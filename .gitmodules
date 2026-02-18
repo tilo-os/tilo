@@ -1,0 +1,18 @@
+[submodule "quick-fs-fuse"]
+	path = quick-fs-fuse
+	url = ./quick-fs-fuse
+[submodule "quick-gnome-shell"]
+	path = quick-gnome-shell
+	url = ./quick-gnome-shell
+[submodule "os"]
+	path = os
+	url = ./os
+[submodule "apps/browser"]
+	path = apps/browser
+	url = ./apps/browser
+[submodule "apps/file-explorer"]
+	path = apps/file-explorer
+	url = ./apps/file-explorer
+[submodule "apps/terminal"]
+	path = apps/terminal
+	url = ./apps/terminal
