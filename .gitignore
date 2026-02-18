@@ -1,0 +1,5 @@
+.env
+os/output/
+os/quick-desktop
+**/target/
+Cargo.lock
