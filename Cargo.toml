@@ -1,0 +1,9 @@
+[workspace]
+members = [
+    "quick-fs-fuse",
+    "quick-gnome-shell",
+    "apps/file-explorer",
+    "apps/terminal",
+    "apps/browser",
+]
+resolver = "2"
