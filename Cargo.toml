@@ -4,6 +4,6 @@ members = [
     "quick-gnome-shell",
     "apps/file-explorer",
     "apps/terminal",
-    "apps/browser",
+    "apps/browser", "quick-ui",
 ]
 resolver = "2"
