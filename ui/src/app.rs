@@ -19,9 +19,11 @@ pub struct App {
     text_renderer: TextRenderer,
     taffy: TaffyTree<()>,
     root_node: Option<taffy::NodeId>,
+    node_map: std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     layout_dirty: bool,
     needs_sync: bool,
     pub theme: Theme,
+    pub debug_mode: bool,
 }
 
 impl App {
@@ -32,9 +34,11 @@ impl App {
             text_renderer: TextRenderer::new(),
             taffy: TaffyTree::new(),
             root_node: None,
+            node_map: std::collections::HashMap::new(),
             layout_dirty: true,
             needs_sync: true,
             theme: Theme::dark(),
+            debug_mode: true,
         }
     }
 
@@ -42,7 +46,8 @@ impl App {
         let event_loop = EventLoop::new().unwrap();
         let window_attributes = Window::default_attributes()
             .with_title("QuickUI App")
-            .with_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0));
+            .with_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0))
+            .with_min_inner_size(winit::dpi::LogicalSize::new(400.0, 300.0));
         #[allow(deprecated)]
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 
@@ -71,7 +76,8 @@ impl App {
         let mut scene = Scene::new();
         
         // Initial build of the layout tree
-        self.root_node = Some(self.root_widget.build_layout(&mut self.taffy, &self.theme));
+        self.node_map.clear();
+        self.root_node = Some(self.root_widget.build_layout(&mut self.taffy, &self.theme, &mut self.node_map));
 
         let mut theme_idx = 0;
         let themes = [
@@ -109,16 +115,42 @@ impl App {
                                     theme_idx = (theme_idx + 1) % themes.len();
                                     self.theme = themes[theme_idx].clone();
                                     self.layout_dirty = true;
-                                    self.needs_sync = true;
-                                    
-                                    use automerge::transaction::Transactable;
                                     let _ = self.state.doc.put(&self.state.root, "request_theme_cycle", false);
                                 }
                             }
 
-                            // Always keep the current theme name synced in state for labels to read
+                            // DX Stunt: Save/Load session
+                            if let Ok(Some((automerge::Value::Scalar(s), _))) = self.state.doc.get(&self.state.root, "request_save") {
+                                if let automerge::ScalarValue::Boolean(true) = s.as_ref() {
+                                    let data = self.state.save();
+                                    let _ = std::fs::write("session.crdt", data);
+                                    let _ = self.state.doc.put(&self.state.root, "request_save", false);
+                                    println!("Session saved to session.crdt");
+                                }
+                            }
+                            if let Ok(Some((automerge::Value::Scalar(s), _))) = self.state.doc.get(&self.state.root, "request_load") {
+                                if let automerge::ScalarValue::Boolean(true) = s.as_ref() {
+                                    if let Ok(data) = std::fs::read("session.crdt") {
+                                        if let Ok(new_state) = State::load(&data) {
+                                            self.state = new_state;
+                                            self.layout_dirty = true;
+                                            self.needs_sync = true;
+                                            println!("Session loaded from session.crdt");
+                                        }
+                                    }
+                                    let _ = self.state.doc.put(&self.state.root, "request_load", false);
+                                }
+                            }
+
+                            // Only keep the current theme name synced in state if it changed
                             use automerge::transaction::Transactable;
-                            let _ = self.state.doc.put(&self.state.root, "current_theme_name", self.theme.name.as_str());
+                            let theme_changed = match self.state.doc.get(&self.state.root, "current_theme_name") {
+                                Ok(Some((automerge::Value::Scalar(s), _))) => s.to_string() != self.theme.name,
+                                _ => true,
+                            };
+                            if theme_changed {
+                                let _ = self.state.doc.put(&self.state.root, "current_theme_name", self.theme.name.as_str());
+                            }
 
                             // 2. Sync Widget Tree
                             if self.needs_sync {
@@ -130,13 +162,24 @@ impl App {
                             let root_node = self.root_node.unwrap();
                             if self.layout_dirty {
                                 // Set root constraints
+                                let node_map = &self.node_map;
+                                let text_renderer = &mut self.text_renderer;
+                                
                                 self.taffy.compute_layout_with_measure(
                                     root_node,
                                     taffy::Size {
                                         width: AvailableSpace::Definite((width as f32) / scale_factor),
                                         height: AvailableSpace::Definite((height as f32) / scale_factor),
                                     },
-                                    |_, _, _, _, _| taffy::Size::ZERO
+                                    |known, available, node_id, _context, _tree| {
+                                        if let Some(&widget_ptr) = node_map.get(&node_id) {
+                                            unsafe {
+                                                (*widget_ptr).measure(known, available, text_renderer)
+                                            }
+                                        } else {
+                                            taffy::Size::ZERO
+                                        }
+                                    }
                                 ).unwrap();
                                 
                                 self.root_widget.apply_layout(&self.taffy, root_node, vello::kurbo::Point::new(0.0, 0.0));
@@ -147,7 +190,43 @@ impl App {
                             let transform = Affine::scale(scale_factor as f64);
                             self.root_widget.draw(&mut scene, transform, &mut self.text_renderer, &self.theme);
                             
-                            // 4. Draw Remote Cursors
+                            // Debug Borders
+                            if self.debug_mode {
+                                fn draw_debug_recursive(widget: &dyn Widget, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, depth: usize) {
+                                    let rect = widget.get_rect();
+                                    let color = match depth % 3 {
+                                        0 => Color::rgb8(255, 0, 255), // Magenta
+                                        1 => Color::rgb8(0, 255, 255), // Cyan
+                                        _ => Color::rgb8(255, 255, 0), // Yellow
+                                    };
+                                    
+                                    scene.stroke(
+                                        &vello::kurbo::Stroke::new(1.0),
+                                        transform,
+                                        color,
+                                        None,
+                                        &rect,
+                                    );
+                                    
+                                    // Draw widget name
+                                    let name = widget.name();
+                                    text_renderer.draw_text(
+                                        scene,
+                                        name,
+                                        10.0,
+                                        color,
+                                        transform * Affine::translate((rect.x0 + 2.0, rect.y0 + 10.0)),
+                                        None,
+                                    );
+
+                                    for child in widget.children() {
+                                        draw_debug_recursive(child, scene, transform, text_renderer, theme, depth + 1);
+                                    }
+                                }
+                                draw_debug_recursive(self.root_widget.as_ref(), &mut scene, transform, &mut self.text_renderer, &self.theme, 0);
+                            }
+                            
+                            // 5. Draw Remote Cursors
                             for (_, cursor) in &self.state.collab.cursors {
                                 let mut path = vello::kurbo::BezPath::new();
                                 path.move_to(vello::kurbo::Point::new(0.0, 0.0));
@@ -196,8 +275,19 @@ impl App {
                         _ => {
                             // Forward events to widget
                             let mut handled = false;
-                            let scale_factor = window.scale_factor();
-                            self.root_widget.handle_event(&event, scale_factor, &mut self.state.doc, &self.state.root, &mut handled);
+                            
+                            // Toggle Debug Mode with F12
+                            if let winit::event::WindowEvent::KeyboardInput { event: winit::event::KeyEvent { logical_key: winit::keyboard::Key::Named(winit::keyboard::NamedKey::F12), state: winit::event::ElementState::Pressed, .. }, .. } = event {
+                                self.debug_mode = !self.debug_mode;
+                                println!("Debug mode: {}", self.debug_mode);
+                                handled = true;
+                            }
+
+                            if !handled {
+                                let scale_factor = window.scale_factor();
+                                self.root_widget.handle_event(&event, scale_factor, &mut self.state.doc, &self.state.root, &mut handled);
+                            }
+
                             if handled {
                                 self.needs_sync = true;
                                 self.layout_dirty = true;

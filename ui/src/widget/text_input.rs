@@ -61,14 +61,16 @@ impl Widget for TextInput {
         }
     }
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree, _theme: &Theme) -> NodeId {
-        taffy.new_leaf(Style {
+    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
+        let node = taffy.new_leaf(Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::length(40.0),
             },
             ..Default::default()
-        }).unwrap()
+        }).unwrap();
+        node_map.insert(node, self as *mut dyn Widget);
+        node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree, node: NodeId, origin: Point) {
@@ -107,16 +109,19 @@ impl Widget for TextInput {
         self.char_x_positions.clear();
         self.char_x_positions.resize(self.text.len() + 1, 0.0);
         for (byte_idx, _) in self.text.char_indices() {
-            self.char_x_positions[byte_idx] = text_renderer.measure_width(&self.text[0..byte_idx], text_size) as f64;
+            let (w, _) = text_renderer.measure(&self.text[0..byte_idx], text_size, None);
+            self.char_x_positions[byte_idx] = w as f64;
         }
-        self.char_x_positions[self.text.len()] = text_renderer.measure_width(&self.text, text_size) as f64;
+        let (total_w, _) = text_renderer.measure(&self.text, text_size, None);
+        self.char_x_positions[self.text.len()] = total_w as f64;
 
         // Cursor
         let cursor_pos = self.cursor_pos.min(self.text.len());
         let cursor_x_offset = if cursor_pos < self.char_x_positions.len() && self.text.is_char_boundary(cursor_pos) {
             self.char_x_positions[cursor_pos]
         } else {
-            text_renderer.measure_width(&self.text, text_size) as f64
+            let (w, _) = text_renderer.measure(&self.text, text_size, None);
+            w as f64
         };
 
         // Adjust scroll
@@ -137,7 +142,8 @@ impl Widget for TextInput {
             &self.text,
             text_size,
             theme.text_primary,
-            transform * Affine::translate((self.rect.x0 + padding_x - self.scroll_x, text_y))
+            transform * Affine::translate((self.rect.x0 + padding_x - self.scroll_x, text_y)),
+            None,
         );
 
         if self.is_focused {
@@ -158,12 +164,19 @@ impl Widget for TextInput {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let logical_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.is_hovered = self.rect.contains(logical_pos);
+                let hover = self.rect.contains(logical_pos);
+                if hover != self.is_hovered {
+                    self.is_hovered = hover;
+                    *handled = true;
+                }
                 self.last_mouse_pos = logical_pos;
             }
             WindowEvent::MouseInput { state: element_state, button: MouseButton::Left, .. } => {
                 if self.is_hovered && *element_state == ElementState::Pressed {
-                    self.is_focused = true;
+                    if !self.is_focused {
+                        self.is_focused = true;
+                        *handled = true;
+                    }
                     
                     // Update cursor pos based on click using exact calculated widths and scrolling
                     let padding_x = 10.0;
@@ -182,10 +195,15 @@ impl Widget for TextInput {
                         }
                     }
                     
-                    self.cursor_pos = best_idx;
-                    *handled = true;
+                    if self.cursor_pos != best_idx {
+                        self.cursor_pos = best_idx;
+                        *handled = true;
+                    }
                 } else if *element_state == ElementState::Pressed {
-                    self.is_focused = false;
+                    if self.is_focused {
+                        self.is_focused = false;
+                        *handled = true;
+                    }
                 }
             }
             WindowEvent::KeyboardInput { event: KeyEvent { logical_key, text, state: element_state, .. }, .. } => {
@@ -252,5 +270,11 @@ impl Widget for TextInput {
             }
             _ => {}
         }
+    }
+
+    fn name(&self) -> &str { "TextInput" }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
     }
 }
