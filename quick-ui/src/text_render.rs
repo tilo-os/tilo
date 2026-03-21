@@ -20,19 +20,31 @@ impl TextRenderer {
         }
     }
 
-    pub fn measure_width(&mut self, text: &str, size: f32) -> f32 {
-        if text.is_empty() { return 0.0; }
+    pub fn measure(&mut self, text: &str, size: f32, max_width: Option<f32>) -> (f32, f32) {
+        if text.is_empty() { return (0.0, 0.0); }
         
-        let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(size, size));
+        // If max_width is Definite(0), treat it as no limit to prevent total collapse
+        // during intermediate Taffy layout steps.
+        let resolved_max_width = if let Some(w) = max_width {
+            if w <= 0.0 { None } else { Some(w) }
+        } else {
+            None
+        };
+
+        let line_height = (size * 1.2).ceil();
+        let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(size, line_height));
         buffer.set_text(&mut self.font_system, text, &cosmic_text::Attrs::new(), Shaping::Advanced, None);
-        buffer.set_size(&mut self.font_system, Some(10000.0), None);
+        buffer.set_size(&mut self.font_system, resolved_max_width, None);
         buffer.shape_until_scroll(&mut self.font_system, false);
 
-        let mut max_width = 0.0f32;
+        let mut width = 0.0f32;
+        let mut lines = 0;
         for run in buffer.layout_runs() {
-            max_width = max_width.max(run.line_w);
+            width = width.max(run.line_w);
+            lines += 1;
         }
-        max_width
+        let height = lines as f32 * line_height;
+        (width.ceil() + 1.0, height)
     }
 
     pub fn draw_text(
@@ -42,12 +54,14 @@ impl TextRenderer {
         size: f32,
         color: Color,
         transform: Affine,
+        max_width: Option<f32>,
     ) {
         if text.is_empty() { return; }
         
-        let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(size, size));
+        let line_height = (size * 1.2).ceil();
+        let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(size, line_height));
         buffer.set_text(&mut self.font_system, text, &cosmic_text::Attrs::new(), Shaping::Advanced, None);
-        buffer.set_size(&mut self.font_system, Some(1000.0), None);
+        buffer.set_size(&mut self.font_system, max_width, None);
         buffer.shape_until_scroll(&mut self.font_system, false);
 
         for run in buffer.layout_runs() {

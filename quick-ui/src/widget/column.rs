@@ -10,12 +10,14 @@ use crate::theme::Theme;
 
 pub struct Column {
     children: Vec<Box<dyn Widget>>,
+    rect: vello::kurbo::Rect,
 }
 
 impl Column {
     pub fn new() -> Self {
         Self {
             children: Vec::new(),
+            rect: vello::kurbo::Rect::ZERO,
         }
     }
 
@@ -32,13 +34,13 @@ impl Widget for Column {
         }
     }
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree, theme: &Theme) -> NodeId {
+    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
         let child_nodes: Vec<NodeId> = self.children
             .iter_mut()
-            .map(|c| c.build_layout(taffy, theme))
+            .map(|c| c.build_layout(taffy, theme, node_map))
             .collect();
             
-        taffy.new_with_children(
+        let node = taffy.new_with_children(
             Style {
                 display: taffy::Display::Flex,
                 flex_direction: taffy::FlexDirection::Column,
@@ -60,15 +62,20 @@ impl Widget for Column {
                 ..Default::default()
             },
             &child_nodes
-        ).unwrap()
+        ).unwrap();
+        node_map.insert(node, self as *mut dyn Widget);
+        node
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree, node: NodeId, origin: Point) {
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
-        let new_origin = Point::new(
+        self.rect = vello::kurbo::Rect::new(
             origin.x + layout.location.x as f64,
             origin.y + layout.location.y as f64,
+            origin.x + layout.location.x as f64 + layout.size.width as f64,
+            origin.y + layout.location.y as f64 + layout.size.height as f64,
         );
+        let new_origin = Point::new(self.rect.x0, self.rect.y0);
         
         let children = taffy.children(node).unwrap();
         for (child_widget, child_node) in self.children.iter_mut().zip(children.iter()) {
@@ -89,5 +96,19 @@ impl Widget for Column {
                 break;
             }
         }
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.children.iter().map(|c| c.as_ref()).collect()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.children.iter_mut().map(|c| c.as_mut() as &mut (dyn Widget + '_)).collect()
+    }
+
+    fn name(&self) -> &str { "Column" }
+
+    fn get_rect(&self) -> vello::kurbo::Rect {
+        self.rect
     }
 }
