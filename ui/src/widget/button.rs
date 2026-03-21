@@ -1,11 +1,12 @@
 use automerge::{AutoCommit, ObjId, Value, ReadDoc, transaction::Transactable};
 use vello::Scene;
 use vello::kurbo::{Affine, RoundedRect, Rect, Point};
-use vello::peniko::Color;
 use winit::event::{WindowEvent, MouseButton, ElementState};
 use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use crate::widget::Widget;
 use crate::text_render::TextRenderer;
+use crate::theme::Theme;
+use crate::i18n;
 
 pub struct Button {
     _id: String,
@@ -34,7 +35,7 @@ impl Widget for Button {
         // Button label could be synced from CRDT here
     }
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree) -> NodeId {
+    fn build_layout(&mut self, taffy: &mut TaffyTree, _theme: &Theme) -> NodeId {
         taffy.new_leaf(Style {
             size: Size {
                 width: Dimension::length(120.0),
@@ -54,16 +55,16 @@ impl Widget for Button {
         );
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer) {
+    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme) {
         let (bg_color, border_color) = if self.is_pressed {
-            (Color::rgb8(35, 35, 40), Color::rgb8(60, 60, 65))
+            (theme.bg_active, theme.border_standard)
         } else if self.is_hovered {
-            (Color::rgb8(55, 55, 60), Color::rgb8(90, 90, 95))
+            (theme.bg_hover, theme.border_standard)
         } else {
-            (Color::rgb8(45, 45, 50), Color::rgb8(80, 80, 85))
+            (theme.bg_primary, theme.border_standard)
         };
 
-        let shape = RoundedRect::from_rect(self.rect, 4.0); // Match text input rounding (4.0)
+        let shape = RoundedRect::from_rect(self.rect, theme.radius_standard);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -80,14 +81,16 @@ impl Widget for Button {
         );
         
         let text_size = 14.0;
-        let text_x = self.rect.center().x - (self.label.len() as f64 * 4.0); // Naive centering
+        let label = i18n!(&self.label);
+        let text_width = text_renderer.measure_width(&label, text_size as f32) as f64;
+        let text_x = self.rect.center().x - (text_width / 2.0);
         let text_y = self.rect.y0 + (self.rect.height() - text_size as f64) / 2.0;
         
         text_renderer.draw_text(
             scene,
-            &self.label,
-            text_size,
-            Color::WHITE,
+            &label,
+            text_size as f32,
+            theme.text_primary,
             transform * Affine::translate((text_x, text_y))
         );
     }
@@ -112,15 +115,27 @@ impl Widget for Button {
                         // CRDT Mutation
                         if !self.is_pressed {
                             if let Some(path) = &self.on_click_path {
-                                // Super hacky CRDT mutation for the counter example
-                                if let Ok(Some((val, _prop_id))) = state.get(root, path.as_str()) {
-                                    if let Value::Scalar(s) = val {
-                                        if let automerge::ScalarValue::Counter(_c) = s.as_ref() {
-                                            let _ = state.increment(root, path.as_str(), 1);
+                                match state.get(root, path.as_str()) {
+                                    Ok(Some((Value::Scalar(s), _))) => {
+                                        match s.as_ref() {
+                                            automerge::ScalarValue::Counter(_) => {
+                                                let _ = state.increment(root, path.as_str(), 1);
+                                            }
+                                            automerge::ScalarValue::Boolean(_) => {
+                                                let _ = state.put(root, path.as_str(), true);
+                                            }
+                                            _ => {
+                                                // Default to setting true if it's some other scalar
+                                                let _ = state.put(root, path.as_str(), true);
+                                            }
                                         }
                                     }
-                                } else {
-                                    let _ = state.put(root, path.as_str(), automerge::ScalarValue::Counter(1.into()));
+                                    _ => {
+                                        // If it doesn't exist, we'll try to put a boolean true
+                                        // (The App check for Counter specifically is a bit rigid, 
+                                        // but this makes buttons work as triggers)
+                                        let _ = state.put(root, path.as_str(), true);
+                                    }
                                 }
                             }
                         }

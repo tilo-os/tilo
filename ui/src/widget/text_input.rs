@@ -1,12 +1,13 @@
 use automerge::{AutoCommit, ObjId, Value, ReadDoc, transaction::Transactable, ObjType};
 use vello::Scene;
 use vello::kurbo::{Affine, RoundedRect, Rect, Point, Stroke};
-use vello::peniko::{Color, BlendMode};
+use vello::peniko::{BlendMode};
 use winit::event::{WindowEvent, MouseButton, ElementState, KeyEvent};
 use winit::keyboard::{Key, NamedKey};
 use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use crate::widget::Widget;
 use crate::text_render::TextRenderer;
+use crate::theme::Theme;
 
 pub struct TextInput {
     _id: String,
@@ -60,7 +61,7 @@ impl Widget for TextInput {
         }
     }
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree) -> NodeId {
+    fn build_layout(&mut self, taffy: &mut TaffyTree, _theme: &Theme) -> NodeId {
         taffy.new_leaf(Style {
             size: Size {
                 width: Dimension::percent(1.0),
@@ -80,27 +81,27 @@ impl Widget for TextInput {
         );
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer) {
+    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme) {
         let bg_color = if self.is_focused {
-            Color::rgb8(30, 30, 35)
+            theme.bg_active
         } else {
-            Color::rgb8(25, 25, 30)
+            theme.bg_app
         };
 
-        let shape = RoundedRect::from_rect(self.rect, 4.0);
+        let shape = RoundedRect::from_rect(self.rect, theme.radius_standard);
         scene.fill(vello::peniko::Fill::NonZero, transform, bg_color, None, &shape);
         
         let border_color = if self.is_focused {
-            Color::rgb8(0, 120, 215)
+            theme.border_focus
         } else if self.is_hovered {
-            Color::rgb8(70, 70, 75)
+            theme.border_standard
         } else {
-            Color::rgb8(50, 50, 55)
+            theme.border_standard // Consider theme.border_dim if added
         };
         scene.stroke(&Stroke::new(1.0), transform, border_color, None, &shape);
 
         let text_size = 16.0;
-        let padding_x = 10.0;
+        let padding_x = theme.padding_standard as f64;
 
         // Pre-calculate positions for exact caret placement and click resolution
         self.char_x_positions.clear();
@@ -135,7 +136,7 @@ impl Widget for TextInput {
             scene,
             &self.text,
             text_size,
-            Color::rgb8(240, 240, 240),
+            theme.text_primary,
             transform * Affine::translate((self.rect.x0 + padding_x - self.scroll_x, text_y))
         );
 
@@ -147,7 +148,7 @@ impl Widget for TextInput {
                 cursor_x + 2.0,
                 self.rect.y0 + (self.rect.height() + text_size as f64) / 2.0
             );
-            scene.fill(vello::peniko::Fill::NonZero, transform, Color::rgb8(0, 120, 215), None, &cursor_rect);
+            scene.fill(vello::peniko::Fill::NonZero, transform, theme.accent_primary, None, &cursor_rect);
         }
 
         scene.pop_layer();
