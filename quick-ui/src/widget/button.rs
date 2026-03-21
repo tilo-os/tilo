@@ -8,7 +8,7 @@ use crate::widget::Widget;
 use crate::text_render::TextRenderer;
 
 pub struct Button {
-    id: String,
+    _id: String,
     label: String,
     rect: Rect,
     is_hovered: bool,
@@ -19,7 +19,7 @@ pub struct Button {
 impl Button {
     pub fn new(id: &str, label: &str, on_click_path: Option<&str>) -> Self {
         Self {
-            id: id.to_string(),
+            _id: id.to_string(),
             label: label.to_string(),
             rect: Rect::ZERO,
             is_hovered: false,
