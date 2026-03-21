@@ -6,6 +6,7 @@ use taffy::{TaffyTree, NodeId, Style};
 use taffy::style_helpers::{length, percent};
 use crate::widget::Widget;
 use crate::text_render::TextRenderer;
+use crate::theme::Theme;
 
 pub struct Column {
     children: Vec<Box<dyn Widget>>,
@@ -31,10 +32,10 @@ impl Widget for Column {
         }
     }
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree) -> NodeId {
+    fn build_layout(&mut self, taffy: &mut TaffyTree, theme: &Theme) -> NodeId {
         let child_nodes: Vec<NodeId> = self.children
             .iter_mut()
-            .map(|c| c.build_layout(taffy))
+            .map(|c| c.build_layout(taffy, theme))
             .collect();
             
         taffy.new_with_children(
@@ -44,13 +45,13 @@ impl Widget for Column {
                 align_items: Some(taffy::AlignItems::FlexStart),
                 gap: taffy::Size {
                     width: length(0.0),
-                    height: length(10.0),
+                    height: length(theme.gap_standard),
                 },
                 padding: taffy::Rect {
-                    left: length(20.0),
-                    right: length(20.0),
-                    top: length(20.0),
-                    bottom: length(20.0),
+                    left: length(theme.padding_standard * 2.0),
+                    right: length(theme.padding_standard * 2.0),
+                    top: length(theme.padding_standard * 2.0),
+                    bottom: length(theme.padding_standard * 2.0),
                 },
                 size: taffy::Size {
                     width: percent(1.0),
@@ -75,9 +76,9 @@ impl Widget for Column {
         }
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer) {
+    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme) {
         for child in &mut self.children {
-            child.draw(scene, transform, text_renderer);
+            child.draw(scene, transform, text_renderer, theme);
         }
     }
 
