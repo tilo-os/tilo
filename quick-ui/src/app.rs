@@ -6,9 +6,12 @@ use winit::{
 use std::sync::Arc;
 use vello::{Scene, Renderer, RendererOptions, util::RenderContext, peniko::Color, kurbo::Affine};
 use taffy::{TaffyTree, AvailableSpace};
+use automerge::ReadDoc;
 use crate::state::State;
 use crate::widget::Widget;
 use crate::text_render::TextRenderer;
+
+use crate::theme::Theme;
 
 pub struct App {
     state: State,
@@ -18,6 +21,7 @@ pub struct App {
     root_node: Option<taffy::NodeId>,
     layout_dirty: bool,
     needs_sync: bool,
+    pub theme: Theme,
 }
 
 impl App {
@@ -30,6 +34,7 @@ impl App {
             root_node: None,
             layout_dirty: true,
             needs_sync: true,
+            theme: Theme::dark(),
         }
     }
 
@@ -66,7 +71,17 @@ impl App {
         let mut scene = Scene::new();
         
         // Initial build of the layout tree
-        self.root_node = Some(self.root_widget.build_layout(&mut self.taffy));
+        self.root_node = Some(self.root_widget.build_layout(&mut self.taffy, &self.theme));
+
+        let mut theme_idx = 0;
+        let themes = [
+            Theme::dark(),
+            Theme::dracula(),
+            Theme::nord(),
+            Theme::gruvbox(),
+            Theme::solarized(),
+            Theme::light(),
+        ];
 
         #[allow(deprecated)]
         event_loop.run(move |event, elwt| {
@@ -87,13 +102,31 @@ impl App {
                             
                             let scale_factor = window.scale_factor() as f32;
                             
-                            // 1. Sync
+                            // 1. Handle State-based Logic (Theme cycling, etc.)
+                            // Check if a theme cycle was requested via button
+                            if let Ok(Some((automerge::Value::Scalar(s), _))) = self.state.doc.get(&self.state.root, "request_theme_cycle") {
+                                if let automerge::ScalarValue::Boolean(true) = s.as_ref() {
+                                    theme_idx = (theme_idx + 1) % themes.len();
+                                    self.theme = themes[theme_idx].clone();
+                                    self.layout_dirty = true;
+                                    self.needs_sync = true;
+                                    
+                                    use automerge::transaction::Transactable;
+                                    let _ = self.state.doc.put(&self.state.root, "request_theme_cycle", false);
+                                }
+                            }
+
+                            // Always keep the current theme name synced in state for labels to read
+                            use automerge::transaction::Transactable;
+                            let _ = self.state.doc.put(&self.state.root, "current_theme_name", self.theme.name.as_str());
+
+                            // 2. Sync Widget Tree
                             if self.needs_sync {
                                 self.root_widget.sync(&self.state.doc, &self.state.root);
                                 self.needs_sync = false;
                             }
                             
-                            // 2. Layout
+                            // 3. Layout
                             let root_node = self.root_node.unwrap();
                             if self.layout_dirty {
                                 // Set root constraints
@@ -110,9 +143,9 @@ impl App {
                                 self.layout_dirty = false;
                             }
                             
-                            // 3. Draw
+                            // 4. Draw
                             let transform = Affine::scale(scale_factor as f64);
-                            self.root_widget.draw(&mut scene, transform, &mut self.text_renderer);
+                            self.root_widget.draw(&mut scene, transform, &mut self.text_renderer, &self.theme);
                             
                             // 4. Draw Remote Cursors
                             for (_, cursor) in &self.state.collab.cursors {
@@ -150,7 +183,7 @@ impl App {
                                 &scene,
                                 &surface_texture,
                                 &vello::RenderParams {
-                                    base_color: Color::rgb8(20, 20, 25), // Very dark blue-grey background
+                                    base_color: self.theme.bg_app,
                                     width,
                                     height,
                                     antialiasing_method: vello::AaConfig::Area,
