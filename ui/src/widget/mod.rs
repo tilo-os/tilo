@@ -4,6 +4,7 @@ use vello::kurbo::Affine;
 use winit::event::WindowEvent;
 use taffy::{TaffyTree, NodeId};
 use crate::text_render::TextRenderer;
+use crate::theme::Theme;
 
 pub struct LayoutConstraints {
     pub max_width: f32,
@@ -13,6 +14,7 @@ pub struct LayoutConstraints {
 pub struct WidgetContext<'a> {
     pub doc: &'a AutoCommit,
     pub path: &'a ObjId,
+    pub theme: &'a Theme,
 }
 
 /// The core Widget trait for Retained Mode CRDT UI.
@@ -21,13 +23,13 @@ pub trait Widget {
     fn sync(&mut self, state: &AutoCommit, path: &ObjId);
     
     /// Pass 1: Build the Taffy layout tree
-    fn build_layout(&mut self, taffy: &mut TaffyTree) -> NodeId;
+    fn build_layout(&mut self, taffy: &mut TaffyTree, theme: &Theme) -> NodeId;
     
     /// Pass 2: Save the calculated layout rect
     fn apply_layout(&mut self, taffy: &TaffyTree, node: NodeId, origin: vello::kurbo::Point);
     
     /// Draw the widget using Vello
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer);
+    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme);
     
     /// Handle winit events, mutating the CRDT document directly if necessary.
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, state: &mut AutoCommit, path: &ObjId, handled: &mut bool);
