@@ -14,6 +14,10 @@ pub struct App {
     state: State,
     root_widget: Box<dyn Widget>,
     text_renderer: TextRenderer,
+    taffy: TaffyTree<()>,
+    root_node: Option<taffy::NodeId>,
+    layout_dirty: bool,
+    needs_sync: bool,
 }
 
 impl App {
@@ -22,6 +26,10 @@ impl App {
             state,
             root_widget,
             text_renderer: TextRenderer::new(),
+            taffy: TaffyTree::new(),
+            root_node: None,
+            layout_dirty: true,
+            needs_sync: true,
         }
     }
 
@@ -56,7 +64,9 @@ impl App {
         ).expect("Failed to create Vello renderer");
 
         let mut scene = Scene::new();
-        let mut taffy = TaffyTree::new();
+        
+        // Initial build of the layout tree
+        self.root_node = Some(self.root_widget.build_layout(&mut self.taffy));
 
         #[allow(deprecated)]
         event_loop.run(move |event, elwt| {
@@ -66,6 +76,7 @@ impl App {
                         WindowEvent::CloseRequested => elwt.exit(),
                         WindowEvent::Resized(size) => {
                             render_cx.resize_surface(&mut surface, size.width, size.height);
+                            self.layout_dirty = true;
                             window.request_redraw();
                         }
                         WindowEvent::RedrawRequested => {
@@ -77,23 +88,27 @@ impl App {
                             let scale_factor = window.scale_factor() as f32;
                             
                             // 1. Sync
-                            self.root_widget.sync(&self.state.doc, &self.state.root);
+                            if self.needs_sync {
+                                self.root_widget.sync(&self.state.doc, &self.state.root);
+                                self.needs_sync = false;
+                            }
                             
                             // 2. Layout
-                            taffy.clear();
-                            let root_node = self.root_widget.build_layout(&mut taffy);
-                            
-                            // Set root constraints
-                            taffy.compute_layout_with_measure(
-                                root_node,
-                                taffy::Size {
-                                    width: AvailableSpace::Definite((width as f32) / scale_factor),
-                                    height: AvailableSpace::Definite((height as f32) / scale_factor),
-                                },
-                                |_, _, _, _, _| taffy::Size::ZERO
-                            ).unwrap();
-                            
-                            self.root_widget.apply_layout(&taffy, root_node, vello::kurbo::Point::new(0.0, 0.0));
+                            let root_node = self.root_node.unwrap();
+                            if self.layout_dirty {
+                                // Set root constraints
+                                self.taffy.compute_layout_with_measure(
+                                    root_node,
+                                    taffy::Size {
+                                        width: AvailableSpace::Definite((width as f32) / scale_factor),
+                                        height: AvailableSpace::Definite((height as f32) / scale_factor),
+                                    },
+                                    |_, _, _, _, _| taffy::Size::ZERO
+                                ).unwrap();
+                                
+                                self.root_widget.apply_layout(&self.taffy, root_node, vello::kurbo::Point::new(0.0, 0.0));
+                                self.layout_dirty = false;
+                            }
                             
                             // 3. Draw
                             let transform = Affine::scale(scale_factor as f64);
@@ -151,6 +166,8 @@ impl App {
                             let scale_factor = window.scale_factor();
                             self.root_widget.handle_event(&event, scale_factor, &mut self.state.doc, &self.state.root, &mut handled);
                             if handled {
+                                self.needs_sync = true;
+                                self.layout_dirty = true;
                                 window.request_redraw();
                             }
                         }
