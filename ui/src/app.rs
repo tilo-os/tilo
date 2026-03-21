@@ -5,7 +5,7 @@ use winit::{
 };
 use std::sync::Arc;
 use vello::{Scene, Renderer, RendererOptions, util::RenderContext, peniko::Color, kurbo::Affine};
-use taffy::{TaffyTree, Style, Size, Dimension, AvailableSpace};
+use taffy::{TaffyTree, AvailableSpace};
 use crate::state::State;
 use crate::widget::Widget;
 use crate::text_render::TextRenderer;
@@ -27,7 +27,7 @@ impl App {
 
     pub fn run(mut self) {
         let event_loop = EventLoop::new().unwrap();
-        let mut window_attributes = Window::default_attributes()
+        let window_attributes = Window::default_attributes()
             .with_title("QuickUI App")
             .with_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0));
         #[allow(deprecated)]

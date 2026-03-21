@@ -6,17 +6,17 @@ use vello::peniko::Color;
 fn main() {
     let mut state = State::new();
     
-    // Initialize state
+    // Initialize CRDT Document State
     {
         use automerge::transaction::Transactable;
         let _ = state.doc.put(&state.root, "toggle_1", true);
         let _ = state.doc.put(&state.root, "check_1", false);
         let _ = state.doc.put(&state.root, "slider_1", 0.75);
         let text_id = state.doc.put_object(&state.root, "text_1", automerge::ObjType::Text).unwrap();
-        let _ = state.doc.splice_text(&text_id, 0, 0, "Hello Collaborative World!");
+        let _ = state.doc.splice_text(&text_id, 0, 0, "Hello Gallery!");
     }
     
-    // Add a fake remote user cursor overlay
+    // Add a fake remote user cursor overlay to demonstrate collaboration rendering
     state.collab.cursors.insert("user_2".into(), RemoteCursor {
         x: 100.0,
         y: 100.0,
@@ -24,6 +24,7 @@ fn main() {
         name: "Alice".into()
     });
 
+    // Build the Widget Tree
     let root_widget = Box::new(
         Column::new()
             .push(Box::new(Button::new("btn_1", "Click Me", Some("counter"))))
@@ -33,6 +34,7 @@ fn main() {
             .push(Box::new(TextInput::new("txt_1", "text_1")))
     );
     
+    // Run the Application
     let app = App::new(state, root_widget);
     app.run();
 }
