@@ -43,14 +43,16 @@ impl Widget for Slider {
         }
     }
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree, _theme: &Theme) -> NodeId {
-        taffy.new_leaf(Style {
+    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
+        let node = taffy.new_leaf(Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::length(30.0),
             },
             ..Default::default()
-        }).unwrap()
+        }).unwrap();
+        node_map.insert(node, self as *mut dyn Widget);
+        node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree, node: NodeId, origin: Point) {
@@ -129,5 +131,11 @@ impl Widget for Slider {
             }
             _ => {}
         }
+    }
+
+    fn name(&self) -> &str { "Slider" }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
     }
 }
