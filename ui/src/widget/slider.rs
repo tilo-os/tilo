@@ -8,7 +8,7 @@ use crate::widget::Widget;
 use crate::text_render::TextRenderer;
 
 pub struct Slider {
-    id: String,
+    _id: String,
     rect: Rect,
     is_hovered: bool,
     is_dragging: bool,
@@ -19,7 +19,7 @@ pub struct Slider {
 impl Slider {
     pub fn new(id: &str, on_change_path: &str) -> Self {
         Self {
-            id: id.to_string(),
+            _id: id.to_string(),
             rect: Rect::ZERO,
             is_hovered: false,
             is_dragging: false,
