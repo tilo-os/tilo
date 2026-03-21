@@ -35,14 +35,16 @@ impl Widget for Button {
         // Button label could be synced from CRDT here
     }
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree, _theme: &Theme) -> NodeId {
-        taffy.new_leaf(Style {
+    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
+        let node = taffy.new_leaf(Style {
             size: Size {
                 width: Dimension::length(120.0),
                 height: Dimension::length(40.0),
             },
             ..Default::default()
-        }).unwrap()
+        }).unwrap();
+        node_map.insert(node, self as *mut dyn Widget);
+        node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree, node: NodeId, origin: Point) {
@@ -82,8 +84,8 @@ impl Widget for Button {
         
         let text_size = 14.0;
         let label = i18n!(&self.label);
-        let text_width = text_renderer.measure_width(&label, text_size as f32) as f64;
-        let text_x = self.rect.center().x - (text_width / 2.0);
+        let (text_width, _text_height) = text_renderer.measure(&label, text_size as f32, None);
+        let text_x = self.rect.center().x - (text_width as f64 / 2.0);
         let text_y = self.rect.y0 + (self.rect.height() - text_size as f64) / 2.0;
         
         text_renderer.draw_text(
@@ -91,7 +93,8 @@ impl Widget for Button {
             &label,
             text_size as f32,
             theme.text_primary,
-            transform * Affine::translate((text_x, text_y))
+            transform * Affine::translate((text_x, text_y)),
+            None,
         );
     }
 
@@ -147,5 +150,11 @@ impl Widget for Button {
             }
             _ => {}
         }
+    }
+
+    fn name(&self) -> &str { "Button" }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
     }
 }

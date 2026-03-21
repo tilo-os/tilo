@@ -39,14 +39,16 @@ impl Widget for Checkbox {
         }
     }
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree, _theme: &Theme) -> NodeId {
-        taffy.new_leaf(Style {
+    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
+        let node = taffy.new_leaf(Style {
             size: Size {
                 width: Dimension::length(24.0),
                 height: Dimension::length(24.0),
             },
             ..Default::default()
-        }).unwrap()
+        }).unwrap();
+        node_map.insert(node, self as *mut dyn Widget);
+        node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree, node: NodeId, origin: Point) {
@@ -111,5 +113,11 @@ impl Widget for Checkbox {
             }
             _ => {}
         }
+    }
+
+    fn name(&self) -> &str { "Checkbox" }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
     }
 }
