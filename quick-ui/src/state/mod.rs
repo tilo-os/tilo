@@ -20,4 +20,20 @@ impl State {
             collab: CollaborationState::new(),
         }
     }
+
+    /// Serializes the entire application CRDT state into a byte vector.
+    pub fn save(&mut self) -> Vec<u8> {
+        self.doc.save()
+    }
+
+    /// Restores an application state from a serialized byte vector.
+    pub fn load(data: &[u8]) -> Result<Self, automerge::AutomergeError> {
+        let doc = AutoCommit::load(data)?;
+        let root = automerge::ROOT;
+        Ok(Self {
+            doc,
+            root,
+            collab: CollaborationState::new(),
+        })
+    }
 }
