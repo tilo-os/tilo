@@ -8,7 +8,7 @@ use crate::widget::Widget;
 use crate::text_render::TextRenderer;
 
 pub struct Checkbox {
-    id: String,
+    _id: String,
     rect: Rect,
     is_hovered: bool,
     is_checked: bool,
@@ -18,7 +18,7 @@ pub struct Checkbox {
 impl Checkbox {
     pub fn new(id: &str, on_toggle_path: &str) -> Self {
         Self {
-            id: id.to_string(),
+            _id: id.to_string(),
             rect: Rect::ZERO,
             is_hovered: false,
             is_checked: false,
