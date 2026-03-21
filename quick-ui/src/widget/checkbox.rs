@@ -6,6 +6,7 @@ use winit::event::{WindowEvent, MouseButton, ElementState};
 use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use crate::widget::Widget;
 use crate::text_render::TextRenderer;
+use crate::theme::Theme;
 
 pub struct Checkbox {
     _id: String,
@@ -38,7 +39,7 @@ impl Widget for Checkbox {
         }
     }
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree) -> NodeId {
+    fn build_layout(&mut self, taffy: &mut TaffyTree, _theme: &Theme) -> NodeId {
         taffy.new_leaf(Style {
             size: Size {
                 width: Dimension::length(24.0),
@@ -58,20 +59,20 @@ impl Widget for Checkbox {
         );
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, _text_renderer: &mut TextRenderer) {
+    fn draw(&mut self, scene: &mut Scene, transform: Affine, _text_renderer: &mut TextRenderer, theme: &Theme) {
         let box_color = if self.is_checked {
-            Color::rgb8(0, 120, 215)
+            theme.accent_primary
         } else if self.is_hovered {
-            Color::rgb8(50, 50, 55)
+            theme.bg_hover
         } else {
-            Color::rgb8(35, 35, 40)
+            theme.bg_active
         };
 
         let box_shape = RoundedRect::from_rect(self.rect, 6.0);
         
         // Draw Box
         scene.fill(vello::peniko::Fill::NonZero, transform, box_color, None, &box_shape);
-        scene.stroke(&Stroke::new(1.0), transform, Color::rgb8(80, 80, 85), None, &box_shape);
+        scene.stroke(&Stroke::new(1.0), transform, theme.border_standard, None, &box_shape);
 
         // Draw Checkmark
         if self.is_checked {
@@ -83,7 +84,7 @@ impl Widget for Checkbox {
             scene.stroke(
                 &Stroke::new(2.5).with_caps(vello::kurbo::Cap::Round).with_join(vello::kurbo::Join::Round),
                 transform,
-                Color::rgb8(255, 255, 255),
+                Color::WHITE,
                 None,
                 &path
             );
