@@ -1,11 +1,11 @@
 use automerge::{AutoCommit, ObjId, Value, ReadDoc, transaction::Transactable};
 use vello::Scene;
 use vello::kurbo::{Affine, RoundedRect, Circle, Rect, Point, Stroke};
-use vello::peniko::Color;
 use winit::event::{WindowEvent, MouseButton, ElementState};
 use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use crate::widget::Widget;
 use crate::text_render::TextRenderer;
+use crate::theme::Theme;
 
 pub struct Toggle {
     _id: String,
@@ -38,7 +38,7 @@ impl Widget for Toggle {
         }
     }
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree) -> NodeId {
+    fn build_layout(&mut self, taffy: &mut TaffyTree, _theme: &Theme) -> NodeId {
         taffy.new_leaf(Style {
             size: Size {
                 width: Dimension::length(44.0),
@@ -58,16 +58,16 @@ impl Widget for Toggle {
         );
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, _text_renderer: &mut TextRenderer) {
+    fn draw(&mut self, scene: &mut Scene, transform: Affine, _text_renderer: &mut TextRenderer, theme: &Theme) {
         let track_color = if self.is_checked {
-            Color::rgb8(0, 180, 80) // Strong Green
+            theme.status_success
         } else {
-            Color::rgb8(45, 45, 50) // Explicit Dark Grey
+            theme.bg_active
         };
 
         let track_shape = RoundedRect::from_rect(self.rect, 12.0);
         scene.fill(vello::peniko::Fill::NonZero, transform, track_color, None, &track_shape);
-        scene.stroke(&Stroke::new(1.0), transform, Color::rgb8(80, 80, 85), None, &track_shape);
+        scene.stroke(&Stroke::new(1.0), transform, theme.border_standard, None, &track_shape);
 
         // Knob
         let knob_radius = 10.0;
@@ -79,9 +79,9 @@ impl Widget for Toggle {
         let knob_y = self.rect.y0 + self.rect.height() / 2.0;
         
         let knob_color = if self.is_hovered {
-            Color::rgb8(240, 240, 240)
+            theme.text_primary
         } else {
-            Color::rgb8(220, 220, 220)
+            theme.text_dim
         };
         
         let knob_shape = Circle::new(Point::new(knob_x, knob_y), knob_radius);

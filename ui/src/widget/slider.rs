@@ -1,11 +1,11 @@
 use automerge::{AutoCommit, ObjId, Value, ReadDoc, transaction::Transactable};
 use vello::Scene;
 use vello::kurbo::{Affine, RoundedRect, Circle, Rect, Point};
-use vello::peniko::Color;
 use winit::event::{WindowEvent, MouseButton, ElementState};
 use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use crate::widget::Widget;
 use crate::text_render::TextRenderer;
+use crate::theme::Theme;
 
 pub struct Slider {
     _id: String,
@@ -43,7 +43,7 @@ impl Widget for Slider {
         }
     }
 
-    fn build_layout(&mut self, taffy: &mut TaffyTree) -> NodeId {
+    fn build_layout(&mut self, taffy: &mut TaffyTree, _theme: &Theme) -> NodeId {
         taffy.new_leaf(Style {
             size: Size {
                 width: Dimension::percent(1.0),
@@ -63,7 +63,7 @@ impl Widget for Slider {
         );
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, _text_renderer: &mut TextRenderer) {
+    fn draw(&mut self, scene: &mut Scene, transform: Affine, _text_renderer: &mut TextRenderer, theme: &Theme) {
         // Track
         let track_height = 6.0;
         let track_rect = Rect::new(
@@ -73,8 +73,8 @@ impl Widget for Slider {
             self.rect.y0 + (self.rect.height() + track_height) / 2.0,
         );
         let track_shape = RoundedRect::from_rect(track_rect, 3.0);
-        scene.fill(vello::peniko::Fill::NonZero, transform, Color::rgb8(45, 45, 50), None, &track_shape);
-        scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, Color::rgb8(80, 80, 85), None, &track_shape);
+        scene.fill(vello::peniko::Fill::NonZero, transform, theme.bg_active, None, &track_shape);
+        scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, theme.border_standard, None, &track_shape);
 
         // Active Track (Blue part on the left)
         let active_track_rect = Rect::new(
@@ -84,7 +84,7 @@ impl Widget for Slider {
             track_rect.y1,
         );
         let active_track_shape = RoundedRect::from_rect(active_track_rect, 3.0);
-        scene.fill(vello::peniko::Fill::NonZero, transform, Color::rgb8(0, 120, 215), None, &active_track_shape);
+        scene.fill(vello::peniko::Fill::NonZero, transform, theme.accent_primary, None, &active_track_shape);
 
         // Knob
         let knob_radius = 10.0;
@@ -93,11 +93,11 @@ impl Widget for Slider {
         let knob_shape = Circle::new(Point::new(knob_x, knob_y), knob_radius);
         
         let knob_color = if self.is_dragging {
-            Color::rgb8(240, 240, 240)
+            theme.text_primary
         } else if self.is_hovered {
-            Color::rgb8(220, 220, 220)
+            theme.text_dim
         } else {
-            Color::rgb8(200, 200, 200)
+            theme.border_standard
         };
         
         scene.fill(vello::peniko::Fill::NonZero, transform, knob_color, None, &knob_shape);
