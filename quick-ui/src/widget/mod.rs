@@ -1,6 +1,6 @@
 use automerge::{AutoCommit, ObjId};
 use vello::Scene;
-use vello::kurbo::{Affine, Size, Rect};
+use vello::kurbo::Affine;
 use winit::event::WindowEvent;
 use taffy::{TaffyTree, NodeId};
 use crate::text_render::TextRenderer;
