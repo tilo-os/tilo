@@ -38,7 +38,7 @@ impl App {
             layout_dirty: true,
             needs_sync: true,
             theme: Theme::dark(),
-            debug_mode: true,
+            debug_mode: std::env::var("QUICK_UI_DEBUG").is_ok(),
         }
     }
 
@@ -191,6 +191,7 @@ impl App {
                             self.root_widget.draw(&mut scene, transform, &mut self.text_renderer, &self.theme);
                             
                             // Debug Borders
+                            #[cfg(debug_assertions)]
                             if self.debug_mode {
                                 fn draw_debug_recursive(widget: &dyn Widget, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, depth: usize) {
                                     let rect = widget.get_rect();
