@@ -1,0 +1,58 @@
+{
+  "containerEnv": {
+    "CARGO_HOME": "/workspaces/${localWorkspaceFolderBasename}/.cargo",
+    "DOCKER_CONTAINER": "true",
+    "RUST_BACKTRACE": "1"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "serayuzgur.crates",
+        "vadimcn.vscode-lldb"
+      ],
+      "settings": {
+        "[rust]": {
+          "editor.defaultFormatter": "rust-lang.rust-analyzer",
+          "editor.formatOnSave": true
+        },
+        "rust-analyzer.check": {
+          "command": "clippy"
+        },
+        "rust-analyzer.checkOnSave": true
+      }
+    }
+  },
+  "dockerComposeFile": "compose.yaml",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "moby": "false"
+    },
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "20"
+    },
+    "ghcr.io/rbarazi/devcontainer-features/ai-npm-packages:1": {}
+  },
+  "forwardPorts": [
+    50051
+  ],
+  "initializeCommand": "bash -c 'cd \"${localWorkspaceFolder}\" && bash .devcontainer/scripts/init-host.sh'",
+  "mounts": [
+    "source=/var/home/linuxbrew/.linuxbrew,target=/var/home/linuxbrew/.linuxbrew,type=bind,readonly"
+  ],
+  "name": "Rust Project",
+  "postCreateCommand": "cargo --version && rustc --version",
+  "postStartCommand": "bash -c 'cd \"${WORKSPACE_FOLDER:-.}\" && bash .devcontainer/scripts/setup-git.sh'",
+  "remoteEnv": {
+    "PATH": "${containerEnv:PATH}:/var/home/linuxbrew/.linuxbrew/bin"
+  },
+  "runArgs": [
+    "--ipc=host",
+    "--init"
+  ],
+  "service": "rust-dev",
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,consistency=cached"
+}
