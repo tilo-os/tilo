@@ -12,6 +12,7 @@ pub struct Slider {
     rect: Rect,
     is_hovered: bool,
     is_dragging: bool,
+    is_focused: bool,
     value: f64, // 0.0 to 1.0
     on_change_path: String,
 }
@@ -23,6 +24,7 @@ impl Slider {
             rect: Rect::ZERO,
             is_hovered: false,
             is_dragging: false,
+            is_focused: false,
             value: 0.5,
             on_change_path: on_change_path.to_string(),
         }
@@ -66,12 +68,18 @@ impl Widget for Slider {
     }
 
     fn draw(&mut self, scene: &mut Scene, transform: Affine, _text_renderer: &mut TextRenderer, theme: &Theme) {
+        // Full Area Focus Border
+        if self.is_focused {
+            let shape = RoundedRect::from_rect(self.rect, theme.radius_standard);
+            scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, theme.border_focus, None, &shape);
+        }
+
         // Track
         let track_height = 6.0;
         let track_rect = Rect::new(
-            self.rect.x0,
+            self.rect.x0 + 5.0,
             self.rect.y0 + (self.rect.height() - track_height) / 2.0,
-            self.rect.x1,
+            self.rect.x1 - 5.0,
             self.rect.y0 + (self.rect.height() + track_height) / 2.0,
         );
         let track_shape = RoundedRect::from_rect(track_rect, 3.0);
@@ -80,9 +88,9 @@ impl Widget for Slider {
 
         // Active Track (Blue part on the left)
         let active_track_rect = Rect::new(
-            self.rect.x0,
+            track_rect.x0,
             track_rect.y0,
-            self.rect.x0 + self.value * self.rect.width(),
+            track_rect.x0 + self.value * track_rect.width(),
             track_rect.y1,
         );
         let active_track_shape = RoundedRect::from_rect(active_track_rect, 3.0);
@@ -90,7 +98,7 @@ impl Widget for Slider {
 
         // Knob
         let knob_radius = 10.0;
-        let knob_x = self.rect.x0 + self.value * self.rect.width();
+        let knob_x = track_rect.x0 + self.value * track_rect.width();
         let knob_y = self.rect.y0 + self.rect.height() / 2.0;
         let knob_shape = Circle::new(Point::new(knob_x, knob_y), knob_radius);
         
@@ -105,14 +113,20 @@ impl Widget for Slider {
         scene.fill(vello::peniko::Fill::NonZero, transform, knob_color, None, &knob_shape);
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, state: &mut AutoCommit, root: &ObjId, handled: &mut bool) {
+    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, _taffy: &TaffyTree<()>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.is_hovered = self.rect.contains(p);
+                let hover = self.rect.contains(p);
+                if hover != self.is_hovered {
+                    self.is_hovered = hover;
+                    *handled = true;
+                }
                 
                 if self.is_dragging {
-                    let mut new_value = (p.x - self.rect.x0) / self.rect.width();
+                    let track_padding = 5.0;
+                    let track_width = self.rect.width() - track_padding * 2.0;
+                    let mut new_value = (p.x - (self.rect.x0 + track_padding)) / track_width;
                     new_value = new_value.clamp(0.0, 1.0);
                     if (new_value - self.value).abs() > 0.001 {
                         self.value = new_value;
@@ -124,9 +138,13 @@ impl Widget for Slider {
             WindowEvent::MouseInput { state: element_state, button: MouseButton::Left, .. } => {
                 if self.is_hovered && *element_state == ElementState::Pressed {
                     self.is_dragging = true;
+                    *focus_target = Some(node_id);
                     *handled = true;
                 } else if *element_state == ElementState::Released {
-                    self.is_dragging = false;
+                    if self.is_dragging {
+                        self.is_dragging = false;
+                        *handled = true;
+                    }
                 }
             }
             _ => {}
@@ -138,4 +156,8 @@ impl Widget for Slider {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+
+    fn is_focusable(&self) -> bool { true }
+    fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
+    fn is_focused(&self) -> bool { self.is_focused }
 }
