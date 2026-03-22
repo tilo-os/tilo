@@ -1,5 +1,5 @@
-use quick_ui::{App, State, Theme};
-use quick_ui::widget::{Button, Column, Toggle, Checkbox, Slider, TextInput, Text, Widget};
+use quick_ui::{App, State};
+use quick_ui::widget::{Button, Column, Toggle, Checkbox, Slider, TextInput, Text};
 use quick_ui::state::RemoteCursor;
 use quick_ui::i18n::I18nManager;
 use vello::peniko::Color;
