@@ -41,7 +41,7 @@ pub trait Widget {
     fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme);
     
     /// Handle winit events, mutating the CRDT document directly if necessary.
-    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, state: &mut AutoCommit, path: &ObjId, handled: &mut bool);
+    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, state: &mut AutoCommit, path: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, taffy: &TaffyTree<()>);
 
     /// Get children widgets (for layout/event propagation)
     fn children(&self) -> Vec<&dyn Widget> { vec![] }
@@ -52,6 +52,11 @@ pub trait Widget {
 
     /// Get widget name for debugging
     fn name(&self) -> &str { "Widget" }
+
+    /// Focus management
+    fn is_focusable(&self) -> bool { false }
+    fn set_focus(&mut self, _focused: bool) {}
+    fn is_focused(&self) -> bool { false }
 }
 
 pub type Element = Box<dyn Widget>;
