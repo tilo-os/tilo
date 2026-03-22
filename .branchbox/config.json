@@ -1,0 +1,24 @@
+{
+  "version": "1",
+  "tunnel": {
+    "enabled": false,
+    "default_provider": null,
+    "providers": {
+      "cloudflared": null
+    }
+  },
+  "editor": {
+    "default_agent": null,
+    "auto_launch_agent_terminal": false,
+    "preferred_sidebar_view": null,
+    "hide_secondary_sidebar": false
+  },
+  "feature": {
+    "branch_prefix": "feature",
+    "teardown": {
+      "delete_branch_by_default": true,
+      "force_delete_unmerged_by_default": false,
+      "prompt_force_delete_unmerged": true
+    }
+  }
+}
