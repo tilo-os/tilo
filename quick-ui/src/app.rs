@@ -4,12 +4,13 @@ use winit::{
     window::Window,
 };
 use std::sync::Arc;
-use vello::{Scene, Renderer, RendererOptions, util::RenderContext, peniko::Color, kurbo::Affine, kurbo::Rect as KurboRect};
+use vello::{Scene, Renderer, RendererOptions, util::RenderContext, peniko::Color, kurbo::Affine, kurbo::Rect as KurboRect, kurbo::Point};
 use taffy::{TaffyTree, AvailableSpace, NodeId};
 use crate::state::State;
 use crate::widget::Widget;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::collaboration::{CollaborationManager, CollabEvent, CollabRequest};
 
 #[derive(Debug, Clone, Copy)]
 enum Direction { Up, Down, Left, Right }
@@ -32,6 +33,9 @@ pub struct App {
     // Stable state for Undo/Redo tracking
     last_stable_focus_idx: Option<usize>,
     last_stable_metadata: Option<String>,
+
+    // Collaboration
+    collab_manager: CollaborationManager,
 }
 
 impl App {
@@ -52,6 +56,7 @@ impl App {
             modifiers: winit::event::Modifiers::default(),
             last_stable_focus_idx: None,
             last_stable_metadata: None,
+            collab_manager: CollaborationManager::new(),
         }
     }
 
@@ -94,14 +99,15 @@ impl App {
     }
 
     fn commit_action(&mut self) {
-        // We push the focus/metadata that were active BEFORE the current changes were committed.
         self.state.commit_action(self.last_stable_focus_idx, self.last_stable_metadata.clone());
-        
-        // Now update stable state to current
         self.last_stable_focus_idx = self.focused_node.and_then(|id| self.focusable_order.iter().position(|&x| x == id));
         self.last_stable_metadata = self.focused_node.and_then(|id| {
             self.node_map.get(&id).and_then(|&w_ptr| unsafe { (*w_ptr).get_state() })
         });
+
+        // Broadcast CRDT state
+        let data = self.state.save();
+        self.collab_manager.send(CollabRequest::SyncCRDT { data });
     }
 
     fn set_focused_node(&mut self, new_id: Option<NodeId>) {
@@ -170,14 +176,10 @@ impl App {
         self.root_node = Some(self.root_widget.build_layout(&mut self.taffy, &self.theme, &mut self.node_map));
         self.update_focusable_order();
         
-        // Capture initial stable state
         self.last_stable_focus_idx = self.focused_node.and_then(|id| self.focusable_order.iter().position(|&x| x == id));
         self.last_stable_metadata = self.focused_node.and_then(|id| {
             self.node_map.get(&id).and_then(|&w_ptr| unsafe { (*w_ptr).get_state() })
         });
-
-        let themes = [Theme::dark(), Theme::dracula(), Theme::nord(), Theme::gruvbox(), Theme::solarized(), Theme::light()];
-        let mut _theme_idx = 0;
 
         event_loop.run(move |event, elwt| {
             match event {
@@ -210,6 +212,22 @@ impl App {
                             let transform = Affine::scale(scale_factor as f64);
                             self.root_widget.draw(&mut scene, transform, &mut self.text_renderer, &self.theme);
                             
+                            // Draw Remote Cursors
+                            for (_, cursor) in &self.state.collab.cursors {
+                                let mut path = vello::kurbo::BezPath::new();
+                                path.move_to(Point::new(0.0, 0.0));
+                                path.line_to(Point::new(14.0, 14.0));
+                                path.line_to(Point::new(6.0, 16.0));
+                                path.line_to(Point::new(0.0, 22.0));
+                                path.close_path();
+
+                                let cursor_transform = transform * Affine::translate((cursor.x as f64, cursor.y as f64));
+                                scene.fill(vello::peniko::Fill::NonZero, cursor_transform, cursor.color.clone(), None, &path);
+                                scene.stroke(&vello::kurbo::Stroke::new(1.5), cursor_transform, Color::WHITE, None, &path);
+                                
+                                self.text_renderer.draw_text(&mut scene, &cursor.name, 10.0, Color::WHITE, cursor_transform * Affine::translate((10.0, 20.0)), None);
+                            }
+
                             if self.debug_mode {
                                 fn draw_debug_recursive(widget: &dyn Widget, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, depth: usize) {
                                     let rect = widget.get_rect();
@@ -287,8 +305,10 @@ impl App {
                             if !handled {
                                 if let WindowEvent::KeyboardInput { event: winit::event::KeyEvent { logical_key: winit::keyboard::Key::Named(logical_key), state: winit::event::ElementState::Pressed, .. }, .. } = event {
                                     let dir = match logical_key {
-                                        winit::keyboard::NamedKey::ArrowUp => Some(Direction::Up), winit::keyboard::NamedKey::ArrowDown => Some(Direction::Down),
-                                        winit::keyboard::NamedKey::ArrowLeft => Some(Direction::Left), winit::keyboard::NamedKey::ArrowRight => Some(Direction::Right),
+                                        winit::keyboard::NamedKey::ArrowUp => Some(Direction::Up),
+                                        winit::keyboard::NamedKey::ArrowDown => Some(Direction::Down),
+                                        winit::keyboard::NamedKey::ArrowLeft => Some(Direction::Left),
+                                        winit::keyboard::NamedKey::ArrowRight => Some(Direction::Right),
                                         _ => None,
                                     };
                                     if let Some(d) = dir { self.navigate_focus(d); handled = true; }
@@ -307,6 +327,37 @@ impl App {
                     }
                 }
                 Event::AboutToWait => {
+                    // Poll collaboration events
+                    for event in self.collab_manager.poll() {
+                        match event {
+                            CollabEvent::Context { collaborators, .. } => {
+                                // Update collaborators
+                                // We'll need a better way to map this, but for now:
+                                for c in collaborators {
+                                    self.state.collab.cursors.entry(c.id.clone()).or_insert(crate::state::RemoteCursor {
+                                        x: 0.0, y: 0.0,
+                                        color: Color::rgb(c.color[0] as f64, c.color[1] as f64, c.color[2] as f64),
+                                        name: c.name,
+                                    });
+                                }
+                            }
+                            CollabEvent::RemoteCursorMoved { user_id, x, y } => {
+                                if let Some(cursor) = self.state.collab.cursors.get_mut(&user_id) {
+                                    cursor.x = x;
+                                    cursor.y = y;
+                                    window.request_redraw();
+                                }
+                            }
+                            CollabEvent::CRDTUpdate { data } => {
+                                if let Ok(new_state) = State::load(&data) {
+                                    self.state.doc = new_state.doc;
+                                    self.needs_sync = true;
+                                    window.request_redraw();
+                                }
+                            }
+                        }
+                    }
+
                     if self.root_widget.needs_commit() {
                         self.commit_action();
                         self.root_widget.on_commit();
