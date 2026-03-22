@@ -13,6 +13,7 @@ pub struct Checkbox {
     rect: Rect,
     is_hovered: bool,
     is_checked: bool,
+    is_focused: bool,
     on_toggle_path: String,
 }
 
@@ -23,6 +24,7 @@ impl Checkbox {
             rect: Rect::ZERO,
             is_hovered: false,
             is_checked: false,
+            is_focused: false,
             on_toggle_path: on_toggle_path.to_string(),
         }
     }
@@ -74,7 +76,14 @@ impl Widget for Checkbox {
         
         // Draw Box
         scene.fill(vello::peniko::Fill::NonZero, transform, box_color, None, &box_shape);
-        scene.stroke(&Stroke::new(1.0), transform, theme.border_standard, None, &box_shape);
+        
+        let stroke_color = if self.is_focused {
+            theme.border_focus
+        } else {
+            theme.border_standard
+        };
+        
+        scene.stroke(&Stroke::new(if self.is_focused { 2.0 } else { 1.0 }), transform, stroke_color, None, &box_shape);
 
         // Draw Checkmark
         if self.is_checked {
@@ -93,7 +102,7 @@ impl Widget for Checkbox {
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, state: &mut AutoCommit, root: &ObjId, handled: &mut bool) {
+    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, _taffy: &TaffyTree<()>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let logical_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -106,6 +115,7 @@ impl Widget for Checkbox {
             WindowEvent::MouseInput { state: element_state, button: MouseButton::Left, .. } => {
                 if self.is_hovered && *element_state == ElementState::Pressed {
                     *handled = true;
+                    *focus_target = Some(node_id);
                     // CRDT Mutation
                     let new_val = !self.is_checked;
                     let _ = state.put(root, self.on_toggle_path.as_str(), automerge::ScalarValue::Boolean(new_val));
@@ -120,4 +130,8 @@ impl Widget for Checkbox {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+
+    fn is_focusable(&self) -> bool { true }
+    fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
+    fn is_focused(&self) -> bool { self.is_focused }
 }

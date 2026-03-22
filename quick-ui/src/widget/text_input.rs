@@ -59,6 +59,10 @@ impl Widget for TextInput {
         if self.cursor_pos > self.text.len() {
             self.cursor_pos = self.text.len();
         }
+        // Ensure cursor is on char boundary
+        while self.cursor_pos > 0 && !self.text.is_char_boundary(self.cursor_pos) {
+            self.cursor_pos -= 1;
+        }
     }
 
     fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
@@ -98,9 +102,9 @@ impl Widget for TextInput {
         } else if self.is_hovered {
             theme.border_standard
         } else {
-            theme.border_standard // Consider theme.border_dim if added
+            theme.border_standard
         };
-        scene.stroke(&Stroke::new(1.0), transform, border_color, None, &shape);
+        scene.stroke(&Stroke::new(if self.is_focused { 2.0 } else { 1.0 }), transform, border_color, None, &shape);
 
         let text_size = 16.0;
         let padding_x = theme.padding_standard as f64;
@@ -160,7 +164,15 @@ impl Widget for TextInput {
         scene.pop_layer();
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, state: &mut AutoCommit, root: &ObjId, handled: &mut bool) {
+    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, _taffy: &TaffyTree<()>) {
+        // Safety clamp
+        if self.cursor_pos > self.text.len() {
+            self.cursor_pos = self.text.len();
+        }
+        while self.cursor_pos > 0 && !self.text.is_char_boundary(self.cursor_pos) {
+            self.cursor_pos -= 1;
+        }
+
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let logical_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -174,7 +186,7 @@ impl Widget for TextInput {
             WindowEvent::MouseInput { state: element_state, button: MouseButton::Left, .. } => {
                 if self.is_hovered && *element_state == ElementState::Pressed {
                     if !self.is_focused {
-                        self.is_focused = true;
+                        *focus_target = Some(node_id);
                         *handled = true;
                     }
                     
@@ -199,11 +211,6 @@ impl Widget for TextInput {
                         self.cursor_pos = best_idx;
                         *handled = true;
                     }
-                } else if *element_state == ElementState::Pressed {
-                    if self.is_focused {
-                        self.is_focused = false;
-                        *handled = true;
-                    }
                 }
             }
             WindowEvent::KeyboardInput { event: KeyEvent { logical_key, text, state: element_state, .. }, .. } => {
@@ -218,12 +225,12 @@ impl Widget for TextInput {
                                     while prev_idx > 0 && !self.text.is_char_boundary(prev_idx) {
                                         prev_idx -= 1;
                                     }
-                                    let _char_len = self.cursor_pos - prev_idx;
+                                    
+                                    // Optimistic local update
+                                    let char_idx = self.text[0..prev_idx].chars().count();
+                                    self.text.remove(prev_idx); 
                                     self.cursor_pos = prev_idx;
                                     
-                                    // Automerge splice_text takes char index (not byte index). 
-                                    // We need to calculate char index for Automerge.
-                                    let char_idx = self.text[0..self.cursor_pos].chars().count();
                                     let _ = state.splice_text(&obj_id, char_idx, 1, "");
                                     *handled = true;
                                 }
@@ -250,6 +257,9 @@ impl Widget for TextInput {
                             }
                             Key::Named(NamedKey::Space) => {
                                 let char_idx = self.text[0..self.cursor_pos].chars().count();
+                                // Optimistic local update
+                                self.text.insert(self.cursor_pos, ' ');
+                                
                                 let _ = state.splice_text(&obj_id, char_idx, 0, " ");
                                 self.cursor_pos += 1;
                                 *handled = true;
@@ -258,8 +268,13 @@ impl Widget for TextInput {
                                 if let Some(t) = text {
                                     if !t.as_str().chars().all(|c| c.is_control()) {
                                         let char_idx = self.text[0..self.cursor_pos].chars().count();
-                                        let _ = state.splice_text(&obj_id, char_idx, 0, t.as_str());
-                                        self.cursor_pos += t.as_str().len();
+                                        
+                                        // Optimistic local update
+                                        let s = t.as_str();
+                                        self.text.insert_str(self.cursor_pos, s);
+                                        
+                                        let _ = state.splice_text(&obj_id, char_idx, 0, s);
+                                        self.cursor_pos += s.len();
                                         *handled = true;
                                     }
                                 }
@@ -277,4 +292,8 @@ impl Widget for TextInput {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+
+    fn is_focusable(&self) -> bool { true }
+    fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
+    fn is_focused(&self) -> bool { self.is_focused }
 }

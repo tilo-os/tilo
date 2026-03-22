@@ -14,6 +14,7 @@ pub struct Button {
     rect: Rect,
     is_hovered: bool,
     is_pressed: bool,
+    is_focused: bool,
     on_click_path: Option<String>, // Path in CRDT to mutate
 }
 
@@ -25,6 +26,7 @@ impl Button {
             rect: Rect::ZERO,
             is_hovered: false,
             is_pressed: false,
+            is_focused: false,
             on_click_path: on_click_path.map(|s| s.to_string()),
         }
     }
@@ -74,10 +76,17 @@ impl Widget for Button {
             None,
             &shape,
         );
+        
+        let stroke_color = if self.is_focused {
+            theme.border_focus
+        } else {
+            border_color
+        };
+        
         scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
+            &vello::kurbo::Stroke::new(if self.is_focused { 2.0 } else { 1.0 }),
             transform,
-            border_color,
+            stroke_color,
             None,
             &shape,
         );
@@ -98,7 +107,7 @@ impl Widget for Button {
         );
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, state: &mut AutoCommit, root: &ObjId, handled: &mut bool) {
+    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, _taffy: &TaffyTree<()>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let logical_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -114,6 +123,10 @@ impl Widget for Button {
                     if pressed != self.is_pressed {
                         self.is_pressed = pressed;
                         *handled = true;
+
+                        if self.is_pressed {
+                            *focus_target = Some(node_id);
+                        }
 
                         // CRDT Mutation
                         if !self.is_pressed {
@@ -135,8 +148,6 @@ impl Widget for Button {
                                     }
                                     _ => {
                                         // If it doesn't exist, we'll try to put a boolean true
-                                        // (The App check for Counter specifically is a bit rigid, 
-                                        // but this makes buttons work as triggers)
                                         let _ = state.put(root, path.as_str(), true);
                                     }
                                 }
@@ -157,4 +168,8 @@ impl Widget for Button {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+
+    fn is_focusable(&self) -> bool { true }
+    fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
+    fn is_focused(&self) -> bool { self.is_focused }
 }
