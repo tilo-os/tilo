@@ -20,6 +20,7 @@ pub struct TextInput {
     last_mouse_pos: Point,
     char_x_positions: Vec<f64>,
     scroll_x: f64,
+    last_edit_time: Option<std::time::Instant>,
 }
 
 impl TextInput {
@@ -35,6 +36,7 @@ impl TextInput {
             last_mouse_pos: Point::ZERO,
             char_x_positions: Vec::new(),
             scroll_x: 0.0,
+            last_edit_time: None,
         }
     }
 }
@@ -230,6 +232,7 @@ impl Widget for TextInput {
                                     let char_idx = self.text[0..prev_idx].chars().count();
                                     self.text.remove(prev_idx); 
                                     self.cursor_pos = prev_idx;
+                                    self.last_edit_time = Some(std::time::Instant::now());
                                     
                                     let _ = state.splice_text(&obj_id, char_idx, 1, "");
                                     *handled = true;
@@ -259,6 +262,7 @@ impl Widget for TextInput {
                                 let char_idx = self.text[0..self.cursor_pos].chars().count();
                                 // Optimistic local update
                                 self.text.insert(self.cursor_pos, ' ');
+                                self.last_edit_time = Some(std::time::Instant::now());
                                 
                                 let _ = state.splice_text(&obj_id, char_idx, 0, " ");
                                 self.cursor_pos += 1;
@@ -272,6 +276,7 @@ impl Widget for TextInput {
                                         // Optimistic local update
                                         let s = t.as_str();
                                         self.text.insert_str(self.cursor_pos, s);
+                                        self.last_edit_time = Some(std::time::Instant::now());
                                         
                                         let _ = state.splice_text(&obj_id, char_idx, 0, s);
                                         self.cursor_pos += s.len();
@@ -296,4 +301,26 @@ impl Widget for TextInput {
     fn is_focusable(&self) -> bool { true }
     fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
     fn is_focused(&self) -> bool { self.is_focused }
+
+    fn needs_commit(&self) -> bool {
+        if let Some(t) = self.last_edit_time {
+            t.elapsed() >= std::time::Duration::from_secs(1)
+        } else {
+            false
+        }
+    }
+
+    fn on_commit(&mut self) {
+        self.last_edit_time = None;
+    }
+
+    fn get_state(&self) -> Option<String> {
+        Some(self.cursor_pos.to_string())
+    }
+
+    fn set_state(&mut self, state: &str) {
+        if let Ok(pos) = state.parse::<usize>() {
+            self.cursor_pos = pos;
+        }
+    }
 }
