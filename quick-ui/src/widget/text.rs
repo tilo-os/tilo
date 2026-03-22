@@ -37,38 +37,37 @@ impl Widget for Text {
                 width: taffy::Dimension::auto(),
                 height: taffy::Dimension::auto(),
             },
-            flex_shrink: 0.0, // Prevent wrapping unless window is truly too small
+            // flex_shrink: 1.0 is CRITICAL for wrapping. 
+            // It allows Taffy to propose a smaller width than natural_w.
+            flex_shrink: 1.0,
             flex_grow: 0.0,
             ..Default::default()
         }).unwrap();
-        // In Taffy 0.9.2, to make a node measurable via compute_layout_with_measure,
-        // it seems it just needs to be a leaf node. 
-        // Let's ensure node_map is correct and use a different approach if it fails.
         node_map.insert(node, self as *mut dyn Widget);
         node
     }
 
-    fn measure(&mut self, _known_dimensions: taffy::Size<Option<f32>>, available_space: taffy::Size<taffy::AvailableSpace>, text_renderer: &mut TextRenderer) -> taffy::Size<f32> {
+    fn measure(&mut self, known_dimensions: taffy::Size<Option<f32>>, available_space: taffy::Size<taffy::AvailableSpace>, text_renderer: &mut TextRenderer) -> taffy::Size<f32> {
         let label = crate::i18n!(&self.label);
         
-        // 1. Get natural size (no wrapping)
-        let (natural_w, natural_h) = text_renderer.measure(&label, self.size, None);
-        
-        // 2. Check if we are forced to wrap
-        let max_available_w = match available_space.width {
-            taffy::AvailableSpace::Definite(w) => Some(w),
-            _ => None,
+        // 1. Determine the maximum width we are allowed to have
+        let max_w = if let Some(w) = known_dimensions.width {
+            Some(w)
+        } else {
+            match available_space.width {
+                taffy::AvailableSpace::Definite(w) => Some(w),
+                taffy::AvailableSpace::MinContent => Some(0.0), // Force wrap to min-content
+                taffy::AvailableSpace::MaxContent => None,      // Allow infinite width
+            }
         };
 
-        if let Some(max_w) = max_available_w {
-            if max_w < natural_w {
-                // Wrap to available space
-                let (w, h) = text_renderer.measure(&label, self.size, Some(max_w));
-                return taffy::Size { width: w, height: h };
-            }
-        }
+        // 2. Measure with that constraint
+        let (w, h) = text_renderer.measure(&label, self.size, max_w);
         
-        taffy::Size { width: natural_w, height: natural_h }
+        // 3. Return the measured size. 
+        // We add a tiny 0.1 epsilon to width to prevent rounding errors in Row/Column
+        // from thinking the text is "just a bit too big" and wrapping it unnecessarily.
+        taffy::Size { width: w + 0.1, height: h }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -83,6 +82,9 @@ impl Widget for Text {
 
     fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme) {
         let label = crate::i18n!(&self.label);
+        // Use the actual width from layout. 
+        // We add 1.0px of "slop" to the draw call to ensure cosmic-text doesn't 
+        // wrap a word that technically fits but is off by a sub-pixel.
         let max_width = self.rect.width() as f32;
         
         text_renderer.draw_text(
@@ -91,7 +93,7 @@ impl Widget for Text {
             self.size,
             theme.text_primary,
             transform * Affine::translate((self.rect.x0, self.rect.y0)),
-            Some(max_width),
+            Some(max_width + 1.0),
         );
     }
 
@@ -102,4 +104,9 @@ impl Widget for Text {
     fn get_rect(&self) -> vello::kurbo::Rect {
         self.rect
     }
+
+    fn is_focusable(&self) -> bool { false }
+    fn set_focus(&mut self, _focused: bool) {}
+    fn is_focused(&self) -> bool { false }
+    fn needs_commit(&self) -> bool { false }
 }
