@@ -1,163 +1,56 @@
-# Collaboration Layer
+# Architectural Plan: The "Layer Above" (Collaboration & Permissions)
 
-## Overview
+This document outlines the design for the Desktop Environment (DE) layer that manages collaboration, network synchronization, and app permissions for the QuickDesktop ecosystem.
 
-The collaboration layer enables real-time P2P workspace sharing. Users invite peers to individual workspaces (zone clusters), where they can see each other's cursors, view streamed application windows, and optionally interact with remote apps.
+## 1. Core Philosophy
+- **Compositor as Orchestrator:** The DE (`quick-gnome-shell`) is the sole owner of the network stack and security policy.
+- **Apps as Reactive Clients:** Apps (`quick-ui` based or legacy) receive "Collaboration Context" from the DE but do not manage P2P connections or permission enforcement themselves.
+- **Cluster-Centricity:** Collaboration is scoped to a `Cluster`. All apps within a cluster share the same collaborator list and base permissions.
 
-## Networking: Iroh
+## 2. The Collaboration Protocol (`zquick_collaboration_v1`)
+We will implement a custom Wayland protocol extension to bridge the DE and apps.
 
-### Why Iroh over libp2p
-- Simpler API, fewer moving parts
-- Built-in NAT traversal (hole punching via relay servers)
-- Identity = Ed25519 public key (NodeId)
-- QUIC-based transport (encrypted, multiplexed)
-- Designed for exactly this use case (local-first P2P sync)
+### Interface: `zquick_collaboration_manager`
+- `get_collaboration_context`: Returns a `collaboration_context` object.
+- `subscribe_events`: App registers to receive remote cursor and collaborator updates.
 
-### Connection Flow
-```
-1. User A generates invite: NodeId + Macaroon token
-2. User A shares invite (QR code, link, or direct message)
-3. User B connects to User A's Iroh endpoint
-4. Handshake: User B presents Macaroon, User A validates
-5. Bidirectional QUIC streams established for:
-   - Automerge sync messages (reliable, ordered)
-   - Video frames (unreliable, low-latency)
-   - Input events (reliable, ordered)
-   - Presence updates (unreliable, frequent)
-```
+### Interface: `zquick_collaboration_context`
+- **Events:**
+    - `collaborator_joined(id, name, color)`
+    - `collaborator_left(id)`
+    - `remote_cursor_moved(id, x, y)`: Relative to the app's surface.
+    - `permissions_changed(manifest_json)`: Updates to sandboxing/capabilities.
+- **Requests:**
+    - `sync_crdt(data)`: App pushes local CRDT changes (Automerge chunks) to the DE for broadcast.
+    - `get_manifest`: Request full permission/sandbox details.
 
-### Iroh Endpoint Setup
-```rust
-let secret_key = load_or_generate_key();
-let endpoint = Endpoint::builder()
-    .secret_key(secret_key)
-    .discovery_n0()       // Use n0 relay for NAT traversal
-    .bind()
-    .await?;
-```
+## 3. Adapters
 
-## Shared State: Automerge CRDTs
+### A. QuickUI Native Adapter (`quick-ui` integration)
+The `quick-ui::App` loop will be extended to:
+1.  **Auto-Discovery:** At startup, detect and bind to the `zquick_collaboration_v1` extension.
+2.  **State Integration:** 
+    - Automatically populate `state.collab.cursors` from protocol events.
+    - Hook into `automerge` to pipe local changes through `sync_crdt`.
+    - Provide a `permissions()` helper for widgets to check if they can access certain paths.
+3.  **Visuals:** Render remote cursors natively within the Vello scene for zero-latency feedback.
 
-### What is Synchronized
-- Zone positions, sizes, names
-- Deck positions, sizes, active tabs
-- Tab metadata (title, command -- NOT pixel data)
-- User cursors (position, color, name)
-- Permission grants (who can do what)
+### B. Legacy App Adapter (`quick-legacy-multiplexer`)
+For apps that are not collaboration-aware (e.g., standard Wayland/Iced apps):
+1.  **Compositor-Side Cursors:** The DE draws remote cursors *over* the app window.
+2.  **Input Multiplexing:** The DE manages which user's input is currently being sent to the app's single pointer/keyboard focus (e.g., "Last Mover Wins" or "Explicit Floor Control").
+3.  **Environment Emulation:** The adapter provides a fake "Home" or "Project" directory based on the Cluster's `permitted_paths` (handled via `bwrap` in `quick-gnome-shell`).
 
-### Sync Protocol
-```
-Local mutation -> Automerge document change -> Generate sync message
-  -> Send over Iroh reliable stream -> Remote peer receives
-  -> Apply sync message to their Automerge document
-  -> Workspace state updated -> Canvas re-renders
-```
+## 4. DE Implementation (`quick-gnome-shell`)
+1.  **Network Integration:** 
+    - `P2PClient` (libp2p) will be updated to handle `CRDTUpdate` messages in addition to `CursorUpdate`.
+    - It will route these messages between machines based on the `Cluster ID`.
+2.  **Security Enforcer:**
+    - `Container` (bwrap) will be initialized with the `Cluster`'s permissions.
+    - The DE will monitor app behavior and potentially revoking access if a cluster's security policy changes.
 
-### Document Structure
-```json
-{
-  "workspace_id": "uuid",
-  "zones": [
-    {
-      "id": "uuid",
-      "name": "Project Alpha",
-      "x": 500, "y": 300,
-      "width": 800, "height": 600,
-      "decks": [...]
-    }
-  ],
-  "cursors": {
-    "node_id_hash": {
-      "x": 150, "y": 200,
-      "name": "Alice",
-      "color": "#ff6b6b"
-    }
-  }
-}
-```
-
-### Conflict Resolution
-Automerge handles concurrent edits automatically:
-- Two users move the same zone: last-write-wins per field
-- Two users add zones simultaneously: both zones appear (set semantics)
-- User disconnects and reconnects: sync catches up from divergence point
-
-## Window Streaming
-
-### Damage-Aware Protocol
-
-Unlike game streaming which brute-forces 60fps compressed video, QuickDesktop only sends pixels that actually change:
-
-1. **Trigger**: Wayland `wl_surface.damage` event from the compositor
-2. **Capture**: DMA-BUF via PipeWire (zero-copy from GPU memory)
-3. **Encode**: GStreamer pipeline with Region of Interest
-   - Static content: high-quality, infrequent updates (perfect text)
-   - Dynamic content: real-time encoding of damaged rectangles only
-4. **Codec**: AV1 (SVT-AV1 low-latency mode)
-   - Screen Content Coding tools for sharp text and solid colors
-   - Massively better than H.264 for desktop content
-5. **Transport**: WebRTC data channels over the Iroh QUIC connection
-   - Packet loss on static screen: ignore (no retransmit needed)
-   - Packet loss on typing update: retransmit aggressively
-
-### Bandwidth Characteristics
-| Scenario | Bandwidth |
-|----------|-----------|
-| Static screen (reading) | ~0 kbps (keepalive only) |
-| Typing in editor | ~50-200 kbps (small damage rects) |
-| Scrolling document | ~2-5 Mbps (large damage area) |
-| Playing video | ~10-20 Mbps (full surface, 30fps) |
-
-### GStreamer Pipeline (Conceptual)
-```
-pipewiresrc -> videoconvert -> svtav1enc (preset=12, tune=0)
-  -> rtpav1pay -> webrtcbin
-```
-
-## Remote Input
-
-### Input Event Protocol
-```rust
-enum RemoteInput {
-    MouseMove { x: f64, y: f64 },
-    MouseButton { button: u32, pressed: bool, x: f64, y: f64 },
-    KeyPress { keycode: u32, pressed: bool },
-    Scroll { dx: f64, dy: f64, x: f64, y: f64 },
-}
-```
-
-### Coordinate Translation
-```
-Guest click at (canvas_x, canvas_y)
-  -> Subtract deck position: (canvas_x - deck_x, canvas_y - deck_y)
-  -> Scale to Wayland surface coordinates
-  -> Send RemoteInput::MouseButton to host
-  -> Host validates region + permissions
-  -> Inject into Smithay seat for the target surface
-```
-
-## Presence
-
-- Cursor positions broadcast at ~30Hz via unreliable Iroh streams
-- Rendered as colored arrows/dots on the remote peer's canvas
-- Name labels appear on hover
-- Cursors fade after 5s of inactivity, disappear after 30s
-
-## File Sharing (Future: tarpc)
-
-### Remote Procedure Calls
-```rust
-#[tarpc::service]
-trait FileService {
-    async fn list_dir(path: String) -> Vec<DirEntry>;
-    async fn read_file(path: String) -> Vec<u8>;
-    async fn write_file(path: String, content: Vec<u8>) -> Result<()>;
-    async fn stat(path: String) -> FileStat;
-}
-```
-
-### Transparent Access
-The file manager asks `fs.list_dir("/project")`:
-- If local: calls `std::fs::read_dir`
-- If remote: serializes request, sends over Iroh, remote host executes and returns result
-- Result: browse remote files without downloading them
+## 5. Next Steps
+1.  **Define Protocol:** Create the XML definition for `zquick_collaboration_v1`.
+2.  **Implement DE Server:** Add the protocol handler to `quick-gnome-shell/src/network/wayland.rs`.
+3.  **Update quick-ui App:** Add the client-side binding logic.
+4.  **Verification:** Run two `responsive_gallery` instances via the shell and verify that typing/cursors sync via the DE's P2P layer rather than direct app-to-app communication.
