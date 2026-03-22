@@ -89,9 +89,10 @@ impl Widget for Column {
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, state: &mut AutoCommit, path: &ObjId, handled: &mut bool) {
-        for child in &mut self.children {
-            child.handle_event(event, scale_factor, state, path, handled);
+    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, state: &mut AutoCommit, path: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, taffy: &TaffyTree<()>) {
+        let child_nodes = taffy.children(node_id).unwrap();
+        for (child_widget, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
+            child_widget.handle_event(event, scale_factor, state, path, handled, focus_target, child_node, taffy);
             if *handled {
                 break;
             }
@@ -106,9 +107,9 @@ impl Widget for Column {
         self.children.iter_mut().map(|c| c.as_mut() as &mut (dyn Widget + '_)).collect()
     }
 
-    fn name(&self) -> &str { "Column" }
-
     fn get_rect(&self) -> vello::kurbo::Rect {
         self.rect
     }
+
+    fn name(&self) -> &str { "Column" }
 }

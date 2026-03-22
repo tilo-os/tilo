@@ -1,9 +1,9 @@
-use taffy::style_helpers::percent;
 use automerge::{AutoCommit, ObjId};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use winit::event::WindowEvent;
 use taffy::{TaffyTree, NodeId, Style};
+use taffy::style_helpers::percent;
 use crate::widget::Widget;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -84,10 +84,11 @@ impl Widget for Stack {
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, state: &mut AutoCommit, path: &ObjId, handled: &mut bool) {
+    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, state: &mut AutoCommit, path: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, taffy: &TaffyTree<()>) {
+        let child_nodes = taffy.children(node_id).unwrap();
         // Handle in reverse order (top-most first)
-        for child in self.children.iter_mut().rev() {
-            child.handle_event(event, scale_factor, state, path, handled);
+        for (child_widget, &child_node) in self.children.iter_mut().rev().zip(child_nodes.iter().rev()) {
+            child_widget.handle_event(event, scale_factor, state, path, handled, focus_target, child_node, taffy);
             if *handled {
                 break;
             }
@@ -102,9 +103,9 @@ impl Widget for Stack {
         self.children.iter_mut().map(|c| c.as_mut() as &mut (dyn Widget + '_)).collect()
     }
 
-    fn name(&self) -> &str { "Stack" }
-
     fn get_rect(&self) -> vello::kurbo::Rect {
         self.rect
     }
+
+    fn name(&self) -> &str { "Stack" }
 }
