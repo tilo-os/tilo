@@ -45,6 +45,7 @@ impl Widget for Column {
                 display: taffy::Display::Flex,
                 flex_direction: taffy::FlexDirection::Column,
                 align_items: Some(taffy::AlignItems::FlexStart),
+                flex_shrink: 0.0, // Prevent vertical squashing
                 gap: taffy::Size {
                     width: length(0.0),
                     height: length(theme.gap_standard),
@@ -112,4 +113,8 @@ impl Widget for Column {
     }
 
     fn name(&self) -> &str { "Column" }
+
+    fn is_focused(&self) -> bool { false }
+    fn needs_commit(&self) -> bool { self.children().iter().any(|c| c.needs_commit()) }
+    fn on_commit(&mut self) { for child in self.children_mut() { child.on_commit(); } }
 }
