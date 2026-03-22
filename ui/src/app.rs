@@ -5,7 +5,7 @@ use winit::{
 };
 use std::sync::Arc;
 use vello::{Scene, Renderer, RendererOptions, util::RenderContext, peniko::Color, kurbo::Affine};
-use taffy::{TaffyTree, AvailableSpace};
+use taffy::{TaffyTree, AvailableSpace, NodeId};
 use automerge::ReadDoc;
 use crate::state::State;
 use crate::widget::Widget;
@@ -18,12 +18,15 @@ pub struct App {
     root_widget: Box<dyn Widget>,
     text_renderer: TextRenderer,
     taffy: TaffyTree<()>,
-    root_node: Option<taffy::NodeId>,
-    node_map: std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+    root_node: Option<NodeId>,
+    node_map: std::collections::HashMap<NodeId, *mut dyn Widget>,
     layout_dirty: bool,
     needs_sync: bool,
     pub theme: Theme,
     pub debug_mode: bool,
+    pub focused_node: Option<NodeId>,
+    pub focusable_order: Vec<NodeId>,
+    modifiers: winit::event::Modifiers,
 }
 
 impl App {
@@ -39,7 +42,33 @@ impl App {
             needs_sync: true,
             theme: Theme::dark(),
             debug_mode: std::env::var("QUICK_UI_DEBUG").is_ok(),
+            focused_node: None,
+            focusable_order: Vec::new(),
+            modifiers: winit::event::Modifiers::default(),
         }
+    }
+
+    fn update_focusable_order(&mut self) {
+        self.focusable_order.clear();
+        
+        // Depth-first traversal to find focusable widgets
+        // Note: This is a bit complex because Widget trait doesn't easily expose children 
+        // with their NodeIds in a flat way without Taffy.
+        
+        fn collect_focusable(node_id: NodeId, widget: &dyn Widget, taffy: &TaffyTree<()>, order: &mut Vec<NodeId>) {
+            if widget.is_focusable() {
+                order.push(node_id);
+            }
+            let children = widget.children();
+            if let Ok(child_nodes) = taffy.children(node_id) {
+                for (child_widget, &child_node) in children.iter().zip(child_nodes.iter()) {
+                    collect_focusable(child_node, *child_widget, taffy, order);
+                }
+            }
+        }
+
+        let root_node = self.root_node.unwrap();
+        collect_focusable(root_node, self.root_widget.as_ref(), &self.taffy, &mut self.focusable_order);
     }
 
     pub fn run(mut self) {
@@ -78,6 +107,7 @@ impl App {
         // Initial build of the layout tree
         self.node_map.clear();
         self.root_node = Some(self.root_widget.build_layout(&mut self.taffy, &self.theme, &mut self.node_map));
+        self.update_focusable_order();
 
         let mut theme_idx = 0;
         let themes = [
@@ -115,6 +145,9 @@ impl App {
                                     theme_idx = (theme_idx + 1) % themes.len();
                                     self.theme = themes[theme_idx].clone();
                                     self.layout_dirty = true;
+                                    self.needs_sync = true;
+                                    
+                                    use automerge::transaction::Transactable;
                                     let _ = self.state.doc.put(&self.state.root, "request_theme_cycle", false);
                                 }
                             }
@@ -273,9 +306,13 @@ impl App {
                             surface_texture.present();
                             device_handle.device.poll(vello::wgpu::Maintain::Poll);
                         }
+                        WindowEvent::ModifiersChanged(modifiers) => {
+                            self.modifiers = modifiers;
+                        }
                         _ => {
                             // Forward events to widget
                             let mut handled = false;
+                            let mut focus_target = None;
                             
                             // Toggle Debug Mode with F12
                             if let winit::event::WindowEvent::KeyboardInput { event: winit::event::KeyEvent { logical_key: winit::keyboard::Key::Named(winit::keyboard::NamedKey::F12), state: winit::event::ElementState::Pressed, .. }, .. } = event {
@@ -284,9 +321,51 @@ impl App {
                                 handled = true;
                             }
 
+                            // Handle Tab navigation
+                            if !handled {
+                                if let winit::event::WindowEvent::KeyboardInput { event: winit::event::KeyEvent { logical_key: winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab), state: winit::event::ElementState::Pressed, .. }, .. } = event {
+                                    let shift = self.modifiers.state().shift_key();
+                                    
+                                    if !self.focusable_order.is_empty() {
+                                        let current_idx = self.focused_node.and_then(|id| self.focusable_order.iter().position(|&x| x == id));
+                                        let next_idx = match current_idx {
+                                            Some(idx) => {
+                                                if shift {
+                                                    if idx == 0 { self.focusable_order.len() - 1 } else { idx - 1 }
+                                                } else {
+                                                    (idx + 1) % self.focusable_order.len()
+                                                }
+                                            }
+                                            None => 0,
+                                        };
+                                        focus_target = Some(self.focusable_order[next_idx]);
+                                        handled = true;
+                                    }
+                                }
+                            }
+
                             if !handled {
                                 let scale_factor = window.scale_factor();
-                                self.root_widget.handle_event(&event, scale_factor, &mut self.state.doc, &self.state.root, &mut handled);
+                                let root_node = self.root_node.unwrap();
+                                self.root_widget.handle_event(&event, scale_factor, &mut self.state.doc, &self.state.root, &mut handled, &mut focus_target, root_node, &self.taffy);
+                            }
+
+                            // Update Focus if requested
+                            if let Some(new_focus_id) = focus_target {
+                                if self.focused_node != Some(new_focus_id) {
+                                    // Blur old
+                                    if let Some(old_id) = self.focused_node {
+                                        if let Some(&w_ptr) = self.node_map.get(&old_id) {
+                                            unsafe { (*w_ptr).set_focus(false); }
+                                        }
+                                    }
+                                    // Focus new
+                                    self.focused_node = Some(new_focus_id);
+                                    if let Some(&w_ptr) = self.node_map.get(&new_focus_id) {
+                                        unsafe { (*w_ptr).set_focus(true); }
+                                    }
+                                    handled = true;
+                                }
                             }
 
                             if handled {
