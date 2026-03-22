@@ -13,6 +13,14 @@ use crate::text_render::TextRenderer;
 
 use crate::theme::Theme;
 
+#[derive(Debug, Clone, Copy)]
+enum Direction {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
 pub struct App {
     state: State,
     root_widget: Box<dyn Widget>,
@@ -51,10 +59,6 @@ impl App {
     fn update_focusable_order(&mut self) {
         self.focusable_order.clear();
         
-        // Depth-first traversal to find focusable widgets
-        // Note: This is a bit complex because Widget trait doesn't easily expose children 
-        // with their NodeIds in a flat way without Taffy.
-        
         fn collect_focusable(node_id: NodeId, widget: &dyn Widget, taffy: &TaffyTree<()>, order: &mut Vec<NodeId>) {
             if widget.is_focusable() {
                 order.push(node_id);
@@ -67,8 +71,81 @@ impl App {
             }
         }
 
-        let root_node = self.root_node.unwrap();
+        let root_node = self.root_node.expect("Root node must exist");
         collect_focusable(root_node, self.root_widget.as_ref(), &self.taffy, &mut self.focusable_order);
+    }
+
+    fn navigate_focus(&mut self, direction: Direction) {
+        let current_id = match self.focused_node {
+            Some(id) => id,
+            None => {
+                if !self.focusable_order.is_empty() {
+                    let first = self.focusable_order[0];
+                    self.set_focused_node(Some(first));
+                }
+                return;
+            }
+        };
+
+        let current_rect = if let Some(&w_ptr) = self.node_map.get(&current_id) {
+            unsafe { (*w_ptr).get_rect() }
+        } else {
+            return;
+        };
+        let current_center = current_rect.center();
+
+        let mut best_candidate = None;
+        let mut best_score = f64::MAX;
+
+        for &candidate_id in &self.focusable_order {
+            if candidate_id == current_id { continue; }
+
+            if let Some(&candidate_ptr) = self.node_map.get(&candidate_id) {
+                let candidate_rect = unsafe { (*candidate_ptr).get_rect() };
+                let candidate_center = candidate_rect.center();
+                let vector = vello::kurbo::Vec2::new(candidate_center.x - current_center.x, candidate_center.y - current_center.y);
+
+                let (primary_dist, secondary_dist, in_direction) = match direction {
+                    Direction::Up => (-vector.y, vector.x.abs(), vector.y < -1.0),
+                    Direction::Down => (vector.y, vector.x.abs(), vector.y > 1.0),
+                    Direction::Left => (-vector.x, vector.y.abs(), vector.x < -1.0),
+                    Direction::Right => (vector.x, vector.y.abs(), vector.x > 1.0),
+                };
+
+                if in_direction {
+                    // Score: primary distance + weighted secondary distance to favor alignment
+                    let score = primary_dist + (secondary_dist * 2.0);
+                    if score < best_score {
+                        best_score = score;
+                        best_candidate = Some(candidate_id);
+                    }
+                }
+            }
+        }
+
+        if let Some(new_id) = best_candidate {
+            self.set_focused_node(Some(new_id));
+        }
+    }
+
+    fn set_focused_node(&mut self, new_id: Option<NodeId>) {
+        if self.focused_node != new_id {
+            // Blur old
+            if let Some(old_id) = self.focused_node {
+                if let Some(&w_ptr) = self.node_map.get(&old_id) {
+                    unsafe { (*w_ptr).set_focus(false); }
+                }
+            }
+            // Focus new
+            self.focused_node = new_id;
+            if let Some(id) = new_id {
+                if let Some(&w_ptr) = self.node_map.get(&id) {
+                    unsafe { (*w_ptr).set_focus(true); }
+                }
+            }
+            self.layout_dirty = true;
+            self.needs_sync = true;
+        }
     }
 
     pub fn run(mut self) {
@@ -338,8 +415,30 @@ impl App {
                                             }
                                             None => 0,
                                         };
-                                        focus_target = Some(self.focusable_order[next_idx]);
+                                        self.set_focused_node(Some(self.focusable_order[next_idx]));
                                         handled = true;
+                                    }
+                                }
+                            }
+
+                            // Handle Arrow navigation
+                            if !handled {
+                                if let winit::event::WindowEvent::KeyboardInput { event: winit::event::KeyEvent { logical_key: winit::keyboard::Key::Named(logical_key), state: winit::event::ElementState::Pressed, .. }, .. } = event {
+                                    let direction = match logical_key {
+                                        winit::keyboard::NamedKey::ArrowUp => Some(Direction::Up),
+                                        winit::keyboard::NamedKey::ArrowDown => Some(Direction::Down),
+                                        winit::keyboard::NamedKey::ArrowLeft => Some(Direction::Left),
+                                        winit::keyboard::NamedKey::ArrowRight => Some(Direction::Right),
+                                        _ => None,
+                                    };
+
+                                    if let Some(dir) = direction {
+                                        let alt = self.modifiers.state().alt_key();
+                                        // Always navigate on Alt+Arrow, or if nothing handled it below
+                                        if alt {
+                                            self.navigate_focus(dir);
+                                            handled = true;
+                                        }
                                     }
                                 }
                             }
@@ -350,22 +449,27 @@ impl App {
                                 self.root_widget.handle_event(&event, scale_factor, &mut self.state.doc, &self.state.root, &mut handled, &mut focus_target, root_node, &self.taffy);
                             }
 
-                            // Update Focus if requested
-                            if let Some(new_focus_id) = focus_target {
-                                if self.focused_node != Some(new_focus_id) {
-                                    // Blur old
-                                    if let Some(old_id) = self.focused_node {
-                                        if let Some(&w_ptr) = self.node_map.get(&old_id) {
-                                            unsafe { (*w_ptr).set_focus(false); }
-                                        }
+                            // Post-widget navigation check (if widget didn't use arrow key)
+                            if !handled {
+                                if let winit::event::WindowEvent::KeyboardInput { event: winit::event::KeyEvent { logical_key: winit::keyboard::Key::Named(logical_key), state: winit::event::ElementState::Pressed, .. }, .. } = event {
+                                    let direction = match logical_key {
+                                        winit::keyboard::NamedKey::ArrowUp => Some(Direction::Up),
+                                        winit::keyboard::NamedKey::ArrowDown => Some(Direction::Down),
+                                        winit::keyboard::NamedKey::ArrowLeft => Some(Direction::Left),
+                                        winit::keyboard::NamedKey::ArrowRight => Some(Direction::Right),
+                                        _ => None,
+                                    };
+                                    if let Some(dir) = direction {
+                                        self.navigate_focus(dir);
+                                        handled = true;
                                     }
-                                    // Focus new
-                                    self.focused_node = Some(new_focus_id);
-                                    if let Some(&w_ptr) = self.node_map.get(&new_focus_id) {
-                                        unsafe { (*w_ptr).set_focus(true); }
-                                    }
-                                    handled = true;
                                 }
+                            }
+
+                            // Update Focus if requested (e.g. by mouse click)
+                            if let Some(new_focus_id) = focus_target {
+                                self.set_focused_node(Some(new_focus_id));
+                                handled = true;
                             }
 
                             if handled {
