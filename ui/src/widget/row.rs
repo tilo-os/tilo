@@ -46,6 +46,7 @@ impl Widget for Row {
                 flex_direction: taffy::FlexDirection::Row,
                 flex_wrap: taffy::FlexWrap::Wrap, // Responsive by default
                 align_items: Some(taffy::AlignItems::Center),
+                flex_shrink: 0.0, // Prevent vertical squashing
                 gap: taffy::Size {
                     width: length(theme.gap_standard),
                     height: length(theme.gap_standard),
@@ -107,4 +108,8 @@ impl Widget for Row {
     }
 
     fn name(&self) -> &str { "Row" }
+
+    fn is_focused(&self) -> bool { false }
+    fn needs_commit(&self) -> bool { self.children().iter().any(|c| c.needs_commit()) }
+    fn on_commit(&mut self) { for child in self.children_mut() { child.on_commit(); } }
 }
