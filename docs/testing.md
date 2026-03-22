@@ -46,6 +46,20 @@ journalctl -u quick-fs-test
 
 ---
 
+## Compositor (Window Manager) Testing Strategy
+
+To ensure the window manager logic (2D clustering, non-overlapping constraints, sandbox permissions) is robust, the Wayland state is decoupled from the graphical UI layer:
+
+1. **Headless Mode:** The compositor (`quick-desktop`) can be instantiated in a headless mode without requiring a GPU or Iced winit window.
+2. **Automated Client Integration Tests:** Using the `wayland-client` crate, test suites can connect to the headless compositor socket, spawn mock applications, and assert correct clustering behavior and portal permission prompts.
+3. **Running Headless Tests:**
+   ```bash
+   cd quick-gnome-shell
+   cargo test --test interaction_test
+   ```
+
+---
+
 ## Manual Testing
 
 If you want to test the production image manually:

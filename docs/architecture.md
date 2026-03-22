@@ -7,16 +7,22 @@ QuickDesktop is a bootable, container-based operating system built on the **Fedo
 ### 1. Compositor (`quick-desktop`)
 A Wayland compositor responsible for the spatial desktop environment. It handles window management, input, and basic UI elements. Located in `quick-gnome-shell/`.
 
+**Window Management Paradigm:**
+- **2D Clusters:** Windows cannot overlap (similar to Niri, but strictly 2D). Applications are organized into "Clusters"—2D arrangements of adjoining tiles.
+- **Cluster Sandboxing:** Each cluster operates in an isolated Bubblewrap sandbox. A cluster is associated with a specific list of directories/files. When apps request file access, the host prompts the user, who can grant permissions temporarily or permanently to the entire cluster.
+- **Collaboration:** Users can invite peers to a specific cluster. This allows sharing the cluster's context via Wayland buffer streaming and remote input injection.
+
 ### 2. FUSE Filesystem (`quick-fs-fuse`)
 A P2P collaborative filesystem mounted at `/var/workspace`.
 -   **Projection Layer**: Shows files immediately based on P2P metadata.
 -   **Hydration**: Fetches file content on-demand from the network via Iroh.
 -   **Performance**: Uses a 10s metadata TTL and 1MB readahead for optimized VM performance.
 
-### 3. System Applications
--   **quick-terminal**: A GPU-accelerated terminal emulator built with Iced.
+### 3. System Applications & QuickUI Toolkit
+-   **QuickUI Framework:** A custom, lightweight retained-mode UI framework built over wgpu/Vello. It is fundamentally designed around Automerge CRDTs to provide Out-Of-The-Box (OOTB) multi-cursor and collaborative text editing. It enforces OS-controlled styling for consistent, user-themeable presentation.
+-   **quick-terminal**: A GPU-accelerated terminal emulator.
 -   **file-explorer**: A spatial file manager for browsing the local and collaborative filesystem.
--   **quick-browser**: A modern, Servo-based web browser with native collaborative features.
+-   **quick-browser**: A modern web browser with native collaborative features.
 
 ## Image Structure
 
