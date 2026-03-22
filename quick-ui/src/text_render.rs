@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use cosmic_text::{FontSystem, SwashCache, Buffer, Metrics, Shaping};
+use cosmic_text::{FontSystem, SwashCache, Buffer, Metrics, Shaping, Wrap};
 use vello::Scene;
 use vello::kurbo::Affine;
 use vello::peniko::{Color, Font, StyleRef};
@@ -23,18 +23,13 @@ impl TextRenderer {
     pub fn measure(&mut self, text: &str, size: f32, max_width: Option<f32>) -> (f32, f32) {
         if text.is_empty() { return (0.0, 0.0); }
         
-        // If max_width is Definite(0), treat it as no limit to prevent total collapse
-        // during intermediate Taffy layout steps.
-        let resolved_max_width = if let Some(w) = max_width {
-            if w <= 0.0 { None } else { Some(w) }
-        } else {
-            None
-        };
-
-        let line_height = (size * 1.2).ceil();
+        let line_height = size * 1.25;
         let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(size, line_height));
         buffer.set_text(&mut self.font_system, text, &cosmic_text::Attrs::new(), Shaping::Advanced, None);
-        buffer.set_size(&mut self.font_system, resolved_max_width, None);
+        
+        buffer.set_size(&mut self.font_system, max_width, None);
+        // Explicitly set wrap mode. Word wrap is standard for UI labels.
+        buffer.set_wrap(&mut self.font_system, Wrap::Word);
         buffer.shape_until_scroll(&mut self.font_system, false);
 
         let mut width = 0.0f32;
@@ -44,7 +39,7 @@ impl TextRenderer {
             lines += 1;
         }
         let height = lines as f32 * line_height;
-        (width.ceil() + 1.0, height)
+        (width, height)
     }
 
     pub fn draw_text(
@@ -58,14 +53,14 @@ impl TextRenderer {
     ) {
         if text.is_empty() { return; }
         
-        let line_height = (size * 1.2).ceil();
+        let line_height = size * 1.25;
         let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(size, line_height));
         buffer.set_text(&mut self.font_system, text, &cosmic_text::Attrs::new(), Shaping::Advanced, None);
         buffer.set_size(&mut self.font_system, max_width, None);
+        buffer.set_wrap(&mut self.font_system, Wrap::Word);
         buffer.shape_until_scroll(&mut self.font_system, false);
 
         for run in buffer.layout_runs() {
-            // Group glyphs by font face
             let mut current_face_id: Option<cosmic_text::fontdb::ID> = None;
             let mut glyphs_to_draw = Vec::new();
 
@@ -131,11 +126,5 @@ impl TextRenderer {
                 StyleRef::Fill(vello::peniko::Fill::NonZero),
                 vello_glyphs.into_iter()
             );
-            
-        // Reset scene state to defaults to avoid polluting subsequent drawing commands
-        // This is a safety measure because Vello 0.2.1's draw_glyphs is stateful.
-        // We use push/pop layer with identity to force a clean state if needed,
-        // but here we rely on the fact that the next widget will call fill()
-        // which sets its own transform and style.
     }
 }
