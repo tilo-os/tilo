@@ -95,9 +95,10 @@ impl Widget for Container {
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, state: &mut AutoCommit, path: &ObjId, handled: &mut bool) {
+    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, state: &mut AutoCommit, path: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, taffy: &TaffyTree<()>) {
         if let Some(child) = &mut self.child {
-            child.handle_event(event, scale_factor, state, path, handled);
+            let child_node = taffy.children(node_id).unwrap()[0];
+            child.handle_event(event, scale_factor, state, path, handled, focus_target, child_node, taffy);
         }
     }
 
@@ -109,9 +110,9 @@ impl Widget for Container {
         self.child.as_mut().map(|c| c.as_mut() as &mut (dyn Widget + '_)).into_iter().collect()
     }
 
-    fn name(&self) -> &str { "Container" }
-
     fn get_rect(&self) -> vello::kurbo::Rect {
         self.rect
     }
+
+    fn name(&self) -> &str { "Container" }
 }
