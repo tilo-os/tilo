@@ -57,6 +57,14 @@ pub trait Widget {
     fn is_focusable(&self) -> bool { false }
     fn set_focus(&mut self, _focused: bool) {}
     fn is_focused(&self) -> bool { false }
+
+    /// Logic for debouncing/grouping undo actions
+    fn needs_commit(&self) -> bool { false }
+    fn on_commit(&mut self) {}
+
+    /// Ephemeral state for Undo/Redo (e.g. caret position)
+    fn get_state(&self) -> Option<String> { None }
+    fn set_state(&mut self, _state: &str) {}
 }
 
 pub type Element = Box<dyn Widget>;
