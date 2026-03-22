@@ -46,6 +46,7 @@ impl Widget for Container {
         
         let style = Style {
             display: taffy::Display::Flex,
+            flex_shrink: 0.0, // Prevent vertical squashing
             padding: taffy::Rect {
                 left: length(theme.padding_standard),
                 right: length(theme.padding_standard),
@@ -115,4 +116,8 @@ impl Widget for Container {
     }
 
     fn name(&self) -> &str { "Container" }
+
+    fn is_focused(&self) -> bool { false }
+    fn needs_commit(&self) -> bool { self.children().iter().any(|c| c.needs_commit()) }
+    fn on_commit(&mut self) { for child in self.children_mut() { child.on_commit(); } }
 }
