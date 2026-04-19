@@ -7,11 +7,15 @@ use taffy::style_helpers::{length, percent};
 use crate::widget::Widget;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::presence::{PathSegment, PresenceKey};
+use crate::permissions::PermissionScope;
 
 pub struct Container {
     child: Option<Box<dyn Widget>>,
     rect: Rect,
     has_background: bool,
+    presence_path: Vec<PathSegment>,
+    permission_scope: Option<PermissionScope>,
 }
 
 impl Container {
@@ -20,6 +24,8 @@ impl Container {
             child: None,
             rect: Rect::ZERO,
             has_background: false,
+            presence_path: Vec::new(),
+            permission_scope: None,
         }
     }
 
@@ -30,6 +36,18 @@ impl Container {
 
     pub fn with_background(mut self) -> Self {
         self.has_background = true;
+        self
+    }
+
+    /// Opt this layout into presence tracking by binding it to a CRDT-style path.
+    pub fn with_presence(mut self, path: Vec<PathSegment>) -> Self {
+        self.presence_path = path;
+        self
+    }
+
+    /// Gate this layout behind a permission scope.
+    pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
+        self.permission_scope = Some(scope);
         self
     }
 }
@@ -120,4 +138,53 @@ impl Widget for Container {
     fn is_focused(&self) -> bool { false }
     fn needs_commit(&self) -> bool { self.children().iter().any(|c| c.needs_commit()) }
     fn on_commit(&mut self) { for child in self.children_mut() { child.on_commit(); } }
+
+    fn presence_key(&self) -> Option<PresenceKey> {
+        if self.presence_path.is_empty() {
+            None
+        } else {
+            Some(PresenceKey::Widget { path: self.presence_path.clone() })
+        }
+    }
+
+    fn permission_scope(&self) -> Option<PermissionScope> {
+        self.permission_scope.clone()
+    }
+
+    fn draw_with_presence(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &crate::presence::PresenceCtx,
+        permissions: &crate::permissions::PermissionContext,
+    ) {
+        // Draw the container's own background, then propagate presence/permission
+        // context down to the child so its opt-in chrome still renders.
+        if self.has_background {
+            let shape = RoundedRect::from_rect(self.rect, theme.radius_standard);
+            scene.fill(vello::peniko::Fill::NonZero, transform, theme.bg_primary, None, &shape);
+            scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, theme.border_standard, None, &shape);
+        }
+
+        if let Some(child) = &mut self.child {
+            child.draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+        }
+
+        if let Some(scope) = self.permission_scope() {
+            if !permissions.check(&scope) {
+                let overlay = vello::peniko::Color::rgba8(0, 0, 0, 77);
+                scene.fill(vello::peniko::Fill::NonZero, transform, overlay, None, &self.rect);
+            }
+        }
+
+        if let Some(key) = self.presence_key() {
+            if let Some(peers) = presence.here.get(&key) {
+                if let Some(user) = peers.first() {
+                    presence.draw_peer_focus(scene, theme, user, self.rect);
+                }
+            }
+        }
+    }
 }
