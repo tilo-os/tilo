@@ -346,6 +346,24 @@ fn sidebar_wheel_overscroll_below_threshold_snaps_back() {
 }
 
 #[test]
+fn sidebar_wheel_management_button_creates_workspace() {
+    use quick_desktop::shell::sidebar_wheel::SidebarWheel;
+    use quick_desktop::shell::state::{WorkspaceTree, Workspace, WorkspaceId};
+    let mut tree = WorkspaceTree {
+        workspaces: vec![],
+        active: WorkspaceId::from(0),
+        active_strip: Default::default(),
+        collaborators: vec![],
+    };
+    tree.workspaces = vec![Workspace::new(WorkspaceId::new(), "A")];
+    tree.active = tree.workspaces[0].id;
+    let w = SidebarWheel::new();
+    w.click_management_new_workspace(&mut tree);
+    assert_eq!(tree.workspaces.len(), 2);
+    assert_eq!(tree.active, tree.workspaces[1].id);
+}
+
+#[test]
 fn topbar_center_widget_cycles_with_wheel_cooldown() {
     use quick_desktop::shell::topbar::{TopBar, CenterWidget};
     use std::time::Duration;
