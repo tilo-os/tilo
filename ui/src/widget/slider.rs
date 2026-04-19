@@ -70,7 +70,7 @@ impl Widget for Slider {
     fn draw(&mut self, scene: &mut Scene, transform: Affine, _text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
         // Full Area Focus Border
         if self.is_focused {
-            let shape = RoundedRect::from_rect(self.rect, theme.radius_standard);
+            let shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.sm as f64);
             scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, theme.border_focus, None, &shape);
         }
 
@@ -83,8 +83,8 @@ impl Widget for Slider {
             self.rect.y0 + (self.rect.height() + track_height) / 2.0,
         );
         let track_shape = RoundedRect::from_rect(track_rect, 3.0);
-        scene.fill(vello::peniko::Fill::NonZero, transform, theme.bg_active, None, &track_shape);
-        scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, theme.border_standard, None, &track_shape);
+        scene.fill(vello::peniko::Fill::NonZero, transform, theme.tokens.colors.neutral[3], None, &track_shape);
+        scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, theme.tokens.colors.border_standard, None, &track_shape);
 
         // Active Track (Blue part on the left)
         let active_track_rect = Rect::new(
@@ -94,7 +94,7 @@ impl Widget for Slider {
             track_rect.y1,
         );
         let active_track_shape = RoundedRect::from_rect(active_track_rect, 3.0);
-        scene.fill(vello::peniko::Fill::NonZero, transform, theme.accent_primary, None, &active_track_shape);
+        scene.fill(vello::peniko::Fill::NonZero, transform, theme.tokens.colors.accent[4], None, &active_track_shape);
 
         // Knob
         let knob_radius = 10.0;
