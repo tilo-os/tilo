@@ -8,11 +8,17 @@
 //! - workspace up/down arrows (clamped at the ends of the workspace list),
 //! - workspace-name button that requests the WorkspaceSettings modal.
 //!
-//! Later tasks in this plan flesh out the CenterWidgets (T19 clock/sparkline/
-//! calendar with wheel cycling) and RightTray (T20 collaborator avatars +
-//! QuickSettings trigger). The state fields for those tasks — `center`,
-//! `last_wheel`, `cooldown` — are declared up-front so T19/T20 don't need to
-//! reshape the struct mid-plan.
+//! T19 adds the CenterWidgets cluster (clock / sparkline / calendar) with
+//! wheel cycling + cooldown. T20 adds the RightTray surface:
+//! - the visible collaborator avatars (first N entries of
+//!   `tree.collaborators`, with an `overflow_count`-driven `+N` pill),
+//! - the QuickSettings gear button that emits
+//!   [`TopBarOutput::OpenQuickSettings`].
+//!
+//! The state fields for the center cluster — `center`, `last_wheel`,
+//! `cooldown` — are declared up-front so T19/T20 don't need to reshape the
+//! struct mid-plan. The RightTray is stateless at the logical level: it
+//! reads collaborators straight from the borrowed `WorkspaceTree`.
 //!
 //! The shell root owns the TopBar and forwards its `TopBarOutput` values to
 //! decide when to open popovers/modals (WorkspaceSettings, QuickSettings);
@@ -21,7 +27,7 @@
 
 use std::time::Duration;
 
-use crate::shell::state::WorkspaceTree;
+use crate::shell::state::{Collaborator, WorkspaceTree};
 use crate::shell::system_monitor::{SparkSample, SystemMonitor};
 
 /// Events the shell dispatches into the TopBar in response to user input
@@ -141,6 +147,29 @@ impl TopBar {
     /// should open the WorkspaceSettings modal for the active workspace.
     pub fn click_workspace_name(&mut self) -> TopBarOutput {
         TopBarOutput::OpenWorkspaceSettings
+    }
+
+    /// Visible avatars for the RightTray: the first `max` collaborators in
+    /// `tree.collaborators`. If `max == 0` the returned slice is empty.
+    /// Remaining collaborators are accounted for via [`TopBar::overflow_count`].
+    pub fn visible_avatars<'a>(
+        &self,
+        tree: &'a WorkspaceTree,
+        max: usize,
+    ) -> Vec<&'a Collaborator> {
+        tree.collaborators.iter().take(max).collect()
+    }
+
+    /// Count of collaborators not shown as individual avatars — rendered as
+    /// the `+N` overflow pill in the RightTray. Returns 0 when all fit.
+    pub fn overflow_count(&self, tree: &WorkspaceTree, max: usize) -> usize {
+        tree.collaborators.len().saturating_sub(max)
+    }
+
+    /// The RightTray gear (QuickSettings trigger) was clicked. Signal to
+    /// the shell that it should open the QuickSettings popover.
+    pub fn click_tray_settings(&mut self) -> TopBarOutput {
+        TopBarOutput::OpenQuickSettings
     }
 
     /// Handle a wheel event over the center-widget cluster. `dir` is a raw
