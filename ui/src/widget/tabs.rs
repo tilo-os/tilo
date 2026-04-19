@@ -155,6 +155,33 @@ impl Widget for TabBar {
             let glyph_color = if close_hover { text_primary } else { text_dim };
             tr.draw_text(scene, glyph, glyph_size, glyph_color, transform * Affine::translate((gx, gy)), None);
         }
+
+        // Drop-zone indicator: while a tab drag is in flight and the cursor
+        // hovers another tab, paint a 2 px indigo bar at the gap where a
+        // release would land the tab. The vec-remove-then-insert semantics
+        // mean dropping onto a tab-to-the-right lands *after* that tab and
+        // dropping onto a tab-to-the-left lands *before* it, so the bar
+        // position mirrors that rule — this keeps the visual aligned with
+        // the actual post-release index.
+        if self.pending_drag.is_some() {
+            if let (Some(to), Some((from, _))) = (
+                self.tab_rects.iter().position(|r| r.contains(self.last_cursor)),
+                self.press_origin,
+            ) {
+                if from != to {
+                    let target = self.tab_rects[to];
+                    let bar_x = if from < to { target.x1 } else { target.x0 - 2.0 };
+                    let bar = Rect::new(bar_x, target.y0 - 2.0, bar_x + 2.0, target.y1 + 2.0);
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        transform,
+                        theme.tokens.colors.accent[5],
+                        None,
+                        &bar,
+                    );
+                }
+            }
+        }
     }
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, _m: &winit::event::Modifiers, _s: &mut AutoCommit, _p: &ObjId, handled: &mut bool, _focus_target: &mut Option<NodeId>, _node_id: NodeId, _taffy: &TaffyTree<()>) {
         match event {
