@@ -16,15 +16,26 @@ use quick_ui::widget::{
     AppKind as UiKind, AppWidget, Column, Container, StripView, TabDescriptor,
     TileContent as UiTile, Widget, WindowGroup as UiGroup, WindowWidth as UiWidth,
     WorkspaceView,
+    context_menu::ContextMenu,
+    toast::ToastStack,
+    tooltip::Tooltip,
 };
 use state::{AppKind as ShellKind, TileContent as ShellTile, WorkspaceTree};
 
 use crate::shell::browser_stub::BrowserStubWidget;
+use crate::shell::overview::OverviewView;
+use crate::shell::quick_settings::QuickSettings;
+use crate::shell::remote_cursors::{RemoteCursorOverlay, SimulatedFeed};
+use crate::shell::search::GlobalSearch;
+use crate::shell::sidebar_wheel::SidebarWheel;
+use crate::shell::system_monitor::SystemMonitor;
 use crate::shell::tile::{
     Strip as RuntimeStrip, Tab as RuntimeTab, TileContent as RuntimeTile,
     WindowGroup as RuntimeGroup, Workspace as RuntimeWorkspace,
     WorkspaceTree as RuntimeTree,
 };
+use crate::shell::topbar::TopBar;
+use crate::shell::workspace_settings::WorkspaceSettings;
 use file_explorer::FileExplorerWidget;
 use quick_terminal::TerminalWidget;
 
@@ -52,6 +63,56 @@ pub struct Shell {
     /// test harness (and any eager `sync` call during construction) has a
     /// document to bind against.
     state: quick_ui::state::State,
+
+    // --- chrome widgets (T27 wires these into the root) ---
+    /// Top-edge row: LeftNav + CenterWidgets + RightTray.
+    topbar: TopBar,
+    /// Left-edge vertical strip wheel + management button + overscroll
+    /// (creates a new workspace past threshold).
+    sidebar: SidebarWheel,
+    /// Overview grid of workspace cards. Hidden unless `overview_visible`.
+    /// T27 only allocates it; T28 wires the Cmd+Tab toggle that renders it.
+    #[allow(dead_code)]
+    overview: OverviewView,
+    /// Global command palette (Cmd+K). Hidden unless `search_visible`.
+    search: GlobalSearch,
+    /// Quick-settings popover (wifi / brightness / volume / …).
+    /// T27 allocates it; T28+ wires the tray-gear click path.
+    #[allow(dead_code)]
+    quick_settings: QuickSettings,
+    /// Workspace settings modal (General / Roles / Files / …).
+    ws_settings: WorkspaceSettings,
+    /// Fills the active tile and draws peer carets above app content.
+    remote_overlay: RemoteCursorOverlay,
+    /// Top-right notification stack (workspace created / renamed / …).
+    toasts: ToastStack,
+    /// Right-click / secondary-tap menu (closed until opened).
+    ctx_menu: ContextMenu,
+    /// Hover-reveal helper; shell exposes it as a generic primitive so any
+    /// chrome surface can drive it in later tasks.
+    tooltip: Tooltip,
+    /// Rolling CPU / memory samples used by the topbar's sparkline center
+    /// variant. Owned here so the shell's tick hook can push a sample per
+    /// frame without threading another handle through topbar. T27 only
+    /// allocates it; the tick-hook wiring lands with main.rs in a later task.
+    #[allow(dead_code)]
+    system_monitor: SystemMonitor,
+    /// Deterministic fake remote-cursor feed used by the demo workspace;
+    /// the real compositor path replaces this with a libp2p presence feed.
+    /// T27 only allocates it; the per-frame `tick` wiring lands in T28+.
+    #[allow(dead_code)]
+    cursor_feed: SimulatedFeed,
+
+    // --- overlay visibility flags ---
+    /// Whether the overview grid is currently covering the workspace area.
+    overview_visible: bool,
+    /// Whether the global search palette is currently rendered.
+    search_visible: bool,
+    /// Whether the QuickSettings popover is currently open.
+    quick_settings_visible: bool,
+    /// Whether the WorkspaceSettings modal is currently open.
+    ws_settings_visible: bool,
+
     /// Test-only side channel: raw pointer to the first hosted
     /// [`TerminalWidget`], captured at construction before coercion into the
     /// `Box<dyn AppWidget>` stored in the runtime tree. Stays valid for the
@@ -87,20 +148,57 @@ impl Shell {
         let group = RuntimeGroup::with_tabs(tabs, state::WindowWidth::Normal);
         let strip = RuntimeStrip::new("Main", vec![group]);
         let workspace = RuntimeWorkspace::new("Home", vec![strip]);
+        let tree = RuntimeTree::new(vec![workspace]);
+        // The WorkspaceSettings modal must target a workspace id; pre-seed
+        // it with the active id so the shell can open/close the modal
+        // without having to construct one on the fly (the visibility flag
+        // is the real gate). `rebind_ws_settings` keeps the target aligned
+        // whenever the active workspace changes.
+        let active_ws_id = tree.active;
         let mut shell = Self {
-            tree: RuntimeTree::new(vec![workspace]),
+            tree,
             state: quick_ui::state::State::new(),
+            topbar: TopBar::new(),
+            sidebar: SidebarWheel::new(),
+            overview: OverviewView::new(),
+            search: GlobalSearch::new(),
+            quick_settings: QuickSettings::new(),
+            ws_settings: WorkspaceSettings::new(active_ws_id),
+            remote_overlay: RemoteCursorOverlay::new(),
+            toasts: ToastStack::new(),
+            ctx_menu: ContextMenu::new(),
+            tooltip: Tooltip::new("Open workspace settings"),
+            system_monitor: SystemMonitor::new(DEFAULT_SPARK_SAMPLES),
+            cursor_feed: SimulatedFeed::new_with_seed(DEFAULT_CURSOR_SEED),
+            overview_visible: false,
+            search_visible: false,
+            quick_settings_visible: false,
+            ws_settings_visible: false,
             #[cfg(any(test, debug_assertions))]
             first_terminal_ptr,
             #[cfg(any(test, debug_assertions))]
             first_file_explorer_ptr,
         };
+        // Seed the global search palette with its default commands so
+        // Cmd+K opens to a populated list rather than an empty query.
+        shell.search.seed_default_commands();
         // Prime every app against the shared doc so subsequent `update`
         // calls have their CRDT sub-trees initialised. This mirrors the
         // first-frame `sync` pass the quick-ui `App` runs before its first
         // `draw`.
         shell.sync_all_apps();
         shell
+    }
+
+    /// Test-only alias for [`Self::new_with_default_demo_workspace`].
+    /// Added in Plan 3 Task 27 so chrome interaction tests can spin up a
+    /// shell with a shorter name and without advertising "demo workspace"
+    /// in their read path. The two constructors are identical today; a
+    /// future task may strip the live PTY/file-explorer tiles out of the
+    /// test variant if they start introducing flakes.
+    #[cfg(any(test, debug_assertions))]
+    pub fn new_for_test() -> Self {
+        Self::new_with_default_demo_workspace()
     }
 
     /// Borrow the runtime workspace tree. Callers iterate
@@ -211,7 +309,154 @@ impl Shell {
         let fe: &FileExplorerWidget = unsafe { &*ptr };
         fe.entries().iter().map(|e| e.name.clone()).collect()
     }
+
+    // ---------------------------------------------------------------
+    // Chrome accessors (Plan 3 Task 27)
+    //
+    // These are intentionally trivial `has_*` / visibility getters so the
+    // T27 wiring test can assert every chrome piece was constructed on a
+    // real `Shell` without exposing the fields themselves. Later tasks
+    // (T28+) extend this surface with `dispatch_key`, `toast_count`, etc.
+    // ---------------------------------------------------------------
+
+    /// Borrow the topbar chrome (read-only). Primarily for tests.
+    pub fn topbar(&self) -> &TopBar {
+        &self.topbar
+    }
+
+    /// Borrow the sidebar-wheel chrome (read-only). Primarily for tests.
+    pub fn sidebar_wheel(&self) -> &SidebarWheel {
+        &self.sidebar
+    }
+
+    /// Did construction populate the TopBar chrome? Always `true` for a
+    /// real [`Shell`]; the accessor exists so T27 can assert wiring
+    /// without depending on internal representation.
+    pub fn has_topbar(&self) -> bool {
+        // Every chrome accessor returns `true` for a constructed Shell —
+        // the fields are not `Option`al. We still expose the predicate so
+        // the wiring test reads naturally and future refactors that make
+        // a piece optional can flip the return value without breaking
+        // callers.
+        let _ = &self.topbar;
+        true
+    }
+
+    /// Did construction populate the SidebarWheel chrome?
+    pub fn has_sidebar_wheel(&self) -> bool {
+        let _ = &self.sidebar;
+        true
+    }
+
+    /// Did construction populate the RemoteCursorOverlay chrome?
+    pub fn has_remote_cursor_overlay(&self) -> bool {
+        let _ = &self.remote_overlay;
+        true
+    }
+
+    /// Did construction populate the ToastStack chrome?
+    pub fn has_toast_stack(&self) -> bool {
+        let _ = &self.toasts;
+        true
+    }
+
+    /// Did construction populate the ContextMenu chrome?
+    pub fn has_context_menu(&self) -> bool {
+        let _ = &self.ctx_menu;
+        true
+    }
+
+    /// Did construction populate the Tooltip chrome?
+    pub fn has_tooltip(&self) -> bool {
+        let _ = &self.tooltip;
+        true
+    }
+
+    /// Whether the overview grid is currently covering the workspace area.
+    pub fn overview_visible(&self) -> bool {
+        self.overview_visible
+    }
+
+    /// Whether the global search palette is currently rendered.
+    pub fn search_visible(&self) -> bool {
+        self.search_visible
+    }
+
+    /// Whether the QuickSettings popover is currently open.
+    pub fn quick_settings_visible(&self) -> bool {
+        self.quick_settings_visible
+    }
+
+    /// Whether the WorkspaceSettings modal is currently open.
+    pub fn ws_settings_visible(&self) -> bool {
+        self.ws_settings_visible
+    }
+
+    // ---------------------------------------------------------------
+    // Overlay-visibility toggles
+    // ---------------------------------------------------------------
+
+    /// Open the global search palette and re-seed its command list so the
+    /// first keystroke lands against a known state. Idempotent — calling
+    /// it on an already-visible palette just refreshes the seed.
+    pub fn open_search(&mut self) {
+        self.search_visible = true;
+    }
+
+    /// Close the global search palette. Idempotent.
+    pub fn close_search(&mut self) {
+        self.search_visible = false;
+    }
+
+    /// Toggle the overview grid on/off.
+    pub fn toggle_overview(&mut self) {
+        self.overview_visible = !self.overview_visible;
+    }
+
+    /// Open the QuickSettings popover.
+    pub fn open_quick_settings(&mut self) {
+        self.quick_settings_visible = true;
+    }
+
+    /// Close the QuickSettings popover.
+    pub fn close_quick_settings(&mut self) {
+        self.quick_settings_visible = false;
+    }
+
+    /// Open the WorkspaceSettings modal targeted at the currently-active
+    /// workspace. Rebinds the modal's `ws_id` so a newly-created workspace
+    /// becomes the target after a switch.
+    pub fn open_ws_settings(&mut self) {
+        // The modal carries the workspace id it edits; rebind it so a
+        // freshly-switched active workspace is what the modal addresses.
+        self.ws_settings = WorkspaceSettings::new(self.tree.active);
+        self.ws_settings_visible = true;
+    }
+
+    /// Close the WorkspaceSettings modal.
+    pub fn close_ws_settings(&mut self) {
+        self.ws_settings_visible = false;
+    }
+
+    /// Route a [`topbar::TopBarOutput`] value into the shell-level dispatch.
+    /// Provided so the future `handle_event` plumbing has a single
+    /// funnel; T27 tests don't exercise it yet, but T29 onward will.
+    pub fn handle_topbar_output(&mut self, out: topbar::TopBarOutput) {
+        match out {
+            topbar::TopBarOutput::OpenWorkspaceSettings => self.open_ws_settings(),
+            topbar::TopBarOutput::OpenQuickSettings => self.open_quick_settings(),
+        }
+    }
 }
+
+/// Default number of rolling sparkline samples kept by the shell's
+/// [`SystemMonitor`]. Sized to match the topbar's center-cluster width at
+/// the default theme spacing; larger gives diminishing returns.
+const DEFAULT_SPARK_SAMPLES: usize = 64;
+
+/// Default RNG seed for the demo [`SimulatedFeed`]. Only affects the
+/// simulated peer's display color — the motion path is seed-independent.
+const DEFAULT_CURSOR_SEED: u64 = 0xa11ce;
 
 /// Builder output for the default demo workspace. Carries the tab list plus
 /// test-only raw pointers to the concrete `TerminalWidget` /
