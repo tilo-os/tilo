@@ -191,3 +191,38 @@ fn workspace_settings_files_tab_builds_files_table_with_columns() {
         .collect();
     assert_eq!(files_cols, vec!["file".to_string(), "permission".to_string()]);
 }
+
+#[test]
+fn topbar_leftnav_navigates_workspaces() {
+    use quick_desktop::shell::topbar::{TopBar, TopBarEvent};
+    use quick_desktop::shell::state::{WorkspaceTree, Workspace, WorkspaceId};
+    let mut tree = WorkspaceTree {
+        workspaces: vec![],
+        active: WorkspaceId::from(0),
+        active_strip: Default::default(),
+        collaborators: vec![],
+    };
+    tree.workspaces = vec![
+        Workspace::new(WorkspaceId::new(), "A"),
+        Workspace::new(WorkspaceId::new(), "B"),
+        Workspace::new(WorkspaceId::new(), "C"),
+    ];
+    tree.active = tree.workspaces[1].id;
+    let mut tb = TopBar::new();
+    tb.emit(TopBarEvent::WorkspaceUp, &mut tree);
+    assert_eq!(tree.active, tree.workspaces[0].id);
+    tb.emit(TopBarEvent::WorkspaceDown, &mut tree);
+    tb.emit(TopBarEvent::WorkspaceDown, &mut tree);
+    assert_eq!(tree.active, tree.workspaces[2].id);
+    // clamped at edges
+    tb.emit(TopBarEvent::WorkspaceDown, &mut tree);
+    assert_eq!(tree.active, tree.workspaces[2].id);
+}
+
+#[test]
+fn topbar_workspace_name_button_emits_settings_request() {
+    use quick_desktop::shell::topbar::{TopBar, TopBarOutput};
+    let mut tb = TopBar::new();
+    let out = tb.click_workspace_name();
+    assert!(matches!(out, TopBarOutput::OpenWorkspaceSettings));
+}
