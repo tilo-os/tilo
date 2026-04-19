@@ -12,6 +12,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::collaboration::{CollaborationManager, CollabEvent, CollabRequest};
 use crate::presence::PresenceCtx;
+use crate::permissions::PermissionContext;
 
 #[derive(Debug, Clone, Copy)]
 enum Direction { Up, Down, Left, Right }
@@ -37,7 +38,8 @@ pub struct App {
 
     // Collaboration
     collab_manager: CollaborationManager,
-    presence: PresenceCtx,
+    pub presence_ctx: PresenceCtx,
+    pub permission_ctx: PermissionContext,
 }
 
 impl App {
@@ -59,8 +61,16 @@ impl App {
             last_stable_focus_idx: None,
             last_stable_metadata: None,
             collab_manager: CollaborationManager::new(),
-            presence: PresenceCtx::empty(),
+            presence_ctx: PresenceCtx::empty(),
+            permission_ctx: PermissionContext::permissive(),
         }
+    }
+
+    pub fn presence_ctx(&self) -> &PresenceCtx { &self.presence_ctx }
+    pub fn presence_ctx_mut(&mut self) -> &mut PresenceCtx { &mut self.presence_ctx }
+    pub fn permission_ctx(&self) -> &PermissionContext { &self.permission_ctx }
+    pub fn set_permission_ctx(&mut self, ctx: PermissionContext) {
+        self.permission_ctx = ctx;
     }
 
     fn update_focusable_order(&mut self) {
@@ -89,15 +99,15 @@ impl App {
         use crate::permissions::UserId;
         let uid = UserId(user_id);
         match payload {
-            Pointer { x, y } => self.presence.set_pointer(&key, uid, (x, y)),
-            Caret { pos } => self.presence.set_caret(&key, uid, pos),
-            Selection { start, end } => self.presence.set_selection(
+            Pointer { x, y } => self.presence_ctx.set_pointer(&key, uid, (x, y)),
+            Caret { pos } => self.presence_ctx.set_caret(&key, uid, pos),
+            Selection { start, end } => self.presence_ctx.set_selection(
                 &key,
                 uid,
                 crate::presence::SelectionRange { start, end },
             ),
-            Arrived => self.presence.register_presence(&key, uid),
-            Left => self.presence.remove_presence(&key, &uid),
+            Arrived => self.presence_ctx.register_presence(&key, uid),
+            Left => self.presence_ctx.remove_presence(&key, &uid),
         }
     }
 
@@ -235,7 +245,14 @@ impl App {
                             }
                             
                             let transform = Affine::scale(scale_factor as f64);
-                            self.root_widget.draw(&mut scene, transform, &mut self.text_renderer, &self.theme, &self.presence);
+                            self.root_widget.draw_with_presence(
+                                &mut scene,
+                                transform,
+                                &mut self.text_renderer,
+                                &self.theme,
+                                &self.presence_ctx,
+                                &self.permission_ctx,
+                            );
                             
                             // Draw Remote Cursors
                             for (_, cursor) in &self.state.collab.cursors {
