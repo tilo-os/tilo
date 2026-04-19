@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Op { View, Edit, Admin }
 
@@ -21,4 +23,13 @@ pub struct PermissionContext {
 impl PermissionContext {
     pub fn single_user() -> Self { Self::default() }
     pub fn allows(&self, _scope: &PermissionScope) -> bool { true }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub enum AppKind {
+    Terminal,
+    FileExplorer,
+    Browser,
+    Settings,
+    Unknown,
 }
