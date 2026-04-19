@@ -14,8 +14,10 @@
 //! - Minimal header + body rendering using `Theme::tokens` surfaces/border.
 //! - Header-click handling that toggles sort direction for `sortable` columns.
 //!
-//! Column resizing (T5) and row virtualization (T6) are follow-up tasks and
-//! will build on this skeleton.
+//! T5 adds interactive column resizing. T6 adds row virtualization via
+//! [`DataTable::set_viewport`]/[`DataTable::set_scroll_y`] and
+//! [`DataTable::visible_row_range`], which the `draw` pass honours so only
+//! rows within the viewport (plus a small overscan) are painted.
 
 use automerge::{AutoCommit, ObjId};
 use std::cmp::Ordering;
@@ -124,6 +126,15 @@ pub struct DataTable<Row> {
     /// Last observed cursor position (for hit-testing press events against the
     /// per-column resize handles).
     last_cursor: Option<Point>,
+    /// Virtualization: viewport height in px. `0.0` = unset (fall back to
+    /// drawing the full `rect`).
+    viewport_h: f32,
+    /// Virtualization: row height in px. Defaults to the render-time
+    /// [`ROW_HEIGHT`] constant so callers who never call `set_viewport`
+    /// still get a sensible `visible_row_range` answer.
+    row_height: f32,
+    /// Virtualization: current vertical scroll offset in px.
+    scroll_y: f32,
 }
 
 impl<Row> DataTable<Row> {
@@ -149,6 +160,9 @@ impl<Row> DataTable<Row> {
             col_widths_px,
             resize: None,
             last_cursor: None,
+            viewport_h: 0.0,
+            row_height: ROW_HEIGHT as f32,
+            scroll_y: 0.0,
         }
     }
 
@@ -236,6 +250,39 @@ impl<Row> DataTable<Row> {
     /// End the active resize gesture. No-op if none is active.
     pub fn end_resize(&mut self) {
         self.resize = None;
+    }
+
+    /// Virtualization: install the viewport height and per-row height (both
+    /// in px). Enables the [`visible_row_range`] windowing used by the draw
+    /// pass so only rows that intersect the viewport (plus a small overscan)
+    /// are rendered.
+    pub fn set_viewport(&mut self, height_px: f32, row_height_px: f32) {
+        self.viewport_h = height_px.max(0.0);
+        self.row_height = row_height_px.max(1.0);
+    }
+
+    /// Virtualization: current vertical scroll offset in px.
+    pub fn set_scroll_y(&mut self, y: f32) {
+        self.scroll_y = y.max(0.0);
+    }
+
+    /// Virtualization: `(start, end)` row-index range (half-open) the draw
+    /// pass should render. `start = max(floor(scroll / row_h) - 2, 0)` and
+    /// `end = min(start + ceil(vp / row_h) + 4, len)` — a 2-row overscan on
+    /// each side keeps scrolling smooth without paying for the full list.
+    ///
+    /// When no viewport has been set the entire row list is returned so the
+    /// fall-back matches the pre-virtualization behaviour.
+    pub fn visible_row_range(&self) -> (usize, usize) {
+        let len = self.view.len();
+        if self.viewport_h <= 0.0 || self.row_height <= 0.0 {
+            return (0, len);
+        }
+        let first = (self.scroll_y / self.row_height).floor() as isize;
+        let start = first.saturating_sub(2).max(0) as usize;
+        let visible = (self.viewport_h / self.row_height).ceil() as usize;
+        let end = (start + visible + 4).min(len);
+        (start, end)
     }
 
     fn resize_handle_rect_for(&self, index: usize) -> Option<Rect> {
@@ -389,8 +436,11 @@ impl<Row: 'static> Widget for DataTable<Row> {
             }
         }
 
-        // Body rows.
-        for (ri, &row_idx) in self.view.iter().enumerate() {
+        // Body rows — virtualization windows the loop to the visible range
+        // plus a small overscan (see `visible_row_range`).
+        let (vis_start, vis_end) = self.visible_row_range();
+        for ri in vis_start..vis_end {
+            let Some(&row_idx) = self.view.get(ri) else { break };
             let y0 = self.rect.y0 + HEADER_HEIGHT + (ri as f64) * ROW_HEIGHT;
             let y1 = y0 + ROW_HEIGHT;
             if y0 >= self.rect.y1 { break; }
