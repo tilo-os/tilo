@@ -25,11 +25,36 @@ pub struct OverlayFlags {
     pub ws_settings: bool,
 }
 
+/// Quick-settings tray values. Local UI state; does not sync to peers —
+/// device settings like brightness, volume, and radio toggles are always
+/// per-device, never shared.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct QuickSettingsState {
+    /// Brightness level, 0.0..=1.0.
+    pub brightness: f32,
+    /// Volume level, 0.0..=1.0.
+    pub volume: f32,
+    pub wifi: bool,
+    pub bluetooth: bool,
+}
+
+impl Default for QuickSettingsState {
+    fn default() -> Self {
+        Self {
+            brightness: 0.6,
+            volume: 0.4,
+            wifi: true,
+            bluetooth: false,
+        }
+    }
+}
+
 /// Mutable chrome state shared across the shell widget tree.
 #[derive(Debug)]
 pub struct ChromeState {
     pub tree: WorkspaceTree,
     pub overlays: OverlayFlags,
+    pub quick_settings: QuickSettingsState,
     /// Monotonic counter bumped every time the tree is mutated. Widgets
     /// poll this in `update` to re-sync their caches; cheaper than running
     /// diff logic and easier than an event bus.
@@ -41,6 +66,7 @@ impl ChromeState {
         Rc::new(RefCell::new(Self {
             tree,
             overlays: OverlayFlags::default(),
+            quick_settings: QuickSettingsState::default(),
             revision: 0,
         }))
     }
