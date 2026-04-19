@@ -35,7 +35,7 @@ Current state of the Rust implementation vs. the concept described in
 |---|---|---|
 | Left 96 px vertical strip | ✅ | `SidebarWheelChrome` renders on the left of the split row. |
 | 3D wheel rotation | 🟧 | 2D vertical wheel with workspace cards, active highlight, + button. No 3D tilt (acceptable per user brief). |
-| Per-strip label + avatars | 🟧 | Workspace name + card chrome shown; collaborator avatars per workspace not yet. |
+| Per-strip label + avatars | 🟧 | Workspace name + card chrome shown; active card paints up to 3 presence dots at the bottom (overflow as "+N"). Per-workspace presence isn't modeled yet — tree-level collaborators attribute to the active card as a "people are here" signal. |
 | Scroll/pan to switch strips | ✅ | Scroll-wheel over the sidebar accumulates line-units; crossing ±1 calls `ChromeState::switch_workspace`. Click-to-activate a workspace card + plus-button-append-and-activate are both wired. |
 | Rim / gradient line on expand | 🟥 | No render. |
 | Current "workspace 1/1" text | ✅ | WorkspaceView renders it. |
