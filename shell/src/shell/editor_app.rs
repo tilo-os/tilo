@@ -25,7 +25,7 @@ use automerge::{
     AutoCommit, ObjId, ObjType, ReadDoc, Value,
     transaction::Transactable,
 };
-use quick_ui::presence::PresenceCtx;
+use quick_ui::presence::{PathSegment, PresenceCtx, PresenceKey};
 use quick_ui::text_render::TextRenderer;
 use quick_ui::theme::Theme;
 use quick_ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
@@ -152,6 +152,26 @@ impl EditorApp {
             .find('\n')
             .map(|i| pos + i)
             .unwrap_or(self.text.len())
+    }
+
+    /// Convert a **char-index** (as stored in `PresenceCtx::carets`) to a
+    /// byte offset into `self.text`. Returns `self.text.len()` if the char
+    /// index walks past the end — peer state that's a bit ahead shouldn't
+    /// panic us.
+    fn char_index_to_byte(&self, char_idx: usize) -> usize {
+        self.text
+            .char_indices()
+            .nth(char_idx)
+            .map(|(b, _)| b)
+            .unwrap_or(self.text.len())
+    }
+
+    /// Presence key for the editor body. Widget-level path so `text_input`-
+    /// style helpers (peer caret / selection) pick it up.
+    pub(crate) fn body_presence_key() -> PresenceKey {
+        PresenceKey::Widget {
+            path: vec![PathSegment::Field(BODY_KEY.into())],
+        }
     }
 }
 
@@ -332,7 +352,7 @@ impl Widget for EditorApp {
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         let tokens = &theme.tokens;
         // Foreground on the white window-card: slate-900 for body, slate-500
@@ -502,6 +522,68 @@ impl Widget for EditorApp {
             None,
             &divider,
         );
+
+        // Peer carets + selections. Read `PresenceCtx` keyed by the editor
+        // body and paint a per-peer caret bar + translucent selection fill
+        // on top of the locally-rendered text. Char-index is mapped to
+        // byte index via `char_indices` so a peer whose caret walks past
+        // the text boundary simply lands at end-of-buffer.
+        let key = Self::body_presence_key();
+        if let Some(carets) = presence.carets.get(&key) {
+            for (user, caret_char) in carets.iter() {
+                let byte_idx = self.char_index_to_byte(*caret_char);
+                let row = self.text[..byte_idx].matches('\n').count();
+                let line_start_byte = self.line_start(byte_idx);
+                let prefix = &self.text[line_start_byte..byte_idx];
+                let (prefix_w, _) = tr.measure(prefix, TEXT_SIZE, None);
+                let x = content_x + prefix_w as f64;
+                let y = body_top + (row as f64) * LINE_HEIGHT as f64 + 2.0;
+                presence.draw_peer_caret(scene, theme, user, (x as f32, y as f32));
+            }
+        }
+
+        if let Some(selections) = presence.selections.get(&key) {
+            for (user, range) in selections.iter() {
+                if range.is_empty() {
+                    continue;
+                }
+                // Walk the selection line-by-line: for each line that
+                // intersects [range.start, range.end], build a rect from
+                // the selection's first column to its last column on that
+                // line. Multi-line selections therefore produce one rect
+                // per visual row, matching how editors conventionally
+                // render per-line selection bands.
+                let sel_start_byte = self.char_index_to_byte(range.start);
+                let sel_end_byte = self.char_index_to_byte(range.end);
+                let mut byte_cursor = sel_start_byte;
+                let mut row = self.text[..sel_start_byte].matches('\n').count();
+                let mut line_rects: Vec<Rect> = Vec::new();
+                while byte_cursor < sel_end_byte {
+                    let line_end_byte = self.line_end(byte_cursor).min(sel_end_byte);
+                    let line_start_byte = self.line_start(byte_cursor);
+                    let pre = &self.text[line_start_byte..byte_cursor];
+                    let span = &self.text[byte_cursor..line_end_byte];
+                    let (pre_w, _) = tr.measure(pre, TEXT_SIZE, None);
+                    let (span_w, _) = tr.measure(span, TEXT_SIZE, None);
+                    let x0 = content_x + pre_w as f64;
+                    let x1 = x0 + span_w as f64;
+                    let y0 = body_top + (row as f64) * LINE_HEIGHT as f64 + 2.0;
+                    let y1 = y0 + LINE_HEIGHT as f64;
+                    line_rects.push(Rect::new(x0, y0, x1, y1));
+                    // Advance to the start of the next line (skip the `\n`).
+                    byte_cursor = line_end_byte;
+                    if byte_cursor < self.text.len() && self.text.as_bytes()[byte_cursor] == b'\n' {
+                        byte_cursor += 1;
+                        row += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if !line_rects.is_empty() {
+                    presence.draw_peer_selection(scene, theme, user, range, &line_rects);
+                }
+            }
+        }
 
         scene.pop_layer();
     }
@@ -763,6 +845,35 @@ mod tests {
         assert_eq!(app.cursor_pos, 3);
         app.delete_before(&mut doc, &tile);
         assert_eq!(app.text, "ab");
+    }
+
+    #[test]
+    fn body_presence_key_is_widget_with_editor_body_field() {
+        // Stable contract: the shell seeds presence state under this
+        // exact key, so a peer's caret/selection for the editor body
+        // must materialise as `Widget { [Field("editor_body")] }`.
+        let key = EditorApp::body_presence_key();
+        match key {
+            PresenceKey::Widget { path } => {
+                assert_eq!(path.len(), 1);
+                match &path[0] {
+                    PathSegment::Field(f) => assert_eq!(f, BODY_KEY),
+                    _ => panic!("expected Field segment"),
+                }
+            }
+            _ => panic!("expected PresenceKey::Widget"),
+        }
+    }
+
+    #[test]
+    fn char_index_to_byte_handles_multibyte_and_oob() {
+        // The body is "aβc" where `β` is a 2-byte UTF-8 scalar.
+        let app = EditorApp::with_seed("aβc");
+        assert_eq!(app.char_index_to_byte(0), 0);
+        assert_eq!(app.char_index_to_byte(1), 1);
+        assert_eq!(app.char_index_to_byte(2), 3); // past `β`
+        // Walk past the end clamps to text.len() rather than panicking.
+        assert_eq!(app.char_index_to_byte(99), app.text.len());
     }
 
     #[test]
