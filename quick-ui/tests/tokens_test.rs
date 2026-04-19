@@ -39,3 +39,24 @@ fn theme_exposes_tokens() {
     // tokens are the source of truth
     assert_eq!(t.tokens.radii.md as f64, t.radius_standard);
 }
+
+use quick_ui::presence::{PresenceCtx, PresenceKey};
+use quick_ui::permissions::{PermissionScope, ResourceId, Op};
+use quick_ui::dnd::{DragPayload};
+
+#[test]
+fn presence_ctx_empty_is_constructible() {
+    let _ = PresenceCtx::empty();
+    let _k = PresenceKey::Widget { path: vec![] };
+}
+
+#[test]
+fn permission_scope_constructs() {
+    let s = PermissionScope { resource: ResourceId::Workspace(0), op: Op::Edit };
+    assert!(matches!(s.op, Op::Edit));
+}
+
+#[test]
+fn drag_payload_tab_variant_exists() {
+    let _ = DragPayload::Tab { group: 0, tab: 0 };
+}
