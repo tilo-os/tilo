@@ -64,6 +64,32 @@ impl QuickSettings {
     pub fn set_volume(&mut self, value: f32) {
         self.volume = value.clamp(0.0, 100.0);
     }
+
+    /// The currently visible level.
+    ///
+    /// The stack is seeded with `QsLevel::Root` in `new`, so this is always
+    /// safe to unwrap.
+    pub fn current_level(&self) -> &QsLevel {
+        self.nav_stack
+            .last()
+            .expect("nav_stack always has at least Root")
+    }
+
+    /// Push a new level onto the nav stack (drill into WiFi/BT details).
+    ///
+    /// The widget layer renders a back-chevron once `nav_stack.len() > 1`,
+    /// and Plan 1's spring animation slides the new level in from the right.
+    pub fn push_level(&mut self, level: QsLevel) {
+        self.nav_stack.push(level);
+    }
+
+    /// Pop the top level. No-op when only `Root` remains so the popover can't
+    /// be emptied.
+    pub fn pop_level(&mut self) {
+        if self.nav_stack.len() > 1 {
+            self.nav_stack.pop();
+        }
+    }
 }
 
 impl Default for QuickSettings {
