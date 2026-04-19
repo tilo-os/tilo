@@ -1,14 +1,9 @@
 use std::collections::HashMap;
 
-pub type UserId = String;
+mod key;
+pub use key::{PresenceKey, PathSegment, SelectionRange};
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum PresenceKey {
-    Widget { path: Vec<String> },
-    Tab { id: u64 },
-    Workspace { id: u64 },
-    App { app: String, sub: String },
-}
+pub type UserId = String;
 
 #[derive(Clone, Debug)]
 pub struct PeerPresence { pub user: UserId, pub color: [u8; 3], pub name: String }
