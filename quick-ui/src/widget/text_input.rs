@@ -8,9 +8,11 @@ use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use crate::widget::Widget;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::presence::{PathSegment, PresenceKey};
 
 pub struct TextInput {
     _id: String,
+    path: Vec<PathSegment>,
     rect: Rect,
     is_hovered: bool,
     is_focused: bool,
@@ -24,20 +26,41 @@ pub struct TextInput {
 }
 
 impl TextInput {
-    pub fn new(id: &str, on_change_path: &str) -> Self {
+    /// Construct a text input bound to a presence `path` (used as the
+    /// widget's `PresenceKey::Widget { path }`). Empty path opts the widget
+    /// out of presence rendering.
+    ///
+    /// Back-compat helpers:
+    ///  - `with_id(id)`: attach a debug/element id string.
+    ///  - `with_on_change_path(path_str)`: attach the CRDT path that this
+    ///    input reads/writes.
+    pub fn new(path: Vec<PathSegment>) -> Self {
         Self {
-            _id: id.to_string(),
+            _id: String::new(),
+            path,
             rect: Rect::ZERO,
             is_hovered: false,
             is_focused: false,
             text: String::new(),
             cursor_pos: 0,
-            on_change_path: on_change_path.to_string(),
+            on_change_path: String::new(),
             last_mouse_pos: Point::ZERO,
             char_x_positions: Vec::new(),
             scroll_x: 0.0,
             last_edit_time: None,
         }
+    }
+
+    /// Back-compat builder: set the debug/element id.
+    pub fn with_id(mut self, id: &str) -> Self {
+        self._id = id.to_string();
+        self
+    }
+
+    /// Back-compat builder: set the CRDT path the widget reads/writes.
+    pub fn with_on_change_path(mut self, path: &str) -> Self {
+        self.on_change_path = path.to_string();
+        self
     }
 }
 
@@ -321,6 +344,76 @@ impl Widget for TextInput {
     fn set_state(&mut self, state: &str) {
         if let Ok(pos) = state.parse::<usize>() {
             self.cursor_pos = pos;
+        }
+    }
+
+    fn presence_key(&self) -> Option<PresenceKey> {
+        if self.path.is_empty() {
+            None
+        } else {
+            Some(PresenceKey::Widget { path: self.path.clone() })
+        }
+    }
+
+    fn draw_with_presence(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &crate::presence::PresenceCtx,
+        permissions: &crate::permissions::PermissionContext,
+    ) {
+        // Always draw the base input first.
+        self.draw(scene, transform, text_renderer, theme, presence);
+
+        if let Some(key) = self.presence_key() {
+            let origin = self.rect.origin();
+
+            // Use a fallback glyph advance (the local caret uses the text
+            // renderer's exact measurement; a peer caret without locally-known
+            // layout falls back to 8 px/char, which is the same contract the
+            // plan specifies for peer rendering).
+            let advance = 8.0_f32;
+
+            // Peer carets.
+            if let Some(list) = presence.carets.get(&key) {
+                for (user, caret) in list.iter() {
+                    let x = origin.x as f32 + 4.0 + (*caret as f32) * advance;
+                    let y = origin.y as f32 + 4.0;
+                    presence.draw_peer_caret(scene, theme, user, (x, y));
+                }
+            }
+
+            // Peer selections.
+            if let Some(list) = presence.selections.get(&key) {
+                for (user, range) in list.iter() {
+                    let x_start = origin.x + 4.0 + (range.start as f64) * advance as f64;
+                    let x_end = origin.x + 4.0 + (range.end as f64) * advance as f64;
+                    let rect = Rect::new(
+                        x_start,
+                        origin.y + 2.0,
+                        x_end,
+                        origin.y + 22.0,
+                    );
+                    presence.draw_peer_selection(scene, theme, user, range, &[rect]);
+                }
+            }
+        }
+
+        // Read-only gating: dim the control if the permission scope is denied.
+        if let Some(scope) = self.permission_scope() {
+            if !permissions.check(&scope) {
+                let r = self.rect;
+                let overlay = vello::peniko::Color::rgba8(0, 0, 0, 80);
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    Affine::IDENTITY,
+                    overlay,
+                    None,
+                    &r,
+                );
+            }
         }
     }
 }
