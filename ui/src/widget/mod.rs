@@ -79,6 +79,8 @@ pub mod context_menu;
 pub mod data_table;
 mod window_group;
 pub use window_group::{WindowGroup, WindowWidth, WIDTH_MIN_PX, WIDTH_MAX_PX, RESIZE_HANDLE_PX};
+mod group_row;
+pub use group_row::GroupRow;
 mod strip_view;
 pub use strip_view::{StripView, STRIP_COOLDOWN_MS};
 mod workspace_view;
