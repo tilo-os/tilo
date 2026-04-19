@@ -22,6 +22,8 @@ smithay = { version = "0.7", default-features = false, features = ["wayland_fron
 calloop-wayland-source = "0.4"
 rand = "0.10.0"
 quick-ui = { path = "../quick-ui" }
+quick-terminal = { path = "../apps/terminal" }
+file-explorer = { path = "../apps/file-explorer" }
 winit = "0.30.13"
 sysinfo = "0.32"
 # Direct deps needed by in-shell widgets (browser_stub, etc.) that implement
