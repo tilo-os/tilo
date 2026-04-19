@@ -111,6 +111,14 @@ impl ShellOverlayHost {
         Rect::new(x1 - popover_w, y0, x1, y0 + popover_h)
     }
 
+    /// Name-input rect inside the ws-settings modal. Matches the drawn
+    /// rect in `draw_ws_settings` so hit-test and draw stay in sync.
+    fn ws_settings_name_rect(&self) -> Rect {
+        let r = self.ws_settings_rect();
+        let body_y = r.y0 + 168.0;
+        Rect::new(r.x0 + 24.0, body_y + 20.0, r.x1 - 24.0, body_y + 48.0)
+    }
+
     /// Mirror of the geometry in `draw_ws_settings` — centered modal card.
     fn ws_settings_rect(&self) -> Rect {
         let modal_w = 520.0_f64;
@@ -343,7 +351,8 @@ impl Widget for ShellOverlayHost {
             }
             if matches!(logical_key, Key::Named(NamedKey::Escape)) {
                 // Priority order matches z-order: palette > overview > ws
-                // settings > quick settings.
+                // settings > quick settings. Esc cancels an in-flight name
+                // edit before closing the ws-settings modal.
                 if self.palette_visible {
                     self.palette_visible = false;
                     *handled = true;
@@ -351,6 +360,12 @@ impl Widget for ShellOverlayHost {
                 }
                 if let Some(chrome) = self.chrome.clone() {
                     let mut st = chrome.borrow_mut();
+                    if st.editing_workspace_name.is_some() {
+                        st.editing_workspace_name = None;
+                        st.bump();
+                        *handled = true;
+                        return;
+                    }
                     if st.overlays.overview {
                         st.overlays.overview = false;
                         st.bump();
@@ -368,6 +383,54 @@ impl Widget for ShellOverlayHost {
                         st.bump();
                         *handled = true;
                         return;
+                    }
+                }
+            }
+
+            // Workspace-name editor. When a buffer is in flight we consume
+            // character / backspace / enter before anything else gets a
+            // chance at them — modifiers already handled above.
+            if let Some(chrome) = self.chrome.clone() {
+                let is_editing = chrome.borrow().editing_workspace_name.is_some();
+                if is_editing && !is_mod {
+                    match logical_key {
+                        Key::Named(NamedKey::Enter) => {
+                            chrome.borrow_mut().commit_workspace_name();
+                            *handled = true;
+                            return;
+                        }
+                        Key::Named(NamedKey::Backspace) => {
+                            let mut st = chrome.borrow_mut();
+                            if let Some(buf) = st.editing_workspace_name.as_mut() {
+                                buf.pop();
+                            }
+                            st.bump();
+                            *handled = true;
+                            return;
+                        }
+                        Key::Named(NamedKey::Space) => {
+                            let mut st = chrome.borrow_mut();
+                            if let Some(buf) = st.editing_workspace_name.as_mut() {
+                                buf.push(' ');
+                            }
+                            st.bump();
+                            *handled = true;
+                            return;
+                        }
+                        Key::Character(s) => {
+                            let mut st = chrome.borrow_mut();
+                            if let Some(buf) = st.editing_workspace_name.as_mut() {
+                                for c in s.chars() {
+                                    if !c.is_control() {
+                                        buf.push(c);
+                                    }
+                                }
+                            }
+                            st.bump();
+                            *handled = true;
+                            return;
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -448,11 +511,38 @@ impl Widget for ShellOverlayHost {
                     *handled = true;
                     return;
                 }
-                if flags.ws_settings && !self.ws_settings_rect().contains(p) {
+                if flags.ws_settings {
+                    let modal_rect = self.ws_settings_rect();
+                    if !modal_rect.contains(p) {
+                        if let Some(chrome) = self.chrome.clone() {
+                            let mut st = chrome.borrow_mut();
+                            // Commit any in-flight name edit before closing
+                            // so clicking away acts like "save & dismiss".
+                            st.commit_workspace_name();
+                            st.overlays.ws_settings = false;
+                            st.bump();
+                        }
+                        *handled = true;
+                        return;
+                    }
+                    // Click inside the modal: routes to the Name input rect
+                    // (begins an edit) or — on any other click inside the
+                    // modal — commits the pending edit if one is in flight.
                     if let Some(chrome) = self.chrome.clone() {
+                        let name_rect = self.ws_settings_name_rect();
                         let mut st = chrome.borrow_mut();
-                        st.overlays.ws_settings = false;
-                        st.bump();
+                        if name_rect.contains(p) {
+                            if st.editing_workspace_name.is_none() {
+                                st.editing_workspace_name = st
+                                    .tree
+                                    .active_workspace()
+                                    .map(|w| w.name.clone())
+                                    .or_else(|| Some(String::new()));
+                                st.bump();
+                            }
+                        } else {
+                            st.commit_workspace_name();
+                        }
                     }
                     *handled = true;
                     return;
@@ -779,7 +869,7 @@ impl ShellOverlayHost {
             tx += w as f64 + 32.0;
         }
 
-        // General-tab body placeholder
+        // Name input — edits fall through to `editing_workspace_name`.
         let body_y = rect.y0 + 168.0;
         text_renderer.draw_text(
             scene,
@@ -789,21 +879,53 @@ impl ShellOverlayHost {
             transform * Affine::translate((rect.x0 + 24.0, body_y)),
             None,
         );
-        let input_rect = Rect::new(rect.x0 + 24.0, body_y + 20.0, rect.x1 - 24.0, body_y + 48.0);
+        let input_rect = self.ws_settings_name_rect();
         let input = RoundedRect::from_rect(input_rect, tokens.radii.sm as f64);
         scene.fill(Fill::NonZero, transform, colors.neutral[1], None, &input);
-        scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, colors.border_standard, None, &input);
+        let editing = state.editing_workspace_name.is_some();
+        let border_color = if editing {
+            colors.accent[5]
+        } else {
+            colors.border_standard
+        };
+        scene.stroke(
+            &vello::kurbo::Stroke::new(if editing { 2.0 } else { 1.0 }),
+            transform,
+            border_color,
+            None,
+            &input,
+        );
+        let shown = state
+            .editing_workspace_name
+            .as_deref()
+            .unwrap_or(active_name.as_str());
+        let input_size = tokens.typography.scale.base;
         text_renderer.draw_text(
             scene,
-            &active_name,
-            tokens.typography.scale.base,
+            shown,
+            input_size,
             colors.text_primary,
             transform * Affine::translate((input_rect.x0 + 12.0, input_rect.y0 + 6.0)),
             None,
         );
+        if editing {
+            let (tw, _th) = text_renderer.measure(shown, input_size, None);
+            let caret_x = input_rect.x0 + 12.0 + tw as f64 + 1.0;
+            let caret = Rect::new(
+                caret_x,
+                input_rect.y0 + 6.0,
+                caret_x + 2.0,
+                input_rect.y0 + 6.0 + input_size as f64,
+            );
+            scene.fill(Fill::NonZero, transform, colors.accent[5], None, &caret);
+        }
 
         // Close hint
-        let hint = "Press Esc to close";
+        let hint = if editing {
+            "Enter to save · Esc to cancel"
+        } else {
+            "Press Esc to close"
+        };
         let hsize = tokens.typography.scale.xs;
         let (hw, _hh) = text_renderer.measure(hint, hsize, None);
         text_renderer.draw_text(
