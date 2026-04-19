@@ -3,6 +3,8 @@ use std::io::{Read, Write};
 use serde::{Serialize, Deserialize};
 use uuid::Uuid;
 
+use crate::presence::PresenceKey;
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum CollabRequest {
     Hello { app_id: String, cluster_id: Uuid },
@@ -23,6 +25,20 @@ pub enum CollabEvent {
     CRDTUpdate {
         data: Vec<u8>,
     },
+    RemotePresenceUpdate {
+        user_id: String,
+        key: PresenceKey,
+        payload: PresencePayload,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub enum PresencePayload {
+    Pointer { x: f32, y: f32 },
+    Caret { pos: usize },
+    Selection { start: usize, end: usize },
+    Arrived,
+    Left,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
