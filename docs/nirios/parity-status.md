@@ -25,7 +25,7 @@ Current state of the Rust implementation vs. the concept described in
 | Overview toggle button | ✅ | Grid icon click toggles `overlays.overview`. |
 | Up/down chevrons | ✅ | Clicks switch workspace via `chrome.switch_workspace(±1)`; greyed at bounds. |
 | Workspace-name button + gear | ✅ | Gear click toggles `overlays.ws_settings`. |
-| Center widget carousel | 🟧 | Clock HH:MM renders; SystemMonitor / Calendar variants not drawn yet. |
+| Center widget carousel | ✅ | 360×28 raised pill with 3-dot indicator on the left; Clock (HH:MM), SystemMonitor (CPU+sparkline+RAM+TMP), Calendar (Next event) variants draw in place. Scroll-wheel over the band cycles the active variant; clicking a dot jumps directly. |
 | Collaborator avatar stack | ✅ | Up to 3 indigo-filled initial circles with 4 px overlap; 4+ peers collapse into a trailing `+N` chip on the raised surface. |
 | Quick-settings tray pill | ✅ | 3-dot click toggles `overlays.quick_settings`. |
 
