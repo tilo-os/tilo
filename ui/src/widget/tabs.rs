@@ -6,45 +6,8 @@ use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use crate::widget::Widget;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::presence::{PresenceCtx, PresenceKey};
+use crate::presence::{PresenceCtx, PresenceKey, user_color};
 use crate::dnd::{DragPayload, DRAG_START_THRESHOLD_PX};
-
-/// Hash a user id to a stable HSL-derived RGB triple so the same peer keeps
-/// the same color across sessions and across the whole UI. Mirrors the
-/// concept's "cursor color per collaborator" invariant at the widget layer
-/// (shell-level pinned palettes can still override by wiring `set_pointer`
-/// with the preferred color).
-fn user_color(user_id: &str) -> (u8, u8, u8) {
-    let mut h: u64 = 0xcbf29ce484222325;
-    for b in user_id.as_bytes() {
-        h ^= *b as u64;
-        h = h.wrapping_mul(0x100000001b3);
-    }
-    // Map to a hue in [0, 360). Fixed saturation + lightness keeps every
-    // peer reading as the same "presence" family without washing out.
-    let hue = (h % 360) as f32;
-    hsl_to_rgb(hue, 0.65, 0.55)
-}
-
-fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
-    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
-    let hh = h / 60.0;
-    let x = c * (1.0 - (hh.rem_euclid(2.0) - 1.0).abs());
-    let (r1, g1, b1) = match hh as i32 {
-        0 => (c, x, 0.0),
-        1 => (x, c, 0.0),
-        2 => (0.0, c, x),
-        3 => (0.0, x, c),
-        4 => (x, 0.0, c),
-        _ => (c, 0.0, x),
-    };
-    let m = l - c / 2.0;
-    (
-        ((r1 + m) * 255.0).clamp(0.0, 255.0) as u8,
-        ((g1 + m) * 255.0).clamp(0.0, 255.0) as u8,
-        ((b1 + m) * 255.0).clamp(0.0, 255.0) as u8,
-    )
-}
 
 #[derive(Clone, Debug)]
 pub struct TabDescriptor { pub id: u64, pub title: String }
@@ -468,15 +431,15 @@ mod tests {
 
     #[test]
     fn user_color_is_stable_per_id_and_differs_across_ids() {
+        // The widget now forwards to `crate::presence::user_color`, which
+        // pins `alice` → pink-500 and `bob` → orange-500. The guarantees
+        // we care about at the widget level are unchanged: stable per id,
+        // distinguishable across ids.
         let a1 = user_color("alice");
         let a2 = user_color("alice");
         let b1 = user_color("bob");
-        assert_eq!(a1, a2, "same id must hash to same color across calls");
-        assert_ne!(a1, b1, "different ids should produce different colors");
-        // Regression: hsl_to_rgb should never panic for the full hue range.
-        for h in 0..360 {
-            let _ = hsl_to_rgb(h as f32, 0.65, 0.55);
-        }
+        assert_eq!(a1, a2, "same id must map to same color across calls");
+        assert_ne!(a1, b1, "different ids should map to different colors");
     }
 
     #[test]
