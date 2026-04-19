@@ -50,7 +50,7 @@ Current state of the Rust implementation vs. the concept described in
 | Maximized state | ✅ | Per-tab maximize icon on hover toggles `WindowGroup::maximized`. While maximized, the group paints a 2 px accent outline, a floating app-title pill (top-left, active tab's title), and a right-side cluster of `[Restore][×]`; the × tints `semantic.danger` on hover and closes the active tab + exits maximize in one click. Search icon still not drawn (global search is already wired via ⌘K). |
 | Tab bar height ~14 px | 🟧 | TabBar is 28 px (concept 14 px). |
 | Tab pill styling | ✅ | Rounded-full pills with active/hover/inactive alpha ramp, close-glyph on hover. |
-| Tab drop zones | 🟧 | Drag-to-reorder works + 2 px indigo bar renders at the drop position while drag is in flight (left of target when moving backward, right of target when moving forward, matching the vec remove-then-insert post-release index). Cross-group move still not supported. |
+| Tab drop zones | ✅ | Drag-to-reorder works + 2 px indigo bar renders at the drop position while drag is in flight (left of target when moving backward, right of target when moving forward). Cross-group moves land through the new `GroupRow` widget in `quick-ui/src/widget/group_row.rs`: `TabBar` publishes `pending_detach` when a release falls outside its own rect, `GroupRow::handle_event` post-dispatch-sweeps sibling groups and hit-tests the release point against each `bar_rect()`, splicing the detached tab + its `TileHost` into the target (the dragged tab becomes active in its new group; the source promotes a neighbour). |
 | Tab-level collaborator blur indicators | 🟥 | No indicators. |
 | Window frame white rounded card | ✅ | `TileHost` paints `surfaces.window_card` (WHITE) with `rounded-xl` radius + `white/20` border. Stub text renders dark-on-white. |
 | Drag-over / search-active borders | 🟧 | `WindowGroup::draw` paints a 1.5 px indigo-500 @ 60% alpha ring while `TabBar::drag_in_flight()` is true; matches the concept's drag-over state for the source group. Search-active ring not yet tied to ⌘K scope. |
@@ -124,7 +124,7 @@ tuned to the concept's slate-900/indigo-500 palette** — it leans more neutral.
 | ⌘↑ / ⌘↓ workspace switch | ✅ | Wired through `ShellOverlayHost` → `chrome.switch_workspace`. |
 | Mouse wheel over strip | ✅ | 600 ms cooldown in `StripView`. |
 | Tab click | ✅ | `TabBar` handles it. |
-| Tab drag-to-reorder | ✅ | Drag starts after 4 px threshold, release hit-tests position within the bar and reorders. |
+| Tab drag-to-reorder | ✅ | Drag starts after 4 px threshold, release hit-tests position within the bar and reorders. Releases outside the bar publish `TabBar::pending_detach`, which the parent `GroupRow` consumes to move the tab into a sibling group whose `bar_rect` contains the release point. |
 | Tab close | ✅ | "×" glyph inside each pill's right edge; click propagates `pending_close` → `WindowGroup` drops the host + removes the tab. |
 | Group resize drag | ✅ | Handle + pointer accumulation work. |
 | Sidebar wheel scroll/pan | ✅ | Click-to-activate + plus-button-create + scroll-wheel accumulator (crosses ±1 on the wheel rect) all wired. |
@@ -139,19 +139,21 @@ tuned to the concept's slate-900/indigo-500 palette** — it leans more neutral.
 
 Sorted by visual/functional impact per unit of work:
 
-1. **Tab cross-group drag** — today reorder stays within a group; concept
-   shows cross-group move via drop zones.
-2. **Shell-side tab presence wiring** — `TabBar` reads
+1. **Shell-side tab presence wiring** — `TabBar` reads
    `PresenceCtx::peers_on(PresenceKey::Tab{id})` and paints dots; nothing
    in the shell actually populates the presence context with a per-tab
    roster yet, so the dots stay empty in practice.
-3. **Per-collaborator fixed cursor colours** — concept pins me/alice/bob
+2. **Per-collaborator fixed cursor colours** — concept pins me/alice/bob
    /charlie hues; Rust currently hashes `UserId → HSL` with no overrides.
-4. **File-explorer tier matching** — concept's Favorites / Project-Root /
+3. **File-explorer tier matching** — concept's Favorites / Project-Root /
    System sidebar tiers; Rust widget exists but doesn't split the listing.
-5. **View-swap animation** — no crossfade between desktop ↔ overview.
-6. **Editor remote carets+selections** — the editor body ships; peer
+4. **View-swap animation** — no crossfade between desktop ↔ overview.
+5. **Editor remote carets+selections** — the editor body ships; peer
    carets/selections inside it are not drawn yet.
+6. **Per-pill "insert before" hit-testing for cross-group drop** — today
+   a cross-group drop lands the tab at index 0 of the target. Per-pill
+   hit-testing (drop between tab X and tab Y) is feasible but needs the
+   target bar to expose `tab_rects` back to `GroupRow`.
 7. **Screenshot-driven visual E2E** — blocked on host missing the "Window
    Calls Extended" GNOME extension; 14 headless E2E tests cover the
    non-visual wiring.
