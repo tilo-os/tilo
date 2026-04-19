@@ -28,7 +28,7 @@ impl Stack {
 }
 
 impl Widget for Stack {
-    fn sync(&mut self, state: &AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         for child in &mut self.children {
             child.sync(state, path);
         }
@@ -78,17 +78,17 @@ impl Widget for Stack {
         }
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme) {
+    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, presence: &crate::presence::PresenceCtx) {
         for child in &mut self.children {
-            child.draw(scene, transform, text_renderer, theme);
+            child.draw(scene, transform, text_renderer, theme, presence);
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, state: &mut AutoCommit, path: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, taffy: &TaffyTree<()>) {
+    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, modifiers: &winit::event::Modifiers, state: &mut AutoCommit, path: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, taffy: &TaffyTree<()>) {
         let child_nodes = taffy.children(node_id).unwrap();
         // Handle in reverse order (top-most first)
         for (child_widget, &child_node) in self.children.iter_mut().rev().zip(child_nodes.iter().rev()) {
-            child_widget.handle_event(event, scale_factor, state, path, handled, focus_target, child_node, taffy);
+            child_widget.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, child_node, taffy);
             if *handled {
                 break;
             }

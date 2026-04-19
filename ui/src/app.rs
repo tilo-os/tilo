@@ -11,6 +11,7 @@ use crate::widget::Widget;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::collaboration::{CollaborationManager, CollabEvent, CollabRequest};
+use crate::presence::PresenceCtx;
 
 #[derive(Debug, Clone, Copy)]
 enum Direction { Up, Down, Left, Right }
@@ -36,6 +37,7 @@ pub struct App {
 
     // Collaboration
     collab_manager: CollaborationManager,
+    presence: PresenceCtx,
 }
 
 impl App {
@@ -57,6 +59,7 @@ impl App {
             last_stable_focus_idx: None,
             last_stable_metadata: None,
             collab_manager: CollaborationManager::new(),
+            presence: PresenceCtx::empty(),
         }
     }
 
@@ -193,7 +196,7 @@ impl App {
                             scene.reset();
                             let scale_factor = window.scale_factor() as f32;
 
-                            if self.needs_sync { self.root_widget.sync(&self.state.doc, &self.state.root); self.needs_sync = false; }
+                            if self.needs_sync { self.root_widget.sync(&mut self.state.doc, &self.state.root); self.needs_sync = false; }
                             
                             let root_node = self.root_node.unwrap();
                             if self.layout_dirty {
@@ -210,7 +213,7 @@ impl App {
                             }
                             
                             let transform = Affine::scale(scale_factor as f64);
-                            self.root_widget.draw(&mut scene, transform, &mut self.text_renderer, &self.theme);
+                            self.root_widget.draw(&mut scene, transform, &mut self.text_renderer, &self.theme, &self.presence);
                             
                             // Draw Remote Cursors
                             for (_, cursor) in &self.state.collab.cursors {
@@ -299,7 +302,7 @@ impl App {
                             if !handled {
                                 let scale_factor = window.scale_factor();
                                 let root_node = self.root_node.unwrap();
-                                self.root_widget.handle_event(&event, scale_factor, &mut self.state.doc, &self.state.root, &mut handled, &mut focus_target, root_node, &self.taffy);
+                                self.root_widget.handle_event(&event, scale_factor, &self.modifiers, &mut self.state.doc, &self.state.root, &mut handled, &mut focus_target, root_node, &self.taffy);
                             }
 
                             if !handled {
