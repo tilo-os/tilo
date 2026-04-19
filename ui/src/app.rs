@@ -79,6 +79,28 @@ impl App {
         }
     }
 
+    fn apply_remote_presence(
+        &mut self,
+        user_id: String,
+        key: crate::presence::PresenceKey,
+        payload: crate::collaboration::PresencePayload,
+    ) {
+        use crate::collaboration::PresencePayload::*;
+        use crate::permissions::UserId;
+        let uid = UserId(user_id);
+        match payload {
+            Pointer { x, y } => self.presence.set_pointer(&key, uid, (x, y)),
+            Caret { pos } => self.presence.set_caret(&key, uid, pos),
+            Selection { start, end } => self.presence.set_selection(
+                &key,
+                uid,
+                crate::presence::SelectionRange { start, end },
+            ),
+            Arrived => self.presence.register_presence(&key, uid),
+            Left => self.presence.remove_presence(&key, &uid),
+        }
+    }
+
     fn apply_undo_entry(&mut self, entry: crate::state::UndoEntry) {
         if let Some(idx) = entry.focused_node_idx {
             if idx < self.focusable_order.len() {
@@ -357,6 +379,10 @@ impl App {
                                     self.needs_sync = true;
                                     window.request_redraw();
                                 }
+                            }
+                            CollabEvent::RemotePresenceUpdate { user_id, key, payload } => {
+                                self.apply_remote_presence(user_id, key, payload);
+                                window.request_redraw();
                             }
                         }
                     }
