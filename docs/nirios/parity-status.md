@@ -12,22 +12,22 @@ Current state of the Rust implementation vs. the concept described in
 
 | Item | Status | Notes |
 |---|---|---|
-| Desktop view (sidebar + strips + groups) | 🟧 | Column of WorkspaceView / StripView / WindowGroups renders; no left wheel, no true horizontal strip. |
-| Overview view | 🟡 | `OverviewView` struct exists; visibility flag set by ⌘Tab; not drawn. |
-| Z-ordered overlay host | 🟥 | Shell has no overlay stack. `App` only renders one root widget. |
+| Desktop view (sidebar + strips + groups) | 🟧 | Top bar + white-card window-groups render; no left wheel, no true horizontal strip. |
+| Overview view | 🟡 | `OverviewView` struct exists; visibility flag set by ⌘Tab; not drawn yet (overlay host only hosts palette). |
+| Z-ordered overlay host | 🟧 | `ShellOverlayHost` owns a `CommandPalette` and draws scrim + popover on ⌘K. Overview / quick-settings / ws-settings not yet wired into the host. |
 | View-swap animation | 🟥 | No crossfade between desktop ↔ overview. |
 
 ## 2. Top bar
 
 | Item | Status | Notes |
 |---|---|---|
-| 40 px fixed bar | 🟡 | `shell::topbar::TopBar` exists and has data methods, not in root tree. |
-| Overview toggle button | 🟡 | TopBar knows output kinds but has no render + click geometry on screen. |
-| Up/down chevrons | 🟡 | `TopBarEvent::{WorkspaceUp,WorkspaceDown}` exist; no visible control. |
-| Workspace-name button + gear | 🟡 | `click_workspace_name()` returns `OpenWorkspaceSettings`; tooltip too. |
-| Center widget carousel | 🟡 | `CenterWidget::{Clock,SystemMonitor,Calendar}` exist; spark samples cached. |
-| Collaborator avatar stack | 🟡 | `visible_avatars(tree, max)`, `overflow_count(tree, max)` helpers; no render. |
-| Quick-settings tray pill | 🟡 | `click_tray_settings()` returns `OpenQuickSettings`; no render. |
+| 40 px fixed bar | ✅ | `TopBarChrome` renders a 40 px overlay-bg bar; wired into `build_nirios_root`. |
+| Overview toggle button | 🟧 | Grid icon drawn on left cluster; click-geometry + toggle still TODO. |
+| Up/down chevrons | 🟧 | Drawn with greyed-out state when at workspace bounds; click wiring still TODO. |
+| Workspace-name button + gear | 🟧 | Pill + gear glyph drawn; click → `OpenWorkspaceSettings` still TODO. |
+| Center widget carousel | 🟧 | Clock HH:MM renders; SystemMonitor / Calendar variants not drawn yet. |
+| Collaborator avatar stack | 🟧 | Avatars draw (up to 3) with initial + indigo fill; overflow count not shown. |
+| Quick-settings tray pill | 🟧 | Pill + 3-dot glyph drawn; click → `OpenQuickSettings` still TODO. |
 
 ## 3. Workspace strip / sidebar wheel
 
@@ -48,11 +48,11 @@ Current state of the Rust implementation vs. the concept described in
 | Width presets (narrow/normal/wide/custom) | ✅ | `WindowWidth` enum + clamped 300–1200. |
 | Right-edge resize handle | ✅ | `WindowGroup` renders handle, hover + drag work. |
 | Maximized state | 🟥 | No maximize / minimize / floating top-bar. |
-| Tab bar height ~14 px | 🟧 | TabBar is 36 px, rectangular (not pill). |
-| Tab pill styling | 🟥 | Flat rectangles. No rounded-full, no hover expansion, no action buttons on hover. |
+| Tab bar height ~14 px | 🟧 | TabBar is 28 px (concept 14 px). |
+| Tab pill styling | 🟧 | Rounded-full pills (white/15 active, white/5 inactive) with dim text. No hover-expand action buttons yet. |
 | Tab drop zones | 🟥 | No reorder-drop zones. |
 | Tab-level collaborator blur indicators | 🟥 | No indicators. |
-| Window frame white rounded card | 🟥 | Tiles render directly on the dark shell; no white-card container. |
+| Window frame white rounded card | ✅ | `TileHost` paints `surfaces.window_card` (WHITE) with `rounded-xl` radius + `white/20` border. Stub text renders dark-on-white. |
 | Drag-over / search-active borders | 🟥 | No border state transitions. |
 
 ## 5. Apps
@@ -68,8 +68,8 @@ Current state of the Rust implementation vs. the concept described in
 
 | Item | Status | Notes |
 |---|---|---|
-| Overlay host in root | 🟥 | Neither `App` nor `Shell` draws a z-ordered overlay stack. |
-| Global search (⌘K) | 🟡 | `GlobalSearch` + `CommandPalette` exist; ⌘K sets flag; not drawn. |
+| Overlay host in root | ✅ | `ShellOverlayHost` wraps the root widget, owns visibility flags, draws scrim + overlays. |
+| Global search (⌘K) | 🟧 | Overlay-host palette draws on ⌘K with scrim; rows don't wire to anything yet (concept's `GlobalSearch` scope/context banner missing). |
 | Search context banner / scope radios | 🟥 | No context-sensitive search chrome. |
 | Overview view modal | 🟡 | ⌘Tab sets flag; not drawn. |
 | Quick settings dropdown | 🟡 | `QuickSettings` holds brightness/volume + nav stack (Wifi / BT drill-ins); not drawn. |
@@ -106,8 +106,8 @@ tuned to the concept's slate-900/indigo-500 palette** — it leans more neutral.
 
 | Item | Status | Notes |
 |---|---|---|
-| Accent indigo-500/600 | 🟧 | Present but not the default accent. |
-| Slate-900 / slate-950 surface scheme | 🟧 | Surfaces exist; exact values drift from concept. |
+| Accent indigo-500/600 | ✅ | Default dark theme's accent ramp is indigo-950→indigo-50 (index 5 = `#6366f1`). |
+| Slate-900 / slate-950 surface scheme | ✅ | Dark theme: slate-900 base, slate-800 raised, black/80 top-bar overlay, slate-900/70 glass. Neutral ramp = slate-950→slate-50. |
 | Per-collaborator fixed cursor colors | 🟥 | Concept pins me/alice/bob/charlie; Rust hashes UserId → HSL. |
 | Radii 8/12/16/24/full | ✅ | Tokens available. |
 | Glow shadows for focus / drag-over | 🟧 | Elevation tokens exist; drag-over glows not implemented. |
@@ -117,7 +117,7 @@ tuned to the concept's slate-900/indigo-500 palette** — it leans more neutral.
 
 | Item | Status | Notes |
 |---|---|---|
-| ⌘K / ⌘Tab / Esc | 🟧 | Handlers exist (`Shell::dispatch_key`), flags set — but overlays never appear. |
+| ⌘K / ⌘Tab / Esc | 🟧 | ⌘K toggles the palette overlay; Esc closes it. ⌘Tab (overview) still a flag with no visible overlay. |
 | ⌘↑ / ⌘↓ workspace switch | ✅ | `WorkspaceView` springs. |
 | Mouse wheel over strip | ✅ | 600 ms cooldown in `StripView`. |
 | Tab click | ✅ | `TabBar` handles it. |
