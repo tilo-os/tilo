@@ -11,7 +11,7 @@
 //!   - `quick-ui/src/widget/tabs.rs` (TabBar close + reorder)
 //!   - `src/shell/notes_app.rs` (NotesApp sync/insert/delete).
 
-use quick_desktop::shell::chrome_state::ChromeState;
+use quick_desktop::shell::chrome_state::{ChromeState, QuickSettingsState};
 use quick_desktop::shell::notes_app::{BODY_KEY, NotesApp};
 use quick_desktop::shell::sidebar_wheel::SidebarWheel;
 use quick_desktop::shell::state::WorkspaceTree;
@@ -79,6 +79,29 @@ fn sidebar_plus_button_appends_workspace_and_activates_it() {
     // shell has something to show in the StripView.
     let active = tree.active_workspace().expect("active workspace");
     assert!(active.strips.iter().any(|s| s.name == "Main"));
+}
+
+#[test]
+fn quick_settings_state_defaults_and_mutates_through_chrome() {
+    let tree = WorkspaceTree::bootstrap_default();
+    let chrome = ChromeState::new(tree);
+    // Defaults are deliberate: brightness > 0 so the slider has a visible
+    // fill, wifi on / bluetooth off to match most fresh installs.
+    let defaults = QuickSettingsState::default();
+    assert_eq!(chrome.borrow().quick_settings, defaults);
+    assert!(defaults.wifi && !defaults.bluetooth);
+
+    // Writes go through the shared handle so every chrome widget
+    // (topbar pill + overlay host popover) sees the same values.
+    {
+        let mut st = chrome.borrow_mut();
+        st.quick_settings.brightness = 0.25;
+        st.quick_settings.bluetooth = true;
+        st.bump();
+    }
+    let qs = chrome.borrow().quick_settings;
+    assert!((qs.brightness - 0.25).abs() < 1e-5);
+    assert!(qs.bluetooth);
 }
 
 #[test]
