@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use crate::permissions::UserId;
 
 mod key;
+mod render;
 pub use key::{PresenceKey, PathSegment, SelectionRange};
+// render.rs adds impl blocks; nothing new to pub use.
 
 #[derive(Debug, Clone)]
 pub struct RemoteCursor {
