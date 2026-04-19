@@ -19,12 +19,16 @@ fn to_ui_width(w: state::WindowWidth) -> UiWidth {
 }
 
 fn to_ui_kind(k: &ShellKind) -> UiKind {
+    // Note: `quick_ui::AppKind` was aligned to spec §7 variants in Plan 3
+    // Task 1 (Terminal, Files, Editor, Browser, Settings). The shell's own
+    // `AppKind` still carries `FileExplorer` and `Other(String)` for v1
+    // compatibility; map them to the nearest UI variant.
     match k {
         ShellKind::Terminal => UiKind::Terminal,
-        ShellKind::FileExplorer => UiKind::FileExplorer,
+        ShellKind::FileExplorer => UiKind::Files,
         ShellKind::Browser => UiKind::Browser,
         ShellKind::Settings => UiKind::Settings,
-        ShellKind::Other(s) => UiKind::Other(s.clone()),
+        ShellKind::Other(_) => UiKind::Settings,
     }
 }
 
