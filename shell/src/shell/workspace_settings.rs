@@ -1,6 +1,6 @@
 //! `WorkspaceSettings` — the three-tabbed modal opened from the TopBar's
 //! workspace-name button. This module covers the **General** tab (T15), the
-//! **Roles** tab (T16), and the **Files** tab (T17 — lands later).
+//! **Roles** tab (T16), and the **Files** tab (T17).
 //!
 //! The modal is a retained-mode shell widget: it owns its `ws_id` + active tab
 //! + per-tab sub-state (selected role id, DataTable instances), and mutates a
@@ -12,7 +12,7 @@
 use quick_ui::overlay::{FocusTrap, Modal};
 use quick_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 
-use crate::shell::state::{AppPerm, Workspace, WorkspaceId};
+use crate::shell::state::{AppPerm, FilePerm, Workspace, WorkspaceId};
 
 /// Tab selector for the WorkspaceSettings modal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,6 +42,18 @@ pub struct AppPermRow {
     pub perm: AppPerm,
 }
 
+/// One row in the Files-tab's "files" `DataTable`: a workspace file id/name
+/// pair plus the permission the currently-selected role has against it.
+/// Constructed on demand from `ws.workspace_files` crossed with
+/// `ws.roles[selected].permissions.per_file`; the table is purely a view of
+/// that map.
+#[derive(Clone, Debug)]
+pub struct FilePermRow {
+    pub file_id: String,
+    pub file_name: String,
+    pub perm: FilePerm,
+}
+
 /// The WorkspaceSettings modal state.
 pub struct WorkspaceSettings {
     pub ws_id: WorkspaceId,
@@ -56,6 +68,11 @@ pub struct WorkspaceSettings {
     /// `per_app` map. Typed over [`AppPermRow`]; the table primitive renders
     /// it via the standard Plan 2 [`DataTable`] passes.
     apps_table: DataTable<AppPermRow>,
+    /// Per-file permission table populated from the selected role's
+    /// `per_file` map crossed with `Workspace.workspace_files`. Typed over
+    /// [`FilePermRow`]; rendered via the same [`DataTable`] primitive as the
+    /// Roles-tab apps table.
+    files_table: DataTable<FilePermRow>,
 }
 
 impl std::fmt::Debug for WorkspaceSettings {
@@ -86,6 +103,7 @@ impl WorkspaceSettings {
             focus_trap: FocusTrap::new(members),
             selected_role: None,
             apps_table: DataTable::new(apps_table_columns()),
+            files_table: DataTable::new(files_table_columns()),
         }
     }
 
@@ -175,6 +193,40 @@ impl WorkspaceSettings {
         self.refresh_apps_table(ws);
     }
 
+    /// Immutable handle to the Files-tab's files permission table. Mirrors
+    /// [`Self::apps_table`] but over the `per_file` map; exposed so the
+    /// shell root can pass it to its render tree alongside the other chrome
+    /// widgets.
+    pub fn files_table(&self) -> &DataTable<FilePermRow> {
+        &self.files_table
+    }
+
+    /// Mutable handle to the files table — used by the shell root when it
+    /// needs to forward events (column resize, sort toggle) into the table.
+    pub fn files_table_mut(&mut self) -> &mut DataTable<FilePermRow> {
+        &mut self.files_table
+    }
+
+    /// Write `perm` into `ws.roles[role_id].permissions.per_file[file_id]`.
+    /// No-op when `role_id` does not exist on the workspace; inserts the
+    /// key if not already present. After mutating the workspace the
+    /// modal's `files_table` is refreshed so the visible table matches.
+    /// Mirrors [`Self::set_app_perm`] but over the `per_file` map.
+    pub fn set_file_perm(
+        &mut self,
+        ws: &mut Workspace,
+        role_id: &str,
+        file_id: &str,
+        perm: FilePerm,
+    ) {
+        if let Some(role) = ws.roles.iter_mut().find(|r| r.id == role_id) {
+            role.permissions
+                .per_file
+                .insert(file_id.to_string(), perm);
+        }
+        self.refresh_files_table(ws);
+    }
+
     /// Rebuild [`apps_table`] rows from the currently-selected role's
     /// `per_app` map. Safe to call when `selected_role` is `None` (result:
     /// empty table).
@@ -202,6 +254,43 @@ impl WorkspaceSettings {
         };
         self.apps_table.set_rows(rows);
     }
+
+    /// Rebuild [`files_table`] rows from the currently-selected role's
+    /// `per_file` map crossed with `Workspace.workspace_files`. Every file
+    /// on the workspace produces a row; files without an entry in `per_file`
+    /// default to [`FilePerm::None`] so the UI can cycle them up from there.
+    /// Safe to call when `selected_role` is `None` (result: empty table) so
+    /// the cycle None → Read → Write → None always has a concrete starting
+    /// permission to read for each file.
+    fn refresh_files_table(&mut self, ws: &Workspace) {
+        let rows: Vec<FilePermRow> = match self.selected_role.as_deref() {
+            Some(id) => match ws.roles.iter().find(|r| r.id == id) {
+                Some(role) => {
+                    let mut v: Vec<FilePermRow> = ws
+                        .workspace_files
+                        .iter()
+                        .map(|f| FilePermRow {
+                            file_id: f.id.clone(),
+                            file_name: f.name.clone(),
+                            perm: role
+                                .permissions
+                                .per_file
+                                .get(&f.id)
+                                .copied()
+                                .unwrap_or(FilePerm::None),
+                        })
+                        .collect();
+                    // Stable order so snapshots are deterministic — the table
+                    // doesn't sort on insertion.
+                    v.sort_by(|a, b| a.file_name.cmp(&b.file_name));
+                    v
+                }
+                None => Vec::new(),
+            },
+            None => Vec::new(),
+        };
+        self.files_table.set_rows(rows);
+    }
 }
 
 /// Column layout for the Roles-tab apps table: `App` name (flex), fixed
@@ -212,6 +301,17 @@ impl WorkspaceSettings {
 fn apps_table_columns() -> Vec<ColumnDef<AppPermRow>> {
     vec![
         ColumnDef::new("app", "App", ColumnWidth::Flex(1.0)).sortable(true),
+        ColumnDef::new("permission", "Permission", ColumnWidth::Fixed(160.0)),
+    ]
+}
+
+/// Column layout for the Files-tab files table: `File` name (flex), fixed
+/// 160px `Permission` picker (None/Read/Write). Mirrors
+/// [`apps_table_columns`] — cell renderers stay empty for now; T27 wires
+/// the draw pass through the shell root.
+fn files_table_columns() -> Vec<ColumnDef<FilePermRow>> {
+    vec![
+        ColumnDef::new("file", "File", ColumnWidth::Flex(1.0)).sortable(true),
         ColumnDef::new("permission", "Permission", ColumnWidth::Fixed(160.0)),
     ]
 }
