@@ -77,6 +77,14 @@ pub struct TabBar {
     /// state so the shell can paint concept-style floating controls over
     /// a full-bleed tile.
     pub pending_max: Option<u64>,
+    /// Populated when a drag gesture is released while the cursor is
+    /// *outside* this bar's own rect — the user intends to move the tab
+    /// to a different window-group. Carries `(tab_id, release_point)` so
+    /// a parent widget (e.g. `GroupRow`) can resolve the drop target by
+    /// hit-testing sibling bars. The parent is expected to drain this
+    /// field immediately; leaving it set across frames is harmless but
+    /// wasteful.
+    pub pending_detach: Option<(u64, Point)>,
 }
 
 impl TabBar {
@@ -98,6 +106,7 @@ impl TabBar {
             pending_reorder: None,
             pending_close: None,
             pending_max: None,
+            pending_detach: None,
         }
     }
     pub fn tabs(&self) -> &[TabDescriptor] { &self.tabs }
@@ -125,6 +134,21 @@ impl TabBar {
     pub fn take_reorder(&mut self) -> Option<(usize, usize)> { self.pending_reorder.take() }
     pub fn take_close(&mut self) -> Option<u64> { self.pending_close.take() }
     pub fn take_max(&mut self) -> Option<u64> { self.pending_max.take() }
+    /// Drain a cross-group detach request if any. See [`Self::pending_detach`].
+    pub fn take_detach(&mut self) -> Option<(u64, Point)> { self.pending_detach.take() }
+    /// Expose the bar's own rect so a parent widget (e.g. `GroupRow`) can
+    /// hit-test a release point against sibling bars without having to
+    /// re-walk the layout tree.
+    pub fn bar_rect(&self) -> Rect { self.rect }
+    /// Insert a tab at `idx` and make it active. Used by the cross-group
+    /// drag routing in `GroupRow::handle_event` to splice a detached tab
+    /// into the target bar without forcing a full rebuild.
+    pub fn insert_tab(&mut self, idx: usize, desc: TabDescriptor) {
+        let clamped = idx.min(self.tabs.len());
+        let id = desc.id;
+        self.tabs.insert(clamped, desc);
+        self.active_id = id;
+    }
 }
 
 impl Widget for TabBar {
@@ -361,16 +385,30 @@ impl Widget for TabBar {
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
-                // Finalise a drag-reorder: if a drag was in flight and the
-                // release point lands over another tab, emit a reorder.
+                // Finalise a drag release. Three possible outcomes:
+                //
+                //   1. Released over another pill in this same bar →
+                //      `pending_reorder` (within-group move).
+                //   2. Released somewhere outside this bar's own rect →
+                //      `pending_detach` (cross-group move — the parent
+                //      `GroupRow` resolves the target bar by hit-testing
+                //      sibling `bar_rect()`s against the release point).
+                //   3. Released inside the bar but not on another pill →
+                //      dropped in the gap, treated as "cancel".
                 if self.pending_drag.is_some() {
                     if let Some((from, _)) = self.press_origin {
-                        let to = self.tab_rects.iter().position(|r| r.contains(self.last_cursor));
-                        if let Some(to) = to {
-                            if to != from {
-                                self.pending_reorder = Some((from, to));
-                                *handled = true;
+                        let in_bar = self.rect.contains(self.last_cursor);
+                        if in_bar {
+                            let to = self.tab_rects.iter().position(|r| r.contains(self.last_cursor));
+                            if let Some(to) = to {
+                                if to != from {
+                                    self.pending_reorder = Some((from, to));
+                                    *handled = true;
+                                }
                             }
+                        } else if let Some(t) = self.tabs.get(from) {
+                            self.pending_detach = Some((t.id, self.last_cursor));
+                            *handled = true;
                         }
                     }
                     self.pending_drag = None;
