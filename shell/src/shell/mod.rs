@@ -22,6 +22,7 @@
 pub mod browser_stub;
 pub mod chrome_state;
 pub mod nirios_tokens;
+pub mod notes_app;
 pub mod overlay_host;
 pub mod overview;
 pub mod persist;
@@ -50,6 +51,7 @@ use quick_ui::widget::{
 use state::{AppKind as ShellKind, TileContent as ShellTile, WorkspaceTree};
 
 use crate::shell::browser_stub::BrowserStubWidget;
+use crate::shell::notes_app::NotesApp;
 use crate::shell::overview::OverviewView;
 use crate::shell::quick_settings::QuickSettings;
 use crate::shell::remote_cursors::{RemoteCursorOverlay, SimulatedFeed};
@@ -953,6 +955,19 @@ fn default_demo_tabs() -> DemoTabs {
     let fe_app: Box<dyn AppWidget> = fe_boxed;
     tabs.push(RuntimeTab::new("Files", RuntimeTile::App(fe_app)));
 
+    // Notes — CRDT-backed plaintext editor. Seeds a welcome paragraph on
+    // first boot; subsequent boots load whatever's in the shared doc.
+    let notes = NotesApp::with_seed(
+        "Welcome to nirios.\n\n\
+         These notes sync live with anyone invited to this workspace — edits \
+         replicate through the same CRDT path every widget uses.\n\n\
+         Ctrl+Z / Ctrl+Y undo and redo across the whole shell.",
+    );
+    tabs.push(RuntimeTab::new(
+        "Notes",
+        RuntimeTile::App(Box::new(notes)),
+    ));
+
     // Browser — explicit stub (Servo not ported; spec §10.6).
     tabs.push(RuntimeTab::new(
         "Browser",
@@ -997,9 +1012,22 @@ fn to_ui_tile(t: &ShellTile) -> UiTile {
             kind: to_ui_kind(kind),
             label: label.clone(),
         },
-        ShellTile::AppPlaceholder { kind, label } => UiTile::Stub {
-            kind: to_ui_kind(kind),
-            label: label.clone(),
+        ShellTile::AppPlaceholder { kind, label } => match kind {
+            // Notes is the only placeholder wired to a live AppWidget in the
+            // persisted render path today. Other placeholders still fall
+            // through to Stub; bringing Terminal/Files online from the
+            // persisted state path is tracked in Plan 3's follow-up.
+            ShellKind::Other(s) if s.eq_ignore_ascii_case("Notes") => {
+                let seed = "Welcome to nirios.\n\n\
+                     These notes sync live with anyone invited to this workspace — \
+                     edits replicate through the same CRDT path every widget uses.\n\n\
+                     Ctrl+Z / Ctrl+Y undo and redo across the whole shell.";
+                UiTile::App(Box::new(NotesApp::with_seed(seed)))
+            }
+            _ => UiTile::Stub {
+                kind: to_ui_kind(kind),
+                label: label.clone(),
+            },
         },
     }
 }

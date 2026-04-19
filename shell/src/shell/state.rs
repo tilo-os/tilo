@@ -245,7 +245,10 @@ impl WorkspaceTree {
         let ws_id = WorkspaceId::new();
         let strip_id = StripId::new();
         let group_id = next_id();
-        let tab_id = next_id();
+        let tab_notes = next_id();
+        let tab_files = next_id();
+        let tab_terminal = next_id();
+        let tab_browser = next_id();
         let ws = Workspace {
             id: ws_id,
             name: "Home".into(),
@@ -254,15 +257,41 @@ impl WorkspaceTree {
                 name: "Main".into(),
                 window_groups: vec![WindowGroup {
                     id: group_id,
-                    tabs: vec![Tab {
-                        id: tab_id,
-                        title: "Terminal".into(),
-                        tile: TileContent::Stub {
-                            kind: AppKind::Terminal,
-                            label: "Terminal".into(),
+                    tabs: vec![
+                        Tab {
+                            id: tab_notes,
+                            title: "Notes".into(),
+                            tile: TileContent::AppPlaceholder {
+                                kind: AppKind::Other("Notes".into()),
+                                label: "Notes".into(),
+                            },
                         },
-                    }],
-                    active_tab: tab_id,
+                        Tab {
+                            id: tab_files,
+                            title: "Files".into(),
+                            tile: TileContent::Stub {
+                                kind: AppKind::FileExplorer,
+                                label: "Files".into(),
+                            },
+                        },
+                        Tab {
+                            id: tab_terminal,
+                            title: "Terminal".into(),
+                            tile: TileContent::Stub {
+                                kind: AppKind::Terminal,
+                                label: "Terminal".into(),
+                            },
+                        },
+                        Tab {
+                            id: tab_browser,
+                            title: "Browser".into(),
+                            tile: TileContent::Stub {
+                                kind: AppKind::Browser,
+                                label: "Browser".into(),
+                            },
+                        },
+                    ],
+                    active_tab: tab_notes,
                     width: WindowWidth::Normal,
                 }],
             }],
