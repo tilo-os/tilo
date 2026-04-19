@@ -93,18 +93,18 @@ impl Widget for TextInput {
         let bg_color = if self.is_focused {
             theme.bg_active
         } else {
-            theme.bg_app
+            theme.tokens.colors.surfaces.raised
         };
 
-        let shape = RoundedRect::from_rect(self.rect, theme.radius_standard);
+        let shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
         scene.fill(vello::peniko::Fill::NonZero, transform, bg_color, None, &shape);
-        
+
         let border_color = if self.is_focused {
-            theme.border_focus
+            theme.tokens.colors.border_focus
         } else if self.is_hovered {
-            theme.border_standard
+            theme.tokens.colors.border_standard
         } else {
-            theme.border_standard
+            theme.tokens.colors.border_standard
         };
         scene.stroke(&Stroke::new(if self.is_focused { 2.0 } else { 1.0 }), transform, border_color, None, &shape);
 
