@@ -173,3 +173,109 @@ fn draw_with_presence_default_delegates_to_draw() {
         &perms,
     );
 }
+
+// --- Task 7: Framework-level permission gating in event dispatch ---
+
+use quick_ui::permissions::{
+    AppKind as AK, Op as OpX, PermissionScope as PS, ResourceId as RI,
+};
+
+struct GatedButton {
+    clicked: bool,
+    scope: PS,
+}
+
+impl quick_ui::widget::Widget for GatedButton {
+    fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
+    fn build_layout(
+        &mut self,
+        _t: &mut taffy::TaffyTree<()>,
+        _th: &quick_ui::theme::Theme,
+        _m: &mut std::collections::HashMap<taffy::NodeId, *mut dyn quick_ui::widget::Widget>,
+    ) -> taffy::NodeId {
+        unimplemented!()
+    }
+    fn apply_layout(
+        &mut self,
+        _t: &taffy::TaffyTree<()>,
+        _n: taffy::NodeId,
+        _o: vello::kurbo::Point,
+    ) {
+    }
+    fn draw(
+        &mut self,
+        _s: &mut vello::Scene,
+        _tr: vello::kurbo::Affine,
+        _txt: &mut quick_ui::text_render::TextRenderer,
+        _th: &quick_ui::theme::Theme,
+        _presence: &quick_ui::presence::PresenceCtx,
+    ) {
+    }
+    fn handle_event(
+        &mut self,
+        _e: &winit::event::WindowEvent,
+        _sf: f64,
+        _mods: &winit::event::Modifiers,
+        _s: &mut automerge::AutoCommit,
+        _p: &automerge::ObjId,
+        _h: &mut bool,
+        _ft: &mut Option<taffy::NodeId>,
+        _nid: taffy::NodeId,
+        _t: &taffy::TaffyTree<()>,
+    ) {
+        self.clicked = true;
+    }
+    fn name(&self) -> &str {
+        "gated"
+    }
+    fn get_rect(&self) -> vello::kurbo::Rect {
+        vello::kurbo::Rect::ZERO
+    }
+    fn permission_scope(&self) -> Option<PS> {
+        Some(self.scope.clone())
+    }
+}
+
+#[test]
+fn gated_widget_rejected_by_framework_helper() {
+    let ctx = PermissionContext::new(
+        UserId("alice".into()),
+        &[viewer_role()],
+        RoleId("viewer".into()),
+    );
+    let w = GatedButton {
+        clicked: false,
+        scope: PS {
+            resource: RI::App(AK::Terminal),
+            op: OpX::Edit,
+        },
+    };
+    let mut fired = false;
+    let allowed = quick_ui::app::dispatch_gated_event(&ctx, &w, || {
+        fired = true;
+    });
+    assert!(!allowed);
+    assert!(!fired);
+}
+
+#[test]
+fn gated_widget_allowed_when_role_grants_edit() {
+    let ctx = PermissionContext::new(
+        UserId("bob".into()),
+        &[editor_role()],
+        RoleId("editor".into()),
+    );
+    let w = GatedButton {
+        clicked: false,
+        scope: PS {
+            resource: RI::App(AK::Terminal),
+            op: OpX::Edit,
+        },
+    };
+    let mut fired = false;
+    let allowed = quick_ui::app::dispatch_gated_event(&ctx, &w, || {
+        fired = true;
+    });
+    assert!(allowed);
+    assert!(fired);
+}
