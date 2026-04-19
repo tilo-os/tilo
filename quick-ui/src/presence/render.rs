@@ -1,44 +1,24 @@
 use vello::{Scene, kurbo::{Rect, Affine, Stroke}, peniko::{Color, Fill}};
 use crate::theme::Theme;
 use crate::permissions::UserId;
-use super::{PresenceCtx, SelectionRange};
+use super::{PresenceCtx, SelectionRange, user_color};
 
 /// Deterministic per-user color — maps a UserId string to a hue with stable lightness.
-/// Used only when the theme does not provide an explicit override.
+///
+/// Delegates to [`user_color`] so every collab affordance (tab presence
+/// dot, remote cursor, peer caret, selection highlight, focus ring) picks
+/// the **same** colour for a given peer. The concept pins four canonical
+/// ids — `me` / `alice` / `bob` / `charlie` — to fixed RGBs so the Rust
+/// render matches the mockup pixel-for-pixel for those names; unknown ids
+/// fall through to a stable FNV-1a → HSL hash. `theme` is retained on the
+/// signature for the all-zero fallback, which only fires if the hash ever
+/// lands exactly on black — vanishingly unlikely in practice.
 pub(crate) fn color_for(user: &UserId, theme: &Theme) -> Color {
-    // Hash to a hue 0..=359.
-    let mut h: u32 = 2166136261;
-    for b in user.0.as_bytes() {
-        h ^= *b as u32;
-        h = h.wrapping_mul(16777619);
-    }
-    let hue = (h % 360) as f64;
-    let (r, g, b) = hsl_to_rgb(hue, 0.6, 0.55);
-    // Fall back to accent_primary for the very unlikely all-zero case.
+    let (r, g, b) = user_color(&user.0);
     if r == 0 && g == 0 && b == 0 {
         return theme.accent_primary;
     }
     Color::rgb8(r, g, b)
-}
-
-fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (u8, u8, u8) {
-    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
-    let hp = h / 60.0;
-    let x = c * (1.0 - (hp.rem_euclid(2.0) - 1.0).abs());
-    let (r1, g1, b1) = match hp as i32 {
-        0 => (c, x, 0.0),
-        1 => (x, c, 0.0),
-        2 => (0.0, c, x),
-        3 => (0.0, x, c),
-        4 => (x, 0.0, c),
-        _ => (c, 0.0, x),
-    };
-    let m = l - c / 2.0;
-    (
-        ((r1 + m) * 255.0).round().clamp(0.0, 255.0) as u8,
-        ((g1 + m) * 255.0).round().clamp(0.0, 255.0) as u8,
-        ((b1 + m) * 255.0).round().clamp(0.0, 255.0) as u8,
-    )
 }
 
 impl PresenceCtx {
