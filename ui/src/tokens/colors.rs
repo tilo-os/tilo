@@ -13,7 +13,18 @@ impl std::ops::Index<usize> for ColorRamp {
 }
 
 #[derive(Clone, Debug)]
-pub struct Surfaces { pub base: Color, pub raised: Color, pub overlay: Color, pub glass: Color, pub glass_blur_px: f32 }
+pub struct Surfaces {
+    pub base: Color,
+    pub raised: Color,
+    pub overlay: Color,
+    pub glass: Color,
+    pub glass_blur_px: f32,
+    /// White rounded-3xl card that frames each window tile in the concept
+    /// (`bg-white` in the React mock). Lives on top of the dark shell bg.
+    pub window_card: Color,
+    /// Subtle border around the card (`border-white/20` in the concept).
+    pub window_card_border: Color,
+}
 
 #[derive(Clone, Debug)]
 pub struct SemanticColors { pub success: Color, pub warning: Color, pub danger: Color, pub info: Color }
@@ -65,6 +76,8 @@ impl Colors {
                 overlay: Color::rgba8(0, 0, 0, 205),   // black/80 (top bar backdrop)
                 glass:   Color::rgba8(15, 23, 42, 180),// slate-900/70 (overlay panels)
                 glass_blur_px: 24.0,
+                window_card: Color::WHITE,
+                window_card_border: Color::rgba8(255, 255, 255, 51), // white/20
             },
             text_primary: Color::WHITE,
             text_dim: Color::rgb8(148, 163, 184), // slate-400
@@ -99,6 +112,8 @@ impl Colors {
                 overlay: Color::rgba8(255, 255, 255, 230),
                 glass: Color::rgba8(245, 245, 250, 180),
                 glass_blur_px: 24.0,
+                window_card: Color::WHITE,
+                window_card_border: Color::rgba8(0, 0, 0, 30),
             },
             text_primary: Color::BLACK,
             text_dim: Color::rgb8(100, 100, 105),
