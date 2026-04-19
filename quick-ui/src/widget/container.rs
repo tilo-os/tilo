@@ -35,7 +35,7 @@ impl Container {
 }
 
 impl Widget for Container {
-    fn sync(&mut self, state: &AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         if let Some(child) = &mut self.child {
             child.sync(state, path);
         }
@@ -84,7 +84,7 @@ impl Widget for Container {
         }
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme) {
+    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, presence: &crate::presence::PresenceCtx) {
         if self.has_background {
             let shape = RoundedRect::from_rect(self.rect, theme.radius_standard);
             scene.fill(vello::peniko::Fill::NonZero, transform, theme.bg_primary, None, &shape);
@@ -92,14 +92,14 @@ impl Widget for Container {
         }
 
         if let Some(child) = &mut self.child {
-            child.draw(scene, transform, text_renderer, theme);
+            child.draw(scene, transform, text_renderer, theme, presence);
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, state: &mut AutoCommit, path: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, taffy: &TaffyTree<()>) {
+    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, modifiers: &winit::event::Modifiers, state: &mut AutoCommit, path: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, taffy: &TaffyTree<()>) {
         if let Some(child) = &mut self.child {
             let child_node = taffy.children(node_id).unwrap()[0];
-            child.handle_event(event, scale_factor, state, path, handled, focus_target, child_node, taffy);
+            child.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, child_node, taffy);
         }
     }
 
