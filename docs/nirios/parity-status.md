@@ -85,7 +85,7 @@ Current state of the Rust implementation vs. the concept described in
 |---|---|---|
 | Remote-cursor overlay | ✅ | `ShellOverlayHost::draw_demo_peer` paints a single simulated peer ("Ada") with caret + name chip + Lissajous motion over the desktop. |
 | Top-bar avatar stack | ✅ | Top-bar paints up to 3 initial avatars + `+N` overflow chip; sync-from-tree re-runs on chrome revision bump. |
-| Tab collaborator blur indicators | 🟥 | — |
+| Tab collaborator blur indicators | 🟧 | `TabBar::draw` reads `PresenceCtx::peers_on(PresenceKey::Tab { id })`; for up to 4 peers it paints low-alpha color dots (stable FNV-style hash → HSL hue) at the bottom of each pill. Shell-level wiring that actually populates `PresenceKey::Tab` is still pending. |
 | File-explorer per-folder presence dots | 🟥 | — |
 | Editor collaborator caret+selection | 🟥 | (Editor itself missing.) |
 
