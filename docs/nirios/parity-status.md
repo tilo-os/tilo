@@ -110,7 +110,7 @@ tuned to the concept's slate-900/indigo-500 palette** — it leans more neutral.
 |---|---|---|
 | Accent indigo-500/600 | ✅ | Default dark theme's accent ramp is indigo-950→indigo-50 (index 5 = `#6366f1`). |
 | Slate-900 / slate-950 surface scheme | ✅ | Dark theme: slate-900 base, slate-800 raised, black/80 top-bar overlay, slate-900/70 glass. Neutral ramp = slate-950→slate-50. |
-| Per-collaborator fixed cursor colors | 🟥 | Concept pins me/alice/bob/charlie; Rust hashes UserId → HSL. |
+| Per-collaborator fixed cursor colors | ✅ | `quick_ui::presence::user_color` pins the concept palette (`me` → indigo-500, `alice` → pink-500, `bob` → orange-500, `charlie` → emerald-500) and falls through to FNV→HSL for unknown ids. Tabs' presence dots and the shell's `SimulatedFeed` (now built via `new_with_user_id("alice", "Alice")`) both read from the same function, so one peer keeps one colour across every affordance. |
 | Radii 8/12/16/24/full | ✅ | Tokens available. |
 | Glow shadows for focus / drag-over | 🟧 | Elevation tokens exist; drag-over glows not implemented. |
 | Framer-Motion-equivalent springs | ✅ | Motion tokens exist; `WorkspaceView` uses one. |
@@ -139,21 +139,19 @@ tuned to the concept's slate-900/indigo-500 palette** — it leans more neutral.
 
 Sorted by visual/functional impact per unit of work:
 
-1. **Per-collaborator fixed cursor colours** — concept pins me/alice/bob
-   /charlie hues; Rust currently hashes `UserId → HSL` with no overrides.
-2. **File-explorer tier matching** — concept's Favorites / Project-Root /
+1. **File-explorer tier matching** — concept's Favorites / Project-Root /
    System sidebar tiers; Rust widget exists but doesn't split the listing.
-3. **View-swap animation** — no crossfade between desktop ↔ overview.
-4. **Editor remote carets+selections** — the editor body ships; peer
+2. **View-swap animation** — no crossfade between desktop ↔ overview.
+3. **Editor remote carets+selections** — the editor body ships; peer
    carets/selections inside it are not drawn yet.
-5. **Live tab-presence refresh from the network layer** — shell-side
-   presence seeding now works at startup. The next step is running it
+4. **Live tab-presence refresh from the network layer** — shell-side
+   presence seeding works at startup. The next step is running it
    again whenever `CollabEvent::RemotePresenceUpdate` lands so a peer
    switching tabs mid-session visibly moves their dot.
-6. **Per-pill "insert before" hit-testing for cross-group drop** — today
+5. **Per-pill "insert before" hit-testing for cross-group drop** — today
    a cross-group drop lands the tab at index 0 of the target. Per-pill
    hit-testing (drop between tab X and tab Y) is feasible but needs the
    target bar to expose `tab_rects` back to `GroupRow`.
-7. **Screenshot-driven visual E2E** — blocked on host missing the "Window
+6. **Screenshot-driven visual E2E** — blocked on host missing the "Window
    Calls Extended" GNOME extension; 15 headless E2E tests cover the
    non-visual wiring.
