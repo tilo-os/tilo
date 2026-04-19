@@ -23,36 +23,53 @@ pub struct Colors { pub neutral: ColorRamp, pub accent: ColorRamp, pub semantic:
 
 impl Colors {
     pub fn dark() -> Self {
+        // Slate-950 → slate-50, one Tailwind step per ramp slot.
         Self {
             neutral: ColorRamp { stops: [
-                Color::rgb8(10, 10, 12), Color::rgb8(20, 20, 25), Color::rgb8(30, 30, 36),
-                Color::rgb8(45, 45, 50), Color::rgb8(55, 55, 60), Color::rgb8(80, 80, 85),
-                Color::rgb8(130, 130, 135), Color::rgb8(180, 180, 185), Color::rgb8(210, 210, 215),
-                Color::rgb8(235, 235, 240), Color::rgb8(255, 255, 255),
+                Color::rgb8(  2,   6,  23), // slate-950
+                Color::rgb8( 15,  23,  42), // slate-900
+                Color::rgb8( 30,  41,  59), // slate-800
+                Color::rgb8( 51,  65,  85), // slate-700
+                Color::rgb8( 71,  85, 105), // slate-600
+                Color::rgb8(100, 116, 139), // slate-500
+                Color::rgb8(148, 163, 184), // slate-400
+                Color::rgb8(203, 213, 225), // slate-300
+                Color::rgb8(226, 232, 240), // slate-200
+                Color::rgb8(241, 245, 249), // slate-100
+                Color::rgb8(248, 250, 252), // slate-50
             ]},
+            // Indigo-950 → indigo-50; index 5 is the concept's `indigo-500`
+            // accent primary (#6366f1).
             accent: ColorRamp { stops: [
-                Color::rgb8(0, 25, 60), Color::rgb8(0, 50, 120), Color::rgb8(0, 75, 170),
-                Color::rgb8(0, 100, 200), Color::rgb8(0, 120, 215), Color::rgb8(40, 150, 230),
-                Color::rgb8(80, 170, 240), Color::rgb8(130, 200, 250), Color::rgb8(180, 220, 250),
-                Color::rgb8(220, 240, 255), Color::rgb8(240, 250, 255),
+                Color::rgb8( 30,  27,  75), // indigo-950
+                Color::rgb8( 49,  46, 129), // indigo-900
+                Color::rgb8( 55,  48, 163), // indigo-800
+                Color::rgb8( 67,  56, 202), // indigo-700
+                Color::rgb8( 79,  70, 229), // indigo-600
+                Color::rgb8( 99, 102, 241), // indigo-500 ← accent primary
+                Color::rgb8(129, 140, 248), // indigo-400
+                Color::rgb8(165, 180, 252), // indigo-300
+                Color::rgb8(199, 210, 254), // indigo-200
+                Color::rgb8(224, 231, 255), // indigo-100
+                Color::rgb8(238, 242, 255), // indigo-50
             ]},
             semantic: SemanticColors {
-                success: Color::rgb8(0, 180, 80),
-                warning: Color::rgb8(220, 150, 0),
-                danger: Color::rgb8(220, 60, 60),
-                info: Color::rgb8(0, 140, 220),
+                success: Color::rgb8( 16, 185, 129), // emerald-500
+                warning: Color::rgb8(245, 158,  11), // amber-500
+                danger:  Color::rgb8(239,  68,  68), // red-500
+                info:    Color::rgb8( 96, 165, 250), // blue-400
             },
             surfaces: Surfaces {
-                base: Color::rgb8(20, 20, 25),
-                raised: Color::rgb8(30, 30, 36),
-                overlay: Color::rgba8(15, 15, 18, 230),
-                glass: Color::rgba8(30, 30, 36, 160),
+                base:   Color::rgb8(15, 23, 42),       // slate-900
+                raised: Color::rgb8(30, 41, 59),       // slate-800
+                overlay: Color::rgba8(0, 0, 0, 205),   // black/80 (top bar backdrop)
+                glass:   Color::rgba8(15, 23, 42, 180),// slate-900/70 (overlay panels)
                 glass_blur_px: 24.0,
             },
             text_primary: Color::WHITE,
-            text_dim: Color::rgb8(200, 200, 200),
-            border_standard: Color::rgb8(80, 80, 85),
-            border_focus: Color::rgb8(0, 120, 215),
+            text_dim: Color::rgb8(148, 163, 184), // slate-400
+            border_standard: Color::rgb8(51, 65, 85), // slate-700
+            border_focus: Color::rgb8(99, 102, 241),  // indigo-500
         }
     }
 

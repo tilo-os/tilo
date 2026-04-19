@@ -74,16 +74,15 @@ impl Widget for WorkspaceView {
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
     }
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, _p: &PresenceCtx) {
+    fn draw(&mut self, scene: &mut Scene, transform: Affine, _tr: &mut TextRenderer, theme: &Theme, _p: &PresenceCtx) {
+        // Only fill the slide-target rect while an animation is in flight — a
+        // static workspace inherits the app background and doesn't need to
+        // re-paint it. The "workspace N/M" indicator lives in the top bar.
         let offset = self.slide.value();
-        let t = transform * Affine::translate((0.0, offset as f64));
-        scene.fill(vello::peniko::Fill::NonZero, t, theme.tokens.colors.surfaces.base, None, &self.rect);
-        let s = format!("workspace {}/{}", self.active_index + 1, self.workspace_count);
-        let text_size = theme.tokens.typography.scale.lg;
-        let (tw, _) = tr.measure(&s, text_size, None);
-        let x = self.rect.center().x - tw as f64 / 2.0;
-        let y = self.rect.y0 + theme.tokens.spacing.s2 as f64;
-        tr.draw_text(scene, &s, text_size, theme.tokens.colors.text_dim, t * Affine::translate((x, y)), None);
+        if offset.abs() > f32::EPSILON {
+            let t = transform * Affine::translate((0.0, offset as f64));
+            scene.fill(vello::peniko::Fill::NonZero, t, theme.tokens.colors.surfaces.base, None, &self.rect);
+        }
     }
     fn handle_event(&mut self, event: &WindowEvent, _sf: f64, modifiers: &winit::event::Modifiers, _s: &mut AutoCommit, _p: &ObjId, handled: &mut bool, _f: &mut Option<NodeId>, _n: NodeId, _t: &TaffyTree<()>) {
         if let WindowEvent::KeyboardInput { event: winit::event::KeyEvent { logical_key: winit::keyboard::Key::Named(k), state: winit::event::ElementState::Pressed, .. }, .. } = event {
