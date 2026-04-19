@@ -50,7 +50,7 @@ Current state of the Rust implementation vs. the concept described in
 | Maximized state | ✅ | Per-tab maximize icon on hover toggles `WindowGroup::maximized`. While maximized, the group paints a 2 px accent outline, a floating app-title pill (top-left, active tab's title), and a right-side cluster of `[Restore][×]`; the × tints `semantic.danger` on hover and closes the active tab + exits maximize in one click. Search icon still not drawn (global search is already wired via ⌘K). |
 | Tab bar height ~14 px | 🟧 | TabBar is 28 px (concept 14 px). |
 | Tab pill styling | ✅ | Rounded-full pills with active/hover/inactive alpha ramp, close-glyph on hover. |
-| Tab drop zones | ✅ | Drag-to-reorder works + 2 px indigo bar renders at the drop position while drag is in flight (left of target when moving backward, right of target when moving forward). Cross-group moves land through the new `GroupRow` widget in `quick-ui/src/widget/group_row.rs`: `TabBar` publishes `pending_detach` when a release falls outside its own rect, `GroupRow::handle_event` post-dispatch-sweeps sibling groups and hit-tests the release point against each `bar_rect()`, splicing the detached tab + its `TileHost` into the target (the dragged tab becomes active in its new group; the source promotes a neighbour). |
+| Tab drop zones | ✅ | Drag-to-reorder works + 2 px indigo bar renders at the drop position while drag is in flight (left of target when moving backward, right of target when moving forward). Cross-group moves land through the new `GroupRow` widget in `quick-ui/src/widget/group_row.rs`: `TabBar` publishes `pending_detach` when a release falls outside its own rect, `GroupRow::handle_event` post-dispatch-sweeps sibling groups and hit-tests the release point against each `bar_rect()`, splicing the detached tab + its `TileHost` into the target (the dragged tab becomes active in its new group; the source promotes a neighbour). Drop index is resolved via `WindowGroup::drop_index_for` → `TabBar::drop_index_for`, which walks `tab_rects()` and compares the release x to each pill's midpoint so a drop between pill X and pill Y lands at index Y rather than always falling to index 0. |
 | Tab-level collaborator blur indicators | 🟥 | No indicators. |
 | Window frame white rounded card | ✅ | `TileHost` paints `surfaces.window_card` (WHITE) with `rounded-xl` radius + `white/20` border. Stub text renders dark-on-white. |
 | Drag-over / search-active borders | 🟧 | `WindowGroup::draw` paints a 1.5 px indigo-500 @ 60% alpha ring while `TabBar::drag_in_flight()` is true; matches the concept's drag-over state for the source group. Search-active ring not yet tied to ⌘K scope. |
@@ -145,10 +145,6 @@ Sorted by visual/functional impact per unit of work:
    presence seeding works at startup. The next step is running it
    again whenever `CollabEvent::RemotePresenceUpdate` lands so a peer
    switching tabs mid-session visibly moves their dot.
-3. **Per-pill "insert before" hit-testing for cross-group drop** — today
-   a cross-group drop lands the tab at index 0 of the target. Per-pill
-   hit-testing (drop between tab X and tab Y) is feasible but needs the
-   target bar to expose `tab_rects` back to `GroupRow`.
-4. **Screenshot-driven visual E2E** — blocked on host missing the "Window
-   Calls Extended" GNOME extension; 15 headless E2E tests cover the
+3. **Screenshot-driven visual E2E** — blocked on host missing the "Window
+   Calls Extended" GNOME extension; 16 headless E2E tests cover the
    non-visual wiring.
