@@ -95,7 +95,7 @@ Current state of the Rust implementation vs. the concept described in
 |---|---|---|
 | Workspace / Strip / WindowGroup / Tab | ✅ | `quick-gnome-shell/src/shell/state.rs`, mirrors concept. |
 | Roles + RolePermissions | ✅ | `Role`, `WorkspaceFile` exist. |
-| Collaborator (id, name, cursor color, etc.) | 🟧 | Rust `Collaborator` now carries `id`, `name`, and `active_tab: Option<u64>` (concept's `activeAppId`), plus `new` / `with_active_tab` constructors. Still missing `cursorColor`, `avatar`, `roleId`, `cursor`. |
+| Collaborator (id, name, cursor color, etc.) | ✅ | Rust `Collaborator` now carries `id`, `name`, `active_tab: Option<u64>` (concept's `activeAppId`), `cursor_color: Option<String>` (hex override; falls through to `user_color` palette), `avatar: Option<String>` (URL or initials fragment) and `role_id: Option<String>` (references the workspace's `Role` table). Builder chain: `Collaborator::new` / `with_active_tab` / `with_cursor_color` / `with_avatar` / `with_role`; all new fields are `#[serde(default)]` so pre-bump persisted trees still load. 8 unit tests in `shell::state::collaborator_tests`. Runtime `cursor` position is modelled out-of-struct via `PresenceCtx::pointers`. |
 | App types | ✅ | `AppKind::{Terminal,Files,Editor,Browser,Settings}` — Editor now maps to `EditorApp`. |
 | CRDT sync for apps | ✅ | Automerge `State::doc`, per-app `sync(doc, root)`. |
 
