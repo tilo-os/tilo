@@ -14,4 +14,4 @@ pub use app::App;
 pub use state::State;
 pub use theme::Theme;
 
-pub use widget::{Widget, WidgetContext, Element};
+pub use widget::{Widget, Element};
