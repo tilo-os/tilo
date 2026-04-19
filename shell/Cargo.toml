@@ -22,6 +22,8 @@ libp2p = { version = "0.56", features = ["tcp", "dns", "websocket", "noise", "ya
 smithay = { version = "0.7", default-features = false, features = ["wayland_frontend", "backend_winit", "desktop"] }
 calloop-wayland-source = "0.4"
 rand = "0.10.0"
+quick-ui = { path = "../quick-ui" }
+winit = "0.30.13"
 
 [dev-dependencies]
 wayland-client = "0.31"
