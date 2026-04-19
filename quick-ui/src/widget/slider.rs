@@ -32,7 +32,7 @@ impl Slider {
 }
 
 impl Widget for Slider {
-    fn sync(&mut self, state: &AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if let Ok(Some((val, _))) = state.get(root, self.on_change_path.as_str()) {
             if let Value::Scalar(s) = val {
                 match s.as_ref() {
@@ -57,7 +57,7 @@ impl Widget for Slider {
         node
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree, node: NodeId, origin: Point) {
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
             origin.x as f64 + layout.location.x as f64,
@@ -67,7 +67,7 @@ impl Widget for Slider {
         );
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, _text_renderer: &mut TextRenderer, theme: &Theme) {
+    fn draw(&mut self, scene: &mut Scene, transform: Affine, _text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
         // Full Area Focus Border
         if self.is_focused {
             let shape = RoundedRect::from_rect(self.rect, theme.radius_standard);
@@ -113,7 +113,7 @@ impl Widget for Slider {
         scene.fill(vello::peniko::Fill::NonZero, transform, knob_color, None, &knob_shape);
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, _taffy: &TaffyTree<()>) {
+    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, _modifiers: &winit::event::Modifiers, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, _taffy: &TaffyTree<()>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);

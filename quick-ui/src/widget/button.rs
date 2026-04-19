@@ -33,7 +33,7 @@ impl Button {
 }
 
 impl Widget for Button {
-    fn sync(&mut self, _state: &AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
         // Button label could be synced from CRDT here
     }
 
@@ -49,7 +49,7 @@ impl Widget for Button {
         node
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree, node: NodeId, origin: Point) {
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
             origin.x as f64 + layout.location.x as f64,
@@ -59,7 +59,7 @@ impl Widget for Button {
         );
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme) {
+    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
         let (bg_color, border_color) = if self.is_pressed {
             (theme.bg_active, theme.border_standard)
         } else if self.is_hovered {
@@ -107,7 +107,7 @@ impl Widget for Button {
         );
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, _taffy: &TaffyTree<()>) {
+    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, _modifiers: &winit::event::Modifiers, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, _taffy: &TaffyTree<()>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let logical_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
