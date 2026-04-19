@@ -416,3 +416,25 @@ impl App {
         }).unwrap();
     }
 }
+
+/// Framework helper: run `dispatch` only if `widget`'s permission scope (if any)
+/// passes `ctx.check`. Returns true if dispatched, false if denied.
+///
+/// Widgets that expose a `permission_scope()` are gated at the framework level:
+/// mutating events (clicks, text input, wheel, etc.) should be routed through
+/// this helper so that denied interactions short-circuit cleanly without the
+/// widget ever observing the event. Callers can additionally consult
+/// `ctx.check_with_denied_feedback(&scope)` to surface a toast/flash on denial.
+pub fn dispatch_gated_event<W: crate::widget::Widget + ?Sized>(
+    ctx: &crate::permissions::PermissionContext,
+    widget: &W,
+    dispatch: impl FnOnce(),
+) -> bool {
+    if let Some(scope) = widget.permission_scope() {
+        if !ctx.check(&scope) {
+            return false;
+        }
+    }
+    dispatch();
+    true
+}
