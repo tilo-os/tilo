@@ -25,6 +25,26 @@ pub struct OverlayFlags {
     pub ws_settings: bool,
 }
 
+/// Global-search scope. Mirrors the concept's "context banner" scope
+/// radios; defaults to `Workspace` so ⌘K results stay scoped to the
+/// active workspace unless the user explicitly widens to everything.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SearchScope {
+    #[default]
+    Workspace,
+    All,
+}
+
+impl SearchScope {
+    /// Short label shown inside the scope pill.
+    pub fn label(self) -> &'static str {
+        match self {
+            SearchScope::Workspace => "Workspace",
+            SearchScope::All => "All",
+        }
+    }
+}
+
 /// Quick-settings tray values. Local UI state; does not sync to peers —
 /// device settings like brightness, volume, and radio toggles are always
 /// per-device, never shared.
@@ -60,6 +80,10 @@ pub struct ChromeState {
     /// active workspace's persisted name until the user commits with
     /// Enter). Cleared on commit or Esc.
     pub editing_workspace_name: Option<String>,
+    /// Active global-search scope. The overlay host paints a scope-pill
+    /// banner above the palette, and clicking a pill rotates through the
+    /// variants of [`SearchScope`].
+    pub search_scope: SearchScope,
     /// Monotonic counter bumped every time the tree is mutated. Widgets
     /// poll this in `update` to re-sync their caches; cheaper than running
     /// diff logic and easier than an event bus.
@@ -73,6 +97,7 @@ impl ChromeState {
             overlays: OverlayFlags::default(),
             quick_settings: QuickSettingsState::default(),
             editing_workspace_name: None,
+            search_scope: SearchScope::default(),
             revision: 0,
         }))
     }

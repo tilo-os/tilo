@@ -11,7 +11,7 @@
 //!   - `quick-ui/src/widget/tabs.rs` (TabBar close + reorder)
 //!   - `src/shell/notes_app.rs` (NotesApp sync/insert/delete).
 
-use quick_desktop::shell::chrome_state::{ChromeState, QuickSettingsState};
+use quick_desktop::shell::chrome_state::{ChromeState, QuickSettingsState, SearchScope};
 use quick_desktop::shell::notes_app::{BODY_KEY, NotesApp};
 use quick_desktop::shell::sidebar_wheel::SidebarWheel;
 use quick_desktop::shell::state::{Collaborator, WorkspaceTree};
@@ -131,6 +131,24 @@ fn commit_workspace_name_applies_buffer_to_active_workspace() {
         chrome.borrow().tree.active_workspace().unwrap().name,
         "Research"
     );
+}
+
+#[test]
+fn search_scope_defaults_to_workspace_and_mutates_through_chrome() {
+    let tree = WorkspaceTree::bootstrap_default();
+    let chrome = ChromeState::new(tree);
+    // Default narrows ⌘K to the current workspace so peers don't get
+    // cross-workspace result leakage by accident.
+    assert_eq!(chrome.borrow().search_scope, SearchScope::Workspace);
+
+    {
+        let mut st = chrome.borrow_mut();
+        st.search_scope = SearchScope::All;
+        st.bump();
+    }
+    assert_eq!(chrome.borrow().search_scope, SearchScope::All);
+    assert_eq!(SearchScope::Workspace.label(), "Workspace");
+    assert_eq!(SearchScope::All.label(), "All");
 }
 
 #[test]
