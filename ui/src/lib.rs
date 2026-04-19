@@ -17,3 +17,4 @@ pub use state::State;
 pub use theme::Theme;
 
 pub use widget::{Widget, Element};
+pub use widget::{AppCommand, AppKind, AppWidget, IconDescriptor};
