@@ -1,3 +1,4 @@
+pub mod browser_stub;
 pub mod nirios_tokens;
 pub mod overview;
 pub mod persist;
