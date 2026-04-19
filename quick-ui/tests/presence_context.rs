@@ -66,3 +66,34 @@ fn selection_for_returns_range() {
     assert_eq!(sel.start, 4);
     assert_eq!(sel.end, 9);
 }
+
+use vello::Scene;
+use quick_ui::theme::Theme;
+
+#[test]
+fn draw_peer_caret_emits_scene_content() {
+    let ctx = PresenceCtx::empty();
+    let mut scene = Scene::new();
+    let theme = Theme::dark();
+    // A fresh scene is structurally empty; after drawing a caret it must have content.
+    assert!(scene.encoding().is_empty(),
+        "precondition: scene must start empty");
+    ctx.draw_peer_caret(&mut scene, &theme, &UserId("alice".into()), (100.0, 50.0));
+    assert!(!scene.encoding().is_empty(),
+        "draw_peer_caret must add geometry to the scene");
+}
+
+#[test]
+fn draw_peer_selection_emits_scene_content() {
+    let ctx = PresenceCtx::empty();
+    let mut scene = Scene::new();
+    let theme = Theme::dark();
+    ctx.draw_peer_selection(
+        &mut scene,
+        &theme,
+        &UserId("alice".into()),
+        &SelectionRange { start: 0, end: 5 },
+        /* line_rects = */ &[vello::kurbo::Rect::new(10.0, 20.0, 60.0, 40.0)],
+    );
+    assert!(!scene.encoding().is_empty());
+}
