@@ -132,6 +132,26 @@ impl Widget for WindowGroup {
         let col = if self.hover_resize || self.resize_origin.is_some() { theme.tokens.colors.border_focus } else { theme.tokens.colors.border_standard };
         scene.fill(vello::peniko::Fill::NonZero, transform, col, None, &handle_rect);
 
+        // Drag-in-flight visual: subtle accent ring around the whole group
+        // so the user has a spatial signal the drag is live. Matches the
+        // concept's "drag-over" border state for the source group. Skipped
+        // while maximized — the 2 px maximized outline takes priority.
+        if self.bar.drag_in_flight() && !self.maximized {
+            let ring = Rect::new(
+                self.rect.x0 - 1.0,
+                self.rect.y0 - 1.0,
+                self.rect.x1 + 1.0,
+                self.rect.y1 + 1.0,
+            );
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.5),
+                transform,
+                theme.tokens.colors.accent[5].with_alpha_factor(0.6),
+                None,
+                &ring,
+            );
+        }
+
         // Maximized visual: 2 px accent outline around the whole group so
         // the user gets immediate feedback from the tab's maximize click
         // even before the shell paints concept-style floating controls.
