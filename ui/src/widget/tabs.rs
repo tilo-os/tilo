@@ -81,6 +81,10 @@ impl TabBar {
         self.tabs.insert(to, t);
     }
     pub fn take_drag(&mut self) -> Option<DragPayload> { self.pending_drag.take() }
+    /// True while a drag gesture is in flight (press threshold exceeded,
+    /// release not yet seen). The parent `WindowGroup` reads this to paint
+    /// a drag-in-flight accent ring matching the concept's drag-over state.
+    pub fn drag_in_flight(&self) -> bool { self.pending_drag.is_some() }
     pub fn take_reorder(&mut self) -> Option<(usize, usize)> { self.pending_reorder.take() }
     pub fn take_close(&mut self) -> Option<u64> { self.pending_close.take() }
     pub fn take_max(&mut self) -> Option<u64> { self.pending_max.take() }
