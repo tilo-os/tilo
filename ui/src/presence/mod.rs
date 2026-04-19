@@ -123,6 +123,27 @@ impl PresenceCtx {
         }
     }
 
+    /// Re-attribute `user` so they are listed on exactly one `PresenceKey::Tab`
+    /// at a time: removes them from every other `Tab` key's presence list,
+    /// then registers them on `target`. Matches the single-active-tab-per-user
+    /// model so a peer switching tabs mid-session moves their dot rather than
+    /// leaving a trail behind on the previously-focused pill.
+    ///
+    /// No-op if `target` isn't a `Tab` key — callers fall back to
+    /// `register_presence` in that case.
+    pub fn set_tab_focus(&mut self, target: &PresenceKey, user: UserId) {
+        if !matches!(target, PresenceKey::Tab { .. }) {
+            self.register_presence(target, user);
+            return;
+        }
+        for (k, list) in self.here.iter_mut() {
+            if matches!(k, PresenceKey::Tab { .. }) && k != target {
+                list.retain(|u| u != &user);
+            }
+        }
+        self.register_presence(target, user);
+    }
+
     pub fn set_pointer(&mut self, key: &PresenceKey, user: UserId, pos: (f32, f32)) {
         let list = self.pointers.entry(key.clone()).or_default();
         if let Some(entry) = list.iter_mut().find(|(u, _)| *u == user) {
@@ -164,5 +185,63 @@ impl PresenceCtx {
 
     pub fn caret_for(&self, key: &PresenceKey, user: &UserId) -> Option<usize> {
         self.carets.get(key)?.iter().find(|(u, _)| u == user).map(|(_, c)| *c)
+    }
+}
+
+#[cfg(test)]
+mod tab_focus_tests {
+    use super::*;
+
+    #[test]
+    fn set_tab_focus_moves_user_between_tabs() {
+        let mut ctx = PresenceCtx::empty();
+        let alice = UserId("alice".into());
+        let a = PresenceKey::Tab { id: "aaa".into() };
+        let b = PresenceKey::Tab { id: "bbb".into() };
+
+        ctx.set_tab_focus(&a, alice.clone());
+        assert_eq!(ctx.peers_on(&a), &[alice.clone()]);
+        assert!(ctx.peers_on(&b).is_empty());
+
+        ctx.set_tab_focus(&b, alice.clone());
+        assert!(
+            ctx.peers_on(&a).is_empty(),
+            "alice must be cleared from her previous tab"
+        );
+        assert_eq!(ctx.peers_on(&b), &[alice]);
+    }
+
+    #[test]
+    fn set_tab_focus_leaves_other_users_on_the_old_tab() {
+        let mut ctx = PresenceCtx::empty();
+        let alice = UserId("alice".into());
+        let bob = UserId("bob".into());
+        let a = PresenceKey::Tab { id: "aaa".into() };
+        let b = PresenceKey::Tab { id: "bbb".into() };
+
+        ctx.set_tab_focus(&a, alice.clone());
+        ctx.set_tab_focus(&a, bob.clone());
+        ctx.set_tab_focus(&b, alice.clone());
+
+        assert_eq!(ctx.peers_on(&a), &[bob]);
+        assert_eq!(ctx.peers_on(&b), &[alice]);
+    }
+
+    #[test]
+    fn set_tab_focus_on_non_tab_key_falls_back_to_register_presence() {
+        let mut ctx = PresenceCtx::empty();
+        let alice = UserId("alice".into());
+        let tab = PresenceKey::Tab { id: "aaa".into() };
+        let ws = PresenceKey::Workspace { id: "home".into() };
+
+        ctx.set_tab_focus(&tab, alice.clone());
+        ctx.set_tab_focus(&ws, alice.clone());
+
+        assert_eq!(
+            ctx.peers_on(&tab),
+            &[alice.clone()],
+            "workspace registration must not evict the tab attribution"
+        );
+        assert_eq!(ctx.peers_on(&ws), &[alice]);
     }
 }

@@ -203,3 +203,41 @@ fn peer_caret_in_text_input_renders_on_remote_app() {
     // The caret value reached bob's PresenceCtx.
     assert_eq!(bob_app.presence_ctx().caret_for(&key, &UserId("alice".into())), Some(5));
 }
+
+#[test]
+fn peer_tab_switch_moves_the_presence_dot() {
+    // Regression guard for live tab-presence refresh: when a peer announces
+    // Arrived on one Tab key and then on another, the dot must *move*, not
+    // accumulate. Without this, a peer who tabs around for a minute leaves
+    // a trail of ghost dots on every tab they ever touched.
+    let mut relay = MemoryRelay::new();
+    let alice_peer = relay.attach("alice");
+    let bob_peer = relay.attach("bob");
+    let (_alice_app, _) = headless_app("alice", alice_peer);
+    let (mut bob_app, _) = headless_app("bob", bob_peer);
+
+    let tab_a = PresenceKey::Tab { id: "aaaa".into() };
+    let tab_b = PresenceKey::Tab { id: "bbbb".into() };
+    let alice = UserId("alice".into());
+
+    // Alice is first attributed to tab A.
+    bob_app.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
+        user_id: "alice".into(),
+        key: tab_a.clone(),
+        payload: PresencePayload::Arrived,
+    });
+    assert_eq!(bob_app.presence_ctx().peers_on(&tab_a), &[alice.clone()]);
+    assert!(bob_app.presence_ctx().peers_on(&tab_b).is_empty());
+
+    // Alice switches to tab B.
+    bob_app.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
+        user_id: "alice".into(),
+        key: tab_b.clone(),
+        payload: PresencePayload::Arrived,
+    });
+    assert!(
+        bob_app.presence_ctx().peers_on(&tab_a).is_empty(),
+        "alice must be cleared from tab A after switching to B"
+    );
+    assert_eq!(bob_app.presence_ctx().peers_on(&tab_b), &[alice]);
+}
