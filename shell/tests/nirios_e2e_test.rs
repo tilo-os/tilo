@@ -157,8 +157,8 @@ fn topbar_renders_up_to_three_avatars_then_overflow_chip() {
     // 2 peers → 2 avatars, no overflow.
     let mut tree = WorkspaceTree::bootstrap_default();
     tree.collaborators = vec![
-        Collaborator { id: "a".into(), name: "Ada".into() },
-        Collaborator { id: "b".into(), name: "Ben".into() },
+        Collaborator::new("a", "Ada"),
+        Collaborator::new("b", "Ben"),
     ];
     let top = TopBarChrome::from_tree(&tree);
     assert_eq!(top.collaborator_initials(), &['A', 'B']);
@@ -166,11 +166,11 @@ fn topbar_renders_up_to_three_avatars_then_overflow_chip() {
 
     // 5 peers → first 3 initials drawn + "+2" chip.
     tree.collaborators = vec![
-        Collaborator { id: "a".into(), name: "Ada".into() },
-        Collaborator { id: "b".into(), name: "Ben".into() },
-        Collaborator { id: "c".into(), name: "Cae".into() },
-        Collaborator { id: "d".into(), name: "Dia".into() },
-        Collaborator { id: "e".into(), name: "Eli".into() },
+        Collaborator::new("a", "Ada"),
+        Collaborator::new("b", "Ben"),
+        Collaborator::new("c", "Cae"),
+        Collaborator::new("d", "Dia"),
+        Collaborator::new("e", "Eli"),
     ];
     let top = TopBarChrome::from_tree(&tree);
     assert_eq!(top.collaborator_initials(), &['A', 'B', 'C']);
@@ -189,11 +189,11 @@ fn sidebar_active_card_inherits_tree_collaborator_count() {
     // overflow on the active card (clamped to 3 + "+2" chip).
     let mut tree = WorkspaceTree::bootstrap_default();
     tree.collaborators = vec![
-        Collaborator { id: "a".into(), name: "Ada".into() },
-        Collaborator { id: "b".into(), name: "Ben".into() },
-        Collaborator { id: "c".into(), name: "Cae".into() },
-        Collaborator { id: "d".into(), name: "Dia".into() },
-        Collaborator { id: "e".into(), name: "Eli".into() },
+        Collaborator::new("a", "Ada"),
+        Collaborator::new("b", "Ben"),
+        Collaborator::new("c", "Cae"),
+        Collaborator::new("d", "Dia"),
+        Collaborator::new("e", "Eli"),
     ];
     let wheel = SidebarWheelChrome::from_tree(&tree);
     assert_eq!(wheel.active_collaborator_count(), 5);
@@ -340,4 +340,62 @@ fn editor_app_persists_edits_through_crdt() {
     let mut b = EditorApp::new();
     b.sync(&mut doc, &tile);
     assert_eq!(doc.text(&body).unwrap(), "let x = 1;\n");
+}
+
+#[test]
+fn sync_tab_presence_seeds_per_tab_peer_registrations() {
+    // Each `Collaborator` with `active_tab = Some(id)` should show up on
+    // `PresenceCtx.peers_on(PresenceKey::Tab{ hex(id) })` after running the
+    // shell's sync helper. This is what turns the tab-pill presence dots
+    // on in practice — without it `TabBar` reads an empty peers list and
+    // draws no dots, regardless of how many peers the top-bar shows.
+    use quick_desktop::shell::sync_tab_presence_from_tree;
+    use quick_ui::permissions::UserId;
+    use quick_ui::presence::{PresenceCtx, PresenceKey};
+
+    let mut tree = WorkspaceTree::bootstrap_default();
+    // Pick a real tab id from the bootstrap tree so we're exercising the
+    // actual id formatting (not a synthetic constant).
+    let ws = tree.active_workspace().expect("active workspace");
+    let strip = ws.strips.first().expect("strip");
+    let grp = strip.window_groups.first().expect("group");
+    let tab_a = grp.tabs[0].id;
+    let tab_b = grp.tabs[1].id;
+
+    // Attribute Ada to tab_a, Ben to tab_b, Cae to no tab at all.
+    let ws_mut = tree
+        .workspaces
+        .iter_mut()
+        .find(|w| w.id == tree.active)
+        .expect("active ws mut");
+    ws_mut.collaborators = vec![
+        Collaborator::with_active_tab("a", "Ada", tab_a),
+        Collaborator::with_active_tab("b", "Ben", tab_b),
+        Collaborator::new("c", "Cae"),
+    ];
+
+    let mut ctx = PresenceCtx::empty();
+    sync_tab_presence_from_tree(&tree, &mut ctx);
+
+    let key_a = PresenceKey::Tab {
+        id: format!("{:x}", tab_a),
+    };
+    let key_b = PresenceKey::Tab {
+        id: format!("{:x}", tab_b),
+    };
+    assert_eq!(ctx.peers_on(&key_a), &[UserId("a".into())]);
+    assert_eq!(ctx.peers_on(&key_b), &[UserId("b".into())]);
+
+    // Cae has no `active_tab` → not attributed anywhere. The map for any
+    // tab id Cae might plausibly live on should therefore not mention "c".
+    let all_peers: Vec<&UserId> = ctx
+        .here
+        .values()
+        .flat_map(|v| v.iter())
+        .collect();
+    assert!(
+        all_peers.iter().all(|u| u.0 != "c"),
+        "collaborator with no active_tab must not register anywhere: {:?}",
+        all_peers
+    );
 }

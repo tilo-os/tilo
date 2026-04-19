@@ -203,6 +203,45 @@ pub struct WorkspaceFile {
 pub struct Collaborator {
     pub id: String,
     pub name: String,
+    /// Tab id the collaborator is currently focused on, if any. Drives
+    /// per-tab presence dots (`TabBar` reads `PresenceKey::Tab{ hex(id) }`
+    /// from `PresenceCtx`; the shell seeds that mapping from this field).
+    /// `None` means "not attributed to a specific tab" — e.g. the peer is
+    /// in the workspace chrome but hasn't focused content yet. Optional
+    /// via `#[serde(default)]` so pre-existing persisted workspaces (with
+    /// no `active_tab` column) still load.
+    #[serde(default)]
+    pub active_tab: Option<u64>,
+}
+
+impl Collaborator {
+    /// Build a collaborator with no tab attribution — the common case for
+    /// "peer entered the workspace but hasn't focused content yet". Existing
+    /// call sites that used the struct literal `Collaborator { id, name }`
+    /// migrate to this constructor so adding future fields (cursor colour,
+    /// avatar, role) doesn't force another codebase-wide literal sweep.
+    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            active_tab: None,
+        }
+    }
+
+    /// Same as [`Collaborator::new`] but also attributes the peer to a
+    /// specific tab, turning on the low-alpha presence dot beneath that
+    /// tab's pill.
+    pub fn with_active_tab(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        tab: u64,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            active_tab: Some(tab),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
