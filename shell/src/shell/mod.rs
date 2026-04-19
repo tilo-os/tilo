@@ -41,7 +41,7 @@ pub mod topbar_chrome;
 pub mod workspace_settings;
 
 use quick_ui::widget::{
-    AppKind as UiKind, AppWidget, Column, Container, StripView, TabDescriptor,
+    AppKind as UiKind, AppWidget, Column, Container, Row, StripView, TabDescriptor,
     TileContent as UiTile, Widget, WindowGroup as UiGroup, WindowWidth as UiWidth,
     WorkspaceView,
     context_menu::{ContextMenu, MenuItem},
@@ -1058,7 +1058,11 @@ pub fn build_nirios_root(tree: &WorkspaceTree) -> Box<dyn Widget> {
     let mut content_col = Column::new().push(workspace_view).push(strip_view);
 
     if let Some(ws) = tree.active_workspace() {
+        // One horizontal Row per strip: the concept lays groups out as a
+        // horizontal row inside each strip, with strips themselves stacking
+        // vertically inside the content Column.
         for strip in &ws.strips {
+            let mut strip_row = Row::new();
             for g in &strip.window_groups {
                 let tabs_with_content: Vec<(TabDescriptor, UiTile)> = g
                     .tabs
@@ -1075,8 +1079,9 @@ pub fn build_nirios_root(tree: &WorkspaceTree) -> Box<dyn Widget> {
                     .collect();
                 let ui_group =
                     UiGroup::new(g.id, tabs_with_content, g.active_tab, to_ui_width(g.width));
-                content_col = content_col.push(Box::new(ui_group));
+                strip_row = strip_row.push(Box::new(ui_group));
             }
+            content_col = content_col.push(Box::new(strip_row));
         }
     }
 
