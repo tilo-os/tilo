@@ -4,6 +4,7 @@ pub mod overview;
 pub mod persist;
 pub mod quick_settings;
 pub mod search;
+pub mod sidebar_wheel;
 pub mod state;
 pub mod system_monitor;
 pub mod topbar;

@@ -33,7 +33,38 @@ impl From<WorkspaceId> for u64 {
     }
 }
 
-pub type StripId = u64;
+/// Monotonic strip identifier. Mirrors [`WorkspaceId`] so callers can mint
+/// fresh ids via `StripId::new()` without threading a counter through; literal
+/// integers still flow in through `From<u64>` for tests and persistence.
+#[derive(
+    Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord,
+)]
+#[serde(transparent)]
+pub struct StripId(pub u64);
+
+impl StripId {
+    /// Allocate a fresh, process-wide unique id.
+    pub fn new() -> Self {
+        Self(next_id())
+    }
+
+    pub fn raw(&self) -> u64 {
+        self.0
+    }
+}
+
+impl From<u64> for StripId {
+    fn from(v: u64) -> Self {
+        Self(v)
+    }
+}
+
+impl From<StripId> for u64 {
+    fn from(v: StripId) -> Self {
+        v.0
+    }
+}
+
 pub type GroupId = u64;
 pub type TabId = u64;
 pub type FileId = u64;
@@ -113,6 +144,18 @@ pub struct Strip {
     pub id: StripId,
     pub name: String,
     pub window_groups: Vec<WindowGroup>,
+}
+
+impl Strip {
+    /// Build an empty strip with the given id and name. Window groups start
+    /// empty; callers (the compositor or persistence layer) populate them.
+    pub fn new(id: StripId, name: impl Into<String>) -> Self {
+        Self {
+            id,
+            name: name.into(),
+            window_groups: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -200,7 +243,7 @@ pub struct WorkspaceTree {
 impl WorkspaceTree {
     pub fn bootstrap_default() -> Self {
         let ws_id = WorkspaceId::new();
-        let strip_id = next_id();
+        let strip_id = StripId::new();
         let group_id = next_id();
         let tab_id = next_id();
         let ws = Workspace {
@@ -239,7 +282,7 @@ impl WorkspaceTree {
 
     pub fn append_empty_workspace(&mut self, name: &str) -> WorkspaceId {
         let ws_id = WorkspaceId::new();
-        let strip_id = next_id();
+        let strip_id = StripId::new();
         let ws = Workspace {
             id: ws_id,
             name: name.into(),
