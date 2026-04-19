@@ -26,7 +26,7 @@ Current state of the Rust implementation vs. the concept described in
 | Up/down chevrons | ✅ | Clicks switch workspace via `chrome.switch_workspace(±1)`; greyed at bounds. |
 | Workspace-name button + gear | ✅ | Gear click toggles `overlays.ws_settings`. |
 | Center widget carousel | 🟧 | Clock HH:MM renders; SystemMonitor / Calendar variants not drawn yet. |
-| Collaborator avatar stack | 🟧 | Avatars draw (up to 3) with initial + indigo fill; overflow count not shown. |
+| Collaborator avatar stack | ✅ | Up to 3 indigo-filled initial circles with 4 px overlap; 4+ peers collapse into a trailing `+N` chip on the raised surface. |
 | Quick-settings tray pill | ✅ | 3-dot click toggles `overlays.quick_settings`. |
 
 ## 3. Workspace strip / sidebar wheel
@@ -84,7 +84,7 @@ Current state of the Rust implementation vs. the concept described in
 | Item | Status | Notes |
 |---|---|---|
 | Remote-cursor overlay | ✅ | `ShellOverlayHost::draw_demo_peer` paints a single simulated peer ("Ada") with caret + name chip + Lissajous motion over the desktop. |
-| Top-bar avatar stack | 🟡 | TopBar helpers read tree collaborators; no render. |
+| Top-bar avatar stack | ✅ | Top-bar paints up to 3 initial avatars + `+N` overflow chip; sync-from-tree re-runs on chrome revision bump. |
 | Tab collaborator blur indicators | 🟥 | — |
 | File-explorer per-folder presence dots | 🟥 | — |
 | Editor collaborator caret+selection | 🟥 | (Editor itself missing.) |
@@ -140,16 +140,14 @@ Sorted by visual/functional impact per unit of work:
 
 1. **Editor app** — concept has a Catppuccin-tinged editor with gutter +
    selection highlight; we don't yet.
-2. **Collaborator avatar stack on the top bar** — top bar already consults
-   workspace collaborators; actually paint the initials.
-3. **Maximize state** — concept has a floating top-bar over a maximized
+2. **Maximize state** — concept has a floating top-bar over a maximized
    window-group; no path in the runtime tree yet.
-4. **Horizontal window-group strips** — groups currently stack vertically;
+3. **Horizontal window-group strips** — groups currently stack vertically;
    concept wants a horizontal row per strip.
-5. **Tab cross-group drag** — today reorder stays within a group; concept
+4. **Tab cross-group drag** — today reorder stays within a group; concept
    shows cross-group move via drop zones.
-6. **Search context banner / scope radios** — global search is palette-only
+5. **Search context banner / scope radios** — global search is palette-only
    today.
-7. **Screenshot-driven visual E2E** — blocked on host missing the "Window
-   Calls Extended" GNOME extension; 7 headless E2E tests cover the
+6. **Screenshot-driven visual E2E** — blocked on host missing the "Window
+   Calls Extended" GNOME extension; 8 headless E2E tests cover the
    non-visual wiring.
