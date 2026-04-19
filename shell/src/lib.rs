@@ -3,3 +3,4 @@ pub mod security;
 pub mod network;
 pub mod ui;
 pub mod config;
+pub mod shell;
