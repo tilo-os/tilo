@@ -61,3 +61,10 @@ fn load_missing_file_returns_default() {
     let t = load_or_default(&missing);
     assert_eq!(t.workspaces.len(), 1);
 }
+
+#[test]
+fn nirios_shell_root_constructs_from_tree() {
+    use quick_desktop::shell::build_nirios_root;
+    let tree = quick_desktop::shell::state::WorkspaceTree::bootstrap_default();
+    let _boxed: Box<dyn quick_ui::widget::Widget> = build_nirios_root(&tree);
+}
