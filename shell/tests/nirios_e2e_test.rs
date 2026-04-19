@@ -200,6 +200,31 @@ fn sidebar_active_card_inherits_tree_collaborator_count() {
 }
 
 #[test]
+fn collaborators_overlay_defaults_off_and_toggles_through_chrome() {
+    let tree = WorkspaceTree::bootstrap_default();
+    let chrome = ChromeState::new(tree);
+    // Defaults: all overlay flags off — the shell starts clean.
+    assert!(!chrome.borrow().overlays.collaborators);
+    assert!(!chrome.borrow().overlays.quick_settings);
+    // Flip through the shared handle; overlay host reads the same field.
+    {
+        let mut st = chrome.borrow_mut();
+        st.overlays.collaborators = true;
+        st.bump();
+    }
+    assert!(chrome.borrow().overlays.collaborators);
+    // Collaborators + quick-settings are sibling overlays — opening one
+    // doesn't implicitly close the other (the outside-click handler does).
+    {
+        let mut st = chrome.borrow_mut();
+        st.overlays.quick_settings = true;
+        st.bump();
+    }
+    assert!(chrome.borrow().overlays.collaborators);
+    assert!(chrome.borrow().overlays.quick_settings);
+}
+
+#[test]
 fn center_widget_cycles_forward_and_backward() {
     // Forward scroll cycles Clock → SystemMonitor → Calendar → Clock.
     assert_eq!(CenterWidget::Clock.next(), CenterWidget::SystemMonitor);
