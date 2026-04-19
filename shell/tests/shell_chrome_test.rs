@@ -101,8 +101,8 @@ fn workspace_settings_general_edits_name_and_removes_collaborator() {
     use quick_desktop::shell::workspace_settings::{WorkspaceSettings, WsTab};
     let mut ws = Workspace::new(WorkspaceId::new(), "Design");
     ws.collaborators = vec![
-        Collaborator { id: "u1".into(), name: "Ada".into() },
-        Collaborator { id: "u2".into(), name: "Bo".into() },
+        Collaborator::new("u1", "Ada"),
+        Collaborator::new("u2", "Bo"),
     ];
     let mut modal = WorkspaceSettings::new(ws.id);
     modal.set_tab(WsTab::General);
@@ -252,10 +252,10 @@ fn topbar_right_tray_renders_collaborators_and_opens_quick_settings() {
     tree.workspaces = vec![Workspace::new(WorkspaceId::new(), "A")];
     tree.active = tree.workspaces[0].id;
     tree.collaborators = vec![
-        Collaborator { id: "u1".into(), name: "Ada".into() },
-        Collaborator { id: "u2".into(), name: "Bo".into() },
-        Collaborator { id: "u3".into(), name: "Cy".into() },
-        Collaborator { id: "u4".into(), name: "Di".into() },
+        Collaborator::new("u1", "Ada"),
+        Collaborator::new("u2", "Bo"),
+        Collaborator::new("u3", "Cy"),
+        Collaborator::new("u4", "Di"),
     ];
     let tb = TopBar::new();
     let avatars = tb.visible_avatars(&tree, 3);
