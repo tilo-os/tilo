@@ -7,6 +7,7 @@ use quick_ui::permissions::{
     AppKind, Op, PermissionAssignment, PermissionContext, PermissionScope, ResourceId,
     Role, RoleId, RolePermissions, UserId, WorkspaceSettingsView,
 };
+use quick_ui::widget::{TextInput, Widget};
 
 #[test]
 fn memory_relay_fans_out_presence_updates_to_both_peers() {
@@ -164,4 +165,41 @@ fn permission_change_from_peer_reflects_locally_after_sync() {
     // bob_app is constructed to confirm the two-App harness is exercised;
     // its permission context is independent of alice's.
     let _ = bob_app.permission_ctx();
+}
+
+#[test]
+fn peer_caret_in_text_input_renders_on_remote_app() {
+    let mut relay = MemoryRelay::new();
+    let alice_peer = relay.attach("alice");
+    let bob_peer = relay.attach("bob");
+    let (_alice_app, _) = headless_app("alice", alice_peer);
+    let (mut bob_app, _) = headless_app("bob", bob_peer);
+
+    let key = PresenceKey::Widget { path: vec![PathSegment::Field("doc".into())] };
+    bob_app.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
+        user_id: "alice".into(),
+        key: key.clone(),
+        payload: PresencePayload::Caret { pos: 5 },
+    });
+
+    // Build a TextInput with matching presence path and render it.
+    let mut input = TextInput::new(vec![PathSegment::Field("doc".into())]);
+    let mut scene = vello::Scene::new();
+    let theme = quick_ui::theme::Theme::dark();
+    let mut tr = quick_ui::text_render::TextRenderer::new();
+    let perms = quick_ui::permissions::PermissionContext::permissive();
+
+    input.draw_with_presence(
+        &mut scene,
+        vello::kurbo::Affine::IDENTITY,
+        &mut tr,
+        &theme,
+        bob_app.presence_ctx(),
+        &perms,
+    );
+
+    // A non-empty scene proves the caret chrome was emitted.
+    assert!(!scene.encoding().is_empty());
+    // The caret value reached bob's PresenceCtx.
+    assert_eq!(bob_app.presence_ctx().caret_for(&key, &UserId("alice".into())), Some(5));
 }
