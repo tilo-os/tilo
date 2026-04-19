@@ -272,3 +272,72 @@ fn notes_app_roundtrips_through_crdt() {
     let text = doc.text(&body).expect("read body");
     assert_eq!(text, "hello");
 }
+
+#[test]
+fn editor_app_is_bootstrapped_as_fifth_demo_tab() {
+    // The runtime demo workspace (what `cargo run -p quick-desktop` shows)
+    // carries five tabs in a single group: Terminal, Files, Notes, Editor,
+    // Browser. The parity milestone's "basic editor / settings / notes /
+    // terminal / file browser" line item requires Editor to be present and
+    // hosted as a live AppWidget (not a Stub), so this test locks the tab
+    // set down against regressions that drop it.
+    use quick_desktop::shell::Shell;
+    use quick_desktop::shell::tile::TileContent as RuntimeTile;
+
+    let shell = Shell::new_with_default_demo_workspace();
+    let tree = shell.workspace_tree();
+    let ws = tree
+        .workspaces
+        .iter()
+        .find(|w| w.id == tree.active)
+        .expect("active workspace");
+    let strip = ws.strips.first().expect("at least one strip");
+    let group = strip.window_groups.first().expect("at least one group");
+    let titles: Vec<&str> = group.tabs.iter().map(|t| t.title.as_str()).collect();
+    assert_eq!(
+        titles,
+        vec!["Terminal", "Files", "Notes", "Editor", "Browser"]
+    );
+
+    // The Editor tab must host a live AppWidget (not fall through to Stub).
+    // We identify it by title rather than index so the assertion survives a
+    // future reshuffling of the tab order.
+    let editor_tab = group
+        .tabs
+        .iter()
+        .find(|t| t.title == "Editor")
+        .expect("Editor tab");
+    assert!(
+        matches!(editor_tab.tile, RuntimeTile::App(_)),
+        "expected Editor to be a live App, got {:?}",
+        editor_tab.tile
+    );
+}
+
+#[test]
+fn editor_app_persists_edits_through_crdt() {
+    use automerge::{AutoCommit, ObjType, ReadDoc, Value, transaction::Transactable};
+    use quick_desktop::shell::editor_app::{BODY_KEY as EDITOR_BODY_KEY, EditorApp};
+    use quick_ui::widget::Widget;
+
+    let mut doc = AutoCommit::new();
+    let root = automerge::ROOT;
+    let tile = doc
+        .put_object(&root, "tile", ObjType::Map)
+        .expect("tile obj");
+
+    // First Editor widget writes its seed into the shared doc on sync.
+    let mut a = EditorApp::with_seed("let x = 1;\n");
+    a.sync(&mut doc, &tile);
+    let body = match doc.get(&tile, EDITOR_BODY_KEY).unwrap().unwrap() {
+        (Value::Object(ObjType::Text), id) => id,
+        _ => panic!("expected Text body under editor_body"),
+    };
+    assert_eq!(doc.text(&body).unwrap(), "let x = 1;\n");
+
+    // A second Editor widget binding to the same doc picks up the existing
+    // body (the CRDT-backed "join the session" story, identical to Notes).
+    let mut b = EditorApp::new();
+    b.sync(&mut doc, &tile);
+    assert_eq!(doc.text(&body).unwrap(), "let x = 1;\n");
+}
