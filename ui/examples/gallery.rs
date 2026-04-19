@@ -40,7 +40,7 @@ fn main() {
             .push(Box::new(Toggle::new("tog_1", "toggle_1")))
             .push(Box::new(Checkbox::new("chk_1", "check_1")))
             .push(Box::new(Slider::new("sld_1", "slider_1")))
-            .push(Box::new(TextInput::new("txt_1", "text_1")))
+            .push(Box::new(TextInput::new(vec![]).with_id("txt_1").with_on_change_path("text_1")))
     );
     
     // 4. Run the Application
