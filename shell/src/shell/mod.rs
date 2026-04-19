@@ -42,7 +42,7 @@ pub mod topbar_chrome;
 pub mod workspace_settings;
 
 use quick_ui::widget::{
-    AppKind as UiKind, AppWidget, Column, Container, Row, StripView, TabDescriptor,
+    AppKind as UiKind, AppWidget, Column, Container, GroupRow, StripView, TabDescriptor,
     TileContent as UiTile, Widget, WindowGroup as UiGroup, WindowWidth as UiWidth,
     WorkspaceView,
     context_menu::{ContextMenu, MenuItem},
@@ -1076,25 +1076,31 @@ pub fn build_nirios_root(tree: &WorkspaceTree) -> Box<dyn Widget> {
         // horizontal row inside each strip, with strips themselves stacking
         // vertically inside the content Column.
         for strip in &ws.strips {
-            let mut strip_row = Row::new();
-            for g in &strip.window_groups {
-                let tabs_with_content: Vec<(TabDescriptor, UiTile)> = g
-                    .tabs
-                    .iter()
-                    .map(|t| {
-                        (
-                            TabDescriptor {
-                                id: t.id,
-                                title: t.title.clone(),
-                            },
-                            to_ui_tile(&t.tile),
-                        )
-                    })
-                    .collect();
-                let ui_group =
-                    UiGroup::new(g.id, tabs_with_content, g.active_tab, to_ui_width(g.width));
-                strip_row = strip_row.push(Box::new(ui_group));
-            }
+            // GroupRow — like a plain Row, but routes cross-group tab
+            // drag-drops. Each WindowGroup still handles its own close /
+            // reorder / maximize; GroupRow only wakes when a drag release
+            // lands outside the source bar.
+            let groups: Vec<UiGroup> = strip
+                .window_groups
+                .iter()
+                .map(|g| {
+                    let tabs_with_content: Vec<(TabDescriptor, UiTile)> = g
+                        .tabs
+                        .iter()
+                        .map(|t| {
+                            (
+                                TabDescriptor {
+                                    id: t.id,
+                                    title: t.title.clone(),
+                                },
+                                to_ui_tile(&t.tile),
+                            )
+                        })
+                        .collect();
+                    UiGroup::new(g.id, tabs_with_content, g.active_tab, to_ui_width(g.width))
+                })
+                .collect();
+            let strip_row = GroupRow::new(groups);
             content_col = content_col.push(Box::new(strip_row));
         }
     }
