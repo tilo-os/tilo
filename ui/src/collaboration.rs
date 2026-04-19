@@ -9,6 +9,7 @@ use crate::presence::PresenceKey;
 pub enum CollabRequest {
     Hello { app_id: String, cluster_id: Uuid },
     SyncCRDT { data: Vec<u8> },
+    SyncIncremental { data: Vec<u8> },
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -23,6 +24,9 @@ pub enum CollabEvent {
         y: f32,
     },
     CRDTUpdate {
+        data: Vec<u8>,
+    },
+    CRDTIncremental {
         data: Vec<u8>,
     },
     RemotePresenceUpdate {
