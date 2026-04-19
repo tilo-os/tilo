@@ -34,9 +34,12 @@ fn walk(root: &Path, out: &mut Vec<PathBuf>) {
 
 fn forbidden_patterns() -> Vec<(Regex, &'static str)> {
     vec![
-        // Hard-coded RGB: Color::rgb8(_, _, _) or Color::rgba8(_, _, _, _)
-        (Regex::new(r"Color::rgb8?\s*\(").unwrap(),
-         "hard-coded Color::rgb8/rgba8 — use theme.* tokens"),
+        // Hard-coded RGB literal palette values. Require a digit as the first
+        // argument so variable-arg calls like `Color::rgb(c.color[0] as f64, …)`
+        // that route real collaborator data through the constructor don't get
+        // flagged — only *literal* palette values do.
+        (Regex::new(r"Color::rgb8?\s*\(\s*\d").unwrap(),
+         "hard-coded Color::rgb8/rgb — use theme.* tokens"),
         // Hard-coded radius literals on rounded rects
         (Regex::new(r"\.to_rounded_rect\(\s*\d+(\.\d+)?\s*\)").unwrap(),
          "hard-coded rounded-rect radius — use theme.radius_standard"),
