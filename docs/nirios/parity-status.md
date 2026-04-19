@@ -70,8 +70,8 @@ Current state of the Rust implementation vs. the concept described in
 | Item | Status | Notes |
 |---|---|---|
 | Overlay host in root | ✅ | `ShellOverlayHost` wraps the root widget, owns visibility flags, draws scrim + overlays. |
-| Global search (⌘K) | 🟧 | Overlay-host palette draws on ⌘K with scrim; rows don't wire to anything yet (concept's `GlobalSearch` scope/context banner missing). |
-| Search context banner / scope radios | 🟥 | No context-sensitive search chrome. |
+| Global search (⌘K) | 🟧 | Overlay-host palette draws on ⌘K with scrim + a scope banner above the palette; palette rows still don't wire to actions. |
+| Search context banner / scope radios | ✅ | Banner above the palette shows "Search in: Workspace / All" pills; click rotates `ChromeState::search_scope`; defaults to Workspace so cross-workspace leakage is opt-in. |
 | Overview view modal | ✅ | Drawn on `overlays.overview`; cards clickable; Esc closes. |
 | Quick settings dropdown | ✅ | Interactive: click-to-set sliders (brightness/volume 0..=1), click-to-flip toggles (Wi-Fi/Bluetooth). State lives on `ChromeState::quick_settings`. |
 | Workspace settings modal | ✅ | Rename workspace: click Name input to begin editing; type / Backspace / Space / Enter / Esc semantics; border highlights indigo with caret block while editing. |
@@ -144,8 +144,6 @@ Sorted by visual/functional impact per unit of work:
    window-group; no path in the runtime tree yet.
 3. **Tab cross-group drag** — today reorder stays within a group; concept
    shows cross-group move via drop zones.
-4. **Search context banner / scope radios** — global search is palette-only
-   today.
-5. **Screenshot-driven visual E2E** — blocked on host missing the "Window
-   Calls Extended" GNOME extension; 8 headless E2E tests cover the
+4. **Screenshot-driven visual E2E** — blocked on host missing the "Window
+   Calls Extended" GNOME extension; 9 headless E2E tests cover the
    non-visual wiring.
