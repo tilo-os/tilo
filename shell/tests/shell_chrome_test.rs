@@ -72,3 +72,20 @@ fn quick_settings_brightness_and_volume_clamp_and_mutate() {
     assert_eq!(q.brightness(), 0.0);
     assert_eq!(q.volume(), 100.0);
 }
+
+#[test]
+fn quick_settings_drill_in_and_back() {
+    use quick_desktop::shell::quick_settings::{QuickSettings, QsLevel};
+    let mut q = QuickSettings::new();
+    assert_eq!(q.current_level(), &QsLevel::Root);
+    q.push_level(QsLevel::Wifi);
+    assert_eq!(q.current_level(), &QsLevel::Wifi);
+    q.push_level(QsLevel::WifiDetails("Home-5G".into()));
+    assert!(matches!(q.current_level(), QsLevel::WifiDetails(s) if s == "Home-5G"));
+    q.pop_level();
+    assert_eq!(q.current_level(), &QsLevel::Wifi);
+    q.pop_level();
+    assert_eq!(q.current_level(), &QsLevel::Root);
+    q.pop_level(); // no-op at root
+    assert_eq!(q.current_level(), &QsLevel::Root);
+}
