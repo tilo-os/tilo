@@ -86,6 +86,60 @@ impl WindowGroup {
         let id = self.bar.active_id();
         self.hosts.iter_mut().find(|(i, _)| *i == id).map(|(_, h)| h)
     }
+
+    // ------------------------------------------------------------------
+    // Cross-group drag-drop routing (parent: `GroupRow`)
+    // ------------------------------------------------------------------
+
+    /// Drain a cross-group detach request from the underlying `TabBar`.
+    /// Returns `(tab_id, release_point)` if the user released a drag
+    /// outside the bar's own rect, else `None`. The parent widget hits-
+    /// tests the release point against sibling bars to find a target.
+    pub fn take_tab_detach(&mut self) -> Option<(u64, Point)> { self.bar.take_detach() }
+
+    /// Remove a tab + its hosted `TileHost` from this group and return
+    /// them so a sibling group can insert them. Returns `None` if no tab
+    /// with that id is present. Preserves caller-side ordering by
+    /// handing back the `TabDescriptor` and `TileHost` as a pair.
+    pub fn detach_tab(&mut self, tab_id: u64) -> Option<(TabDescriptor, TileHost)> {
+        let host_idx = self.hosts.iter().position(|(i, _)| *i == tab_id)?;
+        let (_, host) = self.hosts.remove(host_idx);
+        // TabBar::remove_tab snips the descriptor list and reassigns the
+        // active id to the next tab in the list.
+        let desc_idx = self
+            .bar
+            .tabs()
+            .iter()
+            .position(|t| t.id == tab_id)?;
+        let desc = self.bar.tabs()[desc_idx].clone();
+        self.bar.remove_tab(tab_id);
+        Some((desc, host))
+    }
+
+    /// Insert a previously-detached tab at `idx`, becoming the new active
+    /// tab. The content order is kept aligned with the bar's descriptor
+    /// order so a subsequent reorder inside this group stays coherent.
+    pub fn insert_detached_tab(&mut self, idx: usize, desc: TabDescriptor, host: TileHost) {
+        let id = desc.id;
+        self.bar.insert_tab(idx, desc);
+        let clamped = idx.min(self.hosts.len());
+        self.hosts.insert(clamped, (id, host));
+    }
+
+    /// Return this group's tab-bar rect — i.e. the strip above the tile
+    /// content where sibling drops should resolve. The parent `GroupRow`
+    /// uses it to hit-test cross-group releases.
+    pub fn bar_rect(&self) -> Rect { self.bar.bar_rect() }
+
+    /// Borrow the current tab descriptor list. Exposed so callers (e.g.
+    /// the cross-group drag tests in `GroupRow`) can assert on the tab
+    /// sequence without reaching through the `TabBar` itself.
+    pub fn tabs(&self) -> &[TabDescriptor] { self.bar.tabs() }
+
+    /// The id of the tab currently treated as active by the bar. Exposed
+    /// for cross-group drag tests that need to assert on activation flow
+    /// (e.g. detaching the active tab must promote a sibling to active).
+    pub fn active_tab_id(&self) -> u64 { self.bar.active_id() }
 }
 
 impl Widget for WindowGroup {
