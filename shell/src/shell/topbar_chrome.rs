@@ -97,6 +97,10 @@ pub struct TopBarChrome {
     down_btn_rect: Rect,
     ws_pill_rect: Rect,
     tray_pill_rect: Rect,
+    /// Bounding rect of the avatar stack (initials + overflow chip). Click
+    /// toggles `overlays.collaborators` so the shell can show the peer
+    /// dropdown — matches the concept's avatar-stack-as-trigger affordance.
+    avatar_stack_rect: Rect,
     /// Active center-widget. Scroll-wheel over `center_rect` cycles the
     /// variant; clicks on one of the three dot indicators jumps directly.
     center_widget: CenterWidget,
@@ -132,6 +136,7 @@ impl TopBarChrome {
             down_btn_rect: Rect::ZERO,
             ws_pill_rect: Rect::ZERO,
             tray_pill_rect: Rect::ZERO,
+            avatar_stack_rect: Rect::ZERO,
             center_widget: CenterWidget::Clock,
             center_rect: Rect::ZERO,
             center_dot_rects: [Rect::ZERO; 3],
@@ -592,6 +597,11 @@ impl Widget for TopBarChrome {
         }
         rx -= tray_w + tokens.spacing.s3 as f64;
 
+        // Snapshot the rightmost x of the stack before drawing so we can
+        // populate `avatar_stack_rect` once we know how many circles we
+        // actually drew (including the overflow chip).
+        let stack_right_x = rx;
+
         // Avatar stack: up to 3 circles, overlapping by 4 px, newest on top.
         for (i, initial) in self.collaborator_initials.iter().enumerate() {
             let cx = rx - i as f64 * (14.0 - 4.0);
@@ -654,6 +664,27 @@ impl Widget for TopBarChrome {
                 transform * Affine::translate((center.x - tw as f64 / 2.0, center.y - th as f64 / 2.0)),
                 None,
             );
+        }
+
+        // Avatar stack click target. Spans from the left-most circle to the
+        // right of the stack (rx before drawing). Empty collaborators still
+        // get a zero-sized rect so the click handler short-circuits.
+        let slot_count = self.collaborator_initials.len()
+            + if self.collaborator_overflow > 0 { 1 } else { 0 };
+        if slot_count > 0 {
+            // Stack grows leftward from `stack_right_x`; each circle is 18 px
+            // wide with 4 px overlap, so step = 14 px.
+            let step = 14.0_f64;
+            let leftmost_cx = stack_right_x - (slot_count as f64 - 1.0) * step;
+            let y_mid = center_y;
+            self.avatar_stack_rect = Rect::new(
+                leftmost_cx - 9.0,
+                y_mid - 11.0,
+                stack_right_x,
+                y_mid + 11.0,
+            );
+        } else {
+            self.avatar_stack_rect = Rect::ZERO;
         }
     }
 
@@ -764,6 +795,12 @@ impl Widget for TopBarChrome {
         }
         if self.tray_pill_rect.contains(p) {
             state.overlays.quick_settings = !state.overlays.quick_settings;
+            state.bump();
+            *handled = true;
+            return;
+        }
+        if self.avatar_stack_rect.contains(p) {
+            state.overlays.collaborators = !state.overlays.collaborators;
             state.bump();
             *handled = true;
         }

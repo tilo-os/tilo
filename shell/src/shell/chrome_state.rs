@@ -23,6 +23,11 @@ pub struct OverlayFlags {
     pub overview: bool,
     pub quick_settings: bool,
     pub ws_settings: bool,
+    /// Collaborator dropdown, opened by clicking the avatar stack in the
+    /// top bar's right cluster. Lists every peer by name so invites and
+    /// session handoff have a visible surface; pure UI state — the roster
+    /// itself lives on `WorkspaceTree::collaborators`.
+    pub collaborators: bool,
 }
 
 /// Global-search scope. Mirrors the concept's "context banner" scope

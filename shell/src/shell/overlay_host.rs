@@ -111,6 +111,23 @@ impl ShellOverlayHost {
         Rect::new(x1 - popover_w, y0, x1, y0 + popover_h)
     }
 
+    /// Collaborators dropdown rect — anchored to the top-right like quick-
+    /// settings but narrower and taller-when-many-peers. Height is driven by
+    /// the peer count so a roster of 8 doesn't clip.
+    fn collaborators_rect(&self) -> Rect {
+        let popover_w = 260.0_f64;
+        let peers = self
+            .chrome
+            .as_ref()
+            .map(|c| c.borrow().tree.collaborators.len())
+            .unwrap_or(0);
+        let rows = peers.max(1) as f64;
+        let popover_h = 48.0 + rows * 36.0 + 16.0;
+        let x1 = self.rect.x1 - 16.0;
+        let y0 = self.rect.y0 + 48.0;
+        Rect::new(x1 - popover_w, y0, x1, y0 + popover_h.min(420.0))
+    }
+
     /// Name-input rect inside the ws-settings modal. Matches the drawn
     /// rect in `draw_ws_settings` so hit-test and draw stay in sync.
     fn ws_settings_name_rect(&self) -> Rect {
@@ -301,6 +318,13 @@ impl Widget for ShellOverlayHost {
             self.draw_quick_settings(scene, transform, text_renderer, theme);
         }
 
+        // Collaborators dropdown (anchored top-right, no scrim — matches the
+        // quick-settings dropdown behaviour and the concept's avatar stack
+        // "open peer list" affordance).
+        if flags.collaborators {
+            self.draw_collaborators(scene, transform, text_renderer, theme);
+        }
+
         if self.palette_visible {
             draw_scrim(scene, transform, self.rect);
             self.palette
@@ -408,6 +432,12 @@ impl Widget for ShellOverlayHost {
                         *handled = true;
                         return;
                     }
+                    if st.overlays.collaborators {
+                        st.overlays.collaborators = false;
+                        st.bump();
+                        *handled = true;
+                        return;
+                    }
                     if st.overlays.quick_settings {
                         st.overlays.quick_settings = false;
                         st.bump();
@@ -505,6 +535,22 @@ impl Widget for ShellOverlayHost {
                     }
                 }
                 let flags = self.overlay_flags();
+                if flags.collaborators {
+                    let co_rect = self.collaborators_rect();
+                    if !co_rect.contains(p) {
+                        if let Some(chrome) = self.chrome.clone() {
+                            let mut st = chrome.borrow_mut();
+                            st.overlays.collaborators = false;
+                            st.bump();
+                        }
+                        *handled = true;
+                        return;
+                    }
+                    // Inside the dropdown: swallow the click so the content
+                    // beneath doesn't grab it. No per-row actions yet.
+                    *handled = true;
+                    return;
+                }
                 if flags.quick_settings {
                     let qs_rect = self.quick_settings_rect();
                     if !qs_rect.contains(p) {
@@ -1229,6 +1275,103 @@ impl ShellOverlayHost {
                 prect.height() / 2.0 - 2.0,
             );
             scene.fill(Fill::NonZero, transform, colors.text_primary, None, &knob);
+        }
+    }
+
+    /// Collaborators dropdown: a peer-roster popover anchored under the
+    /// top-right avatar stack. Each row shows an indigo-filled initial
+    /// circle + the peer's name; empty rosters show a "No peers" hint so
+    /// the dropdown still reads as "here are the people" rather than
+    /// "something broken".
+    fn draw_collaborators(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let rect = self.collaborators_rect();
+        let card = RoundedRect::from_rect(rect, tokens.radii.lg as f64);
+        scene.fill(Fill::NonZero, transform, colors.surfaces.raised, None, &card);
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            colors.border_standard,
+            None,
+            &card,
+        );
+        text_renderer.draw_text(
+            scene,
+            "Collaborators",
+            tokens.typography.scale.lg,
+            colors.text_primary,
+            transform * Affine::translate((rect.x0 + 16.0, rect.y0 + 16.0)),
+            None,
+        );
+
+        let peers: Vec<(String, char)> = self
+            .chrome
+            .as_ref()
+            .map(|c| {
+                c.borrow()
+                    .tree
+                    .collaborators
+                    .iter()
+                    .map(|p| {
+                        let initial = p
+                            .name
+                            .chars()
+                            .next()
+                            .map(|c| c.to_ascii_uppercase())
+                            .unwrap_or('•');
+                        (p.name.clone(), initial)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if peers.is_empty() {
+            text_renderer.draw_text(
+                scene,
+                "No peers connected",
+                tokens.typography.scale.sm,
+                colors.text_dim,
+                transform * Affine::translate((rect.x0 + 16.0, rect.y0 + 56.0)),
+                None,
+            );
+            return;
+        }
+
+        for (i, (name, initial)) in peers.iter().enumerate() {
+            let row_y = rect.y0 + 48.0 + i as f64 * 36.0;
+            let center = Point::new(rect.x0 + 16.0 + 12.0, row_y + 14.0);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.accent[5],
+                None,
+                &vello::kurbo::Circle::new(center, 11.0),
+            );
+            let initial_str = initial.to_string();
+            let (iw, ih) = text_renderer.measure(&initial_str, tokens.typography.scale.sm, None);
+            text_renderer.draw_text(
+                scene,
+                &initial_str,
+                tokens.typography.scale.sm,
+                colors.text_primary,
+                transform * Affine::translate((center.x - iw as f64 / 2.0, center.y - ih as f64 / 2.0)),
+                None,
+            );
+            text_renderer.draw_text(
+                scene,
+                name,
+                tokens.typography.scale.sm,
+                colors.text_primary,
+                transform * Affine::translate((rect.x0 + 44.0, row_y + 7.0)),
+                None,
+            );
         }
     }
 
