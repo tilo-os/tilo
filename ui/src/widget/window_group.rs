@@ -107,6 +107,25 @@ impl Widget for WindowGroup {
         let handle_rect = Rect::new(self.rect.x1 - RESIZE_HANDLE_PX, self.rect.y0, self.rect.x1, self.rect.y1);
         let col = if self.hover_resize || self.resize_origin.is_some() { theme.tokens.colors.border_focus } else { theme.tokens.colors.border_standard };
         scene.fill(vello::peniko::Fill::NonZero, transform, col, None, &handle_rect);
+
+        // Maximized visual: 2 px accent outline around the whole group so
+        // the user gets immediate feedback from the tab's maximize click
+        // even before the shell paints concept-style floating controls.
+        if self.maximized {
+            let outline = Rect::new(
+                self.rect.x0 - 1.0,
+                self.rect.y0 - 1.0,
+                self.rect.x1 + 1.0,
+                self.rect.y1 + 1.0,
+            );
+            scene.stroke(
+                &vello::kurbo::Stroke::new(2.0),
+                transform,
+                theme.tokens.colors.accent[5],
+                None,
+                &outline,
+            );
+        }
     }
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, m: &winit::event::Modifiers, s: &mut AutoCommit, p: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, taffy: &TaffyTree<()>) {
         let children = taffy.children(node_id).unwrap();
