@@ -6,6 +6,9 @@ pub mod theme;
 pub mod i18n;
 pub mod collaboration;
 pub mod tokens;
+pub mod presence;
+pub mod permissions;
+pub mod dnd;
 
 pub use app::App;
 pub use state::State;
