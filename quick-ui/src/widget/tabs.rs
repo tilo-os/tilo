@@ -103,6 +103,28 @@ impl TabBar {
     /// hit-test a release point against sibling bars without having to
     /// re-walk the layout tree.
     pub fn bar_rect(&self) -> Rect { self.rect }
+    /// Per-pill rects in tab order, populated during `apply_layout`.
+    /// Exposed so `GroupRow` can resolve an "insert before pill X" drop
+    /// index when a cross-group drag releases over a sibling's bar.
+    pub fn tab_rects(&self) -> &[Rect] { &self.tab_rects }
+    /// Compute an insertion index for a drop at `release_point`. Returns
+    /// an index in `[0, tab_rects.len()]` — `0` means "before the first
+    /// pill", `len` means "after the last pill". Vertical position is
+    /// ignored (only the X coordinate matters); this lets callers drop
+    /// anywhere inside the bar's horizontal extent.
+    ///
+    /// Rule: for each pill, if the release x is left of the pill's
+    /// horizontal midpoint, insert **before** that pill; otherwise keep
+    /// walking. If the release is past every pill's midpoint, append.
+    pub fn drop_index_for(&self, release_point: Point) -> usize {
+        for (i, r) in self.tab_rects.iter().enumerate() {
+            let mid_x = (r.x0 + r.x1) / 2.0;
+            if release_point.x < mid_x {
+                return i;
+            }
+        }
+        self.tab_rects.len()
+    }
     /// Insert a tab at `idx` and make it active. Used by the cross-group
     /// drag routing in `GroupRow::handle_event` to splice a detached tab
     /// into the target bar without forcing a full rebuild.
@@ -440,6 +462,38 @@ mod tests {
         let b1 = user_color("bob");
         assert_eq!(a1, a2, "same id must map to same color across calls");
         assert_ne!(a1, b1, "different ids should map to different colors");
+    }
+
+    #[test]
+    fn drop_index_for_uses_pill_midpoints() {
+        // Hand-craft a bar with three known pill rects so we don't have to
+        // run `apply_layout` through taffy for a drop-index unit test.
+        // Pill A spans [0, 80], B [80, 160], C [160, 240].
+        let mut b = bar();
+        b.rect = Rect::new(0.0, 0.0, 240.0, 28.0);
+        b.tab_rects = vec![
+            Rect::new(0.0, 0.0, 80.0, 28.0),
+            Rect::new(80.0, 0.0, 160.0, 28.0),
+            Rect::new(160.0, 0.0, 240.0, 28.0),
+        ];
+        // Left of A's midpoint (40) → insert before A (index 0).
+        assert_eq!(b.drop_index_for(Point::new(10.0, 14.0)), 0);
+        // Past A's mid but before B's mid (120) → insert at index 1.
+        assert_eq!(b.drop_index_for(Point::new(90.0, 14.0)), 1);
+        // Past B's mid but before C's mid (200) → insert at index 2.
+        assert_eq!(b.drop_index_for(Point::new(170.0, 14.0)), 2);
+        // Past every midpoint → append at len().
+        assert_eq!(b.drop_index_for(Point::new(230.0, 14.0)), 3);
+    }
+
+    #[test]
+    fn drop_index_for_empty_bar_is_zero() {
+        // A bar with no pills (e.g. a target that was just emptied) should
+        // accept any drop at index 0 so the spliced tab lands cleanly.
+        let mut b = bar();
+        b.tab_rects.clear();
+        assert_eq!(b.drop_index_for(Point::new(0.0, 0.0)), 0);
+        assert_eq!(b.drop_index_for(Point::new(1000.0, 0.0)), 0);
     }
 
     #[test]
