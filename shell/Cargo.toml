@@ -23,6 +23,7 @@ calloop-wayland-source = "0.4"
 rand = "0.10.0"
 quick-ui = { path = "../quick-ui" }
 winit = "0.30.13"
+sysinfo = "0.32"
 
 [dev-dependencies]
 wayland-client = "0.31"
