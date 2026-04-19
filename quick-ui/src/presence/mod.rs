@@ -13,9 +13,18 @@ pub enum PresenceKey {
 #[derive(Clone, Debug)]
 pub struct PeerPresence { pub user: UserId, pub color: [u8; 3], pub name: String }
 
+#[derive(Debug, Clone)]
+pub struct RemoteCursor {
+    pub user_id: String,
+    pub color: [f32; 4],
+    pub position: [f32; 2], // scene-space coords
+    pub label: String,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct PresenceCtx {
     peers_here: HashMap<PresenceKey, Vec<PeerPresence>>,
+    pub remote_cursors: Vec<RemoteCursor>,
 }
 
 impl PresenceCtx {
