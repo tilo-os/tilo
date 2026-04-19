@@ -434,6 +434,23 @@ fn overscroll_commit_fires_toast() {
 }
 
 #[test]
+fn toast_fires_on_rename_and_create() {
+    use quick_desktop::shell::Shell;
+    use quick_ui::widget::toast::ToastKind;
+    let mut shell = Shell::new_for_test();
+    let b0 = shell.toast_count();
+    shell.simulate_overscroll_commit(); // "Workspace created"
+    shell.simulate_rename_active_workspace("New Name");
+    let kinds: Vec<ToastKind> = shell.toast_kinds();
+    assert!(
+        kinds
+            .iter()
+            .any(|k| matches!(k, ToastKind::Info | ToastKind::Success))
+    );
+    assert!(shell.toast_count() >= b0 + 2);
+}
+
+#[test]
 fn sidebar_wheel_event_routes_through_shell() {
     use quick_desktop::shell::Shell;
     let mut shell = Shell::new_for_test();
