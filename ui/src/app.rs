@@ -156,7 +156,17 @@ impl App {
                 uid,
                 crate::presence::SelectionRange { start, end },
             ),
-            Arrived => self.presence_ctx.register_presence(&key, uid),
+            Arrived => {
+                // For Tab keys, route through set_tab_focus so a peer
+                // switching tabs moves their dot instead of accumulating
+                // attribution on every tab they've ever visited. Non-tab
+                // keys fall through to plain register_presence.
+                if matches!(key, crate::presence::PresenceKey::Tab { .. }) {
+                    self.presence_ctx.set_tab_focus(&key, uid);
+                } else {
+                    self.presence_ctx.register_presence(&key, uid);
+                }
+            }
             Left => self.presence_ctx.remove_presence(&key, &uid),
         }
     }
