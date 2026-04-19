@@ -200,7 +200,9 @@ impl Shell {
             ctx_menu: ContextMenu::new(),
             tooltip: Tooltip::new("Open workspace settings"),
             system_monitor: SystemMonitor::new(DEFAULT_SPARK_SAMPLES),
-            cursor_feed: SimulatedFeed::new_with_seed(DEFAULT_CURSOR_SEED),
+            // Pin the demo peer to `alice` so the cursor paints pink-500
+            // from the concept palette, not a seed-hashed colour.
+            cursor_feed: SimulatedFeed::new_with_user_id("alice", "Alice"),
             overview_visible: false,
             search_visible: false,
             quick_settings_visible: false,
@@ -889,9 +891,6 @@ impl Shell {
 /// the default theme spacing; larger gives diminishing returns.
 const DEFAULT_SPARK_SAMPLES: usize = 64;
 
-/// Default RNG seed for the demo [`SimulatedFeed`]. Only affects the
-/// simulated peer's display color — the motion path is seed-independent.
-const DEFAULT_CURSOR_SEED: u64 = 0xa11ce;
 
 /// Builder output for the default demo workspace. Carries the tab list plus
 /// test-only raw pointers to the concrete `TerminalWidget` /
