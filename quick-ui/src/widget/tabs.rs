@@ -52,35 +52,56 @@ impl TabBar {
 impl Widget for TabBar {
     fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
     fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
-        let node = taffy.new_leaf(Style { size: Size { width: Dimension::auto(), height: Dimension::length(36.0) }, ..Default::default() }).unwrap();
+        // ~28 px pills on the dark shell bg, above the white-card frame.
+        let node = taffy.new_leaf(Style { size: Size { width: Dimension::auto(), height: Dimension::length(28.0) }, flex_shrink: 0.0, ..Default::default() }).unwrap();
         node_map.insert(node, self as *mut dyn Widget);
         node
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(origin.x + l.location.x as f64, origin.y + l.location.y as f64, origin.x + l.location.x as f64 + l.size.width as f64, origin.y + l.location.y as f64 + l.size.height as f64);
-        let n = self.tabs.len().max(1) as f64;
-        let tab_w = (self.rect.width() / n).max(60.0);
+        // Content-sized pill tabs with a gap between them.
         self.tab_rects.clear();
-        for i in 0..self.tabs.len() {
-            let x0 = self.rect.x0 + (i as f64) * tab_w;
-            self.tab_rects.push(Rect::new(x0, self.rect.y0, x0 + tab_w, self.rect.y1));
+        let gap = 6.0_f64;
+        let pad_x = 12.0_f64;
+        let mut x = self.rect.x0;
+        for t in &self.tabs {
+            let approx_char_w = 7.0_f64;
+            let title_w = t.title.chars().count() as f64 * approx_char_w;
+            let w = (title_w + pad_x * 2.0).max(60.0);
+            self.tab_rects.push(Rect::new(x, self.rect.y0, x + w, self.rect.y1));
+            x += w + gap;
         }
     }
     fn draw(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, _presence: &PresenceCtx) {
-        let bg = theme.tokens.colors.surfaces.raised;
-        scene.fill(vello::peniko::Fill::NonZero, transform, bg, None, &self.rect);
+        // No full-bar fill — pills sit directly on the dark shell background.
+        let radius = self.rect.height() / 2.0;
+        let text_primary = theme.tokens.colors.text_primary;
+        let text_dim = theme.tokens.colors.text_dim;
         for (i, t) in self.tabs.iter().enumerate() {
             let r = self.tab_rects[i];
             let is_active = t.id == self.active_id;
-            let fill = if is_active { theme.tokens.colors.surfaces.base } else if Some(i) == self.hover_idx { theme.tokens.colors.neutral[4] } else { bg };
-            let shape = RoundedRect::from_rect(r, theme.tokens.radii.sm as f64);
+            let is_hover = Some(i) == self.hover_idx;
+            // Active: `white/10` translucent; inactive: `white/5`; hover: bumped.
+            let fill_alpha: u8 = if is_active { 38 } else if is_hover { 26 } else { 13 };
+            let fill = vello::peniko::Color::rgba8(255, 255, 255, fill_alpha);
+            let shape = RoundedRect::from_rect(r, radius);
             scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
+            // Faint border to match concept (`white/20` / `white/10`).
+            let border_alpha: u8 = if is_active { 51 } else { 26 };
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                vello::peniko::Color::rgba8(255, 255, 255, border_alpha),
+                None,
+                &shape,
+            );
+            let text_color = if is_active { text_primary } else { text_dim };
             let text_size = theme.tokens.typography.scale.sm;
-            let (tw, _) = tr.measure(&t.title, text_size, None);
+            let (tw, th) = tr.measure(&t.title, text_size, None);
             let x = r.center().x - tw as f64 / 2.0;
-            let y = r.y0 + (r.height() - text_size as f64) / 2.0;
-            tr.draw_text(scene, &t.title, text_size, theme.tokens.colors.text_primary, transform * Affine::translate((x, y)), None);
+            let y = r.center().y - th as f64 / 2.0;
+            tr.draw_text(scene, &t.title, text_size, text_color, transform * Affine::translate((x, y)), None);
         }
     }
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, _m: &winit::event::Modifiers, _s: &mut AutoCommit, _p: &ObjId, handled: &mut bool, _focus_target: &mut Option<NodeId>, _node_id: NodeId, _taffy: &TaffyTree<()>) {
