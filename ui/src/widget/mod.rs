@@ -64,3 +64,5 @@ mod window_group;
 pub use window_group::{WindowGroup, WindowWidth, WIDTH_MIN_PX, WIDTH_MAX_PX, RESIZE_HANDLE_PX};
 mod strip_view;
 pub use strip_view::{StripView, STRIP_COOLDOWN_MS};
+mod workspace_view;
+pub use workspace_view::{WorkspaceView, WorkspaceSwitchDirection};
