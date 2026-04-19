@@ -85,7 +85,17 @@ impl Widget for WorkspaceView {
         let y = self.rect.y0 + theme.tokens.spacing.s2 as f64;
         tr.draw_text(scene, &s, text_size, theme.tokens.colors.text_dim, t * Affine::translate((x, y)), None);
     }
-    fn handle_event(&mut self, _e: &WindowEvent, _sf: f64, _m: &winit::event::Modifiers, _s: &mut AutoCommit, _p: &ObjId, _h: &mut bool, _f: &mut Option<NodeId>, _n: NodeId, _t: &TaffyTree<()>) {}
+    fn handle_event(&mut self, event: &WindowEvent, _sf: f64, modifiers: &winit::event::Modifiers, _s: &mut AutoCommit, _p: &ObjId, handled: &mut bool, _f: &mut Option<NodeId>, _n: NodeId, _t: &TaffyTree<()>) {
+        if let WindowEvent::KeyboardInput { event: winit::event::KeyEvent { logical_key: winit::keyboard::Key::Named(k), state: winit::event::ElementState::Pressed, .. }, .. } = event {
+            if modifiers.state().super_key() || modifiers.state().control_key() {
+                match k {
+                    winit::keyboard::NamedKey::ArrowUp => { if self.switch(WorkspaceSwitchDirection::Up) { *handled = true; } }
+                    winit::keyboard::NamedKey::ArrowDown => { if self.switch(WorkspaceSwitchDirection::Down) { *handled = true; } }
+                    _ => {}
+                }
+            }
+        }
+    }
     fn name(&self) -> &str { "WorkspaceView" }
     fn get_rect(&self) -> Rect { self.rect }
 }
