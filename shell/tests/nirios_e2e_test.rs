@@ -14,7 +14,8 @@
 use quick_desktop::shell::chrome_state::{ChromeState, QuickSettingsState};
 use quick_desktop::shell::notes_app::{BODY_KEY, NotesApp};
 use quick_desktop::shell::sidebar_wheel::SidebarWheel;
-use quick_desktop::shell::state::WorkspaceTree;
+use quick_desktop::shell::state::{Collaborator, WorkspaceTree};
+use quick_desktop::shell::topbar_chrome::TopBarChrome;
 use quick_desktop::shell::{build_nirios_root, state::TileContent};
 
 use quick_ui::widget::Widget;
@@ -130,6 +131,31 @@ fn commit_workspace_name_applies_buffer_to_active_workspace() {
         chrome.borrow().tree.active_workspace().unwrap().name,
         "Research"
     );
+}
+
+#[test]
+fn topbar_renders_up_to_three_avatars_then_overflow_chip() {
+    // 2 peers → 2 avatars, no overflow.
+    let mut tree = WorkspaceTree::bootstrap_default();
+    tree.collaborators = vec![
+        Collaborator { id: "a".into(), name: "Ada".into() },
+        Collaborator { id: "b".into(), name: "Ben".into() },
+    ];
+    let top = TopBarChrome::from_tree(&tree);
+    assert_eq!(top.collaborator_initials(), &['A', 'B']);
+    assert_eq!(top.collaborator_overflow(), 0);
+
+    // 5 peers → first 3 initials drawn + "+2" chip.
+    tree.collaborators = vec![
+        Collaborator { id: "a".into(), name: "Ada".into() },
+        Collaborator { id: "b".into(), name: "Ben".into() },
+        Collaborator { id: "c".into(), name: "Cae".into() },
+        Collaborator { id: "d".into(), name: "Dia".into() },
+        Collaborator { id: "e".into(), name: "Eli".into() },
+    ];
+    let top = TopBarChrome::from_tree(&tree);
+    assert_eq!(top.collaborator_initials(), &['A', 'B', 'C']);
+    assert_eq!(top.collaborator_overflow(), 2);
 }
 
 #[test]
