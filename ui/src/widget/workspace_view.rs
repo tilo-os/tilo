@@ -61,7 +61,10 @@ impl Widget for WorkspaceView {
         if !self.slide.is_settled() { self.tick_animation(1.0 / 60.0); true } else { false }
     }
     fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
-        let n = taffy.new_leaf(Style { size: Size { width: Dimension::percent(1.0), height: Dimension::percent(1.0) }, ..Default::default() }).unwrap();
+        // Zero-height leaf — WorkspaceView is a keyboard-handler +
+        // animation driver, not a visible rect. Visible workspace chrome
+        // lives in the top bar.
+        let n = taffy.new_leaf(Style { size: Size { width: Dimension::percent(1.0), height: Dimension::length(0.0) }, flex_shrink: 0.0, ..Default::default() }).unwrap();
         node_map.insert(n, self as *mut dyn Widget);
         n
     }
