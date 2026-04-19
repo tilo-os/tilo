@@ -6,11 +6,15 @@ use taffy::{TaffyTree, NodeId, Style, Size};
 use crate::widget::Widget;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::presence::{PathSegment, PresenceKey};
+use crate::permissions::PermissionScope;
 
 pub struct Text {
     label: String,
     size: f32,
     rect: vello::kurbo::Rect,
+    presence_path: Vec<PathSegment>,
+    permission_scope: Option<PermissionScope>,
 }
 
 impl Text {
@@ -19,11 +23,25 @@ impl Text {
             label: label.to_string(),
             size: 16.0,
             rect: vello::kurbo::Rect::ZERO,
+            presence_path: Vec::new(),
+            permission_scope: None,
         }
     }
 
     pub fn with_size(mut self, size: f32) -> Self {
         self.size = size;
+        self
+    }
+
+    /// Opt this widget into presence tracking by binding it to a CRDT-style path.
+    pub fn with_presence(mut self, path: Vec<PathSegment>) -> Self {
+        self.presence_path = path;
+        self
+    }
+
+    /// Gate this widget behind a permission scope.
+    pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
+        self.permission_scope = Some(scope);
         self
     }
 }
@@ -109,4 +127,43 @@ impl Widget for Text {
     fn set_focus(&mut self, _focused: bool) {}
     fn is_focused(&self) -> bool { false }
     fn needs_commit(&self) -> bool { false }
+
+    fn presence_key(&self) -> Option<PresenceKey> {
+        if self.presence_path.is_empty() {
+            None
+        } else {
+            Some(PresenceKey::Widget { path: self.presence_path.clone() })
+        }
+    }
+
+    fn permission_scope(&self) -> Option<PermissionScope> {
+        self.permission_scope.clone()
+    }
+
+    fn draw_with_presence(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &crate::presence::PresenceCtx,
+        permissions: &crate::permissions::PermissionContext,
+    ) {
+        self.draw(scene, transform, text_renderer, theme, presence);
+
+        if let Some(scope) = self.permission_scope() {
+            if !permissions.check(&scope) {
+                let overlay = vello::peniko::Color::rgba8(0, 0, 0, 77);
+                scene.fill(vello::peniko::Fill::NonZero, transform, overlay, None, &self.rect);
+            }
+        }
+
+        if let Some(key) = self.presence_key() {
+            if let Some(peers) = presence.here.get(&key) {
+                if let Some(user) = peers.first() {
+                    presence.draw_peer_focus(scene, theme, user, self.rect);
+                }
+            }
+        }
+    }
 }
