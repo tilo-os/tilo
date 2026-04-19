@@ -28,6 +28,47 @@ use crate::shell::state::WorkspaceTree;
 
 pub const TOPBAR_HEIGHT_PX: f32 = 40.0;
 
+/// Which center-widget variant is active in the top-bar carousel.
+/// Scroll-wheel over the center band cycles between these; a three-dot
+/// indicator on the left of the band shows the current position.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CenterWidget {
+    Clock,
+    SystemMonitor,
+    Calendar,
+}
+
+impl CenterWidget {
+    pub fn next(self) -> Self {
+        match self {
+            CenterWidget::Clock => CenterWidget::SystemMonitor,
+            CenterWidget::SystemMonitor => CenterWidget::Calendar,
+            CenterWidget::Calendar => CenterWidget::Clock,
+        }
+    }
+    pub fn prev(self) -> Self {
+        match self {
+            CenterWidget::Clock => CenterWidget::Calendar,
+            CenterWidget::SystemMonitor => CenterWidget::Clock,
+            CenterWidget::Calendar => CenterWidget::SystemMonitor,
+        }
+    }
+    pub fn index(self) -> usize {
+        match self {
+            CenterWidget::Clock => 0,
+            CenterWidget::SystemMonitor => 1,
+            CenterWidget::Calendar => 2,
+        }
+    }
+    pub fn from_index(i: usize) -> Self {
+        match i % 3 {
+            0 => CenterWidget::Clock,
+            1 => CenterWidget::SystemMonitor,
+            _ => CenterWidget::Calendar,
+        }
+    }
+}
+
 /// Snapshot of the data the top bar renders. Cached at construction and
 /// refreshed when the shell calls [`TopBarChrome::sync_from_tree`] (e.g. in
 /// response to a workspace switch). Keeping the render widget off
@@ -56,6 +97,19 @@ pub struct TopBarChrome {
     down_btn_rect: Rect,
     ws_pill_rect: Rect,
     tray_pill_rect: Rect,
+    /// Active center-widget. Scroll-wheel over `center_rect` cycles the
+    /// variant; clicks on one of the three dot indicators jumps directly.
+    center_widget: CenterWidget,
+    /// Hit region for the center band (dots + content). Populated every
+    /// draw so scroll + click hit-testing stays aligned with what's shown.
+    center_rect: Rect,
+    /// Dot-indicator click targets (one per variant). Same populate-on-draw
+    /// contract as the other rect fields on this struct.
+    center_dot_rects: [Rect; 3],
+    /// Scroll-wheel accumulator over the center band. Matches the
+    /// sidebar-wheel scroll contract so a single deliberate wheel tick
+    /// advances one variant.
+    center_scroll_accum: f32,
     /// Last cursor position in logical coords. Winit delivers the position
     /// with `CursorMoved` but not `MouseInput`, so we cache it here to
     /// hit-test click events.
@@ -78,6 +132,10 @@ impl TopBarChrome {
             down_btn_rect: Rect::ZERO,
             ws_pill_rect: Rect::ZERO,
             tray_pill_rect: Rect::ZERO,
+            center_widget: CenterWidget::Clock,
+            center_rect: Rect::ZERO,
+            center_dot_rects: [Rect::ZERO; 3],
+            center_scroll_accum: 0.0,
             last_cursor: None,
         };
         this.sync_from_tree(tree);
@@ -127,6 +185,12 @@ impl TopBarChrome {
     /// Zero when three-or-fewer peers; otherwise shown as the "+N" chip.
     pub fn collaborator_overflow(&self) -> usize {
         self.collaborator_overflow
+    }
+
+    /// Active center-widget variant. Exposed for integration tests so they
+    /// can verify the scroll-wheel and dot-click state transitions.
+    pub fn center_widget(&self) -> CenterWidget {
+        self.center_widget
     }
 }
 
@@ -319,20 +383,187 @@ impl Widget for TopBarChrome {
         let gear_hole = vello::kurbo::Circle::new(Point::new(gear_x + 4.0, center_y), 1.3);
         scene.fill(Fill::NonZero, transform, colors.text_dim, None, &gear_hole);
 
-        // --- Center cluster: clock HH:MM ---
-        let clock = Self::current_clock_string();
-        let clock_size = tokens.typography.scale.base;
-        let (cw, ch) = text_renderer.measure(&clock, clock_size, None);
-        let cx = (self.rect.x0 + self.rect.x1) / 2.0 - cw as f64 / 2.0;
-        let cy = center_y - ch as f64 / 2.0;
-        text_renderer.draw_text(
-            scene,
-            &clock,
-            clock_size,
-            colors.text_primary,
-            transform * Affine::translate((cx, cy)),
-            None,
+        // --- Center cluster: carousel band with 3 dots + active widget ---
+        let band_w = 360.0_f64;
+        let band_h = 28.0_f64;
+        let band_cx = (self.rect.x0 + self.rect.x1) / 2.0;
+        let band = Rect::new(
+            band_cx - band_w / 2.0,
+            center_y - band_h / 2.0,
+            band_cx + band_w / 2.0,
+            center_y + band_h / 2.0,
         );
+        self.center_rect = band;
+        // Subtle pill backdrop so the band reads as a scroll surface.
+        let band_rr = RoundedRect::from_rect(band, tokens.radii.sm as f64);
+        scene.fill(Fill::NonZero, transform, colors.surfaces.raised, None, &band_rr);
+
+        // Three-dot indicator on the left of the band (vertical stack).
+        let dot_x = band.x0 + 12.0;
+        let dot_size = 3.0_f64;
+        let dot_gap = 4.0_f64;
+        let dot_col_h = 3.0 * dot_size + 2.0 * dot_gap;
+        let dot_top = center_y - dot_col_h / 2.0;
+        for i in 0..3 {
+            let cy = dot_top + i as f64 * (dot_size + dot_gap) + dot_size / 2.0;
+            let active = self.center_widget.index() == i;
+            let r = dot_size * if active { 1.4 } else { 1.0 };
+            let color = if active { colors.accent[5] } else { colors.text_dim };
+            // Store dot hit region (generous 10 px square for clickability).
+            self.center_dot_rects[i] = Rect::new(
+                dot_x - 10.0,
+                cy - 10.0,
+                dot_x + 10.0,
+                cy + 10.0,
+            );
+            let c = vello::kurbo::Circle::new(Point::new(dot_x, cy), r);
+            scene.fill(Fill::NonZero, transform, color, None, &c);
+        }
+
+        // Widget content fills the band to the right of the dots.
+        let content_x0 = dot_x + 24.0;
+        let content_x1 = band.x1 - 12.0;
+        let content_cx = (content_x0 + content_x1) / 2.0;
+        match self.center_widget {
+            CenterWidget::Clock => {
+                let s = Self::current_clock_string();
+                let size = tokens.typography.scale.base;
+                let (tw, th) = text_renderer.measure(&s, size, None);
+                let tx = content_cx - tw as f64 / 2.0;
+                let ty = center_y - th as f64 / 2.0;
+                text_renderer.draw_text(
+                    scene,
+                    &s,
+                    size,
+                    colors.text_primary,
+                    transform * Affine::translate((tx, ty)),
+                    None,
+                );
+            }
+            CenterWidget::SystemMonitor => {
+                // CPU % (left) • sparkline (stretch) • RAM / TMP (right).
+                // Concept uses live random data; here we render a stable
+                // snapshot derived from the clock seconds so nothing
+                // repaints every frame yet the values change over time.
+                let t = Local::now();
+                let secs = t.format("%S").to_string().parse::<u32>().unwrap_or(0);
+                let cpu = 12 + (secs % 20);
+                let ram = 45 + (secs % 8);
+                let tmp = 40 + (secs % 11);
+                let sm_size = tokens.typography.scale.xs;
+                let cpu_str = format!("{cpu}%");
+                let ram_str = format!("{ram}%");
+                let tmp_str = format!("{tmp}°");
+                // Left: CPU label + value.
+                text_renderer.draw_text(
+                    scene,
+                    "CPU",
+                    sm_size,
+                    colors.accent[4],
+                    transform * Affine::translate((content_x0, center_y - 6.0)),
+                    None,
+                );
+                text_renderer.draw_text(
+                    scene,
+                    &cpu_str,
+                    tokens.typography.scale.sm,
+                    colors.text_primary,
+                    transform * Affine::translate((content_x0 + 26.0, center_y - 7.0)),
+                    None,
+                );
+                // Sparkline: 20 bars between CPU label and RAM cluster.
+                let spark_x0 = content_x0 + 70.0;
+                let spark_x1 = content_x1 - 100.0;
+                let spark_w = (spark_x1 - spark_x0).max(40.0);
+                let bars = 20usize;
+                let bar_gap = 1.0;
+                let bar_w = (spark_w - (bars as f64 - 1.0) * bar_gap) / bars as f64;
+                for i in 0..bars {
+                    // Deterministic but varied heights driven by seconds so
+                    // the strip looks "live" on a re-render.
+                    let seed = (secs as usize + i * 7) % 100;
+                    let h = 4.0 + (seed as f64) * 0.08;
+                    let bx = spark_x0 + i as f64 * (bar_w + bar_gap);
+                    let b = Rect::new(bx, center_y + 6.0 - h, bx + bar_w, center_y + 6.0);
+                    scene.fill(Fill::NonZero, transform, colors.accent[4], None, &b);
+                }
+                // Right: RAM + TMP chips.
+                text_renderer.draw_text(
+                    scene,
+                    "RAM",
+                    sm_size,
+                    colors.accent[5],
+                    transform * Affine::translate((content_x1 - 96.0, center_y - 6.0)),
+                    None,
+                );
+                text_renderer.draw_text(
+                    scene,
+                    &ram_str,
+                    tokens.typography.scale.sm,
+                    colors.text_primary,
+                    transform * Affine::translate((content_x1 - 70.0, center_y - 7.0)),
+                    None,
+                );
+                text_renderer.draw_text(
+                    scene,
+                    "TMP",
+                    sm_size,
+                    colors.text_dim,
+                    transform * Affine::translate((content_x1 - 40.0, center_y - 6.0)),
+                    None,
+                );
+                text_renderer.draw_text(
+                    scene,
+                    &tmp_str,
+                    tokens.typography.scale.sm,
+                    colors.text_primary,
+                    transform * Affine::translate((content_x1 - 18.0, center_y - 7.0)),
+                    None,
+                );
+            }
+            CenterWidget::Calendar => {
+                // "Next: Design Sync  15:30" — concept uses a hardcoded next
+                // event; we keep the same placeholder until real calendars
+                // land.
+                let prefix = "Next:";
+                let event = "Design Sync";
+                let time = "15:30";
+                let size = tokens.typography.scale.sm;
+                let (pw, ph) = text_renderer.measure(prefix, size, None);
+                let (ew, _) = text_renderer.measure(event, size, None);
+                let (tw, _) = text_renderer.measure(time, tokens.typography.scale.xs, None);
+                let gap = 8.0;
+                let total = pw as f64 + gap + ew as f64 + gap + tw as f64;
+                let mut tx = content_cx - total / 2.0;
+                let ty = center_y - ph as f64 / 2.0;
+                text_renderer.draw_text(
+                    scene,
+                    prefix,
+                    size,
+                    colors.text_dim,
+                    transform * Affine::translate((tx, ty)),
+                    None,
+                );
+                tx += pw as f64 + gap;
+                text_renderer.draw_text(
+                    scene,
+                    event,
+                    size,
+                    colors.text_primary,
+                    transform * Affine::translate((tx, ty)),
+                    None,
+                );
+                tx += ew as f64 + gap;
+                text_renderer.draw_text(
+                    scene,
+                    time,
+                    tokens.typography.scale.xs,
+                    colors.text_dim,
+                    transform * Affine::translate((tx, ty + 1.0)),
+                    None,
+                );
+            }
+        }
 
         // --- Right cluster: avatar stack + tray pill ---
         let mut rx = self.rect.x1 - pad_x;
@@ -448,6 +679,31 @@ impl Widget for TopBarChrome {
             ));
             return;
         }
+        // Scroll-wheel over the center band cycles the active center-widget
+        // variant (Clock → SystemMonitor → Calendar → …). Mirrors the
+        // sidebar-wheel accumulator contract so a single deliberate tick
+        // advances one variant.
+        if let WindowEvent::MouseWheel { delta, .. } = event {
+            let Some(p) = self.last_cursor else { return };
+            if !self.center_rect.contains(p) {
+                return;
+            }
+            let dy = match delta {
+                winit::event::MouseScrollDelta::LineDelta(_, y) => *y as f32,
+                winit::event::MouseScrollDelta::PixelDelta(pos) => (pos.y as f32) / 40.0,
+            };
+            self.center_scroll_accum += dy;
+            while self.center_scroll_accum >= 1.0 {
+                self.center_widget = self.center_widget.next();
+                self.center_scroll_accum -= 1.0;
+            }
+            while self.center_scroll_accum <= -1.0 {
+                self.center_widget = self.center_widget.prev();
+                self.center_scroll_accum += 1.0;
+            }
+            *handled = true;
+            return;
+        }
         let WindowEvent::MouseInput {
             state: winit::event::ElementState::Pressed,
             button: winit::event::MouseButton::Left,
@@ -456,6 +712,17 @@ impl Widget for TopBarChrome {
         else {
             return;
         };
+        // Dot-indicator clicks: jump directly to that variant. These don't
+        // need the shared chrome handle — purely local widget state.
+        if let Some(p) = self.last_cursor {
+            for (i, rect) in self.center_dot_rects.iter().enumerate() {
+                if rect.contains(p) {
+                    self.center_widget = CenterWidget::from_index(i);
+                    *handled = true;
+                    return;
+                }
+            }
+        }
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
