@@ -120,6 +120,7 @@ tuned to the concept's slate-900/indigo-500 palette** — it leans more neutral.
 | Item | Status | Notes |
 |---|---|---|
 | ⌘K / ⌘Tab / Esc | ✅ | ⌘K toggles palette; ⌘Tab toggles overview; Esc closes the top-most overlay. |
+| Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z | ✅ | `quick-ui`'s App event loop wires undo (Ctrl+Z) + redo (Ctrl+Y or Ctrl+Shift+Z), which the shell inherits since it runs via `quick_ui::App`. |
 | ⌘↑ / ⌘↓ workspace switch | ✅ | Wired through `ShellOverlayHost` → `chrome.switch_workspace`. |
 | Mouse wheel over strip | ✅ | 600 ms cooldown in `StripView`. |
 | Tab click | ✅ | `TabBar` handles it. |
