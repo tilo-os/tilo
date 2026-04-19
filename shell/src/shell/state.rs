@@ -1,7 +1,38 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-pub type WorkspaceId = u64;
+/// Monotonic workspace identifier. Wrapped as a newtype so call-sites can
+/// mint fresh ids via `WorkspaceId::new()`; integer literals still flow in
+/// ergonomically through `From<u64>`.
+#[derive(
+    Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord,
+)]
+#[serde(transparent)]
+pub struct WorkspaceId(pub u64);
+
+impl WorkspaceId {
+    /// Allocate a fresh, process-wide unique id.
+    pub fn new() -> Self {
+        Self(next_id())
+    }
+
+    pub fn raw(&self) -> u64 {
+        self.0
+    }
+}
+
+impl From<u64> for WorkspaceId {
+    fn from(v: u64) -> Self {
+        Self(v)
+    }
+}
+
+impl From<WorkspaceId> for u64 {
+    fn from(v: WorkspaceId) -> Self {
+        v.0
+    }
+}
+
 pub type StripId = u64;
 pub type GroupId = u64;
 pub type TabId = u64;
@@ -125,11 +156,10 @@ pub struct WorkspaceFile {
     pub mime: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct Collaborator {
-    pub user_id: String,
+    pub id: String,
     pub name: String,
-    pub color: [u8; 3],
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -139,6 +169,24 @@ pub struct Workspace {
     pub strips: Vec<Strip>,
     pub roles: Vec<Role>,
     pub workspace_files: Vec<WorkspaceFile>,
+    #[serde(default)]
+    pub collaborators: Vec<Collaborator>,
+}
+
+impl Workspace {
+    /// Build an empty workspace with the given id and name. The workspace
+    /// starts with no strips, roles, files, or collaborators — those are
+    /// populated by the compositor or the persistence layer.
+    pub fn new(id: WorkspaceId, name: impl Into<String>) -> Self {
+        Self {
+            id,
+            name: name.into(),
+            strips: Vec::new(),
+            roles: Vec::new(),
+            workspace_files: Vec::new(),
+            collaborators: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -151,7 +199,7 @@ pub struct WorkspaceTree {
 
 impl WorkspaceTree {
     pub fn bootstrap_default() -> Self {
-        let ws_id = next_id();
+        let ws_id = WorkspaceId::new();
         let strip_id = next_id();
         let group_id = next_id();
         let tab_id = next_id();
@@ -177,6 +225,7 @@ impl WorkspaceTree {
             }],
             roles: vec![],
             workspace_files: vec![],
+            collaborators: vec![],
         };
         let mut active_strip = HashMap::new();
         active_strip.insert(ws_id, strip_id);
@@ -189,7 +238,7 @@ impl WorkspaceTree {
     }
 
     pub fn append_empty_workspace(&mut self, name: &str) -> WorkspaceId {
-        let ws_id = next_id();
+        let ws_id = WorkspaceId::new();
         let strip_id = next_id();
         let ws = Workspace {
             id: ws_id,
@@ -201,6 +250,7 @@ impl WorkspaceTree {
             }],
             roles: vec![],
             workspace_files: vec![],
+            collaborators: vec![],
         };
         self.active_strip.insert(ws_id, strip_id);
         self.workspaces.push(ws);

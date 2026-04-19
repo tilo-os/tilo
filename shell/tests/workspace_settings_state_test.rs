@@ -2,14 +2,7 @@ use quick_desktop::shell::state::{Role, RolePermissions, WorkspaceFile, Workspac
 
 #[test]
 fn role_permissions_round_trip() {
-    let id: WorkspaceId = 1;
-    let mut ws = Workspace {
-        id,
-        name: "Design".into(),
-        strips: vec![],
-        roles: vec![],
-        workspace_files: vec![],
-    };
+    let mut ws = Workspace::new(WorkspaceId::new(), "Design");
     ws.roles.push(Role {
         id: "role-1".into(),
         name: "Editor".into(),

@@ -6,24 +6,17 @@
 use quick_desktop::shell::overview::OverviewView;
 use quick_desktop::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
 
-/// Helper mirroring the plan's `Workspace::new` stand-in. We keep the
-/// `WorkspaceId = u64` alias from Plan 1's state model and mint monotonic ids
-/// locally so tests don't clash when several build a tree.
-fn mk_workspace(id: WorkspaceId, name: &str) -> Workspace {
-    Workspace {
-        id,
-        name: name.into(),
-        strips: vec![],
-        roles: vec![],
-        workspace_files: vec![],
-    }
+/// Helper that builds a workspace with a caller-supplied id so each test
+/// keeps a stable shape without minting fresh monotonic ids.
+fn mk_workspace(id: u64, name: &str) -> Workspace {
+    Workspace::new(WorkspaceId::from(id), name)
 }
 
 #[test]
 fn overview_view_click_activates_workspace() {
     let mut tree = WorkspaceTree {
         workspaces: vec![],
-        active: 0,
+        active: WorkspaceId::from(0),
         active_strip: Default::default(),
         collaborators: vec![],
     };
@@ -88,4 +81,22 @@ fn quick_settings_drill_in_and_back() {
     assert_eq!(q.current_level(), &QsLevel::Root);
     q.pop_level(); // no-op at root
     assert_eq!(q.current_level(), &QsLevel::Root);
+}
+
+#[test]
+fn workspace_settings_general_edits_name_and_removes_collaborator() {
+    use quick_desktop::shell::state::{Collaborator, Workspace, WorkspaceId};
+    use quick_desktop::shell::workspace_settings::{WorkspaceSettings, WsTab};
+    let mut ws = Workspace::new(WorkspaceId::new(), "Design");
+    ws.collaborators = vec![
+        Collaborator { id: "u1".into(), name: "Ada".into() },
+        Collaborator { id: "u2".into(), name: "Bo".into() },
+    ];
+    let mut modal = WorkspaceSettings::new(ws.id);
+    modal.set_tab(WsTab::General);
+    modal.rename(&mut ws, "Concept Room");
+    assert_eq!(ws.name, "Concept Room");
+    modal.remove_collaborator(&mut ws, "u1");
+    assert_eq!(ws.collaborators.len(), 1);
+    assert_eq!(ws.collaborators[0].id, "u2");
 }
