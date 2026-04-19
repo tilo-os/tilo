@@ -3,6 +3,18 @@
 //!
 //! Tasks land their chrome pieces one at a time and add their own test here.
 
+#[test]
+fn visual_smoke_checklist_is_documented() {
+    let src = include_str!("../src/shell/mod.rs");
+    assert!(
+        src.contains("# Visual smoke checklist"),
+        "visual smoke checklist missing"
+    );
+    for marker in ["Cmd+K", "Cmd+Tab", "overscroll", "QuickSettings", "remote cursor"] {
+        assert!(src.contains(marker), "missing smoke item: {marker}");
+    }
+}
+
 use quick_desktop::shell::overview::OverviewView;
 use quick_desktop::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
 
