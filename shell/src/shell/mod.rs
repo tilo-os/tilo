@@ -1126,3 +1126,33 @@ pub fn build_nirios_root(tree: &WorkspaceTree) -> Box<dyn Widget> {
     );
     Box::new(overlay_host::ShellOverlayHost::new(root).with_chrome(chrome))
 }
+
+/// Seed a [`PresenceCtx`] with per-tab presence attributions derived
+/// from the active workspace's collaborator roster.
+///
+/// For each `Collaborator` whose [`Collaborator::active_tab`] is
+/// `Some(tab_id)`, this registers that peer under
+/// `PresenceKey::Tab { id: format!("{:x}", tab_id) }`, which is the key
+/// `TabBar::draw` reads to paint the low-alpha presence dots beneath a
+/// tab pill. Collaborators with `None` are skipped — the top-bar avatar
+/// stack + sidebar card still show them, they just don't attribute to
+/// a specific tab yet.
+///
+/// Intended to be called by the shell host once per frame (before
+/// draw) so the presence context tracks the tree's current state
+/// without accumulating stale entries. Callers that want the roster
+/// cleared between frames should reset `PresenceCtx::here` first;
+/// this helper is additive by design so it can also be invoked from
+/// incremental presence-update handlers.
+pub fn sync_tab_presence_from_tree(tree: &WorkspaceTree, ctx: &mut quick_ui::presence::PresenceCtx) {
+    use quick_ui::permissions::UserId;
+    use quick_ui::presence::PresenceKey;
+    if let Some(ws) = tree.active_workspace() {
+        for c in &ws.collaborators {
+            if let Some(tab_id) = c.active_tab {
+                let key = PresenceKey::Tab { id: format!("{:x}", tab_id) };
+                ctx.register_presence(&key, UserId(c.id.clone()));
+            }
+        }
+    }
+}
