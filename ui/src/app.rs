@@ -402,6 +402,13 @@ impl App {
                                     window.request_redraw();
                                 }
                             }
+                            CollabEvent::CRDTIncremental { data: _ } => {
+                                // Incremental CRDT deltas are applied once the State API
+                                // exposes automerge merge-incremental; for now, best-effort no-op.
+                                // Full-snapshot fallback is still handled via CRDTUpdate.
+                                self.needs_sync = true;
+                                window.request_redraw();
+                            }
                             CollabEvent::RemotePresenceUpdate { user_id, key, payload } => {
                                 self.apply_remote_presence(user_id, key, payload);
                                 window.request_redraw();
