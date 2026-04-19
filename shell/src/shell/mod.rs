@@ -1155,3 +1155,31 @@ pub fn sync_tab_presence_from_tree(tree: &WorkspaceTree, ctx: &mut quick_ui::pre
         }
     }
 }
+
+/// Seed a demo peer ("alice") with a caret + selection inside the editor
+/// body so the peer-caret draw path in [`super::editor_app::EditorApp`]
+/// has visible chrome in single-process development, even before any
+/// real network traffic arrives.
+///
+/// The caret sits roughly two rows in at char index 36 (just past the
+/// first `const` keyword in the default TSX snippet) and the selection
+/// spans a short word after it; both line up against the snippet in
+/// `editor_app::DEFAULT_SEED`. If the shell later loads a different
+/// editor body, the per-char measurement in `EditorApp::draw` handles
+/// out-of-range indices gracefully — `char_index_to_byte` clamps to
+/// `text.len()` so the caret just rides at end-of-buffer.
+pub fn seed_demo_editor_presence(ctx: &mut quick_ui::presence::PresenceCtx) {
+    use quick_ui::permissions::UserId;
+    use quick_ui::presence::{PathSegment, PresenceKey, SelectionRange};
+    let key = PresenceKey::Widget {
+        path: vec![PathSegment::Field("editor_body".into())],
+    };
+    let alice = UserId("alice".into());
+    ctx.register_presence(&key, alice.clone());
+    ctx.set_caret(&key, alice.clone(), 66); // inside line 5 of the default snippet
+    ctx.set_selection(
+        &key,
+        alice,
+        SelectionRange { start: 60, end: 72 }, // short multi-char band on the same line
+    );
+}
