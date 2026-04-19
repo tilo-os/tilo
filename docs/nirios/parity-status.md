@@ -50,7 +50,7 @@ Current state of the Rust implementation vs. the concept described in
 | Maximized state | 🟥 | No maximize / minimize / floating top-bar. |
 | Tab bar height ~14 px | 🟧 | TabBar is 28 px (concept 14 px). |
 | Tab pill styling | ✅ | Rounded-full pills with active/hover/inactive alpha ramp, close-glyph on hover. |
-| Tab drop zones | 🟧 | Drag-to-reorder works via `press_origin` + on-release hit-test inside the bar; no visual drop-zone indicator (cross-group move not supported). |
+| Tab drop zones | 🟧 | Drag-to-reorder works + 2 px indigo bar renders at the drop position while drag is in flight (left of target when moving backward, right of target when moving forward, matching the vec remove-then-insert post-release index). Cross-group move still not supported. |
 | Tab-level collaborator blur indicators | 🟥 | No indicators. |
 | Window frame white rounded card | ✅ | `TileHost` paints `surfaces.window_card` (WHITE) with `rounded-xl` radius + `white/20` border. Stub text renders dark-on-white. |
 | Drag-over / search-active borders | 🟥 | No border state transitions. |
