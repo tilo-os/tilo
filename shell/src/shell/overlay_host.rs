@@ -140,6 +140,39 @@ impl ShellOverlayHost {
         self.palette_visible = !self.palette_visible;
     }
 
+    /// Dispatch the shell action associated with a palette command id,
+    /// then close the palette. Returns `true` if the id matched a known
+    /// command. Callers still close the palette on unknown ids to avoid
+    /// leaving a stale overlay on screen.
+    ///
+    /// Command ids come from the seed set in [`ShellOverlayHost::new`]
+    /// (`search.open` / `overview.toggle` / `settings.open` /
+    /// `quick-settings.open`) and map to a single overlay-flag mutation
+    /// on the shared [`Chrome`] state.
+    pub(crate) fn dispatch_palette_command(&mut self, id: &str) -> bool {
+        let matched = if let Some(chrome) = self.chrome.clone() {
+            let mut st = chrome.borrow_mut();
+            let hit = match id {
+                "overview.toggle" => { st.overlays.overview = !st.overlays.overview; true }
+                "settings.open" => { st.overlays.ws_settings = true; true }
+                "quick-settings.open" => { st.overlays.quick_settings = true; true }
+                // `search.open` is a no-op: the palette is already open
+                // when the user reaches this row. We close it below like
+                // the other commands so behaviour is consistent.
+                "search.open" => true,
+                _ => false,
+            };
+            if hit {
+                st.bump();
+            }
+            hit
+        } else {
+            false
+        };
+        self.palette_visible = false;
+        matched
+    }
+
     fn overlay_flags(&self) -> crate::shell::chrome_state::OverlayFlags {
         self.chrome
             .as_ref()
@@ -742,6 +775,46 @@ impl Widget for ShellOverlayHost {
 
         let children = taffy.children(node_id).unwrap();
         if self.palette_visible {
+            // Mouse-click on a visible row: move cursor to the clicked
+            // row, then dispatch its action. Happens before delegating
+            // to the palette so a single click both selects and fires.
+            if let WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+                ..
+            } = event
+            {
+                if let Some(p) = self.last_cursor {
+                    if let Some(row) = self.palette.row_at(p) {
+                        self.palette.set_cursor(row);
+                        if let Some(id) = self.palette.selected_id().map(|s| s.to_string()) {
+                            self.dispatch_palette_command(&id);
+                        }
+                        *handled = true;
+                        return;
+                    }
+                }
+            }
+            // Keyboard Enter: fire the cursor-selected action. The
+            // palette's own `on_select` callback path is unused because
+            // the shell's command ids map to overlay-state mutations,
+            // not CRDT writes, and the callback's signature is
+            // (&mut AutoCommit, &ObjId) — no chrome access.
+            if let WindowEvent::KeyboardInput {
+                event: KeyEvent {
+                    logical_key: Key::Named(NamedKey::Enter),
+                    state: ElementState::Pressed,
+                    ..
+                },
+                ..
+            } = event
+            {
+                if let Some(id) = self.palette.selected_id().map(|s| s.to_string()) {
+                    self.dispatch_palette_command(&id);
+                    *handled = true;
+                    return;
+                }
+            }
             self.palette.handle_event(
                 event,
                 scale_factor,
@@ -1520,5 +1593,75 @@ mod overview_transition_tests {
             t_mid
         );
         assert_eq!(h.overview_target, 0.0);
+    }
+}
+
+#[cfg(test)]
+mod palette_dispatch_tests {
+    use super::*;
+    use crate::shell::chrome_state::ChromeState;
+    use crate::shell::state::WorkspaceTree;
+    use quick_ui::widget::Container;
+
+    fn host_with_chrome() -> (ShellOverlayHost, crate::shell::chrome_state::Chrome) {
+        let tree = WorkspaceTree::bootstrap_default();
+        let chrome = ChromeState::new(tree);
+        let host = ShellOverlayHost::new(Box::new(Container::new()))
+            .with_chrome(chrome.clone());
+        (host, chrome)
+    }
+
+    #[test]
+    fn dispatch_overview_toggle_flips_overlay_and_closes_palette() {
+        let (mut h, chrome) = host_with_chrome();
+        h.palette_visible = true;
+        assert!(h.dispatch_palette_command("overview.toggle"));
+        assert!(
+            chrome.borrow().overlays.overview,
+            "overview overlay must be on after dispatch"
+        );
+        assert!(!h.palette_visible, "palette must close after dispatch");
+    }
+
+    #[test]
+    fn dispatch_settings_open_raises_ws_settings_flag() {
+        let (mut h, chrome) = host_with_chrome();
+        h.palette_visible = true;
+        assert!(h.dispatch_palette_command("settings.open"));
+        assert!(chrome.borrow().overlays.ws_settings);
+        assert!(!h.palette_visible);
+    }
+
+    #[test]
+    fn dispatch_quick_settings_open_raises_quick_settings_flag() {
+        let (mut h, chrome) = host_with_chrome();
+        h.palette_visible = true;
+        assert!(h.dispatch_palette_command("quick-settings.open"));
+        assert!(chrome.borrow().overlays.quick_settings);
+        assert!(!h.palette_visible);
+    }
+
+    #[test]
+    fn dispatch_unknown_command_still_closes_palette() {
+        let (mut h, _chrome) = host_with_chrome();
+        h.palette_visible = true;
+        assert!(!h.dispatch_palette_command("does.not.exist"));
+        assert!(
+            !h.palette_visible,
+            "palette should close even for unknown ids so no stale overlay stays up"
+        );
+    }
+
+    #[test]
+    fn dispatch_search_open_is_noop_but_closes_palette() {
+        let (mut h, chrome) = host_with_chrome();
+        h.palette_visible = true;
+        let before = chrome.borrow().overlays;
+        assert!(h.dispatch_palette_command("search.open"));
+        assert_eq!(
+            chrome.borrow().overlays, before,
+            "search.open should not mutate overlay flags"
+        );
+        assert!(!h.palette_visible);
     }
 }
