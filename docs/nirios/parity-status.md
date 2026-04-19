@@ -12,7 +12,7 @@ Current state of the Rust implementation vs. the concept described in
 
 | Item | Status | Notes |
 |---|---|---|
-| Desktop view (sidebar + strips + groups) | 🟧 | Top bar + white-card window-groups + left SidebarWheelChrome render. Groups still stack vertically (concept wants horizontal). |
+| Desktop view (sidebar + strips + groups) | ✅ | Top bar + left SidebarWheelChrome + one horizontal Row per strip (groups tile left-to-right). Strips stack vertically inside the content Column. |
 | Overview view | ✅ | `ShellOverlayHost::draw_overview` renders a centered grid of workspace cards with preview tiles; click activates a workspace. |
 | Z-ordered overlay host | ✅ | `ShellOverlayHost` draws palette, overview, quick-settings, workspace-settings + scrim above content. |
 | View-swap animation | 🟥 | No crossfade between desktop ↔ overview. |
@@ -44,7 +44,7 @@ Current state of the Rust implementation vs. the concept described in
 
 | Item | Status | Notes |
 |---|---|---|
-| Groups inside a horizontal strip | 🟧 | Today groups are stacked vertically inside a Column; concept wants horizontal. |
+| Groups inside a horizontal strip | ✅ | Each strip's groups live in a `Row` inside the content Column, so groups tile left-to-right; multiple strips stack vertically. |
 | Width presets (narrow/normal/wide/custom) | ✅ | `WindowWidth` enum + clamped 300–1200. |
 | Right-edge resize handle | ✅ | `WindowGroup` renders handle, hover + drag work. |
 | Maximized state | 🟥 | No maximize / minimize / floating top-bar. |
@@ -142,12 +142,10 @@ Sorted by visual/functional impact per unit of work:
    selection highlight; we don't yet.
 2. **Maximize state** — concept has a floating top-bar over a maximized
    window-group; no path in the runtime tree yet.
-3. **Horizontal window-group strips** — groups currently stack vertically;
-   concept wants a horizontal row per strip.
-4. **Tab cross-group drag** — today reorder stays within a group; concept
+3. **Tab cross-group drag** — today reorder stays within a group; concept
    shows cross-group move via drop zones.
-5. **Search context banner / scope radios** — global search is palette-only
+4. **Search context banner / scope radios** — global search is palette-only
    today.
-6. **Screenshot-driven visual E2E** — blocked on host missing the "Window
+5. **Screenshot-driven visual E2E** — blocked on host missing the "Window
    Calls Extended" GNOME extension; 8 headless E2E tests cover the
    non-visual wiring.
