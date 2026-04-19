@@ -124,6 +124,26 @@ impl Widget for WindowGroup {
             _ => {}
         }
         self.bar.handle_event(event, scale_factor, m, s, p, handled, focus_target, children[0], taffy);
+
+        // Close a tab: drop its host + mirror the removal in the bar.
+        if let Some(close_id) = self.bar.take_close() {
+            if let Some(idx) = self.hosts.iter().position(|(i, _)| *i == close_id) {
+                self.hosts.remove(idx);
+            }
+            self.bar.remove_tab(close_id);
+            *handled = true;
+        }
+
+        // Drag-reorder within the bar: apply the same permutation to hosts
+        // so the visible tab order matches the content order.
+        if let Some((from, to)) = self.bar.take_reorder() {
+            if from < self.hosts.len() && to < self.hosts.len() {
+                let item = self.hosts.remove(from);
+                self.hosts.insert(to, item);
+            }
+            *handled = true;
+        }
+
         if *handled { return; }
         let active_id = self.bar.active_id();
         if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == active_id) {
