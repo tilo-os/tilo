@@ -21,6 +21,7 @@
 
 pub mod browser_stub;
 pub mod nirios_tokens;
+pub mod overlay_host;
 pub mod overview;
 pub mod persist;
 pub mod quick_settings;
@@ -1053,9 +1054,10 @@ pub fn build_nirios_root(tree: &WorkspaceTree) -> Box<dyn Widget> {
 
     let root_col = Column::new().push(topbar).push(content);
 
-    Box::new(
+    let root: Box<dyn Widget> = Box::new(
         Container::new()
             .with_child(Box::new(root_col))
             .filling(),
-    )
+    );
+    Box::new(overlay_host::ShellOverlayHost::new(root))
 }
