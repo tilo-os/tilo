@@ -58,3 +58,17 @@ fn global_search_context_filter_narrows_results() {
     let labels: Vec<String> = s.palette().visible_entries().iter().map(|e| e.label.clone()).collect();
     assert!(labels.iter().all(|l| l.to_lowercase().contains("file") || l.to_lowercase().contains("open")));
 }
+
+#[test]
+fn quick_settings_brightness_and_volume_clamp_and_mutate() {
+    use quick_desktop::shell::quick_settings::QuickSettings;
+    let mut q = QuickSettings::new();
+    q.set_brightness(50.0);
+    q.set_volume(80.0);
+    assert_eq!(q.brightness(), 50.0);
+    assert_eq!(q.volume(), 80.0);
+    q.set_brightness(-10.0);
+    q.set_volume(999.0);
+    assert_eq!(q.brightness(), 0.0);
+    assert_eq!(q.volume(), 100.0);
+}
