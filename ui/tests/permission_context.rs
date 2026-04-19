@@ -279,3 +279,37 @@ fn gated_widget_allowed_when_role_grants_edit() {
     assert!(allowed);
     assert!(fired);
 }
+
+// --- Task 8: Build PermissionContext from a WorkspaceSettings view ---
+
+use quick_ui::permissions::{WorkspaceSettingsView, PermissionAssignment};
+
+#[test]
+fn permission_context_built_from_workspace_settings_view() {
+    let settings = WorkspaceSettingsView {
+        roles: vec![viewer_role(), editor_role()],
+        assignments: vec![PermissionAssignment {
+            user: UserId("alice".into()),
+            role: RoleId("editor".into()),
+        }],
+    };
+    let ctx = PermissionContext::from_workspace_settings(
+        &settings,
+        &UserId("alice".into()),
+    ).expect("alice has an assignment");
+    assert!(ctx.check(&PermissionScope {
+        resource: ResourceId::App(AppKind::Terminal),
+        op: Op::Edit,
+    }));
+}
+
+#[test]
+fn permission_context_from_settings_returns_none_when_unassigned() {
+    let settings = WorkspaceSettingsView {
+        roles: vec![viewer_role()],
+        assignments: vec![],
+    };
+    assert!(PermissionContext::from_workspace_settings(
+        &settings, &UserId("carol".into()),
+    ).is_none());
+}
