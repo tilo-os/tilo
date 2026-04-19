@@ -6,6 +6,7 @@ pub mod quick_settings;
 pub mod search;
 pub mod state;
 pub mod system_monitor;
+pub mod topbar;
 pub mod workspace_settings;
 
 use quick_ui::widget::{
