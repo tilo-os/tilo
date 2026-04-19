@@ -100,3 +100,45 @@ fn workspace_settings_general_edits_name_and_removes_collaborator() {
     assert_eq!(ws.collaborators.len(), 1);
     assert_eq!(ws.collaborators[0].id, "u2");
 }
+
+#[test]
+fn workspace_settings_roles_tab_edits_app_permissions() {
+    use quick_desktop::shell::state::{AppPerm, Role, RolePermissions, Workspace, WorkspaceId};
+    use quick_desktop::shell::workspace_settings::{WorkspaceSettings, WsTab};
+    let mut ws = Workspace::new(WorkspaceId::new(), "Design");
+    ws.roles.push(Role {
+        id: "r1".into(),
+        name: "Viewer".into(),
+        permissions: RolePermissions::default(),
+    });
+    let mut modal = WorkspaceSettings::new(ws.id);
+    modal.set_tab(WsTab::Roles);
+    modal.select_role("r1");
+    assert_eq!(modal.selected_role(), Some("r1"));
+    modal.set_app_perm(&mut ws, "r1", "Terminal", AppPerm::View);
+    modal.set_app_perm(&mut ws, "r1", "Terminal", AppPerm::Edit);
+    let perm = ws.roles[0]
+        .permissions
+        .per_app
+        .get("Terminal")
+        .copied()
+        .unwrap_or(AppPerm::None);
+    assert!(matches!(perm, AppPerm::Edit));
+}
+
+#[test]
+fn workspace_settings_roles_tab_builds_apps_table_with_columns() {
+    use quick_desktop::shell::workspace_settings::WorkspaceSettings;
+    use quick_desktop::shell::state::WorkspaceId;
+    let modal = WorkspaceSettings::new(WorkspaceId::new());
+    // Apps table should expose two columns: the app name (flex) and the
+    // permission picker (fixed width). Keys are stable so callers can hook
+    // sort/resize policies onto them in later tasks.
+    let apps_cols: Vec<String> = modal
+        .apps_table()
+        .columns()
+        .iter()
+        .map(|c| c.key.clone())
+        .collect();
+    assert_eq!(apps_cols, vec!["app".to_string(), "permission".to_string()]);
+}
