@@ -5,6 +5,7 @@ pub mod text_render;
 pub mod theme;
 pub mod i18n;
 pub mod collaboration;
+pub mod tokens;
 
 pub use app::App;
 pub use state::State;
