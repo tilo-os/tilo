@@ -19,13 +19,27 @@ pub struct TabBar {
     rect: Rect,
     tab_rects: Vec<Rect>,
     close_rects: Vec<Rect>,
+    /// Hover-only maximize-icon hit regions, aligned 1:1 with `tabs`.
+    /// Sits just to the left of each pill's close button and only draws
+    /// when the pill is hovered, mirroring the concept's hover-reveal
+    /// action row.
+    max_rects: Vec<Rect>,
     hover_idx: Option<usize>,
     hover_close_idx: Option<usize>,
+    /// Tab whose maximize icon the pointer is currently over. Kept
+    /// separate from `hover_close_idx` so their hover visuals don't bleed
+    /// into each other.
+    hover_max_idx: Option<usize>,
     press_origin: Option<(usize, Point)>,
     last_cursor: Point,
     pub pending_drag: Option<DragPayload>,
     pub pending_reorder: Option<(usize, usize)>,
     pub pending_close: Option<u64>,
+    /// Populated when the user clicks the maximize icon on a tab. The
+    /// outer `WindowGroup` drains this and toggles its own maximized
+    /// state so the shell can paint concept-style floating controls over
+    /// a full-bleed tile.
+    pub pending_max: Option<u64>,
 }
 
 impl TabBar {
@@ -37,13 +51,16 @@ impl TabBar {
             rect: Rect::ZERO,
             tab_rects: Vec::new(),
             close_rects: Vec::new(),
+            max_rects: Vec::new(),
             hover_idx: None,
             hover_close_idx: None,
+            hover_max_idx: None,
             press_origin: None,
             last_cursor: Point::ZERO,
             pending_drag: None,
             pending_reorder: None,
             pending_close: None,
+            pending_max: None,
         }
     }
     pub fn tabs(&self) -> &[TabDescriptor] { &self.tabs }
@@ -66,6 +83,7 @@ impl TabBar {
     pub fn take_drag(&mut self) -> Option<DragPayload> { self.pending_drag.take() }
     pub fn take_reorder(&mut self) -> Option<(usize, usize)> { self.pending_reorder.take() }
     pub fn take_close(&mut self) -> Option<u64> { self.pending_close.take() }
+    pub fn take_max(&mut self) -> Option<u64> { self.pending_max.take() }
 }
 
 impl Widget for TabBar {
@@ -83,20 +101,27 @@ impl Widget for TabBar {
         // ("×") sits inside the right end of each pill, 16 px wide.
         self.tab_rects.clear();
         self.close_rects.clear();
+        self.max_rects.clear();
         let gap = 6.0_f64;
         let pad_x = 12.0_f64;
         let close_w = 18.0_f64;
+        let max_w = 16.0_f64;
         let close_inset = 4.0_f64;
         let mut x = self.rect.x0;
         for t in &self.tabs {
             let approx_char_w = 7.0_f64;
             let title_w = t.title.chars().count() as f64 * approx_char_w;
-            let w = (title_w + pad_x * 2.0 + close_w).max(72.0);
+            // Reserve room for both the close glyph and the hover-reveal
+            // maximize icon so pills don't resize when you hover them.
+            let w = (title_w + pad_x * 2.0 + close_w + max_w).max(84.0);
             let r = Rect::new(x, self.rect.y0, x + w, self.rect.y1);
             let close_x0 = r.x1 - close_w - close_inset;
             let close = Rect::new(close_x0, r.y0 + 4.0, close_x0 + close_w, r.y1 - 4.0);
+            let max_x0 = close_x0 - max_w - 2.0;
+            let max_rect = Rect::new(max_x0, r.y0 + 4.0, max_x0 + max_w, r.y1 - 4.0);
             self.tab_rects.push(r);
             self.close_rects.push(close);
+            self.max_rects.push(max_rect);
             x += w + gap;
         }
     }
@@ -154,6 +179,38 @@ impl Widget for TabBar {
             let gy = close_r.center().y - gh as f64 / 2.0;
             let glyph_color = if close_hover { text_primary } else { text_dim };
             tr.draw_text(scene, glyph, glyph_size, glyph_color, transform * Affine::translate((gx, gy)), None);
+
+            // Maximize icon: only visible on pill hover (concept's
+            // hover-reveal action row). Drawn as a 1 px outlined square so
+            // it reads as a generic "grow window" glyph without needing a
+            // bespoke icon font.
+            if is_hover {
+                let max_r = self.max_rects[i];
+                let max_hover = Some(i) == self.hover_max_idx;
+                if max_hover {
+                    let chip = RoundedRect::from_rect(max_r, max_r.height() / 2.0);
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        transform,
+                        vello::peniko::Color::rgba8(255, 255, 255, 64),
+                        None,
+                        &chip,
+                    );
+                }
+                // 10×10 centered square outline.
+                let s = 10.0_f64;
+                let cx = max_r.center().x;
+                let cy = max_r.center().y;
+                let square = Rect::new(cx - s / 2.0, cy - s / 2.0, cx + s / 2.0, cy + s / 2.0);
+                let outline_color = if max_hover { text_primary } else { text_dim };
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(1.2),
+                    transform,
+                    outline_color,
+                    None,
+                    &square,
+                );
+            }
         }
 
         // Drop-zone indicator: while a tab drag is in flight and the cursor
@@ -189,6 +246,7 @@ impl Widget for TabBar {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_cursor = p;
                 self.hover_close_idx = self.close_rects.iter().position(|r| r.contains(p));
+                self.hover_max_idx = self.max_rects.iter().position(|r| r.contains(p));
                 // Only count a tab as "hovered for highlight" if we're inside
                 // the pill AND not inside its close chip — keeps the close
                 // button's own hover state dominant.
@@ -211,6 +269,15 @@ impl Widget for TabBar {
                 if let Some(ci) = self.hover_close_idx {
                     if let Some(t) = self.tabs.get(ci) {
                         self.pending_close = Some(t.id);
+                        *handled = true;
+                        return;
+                    }
+                }
+                // Maximize icon — only reachable while the pill is hovered,
+                // so it never steals clicks from idle tabs.
+                if let Some(mi) = self.hover_max_idx {
+                    if let Some(t) = self.tabs.get(mi) {
+                        self.pending_max = Some(t.id);
                         *handled = true;
                         return;
                     }
@@ -288,5 +355,18 @@ mod tests {
         b.reorder(0, 2);
         let ids: Vec<u64> = b.tabs().iter().map(|t| t.id).collect();
         assert_eq!(ids, vec![2, 3, 1]);
+    }
+
+    #[test]
+    fn take_max_drains_pending_request_exactly_once() {
+        // Fresh bar has nothing pending — drain is `None` and stays that
+        // way until an event seeds the request.
+        let mut b = bar();
+        assert_eq!(b.take_max(), None);
+        b.pending_max = Some(2);
+        assert_eq!(b.take_max(), Some(2));
+        // Second drain is empty — ensures WindowGroup doesn't double-toggle
+        // `maximized` on redundant polls within the same frame.
+        assert_eq!(b.take_max(), None);
     }
 }
