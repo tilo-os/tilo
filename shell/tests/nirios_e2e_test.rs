@@ -105,6 +105,34 @@ fn quick_settings_state_defaults_and_mutates_through_chrome() {
 }
 
 #[test]
+fn commit_workspace_name_applies_buffer_to_active_workspace() {
+    let tree = WorkspaceTree::bootstrap_default();
+    let chrome = ChromeState::new(tree);
+
+    // Seed an edit-in-flight and commit it.
+    {
+        let mut st = chrome.borrow_mut();
+        st.editing_workspace_name = Some("Research".to_string());
+    }
+    chrome.borrow_mut().commit_workspace_name();
+    let st = chrome.borrow();
+    assert_eq!(st.editing_workspace_name, None);
+    assert_eq!(st.tree.active_workspace().unwrap().name, "Research");
+
+    // An empty/whitespace buffer must *not* overwrite the name.
+    drop(st);
+    {
+        let mut st = chrome.borrow_mut();
+        st.editing_workspace_name = Some("   ".to_string());
+    }
+    chrome.borrow_mut().commit_workspace_name();
+    assert_eq!(
+        chrome.borrow().tree.active_workspace().unwrap().name,
+        "Research"
+    );
+}
+
+#[test]
 fn notes_app_roundtrips_through_crdt() {
     use automerge::{AutoCommit, ObjType, ReadDoc, Value, transaction::Transactable};
     let mut doc = AutoCommit::new();
