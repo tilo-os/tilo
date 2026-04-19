@@ -98,6 +98,29 @@ fn draw_peer_selection_emits_scene_content() {
     assert!(!scene.encoding().is_empty());
 }
 
+#[test]
+fn text_input_renders_peer_caret_when_presence_ctx_has_caret() {
+    use quick_ui::widget::TextInput;
+    use quick_ui::text_render::TextRenderer;
+    use quick_ui::permissions::PermissionContext;
+    use quick_ui::widget::Widget;
+    use vello::kurbo::Affine;
+
+    let mut input = TextInput::new(vec![PathSegment::Field("body".into())]);
+    let mut presence = PresenceCtx::empty();
+    let key = input.presence_key().expect("text_input exposes presence_key");
+    presence.set_caret(&key, UserId("alice".into()), 3);
+
+    let mut scene = Scene::new();
+    let theme = Theme::dark();
+    let mut tr = TextRenderer::new();
+    let perms = PermissionContext::permissive();
+
+    input.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence, &perms);
+    assert!(!scene.encoding().is_empty(),
+        "peer caret should produce scene geometry");
+}
+
 use quick_ui::collaboration::{CollabEvent, PresencePayload};
 
 #[test]
