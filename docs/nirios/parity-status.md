@@ -47,7 +47,7 @@ Current state of the Rust implementation vs. the concept described in
 | Groups inside a horizontal strip | ✅ | Each strip's groups live in a `Row` inside the content Column, so groups tile left-to-right; multiple strips stack vertically. |
 | Width presets (narrow/normal/wide/custom) | ✅ | `WindowWidth` enum + clamped 300–1200. |
 | Right-edge resize handle | ✅ | `WindowGroup` renders handle, hover + drag work. |
-| Maximized state | 🟥 | No maximize / minimize / floating top-bar. |
+| Maximized state | 🟧 | Per-tab maximize icon renders on hover; click flips `WindowGroup::maximized`. Floating top-bar over the maximized group isn't painted yet. |
 | Tab bar height ~14 px | 🟧 | TabBar is 28 px (concept 14 px). |
 | Tab pill styling | ✅ | Rounded-full pills with active/hover/inactive alpha ramp, close-glyph on hover. |
 | Tab drop zones | 🟧 | Drag-to-reorder works + 2 px indigo bar renders at the drop position while drag is in flight (left of target when moving backward, right of target when moving forward, matching the vec remove-then-insert post-release index). Cross-group move still not supported. |
@@ -128,7 +128,7 @@ tuned to the concept's slate-900/indigo-500 palette** — it leans more neutral.
 | Tab close | ✅ | "×" glyph inside each pill's right edge; click propagates `pending_close` → `WindowGroup` drops the host + removes the tab. |
 | Group resize drag | ✅ | Handle + pointer accumulation work. |
 | Sidebar wheel scroll/pan | ✅ | Click-to-activate + plus-button-create + scroll-wheel accumulator (crosses ±1 on the wheel rect) all wired. |
-| Hover reveals tab actions | 🟧 | Close "×" appears on hover; no full action row (pin / split / move). |
+| Hover reveals tab actions | 🟧 | Close "×" sits in the pill always; hovering the pill additionally reveals a maximize-icon to its left (1 px outlined square). Concept's full action row (search + pin / split / move) still not drawn. |
 | Outside-click closes dropdowns | ✅ | Click outside palette / quick-settings / ws-settings rect dismisses them; ws-settings commits a pending rename before closing. |
 | File drag onto workspace | 🟥 | — |
 | Spring view-swap | 🟥 | — |
