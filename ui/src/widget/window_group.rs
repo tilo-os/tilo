@@ -39,13 +39,30 @@ pub struct WindowGroup {
     /// The shell paints the floating controls on top of this rect while
     /// set; click the maximize icon again to un-maximize (restore).
     pub maximized: bool,
+    /// Hit region for the floating "restore" pill drawn while maximized.
+    /// Populated each draw so clicks always map to what's on screen.
+    restore_rect: Rect,
+    restore_hover: bool,
+    last_cursor: Point,
 }
 
 impl WindowGroup {
     pub fn new(id: u64, tabs_with_content: Vec<(TabDescriptor, TileContent)>, active_id: u64, width: WindowWidth) -> Self {
         let descs: Vec<TabDescriptor> = tabs_with_content.iter().map(|(d, _)| d.clone()).collect();
         let hosts: Vec<(u64, TileHost)> = tabs_with_content.into_iter().map(|(d, c)| (d.id, TileHost::new(c))).collect();
-        Self { id, bar: TabBar::new(&format!("g{id}"), descs, active_id), hosts, width, rect: Rect::ZERO, resize_origin: None, hover_resize: false, maximized: false }
+        Self {
+            id,
+            bar: TabBar::new(&format!("g{id}"), descs, active_id),
+            hosts,
+            width,
+            rect: Rect::ZERO,
+            resize_origin: None,
+            hover_resize: false,
+            maximized: false,
+            restore_rect: Rect::ZERO,
+            restore_hover: false,
+            last_cursor: Point::ZERO,
+        }
     }
     pub fn width(&self) -> WindowWidth { self.width }
     pub fn begin_resize(&mut self, pointer_x: f32) { self.resize_origin = Some((pointer_x, self.width.pixels())); }
@@ -125,6 +142,52 @@ impl Widget for WindowGroup {
                 None,
                 &outline,
             );
+
+            // Floating "Restore" pill at the top-right of the group, akin
+            // to the concept's floating controls over a maximized tile.
+            // A single pill is enough to let the user exit maximize state
+            // without having to find the per-tab icon; close still lives
+            // on each tab's own pill so we don't duplicate it here.
+            let pad = 6.0_f64;
+            let pill_w = 76.0_f64;
+            let pill_h = 22.0_f64;
+            let x0 = self.rect.x1 - pill_w - pad;
+            let y0 = self.rect.y0 + pad;
+            self.restore_rect = Rect::new(x0, y0, x0 + pill_w, y0 + pill_h);
+            let pill = vello::kurbo::RoundedRect::from_rect(
+                self.restore_rect,
+                pill_h / 2.0,
+            );
+            let fill_alpha: u8 = if self.restore_hover { 64 } else { 38 };
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                vello::peniko::Color::rgba8(255, 255, 255, fill_alpha),
+                None,
+                &pill,
+            );
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                theme.tokens.colors.accent[5],
+                None,
+                &pill,
+            );
+            let label = "Restore";
+            let size = theme.tokens.typography.scale.xs;
+            let (lw, lh) = tr.measure(label, size, None);
+            let lx = self.restore_rect.center().x - lw as f64 / 2.0;
+            let ly = self.restore_rect.center().y - lh as f64 / 2.0;
+            tr.draw_text(
+                scene,
+                label,
+                size,
+                theme.tokens.colors.text_primary,
+                transform * vello::kurbo::Affine::translate((lx, ly)),
+                None,
+            );
+        } else {
+            self.restore_rect = Rect::ZERO;
         }
     }
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, m: &winit::event::Modifiers, s: &mut AutoCommit, p: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, taffy: &TaffyTree<()>) {
@@ -133,8 +196,20 @@ impl Widget for WindowGroup {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor = pt;
                 self.hover_resize = handle_rect.contains(pt);
+                self.restore_hover = self.maximized && self.restore_rect.contains(pt);
                 if self.resize_origin.is_some() { self.update_resize(pt.x as f32); *handled = true; return; }
+            }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. }
+                if self.maximized && self.restore_rect.contains(self.last_cursor) =>
+            {
+                // Restore-pill click: exit maximize. Handled here (not via
+                // bar.pending_max) so the click never races with a tab
+                // selection under the pill's geometry.
+                self.maximized = false;
+                *handled = true;
+                return;
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } if self.hover_resize => {
                 // the origin x is captured at the current pointer via the current rect
