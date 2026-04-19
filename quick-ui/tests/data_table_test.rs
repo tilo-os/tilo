@@ -47,3 +47,16 @@ fn data_table_column_resize_updates_width() {
     t.end_resize();
     assert_eq!(t.column_width_px("size"), Some(DataTable::<Row>::MIN_COL_WIDTH));
 }
+
+#[test]
+fn data_table_virtualization_windows_rows() {
+    let mut t = DataTable::new(cols());
+    let rows: Vec<Row> = (0..10_000).map(|i| Row { name: format!("r{i}"), size: i as u64 }).collect();
+    t.set_rows(rows);
+    t.set_viewport(500.0, 24.0);        // 500px tall, 24px row height
+    t.set_scroll_y(4800.0);             // scrolled down 200 rows
+    let (start, end) = t.visible_row_range();
+    assert!(start >= 195 && start <= 205, "start={start}");
+    // (viewport / row_height) + small overscan
+    assert!(end - start >= 20 && end - start <= 32, "range size = {}", end - start);
+}
