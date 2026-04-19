@@ -85,7 +85,7 @@ Current state of the Rust implementation vs. the concept described in
 |---|---|---|
 | Remote-cursor overlay | ✅ | `ShellOverlayHost::draw_demo_peer` paints a single simulated peer ("Ada") with caret + name chip + Lissajous motion over the desktop. |
 | Top-bar avatar stack | ✅ | Top-bar paints up to 3 initial avatars + `+N` overflow chip; sync-from-tree re-runs on chrome revision bump. |
-| Tab collaborator blur indicators | ✅ | `TabBar::draw` reads `PresenceCtx::peers_on(PresenceKey::Tab { id })`; for up to 4 peers it paints low-alpha color dots (stable FNV-style hash → HSL hue) at the bottom of each pill. Shell-side wiring landed via `Collaborator::active_tab: Option<u64>` + `shell::sync_tab_presence_from_tree(&tree, &mut ctx)` (called from `main.rs` before the app loop starts), so any workspace collaborator with an `active_tab` attribution now materialises as a dot on the corresponding tab pill on first draw. |
+| Tab collaborator blur indicators | ✅ | `TabBar::draw` reads `PresenceCtx::peers_on(PresenceKey::Tab { id })`; for up to 4 peers it paints low-alpha color dots (stable FNV-style hash → HSL hue) at the bottom of each pill. Shell-side wiring landed via `Collaborator::active_tab: Option<u64>` + `shell::sync_tab_presence_from_tree(&tree, &mut ctx)` (called from `main.rs` before the app loop starts), so any workspace collaborator with an `active_tab` attribution now materialises as a dot on the corresponding tab pill on first draw. Live refresh is wired too: `App::apply_remote_presence` routes `PresenceKey::Tab` `Arrived` payloads through `PresenceCtx::set_tab_focus`, which evicts the user from every other `Tab` key before registering them on the new one — so a peer switching tabs mid-session moves their dot instead of leaving ghosts. |
 | File-explorer per-folder presence dots | 🟥 | — |
 | Editor collaborator caret+selection | ✅ | `EditorApp::draw` reads `PresenceCtx::carets` / `selections` keyed by `PresenceKey::Widget { [Field("editor_body")] }`. Char-index carets are mapped to byte offsets via `char_indices`, then positioned with `tr.measure` on the prefix of the owning line; multi-line selections emit one rect per intersecting row so `draw_peer_selection` paints a clean per-line band. Presence colours unify with tab dots + remote cursors via `presence::color_for` → `user_color`, so alice stays pink everywhere. |
 
@@ -141,10 +141,6 @@ Sorted by visual/functional impact per unit of work:
 
 1. **File-explorer tier matching** — concept's Favorites / Project-Root /
    System sidebar tiers; Rust widget exists but doesn't split the listing.
-2. **Live tab-presence refresh from the network layer** — shell-side
-   presence seeding works at startup. The next step is running it
-   again whenever `CollabEvent::RemotePresenceUpdate` lands so a peer
-   switching tabs mid-session visibly moves their dot.
-3. **Screenshot-driven visual E2E** — blocked on host missing the "Window
+2. **Screenshot-driven visual E2E** — blocked on host missing the "Window
    Calls Extended" GNOME extension; 16 headless E2E tests cover the
    non-visual wiring.
