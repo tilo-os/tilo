@@ -87,7 +87,7 @@ Current state of the Rust implementation vs. the concept described in
 | Top-bar avatar stack | ✅ | Top-bar paints up to 3 initial avatars + `+N` overflow chip; sync-from-tree re-runs on chrome revision bump. |
 | Tab collaborator blur indicators | ✅ | `TabBar::draw` reads `PresenceCtx::peers_on(PresenceKey::Tab { id })`; for up to 4 peers it paints low-alpha color dots (stable FNV-style hash → HSL hue) at the bottom of each pill. Shell-side wiring landed via `Collaborator::active_tab: Option<u64>` + `shell::sync_tab_presence_from_tree(&tree, &mut ctx)` (called from `main.rs` before the app loop starts), so any workspace collaborator with an `active_tab` attribution now materialises as a dot on the corresponding tab pill on first draw. |
 | File-explorer per-folder presence dots | 🟥 | — |
-| Editor collaborator caret+selection | 🟧 | `EditorApp` ships (per-line render + gutter + token tint); remote carets/selections in the editor body not yet rendered. |
+| Editor collaborator caret+selection | ✅ | `EditorApp::draw` reads `PresenceCtx::carets` / `selections` keyed by `PresenceKey::Widget { [Field("editor_body")] }`. Char-index carets are mapped to byte offsets via `char_indices`, then positioned with `tr.measure` on the prefix of the owning line; multi-line selections emit one rect per intersecting row so `draw_peer_selection` paints a clean per-line band. Presence colours unify with tab dots + remote cursors via `presence::color_for` → `user_color`, so alice stays pink everywhere. |
 
 ## 8. Data model
 
@@ -141,16 +141,14 @@ Sorted by visual/functional impact per unit of work:
 
 1. **File-explorer tier matching** — concept's Favorites / Project-Root /
    System sidebar tiers; Rust widget exists but doesn't split the listing.
-2. **Editor remote carets+selections** — the editor body ships; peer
-   carets/selections inside it are not drawn yet.
-3. **Live tab-presence refresh from the network layer** — shell-side
+2. **Live tab-presence refresh from the network layer** — shell-side
    presence seeding works at startup. The next step is running it
    again whenever `CollabEvent::RemotePresenceUpdate` lands so a peer
    switching tabs mid-session visibly moves their dot.
-4. **Per-pill "insert before" hit-testing for cross-group drop** — today
+3. **Per-pill "insert before" hit-testing for cross-group drop** — today
    a cross-group drop lands the tab at index 0 of the target. Per-pill
    hit-testing (drop between tab X and tab Y) is feasible but needs the
    target bar to expose `tab_rects` back to `GroupRow`.
-5. **Screenshot-driven visual E2E** — blocked on host missing the "Window
+4. **Screenshot-driven visual E2E** — blocked on host missing the "Window
    Calls Extended" GNOME extension; 15 headless E2E tests cover the
    non-visual wiring.
