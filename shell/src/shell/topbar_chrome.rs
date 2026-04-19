@@ -40,6 +40,10 @@ pub struct TopBarChrome {
     workspace_index: usize,
     workspace_total: usize,
     collaborator_initials: Vec<char>,
+    /// Count of collaborators beyond the three rendered as avatars. When
+    /// nonzero the top bar paints a "+N" chip after the stack; concept
+    /// keeps the chip's visual weight lighter than a real avatar.
+    collaborator_overflow: usize,
     /// Shared chrome state; used to toggle overlays and switch workspaces
     /// in response to clicks on the top bar's left/right clusters.
     chrome: Option<Chrome>,
@@ -66,6 +70,7 @@ impl TopBarChrome {
             workspace_index: 0,
             workspace_total: 1,
             collaborator_initials: Vec::new(),
+            collaborator_overflow: 0,
             chrome: None,
             synced_revision: 0,
             overview_btn_rect: Rect::ZERO,
@@ -106,10 +111,22 @@ impl TopBarChrome {
             .take(3)
             .filter_map(|c| c.name.chars().next().map(|ch| ch.to_ascii_uppercase()))
             .collect();
+        self.collaborator_overflow = tree.collaborators.len().saturating_sub(3);
     }
 
     fn current_clock_string() -> String {
         Local::now().format("%H:%M").to_string()
+    }
+
+    /// Initials painted as avatars (up to 3). Exposed for integration tests.
+    pub fn collaborator_initials(&self) -> &[char] {
+        &self.collaborator_initials
+    }
+
+    /// Count of collaborators beyond the three rendered as avatars.
+    /// Zero when three-or-fewer peers; otherwise shown as the "+N" chip.
+    pub fn collaborator_overflow(&self) -> usize {
+        self.collaborator_overflow
     }
 }
 
@@ -370,6 +387,39 @@ impl Widget for TopBarChrome {
                 &s,
                 tokens.typography.scale.sm,
                 colors.text_primary,
+                transform * Affine::translate((center.x - tw as f64 / 2.0, center.y - th as f64 / 2.0)),
+                None,
+            );
+        }
+
+        // Overflow chip: "+N" in the same avatar slot, rendered in neutral
+        // raised-surface colour so it reads as "count of extras" rather than
+        // another person. Concept places this to the left of the stack.
+        if self.collaborator_overflow > 0 {
+            let i = self.collaborator_initials.len();
+            let cx = rx - i as f64 * (14.0 - 4.0);
+            let center = Point::new(cx - 7.0, center_y);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.surfaces.overlay,
+                None,
+                &vello::kurbo::Circle::new(center, 9.0),
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.surfaces.raised,
+                None,
+                &vello::kurbo::Circle::new(center, 7.5),
+            );
+            let s = format!("+{}", self.collaborator_overflow);
+            let (tw, th) = text_renderer.measure(&s, tokens.typography.scale.xs, None);
+            text_renderer.draw_text(
+                scene,
+                &s,
+                tokens.typography.scale.xs,
+                colors.text_dim,
                 transform * Affine::translate((center.x - tw as f64 / 2.0, center.y - th as f64 / 2.0)),
                 None,
             );
