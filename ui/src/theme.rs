@@ -1,8 +1,11 @@
 use vello::peniko::Color;
+use crate::tokens::Tokens;
 
 #[derive(Clone, Debug)]
 pub struct Theme {
     pub name: String,
+    pub tokens: Tokens,
+    // Legacy shortcuts — derived from tokens on construction, kept for compat during migration.
     pub bg_app: Color,
     pub bg_primary: Color,
     pub bg_hover: Color,
@@ -18,124 +21,67 @@ pub struct Theme {
     pub gap_standard: f32,
 }
 
-impl Default for Theme {
-    fn default() -> Self {
-        Self::dark()
-    }
-}
+impl Default for Theme { fn default() -> Self { Self::dark() } }
 
 impl Theme {
-    pub fn dark() -> Self {
+    fn from_tokens(name: &str, tokens: Tokens) -> Self {
+        let c = &tokens.colors;
         Self {
-            name: "Dark".into(),
-            bg_app: Color::rgb8(20, 20, 25),
-            bg_primary: Color::rgb8(45, 45, 50),
-            bg_hover: Color::rgb8(55, 55, 60),
-            bg_active: Color::rgb8(35, 35, 40),
-            border_standard: Color::rgb8(80, 80, 85),
-            border_focus: Color::rgb8(0, 120, 215),
-            text_primary: Color::WHITE,
-            text_dim: Color::rgb8(200, 200, 200),
-            accent_primary: Color::rgb8(0, 120, 215),
-            status_success: Color::rgb8(0, 180, 80),
-            radius_standard: 4.0,
-            padding_standard: 10.0,
-            gap_standard: 10.0,
+            name: name.into(),
+            bg_app: c.surfaces.base,
+            bg_primary: c.surfaces.raised,
+            bg_hover: c.neutral[4],
+            bg_active: c.neutral[2],
+            border_standard: c.border_standard,
+            border_focus: c.border_focus,
+            text_primary: c.text_primary,
+            text_dim: c.text_dim,
+            accent_primary: c.accent[4],
+            status_success: c.semantic.success,
+            radius_standard: tokens.radii.md as f64,
+            padding_standard: tokens.spacing.s3,
+            gap_standard: tokens.spacing.s3,
+            tokens,
         }
     }
-
-    pub fn light() -> Self {
-        Self {
-            name: "Light".into(),
-            bg_app: Color::rgb8(240, 240, 245),
-            bg_primary: Color::rgb8(255, 255, 255),
-            bg_hover: Color::rgb8(230, 230, 235),
-            bg_active: Color::rgb8(210, 210, 215),
-            border_standard: Color::rgb8(200, 200, 205),
-            border_focus: Color::rgb8(0, 120, 215),
-            text_primary: Color::BLACK,
-            text_dim: Color::rgb8(100, 100, 105),
-            accent_primary: Color::rgb8(0, 120, 215),
-            status_success: Color::rgb8(0, 150, 70),
-            radius_standard: 4.0,
-            padding_standard: 10.0,
-            gap_standard: 10.0,
-        }
-    }
-
+    pub fn dark() -> Self { Self::from_tokens("Dark", Tokens::dark()) }
+    pub fn light() -> Self { Self::from_tokens("Light", Tokens::light()) }
     pub fn dracula() -> Self {
-        Self {
-            name: "Dracula".into(),
-            bg_app: Color::rgb8(40, 42, 54),        // #282a36
-            bg_primary: Color::rgb8(68, 71, 90),    // #44475a
-            bg_hover: Color::rgb8(98, 114, 164),    // #6272a4
-            bg_active: Color::rgb8(40, 42, 54),
-            border_standard: Color::rgb8(68, 71, 90),
-            border_focus: Color::rgb8(189, 147, 249), // Purple
-            text_primary: Color::rgb8(248, 248, 242), // Foreground
-            text_dim: Color::rgb8(98, 114, 164),      // Comment
-            accent_primary: Color::rgb8(255, 121, 198), // Pink
-            status_success: Color::rgb8(80, 250, 123),  // Green
-            radius_standard: 4.0,
-            padding_standard: 10.0,
-            gap_standard: 10.0,
-        }
+        let mut t = Tokens::dark();
+        t.colors.surfaces.base = Color::rgb8(40, 42, 54);
+        t.colors.surfaces.raised = Color::rgb8(68, 71, 90);
+        t.colors.text_primary = Color::rgb8(248, 248, 242);
+        t.colors.accent.stops[4] = Color::rgb8(255, 121, 198);
+        t.colors.border_focus = Color::rgb8(189, 147, 249);
+        Self::from_tokens("Dracula", t)
     }
-
     pub fn nord() -> Self {
-        Self {
-            name: "Nord".into(),
-            bg_app: Color::rgb8(46, 52, 64),        // nord0
-            bg_primary: Color::rgb8(59, 66, 82),    // nord1
-            bg_hover: Color::rgb8(67, 76, 94),      // nord2
-            bg_active: Color::rgb8(46, 52, 64),
-            border_standard: Color::rgb8(76, 86, 106), // nord3
-            border_focus: Color::rgb8(136, 192, 208),  // nord8
-            text_primary: Color::rgb8(216, 222, 233), // nord4
-            text_dim: Color::rgb8(76, 86, 106),       // nord3
-            accent_primary: Color::rgb8(129, 161, 193), // nord9
-            status_success: Color::rgb8(163, 190, 140), // nord14 (Green)
-            radius_standard: 4.0,
-            padding_standard: 10.0,
-            gap_standard: 10.0,
-        }
+        let mut t = Tokens::dark();
+        t.colors.surfaces.base = Color::rgb8(46, 52, 64);
+        t.colors.surfaces.raised = Color::rgb8(59, 66, 82);
+        t.colors.text_primary = Color::rgb8(216, 222, 233);
+        t.colors.accent.stops[4] = Color::rgb8(129, 161, 193);
+        t.colors.border_focus = Color::rgb8(136, 192, 208);
+        Self::from_tokens("Nord", t)
     }
-
     pub fn gruvbox() -> Self {
-        Self {
-            name: "Gruvbox".into(),
-            bg_app: Color::rgb8(40, 40, 40),        // #282828
-            bg_primary: Color::rgb8(60, 56, 54),    // bg1
-            bg_hover: Color::rgb8(80, 73, 69),      // bg2
-            bg_active: Color::rgb8(40, 40, 40),
-            border_standard: Color::rgb8(146, 131, 116), // Gray
-            border_focus: Color::rgb8(254, 128, 25),     // Bright Orange
-            text_primary: Color::rgb8(235, 219, 178),    // fg
-            text_dim: Color::rgb8(168, 153, 132),        // Bright Gray
-            accent_primary: Color::rgb8(184, 187, 38),   // Bright Green
-            status_success: Color::rgb8(152, 151, 26),   // Normal Green
-            radius_standard: 2.0,
-            padding_standard: 10.0,
-            gap_standard: 10.0,
-        }
+        let mut t = Tokens::dark();
+        t.colors.surfaces.base = Color::rgb8(40, 40, 40);
+        t.colors.surfaces.raised = Color::rgb8(60, 56, 54);
+        t.colors.text_primary = Color::rgb8(235, 219, 178);
+        t.colors.accent.stops[4] = Color::rgb8(184, 187, 38);
+        t.colors.border_focus = Color::rgb8(254, 128, 25);
+        t.radii.md = 2.0;
+        Self::from_tokens("Gruvbox", t)
     }
-
     pub fn solarized() -> Self {
-        Self {
-            name: "Solarized".into(),
-            bg_app: Color::rgb8(0, 43, 54),         // base03
-            bg_primary: Color::rgb8(7, 54, 66),     // base02
-            bg_hover: Color::rgb8(88, 110, 117),    // base01
-            bg_active: Color::rgb8(0, 43, 54),
-            border_standard: Color::rgb8(88, 110, 117), // base01
-            border_focus: Color::rgb8(38, 139, 210),    // Blue
-            text_primary: Color::rgb8(131, 148, 150),   // base0
-            text_dim: Color::rgb8(101, 123, 131),       // base00
-            accent_primary: Color::rgb8(42, 161, 152),  // Cyan
-            status_success: Color::rgb8(133, 153, 0),   // Green
-            radius_standard: 0.0,
-            padding_standard: 10.0,
-            gap_standard: 10.0,
-        }
+        let mut t = Tokens::dark();
+        t.colors.surfaces.base = Color::rgb8(0, 43, 54);
+        t.colors.surfaces.raised = Color::rgb8(7, 54, 66);
+        t.colors.text_primary = Color::rgb8(131, 148, 150);
+        t.colors.accent.stops[4] = Color::rgb8(42, 161, 152);
+        t.colors.border_focus = Color::rgb8(38, 139, 210);
+        t.radii.md = 0.0;
+        Self::from_tokens("Solarized", t)
     }
 }
