@@ -63,7 +63,7 @@ Current state of the Rust implementation vs. the concept described in
 | Terminal | 🟧 | Real PTY via `quick-terminal`. Visual styling driven by `Theme`; matches concept palette if theme tuned. |
 | Files | 🟧 | `file-explorer` crate wired in. Has a sidebar + grid, but not yet matched to concept's Favorites/Project-Root/System tiers. |
 | Browser | 🟧 | `BrowserStubWidget` shows "Browser coming soon"; concept wants white chrome + traffic lights + address bar preview. |
-| Editor | 🟥 | No editor app exists. Concept has one with Catppuccin palette + syntax stubs + collab selection. |
+| Editor | ✅ | `EditorApp` in `quick-gnome-shell/src/shell/editor_app.rs`: CRDT-backed text store (own `editor_body` key so it doesn't clash with Notes), per-line rendering + 44 px line-number gutter, ArrowUp/Down with column preserve, tiny JS/TSX tokenizer (keywords → indigo-500, strings → emerald, numbers → amber, line-comments → slate-500, idents/punct → slate ramp). Ships as a fifth demo tab in the runtime workspace. |
 
 ## 6. Overlays / modals
 
@@ -87,7 +87,7 @@ Current state of the Rust implementation vs. the concept described in
 | Top-bar avatar stack | ✅ | Top-bar paints up to 3 initial avatars + `+N` overflow chip; sync-from-tree re-runs on chrome revision bump. |
 | Tab collaborator blur indicators | 🟧 | `TabBar::draw` reads `PresenceCtx::peers_on(PresenceKey::Tab { id })`; for up to 4 peers it paints low-alpha color dots (stable FNV-style hash → HSL hue) at the bottom of each pill. Shell-level wiring that actually populates `PresenceKey::Tab` is still pending. |
 | File-explorer per-folder presence dots | 🟥 | — |
-| Editor collaborator caret+selection | 🟥 | (Editor itself missing.) |
+| Editor collaborator caret+selection | 🟧 | `EditorApp` ships (per-line render + gutter + token tint); remote carets/selections in the editor body not yet rendered. |
 
 ## 8. Data model
 
@@ -96,7 +96,7 @@ Current state of the Rust implementation vs. the concept described in
 | Workspace / Strip / WindowGroup / Tab | ✅ | `quick-gnome-shell/src/shell/state.rs`, mirrors concept. |
 | Roles + RolePermissions | ✅ | `Role`, `WorkspaceFile` exist. |
 | Collaborator (id, name, cursor color, etc.) | 🟧 | Only `id` + `name` in current Rust `Collaborator`. Missing `cursorColor`, `avatar`, `roleId`, `cursor`, `activeAppId`. |
-| App types | 🟧 | `AppKind::{Terminal,Files,Browser,…}` exists; no Editor. |
+| App types | ✅ | `AppKind::{Terminal,Files,Editor,Browser,Settings}` — Editor now maps to `EditorApp`. |
 | CRDT sync for apps | ✅ | Automerge `State::doc`, per-app `sync(doc, root)`. |
 
 ## 9. Visual tokens
@@ -139,12 +139,19 @@ tuned to the concept's slate-900/indigo-500 palette** — it leans more neutral.
 
 Sorted by visual/functional impact per unit of work:
 
-1. **Editor app** — concept has a Catppuccin-tinged editor with gutter +
-   selection highlight; we don't yet.
-2. **Maximize state** — concept has a floating top-bar over a maximized
-   window-group; no path in the runtime tree yet.
-3. **Tab cross-group drag** — today reorder stays within a group; concept
+1. **Tab cross-group drag** — today reorder stays within a group; concept
    shows cross-group move via drop zones.
-4. **Screenshot-driven visual E2E** — blocked on host missing the "Window
-   Calls Extended" GNOME extension; 9 headless E2E tests cover the
+2. **Shell-side tab presence wiring** — `TabBar` reads
+   `PresenceCtx::peers_on(PresenceKey::Tab{id})` and paints dots; nothing
+   in the shell actually populates the presence context with a per-tab
+   roster yet, so the dots stay empty in practice.
+3. **Per-collaborator fixed cursor colours** — concept pins me/alice/bob
+   /charlie hues; Rust currently hashes `UserId → HSL` with no overrides.
+4. **File-explorer tier matching** — concept's Favorites / Project-Root /
+   System sidebar tiers; Rust widget exists but doesn't split the listing.
+5. **View-swap animation** — no crossfade between desktop ↔ overview.
+6. **Editor remote carets+selections** — the editor body ships; peer
+   carets/selections inside it are not drawn yet.
+7. **Screenshot-driven visual E2E** — blocked on host missing the "Window
+   Calls Extended" GNOME extension; 14 headless E2E tests cover the
    non-visual wiring.
