@@ -1,3 +1,24 @@
+//! # Visual smoke checklist
+//!
+//! Run `cargo run -p quick-desktop` and verify:
+//!
+//! - TopBar renders with a live clock; wheel over the center area cycles to
+//!   the CPU/RAM sparkline and the calendar (200 ms cooldown).
+//! - Cmd+K opens GlobalSearch; typing filters; Enter invokes; Escape closes.
+//! - Cmd+Tab toggles the OverviewView; clicking a card activates the workspace.
+//! - The RightTray gear icon opens QuickSettings; sliders are interactive;
+//!   WiFi/BT drill-in and back work.
+//! - The workspace-name button opens WorkspaceSettings; switching to the Roles
+//!   tab lets you toggle per-app permissions via DataTable; the Files tab
+//!   shows per-role × per-file matrix.
+//! - SidebarWheel scrolls strips; overscrolling past the threshold shows the
+//!   "New session" hint and commits a new workspace; releasing before the
+//!   threshold snaps back.
+//! - Right-clicking a tile opens the context menu.
+//! - Hovering the workspace-name button reveals a tooltip after ~600 ms.
+//! - Creating a workspace (any path) triggers a toast.
+//! - A simulated remote cursor floats over the active tile.
+
 pub mod browser_stub;
 pub mod nirios_tokens;
 pub mod overview;
