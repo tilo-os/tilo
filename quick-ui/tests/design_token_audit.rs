@@ -7,11 +7,15 @@ use regex::Regex;
 
 /// Files exempt from the audit:
 ///  - theme.rs (the single source of truth for literal color values)
+///  - tokens/** (palette sub-modules — colors.rs, elevation.rs, terminal_palette.rs
+///    declare the literal values that theme.rs composes; they are the token
+///    origin, not token consumers)
 ///  - presence/render.rs (the HSL helper intentionally encodes per-user hue math)
 ///  - tests/**                                                            (test fixtures)
 fn is_exempt(path: &Path) -> bool {
     let s = path.to_string_lossy();
     s.contains("/theme.rs")
+        || s.contains("/tokens/")
         || s.contains("/presence/render.rs")
         || s.contains("/tests/")
 }
