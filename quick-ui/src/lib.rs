@@ -9,6 +9,7 @@ pub mod tokens;
 pub mod presence;
 pub mod permissions;
 pub mod dnd;
+pub mod animation;
 
 pub use app::App;
 pub use state::State;
