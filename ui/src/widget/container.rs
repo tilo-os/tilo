@@ -14,6 +14,7 @@ pub struct Container {
     child: Option<Box<dyn Widget>>,
     rect: Rect,
     has_background: bool,
+    fill_height: bool,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
 }
@@ -24,6 +25,7 @@ impl Container {
             child: None,
             rect: Rect::ZERO,
             has_background: false,
+            fill_height: false,
             presence_path: Vec::new(),
             permission_scope: None,
         }
@@ -36,6 +38,14 @@ impl Container {
 
     pub fn with_background(mut self) -> Self {
         self.has_background = true;
+        self
+    }
+
+    /// Opt this container into filling its parent's height (percent(1.0)) rather
+    /// than sizing to its child's intrinsic height. The default (auto height) is
+    /// correct for card-style containers; root shells want `filling()`.
+    pub fn filling(mut self) -> Self {
+        self.fill_height = true;
         self
     }
 
@@ -73,7 +83,7 @@ impl Widget for Container {
             },
             size: taffy::Size {
                 width: percent(1.0),
-                height: taffy::Dimension::auto(),
+                height: if self.fill_height { percent(1.0) } else { taffy::Dimension::auto() },
             },
             ..Default::default()
         };
