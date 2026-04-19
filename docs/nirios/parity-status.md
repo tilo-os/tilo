@@ -61,7 +61,7 @@ Current state of the Rust implementation vs. the concept described in
 |---|---|---|
 | Notes | ✅ | `NotesApp` is a CRDT-backed plaintext editor; soft-wraps, supports Enter/Backspace/Arrows/Home/End; shown as the active tile in the default Home workspace. |
 | Terminal | 🟧 | Real PTY via `quick-terminal`. Visual styling driven by `Theme`; matches concept palette if theme tuned. |
-| Files | 🟧 | `file-explorer` crate wired in. Has a sidebar + grid, but not yet matched to concept's Favorites/Project-Root/System tiers. |
+| Files | ✅ | `file-explorer` crate wired in. `sidebar::build_tiers(home)` now returns a **Favorites** tier (Home + xdg-user-dirs) and a **System** tier (`/`); `files_app.rs` renders a Text label above each tier and keeps `files.sidebar.<N>` ids sequential across tiers. Matches `nirios-concept/src/components/apps/FilesApp.tsx` (lines 94/127). |
 | Browser | 🟧 | `BrowserStubWidget` shows "Browser coming soon"; concept wants white chrome + traffic lights + address bar preview. |
 | Editor | ✅ | `EditorApp` in `quick-gnome-shell/src/shell/editor_app.rs`: CRDT-backed text store (own `editor_body` key so it doesn't clash with Notes), per-line rendering + 44 px line-number gutter, ArrowUp/Down with column preserve, tiny JS/TSX tokenizer (keywords → indigo-500, strings → emerald, numbers → amber, line-comments → slate-500, idents/punct → slate ramp). Ships as a fifth demo tab in the runtime workspace. |
 
@@ -139,8 +139,6 @@ tuned to the concept's slate-900/indigo-500 palette** — it leans more neutral.
 
 Sorted by visual/functional impact per unit of work:
 
-1. **File-explorer tier matching** — concept's Favorites / Project-Root /
-   System sidebar tiers; Rust widget exists but doesn't split the listing.
-2. **Screenshot-driven visual E2E** — blocked on host missing the "Window
+1. **Screenshot-driven visual E2E** — blocked on host missing the "Window
    Calls Extended" GNOME extension; 16 headless E2E tests cover the
    non-visual wiring.
