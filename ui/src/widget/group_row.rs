@@ -207,34 +207,15 @@ impl Widget for GroupRow {
             let Some(tgt_idx) = target_idx else {
                 continue;
             };
-            // Insert at the end of the target bar by default — finer-
-            // grained "insert before pill X" would need a per-pill hit-
-            // test that's not currently exposed. For the parity milestone
-            // the end-of-bar insertion is the expected concept behaviour
-            // (dropping onto the bar lands the tab at the right edge).
-            let end_idx = self.groups[tgt_idx].bar_rect().x1; // just to keep clippy quiet
-            let _ = end_idx;
+            // Resolve the per-pill drop index against the target's tab
+            // rects: left of the first pill's midpoint → 0, between pills
+            // → that pill's index, past the last pill → append. This is
+            // the "insert before pill X" contract the concept expects on
+            // a cross-group drag, rather than always landing at index 0.
+            let drop_idx = self.groups[tgt_idx].drop_index_for(release_point);
             let detached = self.groups[src_idx].detach_tab(tab_id);
             if let Some((desc, host)) = detached {
-                // Target index = current tab count — splices at the end.
-                let target_tab_count = /* read the target bar's current
-                   tab count without an extra borrow */ {
-                    // Re-read after the src mutation; safe because the
-                    // source group is different from the target group
-                    // (checked above).
-                    // `WindowGroup` doesn't expose tab count directly;
-                    // we approximate via the bar rect's non-empty-ness
-                    // and fall back to a position of 0 if the bar is
-                    // currently empty.
-                    // Instead of adding a new accessor just for this we
-                    // insert at 0 — `insert_detached_tab` clamps to the
-                    // current length — and the tab will visually slide
-                    // to the left edge. This matches the "drop onto an
-                    // empty bar" UX; for a populated bar the concept
-                    // accepts either edge.
-                    0
-                };
-                self.groups[tgt_idx].insert_detached_tab(target_tab_count, desc, host);
+                self.groups[tgt_idx].insert_detached_tab(drop_idx, desc, host);
                 *handled = true;
             }
         }
