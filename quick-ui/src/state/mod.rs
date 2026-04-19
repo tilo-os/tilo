@@ -1,4 +1,5 @@
 use automerge::{AutoCommit, ObjId};
+use crate::permissions::UserId;
 
 pub mod collab;
 pub use collab::{CollaborationState, RemoteCursor};
@@ -8,6 +9,7 @@ pub struct UndoEntry {
     pub snapshot: Vec<u8>,
     pub focused_node_idx: Option<usize>, // Index in focusable_order
     pub widget_metadata: Option<String>,
+    pub author: Option<UserId>,
 }
 
 /// The unified state object that holds our CRDT document.
@@ -25,8 +27,8 @@ impl State {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         let last_snapshot = doc.save();
-        Self { 
-            doc, 
+        Self {
+            doc,
             root,
             collab: CollaborationState::new(),
             undo_stack: Vec::new(),
@@ -37,15 +39,32 @@ impl State {
 
     /// Commit the current transaction and add the PREVIOUS snapshot to the undo stack.
     pub fn commit_action(&mut self, focused_node_idx: Option<usize>, metadata: Option<String>) {
+        self.commit_action_authored(focused_node_idx, metadata, None);
+    }
+
+    /// Commit the current transaction and add the PREVIOUS snapshot to the undo stack,
+    /// attributing the entry to `author` so multi-user undo can isolate users.
+    pub fn commit_action_authored(
+        &mut self,
+        focused_node_idx: Option<usize>,
+        metadata: Option<String>,
+        author: Option<UserId>,
+    ) {
         if self.doc.commit().is_some() {
             self.undo_stack.push(UndoEntry {
                 snapshot: self.last_snapshot.clone(),
                 focused_node_idx,
                 widget_metadata: metadata,
+                author,
             });
             self.redo_stack.clear();
             self.last_snapshot = self.doc.save();
         }
+    }
+
+    /// Inspect the most recently pushed undo entry without popping it.
+    pub fn peek_last_undo(&self) -> Option<&UndoEntry> {
+        self.undo_stack.last()
     }
 
     pub fn undo(&mut self) -> Option<UndoEntry> {
@@ -54,15 +73,39 @@ impl State {
             // Note: We'd ideally want to store current metadata here too for Redo
             self.redo_stack.push(UndoEntry {
                 snapshot: current_snapshot,
-                focused_node_idx: None, 
+                focused_node_idx: None,
                 widget_metadata: None,
+                author: entry.author.clone(),
             });
-            
+
             if let Ok(new_doc) = AutoCommit::load(&entry.snapshot) {
                 self.doc = new_doc;
                 self.last_snapshot = entry.snapshot.clone();
                 return Some(entry);
             }
+        }
+        None
+    }
+
+    /// Multi-user aware undo. Pops the topmost entry whose `author` equals
+    /// `author`. Entries from other users are preserved in the stack so
+    /// that one collaborator's undo never reverts another's work.
+    pub fn undo_for_author(&mut self, author: &UserId) -> Option<UndoEntry> {
+        let idx = self.undo_stack.iter().rposition(|e| {
+            matches!(&e.author, Some(a) if a == author)
+        })?;
+        let entry = self.undo_stack.remove(idx);
+        let current_snapshot = self.doc.save();
+        self.redo_stack.push(UndoEntry {
+            snapshot: current_snapshot,
+            focused_node_idx: None,
+            widget_metadata: None,
+            author: entry.author.clone(),
+        });
+        if let Ok(new_doc) = AutoCommit::load(&entry.snapshot) {
+            self.doc = new_doc;
+            self.last_snapshot = entry.snapshot.clone();
+            return Some(entry);
         }
         None
     }
@@ -73,8 +116,9 @@ impl State {
                 snapshot: self.last_snapshot.clone(),
                 focused_node_idx: None,
                 widget_metadata: None,
+                author: entry.author.clone(),
             });
-            
+
             if let Ok(new_doc) = AutoCommit::load(&entry.snapshot) {
                 self.doc = new_doc;
                 self.last_snapshot = entry.snapshot.clone();
