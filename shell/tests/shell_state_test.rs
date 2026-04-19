@@ -38,3 +38,26 @@ fn _type_refs() {
     let _ = std::marker::PhantomData::<Role>;
     let _ = std::marker::PhantomData::<Collaborator>;
 }
+
+#[test]
+fn persistence_roundtrip_atomic() {
+    use quick_desktop::shell::persist::{save_tree_to, load_tree_from};
+    use quick_desktop::shell::state::WorkspaceTree;
+    let tmp = std::env::temp_dir().join(format!("qd-test-{}.json", std::process::id()));
+    let t = WorkspaceTree::bootstrap_default();
+    save_tree_to(&t, &tmp).expect("save");
+    let loaded = load_tree_from(&tmp).expect("load");
+    assert_eq!(loaded.workspaces.len(), t.workspaces.len());
+    assert_eq!(loaded.active, t.active);
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn load_missing_file_returns_default() {
+    use quick_desktop::shell::persist::load_or_default;
+    use std::path::PathBuf;
+    let missing = PathBuf::from("/tmp/definitely-missing-xyz.json");
+    let _ = std::fs::remove_file(&missing);
+    let t = load_or_default(&missing);
+    assert_eq!(t.workspaces.len(), 1);
+}
