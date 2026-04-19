@@ -36,7 +36,7 @@ Current state of the Rust implementation vs. the concept described in
 | Left 96 px vertical strip | ✅ | `SidebarWheelChrome` renders on the left of the split row. |
 | 3D wheel rotation | 🟧 | 2D vertical wheel with workspace cards, active highlight, + button. No 3D tilt (acceptable per user brief). |
 | Per-strip label + avatars | 🟧 | Workspace name + card chrome shown; collaborator avatars per workspace not yet. |
-| Scroll/pan to switch strips | ✅ | Scroll-wheel over the sidebar accumulates line-units; crossing ±1 calls `ChromeState::switch_workspace`. Click-to-activate + plus-button-create-workspace remain. |
+| Scroll/pan to switch strips | ✅ | Scroll-wheel over the sidebar accumulates line-units; crossing ±1 calls `ChromeState::switch_workspace`. Click-to-activate a workspace card + plus-button-append-and-activate are both wired. |
 | Rim / gradient line on expand | 🟥 | No render. |
 | Current "workspace 1/1" text | ✅ | WorkspaceView renders it. |
 
@@ -126,9 +126,9 @@ tuned to the concept's slate-900/indigo-500 palette** — it leans more neutral.
 | Tab drag-to-reorder | ✅ | Drag starts after 4 px threshold, release hit-tests position within the bar and reorders. |
 | Tab close | ✅ | "×" glyph inside each pill's right edge; click propagates `pending_close` → `WindowGroup` drops the host + removes the tab. |
 | Group resize drag | ✅ | Handle + pointer accumulation work. |
-| Sidebar wheel scroll/pan | 🟧 | Click-to-activate + plus-button-create-workspace wired; scroll-wheel gesture on the wheel itself still TODO. |
+| Sidebar wheel scroll/pan | ✅ | Click-to-activate + plus-button-create + scroll-wheel accumulator (crosses ±1 on the wheel rect) all wired. |
 | Hover reveals tab actions | 🟧 | Close "×" appears on hover; no full action row (pin / split / move). |
-| Outside-click closes dropdowns | 🟥 | Only Esc closes. |
+| Outside-click closes dropdowns | ✅ | Click outside palette / quick-settings / ws-settings rect dismisses them; ws-settings commits a pending rename before closing. |
 | File drag onto workspace | 🟥 | — |
 | Spring view-swap | 🟥 | — |
 
