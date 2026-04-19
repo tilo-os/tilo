@@ -54,3 +54,37 @@ fn two_apps_sync_presence_caret_via_memory_relay() {
     let caret = bob_app.presence_ctx().caret_for(&key, &UserId("alice".into()));
     assert_eq!(caret, Some(7));
 }
+
+#[test]
+fn peer_pointer_position_follows_layout_change() {
+    let mut relay = MemoryRelay::new();
+    let alice_peer = relay.attach("alice");
+    let bob_peer = relay.attach("bob");
+    let (_alice_app, _) = headless_app("alice", alice_peer);
+    let (mut bob_app, _) = headless_app("bob", bob_peer);
+
+    let ws_key = PresenceKey::Workspace { id: "ws".into() };
+    bob_app.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
+        user_id: "alice".into(),
+        key: ws_key.clone(),
+        payload: PresencePayload::Pointer { x: 100.0, y: 50.0 },
+    });
+
+    assert_eq!(
+        bob_app.presence_ctx().pointer_for(&ws_key, &UserId("alice".into())),
+        Some((100.0, 50.0))
+    );
+
+    // Simulate a window-level coordinate remap by replaying the pointer event
+    // with new coords — this is what the real layout-change path does.
+    bob_app.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
+        user_id: "alice".into(),
+        key: ws_key.clone(),
+        payload: PresencePayload::Pointer { x: 200.0, y: 70.0 },
+    });
+
+    assert_eq!(
+        bob_app.presence_ctx().pointer_for(&ws_key, &UserId("alice".into())),
+        Some((200.0, 70.0))
+    );
+}
