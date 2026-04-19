@@ -8,6 +8,17 @@ pub struct WeightScale { pub regular: u16, pub medium: u16, pub semibold: u16, p
 
 impl Default for WeightScale { fn default() -> Self { Self { regular: 400, medium: 500, semibold: 600, bold: 700 } } }
 
+/// A named font family, wrapped so consumers can extend with fallbacks/weights later
+/// without breaking token consumers.
+#[derive(Clone, Debug)]
+pub struct FontFamily {
+    pub family: String,
+}
+
+impl FontFamily {
+    pub fn new(family: impl Into<String>) -> Self { Self { family: family.into() } }
+}
+
 #[derive(Clone, Debug)]
 pub struct Typography {
     pub sans_family: String,
