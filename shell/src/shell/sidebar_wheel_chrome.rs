@@ -61,6 +61,13 @@ pub struct SidebarWheelChrome {
     chrome: Option<Chrome>,
     /// Cached revision for the re-sync loop.
     synced_revision: u64,
+    /// Accumulated vertical wheel delta (in line-units) since the last
+    /// workspace switch. Crossing ±1 triggers a switch and resets to 0.
+    scroll_accum: f32,
+    /// Last cursor position in logical coords — used to gate wheel events
+    /// so scrolling only cycles workspaces when the pointer is over the
+    /// sidebar.
+    last_cursor: Option<Point>,
 }
 
 impl SidebarWheelChrome {
@@ -75,6 +82,8 @@ impl SidebarWheelChrome {
             pending_intent: None,
             chrome: None,
             synced_revision: 0,
+            scroll_accum: 0.0,
+            last_cursor: None,
         };
         this.sync_from_tree(tree);
         this
@@ -311,8 +320,44 @@ impl Widget for SidebarWheelChrome {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor = Some(p);
                 self.hover_idx = self.cards.iter().position(|c| c.rect.contains(p));
                 self.hover_plus = self.plus_rect.contains(p);
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                // Only cycle workspaces when the pointer is over the
+                // sidebar — scrolling over window content should go to
+                // the focused tile, not steal workspace switching.
+                let over_sidebar = self
+                    .last_cursor
+                    .map(|p| self.rect.contains(p))
+                    .unwrap_or(false);
+                if !over_sidebar {
+                    return;
+                }
+                let dy = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => *y,
+                    winit::event::MouseScrollDelta::PixelDelta(p) => (p.y / 40.0) as f32,
+                };
+                self.scroll_accum += dy;
+                while self.scroll_accum >= 1.0 {
+                    if let Some(chrome) = self.chrome.clone() {
+                        if !chrome.borrow_mut().switch_workspace(-1) {
+                            break;
+                        }
+                    }
+                    self.scroll_accum -= 1.0;
+                    *handled = true;
+                }
+                while self.scroll_accum <= -1.0 {
+                    if let Some(chrome) = self.chrome.clone() {
+                        if !chrome.borrow_mut().switch_workspace(1) {
+                            break;
+                        }
+                    }
+                    self.scroll_accum += 1.0;
+                    *handled = true;
+                }
             }
             WindowEvent::MouseInput {
                 state: winit::event::ElementState::Pressed,
