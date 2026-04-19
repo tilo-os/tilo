@@ -57,6 +57,7 @@ mod scrollable;  pub use scrollable::{Scrollable, ScrollAxis};
 mod tile_host;   pub use tile_host::{TileHost, TileContent, AppKind};
 mod app_widget;  pub use app_widget::{AppCommand, AppWidget, IconDescriptor};
 pub mod command_palette;
+pub mod data_table;
 mod window_group;
 pub use window_group::{WindowGroup, WindowWidth, WIDTH_MIN_PX, WIDTH_MAX_PX, RESIZE_HANDLE_PX};
 mod strip_view;
