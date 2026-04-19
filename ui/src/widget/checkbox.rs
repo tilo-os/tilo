@@ -65,24 +65,24 @@ impl Widget for Checkbox {
 
     fn draw(&mut self, scene: &mut Scene, transform: Affine, _text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
         let box_color = if self.is_checked {
-            theme.accent_primary
+            theme.tokens.colors.accent[4]
         } else if self.is_hovered {
             theme.bg_hover
         } else {
             theme.bg_active
         };
 
-        let box_shape = RoundedRect::from_rect(self.rect, 6.0);
-        
+        let box_shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
+
         // Draw Box
         scene.fill(vello::peniko::Fill::NonZero, transform, box_color, None, &box_shape);
-        
+
         let stroke_color = if self.is_focused {
             theme.border_focus
         } else {
-            theme.border_standard
+            theme.tokens.colors.border_standard
         };
-        
+
         scene.stroke(&Stroke::new(if self.is_focused { 2.0 } else { 1.0 }), transform, stroke_color, None, &box_shape);
 
         // Draw Checkmark
