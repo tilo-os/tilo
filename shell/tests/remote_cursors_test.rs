@@ -53,3 +53,29 @@ fn simulated_feed_moves_cursor_deterministically() {
     let p1 = ctx.remote_cursors[0].position;
     assert!(p0 != p1, "cursor should have moved");
 }
+
+#[test]
+fn remote_cursor_overlay_filters_to_active_tile() {
+    use quick_desktop::shell::remote_cursors::RemoteCursorOverlay;
+    use quick_ui::presence::{PresenceCtx, RemoteCursor};
+    let mut ctx = PresenceCtx::default();
+    ctx.remote_cursors = vec![
+        RemoteCursor {
+            user_id: "in".into(),
+            color: [0.0; 4],
+            position: [50.0, 50.0],
+            label: "I".into(),
+        },
+        RemoteCursor {
+            user_id: "out".into(),
+            color: [0.0; 4],
+            position: [500.0, 500.0],
+            label: "O".into(),
+        },
+    ];
+    let mut ov = RemoteCursorOverlay::new();
+    ov.set_active_tile_bounds([0.0, 0.0, 200.0, 200.0]);
+    let drawn = ov.cursors_to_draw(&ctx);
+    assert_eq!(drawn.len(), 1);
+    assert_eq!(drawn[0].user_id, "in");
+}
