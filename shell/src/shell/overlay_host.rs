@@ -133,6 +133,35 @@ impl ShellOverlayHost {
         )
     }
 
+    /// Rect for the search-scope banner — sits 8 px above the palette with
+    /// the same horizontal extent. Computed from the palette's post-layout
+    /// rect so the banner tracks the palette even at different DPIs.
+    fn search_banner_rect(&self) -> Rect {
+        let p = self.palette.get_rect();
+        if p.width() <= 0.0 {
+            return Rect::ZERO;
+        }
+        let h = 32.0_f64;
+        Rect::new(p.x0, p.y0 - h - 8.0, p.x1, p.y0 - 8.0)
+    }
+
+    /// Individual scope-pill rect inside the banner. `idx` = 0 → Workspace,
+    /// 1 → All. Hit-test and draw consume this same helper.
+    fn search_scope_pill_rect(&self, idx: usize) -> Rect {
+        let b = self.search_banner_rect();
+        if b.width() <= 0.0 {
+            return Rect::ZERO;
+        }
+        let label_w = 96.0_f64; // "Search in:" prefix
+        let pill_w = 90.0_f64;
+        let pill_gap = 8.0_f64;
+        let pill_h = 22.0_f64;
+        let cy = (b.y0 + b.y1) / 2.0;
+        let start = b.x0 + 16.0 + label_w;
+        let x0 = start + idx as f64 * (pill_w + pill_gap);
+        Rect::new(x0, cy - pill_h / 2.0, x0 + pill_w, cy + pill_h / 2.0)
+    }
+
     /// Mirror of the geometry in `draw_overview`: return the index of the
     /// workspace card at logical position `p`, if any.
     fn hit_test_overview(&self, p: Point) -> Option<usize> {
@@ -276,6 +305,7 @@ impl Widget for ShellOverlayHost {
             draw_scrim(scene, transform, self.rect);
             self.palette
                 .draw(scene, transform, text_renderer, theme, presence);
+            self.draw_search_banner(scene, transform, text_renderer, theme);
         }
     }
 
@@ -448,8 +478,27 @@ impl Widget for ShellOverlayHost {
         {
             if let Some(p) = self.last_cursor {
                 if self.palette_visible {
+                    // Scope-pill click (runs before outside-click so users
+                    // can swap scope without dismissing the palette).
+                    for idx in 0..2 {
+                        if self.search_scope_pill_rect(idx).contains(p) {
+                            if let Some(chrome) = self.chrome.clone() {
+                                use crate::shell::chrome_state::SearchScope;
+                                let mut st = chrome.borrow_mut();
+                                st.search_scope = if idx == 0 {
+                                    SearchScope::Workspace
+                                } else {
+                                    SearchScope::All
+                                };
+                                st.bump();
+                            }
+                            *handled = true;
+                            return;
+                        }
+                    }
                     let palette_rect = self.palette.get_rect();
-                    if !palette_rect.contains(p) {
+                    let banner_rect = self.search_banner_rect();
+                    if !palette_rect.contains(p) && !banner_rect.contains(p) {
                         self.palette_visible = false;
                         *handled = true;
                         return;
@@ -1011,6 +1060,89 @@ impl ShellOverlayHost {
             transform * Affine::translate((chip_rect.x0 + pad_x, chip_rect.y0 + pad_y)),
             None,
         );
+    }
+
+    /// Scope banner drawn above the palette while ⌘K is open. Shows a
+    /// "Search in:" label and two toggleable pills ("Workspace" / "All").
+    /// The active pill uses the indigo accent fill so it reads as
+    /// "selected"; the inactive pill sits on the raised surface.
+    fn draw_search_banner(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        use crate::shell::chrome_state::SearchScope;
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let banner = self.search_banner_rect();
+        if banner.width() <= 0.0 {
+            return;
+        }
+
+        let card = RoundedRect::from_rect(banner, tokens.radii.sm as f64);
+        scene.fill(Fill::NonZero, transform, colors.surfaces.overlay, None, &card);
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            colors.border_standard,
+            None,
+            &card,
+        );
+
+        // "Search in:" label
+        let label_size = tokens.typography.scale.sm;
+        let (_lw, lh) = text_renderer.measure("Search in:", label_size, None);
+        let label_y = (banner.y0 + banner.y1) / 2.0 - lh as f64 / 2.0;
+        text_renderer.draw_text(
+            scene,
+            "Search in:",
+            label_size,
+            colors.text_dim,
+            transform * Affine::translate((banner.x0 + 16.0, label_y)),
+            None,
+        );
+
+        // Active scope from chrome state (defaults to Workspace if the
+        // overlay host was built without chrome — we still want the banner
+        // to render sensibly for tests).
+        let active = self
+            .chrome
+            .as_ref()
+            .map(|c| c.borrow().search_scope)
+            .unwrap_or_default();
+
+        for (idx, scope) in [SearchScope::Workspace, SearchScope::All].iter().enumerate() {
+            let pill = self.search_scope_pill_rect(idx);
+            let is_active = *scope == active;
+            let radius = pill.height() / 2.0;
+            let pill_rr = RoundedRect::new(pill.x0, pill.y0, pill.x1, pill.y1, radius);
+            let fill = if is_active { colors.accent[5] } else { colors.surfaces.raised };
+            scene.fill(Fill::NonZero, transform, fill, None, &pill_rr);
+            if !is_active {
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(1.0),
+                    transform,
+                    colors.border_standard,
+                    None,
+                    &pill_rr,
+                );
+            }
+
+            let text = scope.label();
+            let (tw, th) = text_renderer.measure(text, tokens.typography.scale.sm, None);
+            let tx = (pill.x0 + pill.x1) / 2.0 - tw as f64 / 2.0;
+            let ty = (pill.y0 + pill.y1) / 2.0 - th as f64 / 2.0;
+            text_renderer.draw_text(
+                scene,
+                text,
+                tokens.typography.scale.sm,
+                colors.text_primary,
+                transform * Affine::translate((tx, ty)),
+                None,
+            );
+        }
     }
 
     fn draw_quick_settings(
