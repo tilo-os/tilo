@@ -41,7 +41,7 @@ fn theme_exposes_tokens() {
 }
 
 use quick_ui::presence::{PresenceCtx, PresenceKey};
-use quick_ui::permissions::{PermissionScope, ResourceId, Op};
+use quick_ui::permissions::{PermissionScope, ResourceId, Op, WorkspaceId};
 use quick_ui::dnd::{DragPayload};
 
 #[test]
@@ -52,7 +52,7 @@ fn presence_ctx_empty_is_constructible() {
 
 #[test]
 fn permission_scope_constructs() {
-    let s = PermissionScope { resource: ResourceId::Workspace(0), op: Op::Edit };
+    let s = PermissionScope { resource: ResourceId::Workspace(WorkspaceId("0".into())), op: Op::Edit };
     assert!(matches!(s.op, Op::Edit));
 }
 
