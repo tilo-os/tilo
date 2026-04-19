@@ -55,6 +55,11 @@ pub struct ChromeState {
     pub tree: WorkspaceTree,
     pub overlays: OverlayFlags,
     pub quick_settings: QuickSettingsState,
+    /// When `Some`, the workspace-settings modal's Name input is in text-
+    /// entry mode. The string is the edit buffer (may diverge from the
+    /// active workspace's persisted name until the user commits with
+    /// Enter). Cleared on commit or Esc.
+    pub editing_workspace_name: Option<String>,
     /// Monotonic counter bumped every time the tree is mutated. Widgets
     /// poll this in `update` to re-sync their caches; cheaper than running
     /// diff logic and easier than an event bus.
@@ -67,8 +72,24 @@ impl ChromeState {
             tree,
             overlays: OverlayFlags::default(),
             quick_settings: QuickSettingsState::default(),
+            editing_workspace_name: None,
             revision: 0,
         }))
+    }
+
+    /// Commit the current `editing_workspace_name` buffer (if any) to the
+    /// active workspace's name and clear the buffer. Empty buffers are
+    /// treated as a cancel — we never overwrite the name with "".
+    pub fn commit_workspace_name(&mut self) {
+        if let Some(buf) = self.editing_workspace_name.take() {
+            let trimmed = buf.trim();
+            if !trimmed.is_empty() {
+                if let Some(ws) = self.tree.active_workspace_mut() {
+                    ws.name = trimmed.to_string();
+                }
+            }
+            self.bump();
+        }
     }
 
     pub fn bump(&mut self) {
