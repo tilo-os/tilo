@@ -192,6 +192,20 @@ impl SidebarWheel {
         }
     }
 
+    /// Management-button entrypoint: create and activate a fresh workspace
+    /// without going through the overscroll gesture. Reuses
+    /// [`SidebarWheel::commit_new_workspace`] so the append + activation
+    /// semantics stay identical to the gesture path. Takes `&self` because
+    /// no wheel-local state is touched — the management button is stateless
+    /// with respect to the overscroll accumulator and should be invokable
+    /// from any idle callsite (e.g. a sidebar footer button or the global
+    /// command palette). New workspaces are appended to the tail so they
+    /// appear at the end of the list, matching the default "downward" grow
+    /// direction of the overscroll commit branch.
+    pub fn click_management_new_workspace(&self, tree: &mut WorkspaceTree) -> WorkspaceId {
+        Self::commit_new_workspace(tree, 1)
+    }
+
     /// Internal helper shared by the overscroll commit branch and T23's
     /// management-button entrypoint. Inserts a fresh, empty workspace
     /// (one seeded "Main" strip) and activates it. `dir >= 0` appends to
