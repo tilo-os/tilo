@@ -15,7 +15,7 @@ Current state of the Rust implementation vs. the concept described in
 | Desktop view (sidebar + strips + groups) | ✅ | Top bar + left SidebarWheelChrome + one horizontal Row per strip (groups tile left-to-right). Strips stack vertically inside the content Column. |
 | Overview view | ✅ | `ShellOverlayHost::draw_overview` renders a centered grid of workspace cards with preview tiles; click activates a workspace. |
 | Z-ordered overlay host | ✅ | `ShellOverlayHost` draws palette, overview, quick-settings, workspace-settings + scrim above content. |
-| View-swap animation | 🟥 | No crossfade between desktop ↔ overview. |
+| View-swap animation | ✅ | `ShellOverlayHost` crossfades desktop ↔ overview via ease-out-cubic over 200 ms. Desktop content + simulated peer render inside a `push_layer(alpha = 1 - t)` and scrim + overview grid render inside a `push_layer(alpha = t)`; a mid-flight re-toggle latches `transition_from` from the current `overview_t` so it doesn't pop. 3 unit tests cover idle/full/mid-flight cases. |
 
 ## 2. Top bar
 
@@ -131,7 +131,7 @@ tuned to the concept's slate-900/indigo-500 palette** — it leans more neutral.
 | Hover reveals tab actions | 🟧 | Close "×" sits in the pill always; hovering the pill additionally reveals a maximize-icon to its left (1 px outlined square). Concept's full action row (search + pin / split / move) still not drawn. |
 | Outside-click closes dropdowns | ✅ | Click outside palette / quick-settings / ws-settings rect dismisses them; ws-settings commits a pending rename before closing. |
 | File drag onto workspace | 🟥 | — |
-| Spring view-swap | 🟥 | — |
+| Spring view-swap | ✅ | Ease-out-cubic crossfade in `ShellOverlayHost` (200 ms; see §1). |
 
 ---
 
@@ -141,17 +141,16 @@ Sorted by visual/functional impact per unit of work:
 
 1. **File-explorer tier matching** — concept's Favorites / Project-Root /
    System sidebar tiers; Rust widget exists but doesn't split the listing.
-2. **View-swap animation** — no crossfade between desktop ↔ overview.
-3. **Editor remote carets+selections** — the editor body ships; peer
+2. **Editor remote carets+selections** — the editor body ships; peer
    carets/selections inside it are not drawn yet.
-4. **Live tab-presence refresh from the network layer** — shell-side
+3. **Live tab-presence refresh from the network layer** — shell-side
    presence seeding works at startup. The next step is running it
    again whenever `CollabEvent::RemotePresenceUpdate` lands so a peer
    switching tabs mid-session visibly moves their dot.
-5. **Per-pill "insert before" hit-testing for cross-group drop** — today
+4. **Per-pill "insert before" hit-testing for cross-group drop** — today
    a cross-group drop lands the tab at index 0 of the target. Per-pill
    hit-testing (drop between tab X and tab Y) is feasible but needs the
    target bar to expose `tab_rects` back to `GroupRow`.
-6. **Screenshot-driven visual E2E** — blocked on host missing the "Window
+5. **Screenshot-driven visual E2E** — blocked on host missing the "Window
    Calls Extended" GNOME extension; 15 headless E2E tests cover the
    non-visual wiring.
