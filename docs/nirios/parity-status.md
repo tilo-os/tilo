@@ -47,7 +47,7 @@ Current state of the Rust implementation vs. the concept described in
 | Groups inside a horizontal strip | ✅ | Each strip's groups live in a `Row` inside the content Column, so groups tile left-to-right; multiple strips stack vertically. |
 | Width presets (narrow/normal/wide/custom) | ✅ | `WindowWidth` enum + clamped 300–1200. |
 | Right-edge resize handle | ✅ | `WindowGroup` renders handle, hover + drag work. |
-| Maximized state | 🟧 | Per-tab maximize icon on hover toggles `WindowGroup::maximized`. While maximized, the group paints a 2 px accent outline and a floating "Restore" pill at the top-right (click to un-maximize). Concept's full floating top-bar (app-title pill + search/close cluster) not yet drawn. |
+| Maximized state | ✅ | Per-tab maximize icon on hover toggles `WindowGroup::maximized`. While maximized, the group paints a 2 px accent outline, a floating app-title pill (top-left, active tab's title), and a right-side cluster of `[Restore][×]`; the × tints `semantic.danger` on hover and closes the active tab + exits maximize in one click. Search icon still not drawn (global search is already wired via ⌘K). |
 | Tab bar height ~14 px | 🟧 | TabBar is 28 px (concept 14 px). |
 | Tab pill styling | ✅ | Rounded-full pills with active/hover/inactive alpha ramp, close-glyph on hover. |
 | Tab drop zones | 🟧 | Drag-to-reorder works + 2 px indigo bar renders at the drop position while drag is in flight (left of target when moving backward, right of target when moving forward, matching the vec remove-then-insert post-release index). Cross-group move still not supported. |
@@ -77,7 +77,7 @@ Current state of the Rust implementation vs. the concept described in
 | Workspace settings modal | ✅ | Rename workspace: click Name input to begin editing; type / Backspace / Space / Enter / Esc semantics; border highlights indigo with caret block while editing. |
 | Outside-click close | ✅ | Clicks outside the palette / quick-settings / ws-settings rect dismiss them; an in-flight name edit commits before the modal closes. |
 | Collaborator dropdown | 🟥 | No widget. |
-| Maximized-window floating controls | 🟥 | No maximize path yet. |
+| Maximized-window floating controls | ✅ | `WindowGroup::draw` paints title pill + `[Restore][×]` cluster on top of a maximized group; Restore + close hit-tests live on `restore_rect`/`close_rect`. Hover state on close tints `semantic.danger`. |
 
 ## 7. Collaboration chrome
 
