@@ -95,6 +95,16 @@ struct SortState<Row> {
     cmp: Box<dyn Fn(&Row, &Row) -> Ordering + Send + Sync>,
 }
 
+/// Active column resize gesture. `origin_x` is the pointer-x at which
+/// `begin_resize` was called; `origin_w` is the column width at that moment.
+/// Stored so repeated `drag_resize(pointer_x)` calls can compute an absolute
+/// new width without drifting.
+struct ResizeState {
+    key: String,
+    origin_x: f32,
+    origin_w: f32,
+}
+
 pub struct DataTable<Row> {
     columns: Vec<ColumnDef<Row>>,
     rows: Vec<Row>,
@@ -106,10 +116,28 @@ pub struct DataTable<Row> {
     rect: Rect,
     col_rects: Vec<Rect>,
     is_focused: bool,
+    /// Resolved per-column pixel widths. Populated lazily from `ColumnWidth`
+    /// and then authoritative once the user has dragged a handle.
+    col_widths_px: HashMap<String, f32>,
+    /// Active drag (pointer captured while `Some`).
+    resize: Option<ResizeState>,
+    /// Last observed cursor position (for hit-testing press events against the
+    /// per-column resize handles).
+    last_cursor: Option<Point>,
 }
 
 impl<Row> DataTable<Row> {
+    /// Minimum column width in pixels — dragging below this clamps.
+    pub const MIN_COL_WIDTH: f32 = 40.0;
+
     pub fn new(columns: Vec<ColumnDef<Row>>) -> Self {
+        let col_widths_px = columns
+            .iter()
+            .filter_map(|c| match c.width {
+                ColumnWidth::Fixed(px) => Some((c.key.clone(), px)),
+                _ => None,
+            })
+            .collect();
         Self {
             columns,
             rows: Vec::new(),
@@ -118,6 +146,9 @@ impl<Row> DataTable<Row> {
             rect: Rect::ZERO,
             col_rects: Vec::new(),
             is_focused: false,
+            col_widths_px,
+            resize: None,
+            last_cursor: None,
         }
     }
 
@@ -163,6 +194,55 @@ impl<Row> DataTable<Row> {
                 if ascending { o } else { o.reverse() }
             });
         }
+    }
+
+    /// Resolved pixel width for the column with `key`, if the column exists.
+    /// Returns the stored width if one has been observed/resized, otherwise
+    /// the width encoded in its `ColumnWidth::Fixed` variant. Flex/Auto
+    /// columns return `None` until they've been resized by the user (the
+    /// final pixel value for those depends on the layout pass).
+    pub fn column_width_px(&self, key: &str) -> Option<f32> {
+        if let Some(w) = self.col_widths_px.get(key).copied() {
+            return Some(w);
+        }
+        self.columns.iter().find(|c| c.key == key).and_then(|c| {
+            if let ColumnWidth::Fixed(px) = c.width { Some(px) } else { None }
+        })
+    }
+
+    /// Start a resize gesture on column `key`. `pointer_x` is the pointer's
+    /// x-coordinate at the moment of the press; subsequent `drag_resize`
+    /// calls compute the new width as `origin_w + (pointer_x - origin_x)`.
+    pub fn begin_resize(&mut self, key: &str, pointer_x: f32) {
+        let origin_w = self.column_width_px(key).unwrap_or(Self::MIN_COL_WIDTH);
+        self.resize = Some(ResizeState {
+            key: key.to_string(),
+            origin_x: pointer_x,
+            origin_w,
+        });
+    }
+
+    /// Drag the active resize gesture to the given pointer x-coordinate,
+    /// clamping to `MIN_COL_WIDTH`.
+    pub fn drag_resize(&mut self, pointer_x: f32) {
+        if let Some(r) = &self.resize {
+            let delta = pointer_x - r.origin_x;
+            let new_w = (r.origin_w + delta).max(Self::MIN_COL_WIDTH);
+            let key = r.key.clone();
+            self.col_widths_px.insert(key, new_w);
+        }
+    }
+
+    /// End the active resize gesture. No-op if none is active.
+    pub fn end_resize(&mut self) {
+        self.resize = None;
+    }
+
+    fn resize_handle_rect_for(&self, index: usize) -> Option<Rect> {
+        let col = self.columns.get(index)?;
+        let cr = self.col_rects.get(index)?;
+        let w = col.resize_handle_px as f64;
+        Some(Rect::new(cr.x1 - w, self.rect.y0, cr.x1, self.rect.y0 + HEADER_HEIGHT))
     }
 
     /// Toggle ordering on the column at `index` if it is sortable. Returns the
@@ -229,8 +309,9 @@ impl<Row: 'static> Widget for DataTable<Row> {
             origin.x + l.location.x as f64 + l.size.width as f64,
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
-        // Resolve per-column x-ranges across the header/body.
-        self.col_rects = compute_column_rects(&self.columns, self.rect);
+        // Resolve per-column x-ranges across the header/body. User-resized
+        // widths in `col_widths_px` override the declared `ColumnWidth`.
+        self.col_rects = compute_column_rects(&self.columns, self.rect, &self.col_widths_px);
     }
 
     fn draw(
@@ -346,23 +427,45 @@ impl<Row: 'static> Widget for DataTable<Row> {
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
-        if let WindowEvent::MouseInput {
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-            ..
-        } = event
-        {
-            // Header hit-test happens against the most recently observed cursor
-            // position via `CursorMoved` — for simplicity at this task we only
-            // act on the press itself when the cursor sits within a header
-            // rect that we track in `apply_layout`. We don't cache cursor here
-            // yet (the integration test drives `toggle_sort` directly); still,
-            // keep the press-handler plumbing in place so T5's resize code can
-            // slot in.
-            let _ = scale_factor;
-            let _ = handled;
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor = Some(pt);
+                if self.resize.is_some() {
+                    self.drag_resize(pt.x as f32);
+                    *handled = true;
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let Some(pt) = self.last_cursor else { return };
+                for i in 0..self.columns.len() {
+                    if let Some(handle) = self.resize_handle_rect_for(i) {
+                        if handle.contains(pt) {
+                            let key = self.columns[i].key.clone();
+                            self.begin_resize(&key, pt.x as f32);
+                            *handled = true;
+                            return;
+                        }
+                    }
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } if self.resize.is_some() => {
+                self.end_resize();
+                *handled = true;
+            }
+            _ => {}
         }
     }
+
+    fn wants_pointer_capture(&self) -> bool { self.resize.is_some() }
 
     fn name(&self) -> &str { "DataTable" }
     fn get_rect(&self) -> Rect { self.rect }
@@ -371,11 +474,19 @@ impl<Row: 'static> Widget for DataTable<Row> {
     fn is_focused(&self) -> bool { self.is_focused }
 }
 
-fn compute_column_rects<Row>(columns: &[ColumnDef<Row>], host: Rect) -> Vec<Rect> {
+fn compute_column_rects<Row>(
+    columns: &[ColumnDef<Row>],
+    host: Rect,
+    overrides: &HashMap<String, f32>,
+) -> Vec<Rect> {
     let total_w = host.width() as f32;
     let mut fixed_sum = 0.0_f32;
     let mut flex_sum = 0.0_f32;
     for c in columns {
+        if let Some(px) = overrides.get(&c.key).copied() {
+            fixed_sum += px;
+            continue;
+        }
         match c.width {
             ColumnWidth::Fixed(px) => fixed_sum += px,
             ColumnWidth::Flex(w) => flex_sum += w.max(0.0),
@@ -388,13 +499,17 @@ fn compute_column_rects<Row>(columns: &[ColumnDef<Row>], host: Rect) -> Vec<Rect
     let y0 = host.y0;
     let y1 = host.y0 + HEADER_HEIGHT;
     for c in columns {
-        let w = match c.width {
-            ColumnWidth::Fixed(px) => px,
-            ColumnWidth::Flex(w) => {
-                if flex_sum <= 0.0 { 0.0 } else { flex_remaining * (w.max(0.0) / flex_sum) }
-            }
-            ColumnWidth::Auto => {
-                if flex_sum <= 0.0 { 0.0 } else { flex_remaining * (1.0 / flex_sum) }
+        let w = if let Some(px) = overrides.get(&c.key).copied() {
+            px
+        } else {
+            match c.width {
+                ColumnWidth::Fixed(px) => px,
+                ColumnWidth::Flex(w) => {
+                    if flex_sum <= 0.0 { 0.0 } else { flex_remaining * (w.max(0.0) / flex_sum) }
+                }
+                ColumnWidth::Auto => {
+                    if flex_sum <= 0.0 { 0.0 } else { flex_remaining * (1.0 / flex_sum) }
+                }
             }
         };
         let next = x + w as f64;
@@ -422,7 +537,7 @@ mod tests {
     fn compute_column_rects_splits_flex_after_fixed() {
         let cols = sample_cols();
         let host = Rect::new(0.0, 0.0, 200.0, 28.0);
-        let rects = compute_column_rects(&cols, host);
+        let rects = compute_column_rects(&cols, host, &HashMap::new());
         assert_eq!(rects.len(), 2);
         assert!((rects[0].width() - 160.0).abs() < 0.01);
         assert!((rects[1].width() - 40.0).abs() < 0.01);

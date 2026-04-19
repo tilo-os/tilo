@@ -32,3 +32,18 @@ fn data_table_sorts_ascending_and_descending() {
     let v = t.view_rows();
     assert_eq!(v[0].name, "c");
 }
+
+#[test]
+fn data_table_column_resize_updates_width() {
+    let mut t = DataTable::new(cols());
+    assert_eq!(t.column_width_px("size"), Some(80.0));
+    t.begin_resize("size", 80.0);
+    t.drag_resize(95.0); // delta = +15
+    t.end_resize();
+    assert_eq!(t.column_width_px("size"), Some(95.0));
+    // clamped to >= min
+    t.begin_resize("size", 95.0);
+    t.drag_resize(10.0);
+    t.end_resize();
+    assert_eq!(t.column_width_px("size"), Some(DataTable::<Row>::MIN_COL_WIDTH));
+}
