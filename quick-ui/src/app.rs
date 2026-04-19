@@ -73,6 +73,56 @@ impl App {
         self.permission_ctx = ctx;
     }
 
+    /// Poll the collaboration manager and apply any pending events
+    /// (remote cursor moves, remote presence updates). This is the headless
+    /// equivalent of the `Event::AboutToWait` branch in [`App::run`] and is
+    /// exposed so integration tests can drive the collab pump without
+    /// a real winit event loop.
+    #[doc(hidden)]
+    pub fn poll_and_apply_collab_events(&mut self) {
+        let events = self.collab_manager.poll();
+        for event in events {
+            match event {
+                CollabEvent::RemoteCursorMoved { user_id, x, y } => {
+                    if let Some(cursor) = self.state.collab.cursors.get_mut(&user_id) {
+                        cursor.x = x;
+                        cursor.y = y;
+                    }
+                }
+                CollabEvent::RemotePresenceUpdate { user_id, key, payload } => {
+                    self.apply_remote_presence(user_id, key, payload);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Test-only hook: apply a single `CollabEvent` directly, bypassing the
+    /// collab manager's socket/poll path. Integration tests that construct
+    /// a `MemoryRelay` can use this to inject remote presence / cursor
+    /// updates into the app's state without wiring a full transport.
+    #[doc(hidden)]
+    pub fn apply_collab_event_for_test(&mut self, event: CollabEvent) {
+        match event {
+            CollabEvent::RemotePresenceUpdate { user_id, key, payload } => {
+                self.apply_remote_presence(user_id, key, payload);
+            }
+            CollabEvent::RemoteCursorMoved { user_id, x, y } => {
+                let entry = self.state.collab.cursors.entry(user_id).or_insert(
+                    crate::state::RemoteCursor {
+                        x: 0.0,
+                        y: 0.0,
+                        color: Color::WHITE,
+                        name: String::new(),
+                    },
+                );
+                entry.x = x;
+                entry.y = y;
+            }
+            _ => {}
+        }
+    }
+
     fn update_focusable_order(&mut self) {
         self.focusable_order.clear();
         fn collect_focusable(node_id: NodeId, widget: &dyn Widget, taffy: &TaffyTree<()>, order: &mut Vec<NodeId>) {
