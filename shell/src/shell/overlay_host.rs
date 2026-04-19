@@ -393,12 +393,58 @@ impl Widget for ShellOverlayHost {
                     }
                 }
                 let flags = self.overlay_flags();
-                if flags.quick_settings && !self.quick_settings_rect().contains(p) {
+                if flags.quick_settings {
+                    let qs_rect = self.quick_settings_rect();
+                    if !qs_rect.contains(p) {
+                        if let Some(chrome) = self.chrome.clone() {
+                            let mut st = chrome.borrow_mut();
+                            st.overlays.quick_settings = false;
+                            st.bump();
+                        }
+                        *handled = true;
+                        return;
+                    }
+                    // Click inside the popover: route to slider / toggle
+                    // hit-testing. Sliders snap to click x; toggles flip.
                     if let Some(chrome) = self.chrome.clone() {
                         let mut st = chrome.borrow_mut();
-                        st.overlays.quick_settings = false;
-                        st.bump();
+                        let mut changed = false;
+                        for i in 0..2 {
+                            let (bar, _) = self.quick_settings_slider_geometry(i);
+                            // Extend the hit region vertically so the whole
+                            // slider row (including padding + label) is
+                            // clickable, not just the 6 px bar.
+                            let hit = Rect::new(bar.x0 - 4.0, bar.y0 - 12.0, bar.x1 + 4.0, bar.y1 + 12.0);
+                            if hit.contains(p) {
+                                let t = ((p.x - bar.x0) / bar.width()).clamp(0.0, 1.0) as f32;
+                                if i == 0 {
+                                    st.quick_settings.brightness = t;
+                                } else {
+                                    st.quick_settings.volume = t;
+                                }
+                                changed = true;
+                            }
+                        }
+                        for i in 0..2 {
+                            let prect = self.quick_settings_toggle_geometry(i);
+                            let hit = Rect::new(prect.x0 - 4.0, prect.y0 - 4.0, prect.x1 + 4.0, prect.y1 + 4.0);
+                            if hit.contains(p) {
+                                if i == 0 {
+                                    st.quick_settings.wifi = !st.quick_settings.wifi;
+                                } else {
+                                    st.quick_settings.bluetooth = !st.quick_settings.bluetooth;
+                                }
+                                changed = true;
+                            }
+                        }
+                        if changed {
+                            st.bump();
+                            *handled = true;
+                            return;
+                        }
                     }
+                    // Inside the popover but not on a control — swallow so
+                    // the content below doesn't steal the click.
                     *handled = true;
                     return;
                 }
@@ -854,13 +900,13 @@ impl ShellOverlayHost {
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
+        let qs = self
+            .chrome
+            .as_ref()
+            .map(|c| c.borrow().quick_settings)
+            .unwrap_or_default();
 
-        let popover_w = 280.0_f64;
-        let popover_h = 240.0_f64;
-        // Anchor under the top-right tray pill.
-        let x1 = self.rect.x1 - 16.0;
-        let y0 = self.rect.y0 + 48.0; // below the 40 px top bar + 8 px gap
-        let rect = Rect::new(x1 - popover_w, y0, x1, y0 + popover_h);
+        let rect = self.quick_settings_rect();
         let card = RoundedRect::from_rect(rect, tokens.radii.lg as f64);
         scene.fill(Fill::NonZero, transform, colors.surfaces.raised, None, &card);
         scene.stroke(
@@ -881,9 +927,11 @@ impl ShellOverlayHost {
             None,
         );
 
-        // Slider-ish rows: Brightness / Volume
+        // Slider-ish rows: Brightness / Volume — values read from chrome.
+        let slider_values = [qs.brightness, qs.volume];
         for (i, label) in ["Brightness", "Volume"].iter().enumerate() {
-            let ty = rect.y0 + 56.0 + i as f64 * 52.0;
+            let (bar, _ty) = self.quick_settings_slider_geometry(i);
+            let ty = bar.y0 - 20.0;
             text_renderer.draw_text(
                 scene,
                 label,
@@ -892,19 +940,19 @@ impl ShellOverlayHost {
                 transform * Affine::translate((rect.x0 + 16.0, ty)),
                 None,
             );
-            let bar = Rect::new(rect.x0 + 16.0, ty + 20.0, rect.x1 - 16.0, ty + 26.0);
             let bar_rr = RoundedRect::from_rect(bar, 3.0);
             scene.fill(Fill::NonZero, transform, colors.neutral[2], None, &bar_rr);
-            // Filled portion
-            let fill_w = bar.width() * if i == 0 { 0.6 } else { 0.4 };
+            let fill_w = bar.width() * slider_values[i].clamp(0.0, 1.0) as f64;
             let filled = Rect::new(bar.x0, bar.y0, bar.x0 + fill_w, bar.y1);
             let filled_rr = RoundedRect::from_rect(filled, 3.0);
             scene.fill(Fill::NonZero, transform, colors.accent[5], None, &filled_rr);
         }
 
-        // Toggle rows: Wi-Fi / Bluetooth
+        // Toggle rows: Wi-Fi / Bluetooth — values read from chrome.
+        let toggle_values = [qs.wifi, qs.bluetooth];
         for (i, label) in ["Wi-Fi", "Bluetooth"].iter().enumerate() {
-            let ty = rect.y0 + 160.0 + i as f64 * 28.0;
+            let prect = self.quick_settings_toggle_geometry(i);
+            let ty = prect.y0;
             text_renderer.draw_text(
                 scene,
                 label,
@@ -913,17 +961,40 @@ impl ShellOverlayHost {
                 transform * Affine::translate((rect.x0 + 16.0, ty)),
                 None,
             );
-            // Toggle pill on the right
-            let pill_w = 36.0;
-            let pill_h = 18.0;
-            let prect = Rect::new(rect.x1 - 16.0 - pill_w, ty, rect.x1 - 16.0, ty + pill_h);
-            let pill = RoundedRect::from_rect(prect, pill_h / 2.0);
-            let on = i == 0;
+            let pill = RoundedRect::from_rect(prect, prect.height() / 2.0);
+            let on = toggle_values[i];
             let color = if on { colors.accent[5] } else { colors.neutral[3] };
             scene.fill(Fill::NonZero, transform, color, None, &pill);
-            let knob_x = if on { prect.x1 - pill_h / 2.0 } else { prect.x0 + pill_h / 2.0 };
-            let knob = vello::kurbo::Circle::new(Point::new(knob_x, (prect.y0 + prect.y1) / 2.0), pill_h / 2.0 - 2.0);
+            let knob_x = if on {
+                prect.x1 - prect.height() / 2.0
+            } else {
+                prect.x0 + prect.height() / 2.0
+            };
+            let knob = vello::kurbo::Circle::new(
+                Point::new(knob_x, (prect.y0 + prect.y1) / 2.0),
+                prect.height() / 2.0 - 2.0,
+            );
             scene.fill(Fill::NonZero, transform, colors.text_primary, None, &knob);
         }
+    }
+
+    /// Slider bar rect for the i-th quick-settings slider (0 = Brightness,
+    /// 1 = Volume). Returned together with the label baseline `y` so the
+    /// draw path and the hit-test share one source of truth.
+    pub(crate) fn quick_settings_slider_geometry(&self, i: usize) -> (Rect, f64) {
+        let r = self.quick_settings_rect();
+        let ty = r.y0 + 56.0 + i as f64 * 52.0;
+        let bar = Rect::new(r.x0 + 16.0, ty + 20.0, r.x1 - 16.0, ty + 26.0);
+        (bar, ty)
+    }
+
+    /// Toggle pill rect for the i-th quick-settings toggle (0 = Wi-Fi,
+    /// 1 = Bluetooth).
+    pub(crate) fn quick_settings_toggle_geometry(&self, i: usize) -> Rect {
+        let r = self.quick_settings_rect();
+        let ty = r.y0 + 160.0 + i as f64 * 28.0;
+        let pill_w = 36.0;
+        let pill_h = 18.0;
+        Rect::new(r.x1 - 16.0 - pill_w, ty, r.x1 - 16.0, ty + pill_h)
     }
 }
