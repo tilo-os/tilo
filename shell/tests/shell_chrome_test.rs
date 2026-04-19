@@ -226,3 +226,24 @@ fn topbar_workspace_name_button_emits_settings_request() {
     let out = tb.click_workspace_name();
     assert!(matches!(out, TopBarOutput::OpenWorkspaceSettings));
 }
+
+#[test]
+fn topbar_center_widget_cycles_with_wheel_cooldown() {
+    use quick_desktop::shell::topbar::{TopBar, CenterWidget};
+    use std::time::Duration;
+    let mut tb = TopBar::new();
+    assert_eq!(tb.center_widget(), CenterWidget::Clock);
+    tb.on_center_wheel(1, Duration::from_millis(0));
+    assert_eq!(tb.center_widget(), CenterWidget::SystemMonitor);
+    // second wheel within 200ms cooldown: ignored
+    tb.on_center_wheel(1, Duration::from_millis(100));
+    assert_eq!(tb.center_widget(), CenterWidget::SystemMonitor);
+    tb.on_center_wheel(1, Duration::from_millis(300));
+    assert_eq!(tb.center_widget(), CenterWidget::Calendar);
+    // wrap
+    tb.on_center_wheel(1, Duration::from_millis(700));
+    assert_eq!(tb.center_widget(), CenterWidget::Clock);
+    // negative direction
+    tb.on_center_wheel(-1, Duration::from_millis(1000));
+    assert_eq!(tb.center_widget(), CenterWidget::Calendar);
+}

@@ -22,6 +22,7 @@
 use std::time::Duration;
 
 use crate::shell::state::WorkspaceTree;
+use crate::shell::system_monitor::{SparkSample, SystemMonitor};
 
 /// Events the shell dispatches into the TopBar in response to user input
 /// on the LeftNav cluster. `emit` applies them to a borrowed
@@ -69,11 +70,18 @@ pub enum CenterWidget {
 pub struct TopBar {
     /// Currently visible center widget. T18 leaves this at `Clock`.
     center: CenterWidget,
-    /// Timestamp of the last wheel event consumed by the center widget.
-    /// T19 reads this to enforce the 200 ms cooldown.
-    last_wheel: Duration,
+    /// Timestamp of the last wheel event consumed by the center widget,
+    /// or `None` if no wheel event has been accepted yet. T19 reads this
+    /// to enforce the 200 ms cooldown — the first wheel always passes,
+    /// then subsequent events must wait `cooldown` before cycling again.
+    last_wheel: Option<Duration>,
     /// Cooldown window between successive center-widget cycles.
     cooldown: Duration,
+    /// Latest sparkline samples for the `SystemMonitor` center variant.
+    /// Refreshed once per frame by the shell tick hook via
+    /// [`TopBar::set_system_monitor`]; rendering code reads this cache
+    /// instead of borrowing the monitor across frames.
+    spark_samples: Vec<SparkSample>,
 }
 
 impl TopBar {
@@ -82,8 +90,9 @@ impl TopBar {
     pub fn new() -> Self {
         Self {
             center: CenterWidget::Clock,
-            last_wheel: Duration::ZERO,
+            last_wheel: None,
             cooldown: Duration::from_millis(200),
+            spark_samples: Vec::new(),
         }
     }
 
@@ -98,9 +107,11 @@ impl TopBar {
         self.cooldown
     }
 
-    /// Timestamp of the last accepted wheel event. Exposed for T19.
+    /// Timestamp of the last accepted wheel event, or `Duration::ZERO` if
+    /// no wheel event has ever been accepted. Exposed for T19 tests and
+    /// the shell tick hook.
     pub fn last_wheel(&self) -> Duration {
-        self.last_wheel
+        self.last_wheel.unwrap_or(Duration::ZERO)
     }
 
     /// Apply a [`TopBarEvent`] to the borrowed [`WorkspaceTree`].
@@ -130,6 +141,54 @@ impl TopBar {
     /// should open the WorkspaceSettings modal for the active workspace.
     pub fn click_workspace_name(&mut self) -> TopBarOutput {
         TopBarOutput::OpenWorkspaceSettings
+    }
+
+    /// Handle a wheel event over the center-widget cluster. `dir` is a raw
+    /// delta — only its sign matters. `now` is the monotonic clock used to
+    /// rate-limit cycles; see [`TopBar::cooldown`]. Calls while the
+    /// cooldown is active are silently dropped (no visual feedback — the
+    /// spec §5 calls this "gentle rate-limit").
+    ///
+    /// Indexing wraps modulo 3 across `Clock → SystemMonitor → Calendar →
+    /// Clock`, so wheel-down advances forward and wheel-up steps back.
+    /// `dir == 0` is a no-op.
+    pub fn on_center_wheel(&mut self, dir: i32, now: Duration) {
+        let step = dir.signum();
+        if step == 0 {
+            return;
+        }
+        // First wheel always accepted; subsequent wheels must respect the
+        // 200 ms cooldown so flicky trackpads don't skim past every widget.
+        let allowed = match self.last_wheel {
+            None => true,
+            Some(prev) => now.saturating_sub(prev) >= self.cooldown,
+        };
+        if !allowed {
+            return;
+        }
+        const VARIANTS: [CenterWidget; 3] =
+            [CenterWidget::Clock, CenterWidget::SystemMonitor, CenterWidget::Calendar];
+        let cur = VARIANTS.iter().position(|v| *v == self.center).unwrap_or(0) as i32;
+        let len = VARIANTS.len() as i32;
+        // Euclidean rem so negative `cur + step` wraps to the positive side.
+        let next = ((cur + step) % len + len) % len;
+        self.center = VARIANTS[next as usize];
+        self.last_wheel = Some(now);
+    }
+
+    /// Refresh the sparkline cache from the shell's owned
+    /// [`SystemMonitor`]. The shell calls this once per frame from its
+    /// tick hook so the `SystemMonitor` center variant always renders
+    /// from the most recent samples without the topbar borrowing the
+    /// monitor across frames.
+    pub fn set_system_monitor(&mut self, monitor: &SystemMonitor) {
+        self.spark_samples = monitor.samples().iter().map(|s| **s).collect();
+    }
+
+    /// Sparkline samples cached by [`TopBar::set_system_monitor`].
+    /// Oldest-first. Empty until the first tick-hook call.
+    pub fn spark_samples(&self) -> &[SparkSample] {
+        &self.spark_samples
     }
 }
 
