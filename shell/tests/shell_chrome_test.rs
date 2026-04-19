@@ -228,6 +228,32 @@ fn topbar_workspace_name_button_emits_settings_request() {
 }
 
 #[test]
+fn topbar_right_tray_renders_collaborators_and_opens_quick_settings() {
+    use quick_desktop::shell::topbar::{TopBar, TopBarOutput};
+    use quick_desktop::shell::state::{WorkspaceTree, Collaborator, Workspace, WorkspaceId};
+    let mut tree = WorkspaceTree {
+        workspaces: vec![],
+        active: WorkspaceId::from(0),
+        active_strip: Default::default(),
+        collaborators: vec![],
+    };
+    tree.workspaces = vec![Workspace::new(WorkspaceId::new(), "A")];
+    tree.active = tree.workspaces[0].id;
+    tree.collaborators = vec![
+        Collaborator { id: "u1".into(), name: "Ada".into() },
+        Collaborator { id: "u2".into(), name: "Bo".into() },
+        Collaborator { id: "u3".into(), name: "Cy".into() },
+        Collaborator { id: "u4".into(), name: "Di".into() },
+    ];
+    let tb = TopBar::new();
+    let avatars = tb.visible_avatars(&tree, 3);
+    assert_eq!(avatars.len(), 3);
+    assert_eq!(tb.overflow_count(&tree, 3), 1);
+    let out = TopBar::new().click_tray_settings();
+    assert!(matches!(out, TopBarOutput::OpenQuickSettings));
+}
+
+#[test]
 fn topbar_center_widget_cycles_with_wheel_cooldown() {
     use quick_desktop::shell::topbar::{TopBar, CenterWidget};
     use std::time::Duration;
