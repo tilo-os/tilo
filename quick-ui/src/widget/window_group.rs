@@ -131,6 +131,14 @@ impl WindowGroup {
     /// uses it to hit-test cross-group releases.
     pub fn bar_rect(&self) -> Rect { self.bar.bar_rect() }
 
+    /// Delegate to the bar's per-pill drop-index resolver. Used by
+    /// `GroupRow` on cross-group releases to figure out which index the
+    /// dropped tab should be spliced at, based on where in the target
+    /// bar the pointer landed.
+    pub fn drop_index_for(&self, release_point: Point) -> usize {
+        self.bar.drop_index_for(release_point)
+    }
+
     /// Borrow the current tab descriptor list. Exposed so callers (e.g.
     /// the cross-group drag tests in `GroupRow`) can assert on the tab
     /// sequence without reaching through the `TabBar` itself.
