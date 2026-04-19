@@ -43,7 +43,7 @@ fn main() {
                     .with_child(Box::new(
                         Column::new()
                             .push(Box::new(Text::new("welcome")))
-                            .push(Box::new(TextInput::new("inp_1", "text_val")))
+                            .push(Box::new(TextInput::new(vec![]).with_id("inp_1").with_on_change_path("text_val")))
                     ))
             ))
             .push(Box::new(
