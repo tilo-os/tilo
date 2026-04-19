@@ -66,3 +66,4 @@ pub use strip_view::{StripView, STRIP_COOLDOWN_MS};
 mod workspace_view;
 pub use workspace_view::{WorkspaceView, WorkspaceSwitchDirection};
 pub mod tooltip;
+pub mod toast;
