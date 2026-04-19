@@ -254,6 +254,37 @@ fn topbar_right_tray_renders_collaborators_and_opens_quick_settings() {
 }
 
 #[test]
+fn sidebar_wheel_switches_active_strip() {
+    use quick_desktop::shell::sidebar_wheel::SidebarWheel;
+    use quick_desktop::shell::state::{WorkspaceTree, Workspace, WorkspaceId, Strip, StripId};
+    let mut ws = Workspace::new(WorkspaceId::new(), "A");
+    ws.strips = vec![
+        Strip::new(StripId::new(), "s1"),
+        Strip::new(StripId::new(), "s2"),
+        Strip::new(StripId::new(), "s3"),
+    ];
+    let mut tree = WorkspaceTree {
+        workspaces: vec![],
+        active: WorkspaceId::from(0),
+        active_strip: Default::default(),
+        collaborators: vec![],
+    };
+    let ws_id = ws.id;
+    tree.workspaces = vec![ws];
+    tree.active = ws_id;
+    tree.active_strip.insert(ws_id, tree.workspaces[0].strips[0].id);
+
+    let mut w = SidebarWheel::new();
+    w.on_wheel(1, &mut tree);
+    assert_eq!(tree.active_strip[&ws_id], tree.workspaces[0].strips[1].id);
+    w.on_wheel(1, &mut tree);
+    assert_eq!(tree.active_strip[&ws_id], tree.workspaces[0].strips[2].id);
+    // clamped — overscroll not yet committing (T22 adds it)
+    w.on_wheel(1, &mut tree);
+    assert_eq!(tree.active_strip[&ws_id], tree.workspaces[0].strips[2].id);
+}
+
+#[test]
 fn topbar_center_widget_cycles_with_wheel_cooldown() {
     use quick_desktop::shell::topbar::{TopBar, CenterWidget};
     use std::time::Duration;
