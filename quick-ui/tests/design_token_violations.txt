@@ -1,0 +1,78 @@
+# Design-token audit — captured violation list (Task 12)
+#
+# Produced by: `distrobox enter -- cargo test -p quick-ui --test design_token_audit`
+# Date captured: 2026-04-19 (branch: nirios-shell)
+# Total violations: 53
+#
+# This file is the checklist input for Tasks 13-21 of the nirios-collab plan
+# (docs/superpowers/plans/2026-04-18-nirios-collab.md). Each task sweeps one
+# file and drives this count down. The audit test will remain RED until Task
+# 21 completes — that failing state is intentional.
+#
+# Note for follow-up tasks: the spec names button.rs / checkbox.rs / toggle.rs /
+# slider.rs / text.rs / text_input.rs / layout widgets as the sweep targets,
+# but the *actual* violations reported by the audit live in
+# src/tokens/{colors,elevation,terminal_palette}.rs and src/app.rs. The widget
+# files do not currently contain raw Color::rgb8 / .to_rounded_rect(N) /
+# blur:N / Padding::all(N) literals (they already route through theme.*).
+# Tasks 13-21 should flag this discrepancy to the plan owner before editing
+# the widget files, as the planned sweeps may be no-ops and the real
+# remediation work lives in the token/app files listed below.
+#
+# Paths are repo-relative (the raw test output uses absolute /home/user/...
+# paths from the distrobox mount).
+#
+# ---- Violations ----
+quick-ui/src/tokens/colors.rs:28: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: Color::rgb8(10, 10, 12), Color::rgb8(20, 20, 25), Color::rgb8(30, 30, 36),
+quick-ui/src/tokens/colors.rs:29: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: Color::rgb8(45, 45, 50), Color::rgb8(55, 55, 60), Color::rgb8(80, 80, 85),
+quick-ui/src/tokens/colors.rs:30: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: Color::rgb8(130, 130, 135), Color::rgb8(180, 180, 185), Color::rgb8(210, 210, 215),
+quick-ui/src/tokens/colors.rs:31: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: Color::rgb8(235, 235, 240), Color::rgb8(255, 255, 255),
+quick-ui/src/tokens/colors.rs:34: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: Color::rgb8(0, 25, 60), Color::rgb8(0, 50, 120), Color::rgb8(0, 75, 170),
+quick-ui/src/tokens/colors.rs:35: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: Color::rgb8(0, 100, 200), Color::rgb8(0, 120, 215), Color::rgb8(40, 150, 230),
+quick-ui/src/tokens/colors.rs:36: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: Color::rgb8(80, 170, 240), Color::rgb8(130, 200, 250), Color::rgb8(180, 220, 250),
+quick-ui/src/tokens/colors.rs:37: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: Color::rgb8(220, 240, 255), Color::rgb8(240, 250, 255),
+quick-ui/src/tokens/colors.rs:40: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: success: Color::rgb8(0, 180, 80),
+quick-ui/src/tokens/colors.rs:41: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: warning: Color::rgb8(220, 150, 0),
+quick-ui/src/tokens/colors.rs:42: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: danger: Color::rgb8(220, 60, 60),
+quick-ui/src/tokens/colors.rs:43: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: info: Color::rgb8(0, 140, 220),
+quick-ui/src/tokens/colors.rs:46: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: base: Color::rgb8(20, 20, 25),
+quick-ui/src/tokens/colors.rs:47: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: raised: Color::rgb8(30, 30, 36),
+quick-ui/src/tokens/colors.rs:53: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: text_dim: Color::rgb8(200, 200, 200),
+quick-ui/src/tokens/colors.rs:54: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: border_standard: Color::rgb8(80, 80, 85),
+quick-ui/src/tokens/colors.rs:55: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: border_focus: Color::rgb8(0, 120, 215),
+quick-ui/src/tokens/colors.rs:62: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: Color::rgb8(255, 255, 255), Color::rgb8(245, 245, 248), Color::rgb8(235, 235, 240),
+quick-ui/src/tokens/colors.rs:63: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: Color::rgb8(220, 220, 225), Color::rgb8(200, 200, 205), Color::rgb8(160, 160, 165),
+quick-ui/src/tokens/colors.rs:64: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: Color::rgb8(120, 120, 125), Color::rgb8(90, 90, 95), Color::rgb8(60, 60, 65),
+quick-ui/src/tokens/colors.rs:65: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: Color::rgb8(30, 30, 35), Color::rgb8(10, 10, 12),
+quick-ui/src/tokens/colors.rs:68: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: Color::rgb8(240, 250, 255), Color::rgb8(220, 240, 255), Color::rgb8(180, 220, 250),
+quick-ui/src/tokens/colors.rs:69: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: Color::rgb8(130, 200, 250), Color::rgb8(80, 170, 240), Color::rgb8(40, 150, 230),
+quick-ui/src/tokens/colors.rs:70: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: Color::rgb8(0, 120, 215), Color::rgb8(0, 100, 200), Color::rgb8(0, 75, 170),
+quick-ui/src/tokens/colors.rs:71: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: Color::rgb8(0, 50, 120), Color::rgb8(0, 25, 60),
+quick-ui/src/tokens/colors.rs:74: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: success: Color::rgb8(0, 150, 70),
+quick-ui/src/tokens/colors.rs:75: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: warning: Color::rgb8(200, 130, 0),
+quick-ui/src/tokens/colors.rs:76: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: danger: Color::rgb8(200, 50, 50),
+quick-ui/src/tokens/colors.rs:77: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: info: Color::rgb8(0, 120, 200),
+quick-ui/src/tokens/colors.rs:80: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: base: Color::rgb8(240, 240, 245),
+quick-ui/src/tokens/colors.rs:87: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: text_dim: Color::rgb8(100, 100, 105),
+quick-ui/src/tokens/colors.rs:88: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: border_standard: Color::rgb8(200, 200, 205),
+quick-ui/src/tokens/colors.rs:89: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: border_focus: Color::rgb8(0, 120, 215),
+quick-ui/src/tokens/elevation.rs:13: hard-coded shadow blur — use theme.elevation.* — line: e0: Shadow { offset_y: 0.0, blur: 0.0, color: c(0) },
+quick-ui/src/tokens/elevation.rs:14: hard-coded shadow blur — use theme.elevation.* — line: e1: Shadow { offset_y: 1.0, blur: 2.0, color: c(40) },
+quick-ui/src/tokens/elevation.rs:15: hard-coded shadow blur — use theme.elevation.* — line: e2: Shadow { offset_y: 2.0, blur: 6.0, color: c(60) },
+quick-ui/src/tokens/elevation.rs:16: hard-coded shadow blur — use theme.elevation.* — line: e3: Shadow { offset_y: 4.0, blur: 12.0, color: c(80) },
+quick-ui/src/tokens/elevation.rs:17: hard-coded shadow blur — use theme.elevation.* — line: e4: Shadow { offset_y: 8.0, blur: 24.0, color: c(110) },
+quick-ui/src/tokens/elevation.rs:18: hard-coded shadow blur — use theme.elevation.* — line: glass_inner: Shadow { offset_y: 0.0, blur: 1.0, color: Color::rgba8(255, 255, 255, 20) },
+quick-ui/src/tokens/elevation.rs:19: hard-coded shadow blur — use theme.elevation.* — line: glass_outer: Shadow { offset_y: 12.0, blur: 32.0, color: c(120) },
+quick-ui/src/tokens/terminal_palette.rs:17: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: fg_default: Color::rgb8(220, 220, 220),
+quick-ui/src/tokens/terminal_palette.rs:18: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: bg_default: Color::rgb8(10, 10, 10),
+quick-ui/src/tokens/terminal_palette.rs:28: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: Color::rgb8(128, 128, 128),
+quick-ui/src/tokens/terminal_palette.rs:29: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: Color::rgb8(255, 0, 0),
+quick-ui/src/tokens/terminal_palette.rs:30: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: Color::rgb8(0, 255, 0),
+quick-ui/src/tokens/terminal_palette.rs:31: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: Color::rgb8(255, 255, 0),
+quick-ui/src/tokens/terminal_palette.rs:32: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: Color::rgb8(0, 0, 255),
+quick-ui/src/tokens/terminal_palette.rs:33: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: Color::rgb8(255, 0, 255),
+quick-ui/src/tokens/terminal_palette.rs:34: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: Color::rgb8(0, 255, 255),
+quick-ui/src/tokens/terminal_palette.rs:43: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: p.fg_default = Color::rgb8(20, 20, 20);
+quick-ui/src/tokens/terminal_palette.rs:44: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: p.bg_default = Color::rgb8(245, 245, 245);
+quick-ui/src/app.rs:276: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: let color = match depth % 3 { 0 => Color::rgb8(255, 0, 255), 1 => Color::rgb8(0, 255, 255), _ => Color::rgb8(255, 255, 0) };
+quick-ui/src/app.rs:381: hard-coded Color::rgb8/rgba8 — use theme.* tokens — line: color: Color::rgb(c.color[0] as f64, c.color[1] as f64, c.color[2] as f64),
