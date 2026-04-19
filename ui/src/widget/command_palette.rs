@@ -130,6 +130,50 @@ impl CommandPalette {
 
     pub fn cursor(&self) -> usize { self.cursor }
 
+    /// Move the cursor to `index` within the visible window. Silently
+    /// clamps to the last visible row so overlay callers that do hit-
+    /// testing on the post-layout rects don't have to bounds-check.
+    pub fn set_cursor(&mut self, index: usize) {
+        if self.visible.is_empty() {
+            self.cursor = 0;
+        } else {
+            self.cursor = index.min(self.visible.len() - 1);
+        }
+    }
+
+    /// Id of the currently-selected visible entry, or `None` if the
+    /// filter matched no rows.
+    pub fn selected_id(&self) -> Option<&str> {
+        self.visible
+            .get(self.cursor)
+            .map(|&i| self.entries[i].id.as_str())
+    }
+
+    /// Rect of the `i`th *visible* row, in the same coordinate space as
+    /// `get_rect()`. Returns `None` if `i` is past the end of the
+    /// rendered window (the palette caps at 10 rows in `build_layout`).
+    pub fn row_rect(&self, i: usize) -> Option<Rect> {
+        if i >= self.visible.len() {
+            return None;
+        }
+        let list_top = self.rect.y0 + PADDING + INPUT_HEIGHT + PADDING;
+        let y0 = list_top + (i as f64) * ROW_HEIGHT;
+        let y1 = y0 + ROW_HEIGHT;
+        if y1 > self.rect.y1 - PADDING {
+            return None;
+        }
+        Some(Rect::new(self.rect.x0 + PADDING, y0, self.rect.x1 - PADDING, y1))
+    }
+
+    /// Index of the visible row whose rect contains `p`, if any. Used by
+    /// overlay callers that accept a click inside the palette rect and
+    /// want to move the cursor to the clicked row.
+    pub fn row_at(&self, p: Point) -> Option<usize> {
+        (0..self.visible.len()).find(|&i| {
+            self.row_rect(i).map(|r| r.contains(p)).unwrap_or(false)
+        })
+    }
+
     fn rebuild(&mut self) {
         self.visible.clear();
         for (i, e) in self.entries.iter().enumerate() {
@@ -359,5 +403,45 @@ mod tests {
     #[test]
     fn fuzzy_score_non_subsequence_is_none() {
         assert_eq!(fuzzy_score("xyz", "Rename Workspace"), None);
+    }
+
+    #[test]
+    fn set_cursor_clamps_to_visible_len() {
+        let mut p = CommandPalette::new();
+        p.push(CommandEntry::new("a", "Alpha"));
+        p.push(CommandEntry::new("b", "Bravo"));
+        p.set_cursor(99);
+        assert_eq!(p.cursor(), 1);
+    }
+
+    #[test]
+    fn selected_id_reflects_cursor_position() {
+        let mut p = CommandPalette::new();
+        p.push(CommandEntry::new("a", "Alpha"));
+        p.push(CommandEntry::new("b", "Bravo"));
+        assert_eq!(p.selected_id(), Some("a"));
+        p.set_cursor(1);
+        assert_eq!(p.selected_id(), Some("b"));
+    }
+
+    #[test]
+    fn selected_id_is_none_when_filter_removes_everything() {
+        let mut p = CommandPalette::new();
+        p.push(CommandEntry::new("a", "Alpha"));
+        p.set_filter(Box::new(|_| false));
+        assert_eq!(p.selected_id(), None);
+    }
+
+    #[test]
+    fn row_at_finds_visible_row_inside_the_post_layout_rect() {
+        let mut p = CommandPalette::new();
+        p.push(CommandEntry::new("a", "Alpha"));
+        p.push(CommandEntry::new("b", "Bravo"));
+        // Seat the palette rect so row_rect has meaningful coordinates.
+        p.rect = Rect::new(0.0, 0.0, 360.0, 200.0);
+        let mid_row_1 = p.row_rect(1).unwrap().center();
+        assert_eq!(p.row_at(mid_row_1), Some(1));
+        // Clicks outside the rect return None.
+        assert!(p.row_at(Point::new(1000.0, 1000.0)).is_none());
     }
 }
