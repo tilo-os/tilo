@@ -1,6 +1,7 @@
 pub mod nirios_tokens;
 pub mod persist;
 pub mod state;
+pub mod system_monitor;
 
 use quick_ui::widget::{
     AppKind as UiKind, Column, Container, StripView, TabDescriptor,
