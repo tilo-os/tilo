@@ -18,6 +18,7 @@
 //! query / Enter-to-select work without the desktop stealing focus.
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, LengthPercentageAuto, NodeId, Position, Rect as TaffyRect, Size, Style, TaffyTree};
@@ -52,6 +53,12 @@ pub struct ShellOverlayHost {
     /// Last known cursor position in logical coords, for hit-testing
     /// overlay clicks (shared with the rest of the chrome).
     last_cursor: Option<Point>,
+    /// Simulated remote peer cursor. The shell is collaborative-by-default,
+    /// so we paint a deterministic fake peer ("Ada") over the desktop
+    /// until the network layer feeds real `PresenceCtx::remote_cursors`
+    /// into the widget tree — this keeps the collab chrome visible in
+    /// single-process development. Lissajous-ish path seeded from `started`.
+    started: Instant,
 }
 
 impl ShellOverlayHost {
@@ -74,6 +81,7 @@ impl ShellOverlayHost {
             palette_node: None,
             chrome: None,
             last_cursor: None,
+            started: Instant::now(),
         }
     }
 
@@ -229,6 +237,13 @@ impl Widget for ShellOverlayHost {
     ) {
         self.content
             .draw(scene, transform, text_renderer, theme, presence);
+
+        // Collab chrome: one simulated remote peer floats across the
+        // desktop. Kept here rather than in a separate widget so the draw
+        // order is deterministic — the peer sits above window content but
+        // below every modal/popover.
+        self.draw_demo_peer(scene, transform, text_renderer, theme);
+
         let flags = self.overlay_flags();
 
         // Overview grid (Cmd+Tab)
@@ -751,6 +766,81 @@ impl ShellOverlayHost {
             hsize,
             colors.text_dim,
             transform * Affine::translate((rect.x1 - hw as f64 - 24.0, rect.y1 - 24.0)),
+            None,
+        );
+    }
+
+    /// Paint a single deterministic simulated remote cursor — a "caret +
+    /// name chip" pair — over the desktop content. Lissajous-ish motion
+    /// from a seconds-since-started clock; path stays inside the host's
+    /// rect with a 80 px margin so the peer remains visible regardless
+    /// of window size.
+    fn draw_demo_peer(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let tokens = &theme.tokens;
+        let t = self.started.elapsed().as_secs_f64();
+
+        // Keep the peer inside the visible viewport minus an 80 px margin
+        // so its label chip never clips against the edge.
+        let margin = 80.0_f64;
+        let avail_w = (self.rect.width() - margin * 2.0).max(0.0);
+        let avail_h = (self.rect.height() - margin * 2.0).max(0.0);
+        let cx = self.rect.x0 + margin + avail_w / 2.0;
+        let cy = self.rect.y0 + margin + avail_h / 2.0;
+        let px = cx + (avail_w / 2.0) * (t * 0.4).sin();
+        let py = cy + (avail_h / 2.0) * (t * 0.31).cos();
+        let apex = Point::new(px, py);
+
+        // Indigo "Ada" peer — matches the concept's pinned-color convention.
+        let peer = tokens.colors.accent[5];
+        let caret_size = 10.0_f64;
+        let chip_offset = 2.0_f64;
+        let pad_x = 6.0_f64;
+        let pad_y = 2.0_f64;
+        let label_size = tokens.typography.scale.sm;
+
+        let mut caret = vello::kurbo::BezPath::new();
+        caret.move_to(apex);
+        caret.line_to((apex.x + caret_size, apex.y + caret_size * 0.4));
+        caret.line_to((apex.x + caret_size * 0.4, apex.y + caret_size));
+        caret.close_path();
+        scene.fill(Fill::NonZero, transform, peer, None, &caret);
+
+        let label = "Ada";
+        let (tw, _th) = text_renderer.measure(label, label_size, None);
+        let chip_w = tw as f64 + pad_x * 2.0;
+        let chip_h = label_size as f64 + pad_y * 2.0;
+        let chip_x = apex.x + caret_size + chip_offset;
+        let chip_y = apex.y + caret_size + chip_offset;
+        let chip_rect = Rect::new(chip_x, chip_y, chip_x + chip_w, chip_y + chip_h);
+        let chip = RoundedRect::from_rect(chip_rect, tokens.radii.sm as f64);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tokens.colors.surfaces.raised,
+            None,
+            &chip,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            tokens.colors.border_standard,
+            None,
+            &chip,
+        );
+        let underline = Rect::new(chip_rect.x0, chip_rect.y1 - 2.0, chip_rect.x1, chip_rect.y1);
+        scene.fill(Fill::NonZero, transform, peer, None, &underline);
+        text_renderer.draw_text(
+            scene,
+            label,
+            label_size,
+            tokens.colors.text_primary,
+            transform * Affine::translate((chip_rect.x0 + pad_x, chip_rect.y0 + pad_y)),
             None,
         );
     }
