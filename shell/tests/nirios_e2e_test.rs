@@ -14,6 +14,7 @@
 use quick_desktop::shell::chrome_state::{ChromeState, QuickSettingsState, SearchScope};
 use quick_desktop::shell::notes_app::{BODY_KEY, NotesApp};
 use quick_desktop::shell::sidebar_wheel::SidebarWheel;
+use quick_desktop::shell::sidebar_wheel_chrome::SidebarWheelChrome;
 use quick_desktop::shell::state::{Collaborator, WorkspaceTree};
 use quick_desktop::shell::topbar_chrome::{CenterWidget, TopBarChrome};
 use quick_desktop::shell::{build_nirios_root, state::TileContent};
@@ -174,6 +175,28 @@ fn topbar_renders_up_to_three_avatars_then_overflow_chip() {
     let top = TopBarChrome::from_tree(&tree);
     assert_eq!(top.collaborator_initials(), &['A', 'B', 'C']);
     assert_eq!(top.collaborator_overflow(), 2);
+}
+
+#[test]
+fn sidebar_active_card_inherits_tree_collaborator_count() {
+    // No peers → no dots drawn.
+    let tree = WorkspaceTree::bootstrap_default();
+    let wheel = SidebarWheelChrome::from_tree(&tree);
+    assert_eq!(wheel.active_collaborator_count(), 0);
+
+    // Tree-level collaborators flow into the active card's presence count.
+    // Per-workspace presence isn't modeled yet, so a 5-peer tree shows "+N"
+    // overflow on the active card (clamped to 3 + "+2" chip).
+    let mut tree = WorkspaceTree::bootstrap_default();
+    tree.collaborators = vec![
+        Collaborator { id: "a".into(), name: "Ada".into() },
+        Collaborator { id: "b".into(), name: "Ben".into() },
+        Collaborator { id: "c".into(), name: "Cae".into() },
+        Collaborator { id: "d".into(), name: "Dia".into() },
+        Collaborator { id: "e".into(), name: "Eli".into() },
+    ];
+    let wheel = SidebarWheelChrome::from_tree(&tree);
+    assert_eq!(wheel.active_collaborator_count(), 5);
 }
 
 #[test]
