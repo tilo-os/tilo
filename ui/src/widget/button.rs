@@ -61,14 +61,14 @@ impl Widget for Button {
 
     fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
         let (bg_color, border_color) = if self.is_pressed {
-            (theme.bg_active, theme.border_standard)
+            (theme.bg_active, theme.tokens.colors.border_standard)
         } else if self.is_hovered {
-            (theme.bg_hover, theme.border_standard)
+            (theme.bg_hover, theme.tokens.colors.border_standard)
         } else {
-            (theme.bg_primary, theme.border_standard)
+            (theme.tokens.colors.surfaces.raised, theme.tokens.colors.border_standard)
         };
 
-        let shape = RoundedRect::from_rect(self.rect, theme.radius_standard);
+        let shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -76,13 +76,13 @@ impl Widget for Button {
             None,
             &shape,
         );
-        
+
         let stroke_color = if self.is_focused {
             theme.border_focus
         } else {
             border_color
         };
-        
+
         scene.stroke(
             &vello::kurbo::Stroke::new(if self.is_focused { 2.0 } else { 1.0 }),
             transform,
@@ -90,18 +90,18 @@ impl Widget for Button {
             None,
             &shape,
         );
-        
+
         let text_size = 14.0;
         let label = i18n!(&self.label);
         let (text_width, _text_height) = text_renderer.measure(&label, text_size as f32, None);
         let text_x = self.rect.center().x - (text_width as f64 / 2.0);
         let text_y = self.rect.y0 + (self.rect.height() - text_size as f64) / 2.0;
-        
+
         text_renderer.draw_text(
             scene,
             &label,
             text_size as f32,
-            theme.text_primary,
+            theme.tokens.colors.text_primary,
             transform * Affine::translate((text_x, text_y)),
             None,
         );
