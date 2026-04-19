@@ -383,3 +383,17 @@ fn topbar_center_widget_cycles_with_wheel_cooldown() {
     tb.on_center_wheel(-1, Duration::from_millis(1000));
     assert_eq!(tb.center_widget(), CenterWidget::Calendar);
 }
+
+#[test]
+fn shell_root_wires_all_chrome() {
+    use quick_desktop::shell::Shell;
+    let shell = Shell::new_for_test();
+    assert!(shell.has_topbar());
+    assert!(shell.has_sidebar_wheel());
+    assert!(shell.has_remote_cursor_overlay());
+    assert!(shell.has_toast_stack());
+    assert!(shell.has_context_menu());
+    assert!(shell.has_tooltip());
+    // overview hidden by default
+    assert!(!shell.overview_visible());
+}
