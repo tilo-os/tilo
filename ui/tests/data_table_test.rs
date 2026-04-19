@@ -49,6 +49,31 @@ fn data_table_column_resize_updates_width() {
 }
 
 #[test]
+fn data_table_sort_by_flips_direction_when_comparator_registered() {
+    // `sort_by(column_key, ascending)` is the prompt-locked public entry; it
+    // reapplies the existing comparator with the requested direction. It
+    // returns `true` when the column has a comparator installed (via a prior
+    // `sort_by_with`), `false` otherwise.
+    let mut t = DataTable::new(cols());
+    t.set_rows(vec![
+        Row { name: "c".into(), size: 30 },
+        Row { name: "a".into(), size: 10 },
+        Row { name: "b".into(), size: 20 },
+    ]);
+    // No comparator yet → sort_by is a no-op, reports `false`.
+    assert!(!t.sort_by("name", true));
+    // Install via the typed helper, then use sort_by to flip direction.
+    t.sort_by_with(|a, b| a.name.cmp(&b.name), "name", true);
+    assert!(t.sort_by("name", false));
+    assert_eq!(t.view_rows()[0].name, "c");
+    assert!(t.sort_by("name", true));
+    assert_eq!(t.view_rows()[0].name, "a");
+    // Unknown column key → false, state unchanged.
+    assert!(!t.sort_by("size", true));
+    assert_eq!(t.view_rows()[0].name, "a");
+}
+
+#[test]
 fn data_table_virtualization_windows_rows() {
     let mut t = DataTable::new(cols());
     let rows: Vec<Row> = (0..10_000).map(|i| Row { name: format!("r{i}"), size: i as u64 }).collect();
