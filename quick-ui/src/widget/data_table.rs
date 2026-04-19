@@ -198,6 +198,27 @@ impl<Row> DataTable<Row> {
         self.reapply_sort();
     }
 
+    /// Prompt-locked sort entry point. Applies direction `ascending` to the
+    /// column `column_key`, **reusing** the comparator previously installed
+    /// via [`Self::sort_by_with`]. Returns `true` when the column has a
+    /// registered comparator and the sort was applied; `false` when no
+    /// comparator is installed for that key (call `sort_by_with` first).
+    ///
+    /// Rationale: because per-column comparators cannot be encoded as pure
+    /// `(key, direction)` without help, callers install typed comparators via
+    /// `sort_by_with`, then header-click / keyboard handlers drive subsequent
+    /// direction flips through this simpler entry point.
+    pub fn sort_by(&mut self, column_key: &str, ascending: bool) -> bool {
+        if let Some(s) = &mut self.sort {
+            if s.key == column_key {
+                s.ascending = ascending;
+                self.reapply_sort();
+                return true;
+            }
+        }
+        false
+    }
+
     fn reapply_sort(&mut self) {
         if let Some(s) = &self.sort {
             let rows = &self.rows;
