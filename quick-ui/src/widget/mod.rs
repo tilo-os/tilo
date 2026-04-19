@@ -32,11 +32,29 @@ pub trait Widget {
     fn set_state(&mut self, _state: &str) {}
 
     // --- Collab / DnD contract extensions ---
+    /// Stable identity used to look up presence and permissions for this widget.
+    /// Default: opt-out (no presence tracking).
     fn presence_key(&self) -> Option<PresenceKey> { None }
+    /// Which permission scope, if any, gates this widget. Default: no gating.
     fn permission_scope(&self) -> Option<PermissionScope> { None }
     fn accepts_drop(&self, _payload: &DragPayload) -> bool { false }
     fn on_drop(&mut self, _payload: DragPayload, _state: &mut AutoCommit, _path: &ObjId) {}
     fn wants_pointer_capture(&self) -> bool { false }
+
+    /// Called by `App` during draw. Widgets that consume presence/permission
+    /// context can override this; the default forwards to `draw`, passing
+    /// through `presence` and ignoring `_permissions`.
+    fn draw_with_presence(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        _permissions: &crate::permissions::PermissionContext,
+    ) {
+        self.draw(scene, transform, text_renderer, theme, presence);
+    }
 }
 
 pub type Element = Box<dyn Widget>;
