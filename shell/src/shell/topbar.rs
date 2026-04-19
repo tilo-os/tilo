@@ -27,6 +27,8 @@
 
 use std::time::Duration;
 
+use quick_ui::widget::tooltip::Tooltip;
+
 use crate::shell::state::{Collaborator, WorkspaceTree};
 use crate::shell::system_monitor::{SparkSample, SystemMonitor};
 
@@ -88,6 +90,11 @@ pub struct TopBar {
     /// [`TopBar::set_system_monitor`]; rendering code reads this cache
     /// instead of borrowing the monitor across frames.
     spark_samples: Vec<SparkSample>,
+    /// Hover tooltip for the LeftNav workspace-name button. T31 wires it:
+    /// the shell calls [`TopBar::hover_ws_name`] on pointer enter/leave and
+    /// [`TopBar::tick`] once per frame; the primitive flips visible once
+    /// the accumulated hover crosses its 600 ms reveal delay.
+    ws_name_tooltip: Tooltip,
 }
 
 impl TopBar {
@@ -99,6 +106,7 @@ impl TopBar {
             last_wheel: None,
             cooldown: Duration::from_millis(200),
             spark_samples: Vec::new(),
+            ws_name_tooltip: Tooltip::new("Open workspace settings"),
         }
     }
 
@@ -218,6 +226,36 @@ impl TopBar {
     /// Oldest-first. Empty until the first tick-hook call.
     pub fn spark_samples(&self) -> &[SparkSample] {
         &self.spark_samples
+    }
+
+    /// Pointer entered (`hovered == true`) or left (`hovered == false`) the
+    /// LeftNav workspace-name button. Drives the hover timing on the
+    /// attached tooltip; see [`TopBar::ws_name_tooltip_visible`].
+    ///
+    /// The primitive seeds its accumulator with `Duration::ZERO` on enter,
+    /// so the shell must call [`TopBar::tick`] to advance time. On leave
+    /// the accumulator is cleared and the tooltip hides immediately.
+    pub fn hover_ws_name(&mut self, hovered: bool) {
+        if hovered {
+            self.ws_name_tooltip.on_hover_enter(Duration::ZERO);
+        } else {
+            self.ws_name_tooltip.on_hover_leave();
+        }
+    }
+
+    /// Advance hover-timing clocks owned by the topbar by `dt`. Currently
+    /// only the workspace-name tooltip consumes this; future center-widget
+    /// or right-tray tooltips can be multiplexed here without touching the
+    /// shell's per-frame call site.
+    pub fn tick(&mut self, dt: Duration) {
+        self.ws_name_tooltip.tick(dt);
+    }
+
+    /// `true` once the hover over the workspace-name button has persisted
+    /// long enough to reveal the tooltip. Returns `false` while the pointer
+    /// is not over the button or before the reveal delay has elapsed.
+    pub fn ws_name_tooltip_visible(&self) -> bool {
+        self.ws_name_tooltip.is_visible()
     }
 }
 
