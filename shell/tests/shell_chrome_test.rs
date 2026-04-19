@@ -39,3 +39,22 @@ fn overview_view_click_activates_workspace() {
     ov.click_card(1, &mut tree);
     assert_eq!(tree.active, b_id);
 }
+
+use quick_desktop::shell::search::GlobalSearch;
+
+#[test]
+fn global_search_seeds_commands_and_filters() {
+    let mut s = GlobalSearch::new();
+    s.seed_default_commands(); // "Create Workspace", "Rename Workspace", "Open Settings", ...
+    s.palette_mut().set_query("create");
+    assert!(s.palette().visible_entries().iter().any(|e| e.label.contains("Create")));
+}
+
+#[test]
+fn global_search_context_filter_narrows_results() {
+    let mut s = GlobalSearch::new();
+    s.seed_default_commands();
+    s.set_context_kind(quick_desktop::shell::search::SearchContext::Files);
+    let labels: Vec<String> = s.palette().visible_entries().iter().map(|e| e.label.clone()).collect();
+    assert!(labels.iter().all(|l| l.to_lowercase().contains("file") || l.to_lowercase().contains("open")));
+}
