@@ -47,7 +47,7 @@ Current state of the Rust implementation vs. the concept described in
 | Groups inside a horizontal strip | ✅ | Each strip's groups live in a `Row` inside the content Column, so groups tile left-to-right; multiple strips stack vertically. |
 | Width presets (narrow/normal/wide/custom) | ✅ | `WindowWidth` enum + clamped 300–1200. |
 | Right-edge resize handle | ✅ | `WindowGroup` renders handle, hover + drag work. |
-| Maximized state | 🟧 | Per-tab maximize icon renders on hover; click flips `WindowGroup::maximized`. Floating top-bar over the maximized group isn't painted yet. |
+| Maximized state | 🟧 | Per-tab maximize icon on hover toggles `WindowGroup::maximized`. While maximized, the group paints a 2 px accent outline and a floating "Restore" pill at the top-right (click to un-maximize). Concept's full floating top-bar (app-title pill + search/close cluster) not yet drawn. |
 | Tab bar height ~14 px | 🟧 | TabBar is 28 px (concept 14 px). |
 | Tab pill styling | ✅ | Rounded-full pills with active/hover/inactive alpha ramp, close-glyph on hover. |
 | Tab drop zones | 🟧 | Drag-to-reorder works + 2 px indigo bar renders at the drop position while drag is in flight (left of target when moving backward, right of target when moving forward, matching the vec remove-then-insert post-release index). Cross-group move still not supported. |
