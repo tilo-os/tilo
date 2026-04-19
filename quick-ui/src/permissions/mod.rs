@@ -33,3 +33,6 @@ pub enum AppKind {
     Settings,
     Unknown,
 }
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub struct UserId(pub String);
