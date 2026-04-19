@@ -8,11 +8,19 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::presence::PresenceCtx;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AppKind { Terminal, FileExplorer, Browser, Settings, Other(String) }
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum AppKind { Terminal, Files, Editor, Browser, Settings }
 
 impl AppKind {
-    pub fn as_str(&self) -> &str { match self { AppKind::Terminal => "Terminal", AppKind::FileExplorer => "Files", AppKind::Browser => "Browser", AppKind::Settings => "Settings", AppKind::Other(s) => s.as_str() } }
+    pub fn as_str(&self) -> &str {
+        match self {
+            AppKind::Terminal => "Terminal",
+            AppKind::Files => "Files",
+            AppKind::Editor => "Editor",
+            AppKind::Browser => "Browser",
+            AppKind::Settings => "Settings",
+        }
+    }
 }
 
 /// Content for a single tile (single tab) hosted by a `TileHost`.
