@@ -399,3 +399,38 @@ fn sync_tab_presence_seeds_per_tab_peer_registrations() {
         all_peers
     );
 }
+
+#[test]
+fn seed_demo_editor_presence_registers_alice_caret_and_selection() {
+    // The shell's `main.rs` calls this seeder before `app.run()` so the
+    // editor's peer-caret render has something to paint in single-process
+    // development. Guard against accidental breakage: the key must match
+    // what `EditorApp` reads, and the registered caret + selection must be
+    // retrievable by user.
+    use quick_desktop::shell::seed_demo_editor_presence;
+    use quick_ui::permissions::UserId;
+    use quick_ui::presence::{PathSegment, PresenceCtx, PresenceKey};
+
+    let mut ctx = PresenceCtx::empty();
+    seed_demo_editor_presence(&mut ctx);
+
+    let key = PresenceKey::Widget {
+        path: vec![PathSegment::Field("editor_body".into())],
+    };
+    let alice = UserId("alice".into());
+
+    assert!(
+        ctx.peers_on(&key).contains(&alice),
+        "alice should be registered as present on the editor body"
+    );
+    assert_eq!(
+        ctx.caret_for(&key, &alice),
+        Some(66),
+        "alice's caret char-index should be the seeded value"
+    );
+    let sel = ctx
+        .selection_for(&key, &alice)
+        .expect("alice should have a seeded selection");
+    assert_eq!(sel.start, 60);
+    assert_eq!(sel.end, 72);
+}
