@@ -10,6 +10,7 @@ pub mod presence;
 pub mod permissions;
 pub mod dnd;
 pub mod animation;
+pub mod overlay;
 
 pub use app::App;
 pub use state::State;
