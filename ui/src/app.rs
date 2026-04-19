@@ -358,7 +358,13 @@ impl App {
 
                             if !handled && self.modifiers.state().control_key() {
                                 if let WindowEvent::KeyboardInput { event: winit::event::KeyEvent { logical_key: winit::keyboard::Key::Character(ref c), state: winit::event::ElementState::Pressed, .. }, .. } = event {
+                                    let shift = self.modifiers.state().shift_key();
                                     match c.as_str() {
+                                        // Ctrl+Shift+Z is the Linux/Mac-native redo binding
+                                        // and winit delivers it as character "Z" while shift is
+                                        // held, so check the modifier directly rather than
+                                        // relying on the capital-letter cue.
+                                        "z" | "Z" if shift => { if let Some(e) = self.state.redo() { self.apply_undo_entry(e); } is_undo_redo = true; handled = true; }
                                         "z" | "Z" => { if let Some(e) = self.state.undo() { self.apply_undo_entry(e); } is_undo_redo = true; handled = true; }
                                         "y" | "Y" => { if let Some(e) = self.state.redo() { self.apply_undo_entry(e); } is_undo_redo = true; handled = true; }
                                         _ => {}
