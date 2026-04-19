@@ -1,4 +1,5 @@
 use quick_ui::tokens::{Tokens, ColorRamp, Spacing, Radii};
+use quick_ui::Theme;
 
 #[test]
 fn tokens_dark_has_11_neutral_stops() {
@@ -28,4 +29,13 @@ fn radii_has_five_steps_plus_full() {
     assert!(r.md < r.lg);
     assert!(r.lg < r.xl);
     assert!(r.xl < r.full);
+}
+
+#[test]
+fn theme_exposes_tokens() {
+    let t = Theme::dark();
+    // legacy shortcuts still work
+    assert_eq!(t.padding_standard, t.tokens.spacing.s3);
+    // tokens are the source of truth
+    assert_eq!(t.tokens.radii.md as f64, t.radius_standard);
 }
