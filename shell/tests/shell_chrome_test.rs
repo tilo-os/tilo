@@ -285,6 +285,67 @@ fn sidebar_wheel_switches_active_strip() {
 }
 
 #[test]
+fn sidebar_wheel_overscroll_commits_new_workspace_past_threshold() {
+    use quick_desktop::shell::sidebar_wheel::SidebarWheel;
+    use quick_desktop::shell::state::{Strip, StripId, Workspace, WorkspaceId, WorkspaceTree};
+    let mut ws = Workspace::new(WorkspaceId::new(), "A");
+    ws.strips = vec![Strip::new(StripId::new(), "s1")];
+    let mut tree = WorkspaceTree {
+        workspaces: vec![],
+        active: WorkspaceId::from(0),
+        active_strip: Default::default(),
+        collaborators: vec![],
+    };
+    let ws_id = ws.id;
+    tree.workspaces = vec![ws];
+    tree.active = ws_id;
+    tree.active_strip
+        .insert(ws_id, tree.workspaces[0].strips[0].id);
+
+    let mut w = SidebarWheel::new();
+    // at the top/bottom end, wheel direction +1 = downward overscroll
+    w.begin_overscroll(1);
+    for _ in 0..10 {
+        w.drag_overscroll(1, 10.0);
+    } // 100px of pull
+    assert!(w.overscroll_hint_visible());
+    assert!(w.overscroll_progress() > 0.0);
+
+    // below threshold → snap back
+    w.release_overscroll(&mut tree);
+    assert_eq!(tree.workspaces.len(), 1);
+
+    w.begin_overscroll(1);
+    for _ in 0..30 {
+        w.drag_overscroll(1, 10.0);
+    } // 300px
+    assert!(w.overscroll_progress() >= 1.0);
+    w.release_overscroll(&mut tree);
+    assert_eq!(tree.workspaces.len(), 2);
+    assert_eq!(tree.active, tree.workspaces[1].id);
+}
+
+#[test]
+fn sidebar_wheel_overscroll_below_threshold_snaps_back() {
+    use quick_desktop::shell::sidebar_wheel::SidebarWheel;
+    use quick_desktop::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
+    let mut tree = WorkspaceTree {
+        workspaces: vec![],
+        active: WorkspaceId::from(0),
+        active_strip: Default::default(),
+        collaborators: vec![],
+    };
+    tree.workspaces = vec![Workspace::new(WorkspaceId::new(), "A")];
+    tree.active = tree.workspaces[0].id;
+    let mut w = SidebarWheel::new();
+    w.begin_overscroll(-1);
+    w.drag_overscroll(-1, 50.0);
+    w.release_overscroll(&mut tree);
+    assert_eq!(tree.workspaces.len(), 1);
+    assert_eq!(w.overscroll_progress(), 0.0);
+}
+
+#[test]
 fn topbar_center_widget_cycles_with_wheel_cooldown() {
     use quick_desktop::shell::topbar::{TopBar, CenterWidget};
     use std::time::Duration;
