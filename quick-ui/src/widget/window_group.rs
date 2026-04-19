@@ -43,6 +43,11 @@ pub struct WindowGroup {
     /// Populated each draw so clicks always map to what's on screen.
     restore_rect: Rect,
     restore_hover: bool,
+    /// Hit region for the floating "close active tab" glyph drawn while
+    /// maximized, sitting just right of the restore pill to mirror the
+    /// concept's `[Search] [Minimize2] [X]` cluster.
+    close_rect: Rect,
+    close_hover: bool,
     last_cursor: Point,
 }
 
@@ -61,6 +66,8 @@ impl WindowGroup {
             maximized: false,
             restore_rect: Rect::ZERO,
             restore_hover: false,
+            close_rect: Rect::ZERO,
+            close_hover: false,
             last_cursor: Point::ZERO,
         }
     }
@@ -143,17 +150,67 @@ impl Widget for WindowGroup {
                 &outline,
             );
 
-            // Floating "Restore" pill at the top-right of the group, akin
-            // to the concept's floating controls over a maximized tile.
-            // A single pill is enough to let the user exit maximize state
-            // without having to find the per-tab icon; close still lives
-            // on each tab's own pill so we don't duplicate it here.
+            // Floating controls at the top of the maximized group, matching
+            // the concept's `[app title]  …  [Restore][×]` layout.
             let pad = 6.0_f64;
-            let pill_w = 76.0_f64;
             let pill_h = 22.0_f64;
-            let x0 = self.rect.x1 - pill_w - pad;
             let y0 = self.rect.y0 + pad;
-            self.restore_rect = Rect::new(x0, y0, x0 + pill_w, y0 + pill_h);
+
+            // Left: app-title pill. Shows the active tab's title so the
+            // maximized tile still tells you which app owns the surface.
+            let active_title = self
+                .bar
+                .tabs()
+                .iter()
+                .find(|t| t.id == self.bar.active_id())
+                .map(|t| t.title.clone())
+                .unwrap_or_default();
+            let title_size = theme.tokens.typography.scale.xs;
+            let (tw, th) = tr.measure(&active_title, title_size, None);
+            let title_pill_w = (tw as f64 + 24.0).max(80.0);
+            let title_pill = Rect::new(
+                self.rect.x0 + pad,
+                y0,
+                self.rect.x0 + pad + title_pill_w,
+                y0 + pill_h,
+            );
+            let title_rr =
+                vello::kurbo::RoundedRect::from_rect(title_pill, pill_h / 2.0);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                vello::peniko::Color::rgba8(255, 255, 255, 38),
+                None,
+                &title_rr,
+            );
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                theme.tokens.colors.accent[5],
+                None,
+                &title_rr,
+            );
+            let title_tx = title_pill.center().x - tw as f64 / 2.0;
+            let title_ty = title_pill.center().y - th as f64 / 2.0;
+            tr.draw_text(
+                scene,
+                &active_title,
+                title_size,
+                theme.tokens.colors.text_primary,
+                transform * vello::kurbo::Affine::translate((title_tx, title_ty)),
+                None,
+            );
+
+            // Right-action cluster: Restore pill + close glyph.
+            let close_w = 22.0_f64;
+            let close_x0 = self.rect.x1 - close_w - pad;
+            self.close_rect = Rect::new(close_x0, y0, close_x0 + close_w, y0 + pill_h);
+            let restore_w = 76.0_f64;
+            let restore_x0 = close_x0 - restore_w - 4.0;
+            self.restore_rect =
+                Rect::new(restore_x0, y0, restore_x0 + restore_w, y0 + pill_h);
+
+            // Restore pill.
             let pill = vello::kurbo::RoundedRect::from_rect(
                 self.restore_rect,
                 pill_h / 2.0,
@@ -174,20 +231,51 @@ impl Widget for WindowGroup {
                 &pill,
             );
             let label = "Restore";
-            let size = theme.tokens.typography.scale.xs;
-            let (lw, lh) = tr.measure(label, size, None);
+            let (lw, lh) = tr.measure(label, title_size, None);
             let lx = self.restore_rect.center().x - lw as f64 / 2.0;
             let ly = self.restore_rect.center().y - lh as f64 / 2.0;
             tr.draw_text(
                 scene,
                 label,
-                size,
+                title_size,
                 theme.tokens.colors.text_primary,
                 transform * vello::kurbo::Affine::translate((lx, ly)),
                 None,
             );
+
+            // Close glyph: matches the concept's `X` button, tinted red on
+            // hover so the destructive intent is obvious.
+            let close_rr =
+                vello::kurbo::RoundedRect::from_rect(self.close_rect, pill_h / 2.0);
+            let close_alpha: u8 = if self.close_hover { 180 } else { 38 };
+            let close_fill = if self.close_hover {
+                theme.tokens.colors.semantic.danger
+            } else {
+                vello::peniko::Color::rgba8(255, 255, 255, close_alpha)
+            };
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                close_fill,
+                None,
+                &close_rr,
+            );
+            let glyph = "×";
+            let glyph_size = theme.tokens.typography.scale.base;
+            let (gw, gh) = tr.measure(glyph, glyph_size, None);
+            let gx = self.close_rect.center().x - gw as f64 / 2.0;
+            let gy = self.close_rect.center().y - gh as f64 / 2.0;
+            tr.draw_text(
+                scene,
+                glyph,
+                glyph_size,
+                theme.tokens.colors.text_primary,
+                transform * vello::kurbo::Affine::translate((gx, gy)),
+                None,
+            );
         } else {
             self.restore_rect = Rect::ZERO;
+            self.close_rect = Rect::ZERO;
         }
     }
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, m: &winit::event::Modifiers, s: &mut AutoCommit, p: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, taffy: &TaffyTree<()>) {
@@ -199,7 +287,24 @@ impl Widget for WindowGroup {
                 self.last_cursor = pt;
                 self.hover_resize = handle_rect.contains(pt);
                 self.restore_hover = self.maximized && self.restore_rect.contains(pt);
+                self.close_hover = self.maximized && self.close_rect.contains(pt);
                 if self.resize_origin.is_some() { self.update_resize(pt.x as f32); *handled = true; return; }
+            }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. }
+                if self.maximized && self.close_rect.contains(self.last_cursor) =>
+            {
+                // Close-glyph click on a maximized group: drop the active
+                // tab's host, remove the tab from the bar, and exit
+                // maximize so the group stops drawing floating controls
+                // that now point at a stale tab.
+                let active_id = self.bar.active_id();
+                if let Some(idx) = self.hosts.iter().position(|(i, _)| *i == active_id) {
+                    self.hosts.remove(idx);
+                }
+                self.bar.remove_tab(active_id);
+                self.maximized = false;
+                *handled = true;
+                return;
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. }
                 if self.maximized && self.restore_rect.contains(self.last_cursor) =>
