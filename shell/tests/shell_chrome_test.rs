@@ -479,3 +479,21 @@ fn tray_gear_toggles_quick_settings_via_shell() {
     shell.simulate_tray_gear_click();
     assert!(!shell.quick_settings_visible());
 }
+
+// ---------------------------------------------------------------------------
+// T30 — ContextMenu wiring: right-click on tile → default menu
+// ---------------------------------------------------------------------------
+
+#[test]
+fn right_click_on_tile_opens_default_context_menu() {
+    use quick_desktop::shell::Shell;
+    let mut shell = Shell::new_for_test();
+    assert!(!shell.context_menu_is_open());
+    shell.simulate_right_click_on_active_tile([120.0, 200.0]);
+    assert!(shell.context_menu_is_open());
+    assert_eq!(shell.context_menu_position(), Some([120.0, 200.0]));
+    let labels = shell.context_menu_labels();
+    assert!(labels.iter().any(|l| l == "Close Tab"));
+    assert!(labels.iter().any(|l| l == "Split Right"));
+    assert!(labels.iter().any(|l| l == "Move to New Group"));
+}

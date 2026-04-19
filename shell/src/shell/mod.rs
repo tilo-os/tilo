@@ -17,7 +17,7 @@ use quick_ui::widget::{
     AppKind as UiKind, AppWidget, Column, Container, StripView, TabDescriptor,
     TileContent as UiTile, Widget, WindowGroup as UiGroup, WindowWidth as UiWidth,
     WorkspaceView,
-    context_menu::ContextMenu,
+    context_menu::{ContextMenu, MenuItem},
     toast::ToastStack,
     tooltip::Tooltip,
 };
@@ -787,6 +787,70 @@ impl Shell {
             ws.name = new_name.to_string();
         }
         self.toasts.push("Workspace renamed", ToastKind::Info);
+    }
+
+    // -----------------------------------------------------------------
+    // T30 — ContextMenu wiring: right-click on tile
+    //
+    // The default tile context menu carries three tile-scoped actions
+    // separated by a single `MenuItem::Separator`:
+    //
+    //   "Close Tab"
+    //   ------
+    //   "Split Right"
+    //   "Move to New Group"
+    //
+    // The callbacks are currently no-ops — wiring them to real tree
+    // mutations (tab removal, sibling-group splits, group promotion)
+    // lands in follow-up tasks. T30 only asserts the menu is populated
+    // and anchored at the right-click position.
+    // -----------------------------------------------------------------
+
+    /// Whether the tile context menu is currently visible.
+    pub fn context_menu_is_open(&self) -> bool {
+        self.ctx_menu.is_open()
+    }
+
+    /// Anchor position of the most-recent `open_at` on the context menu,
+    /// or `None` if the menu has never been opened.
+    pub fn context_menu_position(&self) -> Option<[f32; 2]> {
+        self.ctx_menu.position()
+    }
+
+    /// Snapshot the labels of every action item in the context menu in
+    /// order, skipping separators. Useful for tests that want to assert
+    /// the default item set without reaching through `MenuItem` variants.
+    pub fn context_menu_labels(&self) -> Vec<String> {
+        self.ctx_menu
+            .items()
+            .iter()
+            .filter_map(|i| i.label().map(|s| s.to_string()))
+            .collect()
+    }
+
+    /// Simulate a right-click on the currently-active tile at logical
+    /// position `[x, y]`. Clears any previously-seeded items and pushes
+    /// the default tile-scoped action set, then anchors the menu at the
+    /// caller-provided position.
+    #[cfg(any(test, debug_assertions))]
+    pub fn simulate_right_click_on_active_tile(&mut self, position: [f32; 2]) {
+        self.open_default_tile_context_menu(position);
+    }
+
+    /// Populate `ctx_menu` with the default tile action list and open it
+    /// at `position`. Extracted so the production right-click path (wired
+    /// alongside the compositor's pointer-event layer in a later task) and
+    /// the test-only simulator share the same item-construction code.
+    fn open_default_tile_context_menu(&mut self, position: [f32; 2]) {
+        // Rebuild from scratch so repeated right-clicks don't accumulate
+        // items from earlier menus (e.g. if a follow-up task adds a
+        // context-specific path that seeds different entries).
+        self.ctx_menu = ContextMenu::new();
+        self.ctx_menu.push(MenuItem::action("Close Tab", || {}));
+        self.ctx_menu.push(MenuItem::separator());
+        self.ctx_menu.push(MenuItem::action("Split Right", || {}));
+        self.ctx_menu.push(MenuItem::action("Move to New Group", || {}));
+        self.ctx_menu.open_at(position);
     }
 }
 
