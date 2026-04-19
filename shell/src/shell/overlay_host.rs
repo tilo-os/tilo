@@ -93,6 +93,30 @@ impl ShellOverlayHost {
             .unwrap_or_default()
     }
 
+    /// Mirror of the geometry in `draw_quick_settings` — the popover rect
+    /// anchored under the top-right tray pill.
+    fn quick_settings_rect(&self) -> Rect {
+        let popover_w = 280.0_f64;
+        let popover_h = 240.0_f64;
+        let x1 = self.rect.x1 - 16.0;
+        let y0 = self.rect.y0 + 48.0;
+        Rect::new(x1 - popover_w, y0, x1, y0 + popover_h)
+    }
+
+    /// Mirror of the geometry in `draw_ws_settings` — centered modal card.
+    fn ws_settings_rect(&self) -> Rect {
+        let modal_w = 520.0_f64;
+        let modal_h = 360.0_f64;
+        let cx = (self.rect.x0 + self.rect.x1) / 2.0;
+        let cy = (self.rect.y0 + self.rect.y1) / 2.0;
+        Rect::new(
+            cx - modal_w / 2.0,
+            cy - modal_h / 2.0,
+            cx + modal_w / 2.0,
+            cy + modal_h / 2.0,
+        )
+    }
+
     /// Mirror of the geometry in `draw_overview`: return the index of the
     /// workspace card at logical position `p`, if any.
     fn hit_test_overview(&self, p: Point) -> Option<usize> {
@@ -330,6 +354,47 @@ impl Widget for ShellOverlayHost {
                         *handled = true;
                         return;
                     }
+                }
+            }
+        }
+
+        // Outside-click close: if a popover/modal is up and the click
+        // lands outside its rect, dismiss it and swallow the click so the
+        // content below doesn't react. Overview has its own dismissal path
+        // below (click-to-activate-workspace) so we skip it here.
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: winit::event::MouseButton::Left,
+            ..
+        } = event
+        {
+            if let Some(p) = self.last_cursor {
+                if self.palette_visible {
+                    let palette_rect = self.palette.get_rect();
+                    if !palette_rect.contains(p) {
+                        self.palette_visible = false;
+                        *handled = true;
+                        return;
+                    }
+                }
+                let flags = self.overlay_flags();
+                if flags.quick_settings && !self.quick_settings_rect().contains(p) {
+                    if let Some(chrome) = self.chrome.clone() {
+                        let mut st = chrome.borrow_mut();
+                        st.overlays.quick_settings = false;
+                        st.bump();
+                    }
+                    *handled = true;
+                    return;
+                }
+                if flags.ws_settings && !self.ws_settings_rect().contains(p) {
+                    if let Some(chrome) = self.chrome.clone() {
+                        let mut st = chrome.borrow_mut();
+                        st.overlays.ws_settings = false;
+                        st.bump();
+                    }
+                    *handled = true;
+                    return;
                 }
             }
         }
