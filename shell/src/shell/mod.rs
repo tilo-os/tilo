@@ -20,6 +20,7 @@
 //! - A simulated remote cursor floats over the active tile.
 
 pub mod browser_stub;
+pub mod chrome_state;
 pub mod nirios_tokens;
 pub mod overlay_host;
 pub mod overview;
@@ -28,6 +29,8 @@ pub mod quick_settings;
 pub mod remote_cursors;
 pub mod search;
 pub mod sidebar_wheel;
+pub mod sidebar_wheel_chrome;
+pub mod split_row;
 pub mod state;
 pub mod system_monitor;
 pub mod test_support;
@@ -1005,6 +1008,8 @@ fn to_ui_tile(t: &ShellTile) -> UiTile {
 /// active workspace's active strip as a `StripView` overlay above the active
 /// `WorkspaceView`, with placeholder window-groups laid out horizontally.
 pub fn build_nirios_root(tree: &WorkspaceTree) -> Box<dyn Widget> {
+    let chrome = chrome_state::ChromeState::new(tree.clone());
+
     let strips_for_view: Vec<String> = tree
         .active_workspace()
         .map(|w| w.strips.iter().map(|s| s.name.clone()).collect())
@@ -1018,7 +1023,9 @@ pub fn build_nirios_root(tree: &WorkspaceTree) -> Box<dyn Widget> {
             .unwrap_or(0),
     ));
 
-    let topbar: Box<dyn Widget> = Box::new(topbar_chrome::TopBarChrome::from_tree(tree));
+    let topbar: Box<dyn Widget> = Box::new(
+        topbar_chrome::TopBarChrome::from_tree(tree).with_chrome(chrome.clone()),
+    );
 
     let mut content_col = Column::new().push(workspace_view).push(strip_view);
 
@@ -1052,12 +1059,17 @@ pub fn build_nirios_root(tree: &WorkspaceTree) -> Box<dyn Widget> {
             .filling(),
     );
 
-    let root_col = Column::new().push(topbar).push(content);
+    let sidebar: Box<dyn Widget> = Box::new(
+        sidebar_wheel_chrome::SidebarWheelChrome::from_tree(tree).with_chrome(chrome.clone()),
+    );
+    let below_topbar: Box<dyn Widget> = Box::new(split_row::SplitRow::new(sidebar, content));
+
+    let root_col = Column::new().push(topbar).push(below_topbar);
 
     let root: Box<dyn Widget> = Box::new(
         Container::new()
             .with_child(Box::new(root_col))
             .filling(),
     );
-    Box::new(overlay_host::ShellOverlayHost::new(root))
+    Box::new(overlay_host::ShellOverlayHost::new(root).with_chrome(chrome))
 }

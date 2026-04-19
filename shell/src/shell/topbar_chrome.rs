@@ -23,6 +23,7 @@ use quick_ui::text_render::TextRenderer;
 use quick_ui::theme::Theme;
 use quick_ui::widget::Widget;
 
+use crate::shell::chrome_state::Chrome;
 use crate::shell::state::WorkspaceTree;
 
 pub const TOPBAR_HEIGHT_PX: f32 = 40.0;
@@ -39,6 +40,22 @@ pub struct TopBarChrome {
     workspace_index: usize,
     workspace_total: usize,
     collaborator_initials: Vec<char>,
+    /// Shared chrome state; used to toggle overlays and switch workspaces
+    /// in response to clicks on the top bar's left/right clusters.
+    chrome: Option<Chrome>,
+    /// Cached revision from `Chrome::revision` so `update` can detect when
+    /// the tree has mutated since the last sync.
+    synced_revision: u64,
+    // Click geometry — recomputed every frame so it tracks DPI / resize.
+    overview_btn_rect: Rect,
+    up_btn_rect: Rect,
+    down_btn_rect: Rect,
+    ws_pill_rect: Rect,
+    tray_pill_rect: Rect,
+    /// Last cursor position in logical coords. Winit delivers the position
+    /// with `CursorMoved` but not `MouseInput`, so we cache it here to
+    /// hit-test click events.
+    last_cursor: Option<Point>,
 }
 
 impl TopBarChrome {
@@ -49,9 +66,27 @@ impl TopBarChrome {
             workspace_index: 0,
             workspace_total: 1,
             collaborator_initials: Vec::new(),
+            chrome: None,
+            synced_revision: 0,
+            overview_btn_rect: Rect::ZERO,
+            up_btn_rect: Rect::ZERO,
+            down_btn_rect: Rect::ZERO,
+            ws_pill_rect: Rect::ZERO,
+            tray_pill_rect: Rect::ZERO,
+            last_cursor: None,
         };
         this.sync_from_tree(tree);
         this
+    }
+
+    /// Attach a shared chrome-state handle. The top bar uses it to toggle
+    /// overlays (quick-settings, workspace-settings, overview) and to
+    /// switch the active workspace via the up/down chevrons.
+    pub fn with_chrome(mut self, chrome: Chrome) -> Self {
+        let rev = chrome.borrow().revision;
+        self.chrome = Some(chrome);
+        self.synced_revision = rev;
+        self
     }
 
     pub fn sync_from_tree(&mut self, tree: &WorkspaceTree) {
@@ -82,10 +117,20 @@ impl Widget for TopBarChrome {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
     fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
-        // Clock updates once per second; we do not currently trigger a
-        // re-paint on that cadence, but returning `true` here would flood
-        // the frame loop. The shell's existing per-frame redraw in
-        // `App::run` picks up the new HH:MM within ~16 ms anyway.
+        // Re-sync when the shared chrome state has mutated since our last
+        // pass — typically after a workspace switch or overlay toggle
+        // triggered by a sibling widget.
+        if let Some(chrome) = self.chrome.clone() {
+            let rev = chrome.borrow().revision;
+            if rev != self.synced_revision {
+                // Clone the tree to avoid re-borrowing chrome while calling
+                // `sync_from_tree` (which borrows &self mut).
+                let tree_snap = chrome.borrow().tree.clone();
+                self.sync_from_tree(&tree_snap);
+                self.synced_revision = rev;
+                return true;
+            }
+        }
         false
     }
 
@@ -149,6 +194,12 @@ impl Widget for TopBarChrome {
 
         // Overview "grid" icon: 2x2 mini-squares.
         let cell = (icon_size - 4.0) / 2.0;
+        self.overview_btn_rect = Rect::new(
+            x - 4.0,
+            center_y - icon_size / 2.0 - 4.0,
+            x + icon_size + 4.0,
+            center_y + icon_size / 2.0 + 4.0,
+        );
         for (cx, cy) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
             let r = Rect::new(
                 x + cx * (cell + 2.0),
@@ -167,6 +218,12 @@ impl Widget for TopBarChrome {
 
         // Up-chevron ▲
         let chev = 10.0_f64;
+        self.up_btn_rect = Rect::new(
+            x - 4.0,
+            center_y - chev * 0.35 - 6.0,
+            x + chev + 4.0,
+            center_y + chev * 0.35 + 6.0,
+        );
         let up = vello::kurbo::BezPath::from_iter([
             vello::kurbo::PathEl::MoveTo(Point::new(x, center_y + chev * 0.35)),
             vello::kurbo::PathEl::LineTo(Point::new(x + chev / 2.0, center_y - chev * 0.35)),
@@ -182,6 +239,12 @@ impl Widget for TopBarChrome {
         x += chev + tokens.spacing.s2 as f64;
 
         // Down-chevron ▼
+        self.down_btn_rect = Rect::new(
+            x - 4.0,
+            center_y - chev * 0.35 - 6.0,
+            x + chev + 4.0,
+            center_y + chev * 0.35 + 6.0,
+        );
         let dn = vello::kurbo::BezPath::from_iter([
             vello::kurbo::PathEl::MoveTo(Point::new(x, center_y - chev * 0.35)),
             vello::kurbo::PathEl::LineTo(Point::new(x + chev / 2.0, center_y + chev * 0.35)),
@@ -209,15 +272,14 @@ impl Widget for TopBarChrome {
         let (ws_w, ws_h) = text_renderer.measure(&ws_label, ws_text_size, None);
         let ws_y = center_y - ws_h as f64 / 2.0;
         // Subtle pill backdrop so the workspace name reads as clickable.
-        let pill = RoundedRect::from_rect(
-            Rect::new(
-                x - 6.0,
-                center_y - 12.0,
-                x + ws_w as f64 + 18.0,
-                center_y + 12.0,
-            ),
-            tokens.radii.sm as f64,
+        let ws_pill_outer = Rect::new(
+            x - 6.0,
+            center_y - 12.0,
+            x + ws_w as f64 + 28.0,
+            center_y + 12.0,
         );
+        self.ws_pill_rect = ws_pill_outer;
+        let pill = RoundedRect::from_rect(ws_pill_outer, tokens.radii.sm as f64);
         scene.fill(Fill::NonZero, transform, colors.surfaces.raised, None, &pill);
         text_renderer.draw_text(
             scene,
@@ -261,6 +323,12 @@ impl Widget for TopBarChrome {
         // Tray pill (rounded-full) with three dots for wifi / monitor / battery.
         let tray_w = 52.0_f64;
         let tray_h = 22.0_f64;
+        self.tray_pill_rect = Rect::new(
+            rx - tray_w,
+            center_y - tray_h / 2.0,
+            rx,
+            center_y + tray_h / 2.0,
+        );
         let tray = RoundedRect::new(
             rx - tray_w,
             center_y - tray_h / 2.0,
@@ -310,17 +378,78 @@ impl Widget for TopBarChrome {
 
     fn handle_event(
         &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
+        event: &WindowEvent,
+        scale_factor: f64,
         _modifiers: &winit::event::Modifiers,
         _state: &mut AutoCommit,
         _path: &ObjId,
-        _handled: &mut bool,
+        handled: &mut bool,
         _focus_target: &mut Option<NodeId>,
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
-        // Click wiring lands in a follow-up phase alongside the overlay host.
+        // Track the cursor position so `MouseInput` (which doesn't carry a
+        // position) can still hit-test against the click geometry captured
+        // during the most recent draw pass.
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.last_cursor = Some(Point::new(
+                position.x / scale_factor,
+                position.y / scale_factor,
+            ));
+            return;
+        }
+        let WindowEvent::MouseInput {
+            state: winit::event::ElementState::Pressed,
+            button: winit::event::MouseButton::Left,
+            ..
+        } = event
+        else {
+            return;
+        };
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        // Need the cursor position — winit delivers MouseInput without it,
+        // so we reach into the last-known cursor via the Modifiers path.
+        // For now, fall back to a separate CursorMoved tracker stored on
+        // the widget. Without a cursor tracker we can't map; skip until a
+        // CursorMoved arrives to prime the click area.
+        let pos = match self.last_cursor {
+            Some(p) => p,
+            None => return,
+        };
+        let _ = scale_factor;
+        let p = pos;
+        let mut state = chrome.borrow_mut();
+        if self.overview_btn_rect.contains(p) {
+            state.overlays.overview = !state.overlays.overview;
+            state.bump();
+            *handled = true;
+            return;
+        }
+        if self.up_btn_rect.contains(p) {
+            if state.switch_workspace(-1) {
+                *handled = true;
+            }
+            return;
+        }
+        if self.down_btn_rect.contains(p) {
+            if state.switch_workspace(1) {
+                *handled = true;
+            }
+            return;
+        }
+        if self.ws_pill_rect.contains(p) {
+            state.overlays.ws_settings = !state.overlays.ws_settings;
+            state.bump();
+            *handled = true;
+            return;
+        }
+        if self.tray_pill_rect.contains(p) {
+            state.overlays.quick_settings = !state.overlays.quick_settings;
+            state.bump();
+            *handled = true;
+        }
     }
 
     fn name(&self) -> &str {
