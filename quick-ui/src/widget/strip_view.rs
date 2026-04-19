@@ -52,7 +52,10 @@ impl StripView {
 impl Widget for StripView {
     fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
     fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
-        let node = taffy.new_leaf(Style { size: Size { width: Dimension::percent(1.0), height: Dimension::percent(1.0) }, ..Default::default() }).unwrap();
+        // Zero-height leaf — the StripView's job today is scroll-wheel
+        // pagination, not rendering. Visible strip UI lives on the real
+        // window-groups that the shell tiles next to it.
+        let node = taffy.new_leaf(Style { size: Size { width: Dimension::percent(1.0), height: Dimension::length(0.0) }, flex_shrink: 0.0, ..Default::default() }).unwrap();
         node_map.insert(node, self as *mut dyn Widget);
         node
     }
@@ -65,16 +68,9 @@ impl Widget for StripView {
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
     }
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, _presence: &PresenceCtx) {
-        // Simple v1: render the active strip name centered; shell will overlay real groups in later tasks.
-        scene.fill(vello::peniko::Fill::NonZero, transform, theme.tokens.colors.surfaces.base, None, &self.rect);
-        if let Some(name) = self.strip_names.get(self.active_index) {
-            let text_size = theme.tokens.typography.scale.x2l;
-            let (tw, _) = tr.measure(name, text_size, None);
-            let x = self.rect.center().x - tw as f64 / 2.0;
-            let y = self.rect.center().y - text_size as f64 / 2.0;
-            tr.draw_text(scene, name, text_size, theme.tokens.colors.text_dim, transform * Affine::translate((x, y)), None);
-        }
+    fn draw(&mut self, _scene: &mut Scene, _transform: Affine, _tr: &mut TextRenderer, _theme: &Theme, _presence: &PresenceCtx) {
+        // Invisible today — real strip chrome lives in the shell's
+        // window-group layout + top-bar.
     }
     fn handle_event(&mut self, event: &WindowEvent, _scale: f64, _m: &winit::event::Modifiers, _s: &mut AutoCommit, _p: &ObjId, handled: &mut bool, _focus: &mut Option<NodeId>, _n: NodeId, _t: &TaffyTree<()>) {
         if let WindowEvent::MouseWheel { delta, .. } = event {
