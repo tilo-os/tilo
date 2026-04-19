@@ -1,6 +1,7 @@
 pub mod nirios_tokens;
 pub mod overview;
 pub mod persist;
+pub mod quick_settings;
 pub mod search;
 pub mod state;
 pub mod system_monitor;
