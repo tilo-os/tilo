@@ -271,18 +271,23 @@ impl App {
                             }
 
                             if self.debug_mode {
-                                fn draw_debug_recursive(widget: &dyn Widget, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, depth: usize) {
+                                let debug_outline_cycle = [
+                                    self.theme.tokens.colors.semantic.warning,
+                                    self.theme.tokens.colors.semantic.info,
+                                    self.theme.tokens.colors.semantic.success,
+                                ];
+                                fn draw_debug_recursive(widget: &dyn Widget, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, depth: usize, cycle: &[Color; 3]) {
                                     let rect = widget.get_rect();
-                                    let color = match depth % 3 { 0 => Color::rgb8(255, 0, 255), 1 => Color::rgb8(0, 255, 255), _ => Color::rgb8(255, 255, 0) };
+                                    let color = cycle[depth % 3];
                                     scene.stroke(&vello::kurbo::Stroke::new(1.5), transform, color, None, &rect);
                                     let label = format!("{}: {}", widget.name(), depth);
                                     let text_y = (rect.y0 + 12.0).min(rect.y1);
                                     let bg_rect = KurboRect::new(rect.x0, rect.y0, rect.x0 + 100.0, rect.y0 + 14.0);
                                     scene.fill(vello::peniko::Fill::NonZero, transform, Color::rgba8(0,0,0,180), None, &bg_rect);
                                     text_renderer.draw_text(scene, &label, 10.0, color, transform * Affine::translate((rect.x0 + 2.0, text_y)), None);
-                                    for child in widget.children() { draw_debug_recursive(child, scene, transform, text_renderer, depth + 1); }
+                                    for child in widget.children() { draw_debug_recursive(child, scene, transform, text_renderer, depth + 1, cycle); }
                                 }
-                                draw_debug_recursive(self.root_widget.as_ref(), &mut scene, transform, &mut self.text_renderer, 0);
+                                draw_debug_recursive(self.root_widget.as_ref(), &mut scene, transform, &mut self.text_renderer, 0, &debug_outline_cycle);
                             }
 
                             let surface_texture = surface.surface.get_current_texture().expect("failed to get surface texture");
