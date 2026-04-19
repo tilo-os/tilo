@@ -3,7 +3,8 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::WindowEvent;
 use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
-use crate::widget::{Widget, Element};
+use crate::widget::Widget;
+use crate::widget::app_widget::AppWidget;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::presence::PresenceCtx;
@@ -25,12 +26,11 @@ impl AppKind {
 
 /// Content for a single tile (single tab) hosted by a `TileHost`.
 ///
-/// **Interim:** During Plan 1, `App` carries a `Box<dyn Widget>` so concrete widgets
-/// need not implement the full `AppWidget` trait yet. Plan 3 redefines the variant as
-/// `Box<dyn AppWidget>` (which extends `Widget`) once the app contract lands. The
-/// `Wayland(SurfaceId)` variant is reserved for future compositor integration.
+/// As of Plan 3 Task 3, `App` carries a `Box<dyn AppWidget>` — `AppWidget: Widget`
+/// so layout/draw/event calls still auto-upcast to the base `Widget` contract.
+/// The `Wayland(SurfaceId)` variant is reserved for future compositor integration.
 pub enum TileContent {
-    App(Element),
+    App(Box<dyn AppWidget>),
     Stub { kind: AppKind, label: String },
     // reserved: Wayland(u64),
 }
