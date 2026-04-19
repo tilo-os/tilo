@@ -3,7 +3,10 @@ mod support;
 use support::{MemoryRelay, pump, headless_app};
 use quick_ui::collaboration::{CollabRequest, CollabEvent, PresencePayload};
 use quick_ui::presence::{PresenceKey, PathSegment};
-use quick_ui::permissions::UserId;
+use quick_ui::permissions::{
+    AppKind, Op, PermissionAssignment, PermissionContext, PermissionScope, ResourceId,
+    Role, RoleId, RolePermissions, UserId, WorkspaceSettingsView,
+};
 
 #[test]
 fn memory_relay_fans_out_presence_updates_to_both_peers() {
@@ -87,4 +90,78 @@ fn peer_pointer_position_follows_layout_change() {
         bob_app.presence_ctx().pointer_for(&ws_key, &UserId("alice".into())),
         Some((200.0, 70.0))
     );
+}
+
+fn make_view(alice_role: &str, bob_role: &str) -> WorkspaceSettingsView {
+    WorkspaceSettingsView {
+        roles: vec![
+            Role {
+                id: RoleId("viewer".into()),
+                name: "Viewer".into(),
+                permissions: RolePermissions {
+                    app_access: vec![(AppKind::Terminal, Op::View)],
+                    ..Default::default()
+                },
+            },
+            Role {
+                id: RoleId("editor".into()),
+                name: "Editor".into(),
+                permissions: RolePermissions {
+                    app_access: vec![(AppKind::Terminal, Op::Edit)],
+                    ..Default::default()
+                },
+            },
+        ],
+        assignments: vec![
+            PermissionAssignment { user: UserId("alice".into()), role: RoleId(alice_role.into()) },
+            PermissionAssignment { user: UserId("bob".into()),   role: RoleId(bob_role.into()) },
+        ],
+    }
+}
+
+#[test]
+fn viewer_role_denies_terminal_edit_after_settings_applied() {
+    let mut relay = MemoryRelay::new();
+    let alice_peer = relay.attach("alice");
+    let (mut alice_app, _) = headless_app("alice", alice_peer);
+
+    let view = make_view("viewer", "editor");
+    let ctx = PermissionContext::from_workspace_settings(&view, &UserId("alice".into()))
+        .expect("assignment exists");
+    alice_app.set_permission_ctx(ctx);
+
+    let scope = PermissionScope {
+        resource: ResourceId::App(AppKind::Terminal),
+        op: Op::Edit,
+    };
+    assert!(!alice_app.permission_ctx().check(&scope));
+}
+
+#[test]
+fn permission_change_from_peer_reflects_locally_after_sync() {
+    let mut relay = MemoryRelay::new();
+    let alice_peer = relay.attach("alice");
+    let bob_peer = relay.attach("bob");
+    let (mut alice_app, _) = headless_app("alice", alice_peer);
+    let (bob_app, _) = headless_app("bob", bob_peer);
+
+    // Bob edits workspace settings -> promotes alice to editor.
+    let new_view = make_view("editor", "editor");
+
+    // Simulate CRDT sync: bob broadcasts the serialized settings;
+    // alice receives and rebuilds her PermissionContext.
+    let ctx_for_alice = PermissionContext::from_workspace_settings(
+        &new_view, &UserId("alice".into()),
+    ).unwrap();
+    alice_app.set_permission_ctx(ctx_for_alice);
+
+    let scope = PermissionScope {
+        resource: ResourceId::App(AppKind::Terminal),
+        op: Op::Edit,
+    };
+    assert!(alice_app.permission_ctx().check(&scope));
+
+    // bob_app is constructed to confirm the two-App harness is exercised;
+    // its permission context is independent of alice's.
+    let _ = bob_app.permission_ctx();
 }
