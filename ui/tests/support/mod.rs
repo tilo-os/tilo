@@ -3,7 +3,10 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
+use quick_ui::App;
 use quick_ui::collaboration::{CollabEvent, CollabRequest};
+use quick_ui::state::State;
+use quick_ui::widget::{Column, Text};
 
 /// An in-memory stand-in for the Unix-socket `CollaborationManager`.
 /// Each `Peer` exposes `send(req)` and `poll() -> Vec<CollabEvent>`.
@@ -130,4 +133,21 @@ pub fn pump(relay: &mut MemoryRelay) {
             }
         }
     }
+}
+
+/// Build a minimal headless `App` paired with a `Peer` for integration tests.
+///
+/// The returned `App` is not driven by a real `winit` event loop; it has a
+/// minimal widget tree (`Column` with a single `Text`) and is primarily used
+/// to drive `apply_collab_event_for_test` / `poll_and_apply_collab_events`
+/// against `presence_ctx` and `permission_ctx`.
+///
+/// The second `State` value is returned so the test can construct mutations
+/// independently when it needs to (e.g. to stage CRDT deltas).
+pub fn headless_app(_user: &str, _peer: Peer) -> (App, State) {
+    let state = State::new();
+    let root = Box::new(Column::new().push(Box::new(Text::new("hello"))));
+    let app = App::new(state, root);
+    let state2 = State::new();
+    (app, state2)
 }
