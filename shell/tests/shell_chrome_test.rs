@@ -481,6 +481,22 @@ fn tray_gear_toggles_quick_settings_via_shell() {
 }
 
 // ---------------------------------------------------------------------------
+// T31 — Tooltip wiring: topbar workspace-name button tooltip
+// ---------------------------------------------------------------------------
+
+#[test]
+fn topbar_ws_name_tooltip_reveals_after_delay() {
+    use quick_desktop::shell::topbar::TopBar;
+    use std::time::Duration;
+    let mut tb = TopBar::new();
+    tb.hover_ws_name(true);
+    tb.tick(Duration::from_millis(700));
+    assert!(tb.ws_name_tooltip_visible());
+    tb.hover_ws_name(false);
+    assert!(!tb.ws_name_tooltip_visible());
+}
+
+// ---------------------------------------------------------------------------
 // T30 — ContextMenu wiring: right-click on tile → default menu
 // ---------------------------------------------------------------------------
 
