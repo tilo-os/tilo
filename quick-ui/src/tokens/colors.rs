@@ -1,0 +1,92 @@
+use vello::peniko::Color;
+
+#[derive(Clone, Debug)]
+pub struct ColorRamp { pub stops: [Color; 11] }
+
+impl ColorRamp {
+    pub fn len(&self) -> usize { self.stops.len() }
+}
+
+impl std::ops::Index<usize> for ColorRamp {
+    type Output = Color;
+    fn index(&self, i: usize) -> &Color { &self.stops[i] }
+}
+
+#[derive(Clone, Debug)]
+pub struct Surfaces { pub base: Color, pub raised: Color, pub overlay: Color, pub glass: Color, pub glass_blur_px: f32 }
+
+#[derive(Clone, Debug)]
+pub struct SemanticColors { pub success: Color, pub warning: Color, pub danger: Color, pub info: Color }
+
+#[derive(Clone, Debug)]
+pub struct Colors { pub neutral: ColorRamp, pub accent: ColorRamp, pub semantic: SemanticColors, pub surfaces: Surfaces, pub text_primary: Color, pub text_dim: Color, pub border_standard: Color, pub border_focus: Color }
+
+impl Colors {
+    pub fn dark() -> Self {
+        Self {
+            neutral: ColorRamp { stops: [
+                Color::rgb8(10, 10, 12), Color::rgb8(20, 20, 25), Color::rgb8(30, 30, 36),
+                Color::rgb8(45, 45, 50), Color::rgb8(55, 55, 60), Color::rgb8(80, 80, 85),
+                Color::rgb8(130, 130, 135), Color::rgb8(180, 180, 185), Color::rgb8(210, 210, 215),
+                Color::rgb8(235, 235, 240), Color::rgb8(255, 255, 255),
+            ]},
+            accent: ColorRamp { stops: [
+                Color::rgb8(0, 25, 60), Color::rgb8(0, 50, 120), Color::rgb8(0, 75, 170),
+                Color::rgb8(0, 100, 200), Color::rgb8(0, 120, 215), Color::rgb8(40, 150, 230),
+                Color::rgb8(80, 170, 240), Color::rgb8(130, 200, 250), Color::rgb8(180, 220, 250),
+                Color::rgb8(220, 240, 255), Color::rgb8(240, 250, 255),
+            ]},
+            semantic: SemanticColors {
+                success: Color::rgb8(0, 180, 80),
+                warning: Color::rgb8(220, 150, 0),
+                danger: Color::rgb8(220, 60, 60),
+                info: Color::rgb8(0, 140, 220),
+            },
+            surfaces: Surfaces {
+                base: Color::rgb8(20, 20, 25),
+                raised: Color::rgb8(30, 30, 36),
+                overlay: Color::rgba8(15, 15, 18, 230),
+                glass: Color::rgba8(30, 30, 36, 160),
+                glass_blur_px: 24.0,
+            },
+            text_primary: Color::WHITE,
+            text_dim: Color::rgb8(200, 200, 200),
+            border_standard: Color::rgb8(80, 80, 85),
+            border_focus: Color::rgb8(0, 120, 215),
+        }
+    }
+
+    pub fn light() -> Self {
+        Self {
+            neutral: ColorRamp { stops: [
+                Color::rgb8(255, 255, 255), Color::rgb8(245, 245, 248), Color::rgb8(235, 235, 240),
+                Color::rgb8(220, 220, 225), Color::rgb8(200, 200, 205), Color::rgb8(160, 160, 165),
+                Color::rgb8(120, 120, 125), Color::rgb8(90, 90, 95), Color::rgb8(60, 60, 65),
+                Color::rgb8(30, 30, 35), Color::rgb8(10, 10, 12),
+            ]},
+            accent: ColorRamp { stops: [
+                Color::rgb8(240, 250, 255), Color::rgb8(220, 240, 255), Color::rgb8(180, 220, 250),
+                Color::rgb8(130, 200, 250), Color::rgb8(80, 170, 240), Color::rgb8(40, 150, 230),
+                Color::rgb8(0, 120, 215), Color::rgb8(0, 100, 200), Color::rgb8(0, 75, 170),
+                Color::rgb8(0, 50, 120), Color::rgb8(0, 25, 60),
+            ]},
+            semantic: SemanticColors {
+                success: Color::rgb8(0, 150, 70),
+                warning: Color::rgb8(200, 130, 0),
+                danger: Color::rgb8(200, 50, 50),
+                info: Color::rgb8(0, 120, 200),
+            },
+            surfaces: Surfaces {
+                base: Color::rgb8(240, 240, 245),
+                raised: Color::WHITE,
+                overlay: Color::rgba8(255, 255, 255, 230),
+                glass: Color::rgba8(245, 245, 250, 180),
+                glass_blur_px: 24.0,
+            },
+            text_primary: Color::BLACK,
+            text_dim: Color::rgb8(100, 100, 105),
+            border_standard: Color::rgb8(200, 200, 205),
+            border_focus: Color::rgb8(0, 120, 215),
+        }
+    }
+}
