@@ -108,6 +108,19 @@ impl PermissionContext {
         self.check_with_denied_feedback(scope).is_none()
     }
 
+    pub fn from_workspace_settings(
+        view: &WorkspaceSettingsView,
+        user: &UserId,
+    ) -> Option<Self> {
+        let assignment = view
+            .assignments
+            .iter()
+            .find(|a| &a.user == user)?
+            .role
+            .clone();
+        Some(Self::new(user.clone(), &view.roles, assignment))
+    }
+
     pub fn check_with_denied_feedback(&self, scope: &PermissionScope) -> Option<DenyReason> {
         let Some(role) = self.role.as_ref() else {
             return Some(DenyReason::RoleNotAssigned);
@@ -153,4 +166,19 @@ impl PermissionContext {
             }
         }
     }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PermissionAssignment {
+    pub user: UserId,
+    pub role: RoleId,
+}
+
+/// Read-only view of the `WorkspaceSettings` modal's persisted state
+/// used to build a `PermissionContext`. The shell owns the mutable
+/// counterpart; this is the contract the UI writes into.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct WorkspaceSettingsView {
+    pub roles: Vec<Role>,
+    pub assignments: Vec<PermissionAssignment>,
 }
