@@ -85,7 +85,7 @@ Current state of the Rust implementation vs. the concept described in
 |---|---|---|
 | Remote-cursor overlay | ✅ | `ShellOverlayHost::draw_demo_peer` paints a single simulated peer ("Ada") with caret + name chip + Lissajous motion over the desktop. |
 | Top-bar avatar stack | ✅ | Top-bar paints up to 3 initial avatars + `+N` overflow chip; sync-from-tree re-runs on chrome revision bump. |
-| Tab collaborator blur indicators | 🟧 | `TabBar::draw` reads `PresenceCtx::peers_on(PresenceKey::Tab { id })`; for up to 4 peers it paints low-alpha color dots (stable FNV-style hash → HSL hue) at the bottom of each pill. Shell-level wiring that actually populates `PresenceKey::Tab` is still pending. |
+| Tab collaborator blur indicators | ✅ | `TabBar::draw` reads `PresenceCtx::peers_on(PresenceKey::Tab { id })`; for up to 4 peers it paints low-alpha color dots (stable FNV-style hash → HSL hue) at the bottom of each pill. Shell-side wiring landed via `Collaborator::active_tab: Option<u64>` + `shell::sync_tab_presence_from_tree(&tree, &mut ctx)` (called from `main.rs` before the app loop starts), so any workspace collaborator with an `active_tab` attribution now materialises as a dot on the corresponding tab pill on first draw. |
 | File-explorer per-folder presence dots | 🟥 | — |
 | Editor collaborator caret+selection | 🟧 | `EditorApp` ships (per-line render + gutter + token tint); remote carets/selections in the editor body not yet rendered. |
 
@@ -95,7 +95,7 @@ Current state of the Rust implementation vs. the concept described in
 |---|---|---|
 | Workspace / Strip / WindowGroup / Tab | ✅ | `quick-gnome-shell/src/shell/state.rs`, mirrors concept. |
 | Roles + RolePermissions | ✅ | `Role`, `WorkspaceFile` exist. |
-| Collaborator (id, name, cursor color, etc.) | 🟧 | Only `id` + `name` in current Rust `Collaborator`. Missing `cursorColor`, `avatar`, `roleId`, `cursor`, `activeAppId`. |
+| Collaborator (id, name, cursor color, etc.) | 🟧 | Rust `Collaborator` now carries `id`, `name`, and `active_tab: Option<u64>` (concept's `activeAppId`), plus `new` / `with_active_tab` constructors. Still missing `cursorColor`, `avatar`, `roleId`, `cursor`. |
 | App types | ✅ | `AppKind::{Terminal,Files,Editor,Browser,Settings}` — Editor now maps to `EditorApp`. |
 | CRDT sync for apps | ✅ | Automerge `State::doc`, per-app `sync(doc, root)`. |
 
@@ -139,21 +139,21 @@ tuned to the concept's slate-900/indigo-500 palette** — it leans more neutral.
 
 Sorted by visual/functional impact per unit of work:
 
-1. **Shell-side tab presence wiring** — `TabBar` reads
-   `PresenceCtx::peers_on(PresenceKey::Tab{id})` and paints dots; nothing
-   in the shell actually populates the presence context with a per-tab
-   roster yet, so the dots stay empty in practice.
-2. **Per-collaborator fixed cursor colours** — concept pins me/alice/bob
+1. **Per-collaborator fixed cursor colours** — concept pins me/alice/bob
    /charlie hues; Rust currently hashes `UserId → HSL` with no overrides.
-3. **File-explorer tier matching** — concept's Favorites / Project-Root /
+2. **File-explorer tier matching** — concept's Favorites / Project-Root /
    System sidebar tiers; Rust widget exists but doesn't split the listing.
-4. **View-swap animation** — no crossfade between desktop ↔ overview.
-5. **Editor remote carets+selections** — the editor body ships; peer
+3. **View-swap animation** — no crossfade between desktop ↔ overview.
+4. **Editor remote carets+selections** — the editor body ships; peer
    carets/selections inside it are not drawn yet.
+5. **Live tab-presence refresh from the network layer** — shell-side
+   presence seeding now works at startup. The next step is running it
+   again whenever `CollabEvent::RemotePresenceUpdate` lands so a peer
+   switching tabs mid-session visibly moves their dot.
 6. **Per-pill "insert before" hit-testing for cross-group drop** — today
    a cross-group drop lands the tab at index 0 of the target. Per-pill
    hit-testing (drop between tab X and tab Y) is feasible but needs the
    target bar to expose `tab_rects` back to `GroupRow`.
 7. **Screenshot-driven visual E2E** — blocked on host missing the "Window
-   Calls Extended" GNOME extension; 14 headless E2E tests cover the
+   Calls Extended" GNOME extension; 15 headless E2E tests cover the
    non-visual wiring.
