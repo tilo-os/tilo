@@ -51,7 +51,7 @@ Current state of the Rust implementation vs. the concept described in
 | Tab bar height ~14 px | 🟧 | TabBar is 28 px (concept 14 px). |
 | Tab pill styling | ✅ | Rounded-full pills with active/hover/inactive alpha ramp, close-glyph on hover. |
 | Tab drop zones | ✅ | Drag-to-reorder works + 2 px indigo bar renders at the drop position while drag is in flight (left of target when moving backward, right of target when moving forward). Cross-group moves land through the new `GroupRow` widget in `quick-ui/src/widget/group_row.rs`: `TabBar` publishes `pending_detach` when a release falls outside its own rect, `GroupRow::handle_event` post-dispatch-sweeps sibling groups and hit-tests the release point against each `bar_rect()`, splicing the detached tab + its `TileHost` into the target (the dragged tab becomes active in its new group; the source promotes a neighbour). Drop index is resolved via `WindowGroup::drop_index_for` → `TabBar::drop_index_for`, which walks `tab_rects()` and compares the release x to each pill's midpoint so a drop between pill X and pill Y lands at index Y rather than always falling to index 0. |
-| Tab-level collaborator blur indicators | 🟥 | No indicators. |
+| Tab-level collaborator blur indicators | ✅ | See §7 — `TabBar::draw` paints per-peer colour dots at the bottom of each pill via `PresenceCtx::peers_on(PresenceKey::Tab { id })`; wired to both startup-seeded + live-refreshed presence. |
 | Window frame white rounded card | ✅ | `TileHost` paints `surfaces.window_card` (WHITE) with `rounded-xl` radius + `white/20` border. Stub text renders dark-on-white. |
 | Drag-over / search-active borders | 🟧 | `WindowGroup::draw` paints a 1.5 px indigo-500 @ 60% alpha ring while `TabBar::drag_in_flight()` is true; matches the concept's drag-over state for the source group. Search-active ring not yet tied to ⌘K scope. |
 
@@ -70,7 +70,7 @@ Current state of the Rust implementation vs. the concept described in
 | Item | Status | Notes |
 |---|---|---|
 | Overlay host in root | ✅ | `ShellOverlayHost` wraps the root widget, owns visibility flags, draws scrim + overlays. |
-| Global search (⌘K) | 🟧 | Overlay-host palette draws on ⌘K with scrim + a scope banner above the palette; palette rows still don't wire to actions. |
+| Global search (⌘K) | ✅ | Overlay-host palette draws on ⌘K with scrim + a scope banner above the palette. Rows are now action-wired: `ShellOverlayHost::dispatch_palette_command` maps ids (`overview.toggle`, `settings.open`, `quick-settings.open`, `search.open`) to chrome overlay mutations; Enter on the cursor row and left-click on any visible row both dispatch and close the palette. Unknown ids close the palette too (no stale overlay). |
 | Search context banner / scope radios | ✅ | Banner above the palette shows "Search in: Workspace / All" pills; click rotates `ChromeState::search_scope`; defaults to Workspace so cross-workspace leakage is opt-in. |
 | Overview view modal | ✅ | Drawn on `overlays.overview`; cards clickable; Esc closes. |
 | Quick settings dropdown | ✅ | Interactive: click-to-set sliders (brightness/volume 0..=1), click-to-flip toggles (Wi-Fi/Bluetooth). State lives on `ChromeState::quick_settings`. |
