@@ -1,11 +1,11 @@
-use vello::{Scene, kurbo::{Rect, Affine}, peniko::{Color, Fill}};
+use vello::{Scene, kurbo::{Rect, Affine, Stroke}, peniko::{Color, Fill}};
 use crate::theme::Theme;
 use crate::permissions::UserId;
 use super::{PresenceCtx, SelectionRange};
 
 /// Deterministic per-user color — maps a UserId string to a hue with stable lightness.
 /// Used only when the theme does not provide an explicit override.
-fn color_for(user: &UserId, theme: &Theme) -> Color {
+pub(crate) fn color_for(user: &UserId, theme: &Theme) -> Color {
     // Hash to a hue 0..=359.
     let mut h: u32 = 2166136261;
     for b in user.0.as_bytes() {
@@ -87,5 +87,21 @@ impl PresenceCtx {
         let y = pos.1 as f64;
         let rect = Rect::new(x - 4.0, y - 4.0, x + 4.0, y + 4.0);
         scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, &rect);
+    }
+
+    /// Draw a 2-px focus outline around `rect` in `user`'s assigned color.
+    /// Used by widgets that want to signal "this peer is present on me"
+    /// without owning caret/selection geometry of their own.
+    pub fn draw_peer_focus(
+        &self,
+        scene: &mut Scene,
+        theme: &Theme,
+        user: &UserId,
+        rect: Rect,
+    ) {
+        let color = color_for(user, theme);
+        // Inflate inward by 1px so the 2px stroke sits inside `rect`.
+        let outline = rect.inflate(-1.0, -1.0);
+        scene.stroke(&Stroke::new(2.0), Affine::IDENTITY, color, None, &outline);
     }
 }
