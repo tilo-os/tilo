@@ -212,6 +212,24 @@ pub struct Collaborator {
     /// no `active_tab` column) still load.
     #[serde(default)]
     pub active_tab: Option<u64>,
+    /// Optional hex string (`#rrggbb` or `#rrggbbaa`) overriding the
+    /// palette that [`quick_ui::presence::user_color`] would pick for
+    /// this peer. Mirrors `nirios-concept/src/data.ts`'s per-peer
+    /// `cursorColor`. `None` falls through to the palette — the common
+    /// case for the four canonical ids (`me`/`alice`/`bob`/`charlie`).
+    #[serde(default)]
+    pub cursor_color: Option<String>,
+    /// Optional avatar URL or initials fragment. Concept feature parity
+    /// only — the runtime renders initials today, so this is stored but
+    /// not yet wired to a bitmap loader.
+    #[serde(default)]
+    pub avatar: Option<String>,
+    /// Role this peer plays in the workspace. References
+    /// [`Role::id`](Role) in the owning workspace's role table.
+    /// Permission checks read from `WorkspaceFile`; this field drives
+    /// the top-bar role chip + concept's roster dropdown.
+    #[serde(default)]
+    pub role_id: Option<String>,
 }
 
 impl Collaborator {
@@ -225,6 +243,9 @@ impl Collaborator {
             id: id.into(),
             name: name.into(),
             active_tab: None,
+            cursor_color: None,
+            avatar: None,
+            role_id: None,
         }
     }
 
@@ -236,11 +257,29 @@ impl Collaborator {
         name: impl Into<String>,
         tab: u64,
     ) -> Self {
-        Self {
-            id: id.into(),
-            name: name.into(),
-            active_tab: Some(tab),
-        }
+        let mut c = Self::new(id, name);
+        c.active_tab = Some(tab);
+        c
+    }
+
+    /// Attach an explicit `#rrggbb` / `#rrggbbaa` override for this peer.
+    /// Takes precedence over the palette lookup when the top-bar /
+    /// sidebar / tab dots read a colour.
+    pub fn with_cursor_color(mut self, hex: impl Into<String>) -> Self {
+        self.cursor_color = Some(hex.into());
+        self
+    }
+
+    /// Attach an avatar reference (URL or initials fragment).
+    pub fn with_avatar(mut self, avatar: impl Into<String>) -> Self {
+        self.avatar = Some(avatar.into());
+        self
+    }
+
+    /// Attach a role id pointing into the workspace's role table.
+    pub fn with_role(mut self, role_id: impl Into<String>) -> Self {
+        self.role_id = Some(role_id.into());
+        self
     }
 }
 
@@ -406,5 +445,88 @@ impl WorkspaceTree {
         }
         self.active = self.workspaces[idx + 1].id;
         true
+    }
+}
+
+#[cfg(test)]
+mod collaborator_tests {
+    use super::*;
+
+    #[test]
+    fn new_initializes_all_concept_fields_to_none() {
+        let c = Collaborator::new("alice", "Alice");
+        assert_eq!(c.id, "alice");
+        assert_eq!(c.name, "Alice");
+        assert_eq!(c.active_tab, None);
+        assert_eq!(c.cursor_color, None);
+        assert_eq!(c.avatar, None);
+        assert_eq!(c.role_id, None);
+    }
+
+    #[test]
+    fn with_active_tab_delegates_to_new_and_sets_tab() {
+        let c = Collaborator::with_active_tab("bob", "Bob", 42);
+        assert_eq!(c.active_tab, Some(42));
+        // Other concept fields stay at their defaults.
+        assert_eq!(c.cursor_color, None);
+        assert_eq!(c.avatar, None);
+        assert_eq!(c.role_id, None);
+    }
+
+    #[test]
+    fn with_cursor_color_sets_hex_override() {
+        let c = Collaborator::new("alice", "Alice").with_cursor_color("#ff00aa");
+        assert_eq!(c.cursor_color.as_deref(), Some("#ff00aa"));
+    }
+
+    #[test]
+    fn with_avatar_sets_reference() {
+        let c = Collaborator::new("charlie", "Charlie").with_avatar("CC");
+        assert_eq!(c.avatar.as_deref(), Some("CC"));
+    }
+
+    #[test]
+    fn with_role_sets_role_id() {
+        let c = Collaborator::new("bob", "Bob").with_role("editor");
+        assert_eq!(c.role_id.as_deref(), Some("editor"));
+    }
+
+    #[test]
+    fn builder_methods_can_be_chained() {
+        let c = Collaborator::with_active_tab("me", "Me", 7)
+            .with_cursor_color("#112233")
+            .with_avatar("ME")
+            .with_role("owner");
+        assert_eq!(c.active_tab, Some(7));
+        assert_eq!(c.cursor_color.as_deref(), Some("#112233"));
+        assert_eq!(c.avatar.as_deref(), Some("ME"));
+        assert_eq!(c.role_id.as_deref(), Some("owner"));
+    }
+
+    #[test]
+    fn legacy_json_without_concept_fields_still_deserializes() {
+        // Workspaces persisted before the struct grew concept fields omit
+        // `cursor_color`, `avatar`, and `role_id`. The `#[serde(default)]`
+        // on each field keeps those payloads loadable, so upgrading doesn't
+        // wipe saved state.
+        let legacy = r#"{"id":"alice","name":"Alice","active_tab":null}"#;
+        let c: Collaborator = serde_json::from_str(legacy).unwrap();
+        assert_eq!(c.id, "alice");
+        assert_eq!(c.name, "Alice");
+        assert_eq!(c.active_tab, None);
+        assert_eq!(c.cursor_color, None);
+        assert_eq!(c.avatar, None);
+        assert_eq!(c.role_id, None);
+    }
+
+    #[test]
+    fn fully_populated_round_trip() {
+        let c = Collaborator::with_active_tab("alice", "Alice", 3)
+            .with_cursor_color("#aabbcc")
+            .with_avatar("A")
+            .with_role("editor");
+        let json = serde_json::to_string(&c).unwrap();
+        let back: Collaborator = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, c);
     }
 }
