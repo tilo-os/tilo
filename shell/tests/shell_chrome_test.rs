@@ -142,3 +142,52 @@ fn workspace_settings_roles_tab_builds_apps_table_with_columns() {
         .collect();
     assert_eq!(apps_cols, vec!["app".to_string(), "permission".to_string()]);
 }
+
+#[test]
+fn workspace_settings_files_tab_edits_file_permissions() {
+    use quick_desktop::shell::state::{
+        FilePerm, Role, RolePermissions, Workspace, WorkspaceFile, WorkspaceId,
+    };
+    use quick_desktop::shell::workspace_settings::{WorkspaceSettings, WsTab};
+    let mut ws = Workspace::new(WorkspaceId::new(), "Design");
+    ws.roles.push(Role {
+        id: "r1".into(),
+        name: "Editor".into(),
+        permissions: RolePermissions::default(),
+    });
+    ws.workspace_files.push(WorkspaceFile {
+        id: "f1".into(),
+        name: "brief.md".into(),
+        mime: "text/markdown".into(),
+    });
+    let mut modal = WorkspaceSettings::new(ws.id);
+    modal.set_tab(WsTab::Files);
+    modal.select_role("r1");
+    assert_eq!(modal.selected_role(), Some("r1"));
+    modal.set_file_perm(&mut ws, "r1", "f1", FilePerm::Read);
+    modal.set_file_perm(&mut ws, "r1", "f1", FilePerm::Write);
+    let perm = ws.roles[0]
+        .permissions
+        .per_file
+        .get("f1")
+        .copied()
+        .unwrap_or(FilePerm::None);
+    assert!(matches!(perm, FilePerm::Write));
+}
+
+#[test]
+fn workspace_settings_files_tab_builds_files_table_with_columns() {
+    use quick_desktop::shell::state::WorkspaceId;
+    use quick_desktop::shell::workspace_settings::WorkspaceSettings;
+    let modal = WorkspaceSettings::new(WorkspaceId::new());
+    // Files table should expose two columns: the file name (flex) and the
+    // permission picker (fixed width). Keys are stable so callers can hook
+    // sort/resize policies onto them in later tasks.
+    let files_cols: Vec<String> = modal
+        .files_table()
+        .columns()
+        .iter()
+        .map(|c| c.key.clone())
+        .collect();
+    assert_eq!(files_cols, vec!["file".to_string(), "permission".to_string()]);
+}
