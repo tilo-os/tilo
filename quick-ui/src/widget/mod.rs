@@ -39,11 +39,6 @@ pub trait Widget {
     fn wants_pointer_capture(&self) -> bool { false }
 }
 
-/// Empty marker trait extending `Widget`. The full trait (with `app_kind`, `app_title`,
-/// `commands`, etc.) lands in Plan 3. During Plan 1 the shell uses `Box<dyn Widget>`
-/// inside `TileContent::App` so concrete widgets need not implement `AppWidget` yet.
-pub trait AppWidget: Widget {}
-
 pub type Element = Box<dyn Widget>;
 
 mod button;      pub use button::Button;
@@ -60,6 +55,7 @@ mod text_input;  pub use text_input::TextInput;
 mod tabs;        pub use tabs::{TabBar, TabDescriptor};
 mod scrollable;  pub use scrollable::{Scrollable, ScrollAxis};
 mod tile_host;   pub use tile_host::{TileHost, TileContent, AppKind};
+mod app_widget;  pub use app_widget::{AppCommand, AppWidget, IconDescriptor};
 mod window_group;
 pub use window_group::{WindowGroup, WindowWidth, WIDTH_MIN_PX, WIDTH_MAX_PX, RESIZE_HANDLE_PX};
 mod strip_view;
