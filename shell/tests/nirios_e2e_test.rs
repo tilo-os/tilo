@@ -15,7 +15,7 @@ use quick_desktop::shell::chrome_state::{ChromeState, QuickSettingsState, Search
 use quick_desktop::shell::notes_app::{BODY_KEY, NotesApp};
 use quick_desktop::shell::sidebar_wheel::SidebarWheel;
 use quick_desktop::shell::state::{Collaborator, WorkspaceTree};
-use quick_desktop::shell::topbar_chrome::TopBarChrome;
+use quick_desktop::shell::topbar_chrome::{CenterWidget, TopBarChrome};
 use quick_desktop::shell::{build_nirios_root, state::TileContent};
 
 use quick_ui::widget::Widget;
@@ -174,6 +174,26 @@ fn topbar_renders_up_to_three_avatars_then_overflow_chip() {
     let top = TopBarChrome::from_tree(&tree);
     assert_eq!(top.collaborator_initials(), &['A', 'B', 'C']);
     assert_eq!(top.collaborator_overflow(), 2);
+}
+
+#[test]
+fn center_widget_cycles_forward_and_backward() {
+    // Forward scroll cycles Clock → SystemMonitor → Calendar → Clock.
+    assert_eq!(CenterWidget::Clock.next(), CenterWidget::SystemMonitor);
+    assert_eq!(CenterWidget::SystemMonitor.next(), CenterWidget::Calendar);
+    assert_eq!(CenterWidget::Calendar.next(), CenterWidget::Clock);
+    // Backward scroll is the inverse.
+    assert_eq!(CenterWidget::Clock.prev(), CenterWidget::Calendar);
+    assert_eq!(CenterWidget::Calendar.prev(), CenterWidget::SystemMonitor);
+    assert_eq!(CenterWidget::SystemMonitor.prev(), CenterWidget::Clock);
+    // Dot-click hit-test maps 0→Clock, 1→SystemMonitor, 2→Calendar; wraps on 3+.
+    assert_eq!(CenterWidget::from_index(0), CenterWidget::Clock);
+    assert_eq!(CenterWidget::from_index(1), CenterWidget::SystemMonitor);
+    assert_eq!(CenterWidget::from_index(2), CenterWidget::Calendar);
+    assert_eq!(CenterWidget::from_index(3), CenterWidget::Clock);
+    // And the top bar starts on Clock by default so the first frame is sane.
+    let tree = WorkspaceTree::bootstrap_default();
+    assert_eq!(TopBarChrome::from_tree(&tree).center_widget(), CenterWidget::Clock);
 }
 
 #[test]
