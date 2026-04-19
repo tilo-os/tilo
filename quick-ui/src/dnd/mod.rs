@@ -31,3 +31,17 @@ impl DragDropManager {
     pub fn end(&mut self) -> Option<DragState> { self.active.take() }
     pub fn is_active(&self) -> bool { self.active.is_some() }
 }
+
+impl DragDropManager {
+    pub fn distance_moved(&self) -> f64 {
+        if let Some(s) = &self.active {
+            let dx = s.current.x - s.origin.x;
+            let dy = s.current.y - s.origin.y;
+            (dx * dx + dy * dy).sqrt()
+        } else { 0.0 }
+    }
+}
+
+/// Threshold in logical pixels after which a pointer press-and-move is promoted
+/// to a drag gesture. Matches macOS / GTK conventions.
+pub const DRAG_START_THRESHOLD_PX: f64 = 4.0;
