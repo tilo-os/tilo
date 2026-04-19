@@ -307,6 +307,31 @@ impl SimulatedFeed {
         }
     }
 
+    /// Creates a feed pinned to a concept-known user id. The id runs through
+    /// [`quick_ui::presence::user_color`], so canonical ids (`me`, `alice`,
+    /// `bob`, `charlie`) pick up the reference-mockup palette verbatim. The
+    /// `display_name` is what renders in the name chip above the caret — it
+    /// is decoupled from the id so a peer can show up as "Alice" while
+    /// staying attributed to the `alice` pinned colour.
+    pub fn new_with_user_id(user_id: &str, display_name: &str) -> Self {
+        let (r, g, b) = quick_ui::presence::user_color(user_id);
+        let color = [
+            r as f32 / 255.0,
+            g as f32 / 255.0,
+            b as f32 / 255.0,
+            1.0,
+        ];
+        Self {
+            t: std::time::Duration::ZERO,
+            // Seed is unused on the render path for user-id-pinned feeds;
+            // kept non-zero so the `sim-<seed>` user_id on the RemoteCursor
+            // stays distinct from a seed=0 feed if both ever coexist.
+            seed: 0xa11ce,
+            user: display_name.to_string(),
+            color,
+        }
+    }
+
     /// Advances the feed by `dt` and rewrites `ctx.remote_cursors` with the
     /// single simulated peer's current position. Subsequent calls replace the
     /// vec contents so a single feed never leaks multiple phantom cursors.
