@@ -73,21 +73,33 @@ impl Widget for TileHost {
         }
     }
     fn draw(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
-        let shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.lg as f64);
-        scene.fill(vello::peniko::Fill::NonZero, transform, theme.tokens.colors.surfaces.raised, None, &shape);
+        // White rounded-3xl card (concept: `bg-white` `rounded-3xl`
+        // `border-white/20` `shadow-2xl`).
+        let shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.xl as f64);
+        scene.fill(vello::peniko::Fill::NonZero, transform, theme.tokens.colors.surfaces.window_card, None, &shape);
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.surfaces.window_card_border,
+            None,
+            &shape,
+        );
         match &mut self.content {
             TileContent::App(w) => w.draw(scene, transform, tr, theme, presence),
             TileContent::Stub { kind, label } => {
+                // Dark text on the white card.
+                let on_card = theme.tokens.colors.neutral[1]; // slate-900 in dark theme
+                let on_card_dim = theme.tokens.colors.neutral[4]; // slate-600
                 let text_size = theme.tokens.typography.scale.xl;
                 let (tw, _) = tr.measure(label, text_size, None);
                 let x = self.rect.center().x - tw as f64 / 2.0;
                 let y = self.rect.center().y - text_size as f64 / 2.0;
-                tr.draw_text(scene, label, text_size, theme.tokens.colors.text_primary, transform * Affine::translate((x, y)), None);
+                tr.draw_text(scene, label, text_size, on_card, transform * Affine::translate((x, y)), None);
                 let sm = theme.tokens.typography.scale.sm;
                 let s = format!("{} coming soon", kind.as_str());
                 let (sw, _) = tr.measure(&s, sm, None);
                 let sx = self.rect.center().x - sw as f64 / 2.0;
-                tr.draw_text(scene, &s, sm, theme.tokens.colors.text_dim, transform * Affine::translate((sx, y + text_size as f64 + 8.0)), None);
+                tr.draw_text(scene, &s, sm, on_card_dim, transform * Affine::translate((sx, y + text_size as f64 + 8.0)), None);
             }
         }
     }
