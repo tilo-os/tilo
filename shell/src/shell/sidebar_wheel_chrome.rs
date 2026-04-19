@@ -68,6 +68,12 @@ pub struct SidebarWheelChrome {
     /// so scrolling only cycles workspaces when the pointer is over the
     /// sidebar.
     last_cursor: Option<Point>,
+    /// How many collaborators are present on the active workspace. Today we
+    /// don't track per-workspace presence yet, so we treat tree-level
+    /// collaborators as "everyone is on the active workspace" — good enough
+    /// for the visual parity signal "this card has people on it". Clamped
+    /// to 3 when drawn so the chrome doesn't overflow the card.
+    active_collab_count: usize,
 }
 
 impl SidebarWheelChrome {
@@ -84,6 +90,7 @@ impl SidebarWheelChrome {
             synced_revision: 0,
             scroll_accum: 0.0,
             last_cursor: None,
+            active_collab_count: 0,
         };
         this.sync_from_tree(tree);
         this
@@ -108,6 +115,13 @@ impl SidebarWheelChrome {
                 rect: Rect::ZERO,
             })
             .collect();
+        self.active_collab_count = tree.collaborators.len();
+    }
+
+    /// Collaborator-dot count rendered on the active workspace card.
+    /// Exposed so integration tests can verify the sync-from-tree wiring.
+    pub fn active_collaborator_count(&self) -> usize {
+        self.active_collab_count
     }
 
     /// Drain any pending intent queued by a previous click. Shell calls this
@@ -274,6 +288,42 @@ impl Widget for SidebarWheelChrome {
                 transform * Affine::translate((sx, sy)),
                 None,
             );
+
+            // Collaborator presence dots on the active card. Per-workspace
+            // presence isn't modeled yet, so tree-level collaborators all
+            // attribute to the active workspace as a "people are here"
+            // signal. Clamp to 3 and overflow into a "+N" chip so 4+ peers
+            // stay readable inside the 96-px-wide card.
+            if is_active && self.active_collab_count > 0 {
+                let shown = self.active_collab_count.min(3);
+                let overflow = self.active_collab_count.saturating_sub(3);
+                let dot_r = 3.0_f64;
+                let gap = 3.0_f64;
+                let row_w = shown as f64 * (dot_r * 2.0) + (shown as f64 - 1.0).max(0.0) * gap
+                    + if overflow > 0 { 14.0 } else { 0.0 };
+                let base_x = (card.rect.x0 + card.rect.x1) / 2.0 - row_w / 2.0;
+                let dot_y = card.rect.y1 - 10.0;
+                for i in 0..shown {
+                    let dx = base_x + dot_r + i as f64 * (dot_r * 2.0 + gap);
+                    let c = vello::kurbo::Circle::new(Point::new(dx, dot_y), dot_r);
+                    scene.fill(Fill::NonZero, transform, colors.text_primary, None, &c);
+                }
+                if overflow > 0 {
+                    let chip_x = base_x + shown as f64 * (dot_r * 2.0 + gap);
+                    let s = format!("+{}", overflow);
+                    let (tw, th) = text_renderer.measure(&s, tokens.typography.scale.xs, None);
+                    text_renderer.draw_text(
+                        scene,
+                        &s,
+                        tokens.typography.scale.xs,
+                        colors.text_primary,
+                        transform
+                            * Affine::translate((chip_x, dot_y - th as f64 / 2.0)),
+                        None,
+                    );
+                    let _ = tw; // silence unused: we just want ascent-based y alignment
+                }
+            }
         }
 
         // Trailing "+" card — dashed outline so it reads as a hint.
