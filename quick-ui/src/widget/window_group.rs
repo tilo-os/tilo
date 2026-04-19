@@ -35,13 +35,17 @@ pub struct WindowGroup {
     rect: Rect,
     resize_origin: Option<(f32, u32)>,
     pub hover_resize: bool,
+    /// User has requested the concept's "maximized" mode for this group.
+    /// The shell paints the floating controls on top of this rect while
+    /// set; click the maximize icon again to un-maximize (restore).
+    pub maximized: bool,
 }
 
 impl WindowGroup {
     pub fn new(id: u64, tabs_with_content: Vec<(TabDescriptor, TileContent)>, active_id: u64, width: WindowWidth) -> Self {
         let descs: Vec<TabDescriptor> = tabs_with_content.iter().map(|(d, _)| d.clone()).collect();
         let hosts: Vec<(u64, TileHost)> = tabs_with_content.into_iter().map(|(d, c)| (d.id, TileHost::new(c))).collect();
-        Self { id, bar: TabBar::new(&format!("g{id}"), descs, active_id), hosts, width, rect: Rect::ZERO, resize_origin: None, hover_resize: false }
+        Self { id, bar: TabBar::new(&format!("g{id}"), descs, active_id), hosts, width, rect: Rect::ZERO, resize_origin: None, hover_resize: false, maximized: false }
     }
     pub fn width(&self) -> WindowWidth { self.width }
     pub fn begin_resize(&mut self, pointer_x: f32) { self.resize_origin = Some((pointer_x, self.width.pixels())); }
@@ -131,6 +135,15 @@ impl Widget for WindowGroup {
                 self.hosts.remove(idx);
             }
             self.bar.remove_tab(close_id);
+            *handled = true;
+        }
+
+        // Maximize toggle from the tab bar's hover-action icon. We don't
+        // yet reshape the layout tree (the shell paints floating controls
+        // on top instead), so just flip the flag and let the shell pick it
+        // up on its next draw.
+        if let Some(_id) = self.bar.take_max() {
+            self.maximized = !self.maximized;
             *handled = true;
         }
 
