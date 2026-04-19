@@ -21,6 +21,7 @@
 
 pub mod browser_stub;
 pub mod chrome_state;
+pub mod editor_app;
 pub mod nirios_tokens;
 pub mod notes_app;
 pub mod overlay_host;
@@ -51,6 +52,7 @@ use quick_ui::widget::{
 use state::{AppKind as ShellKind, TileContent as ShellTile, WorkspaceTree};
 
 use crate::shell::browser_stub::BrowserStubWidget;
+use crate::shell::editor_app::EditorApp;
 use crate::shell::notes_app::NotesApp;
 use crate::shell::overview::OverviewView;
 use crate::shell::quick_settings::QuickSettings;
@@ -968,6 +970,15 @@ fn default_demo_tabs() -> DemoTabs {
         RuntimeTile::App(Box::new(notes)),
     ));
 
+    // Editor — code-leaning sibling to Notes (per-line rendering, gutter,
+    // tiny JS/TSX-style tokenizer). Uses its own CRDT key so it doesn't
+    // stomp on the Notes body.
+    let editor = EditorApp::with_default_snippet();
+    tabs.push(RuntimeTab::new(
+        "Editor",
+        RuntimeTile::App(Box::new(editor)),
+    ));
+
     // Browser — explicit stub (Servo not ported; spec §10.6).
     tabs.push(RuntimeTab::new(
         "Browser",
@@ -1023,6 +1034,9 @@ fn to_ui_tile(t: &ShellTile) -> UiTile {
                      edits replicate through the same CRDT path every widget uses.\n\n\
                      Ctrl+Z / Ctrl+Y undo and redo across the whole shell.";
                 UiTile::App(Box::new(NotesApp::with_seed(seed)))
+            }
+            ShellKind::Other(s) if s.eq_ignore_ascii_case("Editor") => {
+                UiTile::App(Box::new(EditorApp::with_default_snippet()))
             }
             _ => UiTile::Stub {
                 kind: to_ui_kind(kind),
