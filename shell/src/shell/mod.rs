@@ -1040,5 +1040,10 @@ pub fn build_nirios_root(tree: &WorkspaceTree) -> Box<dyn Widget> {
             }
         }
     }
-    Box::new(Container::new().with_child(Box::new(col)).with_background())
+    Box::new(
+        Container::new()
+            .with_child(Box::new(col))
+            .with_background()
+            .filling(),
+    )
 }
