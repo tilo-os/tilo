@@ -25,7 +25,7 @@ use taffy::{Dimension, LengthPercentageAuto, NodeId, Position, Rect as TaffyRect
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::kurbo::RoundedRect;
-use vello::peniko::{Color, Fill};
+use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -59,7 +59,22 @@ pub struct ShellOverlayHost {
     /// into the widget tree — this keeps the collab chrome visible in
     /// single-process development. Lissajous-ish path seeded from `started`.
     started: Instant,
+    /// Overview crossfade state: `overview_t` ∈ [0, 1] where 0 = desktop
+    /// fully visible and 1 = overview fully visible. `overview_target` is
+    /// the value `overview_t` is animating toward (latched on toggle).
+    /// `transition_started`/`transition_from` bookend the in-flight
+    /// animation so a re-toggle mid-fade picks up from the current visible
+    /// alpha rather than popping back to 0 or 1.
+    overview_t: f32,
+    overview_target: f32,
+    transition_started: Option<Instant>,
+    transition_from: f32,
 }
+
+/// Crossfade duration between desktop ↔ overview. 200 ms reads as a
+/// "soft swap" without dragging — matches the concept's spring preset
+/// well enough without introducing a spring solver in the render loop.
+const OVERVIEW_TRANSITION_MS: u64 = 200;
 
 impl ShellOverlayHost {
     pub fn new(content: Box<dyn Widget>) -> Self {
@@ -82,7 +97,38 @@ impl ShellOverlayHost {
             chrome: None,
             last_cursor: None,
             started: Instant::now(),
+            overview_t: 0.0,
+            overview_target: 0.0,
+            transition_started: None,
+            transition_from: 0.0,
         }
+    }
+
+    /// Advance the overview crossfade toward `overview_target`. Latches
+    /// a new transition if the target changed since last frame, then
+    /// evaluates the ease-out cubic lerp. Returns the current `t` so the
+    /// draw path can gate the content/overview alpha in lockstep.
+    fn tick_overview_transition(&mut self, target: f32) -> f32 {
+        if (target - self.overview_target).abs() > f32::EPSILON {
+            self.transition_from = self.overview_t;
+            self.overview_target = target;
+            self.transition_started = Some(Instant::now());
+        }
+        if let Some(started) = self.transition_started {
+            let elapsed = started.elapsed().as_millis() as f32;
+            let duration = OVERVIEW_TRANSITION_MS as f32;
+            if elapsed >= duration {
+                self.overview_t = self.overview_target;
+                self.transition_started = None;
+            } else {
+                let p = (elapsed / duration).clamp(0.0, 1.0);
+                // Ease-out cubic: 1 - (1 - p)^3
+                let eased = 1.0 - (1.0 - p).powi(3);
+                self.overview_t =
+                    self.transition_from + (self.overview_target - self.transition_from) * eased;
+            }
+        }
+        self.overview_t
     }
 
     pub fn with_chrome(mut self, chrome: Chrome) -> Self {
@@ -289,21 +335,38 @@ impl Widget for ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.content
-            .draw(scene, transform, text_renderer, theme, presence);
-
-        // Collab chrome: one simulated remote peer floats across the
-        // desktop. Kept here rather than in a separate widget so the draw
-        // order is deterministic — the peer sits above window content but
-        // below every modal/popover.
-        self.draw_demo_peer(scene, transform, text_renderer, theme);
-
         let flags = self.overlay_flags();
+        let target = if flags.overview { 1.0 } else { 0.0 };
+        let t = self.tick_overview_transition(target);
+        let content_alpha = 1.0 - t;
+        let overview_alpha = t;
 
-        // Overview grid (Cmd+Tab)
-        if flags.overview {
-            draw_scrim(scene, transform, self.rect);
-            self.draw_overview(scene, transform, text_renderer, theme);
+        // Desktop content + simulated peer fade out as overview fades in.
+        // Skip the layer entirely at full opacity to keep the common path
+        // cheap (vello push_layer clips + allocates an intermediate).
+        if content_alpha >= 0.999 {
+            self.content
+                .draw(scene, transform, text_renderer, theme, presence);
+            self.draw_demo_peer(scene, transform, text_renderer, theme);
+        } else if content_alpha > 0.0 {
+            scene.push_layer(BlendMode::default(), content_alpha, transform, &self.rect);
+            self.content
+                .draw(scene, transform, text_renderer, theme, presence);
+            self.draw_demo_peer(scene, transform, text_renderer, theme);
+            scene.pop_layer();
+        }
+
+        // Overview grid (Cmd+Tab) crossfades opposite the desktop content.
+        if overview_alpha > 0.0 {
+            if overview_alpha >= 0.999 {
+                draw_scrim(scene, transform, self.rect);
+                self.draw_overview(scene, transform, text_renderer, theme);
+            } else {
+                scene.push_layer(BlendMode::default(), overview_alpha, transform, &self.rect);
+                draw_scrim(scene, transform, self.rect);
+                self.draw_overview(scene, transform, text_renderer, theme);
+                scene.pop_layer();
+            }
         }
 
         // Workspace settings modal
@@ -1393,5 +1456,69 @@ impl ShellOverlayHost {
         let pill_w = 36.0;
         let pill_h = 18.0;
         Rect::new(r.x1 - 16.0 - pill_w, ty, r.x1 - 16.0, ty + pill_h)
+    }
+}
+
+#[cfg(test)]
+mod overview_transition_tests {
+    use super::*;
+    use quick_ui::widget::Container;
+
+    fn host() -> ShellOverlayHost {
+        // Dummy content widget — `Container::new()` produces an empty
+        // layout node which is enough for the transition state tests.
+        ShellOverlayHost::new(Box::new(Container::new()))
+    }
+
+    #[test]
+    fn idle_holds_zero_until_target_changes() {
+        let mut h = host();
+        for _ in 0..5 {
+            let t = h.tick_overview_transition(0.0);
+            assert_eq!(t, 0.0);
+        }
+    }
+
+    #[test]
+    fn target_change_latches_transition_and_completes() {
+        let mut h = host();
+        h.tick_overview_transition(1.0);
+        assert!(h.transition_started.is_some(), "should latch transition");
+        assert_eq!(h.overview_target, 1.0);
+        // Sleep past the full duration and tick once more; value should
+        // settle exactly at the target with the transition cleared.
+        std::thread::sleep(std::time::Duration::from_millis(
+            OVERVIEW_TRANSITION_MS + 30,
+        ));
+        let t = h.tick_overview_transition(1.0);
+        assert!((t - 1.0).abs() < f32::EPSILON);
+        assert!(h.transition_started.is_none(), "transition should clear");
+    }
+
+    #[test]
+    fn mid_flight_re_toggle_picks_up_from_current_t() {
+        // Start a 0→1 fade, tick a bit, then flip target to 0. The
+        // `transition_from` should be captured from the current `overview_t`
+        // (not 0), so the reverse fade starts from wherever we were rather
+        // than popping.
+        let mut h = host();
+        h.tick_overview_transition(1.0);
+        std::thread::sleep(std::time::Duration::from_millis(
+            OVERVIEW_TRANSITION_MS / 2,
+        ));
+        let t_mid = h.tick_overview_transition(1.0);
+        assert!(
+            t_mid > 0.0 && t_mid < 1.0,
+            "mid-flight t should be between 0 and 1, got {}",
+            t_mid
+        );
+        h.tick_overview_transition(0.0);
+        assert!(
+            (h.transition_from - t_mid).abs() < 0.01,
+            "reverse should start from current alpha, got from={} t_mid={}",
+            h.transition_from,
+            t_mid
+        );
+        assert_eq!(h.overview_target, 0.0);
     }
 }
