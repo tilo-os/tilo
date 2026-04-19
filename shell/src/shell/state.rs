@@ -84,16 +84,45 @@ pub struct Strip {
     pub window_groups: Vec<WindowGroup>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Role {
-    pub id: u64,
+    pub id: String,
     pub name: String,
+    pub permissions: RolePermissions,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct RolePermissions {
+    pub can_invite: bool,
+    pub can_edit_files: bool,
+    /// Keyed by `AppKind::as_str()` (serde-friendly string key).
+    pub per_app: HashMap<String, AppPerm>,
+    /// Keyed by `WorkspaceFile.id`.
+    pub per_file: HashMap<String, FilePerm>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AppPerm {
+    #[default]
+    None,
+    View,
+    Edit,
+    Admin,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum FilePerm {
+    #[default]
+    None,
+    Read,
+    Write,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkspaceFile {
-    pub id: FileId,
+    pub id: String,
     pub name: String,
+    pub mime: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
