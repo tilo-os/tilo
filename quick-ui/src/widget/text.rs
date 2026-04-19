@@ -91,7 +91,7 @@ impl Widget for Text {
             scene,
             &label,
             self.size,
-            theme.text_primary,
+            theme.tokens.colors.text_primary,
             transform * Affine::translate((self.rect.x0, self.rect.y0)),
             Some(max_width + 1.0),
         );

@@ -64,20 +64,20 @@ impl Widget for Toggle {
 
     fn draw(&mut self, scene: &mut Scene, transform: Affine, _text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
         let track_color = if self.is_checked {
-            theme.status_success
+            theme.tokens.colors.accent[4]
         } else {
-            theme.bg_active
+            theme.tokens.colors.neutral[3]
         };
 
-        let track_shape = RoundedRect::from_rect(self.rect, 12.0);
+        let track_shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.full as f64);
         scene.fill(vello::peniko::Fill::NonZero, transform, track_color, None, &track_shape);
-        
+
         let stroke_color = if self.is_focused {
             theme.border_focus
         } else {
-            theme.border_standard
+            theme.tokens.colors.border_standard
         };
-        
+
         scene.stroke(&Stroke::new(if self.is_focused { 2.0 } else { 1.0 }), transform, stroke_color, None, &track_shape);
 
         // Knob
