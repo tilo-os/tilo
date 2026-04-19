@@ -32,6 +32,7 @@ pub mod system_monitor;
 pub mod test_support;
 pub mod tile;
 pub mod topbar;
+pub mod topbar_chrome;
 pub mod workspace_settings;
 
 use quick_ui::widget::{
@@ -1016,7 +1017,9 @@ pub fn build_nirios_root(tree: &WorkspaceTree) -> Box<dyn Widget> {
             .unwrap_or(0),
     ));
 
-    let mut col = Column::new().push(workspace_view).push(strip_view);
+    let topbar: Box<dyn Widget> = Box::new(topbar_chrome::TopBarChrome::from_tree(tree));
+
+    let mut content_col = Column::new().push(workspace_view).push(strip_view);
 
     if let Some(ws) = tree.active_workspace() {
         for strip in &ws.strips {
@@ -1036,14 +1039,23 @@ pub fn build_nirios_root(tree: &WorkspaceTree) -> Box<dyn Widget> {
                     .collect();
                 let ui_group =
                     UiGroup::new(g.id, tabs_with_content, g.active_tab, to_ui_width(g.width));
-                col = col.push(Box::new(ui_group));
+                content_col = content_col.push(Box::new(ui_group));
             }
         }
     }
+
+    let content: Box<dyn Widget> = Box::new(
+        Container::new()
+            .with_child(Box::new(content_col))
+            .with_background()
+            .filling(),
+    );
+
+    let root_col = Column::new().push(topbar).push(content);
+
     Box::new(
         Container::new()
-            .with_child(Box::new(col))
-            .with_background()
+            .with_child(Box::new(root_col))
             .filling(),
     )
 }
