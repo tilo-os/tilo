@@ -97,3 +97,24 @@ fn draw_peer_selection_emits_scene_content() {
     );
     assert!(!scene.encoding().is_empty());
 }
+
+use quick_ui::collaboration::{CollabEvent, PresencePayload};
+
+#[test]
+fn remote_presence_update_round_trips_through_serde() {
+    let event = CollabEvent::RemotePresenceUpdate {
+        user_id: "alice".into(),
+        key: PresenceKey::Tab { id: "tab-1".into() },
+        payload: PresencePayload::Caret { pos: 12 },
+    };
+    let json = serde_json::to_string(&event).unwrap();
+    let back: CollabEvent = serde_json::from_str(&json).unwrap();
+    match back {
+        CollabEvent::RemotePresenceUpdate { user_id, key, payload } => {
+            assert_eq!(user_id, "alice");
+            assert_eq!(key, PresenceKey::Tab { id: "tab-1".into() });
+            assert!(matches!(payload, PresencePayload::Caret { pos: 12 }));
+        }
+        _ => panic!("wrong variant"),
+    }
+}
