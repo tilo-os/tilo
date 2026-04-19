@@ -23,3 +23,11 @@ fn tabbar_reorder_swaps_positions() {
     let ids: Vec<u64> = bar.tabs().iter().map(|t| t.id).collect();
     assert_eq!(ids, vec![2, 3, 1]);
 }
+
+use quick_ui::widget::{TileContent, TileHost, AppKind};
+
+#[test]
+fn tile_content_stub_renders_label() {
+    let tc = TileContent::Stub { kind: AppKind::Browser, label: "Browser".into() };
+    assert_eq!(TileHost::new(tc).kind_string(), "Browser");
+}
