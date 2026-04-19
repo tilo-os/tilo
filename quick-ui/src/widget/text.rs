@@ -29,7 +29,7 @@ impl Text {
 }
 
 impl Widget for Text {
-    fn sync(&mut self, _state: &AutoCommit, _path: &ObjId) {}
+    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
     fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
         let node = taffy.new_leaf(Style {
@@ -80,7 +80,7 @@ impl Widget for Text {
         );
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme) {
+    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
         let label = crate::i18n!(&self.label);
         // Use the actual width from layout. 
         // We add 1.0px of "slop" to the draw call to ensure cosmic-text doesn't 
@@ -97,7 +97,7 @@ impl Widget for Text {
         );
     }
 
-    fn handle_event(&mut self, _event: &WindowEvent, _scale_factor: f64, _state: &mut AutoCommit, _path: &ObjId, _handled: &mut bool, _focus_target: &mut Option<NodeId>, _node_id: NodeId, _taffy: &TaffyTree<()>) {}
+    fn handle_event(&mut self, _event: &WindowEvent, _scale_factor: f64, _modifiers: &winit::event::Modifiers, _state: &mut AutoCommit, _path: &ObjId, _handled: &mut bool, _focus_target: &mut Option<NodeId>, _node_id: NodeId, _taffy: &TaffyTree<()>) {}
 
     fn name(&self) -> &str { "Text" }
 

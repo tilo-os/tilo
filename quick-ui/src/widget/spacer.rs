@@ -20,7 +20,7 @@ impl Spacer {
 }
 
 impl Widget for Spacer {
-    fn sync(&mut self, _state: &AutoCommit, _path: &ObjId) {}
+    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
     fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
         let node = taffy.new_leaf(Style {
@@ -42,9 +42,9 @@ impl Widget for Spacer {
         );
     }
 
-    fn draw(&mut self, _scene: &mut Scene, _transform: Affine, _text_renderer: &mut TextRenderer, _theme: &Theme) {}
+    fn draw(&mut self, _scene: &mut Scene, _transform: Affine, _text_renderer: &mut TextRenderer, _theme: &Theme, _presence: &crate::presence::PresenceCtx) {}
 
-    fn handle_event(&mut self, _event: &WindowEvent, _scale_factor: f64, _state: &mut AutoCommit, _path: &ObjId, _handled: &mut bool, _focus_target: &mut Option<NodeId>, _node_id: NodeId, _taffy: &TaffyTree<()>) {}
+    fn handle_event(&mut self, _event: &WindowEvent, _scale_factor: f64, _modifiers: &winit::event::Modifiers, _state: &mut AutoCommit, _path: &ObjId, _handled: &mut bool, _focus_target: &mut Option<NodeId>, _node_id: NodeId, _taffy: &TaffyTree<()>) {}
 
     fn name(&self) -> &str { "Spacer" }
 

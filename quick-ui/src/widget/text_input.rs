@@ -42,7 +42,7 @@ impl TextInput {
 }
 
 impl Widget for TextInput {
-    fn sync(&mut self, state: &AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if let Ok(Some((val, obj_id))) = state.get(root, self.on_change_path.as_str()) {
             match val {
                 Value::Scalar(s) => {
@@ -79,7 +79,7 @@ impl Widget for TextInput {
         node
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree, node: NodeId, origin: Point) {
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
             origin.x as f64 + layout.location.x as f64,
@@ -89,7 +89,7 @@ impl Widget for TextInput {
         );
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme) {
+    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
         let bg_color = if self.is_focused {
             theme.bg_active
         } else {
@@ -166,7 +166,7 @@ impl Widget for TextInput {
         scene.pop_layer();
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, _taffy: &TaffyTree<()>) {
+    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, _modifiers: &winit::event::Modifiers, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, _taffy: &TaffyTree<()>) {
         // Safety clamp
         if self.cursor_pos > self.text.len() {
             self.cursor_pos = self.text.len();
