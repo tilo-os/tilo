@@ -5,6 +5,7 @@ pub mod quick_settings;
 pub mod search;
 pub mod state;
 pub mod system_monitor;
+pub mod workspace_settings;
 
 use quick_ui::widget::{
     AppKind as UiKind, Column, Container, StripView, TabDescriptor,
