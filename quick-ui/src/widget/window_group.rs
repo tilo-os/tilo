@@ -633,6 +633,18 @@ impl Widget for WindowGroup {
     fn name(&self) -> &str { "WindowGroup" }
     fn get_rect(&self) -> Rect { self.rect }
     fn wants_pointer_capture(&self) -> bool { self.resize_origin.is_some() }
+    fn take_structure_dirty(&mut self) -> bool {
+        // Bubble both the TabBar's and every host's dirty flag. Ordered
+        // with `|` over a fold so each child still gets its flag cleared
+        // even if an earlier one already reported dirty.
+        let bar = self.bar.take_structure_dirty();
+        let hosts = self
+            .hosts
+            .iter_mut()
+            .map(|(_, h)| h.take_structure_dirty())
+            .fold(false, |acc, d| acc || d);
+        bar || hosts
+    }
     fn needs_animation_frame(&self) -> bool {
         // The tab bar runs a frame-driven drop-zone expand animation
         // during drag; its signal would otherwise be invisible to ancestors
