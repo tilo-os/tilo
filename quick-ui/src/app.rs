@@ -195,8 +195,29 @@ impl App {
                 entry.x = x;
                 entry.y = y;
             }
+            CollabEvent::CRDTIncremental { data } => {
+                // Mirror the production path so tests can exercise the
+                // incremental-merge wiring without a real event loop.
+                let _ = self.state.load_incremental(&data);
+                self.needs_sync = true;
+            }
+            CollabEvent::CRDTUpdate { data } => {
+                if let Ok(new_state) = crate::state::State::load(&data) {
+                    self.state.doc = new_state.doc;
+                    self.needs_sync = true;
+                }
+            }
             _ => {}
         }
+    }
+
+    /// Test-only accessor: a mutable reference to the app's CRDT state so
+    /// integration tests can stage mutations (e.g. type into a text input)
+    /// and then serialize the resulting deltas via `save_incremental` to
+    /// feed the peer relay.
+    #[doc(hidden)]
+    pub fn state_mut_for_test(&mut self) -> &mut crate::state::State {
+        &mut self.state
     }
 
     fn update_focusable_order(&mut self) {
@@ -579,10 +600,12 @@ impl App {
                                     window.request_redraw();
                                 }
                             }
-                            CollabEvent::CRDTIncremental { data: _ } => {
-                                // Incremental CRDT deltas are applied once the State API
-                                // exposes automerge merge-incremental; for now, best-effort no-op.
-                                // Full-snapshot fallback is still handled via CRDTUpdate.
+                            CollabEvent::CRDTIncremental { data } => {
+                                // Merge the incremental patch into the local
+                                // CRDT. If the bytes are malformed we keep the
+                                // local doc unchanged (best-effort) — a noisy
+                                // peer can't brick our state.
+                                let _ = self.state.load_incremental(&data);
                                 self.needs_sync = true;
                                 window.request_redraw();
                             }
