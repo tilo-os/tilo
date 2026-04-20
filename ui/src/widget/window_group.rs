@@ -532,6 +532,18 @@ impl Widget for WindowGroup {
     fn name(&self) -> &str { "WindowGroup" }
     fn get_rect(&self) -> Rect { self.rect }
     fn wants_pointer_capture(&self) -> bool { self.resize_origin.is_some() }
+    fn needs_animation_frame(&self) -> bool {
+        // The tab bar runs a frame-driven drop-zone expand animation
+        // during drag; its signal would otherwise be invisible to ancestors
+        // because `WindowGroup::children()` uses the default (empty) impl.
+        // Bubble it up plus any active host's signal so nested app
+        // animations (e.g. caret blink in future revisions) keep pumping.
+        self.bar.needs_animation_frame()
+            || self
+                .hosts
+                .iter()
+                .any(|(_, h)| h.needs_animation_frame())
+    }
 }
 
 #[cfg(test)]

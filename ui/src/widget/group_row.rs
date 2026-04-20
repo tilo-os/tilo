@@ -335,6 +335,15 @@ impl Widget for GroupRow {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+
+    fn needs_animation_frame(&self) -> bool {
+        // Bubble up any child group's animation signal — the default
+        // `children()` impl returns an empty vec, so without this our
+        // WindowGroup's TabBar drop-zone expand curve would never reach
+        // the shell's overlay host and the redraw pump would stall
+        // mid-animation.
+        self.groups.iter().any(|g| g.needs_animation_frame())
+    }
 }
 
 #[cfg(test)]
