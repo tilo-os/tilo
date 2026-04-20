@@ -73,6 +73,25 @@ impl App {
         self.permission_ctx = ctx;
     }
 
+    /// Broadcast the local user's presence to every connected peer via
+    /// the collaboration manager. This is the outbound counterpart to
+    /// `apply_remote_presence`: callers — the shell, or any widget that
+    /// has meaningful local presence (text input cursor, tab focus) —
+    /// invoke this when state changes, and peers receive the event
+    /// through `CollabEvent::RemotePresenceUpdate`.
+    ///
+    /// The server (or `MemoryRelay::pump` in tests) attributes the
+    /// broadcast to *this* user's id automatically, so callers only
+    /// specify what changed, not who.
+    pub fn broadcast_presence(
+        &mut self,
+        key: crate::presence::PresenceKey,
+        payload: crate::collaboration::PresencePayload,
+    ) {
+        self.collab_manager
+            .send(CollabRequest::Presence { key, payload });
+    }
+
     /// Poll the collaboration manager and apply any pending events
     /// (remote cursor moves, remote presence updates). This is the headless
     /// equivalent of the `Event::AboutToWait` branch in [`App::run`] and is
