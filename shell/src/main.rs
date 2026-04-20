@@ -1,6 +1,7 @@
 use quick_desktop::shell::{
     build_nirios_root, persist, seed_demo_editor_presence, sync_tab_presence_from_tree,
 };
+use quick_ui::presence::PresenceKey;
 use quick_ui::{App, State};
 
 fn main() {
@@ -20,5 +21,12 @@ fn main() {
     // development. Network traffic replaces this with real peer state
     // when it arrives.
     seed_demo_editor_presence(app.presence_ctx_mut());
+    // Declare the pointer-presence scope so local cursor moves broadcast
+    // to every connected peer under the active workspace id. Remote
+    // peers receive `CollabEvent::RemotePresenceUpdate` on the same
+    // key and render this user's pointer on the correct workspace.
+    app.set_presence_broadcast_scope(Some(PresenceKey::Workspace {
+        id: format!("{}", tree.active.0),
+    }));
     app.run();
 }
