@@ -488,6 +488,17 @@ impl App {
                         self.needs_sync = true;
                         window.request_redraw();
                     }
+
+                    // Pump the animation loop: while any widget reports an
+                    // in-flight frame-driven transition (e.g. the shell's
+                    // overview crossfade), keep scheduling redraws so the
+                    // animation progresses until it settles. Without this,
+                    // a single post-click redraw renders the first eased
+                    // frame at t≈0 and then stalls — the overview would
+                    // appear to "not work" because the fade never plays.
+                    if self.root_widget.needs_animation_frame() {
+                        window.request_redraw();
+                    }
                 }
                 _ => {}
             }
