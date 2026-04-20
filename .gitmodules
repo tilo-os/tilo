@@ -1,9 +1,9 @@
 [submodule "quick-fs-fuse"]
 	path = quick-fs-fuse
 	url = ./quick-fs-fuse
-[submodule "quick-gnome-shell"]
-	path = quick-gnome-shell
-	url = ./quick-gnome-shell
+[submodule "quick-shell"]
+	path = quick-shell
+	url = ./quick-shell
 [submodule "os"]
 	path = os
 	url = ./os

@@ -4,9 +4,9 @@
 
 **Goal:** Land the toolkit primitives (design tokens, animation, overlay, drag-drop, scroll, tabs, drag-resize tiles, paginated strips, workspace tree with JSON persistence) and swap `quick-desktop` to a winit-driven nirios shell with placeholder tiles — Phase A steps 1–7 from `docs/superpowers/specs/2026-04-18-nirios-shell-design.md`.
 
-**Architecture:** `quick-ui` grows new modules — `tokens/`, `animation/`, `overlay/`, `dnd/`, `presence/`, `permissions/`, plus `widget/scroll.rs`, `widget/tabs.rs`, `widget/tile_host.rs`, `widget/window_group.rs`, `widget/scrollable.rs`, `widget/strip_view.rs`, `widget/workspace_view.rs`. The existing `Widget` trait gains `presence_key`, `permission_scope`, `accepts_drop`/`on_drop`, `wants_pointer_capture`; `draw` takes an extra `&PresenceCtx`. `quick-gnome-shell` adds `src/shell/` with `WorkspaceTree` state + `nirios::Shell` root widget; its `main.rs` is replaced with a winit-hosted `quick_ui::App` whose root is `nirios::Shell`. Iced code is deleted; Wayland/smithay scaffolding stays in `network/` untouched.
+**Architecture:** `quick-ui` grows new modules — `tokens/`, `animation/`, `overlay/`, `dnd/`, `presence/`, `permissions/`, plus `widget/scroll.rs`, `widget/tabs.rs`, `widget/tile_host.rs`, `widget/window_group.rs`, `widget/scrollable.rs`, `widget/strip_view.rs`, `widget/workspace_view.rs`. The existing `Widget` trait gains `presence_key`, `permission_scope`, `accepts_drop`/`on_drop`, `wants_pointer_capture`; `draw` takes an extra `&PresenceCtx`. `quick-shell` adds `src/shell/` with `WorkspaceTree` state + `nirios::Shell` root widget; its `main.rs` is replaced with a winit-hosted `quick_ui::App` whose root is `nirios::Shell`. Iced code is deleted; Wayland/smithay scaffolding stays in `network/` untouched.
 
-**Tech Stack:** Rust edition 2024 (quick-ui, quick-gnome-shell), vello, wgpu, winit, taffy, cosmic-text, automerge, tokio, serde, serde_json, uuid, dirs-next.
+**Tech Stack:** Rust edition 2024 (quick-ui, quick-shell), vello, wgpu, winit, taffy, cosmic-text, automerge, tokio, serde, serde_json, uuid, dirs-next.
 
 ---
 
@@ -47,11 +47,11 @@
 - `/var/home/user/Development/quickdesktop/quick-ui/tests/window_group_test.rs`
 - `/var/home/user/Development/quickdesktop/quick-ui/tests/strip_view_test.rs`
 - `/var/home/user/Development/quickdesktop/quick-ui/tests/workspace_view_test.rs`
-- `/var/home/user/Development/quickdesktop/quick-gnome-shell/src/shell/mod.rs`
-- `/var/home/user/Development/quickdesktop/quick-gnome-shell/src/shell/state.rs`
-- `/var/home/user/Development/quickdesktop/quick-gnome-shell/src/shell/persist.rs`
-- `/var/home/user/Development/quickdesktop/quick-gnome-shell/src/shell/nirios_tokens.rs`
-- `/var/home/user/Development/quickdesktop/quick-gnome-shell/tests/shell_state_test.rs`
+- `/var/home/user/Development/quickdesktop/quick-shell/src/shell/mod.rs`
+- `/var/home/user/Development/quickdesktop/quick-shell/src/shell/state.rs`
+- `/var/home/user/Development/quickdesktop/quick-shell/src/shell/persist.rs`
+- `/var/home/user/Development/quickdesktop/quick-shell/src/shell/nirios_tokens.rs`
+- `/var/home/user/Development/quickdesktop/quick-shell/tests/shell_state_test.rs`
 
 ### Modify
 
@@ -71,9 +71,9 @@
 - `/var/home/user/Development/quickdesktop/quick-ui/src/widget/toggle.rs` — update `draw` signature, consume tokens
 - `/var/home/user/Development/quickdesktop/quick-ui/src/app.rs` — pass `&PresenceCtx` to root `draw`
 - `/var/home/user/Development/quickdesktop/quick-ui/Cargo.toml` — add `dirs-next` dep
-- `/var/home/user/Development/quickdesktop/quick-gnome-shell/src/main.rs` — replace Iced entry with winit + `quick_ui::App`
-- `/var/home/user/Development/quickdesktop/quick-gnome-shell/src/lib.rs` — expose `shell` module, drop Iced surface
-- `/var/home/user/Development/quickdesktop/quick-gnome-shell/Cargo.toml` — remove `iced`, add `quick-ui`, `winit`, `dirs-next`
+- `/var/home/user/Development/quickdesktop/quick-shell/src/main.rs` — replace Iced entry with winit + `quick_ui::App`
+- `/var/home/user/Development/quickdesktop/quick-shell/src/lib.rs` — expose `shell` module, drop Iced surface
+- `/var/home/user/Development/quickdesktop/quick-shell/Cargo.toml` — remove `iced`, add `quick-ui`, `winit`, `dirs-next`
 
 ---
 
@@ -2250,19 +2250,19 @@ git -C /var/home/user/Development/quickdesktop commit -m "feat(quick-ui): StripV
 
 ---
 
-## Task 14: WorkspaceTree state in quick-gnome-shell
+## Task 14: WorkspaceTree state in quick-shell
 
 **Files:**
-- Create: `/var/home/user/Development/quickdesktop/quick-gnome-shell/src/shell/state.rs`
-- Create: `/var/home/user/Development/quickdesktop/quick-gnome-shell/src/shell/mod.rs`
-- Create: `/var/home/user/Development/quickdesktop/quick-gnome-shell/src/shell/nirios_tokens.rs`
-- Create: `/var/home/user/Development/quickdesktop/quick-gnome-shell/tests/shell_state_test.rs`
-- Modify: `/var/home/user/Development/quickdesktop/quick-gnome-shell/src/lib.rs`
-- Modify: `/var/home/user/Development/quickdesktop/quick-gnome-shell/Cargo.toml`
+- Create: `/var/home/user/Development/quickdesktop/quick-shell/src/shell/state.rs`
+- Create: `/var/home/user/Development/quickdesktop/quick-shell/src/shell/mod.rs`
+- Create: `/var/home/user/Development/quickdesktop/quick-shell/src/shell/nirios_tokens.rs`
+- Create: `/var/home/user/Development/quickdesktop/quick-shell/tests/shell_state_test.rs`
+- Modify: `/var/home/user/Development/quickdesktop/quick-shell/src/lib.rs`
+- Modify: `/var/home/user/Development/quickdesktop/quick-shell/Cargo.toml`
 
 - [ ] **Step 1: Write the failing test**
 
-`quick-gnome-shell/tests/shell_state_test.rs`:
+`quick-shell/tests/shell_state_test.rs`:
 
 ```rust
 use quick_desktop::shell::state::{WorkspaceTree, Workspace, Strip, WindowGroup, Tab, WindowWidth, TileContent, AppKind, Role, Collaborator};
@@ -2297,7 +2297,7 @@ Expected: FAIL — module absent; also `quick-desktop` binary still has Iced com
 
 - [ ] **Step 3: Write the minimal implementation**
 
-Add to `quick-gnome-shell/Cargo.toml` `[dependencies]`:
+Add to `quick-shell/Cargo.toml` `[dependencies]`:
 
 ```toml
 quick-ui = { path = "../quick-ui" }
@@ -2305,7 +2305,7 @@ winit = "0.30.13"
 dirs-next = "2.0"
 ```
 
-`quick-gnome-shell/src/shell/state.rs`:
+`quick-shell/src/shell/state.rs`:
 
 ```rust
 use serde::{Serialize, Deserialize};
@@ -2435,7 +2435,7 @@ impl WorkspaceTree {
 }
 ```
 
-`quick-gnome-shell/src/shell/nirios_tokens.rs`:
+`quick-shell/src/shell/nirios_tokens.rs`:
 
 ```rust
 use quick_ui::tokens::Tokens;
@@ -2453,7 +2453,7 @@ pub fn nirios_dark() -> Tokens {
 }
 ```
 
-`quick-gnome-shell/src/shell/mod.rs`:
+`quick-shell/src/shell/mod.rs`:
 
 ```rust
 pub mod state;
@@ -2461,7 +2461,7 @@ pub mod nirios_tokens;
 pub mod persist;
 ```
 
-`quick-gnome-shell/src/shell/persist.rs` (stub — filled in Task 16):
+`quick-shell/src/shell/persist.rs` (stub — filled in Task 16):
 
 ```rust
 use std::path::PathBuf;
@@ -2473,7 +2473,7 @@ pub fn state_json_path() -> PathBuf {
 }
 ```
 
-Modify `quick-gnome-shell/src/lib.rs` to expose shell (ensure `pub mod shell;` is present). The existing content may be empty or minimal; append if needed.
+Modify `quick-shell/src/lib.rs` to expose shell (ensure `pub mod shell;` is present). The existing content may be empty or minimal; append if needed.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
@@ -2486,8 +2486,8 @@ Expected: PASS (or skip until Task 17 removes Iced if build blocks).
 - [ ] **Step 5: Commit**
 
 ```bash
-git -C /var/home/user/Development/quickdesktop/quick-gnome-shell add src/shell Cargo.toml tests/shell_state_test.rs src/lib.rs
-git -C /var/home/user/Development/quickdesktop/quick-gnome-shell commit -m "feat(shell): WorkspaceTree v1 data model with JSON-serializable shell state"
+git -C /var/home/user/Development/quickdesktop/quick-shell add src/shell Cargo.toml tests/shell_state_test.rs src/lib.rs
+git -C /var/home/user/Development/quickdesktop/quick-shell commit -m "feat(shell): WorkspaceTree v1 data model with JSON-serializable shell state"
 ```
 
 ---
@@ -2635,12 +2635,12 @@ git -C /var/home/user/Development/quickdesktop commit -m "feat(quick-ui): Worksp
 ## Task 16: JSON persistence for WorkspaceTree
 
 **Files:**
-- Modify: `/var/home/user/Development/quickdesktop/quick-gnome-shell/src/shell/persist.rs`
-- Modify: `/var/home/user/Development/quickdesktop/quick-gnome-shell/tests/shell_state_test.rs`
+- Modify: `/var/home/user/Development/quickdesktop/quick-shell/src/shell/persist.rs`
+- Modify: `/var/home/user/Development/quickdesktop/quick-shell/tests/shell_state_test.rs`
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `quick-gnome-shell/tests/shell_state_test.rs`:
+Append to `quick-shell/tests/shell_state_test.rs`:
 
 ```rust
 #[test]
@@ -2674,7 +2674,7 @@ Expected: FAIL — `save_tree_to` / `load_tree_from` missing.
 
 - [ ] **Step 3: Write the minimal implementation**
 
-Replace `quick-gnome-shell/src/shell/persist.rs`:
+Replace `quick-shell/src/shell/persist.rs`:
 
 ```rust
 use std::path::{Path, PathBuf};
@@ -2721,8 +2721,8 @@ Expected: PASS (5 tests total).
 - [ ] **Step 5: Commit**
 
 ```bash
-git -C /var/home/user/Development/quickdesktop/quick-gnome-shell add src/shell/persist.rs tests/shell_state_test.rs
-git -C /var/home/user/Development/quickdesktop/quick-gnome-shell commit -m "feat(shell): atomic JSON persistence for WorkspaceTree with default fallback"
+git -C /var/home/user/Development/quickdesktop/quick-shell add src/shell/persist.rs tests/shell_state_test.rs
+git -C /var/home/user/Development/quickdesktop/quick-shell commit -m "feat(shell): atomic JSON persistence for WorkspaceTree with default fallback"
 ```
 
 ---
@@ -2730,12 +2730,12 @@ git -C /var/home/user/Development/quickdesktop/quick-gnome-shell commit -m "feat
 ## Task 17: Swap quick-desktop binary to nirios shell running on quick_ui::App
 
 **Files:**
-- Modify: `/var/home/user/Development/quickdesktop/quick-gnome-shell/src/main.rs`
-- Modify: `/var/home/user/Development/quickdesktop/quick-gnome-shell/Cargo.toml`
+- Modify: `/var/home/user/Development/quickdesktop/quick-shell/src/main.rs`
+- Modify: `/var/home/user/Development/quickdesktop/quick-shell/Cargo.toml`
 
 - [ ] **Step 1: Write the failing test** (build-smoke + shell construction)
 
-Append to `quick-gnome-shell/tests/shell_state_test.rs`:
+Append to `quick-shell/tests/shell_state_test.rs`:
 
 ```rust
 #[test]
@@ -2753,7 +2753,7 @@ Expected: FAIL — `build_nirios_root` missing.
 
 - [ ] **Step 3: Write the minimal implementation**
 
-Update `quick-gnome-shell/Cargo.toml` — remove `iced` from `[dependencies]` (it stays in the workspace's `apps/browser` etc. which are unaffected). Final `[dependencies]`:
+Update `quick-shell/Cargo.toml` — remove `iced` from `[dependencies]` (it stays in the workspace's `apps/browser` etc. which are unaffected). Final `[dependencies]`:
 
 ```toml
 [dependencies]
@@ -2778,7 +2778,7 @@ quick-ui = { path = "../quick-ui" }
 winit = "0.30.13"
 ```
 
-Add to `quick-gnome-shell/src/shell/mod.rs`:
+Add to `quick-shell/src/shell/mod.rs`:
 
 ```rust
 pub mod state;
@@ -2844,7 +2844,7 @@ pub fn build_nirios_root(tree: &WorkspaceTree) -> Box<dyn Widget> {
 fn descs_unused(_d: &[quick_ui::widget::TabDescriptor]) {}
 ```
 
-Replace `quick-gnome-shell/src/main.rs` with:
+Replace `quick-shell/src/main.rs` with:
 
 ```rust
 use quick_ui::{App, State};
@@ -2861,7 +2861,7 @@ fn main() {
 }
 ```
 
-Update `quick-gnome-shell/src/lib.rs` to contain (and nothing else for this plan):
+Update `quick-shell/src/lib.rs` to contain (and nothing else for this plan):
 
 ```rust
 pub mod shell;
@@ -2872,10 +2872,10 @@ pub mod network;
 pub mod workspace;
 ```
 
-Delete `quick-gnome-shell/src/ui/` and `quick-gnome-shell/src/ui.rs` (Iced-only canvas). Use:
+Delete `quick-shell/src/ui/` and `quick-shell/src/ui.rs` (Iced-only canvas). Use:
 
 ```bash
-git -C /var/home/user/Development/quickdesktop/quick-gnome-shell rm -r src/ui src/ui.rs
+git -C /var/home/user/Development/quickdesktop/quick-shell rm -r src/ui src/ui.rs
 ```
 
 - [ ] **Step 4: Run the test to verify it passes**
@@ -2906,8 +2906,8 @@ Re-run `cargo build -p quick-ui && cargo test -p quick-ui --test workspace_view_
 - [ ] **Step 5: Commit**
 
 ```bash
-git -C /var/home/user/Development/quickdesktop/quick-gnome-shell add -A
-git -C /var/home/user/Development/quickdesktop/quick-gnome-shell commit -m "feat(shell): swap quick-desktop entry to winit + quick_ui::App running nirios shell; drop Iced UI"
+git -C /var/home/user/Development/quickdesktop/quick-shell add -A
+git -C /var/home/user/Development/quickdesktop/quick-shell commit -m "feat(shell): swap quick-desktop entry to winit + quick_ui::App running nirios shell; drop Iced UI"
 git -C /var/home/user/Development/quickdesktop add quick-ui/src/widget/workspace_view.rs
 git -C /var/home/user/Development/quickdesktop commit -m "feat(quick-ui): WorkspaceView consumes Super/Ctrl+ArrowUp/Down for workspace switch"
 ```
@@ -2915,8 +2915,8 @@ git -C /var/home/user/Development/quickdesktop commit -m "feat(quick-ui): Worksp
 Then bump the submodule pointer from superproject:
 
 ```bash
-git -C /var/home/user/Development/quickdesktop add quick-gnome-shell
-git -C /var/home/user/Development/quickdesktop commit -m "bump quick-gnome-shell to nirios foundation"
+git -C /var/home/user/Development/quickdesktop add quick-shell
+git -C /var/home/user/Development/quickdesktop commit -m "bump quick-shell to nirios foundation"
 ```
 
 ---
@@ -2935,7 +2935,7 @@ git -C /var/home/user/Development/quickdesktop commit -m "bump quick-gnome-shell
   - `WorkspaceTree` + `WorkspaceView` + up/down switch with 2D slide + JSON persistence → Tasks 14, 15, 16.
   - Swap `quick-desktop` entry point to nirios shell in dev mode via winit + `quick_ui::App`, drop Iced UI, keep Wayland/smithay scaffolding unused → Task 17.
 
-- [ ] **Signatures locked in verbatim.** The spec's Widget-trait extensions (`presence_key`, `permission_scope`, `accepts_drop`, `on_drop`, `wants_pointer_capture`, `draw` + `&PresenceCtx`) appear exactly in Task 4's `widget/mod.rs` replacement. The `WorkspaceTree`/`Workspace`/`Strip`/`WindowGroup`/`Tab`/`TileContent`/`WindowWidth` data model in Task 14 mirrors the spec §5 exactly. `WindowWidth::Custom` is clamped to `300..=1200` in both `quick-ui::widget::WindowWidth` and `quick-gnome-shell::shell::state::WindowWidth`.
+- [ ] **Signatures locked in verbatim.** The spec's Widget-trait extensions (`presence_key`, `permission_scope`, `accepts_drop`, `on_drop`, `wants_pointer_capture`, `draw` + `&PresenceCtx`) appear exactly in Task 4's `widget/mod.rs` replacement. The `WorkspaceTree`/`Workspace`/`Strip`/`WindowGroup`/`Tab`/`TileContent`/`WindowWidth` data model in Task 14 mirrors the spec §5 exactly. `WindowWidth::Custom` is clamped to `300..=1200` in both `quick-ui::widget::WindowWidth` and `quick-shell::shell::state::WindowWidth`.
 
 - [ ] **AppWidget interim is documented.** Task 4 defines `AppWidget: Widget` as an empty marker with an inline doc comment stating the full trait lands in Plan 3. Task 11 documents that `TileContent::App` carries a `Box<dyn Widget>` during Plan 1. Task 14's state-level `TileContent::AppPlaceholder` is JSON-serializable and distinct from the UI-level `TileContent` that gets upgraded in Plan 3.
 
@@ -2947,7 +2947,7 @@ git -C /var/home/user/Development/quickdesktop commit -m "bump quick-gnome-shell
 
 - [ ] **Git preference.** Every git invocation uses `git -C /var/home/user/Development/quickdesktop[/submodule]` form (see CLAUDE.md).
 
-- [ ] **Rust edition.** `quick-ui` and `quick-gnome-shell` remain on edition 2024; their `Cargo.toml` edits preserve `edition = "2024"`. Apps are untouched in this plan.
+- [ ] **Rust edition.** `quick-ui` and `quick-shell` remain on edition 2024; their `Cargo.toml` edits preserve `edition = "2024"`. Apps are untouched in this plan.
 
 - [ ] **Tokens nested, not separate.** Task 2 makes `Tokens` a field of `Theme`, not a sibling struct, matching the user brief.
 
