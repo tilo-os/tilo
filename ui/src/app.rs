@@ -4,15 +4,39 @@ use winit::{
     window::Window,
 };
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use vello::{Scene, Renderer, RendererOptions, util::RenderContext, peniko::Color, kurbo::Affine, kurbo::Rect as KurboRect, kurbo::Point};
 use taffy::{TaffyTree, AvailableSpace, NodeId};
 use crate::state::State;
 use crate::widget::Widget;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::collaboration::{CollaborationManager, CollabEvent, CollabRequest};
-use crate::presence::PresenceCtx;
+use crate::collaboration::{CollaborationManager, CollabEvent, CollabRequest, PresencePayload};
+use crate::presence::{PresenceCtx, PresenceKey};
 use crate::permissions::PermissionContext;
+
+/// Minimum gap between two outbound pointer presence broadcasts, in
+/// milliseconds. Winit delivers `CursorMoved` at vsync rate or higher; at
+/// 120 Hz the raw event stream is ~8 ms per delta, which would saturate
+/// the Unix socket for no visual gain. 33 ms caps the wire rate at ~30 Hz
+/// — fast enough that remote cursors read as fluid, slow enough that the
+/// collab socket never becomes the bottleneck.
+pub(crate) const POINTER_BROADCAST_MIN_GAP_MS: u64 = 33;
+
+/// Pure throttle decision: given the timestamp of the last broadcast and
+/// the current instant, return `true` iff a new broadcast is allowed. Kept
+/// public-in-crate so the throttle logic can be unit-tested without a
+/// real event loop.
+pub(crate) fn pointer_broadcast_allowed(
+    last: Option<Instant>,
+    now: Instant,
+    min_gap: Duration,
+) -> bool {
+    match last {
+        None => true,
+        Some(t) => now.duration_since(t) >= min_gap,
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 enum Direction { Up, Down, Left, Right }
@@ -40,6 +64,19 @@ pub struct App {
     collab_manager: CollaborationManager,
     pub presence_ctx: PresenceCtx,
     pub permission_ctx: PermissionContext,
+
+    /// Scope under which local pointer moves are broadcast via
+    /// [`App::broadcast_presence`] while the event loop runs. The shell
+    /// sets this at startup (e.g. to the current workspace) so every
+    /// connected peer receives `RemotePresenceUpdate` events under the
+    /// same key the shell paints remote cursors with. Leaving it `None`
+    /// disables outbound pointer broadcast — useful for headless tests
+    /// and the `quick-ui` examples, which have no meaningful scope.
+    presence_broadcast_scope: Option<PresenceKey>,
+    /// Timestamp of the last outbound pointer broadcast, used by
+    /// [`pointer_broadcast_allowed`] to throttle the wire rate to
+    /// ~30 Hz regardless of how fast winit delivers `CursorMoved`.
+    last_pointer_broadcast: Option<Instant>,
 }
 
 impl App {
@@ -63,7 +100,27 @@ impl App {
             collab_manager: CollaborationManager::new(),
             presence_ctx: PresenceCtx::empty(),
             permission_ctx: PermissionContext::permissive(),
+            presence_broadcast_scope: None,
+            last_pointer_broadcast: None,
         }
+    }
+
+    /// Set (or clear) the presence key under which local pointer moves
+    /// are broadcast during the event loop. The shell calls this after
+    /// resolving the active workspace so remote peers see the cursor
+    /// attributed to the right scope. Passing `None` disables outbound
+    /// pointer broadcast.
+    pub fn set_presence_broadcast_scope(&mut self, key: Option<PresenceKey>) {
+        self.presence_broadcast_scope = key;
+        // Reset the throttle so a new scope's first pointer move fires
+        // immediately rather than waiting on the stale last-send gate.
+        self.last_pointer_broadcast = None;
+    }
+
+    /// Returns the currently active presence-broadcast scope, if any.
+    /// Exposed for tests that assert the scope wiring.
+    pub fn presence_broadcast_scope(&self) -> Option<&PresenceKey> {
+        self.presence_broadcast_scope.as_ref()
     }
 
     pub fn presence_ctx(&self) -> &PresenceCtx { &self.presence_ctx }
@@ -377,6 +434,41 @@ impl App {
                         }
                         WindowEvent::ModifiersChanged(modifiers) => { self.modifiers = modifiers; }
                         _ => {
+                            // Outbound pointer-presence broadcast: if the
+                            // shell has declared a presence scope, relay
+                            // every pointer move (throttled to ~30 Hz) so
+                            // peers can render this user's cursor on the
+                            // same scope. CursorLeft clears the peer-side
+                            // pointer via the `Left` payload so their
+                            // cursor stops rendering when we wander out
+                            // of the window.
+                            if let Some(scope) = self.presence_broadcast_scope.clone() {
+                                match &event {
+                                    WindowEvent::CursorMoved { position, .. } => {
+                                        let now = Instant::now();
+                                        if pointer_broadcast_allowed(
+                                            self.last_pointer_broadcast,
+                                            now,
+                                            Duration::from_millis(POINTER_BROADCAST_MIN_GAP_MS),
+                                        ) {
+                                            self.last_pointer_broadcast = Some(now);
+                                            self.broadcast_presence(
+                                                scope.clone(),
+                                                PresencePayload::Pointer {
+                                                    x: position.x as f32,
+                                                    y: position.y as f32,
+                                                },
+                                            );
+                                        }
+                                    }
+                                    WindowEvent::CursorLeft { .. } => {
+                                        self.broadcast_presence(scope.clone(), PresencePayload::Left);
+                                        self.last_pointer_broadcast = None;
+                                    }
+                                    _ => {}
+                                }
+                            }
+
                             let mut handled = false;
                             let mut focus_target = None;
                             let mut is_undo_redo = false;
@@ -533,6 +625,82 @@ impl App {
 /// this helper so that denied interactions short-circuit cleanly without the
 /// widget ever observing the event. Callers can additionally consult
 /// `ctx.check_with_denied_feedback(&scope)` to surface a toast/flash on denial.
+#[cfg(test)]
+mod pointer_broadcast_tests {
+    use super::*;
+
+    #[test]
+    fn pointer_broadcast_allowed_first_call_always_passes() {
+        // With no prior broadcast, the throttle must let the first move
+        // through. Otherwise a peer's first pointer event after startup
+        // would drop silently.
+        let now = Instant::now();
+        assert!(pointer_broadcast_allowed(None, now, Duration::from_millis(33)));
+    }
+
+    #[test]
+    fn pointer_broadcast_allowed_blocks_inside_gap() {
+        // Two broadcasts spaced closer than the minimum gap: the second
+        // must be denied so the wire rate stays capped.
+        let t0 = Instant::now();
+        let t1 = t0 + Duration::from_millis(10);
+        assert!(!pointer_broadcast_allowed(
+            Some(t0),
+            t1,
+            Duration::from_millis(33),
+        ));
+    }
+
+    #[test]
+    fn pointer_broadcast_allowed_passes_at_and_past_gap() {
+        // A broadcast exactly at the gap boundary is allowed — strict >
+        // would accumulate single-ms drift under a sawtooth wakeup schedule.
+        let t0 = Instant::now();
+        assert!(pointer_broadcast_allowed(
+            Some(t0),
+            t0 + Duration::from_millis(33),
+            Duration::from_millis(33),
+        ));
+        assert!(pointer_broadcast_allowed(
+            Some(t0),
+            t0 + Duration::from_millis(50),
+            Duration::from_millis(33),
+        ));
+    }
+
+    #[test]
+    fn set_presence_broadcast_scope_resets_throttle() {
+        // A new scope should fire immediately rather than waiting on the
+        // old scope's last-send gate. Verified by observing that
+        // `last_pointer_broadcast` is cleared when the scope changes.
+        let state = State::new();
+        let root = Box::new(crate::widget::Text::new("t"));
+        let mut app = App::new(state, root);
+        app.last_pointer_broadcast = Some(Instant::now());
+        app.set_presence_broadcast_scope(Some(PresenceKey::Workspace {
+            id: "home".into(),
+        }));
+        assert!(
+            app.last_pointer_broadcast.is_none(),
+            "scope change must clear the throttle so the next move broadcasts immediately"
+        );
+        assert_eq!(
+            app.presence_broadcast_scope(),
+            Some(&PresenceKey::Workspace { id: "home".into() })
+        );
+    }
+
+    #[test]
+    fn default_scope_is_none_so_broadcast_is_opt_in() {
+        // A fresh App must not broadcast pointer presence by default —
+        // the headless tests and `quick-ui` examples rely on that.
+        let state = State::new();
+        let root = Box::new(crate::widget::Text::new("t"));
+        let app = App::new(state, root);
+        assert!(app.presence_broadcast_scope().is_none());
+    }
+}
+
 pub fn dispatch_gated_event<W: crate::widget::Widget + ?Sized>(
     ctx: &crate::permissions::PermissionContext,
     widget: &W,
