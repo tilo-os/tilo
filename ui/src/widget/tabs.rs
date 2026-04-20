@@ -6,7 +6,7 @@ use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use crate::widget::Widget;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::presence::{PresenceCtx, PresenceKey, user_color};
+use crate::presence::{PresenceCtx, PresenceKey};
 use crate::dnd::{DragPayload, DRAG_START_THRESHOLD_PX};
 
 #[derive(Clone, Debug)]
@@ -228,7 +228,7 @@ impl Widget for TabBar {
                 let base_x = r.center().x - span / 2.0;
                 let bottom = r.y1 + 2.0;
                 for (pi, peer) in peers.iter().take(4).enumerate() {
-                    let (cr, cg, cb) = user_color(&peer.0);
+                    let (cr, cg, cb) = presence.color_for(peer);
                     let cx = base_x + pi as f64 * 10.0;
                     let c = vello::kurbo::Circle::new(Point::new(cx, bottom), dot_r);
                     scene.fill(
@@ -412,6 +412,7 @@ impl Widget for TabBar {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::presence::user_color;
 
     fn bar() -> TabBar {
         TabBar::new(
