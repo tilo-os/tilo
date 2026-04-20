@@ -151,7 +151,8 @@ impl GroupRow {
             .max()
             .unwrap_or(0)
             .saturating_add(1);
-        let new_group = WindowGroup::from_detached(new_id, desc, host, WindowWidth::Normal);
+        let mut new_group = WindowGroup::from_detached(new_id, desc, host, WindowWidth::Normal);
+        new_group.start_spawn_animation();
         let clamped = gap_idx.min(self.groups.len());
         self.groups.insert(clamped, new_group);
         if src_now_empty {
