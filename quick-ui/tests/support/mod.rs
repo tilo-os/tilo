@@ -99,9 +99,12 @@ impl Peer {
 }
 
 /// Process all pending outbound requests: translate each into a broadcast
-/// event to every other peer. Presence + incremental updates are forwarded
-/// verbatim; `SyncIncremental` is rebroadcast as `CRDTIncremental`, and
-/// `SyncCRDT` as `CRDTUpdate`. `Hello` is not fanned out.
+/// event to every other peer. Sender never receives its own broadcast.
+/// - `SyncIncremental` → `CRDTIncremental`
+/// - `SyncCRDT` → `CRDTUpdate`
+/// - `Presence` → `RemotePresenceUpdate` (attributed to the sender's id,
+///    so the receiving peer knows *who* the cursor/caret belongs to)
+/// - `Hello` is not fanned out
 pub fn pump(relay: &mut MemoryRelay) {
     let pending = std::mem::take(&mut relay.pending_out);
     let mut inboxes = relay.inboxes.lock().unwrap();
@@ -128,6 +131,21 @@ pub fn pump(relay: &mut MemoryRelay) {
                         .get_mut(id)
                         .unwrap()
                         .push_back(CollabEvent::CRDTUpdate { data: data.clone() });
+                }
+            }
+            CollabRequest::Presence { key, payload } => {
+                for id in &peer_ids {
+                    if id == &from {
+                        continue;
+                    }
+                    inboxes
+                        .get_mut(id)
+                        .unwrap()
+                        .push_back(CollabEvent::RemotePresenceUpdate {
+                            user_id: from.clone(),
+                            key: key.clone(),
+                            payload: payload.clone(),
+                        });
                 }
             }
             CollabRequest::Hello { .. } => {
