@@ -21,6 +21,7 @@
 
 pub mod browser_stub;
 pub mod chrome_state;
+pub mod desktop_backdrop;
 pub mod editor_app;
 pub mod nirios_tokens;
 pub mod notes_app;
@@ -1156,10 +1157,7 @@ pub fn build_nirios_root_with_chrome(
     }
 
     let content: Box<dyn Widget> = Box::new(
-        Container::new()
-            .with_child(Box::new(content_col))
-            .with_background()
-            .filling(),
+        desktop_backdrop::DesktopBackdrop::new().with_child(Box::new(content_col)),
     );
 
     // Sidebar wheel is no longer a left-leaf of a SplitRow — it floats as
