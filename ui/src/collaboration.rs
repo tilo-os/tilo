@@ -10,6 +10,12 @@ pub enum CollabRequest {
     Hello { app_id: String, cluster_id: Uuid },
     SyncCRDT { data: Vec<u8> },
     SyncIncremental { data: Vec<u8> },
+    /// Outbound presence update — the local user's pointer moved, caret
+    /// changed, selection shifted, or they arrived/left a keyed object.
+    /// The server fans this out to every connected peer as a
+    /// `CollabEvent::RemotePresenceUpdate`; the test relay uses the same
+    /// path. Round-trips complete the loop with `apply_remote_presence`.
+    Presence { key: PresenceKey, payload: PresencePayload },
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
