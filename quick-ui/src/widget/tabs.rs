@@ -35,6 +35,20 @@ const DROP_ZONE_IDLE_PX: f64 = 2.0;
 /// concept's `motion.div layout transition={{ type: "spring" }}` feel.
 const LAYOUT_ANIM_MS: u64 = 180;
 
+/// Per-pill fade-in when a tab is inserted. Matches the concept's
+/// `initial={{ opacity: 0, y: -10, scale: 0.9 }}` → `animate={{ opacity: 1,
+/// y: 0, scale: 1 }}` on each `<motion.div>` tab pill. Kept at 220 ms —
+/// comfortably distinct from the 180 ms layout spring so a freshly
+/// inserted pill reads as "appearing" rather than just sliding in with
+/// its neighbours. We fade opacity + vertical offset only; scale is
+/// skipped to avoid a per-pill affine push_layer.
+const INSERT_FADE_MS: u64 = 220;
+/// Vertical start offset for the insert fade, in CSS-like px. Positive
+/// values pull the pill *up* at t=0 and settle to the target position at
+/// t=1 (so the pill reads as dropping in from above, matching the
+/// concept's `y: -10` initial).
+const INSERT_FADE_Y_OFFSET: f64 = 10.0;
+
 #[derive(Clone, Debug)]
 pub struct TabDescriptor {
     pub id: u64,
@@ -127,6 +141,14 @@ pub struct TabBar {
     /// LAYOUT_ANIM_MS` — `needs_animation_frame` derives the "still
     /// animating" answer from this directly.
     layout_anim_started: Option<Instant>,
+    /// Per-tab fade-in timestamps, keyed by tab id. Populated by
+    /// `insert_tab` at the moment the tab is spliced in; `draw` reads
+    /// the timestamp, computes a per-pill alpha + y-offset, and drops
+    /// the entry once `INSERT_FADE_MS` elapses. Tabs that were present
+    /// at `TabBar::new` construction get no entry → render steady-state.
+    /// This keeps the headless / screenshot tests deterministic:
+    /// animations only fire for runtime insertions, not static fixtures.
+    inserted_at: HashMap<u64, Instant>,
 }
 
 impl TabBar {
@@ -156,6 +178,7 @@ impl TabBar {
             drop_zone_animated_at: None,
             prev_tab_rects_by_id: HashMap::new(),
             layout_anim_started: None,
+            inserted_at: HashMap::new(),
         }
     }
 
@@ -242,11 +265,13 @@ impl TabBar {
         let id = desc.id;
         // Snapshot existing pill rects so neighbours visibly slide aside
         // to make room. The newly inserted tab isn't in `prev_*`, so
-        // `draw` renders it at its target rect immediately — which is the
-        // right call: the concept's inserted pills pop in opaque, they
-        // don't fade from nothing.
+        // `draw` would otherwise render it at its target rect immediately
+        // — we instead latch `inserted_at` for this id so `draw` plays a
+        // fade-in (opacity 0→1 + vertical settle) over `INSERT_FADE_MS`,
+        // matching the concept's per-pill motion init.
         self.snapshot_layout_for_spring();
         self.tabs.insert(clamped, desc);
+        self.inserted_at.insert(id, Instant::now());
         self.active_id = id;
     }
 
@@ -353,6 +378,13 @@ impl Widget for TabBar {
             }
         });
 
+        // Clean up any insert-fade entries that have fully elapsed — keeps
+        // `inserted_at` bounded and prevents `needs_animation_frame` from
+        // pumping redraws forever.
+        let fade_window = Duration::from_millis(INSERT_FADE_MS);
+        self.inserted_at
+            .retain(|_, started| started.elapsed() < fade_window);
+
         for (i, t) in self.tabs.iter().enumerate() {
             let target = self.tab_rects[i];
             // Visual rect = interpolation of prev → target if we have a
@@ -369,6 +401,58 @@ impl Widget for TabBar {
             };
             let dx = r.x0 - target.x0;
             let dy = r.y0 - target.y0;
+
+            // Per-pill insert fade: tabs spliced in by `insert_tab` fade
+            // from alpha=0 + y=-10 to alpha=1 + y=0 over `INSERT_FADE_MS`.
+            // `fade_alpha` < 1.0 wraps the whole per-pill paint block in a
+            // `push_layer` with the current alpha; `fade_y` shifts the
+            // transform upward at t=0 and settles to 0 at t=1 via
+            // ease-out-cubic, matching the concept's `y: -10` → `y: 0` on
+            // each `<motion.div>` pill.
+            let (fade_alpha, fade_y): (f32, f64) = match self.inserted_at.get(&t.id) {
+                Some(started) => {
+                    let elapsed = started.elapsed();
+                    if elapsed >= fade_window {
+                        (1.0, 0.0)
+                    } else {
+                        let raw = (elapsed.as_secs_f64()
+                            / (INSERT_FADE_MS as f64 / 1000.0))
+                            .clamp(0.0, 1.0);
+                        let eased = 1.0 - (1.0 - raw).powi(3);
+                        (eased as f32, -INSERT_FADE_Y_OFFSET * (1.0 - eased))
+                    }
+                }
+                None => (1.0, 0.0),
+            };
+            // If this pill is mid-fade, push a pill-scoped alpha layer and
+            // shift the transform vertically. The dx/dy for the layout
+            // spring still apply — a just-inserted pill has no prev rect so
+            // `dy` stays zero, but we honour it here for completeness.
+            let pill_transform = if fade_y != 0.0 {
+                transform * Affine::translate((0.0, fade_y))
+            } else {
+                transform
+            };
+            let pill_alpha_active = fade_alpha < 1.0;
+            if pill_alpha_active {
+                // Clip rect generous around the pill so the hover-reveal
+                // action icons also fade in cleanly.
+                let clip = Rect::new(
+                    r.x0 - 2.0,
+                    r.y0 - 4.0,
+                    r.x1 + self.close_rects[i].width() + 60.0,
+                    r.y1 + 4.0,
+                );
+                scene.push_layer(
+                    vello::peniko::BlendMode::default(),
+                    fade_alpha,
+                    transform,
+                    &clip,
+                );
+            }
+            // All per-pill paint below uses `pill_transform` so the fade's
+            // vertical offset composes with any layout-spring dx/dy.
+            let transform = pill_transform;
             let is_active = t.id == self.active_id;
             let is_hover = Some(i) == self.hover_idx;
             // Active: `white/10` translucent; inactive: `white/5`; hover: bumped.
@@ -542,6 +626,13 @@ impl Widget for TabBar {
                     None,
                     &handle,
                 );
+            }
+
+            // Close out the insert-fade layer, if one was pushed at the
+            // top of this iteration. The branch must mirror the push
+            // exactly — `pill_alpha_active` tracks that.
+            if pill_alpha_active {
+                scene.pop_layer();
             }
         }
 
@@ -763,7 +854,13 @@ impl Widget for TabBar {
             .layout_anim_started
             .map(|t| t.elapsed() < Duration::from_millis(LAYOUT_ANIM_MS))
             .unwrap_or(false);
-        drop_zone || layout
+        // 3. Per-tab insert fade (220 ms). Any unexpired entry keeps the
+        //    redraw pump going so the fade curve is visible.
+        let insert_fade = self
+            .inserted_at
+            .values()
+            .any(|t| t.elapsed() < Duration::from_millis(INSERT_FADE_MS));
+        drop_zone || layout || insert_fade
     }
 }
 
@@ -1143,6 +1240,48 @@ mod tests {
         // rendered tab to look it up against.
         assert!(b.prev_tab_rects_by_id.contains_key(&1));
         assert!(b.prev_tab_rects_by_id.contains_key(&3));
+    }
+
+    #[test]
+    fn insert_tab_records_inserted_at_for_fade_in() {
+        // The fade-in animation is driven by the per-tab `inserted_at`
+        // map. A call to `insert_tab` must stamp the new tab id so the
+        // draw path plays the opacity/y-offset curve.
+        let mut b = bar();
+        b.tab_rects = vec![
+            Rect::new(0.0, 6.0, 80.0, 34.0),
+            Rect::new(86.0, 6.0, 166.0, 34.0),
+            Rect::new(172.0, 6.0, 252.0, 34.0),
+        ];
+        assert!(!b.inserted_at.contains_key(&99), "precondition: no entry");
+        b.insert_tab(1, TabDescriptor::new(99, "NEW"));
+        assert!(
+            b.inserted_at.contains_key(&99),
+            "insert_tab must record a fade-in timestamp for the new tab id",
+        );
+        // While the fade is in flight, `needs_animation_frame` must
+        // report true so the App pumps redraws.
+        assert!(
+            b.needs_animation_frame(),
+            "insert fade must keep the redraw pump alive",
+        );
+    }
+
+    #[test]
+    fn insert_fade_clears_after_duration() {
+        // Once `INSERT_FADE_MS` has elapsed, `needs_animation_frame`
+        // must go quiet again. We backdate the `inserted_at` entry so
+        // the retain in `draw` (and the timestamp check in
+        // `needs_animation_frame`) both consider it expired.
+        let mut b = bar();
+        b.inserted_at.insert(
+            7,
+            Instant::now() - Duration::from_millis(INSERT_FADE_MS + 50),
+        );
+        assert!(
+            !b.needs_animation_frame(),
+            "elapsed insert fade must not pump frames",
+        );
     }
 
     #[test]
