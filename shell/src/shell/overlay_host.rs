@@ -420,35 +420,101 @@ impl ShellOverlayHost {
         Rect::new(x0, cy - pill_h / 2.0, x0 + pill_w, cy + pill_h / 2.0)
     }
 
+    /// Geometry of the overview's centered content column. Concept wraps
+    /// everything in a `max-w-5xl w-full` column with `p-12` outer padding,
+    /// horizontally centered by the outer `items-center` flex row. The
+    /// returned rect is the inner column after the padding is removed.
+    fn overview_column_rect(&self) -> Rect {
+        let max_w = OVERVIEW_MAX_WIDTH_PX;
+        let padding = OVERVIEW_OUTER_PADDING_PX;
+        let inner_w = (self.rect.width() - padding * 2.0).min(max_w);
+        let cx = (self.rect.x0 + self.rect.x1) / 2.0;
+        let x0 = cx - inner_w / 2.0;
+        let x1 = cx + inner_w / 2.0;
+        Rect::new(x0, self.rect.y0 + padding, x1, self.rect.y1 - padding)
+    }
+
+    /// Y-coordinate where the first workspace row card starts. Matches the
+    /// draw path so hit-test + draw stay in sync. The header sits above the
+    /// rail container; the rail container sits `mb-16` below the header.
+    fn overview_first_row_top(&self) -> f64 {
+        let col = self.overview_column_rect();
+        col.y0 + OVERVIEW_HEADER_HEIGHT_PX + OVERVIEW_HEADER_MARGIN_BOTTOM_PX
+    }
+
+    /// Rect of the workspace card at `idx` in the vertical list.
+    fn overview_row_rect(&self, idx: usize) -> Rect {
+        let col = self.overview_column_rect();
+        let top = self.overview_first_row_top();
+        let y0 = top + idx as f64 * (OVERVIEW_ROW_HEIGHT_PX + OVERVIEW_ROW_GAP_PX);
+        Rect::new(col.x0, y0, col.x1, y0 + OVERVIEW_ROW_HEIGHT_PX)
+    }
+
     /// Mirror of the geometry in `draw_overview`: return the index of the
     /// workspace card at logical position `p`, if any.
     fn hit_test_overview(&self, p: Point) -> Option<usize> {
         let chrome = self.chrome.as_ref()?;
         let state = chrome.borrow();
-        let card_w = 240.0_f64;
-        let card_h = 160.0_f64;
-        let gap = 24.0_f64;
-        let avail_w = self.rect.width() - 120.0;
-        let cols = ((avail_w + gap) / (card_w + gap)).floor().max(1.0) as usize;
-        let n = state.tree.workspaces.len();
-        let rows = (n + cols - 1) / cols.max(1);
-        let total_w = cols as f64 * card_w + (cols.saturating_sub(1)) as f64 * gap;
-        let total_h = rows as f64 * card_h + (rows.saturating_sub(1)) as f64 * gap;
-        let start_x = (self.rect.x0 + self.rect.x1) / 2.0 - total_w / 2.0;
-        let start_y = (self.rect.y0 + self.rect.y1) / 2.0 - total_h / 2.0;
-        for (i, _ws) in state.tree.workspaces.iter().enumerate() {
-            let col = i % cols;
-            let row = i / cols;
-            let x0 = start_x + col as f64 * (card_w + gap);
-            let y0 = start_y + row as f64 * (card_h + gap);
-            let rect = Rect::new(x0, y0, x0 + card_w, y0 + card_h);
-            if rect.contains(p) {
+        for i in 0..state.tree.workspaces.len() {
+            if self.overview_row_rect(i).contains(p) {
                 return Some(i);
             }
         }
         None
     }
 }
+
+// -----------------------------------------------------------------------------
+// Overview layout constants
+// -----------------------------------------------------------------------------
+//
+// Concept source of truth: `nirios-concept/src/components/OverviewView.tsx`.
+// The values below map Tailwind utilities to pixel equivalents; keeping them
+// as module-level constants lets the draw path, `hit_test_overview`, and the
+// unit tests share one geometry oracle.
+//
+// * `max-w-5xl` → 1024 px content column.
+// * `p-12`      → 48 px outer padding (root is `flex-1 bg-slate-950 ...`).
+// * `space-y-8` → 32 px gap between workspace rows.
+// * `mb-16`     → 64 px gap under the header block.
+// * `border-2`  → 2 px card border.
+// * `rounded-3xl` → 24 px card radius.
+// * `p-6`       → 24 px inner padding on each workspace card.
+// * `gap-8`     → 32 px gap between sidebar column and mini-window row.
+// * `w-64`      → 256 px sidebar column.
+// * `h-20`      → 80 px mini-window card height.
+
+const OVERVIEW_MAX_WIDTH_PX: f64 = 1024.0;
+const OVERVIEW_OUTER_PADDING_PX: f64 = 48.0;
+const OVERVIEW_ROW_GAP_PX: f64 = 32.0;
+/// Row height = top/bottom padding (2×24) + sidebar column content stack
+/// (title ≈ 26, perms panel 60, collaborators header + avatars ≈ 48,
+/// footer ≈ 16) with a little breathing room. The concept uses
+/// `items-start` so the row sizes to content; we lock it to a stable
+/// value so the vertical list reads as even rows.
+const OVERVIEW_ROW_HEIGHT_PX: f64 = 240.0;
+const OVERVIEW_ROW_RADIUS_PX: f64 = 24.0;
+const OVERVIEW_ROW_BORDER_PX: f64 = 2.0;
+const OVERVIEW_CARD_PADDING_PX: f64 = 24.0;
+const OVERVIEW_SIDEBAR_WIDTH_PX: f64 = 256.0;
+const OVERVIEW_SIDEBAR_GAP_PX: f64 = 32.0;
+const OVERVIEW_MINI_HEIGHT_PX: f64 = 80.0;
+const OVERVIEW_MINI_WIDTH_PX: f64 = 96.0;
+const OVERVIEW_MINI_GAP_PX: f64 = 16.0;
+/// Space reserved above the first row for the "Workspaces" header block.
+/// The concept's header is centered with an `h1 text-4xl` + body line; 72 px
+/// accommodates the two lines comfortably.
+const OVERVIEW_HEADER_HEIGHT_PX: f64 = 72.0;
+/// `mb-16` in the concept.
+const OVERVIEW_HEADER_MARGIN_BOTTOM_PX: f64 = 64.0;
+/// Active-indicator dot geometry. Concept draws a 16×16 px dot at
+/// `-left-[35px]` from the card's left edge, vertically centred.
+const OVERVIEW_DOT_SIZE_PX: f64 = 16.0;
+const OVERVIEW_DOT_OFFSET_PX: f64 = 35.0;
+/// Horizontal offset of the vertical rail line from the card's left edge
+/// (`left-8` - card offset). The rail sits behind the dot column.
+const OVERVIEW_RAIL_OFFSET_PX: f64 = 35.0;
+const OVERVIEW_RAIL_WIDTH_PX: f64 = 2.0;
 
 impl Widget for ShellOverlayHost {
     fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
@@ -1425,6 +1491,113 @@ fn modal_open_curve(opened_at: Option<Instant>, start_scale: f64) -> (f32, f64, 
     (eased as f32, 20.0 * (1.0 - eased), scale)
 }
 
+/// Paint a single concept-parity MiniWindow inside `rect`.
+///
+/// Concept `OverviewView.tsx:6-32`:
+/// * Tab-dot row along the top: active tab is a 16×10 pill, inactive tabs
+///   are 10 px dots.
+/// * App-card body: `bg-slate-800 rounded-lg border border-slate-700` with
+///   a slightly brighter interior, filling the remainder of the height.
+fn draw_mini_window(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    rect: Rect,
+    tab_count: usize,
+    active_tab_idx: usize,
+) {
+    let tokens = &theme.tokens;
+    let colors = &tokens.colors;
+
+    let tab_h = 10.0_f64;
+    let tab_gap = 4.0;
+    let tab_row_y0 = rect.y0;
+    let tab_row_y1 = rect.y0 + tab_h;
+
+    // Tabs — draw left-aligned with `justify-start`.
+    let mut tx = rect.x0 + 4.0;
+    for i in 0..tab_count.max(1) {
+        let is_active = i == active_tab_idx;
+        let tab_w = if is_active { 16.0 } else { 10.0 };
+        if tx + tab_w > rect.x1 {
+            break;
+        }
+        let tab_rect = Rect::new(tx, tab_row_y0, tx + tab_w, tab_row_y1);
+        let tab_rr = RoundedRect::from_rect(tab_rect, tab_h / 2.0);
+        // Dot colour: active slate-600/80, inactive slate-700/50.
+        let slate_600 = colors.neutral[4];
+        let slate_700 = colors.neutral[3];
+        let dot_color = if is_active {
+            Color::rgba(
+                slate_600.r as f64,
+                slate_600.g as f64,
+                slate_600.b as f64,
+                0.80,
+            )
+        } else {
+            Color::rgba(
+                slate_700.r as f64,
+                slate_700.g as f64,
+                slate_700.b as f64,
+                0.50,
+            )
+        };
+        scene.fill(Fill::NonZero, transform, dot_color, None, &tab_rr);
+        let border = Color::rgba(
+            slate_600.r as f64,
+            slate_600.g as f64,
+            slate_600.b as f64,
+            0.50,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(0.5),
+            transform,
+            border,
+            None,
+            &tab_rr,
+        );
+        tx += tab_w + tab_gap;
+    }
+
+    // App card body.
+    let body_rect = Rect::new(rect.x0, tab_row_y1 + 2.0, rect.x1, rect.y1);
+    let body_rr = RoundedRect::from_rect(body_rect, 6.0);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        colors.neutral[2], // slate-800
+        None,
+        &body_rr,
+    );
+    scene.stroke(
+        &vello::kurbo::Stroke::new(0.5),
+        transform,
+        colors.neutral[3], // slate-700
+        None,
+        &body_rr,
+    );
+    // Inset interior — slightly brighter so the card reads as a chrome
+    // frame around a distinct content pane.
+    let inset = 3.0;
+    let inner = Rect::new(
+        body_rect.x0 + inset,
+        body_rect.y0 + inset,
+        body_rect.x1 - inset,
+        body_rect.y1 - inset,
+    );
+    if inner.width() > 0.0 && inner.height() > 0.0 {
+        let inner_rr = RoundedRect::from_rect(inner, 4.0);
+        let slate_800 = colors.neutral[2];
+        let inner_fill = Color::rgba(
+            slate_800.r as f64,
+            slate_800.g as f64,
+            slate_800.b as f64,
+            0.5,
+        );
+        scene.fill(Fill::NonZero, transform, inner_fill, None, &inner_rr);
+    }
+}
+
 impl ShellOverlayHost {
     fn draw_overview(
         &mut self,
@@ -1438,26 +1611,26 @@ impl ShellOverlayHost {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
 
-        // Centered grid of workspace cards — responsive column count based
-        // on width; cards are 240×160 with 24 px gap.
-        let card_w = 240.0_f64;
-        let card_h = 160.0_f64;
-        let gap = 24.0_f64;
-        let avail_w = self.rect.width() - 120.0;
-        let cols = ((avail_w + gap) / (card_w + gap)).floor().max(1.0) as usize;
-        let n = state.tree.workspaces.len();
-        let rows = (n + cols - 1) / cols.max(1);
-        let total_w = cols as f64 * card_w + (cols.saturating_sub(1)) as f64 * gap;
-        let total_h = rows as f64 * card_h + (rows.saturating_sub(1)) as f64 * gap;
-        let start_x = (self.rect.x0 + self.rect.x1) / 2.0 - total_w / 2.0;
-        let start_y = (self.rect.y0 + self.rect.y1) / 2.0 - total_h / 2.0;
+        // Base backdrop — concept root uses `bg-slate-950` (opaque dark
+        // canvas). The overlay sits above a scrim so this paints only the
+        // centered content column's backing, but we darken the full rect
+        // to keep the desktop fully obscured while the overview is up.
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.neutral[0], // slate-950
+            None,
+            &self.rect,
+        );
 
-        // Title: "Workspaces"
+        let col = self.overview_column_rect();
+
+        // -- Header: "Workspaces" h1 + subtitle ---------------------------
         let title = "Workspaces";
-        let title_size = tokens.typography.scale.xl;
+        let title_size = tokens.typography.scale.x3l; // close to text-4xl
         let (tw, th) = text_renderer.measure(title, title_size, None);
-        let tx = (self.rect.x0 + self.rect.x1) / 2.0 - tw as f64 / 2.0;
-        let ty = start_y - 40.0 - th as f64;
+        let tx = (col.x0 + col.x1) / 2.0 - tw as f64 / 2.0;
+        let ty = col.y0 + 8.0;
         text_renderer.draw_text(
             scene,
             title,
@@ -1466,22 +1639,52 @@ impl ShellOverlayHost {
             transform * Affine::translate((tx, ty)),
             None,
         );
+        let subtitle = "Your workspaces, side by side";
+        let sub_size = tokens.typography.scale.base;
+        let (sw, _sh) = text_renderer.measure(subtitle, sub_size, None);
+        let sx = (col.x0 + col.x1) / 2.0 - sw as f64 / 2.0;
+        let sy = ty + th as f64 + 8.0;
+        text_renderer.draw_text(
+            scene,
+            subtitle,
+            sub_size,
+            colors.text_dim,
+            transform * Affine::translate((sx, sy)),
+            None,
+        );
 
+        // -- Vertical rail behind the indicator column --------------------
+        // Concept `:54` — rail line `absolute left-8 top-0 bottom-0 w-0.5
+        // bg-slate-800 -z-10` inside the rail container. We paint it
+        // behind the cards, spanning the first row's top to the last
+        // row's bottom so it tracks however many workspaces exist.
+        let n = state.tree.workspaces.len();
+        if n > 0 {
+            let rail_x = col.x0 - OVERVIEW_RAIL_OFFSET_PX;
+            let first = self.overview_row_rect(0);
+            let last = self.overview_row_rect(n - 1);
+            let rail = Rect::new(
+                rail_x - OVERVIEW_RAIL_WIDTH_PX / 2.0,
+                first.y0,
+                rail_x + OVERVIEW_RAIL_WIDTH_PX / 2.0,
+                last.y1,
+            );
+            scene.fill(Fill::NonZero, transform, colors.neutral[2], None, &rail);
+        }
+
+        // -- Workspace rows ----------------------------------------------
         for (i, ws) in state.tree.workspaces.iter().enumerate() {
-            let col = i % cols;
-            let row = i / cols;
-            let x0 = start_x + col as f64 * (card_w + gap);
-            let y0 = start_y + row as f64 * (card_h + gap);
-            let rect = Rect::new(x0, y0, x0 + card_w, y0 + card_h);
+            let rect = self.overview_row_rect(i);
             let is_active = ws.id == state.tree.active;
-            // Concept `OverviewView.tsx:66` — `whileHover={{ scale: 1.01 }}`.
-            // Scale the hovered card about its own center so neighbours
-            // stay anchored.
+
+            // Concept `:66` — `whileHover={{ scale: 1.01 }}`. Skip the
+            // scale transform for the active row (it already has the
+            // indigo ring + glow marking it as selected).
             let is_hover = self
                 .last_cursor
                 .map(|c| rect.contains(c))
                 .unwrap_or(false);
-            let card_xform = if is_hover {
+            let card_xform = if is_hover && !is_active {
                 let cx = rect.center().x;
                 let cy = rect.center().y;
                 transform
@@ -1491,109 +1694,439 @@ impl ShellOverlayHost {
             } else {
                 transform
             };
-            // Concept `OverviewView.tsx:63`: inactive cards use
-            // `bg-slate-900/50` (darker/translucent) while the active card
-            // uses solid `bg-slate-900`. We were doing the opposite — the
-            // active card was lighter (`surfaces.raised` = slate-800) than
-            // inactives, which visually subordinated the selection.
-            let fill = if is_active {
-                colors.neutral[1] // solid slate-900
-            } else {
-                // slate-900/50 approximation: half-alpha slate-900.
-                let c = colors.neutral[1];
-                Color::rgba(c.r as f64, c.g as f64, c.b as f64, 0.5)
-            };
-            let card = RoundedRect::from_rect(rect, tokens.radii.lg as f64);
-            scene.fill(Fill::NonZero, card_xform, fill, None, &card);
+
+            // Active: `bg-slate-900` solid + indigo-500 ring + glow.
+            // Inactive: `bg-slate-900/50` translucent; on hover bumps to
+            // full opacity + slate-700 border. We approximate the
+            // `shadow-[0_0_40px_-10px_rgba(99,102,241,0.3)]` by painting a
+            // soft indigo halo as a slightly larger, alpha-weighted
+            // rounded rect underneath the card.
+            let card = RoundedRect::from_rect(rect, OVERVIEW_ROW_RADIUS_PX);
             if is_active {
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(2.0),
+                // Soft indigo glow beneath the card.
+                let glow_rect = Rect::new(
+                    rect.x0 - 12.0,
+                    rect.y0 - 12.0,
+                    rect.x1 + 12.0,
+                    rect.y1 + 12.0,
+                );
+                let glow = RoundedRect::from_rect(
+                    glow_rect,
+                    OVERVIEW_ROW_RADIUS_PX + 4.0,
+                );
+                let indigo = colors.accent[5];
+                let glow_color = Color::rgba(
+                    indigo.r as f64,
+                    indigo.g as f64,
+                    indigo.b as f64,
+                    0.18,
+                );
+                scene.fill(Fill::NonZero, card_xform, glow_color, None, &glow);
+                scene.fill(
+                    Fill::NonZero,
                     card_xform,
-                    colors.accent[5],
+                    colors.neutral[1], // slate-900
+                    None,
+                    &card,
+                );
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(OVERVIEW_ROW_BORDER_PX),
+                    card_xform,
+                    indigo,
                     None,
                     &card,
                 );
             } else {
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.0),
-                    card_xform,
-                    colors.border_standard,
-                    None,
-                    &card,
-                );
+                let slate_900 = colors.neutral[1];
+                let fill = if is_hover {
+                    slate_900
+                } else {
+                    Color::rgba(
+                        slate_900.r as f64,
+                        slate_900.g as f64,
+                        slate_900.b as f64,
+                        0.5,
+                    )
+                };
+                scene.fill(Fill::NonZero, card_xform, fill, None, &card);
+                // Inactive: `border-transparent` at rest, `border-slate-700`
+                // on hover. We only stroke on hover to avoid competing with
+                // the rail; at rest the card reads as floating on slate-950.
+                if is_hover {
+                    scene.stroke(
+                        &vello::kurbo::Stroke::new(OVERVIEW_ROW_BORDER_PX),
+                        card_xform,
+                        colors.neutral[3], // slate-700
+                        None,
+                        &card,
+                    );
+                }
             }
 
-            // Draw workspace name top-left
-            let name_size = tokens.typography.scale.base;
+            // Active-indicator dot on the rail.
+            let dot_cx = col.x0 - OVERVIEW_DOT_OFFSET_PX + OVERVIEW_DOT_SIZE_PX / 2.0 - OVERVIEW_DOT_SIZE_PX / 2.0;
+            let dot_center = Point::new(col.x0 - OVERVIEW_DOT_OFFSET_PX, rect.center().y);
+            let _ = dot_cx;
+            // Outer ring (slate-950 border-4 separating the dot from the rail).
+            scene.fill(
+                Fill::NonZero,
+                card_xform,
+                colors.neutral[0],
+                None,
+                &vello::kurbo::Circle::new(dot_center, OVERVIEW_DOT_SIZE_PX / 2.0),
+            );
+            let inner_color = if is_active {
+                colors.accent[5]
+            } else {
+                colors.neutral[3] // slate-700
+            };
+            scene.fill(
+                Fill::NonZero,
+                card_xform,
+                inner_color,
+                None,
+                &vello::kurbo::Circle::new(dot_center, OVERVIEW_DOT_SIZE_PX / 2.0 - 4.0),
+            );
+
+            // -- Sidebar column ------------------------------------------
+            let sidebar_x0 = rect.x0 + OVERVIEW_CARD_PADDING_PX;
+            let sidebar_y0 = rect.y0 + OVERVIEW_CARD_PADDING_PX;
+            let sidebar_w = OVERVIEW_SIDEBAR_WIDTH_PX;
+
+            // Title + WS-ID pill + (optional "Current" marker).
+            let name_size = tokens.typography.scale.xl; // h2 text-2xl
             text_renderer.draw_text(
                 scene,
                 &ws.name,
                 name_size,
                 colors.text_primary,
-                card_xform * Affine::translate((rect.x0 + 16.0, rect.y0 + 16.0)),
+                card_xform * Affine::translate((sidebar_x0, sidebar_y0)),
                 None,
             );
-
-            // Subtitle: strip / window counts
-            let win_count: usize = ws.strips.iter().map(|s| s.window_groups.len()).sum();
-            let sub = format!("{} strips · {} windows", ws.strips.len(), win_count);
-            let sub_size = tokens.typography.scale.sm;
+            let (name_w, name_h) = text_renderer.measure(&ws.name, name_size, None);
+            // Pill: WS-{idx+1}
+            let pill_label = format!("WS-{}", i + 1);
+            let pill_font = tokens.typography.scale.xs;
+            let (plw, plh) = text_renderer.measure(&pill_label, pill_font, None);
+            let pill_pad_x = 8.0;
+            let pill_pad_y = 2.0;
+            let pill_x0 = sidebar_x0 + name_w as f64 + 8.0;
+            let pill_cy = sidebar_y0 + name_h as f64 / 2.0;
+            let pill_h = plh as f64 + pill_pad_y * 2.0;
+            let pill_rect = Rect::new(
+                pill_x0,
+                pill_cy - pill_h / 2.0,
+                pill_x0 + plw as f64 + pill_pad_x * 2.0,
+                pill_cy + pill_h / 2.0,
+            );
+            let pill_rr = RoundedRect::from_rect(pill_rect, 4.0);
+            scene.fill(Fill::NonZero, card_xform, colors.neutral[2], None, &pill_rr);
             text_renderer.draw_text(
                 scene,
-                &sub,
-                sub_size,
-                colors.text_dim,
-                card_xform * Affine::translate((rect.x0 + 16.0, rect.y0 + 40.0)),
+                &pill_label,
+                pill_font,
+                colors.neutral[7],
+                card_xform
+                    * Affine::translate((
+                        pill_rect.x0 + pill_pad_x,
+                        pill_rect.y0 + pill_pad_y,
+                    )),
+                None,
+            );
+            if is_active {
+                let current_y = sidebar_y0 + name_h as f64 + 4.0;
+                text_renderer.draw_text(
+                    scene,
+                    "Current",
+                    tokens.typography.scale.sm,
+                    colors.accent[6], // indigo-400
+                    card_xform * Affine::translate((sidebar_x0, current_y)),
+                    None,
+                );
+            }
+
+            // Permissions panel: `bg-slate-950 rounded-xl p-3 border
+            // border-slate-800 space-y-2`. Badges: Roles (blue) + Files
+            // (purple). The concept shows a shield + "Permissions" label.
+            let perm_y0 = sidebar_y0 + name_h as f64 + 28.0;
+            let perm_h = 60.0_f64;
+            let perm_rect = Rect::new(
+                sidebar_x0,
+                perm_y0,
+                sidebar_x0 + sidebar_w,
+                perm_y0 + perm_h,
+            );
+            let perm_rr = RoundedRect::from_rect(perm_rect, 12.0);
+            scene.fill(Fill::NonZero, card_xform, colors.neutral[0], None, &perm_rr);
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                card_xform,
+                colors.neutral[2],
+                None,
+                &perm_rr,
+            );
+            // Shield glyph (simple triangle/trapezoid) stubbed as a small
+            // emerald square — keeps the perm panel readable without
+            // pulling in a vector icon here. Label + "Permissions" sits
+            // to its right.
+            let shield_rect = Rect::new(
+                perm_rect.x0 + 12.0,
+                perm_rect.y0 + 10.0,
+                perm_rect.x0 + 22.0,
+                perm_rect.y0 + 20.0,
+            );
+            scene.fill(
+                Fill::NonZero,
+                card_xform,
+                colors.semantic.success,
+                None,
+                &RoundedRect::from_rect(shield_rect, 2.0),
+            );
+            text_renderer.draw_text(
+                scene,
+                "Permissions",
+                tokens.typography.scale.sm,
+                colors.text_primary,
+                card_xform * Affine::translate((perm_rect.x0 + 28.0, perm_rect.y0 + 8.0)),
+                None,
+            );
+            // Badges row: Roles (blue) + Files (purple). Counts come from
+            // the workspace's role table + file list.
+            let role_count = ws.roles.len();
+            let file_count = ws.workspace_files.len();
+            let roles_label = format!("{} Roles", role_count.max(2));
+            let files_label = format!("{} Files", file_count);
+            let badge_font = tokens.typography.scale.xs;
+            let badge_pad_x = 6.0;
+            let badge_pad_y = 3.0;
+            let badge_y = perm_rect.y0 + 30.0;
+            let (rlw, rlh) = text_renderer.measure(&roles_label, badge_font, None);
+            let roles_badge = Rect::new(
+                perm_rect.x0 + 12.0,
+                badge_y,
+                perm_rect.x0 + 12.0 + rlw as f64 + badge_pad_x * 2.0,
+                badge_y + rlh as f64 + badge_pad_y * 2.0,
+            );
+            // blue-500 @ 20%
+            let blue = colors.semantic.info;
+            let blue_bg = Color::rgba(blue.r as f64, blue.g as f64, blue.b as f64, 0.20);
+            scene.fill(
+                Fill::NonZero,
+                card_xform,
+                blue_bg,
+                None,
+                &RoundedRect::from_rect(roles_badge, 6.0),
+            );
+            text_renderer.draw_text(
+                scene,
+                &roles_label,
+                badge_font,
+                blue,
+                card_xform
+                    * Affine::translate((
+                        roles_badge.x0 + badge_pad_x,
+                        roles_badge.y0 + badge_pad_y,
+                    )),
+                None,
+            );
+            let (flw, flh) = text_renderer.measure(&files_label, badge_font, None);
+            let files_badge = Rect::new(
+                roles_badge.x1 + 6.0,
+                badge_y,
+                roles_badge.x1 + 6.0 + flw as f64 + badge_pad_x * 2.0,
+                badge_y + flh as f64 + badge_pad_y * 2.0,
+            );
+            // purple-500 @ 20% — approximate via indigo[4]+red shift.
+            let purple = Color::rgb8(168, 85, 247);
+            let purple_bg = Color::rgba(
+                purple.r as f64,
+                purple.g as f64,
+                purple.b as f64,
+                0.20,
+            );
+            scene.fill(
+                Fill::NonZero,
+                card_xform,
+                purple_bg,
+                None,
+                &RoundedRect::from_rect(files_badge, 6.0),
+            );
+            text_renderer.draw_text(
+                scene,
+                &files_label,
+                badge_font,
+                purple,
+                card_xform
+                    * Affine::translate((
+                        files_badge.x0 + badge_pad_x,
+                        files_badge.y0 + badge_pad_y,
+                    )),
                 None,
             );
 
-            // Mini preview: draw each window-group as a rounded rectangle
-            // inside the card, laid out horizontally.
-            let preview_rect = Rect::new(
-                rect.x0 + 16.0,
-                rect.y0 + 70.0,
-                rect.x1 - 16.0,
-                rect.y1 - 16.0,
+            // Collaborators block (header + avatar stack).
+            let collab_y0 = perm_rect.y1 + 12.0;
+            text_renderer.draw_text(
+                scene,
+                "Collaborators",
+                tokens.typography.scale.sm,
+                colors.text_dim,
+                card_xform * Affine::translate((sidebar_x0, collab_y0)),
+                None,
             );
-            if win_count > 0 {
-                let tile_gap = 6.0;
-                let tile_w = (preview_rect.width() - tile_gap * (win_count.saturating_sub(1)) as f64)
-                    / win_count as f64;
-                let mut tx = preview_rect.x0;
-                for strip in &ws.strips {
-                    for g in &strip.window_groups {
-                        let tile = Rect::new(tx, preview_rect.y0, tx + tile_w, preview_rect.y1);
-                        let tile_rr =
-                            RoundedRect::from_rect(tile, tokens.radii.sm as f64);
-                        scene.fill(
-                            Fill::NonZero,
-                            card_xform,
-                            colors.surfaces.window_card,
-                            None,
-                            &tile_rr,
-                        );
-                        // Draw a little tab strip on top of each preview tile
-                        let tab_h = 6.0;
-                        let tab = Rect::new(tile.x0, tile.y0, tile.x1, tile.y0 + tab_h);
-                        scene.fill(Fill::NonZero, card_xform, colors.accent[3], None, &tab);
-                        let _ = g;
-                        tx += tile_w + tile_gap;
+            // Roster = workspace-local collaborators first, else fall back
+            // to the tree-wide roster so demo workspaces still show
+            // avatars.
+            let peers: Vec<&crate::shell::state::Collaborator> =
+                if !ws.collaborators.is_empty() {
+                    ws.collaborators.iter().collect()
+                } else {
+                    state.tree.collaborators.iter().collect()
+                };
+            let avatar_r = 12.0_f64;
+            let avatar_step = 22.0_f64; // 28 px avatar - 6 px overlap
+            let avatar_y = collab_y0 + 20.0;
+            let max_shown = 4_usize.min(peers.len());
+            for (idx, peer) in peers.iter().take(max_shown).enumerate() {
+                let cx = sidebar_x0 + avatar_r + idx as f64 * avatar_step;
+                let cy = avatar_y + avatar_r;
+                scene.fill(
+                    Fill::NonZero,
+                    card_xform,
+                    colors.neutral[1], // ring bg = slate-900
+                    None,
+                    &vello::kurbo::Circle::new(Point::new(cx, cy), avatar_r + 2.0),
+                );
+                scene.fill(
+                    Fill::NonZero,
+                    card_xform,
+                    colors.accent[5],
+                    None,
+                    &vello::kurbo::Circle::new(Point::new(cx, cy), avatar_r),
+                );
+                let initial = peer
+                    .name
+                    .chars()
+                    .next()
+                    .unwrap_or('?')
+                    .to_ascii_uppercase()
+                    .to_string();
+                let (iw, ih) = text_renderer.measure(&initial, tokens.typography.scale.sm, None);
+                text_renderer.draw_text(
+                    scene,
+                    &initial,
+                    tokens.typography.scale.sm,
+                    colors.text_primary,
+                    card_xform
+                        * Affine::translate((cx - iw as f64 / 2.0, cy - ih as f64 / 2.0)),
+                    None,
+                );
+            }
+            // Plus button at the tail of the avatar stack — concept uses
+            // this as the invite affordance.
+            let plus_idx = max_shown;
+            let plus_cx = sidebar_x0 + avatar_r + plus_idx as f64 * avatar_step;
+            let plus_cy = avatar_y + avatar_r;
+            scene.fill(
+                Fill::NonZero,
+                card_xform,
+                colors.neutral[1],
+                None,
+                &vello::kurbo::Circle::new(Point::new(plus_cx, plus_cy), avatar_r + 2.0),
+            );
+            scene.fill(
+                Fill::NonZero,
+                card_xform,
+                colors.neutral[2],
+                None,
+                &vello::kurbo::Circle::new(Point::new(plus_cx, plus_cy), avatar_r),
+            );
+            // Plus glyph (two short strokes).
+            let plus_len = 6.0_f64;
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.5),
+                card_xform,
+                colors.text_dim,
+                None,
+                &vello::kurbo::Line::new(
+                    Point::new(plus_cx - plus_len / 2.0, plus_cy),
+                    Point::new(plus_cx + plus_len / 2.0, plus_cy),
+                ),
+            );
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.5),
+                card_xform,
+                colors.text_dim,
+                None,
+                &vello::kurbo::Line::new(
+                    Point::new(plus_cx, plus_cy - plus_len / 2.0),
+                    Point::new(plus_cx, plus_cy + plus_len / 2.0),
+                ),
+            );
+
+            // Footer: N windows counter.
+            let win_count: usize = ws.strips.iter().map(|s| s.window_groups.len()).sum();
+            let footer = format!("{} windows", win_count);
+            let footer_y = rect.y1 - OVERVIEW_CARD_PADDING_PX - 14.0;
+            text_renderer.draw_text(
+                scene,
+                &footer,
+                tokens.typography.scale.xs,
+                colors.text_dim,
+                card_xform * Affine::translate((sidebar_x0, footer_y)),
+                None,
+            );
+
+            // -- Mini-window row (right column) --------------------------
+            let mini_x0 = sidebar_x0 + sidebar_w + OVERVIEW_SIDEBAR_GAP_PX;
+            let mini_x1 = rect.x1 - OVERVIEW_CARD_PADDING_PX;
+            let mini_cy = rect.center().y;
+            let mini_y0 = mini_cy - OVERVIEW_MINI_HEIGHT_PX / 2.0;
+            // One MiniWindow per window group in every strip. Concept
+            // flattens across strips; so do we.
+            let mut mx = mini_x0;
+            let mut drew_any = false;
+            'outer: for strip in &ws.strips {
+                for g in &strip.window_groups {
+                    let mini_w = match g.width {
+                        crate::shell::state::WindowWidth::Wide => 128.0,
+                        crate::shell::state::WindowWidth::Narrow => 64.0,
+                        _ => OVERVIEW_MINI_WIDTH_PX,
+                    };
+                    if mx + mini_w > mini_x1 {
+                        break 'outer;
                     }
+                    draw_mini_window(
+                        scene,
+                        card_xform,
+                        theme,
+                        Rect::new(mx, mini_y0, mx + mini_w, mini_y0 + OVERVIEW_MINI_HEIGHT_PX),
+                        g.tabs.len(),
+                        g.tabs
+                            .iter()
+                            .position(|t| t.id == g.active_tab)
+                            .unwrap_or(0),
+                    );
+                    mx += mini_w + OVERVIEW_MINI_GAP_PX;
+                    drew_any = true;
                 }
-            } else {
-                // Empty workspace placeholder dashed area.
-                let pr = RoundedRect::from_rect(preview_rect, tokens.radii.sm as f64);
+            }
+            if !drew_any {
+                // Empty workspace placeholder — dashed frame spanning the
+                // mini-window region.
+                let empty_rect = Rect::new(mini_x0, mini_y0, mini_x1, mini_y0 + OVERVIEW_MINI_HEIGHT_PX);
+                let empty_rr = RoundedRect::from_rect(empty_rect, 12.0);
                 scene.stroke(
                     &vello::kurbo::Stroke::new(1.0).with_dashes(0.0, [4.0, 4.0]),
                     card_xform,
-                    colors.border_standard,
+                    colors.neutral[2],
                     None,
-                    &pr,
+                    &empty_rr,
                 );
-                let empty_label = "empty";
+                let empty_label = "No windows";
                 let (ew, eh) = text_renderer.measure(empty_label, sub_size, None);
-                let ex = (preview_rect.x0 + preview_rect.x1) / 2.0 - ew as f64 / 2.0;
-                let ey = (preview_rect.y0 + preview_rect.y1) / 2.0 - eh as f64 / 2.0;
+                let ex = (empty_rect.x0 + empty_rect.x1) / 2.0 - ew as f64 / 2.0;
+                let ey = (empty_rect.y0 + empty_rect.y1) / 2.0 - eh as f64 / 2.0;
                 text_renderer.draw_text(
                     scene,
                     empty_label,
@@ -2625,10 +3158,11 @@ mod modal_curve_tests {
         );
     }
 
-    /// Concept `OverviewView.tsx:66` — `whileHover={{ scale: 1.01 }}` on each
-    /// workspace card. The draw path consults `self.last_cursor` inside the
-    /// card rect, so the hit-test must stay honest with the card-rect
-    /// geometry it computes; `hit_test_overview` is that shared oracle.
+    /// Concept `OverviewView.tsx:60-68` — rows tile vertically down the
+    /// centered column, one per workspace. The draw path consults
+    /// `self.last_cursor` against each row rect, so the hit-test must stay
+    /// honest with the row geometry it computes; `hit_test_overview` and
+    /// `overview_row_rect` are the shared oracle.
     #[test]
     fn overview_hit_test_returns_card_index_when_cursor_is_over_card() {
         use crate::shell::chrome_state::ChromeState;
@@ -2643,25 +3177,16 @@ mod modal_curve_tests {
             .with_chrome(chrome.clone());
         h.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
 
-        // Replicate the geometry in draw_overview / hit_test_overview so we
-        // can point the cursor at the first card's center.
-        let card_w = 240.0_f64;
-        let card_h = 160.0_f64;
-        let gap = 24.0_f64;
-        let avail_w = h.rect.width() - 120.0;
-        let cols = ((avail_w + gap) / (card_w + gap)).floor().max(1.0) as usize;
-        let n = chrome.borrow().tree.workspaces.len();
-        let rows = (n + cols - 1) / cols.max(1);
-        let total_w = cols as f64 * card_w + (cols.saturating_sub(1)) as f64 * gap;
-        let total_h = rows as f64 * card_h + (rows.saturating_sub(1)) as f64 * gap;
-        let start_x = (h.rect.x0 + h.rect.x1) / 2.0 - total_w / 2.0;
-        let start_y = (h.rect.y0 + h.rect.y1) / 2.0 - total_h / 2.0;
-        let first_center =
-            Point::new(start_x + card_w / 2.0, start_y + card_h / 2.0);
+        // Aim at the first row's centre via the same geometry helper the
+        // draw path uses, so this test doesn't re-derive row math.
+        let first = h.overview_row_rect(0);
+        assert_eq!(h.hit_test_overview(first.center()), Some(0));
 
-        assert_eq!(h.hit_test_overview(first_center), Some(0));
+        // Second row should hit with index 1.
+        let second = h.overview_row_rect(1);
+        assert_eq!(h.hit_test_overview(second.center()), Some(1));
 
-        // A point far outside the grid must return None.
+        // A point far outside the column (top-left corner) must return None.
         assert_eq!(h.hit_test_overview(Point::new(5.0, 5.0)), None);
     }
 }
