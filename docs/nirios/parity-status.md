@@ -214,3 +214,21 @@ for chrome density). Outstanding infrastructure-level items:
    in-flight signal so the app keeps pumping redraws until the
    curve settles; the timestamp clears on close so the next open
    replays the motion.
+
+6. **Modal entry animations (ws-settings + palette)** — ✅ the two
+   remaining concept `motion.div` panel wraps are now live:
+   `WorkspaceSettingsModal.tsx:42-46` (start scale 0.95, y=20) and
+   `GlobalSearch.tsx:109-113` (start scale 0.9, y=20). Both share a
+   module-level `modal_open_curve(opened_at, start_scale)` helper
+   that returns `(alpha, dy, scale)` sampled on ease-out-cubic over
+   `MODAL_OPEN_ANIM_MS = 220 ms`. Each overlay adds its own
+   rising-edge bookkeeping (`ws_settings_opened_at`/`_was_open`,
+   `palette_opened_at`/`palette_was_visible`) and draws the scrim at
+   full alpha while only the panel fades — matching the concept's
+   "modal lifts out of the scrim" feel. `needs_animation_frame`
+   includes both flags. Covered by 5 unit tests
+   (`modal_curve_tests::{modal_open_curve_at_rest_when_no_timestamp,
+   modal_open_curve_starts_from_initial_values,
+   modal_open_curve_settles_at_rest_after_duration,
+   palette_rising_edge_stamps_opened_at_and_pumps_frames,
+   ws_settings_close_clears_opened_at}`).
