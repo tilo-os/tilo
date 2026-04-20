@@ -554,11 +554,11 @@ mod tests {
     fn make_group() -> WindowGroup {
         let tabs: Vec<(TabDescriptor, TileContent)> = vec![
             (
-                TabDescriptor { id: 1, title: "A".into() },
+                TabDescriptor::new(1, "A"),
                 TileContent::Stub { kind: AppKind::Settings, label: "a".into() },
             ),
             (
-                TabDescriptor { id: 2, title: "B".into() },
+                TabDescriptor::new(2, "B"),
                 TileContent::Stub { kind: AppKind::Settings, label: "b".into() },
             ),
         ];
