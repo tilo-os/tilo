@@ -147,4 +147,30 @@ impl State {
             last_snapshot,
         })
     }
+
+    /// Apply an incremental CRDT patch (bytes produced by
+    /// `AutoCommit::save_incremental` on another peer) into this document.
+    /// Returns the number of ops applied on success.
+    ///
+    /// This is how `CollabEvent::CRDTIncremental` is actually merged on the
+    /// receiver side — without it, incremental deltas broadcast by one peer
+    /// would never reach another peer's CRDT.
+    pub fn load_incremental(
+        &mut self,
+        data: &[u8],
+    ) -> Result<usize, automerge::AutomergeError> {
+        let n = self.doc.load_incremental(data)?;
+        // Keep the undo baseline aligned with the new, merged document state
+        // so the *next* local action can snapshot against a complete picture.
+        self.last_snapshot = self.doc.save();
+        Ok(n)
+    }
+
+    /// Serialize the changes made since the last save/save_incremental call.
+    /// The returned bytes can be fed into another peer's `load_incremental`
+    /// to replay just the delta — the basic building block of efficient
+    /// CRDT sync.
+    pub fn save_incremental(&mut self) -> Vec<u8> {
+        self.doc.save_incremental()
+    }
 }
