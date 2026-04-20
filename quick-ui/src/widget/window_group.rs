@@ -134,6 +134,40 @@ impl WindowGroup {
         self.hosts.insert(clamped, (id, host));
     }
 
+    /// Construct a new `WindowGroup` wrapping a single pre-built
+    /// `(TabDescriptor, TileHost)` pair — the output of `detach_tab`.
+    ///
+    /// Used by `GroupRow` when the user drops a dragged tab into the
+    /// empty space between groups (or past the last group), creating a
+    /// fresh group at that position with the dragged tab as its sole
+    /// child. The equivalent of the concept's `onMoveTab(src, 'new',
+    /// tab, idx)` path in `DesktopView.tsx:414`.
+    pub fn from_detached(id: u64, desc: TabDescriptor, host: TileHost, width: WindowWidth) -> Self {
+        let active_id = desc.id;
+        let tab_id = desc.id;
+        Self {
+            id,
+            bar: TabBar::new(&format!("g{id}"), vec![desc], active_id),
+            hosts: vec![(tab_id, host)],
+            width,
+            rect: Rect::ZERO,
+            resize_origin: None,
+            hover_resize: false,
+            maximized: false,
+            search_active: false,
+            restore_rect: Rect::ZERO,
+            restore_hover: false,
+            close_rect: Rect::ZERO,
+            close_hover: false,
+            last_cursor: Point::ZERO,
+        }
+    }
+
+    /// Number of tabs hosted by this group. Used by `GroupRow` to decide
+    /// whether a detach leaves the source group empty (and thus whether
+    /// to prune it after a new-group drop).
+    pub fn tab_count(&self) -> usize { self.hosts.len() }
+
     /// Return this group's tab-bar rect — i.e. the strip above the tile
     /// content where sibling drops should resolve. The parent `GroupRow`
     /// uses it to hit-test cross-group releases.
