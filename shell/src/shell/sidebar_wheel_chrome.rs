@@ -311,6 +311,23 @@ impl Widget for SidebarWheelChrome {
         for (idx, card) in self.cards.iter().enumerate() {
             let is_active = self.active == Some(card.id);
             let is_hover = self.hover_idx == Some(idx);
+            // Hover-scale matches concept `DesktopView.tsx:446`
+            // `whileHover={{ scale: 1.05 }}` — a subtle 5 % grow on the
+            // hovered card so the user gets proprioceptive feedback that
+            // the pill is interactive. Scaled about the card's center
+            // so it grows symmetrically rather than from the top-left.
+            // Applied to both the card rect and its glyph/subtitle
+            // transforms below so the pill stays a coherent unit.
+            let card_xform = if is_hover && !is_active {
+                let cx = card.rect.center().x;
+                let cy = card.rect.center().y;
+                transform
+                    * Affine::translate((cx, cy))
+                    * Affine::scale(1.05)
+                    * Affine::translate((-cx, -cy))
+            } else {
+                transform
+            };
             let pill = RoundedRect::from_rect(card.rect, tokens.radii.md as f64);
             let fill = if is_active {
                 colors.accent[5]
@@ -319,9 +336,11 @@ impl Widget for SidebarWheelChrome {
             } else {
                 colors.neutral[1] // slate-900
             };
-            scene.fill(Fill::NonZero, transform, fill, None, &pill);
+            scene.fill(Fill::NonZero, card_xform, fill, None, &pill);
             if is_active {
                 // Subtle ring / inner-stroke to echo the indigo glow.
+                // Active card doesn't hover-scale (it's already the
+                // focal point) so this uses the base transform.
                 let ring = RoundedRect::from_rect(
                     Rect::new(
                         card.rect.x0 - 1.0,
@@ -341,7 +360,8 @@ impl Widget for SidebarWheelChrome {
             }
 
             // Big initial glyph, centered horizontally + slightly above
-            // center so the strip-count subtitle fits below.
+            // center so the strip-count subtitle fits below. Uses
+            // `card_xform` so the glyph scales with the pill on hover.
             let glyph_size = tokens.typography.scale.xl;
             let (gw, gh) = text_renderer.measure(&card.label, glyph_size, None);
             let cx = (card.rect.x0 + card.rect.x1) / 2.0 - gw as f64 / 2.0;
@@ -352,7 +372,7 @@ impl Widget for SidebarWheelChrome {
                 &card.label,
                 glyph_size,
                 glyph_color,
-                transform * Affine::translate((cx, cy)),
+                card_xform * Affine::translate((cx, cy)),
                 None,
             );
 
@@ -376,7 +396,7 @@ impl Widget for SidebarWheelChrome {
                 &subtitle,
                 sub_size,
                 sub_color,
-                transform * Affine::translate((sx, sy)),
+                card_xform * Affine::translate((sx, sy)),
                 None,
             );
 
@@ -406,7 +426,7 @@ impl Widget for SidebarWheelChrome {
                 for i in 0..shown {
                     let dx = base_x + dot_r + i as f64 * (dot_r * 2.0 + gap);
                     let c = vello::kurbo::Circle::new(Point::new(dx, dot_y), dot_r);
-                    scene.fill(Fill::NonZero, transform, dot_color, None, &c);
+                    scene.fill(Fill::NonZero, card_xform, dot_color, None, &c);
                 }
                 if overflow > 0 {
                     let chip_x = base_x + shown as f64 * (dot_r * 2.0 + gap);
@@ -417,7 +437,7 @@ impl Widget for SidebarWheelChrome {
                         &s,
                         tokens.typography.scale.xs,
                         dot_color,
-                        transform
+                        card_xform
                             * Affine::translate((chip_x, dot_y - th as f64 / 2.0)),
                         None,
                     );
