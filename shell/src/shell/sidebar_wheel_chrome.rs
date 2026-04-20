@@ -46,6 +46,12 @@ struct WorkspaceCard {
     id: WorkspaceId,
     label: String,
     strip_count: usize,
+    /// Number of collaborators on this workspace. Read from
+    /// `Workspace::collaborators.len()` during `sync_from_tree`; falls
+    /// back to the tree-level roster so shells that haven't split their
+    /// collaborator roster per-workspace still get a presence signal on
+    /// the active card.
+    collab_count: usize,
     rect: Rect,
 }
 
@@ -105,23 +111,54 @@ impl SidebarWheelChrome {
 
     pub fn sync_from_tree(&mut self, tree: &WorkspaceTree) {
         self.active = Some(tree.active);
+        let tree_fallback = tree.collaborators.len();
         self.cards = tree
             .workspaces
             .iter()
-            .map(|w| WorkspaceCard {
-                id: w.id,
-                label: workspace_initial(&w.name),
-                strip_count: w.strips.len(),
-                rect: Rect::ZERO,
+            .map(|w| {
+                // Per-workspace count takes precedence; we only fall back
+                // to the tree-level roster for the active workspace when
+                // the workspace itself has none (so single-workspace demo
+                // trees still light up the active card).
+                let per_ws = w.collaborators.len();
+                let count = if per_ws > 0 {
+                    per_ws
+                } else if tree.active == w.id {
+                    tree_fallback
+                } else {
+                    0
+                };
+                WorkspaceCard {
+                    id: w.id,
+                    label: workspace_initial(&w.name),
+                    strip_count: w.strips.len(),
+                    collab_count: count,
+                    rect: Rect::ZERO,
+                }
             })
             .collect();
-        self.active_collab_count = tree.collaborators.len();
+        // Legacy field: keep it in sync with the active card so the
+        // existing tests that assert on `active_collaborator_count` keep
+        // working. New callers should prefer `card_collab_count`.
+        self.active_collab_count = self
+            .cards
+            .iter()
+            .find(|c| Some(c.id) == self.active)
+            .map(|c| c.collab_count)
+            .unwrap_or(0);
     }
 
     /// Collaborator-dot count rendered on the active workspace card.
     /// Exposed so integration tests can verify the sync-from-tree wiring.
     pub fn active_collaborator_count(&self) -> usize {
         self.active_collab_count
+    }
+
+    /// Collaborator-dot count rendered on the workspace card at index
+    /// `idx` (order matches `tree.workspaces`). Returns 0 for out-of-
+    /// range indices.
+    pub fn card_collab_count(&self, idx: usize) -> usize {
+        self.cards.get(idx).map(|c| c.collab_count).unwrap_or(0)
     }
 
     /// Drain any pending intent queued by a previous click. Shell calls this
@@ -343,24 +380,33 @@ impl Widget for SidebarWheelChrome {
                 None,
             );
 
-            // Collaborator presence dots on the active card. Per-workspace
-            // presence isn't modeled yet, so tree-level collaborators all
-            // attribute to the active workspace as a "people are here"
-            // signal. Clamp to 3 and overflow into a "+N" chip so 4+ peers
-            // stay readable inside the 96-px-wide card.
-            if is_active && self.active_collab_count > 0 {
-                let shown = self.active_collab_count.min(3);
-                let overflow = self.active_collab_count.saturating_sub(3);
+            // Collaborator presence dots on every card. Per-workspace
+            // presence is now modeled (`Workspace::collaborators`), so
+            // each card can show its own roster; we still fall back to
+            // the tree-level roster on the active card when the workspace
+            // has none. Clamp to 3 and overflow into a "+N" chip so 4+
+            // peers stay readable inside the 96-px-wide card. Inactive
+            // cards render at half-alpha so the active card still reads
+            // as the focus anchor.
+            let card_count = card.collab_count;
+            if card_count > 0 {
+                let shown = card_count.min(3);
+                let overflow = card_count.saturating_sub(3);
                 let dot_r = 3.0_f64;
                 let gap = 3.0_f64;
                 let row_w = shown as f64 * (dot_r * 2.0) + (shown as f64 - 1.0).max(0.0) * gap
                     + if overflow > 0 { 14.0 } else { 0.0 };
                 let base_x = (card.rect.x0 + card.rect.x1) / 2.0 - row_w / 2.0;
                 let dot_y = card.rect.y1 - 10.0;
+                let dot_color = if is_active {
+                    colors.text_primary
+                } else {
+                    colors.text_primary.with_alpha_factor(0.55)
+                };
                 for i in 0..shown {
                     let dx = base_x + dot_r + i as f64 * (dot_r * 2.0 + gap);
                     let c = vello::kurbo::Circle::new(Point::new(dx, dot_y), dot_r);
-                    scene.fill(Fill::NonZero, transform, colors.text_primary, None, &c);
+                    scene.fill(Fill::NonZero, transform, dot_color, None, &c);
                 }
                 if overflow > 0 {
                     let chip_x = base_x + shown as f64 * (dot_r * 2.0 + gap);
@@ -370,7 +416,7 @@ impl Widget for SidebarWheelChrome {
                         scene,
                         &s,
                         tokens.typography.scale.xs,
-                        colors.text_primary,
+                        dot_color,
                         transform
                             * Affine::translate((chip_x, dot_y - th as f64 / 2.0)),
                         None,

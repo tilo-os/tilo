@@ -200,6 +200,58 @@ fn sidebar_active_card_inherits_tree_collaborator_count() {
 }
 
 #[test]
+fn sidebar_cards_read_per_workspace_collaborator_rosters() {
+    // Per-workspace presence is now wired (§3 "Per-strip label + avatars").
+    // Each workspace's own `Workspace::collaborators` populates its card,
+    // with a tree-level fallback only on the active card (and only when
+    // the workspace itself is empty).
+    let mut tree = WorkspaceTree::bootstrap_default();
+    // Seed a second workspace so we have two cards to compare.
+    let w1_id = tree.workspaces[0].id;
+    tree.append_empty_workspace("Second");
+    let w2_id = tree.workspaces[1].id;
+    // Workspace 0: two peers. Workspace 1: one peer. Tree: none.
+    tree.workspaces[0].collaborators = vec![
+        Collaborator::new("a", "Ada"),
+        Collaborator::new("b", "Ben"),
+    ];
+    tree.workspaces[1].collaborators = vec![Collaborator::new("c", "Cae")];
+    tree.active = w1_id;
+
+    let wheel = SidebarWheelChrome::from_tree(&tree);
+    assert_eq!(wheel.card_collab_count(0), 2, "workspace 0 has 2 peers");
+    assert_eq!(wheel.card_collab_count(1), 1, "workspace 1 has 1 peer");
+    assert_eq!(
+        wheel.active_collaborator_count(),
+        2,
+        "active-count helper still returns the active card's count"
+    );
+    let _ = w2_id;
+}
+
+#[test]
+fn sidebar_inactive_card_without_per_ws_roster_shows_zero_dots() {
+    // Falls back to tree-level peers only on the *active* card — an
+    // inactive card with no per-workspace peers should not borrow the
+    // tree-level roster, otherwise every card would display the same
+    // phantom "everyone is here" roster.
+    let mut tree = WorkspaceTree::bootstrap_default();
+    let w0 = tree.workspaces[0].id;
+    tree.append_empty_workspace("Second");
+    tree.collaborators = vec![
+        Collaborator::new("a", "Ada"),
+        Collaborator::new("b", "Ben"),
+    ];
+    // Workspace 0 is active + has no per-ws roster: borrows tree (2).
+    // Workspace 1 is inactive + has no per-ws roster: stays at 0.
+    tree.active = w0;
+
+    let wheel = SidebarWheelChrome::from_tree(&tree);
+    assert_eq!(wheel.card_collab_count(0), 2);
+    assert_eq!(wheel.card_collab_count(1), 0);
+}
+
+#[test]
 fn collaborators_overlay_defaults_off_and_toggles_through_chrome() {
     let tree = WorkspaceTree::bootstrap_default();
     let chrome = ChromeState::new(tree);
