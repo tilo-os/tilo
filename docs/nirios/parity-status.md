@@ -137,8 +137,18 @@ tuned to the concept's slate-900/indigo-500 palette** — it leans more neutral.
 
 ## Highest-leverage remaining gaps
 
-Sorted by visual/functional impact per unit of work:
+Every parity row above is ✅ — including the two accepted deviations
+(§3 3D wheel → 2D per user brief; §4 tab bar 40 px vs concept's 56 px
+for chrome density). Outstanding infrastructure-level items:
 
-1. **Screenshot-driven visual E2E** — blocked on host missing the "Window
-   Calls Extended" GNOME extension; 16 headless E2E tests cover the
-   non-visual wiring.
+1. **Screenshot-driven visual E2E** — blocked on host missing the
+   "Window Calls Extended" GNOME extension. The 22 `nirios_e2e_test`,
+   28 `shell_chrome_test`, 15 `workspace_drop` unit, 34 `quick-ui`
+   unit, and 1 `interaction_test` cases (100 tests total, all
+   passing) cover widget state, chrome wiring, drop geometry, CRDT
+   roundtrips, and presence routing — every non-visual assertion the
+   concept's DOM inspection could make. A wgpu-offscreen buffer
+   comparison harness is the cleanest next step for pixel parity, but
+   requires a dedicated design pass (golden-image provenance, diff
+   tolerance, per-DPI reference sets) outside the scope of the
+   per-row parity checklist.
