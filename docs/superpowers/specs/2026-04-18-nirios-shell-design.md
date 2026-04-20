@@ -9,7 +9,7 @@
 
 Build a collaborative, cross-platform desktop shell and the UI toolkit that powers it, both written in pure Rust. Two sentences of intent:
 
-1. The shell is a reimplementation of the nirios visual concept as the real UI of QuickDesktop, replacing the existing Iced-based UI in `quick-gnome-shell`.
+1. The shell is a reimplementation of the nirios visual concept as the real UI of QuickDesktop, replacing the existing Iced-based UI in `quick-shell`.
 2. The toolkit (`quick-ui`) grows into a collaboration-first, cross-platform UI framework that can compete with the web — it is the foundation for every system app, not just the shell.
 
 **Design language parity:** the shell and all native apps share one design-token system, one motion language, one set of collaboration affordances, and one widget contract. Apps should look and feel like part of the OS.
@@ -23,12 +23,12 @@ Build a collaborative, cross-platform desktop shell and the UI toolkit that powe
 ### Crate-level changes
 
 - **`quick-ui`** (in-tree) — grows substantially. New primitives, a design-token module, a collaboration-contract module, an animation/spring engine, an overlay/modal subsystem, a drag-and-drop manager, a scroll area, a tabs widget, a command palette, a context-menu + tooltip + toast layer, a data-table primitive, a virtualized list, a richer text-input (presence-aware, IME plumbing). Existing widgets are *extended* to the new contract, not rewritten.
-- **`quick-gnome-shell`** (submodule) — UI replaced. Its Iced `Application` is swapped for a `quick_ui::App` driving a `nirios::Shell` root widget. Non-UI code (Wayland/Smithay scaffolding, `workspace.rs`, `security/`, `network/` with libp2p, `config.rs`) remains. Iced dependencies removed from `Cargo.toml` unless any non-UI module still uses them.
+- **`quick-shell`** (submodule) — UI replaced. Its Iced `Application` is swapped for a `quick_ui::App` driving a `nirios::Shell` root widget. Non-UI code (Wayland/Smithay scaffolding, `workspace.rs`, `security/`, `network/` with libp2p, `config.rs`) remains. Iced dependencies removed from `Cargo.toml` unless any non-UI module still uses them.
 - **`apps/terminal`** (submodule, already on `quick-ui`) — preserved. Gets an `AppWidget` impl and adopts the new tokens/presence hooks.
 - **`apps/file-explorer`** (submodule, currently Iced) — **ported to `quick-ui`** as part of this plan, preserving every capability it has today. Its Iced code is removed once port parity is verified.
 - **`apps/browser`** (submodule, Servo + Iced) — exempt. Stays as-is. Represented in the shell as a `TileContent::Stub` card ("Browser coming soon"), with an optional "open in external browser" button invoking `xdg-open`.
 
-### New module tree inside `quick-gnome-shell`
+### New module tree inside `quick-shell`
 
 ```
 src/shell/
@@ -78,7 +78,7 @@ src/
 
 ### Dependency direction
 
-`quick-ui` is the base. `apps/terminal` and (post-port) `apps/file-explorer` depend on `quick-ui`. `quick-gnome-shell` depends on `quick-ui` and on the two native apps so it can embed them as `AppWidget` instances inside shell tiles. `apps/browser` is not a shell dependency.
+`quick-ui` is the base. `apps/terminal` and (post-port) `apps/file-explorer` depend on `quick-ui`. `quick-shell` depends on `quick-ui` and on the two native apps so it can embed them as `AppWidget` instances inside shell tiles. `apps/browser` is not a shell dependency.
 
 ### Run modes
 
@@ -310,11 +310,11 @@ Approach 3 from the brainstorm: toolkit + shell co-developed, app port last, col
 
 - **`quick-ui` unit tests** per new primitive (construction, layout measurement, basic event handling).
 - **Headless render tests** in `quick-ui`: feed canned events, capture Vello scene, assert structural invariants (bounds, layer counts, token-derived values) rather than pixels.
-- **Shell interaction tests** — new `tests/shell_interaction.rs` in `quick-gnome-shell` driving `nirios::Shell` with synthetic events. Required assertions: workspace switch navigates; Cmd+K opens search; tab drag between groups moves state; tab drag to "+"-zone creates a new group; overscroll past threshold appends a workspace; strip paginate switches active strip with cooldown honored.
+- **Shell interaction tests** — new `tests/shell_interaction.rs` in `quick-shell` driving `nirios::Shell` with synthetic events. Required assertions: workspace switch navigates; Cmd+K opens search; tab drag between groups moves state; tab drag to "+"-zone creates a new group; overscroll past threshold appends a workspace; strip paginate switches active strip with cooldown honored.
 - **Port-parity tests** for file-explorer — each existing capability has a matching test in the `quick-ui` port before the Iced code is removed.
 - **Collab tests** — simulated multi-user session with two `App` instances sharing `CollaborationManager` over an in-memory pipe. Assertions: peer cursor positions render at the right screen coords under layout changes; presence chrome updates on peer join/leave; permission-gated widget rejects mutation and renders read-only.
 - **Visual smoke** — `cargo run -p quick-desktop` in dev mode is the primary integration check throughout Phase A and B. Mandatory run after each step in §8.
-- **Compositor headless test** (`cargo test --test interaction_test` in `quick-gnome-shell`) continues to run unchanged — the shell-UI tests are an additional suite.
+- **Compositor headless test** (`cargo test --test interaction_test` in `quick-shell`) continues to run unchanged — the shell-UI tests are an additional suite.
 
 ## 9a. Error handling & failure modes
 

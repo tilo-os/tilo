@@ -65,7 +65,7 @@ systemd -> graphical.target -> greetd.service
 ## Build Pipeline
 
 ```
-1. cargo build --release    (in quick-gnome-shell/)
+1. cargo build --release    (in quick-shell/)
 2. podman build             (builds container image from os/Containerfile)
 3. bootc-image-builder      (converts container -> QCOW2/ISO)
 4. qemu-system-x86_64       (test in VM)

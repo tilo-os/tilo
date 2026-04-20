@@ -3,7 +3,7 @@
 This document outlines the design for the Desktop Environment (DE) layer that manages collaboration, network synchronization, and app permissions for the QuickDesktop ecosystem.
 
 ## 1. Core Philosophy
-- **Compositor as Orchestrator:** The DE (`quick-gnome-shell`) is the sole owner of the network stack and security policy.
+- **Compositor as Orchestrator:** The DE (`quick-shell`) is the sole owner of the network stack and security policy.
 - **Apps as Reactive Clients:** Apps (`quick-ui` based or legacy) receive "Collaboration Context" from the DE but do not manage P2P connections or permission enforcement themselves.
 - **Cluster-Centricity:** Collaboration is scoped to a `Cluster`. All apps within a cluster share the same collaborator list and base permissions.
 
@@ -39,9 +39,9 @@ The `quick-ui::App` loop will be extended to:
 For apps that are not collaboration-aware (e.g., standard Wayland/Iced apps):
 1.  **Compositor-Side Cursors:** The DE draws remote cursors *over* the app window.
 2.  **Input Multiplexing:** The DE manages which user's input is currently being sent to the app's single pointer/keyboard focus (e.g., "Last Mover Wins" or "Explicit Floor Control").
-3.  **Environment Emulation:** The adapter provides a fake "Home" or "Project" directory based on the Cluster's `permitted_paths` (handled via `bwrap` in `quick-gnome-shell`).
+3.  **Environment Emulation:** The adapter provides a fake "Home" or "Project" directory based on the Cluster's `permitted_paths` (handled via `bwrap` in `quick-shell`).
 
-## 4. DE Implementation (`quick-gnome-shell`)
+## 4. DE Implementation (`quick-shell`)
 1.  **Network Integration:** 
     - `P2PClient` (libp2p) will be updated to handle `CRDTUpdate` messages in addition to `CursorUpdate`.
     - It will route these messages between machines based on the `Cluster ID`.
@@ -51,6 +51,6 @@ For apps that are not collaboration-aware (e.g., standard Wayland/Iced apps):
 
 ## 5. Next Steps
 1.  **Define Protocol:** Create the XML definition for `zquick_collaboration_v1`.
-2.  **Implement DE Server:** Add the protocol handler to `quick-gnome-shell/src/network/wayland.rs`.
+2.  **Implement DE Server:** Add the protocol handler to `quick-shell/src/network/wayland.rs`.
 3.  **Update quick-ui App:** Add the client-side binding logic.
 4.  **Verification:** Run two `responsive_gallery` instances via the shell and verify that typing/cursors sync via the DE's P2P layer rather than direct app-to-app communication.
