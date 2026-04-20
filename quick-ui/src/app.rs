@@ -49,6 +49,12 @@ pub struct App {
     root_node: Option<NodeId>,
     node_map: std::collections::HashMap<NodeId, *mut dyn Widget>,
     layout_dirty: bool,
+    /// Set when any widget in the tree has reported `take_structure_dirty()`
+    /// this tick. Triggers a rebuild of the taffy tree before the next
+    /// layout pass — without it, widgets spawned at runtime (e.g. a new
+    /// `WindowGroup` from a tab-drop split) have no `NodeId` and are
+    /// skipped by `apply_layout`.
+    structure_dirty: bool,
     needs_sync: bool,
     pub theme: Theme,
     pub debug_mode: bool,
@@ -89,6 +95,7 @@ impl App {
             root_node: None,
             node_map: std::collections::HashMap::new(),
             layout_dirty: true,
+            structure_dirty: false,
             needs_sync: true,
             theme: Theme::dark(),
             debug_mode: std::env::var("QUICK_UI_DEBUG").is_ok(),
@@ -386,7 +393,28 @@ impl App {
                             let scale_factor = window.scale_factor() as f32;
 
                             if self.needs_sync { self.root_widget.sync(&mut self.state.doc, &self.state.root); self.needs_sync = false; }
-                            
+
+                            // Poll the tree for structural mutations that
+                            // happened since the last frame (e.g. a tab
+                            // split that inserted a brand-new WindowGroup
+                            // into a GroupRow). If any subtree reports
+                            // dirty, rebuild the taffy tree from scratch so
+                            // the new widgets get node ids and the layout
+                            // pass below sees them.
+                            self.structure_dirty |= self.root_widget.take_structure_dirty();
+                            if self.structure_dirty {
+                                self.taffy = TaffyTree::new();
+                                self.node_map.clear();
+                                self.root_node = Some(self.root_widget.build_layout(
+                                    &mut self.taffy,
+                                    &self.theme,
+                                    &mut self.node_map,
+                                ));
+                                self.structure_dirty = false;
+                                self.layout_dirty = true;
+                                self.update_focusable_order();
+                            }
+
                             let root_node = self.root_node.unwrap();
                             if self.layout_dirty {
                                 let node_map = &self.node_map;
@@ -620,6 +648,18 @@ impl App {
                         self.commit_action();
                         self.root_widget.on_commit();
                         self.needs_sync = true;
+                        window.request_redraw();
+                    }
+
+                    // If a widget mutated its child composition between
+                    // frames (e.g. GroupRow split a tab into a new group
+                    // during the last event dispatch), flag the app so the
+                    // next RedrawRequested rebuilds the taffy tree before
+                    // laying out. We don't drain the flag here — the draw
+                    // handler needs to see it — just pump a redraw so the
+                    // rebuild happens promptly.
+                    if self.root_widget.take_structure_dirty() {
+                        self.structure_dirty = true;
                         window.request_redraw();
                     }
 

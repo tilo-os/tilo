@@ -134,4 +134,14 @@ impl Widget for TileHost {
     }
     fn name(&self) -> &str { "TileHost" }
     fn get_rect(&self) -> Rect { self.rect }
+    fn take_structure_dirty(&mut self) -> bool {
+        // A hosted app widget could itself mutate its subtree (e.g. a file
+        // explorer that spawns a new pane). Forward through so App can
+        // rebuild the taffy tree when the inner widget reports dirty.
+        if let TileContent::App(w) = &mut self.content {
+            w.take_structure_dirty()
+        } else {
+            false
+        }
+    }
 }
