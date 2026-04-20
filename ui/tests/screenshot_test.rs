@@ -224,14 +224,8 @@ fn tab_bar_renders_pills_inside_six_px_insets() {
     };
 
     let tabs = vec![
-        TabDescriptor {
-            id: 1,
-            title: "a".into(),
-        },
-        TabDescriptor {
-            id: 2,
-            title: "b".into(),
-        },
+        TabDescriptor::new(1, "a"),
+        TabDescriptor::new(2, "b"),
     ];
     let mut bar: Box<dyn Widget> = Box::new(TabBar::new("grp", tabs, 1));
 

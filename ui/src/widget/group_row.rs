@@ -356,10 +356,7 @@ mod tests {
             .iter()
             .map(|t| {
                 (
-                    TabDescriptor {
-                        id: *t,
-                        title: format!("T{t}"),
-                    },
+                    TabDescriptor::new(*t, format!("T{t}")),
                     TileContent::Stub {
                         kind: crate::widget::AppKind::Settings,
                         label: format!("S{t}"),
