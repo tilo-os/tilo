@@ -73,9 +73,32 @@ impl Widget for TileHost {
         }
     }
     fn draw(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
+        // Shadow-2xl approximation beneath the card (concept:
+        // `shadow-2xl` ≈ `0 25px 50px -12px rgba(0, 0, 0, 0.25)`).
+        // Vello has no native gaussian blur so we approximate with four
+        // progressively larger, translated-down, alpha-diminishing
+        // rounded rects stacked behind the card. Each ring contributes
+        // ~6 % alpha so their union reads as a soft 30 % drop shadow.
+        let radius = theme.tokens.radii.xl as f64;
+        for (spread, dy, alpha) in [(2.0_f64, 6.0_f64, 24u8), (6.0, 12.0, 18), (14.0, 20.0, 10), (24.0, 28.0, 4)] {
+            let shadow_rect = Rect::new(
+                self.rect.x0 - spread,
+                self.rect.y0 + dy - spread * 0.3,
+                self.rect.x1 + spread,
+                self.rect.y1 + dy + spread,
+            );
+            let shadow_shape = RoundedRect::from_rect(shadow_rect, radius + spread * 0.5);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                vello::peniko::Color::rgba8(0, 0, 0, alpha),
+                None,
+                &shadow_shape,
+            );
+        }
         // White rounded-3xl card (concept: `bg-white` `rounded-3xl`
         // `border-white/20` `shadow-2xl`).
-        let shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.xl as f64);
+        let shape = RoundedRect::from_rect(self.rect, radius);
         scene.fill(vello::peniko::Fill::NonZero, transform, theme.tokens.colors.surfaces.window_card, None, &shape);
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
