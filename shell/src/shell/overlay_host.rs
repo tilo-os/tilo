@@ -863,6 +863,14 @@ impl Widget for ShellOverlayHost {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+
+    fn needs_animation_frame(&self) -> bool {
+        // An in-flight overview crossfade needs continuous redraws; the
+        // app polls this in `AboutToWait` and re-schedules a frame as long
+        // as `transition_started` is set (cleared once elapsed ≥ duration
+        // inside `tick_overview_transition`).
+        self.transition_started.is_some()
+    }
 }
 
 fn draw_scrim(scene: &mut Scene, transform: Affine, rect: Rect) {
