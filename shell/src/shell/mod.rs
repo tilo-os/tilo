@@ -1148,10 +1148,25 @@ pub fn sync_tab_presence_from_tree(tree: &WorkspaceTree, ctx: &mut quick_ui::pre
     use quick_ui::presence::PresenceKey;
     if let Some(ws) = tree.active_workspace() {
         for c in &ws.collaborators {
+            // Push per-peer colour overrides first: both tree-level and
+            // workspace-level Collaborators may carry `cursor_color`, and
+            // this helper only walks the active workspace, so the ordering
+            // doesn't matter — the later write wins for the same user id.
+            if let Some(hex) = &c.cursor_color {
+                ctx.set_color_override(UserId(c.id.clone()), hex);
+            }
             if let Some(tab_id) = c.active_tab {
                 let key = PresenceKey::Tab { id: format!("{:x}", tab_id) };
                 ctx.register_presence(&key, UserId(c.id.clone()));
             }
+        }
+    }
+    // Tree-level roster too (top-bar avatar stack reads from here). Only
+    // the colour override is copied — tree-level collaborators have no
+    // tab attribution by design (that lives on the workspace).
+    for c in &tree.collaborators {
+        if let Some(hex) = &c.cursor_color {
+            ctx.set_color_override(UserId(c.id.clone()), hex);
         }
     }
 }
