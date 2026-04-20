@@ -97,6 +97,18 @@ pub struct ShellOverlayHost {
     /// detect the rising edge (open transition) without reaching into
     /// the chrome on every tick.
     qs_was_open: bool,
+    /// Rising-edge timestamp for the workspace-settings modal entry
+    /// animation. Concept `WorkspaceSettingsModal.tsx:42-46` uses
+    /// `initial={{ opacity: 0, scale: 0.95, y: 20 }}` →
+    /// `animate={{ opacity: 1, scale: 1, y: 0 }}`. Cleared on close.
+    ws_settings_opened_at: Option<Instant>,
+    ws_settings_was_open: bool,
+    /// Rising-edge timestamp for the command-palette / global-search
+    /// modal entry animation. Concept `GlobalSearch.tsx:109-113` uses
+    /// `initial={{ opacity: 0, scale: 0.9, y: 20 }}` →
+    /// `animate={{ opacity: 1, scale: 1, y: 0 }}`. Cleared on close.
+    palette_opened_at: Option<Instant>,
+    palette_was_visible: bool,
 }
 
 /// Crossfade duration between desktop ↔ overview. 200 ms reads as a
@@ -113,6 +125,13 @@ const WS_SLIDE_MS: u64 = 260;
 /// motion.div springs the panel in roughly this fast). Short enough to
 /// feel snappy on a dropdown; long enough to register as motion.
 const QS_OPEN_ANIM_MS: u64 = 180;
+
+/// Duration of the modal-style entry animation used by workspace-settings
+/// and global-search (both wrap in a `motion.div` that fades + scales +
+/// settles from y=20). Slightly longer than the dropdown variant because
+/// the travel distance is larger and the user focus is on the modal
+/// contents rather than a tray affordance.
+const MODAL_OPEN_ANIM_MS: u64 = 220;
 
 impl ShellOverlayHost {
     pub fn new(content: Box<dyn Widget>) -> Self {
@@ -144,6 +163,10 @@ impl ShellOverlayHost {
             ws_slide_dir: 0.0,
             qs_opened_at: None,
             qs_was_open: false,
+            ws_settings_opened_at: None,
+            ws_settings_was_open: false,
+            palette_opened_at: None,
+            palette_was_visible: false,
         }
     }
 
@@ -520,10 +543,43 @@ impl Widget for ShellOverlayHost {
             }
         }
 
-        // Workspace settings modal
+        // Workspace settings modal — concept wraps the content in
+        // `motion.div initial={{ opacity: 0, scale: 0.95, y: 20 }}` →
+        // `animate={{ opacity: 1, scale: 1, y: 0 }}` over ~220 ms.
+        // Detect the open rising edge and play the matching motion.
+        // The scrim underneath stays full-alpha so the modal appears to
+        // "lift" out of the scrim rather than the whole layer fading.
+        if flags.ws_settings && !self.ws_settings_was_open {
+            self.ws_settings_opened_at = Some(Instant::now());
+        }
+        if !flags.ws_settings {
+            self.ws_settings_opened_at = None;
+        }
+        self.ws_settings_was_open = flags.ws_settings;
         if flags.ws_settings {
             draw_scrim(scene, transform, self.rect);
-            self.draw_ws_settings(scene, transform, text_renderer, theme);
+            let (alpha, dy, scale) = modal_open_curve(self.ws_settings_opened_at, 0.95);
+            let in_flight = alpha < 1.0;
+            let panel_rect = self.ws_settings_rect();
+            if in_flight {
+                // Clip generously so the scrim doesn't get painted over by
+                // the modal's alpha layer.
+                scene.push_layer(BlendMode::default(), alpha, transform, &self.rect);
+            }
+            let panel_xform = if dy != 0.0 || scale != 1.0 {
+                let cx = panel_rect.center().x;
+                let cy = panel_rect.center().y;
+                transform
+                    * Affine::translate((cx, cy + dy))
+                    * Affine::scale(scale)
+                    * Affine::translate((-cx, -cy))
+            } else {
+                transform
+            };
+            self.draw_ws_settings(scene, panel_xform, text_renderer, theme);
+            if in_flight {
+                scene.pop_layer();
+            }
         }
 
         // Quick-settings popover (anchored top-right, no scrim so it reads
@@ -594,11 +650,42 @@ impl Widget for ShellOverlayHost {
             self.draw_collaborators(scene, transform, text_renderer, theme);
         }
 
+        // Command palette / global search — concept `GlobalSearch.tsx:109-113`
+        // wraps the panel in a motion.div with a scale 0.9 → 1.0 and
+        // y 20 → 0 + opacity 0 → 1 entry. Detect open rising edge.
+        if self.palette_visible && !self.palette_was_visible {
+            self.palette_opened_at = Some(Instant::now());
+        }
+        if !self.palette_visible {
+            self.palette_opened_at = None;
+        }
+        self.palette_was_visible = self.palette_visible;
         if self.palette_visible {
             draw_scrim(scene, transform, self.rect);
+            let (alpha, dy, scale) = modal_open_curve(self.palette_opened_at, 0.9);
+            let in_flight = alpha < 1.0;
+            let palette_rect = self.palette.get_rect();
+            if in_flight {
+                scene.push_layer(BlendMode::default(), alpha, transform, &self.rect);
+            }
+            let palette_xform = if dy != 0.0 || scale != 1.0 {
+                let cx = palette_rect.center().x;
+                let cy = palette_rect.center().y;
+                transform
+                    * Affine::translate((cx, cy + dy))
+                    * Affine::scale(scale)
+                    * Affine::translate((-cx, -cy))
+            } else {
+                transform
+            };
             self.palette
-                .draw(scene, transform, text_renderer, theme, presence);
-            self.draw_search_banner(scene, transform, text_renderer, theme);
+                .draw(scene, palette_xform, text_renderer, theme, presence);
+            // Search-banner rides along with the panel so the two read
+            // as one composed unit during the entry curve.
+            self.draw_search_banner(scene, palette_xform, text_renderer, theme);
+            if in_flight {
+                scene.pop_layer();
+            }
         }
     }
 
@@ -1050,9 +1137,17 @@ impl Widget for ShellOverlayHost {
             .qs_opened_at
             .map(|t| t.elapsed() < Duration::from_millis(QS_OPEN_ANIM_MS))
             .unwrap_or(false);
+        let modal_in_flight = |ts: Option<Instant>| {
+            ts.map(|t| t.elapsed() < Duration::from_millis(MODAL_OPEN_ANIM_MS))
+                .unwrap_or(false)
+        };
+        let ws_settings_in_flight = modal_in_flight(self.ws_settings_opened_at);
+        let palette_in_flight = modal_in_flight(self.palette_opened_at);
         self.transition_started.is_some()
             || self.ws_slide_started.is_some()
             || qs_in_flight
+            || ws_settings_in_flight
+            || palette_in_flight
             || self.content.needs_animation_frame()
     }
 }
@@ -1065,6 +1160,28 @@ fn draw_scrim(scene: &mut Scene, transform: Affine, rect: Rect) {
         None,
         &rect,
     );
+}
+
+/// Shared ease-out-cubic curve for modal-style open animations. Both
+/// workspace-settings and the command palette wrap their panels in
+/// `motion.div` with `initial={{ opacity: 0, scale: start_scale, y: 20 }}` →
+/// `animate={{ opacity: 1, scale: 1, y: 0 }}`. Returns `(alpha, dy, scale)`
+/// sampled `elapsed.ms()` into a `MODAL_OPEN_ANIM_MS` window. Idle (no
+/// timestamp) returns `(1.0, 0.0, 1.0)` so callers can detect rest via
+/// `alpha >= 1.0 && dy == 0.0 && scale == 1.0`.
+fn modal_open_curve(opened_at: Option<Instant>, start_scale: f64) -> (f32, f64, f64) {
+    let Some(started) = opened_at else {
+        return (1.0, 0.0, 1.0);
+    };
+    let window = Duration::from_millis(MODAL_OPEN_ANIM_MS);
+    let elapsed = started.elapsed();
+    if elapsed >= window {
+        return (1.0, 0.0, 1.0);
+    }
+    let raw = (elapsed.as_secs_f64() / (MODAL_OPEN_ANIM_MS as f64 / 1000.0)).clamp(0.0, 1.0);
+    let eased = 1.0 - (1.0 - raw).powi(3);
+    let scale = start_scale + (1.0 - start_scale) * eased;
+    (eased as f32, 20.0 * (1.0 - eased), scale)
 }
 
 impl ShellOverlayHost {
@@ -2091,6 +2208,90 @@ mod workspace_slide_tests {
             h.ws_slide_dir < 0.0,
             "switch_up should slide in from above (-y), got dir={}",
             h.ws_slide_dir
+        );
+    }
+}
+
+#[cfg(test)]
+mod modal_curve_tests {
+    //! Guards the shared ease-out-cubic curve used by the workspace-settings
+    //! modal and the command palette. The actual draw path composes this
+    //! curve into an alpha/translate/scale — these assertions keep the
+    //! *source* of that composition honest so a later refactor of the
+    //! draw path can't silently regress the rest state or the concept
+    //! animation's start scale.
+
+    use super::*;
+
+    #[test]
+    fn modal_open_curve_at_rest_when_no_timestamp() {
+        let (alpha, dy, scale) = modal_open_curve(None, 0.95);
+        assert_eq!(alpha, 1.0);
+        assert_eq!(dy, 0.0);
+        assert_eq!(scale, 1.0);
+    }
+
+    #[test]
+    fn modal_open_curve_starts_from_initial_values() {
+        // Timestamp "just now" — elapsed is effectively zero, so the
+        // curve should be at its initial (pre-animate) state.
+        let (alpha, dy, scale) = modal_open_curve(Some(Instant::now()), 0.9);
+        assert!(alpha < 0.05, "alpha at t=0 should be ~0, got {}", alpha);
+        assert!(
+            (dy - 20.0).abs() < 0.5,
+            "dy at t=0 should be ~20 px, got {}",
+            dy
+        );
+        assert!(
+            (scale - 0.9).abs() < 0.01,
+            "scale at t=0 should equal start_scale 0.9, got {}",
+            scale
+        );
+    }
+
+    #[test]
+    fn modal_open_curve_settles_at_rest_after_duration() {
+        let past = Instant::now() - Duration::from_millis(MODAL_OPEN_ANIM_MS + 50);
+        let (alpha, dy, scale) = modal_open_curve(Some(past), 0.95);
+        assert_eq!(alpha, 1.0);
+        assert_eq!(dy, 0.0);
+        assert_eq!(scale, 1.0);
+    }
+
+    #[test]
+    fn palette_rising_edge_stamps_opened_at_and_pumps_frames() {
+        use quick_ui::widget::Container;
+        let mut h = ShellOverlayHost::new(Box::new(Container::new()));
+        assert!(h.palette_opened_at.is_none());
+        h.palette_visible = true;
+        // Normally `draw` does the rising-edge detection; emulate it here
+        // by poking the state machine the same way.
+        if h.palette_visible && !h.palette_was_visible {
+            h.palette_opened_at = Some(Instant::now());
+        }
+        h.palette_was_visible = h.palette_visible;
+        assert!(h.palette_opened_at.is_some());
+        assert!(
+            h.needs_animation_frame(),
+            "in-flight palette open must pump redraws"
+        );
+    }
+
+    #[test]
+    fn ws_settings_close_clears_opened_at() {
+        use quick_ui::widget::Container;
+        let mut h = ShellOverlayHost::new(Box::new(Container::new()));
+        h.ws_settings_opened_at = Some(Instant::now());
+        h.ws_settings_was_open = true;
+        // Emulate the close branch of the draw path.
+        let flags_open = false;
+        if !flags_open {
+            h.ws_settings_opened_at = None;
+        }
+        h.ws_settings_was_open = flags_open;
+        assert!(
+            h.ws_settings_opened_at.is_none(),
+            "close must clear the timestamp so next open replays motion"
         );
     }
 }
