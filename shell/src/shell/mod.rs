@@ -1176,9 +1176,21 @@ pub fn build_nirios_root_with_chrome(
             .with_child(Box::new(root_col))
             .filling(),
     );
+    // The real topbar bottom accounts for the outer `Container` (padding
+    // = `padding_standard`) wrapping a `Column` (padding =
+    // `padding_standard * 2`) — so the topbar sits at y = `padding
+    // _standard * 3` and ends at that + `TOPBAR_HEIGHT_PX`. Mirroring
+    // this here keeps the floating sidebar wheel aligned with the real
+    // topbar bottom instead of with the bare 40 px assumed by
+    // `SIDEBAR_TOP_OFFSET_PX`; without the override the sidebar's rect
+    // overlaps the topbar band and swallows the overview-toggle click
+    // (see `full_root_click_toggles_overview_via_topbar_button`).
+    let padding_standard = quick_ui::tokens::Spacing::default().s3;
+    let sidebar_top = padding_standard * 3.0 + topbar_chrome::TOPBAR_HEIGHT_PX;
     let host = overlay_host::ShellOverlayHost::new(root)
         .with_chrome(chrome.clone())
-        .with_sidebar(sidebar);
+        .with_sidebar(sidebar)
+        .with_sidebar_top(sidebar_top);
     let host: Box<dyn Widget> = Box::new(host);
     (host, chrome)
 }

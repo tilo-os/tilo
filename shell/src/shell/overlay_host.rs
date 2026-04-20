@@ -114,6 +114,14 @@ pub struct ShellOverlayHost {
     /// `animate={{ opacity: 1, scale: 1, y: 0 }}`. Cleared on close.
     palette_opened_at: Option<Instant>,
     palette_was_visible: bool,
+    /// Vertical inset at which the floating sidebar wheel starts. Defaults
+    /// to [`SIDEBAR_TOP_OFFSET_PX`] (matches `TOPBAR_HEIGHT_PX`) but the
+    /// real shell wraps its topbar in a padded `Column`/`Container`, so
+    /// the topbar's bottom edge lands below y=40. `build_nirios_root_
+    /// with_chrome` overrides this via [`Self::with_sidebar_top`] so the
+    /// sidebar's rect doesn't overlap the topbar and swallow the overview-
+    /// toggle click.
+    sidebar_top_y: f32,
 }
 
 /// Total duration of the desktop ↔ overview crossfade. The concept wraps
@@ -189,6 +197,7 @@ impl ShellOverlayHost {
             ws_settings_was_open: false,
             palette_opened_at: None,
             palette_was_visible: false,
+            sidebar_top_y: SIDEBAR_TOP_OFFSET_PX,
         }
     }
 
@@ -295,6 +304,21 @@ impl ShellOverlayHost {
     /// appears to hover over the wallpaper rather than occupy a column.
     pub fn with_sidebar(mut self, sidebar: Box<dyn Widget>) -> Self {
         self.sidebar = Some(sidebar);
+        self
+    }
+
+    /// Override the vertical y-offset at which the sidebar wheel starts.
+    /// Callers pass the real topbar-bottom in viewport-local coordinates
+    /// (i.e. accounting for any outer padding introduced by `Column` /
+    /// `Container` wrappers around the topbar). The default is 40 px
+    /// which assumes the topbar is rendered at y=0..40; the real shell
+    /// wraps the topbar in padded layout widgets so the actual bottom
+    /// sits lower. Without this override, the sidebar's rect overlaps
+    /// the topbar's rendered band and swallows clicks on the overview-
+    /// toggle grid icon (see
+    /// `full_root_click_toggles_overview_via_topbar_button`).
+    pub fn with_sidebar_top(mut self, y: f32) -> Self {
+        self.sidebar_top_y = y;
         self
     }
 
@@ -582,7 +606,7 @@ impl Widget for ShellOverlayHost {
                 style.inset = TaffyRect {
                     left: LengthPercentageAuto::length(0.0),
                     right: LengthPercentageAuto::auto(),
-                    top: LengthPercentageAuto::length(SIDEBAR_TOP_OFFSET_PX),
+                    top: LengthPercentageAuto::length(self.sidebar_top_y),
                     bottom: LengthPercentageAuto::length(0.0),
                 };
                 style.size = Size {
@@ -1306,20 +1330,40 @@ impl Widget for ShellOverlayHost {
         // clicks / wheel / drag inside the wheel's rect take precedence
         // over the desktop underneath. The sidebar child is `children[2]`
         // when present (build_layout appends it after content + palette).
+        //
+        // Gate this first-dibs routing on "cursor inside the sidebar's
+        // own rect" for pointer events — otherwise the sidebar's rect
+        // (x ∈ [0, 96], y ∈ [sidebar_top_y, window_h]) can overlap the
+        // topbar's rendered band and swallow clicks on the overview-
+        // toggle grid icon at (x ≈ 24..66, y ≈ 40..76). Non-pointer
+        // events (keyboard, focus, …) are always forwarded so the
+        // sidebar keeps any keyboard affordances it might add later.
         if let (Some(sidebar), Some(sidebar_child)) = (self.sidebar.as_mut(), children.get(2)) {
-            sidebar.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                *sidebar_child,
-                taffy,
-            );
-            if *handled {
-                return;
+            let sidebar_rect = sidebar.get_rect();
+            let forward_pointer_to_sidebar = match event {
+                WindowEvent::MouseInput { .. }
+                | WindowEvent::MouseWheel { .. }
+                | WindowEvent::CursorMoved { .. } => self
+                    .last_cursor
+                    .map(|p| sidebar_rect.contains(p))
+                    .unwrap_or(false),
+                _ => true,
+            };
+            if forward_pointer_to_sidebar {
+                sidebar.handle_event(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    *sidebar_child,
+                    taffy,
+                );
+                if *handled {
+                    return;
+                }
             }
         }
         self.content.handle_event(

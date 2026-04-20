@@ -283,28 +283,34 @@ fn e2e_open_close_overview() {
     let out_dir = screenshots_dir();
 
     let mut h = Harness::new(&tree);
-    // Pre-click frame.
+    // Pre-click frame — also primes the topbar's `overview_btn_rect` so
+    // the probe-computed hit coordinates below are valid.
     h.draw_to(renderer_opt.as_mut(), &out_dir.join("e2e-01-desktop.png"));
 
-    // Drive a click through the *TopBarChrome widget* rather than the
-    // root: on the `nirios-shell` branch, the floating sidebar wheel
-    // (x ∈ [0, 96], y ∈ [40, H]) overlaps the overview button's hit
-    // region (x ≈ 44..66, y ≈ 46..66) and swallows the press. The
-    // existing regression test
-    // `full_root_click_toggles_overview_via_topbar_button` in
-    // `nirios_e2e_test.rs` is currently failing for the same reason
-    // (visible-gap documented there). We still exercise the real click
-    // geometry via a sibling `TopBarChrome`; the full root is used for
-    // rendering + Esc dispatch so the snapshots reflect the true chrome.
-    //
-    // TODO: once the sidebar's click-guard is narrowed to its own card
-    // rects (not the full column), swap this back to `h.click(hit.x, hit.y)`
-    // through the root.
-    drive_overview_click_via_probe(&tree, &theme, h.chrome.clone());
+    // Drive a real click through the root widget tree at the overview-
+    // toggle grid icon. The sibling `TopBarChrome` probe below is used
+    // only to compute the button's centre coordinates (identical geometry
+    // to the real topbar); the click itself flows through
+    // `ShellOverlayHost::handle_event` which now narrows the sidebar
+    // wheel's click-guard to its own y-range.
+    let hit = overview_btn_hit(&tree, &theme, h.chrome.clone());
+    h.click(hit.x, hit.y);
     assert!(
         h.chrome.borrow().overlays.overview,
-        "TopBarChrome click should open the overview overlay"
+        "root-level click on the overview button should open the overview overlay"
     );
+
+    // Kick off the crossfade — `tick_overview_transition` only latches a
+    // fresh `transition_started` on its first draw after the target
+    // changed, so `needs_animation_frame()` reads `false` until that
+    // first draw runs. Without this priming draw the loop below exits
+    // immediately and the snapshot captures the pre-fade desktop.
+    {
+        let mut scene = Scene::new();
+        let presence = PresenceCtx::default();
+        h.root
+            .draw(&mut scene, Affine::IDENTITY, &mut h.tr, &h.theme, &presence);
+    }
 
     // Drive the 400 ms crossfade to completion by sleeping + redrawing.
     // `needs_animation_frame()` is `true` during the transition; we use
@@ -329,6 +335,17 @@ fn e2e_open_close_overview() {
         !h.chrome.borrow().overlays.overview,
         "Escape should close the overview overlay"
     );
+
+    // Same priming-draw trick as the open path: `tick_overview_transition`
+    // latches `transition_started` on the first draw after the target flips,
+    // so without this priming pass `needs_animation_frame()` returns false
+    // and the loop below exits before the fade-out runs.
+    {
+        let mut scene = Scene::new();
+        let presence = PresenceCtx::default();
+        h.root
+            .draw(&mut scene, Affine::IDENTITY, &mut h.tr, &h.theme, &presence);
+    }
 
     let deadline = Instant::now() + Duration::from_millis(600);
     while h.root.needs_animation_frame() && Instant::now() < deadline {
@@ -358,101 +375,64 @@ fn e2e_open_close_overview() {
     }
 }
 
-/// Drive a left-click through an independently-built `TopBarChrome`
-/// wired to the same `Chrome` handle as the root's topbar. The click
-/// mutates the shared state so the root's overlay reads `overlays
-/// .overview = true` on its next `draw`. This is a workaround for the
-/// sidebar-overlap bug documented at the call site.
-fn drive_overview_click_via_probe(
+/// Compute the centre of the topbar's overview-toggle grid icon in the
+/// real shell's viewport-local coordinates. We build a throwaway sibling
+/// `TopBarChrome` laid out in the same W×H viewport — topbar geometry is
+/// purely width-driven so the sibling's `overview_btn_rect()` matches
+/// the real tree's. The real shell wraps its topbar in `Container`
+/// (padding = `padding_standard`) around `Column` (padding = `padding
+/// _standard * 2`), so the topbar origin in the real tree sits at
+/// `padding_standard * 3`; we mirror that offset on the probe so the
+/// returned point lines up with what the root hit-tests against.
+fn overview_btn_hit(
     tree: &WorkspaceTree,
     theme: &Theme,
     chrome: quick_desktop::shell::chrome_state::Chrome,
-) {
-    let mut bar = TopBarChrome::from_tree(tree).with_chrome(chrome);
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let node = bar.build_layout(&mut taffy, theme, &mut map);
-    let vp = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(W),
-                    height: Dimension::length(H),
-                },
-                ..Default::default()
-            },
-            &[node],
-        )
-        .unwrap();
-    taffy
-        .compute_layout_with_measure(
-            vp,
-            Size {
-                width: AvailableSpace::Definite(W),
-                height: AvailableSpace::Definite(H),
-            },
-            |_, _, _, _, _| taffy::Size::ZERO,
-        )
-        .expect("compute_layout");
-    bar.apply_layout(&taffy, node, Point::ORIGIN);
-    let mut scene = Scene::new();
-    let mut tr = TextRenderer::new();
-    let presence = PresenceCtx::default();
-    bar.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
-    let btn = bar.overview_btn_rect();
-    let centre = Point::new((btn.x0 + btn.x1) / 2.0, (btn.y0 + btn.y1) / 2.0);
-
-    let mut doc = AutoCommit::new();
-    let doc_root = automerge::ROOT.clone();
-    let modifiers = Modifiers::default();
-    let mut focus: Option<NodeId> = None;
-
-    for ev in [
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: PhysicalPosition::new(centre.x, centre.y),
-        },
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        },
-    ] {
-        let mut handled = false;
-        bar.handle_event(
-            &ev,
-            1.0,
-            &modifiers,
-            &mut doc,
-            &doc_root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
-        );
-    }
+) -> Point {
+    let (_, centre) = probe_topbar(tree, theme, chrome, |bar| bar.overview_btn_rect());
+    centre
 }
 
-/// Same pattern as [`drive_overview_click_via_probe`] for the three-dot
-/// tray pill (quick settings). Sidebar overlap doesn't actually reach the
-/// tray (it's on the far right) so in principle the root-level click
-/// works; routing through a sibling TopBarChrome keeps the two e2e
-/// harness tests symmetric and insulates both from future shell-wide
-/// click-guard changes.
-fn drive_quick_settings_click_via_probe(
+/// Same pattern as [`overview_btn_hit`] for the three-dot tray pill
+/// (quick settings).
+fn tray_pill_hit(
     tree: &WorkspaceTree,
     theme: &Theme,
     chrome: quick_desktop::shell::chrome_state::Chrome,
-) {
+) -> Point {
+    let (_, centre) = probe_topbar(tree, theme, chrome, |bar| bar.tray_pill_rect());
+    centre
+}
+
+/// Shared probe helper: lay out a sibling TopBarChrome at the real shell's
+/// topbar origin (`padding_standard * 3`) and width (W minus the same
+/// padding on both sides), and return the `extract`-selected rect along
+/// with its centre point. Topbar geometry is purely width-driven, so
+/// matching the container-padded width is required for the right-edge
+/// cluster (tray pill, avatar stack) to line up with what the live root
+/// hit-tests against.
+fn probe_topbar(
+    tree: &WorkspaceTree,
+    theme: &Theme,
+    chrome: quick_desktop::shell::chrome_state::Chrome,
+    extract: impl FnOnce(&TopBarChrome) -> vello::kurbo::Rect,
+) -> (vello::kurbo::Rect, Point) {
     let mut bar = TopBarChrome::from_tree(tree).with_chrome(chrome);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let node = bar.build_layout(&mut taffy, theme, &mut map);
+    // Shrink the probe viewport by the same horizontal padding the real
+    // tree's Container (padding = `padding_standard`) wrapping a Column
+    // (padding = `padding_standard * 2`) takes away. `apply_layout`
+    // origin is shifted by the same amount so the returned rects live
+    // in the full viewport's coordinate space.
+    let topbar_offset = theme.padding_standard as f64 * 3.0;
+    let probe_w = W - (theme.padding_standard * 6.0) as f32;
     let vp = taffy
         .new_with_children(
             Style {
                 size: Size {
-                    width: Dimension::length(W),
+                    width: Dimension::length(probe_w),
                     height: Dimension::length(H),
                 },
                 ..Default::default()
@@ -464,50 +444,20 @@ fn drive_quick_settings_click_via_probe(
         .compute_layout_with_measure(
             vp,
             Size {
-                width: AvailableSpace::Definite(W),
+                width: AvailableSpace::Definite(probe_w),
                 height: AvailableSpace::Definite(H),
             },
             |_, _, _, _, _| taffy::Size::ZERO,
         )
         .expect("compute_layout");
-    bar.apply_layout(&taffy, node, Point::ORIGIN);
+    bar.apply_layout(&taffy, node, Point::new(topbar_offset, topbar_offset));
     let mut scene = Scene::new();
     let mut tr = TextRenderer::new();
     let presence = PresenceCtx::default();
     bar.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
-    let rect = bar.tray_pill_rect();
-    let centre = Point::new((rect.x0 + rect.x1) / 2.0, (rect.y0 + rect.y1) / 2.0);
-
-    let mut doc = AutoCommit::new();
-    let doc_root = automerge::ROOT.clone();
-    let modifiers = Modifiers::default();
-    let mut focus: Option<NodeId> = None;
-
-    for ev in [
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: PhysicalPosition::new(centre.x, centre.y),
-        },
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        },
-    ] {
-        let mut handled = false;
-        bar.handle_event(
-            &ev,
-            1.0,
-            &modifiers,
-            &mut doc,
-            &doc_root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
-        );
-    }
-    let _ = vp;
+    let r = extract(&bar);
+    let centre = Point::new((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0);
+    (r, centre)
 }
 
 // ---------------------------------------------------------------------------
@@ -892,14 +842,21 @@ fn e2e_open_quick_settings() {
     let mut h = Harness::new(&tree);
     assert!(!h.chrome.borrow().overlays.quick_settings);
 
-    // Route the click through a sibling `TopBarChrome` wired to the same
-    // `Chrome` handle. Same rationale as in `e2e_open_close_overview`:
-    // insulates this test from the sidebar-wheel click-guard + any future
-    // shell-wide event routing changes. See `drive_overview_click_via_probe`.
-    drive_quick_settings_click_via_probe(&tree, &theme, h.chrome.clone());
+    // A draw pass is required so the inner `TopBarChrome` populates its
+    // `tray_pill_rect` — that's what its handle_event hit-tests against.
+    h.draw_to(
+        renderer_opt.as_mut(),
+        &out_dir.join("e2e-06-quick-settings-pre.png"),
+    );
+
+    // Drive a real click through the root at the tray pill's centre.
+    // With the sidebar's click-guard narrowed to its own y-range, the
+    // root-level click now reaches `TopBarChrome::handle_event` directly.
+    let hit = tray_pill_hit(&tree, &theme, h.chrome.clone());
+    h.click(hit.x, hit.y);
     assert!(
         h.chrome.borrow().overlays.quick_settings,
-        "clicking the three-dot tray pill should open the quick-settings overlay"
+        "root-level click on the three-dot tray pill should open the quick-settings overlay"
     );
 
     // Drive the 180 ms open fade to settle before snapshotting so the
