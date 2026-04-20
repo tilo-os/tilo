@@ -204,6 +204,14 @@ impl TopBarChrome {
     pub fn overview_btn_rect(&self) -> Rect {
         self.overview_btn_rect
     }
+
+    /// Bounding rect of the quick-settings tray pill (three-dot widget on
+    /// the far right of the top bar). Populated during `draw`; exposed so
+    /// integration tests can hit-test click coordinates against the exact
+    /// geometry the widget uses internally.
+    pub fn tray_pill_rect(&self) -> Rect {
+        self.tray_pill_rect
+    }
 }
 
 impl Widget for TopBarChrome {
