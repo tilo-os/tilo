@@ -300,6 +300,68 @@ fn peer_caret_in_text_input_renders_on_remote_app() {
 }
 
 #[test]
+fn crdt_incremental_deltas_replay_on_remote_peer() {
+    // End-to-end coverage for `CollabEvent::CRDTIncremental`: alice makes a
+    // concrete CRDT mutation, serializes the delta via `save_incremental`,
+    // and fires it through the relay; bob's app must apply the bytes to his
+    // own doc so they converge. Before this plumbing landed, the
+    // CRDTIncremental branch in App was a no-op and the two docs drifted.
+    let mut relay = MemoryRelay::new();
+    let alice_peer = relay.attach("alice");
+    let bob_peer = relay.attach("bob");
+    let (mut alice_app, _) = headless_app("alice", alice_peer.clone());
+    let (mut bob_app, _) = headless_app("bob", bob_peer.clone());
+
+    // Alice writes a scalar into the root of her doc, then harvests the
+    // delta. In production a widget would mutate the doc as part of event
+    // handling — we do it directly here to keep the test self-contained.
+    {
+        let state = alice_app.state_mut_for_test();
+        use automerge::transaction::Transactable;
+        state
+            .doc
+            .put(automerge::ROOT, "hello", "from alice")
+            .expect("put scalar");
+    }
+    let delta = alice_app.state_mut_for_test().save_incremental();
+    assert!(
+        !delta.is_empty(),
+        "save_incremental must emit non-empty bytes after a mutation"
+    );
+
+    alice_peer.send(CollabRequest::SyncIncremental { data: delta.clone() });
+    relay.drain_peer_outbox(&alice_peer);
+    pump(&mut relay);
+
+    // Bob consumes the CRDTIncremental event via the test hook, which now
+    // actually merges the patch instead of ignoring it.
+    let events = bob_peer.poll();
+    let mut applied = false;
+    for ev in events {
+        if matches!(ev, CollabEvent::CRDTIncremental { .. }) {
+            applied = true;
+        }
+        bob_app.apply_collab_event_for_test(ev);
+    }
+    assert!(applied, "bob must receive the CRDTIncremental event");
+
+    // Convergence: bob's doc now reflects alice's scalar.
+    use automerge::ReadDoc;
+    let state = bob_app.state_mut_for_test();
+    let got = state
+        .doc
+        .get(automerge::ROOT, "hello")
+        .expect("read back")
+        .and_then(|(val, _)| val.into_scalar().ok())
+        .and_then(|s| s.into_string().ok());
+    assert_eq!(
+        got.as_deref(),
+        Some("from alice"),
+        "bob's doc must converge with alice's after the incremental merge"
+    );
+}
+
+#[test]
 fn peer_tab_switch_moves_the_presence_dot() {
     // Regression guard for live tab-presence refresh: when a peer announces
     // Arrived on one Tab key and then on another, the dot must *move*, not
