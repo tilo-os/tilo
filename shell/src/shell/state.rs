@@ -69,7 +69,7 @@ pub type GroupId = u64;
 pub type TabId = u64;
 pub type FileId = u64;
 
-fn next_id() -> u64 {
+pub(crate) fn next_id() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static N: AtomicU64 = AtomicU64::new(1);
     N.fetch_add(1, Ordering::Relaxed)

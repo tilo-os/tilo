@@ -39,6 +39,7 @@ pub mod test_support;
 pub mod tile;
 pub mod topbar;
 pub mod topbar_chrome;
+pub mod workspace_drop;
 pub mod workspace_settings;
 
 use quick_ui::widget::{
@@ -867,6 +868,35 @@ impl Shell {
     #[cfg(any(test, debug_assertions))]
     pub fn simulate_right_click_on_active_tile(&mut self, position: [f32; 2]) {
         self.open_default_tile_context_menu(position);
+    }
+
+    // -----------------------------------------------------------------
+    // File-drop onto workspace (§10, concept `DesktopView.tsx:187-205`)
+    //
+    // `handle_file_drop` is the public entry point for
+    // `WindowEvent::DroppedFile` events — winit delivers the absolute
+    // path of the dropped file when the compositor accepts a drag from
+    // an external source (file manager, browser, etc.). The shell
+    // classifies the item, picks an app (Editor for code files, Files
+    // otherwise), and splices a new `Stub` tab into the active
+    // workspace's first strip's first window group. Returns the new
+    // `Tab::id` or `None` if the path has no filename.
+    // -----------------------------------------------------------------
+
+    /// Route a `WindowEvent::DroppedFile` payload into the runtime tree
+    /// via [`workspace_drop::apply_runtime_workspace_drop_from_path`].
+    /// Returns the new tab id so callers can focus it, route presence
+    /// events, or cancel the drop by dropping the return value.
+    pub fn handle_file_drop(&mut self, path: &std::path::Path) -> Option<u64> {
+        workspace_drop::apply_runtime_workspace_drop_from_path(&mut self.tree, path)
+    }
+
+    /// Test-only simulator that lets integration tests drive the drop
+    /// path without marshalling a real `WindowEvent::DroppedFile`.
+    /// Returns the new tab id, or `None` if the path had no filename.
+    #[cfg(any(test, debug_assertions))]
+    pub fn simulate_file_drop(&mut self, path: &std::path::Path) -> Option<u64> {
+        self.handle_file_drop(path)
     }
 
     /// Populate `ctx_menu` with the default tile action list and open it
