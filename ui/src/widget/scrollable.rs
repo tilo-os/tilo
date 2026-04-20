@@ -183,4 +183,11 @@ impl Widget for Scrollable {
     fn name(&self) -> &str { "Scrollable" }
 
     fn get_rect(&self) -> Rect { self.rect }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        self.child
+            .as_mut()
+            .map(|c| c.take_structure_dirty())
+            .unwrap_or(false)
+    }
 }
