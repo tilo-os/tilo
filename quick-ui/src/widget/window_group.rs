@@ -264,27 +264,30 @@ impl Widget for WindowGroup {
     fn draw(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
         // Per-group spawn fade: if `start_spawn_animation` was called on
         // a freshly-created group (typically by the split-into-new-group
-        // path), play the concept's `initial={{ opacity: 0, y: 20 }}`
-        // curve over `SPAWN_ANIM_MS`. Computed upfront so the whole
-        // paint block (bar + tile + chrome rings) composes under a
-        // single alpha layer + vertical transform, keeping pill hover
-        // targets and resize-handle hit-tests aligned with what the
-        // user sees on screen.
+        // path), play the concept's
+        // `initial={{ opacity: 0, scale: 0.95, y: 20 }}` →
+        // `animate={{ opacity: 1, scale: 1, y: 0 }}` curve over
+        // `SPAWN_ANIM_MS`. Computed upfront so the whole paint block
+        // (bar + tile + chrome rings) composes under a single alpha
+        // layer + translate + scale, keeping pill hover targets and
+        // resize-handle hit-tests aligned with what the user sees on
+        // screen mid-fade.
         let fade_window = Duration::from_millis(SPAWN_ANIM_MS);
-        let (fade_alpha, fade_y): (f32, f64) = match self.spawned_at {
+        let (fade_alpha, fade_y, fade_scale): (f32, f64, f64) = match self.spawned_at {
             Some(started) => {
                 let elapsed = started.elapsed();
                 if elapsed >= fade_window {
-                    (1.0, 0.0)
+                    (1.0, 0.0, 1.0)
                 } else {
                     let raw = (elapsed.as_secs_f64()
                         / (SPAWN_ANIM_MS as f64 / 1000.0))
                         .clamp(0.0, 1.0);
                     let eased = 1.0 - (1.0 - raw).powi(3);
-                    (eased as f32, SPAWN_ANIM_Y_OFFSET * (1.0 - eased))
+                    let scale = 0.95 + 0.05 * eased;
+                    (eased as f32, SPAWN_ANIM_Y_OFFSET * (1.0 - eased), scale)
                 }
             }
-            None => (1.0, 0.0),
+            None => (1.0, 0.0, 1.0),
         };
         let spawn_active = fade_alpha < 1.0;
         if spawn_active {
@@ -305,9 +308,15 @@ impl Widget for WindowGroup {
             );
         }
         // All subsequent paint uses `transform` shifted by the fade's
-        // y-offset so the group reads as "settling down" into place.
-        let transform = if fade_y != 0.0 {
-            transform * Affine::translate((0.0, fade_y))
+        // y-offset and scaled about the group's center point so the
+        // group reads as "settling down" into place.
+        let transform = if fade_y != 0.0 || fade_scale != 1.0 {
+            let cx = self.rect.center().x;
+            let cy = self.rect.center().y;
+            transform
+                * Affine::translate((cx, cy + fade_y))
+                * Affine::scale(fade_scale)
+                * Affine::translate((-cx, -cy))
         } else {
             transform
         };
