@@ -108,15 +108,16 @@ Current state of the Rust implementation vs. the concept described in
 
 The `quick-ui` theme exposes accent / semantic / neutral ramps, typography
 scale, spacing, radii, elevation, motion presets, and a terminal palette.
-It is structurally complete for theming but the **default dark theme is not
-tuned to the concept's slate-900/indigo-500 palette** — it leans more neutral.
+The **default dark theme is now tuned to the concept's slate-900 / indigo-500
+palette** — slate/indigo ramps match Tailwind's exact hex codes and the
+surface alphas match the concept's `/70` and `/80` conventions.
 
 | Item | Status | Notes |
 |---|---|---|
-| Accent indigo-500/600 | ✅ | Default dark theme's accent ramp is indigo-950→indigo-50 (index 5 = `#6366f1`). |
-| Slate-900 / slate-950 surface scheme | ✅ | Dark theme: slate-900 base, slate-800 raised, black/80 top-bar overlay, slate-900/70 glass. Neutral ramp = slate-950→slate-50. |
+| Accent indigo-500/600 | ✅ | Default dark theme's accent ramp is indigo-950→indigo-50 (index 5 = `#6366f1`); concept's indigo-400 / 500 / 600 sit at indices 6 / 5 / 4 and line up to `#818cf8` / `#6366f1` / `#4f46e5` exactly. |
+| Slate-900 / slate-950 surface scheme | ✅ | Dark theme: `surfaces.base` = slate-900 (`#0f172a`), `surfaces.raised` = slate-800 (`#1e293b`), `surfaces.overlay` = `rgba(0,0,0,0.8)` (black/80, top-bar backdrop), `surfaces.glass` = `rgba(15,23,42,0.8)` (slate-900/80, overlay panels). Neutral ramp = slate-950→slate-50 at exact Tailwind hex values. |
 | Per-collaborator fixed cursor colors | ✅ | `quick_ui::presence::user_color` pins the concept palette (`me` → indigo-500, `alice` → pink-500, `bob` → orange-500, `charlie` → emerald-500) and falls through to FNV→HSL for unknown ids. Tabs' presence dots and the shell's `SimulatedFeed` (now built via `new_with_user_id("alice", "Alice")`) both read from the same function, so one peer keeps one colour across every affordance. Arbitrary per-peer overrides are now wired too: `Collaborator::cursor_color` (hex) is seeded into `PresenceCtx::color_overrides` by `sync_tab_presence_from_tree`, and every render helper (`TabBar`, `draw_peer_caret`/`_selection`/`_pointer`/`_focus`) consults `PresenceCtx::color_for` before falling through to the palette. |
-| Radii 8/12/16/24/full | ✅ | Tokens available. |
+| Radii aligned to Tailwind steps | ✅ | `Radii::default()` now mirrors the concept's Tailwind radius scale: `sm=4` (`rounded`), `md=8` (`rounded-lg`), `lg=12` (`rounded-xl`), `xl=24` (`rounded-3xl`), `full=9999`. The window card (`TileHost` → `radii.xl`) now paints at 24 px to match the concept's `rounded-3xl` anchor. Only five slots exist, so the 16 px (`rounded-2xl`) step is intentionally absent. |
 | Glow shadows for focus / drag-over | ✅ | `WindowGroup::draw` paints a 1.5 px indigo-500 @ 60% alpha ring while a tab drag is in flight (drag-over affordance), and a two-stroke indigo glow (8 px @ 24% outer, 4 px @ 50% inner) around the whole card when `search_active` is set (focus glow). Elevation tokens cover the rest. |
 | Framer-Motion-equivalent springs | ✅ | Motion tokens exist; `WorkspaceView` uses one. |
 
