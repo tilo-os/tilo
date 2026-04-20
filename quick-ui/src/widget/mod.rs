@@ -40,6 +40,18 @@ pub trait Widget {
     fn accepts_drop(&self, _payload: &DragPayload) -> bool { false }
     fn on_drop(&mut self, _payload: DragPayload, _state: &mut AutoCommit, _path: &ObjId) {}
     fn wants_pointer_capture(&self) -> bool { false }
+    /// Whether this widget (or any descendant) is currently running a
+    /// frame-driven animation and needs the host to keep pumping redraws
+    /// until the transition settles. Default: opt-out (static widget).
+    ///
+    /// `App` polls this during `Event::AboutToWait` and schedules another
+    /// redraw while it's true. Without this, overlays like the overview
+    /// crossfade would paint one frame immediately after the click, then
+    /// freeze partway through the easing curve until the next unrelated
+    /// event arrived — making interactions look broken.
+    fn needs_animation_frame(&self) -> bool {
+        self.children().iter().any(|c| c.needs_animation_frame())
+    }
 
     /// Called by `App` during draw. Widgets that consume presence/permission
     /// context can override this; the default forwards to `draw`, passing
