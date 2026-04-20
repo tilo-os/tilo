@@ -1698,30 +1698,41 @@ impl ShellOverlayHost {
             // Active: `bg-slate-900` solid + indigo-500 ring + glow.
             // Inactive: `bg-slate-900/50` translucent; on hover bumps to
             // full opacity + slate-700 border. We approximate the
-            // `shadow-[0_0_40px_-10px_rgba(99,102,241,0.3)]` by painting a
-            // soft indigo halo as a slightly larger, alpha-weighted
-            // rounded rect underneath the card.
+            // concept's `shadow-[0_0_40px_-10px_rgba(99,102,241,0.3)]`
+            // by painting a concentric-ring glow beneath the card. A
+            // single flat outer rect reads as a hard-edged pale halo
+            // (visual gap #4 in docs/nirios/visual-gaps.md); three rings
+            // with decreasing alpha + increasing spread produce a soft
+            // fall-off that fades into the slate-950 backdrop.
             let card = RoundedRect::from_rect(rect, OVERVIEW_ROW_RADIUS_PX);
             if is_active {
-                // Soft indigo glow beneath the card.
-                let glow_rect = Rect::new(
-                    rect.x0 - 12.0,
-                    rect.y0 - 12.0,
-                    rect.x1 + 12.0,
-                    rect.y1 + 12.0,
-                );
-                let glow = RoundedRect::from_rect(
-                    glow_rect,
-                    OVERVIEW_ROW_RADIUS_PX + 4.0,
-                );
                 let indigo = colors.accent[5];
-                let glow_color = Color::rgba(
-                    indigo.r as f64,
-                    indigo.g as f64,
-                    indigo.b as f64,
-                    0.18,
-                );
-                scene.fill(Fill::NonZero, card_xform, glow_color, None, &glow);
+                // (spread_px, alpha). Near-card ring stays low so it
+                // doesn't compete with the 2 px indigo border.
+                let glow_steps: [(f64, f64); 3] = [
+                    (4.0, 0.18),
+                    (8.0, 0.08),
+                    (12.0, 0.04),
+                ];
+                for (spread, alpha) in glow_steps.iter() {
+                    let glow_rect = Rect::new(
+                        rect.x0 - spread,
+                        rect.y0 - spread,
+                        rect.x1 + spread,
+                        rect.y1 + spread,
+                    );
+                    let glow = RoundedRect::from_rect(
+                        glow_rect,
+                        OVERVIEW_ROW_RADIUS_PX + spread,
+                    );
+                    let glow_color = Color::rgba(
+                        indigo.r as f64,
+                        indigo.g as f64,
+                        indigo.b as f64,
+                        *alpha,
+                    );
+                    scene.fill(Fill::NonZero, card_xform, glow_color, None, &glow);
+                }
                 scene.fill(
                     Fill::NonZero,
                     card_xform,
