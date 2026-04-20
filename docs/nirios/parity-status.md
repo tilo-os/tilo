@@ -15,7 +15,7 @@ Current state of the Rust implementation vs. the concept described in
 | Desktop view (sidebar + strips + groups) | ✅ | Top bar + left SidebarWheelChrome + one horizontal Row per strip (groups tile left-to-right). Strips stack vertically inside the content Column. |
 | Overview view | ✅ | `ShellOverlayHost::draw_overview` renders a centered grid of workspace cards with preview tiles; click activates a workspace. |
 | Z-ordered overlay host | ✅ | `ShellOverlayHost` draws palette, overview, quick-settings, workspace-settings + scrim above content. |
-| View-swap animation | ✅ | `ShellOverlayHost` crossfades desktop ↔ overview via ease-out-cubic over 200 ms. Desktop content + simulated peer render inside a `push_layer(alpha = 1 - t)` and scrim + overview grid render inside a `push_layer(alpha = t)`; a mid-flight re-toggle latches `transition_from` from the current `overview_t` so it doesn't pop. 3 unit tests cover idle/full/mid-flight cases. |
+| View-swap animation | ✅ | `ShellOverlayHost` crossfades desktop ↔ overview via ease-out-cubic over 200 ms. Desktop content + simulated peer render inside a `push_layer(alpha = 1 - t)` and scrim + overview grid render inside a `push_layer(alpha = t)`; a mid-flight re-toggle latches `transition_from` from the current `overview_t` so it doesn't pop. `ShellOverlayHost::needs_animation_frame()` returns true while `transition_started.is_some()` so `App` pumps redraws in `AboutToWait` until the curve settles — without this the overview stalled at `t ≈ 0` after the click and the button appeared non-functional. 3 unit tests cover idle/full/mid-flight plus a full-root click E2E and an animation-frame-pump E2E. |
 
 ## 2. Top bar
 
