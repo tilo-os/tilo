@@ -1162,19 +1162,25 @@ pub fn build_nirios_root_with_chrome(
             .filling(),
     );
 
+    // Sidebar wheel is no longer a left-leaf of a SplitRow — it floats as
+    // an absolute-positioned overlay inside `ShellOverlayHost` (matching
+    // the concept's `absolute left-0 top-0 bottom-0 w-24 z-40` wheel).
     let sidebar: Box<dyn Widget> = Box::new(
         sidebar_wheel_chrome::SidebarWheelChrome::from_tree(tree).with_chrome(chrome.clone()),
     );
-    let below_topbar: Box<dyn Widget> = Box::new(split_row::SplitRow::new(sidebar, content));
 
-    let root_col = Column::new().push(topbar).push(below_topbar);
+    // Shell root: top bar stacked above the desktop content. The content
+    // now spans the full width — the wheel floats on top of it.
+    let root_col = Column::new().push(topbar).push(content);
 
     let root: Box<dyn Widget> = Box::new(
         Container::new()
             .with_child(Box::new(root_col))
             .filling(),
     );
-    let host = overlay_host::ShellOverlayHost::new(root).with_chrome(chrome.clone());
+    let host = overlay_host::ShellOverlayHost::new(root)
+        .with_chrome(chrome.clone())
+        .with_sidebar(sidebar);
     let host: Box<dyn Widget> = Box::new(host);
     (host, chrome)
 }

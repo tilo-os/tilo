@@ -6,8 +6,12 @@
 //! is reserved for creating a new workspace (click wiring lands together
 //! with the topbar-click plumbing).
 //!
-//! Layout is 100 % height under the top bar — the shell splits the
-//! below-top-bar area horizontally into `[SidebarWheelChrome | content]`.
+//! The wheel is composed as a *floating* overlay above the desktop
+//! wallpaper, not as a left-leaf of a split row. `ShellOverlayHost`
+//! places it absolutely so only the cards and a subtle glassy backdrop
+//! catch the eye — the column-wide opaque fill used previously has been
+//! removed to match the concept (`DesktopView.tsx:219-248`, which uses
+//! `absolute left-0 top-0 bottom-0 w-24` with no background column).
 
 use std::collections::HashMap;
 
@@ -270,68 +274,40 @@ impl Widget for SidebarWheelChrome {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
 
-        // Column background: slightly darker than the workspace canvas so
-        // the wheel reads as a distinct chrome column (concept: slate-950
-        // under slate-900 content).
-        scene.fill(Fill::NonZero, transform, colors.neutral[0], None, &self.rect);
-
-        // Right edge divider line.
-        let divider = Rect::new(self.rect.x1 - 1.0, self.rect.y0, self.rect.x1, self.rect.y1);
-        scene.fill(Fill::NonZero, transform, colors.border_standard, None, &divider);
-
-        // Rim / gradient line on expand — concept fades workspace cards out
-        // at the top and bottom of the wheel so they appear to slip into /
-        // out of view. We approximate the CSS `mask-image: linear-gradient`
-        // with stepped alpha strips at each edge. The top strip is opaque
-        // near the edge and fades transparent downward (stacking
-        // `neutral[0]` at decreasing alpha produces the appearance of cards
-        // being "eaten" by the chrome); the bottom strip mirrors it.
-        let fade_h = 36.0_f64;
-        let steps = 8_usize;
-        let step_h = fade_h / steps as f64;
-        let bg = colors.neutral[0];
-        for i in 0..steps {
-            // Top: near the edge = high alpha → low alpha further down.
-            let alpha = 1.0 - (i as f32) / (steps as f32);
-            let top = Rect::new(
-                self.rect.x0,
-                self.rect.y0 + step_h * i as f64,
-                self.rect.x1 - 1.0,
-                self.rect.y0 + step_h * (i + 1) as f64,
-            );
+        // The concept (`DesktopView.tsx:219-248`) floats the wheel over the
+        // wallpaper — no opaque column. We only paint a subtle glassy
+        // backdrop behind the stack of cards themselves so the wheel reads
+        // as a distinct object while still letting the desktop behind it
+        // show through. The old full-column fill + divider + gradient rim
+        // pattern has been removed; the wheel is now painted as an overlay
+        // by `ShellOverlayHost`, not as a left-leaf of the `SplitRow`.
+        let backdrop_inset_y = 24.0_f64;
+        let backdrop = Rect::new(
+            self.rect.x0 + 8.0,
+            self.rect.y0 + backdrop_inset_y,
+            self.rect.x1 - 8.0,
+            self.rect.y1 - backdrop_inset_y,
+        );
+        if backdrop.width() > 0.0 && backdrop.height() > 0.0 {
+            let backdrop_rr = RoundedRect::from_rect(backdrop, (tokens.radii.lg * 1.5) as f64);
+            // `bg-white/5` from concept — a near-transparent white. We
+            // approximate with surfaces.raised at low alpha so the wheel
+            // sits visually on a hairline frosted pane over the wallpaper.
             scene.fill(
                 Fill::NonZero,
                 transform,
-                bg.with_alpha_factor(alpha * 0.6),
+                colors.surfaces.raised.with_alpha_factor(0.25),
                 None,
-                &top,
+                &backdrop_rr,
             );
-            let bottom = Rect::new(
-                self.rect.x0,
-                self.rect.y1 - step_h * (i + 1) as f64,
-                self.rect.x1 - 1.0,
-                self.rect.y1 - step_h * i as f64,
-            );
-            scene.fill(
-                Fill::NonZero,
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
                 transform,
-                bg.with_alpha_factor(alpha * 0.6),
+                colors.border_standard.with_alpha_factor(0.35),
                 None,
-                &bottom,
+                &backdrop_rr,
             );
         }
-        // Hairline accent rim at the very top and bottom — a 1 px indigo
-        // line at low alpha, echoing the concept's focus-glow trim.
-        let top_rim = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1 - 1.0, self.rect.y0 + 1.0);
-        let bot_rim = Rect::new(
-            self.rect.x0,
-            self.rect.y1 - 1.0,
-            self.rect.x1 - 1.0,
-            self.rect.y1,
-        );
-        let rim = colors.accent[5].with_alpha_factor(0.35);
-        scene.fill(Fill::NonZero, transform, rim, None, &top_rim);
-        scene.fill(Fill::NonZero, transform, rim, None, &bot_rim);
 
         // Draw each workspace card.
         for (idx, card) in self.cards.iter().enumerate() {

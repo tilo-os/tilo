@@ -40,12 +40,17 @@ use crate::shell::chrome_state::Chrome;
 pub struct ShellOverlayHost {
     rect: Rect,
     content: Box<dyn Widget>,
+    /// Floating sidebar wheel — absolutely positioned above the desktop
+    /// content, offset below the top bar. Optional so tests can build a
+    /// bare host without a wheel; production shells always provide one.
+    sidebar: Option<Box<dyn Widget>>,
     palette: CommandPalette,
     palette_visible: bool,
     // Child node ids are captured once during `build_layout` so we can
     // forward layout/draw/event calls without re-walking the tree.
     content_node: Option<NodeId>,
     palette_node: Option<NodeId>,
+    sidebar_node: Option<NodeId>,
     /// Shared chrome state; the host reads `overlays` flags from this to
     /// decide whether to draw overview / quick-settings / ws-settings on
     /// top of the content.
@@ -111,10 +116,25 @@ pub struct ShellOverlayHost {
     palette_was_visible: bool,
 }
 
-/// Crossfade duration between desktop ↔ overview. 200 ms reads as a
-/// "soft swap" without dragging — matches the concept's spring preset
-/// well enough without introducing a spring solver in the render loop.
-const OVERVIEW_TRANSITION_MS: u64 = 200;
+/// Total duration of the desktop ↔ overview crossfade. The concept wraps
+/// the two views in `AnimatePresence mode="wait"` with `duration: 0.2`
+/// per side (`App.tsx:427-487`) — the outgoing view runs its exit first,
+/// then the incoming runs its enter, for ~400 ms end-to-end. We split
+/// `overview_t` ∈ [0, 1] into two halves inside the draw path: the first
+/// half shrinks/fades the desktop out, the second half grows/fades the
+/// overview in.
+const OVERVIEW_TRANSITION_MS: u64 = 400;
+
+/// Vertical inset below the top bar where the floating sidebar wheel
+/// starts. Matches `TOPBAR_HEIGHT_PX` so the wheel doesn't clip into the
+/// tray; kept as a local constant to avoid a cross-module import for a
+/// single f32.
+const SIDEBAR_TOP_OFFSET_PX: f32 = 40.0;
+
+/// Width of the floating sidebar overlay. Mirrors
+/// `sidebar_wheel_chrome::SIDEBAR_WIDTH_PX` so the two stay in sync
+/// without a cross-module constant dependency.
+const SIDEBAR_WIDTH_PX: f32 = 96.0;
 
 /// Duration of the vertical workspace-swap slide. Matches the concept's
 /// wheel-spin feel — long enough to register as motion, short enough to
@@ -147,10 +167,12 @@ impl ShellOverlayHost {
         Self {
             rect: Rect::ZERO,
             content,
+            sidebar: None,
             palette,
             palette_visible: false,
             content_node: None,
             palette_node: None,
+            sidebar_node: None,
             chrome: None,
             last_cursor: None,
             started: Instant::now(),
@@ -234,8 +256,11 @@ impl ShellOverlayHost {
 
     /// Advance the overview crossfade toward `overview_target`. Latches
     /// a new transition if the target changed since last frame, then
-    /// evaluates the ease-out cubic lerp. Returns the current `t` so the
-    /// draw path can gate the content/overview alpha in lockstep.
+    /// evaluates a linear lerp of raw progress. The draw path is
+    /// responsible for splitting the returned `t` into a sequential
+    /// two-phase animation (desktop shrink-out in `[0, 0.5]`, overview
+    /// zoom-in in `[0.5, 1.0]`), each with its own smoothstep easing —
+    /// so keep this function returning *linear* progress.
     fn tick_overview_transition(&mut self, target: f32) -> f32 {
         if (target - self.overview_target).abs() > f32::EPSILON {
             self.transition_from = self.overview_t;
@@ -250,10 +275,11 @@ impl ShellOverlayHost {
                 self.transition_started = None;
             } else {
                 let p = (elapsed / duration).clamp(0.0, 1.0);
-                // Ease-out cubic: 1 - (1 - p)^3
-                let eased = 1.0 - (1.0 - p).powi(3);
+                // Linear progress — the split-half smoothstep happens in
+                // `compose_overlay_transition` so each phase can ease
+                // independently (matches `AnimatePresence mode="wait"`).
                 self.overview_t =
-                    self.transition_from + (self.overview_target - self.transition_from) * eased;
+                    self.transition_from + (self.overview_target - self.transition_from) * p;
             }
         }
         self.overview_t
@@ -261,6 +287,14 @@ impl ShellOverlayHost {
 
     pub fn with_chrome(mut self, chrome: Chrome) -> Self {
         self.chrome = Some(chrome);
+        self
+    }
+
+    /// Register the floating sidebar wheel. The wheel is laid out as an
+    /// absolutely-positioned overlay above the desktop content so it
+    /// appears to hover over the wallpaper rather than occupy a column.
+    pub fn with_sidebar(mut self, sidebar: Box<dyn Widget>) -> Self {
+        self.sidebar = Some(sidebar);
         self
     }
 
@@ -419,13 +453,21 @@ impl ShellOverlayHost {
 impl Widget for ShellOverlayHost {
     fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
         self.content.sync(s, p);
+        if let Some(sidebar) = self.sidebar.as_mut() {
+            sidebar.sync(s, p);
+        }
         self.palette.sync(s, p);
     }
 
     fn update(&mut self, s: &mut AutoCommit, p: &ObjId) -> bool {
         let a = self.content.update(s, p);
         let b = self.palette.update(s, p);
-        a || b
+        let c = self
+            .sidebar
+            .as_mut()
+            .map(|w| w.update(s, p))
+            .unwrap_or(false);
+        a || b || c
     }
 
     fn build_layout(
@@ -457,6 +499,41 @@ impl Widget for ShellOverlayHost {
 
         self.content_node = Some(content_node);
         self.palette_node = Some(palette_node);
+
+        // Floating sidebar wheel: absolutely positioned on the left edge
+        // directly below the top bar, taking the remainder of the host's
+        // height. Sized to the wheel's intrinsic 96 px width. The sidebar
+        // widget's own build_layout chose a leaf style — we override it
+        // with an absolute position so it hovers above the content pane
+        // instead of displacing it.
+        let sidebar_node = self
+            .sidebar
+            .as_mut()
+            .map(|sidebar| {
+                let node = sidebar.build_layout(taffy, theme, node_map);
+                let mut style = taffy.style(node).unwrap().clone();
+                style.position = Position::Absolute;
+                style.inset = TaffyRect {
+                    left: LengthPercentageAuto::length(0.0),
+                    right: LengthPercentageAuto::auto(),
+                    top: LengthPercentageAuto::length(SIDEBAR_TOP_OFFSET_PX),
+                    bottom: LengthPercentageAuto::length(0.0),
+                };
+                style.size = Size {
+                    width: Dimension::length(SIDEBAR_WIDTH_PX),
+                    height: Dimension::auto(),
+                };
+                style.flex_grow = 0.0;
+                style.flex_shrink = 0.0;
+                taffy.set_style(node, style).unwrap();
+                node
+            });
+        self.sidebar_node = sidebar_node;
+
+        let children: Vec<NodeId> = match sidebar_node {
+            Some(s) => vec![content_node, palette_node, s],
+            None => vec![content_node, palette_node],
+        };
         let node = taffy
             .new_with_children(
                 Style {
@@ -466,7 +543,7 @@ impl Widget for ShellOverlayHost {
                     },
                     ..Default::default()
                 },
-                &[content_node, palette_node],
+                &children,
             )
             .unwrap();
         node_map.insert(node, self as *mut dyn Widget);
@@ -486,6 +563,13 @@ impl Widget for ShellOverlayHost {
             .apply_layout(taffy, children[0], Point::new(self.rect.x0, self.rect.y0));
         self.palette
             .apply_layout(taffy, children[1], Point::new(self.rect.x0, self.rect.y0));
+        if let (Some(sidebar), Some(sidebar_child)) = (self.sidebar.as_mut(), children.get(2)) {
+            sidebar.apply_layout(
+                taffy,
+                *sidebar_child,
+                Point::new(self.rect.x0, self.rect.y0),
+            );
+        }
     }
 
     fn draw(
@@ -499,24 +583,44 @@ impl Widget for ShellOverlayHost {
         let flags = self.overlay_flags();
         let target = if flags.overview { 1.0 } else { 0.0 };
         let t = self.tick_overview_transition(target);
-        let content_alpha = 1.0 - t;
-        let overview_alpha = t;
+        // Sequential two-phase composition (concept `App.tsx:427-487`
+        // wraps both views in `AnimatePresence mode="wait"` so the
+        // outgoing view plays its exit fully before the incoming view's
+        // enter begins). `t` is linear progress toward `overview_target`
+        // (1.0 = overview shown, 0.0 = desktop shown). The helper returns
+        // alpha + scale for each layer for the current half.
+        let (content_alpha, content_scale, overview_alpha, overview_scale) =
+            compose_overlay_transition(t, self.overview_target);
 
         // Workspace slide-swap: when the active workspace just changed,
         // translate the content widget vertically so the new workspace
         // reads as sliding into place. Zero at rest, so idle draws are
         // identical to pre-animation paths.
         let slide_dy = self.tick_workspace_slide().unwrap_or(0.0);
-        let content_xform = if slide_dy != 0.0 {
-            transform * Affine::translate((0.0, slide_dy))
-        } else {
-            transform
+
+        // Scale pivot = scene centre (so the shrink/zoom feels anchored
+        // to the viewport the user is looking at, not the origin).
+        let cx = (self.rect.x0 + self.rect.x1) / 2.0;
+        let cy = (self.rect.y0 + self.rect.y1) / 2.0;
+        let scaled = |s: f64| -> Affine {
+            Affine::translate((cx, cy)) * Affine::scale(s) * Affine::translate((-cx, -cy))
         };
+
+        // Desktop content transform: workspace-slide first (viewport
+        // scroll), then the overlay-scale about the centre so the scale
+        // reads as the entire viewport zooming in/out.
+        let mut content_xform = transform;
+        if slide_dy != 0.0 {
+            content_xform = content_xform * Affine::translate((0.0, slide_dy));
+        }
+        if (content_scale - 1.0).abs() > f64::EPSILON {
+            content_xform = scaled(content_scale) * content_xform;
+        }
 
         // Desktop content + simulated peer fade out as overview fades in.
         // Skip the layer entirely at full opacity to keep the common path
         // cheap (vello push_layer clips + allocates an intermediate).
-        if content_alpha >= 0.999 {
+        if content_alpha >= 0.999 && (content_scale - 1.0).abs() <= f64::EPSILON {
             self.content
                 .draw(scene, content_xform, text_renderer, theme, presence);
             self.draw_demo_peer(scene, transform, text_renderer, theme);
@@ -525,20 +629,49 @@ impl Widget for ShellOverlayHost {
             scene.push_layer(BlendMode::default(), content_alpha, transform, &self.rect);
             self.content
                 .draw(scene, content_xform, text_renderer, theme, presence);
-            self.draw_demo_peer(scene, transform, text_renderer, theme);
-            self.draw_real_peers(scene, transform, text_renderer, theme, presence);
+            // Demo + real peers scale with the desktop so they appear to
+            // live inside the scaling viewport rather than glued to the
+            // screen.
+            let peer_xform = if (content_scale - 1.0).abs() > f64::EPSILON {
+                scaled(content_scale) * transform
+            } else {
+                transform
+            };
+            self.draw_demo_peer(scene, peer_xform, text_renderer, theme);
+            self.draw_real_peers(scene, peer_xform, text_renderer, theme, presence);
             scene.pop_layer();
         }
 
-        // Overview grid (Cmd+Tab) crossfades opposite the desktop content.
+        // Overview grid (Cmd+Tab) scales+fades into place on the second
+        // half of the crossfade (or, on the reverse, scales out on the
+        // first half). Same scale-about-centre pivot as the desktop.
         if overview_alpha > 0.0 {
-            if overview_alpha >= 0.999 {
+            let overview_xform = if (overview_scale - 1.0).abs() > f64::EPSILON {
+                scaled(overview_scale) * transform
+            } else {
+                transform
+            };
+            if overview_alpha >= 0.999 && (overview_scale - 1.0).abs() <= f64::EPSILON {
                 draw_scrim(scene, transform, self.rect);
                 self.draw_overview(scene, transform, text_renderer, theme);
             } else {
                 scene.push_layer(BlendMode::default(), overview_alpha, transform, &self.rect);
                 draw_scrim(scene, transform, self.rect);
-                self.draw_overview(scene, transform, text_renderer, theme);
+                self.draw_overview(scene, overview_xform, text_renderer, theme);
+                scene.pop_layer();
+            }
+        }
+
+        // Floating sidebar wheel: draws above the desktop content but
+        // below overlay-stacked UI (palette / settings). The wheel scales
+        // with the desktop layer so the whole world reads as zooming in
+        // or out together during an overview transition.
+        if let Some(sidebar) = self.sidebar.as_mut() {
+            if content_alpha >= 0.999 && (content_scale - 1.0).abs() <= f64::EPSILON {
+                sidebar.draw(scene, content_xform, text_renderer, theme, presence);
+            } else if content_alpha > 0.0 {
+                scene.push_layer(BlendMode::default(), content_alpha, transform, &self.rect);
+                sidebar.draw(scene, content_xform, text_renderer, theme, presence);
                 scene.pop_layer();
             }
         }
@@ -1103,6 +1236,26 @@ impl Widget for ShellOverlayHost {
                 return;
             }
         }
+        // Forward events to the floating sidebar before the content so
+        // clicks / wheel / drag inside the wheel's rect take precedence
+        // over the desktop underneath. The sidebar child is `children[2]`
+        // when present (build_layout appends it after content + palette).
+        if let (Some(sidebar), Some(sidebar_child)) = (self.sidebar.as_mut(), children.get(2)) {
+            sidebar.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                *sidebar_child,
+                taffy,
+            );
+            if *handled {
+                return;
+            }
+        }
         self.content.handle_event(
             event,
             scale_factor,
@@ -1143,12 +1296,97 @@ impl Widget for ShellOverlayHost {
         };
         let ws_settings_in_flight = modal_in_flight(self.ws_settings_opened_at);
         let palette_in_flight = modal_in_flight(self.palette_opened_at);
+        let sidebar_frame = self
+            .sidebar
+            .as_ref()
+            .map(|s| s.needs_animation_frame())
+            .unwrap_or(false);
         self.transition_started.is_some()
             || self.ws_slide_started.is_some()
             || qs_in_flight
             || ws_settings_in_flight
             || palette_in_flight
             || self.content.needs_animation_frame()
+            || sidebar_frame
+    }
+}
+
+/// Compose the two-phase overview ↔ desktop transition.
+///
+/// `t` is the linear progress of the current transition toward `target`
+/// (0 = desktop fully shown, 1 = overview fully shown). The draw path
+/// splits `t` into two sequential halves so one view finishes exiting
+/// before the other starts entering, matching `AnimatePresence
+/// mode="wait"` in the concept (`App.tsx:427-487`):
+///
+/// * Entering overview (`target == 1.0`):
+///   - First half (t ∈ [0, 0.5]): desktop fades + shrinks `1.0 → 0.95`.
+///   - Second half (t ∈ [0.5, 1.0]): overview fades in + zooms
+///     `0.95 → 1.0`.
+/// * Leaving overview (`target == 0.0`):
+///   - First half (t ∈ [1.0, 0.5] i.e. rising `1-t`): overview fades +
+///     shrinks `1.0 → 0.95`.
+///   - Second half (t ∈ [0.5, 0.0]): desktop fades in + zooms
+///     `0.95 → 1.0`.
+///
+/// Each half is eased with smoothstep (`p * p * (3 - 2p)`).
+/// Returns `(content_alpha, content_scale, overview_alpha,
+/// overview_scale)`.
+fn compose_overlay_transition(t: f32, target: f32) -> (f32, f64, f32, f64) {
+    // Scale anchor points for the shrink/zoom halves. `0.95` matches the
+    // concept's `scale: 0.95` initial/exit values.
+    const SHRINK_SCALE: f64 = 0.95;
+
+    // Smoothstep: `p` in [0, 1] → eased in [0, 1], with zero derivative
+    // at both ends so motion starts/stops smoothly.
+    fn smoothstep(p: f32) -> f32 {
+        let p = p.clamp(0.0, 1.0);
+        p * p * (3.0 - 2.0 * p)
+    }
+
+    // Unified direction: positive = heading toward overview (desktop
+    // exits first), negative = heading toward desktop (overview exits
+    // first). Rest state = no animation.
+    let going_to_overview = target > 0.5;
+    if t <= 0.0 {
+        // Desktop fully visible.
+        return (1.0, 1.0, 0.0, 1.0);
+    }
+    if t >= 1.0 {
+        // Overview fully visible.
+        return (0.0, 1.0, 1.0, 1.0);
+    }
+
+    if going_to_overview {
+        if t < 0.5 {
+            // Phase 1: desktop shrink-out. Overview is still hidden.
+            let p = smoothstep(t * 2.0);
+            let alpha = 1.0 - p;
+            let scale = 1.0 + (SHRINK_SCALE - 1.0) * p as f64;
+            (alpha, scale, 0.0, SHRINK_SCALE)
+        } else {
+            // Phase 2: overview zoom-in. Desktop is hidden.
+            let p = smoothstep((t - 0.5) * 2.0);
+            let alpha = p;
+            let scale = SHRINK_SCALE + (1.0 - SHRINK_SCALE) * p as f64;
+            (0.0, SHRINK_SCALE, alpha, scale)
+        }
+    } else {
+        // Leaving overview: the animation runs from t ≈ 1 → 0.
+        if t > 0.5 {
+            // Phase 1 (reverse): overview shrink-out. Desktop still
+            // hidden. `(1 - t) * 2` turns t ∈ (0.5, 1.0] into p ∈ [0, 1).
+            let p = smoothstep((1.0 - t) * 2.0);
+            let alpha = 1.0 - p;
+            let scale = 1.0 + (SHRINK_SCALE - 1.0) * p as f64;
+            (0.0, SHRINK_SCALE, alpha, scale)
+        } else {
+            // Phase 2 (reverse): desktop zoom-in. Overview hidden.
+            let p = smoothstep((0.5 - t) * 2.0);
+            let alpha = p;
+            let scale = SHRINK_SCALE + (1.0 - SHRINK_SCALE) * p as f64;
+            (alpha, scale, 0.0, SHRINK_SCALE)
+        }
     }
 }
 
@@ -1980,6 +2218,67 @@ mod overview_transition_tests {
         // Dummy content widget — `Container::new()` produces an empty
         // layout node which is enough for the transition state tests.
         ShellOverlayHost::new(Box::new(Container::new()))
+    }
+
+    #[test]
+    fn compose_at_rest_returns_expected_layer_state() {
+        // Fully at desktop (t=0, target=0) → desktop fully visible,
+        // overview hidden, both at natural scale.
+        let (ca, cs, oa, os) = compose_overlay_transition(0.0, 0.0);
+        assert_eq!(ca, 1.0);
+        assert_eq!(cs, 1.0);
+        assert_eq!(oa, 0.0);
+        assert_eq!(os, 1.0);
+
+        // Fully at overview (t=1, target=1) → overview fully visible,
+        // desktop hidden.
+        let (ca, cs, oa, os) = compose_overlay_transition(1.0, 1.0);
+        assert_eq!(ca, 0.0);
+        assert_eq!(cs, 1.0);
+        assert_eq!(oa, 1.0);
+        assert_eq!(os, 1.0);
+    }
+
+    #[test]
+    fn compose_half_split_produces_expected_phase_scales() {
+        // Entering overview: at t=0.25 we're halfway through the first
+        // half (desktop shrink-out). The raw half-progress is 0.5; after
+        // smoothstep (0.5*0.5*(3-1.0)) = 0.5 exactly. Desktop scale
+        // lerps 1.0 → 0.95, so at eased-0.5 we get 0.975.
+        let (ca, cs, oa, os) = compose_overlay_transition(0.25, 1.0);
+        assert!((cs - 0.975).abs() < 1e-6, "desktop scale at t=0.25 should be 0.975, got {}", cs);
+        assert!((ca - 0.5).abs() < 1e-6, "desktop alpha at t=0.25 should be 0.5, got {}", ca);
+        assert_eq!(oa, 0.0, "overview must still be hidden in the first half");
+        assert_eq!(os, 0.95, "overview scale stays at SHRINK_SCALE during phase 1");
+
+        // At t=0.75 we're halfway through the second half (overview
+        // zoom-in). Smoothstep(0.5) = 0.5 again, overview scale lerps
+        // 0.95 → 1.0, so eased-0.5 gives 0.975.
+        let (ca, cs, oa, os) = compose_overlay_transition(0.75, 1.0);
+        assert_eq!(ca, 0.0, "desktop must be hidden in the second half");
+        assert_eq!(cs, 0.95, "desktop scale stays at SHRINK_SCALE during phase 2");
+        assert!((os - 0.975).abs() < 1e-6, "overview scale at t=0.75 should be 0.975, got {}", os);
+        assert!((oa - 0.5).abs() < 1e-6, "overview alpha at t=0.75 should be 0.5, got {}", oa);
+    }
+
+    #[test]
+    fn compose_reverse_swaps_phase_order() {
+        // Leaving overview (target=0.0): at t=0.75 (animation running
+        // from 1.0 → 0.0) we're halfway through the first phase
+        // (overview shrinks out). `(1 - t) * 2 = 0.5` → smoothstep → 0.5.
+        let (ca, cs, oa, os) = compose_overlay_transition(0.75, 0.0);
+        assert_eq!(ca, 0.0);
+        assert_eq!(cs, 0.95);
+        assert!((oa - 0.5).abs() < 1e-6);
+        assert!((os - 0.975).abs() < 1e-6);
+
+        // At t=0.25 (still running toward 0.0) phase 2 starts: desktop
+        // zooms back in. `(0.5 - 0.25) * 2 = 0.5` → smoothstep → 0.5.
+        let (ca, cs, oa, os) = compose_overlay_transition(0.25, 0.0);
+        assert_eq!(oa, 0.0);
+        assert_eq!(os, 0.95);
+        assert!((ca - 0.5).abs() < 1e-6);
+        assert!((cs - 0.975).abs() < 1e-6);
     }
 
     #[test]
