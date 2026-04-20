@@ -1,7 +1,7 @@
 [workspace]
 members = [
     "quick-fs-fuse",
-    "quick-gnome-shell",
+    "quick-shell",
     "apps/file-explorer",
     "apps/terminal",
     "apps/browser", "quick-ui",

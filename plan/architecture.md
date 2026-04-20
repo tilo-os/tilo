@@ -114,7 +114,7 @@ quickdesktop/
 │   └── etc/
 │       ├── quick-desktop/desktop.toml
 │       └── greetd/config.toml
-└── quick-gnome-shell/       # Compositor source (Rust)
+└── quick-shell/       # Compositor source (Rust)
     ├── Cargo.toml
     ├── desktop.toml
     └── src/
