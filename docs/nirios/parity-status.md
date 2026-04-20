@@ -246,3 +246,18 @@ for chrome density). Outstanding infrastructure-level items:
    cursor). Opt-in by construction: non-hovered or active cards
    continue to paint on the base transform, so no regression for the
    steady-state render path.
+
+8. **Overview card hover-scale** — ✅ concept's `OverviewView.tsx:66`
+   `whileHover={{ scale: 1.01 }}` on each workspace card in the
+   overview grid ported to `ShellOverlayHost::draw_overview`. Each
+   card's rect is tested against `self.last_cursor`; when the cursor
+   is inside, `card_xform = transform * T(cx,cy) * S(1.01) *
+   T(-cx,-cy)` and the card fill/stroke, name, subtitle, preview
+   tiles + tab strips, empty-workspace dashed placeholder + label
+   all route through it. Subtler than the sidebar (1.01 vs 1.05) to
+   match the concept's overview aesthetic where cards already sit in
+   a spacious grid. `hit_test_overview` remains the single source of
+   truth for overview card geometry; a new unit test
+   (`overview_hit_test_returns_card_index_when_cursor_is_over_card`)
+   guards the hit-test so a later refactor of the grid can't silently
+   break the hover path.
