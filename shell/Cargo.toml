@@ -35,3 +35,8 @@ vello = "0.2.1"
 [dev-dependencies]
 wayland-client = "0.31"
 tokio-test = "0.4"
+# Offscreen headless renderer used by `tests/e2e_shell_flows.rs`. Versions
+# mirror quick-ui so Cargo collapses to a single copy in the workspace lock.
+pollster = "0.4.0"
+wgpu = "0.20"
+png = "0.17"
