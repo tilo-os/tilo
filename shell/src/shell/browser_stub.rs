@@ -113,64 +113,192 @@ impl Widget for BrowserStubWidget {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // Card background using the OS-provided surface tokens.
+        // Concept-style browser chrome: white card, 48 px header with three
+        // traffic-light circles on the left + a pill-shaped address bar
+        // centred in the remaining width, and a body with a placeholder
+        // "App Preview" canvas. Matches
+        // `nirios-concept/src/components/apps/BrowserApp.tsx`; the outer
+        // rounded card is clipped against `self.rect` so the chrome paints
+        // inside the host's tile boundary.
         let tokens = &theme.tokens;
         let radius = tokens.radii.lg as f64;
         let card = vello::kurbo::RoundedRect::from_rect(self.rect, radius);
+
+        // White card background, matching concept's `bg-white`.
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            tokens.colors.surfaces.window_card,
+            None,
+            &card,
+        );
+
+        let chrome_h = 48.0_f64;
+        let chrome_rect = Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y0 + chrome_h,
+        );
+
+        // Chrome strip — slate-50-ish tone. The window card is already
+        // white, so we overlay a thin slate-tinted band clipped to the
+        // chrome rect for the header.
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
             tokens.colors.surfaces.raised,
             None,
-            &card,
+            &chrome_rect,
+        );
+        // Divider under the chrome.
+        let divider = Rect::new(
+            self.rect.x0,
+            self.rect.y0 + chrome_h - 1.0,
+            self.rect.x1,
+            self.rect.y0 + chrome_h,
+        );
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            tokens.colors.border_standard,
+            None,
+            &divider,
         );
 
-        // Large browser glyph centred above the headline — same codepoint as
-        // the `IconDescriptor::Glyph` returned below so the tab icon and the
-        // card glyph render identically.
-        let glyph = "󰖟";
-        let glyph_size = tokens.typography.scale.x2l;
-        let (gw, _gh) = text_renderer.measure(glyph, glyph_size, None);
-        let gx = self.rect.center().x - gw as f64 / 2.0;
-        let gy = self.rect.center().y - (glyph_size as f64) - 32.0;
-        text_renderer.draw_text(
-            scene,
-            glyph,
-            glyph_size,
-            tokens.colors.text_primary,
-            transform * Affine::translate((gx, gy)),
-            None,
-        );
+        // Three traffic-light circles (slate-300-ish, concept doesn't
+        // colour them red/yellow/green). 12 px diameter, 8 px apart,
+        // starting 16 px from the chrome's left edge.
+        let light_y = self.rect.y0 + chrome_h / 2.0;
+        for i in 0..3 {
+            let cx = self.rect.x0 + 22.0 + (i as f64) * 18.0;
+            let circ = vello::kurbo::Circle::new(Point::new(cx, light_y), 6.0);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                tokens.colors.text_dim,
+                None,
+                &circ,
+            );
+        }
 
-        // Headline.
-        let headline = "Browser coming soon";
-        let headline_size = tokens.typography.scale.xl;
-        let (hw, _) = text_renderer.measure(headline, headline_size, None);
-        let hx = self.rect.center().x - hw as f64 / 2.0;
-        let hy = self.rect.center().y;
-        text_renderer.draw_text(
-            scene,
-            headline,
-            headline_size,
-            tokens.colors.text_primary,
-            transform * Affine::translate((hx, hy)),
-            None,
-        );
+        // Address-bar pill. Concept clamps it to `max-w-2xl` (≈ 672 px);
+        // here we clamp by the card width minus the traffic-light gutter
+        // and right-hand padding, so it centres inside the remaining band.
+        let bar_left = self.rect.x0 + 78.0;
+        let bar_right = (self.rect.x1 - 24.0).min(self.rect.x0 + 78.0 + 560.0);
+        if bar_right > bar_left + 80.0 {
+            let bar_rect = Rect::new(bar_left, light_y - 14.0, bar_right, light_y + 14.0);
+            let pill = vello::kurbo::RoundedRect::from_rect(bar_rect, 14.0);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                tokens.colors.surfaces.window_card,
+                None,
+                &pill,
+            );
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                tokens.colors.border_standard,
+                None,
+                &pill,
+            );
 
-        // Sub-line.
-        let sub = "The native browser isn't ready yet.";
-        let sub_size = tokens.typography.scale.sm;
-        let (sw, _) = text_renderer.measure(sub, sub_size, None);
-        let sx = self.rect.center().x - sw as f64 / 2.0;
-        let sy = hy + headline_size as f64 + 8.0;
-        text_renderer.draw_text(
-            scene,
-            sub,
-            sub_size,
-            tokens.colors.text_dim,
-            transform * Affine::translate((sx, sy)),
-            None,
-        );
+            // Globe glyph + URL text inside the pill.
+            let globe = "󰖟";
+            let glyph_size = tokens.typography.scale.base;
+            let (ggw, ggh) = text_renderer.measure(globe, glyph_size, None);
+            let gx = bar_rect.x0 + 14.0;
+            let gy = bar_rect.center().y - ggh as f64 / 2.0;
+            text_renderer.draw_text(
+                scene,
+                globe,
+                glyph_size,
+                tokens.colors.text_dim,
+                transform * Affine::translate((gx, gy)),
+                None,
+            );
+            let url = "localhost:3000";
+            let (_uw, uh) = text_renderer.measure(url, glyph_size, None);
+            let ux = gx + ggw as f64 + 10.0;
+            let uy = bar_rect.center().y - uh as f64 / 2.0;
+            text_renderer.draw_text(
+                scene,
+                url,
+                glyph_size,
+                tokens.colors.text_dim,
+                transform * Affine::translate((ux, uy)),
+                None,
+            );
+        }
+
+        // Body: a centred indigo tile + headline, in the concept's
+        // "App Preview" placeholder style. Painted only if we have
+        // enough vertical room for the whole composition.
+        let body_top = self.rect.y0 + chrome_h + 16.0;
+        if self.rect.y1 - body_top > 200.0 {
+            let tile_size = 96.0_f64;
+            let tile_cx = self.rect.center().x;
+            let tile_cy = body_top + 96.0;
+            let tile_rect = Rect::new(
+                tile_cx - tile_size / 2.0,
+                tile_cy - tile_size / 2.0,
+                tile_cx + tile_size / 2.0,
+                tile_cy + tile_size / 2.0,
+            );
+            let tile = vello::kurbo::RoundedRect::from_rect(tile_rect, 20.0);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                tokens.colors.accent[2].with_alpha_factor(0.18),
+                None,
+                &tile,
+            );
+            let inner_size = 48.0_f64;
+            let inner_rect = Rect::new(
+                tile_cx - inner_size / 2.0,
+                tile_cy - inner_size / 2.0,
+                tile_cx + inner_size / 2.0,
+                tile_cy + inner_size / 2.0,
+            );
+            let inner = vello::kurbo::RoundedRect::from_rect(inner_rect, 10.0);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                tokens.colors.accent[5],
+                None,
+                &inner,
+            );
+
+            let headline = "App Preview";
+            let headline_size = tokens.typography.scale.xl;
+            let (hw, _hh) = text_renderer.measure(headline, headline_size, None);
+            let hx = self.rect.center().x - hw as f64 / 2.0;
+            let hy = tile_cy + tile_size / 2.0 + 24.0;
+            text_renderer.draw_text(
+                scene,
+                headline,
+                headline_size,
+                tokens.colors.text_primary,
+                transform * Affine::translate((hx, hy)),
+                None,
+            );
+
+            let sub = "Running locally on port 3000";
+            let sub_size = tokens.typography.scale.sm;
+            let (sw, _) = text_renderer.measure(sub, sub_size, None);
+            let sx = self.rect.center().x - sw as f64 / 2.0;
+            let sy = hy + headline_size as f64 + 8.0;
+            text_renderer.draw_text(
+                scene,
+                sub,
+                sub_size,
+                tokens.colors.text_dim,
+                transform * Affine::translate((sx, sy)),
+                None,
+            );
+        }
     }
 
     fn handle_event(
