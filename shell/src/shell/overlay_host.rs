@@ -1233,13 +1233,30 @@ impl ShellOverlayHost {
             let y0 = start_y + row as f64 * (card_h + gap);
             let rect = Rect::new(x0, y0, x0 + card_w, y0 + card_h);
             let is_active = ws.id == state.tree.active;
+            // Concept `OverviewView.tsx:66` — `whileHover={{ scale: 1.01 }}`.
+            // Scale the hovered card about its own center so neighbours
+            // stay anchored.
+            let is_hover = self
+                .last_cursor
+                .map(|c| rect.contains(c))
+                .unwrap_or(false);
+            let card_xform = if is_hover {
+                let cx = rect.center().x;
+                let cy = rect.center().y;
+                transform
+                    * Affine::translate((cx, cy))
+                    * Affine::scale(1.01)
+                    * Affine::translate((-cx, -cy))
+            } else {
+                transform
+            };
             let fill = if is_active { colors.surfaces.raised } else { colors.neutral[1] };
             let card = RoundedRect::from_rect(rect, tokens.radii.lg as f64);
-            scene.fill(Fill::NonZero, transform, fill, None, &card);
+            scene.fill(Fill::NonZero, card_xform, fill, None, &card);
             if is_active {
                 scene.stroke(
                     &vello::kurbo::Stroke::new(2.0),
-                    transform,
+                    card_xform,
                     colors.accent[5],
                     None,
                     &card,
@@ -1247,7 +1264,7 @@ impl ShellOverlayHost {
             } else {
                 scene.stroke(
                     &vello::kurbo::Stroke::new(1.0),
-                    transform,
+                    card_xform,
                     colors.border_standard,
                     None,
                     &card,
@@ -1261,7 +1278,7 @@ impl ShellOverlayHost {
                 &ws.name,
                 name_size,
                 colors.text_primary,
-                transform * Affine::translate((rect.x0 + 16.0, rect.y0 + 16.0)),
+                card_xform * Affine::translate((rect.x0 + 16.0, rect.y0 + 16.0)),
                 None,
             );
 
@@ -1274,7 +1291,7 @@ impl ShellOverlayHost {
                 &sub,
                 sub_size,
                 colors.text_dim,
-                transform * Affine::translate((rect.x0 + 16.0, rect.y0 + 40.0)),
+                card_xform * Affine::translate((rect.x0 + 16.0, rect.y0 + 40.0)),
                 None,
             );
 
@@ -1298,7 +1315,7 @@ impl ShellOverlayHost {
                             RoundedRect::from_rect(tile, tokens.radii.sm as f64);
                         scene.fill(
                             Fill::NonZero,
-                            transform,
+                            card_xform,
                             colors.surfaces.window_card,
                             None,
                             &tile_rr,
@@ -1306,7 +1323,7 @@ impl ShellOverlayHost {
                         // Draw a little tab strip on top of each preview tile
                         let tab_h = 6.0;
                         let tab = Rect::new(tile.x0, tile.y0, tile.x1, tile.y0 + tab_h);
-                        scene.fill(Fill::NonZero, transform, colors.accent[3], None, &tab);
+                        scene.fill(Fill::NonZero, card_xform, colors.accent[3], None, &tab);
                         let _ = g;
                         tx += tile_w + tile_gap;
                     }
@@ -1316,7 +1333,7 @@ impl ShellOverlayHost {
                 let pr = RoundedRect::from_rect(preview_rect, tokens.radii.sm as f64);
                 scene.stroke(
                     &vello::kurbo::Stroke::new(1.0).with_dashes(0.0, [4.0, 4.0]),
-                    transform,
+                    card_xform,
                     colors.border_standard,
                     None,
                     &pr,
@@ -1330,7 +1347,7 @@ impl ShellOverlayHost {
                     empty_label,
                     sub_size,
                     colors.text_dim,
-                    transform * Affine::translate((ex, ey)),
+                    card_xform * Affine::translate((ex, ey)),
                     None,
                 );
             }
@@ -2293,5 +2310,45 @@ mod modal_curve_tests {
             h.ws_settings_opened_at.is_none(),
             "close must clear the timestamp so next open replays motion"
         );
+    }
+
+    /// Concept `OverviewView.tsx:66` — `whileHover={{ scale: 1.01 }}` on each
+    /// workspace card. The draw path consults `self.last_cursor` inside the
+    /// card rect, so the hit-test must stay honest with the card-rect
+    /// geometry it computes; `hit_test_overview` is that shared oracle.
+    #[test]
+    fn overview_hit_test_returns_card_index_when_cursor_is_over_card() {
+        use crate::shell::chrome_state::ChromeState;
+        use crate::shell::state::WorkspaceTree;
+        use quick_ui::widget::Container;
+
+        let mut tree = WorkspaceTree::bootstrap_default();
+        tree.append_empty_workspace("Second");
+        tree.append_empty_workspace("Third");
+        let chrome = ChromeState::new(tree);
+        let mut h = ShellOverlayHost::new(Box::new(Container::new()))
+            .with_chrome(chrome.clone());
+        h.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+
+        // Replicate the geometry in draw_overview / hit_test_overview so we
+        // can point the cursor at the first card's center.
+        let card_w = 240.0_f64;
+        let card_h = 160.0_f64;
+        let gap = 24.0_f64;
+        let avail_w = h.rect.width() - 120.0;
+        let cols = ((avail_w + gap) / (card_w + gap)).floor().max(1.0) as usize;
+        let n = chrome.borrow().tree.workspaces.len();
+        let rows = (n + cols - 1) / cols.max(1);
+        let total_w = cols as f64 * card_w + (cols.saturating_sub(1)) as f64 * gap;
+        let total_h = rows as f64 * card_h + (rows.saturating_sub(1)) as f64 * gap;
+        let start_x = (h.rect.x0 + h.rect.x1) / 2.0 - total_w / 2.0;
+        let start_y = (h.rect.y0 + h.rect.y1) / 2.0 - total_h / 2.0;
+        let first_center =
+            Point::new(start_x + card_w / 2.0, start_y + card_h / 2.0);
+
+        assert_eq!(h.hit_test_overview(first_center), Some(0));
+
+        // A point far outside the grid must return None.
+        assert_eq!(h.hit_test_overview(Point::new(5.0, 5.0)), None);
     }
 }
