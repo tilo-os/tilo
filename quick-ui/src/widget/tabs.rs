@@ -150,11 +150,22 @@ impl TabBar {
     }
 }
 
+/// Outer bar height. Matches the concept's `h-14` (56 px Tailwind) at
+/// a slightly tighter ratio so the pills still read as compact chrome
+/// rather than a full secondary toolbar. See `parity-status.md` §4.
+pub const TAB_BAR_HEIGHT: f64 = 40.0;
+/// Vertical inset of each pill within the bar. Bar height 40 – 2 × 6 =
+/// 28 px pill height, matching the concept's `px-4 py-2 text-sm` pill.
+pub const TAB_PILL_INSET_Y: f64 = 6.0;
+
 impl Widget for TabBar {
     fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
     fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
-        // ~28 px pills on the dark shell bg, above the white-card frame.
-        let node = taffy.new_leaf(Style { size: Size { width: Dimension::auto(), height: Dimension::length(28.0) }, flex_shrink: 0.0, ..Default::default() }).unwrap();
+        // Outer bar is `TAB_BAR_HEIGHT` tall (40 px); pills sit inset
+        // `TAB_PILL_INSET_Y` (6 px) top + bottom so each pill reads as
+        // 28 px, matching the concept's `h-14` container / `py-2 text-sm`
+        // pill proportions.
+        let node = taffy.new_leaf(Style { size: Size { width: Dimension::auto(), height: Dimension::length(TAB_BAR_HEIGHT as f32) }, flex_shrink: 0.0, ..Default::default() }).unwrap();
         node_map.insert(node, self as *mut dyn Widget);
         node
     }
@@ -173,6 +184,8 @@ impl Widget for TabBar {
         let max_w = 16.0_f64;
         let search_w = 16.0_f64;
         let close_inset = 4.0_f64;
+        let pill_y0 = self.rect.y0 + TAB_PILL_INSET_Y;
+        let pill_y1 = self.rect.y1 - TAB_PILL_INSET_Y;
         let mut x = self.rect.x0;
         for t in &self.tabs {
             let approx_char_w = 7.0_f64;
@@ -180,7 +193,7 @@ impl Widget for TabBar {
             // Reserve room for the close glyph + both hover-reveal icons
             // (search, maximize) so pills don't resize when you hover them.
             let w = (title_w + pad_x * 2.0 + close_w + max_w + search_w).max(96.0);
-            let r = Rect::new(x, self.rect.y0, x + w, self.rect.y1);
+            let r = Rect::new(x, pill_y0, x + w, pill_y1);
             let close_x0 = r.x1 - close_w - close_inset;
             let close = Rect::new(close_x0, r.y0 + 4.0, close_x0 + close_w, r.y1 - 4.0);
             let max_x0 = close_x0 - max_w - 2.0;
@@ -196,7 +209,10 @@ impl Widget for TabBar {
     }
     fn draw(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
         // No full-bar fill — pills sit directly on the dark shell background.
-        let radius = self.rect.height() / 2.0;
+        // Radius is based on pill height (bar minus 2 × inset), not the full
+        // bar, so pills stay `rounded-full` even when the outer bar grows.
+        let pill_height = (self.rect.height() - 2.0 * TAB_PILL_INSET_Y).max(0.0);
+        let radius = pill_height / 2.0;
         let text_primary = theme.tokens.colors.text_primary;
         let text_dim = theme.tokens.colors.text_dim;
         for (i, t) in self.tabs.iter().enumerate() {
@@ -540,20 +556,24 @@ mod tests {
         // run `apply_layout` through taffy for a drop-index unit test.
         // Pill A spans [0, 80], B [80, 160], C [160, 240].
         let mut b = bar();
-        b.rect = Rect::new(0.0, 0.0, 240.0, 28.0);
+        // Outer bar: 40 px (TAB_BAR_HEIGHT). Pills sit inset 6 px top/bot,
+        // so pill y spans [6, 34]. Drop-index hit tests only compare the x
+        // coordinate, so this y-inset is cosmetic for the test — picked to
+        // match the real `apply_layout` geometry so we catch regressions.
+        b.rect = Rect::new(0.0, 0.0, 240.0, 40.0);
         b.tab_rects = vec![
-            Rect::new(0.0, 0.0, 80.0, 28.0),
-            Rect::new(80.0, 0.0, 160.0, 28.0),
-            Rect::new(160.0, 0.0, 240.0, 28.0),
+            Rect::new(0.0, 6.0, 80.0, 34.0),
+            Rect::new(80.0, 6.0, 160.0, 34.0),
+            Rect::new(160.0, 6.0, 240.0, 34.0),
         ];
         // Left of A's midpoint (40) → insert before A (index 0).
-        assert_eq!(b.drop_index_for(Point::new(10.0, 14.0)), 0);
+        assert_eq!(b.drop_index_for(Point::new(10.0, 20.0)), 0);
         // Past A's mid but before B's mid (120) → insert at index 1.
-        assert_eq!(b.drop_index_for(Point::new(90.0, 14.0)), 1);
+        assert_eq!(b.drop_index_for(Point::new(90.0, 20.0)), 1);
         // Past B's mid but before C's mid (200) → insert at index 2.
-        assert_eq!(b.drop_index_for(Point::new(170.0, 14.0)), 2);
+        assert_eq!(b.drop_index_for(Point::new(170.0, 20.0)), 2);
         // Past every midpoint → append at len().
-        assert_eq!(b.drop_index_for(Point::new(230.0, 14.0)), 3);
+        assert_eq!(b.drop_index_for(Point::new(230.0, 20.0)), 3);
     }
 
     #[test]
