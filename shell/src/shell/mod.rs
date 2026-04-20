@@ -1127,10 +1127,21 @@ pub fn build_nirios_root_with_chrome(
                         .tabs
                         .iter()
                         .map(|t| {
+                            // Pull the tile's app-kind up to the tab so
+                            // `TabBar::draw` can paint a typed leading
+                            // glyph (concept's `getAppIcon` in
+                            // `WindowFrame.tsx:10-18`). Both `Stub` and
+                            // `AppPlaceholder` carry a `kind`, so this
+                            // works for every live tile.
+                            let kind = match &t.tile {
+                                ShellTile::Stub { kind, .. } => to_ui_kind(kind),
+                                ShellTile::AppPlaceholder { kind, .. } => to_ui_kind(kind),
+                            };
                             (
                                 TabDescriptor {
                                     id: t.id,
                                     title: t.title.clone(),
+                                    app_kind: Some(kind),
                                 },
                                 to_ui_tile(&t.tile),
                             )
