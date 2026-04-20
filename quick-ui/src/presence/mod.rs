@@ -105,6 +105,12 @@ pub struct PresenceCtx {
     pub selections: HashMap<PresenceKey, Vec<(UserId, SelectionRange)>>,
     pub carets: HashMap<PresenceKey, Vec<(UserId, usize)>>,
     pub remote_cursors: Vec<RemoteCursor>,
+    /// Optional per-user RGB override. Seeded by the shell from
+    /// [`Collaborator::cursor_color`] so widgets don't have to thread
+    /// `Collaborator` refs to honour a non-palette colour. Read through
+    /// [`PresenceCtx::color_for`] which falls through to [`user_color`]
+    /// when a user has no override.
+    pub color_overrides: HashMap<UserId, (u8, u8, u8)>,
 }
 
 impl PresenceCtx {
@@ -186,6 +192,51 @@ impl PresenceCtx {
     pub fn caret_for(&self, key: &PresenceKey, user: &UserId) -> Option<usize> {
         self.carets.get(key)?.iter().find(|(u, _)| u == user).map(|(_, c)| *c)
     }
+
+    /// Seed or replace this user's colour override. Accepts `#rgb`,
+    /// `#rrggbb`, and `#rrggbbaa` (alpha ignored — presence renderers
+    /// apply their own alpha). Malformed hex silently clears the override
+    /// so the caller falls back to [`user_color`].
+    pub fn set_color_override(&mut self, user: UserId, hex: &str) {
+        match parse_hex_color(hex) {
+            Some(rgb) => { self.color_overrides.insert(user, rgb); }
+            None => { self.color_overrides.remove(&user); }
+        }
+    }
+
+    /// Colour this user should render as. Checks the override map first,
+    /// then falls through to the palette-pinned [`user_color`] so peers
+    /// with no seed still behave exactly as before.
+    pub fn color_for(&self, user: &UserId) -> (u8, u8, u8) {
+        if let Some(rgb) = self.color_overrides.get(user) {
+            return *rgb;
+        }
+        user_color(&user.0)
+    }
+}
+
+/// Parse a `#rgb` / `#rrggbb` / `#rrggbbaa` colour string to an RGB triple.
+/// Alpha, when present, is discarded — presence affordances manage alpha
+/// at render time. Leading `#` is optional. Returns `None` for anything
+/// unparseable so callers can silently fall through to the palette.
+pub fn parse_hex_color(hex: &str) -> Option<(u8, u8, u8)> {
+    let s = hex.trim_start_matches('#');
+    let bytes = s.as_bytes();
+    match bytes.len() {
+        3 => {
+            let r = u8::from_str_radix(std::str::from_utf8(&[bytes[0], bytes[0]]).ok()?, 16).ok()?;
+            let g = u8::from_str_radix(std::str::from_utf8(&[bytes[1], bytes[1]]).ok()?, 16).ok()?;
+            let b = u8::from_str_radix(std::str::from_utf8(&[bytes[2], bytes[2]]).ok()?, 16).ok()?;
+            Some((r, g, b))
+        }
+        6 | 8 => {
+            let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+            let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+            Some((r, g, b))
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -243,5 +294,53 @@ mod tab_focus_tests {
             "workspace registration must not evict the tab attribution"
         );
         assert_eq!(ctx.peers_on(&ws), &[alice]);
+    }
+}
+
+#[cfg(test)]
+mod color_override_tests {
+    use super::*;
+
+    #[test]
+    fn parse_hex_color_accepts_common_forms() {
+        assert_eq!(parse_hex_color("#ff0000"), Some((0xff, 0x00, 0x00)));
+        assert_eq!(parse_hex_color("00ff00"), Some((0x00, 0xff, 0x00)));
+        assert_eq!(parse_hex_color("#0000ffee"), Some((0x00, 0x00, 0xff)));
+        // #rgb short form expands to #rrggbb.
+        assert_eq!(parse_hex_color("#f0a"), Some((0xff, 0x00, 0xaa)));
+    }
+
+    #[test]
+    fn parse_hex_color_rejects_malformed_input() {
+        assert_eq!(parse_hex_color(""), None);
+        assert_eq!(parse_hex_color("#12"), None);
+        assert_eq!(parse_hex_color("#zzzzzz"), None);
+        assert_eq!(parse_hex_color("not-a-color"), None);
+    }
+
+    #[test]
+    fn color_for_falls_through_to_palette_without_override() {
+        let ctx = PresenceCtx::empty();
+        assert_eq!(ctx.color_for(&UserId("alice".into())), user_color("alice"));
+    }
+
+    #[test]
+    fn color_for_honours_override_when_set() {
+        let mut ctx = PresenceCtx::empty();
+        ctx.set_color_override(UserId("alice".into()), "#abcdef");
+        assert_eq!(
+            ctx.color_for(&UserId("alice".into())),
+            (0xab, 0xcd, 0xef)
+        );
+        // A different user is unaffected and still uses the palette.
+        assert_eq!(ctx.color_for(&UserId("bob".into())), user_color("bob"));
+    }
+
+    #[test]
+    fn malformed_override_clears_any_prior_entry() {
+        let mut ctx = PresenceCtx::empty();
+        ctx.set_color_override(UserId("alice".into()), "#abcdef");
+        ctx.set_color_override(UserId("alice".into()), "nonsense");
+        assert_eq!(ctx.color_for(&UserId("alice".into())), user_color("alice"));
     }
 }
