@@ -141,14 +141,21 @@ Every parity row above is ✅ — including the two accepted deviations
 (§3 3D wheel → 2D per user brief; §4 tab bar 40 px vs concept's 56 px
 for chrome density). Outstanding infrastructure-level items:
 
-1. **Screenshot-driven visual E2E** — blocked on host missing the
-   "Window Calls Extended" GNOME extension. The 22 `nirios_e2e_test`,
-   28 `shell_chrome_test`, 15 `workspace_drop` unit, 34 `quick-ui`
-   unit, and 1 `interaction_test` cases (100 tests total, all
-   passing) cover widget state, chrome wiring, drop geometry, CRDT
-   roundtrips, and presence routing — every non-visual assertion the
-   concept's DOM inspection could make. A wgpu-offscreen buffer
-   comparison harness is the cleanest next step for pixel parity, but
-   requires a dedicated design pass (golden-image provenance, diff
-   tolerance, per-DPI reference sets) outside the scope of the
-   per-row parity checklist.
+1. **Screenshot-driven visual E2E** — ✅ **infra landed** in
+   `quick-ui/tests/support/offscreen.rs`: a headless wgpu + vello
+   renderer that copies texture bytes back to the CPU (handling the
+   256-byte row-pitch alignment) so tests can assert pixel invariants
+   or write PNGs without winit/a compositor. Three smoke tests in
+   `quick-ui/tests/screenshot_test.rs` exercise the pipeline: a solid
+   background + filled rect, a PNG writeback with magic-byte
+   verification, and a full `Container` widget driven through
+   `build_layout` → taffy compute → `apply_layout` → `draw`, proving
+   the widget tree overpaints a base colour. All three pass; they
+   skip gracefully (no panic, `eprintln` only) when no wgpu adapter
+   is available. Full test count: 22 `nirios_e2e_test`, 28
+   `shell_chrome_test`, 15 `workspace_drop` unit, 34 `quick-ui` unit,
+   1 `interaction_test`, 3 `screenshot_test` — **103 tests total,
+   all passing**. A golden-image diff harness (with reference-set
+   provenance + per-DPI bases + tolerance) is the next incremental
+   step for pixel-regression coverage and is deferred as its own
+   scope rather than bundled here.
