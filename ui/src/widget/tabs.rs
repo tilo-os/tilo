@@ -3,6 +3,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::{WindowEvent, MouseButton, ElementState};
 use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use crate::widget::Widget;
 use crate::text_render::TextRenderer;
@@ -26,6 +27,13 @@ const DROP_ZONE_EXPANDED_PX: f64 = 18.0;
 /// a drag is in flight. Stays thin (2 px) so it reads as a subtle guide
 /// rather than a warning.
 const DROP_ZONE_IDLE_PX: f64 = 2.0;
+
+/// Duration of the tab-layout spring that plays when pills reorder, insert,
+/// or close. Longer than the drop-zone animation because this one moves
+/// *every* pill's position — 180 ms is enough for the eye to track the
+/// motion as a smooth interpolation instead of a jump cut. Matches the
+/// concept's `motion.div layout transition={{ type: "spring" }}` feel.
+const LAYOUT_ANIM_MS: u64 = 180;
 
 #[derive(Clone, Debug)]
 pub struct TabDescriptor {
@@ -106,6 +114,19 @@ pub struct TabBar {
     /// `draw` to derive `eased = (elapsed / DROP_ZONE_ANIM_MS).min(1)`.
     /// Wrapped in `Option` because `Instant` has no `ZERO` constant.
     drop_zone_animated_at: Option<Instant>,
+    /// Snapshot of each tab's `tab_rects[i]` keyed by tab id, captured
+    /// just before the last reorder/insert/remove. `draw` uses this to
+    /// interpolate each pill's *visual* position toward its new
+    /// `tab_rects[i]` over `LAYOUT_ANIM_MS`. Tabs that didn't exist in
+    /// the previous layout simply render at their target rect (no
+    /// fly-in); that matches the concept where `AnimatePresence` animates
+    /// positions of *existing* items only.
+    prev_tab_rects_by_id: HashMap<u64, Rect>,
+    /// `Instant` the current layout spring started, or `None` if no
+    /// animation is in-flight. Cleared implicitly when `elapsed >
+    /// LAYOUT_ANIM_MS` — `needs_animation_frame` derives the "still
+    /// animating" answer from this directly.
+    layout_anim_started: Option<Instant>,
 }
 
 impl TabBar {
@@ -133,7 +154,26 @@ impl TabBar {
             pending_detach: None,
             drop_zone_target: None,
             drop_zone_animated_at: None,
+            prev_tab_rects_by_id: HashMap::new(),
+            layout_anim_started: None,
         }
+    }
+
+    /// Capture the current `tab_rects` keyed by tab id, then latch
+    /// `layout_anim_started` so the next few frames render every pill
+    /// interpolating from its old position toward the new one. Called
+    /// from `reorder`, `insert_tab`, and `remove_tab`. No-op on an empty
+    /// layout (first-ever layout pass) — there's nothing to spring from.
+    fn snapshot_layout_for_spring(&mut self) {
+        if self.tab_rects.len() != self.tabs.len() {
+            return;
+        }
+        let mut snap: HashMap<u64, Rect> = HashMap::with_capacity(self.tabs.len());
+        for (i, t) in self.tabs.iter().enumerate() {
+            snap.insert(t.id, self.tab_rects[i]);
+        }
+        self.prev_tab_rects_by_id = snap;
+        self.layout_anim_started = Some(Instant::now());
     }
     pub fn tabs(&self) -> &[TabDescriptor] { &self.tabs }
     pub fn tabs_mut(&mut self) -> &mut Vec<TabDescriptor> { &mut self.tabs }
@@ -141,6 +181,10 @@ impl TabBar {
     pub fn set_active(&mut self, id: u64) { if self.tabs.iter().any(|t| t.id == id) { self.active_id = id; } }
     pub fn remove_tab(&mut self, id: u64) -> Option<usize> {
         let idx = self.tabs.iter().position(|t| t.id == id)?;
+        // Snapshot current pill geometry *before* mutating so the spring
+        // has something to interpolate from. Survivors fly toward their
+        // new rect; the removed tab has no target and simply disappears.
+        self.snapshot_layout_for_spring();
         self.tabs.remove(idx);
         if self.active_id == id {
             self.active_id = self.tabs.get(idx).or_else(|| self.tabs.last()).map(|t| t.id).unwrap_or(0);
@@ -149,6 +193,7 @@ impl TabBar {
     }
     pub fn reorder(&mut self, from: usize, to: usize) {
         if from >= self.tabs.len() || to >= self.tabs.len() || from == to { return; }
+        self.snapshot_layout_for_spring();
         let t = self.tabs.remove(from);
         self.tabs.insert(to, t);
     }
@@ -195,6 +240,12 @@ impl TabBar {
     pub fn insert_tab(&mut self, idx: usize, desc: TabDescriptor) {
         let clamped = idx.min(self.tabs.len());
         let id = desc.id;
+        // Snapshot existing pill rects so neighbours visibly slide aside
+        // to make room. The newly inserted tab isn't in `prev_*`, so
+        // `draw` renders it at its target rect immediately — which is the
+        // right call: the concept's inserted pills pop in opaque, they
+        // don't fade from nothing.
+        self.snapshot_layout_for_spring();
         self.tabs.insert(clamped, desc);
         self.active_id = id;
     }
@@ -284,8 +335,40 @@ impl Widget for TabBar {
         let radius = pill_height / 2.0;
         let text_primary = theme.tokens.colors.text_primary;
         let text_dim = theme.tokens.colors.text_dim;
+
+        // Tab-layout spring. If a reorder/insert/remove just happened,
+        // every surviving pill interpolates from its previous rect to
+        // its target `tab_rects[i]` over `LAYOUT_ANIM_MS`. Tabs that
+        // weren't in the snapshot (brand new) render at target
+        // immediately — matches concept's AnimatePresence where only
+        // existing items animate layout changes.
+        let layout_t = self.layout_anim_started.and_then(|t| {
+            let elapsed = t.elapsed();
+            if elapsed >= Duration::from_millis(LAYOUT_ANIM_MS) {
+                None
+            } else {
+                let raw = elapsed.as_secs_f64() / (LAYOUT_ANIM_MS as f64 / 1000.0);
+                // Ease-out-cubic, matching the drop-zone curve above.
+                Some(1.0 - (1.0 - raw).powi(3))
+            }
+        });
+
         for (i, t) in self.tabs.iter().enumerate() {
-            let r = self.tab_rects[i];
+            let target = self.tab_rects[i];
+            // Visual rect = interpolation of prev → target if we have a
+            // snapshot for this tab id and a spring is in flight. No
+            // snapshot (new tab) or no active spring → render at target.
+            let r = match (layout_t, self.prev_tab_rects_by_id.get(&t.id)) {
+                (Some(tt), Some(prev)) => Rect::new(
+                    prev.x0 + (target.x0 - prev.x0) * tt,
+                    prev.y0 + (target.y0 - prev.y0) * tt,
+                    prev.x1 + (target.x1 - prev.x1) * tt,
+                    prev.y1 + (target.y1 - prev.y1) * tt,
+                ),
+                _ => target,
+            };
+            let dx = r.x0 - target.x0;
+            let dy = r.y0 - target.y0;
             let is_active = t.id == self.active_id;
             let is_hover = Some(i) == self.hover_idx;
             // Active: `white/10` translucent; inactive: `white/5`; hover: bumped.
@@ -368,7 +451,12 @@ impl Widget for TabBar {
             // Close button: rendered always but emphasised on hover of the
             // tab or the close rect itself. Concept-aligned: a "×" glyph on
             // a subtle hover chip.
-            let close_r = self.close_rects[i];
+            // During a layout spring, offset the hit-test rect by (dx, dy)
+            // so the glyph tracks the pill. Hit-testing still uses
+            // `self.close_rects[i]` unchanged, so the cursor interacts
+            // with the target position — a reasonable trade for a 180 ms
+            // animation.
+            let close_r = self.close_rects[i] + vello::kurbo::Vec2::new(dx, dy);
             let close_hover = Some(i) == self.hover_close_idx;
             let close_chip_alpha: u8 = if close_hover { 64 } else if is_hover { 28 } else { 0 };
             if close_chip_alpha > 0 {
@@ -388,7 +476,7 @@ impl Widget for TabBar {
             // it reads as a generic "grow window" glyph without needing a
             // bespoke icon font.
             if is_hover {
-                let max_r = self.max_rects[i];
+                let max_r = self.max_rects[i] + vello::kurbo::Vec2::new(dx, dy);
                 let max_hover = Some(i) == self.hover_max_idx;
                 if max_hover {
                     let chip = RoundedRect::from_rect(max_r, max_r.height() / 2.0);
@@ -417,7 +505,7 @@ impl Widget for TabBar {
                 // Search icon — "magnifying glass" built from a 5 px circle
                 // plus a short diagonal handle line, so we don't need an
                 // icon-font codepoint. Concept's third hover-reveal action.
-                let search_r = self.search_rects[i];
+                let search_r = self.search_rects[i] + vello::kurbo::Vec2::new(dx, dy);
                 let search_hover = Some(i) == self.hover_search_idx;
                 if search_hover {
                     let chip = RoundedRect::from_rect(search_r, search_r.height() / 2.0);
@@ -660,14 +748,22 @@ impl Widget for TabBar {
     fn wants_pointer_capture(&self) -> bool { self.press_origin.is_some() || self.pending_drag.is_some() }
     fn accepts_drop(&self, payload: &DragPayload) -> bool { matches!(payload, DragPayload::Tab { .. }) }
     fn needs_animation_frame(&self) -> bool {
-        // Keep the host pumping redraws while the drop-zone expand curve
-        // is still interpolating. `drop_zone_animated_at` is cleared on
-        // release, so at rest (no drag) this returns false and widgets
-        // above us (`WindowGroup`, `GroupRow`, …) can still be static.
-        match self.drop_zone_animated_at {
-            Some(t) => t.elapsed() < Duration::from_millis(DROP_ZONE_ANIM_MS),
-            None => false,
-        }
+        // Keep the host pumping redraws while either of the two animations
+        // are still in flight:
+        //   1. Drop-zone expand curve while a drag is pending (140 ms).
+        //   2. Tab-layout spring after reorder/insert/remove (180 ms).
+        // At rest (no drag, no layout change) both return false and the
+        // wrapping widgets (`WindowGroup`, `GroupRow`, `ShellOverlayHost`)
+        // can stop pumping frames.
+        let drop_zone = self
+            .drop_zone_animated_at
+            .map(|t| t.elapsed() < Duration::from_millis(DROP_ZONE_ANIM_MS))
+            .unwrap_or(false);
+        let layout = self
+            .layout_anim_started
+            .map(|t| t.elapsed() < Duration::from_millis(LAYOUT_ANIM_MS))
+            .unwrap_or(false);
+        drop_zone || layout
     }
 }
 
@@ -973,6 +1069,96 @@ mod tests {
         // If A and B both hit the floor, at least verify the call-path
         // is live — i.e. the typed descriptor still computes a rect.
         assert!(width_b > 0.0);
+    }
+
+    #[test]
+    fn reorder_starts_layout_spring_and_snapshots_prev_rects() {
+        // Before reorder: no snapshot, no animation.
+        let mut b = bar();
+        assert!(b.prev_tab_rects_by_id.is_empty());
+        assert!(b.layout_anim_started.is_none());
+        assert!(!b.needs_animation_frame());
+
+        // Seed `tab_rects` so the snapshot has something to capture —
+        // this is what `apply_layout` would leave behind in production.
+        b.tab_rects = vec![
+            Rect::new(0.0, 6.0, 80.0, 34.0),
+            Rect::new(86.0, 6.0, 166.0, 34.0),
+            Rect::new(172.0, 6.0, 252.0, 34.0),
+        ];
+
+        // Trigger a reorder. Snapshot must capture the pre-reorder rects
+        // keyed by id, and the spring must start.
+        b.reorder(0, 2);
+        assert_eq!(b.prev_tab_rects_by_id.len(), 3);
+        assert_eq!(
+            b.prev_tab_rects_by_id.get(&1).copied(),
+            Some(Rect::new(0.0, 6.0, 80.0, 34.0)),
+            "tab 1's pre-reorder rect must be captured"
+        );
+        assert!(b.layout_anim_started.is_some());
+        assert!(
+            b.needs_animation_frame(),
+            "fresh reorder must request animation frames"
+        );
+    }
+
+    #[test]
+    fn insert_tab_triggers_layout_spring() {
+        // Inserting a tab into an existing bar must spring neighbours
+        // aside — same mechanism as reorder. Verify the animation
+        // started and the pre-insert rects were captured.
+        let mut b = bar();
+        b.tab_rects = vec![
+            Rect::new(0.0, 6.0, 80.0, 34.0),
+            Rect::new(86.0, 6.0, 166.0, 34.0),
+            Rect::new(172.0, 6.0, 252.0, 34.0),
+        ];
+        b.insert_tab(1, TabDescriptor::new(99, "NEW"));
+        assert!(b.layout_anim_started.is_some());
+        assert!(b.needs_animation_frame());
+        // The new tab 99 is *not* in the snapshot — it renders at target
+        // immediately (no fly-in), which the draw path guards with
+        // `prev_tab_rects_by_id.get(...)`.
+        assert!(!b.prev_tab_rects_by_id.contains_key(&99));
+        // Existing tabs must be in the snapshot so their old positions
+        // are known to the interpolator.
+        assert!(b.prev_tab_rects_by_id.contains_key(&1));
+    }
+
+    #[test]
+    fn remove_tab_triggers_layout_spring() {
+        let mut b = bar();
+        b.tab_rects = vec![
+            Rect::new(0.0, 6.0, 80.0, 34.0),
+            Rect::new(86.0, 6.0, 166.0, 34.0),
+            Rect::new(172.0, 6.0, 252.0, 34.0),
+        ];
+        b.remove_tab(2);
+        assert!(b.layout_anim_started.is_some());
+        assert!(b.needs_animation_frame());
+        // Survivors are all in the snapshot so they slide into the freed
+        // slot; the removed id is in the snapshot too (the method
+        // captures *before* the remove), which is harmless — there's no
+        // rendered tab to look it up against.
+        assert!(b.prev_tab_rects_by_id.contains_key(&1));
+        assert!(b.prev_tab_rects_by_id.contains_key(&3));
+    }
+
+    #[test]
+    fn layout_spring_clears_itself_after_duration() {
+        // After `LAYOUT_ANIM_MS` has elapsed, `needs_animation_frame`
+        // must go quiet so the host stops redrawing. We simulate this
+        // by backdating `layout_anim_started` — a real reorder's
+        // timestamp will reach this state naturally after 180 ms.
+        let mut b = bar();
+        b.layout_anim_started = Some(
+            Instant::now() - Duration::from_millis(LAYOUT_ANIM_MS + 50),
+        );
+        assert!(
+            !b.needs_animation_frame(),
+            "elapsed animation must not request frames"
+        );
     }
 
     #[test]
