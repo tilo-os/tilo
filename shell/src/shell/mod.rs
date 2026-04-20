@@ -1079,6 +1079,16 @@ fn to_ui_tile(t: &ShellTile) -> UiTile {
 /// active workspace's active strip as a `StripView` overlay above the active
 /// `WorkspaceView`, with placeholder window-groups laid out horizontally.
 pub fn build_nirios_root(tree: &WorkspaceTree) -> Box<dyn Widget> {
+    let (root, _chrome) = build_nirios_root_with_chrome(tree);
+    root
+}
+
+/// Same as [`build_nirios_root`] but also returns the shared chrome handle
+/// owned by the returned root. Integration tests use it to observe overlay
+/// toggles without having to drill through the widget tree.
+pub fn build_nirios_root_with_chrome(
+    tree: &WorkspaceTree,
+) -> (Box<dyn Widget>, chrome_state::Chrome) {
     let chrome = chrome_state::ChromeState::new(tree.clone());
 
     let strips_for_view: Vec<String> = tree
@@ -1153,7 +1163,9 @@ pub fn build_nirios_root(tree: &WorkspaceTree) -> Box<dyn Widget> {
             .with_child(Box::new(root_col))
             .filling(),
     );
-    Box::new(overlay_host::ShellOverlayHost::new(root).with_chrome(chrome))
+    let host = overlay_host::ShellOverlayHost::new(root).with_chrome(chrome.clone());
+    let host: Box<dyn Widget> = Box::new(host);
+    (host, chrome)
 }
 
 /// Seed a [`PresenceCtx`] with per-tab presence attributions derived

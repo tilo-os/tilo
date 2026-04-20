@@ -17,7 +17,7 @@ use quick_desktop::shell::sidebar_wheel::SidebarWheel;
 use quick_desktop::shell::sidebar_wheel_chrome::SidebarWheelChrome;
 use quick_desktop::shell::state::{Collaborator, WorkspaceTree};
 use quick_desktop::shell::topbar_chrome::{CenterWidget, TopBarChrome};
-use quick_desktop::shell::{build_nirios_root, state::TileContent};
+use quick_desktop::shell::{build_nirios_root, build_nirios_root_with_chrome, state::TileContent};
 
 use quick_ui::widget::Widget;
 
@@ -628,4 +628,404 @@ fn chrome_file_drop_appends_tab_and_bumps_revision() {
     assert_eq!(group.active_tab, tab_id);
     assert_eq!(group.tabs.len(), before_tab_count + 1);
     assert_eq!(group.tabs.last().unwrap().title, "main.ts");
+}
+
+/// Clicking the top-bar overview button must toggle
+/// `chrome.overlays.overview`. This test drives the widget end-to-end:
+/// build_layout → compute → apply_layout → draw (populates the
+/// button rect) → CursorMoved + MouseInput::Pressed → assert.
+///
+/// Reproduces the user-reported "overview button doesn't work" bug
+/// (ralph-loop iter, 2026-04-20): if the event dispatch path is
+/// intercepted before TopBarChrome sees the click, `overview` stays
+/// false.
+#[test]
+fn overview_button_click_toggles_overview_overlay() {
+    use automerge::AutoCommit;
+    use quick_ui::presence::PresenceCtx;
+    use quick_ui::text_render::TextRenderer;
+    use quick_ui::theme::Theme;
+    use std::collections::HashMap;
+    use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+    use vello::Scene;
+    use vello::kurbo::{Affine, Point};
+    use winit::dpi::PhysicalPosition;
+    use winit::event::{ElementState, MouseButton, WindowEvent};
+
+    let tree = WorkspaceTree::bootstrap_default();
+    let chrome = ChromeState::new(tree.clone());
+    assert!(!chrome.borrow().overlays.overview, "precondition: overview starts closed");
+
+    let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+
+    let theme = Theme::dark();
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let node = bar.build_layout(&mut taffy, &theme, &mut node_map);
+    // Wrap the bar in a viewport so it lays out inside known bounds.
+    let viewport = taffy
+        .new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(1600.0),
+                    height: Dimension::length(900.0),
+                },
+                ..Default::default()
+            },
+            &[node],
+        )
+        .unwrap();
+    taffy
+        .compute_layout_with_measure(
+            viewport,
+            Size {
+                width: AvailableSpace::Definite(1600.0),
+                height: AvailableSpace::Definite(900.0),
+            },
+            |_, _, _, _, _| taffy::Size::ZERO,
+        )
+        .expect("compute_layout");
+    bar.apply_layout(&taffy, node, Point::ORIGIN);
+
+    // Draw once to populate `overview_btn_rect`.
+    let mut scene = Scene::new();
+    let mut tr = TextRenderer::new();
+    let presence = PresenceCtx::default();
+    bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+
+    let btn = bar.overview_btn_rect();
+    assert!(btn.area() > 0.0, "draw should have populated overview_btn_rect");
+    let hit = Point::new((btn.x0 + btn.x1) / 2.0, (btn.y0 + btn.y1) / 2.0);
+
+    // Synthesise a cursor move + press at the button centre. The widget
+    // tracks cursor internally because winit delivers MouseInput without
+    // a position.
+    let mut state = AutoCommit::new();
+    let root = automerge::ROOT.clone();
+    let mut handled = false;
+    let mut focus: Option<NodeId> = None;
+    let modifiers = winit::event::Modifiers::default();
+
+    let cm = WindowEvent::CursorMoved {
+        device_id: unsafe { std::mem::zeroed() },
+        position: PhysicalPosition::new(hit.x, hit.y),
+    };
+    bar.handle_event(&cm, 1.0, &modifiers, &mut state, &root, &mut handled, &mut focus, node, &taffy);
+    let mi = WindowEvent::MouseInput {
+        device_id: unsafe { std::mem::zeroed() },
+        state: ElementState::Pressed,
+        button: MouseButton::Left,
+    };
+    bar.handle_event(&mi, 1.0, &modifiers, &mut state, &root, &mut handled, &mut focus, node, &taffy);
+
+    assert!(handled, "click on overview button should be handled by the top bar");
+    assert!(
+        chrome.borrow().overlays.overview,
+        "first click should open the overview overlay"
+    );
+
+    // Second click closes it again.
+    let mut handled2 = false;
+    bar.handle_event(&mi, 1.0, &modifiers, &mut state, &root, &mut handled2, &mut focus, node, &taffy);
+    assert!(handled2);
+    assert!(
+        !chrome.borrow().overlays.overview,
+        "second click should close the overview overlay again"
+    );
+}
+
+/// Drive the **full** `build_nirios_root` tree (ShellOverlayHost →
+/// Container → Column → TopBarChrome + …) with a synthetic click on the
+/// overview button. Reproduces the user-reported bug where the button did
+/// nothing in the real shell: routing via `ShellOverlayHost::handle_event`
+/// must reach `TopBarChrome`, not be short-circuited by an overlay
+/// click-guard.
+///
+/// The test locates the button rect by building a throwaway sibling
+/// `TopBarChrome` laid out in the same viewport and reading its
+/// `overview_btn_rect()`. Topbar geometry is purely DPI/width-driven, so
+/// the sibling's rect matches the real tree's.
+#[test]
+fn full_root_click_toggles_overview_via_topbar_button() {
+    use automerge::AutoCommit;
+    use quick_ui::presence::PresenceCtx;
+    use quick_ui::text_render::TextRenderer;
+    use quick_ui::theme::Theme;
+    use std::collections::HashMap;
+    use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+    use vello::Scene;
+    use vello::kurbo::{Affine, Point};
+    use winit::dpi::PhysicalPosition;
+    use winit::event::{ElementState, MouseButton, WindowEvent};
+
+    const W: f32 = 1600.0;
+    const H: f32 = 900.0;
+
+    let tree = WorkspaceTree::bootstrap_default();
+
+    // Probe: a sibling TopBarChrome laid out standalone at the same width.
+    // We draw it once so its overview_btn_rect is populated and we know
+    // the click coords.
+    let probe_chrome = ChromeState::new(tree.clone());
+    let mut probe = TopBarChrome::from_tree(&tree).with_chrome(probe_chrome.clone());
+    let theme = Theme::dark();
+    let mut probe_taffy: TaffyTree<()> = TaffyTree::new();
+    let mut probe_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let pnode = probe.build_layout(&mut probe_taffy, &theme, &mut probe_map);
+    let pvp = probe_taffy
+        .new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(W as f32),
+                    height: Dimension::length(H as f32),
+                },
+                ..Default::default()
+            },
+            &[pnode],
+        )
+        .unwrap();
+    probe_taffy
+        .compute_layout_with_measure(
+            pvp,
+            Size {
+                width: AvailableSpace::Definite(W),
+                height: AvailableSpace::Definite(H),
+            },
+            |_, _, _, _, _| taffy::Size::ZERO,
+        )
+        .expect("probe compute_layout");
+    // Match the real tree's layout: the topbar sits inside a Column
+    // (padding = `padding_standard * 2`) inside a Container (padding =
+    // `padding_standard`), so the topbar origin in the real tree is
+    // `padding_standard * 3` down and in from the viewport. Mirror that
+    // offset on the probe so the button rect's coordinates line up with
+    // what the real tree will hit-test against.
+    let topbar_offset = theme.padding_standard as f64 * 3.0;
+    probe.apply_layout(&probe_taffy, pnode, Point::new(topbar_offset, topbar_offset));
+    let mut probe_scene = Scene::new();
+    let mut probe_tr = TextRenderer::new();
+    let probe_presence = PresenceCtx::default();
+    probe.draw(
+        &mut probe_scene,
+        Affine::IDENTITY,
+        &mut probe_tr,
+        &theme,
+        &probe_presence,
+    );
+    let btn = probe.overview_btn_rect();
+    let hit = Point::new((btn.x0 + btn.x1) / 2.0, (btn.y0 + btn.y1) / 2.0);
+
+    // Real tree: drive the full root through winit events.
+    let (mut root, chrome) = build_nirios_root_with_chrome(&tree);
+    assert!(!chrome.borrow().overlays.overview);
+
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let root_node = root.build_layout(&mut taffy, &theme, &mut node_map);
+    let vp = taffy
+        .new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(W),
+                    height: Dimension::length(H),
+                },
+                ..Default::default()
+            },
+            &[root_node],
+        )
+        .unwrap();
+    let mut tr = TextRenderer::new();
+    taffy
+        .compute_layout_with_measure(
+            vp,
+            Size {
+                width: AvailableSpace::Definite(W),
+                height: AvailableSpace::Definite(H),
+            },
+            |known, available, node_id, _, _| {
+                if let Some(&ptr) = node_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, available, &mut tr) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        )
+        .expect("compute_layout");
+    root.apply_layout(&taffy, root_node, Point::ORIGIN);
+
+    // A draw pass is required so the inner TopBarChrome populates its
+    // overview_btn_rect — that's what handle_event hit-tests against.
+    let mut scene = Scene::new();
+    let presence = PresenceCtx::default();
+    root.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+
+    let mut state = AutoCommit::new();
+    let root_path = automerge::ROOT.clone();
+    let modifiers = winit::event::Modifiers::default();
+    let mut focus: Option<NodeId> = None;
+
+    let cm = WindowEvent::CursorMoved {
+        device_id: unsafe { std::mem::zeroed() },
+        position: PhysicalPosition::new(hit.x, hit.y),
+    };
+    let mut handled = false;
+    root.handle_event(
+        &cm,
+        1.0,
+        &modifiers,
+        &mut state,
+        &root_path,
+        &mut handled,
+        &mut focus,
+        root_node,
+        &taffy,
+    );
+
+    let mi = WindowEvent::MouseInput {
+        device_id: unsafe { std::mem::zeroed() },
+        state: ElementState::Pressed,
+        button: MouseButton::Left,
+    };
+    let mut handled = false;
+    root.handle_event(
+        &mi,
+        1.0,
+        &modifiers,
+        &mut state,
+        &root_path,
+        &mut handled,
+        &mut focus,
+        root_node,
+        &taffy,
+    );
+
+    assert!(
+        chrome.borrow().overlays.overview,
+        "click on overview button via full root must open the overview overlay"
+    );
+
+    // Second click while the overview is open must close it again — no
+    // matter *where* the handler for that click lives in the widget tree.
+    // Currently ShellOverlayHost's click-to-activate-workspace handler
+    // swallows the event on any click when `flags.overview` is true; we
+    // just want the end effect (overview closed) to hold.
+    let mut handled = false;
+    root.handle_event(
+        &cm,
+        1.0,
+        &modifiers,
+        &mut state,
+        &root_path,
+        &mut handled,
+        &mut focus,
+        root_node,
+        &taffy,
+    );
+    let mut handled = false;
+    root.handle_event(
+        &mi,
+        1.0,
+        &modifiers,
+        &mut state,
+        &root_path,
+        &mut handled,
+        &mut focus,
+        root_node,
+        &taffy,
+    );
+    assert!(
+        !chrome.borrow().overlays.overview,
+        "second click on the overview button must close the overview overlay"
+    );
+}
+
+/// Clicking the overview button must kick off an animation the host can
+/// keep ticking. `ShellOverlayHost` reports `needs_animation_frame() ==
+/// true` while the transition is still running; `App` polls this in
+/// `AboutToWait` to schedule the next redraw. Without this signal the
+/// overview crossfade would paint one post-click frame at `t ≈ 0` and
+/// then freeze — which is what the user observed as "overview button
+/// doesn't work".
+#[test]
+fn overview_toggle_signals_animation_frames_until_settled() {
+    use automerge::AutoCommit;
+    use quick_ui::presence::PresenceCtx;
+    use quick_ui::text_render::TextRenderer;
+    use quick_ui::theme::Theme;
+    use std::collections::HashMap;
+    use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+    use vello::Scene;
+    use vello::kurbo::{Affine, Point};
+
+    const W: f32 = 1600.0;
+    const H: f32 = 900.0;
+
+    let tree = WorkspaceTree::bootstrap_default();
+    let (mut root, chrome) = build_nirios_root_with_chrome(&tree);
+
+    // Before any interaction no animation is in flight.
+    assert!(!root.needs_animation_frame(), "static root should not request animation frames");
+
+    // Toggle the overview directly via the shared chrome handle — the
+    // click path is covered by other tests; here we only care about the
+    // animation signal.
+    chrome.borrow_mut().overlays.overview = true;
+    chrome.borrow_mut().bump();
+
+    let theme = Theme::dark();
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let node = root.build_layout(&mut taffy, &theme, &mut node_map);
+    let vp = taffy
+        .new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(W),
+                    height: Dimension::length(H),
+                },
+                ..Default::default()
+            },
+            &[node],
+        )
+        .unwrap();
+    let mut tr = TextRenderer::new();
+    taffy
+        .compute_layout_with_measure(
+            vp,
+            Size {
+                width: AvailableSpace::Definite(W),
+                height: AvailableSpace::Definite(H),
+            },
+            |known, available, nid, _, _| {
+                if let Some(&ptr) = node_map.get(&nid) {
+                    unsafe { (*ptr).measure(known, available, &mut tr) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        )
+        .expect("compute_layout");
+    root.apply_layout(&taffy, node, Point::ORIGIN);
+
+    // First draw: sets `overview_target = 1.0` and arms `transition_started`.
+    let mut scene = Scene::new();
+    let presence = PresenceCtx::default();
+    let _ = AutoCommit::new();
+    root.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+
+    assert!(
+        root.needs_animation_frame(),
+        "host must request animation frames while the overview crossfade is in flight"
+    );
+
+    // Drive the animation to completion: sleep longer than the configured
+    // transition duration, then draw once more so the elapsed check
+    // inside `tick_overview_transition` clears `transition_started`.
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    root.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+
+    assert!(
+        !root.needs_animation_frame(),
+        "host must stop requesting animation frames once the crossfade settles"
+    );
 }
