@@ -450,6 +450,19 @@ impl Widget for ShellOverlayHost {
             ));
         }
 
+        // File-drop (§10, concept `DesktopView.tsx:187-205`) — route the
+        // winit `WindowEvent::DroppedFile` payload straight into chrome
+        // state so the active workspace's first group gets a new tab.
+        // Consumes the event so downstream widgets don't re-handle it.
+        if let WindowEvent::DroppedFile(path) = event {
+            if let Some(chrome) = &self.chrome {
+                if chrome.borrow_mut().handle_file_drop(path).is_some() {
+                    *handled = true;
+                    return;
+                }
+            }
+        }
+
         // Global shortcuts first — ⌘K / Ctrl+K toggles the palette, ⌘Tab
         // toggles the overview, and Esc closes whichever overlay is on top.
         if let WindowEvent::KeyboardInput {
