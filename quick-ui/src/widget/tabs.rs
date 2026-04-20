@@ -360,6 +360,12 @@ impl Widget for TabBar {
         let radius = pill_height / 2.0;
         let text_primary = theme.tokens.colors.text_primary;
         let text_dim = theme.tokens.colors.text_dim;
+        // `neutral[1]` = slate-900; used as dark title on the white active
+        // pill. `neutral[5]` = slate-500; used as a dimmer tone for
+        // hover-reveal icons on the active pill (below `text_primary`
+        // white but above the near-black title).
+        let slate_900 = theme.tokens.colors.neutral[1];
+        let slate_500 = theme.tokens.colors.neutral[5];
 
         // Tab-layout spring. If a reorder/insert/remove just happened,
         // every surviving pill interpolates from its previous rect to
@@ -455,21 +461,55 @@ impl Widget for TabBar {
             let transform = pill_transform;
             let is_active = t.id == self.active_id;
             let is_hover = Some(i) == self.hover_idx;
-            // Active: `white/10` translucent; inactive: `white/5`; hover: bumped.
-            let fill_alpha: u8 = if is_active { 38 } else if is_hover { 26 } else { 13 };
-            let fill = vello::peniko::Color::rgba8(255, 255, 255, fill_alpha);
+            // Active pill reads as an extension of the white content card
+            // beneath: near-white fill, dark slate-900 title text. Inactive
+            // pills stay on the dark shell as translucent slate with a
+            // dimmed slate-400 title, bumping up on hover. This is a bigger
+            // contrast delta than the earlier flat white/10 vs white/5
+            // split, which made the active tab nearly invisible (visual
+            // gap #2 in docs/nirios/visual-gaps.md).
             let shape = RoundedRect::from_rect(r, radius);
-            scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
-            // Faint border to match concept (`white/20` / `white/10`).
-            let border_alpha: u8 = if is_active { 51 } else { 26 };
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                vello::peniko::Color::rgba8(255, 255, 255, border_alpha),
-                None,
-                &shape,
-            );
-            let text_color = if is_active { text_primary } else { text_dim };
+            if is_active {
+                // ~90 % white — matches the card beneath so the pill
+                // reads as continuous with it while still sitting visibly
+                // above the dark shell.
+                let fill = vello::peniko::Color::rgba8(255, 255, 255, 230);
+                scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
+                // Subtle warm-white border reinforces the pill edge
+                // against the card highlight.
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(1.0),
+                    transform,
+                    vello::peniko::Color::rgba8(255, 255, 255, 204),
+                    None,
+                    &shape,
+                );
+            } else {
+                // Inactive / hover: translucent white on the dark shell.
+                // `white/8` idle / `white/25` hover — a clear but still
+                // subdued state.
+                let fill_alpha: u8 = if is_hover { 64 } else { 20 };
+                let fill = vello::peniko::Color::rgba8(255, 255, 255, fill_alpha);
+                scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
+                let border_alpha: u8 = if is_hover { 51 } else { 26 };
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(1.0),
+                    transform,
+                    vello::peniko::Color::rgba8(255, 255, 255, border_alpha),
+                    None,
+                    &shape,
+                );
+            }
+            // Title color follows pill state: active → slate-900 on the
+            // near-white pill; hover → full white (bumped from slate-400);
+            // inactive idle → slate-400 (the `text_dim` token).
+            let text_color = if is_active {
+                slate_900
+            } else if is_hover {
+                text_primary
+            } else {
+                text_dim
+            };
             let text_size = theme.tokens.typography.scale.sm;
             let (tw, th) = tr.measure(&t.title, text_size, None);
             // Paint the leading app-kind icon when one is set — a small
@@ -542,17 +582,43 @@ impl Widget for TabBar {
             // animation.
             let close_r = self.close_rects[i] + vello::kurbo::Vec2::new(dx, dy);
             let close_hover = Some(i) == self.hover_close_idx;
+            // Hover-chip color follows pill state: a translucent black on
+            // the white active pill, translucent white on the dark inactive
+            // pill, so the chip reads as a lifted hit-target in both cases.
             let close_chip_alpha: u8 = if close_hover { 64 } else if is_hover { 28 } else { 0 };
             if close_chip_alpha > 0 {
                 let chip = RoundedRect::from_rect(close_r, close_r.height() / 2.0);
-                scene.fill(vello::peniko::Fill::NonZero, transform, vello::peniko::Color::rgba8(255, 255, 255, close_chip_alpha), None, &chip);
+                let chip_color = if is_active {
+                    // Translucent slate-900 on the white pill so the chip
+                    // reads as a darkening hover target; the base colour
+                    // comes from the theme's neutral ramp.
+                    vello::peniko::Color::rgba8(
+                        slate_900.r,
+                        slate_900.g,
+                        slate_900.b,
+                        close_chip_alpha,
+                    )
+                } else {
+                    vello::peniko::Color::rgba8(255, 255, 255, close_chip_alpha)
+                };
+                scene.fill(vello::peniko::Fill::NonZero, transform, chip_color, None, &chip);
             }
             let glyph = "×";
             let glyph_size = theme.tokens.typography.scale.base;
             let (gw, gh) = tr.measure(glyph, glyph_size, None);
             let gx = close_r.center().x - gw as f64 / 2.0;
             let gy = close_r.center().y - gh as f64 / 2.0;
-            let glyph_color = if close_hover { text_primary } else { text_dim };
+            // Glyph color mirrors title color so icons and title track
+            // the active/inactive contrast delta.
+            let glyph_color = if is_active {
+                // Dim variant on the white pill: slate-500 idle → slate-900
+                // on close-hover.
+                if close_hover { slate_900 } else { slate_500 }
+            } else if close_hover {
+                text_primary
+            } else {
+                text_dim
+            };
             tr.draw_text(scene, glyph, glyph_size, glyph_color, transform * Affine::translate((gx, gy)), None);
 
             // Maximize icon: only visible on pill hover (concept's
@@ -560,6 +626,22 @@ impl Widget for TabBar {
             // it reads as a generic "grow window" glyph without needing a
             // bespoke icon font.
             if is_hover {
+                // Hover-action chips and icons swap polarity on the active
+                // white pill so they stay readable against both dark and
+                // light pill backgrounds.
+                let chip_tint = if is_active {
+                    vello::peniko::Color::rgba8(
+                        slate_900.r,
+                        slate_900.g,
+                        slate_900.b,
+                        48,
+                    )
+                } else {
+                    vello::peniko::Color::rgba8(255, 255, 255, 64)
+                };
+                let icon_idle = if is_active { slate_500 } else { text_dim };
+                let icon_active = if is_active { slate_900 } else { text_primary };
+
                 let max_r = self.max_rects[i] + vello::kurbo::Vec2::new(dx, dy);
                 let max_hover = Some(i) == self.hover_max_idx;
                 if max_hover {
@@ -567,7 +649,7 @@ impl Widget for TabBar {
                     scene.fill(
                         vello::peniko::Fill::NonZero,
                         transform,
-                        vello::peniko::Color::rgba8(255, 255, 255, 64),
+                        chip_tint,
                         None,
                         &chip,
                     );
@@ -577,7 +659,7 @@ impl Widget for TabBar {
                 let cx = max_r.center().x;
                 let cy = max_r.center().y;
                 let square = Rect::new(cx - s / 2.0, cy - s / 2.0, cx + s / 2.0, cy + s / 2.0);
-                let outline_color = if max_hover { text_primary } else { text_dim };
+                let outline_color = if max_hover { icon_active } else { icon_idle };
                 scene.stroke(
                     &vello::kurbo::Stroke::new(1.2),
                     transform,
@@ -596,12 +678,12 @@ impl Widget for TabBar {
                     scene.fill(
                         vello::peniko::Fill::NonZero,
                         transform,
-                        vello::peniko::Color::rgba8(255, 255, 255, 64),
+                        chip_tint,
                         None,
                         &chip,
                     );
                 }
-                let icon_color = if search_hover { text_primary } else { text_dim };
+                let icon_color = if search_hover { icon_active } else { icon_idle };
                 // Slightly off-centre to make room for the diagonal handle.
                 let scx = search_r.center().x - 1.0;
                 let scy = search_r.center().y - 1.0;
