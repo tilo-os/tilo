@@ -22,3 +22,4 @@ uuid = { version = "1.15", features = ["v4", "serde"] }
 
 [dev-dependencies]
 regex = "1"
+png = "0.17"
