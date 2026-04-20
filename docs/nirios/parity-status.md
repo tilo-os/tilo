@@ -232,3 +232,17 @@ for chrome density). Outstanding infrastructure-level items:
    modal_open_curve_settles_at_rest_after_duration,
    palette_rising_edge_stamps_opened_at_and_pumps_frames,
    ws_settings_close_clears_opened_at}`).
+
+7. **Sidebar card hover-scale** — ✅ concept's `DesktopView.tsx:446`
+   `whileHover={{ scale: 1.05 }}` on each workspace card in the left
+   sidebar wheel ported to `SidebarWheelChrome::draw`. For every
+   non-active card, when the hover bookkeeping marks the card as
+   hovered we compose `transform * translate(cx, cy) * scale(1.05) *
+   translate(-cx, -cy)` (scale-about-center) and route the pill fill,
+   glyph text, subtitle text, per-peer presence dots, and overflow
+   `+N` chip through that derived `card_xform`. The active card's
+   indigo ring stays on the base transform (intentional — it keeps
+   its geometric anchor while hovered neighbours lift toward the
+   cursor). Opt-in by construction: non-hovered or active cards
+   continue to paint on the base transform, so no regression for the
+   steady-state render path.
