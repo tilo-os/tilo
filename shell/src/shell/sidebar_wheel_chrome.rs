@@ -14,12 +14,13 @@
 //! `absolute left-0 top-0 bottom-0 w-24` with no background column).
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, PathEl, Point, Rect, RoundedRect};
-use vello::peniko::Fill;
+use vello::kurbo::{Affine, BezPath, Circle, PathEl, Point, Rect, RoundedRect, Stroke};
+use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::WindowEvent;
 
 use quick_ui::presence::PresenceCtx;
@@ -97,6 +98,16 @@ pub struct SidebarWheelChrome {
     /// threshold during a press, so the release branch knows to *skip* the
     /// click-to-activate action a pure click would have fired.
     drag_moved: bool,
+    /// Eased [0.0, 1.0] progress for the pill highlight + rim arc. 1.0 is
+    /// the fully-expanded pose (hover or drag in flight); 0.0 is the
+    /// collapsed 4-px-strip pose. Stepped per-frame in `draw` toward the
+    /// current `is_expanded()` signal over `EXPAND_ANIM_MS` ms using
+    /// smoothstep easing. Mirrors the concept's motion-layer eased
+    /// transitions at `DesktopView.tsx:238-248` / `:306-314`.
+    pill_anim_t: f32,
+    /// Timestamp of the last `draw` call so we can compute `dt` without
+    /// relying on a frame-scheduler tick. `None` until the first frame.
+    last_frame_time: Option<Instant>,
 }
 
 /// One full card's worth of vertical travel before we rotate the wheel. The
@@ -107,6 +118,10 @@ const DRAG_SWITCH_THRESHOLD_PX: f64 = 74.0;
 /// A press that never exceeds this pixel radius counts as a click and falls
 /// through to the existing card-activate / create-workspace intents.
 const DRAG_CLICK_TOLERANCE_PX: f64 = 4.0;
+
+/// Milliseconds for the pill-highlight + rim-arc expand/collapse ease. Mirrors
+/// the React concept's default motion-layer transition duration.
+const EXPAND_ANIM_MS: f32 = 300.0;
 
 impl SidebarWheelChrome {
     pub fn from_tree(tree: &WorkspaceTree) -> Self {
@@ -127,6 +142,8 @@ impl SidebarWheelChrome {
             drag_last_y: None,
             drag_accum: 0.0,
             drag_moved: false,
+            pill_anim_t: 0.0,
+            last_frame_time: None,
         };
         this.sync_from_tree(tree);
         this
@@ -195,6 +212,15 @@ impl SidebarWheelChrome {
     /// each frame to forward to its state mutation handlers.
     pub fn take_intent(&mut self) -> Option<SidebarIntent> {
         self.pending_intent.take()
+    }
+
+    /// Whether the wheel is in its "expanded" pose — same trigger that the
+    /// concept uses (`isStripsExpanded` at `DesktopView.tsx:238-323`) to
+    /// bloom the pill highlight + rim arc. We OR hover (any card or the
+    /// `+` card) with drag-rotate in flight so the chrome reads as live
+    /// the whole time a rotate gesture is happening.
+    fn is_expanded(&self) -> bool {
+        self.hover_idx.is_some() || self.hover_plus || self.drag_start_y.is_some()
     }
 }
 
@@ -307,6 +333,91 @@ impl Widget for SidebarWheelChrome {
                 None,
                 &backdrop_rr,
             );
+        }
+
+        // Step the pill/rim expansion animation toward the current target
+        // pose using real elapsed time so the ease stays framerate-
+        // independent. Smoothstep matches the concept's default motion-
+        // layer ease (`DesktopView.tsx:238-248` / `:306-314`).
+        let now = Instant::now();
+        let dt = match self.last_frame_time {
+            Some(prev) => now.duration_since(prev).as_secs_f32().min(0.1),
+            None => 0.0,
+        };
+        self.last_frame_time = Some(now);
+        let target = if self.is_expanded() { 1.0_f32 } else { 0.0_f32 };
+        let step = if EXPAND_ANIM_MS > 0.0 {
+            (dt * 1000.0) / EXPAND_ANIM_MS
+        } else {
+            1.0
+        };
+        if self.pill_anim_t < target {
+            self.pill_anim_t = (self.pill_anim_t + step).min(target);
+        } else if self.pill_anim_t > target {
+            self.pill_anim_t = (self.pill_anim_t - step).max(target);
+        }
+        let p = self.pill_anim_t.clamp(0.0, 1.0);
+        let eased = p * p * (3.0 - 2.0 * p);
+
+        // ---- Pill highlight ------------------------------------------------
+        // Collapsed: 4 px-wide strip pressed against the left edge, translated
+        // a further 10 px left so it reads as a hairline hugging the sidebar's
+        // outer margin, at 20 % opacity. Expanded: full inset-4 width pill
+        // centered inside the sidebar, full opacity. Concept:
+        // `DesktopView.tsx:238-248`.
+        let pill_y0 = self.rect.y0 + 32.0; // `inset-y-8` in Tailwind = 32 px
+        let pill_y1 = self.rect.y1 - 32.0;
+        if pill_y1 > pill_y0 {
+            let expanded_x0 = self.rect.x0 + 4.0;
+            let expanded_x1 = self.rect.x1 - 4.0;
+            let collapsed_x0 = self.rect.x0 - 10.0;
+            let collapsed_x1 = collapsed_x0 + 4.0;
+            let x0 = collapsed_x0 as f32 + (expanded_x0 as f32 - collapsed_x0 as f32) * eased;
+            let x1 = collapsed_x1 as f32 + (expanded_x1 as f32 - collapsed_x1 as f32) * eased;
+            let opacity = 0.2 + 0.8 * eased;
+            let pill_rect = Rect::new(x0 as f64, pill_y0, x1 as f64, pill_y1);
+            let radius = pill_rect.height() / 2.0;
+            let pill = RoundedRect::from_rect(pill_rect, radius);
+            // `bg-white/5` = alpha 13/255, `border-white/10` = alpha 26/255.
+            // Scale by the opacity multiplier so a collapsed pill reads
+            // softer than the expanded bloom.
+            let fill_a = (13.0 * opacity).round().clamp(0.0, 255.0) as u8;
+            let stroke_a = (26.0 * opacity).round().clamp(0.0, 255.0) as u8;
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                Color::rgba8(255, 255, 255, fill_a),
+                None,
+                &pill,
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                Color::rgba8(255, 255, 255, stroke_a),
+                None,
+                &pill,
+            );
+        }
+
+        // ---- Wheel rim arc -------------------------------------------------
+        // Huge faint circle behind the cards; only the right-most sliver is
+        // visible inside the sidebar rect. Fades in with the pill. Concept:
+        // `DesktopView.tsx:306-314`.
+        if eased > 0.0 {
+            let cx = self.rect.x0 + 50.0;
+            let cy = (self.rect.y0 + self.rect.y1) / 2.0;
+            let rim = Circle::new((cx, cy), 600.0);
+            // Clip the rim to the sidebar bounds so the large circle doesn't
+            // bleed out into the desktop behind/beside the wheel.
+            scene.push_layer(BlendMode::default(), eased, transform, &self.rect);
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                Color::rgba8(255, 255, 255, 13), // white/5
+                None,
+                &rim,
+            );
+            scene.pop_layer();
         }
 
         // Draw each workspace card.
