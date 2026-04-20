@@ -24,12 +24,18 @@ pub struct TabBar {
     /// when the pill is hovered, mirroring the concept's hover-reveal
     /// action row.
     max_rects: Vec<Rect>,
+    /// Hover-only "search in app" hit regions, aligned 1:1 with `tabs`.
+    /// Sits left of the maximize icon and mirrors the third concept
+    /// action button: clicking it publishes `pending_search` for the
+    /// shell to open the command palette scoped to that tab.
+    search_rects: Vec<Rect>,
     hover_idx: Option<usize>,
     hover_close_idx: Option<usize>,
     /// Tab whose maximize icon the pointer is currently over. Kept
     /// separate from `hover_close_idx` so their hover visuals don't bleed
     /// into each other.
     hover_max_idx: Option<usize>,
+    hover_search_idx: Option<usize>,
     press_origin: Option<(usize, Point)>,
     last_cursor: Point,
     pub pending_drag: Option<DragPayload>,
@@ -40,6 +46,10 @@ pub struct TabBar {
     /// state so the shell can paint concept-style floating controls over
     /// a full-bleed tile.
     pub pending_max: Option<u64>,
+    /// Populated when the user clicks the hover-only search icon on a
+    /// tab. The shell drains this and opens the command palette scoped
+    /// to that tab (concept's "Search in App" per-tab action).
+    pub pending_search: Option<u64>,
     /// Populated when a drag gesture is released while the cursor is
     /// *outside* this bar's own rect — the user intends to move the tab
     /// to a different window-group. Carries `(tab_id, release_point)` so
@@ -60,15 +70,18 @@ impl TabBar {
             tab_rects: Vec::new(),
             close_rects: Vec::new(),
             max_rects: Vec::new(),
+            search_rects: Vec::new(),
             hover_idx: None,
             hover_close_idx: None,
             hover_max_idx: None,
+            hover_search_idx: None,
             press_origin: None,
             last_cursor: Point::ZERO,
             pending_drag: None,
             pending_reorder: None,
             pending_close: None,
             pending_max: None,
+            pending_search: None,
             pending_detach: None,
         }
     }
@@ -97,6 +110,7 @@ impl TabBar {
     pub fn take_reorder(&mut self) -> Option<(usize, usize)> { self.pending_reorder.take() }
     pub fn take_close(&mut self) -> Option<u64> { self.pending_close.take() }
     pub fn take_max(&mut self) -> Option<u64> { self.pending_max.take() }
+    pub fn take_search(&mut self) -> Option<u64> { self.pending_search.take() }
     /// Drain a cross-group detach request if any. See [`Self::pending_detach`].
     pub fn take_detach(&mut self) -> Option<(u64, Point)> { self.pending_detach.take() }
     /// Expose the bar's own rect so a parent widget (e.g. `GroupRow`) can
@@ -152,26 +166,31 @@ impl Widget for TabBar {
         self.tab_rects.clear();
         self.close_rects.clear();
         self.max_rects.clear();
+        self.search_rects.clear();
         let gap = 6.0_f64;
         let pad_x = 12.0_f64;
         let close_w = 18.0_f64;
         let max_w = 16.0_f64;
+        let search_w = 16.0_f64;
         let close_inset = 4.0_f64;
         let mut x = self.rect.x0;
         for t in &self.tabs {
             let approx_char_w = 7.0_f64;
             let title_w = t.title.chars().count() as f64 * approx_char_w;
-            // Reserve room for both the close glyph and the hover-reveal
-            // maximize icon so pills don't resize when you hover them.
-            let w = (title_w + pad_x * 2.0 + close_w + max_w).max(84.0);
+            // Reserve room for the close glyph + both hover-reveal icons
+            // (search, maximize) so pills don't resize when you hover them.
+            let w = (title_w + pad_x * 2.0 + close_w + max_w + search_w).max(96.0);
             let r = Rect::new(x, self.rect.y0, x + w, self.rect.y1);
             let close_x0 = r.x1 - close_w - close_inset;
             let close = Rect::new(close_x0, r.y0 + 4.0, close_x0 + close_w, r.y1 - 4.0);
             let max_x0 = close_x0 - max_w - 2.0;
             let max_rect = Rect::new(max_x0, r.y0 + 4.0, max_x0 + max_w, r.y1 - 4.0);
+            let search_x0 = max_x0 - search_w - 2.0;
+            let search_rect = Rect::new(search_x0, r.y0 + 4.0, search_x0 + search_w, r.y1 - 4.0);
             self.tab_rects.push(r);
             self.close_rects.push(close);
             self.max_rects.push(max_rect);
+            self.search_rects.push(search_rect);
             x += w + gap;
         }
     }
@@ -290,6 +309,47 @@ impl Widget for TabBar {
                     None,
                     &square,
                 );
+
+                // Search icon — "magnifying glass" built from a 5 px circle
+                // plus a short diagonal handle line, so we don't need an
+                // icon-font codepoint. Concept's third hover-reveal action.
+                let search_r = self.search_rects[i];
+                let search_hover = Some(i) == self.hover_search_idx;
+                if search_hover {
+                    let chip = RoundedRect::from_rect(search_r, search_r.height() / 2.0);
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        transform,
+                        vello::peniko::Color::rgba8(255, 255, 255, 64),
+                        None,
+                        &chip,
+                    );
+                }
+                let icon_color = if search_hover { text_primary } else { text_dim };
+                // Slightly off-centre to make room for the diagonal handle.
+                let scx = search_r.center().x - 1.0;
+                let scy = search_r.center().y - 1.0;
+                let circle = vello::kurbo::Circle::new(Point::new(scx, scy), 3.5);
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(1.2),
+                    transform,
+                    icon_color,
+                    None,
+                    &circle,
+                );
+                // Handle: 3 px diagonal stroke off the bottom-right of the
+                // glass.
+                let handle = vello::kurbo::Line::new(
+                    Point::new(scx + 2.5, scy + 2.5),
+                    Point::new(scx + 5.0, scy + 5.0),
+                );
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(1.2),
+                    transform,
+                    icon_color,
+                    None,
+                    &handle,
+                );
             }
         }
 
@@ -327,6 +387,7 @@ impl Widget for TabBar {
                 self.last_cursor = p;
                 self.hover_close_idx = self.close_rects.iter().position(|r| r.contains(p));
                 self.hover_max_idx = self.max_rects.iter().position(|r| r.contains(p));
+                self.hover_search_idx = self.search_rects.iter().position(|r| r.contains(p));
                 // Only count a tab as "hovered for highlight" if we're inside
                 // the pill AND not inside its close chip — keeps the close
                 // button's own hover state dominant.
@@ -358,6 +419,14 @@ impl Widget for TabBar {
                 if let Some(mi) = self.hover_max_idx {
                     if let Some(t) = self.tabs.get(mi) {
                         self.pending_max = Some(t.id);
+                        *handled = true;
+                        return;
+                    }
+                }
+                // Search icon — same deal; shell drains `pending_search`.
+                if let Some(si) = self.hover_search_idx {
+                    if let Some(t) = self.tabs.get(si) {
+                        self.pending_search = Some(t.id);
                         *handled = true;
                         return;
                     }
@@ -508,5 +577,17 @@ mod tests {
         // Second drain is empty — ensures WindowGroup doesn't double-toggle
         // `maximized` on redundant polls within the same frame.
         assert_eq!(b.take_max(), None);
+    }
+
+    #[test]
+    fn take_search_drains_pending_request_exactly_once() {
+        // Matches the `take_max` contract — a pending search request is
+        // drained exactly once so the shell doesn't re-open the command
+        // palette on every frame after a single click.
+        let mut b = bar();
+        assert_eq!(b.take_search(), None);
+        b.pending_search = Some(3);
+        assert_eq!(b.take_search(), Some(3));
+        assert_eq!(b.take_search(), None);
     }
 }
