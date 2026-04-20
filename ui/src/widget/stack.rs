@@ -127,6 +127,13 @@ impl Widget for Stack {
 
     fn name(&self) -> &str { "Stack" }
 
+    fn take_structure_dirty(&mut self) -> bool {
+        self.children
+            .iter_mut()
+            .map(|c| c.take_structure_dirty())
+            .fold(false, |acc, d| acc || d)
+    }
+
     fn presence_key(&self) -> Option<PresenceKey> {
         if self.presence_path.is_empty() {
             None

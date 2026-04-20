@@ -34,6 +34,13 @@ pub struct GroupRow {
     /// the target) still has a known release point to drive our
     /// post-dispatch detach sweep.
     last_cursor: Point,
+    /// Set when this row's `self.groups` vector is mutated structurally
+    /// (e.g. a tab is split into a brand-new `WindowGroup`). The App's
+    /// tick handler polls via `take_structure_dirty` and rebuilds the
+    /// taffy tree so the new group participates in layout / draw. Without
+    /// this signal, `apply_layout` would walk `node_ids` that don't cover
+    /// the new group and skip it entirely.
+    structure_dirty: bool,
 }
 
 impl GroupRow {
@@ -43,6 +50,7 @@ impl GroupRow {
             rect: Rect::ZERO,
             node_ids: Vec::new(),
             last_cursor: Point::ZERO,
+            structure_dirty: false,
         }
     }
 
@@ -155,6 +163,11 @@ impl GroupRow {
         new_group.start_spawn_animation();
         let clamped = gap_idx.min(self.groups.len());
         self.groups.insert(clamped, new_group);
+        // Flag a structural mutation so the App's tick handler rebuilds
+        // the taffy tree. Without this, `apply_layout` would iterate the
+        // stale `node_ids` (one per pre-split group) and skip the newly
+        // inserted group entirely — the bug this whole field exists to fix.
+        self.structure_dirty = true;
         if src_now_empty {
             // Source index shifts by 1 iff the new group was inserted
             // at or left of the source's original slot.
@@ -345,6 +358,21 @@ impl Widget for GroupRow {
         // mid-animation.
         self.groups.iter().any(|g| g.needs_animation_frame())
     }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        // Clear + report our own flag (so a second poll in the same tick
+        // returns false), then forward to every group so a nested mutation
+        // — e.g. a future tab-close-prunes-group path inside WindowGroup —
+        // still bubbles up. `any` plus `|` combined so we don't
+        // short-circuit the child traversal (each child must also clear).
+        let own = std::mem::take(&mut self.structure_dirty);
+        let children = self
+            .groups
+            .iter_mut()
+            .map(|g| g.take_structure_dirty())
+            .fold(false, |acc, d| acc || d);
+        own || children
+    }
 }
 
 #[cfg(test)]
@@ -445,6 +473,41 @@ mod tests {
         assert_eq!(ids[2], vec![10, 11]);
         // Dropped tab must be active in its new solo group.
         assert_eq!(row.groups[1].active_tab_id(), 2);
+    }
+
+    #[test]
+    fn split_tab_into_new_group_flags_structure_dirty_once() {
+        // Regression guard for the "new group never renders" bug: after a
+        // successful split, the row must report `take_structure_dirty()`
+        // true so `App` rebuilds the taffy tree and the new group gets a
+        // NodeId. The flag is edge-triggered — a second poll in the same
+        // tick (without another mutation) returns false so we don't churn
+        // taffy every frame.
+        let g0 = make_group(100, &[1, 2, 3]);
+        let g1 = make_group(200, &[10, 11]);
+        let mut row = GroupRow::new(vec![g0, g1]);
+
+        // Fresh row has nothing pending.
+        assert!(!row.take_structure_dirty(), "fresh row must not be dirty");
+
+        // Split sets the flag.
+        assert!(row.split_tab_into_new_group(0, 2, 1));
+        assert!(
+            row.take_structure_dirty(),
+            "successful split must flag structure_dirty for the App to rebuild taffy"
+        );
+        // Flag is edge-triggered — no second pulse without another mutation.
+        assert!(
+            !row.take_structure_dirty(),
+            "flag must clear after first poll so we don't rebuild every frame"
+        );
+
+        // A no-op split (unknown tab) must not flag the row.
+        assert!(!row.split_tab_into_new_group(0, 9999, 0));
+        assert!(
+            !row.take_structure_dirty(),
+            "failed split must not flag structure_dirty"
+        );
     }
 
     #[test]
