@@ -131,6 +131,13 @@ impl Widget for Row {
     fn needs_commit(&self) -> bool { self.children().iter().any(|c| c.needs_commit()) }
     fn on_commit(&mut self) { for child in self.children_mut() { child.on_commit(); } }
 
+    fn take_structure_dirty(&mut self) -> bool {
+        self.children
+            .iter_mut()
+            .map(|c| c.take_structure_dirty())
+            .fold(false, |acc, d| acc || d)
+    }
+
     fn presence_key(&self) -> Option<PresenceKey> {
         if self.presence_path.is_empty() {
             None

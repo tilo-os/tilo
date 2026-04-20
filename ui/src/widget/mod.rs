@@ -53,6 +53,19 @@ pub trait Widget {
         self.children().iter().any(|c| c.needs_animation_frame())
     }
 
+    /// Returns true if this subtree mutated its structural composition (e.g.
+    /// inserted/removed child widgets) since the last frame. The App polls
+    /// this once per tick and rebuilds the taffy tree when true.
+    ///
+    /// The default returns `false`, which is correct for leaf widgets but
+    /// wrong for any container that stores child `Box<dyn Widget>`s because
+    /// it breaks the recursion — container widgets MUST override this to
+    /// forward the query to their children:
+    /// `self.children_mut().into_iter().any(|c| c.take_structure_dirty())`
+    /// (or use their own child storage if `children_mut` doesn't expose
+    /// them, e.g. `GroupRow::groups`).
+    fn take_structure_dirty(&mut self) -> bool { false }
+
     /// Called by `App` during draw. Widgets that consume presence/permission
     /// context can override this; the default forwards to `draw`, passing
     /// through `presence` and ignoring `_permissions`.
