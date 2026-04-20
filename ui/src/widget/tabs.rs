@@ -763,17 +763,31 @@ impl Widget for TabBar {
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+                // Fresh hit-tests at press time against the authoritative
+                // rects, rather than trusting the hover-index cache populated
+                // on `CursorMoved`. The cache can lag when the click arrives
+                // before a hover-refresh covers the press position (e.g. a
+                // click on an inactive tab's icon without a prior in-icon
+                // move), which previously swallowed the icon hit and merely
+                // activated the tab. Concept's `TabBar.tsx` fires its action
+                // on first click regardless of tab-active state — this
+                // matches that behaviour.
+                let cursor_pos = self.last_cursor;
+                let close_idx = self.close_rects.iter().position(|r| r.contains(cursor_pos));
+                let max_idx = self.max_rects.iter().position(|r| r.contains(cursor_pos));
+                let search_idx = self.search_rects.iter().position(|r| r.contains(cursor_pos));
+
                 // Close button takes priority over selection/drag.
-                if let Some(ci) = self.hover_close_idx {
+                if let Some(ci) = close_idx {
                     if let Some(t) = self.tabs.get(ci) {
                         self.pending_close = Some(t.id);
                         *handled = true;
                         return;
                     }
                 }
-                // Maximize icon — only reachable while the pill is hovered,
-                // so it never steals clicks from idle tabs.
-                if let Some(mi) = self.hover_max_idx {
+                // Maximize icon — fires on first click regardless of whether
+                // the tab is already active.
+                if let Some(mi) = max_idx {
                     if let Some(t) = self.tabs.get(mi) {
                         self.pending_max = Some(t.id);
                         *handled = true;
@@ -781,7 +795,7 @@ impl Widget for TabBar {
                     }
                 }
                 // Search icon — same deal; shell drains `pending_search`.
-                if let Some(si) = self.hover_search_idx {
+                if let Some(si) = search_idx {
                     if let Some(t) = self.tabs.get(si) {
                         self.pending_search = Some(t.id);
                         *handled = true;
@@ -1392,6 +1406,164 @@ mod tests {
         assert!(
             !b.needs_animation_frame(),
             "at rest (no drag) the bar must not pump frames"
+        );
+    }
+
+    #[test]
+    fn press_on_inactive_tab_maximize_icon_fires_on_first_click() {
+        // Regression: the maximize icon previously only responded while the
+        // hover-index cache named its pill, so a press that arrived without
+        // a prior in-icon `CursorMoved` — or one that landed on an inactive
+        // tab whose hover cache was out of sync — would merely activate the
+        // tab instead of firing `pending_max`. Concept's `TabBar.tsx` fires
+        // on the first click regardless of active state; we must match that.
+        let mut b = bar();
+        // Hand-build rects so we don't have to run taffy. Three pills with
+        // a 12 px wide maximize rect on each, sitting near the right edge.
+        // A sits at [0..80], B at [86..166], C at [172..252]. Tab `1` (A) is
+        // the active one — we'll click B's (inactive) maximize.
+        b.rect = Rect::new(0.0, 0.0, 252.0, 40.0);
+        b.tab_rects = vec![
+            Rect::new(0.0, 6.0, 80.0, 34.0),
+            Rect::new(86.0, 6.0, 166.0, 34.0),
+            Rect::new(172.0, 6.0, 252.0, 34.0),
+        ];
+        b.close_rects = vec![
+            Rect::new(60.0, 10.0, 78.0, 30.0),
+            Rect::new(146.0, 10.0, 164.0, 30.0),
+            Rect::new(232.0, 10.0, 250.0, 30.0),
+        ];
+        b.max_rects = vec![
+            Rect::new(40.0, 10.0, 56.0, 30.0),
+            Rect::new(126.0, 10.0, 142.0, 30.0),
+            Rect::new(212.0, 10.0, 228.0, 30.0),
+        ];
+        b.search_rects = vec![
+            Rect::new(20.0, 10.0, 36.0, 30.0),
+            Rect::new(106.0, 10.0, 122.0, 30.0),
+            Rect::new(192.0, 10.0, 208.0, 30.0),
+        ];
+        // Active tab is A (id 1). B (id 2) is inactive.
+        assert_eq!(b.active_id(), 1);
+
+        // Seed `last_cursor` on B's maximize rect, but deliberately leave
+        // `hover_max_idx` as None — this mirrors the stale-cache case where
+        // the click position hasn't been covered by a prior CursorMoved.
+        b.last_cursor = Point::new(134.0, 20.0);
+        b.hover_max_idx = None;
+        b.hover_search_idx = None;
+        b.hover_close_idx = None;
+        b.hover_idx = Some(1);
+
+        let press = WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        };
+        let mut tree = TaffyTree::<()>::new();
+        let node = tree.new_leaf(Style::default()).unwrap();
+        let mut handled = false;
+        let mut focus_target = None;
+        let mut state = automerge::AutoCommit::new();
+        let root_id = automerge::ROOT;
+        b.handle_event(
+            &press,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut state,
+            &root_id,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &tree,
+        );
+
+        // The press must publish a `pending_max` for tab B (id 2) on the
+        // first click, even though B was not active and the hover cache was
+        // empty. Crucially, tab activation must *not* happen here — the
+        // concept treats the icon as a distinct hit-zone.
+        assert_eq!(
+            b.take_max(),
+            Some(2),
+            "maximize click on inactive tab must fire on first press",
+        );
+        assert!(handled, "press on the maximize icon is handled");
+        assert_eq!(
+            b.active_id(),
+            1,
+            "icon hit must not bleed into tab activation",
+        );
+    }
+
+    #[test]
+    fn press_on_inactive_tab_search_icon_fires_on_first_click() {
+        // Twin of the maximize test for the search icon. Same staleness
+        // hazard, same expected fix: fresh hit-test on press.
+        let mut b = bar();
+        b.rect = Rect::new(0.0, 0.0, 252.0, 40.0);
+        b.tab_rects = vec![
+            Rect::new(0.0, 6.0, 80.0, 34.0),
+            Rect::new(86.0, 6.0, 166.0, 34.0),
+            Rect::new(172.0, 6.0, 252.0, 34.0),
+        ];
+        b.close_rects = vec![
+            Rect::new(60.0, 10.0, 78.0, 30.0),
+            Rect::new(146.0, 10.0, 164.0, 30.0),
+            Rect::new(232.0, 10.0, 250.0, 30.0),
+        ];
+        b.max_rects = vec![
+            Rect::new(40.0, 10.0, 56.0, 30.0),
+            Rect::new(126.0, 10.0, 142.0, 30.0),
+            Rect::new(212.0, 10.0, 228.0, 30.0),
+        ];
+        b.search_rects = vec![
+            Rect::new(20.0, 10.0, 36.0, 30.0),
+            Rect::new(106.0, 10.0, 122.0, 30.0),
+            Rect::new(192.0, 10.0, 208.0, 30.0),
+        ];
+        assert_eq!(b.active_id(), 1);
+
+        // Cursor over C's search rect (inactive tab, id 3). All hover
+        // caches empty to prove the press path does a fresh hit-test.
+        b.last_cursor = Point::new(200.0, 20.0);
+        b.hover_max_idx = None;
+        b.hover_search_idx = None;
+        b.hover_close_idx = None;
+        b.hover_idx = Some(2);
+
+        let press = WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        };
+        let mut tree = TaffyTree::<()>::new();
+        let node = tree.new_leaf(Style::default()).unwrap();
+        let mut handled = false;
+        let mut focus_target = None;
+        let mut state = automerge::AutoCommit::new();
+        let root_id = automerge::ROOT;
+        b.handle_event(
+            &press,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut state,
+            &root_id,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &tree,
+        );
+
+        assert_eq!(
+            b.take_search(),
+            Some(3),
+            "search click on inactive tab must fire on first press",
+        );
+        assert!(handled, "press on the search icon is handled");
+        assert_eq!(
+            b.active_id(),
+            1,
+            "search icon hit must not bleed into tab activation",
         );
     }
 }
