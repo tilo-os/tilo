@@ -65,7 +65,7 @@ Current state of the Rust implementation vs. the concept described in
 | Terminal | ✅ | Real PTY via `quick-terminal`. Dark `TerminalPalette` is now tuned to the concept's `TerminalApp.tsx`: pure-black background, green-400 (#4ade80) default foreground, ANSI 1..=7 anchored on Tailwind's `-400` ramp (red/yellow/blue/purple/cyan + slate-300 neutrals), bright 8..=15 on the `-300` ramp. Palette swap on theme change is already covered by `terminal_ansi_mapping_tracks_palette_swaps`. |
 | Files | ✅ | `file-explorer` crate wired in. `sidebar::build_tiers(home)` now returns a **Favorites** tier (Home + xdg-user-dirs) and a **System** tier (`/`); `files_app.rs` renders a Text label above each tier and keeps `files.sidebar.<N>` ids sequential across tiers. Matches `nirios-concept/src/components/apps/FilesApp.tsx` (lines 94/127). |
 | Browser | ✅ | `BrowserStubWidget::draw` paints concept's browser chrome: white card, 48 px header with 3 slate traffic-light circles + centered globe-plus-URL address pill, and an indigo "App Preview" tile with headline/subheadline in the body. Still a stub — no real web engine — but visually matches `nirios-concept/src/components/apps/BrowserApp.tsx`. |
-| Editor | ✅ | `EditorApp` in `quick-gnome-shell/src/shell/editor_app.rs`: CRDT-backed text store (own `editor_body` key so it doesn't clash with Notes), per-line rendering + 44 px line-number gutter, ArrowUp/Down with column preserve, tiny JS/TSX tokenizer (keywords → indigo-500, strings → emerald, numbers → amber, line-comments → slate-500, idents/punct → slate ramp). Ships as a fifth demo tab in the runtime workspace. |
+| Editor | ✅ | `EditorApp` in `quick-shell/src/shell/editor_app.rs`: CRDT-backed text store (own `editor_body` key so it doesn't clash with Notes), per-line rendering + 44 px line-number gutter, ArrowUp/Down with column preserve, tiny JS/TSX tokenizer (keywords → indigo-500, strings → emerald, numbers → amber, line-comments → slate-500, idents/punct → slate ramp). Ships as a fifth demo tab in the runtime workspace. |
 
 ## 6. Overlays / modals
 
@@ -98,7 +98,7 @@ Current state of the Rust implementation vs. the concept described in
 
 | Item | Status | Notes |
 |---|---|---|
-| Workspace / Strip / WindowGroup / Tab | ✅ | `quick-gnome-shell/src/shell/state.rs`, mirrors concept. |
+| Workspace / Strip / WindowGroup / Tab | ✅ | `quick-shell/src/shell/state.rs`, mirrors concept. |
 | Roles + RolePermissions | ✅ | `Role`, `WorkspaceFile` exist. |
 | Collaborator (id, name, cursor color, etc.) | ✅ | Rust `Collaborator` now carries `id`, `name`, `active_tab: Option<u64>` (concept's `activeAppId`), `cursor_color: Option<String>` (hex override; falls through to `user_color` palette), `avatar: Option<String>` (URL or initials fragment) and `role_id: Option<String>` (references the workspace's `Role` table). Builder chain: `Collaborator::new` / `with_active_tab` / `with_cursor_color` / `with_avatar` / `with_role`; all new fields are `#[serde(default)]` so pre-bump persisted trees still load. 8 unit tests in `shell::state::collaborator_tests`. Runtime `cursor` position is modelled out-of-struct via `PresenceCtx::pointers`. |
 | App types | ✅ | `AppKind::{Terminal,Files,Editor,Browser,Settings}` — Editor now maps to `EditorApp`. |

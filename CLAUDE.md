@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 QuickDesktop is a collaborative, spatial Linux OS built on **Fedora Bootc**. It is a stack, not a single app:
 
 - An immutable container-based OS image
-- A custom Wayland compositor with a 2D-cluster (Niri-like) window model
+- A custom Wayland compositor with a 2D-cluster tile-first window model
 - A P2P FUSE filesystem that projects remote files and hydrates on demand
 - A custom CRDT-native UI toolkit used by system apps
 - Native system apps (terminal, file explorer, browser)
@@ -18,7 +18,7 @@ Treat these as deeply interrelated — a change in `quick-ui` or `quick-fs-fuse`
 
 This is a **Cargo workspace with git submodules**. The workspace members in `Cargo.toml` are:
 
-- `quick-gnome-shell/` (submodule, binary `quick-desktop`) — Wayland compositor. Built on `smithay` + `iced` + `libp2p` (gossipsub, mdns). Contains the 2D cluster/sandbox/collaboration logic.
+- `quick-shell/` (submodule, binary `quick-desktop`) — Wayland compositor. Built on `smithay` + `iced` + `libp2p` (gossipsub, mdns). Contains the 2D cluster/sandbox/collaboration logic.
 - `quick-fs-fuse/` (submodule) — FUSE3 driver, Iroh-based P2P, mounted at `/var/workspace` with cache at `/var/cache/quick-fs`. 10s metadata TTL, 1MB readahead.
 - `quick-ui/` (in-tree) — The UI toolkit. Retained-mode, CRDT-native. Stack: `wgpu` + `vello` (render), `taffy` (layout), `cosmic-text` (text), `automerge` (state), `winit` (windowing), `fluent` (i18n).
 - `apps/terminal/` (submodule, binary `quick-terminal`) — GPU-accelerated terminal. Uses `quick-ui`.
@@ -60,7 +60,7 @@ cargo test -p quick-ui
 The compositor has a headless integration test harness that exercises the Wayland state without a GPU:
 
 ```bash
-cd quick-gnome-shell && cargo test --test interaction_test
+cd quick-shell && cargo test --test interaction_test
 ```
 
 ### Running `quick-ui` examples
@@ -141,7 +141,7 @@ Pull all submodules with `git submodule update --remote --merge`.
 
 ## Conventions
 
-- **Rust edition:** `quick-ui`, `quick-gnome-shell`, `quick-fs-fuse` are on edition **2024**; the apps (`terminal`, `file-explorer`, `browser`) are on **2021**. Don't "normalize" these in passing.
+- **Rust edition:** `quick-ui`, `quick-shell`, `quick-fs-fuse` are on edition **2024**; the apps (`terminal`, `file-explorer`, `browser`) are on **2021**. Don't "normalize" these in passing.
 - **Container tooling:** use rootless `podman` (no `sudo`) for image builds where possible. `os/build.sh` only needs `sudo` for the disk-image step.
 - **Don't run workspace-wide `cargo test`** unless you genuinely need it — it blocks the shared target lock and is slow. Scope to `-p <crate>`.
 - Debug overlays in `quick-ui` are gated by `QUICK_UI_DEBUG` **and** `debug_assertions`; they're unavailable in release builds.
