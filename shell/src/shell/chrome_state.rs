@@ -126,6 +126,19 @@ impl ChromeState {
         self.revision = self.revision.wrapping_add(1);
     }
 
+    /// Route a winit `WindowEvent::DroppedFile` payload into the active
+    /// workspace's first strip's first window group via
+    /// [`super::workspace_drop::apply_workspace_drop_from_path`]. Bumps
+    /// the revision counter so widgets re-sync on the next frame.
+    /// Returns the new tab id, or `None` if the path has no filename.
+    pub fn handle_file_drop(&mut self, path: &std::path::Path) -> Option<u64> {
+        let tab_id = super::workspace_drop::apply_workspace_drop_from_path(&mut self.tree, path);
+        if tab_id.is_some() {
+            self.bump();
+        }
+        tab_id
+    }
+
     /// Switch to the workspace at the given direction (±1). Returns true
     /// if the active workspace changed.
     pub fn switch_workspace(&mut self, dir: i32) -> bool {
