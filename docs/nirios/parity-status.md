@@ -145,17 +145,20 @@ for chrome density). Outstanding infrastructure-level items:
    `quick-ui/tests/support/offscreen.rs`: a headless wgpu + vello
    renderer that copies texture bytes back to the CPU (handling the
    256-byte row-pitch alignment) so tests can assert pixel invariants
-   or write PNGs without winit/a compositor. Three smoke tests in
+   or write PNGs without winit/a compositor. Four smoke tests in
    `quick-ui/tests/screenshot_test.rs` exercise the pipeline: a solid
    background + filled rect, a PNG writeback with magic-byte
-   verification, and a full `Container` widget driven through
-   `build_layout` → taffy compute → `apply_layout` → `draw`, proving
-   the widget tree overpaints a base colour. All three pass; they
-   skip gracefully (no panic, `eprintln` only) when no wgpu adapter
-   is available. Full test count: 22 `nirios_e2e_test`, 28
-   `shell_chrome_test`, 15 `workspace_drop` unit, 34 `quick-ui` unit,
-   1 `interaction_test`, 3 `screenshot_test` — **103 tests total,
-   all passing**. A golden-image diff harness (with reference-set
+   verification, a full `Container` widget driven through
+   `build_layout` → taffy compute → `apply_layout` → `draw` proving
+   the widget tree overpaints a base colour, and a real `TabBar`
+   render asserting the 40 px / 6 px-inset pill geometry — the first
+   visual regression tied to a recent deliberate change. All four
+   pass; they skip gracefully (no panic, `eprintln` only) when no
+   wgpu adapter is available. Set `QUICK_UI_SCREENSHOT_DIR=<path>`
+   on the TabBar test to write `tab_bar.png` for by-eye inspection.
+   Full test count: 22 `nirios_e2e_test`, 28 `shell_chrome_test`, 15
+   `workspace_drop` unit, 34 `quick-ui` unit, 1 `interaction_test`,
+   4 `screenshot_test` — **104 tests total, all passing**. A golden-image diff harness (with reference-set
    provenance + per-DPI bases + tolerance) is the next incremental
    step for pixel-regression coverage and is deferred as its own
    scope rather than bundled here.
