@@ -3,11 +3,28 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::{WindowEvent, MouseButton, ElementState};
 use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
+use std::time::{Duration, Instant};
 use crate::widget::Widget;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::presence::{PresenceCtx, PresenceKey};
 use crate::dnd::{DragPayload, DRAG_START_THRESHOLD_PX};
+
+/// Duration of the inter-pill drop-zone expand animation. Matches the
+/// concept's `motion.div layout` spring feel — short enough that the user
+/// perceives the zone "tracking" the cursor but long enough that the eye
+/// catches the transition. Paired with `needs_animation_frame()` so the
+/// host keeps pumping redraws while interpolation is in flight.
+const DROP_ZONE_ANIM_MS: u64 = 140;
+/// Width a drop-zone indicator expands to when it's the current target
+/// gap. Mirrors the concept's `w-16` (64 px Tailwind). We clamp visually
+/// against the actual gap between pills (6 px) at rest — the expansion is
+/// an overlay painted *over* adjacent pills, not a layout change.
+const DROP_ZONE_EXPANDED_PX: f64 = 18.0;
+/// Width of the idle drop-zone hint painted in every inter-pill gap while
+/// a drag is in flight. Stays thin (2 px) so it reads as a subtle guide
+/// rather than a warning.
+const DROP_ZONE_IDLE_PX: f64 = 2.0;
 
 #[derive(Clone, Debug)]
 pub struct TabDescriptor { pub id: u64, pub title: String }
@@ -58,6 +75,16 @@ pub struct TabBar {
     /// field immediately; leaving it set across frames is harmless but
     /// wasteful.
     pub pending_detach: Option<(u64, Point)>,
+    /// Inter-pill gap index (0..=tabs.len()) the cursor last hovered
+    /// while a drag was in flight. `None` means no drag, or the cursor
+    /// left the bar entirely. Changing the target latches
+    /// `drop_zone_animated_at` so `draw` can interpolate the zone's
+    /// expansion across a few frames instead of popping.
+    drop_zone_target: Option<usize>,
+    /// `Instant` at which `drop_zone_target` last changed. Read by
+    /// `draw` to derive `eased = (elapsed / DROP_ZONE_ANIM_MS).min(1)`.
+    /// Wrapped in `Option` because `Instant` has no `ZERO` constant.
+    drop_zone_animated_at: Option<Instant>,
 }
 
 impl TabBar {
@@ -83,6 +110,8 @@ impl TabBar {
             pending_max: None,
             pending_search: None,
             pending_detach: None,
+            drop_zone_target: None,
+            drop_zone_animated_at: None,
         }
     }
     pub fn tabs(&self) -> &[TabDescriptor] { &self.tabs }
@@ -147,6 +176,15 @@ impl TabBar {
         let id = desc.id;
         self.tabs.insert(clamped, desc);
         self.active_id = id;
+    }
+
+    /// Currently-targeted drop-zone gap index (only meaningful while a
+    /// drag is in flight). `None` means "no target" — either the drag
+    /// just started (pre-first-CursorMoved) or the cursor left the bar
+    /// for a cross-group release path. Exposed for tests.
+    #[cfg(test)]
+    pub(crate) fn drop_zone_target(&self) -> Option<usize> {
+        self.drop_zone_target
     }
 }
 
@@ -369,28 +407,86 @@ impl Widget for TabBar {
             }
         }
 
-        // Drop-zone indicator: while a tab drag is in flight and the cursor
-        // hovers another tab, paint a 2 px indigo bar at the gap where a
-        // release would land the tab. The vec-remove-then-insert semantics
-        // mean dropping onto a tab-to-the-right lands *after* that tab and
-        // dropping onto a tab-to-the-left lands *before* it, so the bar
-        // position mirrors that rule — this keeps the visual aligned with
-        // the actual post-release index.
-        if self.pending_drag.is_some() {
-            if let (Some(to), Some((from, _))) = (
-                self.tab_rects.iter().position(|r| r.contains(self.last_cursor)),
-                self.press_origin,
-            ) {
-                if from != to {
-                    let target = self.tab_rects[to];
-                    let bar_x = if from < to { target.x1 } else { target.x0 - 2.0 };
-                    let bar = Rect::new(bar_x, target.y0 - 2.0, bar_x + 2.0, target.y1 + 2.0);
+        // Drop-zone indicators: while a tab drag is in flight, paint one
+        // vertical bar per inter-pill gap (N+1 gaps for N tabs, including
+        // one at the start and one at the end). The gap the cursor is
+        // currently over animates from the idle width to `_EXPANDED_PX`
+        // with a glow — this is the Rust port of the concept's
+        // `TabDropZone` which uses `motion.div layout` to spring between
+        // `w-2` and `w-16`. Animation state (`drop_zone_target` +
+        // `drop_zone_animated_at`) is updated in `handle_event`; `draw`
+        // only reads it here to interpolate.
+        if self.pending_drag.is_some() && !self.tab_rects.is_empty() {
+            let accent = theme.tokens.colors.accent[5];
+            let target = self.drop_zone_target;
+            let now = Instant::now();
+            let elapsed_ms = self
+                .drop_zone_animated_at
+                .map(|t| now.duration_since(t).as_millis() as f64)
+                .unwrap_or(DROP_ZONE_ANIM_MS as f64);
+            // Ease-out-cubic over DROP_ZONE_ANIM_MS; clamps to [0, 1].
+            let raw_t = (elapsed_ms / DROP_ZONE_ANIM_MS as f64).clamp(0.0, 1.0);
+            let eased_t = 1.0 - (1.0 - raw_t).powi(3);
+
+            for gap_idx in 0..=self.tab_rects.len() {
+                // Compute the gap's centre x: between pills, or just past
+                // the outermost edge at the endpoints.
+                let (cx, y0, y1) = if gap_idx == 0 {
+                    let r = self.tab_rects[0];
+                    (r.x0 - 3.0, r.y0 - 2.0, r.y1 + 2.0)
+                } else if gap_idx == self.tab_rects.len() {
+                    let r = *self.tab_rects.last().unwrap();
+                    (r.x1 + 3.0, r.y0 - 2.0, r.y1 + 2.0)
+                } else {
+                    let prev = self.tab_rects[gap_idx - 1];
+                    let next = self.tab_rects[gap_idx];
+                    let cx = (prev.x1 + next.x0) / 2.0;
+                    (cx, prev.y0.min(next.y0) - 2.0, prev.y1.max(next.y1) + 2.0)
+                };
+
+                // Target gap expands smoothly. Non-target gaps stay at
+                // the idle width + ~30% alpha so the user still sees
+                // every possible drop location (concept's always-visible
+                // spacers).
+                let is_target = target == Some(gap_idx);
+                let (w, alpha) = if is_target {
+                    let w = DROP_ZONE_IDLE_PX
+                        + (DROP_ZONE_EXPANDED_PX - DROP_ZONE_IDLE_PX) * eased_t;
+                    // Interpolate 0.3 → 1.0 alpha too so the target zone
+                    // brightens as it widens.
+                    let a = 0.3 + 0.7 * eased_t;
+                    (w, a)
+                } else {
+                    (DROP_ZONE_IDLE_PX, 0.3)
+                };
+
+                let bar = Rect::new(cx - w / 2.0, y0, cx + w / 2.0, y1);
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    accent.with_alpha_factor(alpha as f32),
+                    None,
+                    &bar,
+                );
+
+                // Extra outer glow on the target gap while it's past ~60%
+                // of the animation. Cheap approximation of the concept's
+                // `shadow-[0_0_12px_rgba(99,102,241,0.8)]` without needing
+                // a blur primitive — two wider strokes at lower alpha.
+                if is_target && eased_t > 0.6 {
+                    let glow_t = ((eased_t - 0.6) / 0.4).clamp(0.0, 1.0);
+                    let glow = Rect::new(
+                        cx - (w / 2.0 + 4.0),
+                        y0 - 1.0,
+                        cx + (w / 2.0 + 4.0),
+                        y1 + 1.0,
+                    );
                     scene.fill(
                         vello::peniko::Fill::NonZero,
                         transform,
-                        theme.tokens.colors.accent[5],
+                        accent.with_alpha_factor(0.25 * glow_t as f32),
                         None,
-                        &bar,
+                        &glow,
                     );
                 }
             }
@@ -418,6 +514,22 @@ impl Widget for TabBar {
                             self.pending_drag = Some(DragPayload::Tab { group: group_tag_hash, tab: t.id });
                             *handled = true;
                         }
+                    }
+                }
+                // While a drag is in flight, keep the drop-zone target in
+                // sync with the cursor. Cursor inside the bar → the gap
+                // index resolved by `drop_index_for`. Outside the bar →
+                // clear (cross-group release is handled by `GroupRow`;
+                // this bar shouldn't paint an expanding zone for it).
+                if self.pending_drag.is_some() {
+                    let new_target = if self.rect.contains(p) {
+                        Some(self.drop_index_for(p))
+                    } else {
+                        None
+                    };
+                    if new_target != self.drop_zone_target {
+                        self.drop_zone_target = new_target;
+                        self.drop_zone_animated_at = Some(Instant::now());
                     }
                 }
             }
@@ -484,6 +596,11 @@ impl Widget for TabBar {
                     self.pending_drag = None;
                 }
                 self.press_origin = None;
+                // Drag is over — stop pumping redraws for the drop-zone
+                // animation and clear the target so a fresh drag starts
+                // with no stale zone visible.
+                self.drop_zone_target = None;
+                self.drop_zone_animated_at = None;
             }
             _ => {}
         }
@@ -492,6 +609,16 @@ impl Widget for TabBar {
     fn get_rect(&self) -> Rect { self.rect }
     fn wants_pointer_capture(&self) -> bool { self.press_origin.is_some() || self.pending_drag.is_some() }
     fn accepts_drop(&self, payload: &DragPayload) -> bool { matches!(payload, DragPayload::Tab { .. }) }
+    fn needs_animation_frame(&self) -> bool {
+        // Keep the host pumping redraws while the drop-zone expand curve
+        // is still interpolating. `drop_zone_animated_at` is cleared on
+        // release, so at rest (no drag) this returns false and widgets
+        // above us (`WindowGroup`, `GroupRow`, …) can still be static.
+        match self.drop_zone_animated_at {
+            Some(t) => t.elapsed() < Duration::from_millis(DROP_ZONE_ANIM_MS),
+            None => false,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -609,5 +736,100 @@ mod tests {
         b.pending_search = Some(3);
         assert_eq!(b.take_search(), Some(3));
         assert_eq!(b.take_search(), None);
+    }
+
+    #[test]
+    fn drop_zone_target_tracks_cursor_during_drag() {
+        // With a drag in flight, moving the cursor across the bar should
+        // update `drop_zone_target` to the gap index that matches
+        // `drop_index_for`. This is the state that drives the concept's
+        // TabDropZone expand animation in `draw`.
+        let mut b = bar();
+        // Hand-build tab rects so we don't have to run the taffy pass.
+        // Pills: A [0..80], B [80..160], C [160..240]. Bar rect covers
+        // [0..240, 0..40].
+        b.rect = Rect::new(0.0, 0.0, 240.0, 40.0);
+        b.tab_rects = vec![
+            Rect::new(0.0, 6.0, 80.0, 34.0),
+            Rect::new(80.0, 6.0, 160.0, 34.0),
+            Rect::new(160.0, 6.0, 240.0, 34.0),
+        ];
+        // Simulate a drag being in flight (the event-based path that
+        // normally sets this — press + move past threshold — is already
+        // covered by integration tests).
+        b.pending_drag = Some(DragPayload::Tab { group: 0, tab: 1 });
+        // Cursor over pill B's left half → drop index 1 (insert before B).
+        b.last_cursor = Point::new(90.0, 20.0);
+        let event = WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(90.0, 20.0),
+        };
+        let mut tree = TaffyTree::<()>::new();
+        let node = tree.new_leaf(Style::default()).unwrap();
+        let mut handled = false;
+        let mut focus_target = None;
+        let mut state = automerge::AutoCommit::new();
+        let root_id = automerge::ROOT;
+        b.handle_event(
+            &event,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut state,
+            &root_id,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &tree,
+        );
+        assert_eq!(b.drop_zone_target(), Some(1), "cursor on B's left half → gap 1");
+        // While animating, `needs_animation_frame()` must be true so the
+        // host pumps redraws. Sampled immediately after the target
+        // change — well within `DROP_ZONE_ANIM_MS`.
+        assert!(
+            b.needs_animation_frame(),
+            "drop-zone animation must request redraws"
+        );
+
+        // Move cursor past pill C's midpoint → gap 3 (append).
+        let event = WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(230.0, 20.0),
+        };
+        b.handle_event(
+            &event,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut state,
+            &root_id,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &tree,
+        );
+        assert_eq!(b.drop_zone_target(), Some(3), "past C's mid → gap 3");
+
+        // Release the drag: target must clear and animation-frame must
+        // stop requesting redraws so the shell can go idle again.
+        let release = WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        };
+        b.handle_event(
+            &release,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut state,
+            &root_id,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &tree,
+        );
+        assert_eq!(b.drop_zone_target(), None, "release clears target");
+        assert!(
+            !b.needs_animation_frame(),
+            "at rest (no drag) the bar must not pump frames"
+        );
     }
 }
