@@ -18,7 +18,7 @@
 //! query / Enter-to-select work without the desktop stealing focus.
 
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, LengthPercentageAuto, NodeId, Position, Rect as TaffyRect, Size, Style, TaffyTree};
@@ -86,6 +86,17 @@ pub struct ShellOverlayHost {
     /// over — we slide the new one toward its rest position from an
     /// offset of `sign * viewport_height` to 0.
     ws_slide_dir: f32,
+    /// Rising-edge timestamp for the quick-settings popover entry
+    /// animation (concept `QuickSettings.tsx:165-168`, opens with
+    /// `initial={{ opacity: 0, y: -10, scale: 0.95 }}` →
+    /// `animate={{ opacity: 1, y: 0, scale: 1 }}`). `None` means no
+    /// animation is in flight; cleared when the popover closes so the
+    /// next open replays the motion.
+    qs_opened_at: Option<Instant>,
+    /// Previous-frame visibility of the quick-settings flag, used to
+    /// detect the rising edge (open transition) without reaching into
+    /// the chrome on every tick.
+    qs_was_open: bool,
 }
 
 /// Crossfade duration between desktop ↔ overview. 200 ms reads as a
@@ -97,6 +108,11 @@ const OVERVIEW_TRANSITION_MS: u64 = 200;
 /// wheel-spin feel — long enough to register as motion, short enough to
 /// not feel sluggish when rapidly cycling workspaces via keyboard.
 const WS_SLIDE_MS: u64 = 260;
+
+/// Duration of the quick-settings popover entry animation (concept
+/// motion.div springs the panel in roughly this fast). Short enough to
+/// feel snappy on a dropdown; long enough to register as motion.
+const QS_OPEN_ANIM_MS: u64 = 180;
 
 impl ShellOverlayHost {
     pub fn new(content: Box<dyn Widget>) -> Self {
@@ -126,6 +142,8 @@ impl ShellOverlayHost {
             last_active_ws: None,
             ws_slide_started: None,
             ws_slide_dir: 0.0,
+            qs_opened_at: None,
+            qs_was_open: false,
         }
     }
 
@@ -509,9 +527,64 @@ impl Widget for ShellOverlayHost {
         }
 
         // Quick-settings popover (anchored top-right, no scrim so it reads
-        // as a dropdown rather than a modal)
+        // as a dropdown rather than a modal). Concept wraps this in a
+        // `motion.div` with `initial={{ opacity: 0, y: -10, scale: 0.95 }}`
+        // → `animate={{ opacity: 1, y: 0, scale: 1 }}` so the panel reads
+        // as "slipping out of the top-right". Detect the open rising edge
+        // and play the same motion for `QS_OPEN_ANIM_MS`.
+        if flags.quick_settings && !self.qs_was_open {
+            self.qs_opened_at = Some(Instant::now());
+        }
+        if !flags.quick_settings {
+            self.qs_opened_at = None;
+        }
+        self.qs_was_open = flags.quick_settings;
         if flags.quick_settings {
-            self.draw_quick_settings(scene, transform, text_renderer, theme);
+            let fade_window = Duration::from_millis(QS_OPEN_ANIM_MS);
+            let (alpha, dy, scale): (f32, f64, f64) = match self.qs_opened_at {
+                Some(started) => {
+                    let elapsed = started.elapsed();
+                    if elapsed >= fade_window {
+                        (1.0, 0.0, 1.0)
+                    } else {
+                        let raw = (elapsed.as_secs_f64()
+                            / (QS_OPEN_ANIM_MS as f64 / 1000.0))
+                            .clamp(0.0, 1.0);
+                        let eased = 1.0 - (1.0 - raw).powi(3);
+                        (
+                            eased as f32,
+                            -10.0 * (1.0 - eased),
+                            0.95 + 0.05 * eased,
+                        )
+                    }
+                }
+                None => (1.0, 0.0, 1.0),
+            };
+            let in_flight = alpha < 1.0;
+            let qs_rect = self.quick_settings_rect();
+            let clip = Rect::new(
+                qs_rect.x0 - 8.0,
+                qs_rect.y0 - 16.0,
+                qs_rect.x1 + 8.0,
+                qs_rect.y1 + 8.0,
+            );
+            if in_flight {
+                scene.push_layer(BlendMode::default(), alpha, transform, &clip);
+            }
+            let qs_xform = if dy != 0.0 || scale != 1.0 {
+                let cx = qs_rect.center().x;
+                let cy = qs_rect.y0;
+                transform
+                    * Affine::translate((cx, cy + dy))
+                    * Affine::scale(scale)
+                    * Affine::translate((-cx, -cy))
+            } else {
+                transform
+            };
+            self.draw_quick_settings(scene, qs_xform, text_renderer, theme);
+            if in_flight {
+                scene.pop_layer();
+            }
         }
 
         // Collaborators dropdown (anchored top-right, no scrim — matches the
@@ -968,12 +1041,18 @@ impl Widget for ShellOverlayHost {
         // Continuous redraws while any of:
         //   - overview crossfade (transition_started)
         //   - workspace slide-swap (ws_slide_started)
+        //   - quick-settings open fade (qs_opened_at, within window)
         //   - any inner widget (tab drop-zones, tab layout spring, …)
         // is in flight. `tick_*` methods clear their own flags once the
         // animation duration has fully elapsed, so at rest this returns
         // false and the app event loop can go idle.
+        let qs_in_flight = self
+            .qs_opened_at
+            .map(|t| t.elapsed() < Duration::from_millis(QS_OPEN_ANIM_MS))
+            .unwrap_or(false);
         self.transition_started.is_some()
             || self.ws_slide_started.is_some()
+            || qs_in_flight
             || self.content.needs_animation_frame()
     }
 }
