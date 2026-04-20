@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+pub mod offscreen;
+
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
