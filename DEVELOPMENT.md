@@ -6,7 +6,7 @@ Welcome to the QuickDesktop project! This document outlines how to set up your e
 
 QuickDesktop is organized as a Cargo Workspace using Git Submodules for its core components.
 
--   `quick-gnome-shell/`: The Wayland compositor (`quick-desktop`).
+-   `quick-shell/`: The Wayland compositor (`quick-desktop`).
 -   `quick-fs-fuse/`: The collaborative P2P filesystem.
 -   `os/`: Build scripts and configurations for the Fedora Bootc OS.
 -   `apps/`:

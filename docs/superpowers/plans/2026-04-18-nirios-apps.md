@@ -6,7 +6,7 @@
 
 **Architecture:** `AppWidget: Widget` becomes the single integration contract between the shell and any in-process app. The terminal already uses `quick-ui`, so it gets a minimal trait-impl refactor plus token adoption. The file-explorer currently uses `iced::application` and is ported in two phases: (1) an audit task that inventories every user-visible feature from the existing single-file iced implementation and produces a port-parity checklist + test expectations; (2) a staged port that replaces iced with `quick-ui`, reusing Plan 2 primitives (`DataTable`, `Scrollable`, `ContextMenu`, `Tooltip`, `Toast`). The browser is not ported — a `TileContent::Stub` card with an `xdg-open` fallback stands in. Finally, the shell tile-construction sites from Plan 1 are rewritten to embed concrete `AppWidget` impls, the `TileContent::App` variant is tightened from `Box<dyn Widget>` to `Box<dyn AppWidget>`, and an integration test asserts that a real terminal prompt and a real directory listing render inside shell tabs.
 
-**Tech Stack:** Rust 2021 (terminal, file-explorer) / Rust 2024 (quick-ui, quick-gnome-shell). `quick-ui` widgets + tokens + primitives from Plans 1 & 2. `portable-pty` + `vte` (terminal, unchanged). `walkdir` + `trash` + `open` + `mime_guess` + `humansize` + `chrono` + `dirs-next` (file-explorer, kept from iced app; `iced` + `tokio` removed as Cargo deps after port). `xdg-open` via `std::process::Command` (browser stub). Git submodules for `apps/terminal` and `apps/file-explorer`.
+**Tech Stack:** Rust 2021 (terminal, file-explorer) / Rust 2024 (quick-ui, quick-shell). `quick-ui` widgets + tokens + primitives from Plans 1 & 2. `portable-pty` + `vte` (terminal, unchanged). `walkdir` + `trash` + `open` + `mime_guess` + `humansize` + `chrono` + `dirs-next` (file-explorer, kept from iced app; `iced` + `tokio` removed as Cargo deps after port). `xdg-open` via `std::process::Command` (browser stub). Git submodules for `apps/terminal` and `apps/file-explorer`.
 
 ---
 
@@ -29,8 +29,8 @@
 - `apps/file-explorer/src/views/grid_view.rs` — grid-mode content via a flow layout of cards.
 - `apps/file-explorer/tests/parity.rs` — port-parity integration tests driven from the audit.
 - `apps/file-explorer/src/main.rs` — rewritten to a thin `quick_ui::App::new` binary over `FileExplorerWidget`.
-- `quick-gnome-shell/src/shell/browser_stub.rs` — `BrowserStubWidget` implementing `AppWidget` with an "Open in external browser" button invoking `xdg-open`.
-- `quick-gnome-shell/tests/apps_integration.rs` — new integration test spawning the shell and asserting terminal prompt + file-explorer listing render.
+- `quick-shell/src/shell/browser_stub.rs` — `BrowserStubWidget` implementing `AppWidget` with an "Open in external browser" button invoking `xdg-open`.
+- `quick-shell/tests/apps_integration.rs` — new integration test spawning the shell and asserting terminal prompt + file-explorer listing render.
 
 ### Modified files
 
@@ -39,9 +39,9 @@
 - `apps/terminal/Cargo.toml` — add `[lib]` target alongside the existing `[[bin]]`; no new deps.
 - `apps/terminal/src/main.rs` — keep only `fn main()` + PTY spawn glue; delegate widget creation to `lib.rs::TerminalWidget::spawn_default`.
 - `apps/file-explorer/Cargo.toml` — add `quick-ui` path dep; remove `iced` dep; keep `walkdir`, `trash`, `open`, `mime_guess`, `humansize`, `chrono`, `dirs-next`, `tracing`, `tracing-subscriber`; remove `tokio` (sync I/O via `std::fs` is sufficient for v1 since the grid is in-memory). Add `[lib]` + `[[bin]]` targets. Bump to `version = "0.2.0"`.
-- `quick-gnome-shell/src/shell/tile.rs` — change `TileContent::App(Box<dyn Widget>)` to `TileContent::App(Box<dyn AppWidget>)`; `TileHost` continues to delegate layout/draw to the boxed widget via the super-trait.
-- `quick-gnome-shell/src/shell/mod.rs` or equivalent — replace Plan 1 placeholder-tile construction sites with `Box::new(TerminalWidget::spawn_default()?)` and `Box::new(FileExplorerWidget::new())` or a `BrowserStubWidget::new()` depending on the `AppKind` the demo workspace requests.
-- `quick-gnome-shell/Cargo.toml` — add `quick-terminal = { path = "../apps/terminal" }` and `file-explorer = { path = "../apps/file-explorer" }` as dependencies.
+- `quick-shell/src/shell/tile.rs` — change `TileContent::App(Box<dyn Widget>)` to `TileContent::App(Box<dyn AppWidget>)`; `TileHost` continues to delegate layout/draw to the boxed widget via the super-trait.
+- `quick-shell/src/shell/mod.rs` or equivalent — replace Plan 1 placeholder-tile construction sites with `Box::new(TerminalWidget::spawn_default()?)` and `Box::new(FileExplorerWidget::new())` or a `BrowserStubWidget::new()` depending on the `AppKind` the demo workspace requests.
+- `quick-shell/Cargo.toml` — add `quick-terminal = { path = "../apps/terminal" }` and `file-explorer = { path = "../apps/file-explorer" }` as dependencies.
 
 ### Deleted
 
@@ -433,13 +433,13 @@ git -C /var/home/user/Development/quickdesktop commit -m "chore: bump file-explo
 ## Task 3: Migrate `TileContent::App` from `Box<dyn Widget>` to `Box<dyn AppWidget>`
 
 **Files:**
-- Modify: `quick-gnome-shell/src/shell/tile.rs`
-- Modify: `quick-gnome-shell/src/shell/*` (any construction site from Plan 1 that built `TileContent::App`)
-- Test: `quick-gnome-shell/tests/tile_app_widget.rs`
+- Modify: `quick-shell/src/shell/tile.rs`
+- Modify: `quick-shell/src/shell/*` (any construction site from Plan 1 that built `TileContent::App`)
+- Test: `quick-shell/tests/tile_app_widget.rs`
 
 - [ ] **Step 1: Write the failing test**
 
-Create `quick-gnome-shell/tests/tile_app_widget.rs`:
+Create `quick-shell/tests/tile_app_widget.rs`:
 
 ```rust
 //! Asserts `TileContent::App` holds an `AppWidget`, not a bare `Widget`.
@@ -489,7 +489,7 @@ Expected: FAIL — either `expected Box<dyn Widget>, found Box<dyn AppWidget>` (
 
 - [ ] **Step 3: Tighten the enum**
 
-In `quick-gnome-shell/src/shell/tile.rs`, change the `App` variant from
+In `quick-shell/src/shell/tile.rs`, change the `App` variant from
 `App(Box<dyn Widget>)` to `App(Box<dyn AppWidget>)`:
 
 ```rust
@@ -508,7 +508,7 @@ auto-upcast.
 
 - [ ] **Step 4: Fix construction sites**
 
-Search for `TileContent::App(` inside `quick-gnome-shell/src/`. Any placeholder
+Search for `TileContent::App(` inside `quick-shell/src/`. Any placeholder
 site from Plan 1 that constructed `TileContent::App` with a bare widget must
 either (a) be replaced with a `TileContent::Stub { kind, label }` until Task 15
 rewrites it, or (b) wrap the existing placeholder widget in a local
@@ -523,15 +523,15 @@ Expected: test passes; `quick-desktop` still builds.
 - [ ] **Step 6: Commit inside the shell submodule**
 
 ```bash
-git -C /var/home/user/Development/quickdesktop/quick-gnome-shell add src/shell tests/tile_app_widget.rs
-git -C /var/home/user/Development/quickdesktop/quick-gnome-shell commit -m "refactor(shell): TileContent::App now holds Box<dyn AppWidget>"
+git -C /var/home/user/Development/quickdesktop/quick-shell add src/shell tests/tile_app_widget.rs
+git -C /var/home/user/Development/quickdesktop/quick-shell commit -m "refactor(shell): TileContent::App now holds Box<dyn AppWidget>"
 ```
 
 - [ ] **Step 7: Bump the submodule pointer**
 
 ```bash
-git -C /var/home/user/Development/quickdesktop add quick-gnome-shell
-git -C /var/home/user/Development/quickdesktop commit -m "chore: bump quick-gnome-shell (TileContent::App → AppWidget)"
+git -C /var/home/user/Development/quickdesktop add quick-shell
+git -C /var/home/user/Development/quickdesktop commit -m "chore: bump quick-shell (TileContent::App → AppWidget)"
 ```
 
 ---
@@ -1869,13 +1869,13 @@ git -C /var/home/user/Development/quickdesktop commit -m "chore: bump file-explo
 ## Task 14: Add the browser stub `TileContent::Stub` widget
 
 **Files:**
-- Create: `quick-gnome-shell/src/shell/browser_stub.rs`
-- Modify: `quick-gnome-shell/src/shell/mod.rs` (add `pub mod browser_stub;`)
-- Test: `quick-gnome-shell/tests/browser_stub.rs`
+- Create: `quick-shell/src/shell/browser_stub.rs`
+- Modify: `quick-shell/src/shell/mod.rs` (add `pub mod browser_stub;`)
+- Test: `quick-shell/tests/browser_stub.rs`
 
 - [ ] **Step 1: Write the failing test**
 
-Create `quick-gnome-shell/tests/browser_stub.rs`:
+Create `quick-shell/tests/browser_stub.rs`:
 
 ```rust
 use quick_desktop::shell::browser_stub::BrowserStubWidget;
@@ -1908,7 +1908,7 @@ fn browser_stub_open_external_invokes_xdg_open_with_url() {
 Run: `cargo test -p quick-desktop --test browser_stub`
 Expected: FAIL — `browser_stub` module does not exist.
 
-- [ ] **Step 3: Create `quick-gnome-shell/src/shell/browser_stub.rs`**
+- [ ] **Step 3: Create `quick-shell/src/shell/browser_stub.rs`**
 
 ```rust
 use quick_ui::{AppKind, AppWidget, IconDescriptor};
@@ -1993,7 +1993,7 @@ impl AppWidget for BrowserStubWidget {
 }
 ```
 
-Register in `quick-gnome-shell/src/shell/mod.rs`:
+Register in `quick-shell/src/shell/mod.rs`:
 
 ```rust
 pub mod browser_stub;
@@ -2007,23 +2007,23 @@ Expected: PASS.
 - [ ] **Step 5: Commit inside submodule + bump pointer**
 
 ```bash
-git -C /var/home/user/Development/quickdesktop/quick-gnome-shell add src/shell/ tests/browser_stub.rs
-git -C /var/home/user/Development/quickdesktop/quick-gnome-shell commit -m "feat(shell): browser stub AppWidget with xdg-open runner"
-git -C /var/home/user/Development/quickdesktop add quick-gnome-shell
-git -C /var/home/user/Development/quickdesktop commit -m "chore: bump quick-gnome-shell (browser stub)"
+git -C /var/home/user/Development/quickdesktop/quick-shell add src/shell/ tests/browser_stub.rs
+git -C /var/home/user/Development/quickdesktop/quick-shell commit -m "feat(shell): browser stub AppWidget with xdg-open runner"
+git -C /var/home/user/Development/quickdesktop add quick-shell
+git -C /var/home/user/Development/quickdesktop commit -m "chore: bump quick-shell (browser stub)"
 ```
 
 ---
 
-## Task 15: Wire `quick-terminal` and `file-explorer` into `quick-gnome-shell`
+## Task 15: Wire `quick-terminal` and `file-explorer` into `quick-shell`
 
 **Files:**
-- Modify: `quick-gnome-shell/Cargo.toml` (add the two app deps)
-- Modify: `quick-gnome-shell/src/shell/mod.rs` or wherever the demo workspace builds tiles — replace placeholder `TileContent::Stub` / placeholder-app constructions from Plan 1 with real `AppWidget` impls
+- Modify: `quick-shell/Cargo.toml` (add the two app deps)
+- Modify: `quick-shell/src/shell/mod.rs` or wherever the demo workspace builds tiles — replace placeholder `TileContent::Stub` / placeholder-app constructions from Plan 1 with real `AppWidget` impls
 
 - [ ] **Step 1: Write the failing test**
 
-Create `quick-gnome-shell/tests/apps_integration.rs`:
+Create `quick-shell/tests/apps_integration.rs`:
 
 ```rust
 //! Spawns the nirios shell in headless mode, embeds a real terminal and a
@@ -2062,7 +2062,7 @@ workspace still uses Plan 1 placeholders.
 
 - [ ] **Step 3: Wire deps**
 
-Update `quick-gnome-shell/Cargo.toml` dependencies:
+Update `quick-shell/Cargo.toml` dependencies:
 
 ```toml
 [dependencies]
@@ -2126,10 +2126,10 @@ shows the stub card.
 - [ ] **Step 6: Commit inside submodule + bump pointer**
 
 ```bash
-git -C /var/home/user/Development/quickdesktop/quick-gnome-shell add Cargo.toml src/shell tests/apps_integration.rs
-git -C /var/home/user/Development/quickdesktop/quick-gnome-shell commit -m "feat(shell): host real terminal + file-explorer + browser stub in default workspace"
-git -C /var/home/user/Development/quickdesktop add quick-gnome-shell
-git -C /var/home/user/Development/quickdesktop commit -m "chore: bump quick-gnome-shell (apps wired)"
+git -C /var/home/user/Development/quickdesktop/quick-shell add Cargo.toml src/shell tests/apps_integration.rs
+git -C /var/home/user/Development/quickdesktop/quick-shell commit -m "feat(shell): host real terminal + file-explorer + browser stub in default workspace"
+git -C /var/home/user/Development/quickdesktop add quick-shell
+git -C /var/home/user/Development/quickdesktop commit -m "chore: bump quick-shell (apps wired)"
 ```
 
 ---
@@ -2137,11 +2137,11 @@ git -C /var/home/user/Development/quickdesktop commit -m "chore: bump quick-gnom
 ## Task 16: Integration test — terminal prompt renders + file-explorer listing renders
 
 **Files:**
-- Modify: `quick-gnome-shell/tests/apps_integration.rs`
+- Modify: `quick-shell/tests/apps_integration.rs`
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `quick-gnome-shell/tests/apps_integration.rs`:
+Append to `quick-shell/tests/apps_integration.rs`:
 
 ```rust
 use std::time::Duration;
@@ -2185,7 +2185,7 @@ Expected: FAIL — `tick_for_test`, `first_terminal_line`, `first_file_explorer_
 
 - [ ] **Step 3: Add the test helpers**
 
-In `quick-gnome-shell/src/shell/mod.rs` (or wherever `Shell` is defined), add
+In `quick-shell/src/shell/mod.rs` (or wherever `Shell` is defined), add
 `#[cfg(any(test, debug_assertions))]` helpers:
 
 ```rust
@@ -2340,11 +2340,11 @@ git -C /var/home/user/Development/quickdesktop/apps/file-explorer add src/
 git -C /var/home/user/Development/quickdesktop/apps/file-explorer commit -m "feat(file-explorer): test introspection registry for entry-name peek"
 
 # shell
-git -C /var/home/user/Development/quickdesktop/quick-gnome-shell add src/ tests/apps_integration.rs
-git -C /var/home/user/Development/quickdesktop/quick-gnome-shell commit -m "feat(shell): integration test — terminal prompt + file-explorer listing"
+git -C /var/home/user/Development/quickdesktop/quick-shell add src/ tests/apps_integration.rs
+git -C /var/home/user/Development/quickdesktop/quick-shell commit -m "feat(shell): integration test — terminal prompt + file-explorer listing"
 
 # main repo bumps
-git -C /var/home/user/Development/quickdesktop add apps/terminal apps/file-explorer quick-gnome-shell
+git -C /var/home/user/Development/quickdesktop add apps/terminal apps/file-explorer quick-shell
 git -C /var/home/user/Development/quickdesktop commit -m "chore: bump all three submodules (integration peek helpers + test)"
 ```
 
@@ -2553,7 +2553,7 @@ Run this checklist against the spec `docs/superpowers/specs/2026-04-18-nirios-sh
 - [x] File-explorer `FileExplorerWidget` assembly (Task 10) precedes iced-binary replacement (Task 12).
 
 **6. Submodule hygiene**
-- [x] Every change inside `apps/terminal`, `apps/file-explorer`, `quick-gnome-shell` is committed inside the submodule before the superproject pointer is bumped.
+- [x] Every change inside `apps/terminal`, `apps/file-explorer`, `quick-shell` is committed inside the submodule before the superproject pointer is bumped.
 - [x] No use of `git add -A` from the root (per CLAUDE.md).
 
 **7. CLAUDE.md compliance**

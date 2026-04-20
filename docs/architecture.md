@@ -5,10 +5,10 @@ QuickDesktop is a bootable, container-based operating system built on the **Fedo
 ## Core Components
 
 ### 1. Compositor (`quick-desktop`)
-A Wayland compositor responsible for the spatial desktop environment. It handles window management, input, and basic UI elements. Located in `quick-gnome-shell/`.
+A Wayland compositor responsible for the spatial desktop environment. It handles window management, input, and basic UI elements. Located in `quick-shell/`.
 
 **Window Management Paradigm:**
-- **2D Clusters:** Windows cannot overlap (similar to Niri, but strictly 2D). Applications are organized into "Clusters"—2D arrangements of adjoining tiles.
+- **2D Clusters:** Windows cannot overlap; the compositor is strictly cluster-tiled in 2D. Applications are organized into "Clusters"—2D arrangements of adjoining tiles.
 - **Cluster Sandboxing:** Each cluster operates in an isolated Bubblewrap sandbox. A cluster is associated with a specific list of directories/files. When apps request file access, the host prompts the user, who can grant permissions temporarily or permanently to the entire cluster.
 - **Collaboration:** Users can invite peers to a specific cluster. This allows sharing the cluster's context via Wayland buffer streaming and remote input injection.
 

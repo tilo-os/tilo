@@ -54,7 +54,7 @@ To ensure the window manager logic (2D clustering, non-overlapping constraints, 
 2. **Automated Client Integration Tests:** Using the `wayland-client` crate, test suites can connect to the headless compositor socket, spawn mock applications, and assert correct clustering behavior and portal permission prompts.
 3. **Running Headless Tests:**
    ```bash
-   cd quick-gnome-shell
+   cd quick-shell
    cargo test --test interaction_test
    ```
 

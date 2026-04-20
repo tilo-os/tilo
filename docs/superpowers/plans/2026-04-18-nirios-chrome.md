@@ -24,7 +24,7 @@ Land the visible shell chrome on top of Plan 1's foundation: OverviewView, Globa
 
 ## Architecture
 
-All new toolkit primitives (`CommandPalette`, `DataTable`, `ContextMenu`, `Tooltip`, `Toast`) live in `quick-ui/src/widget/`. All new shell chrome modules live in `quick-gnome-shell/src/shell/`. Shell chrome is composed by the existing `nirios::Shell` root widget from Plan 1 — we only add children, never rewrite the root. The `PresenceCtx` scaffold from Plan 1 is populated with a `remote_cursors: Vec<RemoteCursor>` field and is fed by a simulated feed module (`shell::remote_cursors::SimulatedFeed`) so Plan 4 can swap to the real `CollaborationManager` source without touching widgets.
+All new toolkit primitives (`CommandPalette`, `DataTable`, `ContextMenu`, `Tooltip`, `Toast`) live in `quick-ui/src/widget/`. All new shell chrome modules live in `quick-shell/src/shell/`. Shell chrome is composed by the existing `nirios::Shell` root widget from Plan 1 — we only add children, never rewrite the root. The `PresenceCtx` scaffold from Plan 1 is populated with a `remote_cursors: Vec<RemoteCursor>` field and is fed by a simulated feed module (`shell::remote_cursors::SimulatedFeed`) so Plan 4 can swap to the real `CollaborationManager` source without touching widgets.
 
 Every new widget implements the extended `Widget` contract from Plan 1:
 
@@ -36,7 +36,7 @@ Every new widget implements the extended `Widget` contract from Plan 1:
 ## Tech stack
 
 - No new workspace dependencies. Uses only crates already present in Plan 1 (`automerge`, `taffy`, `vello`, `cosmic-text`, `winit`, `wgpu`, `serde`, `serde_json`, `uuid`, `sysinfo` — `sysinfo` is added here for the TopBar system-monitor sparkline).
-- **Sole new dep:** `sysinfo = "0.32"` added to `quick-gnome-shell/Cargo.toml` for CPU/RAM readings.
+- **Sole new dep:** `sysinfo = "0.32"` added to `quick-shell/Cargo.toml` for CPU/RAM readings.
 - `cargo test -p quick-ui` and `cargo test -p quick-desktop` are the two test targets; neither test ever requires a GPU (all rendering goes through a headless Vello scene buffer).
 
 ## File Structure
@@ -58,7 +58,7 @@ quick-ui/tests/
   tooltip_test.rs
   toast_test.rs
 
-quick-gnome-shell/src/shell/
+quick-shell/src/shell/
   overview.rs              # OverviewView
   search.rs                # GlobalSearch (uses CommandPalette)
   quick_settings.rs        # QuickSettings popover
@@ -68,7 +68,7 @@ quick-gnome-shell/src/shell/
   remote_cursors.rs        # PresenceCtx-driven overlay + SimulatedFeed
   system_monitor.rs        # sysinfo-backed CPU/RAM sparkline
 
-quick-gnome-shell/tests/
+quick-shell/tests/
   shell_chrome_test.rs     # shell-chrome interaction tests
 ```
 
@@ -77,9 +77,9 @@ Files modified:
 ```
 quick-ui/src/widget/mod.rs          # pub mod + re-exports for new primitives
 quick-ui/src/lib.rs                 # re-exports
-quick-gnome-shell/src/shell/mod.rs  # wire new modules into nirios::Shell
-quick-gnome-shell/src/shell/state.rs # add Role/RolePermissions/WorkspaceFile if Plan 1 didn't finalize
-quick-gnome-shell/Cargo.toml        # add sysinfo = "0.32"
+quick-shell/src/shell/mod.rs  # wire new modules into nirios::Shell
+quick-shell/src/shell/state.rs # add Role/RolePermissions/WorkspaceFile if Plan 1 didn't finalize
+quick-shell/Cargo.toml        # add sysinfo = "0.32"
 quick-ui/src/presence/mod.rs        # populate PresenceCtx with remote_cursors field
 ```
 
@@ -142,7 +142,7 @@ Subagents may take G2 in parallel (8 tasks across 8 files), and G3 in parallel (
 
 ### T1 — Bump deps, extend `PresenceCtx`
 
-**Files:** `quick-gnome-shell/Cargo.toml`, `quick-ui/src/presence/mod.rs`
+**Files:** `quick-shell/Cargo.toml`, `quick-ui/src/presence/mod.rs`
 
 **Test (write first, must fail):** In `quick-ui/tests/presence_remote_cursors_test.rs`:
 
@@ -185,7 +185,7 @@ pub struct PresenceCtx {
 
 (If Plan 1 defined `PresenceCtx` with `#[non_exhaustive]`, keep that; we're only adding a field.)
 
-Then add to `quick-gnome-shell/Cargo.toml` under `[dependencies]`:
+Then add to `quick-shell/Cargo.toml` under `[dependencies]`:
 
 ```toml
 sysinfo = "0.32"
@@ -193,15 +193,15 @@ sysinfo = "0.32"
 
 **Run:** `cargo test -p quick-ui presence_ctx_holds_remote_cursors` — must pass.
 
-**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-ui/src/presence/mod.rs quick-ui/tests/presence_remote_cursors_test.rs quick-gnome-shell/Cargo.toml && git -C /var/home/user/Development/quickdesktop commit -m "chore: extend PresenceCtx with remote_cursors + add sysinfo dep"`
+**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-ui/src/presence/mod.rs quick-ui/tests/presence_remote_cursors_test.rs quick-shell/Cargo.toml && git -C /var/home/user/Development/quickdesktop commit -m "chore: extend PresenceCtx with remote_cursors + add sysinfo dep"`
 
 ---
 
 ### T2 — `Role`, `RolePermissions`, `WorkspaceFile` types in shell state
 
-**File:** `quick-gnome-shell/src/shell/state.rs`
+**File:** `quick-shell/src/shell/state.rs`
 
-**Test (write first):** In `quick-gnome-shell/tests/workspace_settings_state_test.rs`:
+**Test (write first):** In `quick-shell/tests/workspace_settings_state_test.rs`:
 
 ```rust
 use quick_desktop::shell::state::{Role, RolePermissions, WorkspaceFile, Workspace, WorkspaceId};
@@ -231,7 +231,7 @@ fn role_permissions_round_trip() {
 
 **Run:** `cargo test -p quick-desktop role_permissions_round_trip` — fail.
 
-**Impl:** Append to `quick-gnome-shell/src/shell/state.rs`:
+**Impl:** Append to `quick-shell/src/shell/state.rs`:
 
 ```rust
 use std::collections::HashMap;
@@ -269,7 +269,7 @@ Confirm `Workspace` already has `roles: Vec<Role>` and `workspace_files: Vec<Wor
 
 **Run:** `cargo test -p quick-desktop role_permissions_round_trip` — pass.
 
-**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-gnome-shell/src/shell/state.rs quick-gnome-shell/tests/workspace_settings_state_test.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): Role/RolePermissions/WorkspaceFile concrete types"`
+**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-shell/src/shell/state.rs quick-shell/tests/workspace_settings_state_test.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): Role/RolePermissions/WorkspaceFile concrete types"`
 
 ---
 
@@ -617,9 +617,9 @@ fn toast_stack_caps_entries() {
 
 ### T10 — `system_monitor` module (sysinfo-backed sparkline source)
 
-**File:** `quick-gnome-shell/src/shell/system_monitor.rs`
+**File:** `quick-shell/src/shell/system_monitor.rs`
 
-**Test:** `quick-gnome-shell/tests/system_monitor_test.rs`:
+**Test:** `quick-shell/tests/system_monitor_test.rs`:
 
 ```rust
 use quick_desktop::shell::system_monitor::{SystemMonitor, SparkSample};
@@ -667,15 +667,15 @@ impl SystemMonitor {
 
 **Run:** pass.
 
-**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-gnome-shell/src/shell/system_monitor.rs quick-gnome-shell/tests/system_monitor_test.rs quick-gnome-shell/src/shell/mod.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): sysinfo-backed SystemMonitor for topbar sparkline"`
+**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-shell/src/shell/system_monitor.rs quick-shell/tests/system_monitor_test.rs quick-shell/src/shell/mod.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): sysinfo-backed SystemMonitor for topbar sparkline"`
 
 ---
 
 ### T11 — `OverviewView` (vertical list of workspace mini-cards)
 
-**File:** `quick-gnome-shell/src/shell/overview.rs`
+**File:** `quick-shell/src/shell/overview.rs`
 
-**Test:** Add to `quick-gnome-shell/tests/shell_chrome_test.rs`:
+**Test:** Add to `quick-shell/tests/shell_chrome_test.rs`:
 
 ```rust
 use quick_desktop::shell::overview::OverviewView;
@@ -704,13 +704,13 @@ fn overview_view_click_activates_workspace() {
 
 **Run:** pass.
 
-**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-gnome-shell/src/shell/overview.rs quick-gnome-shell/tests/shell_chrome_test.rs quick-gnome-shell/src/shell/mod.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): OverviewView vertical list of workspace cards"`
+**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-shell/src/shell/overview.rs quick-shell/tests/shell_chrome_test.rs quick-shell/src/shell/mod.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): OverviewView vertical list of workspace cards"`
 
 ---
 
 ### T12 — `GlobalSearch` (uses `CommandPalette`, Cmd+K toggle)
 
-**File:** `quick-gnome-shell/src/shell/search.rs`
+**File:** `quick-shell/src/shell/search.rs`
 
 **Test:** Add to `shell_chrome_test.rs`:
 
@@ -741,13 +741,13 @@ fn global_search_context_filter_narrows_results() {
 
 **Run:** pass.
 
-**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-gnome-shell/src/shell/search.rs quick-gnome-shell/tests/shell_chrome_test.rs quick-gnome-shell/src/shell/mod.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): GlobalSearch with context-aware filter"`
+**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-shell/src/shell/search.rs quick-shell/tests/shell_chrome_test.rs quick-shell/src/shell/mod.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): GlobalSearch with context-aware filter"`
 
 ---
 
 ### T13 — QuickSettings level 1 (brightness + volume sliders)
 
-**File:** `quick-gnome-shell/src/shell/quick_settings.rs`
+**File:** `quick-shell/src/shell/quick_settings.rs`
 
 **Test:**
 
@@ -773,13 +773,13 @@ fn quick_settings_brightness_and_volume_clamp_and_mutate() {
 
 **Run:** pass.
 
-**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-gnome-shell/src/shell/quick_settings.rs quick-gnome-shell/tests/shell_chrome_test.rs quick-gnome-shell/src/shell/mod.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): QuickSettings popover level 1 with clamped sliders"`
+**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-shell/src/shell/quick_settings.rs quick-shell/tests/shell_chrome_test.rs quick-shell/src/shell/mod.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): QuickSettings popover level 1 with clamped sliders"`
 
 ---
 
 ### T14 — QuickSettings multi-level drill-in
 
-**File:** `quick-gnome-shell/src/shell/quick_settings.rs`
+**File:** `quick-shell/src/shell/quick_settings.rs`
 
 **Test:**
 
@@ -808,13 +808,13 @@ fn quick_settings_drill_in_and_back() {
 
 **Run:** pass.
 
-**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-gnome-shell/src/shell/quick_settings.rs quick-gnome-shell/tests/shell_chrome_test.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): QuickSettings multi-level WiFi/BT drill-in"`
+**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-shell/src/shell/quick_settings.rs quick-shell/tests/shell_chrome_test.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): QuickSettings multi-level WiFi/BT drill-in"`
 
 ---
 
 ### T15 — WorkspaceSettings General tab
 
-**File:** `quick-gnome-shell/src/shell/workspace_settings.rs`
+**File:** `quick-shell/src/shell/workspace_settings.rs`
 
 **Test:**
 
@@ -846,13 +846,13 @@ Add `Collaborator` to `state.rs` if not already present: `pub struct Collaborato
 
 **Run:** pass.
 
-**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-gnome-shell/src/shell/workspace_settings.rs quick-gnome-shell/src/shell/state.rs quick-gnome-shell/tests/shell_chrome_test.rs quick-gnome-shell/src/shell/mod.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): WorkspaceSettings modal General tab"`
+**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-shell/src/shell/workspace_settings.rs quick-shell/src/shell/state.rs quick-shell/tests/shell_chrome_test.rs quick-shell/src/shell/mod.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): WorkspaceSettings modal General tab"`
 
 ---
 
 ### T16 — WorkspaceSettings Roles tab (uses `DataTable`)
 
-**File:** `quick-gnome-shell/src/shell/workspace_settings.rs`
+**File:** `quick-shell/src/shell/workspace_settings.rs`
 
 **Test:**
 
@@ -879,13 +879,13 @@ fn workspace_settings_roles_tab_edits_app_permissions() {
 
 **Run:** pass.
 
-**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-gnome-shell/src/shell/workspace_settings.rs quick-gnome-shell/tests/shell_chrome_test.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): WorkspaceSettings Roles tab with DataTable app perms"`
+**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-shell/src/shell/workspace_settings.rs quick-shell/tests/shell_chrome_test.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): WorkspaceSettings Roles tab with DataTable app perms"`
 
 ---
 
 ### T17 — WorkspaceSettings Files tab (per-role file perm matrix)
 
-**File:** `quick-gnome-shell/src/shell/workspace_settings.rs`
+**File:** `quick-shell/src/shell/workspace_settings.rs`
 
 **Test:**
 
@@ -911,13 +911,13 @@ fn workspace_settings_files_tab_edits_file_permissions() {
 
 **Run:** pass.
 
-**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-gnome-shell/src/shell/workspace_settings.rs quick-gnome-shell/tests/shell_chrome_test.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): WorkspaceSettings Files tab per-role permission matrix"`
+**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-shell/src/shell/workspace_settings.rs quick-shell/tests/shell_chrome_test.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): WorkspaceSettings Files tab per-role permission matrix"`
 
 ---
 
 ### T18 — TopBar LeftNav (overview + ws up/down + ws name)
 
-**File:** `quick-gnome-shell/src/shell/topbar.rs`
+**File:** `quick-shell/src/shell/topbar.rs`
 
 **Test:**
 
@@ -959,13 +959,13 @@ fn topbar_workspace_name_button_emits_settings_request() {
 
 **Run:** pass.
 
-**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-gnome-shell/src/shell/topbar.rs quick-gnome-shell/tests/shell_chrome_test.rs quick-gnome-shell/src/shell/mod.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): TopBar LeftNav with clamped workspace up/down + name button"`
+**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-shell/src/shell/topbar.rs quick-shell/tests/shell_chrome_test.rs quick-shell/src/shell/mod.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): TopBar LeftNav with clamped workspace up/down + name button"`
 
 ---
 
 ### T19 — TopBar CenterWidgets (clock + sparkline + calendar, wheel cycle, 200ms cooldown)
 
-**File:** `quick-gnome-shell/src/shell/topbar.rs`
+**File:** `quick-shell/src/shell/topbar.rs`
 
 **Test:**
 
@@ -998,13 +998,13 @@ fn topbar_center_widget_cycles_with_wheel_cooldown() {
 
 **Run:** pass.
 
-**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-gnome-shell/src/shell/topbar.rs quick-gnome-shell/tests/shell_chrome_test.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): TopBar CenterWidgets wheel-cycle with 200ms cooldown"`
+**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-shell/src/shell/topbar.rs quick-shell/tests/shell_chrome_test.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): TopBar CenterWidgets wheel-cycle with 200ms cooldown"`
 
 ---
 
 ### T20 — TopBar RightTray (collaborator avatars + QuickSettings trigger)
 
-**File:** `quick-gnome-shell/src/shell/topbar.rs`
+**File:** `quick-shell/src/shell/topbar.rs`
 
 **Test:**
 
@@ -1037,13 +1037,13 @@ fn topbar_right_tray_renders_collaborators_and_opens_quick_settings() {
 
 **Run:** pass.
 
-**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-gnome-shell/src/shell/topbar.rs quick-gnome-shell/tests/shell_chrome_test.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): TopBar RightTray avatars + QuickSettings trigger"`
+**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-shell/src/shell/topbar.rs quick-shell/tests/shell_chrome_test.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): TopBar RightTray avatars + QuickSettings trigger"`
 
 ---
 
 ### T21 — `SidebarWheel` skeleton (wheel-to-switch-strip)
 
-**File:** `quick-gnome-shell/src/shell/sidebar_wheel.rs`
+**File:** `quick-shell/src/shell/sidebar_wheel.rs`
 
 **Test:**
 
@@ -1081,13 +1081,13 @@ fn sidebar_wheel_switches_active_strip() {
 
 **Run:** pass.
 
-**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-gnome-shell/src/shell/sidebar_wheel.rs quick-gnome-shell/tests/shell_chrome_test.rs quick-gnome-shell/src/shell/mod.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): SidebarWheel skeleton with wheel-to-switch-strip"`
+**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-shell/src/shell/sidebar_wheel.rs quick-shell/tests/shell_chrome_test.rs quick-shell/src/shell/mod.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): SidebarWheel skeleton with wheel-to-switch-strip"`
 
 ---
 
 ### T22 — SidebarWheel overscroll-create gesture
 
-**File:** `quick-gnome-shell/src/shell/sidebar_wheel.rs`
+**File:** `quick-shell/src/shell/sidebar_wheel.rs`
 
 **Test:**
 
@@ -1147,13 +1147,13 @@ Widget draws a hint card with label "New session" whose alpha = `overscroll_prog
 
 **Run:** pass.
 
-**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-gnome-shell/src/shell/sidebar_wheel.rs quick-gnome-shell/tests/shell_chrome_test.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): SidebarWheel overscroll-create gesture with threshold commit + snap-back"`
+**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-shell/src/shell/sidebar_wheel.rs quick-shell/tests/shell_chrome_test.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): SidebarWheel overscroll-create gesture with threshold commit + snap-back"`
 
 ---
 
 ### T23 — SidebarWheel workspace-management button entrypoint
 
-**File:** `quick-gnome-shell/src/shell/sidebar_wheel.rs`
+**File:** `quick-shell/src/shell/sidebar_wheel.rs`
 
 **Test:**
 
@@ -1178,15 +1178,15 @@ fn sidebar_wheel_management_button_creates_workspace() {
 
 **Run:** pass.
 
-**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-gnome-shell/src/shell/sidebar_wheel.rs quick-gnome-shell/tests/shell_chrome_test.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): SidebarWheel management-button path reuses overscroll commit helper"`
+**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-shell/src/shell/sidebar_wheel.rs quick-shell/tests/shell_chrome_test.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): SidebarWheel management-button path reuses overscroll commit helper"`
 
 ---
 
 ### T24 — `RemoteCursor` population + mapping helper
 
-**File:** `quick-ui/src/presence/mod.rs` (extend), `quick-gnome-shell/src/shell/remote_cursors.rs`
+**File:** `quick-ui/src/presence/mod.rs` (extend), `quick-shell/src/shell/remote_cursors.rs`
 
-**Test:** `quick-gnome-shell/tests/remote_cursors_test.rs`:
+**Test:** `quick-shell/tests/remote_cursors_test.rs`:
 
 ```rust
 use quick_ui::presence::{PresenceCtx, RemoteCursor};
@@ -1216,13 +1216,13 @@ fn remote_cursor_is_clipped_to_active_tile_bounds() {
 
 **Run:** pass.
 
-**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-gnome-shell/src/shell/remote_cursors.rs quick-gnome-shell/tests/remote_cursors_test.rs quick-gnome-shell/src/shell/mod.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): remote_cursors bounds helper"`
+**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-shell/src/shell/remote_cursors.rs quick-shell/tests/remote_cursors_test.rs quick-shell/src/shell/mod.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): remote_cursors bounds helper"`
 
 ---
 
 ### T25 — `SimulatedFeed` driving remote cursors
 
-**File:** `quick-gnome-shell/src/shell/remote_cursors.rs`
+**File:** `quick-shell/src/shell/remote_cursors.rs`
 
 **Test:**
 
@@ -1250,13 +1250,13 @@ fn simulated_feed_moves_cursor_deterministically() {
 
 **Run:** pass.
 
-**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-gnome-shell/src/shell/remote_cursors.rs quick-gnome-shell/tests/remote_cursors_test.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): SimulatedFeed drives remote cursors deterministically"`
+**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-shell/src/shell/remote_cursors.rs quick-shell/tests/remote_cursors_test.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): SimulatedFeed drives remote cursors deterministically"`
 
 ---
 
 ### T26 — `RemoteCursorOverlay` widget draws over active tile
 
-**File:** `quick-gnome-shell/src/shell/remote_cursors.rs`
+**File:** `quick-shell/src/shell/remote_cursors.rs`
 
 **Test:**
 
@@ -1284,13 +1284,13 @@ fn remote_cursor_overlay_filters_to_active_tile() {
 
 **Run:** pass.
 
-**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-gnome-shell/src/shell/remote_cursors.rs quick-gnome-shell/tests/remote_cursors_test.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): RemoteCursorOverlay widget scoped to active tile"`
+**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-shell/src/shell/remote_cursors.rs quick-shell/tests/remote_cursors_test.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): RemoteCursorOverlay widget scoped to active tile"`
 
 ---
 
 ### T27 — Wire chrome into `nirios::Shell` root widget
 
-**File:** `quick-gnome-shell/src/shell/mod.rs`
+**File:** `quick-shell/src/shell/mod.rs`
 
 **Test:** In `shell_chrome_test.rs`:
 
@@ -1318,13 +1318,13 @@ Handle global hotkeys in root `handle_event`: `Cmd+K` toggles `search_visible`; 
 
 **Run:** pass.
 
-**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-gnome-shell/src/shell/mod.rs quick-gnome-shell/tests/shell_chrome_test.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): nirios::Shell root wires all chrome + global hotkeys"`
+**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-shell/src/shell/mod.rs quick-shell/tests/shell_chrome_test.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): nirios::Shell root wires all chrome + global hotkeys"`
 
 ---
 
 ### T28 — Shell-chrome interaction tests
 
-**File:** `quick-gnome-shell/tests/shell_chrome_test.rs`
+**File:** `quick-shell/tests/shell_chrome_test.rs`
 
 **Test (add):**
 
@@ -1367,13 +1367,13 @@ fn overscroll_commit_fires_toast() {
 
 **Run:** pass.
 
-**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-gnome-shell/src/shell/mod.rs quick-gnome-shell/tests/shell_chrome_test.rs && git -C /var/home/user/Development/quickdesktop commit -m "test(shell): Cmd+K / Cmd+Tab / overscroll-toast interaction tests"`
+**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-shell/src/shell/mod.rs quick-shell/tests/shell_chrome_test.rs && git -C /var/home/user/Development/quickdesktop commit -m "test(shell): Cmd+K / Cmd+Tab / overscroll-toast interaction tests"`
 
 ---
 
 ### T29 — Toast wiring: workspace create + rename
 
-**File:** `quick-gnome-shell/src/shell/mod.rs`
+**File:** `quick-shell/src/shell/mod.rs`
 
 **Test (add):**
 
@@ -1398,13 +1398,13 @@ fn toast_fires_on_rename_and_create() {
 
 **Run:** pass.
 
-**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-gnome-shell/src/shell/mod.rs quick-gnome-shell/src/shell/workspace_settings.rs quick-gnome-shell/tests/shell_chrome_test.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): toasts fire on workspace create + rename"`
+**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-shell/src/shell/mod.rs quick-shell/src/shell/workspace_settings.rs quick-shell/tests/shell_chrome_test.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): toasts fire on workspace create + rename"`
 
 ---
 
 ### T30 — ContextMenu wiring: right-click on tile
 
-**File:** `quick-gnome-shell/src/shell/mod.rs`
+**File:** `quick-shell/src/shell/mod.rs`
 
 **Test:**
 
@@ -1430,13 +1430,13 @@ fn right_click_on_tile_opens_default_context_menu() {
 
 **Run:** pass.
 
-**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-gnome-shell/src/shell/mod.rs quick-gnome-shell/tests/shell_chrome_test.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): default tile context menu wired on right-click"`
+**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-shell/src/shell/mod.rs quick-shell/tests/shell_chrome_test.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): default tile context menu wired on right-click"`
 
 ---
 
 ### T31 — Tooltip wiring: topbar workspace-name button
 
-**File:** `quick-gnome-shell/src/shell/topbar.rs`
+**File:** `quick-shell/src/shell/topbar.rs`
 
 **Test:**
 
@@ -1460,18 +1460,18 @@ fn topbar_ws_name_tooltip_reveals_after_delay() {
 
 **Run:** pass.
 
-**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-gnome-shell/src/shell/topbar.rs quick-gnome-shell/tests/shell_chrome_test.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): workspace-name tooltip after 600ms hover"`
+**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-shell/src/shell/topbar.rs quick-shell/tests/shell_chrome_test.rs && git -C /var/home/user/Development/quickdesktop commit -m "feat(shell): workspace-name tooltip after 600ms hover"`
 
 ---
 
 ### T32 — Visual smoke checklist (doc-comment)
 
-**File:** `quick-gnome-shell/src/shell/mod.rs`
+**File:** `quick-shell/src/shell/mod.rs`
 
 **Test (compile-only):** Not a runtime test — a crate doc-comment. Still do TDD: add a compile-fail test asserting the doc block exists.
 
 ```rust
-// at top of quick-gnome-shell/tests/shell_chrome_test.rs:
+// at top of quick-shell/tests/shell_chrome_test.rs:
 #[test]
 fn visual_smoke_checklist_is_documented() {
     let src = include_str!("../src/shell/mod.rs");
@@ -1511,7 +1511,7 @@ fn visual_smoke_checklist_is_documented() {
 
 **Run:** pass.
 
-**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-gnome-shell/src/shell/mod.rs quick-gnome-shell/tests/shell_chrome_test.rs && git -C /var/home/user/Development/quickdesktop commit -m "docs(shell): visual smoke checklist for nirios chrome"`
+**Commit:** `git -C /var/home/user/Development/quickdesktop add quick-shell/src/shell/mod.rs quick-shell/tests/shell_chrome_test.rs && git -C /var/home/user/Development/quickdesktop commit -m "docs(shell): visual smoke checklist for nirios chrome"`
 
 ---
 
@@ -1547,6 +1547,6 @@ Before handing off to Plan 3:
 - [ ] Signatures for `CommandPalette` and `DataTable` match the prompt-locked signatures exactly (public API surface — `new`, `push`, `set_query`, `set_filter` for CommandPalette; `new`, `set_rows`, `sort_by` for DataTable). The `sort_by_with` typed helper on DataTable is additive.
 - [ ] `cargo run -p quick-desktop` reproduces every item of the T32 visual smoke checklist.
 - [ ] Deferred items ( 2.5D/3D wheel geometry, real `CollaborationManager` feed, wire-side permission enforcement, persistence-backed workspace tree) are **not** implemented here, matching the spec §10 and the deferred tracker.
-- [ ] Files added: `command_palette.rs`, `data_table.rs`, `context_menu.rs`, `tooltip.rs`, `toast.rs` in `quick-ui/src/widget/`; `overview.rs`, `search.rs`, `quick_settings.rs`, `workspace_settings.rs`, `topbar.rs`, `sidebar_wheel.rs`, `remote_cursors.rs`, `system_monitor.rs` in `quick-gnome-shell/src/shell/`. Count matches File Structure section. No other module was created.
+- [ ] Files added: `command_palette.rs`, `data_table.rs`, `context_menu.rs`, `tooltip.rs`, `toast.rs` in `quick-ui/src/widget/`; `overview.rs`, `search.rs`, `quick_settings.rs`, `workspace_settings.rs`, `topbar.rs`, `sidebar_wheel.rs`, `remote_cursors.rs`, `system_monitor.rs` in `quick-shell/src/shell/`. Count matches File Structure section. No other module was created.
 - [ ] No new workspace dependency beyond `sysinfo = "0.32"`.
 - [ ] Each task commit is small (< 400 LoC diff); if any grew larger during execution, it was split as the plan prescribes.
