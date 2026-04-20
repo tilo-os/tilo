@@ -868,8 +868,11 @@ impl Widget for ShellOverlayHost {
         // An in-flight overview crossfade needs continuous redraws; the
         // app polls this in `AboutToWait` and re-schedules a frame as long
         // as `transition_started` is set (cleared once elapsed ≥ duration
-        // inside `tick_overview_transition`).
-        self.transition_started.is_some()
+        // inside `tick_overview_transition`). We also bubble up the inner
+        // desktop's signal — a TabBar running a drop-zone expand
+        // animation, for instance — so chrome-layer stasis never stalls
+        // content-layer transitions.
+        self.transition_started.is_some() || self.content.needs_animation_frame()
     }
 }
 
