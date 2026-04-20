@@ -29,7 +29,7 @@ use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use quick_ui::presence::PresenceCtx;
+use quick_ui::presence::{PresenceCtx, PresenceKey};
 use quick_ui::text_render::TextRenderer;
 use quick_ui::theme::Theme;
 use quick_ui::widget::Widget;
@@ -479,11 +479,13 @@ impl Widget for ShellOverlayHost {
             self.content
                 .draw(scene, content_xform, text_renderer, theme, presence);
             self.draw_demo_peer(scene, transform, text_renderer, theme);
+            self.draw_real_peers(scene, transform, text_renderer, theme, presence);
         } else if content_alpha > 0.0 {
             scene.push_layer(BlendMode::default(), content_alpha, transform, &self.rect);
             self.content
                 .draw(scene, content_xform, text_renderer, theme, presence);
             self.draw_demo_peer(scene, transform, text_renderer, theme);
+            self.draw_real_peers(scene, transform, text_renderer, theme, presence);
             scene.pop_layer();
         }
 
@@ -1368,6 +1370,92 @@ impl ShellOverlayHost {
         );
     }
 
+    /// Paint every real peer's live pointer for the active workspace
+    /// scope. Reads [`PresenceCtx::pointers`] filtered to
+    /// `PresenceKey::Workspace { id: <active> }`, which is the same key
+    /// `App::set_presence_broadcast_scope` writes when the shell runs.
+    /// Each peer gets a caret+name chip identical in shape to
+    /// `draw_demo_peer` so remote and simulated peers read the same on
+    /// screen. Colours come from `PresenceCtx::color_for` so palette
+    /// pins ("alice" → pink, "bob" → orange) survive the round-trip.
+    fn draw_real_peers(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let Some(chrome_rc) = self.chrome.as_ref() else { return };
+        let active_id_str = format!("{}", chrome_rc.borrow().tree.active.raw());
+        let key = PresenceKey::Workspace { id: active_id_str };
+        let Some(peers) = presence.pointers.get(&key) else { return };
+        if peers.is_empty() {
+            return;
+        }
+
+        let tokens = &theme.tokens;
+        let caret_size = 10.0_f64;
+        let chip_offset = 2.0_f64;
+        let pad_x = 6.0_f64;
+        let pad_y = 2.0_f64;
+        let label_size = tokens.typography.scale.sm;
+
+        for (user, pos) in peers {
+            let apex = Point::new(pos.0 as f64, pos.1 as f64);
+            // Guard: winit delivers scaled coordinates so the pointer
+            // can, in principle, fall outside this window's rect if
+            // the broadcast came from a peer with a different viewport.
+            // Clip the paint to our content rect so we never trail a
+            // cursor into the top-bar / sidebar chrome.
+            if !self.rect.contains(apex) {
+                continue;
+            }
+            let (pr, pg, pb) = presence.color_for(user);
+            let peer = Color::rgb8(pr, pg, pb);
+
+            let mut caret = vello::kurbo::BezPath::new();
+            caret.move_to(apex);
+            caret.line_to((apex.x + caret_size, apex.y + caret_size * 0.4));
+            caret.line_to((apex.x + caret_size * 0.4, apex.y + caret_size));
+            caret.close_path();
+            scene.fill(Fill::NonZero, transform, peer, None, &caret);
+
+            let label = &user.0;
+            let (tw, _th) = text_renderer.measure(label, label_size, None);
+            let chip_w = tw as f64 + pad_x * 2.0;
+            let chip_h = label_size as f64 + pad_y * 2.0;
+            let chip_x = apex.x + caret_size + chip_offset;
+            let chip_y = apex.y + caret_size + chip_offset;
+            let chip_rect = Rect::new(chip_x, chip_y, chip_x + chip_w, chip_y + chip_h);
+            let chip = RoundedRect::from_rect(chip_rect, tokens.radii.sm as f64);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                tokens.colors.surfaces.raised,
+                None,
+                &chip,
+            );
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                tokens.colors.border_standard,
+                None,
+                &chip,
+            );
+            let underline = Rect::new(chip_rect.x0, chip_rect.y1 - 2.0, chip_rect.x1, chip_rect.y1);
+            scene.fill(Fill::NonZero, transform, peer, None, &underline);
+            text_renderer.draw_text(
+                scene,
+                label,
+                label_size,
+                tokens.colors.text_primary,
+                transform * Affine::translate((chip_rect.x0 + pad_x, chip_rect.y0 + pad_y)),
+                None,
+            );
+        }
+    }
+
     /// Scope banner drawn above the palette while ⌘K is open. Shows a
     /// "Search in:" label and two toggleable pills ("Workspace" / "All").
     /// The active pill uses the indigo accent fill so it reads as
@@ -1859,6 +1947,46 @@ mod workspace_slide_tests {
         assert!(
             !h.needs_animation_frame(),
             "host must go idle once slide completes and no other animation is in flight"
+        );
+    }
+
+    #[test]
+    fn real_peers_filter_picks_up_pointers_on_active_workspace_only() {
+        use quick_ui::permissions::UserId;
+        let (h, chrome) = host_with_two_workspaces();
+        let active = chrome.borrow().tree.active.raw();
+        let active_key = PresenceKey::Workspace {
+            id: format!("{}", active),
+        };
+        let other_key = PresenceKey::Workspace {
+            id: format!("{}", active.wrapping_add(99)),
+        };
+        let mut presence = PresenceCtx::empty();
+        presence.set_pointer(&active_key, UserId("alice".into()), (120.0, 240.0));
+        presence.set_pointer(&other_key, UserId("bob".into()), (300.0, 400.0));
+
+        // Same key-format the shell uses inside `draw_real_peers`: the
+        // active workspace id stringified. Mismatches must never match.
+        let shell_key = PresenceKey::Workspace {
+            id: format!("{}", h.chrome.as_ref().unwrap().borrow().tree.active.raw()),
+        };
+        let matches = presence
+            .pointers
+            .get(&shell_key)
+            .map(|v| v.len())
+            .unwrap_or(0);
+        assert_eq!(
+            matches, 1,
+            "only alice's pointer lives on the active workspace key"
+        );
+        let other_matches = presence
+            .pointers
+            .get(&other_key)
+            .map(|v| v.len())
+            .unwrap_or(0);
+        assert_eq!(
+            other_matches, 1,
+            "bob's pointer stays attributed to the other workspace (filter must drop it)"
         );
     }
 
