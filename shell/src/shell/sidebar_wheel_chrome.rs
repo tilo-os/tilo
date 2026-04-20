@@ -216,6 +216,60 @@ impl Widget for SidebarWheelChrome {
         let divider = Rect::new(self.rect.x1 - 1.0, self.rect.y0, self.rect.x1, self.rect.y1);
         scene.fill(Fill::NonZero, transform, colors.border_standard, None, &divider);
 
+        // Rim / gradient line on expand — concept fades workspace cards out
+        // at the top and bottom of the wheel so they appear to slip into /
+        // out of view. We approximate the CSS `mask-image: linear-gradient`
+        // with stepped alpha strips at each edge. The top strip is opaque
+        // near the edge and fades transparent downward (stacking
+        // `neutral[0]` at decreasing alpha produces the appearance of cards
+        // being "eaten" by the chrome); the bottom strip mirrors it.
+        let fade_h = 36.0_f64;
+        let steps = 8_usize;
+        let step_h = fade_h / steps as f64;
+        let bg = colors.neutral[0];
+        for i in 0..steps {
+            // Top: near the edge = high alpha → low alpha further down.
+            let alpha = 1.0 - (i as f32) / (steps as f32);
+            let top = Rect::new(
+                self.rect.x0,
+                self.rect.y0 + step_h * i as f64,
+                self.rect.x1 - 1.0,
+                self.rect.y0 + step_h * (i + 1) as f64,
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                bg.with_alpha_factor(alpha * 0.6),
+                None,
+                &top,
+            );
+            let bottom = Rect::new(
+                self.rect.x0,
+                self.rect.y1 - step_h * (i + 1) as f64,
+                self.rect.x1 - 1.0,
+                self.rect.y1 - step_h * i as f64,
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                bg.with_alpha_factor(alpha * 0.6),
+                None,
+                &bottom,
+            );
+        }
+        // Hairline accent rim at the very top and bottom — a 1 px indigo
+        // line at low alpha, echoing the concept's focus-glow trim.
+        let top_rim = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1 - 1.0, self.rect.y0 + 1.0);
+        let bot_rim = Rect::new(
+            self.rect.x0,
+            self.rect.y1 - 1.0,
+            self.rect.x1 - 1.0,
+            self.rect.y1,
+        );
+        let rim = colors.accent[5].with_alpha_factor(0.35);
+        scene.fill(Fill::NonZero, transform, rim, None, &top_rim);
+        scene.fill(Fill::NonZero, transform, rim, None, &bot_rim);
+
         // Draw each workspace card.
         for (idx, card) in self.cards.iter().enumerate() {
             let is_active = self.active == Some(card.id);
