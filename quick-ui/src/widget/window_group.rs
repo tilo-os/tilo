@@ -4,6 +4,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{WindowEvent, MouseButton, ElementState};
 use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use taffy::style_helpers::length;
+use std::time::{Duration, Instant};
 use crate::widget::{Widget, TabBar, TabDescriptor, TileContent, TileHost};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -12,6 +13,20 @@ use crate::presence::PresenceCtx;
 pub const WIDTH_MIN_PX: u32 = 300;
 pub const WIDTH_MAX_PX: u32 = 1200;
 pub const RESIZE_HANDLE_PX: f64 = 6.0;
+
+/// Duration of the per-group fade-in played when a `WindowGroup` is
+/// newly spawned — e.g. via split-into-new-group from a cross-group
+/// drag release. Matches the concept's
+/// `initial={{ opacity: 0, scale: 0.95, y: 20 }}` →
+/// `animate={{ opacity: 1, scale: 1, y: 0 }}` on each `<motion.div>`
+/// window frame (`WindowFrame.tsx:201-205`). 320 ms is long enough for
+/// the motion to read as an "arrival" without delaying the user's next
+/// interaction on the new group.
+const SPAWN_ANIM_MS: u64 = 320;
+/// Vertical start offset for the spawn fade, in CSS-like px. Positive
+/// values mean the group starts below its target and settles up —
+/// mirrors the concept's `y: 20` initial.
+const SPAWN_ANIM_Y_OFFSET: f64 = 20.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowWidth { Narrow, Normal, Wide, Custom(u32) }
@@ -56,6 +71,13 @@ pub struct WindowGroup {
     close_rect: Rect,
     close_hover: bool,
     last_cursor: Point,
+    /// `Instant` at which this group's spawn-fade was latched, or
+    /// `None` if no spawn animation is in-flight (the common case —
+    /// groups built at `build_nirios_root` time don't animate). Set
+    /// via [`WindowGroup::start_spawn_animation`] from code paths that
+    /// create a brand-new group (e.g. split-tab-into-new-group in
+    /// [`crate::widget::GroupRow::split_tab_into_new_group`]).
+    spawned_at: Option<Instant>,
 }
 
 impl WindowGroup {
@@ -77,9 +99,22 @@ impl WindowGroup {
             close_rect: Rect::ZERO,
             close_hover: false,
             last_cursor: Point::ZERO,
+            spawned_at: None,
         }
     }
     pub fn width(&self) -> WindowWidth { self.width }
+
+    /// Latch the concept-faithful spawn fade-in (opacity 0→1 with a
+    /// 20 px → 0 vertical settle over `SPAWN_ANIM_MS`). Callers that
+    /// create a brand-new `WindowGroup` — e.g. the split-into-new-group
+    /// path in `GroupRow` — invoke this immediately after construction
+    /// so the group reads as "arriving" rather than popping in opaque.
+    /// A subsequent call within the animation window restarts it, which
+    /// is acceptable (the group re-acquired focus; replay is the least
+    /// surprising behaviour).
+    pub fn start_spawn_animation(&mut self) {
+        self.spawned_at = Some(Instant::now());
+    }
     pub fn begin_resize(&mut self, pointer_x: f32) { self.resize_origin = Some((pointer_x, self.width.pixels())); }
     pub fn update_resize(&mut self, pointer_x: f32) {
         if let Some((origin_x, origin_w)) = self.resize_origin {
@@ -160,6 +195,7 @@ impl WindowGroup {
             close_rect: Rect::ZERO,
             close_hover: false,
             last_cursor: Point::ZERO,
+            spawned_at: None,
         }
     }
 
@@ -226,6 +262,55 @@ impl Widget for WindowGroup {
         }
     }
     fn draw(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
+        // Per-group spawn fade: if `start_spawn_animation` was called on
+        // a freshly-created group (typically by the split-into-new-group
+        // path), play the concept's `initial={{ opacity: 0, y: 20 }}`
+        // curve over `SPAWN_ANIM_MS`. Computed upfront so the whole
+        // paint block (bar + tile + chrome rings) composes under a
+        // single alpha layer + vertical transform, keeping pill hover
+        // targets and resize-handle hit-tests aligned with what the
+        // user sees on screen.
+        let fade_window = Duration::from_millis(SPAWN_ANIM_MS);
+        let (fade_alpha, fade_y): (f32, f64) = match self.spawned_at {
+            Some(started) => {
+                let elapsed = started.elapsed();
+                if elapsed >= fade_window {
+                    (1.0, 0.0)
+                } else {
+                    let raw = (elapsed.as_secs_f64()
+                        / (SPAWN_ANIM_MS as f64 / 1000.0))
+                        .clamp(0.0, 1.0);
+                    let eased = 1.0 - (1.0 - raw).powi(3);
+                    (eased as f32, SPAWN_ANIM_Y_OFFSET * (1.0 - eased))
+                }
+            }
+            None => (1.0, 0.0),
+        };
+        let spawn_active = fade_alpha < 1.0;
+        if spawn_active {
+            // Clip with a generous margin so the concept-faithful glow
+            // rings (search_active, maximized outline) aren't clipped
+            // mid-fade. 16 px covers the widest outer stroke currently.
+            let clip = Rect::new(
+                self.rect.x0 - 16.0,
+                self.rect.y0 - 16.0,
+                self.rect.x1 + 16.0,
+                self.rect.y1 + 16.0,
+            );
+            scene.push_layer(
+                vello::peniko::BlendMode::default(),
+                fade_alpha,
+                transform,
+                &clip,
+            );
+        }
+        // All subsequent paint uses `transform` shifted by the fade's
+        // y-offset so the group reads as "settling down" into place.
+        let transform = if fade_y != 0.0 {
+            transform * Affine::translate((0.0, fade_y))
+        } else {
+            transform
+        };
         self.bar.draw(scene, transform, tr, theme, presence);
         let active_id = self.bar.active_id();
         if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == active_id) {
@@ -436,6 +521,13 @@ impl Widget for WindowGroup {
             self.restore_rect = Rect::ZERO;
             self.close_rect = Rect::ZERO;
         }
+
+        // Close out the spawn-fade layer if one was pushed at the top
+        // of `draw`. Mirrors the `spawn_active` branch exactly so every
+        // `push_layer` has a matching pop.
+        if spawn_active {
+            scene.pop_layer();
+        }
     }
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, m: &winit::event::Modifiers, s: &mut AutoCommit, p: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, taffy: &TaffyTree<()>) {
         let children = taffy.children(node_id).unwrap();
@@ -538,7 +630,14 @@ impl Widget for WindowGroup {
         // because `WindowGroup::children()` uses the default (empty) impl.
         // Bubble it up plus any active host's signal so nested app
         // animations (e.g. caret blink in future revisions) keep pumping.
-        self.bar.needs_animation_frame()
+        // Also honour the per-group spawn fade while it's in flight so
+        // the motion plays out without visible stutter.
+        let spawn_in_flight = self
+            .spawned_at
+            .map(|t| t.elapsed() < Duration::from_millis(SPAWN_ANIM_MS))
+            .unwrap_or(false);
+        spawn_in_flight
+            || self.bar.needs_animation_frame()
             || self
                 .hosts
                 .iter()
@@ -583,5 +682,27 @@ mod tests {
             g.search_active = !g.search_active;
         }
         assert!(!g.search_active, "second drain should flip search_active off");
+    }
+
+    #[test]
+    fn start_spawn_animation_records_timestamp_and_pumps_frames() {
+        let mut g = make_group();
+        assert!(g.spawned_at.is_none(), "fresh group has no spawn timestamp");
+        g.start_spawn_animation();
+        assert!(g.spawned_at.is_some(), "start_spawn_animation records the start");
+        assert!(
+            g.needs_animation_frame(),
+            "in-flight spawn fade must pump the run loop",
+        );
+    }
+
+    #[test]
+    fn spawn_fade_window_clears_after_duration() {
+        let mut g = make_group();
+        g.spawned_at = Some(Instant::now() - Duration::from_millis(SPAWN_ANIM_MS + 16));
+        assert!(
+            !g.needs_animation_frame(),
+            "after the spawn window elapses, the fade no longer demands frames",
+        );
     }
 }
