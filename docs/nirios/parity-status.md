@@ -112,7 +112,7 @@ tuned to the concept's slate-900/indigo-500 palette** — it leans more neutral.
 | Slate-900 / slate-950 surface scheme | ✅ | Dark theme: slate-900 base, slate-800 raised, black/80 top-bar overlay, slate-900/70 glass. Neutral ramp = slate-950→slate-50. |
 | Per-collaborator fixed cursor colors | ✅ | `quick_ui::presence::user_color` pins the concept palette (`me` → indigo-500, `alice` → pink-500, `bob` → orange-500, `charlie` → emerald-500) and falls through to FNV→HSL for unknown ids. Tabs' presence dots and the shell's `SimulatedFeed` (now built via `new_with_user_id("alice", "Alice")`) both read from the same function, so one peer keeps one colour across every affordance. Arbitrary per-peer overrides are now wired too: `Collaborator::cursor_color` (hex) is seeded into `PresenceCtx::color_overrides` by `sync_tab_presence_from_tree`, and every render helper (`TabBar`, `draw_peer_caret`/`_selection`/`_pointer`/`_focus`) consults `PresenceCtx::color_for` before falling through to the palette. |
 | Radii 8/12/16/24/full | ✅ | Tokens available. |
-| Glow shadows for focus / drag-over | 🟧 | Elevation tokens exist; drag-over glows not implemented. |
+| Glow shadows for focus / drag-over | ✅ | `WindowGroup::draw` paints a 1.5 px indigo-500 @ 60% alpha ring while a tab drag is in flight (drag-over affordance), and a two-stroke indigo glow (8 px @ 24% outer, 4 px @ 50% inner) around the whole card when `search_active` is set (focus glow). Elevation tokens cover the rest. |
 | Framer-Motion-equivalent springs | ✅ | Motion tokens exist; `WorkspaceView` uses one. |
 
 ## 10. Interaction & state
