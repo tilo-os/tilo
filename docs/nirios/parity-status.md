@@ -149,21 +149,30 @@ for chrome density). Outstanding infrastructure-level items:
    `quick-ui/tests/support/offscreen.rs`: a headless wgpu + vello
    renderer that copies texture bytes back to the CPU (handling the
    256-byte row-pitch alignment) so tests can assert pixel invariants
-   or write PNGs without winit/a compositor. Four smoke tests in
-   `quick-ui/tests/screenshot_test.rs` exercise the pipeline: a solid
-   background + filled rect, a PNG writeback with magic-byte
-   verification, a full `Container` widget driven through
-   `build_layout` → taffy compute → `apply_layout` → `draw` proving
-   the widget tree overpaints a base colour, and a real `TabBar`
-   render asserting the 40 px / 6 px-inset pill geometry — the first
-   visual regression tied to a recent deliberate change. All four
-   pass; they skip gracefully (no panic, `eprintln` only) when no
-   wgpu adapter is available. Set `QUICK_UI_SCREENSHOT_DIR=<path>`
-   on the TabBar test to write `tab_bar.png` for by-eye inspection.
-   Full test count: 22 `nirios_e2e_test`, 28 `shell_chrome_test`, 15
-   `workspace_drop` unit, 39 `quick-ui` unit, 1 `interaction_test`,
-   4 `screenshot_test` — **109 tests total, all passing** (five new
-   `group_row::tests` cases cover the inter-group drop flow). A golden-image diff harness (with reference-set
-   provenance + per-DPI bases + tolerance) is the next incremental
-   step for pixel-regression coverage and is deferred as its own
-   scope rather than bundled here.
+   or write PNGs without winit/a compositor. Smoke tests in
+   `screenshot_test.rs` exercise the pipeline (solid bg + rect, PNG
+   writeback with magic-byte verification, full `Container` widget,
+   `TabBar` geometry guard). **Two journey-style E2E tests** now layer
+   on top: `window_group_visual_journey.rs` drives a `WindowGroup`
+   through four states (fresh → search-active → maximized →
+   post-close) and asserts each produces a distinct FNV-1a pixel hash
+   — so the indigo focus ring, the maximized floating title pill + ×,
+   and the tab-close / layout-spring path all become pixel-regression
+   guarded. `group_row_visual_journey.rs` does the same for
+   cross-group chrome (baseline → transfer-tab → split-into-new-group)
+   to cover the drag-routing and group-count-change paint paths.
+   Every journey test skips gracefully without a wgpu adapter and
+   writes one PNG per state when `QUICK_UI_SCREENSHOT_DIR` is set.
+   A golden-image diff harness (with reference-set provenance +
+   per-DPI bases + tolerance) is the next incremental step and is
+   deferred as its own scope.
+
+2. **Per-tab fade-in animation** — ✅ concept's `<motion.div>` tab
+   spawn (`WindowFrame.tsx:284-288`) ported as a per-id `inserted_at`
+   map on `TabBar`. `insert_tab` stamps a timestamp, `draw` wraps the
+   pill paint in a `push_layer` with ease-out-cubic alpha + a
+   vertical settle from `-10` to `0`, and `needs_animation_frame`
+   reports true while any unexpired entry exists so `App` keeps
+   pumping redraws over the 220 ms curve. Opt-in by construction —
+   `TabBar::new` does not seed the map, so headless / screenshot
+   tests stay deterministic as long as they don't trigger an insert.
