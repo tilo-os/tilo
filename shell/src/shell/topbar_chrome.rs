@@ -197,6 +197,13 @@ impl TopBarChrome {
     pub fn center_widget(&self) -> CenterWidget {
         self.center_widget
     }
+
+    /// Bounding rect of the overview button. Populated during `draw`;
+    /// exposed so integration tests can hit-test click coordinates against
+    /// the exact geometry the widget uses internally.
+    pub fn overview_btn_rect(&self) -> Rect {
+        self.overview_btn_rect
+    }
 }
 
 impl Widget for TopBarChrome {
