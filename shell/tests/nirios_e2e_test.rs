@@ -533,3 +533,68 @@ fn seed_demo_editor_presence_registers_alice_caret_and_selection() {
     assert_eq!(sel.start, 60);
     assert_eq!(sel.end, 72);
 }
+
+#[test]
+fn shell_file_drop_appends_tab_to_active_workspace() {
+    // End-to-end: dropping a .ts file onto the workspace area should
+    // append a new tab to the active workspace's first group via
+    // `Shell::handle_file_drop`, matching the concept's `DesktopView.tsx`
+    // `handleDrop` path.
+    use quick_desktop::shell::Shell;
+
+    let mut shell = Shell::new_for_test();
+    let before_titles: Vec<String> = shell.workspace_tree().workspaces[0].strips[0]
+        .window_groups[0]
+        .tabs
+        .iter()
+        .map(|t| t.title.clone())
+        .collect();
+
+    // File does not need to exist on disk; `DraggedItem::from_path` falls
+    // back to the non-directory branch when `is_dir()` returns false, which
+    // matches the concept's drop payload semantics.
+    let path = std::path::PathBuf::from("/tmp/main.ts");
+    let tab_id = shell.simulate_file_drop(&path).expect("tab_id");
+
+    let ws = &shell.workspace_tree().workspaces[0];
+    let group = &ws.strips[0].window_groups[0];
+    // New tab was appended + activated.
+    assert_eq!(group.active_tab, tab_id);
+    assert_eq!(
+        group.tabs.len(),
+        before_titles.len() + 1,
+        "exactly one new tab should be appended"
+    );
+    assert_eq!(group.tabs.last().unwrap().title, "main.ts");
+    // Every pre-existing tab must still be present; the drop must not
+    // replace or reorder earlier tabs.
+    for t in &before_titles {
+        assert!(
+            group.tabs.iter().any(|x| &x.title == t),
+            "tab `{t}` went missing after drop"
+        );
+    }
+}
+
+#[test]
+fn shell_folder_drop_labels_the_tab_with_files_prefix() {
+    use quick_desktop::shell::Shell;
+
+    let mut shell = Shell::new_for_test();
+    // `is_dir()` returns false on /no/such/path, so this exercises the
+    // non-filesystem branch of `DraggedItem::from_path` classification.
+    // Use a real temp directory so the folder classification kicks in.
+    let dir = std::env::temp_dir().join("nirios-drop-folder-test");
+    let _ = std::fs::create_dir_all(&dir);
+
+    let tab_id = shell.simulate_file_drop(&dir).expect("tab_id");
+    let group = &shell.workspace_tree().workspaces[0].strips[0].window_groups[0];
+    assert_eq!(group.active_tab, tab_id);
+    let new_title = &group.tabs.last().unwrap().title;
+    assert!(
+        new_title.starts_with("Files — "),
+        "folder drop should prefix the tab label with `Files — `, got: {new_title}"
+    );
+
+    let _ = std::fs::remove_dir(&dir);
+}
