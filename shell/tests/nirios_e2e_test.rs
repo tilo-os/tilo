@@ -598,3 +598,34 @@ fn shell_folder_drop_labels_the_tab_with_files_prefix() {
 
     let _ = std::fs::remove_dir(&dir);
 }
+
+#[test]
+fn chrome_file_drop_appends_tab_and_bumps_revision() {
+    // Production-path counterpart of `shell_file_drop_*`: exercise the
+    // `ChromeState::handle_file_drop` hook that `ShellOverlayHost`
+    // invokes when winit delivers `WindowEvent::DroppedFile`. The chrome
+    // state wraps the persisted tree (not the runtime tree) so this
+    // also verifies the persisted-tree `apply_workspace_drop_from_path`
+    // overload wires correctly.
+    let tree = WorkspaceTree::bootstrap_default();
+    let chrome = ChromeState::new(tree);
+    let before_rev = chrome.borrow().revision;
+    let before_tab_count = chrome.borrow().tree.workspaces[0].strips[0].window_groups[0]
+        .tabs
+        .len();
+
+    let tab_id = chrome
+        .borrow_mut()
+        .handle_file_drop(std::path::Path::new("/tmp/main.ts"))
+        .expect("tab_id");
+
+    let st = chrome.borrow();
+    assert!(
+        st.revision > before_rev,
+        "handle_file_drop should bump the chrome revision so widgets re-sync"
+    );
+    let group = &st.tree.workspaces[0].strips[0].window_groups[0];
+    assert_eq!(group.active_tab, tab_id);
+    assert_eq!(group.tabs.len(), before_tab_count + 1);
+    assert_eq!(group.tabs.last().unwrap().title, "main.ts");
+}

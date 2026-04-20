@@ -200,6 +200,19 @@ pub fn apply_runtime_workspace_drop_from_path(
     apply_runtime_workspace_drop(tree, item)
 }
 
+/// `apply_workspace_drop` overload that takes a `Path` and does the
+/// `DraggedItem::from_path` conversion. Persisted-tree counterpart of
+/// [`apply_runtime_workspace_drop_from_path`]; used by
+/// [`super::chrome_state::ChromeState::handle_file_drop`] which holds a
+/// `WorkspaceTree` (not a runtime one).
+pub fn apply_workspace_drop_from_path(
+    tree: &mut WorkspaceTree,
+    path: &Path,
+) -> Option<u64> {
+    let item = DraggedItem::from_path(path)?;
+    apply_workspace_drop(tree, item)
+}
+
 /// Silence the unused-import warning when `RuntimeStrip` is only used
 /// in doctests / docs (above). Keeps the symbol available so future
 /// reworks of the module don't have to re-add the import.
