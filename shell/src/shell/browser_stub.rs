@@ -271,6 +271,12 @@ impl Widget for BrowserStubWidget {
                 &inner,
             );
 
+            // On the white browser card `text_primary` (pure white) would
+            // be invisible — use the dark-on-white pairing the concept shows
+            // (`text-slate-800` headline, `text-slate-500` subtitle).
+            let on_card_headline = tokens.colors.neutral[1]; // slate-900 in dark theme
+            let on_card_subtle = tokens.colors.neutral[4]; // slate-600
+
             let headline = "App Preview";
             let headline_size = tokens.typography.scale.xl;
             let (hw, _hh) = text_renderer.measure(headline, headline_size, None);
@@ -280,7 +286,7 @@ impl Widget for BrowserStubWidget {
                 scene,
                 headline,
                 headline_size,
-                tokens.colors.text_primary,
+                on_card_headline,
                 transform * Affine::translate((hx, hy)),
                 None,
             );
@@ -294,7 +300,7 @@ impl Widget for BrowserStubWidget {
                 scene,
                 sub,
                 sub_size,
-                tokens.colors.text_dim,
+                on_card_subtle,
                 transform * Affine::translate((sx, sy)),
                 None,
             );

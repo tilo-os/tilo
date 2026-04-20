@@ -1153,10 +1153,13 @@ impl Widget for ShellOverlayHost {
 }
 
 fn draw_scrim(scene: &mut Scene, transform: Affine, rect: Rect) {
+    // Concept uses `bg-black/30` (≈ alpha 77) on overlay scrims — we were
+    // painting black/60 (alpha 154) which reads too heavy and muddies the
+    // content behind the palette / ws-settings.
     scene.fill(
         Fill::NonZero,
         transform,
-        Color::rgba8(0, 0, 0, 154),
+        Color::rgba8(0, 0, 0, 77),
         None,
         &rect,
     );
@@ -1250,7 +1253,18 @@ impl ShellOverlayHost {
             } else {
                 transform
             };
-            let fill = if is_active { colors.surfaces.raised } else { colors.neutral[1] };
+            // Concept `OverviewView.tsx:63`: inactive cards use
+            // `bg-slate-900/50` (darker/translucent) while the active card
+            // uses solid `bg-slate-900`. We were doing the opposite — the
+            // active card was lighter (`surfaces.raised` = slate-800) than
+            // inactives, which visually subordinated the selection.
+            let fill = if is_active {
+                colors.neutral[1] // solid slate-900
+            } else {
+                // slate-900/50 approximation: half-alpha slate-900.
+                let c = colors.neutral[1];
+                Color::rgba(c.r as f64, c.g as f64, c.b as f64, 0.5)
+            };
             let card = RoundedRect::from_rect(rect, tokens.radii.lg as f64);
             scene.fill(Fill::NonZero, card_xform, fill, None, &card);
             if is_active {
