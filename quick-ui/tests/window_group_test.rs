@@ -12,7 +12,7 @@ fn window_width_presets_are_clamped() {
 
 #[test]
 fn window_group_drag_right_edge_resizes() {
-    let mut g = WindowGroup::new(1, vec![(TabDescriptor { id: 1, title: "T1".into() }, TileContent::Stub { kind: AppKind::Terminal, label: "Terminal".into() })], 1, WindowWidth::Normal);
+    let mut g = WindowGroup::new(1, vec![(TabDescriptor::new(1, "T1"), TileContent::Stub { kind: AppKind::Terminal, label: "Terminal".into() })], 1, WindowWidth::Normal);
     g.begin_resize(600.0);
     g.update_resize(750.0);
     g.end_resize();
