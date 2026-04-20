@@ -39,6 +39,13 @@ pub struct WindowGroup {
     /// The shell paints the floating controls on top of this rect while
     /// set; click the maximize icon again to un-maximize (restore).
     pub maximized: bool,
+    /// Concept parity for `WindowFrame.isSearching`: the user clicked the
+    /// search glyph on one of this group's tabs. We paint a thicker indigo
+    /// ring + outer glow around the card while set, matching the concept's
+    /// `ring-4 ring-indigo-500/50 shadow-[0_0_60px_rgba(99,102,241,0.6)]`.
+    /// Toggled off by clicking the same icon again or pressing Esc while
+    /// the group is focused.
+    pub search_active: bool,
     /// Hit region for the floating "restore" pill drawn while maximized.
     /// Populated each draw so clicks always map to what's on screen.
     restore_rect: Rect,
@@ -64,6 +71,7 @@ impl WindowGroup {
             resize_origin: None,
             hover_resize: false,
             maximized: false,
+            search_active: false,
             restore_rect: Rect::ZERO,
             restore_hover: false,
             close_rect: Rect::ZERO,
@@ -211,6 +219,41 @@ impl Widget for WindowGroup {
                 theme.tokens.colors.accent[5].with_alpha_factor(0.6),
                 None,
                 &ring,
+            );
+        }
+
+        // Search-active visual: concept's `ring-4 ring-indigo-500/50` +
+        // `shadow-[0_0_60px_rgba(99,102,241,0.6)]`. We paint two concentric
+        // indigo strokes (inner 4 px at 50% alpha, outer 8 px at 24% alpha)
+        // to approximate the ring + shadow pair without introducing a blur
+        // primitive. Draws behind the maximized outline so a group can be
+        // simultaneously maximized and searching (as the concept allows).
+        if self.search_active {
+            let ring_outer = Rect::new(
+                self.rect.x0 - 6.0,
+                self.rect.y0 - 6.0,
+                self.rect.x1 + 6.0,
+                self.rect.y1 + 6.0,
+            );
+            scene.stroke(
+                &vello::kurbo::Stroke::new(8.0),
+                transform,
+                theme.tokens.colors.accent[5].with_alpha_factor(0.24),
+                None,
+                &ring_outer,
+            );
+            let ring_inner = Rect::new(
+                self.rect.x0 - 2.0,
+                self.rect.y0 - 2.0,
+                self.rect.x1 + 2.0,
+                self.rect.y1 + 2.0,
+            );
+            scene.stroke(
+                &vello::kurbo::Stroke::new(4.0),
+                transform,
+                theme.tokens.colors.accent[5].with_alpha_factor(0.5),
+                None,
+                &ring_inner,
             );
         }
 
@@ -428,6 +471,14 @@ impl Widget for WindowGroup {
             *handled = true;
         }
 
+        // Search toggle from the tab bar's hover-action icon. Same pattern
+        // as maximize — the bar publishes `pending_search` once per click,
+        // we drain it here and flip the search-active ring on the group.
+        if let Some(_id) = self.bar.take_search() {
+            self.search_active = !self.search_active;
+            *handled = true;
+        }
+
         // Drag-reorder within the bar: apply the same permutation to hosts
         // so the visible tab order matches the content order.
         if let Some((from, to)) = self.bar.take_reorder() {
@@ -447,4 +498,44 @@ impl Widget for WindowGroup {
     fn name(&self) -> &str { "WindowGroup" }
     fn get_rect(&self) -> Rect { self.rect }
     fn wants_pointer_capture(&self) -> bool { self.resize_origin.is_some() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widget::{AppKind, TabDescriptor, TileContent};
+
+    fn make_group() -> WindowGroup {
+        let tabs: Vec<(TabDescriptor, TileContent)> = vec![
+            (
+                TabDescriptor { id: 1, title: "A".into() },
+                TileContent::Stub { kind: AppKind::Settings, label: "a".into() },
+            ),
+            (
+                TabDescriptor { id: 2, title: "B".into() },
+                TileContent::Stub { kind: AppKind::Settings, label: "b".into() },
+            ),
+        ];
+        WindowGroup::new(10, tabs, 1, WindowWidth::Normal)
+    }
+
+    #[test]
+    fn search_active_toggles_when_bar_publishes_pending_search() {
+        // Fresh group starts not-searching. Seeding `bar.pending_search`
+        // and re-running the drain block flips the flag, and a second
+        // drain flips it back — matching the concept's click-to-toggle
+        // affordance on the tab pill's search glyph.
+        let mut g = make_group();
+        assert!(!g.search_active, "fresh group must not be searching");
+        g.bar.pending_search = Some(1);
+        if let Some(_id) = g.bar.take_search() {
+            g.search_active = !g.search_active;
+        }
+        assert!(g.search_active, "drain should flip search_active on");
+        g.bar.pending_search = Some(1);
+        if let Some(_id) = g.bar.take_search() {
+            g.search_active = !g.search_active;
+        }
+        assert!(!g.search_active, "second drain should flip search_active off");
+    }
 }

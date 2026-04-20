@@ -53,7 +53,7 @@ Current state of the Rust implementation vs. the concept described in
 | Tab drop zones | ✅ | Drag-to-reorder works + 2 px indigo bar renders at the drop position while drag is in flight (left of target when moving backward, right of target when moving forward). Cross-group moves land through the new `GroupRow` widget in `quick-ui/src/widget/group_row.rs`: `TabBar` publishes `pending_detach` when a release falls outside its own rect, `GroupRow::handle_event` post-dispatch-sweeps sibling groups and hit-tests the release point against each `bar_rect()`, splicing the detached tab + its `TileHost` into the target (the dragged tab becomes active in its new group; the source promotes a neighbour). Drop index is resolved via `WindowGroup::drop_index_for` → `TabBar::drop_index_for`, which walks `tab_rects()` and compares the release x to each pill's midpoint so a drop between pill X and pill Y lands at index Y rather than always falling to index 0. |
 | Tab-level collaborator blur indicators | ✅ | See §7 — `TabBar::draw` paints per-peer colour dots at the bottom of each pill via `PresenceCtx::peers_on(PresenceKey::Tab { id })`; wired to both startup-seeded + live-refreshed presence. |
 | Window frame white rounded card | ✅ | `TileHost` paints `surfaces.window_card` (WHITE) with `rounded-xl` radius + `white/20` border. Stub text renders dark-on-white. |
-| Drag-over / search-active borders | 🟧 | `WindowGroup::draw` paints a 1.5 px indigo-500 @ 60% alpha ring while `TabBar::drag_in_flight()` is true; matches the concept's drag-over state for the source group. Search-active ring not yet tied to ⌘K scope. |
+| Drag-over / search-active borders | ✅ | `WindowGroup::draw` paints a 1.5 px indigo-500 @ 60% alpha ring while `TabBar::drag_in_flight()` is true. Search-active ring (concept's `ring-4 ring-indigo-500/50 shadow-[0_0_60px_rgba(99,102,241,0.6)]`) is drawn as two concentric indigo strokes (8 px @ 24% alpha outer, 4 px @ 50% alpha inner) when `WindowGroup::search_active` is set — toggled by the tab-pill search glyph via `TabBar::pending_search` → `WindowGroup::take_search` drain. |
 
 ## 5. Apps
 
@@ -128,7 +128,7 @@ tuned to the concept's slate-900/indigo-500 palette** — it leans more neutral.
 | Tab close | ✅ | "×" glyph inside each pill's right edge; click propagates `pending_close` → `WindowGroup` drops the host + removes the tab. |
 | Group resize drag | ✅ | Handle + pointer accumulation work. |
 | Sidebar wheel scroll/pan | ✅ | Click-to-activate + plus-button-create + scroll-wheel accumulator (crosses ±1 on the wheel rect) all wired. |
-| Hover reveals tab actions | 🟧 | Close "×" sits in the pill always; hovering the pill additionally reveals a maximize-icon to its left (1 px outlined square). Concept's full action row (search + pin / split / move) still not drawn. |
+| Hover reveals tab actions | ✅ | Close "×" sits in the pill always; hovering the pill additionally reveals a magnifying-glass (search) + maximize-icon to its left. Click search toggles `WindowGroup::search_active`, which paints the concept's indigo ring-4 + outer glow around the whole card. Click maximize toggles `WindowGroup::maximized`. Pin / split / move still not drawn — lower-priority concept affordances. |
 | Outside-click closes dropdowns | ✅ | Click outside palette / quick-settings / ws-settings rect dismisses them; ws-settings commits a pending rename before closing. |
 | File drag onto workspace | 🟥 | — |
 | Spring view-swap | ✅ | Ease-out-cubic crossfade in `ShellOverlayHost` (200 ms; see §1). |
