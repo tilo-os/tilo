@@ -182,8 +182,9 @@ for chrome density). Outstanding infrastructure-level items:
    ported as a single `spawned_at: Option<Instant>` on `WindowGroup`
    plus the public `start_spawn_animation()` entry point. `draw`
    wraps the whole group paint in a `push_layer` alpha fade with an
-   ease-out-cubic curve over 320 ms and applies a 20 px → 0 vertical
-   settle via `Affine::translate`. `needs_animation_frame` returns
+   ease-out-cubic curve over 320 ms and applies both a 20 px → 0
+   vertical settle and a 0.95 → 1.0 scale (about the group's center)
+   via composed `Affine` transforms. `needs_animation_frame` returns
    true while the curve is in flight so redraws keep flowing.
    Wire-up: `GroupRow::split_tab_into_new_group` kicks off the fade
    on the freshly-detached group so tear-offs materialise instead
@@ -192,3 +193,24 @@ for chrome density). Outstanding infrastructure-level items:
    offscreen renders stay deterministic. Covered by
    `window_group::tests::start_spawn_animation_records_timestamp_and_pumps_frames`
    and `spawn_fade_window_clears_after_duration`.
+
+4. **Shadow-2xl beneath window card** — ✅ concept's `shadow-2xl`
+   on the white window card (`WindowFrame.tsx:357` `bg-white shadow-2xl`)
+   ≈ `0 25px 50px -12px rgba(0, 0, 0, 0.25)`. Vello has no native
+   gaussian blur, so `TileHost::draw` paints four progressively-larger,
+   downward-translated, alpha-diminishing rounded rects behind the
+   white card (24/18/10/4 alpha over 2/6/14/24 px spread offsets).
+   Their union reads as a soft ~30 % drop shadow that matches the
+   concept's perceived depth without needing a blur shader.
+
+5. **Quick-settings popover entry animation** — ✅ concept's
+   `QuickSettings.tsx:165-168` motion.div, `initial={{ opacity: 0, y: -10, scale: 0.95 }}` → `animate={{ opacity: 1, y: 0, scale: 1 }}`.
+   `ShellOverlayHost` tracks `qs_opened_at: Option<Instant>` +
+   `qs_was_open: bool` for rising-edge detection, wraps the popover
+   paint in a `push_layer` alpha fade for 180 ms with ease-out-cubic,
+   and composes a transform that scales 0.95 → 1.0 about the panel's
+   top-center anchor plus a -10 → 0 px vertical settle. Idle draws
+   short-circuit the matrix concat. `needs_animation_frame` ORs the
+   in-flight signal so the app keeps pumping redraws until the
+   curve settles; the timestamp clears on close so the next open
+   replays the motion.
