@@ -176,3 +176,19 @@ for chrome density). Outstanding infrastructure-level items:
    pumping redraws over the 220 ms curve. Opt-in by construction —
    `TabBar::new` does not seed the map, so headless / screenshot
    tests stay deterministic as long as they don't trigger an insert.
+
+3. **Per-window spawn fade-in animation** — ✅ concept's per-window
+   `<motion.div>` spawn (`WindowFrame.tsx:201-205`, `initial={{ opacity: 0, scale: 0.95, y: 20 }}` → `animate={{ opacity: 1, scale: 1, y: 0 }}`)
+   ported as a single `spawned_at: Option<Instant>` on `WindowGroup`
+   plus the public `start_spawn_animation()` entry point. `draw`
+   wraps the whole group paint in a `push_layer` alpha fade with an
+   ease-out-cubic curve over 320 ms and applies a 20 px → 0 vertical
+   settle via `Affine::translate`. `needs_animation_frame` returns
+   true while the curve is in flight so redraws keep flowing.
+   Wire-up: `GroupRow::split_tab_into_new_group` kicks off the fade
+   on the freshly-detached group so tear-offs materialise instead
+   of snapping in. Opt-in by construction — `WindowGroup::new` /
+   `from_detached` leave `spawned_at = None`, so baseline tests /
+   offscreen renders stay deterministic. Covered by
+   `window_group::tests::start_spawn_animation_records_timestamp_and_pumps_frames`
+   and `spawn_fade_window_clears_after_duration`.
