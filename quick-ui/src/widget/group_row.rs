@@ -210,15 +210,22 @@ impl Widget for GroupRow {
             .map(|g| g.build_layout(taffy, theme, node_map))
             .collect();
         self.node_ids = children.clone();
+        // The row must fill the remaining vertical space inside the
+        // parent Column so each child `WindowGroup`'s `height: percent(1.0)`
+        // resolves to the full available height — otherwise the row only
+        // measures as tall as the tallest child's natural height (i.e. the
+        // 40 px TabBar) and the `TileHost` collapses to zero height,
+        // hiding the concept's white card entirely.
         let node = taffy
             .new_with_children(
                 Style {
                     display: Display::Flex,
                     flex_direction: FlexDirection::Row,
                     size: Size {
-                        width: Dimension::auto(),
+                        width: Dimension::percent(1.0),
                         height: Dimension::auto(),
                     },
+                    flex_grow: 1.0,
                     gap: Size {
                         width: taffy::LengthPercentage::length(8.0),
                         height: taffy::LengthPercentage::length(0.0),
