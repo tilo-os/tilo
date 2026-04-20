@@ -21,7 +21,7 @@ use winit::event::{Modifiers, WindowEvent};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::{Widget, WindowGroup};
+use crate::widget::{Widget, WindowGroup, WindowWidth};
 
 pub struct GroupRow {
     pub groups: Vec<WindowGroup>,
@@ -72,6 +72,96 @@ impl GroupRow {
         };
         let dst_group = &mut self.groups[dst];
         dst_group.insert_detached_tab(target_idx, desc, host);
+        true
+    }
+
+    /// Classify a drag release point against the row's inter-group drop
+    /// zones. Returns `Some(gap_idx)` if the release landed strictly
+    /// between two groups (or before the first / after the last) while
+    /// still inside the row's vertical band; `None` otherwise.
+    ///
+    /// `gap_idx` counts gap slots left-to-right:
+    /// - `0` → insert a new group before the current first group
+    /// - `i` (for `1 ≤ i < N`) → insert between groups `i-1` and `i`
+    /// - `N` → append a new group to the right of the current last group
+    ///
+    /// Only returns `Some(_)` when the release is in the *gap* between
+    /// group rects (not inside any group), so a drop inside a group's
+    /// tile area still falls through to the sibling-bar detection above.
+    pub fn gap_index_for(&self, release_point: Point) -> Option<usize> {
+        if self.groups.is_empty() {
+            // Empty row → any drop inside its rect becomes the first group.
+            return if self.rect.contains(release_point) { Some(0) } else { None };
+        }
+        // Y must be within the row's vertical band.
+        if release_point.y < self.rect.y0 || release_point.y > self.rect.y1 {
+            return None;
+        }
+        // Inside any group rect → not a gap drop.
+        for g in &self.groups {
+            if g.get_rect().contains(release_point) {
+                return None;
+            }
+        }
+        // Release is left of the first group → insert at 0.
+        if release_point.x < self.groups[0].get_rect().x0 {
+            return Some(0);
+        }
+        // Between pair (i-1, i)?
+        for i in 1..self.groups.len() {
+            let left = self.groups[i - 1].get_rect().x1;
+            let right = self.groups[i].get_rect().x0;
+            if release_point.x >= left && release_point.x <= right {
+                return Some(i);
+            }
+        }
+        // Release is right of the last group → append.
+        if release_point.x > self.groups.last().unwrap().get_rect().x1 {
+            return Some(self.groups.len());
+        }
+        None
+    }
+
+    /// Detach `tab_id` from `src` and splice it into a brand-new
+    /// `WindowGroup` at `gap_idx`, pruning the source group if the
+    /// detach left it empty. Returns `true` if the split happened.
+    /// Exposed separately so tests can drive the flow without staging a
+    /// full winit event sequence.
+    pub fn split_tab_into_new_group(
+        &mut self,
+        src: usize,
+        tab_id: u64,
+        gap_idx: usize,
+    ) -> bool {
+        if src >= self.groups.len() {
+            return false;
+        }
+        let detached = {
+            let src_group = &mut self.groups[src];
+            src_group.detach_tab(tab_id)
+        };
+        let Some((desc, host)) = detached else {
+            return false;
+        };
+        let src_now_empty = self.groups[src].tab_count() == 0;
+        let new_id = self
+            .groups
+            .iter()
+            .map(|g| g.id)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        let new_group = WindowGroup::from_detached(new_id, desc, host, WindowWidth::Normal);
+        let clamped = gap_idx.min(self.groups.len());
+        self.groups.insert(clamped, new_group);
+        if src_now_empty {
+            // Source index shifts by 1 iff the new group was inserted
+            // at or left of the source's original slot.
+            let src_after = if clamped <= src { src + 1 } else { src };
+            if src_after < self.groups.len() {
+                self.groups.remove(src_after);
+            }
+        }
         true
     }
 }
@@ -204,19 +294,36 @@ impl Widget for GroupRow {
                 .enumerate()
                 .find(|(i, g)| *i != src_idx && g.bar_rect().contains(release_point))
                 .map(|(i, _)| i);
-            let Some(tgt_idx) = target_idx else {
+            if let Some(tgt_idx) = target_idx {
+                // Resolve the per-pill drop index against the target's tab
+                // rects: left of the first pill's midpoint → 0, between
+                // pills → that pill's index, past the last pill → append.
+                let drop_idx = self.groups[tgt_idx].drop_index_for(release_point);
+                let detached = self.groups[src_idx].detach_tab(tab_id);
+                if let Some((desc, host)) = detached {
+                    self.groups[tgt_idx].insert_detached_tab(drop_idx, desc, host);
+                    *handled = true;
+                }
                 continue;
-            };
-            // Resolve the per-pill drop index against the target's tab
-            // rects: left of the first pill's midpoint → 0, between pills
-            // → that pill's index, past the last pill → append. This is
-            // the "insert before pill X" contract the concept expects on
-            // a cross-group drag, rather than always landing at index 0.
-            let drop_idx = self.groups[tgt_idx].drop_index_for(release_point);
-            let detached = self.groups[src_idx].detach_tab(tab_id);
-            if let Some((desc, host)) = detached {
-                self.groups[tgt_idx].insert_detached_tab(drop_idx, desc, host);
-                *handled = true;
+            }
+            // No sibling bar matched — try the inter-group gap zones.
+            // Matches the concept's `DropZone` between every pair of
+            // groups in `DesktopView.tsx:414`, which calls
+            // `onMoveTab(src, 'new', tab, idx)` to splice a new group.
+            if let Some(gap_idx) = self.gap_index_for(release_point) {
+                // Refuse the degenerate case where the source is a
+                // single-tab group and the user is just dropping the tab
+                // back next to itself — that would destroy and recreate
+                // the same group in the same slot for no visible effect.
+                let src_only_tab = self.groups[src_idx].tab_count() == 1;
+                let right_of_src = gap_idx == src_idx + 1;
+                let left_of_src = gap_idx == src_idx;
+                if src_only_tab && (right_of_src || left_of_src) {
+                    continue;
+                }
+                if self.split_tab_into_new_group(src_idx, tab_id, gap_idx) {
+                    *handled = true;
+                }
             }
         }
     }
@@ -287,6 +394,146 @@ mod tests {
         let mut row = GroupRow::new(vec![g0, g1]);
         // id 999 isn't in either group.
         assert!(!row.transfer_tab(0, 1, 999, 0));
+    }
+
+    #[test]
+    fn split_tab_into_new_group_appends_with_empty_source_pruned() {
+        // Source is single-tab (id 1), destination gap is at the end
+        // (gap_idx=2 past the only other group). Expect: source
+        // disappears, new group takes its place-plus-one (effectively
+        // remains in the same x slot since the source was at index 0).
+        let g0 = make_group(100, &[1]);       // single-tab — will be pruned
+        let g1 = make_group(200, &[10, 11]);
+        let mut row = GroupRow::new(vec![g0, g1]);
+
+        assert!(row.split_tab_into_new_group(0, 1, 2));
+
+        // Two groups remain: g1 (with its original tabs) and the new
+        // one (with just tab 1). The new group's id must be unique
+        // relative to existing groups' ids.
+        assert_eq!(row.groups.len(), 2);
+        let first_ids: Vec<u64> = row.groups[0].tabs().iter().map(|t| t.id).collect();
+        let second_ids: Vec<u64> = row.groups[1].tabs().iter().map(|t| t.id).collect();
+        assert_eq!(first_ids, vec![10, 11]);
+        assert_eq!(second_ids, vec![1]);
+        assert_ne!(row.groups[1].id, 200, "new group id must be unique");
+    }
+
+    #[test]
+    fn split_tab_into_new_group_inserts_between_existing_groups() {
+        // Source is multi-tab; drop lands at gap_idx=1 (between g0 and g1).
+        // Source keeps its remaining tabs; new group sits between them.
+        let g0 = make_group(100, &[1, 2, 3]);
+        let g1 = make_group(200, &[10, 11]);
+        let mut row = GroupRow::new(vec![g0, g1]);
+
+        assert!(row.split_tab_into_new_group(0, 2, 1));
+
+        assert_eq!(row.groups.len(), 3);
+        let ids: Vec<Vec<u64>> = row.groups.iter()
+            .map(|g| g.tabs().iter().map(|t| t.id).collect())
+            .collect();
+        assert_eq!(ids[0], vec![1, 3]);
+        assert_eq!(ids[1], vec![2]); // the new group with just the dropped tab
+        assert_eq!(ids[2], vec![10, 11]);
+        // Dropped tab must be active in its new solo group.
+        assert_eq!(row.groups[1].active_tab_id(), 2);
+    }
+
+    #[test]
+    fn split_tab_into_new_group_noop_for_unknown_tab() {
+        let g0 = make_group(100, &[1, 2]);
+        let g1 = make_group(200, &[3]);
+        let mut row = GroupRow::new(vec![g0, g1]);
+        assert!(!row.split_tab_into_new_group(0, 999, 0));
+        // Groups untouched.
+        assert_eq!(row.groups.len(), 2);
+        let g0_ids: Vec<u64> = row.groups[0].tabs().iter().map(|t| t.id).collect();
+        assert_eq!(g0_ids, vec![1, 2]);
+    }
+
+    #[test]
+    fn split_tab_into_new_group_prepends_when_gap_zero() {
+        let g0 = make_group(100, &[1, 2]);
+        let g1 = make_group(200, &[10]);
+        let mut row = GroupRow::new(vec![g0, g1]);
+
+        assert!(row.split_tab_into_new_group(0, 1, 0));
+
+        assert_eq!(row.groups.len(), 3);
+        let ids: Vec<Vec<u64>> = row.groups.iter()
+            .map(|g| g.tabs().iter().map(|t| t.id).collect())
+            .collect();
+        assert_eq!(ids[0], vec![1]); // the new group
+        assert_eq!(ids[1], vec![2]); // original source minus tab 1
+        assert_eq!(ids[2], vec![10]);
+    }
+
+    #[test]
+    fn gap_index_for_classifies_inter_group_drops() {
+        // Build a real taffy layout so the groups' rects are populated,
+        // then probe `gap_index_for` at positions derived from those
+        // rects.
+        use std::collections::HashMap;
+        use taffy::{AvailableSpace, Size as TSize, TaffyTree};
+
+        let g0 = make_group(100, &[1]);
+        let g1 = make_group(200, &[10]);
+        let mut row = GroupRow::new(vec![g0, g1]);
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
+        let root = row.build_layout(&mut taffy, &theme, &mut node_map);
+
+        // Wrap in an outer node so the row gets laid out inside a known
+        // viewport (taffy won't otherwise know the row's outer bounds).
+        let viewport = taffy
+            .new_with_children(
+                Style {
+                    size: Size { width: Dimension::length(2000.0), height: Dimension::length(600.0) },
+                    ..Default::default()
+                },
+                &[root],
+            )
+            .unwrap();
+        taffy
+            .compute_layout_with_measure(
+                viewport,
+                TSize {
+                    width: AvailableSpace::Definite(2000.0),
+                    height: AvailableSpace::Definite(600.0),
+                },
+                |_, _, _, _, _| taffy::Size::ZERO,
+            )
+            .expect("taffy compute_layout");
+        row.apply_layout(&taffy, root, Point::ORIGIN);
+
+        let r0 = row.groups[0].get_rect();
+        let r1 = row.groups[1].get_rect();
+        let row_rect = row.rect;
+        let y = (row_rect.y0 + row_rect.y1) / 2.0;
+
+        // Left of first group → gap 0.
+        assert_eq!(row.gap_index_for(Point::new(r0.x0 - 4.0, y)), Some(0));
+        // Right of last group → gap N (=2).
+        assert_eq!(row.gap_index_for(Point::new(r1.x1 + 4.0, y)), Some(2));
+        // Inside a group's rect → None.
+        assert_eq!(
+            row.gap_index_for(Point::new(r0.x0 + 4.0, y)),
+            None,
+            "drops inside a group tile should not be inter-group gaps"
+        );
+        // Above the row (y outside) → None.
+        assert_eq!(
+            row.gap_index_for(Point::new(r0.x0 - 4.0, row_rect.y0 - 10.0)),
+            None
+        );
+        // Between groups, if the layout left any gap — only assert if
+        // one exists, since flex with gap=8 should give us some space.
+        if r1.x0 > r0.x1 {
+            let mid = (r0.x1 + r1.x0) / 2.0;
+            assert_eq!(row.gap_index_for(Point::new(mid, y)), Some(1));
+        }
     }
 
     #[test]
