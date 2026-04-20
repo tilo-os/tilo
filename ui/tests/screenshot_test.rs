@@ -193,3 +193,123 @@ fn headless_renderer_captures_a_widget_tree() {
         "container background should have overpainted the red base colour"
     );
 }
+
+/// Render the real `TabBar` widget at its concept-parity geometry and
+/// assert the 40 px / 6 px-inset-pill layout shows up in the rasterised
+/// output. This is the first visual regression test tied to a recent
+/// deliberate change (bar height 56 → 40 px, pills inset 6 px top/bot).
+///
+/// The bar is drawn against a magenta base colour so every pixel inside
+/// the pill shows up as non-magenta (pill fill + border stroke), while
+/// pixels in the 6 px insets above/below stay exactly magenta (no bar
+/// fill is drawn — pills sit directly on the shell background).
+#[test]
+fn tab_bar_renders_pills_inside_six_px_insets() {
+    use quick_ui::presence::PresenceCtx;
+    use quick_ui::text_render::TextRenderer;
+    use quick_ui::theme::Theme;
+    use quick_ui::widget::{TabBar, TabDescriptor, Widget};
+    use std::collections::HashMap;
+    use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+
+    // 240 wide gives us room for the first 96 px min-width pill + gap;
+    // 40 tall matches TAB_BAR_HEIGHT exactly.
+    let (w, h) = (240u32, 40u32);
+    let mut renderer = match try_new_renderer(w, h) {
+        Some(r) => r,
+        None => {
+            eprintln!("offscreen: no wgpu adapter available — skipping tab-bar test");
+            return;
+        }
+    };
+
+    let tabs = vec![
+        TabDescriptor {
+            id: 1,
+            title: "a".into(),
+        },
+        TabDescriptor {
+            id: 2,
+            title: "b".into(),
+        },
+    ];
+    let mut bar: Box<dyn Widget> = Box::new(TabBar::new("grp", tabs, 1));
+
+    let theme = Theme::dark();
+    let mut taffy = TaffyTree::<()>::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let root = bar.build_layout(&mut taffy, &theme, &mut node_map);
+
+    let mut tr = TextRenderer::new();
+    taffy
+        .compute_layout_with_measure(
+            root,
+            Size {
+                width: AvailableSpace::Definite(w as f32),
+                height: AvailableSpace::Definite(h as f32),
+            },
+            |known, available, node_id, _, _| {
+                if let Some(&ptr) = node_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, available, &mut tr) }
+                } else {
+                    Size::ZERO
+                }
+            },
+        )
+        .expect("taffy compute_layout");
+
+    bar.apply_layout(&taffy, root, vello::kurbo::Point::ORIGIN);
+
+    let presence = PresenceCtx::default();
+    let mut scene = Scene::new();
+    bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+
+    // Magenta base — not in any theme colour, so it's unambiguously "no
+    // widget pixels here" when sampled.
+    let bg = Color::rgb8(0xff, 0x00, 0xff);
+    let rgba = renderer.render(&scene, bg);
+
+    // If QUICK_UI_SCREENSHOT_DIR is set (e.g. the developer is inspecting
+    // the recent 40 px tab-bar change by eye), write the rasterised bar
+    // to `<dir>/tab_bar.png`. Off by default so normal CI runs don't
+    // accumulate artifacts.
+    if let Ok(dir) = std::env::var("QUICK_UI_SCREENSHOT_DIR") {
+        let path = std::path::Path::new(&dir).join("tab_bar.png");
+        std::fs::create_dir_all(&dir).ok();
+        let file = std::fs::File::create(&path).expect("create screenshot png");
+        let mut bw = std::io::BufWriter::new(file);
+        let mut enc = png::Encoder::new(&mut bw, w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        let mut writer = enc.write_header().expect("png header");
+        writer.write_image_data(&rgba).expect("png write");
+        eprintln!("wrote tab-bar screenshot to {}", path.display());
+    }
+
+    // Top inset strip (y < 6): pure magenta — no widget draws up here.
+    let (r, g, b, _a) = OffscreenRenderer::sample(&rgba, w, 20, 2);
+    assert_eq!(
+        (r, g, b),
+        (0xff, 0x00, 0xff),
+        "top 6 px inset should leave the magenta base untouched"
+    );
+
+    // Bottom inset strip (y > 34): pure magenta — same rationale.
+    let (r, g, b, _a) = OffscreenRenderer::sample(&rgba, w, 20, 37);
+    assert_eq!(
+        (r, g, b),
+        (0xff, 0x00, 0xff),
+        "bottom 6 px inset should leave the magenta base untouched"
+    );
+
+    // Pill interior (first pill center ≈ (48, 20)): the pill fills with
+    // a translucent white (`white/10` or `white/15`), so compositing over
+    // magenta drops the G channel below 0xff. A magenta pixel here would
+    // mean the pill didn't render.
+    let (r, g, b, a) = OffscreenRenderer::sample(&rgba, w, 48, 20);
+    assert_eq!(a, 0xff, "pill center should be opaque");
+    assert!(
+        g < 0xff,
+        "pill fill should have composited over magenta (r={r}, g={g}, b={b})"
+    );
+}
