@@ -401,6 +401,53 @@ fn sync_tab_presence_seeds_per_tab_peer_registrations() {
 }
 
 #[test]
+fn sync_tab_presence_seeds_per_user_color_overrides_from_collaborators() {
+    // A `Collaborator` carrying a `cursor_color` hex override must be
+    // copied into `PresenceCtx::color_overrides` during the sync step so
+    // every downstream affordance (tab dots, caret, selection, pointer)
+    // reads the authoritative colour from one place. Concept peers that
+    // don't carry a per-peer `cursorColor` still fall through to the
+    // palette-pinned `user_color`, so the map must stay empty for them.
+    use quick_desktop::shell::sync_tab_presence_from_tree;
+    use quick_ui::permissions::UserId;
+    use quick_ui::presence::PresenceCtx;
+
+    let mut tree = WorkspaceTree::bootstrap_default();
+    let ws_mut = tree
+        .workspaces
+        .iter_mut()
+        .find(|w| w.id == tree.active)
+        .expect("active ws mut");
+    // Ada has an override, Ben does not; Cae lives on the tree-level
+    // roster (not the workspace) — her override must also be seeded.
+    ws_mut.collaborators = vec![
+        Collaborator::new("a", "Ada").with_cursor_color("#abcdef"),
+        Collaborator::new("b", "Ben"),
+    ];
+    tree.collaborators = vec![Collaborator::new("c", "Cae").with_cursor_color("#112233")];
+
+    let mut ctx = PresenceCtx::empty();
+    sync_tab_presence_from_tree(&tree, &mut ctx);
+
+    assert_eq!(
+        ctx.color_for(&UserId("a".into())),
+        (0xab, 0xcd, 0xef),
+        "Ada's #abcdef override should be honoured",
+    );
+    assert_eq!(
+        ctx.color_for(&UserId("c".into())),
+        (0x11, 0x22, 0x33),
+        "tree-level collaborator's override should also seed",
+    );
+    // Ben has no override → falls through to the palette-pinned colour.
+    assert_eq!(
+        ctx.color_for(&UserId("b".into())),
+        quick_ui::presence::user_color("b"),
+        "no-override peer must still use palette fallback",
+    );
+}
+
+#[test]
 fn seed_demo_editor_presence_registers_alice_caret_and_selection() {
     // The shell's `main.rs` calls this seeder before `app.run()` so the
     // editor's peer-caret render has something to paint in single-process
