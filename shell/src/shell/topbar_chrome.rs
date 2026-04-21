@@ -19,7 +19,7 @@ use vello::peniko::Fill;
 use winit::event::WindowEvent;
 
 use quick_ui::presence::{PresenceCtx, parse_hex_color, user_color};
-use quick_ui::text_render::TextRenderer;
+use quick_ui::text_render::{TextRenderer, TextWeight};
 use quick_ui::theme::Theme;
 use quick_ui::widget::Widget;
 use vello::peniko::Color;
@@ -250,6 +250,53 @@ impl TopBarChrome {
         Self::DOT_INACTIVE_RADIUS
     }
 
+    /// Which lucide glyph is used for the top-bar overview button.
+    /// Pinned so the gap-#5 icon swap survives later refactors — if a
+    /// future change reverts the overview glyph back to the four-rect
+    /// quad, this accessor's test will fail loudly.
+    pub fn overview_glyph_icon() -> quick_ui::icons::Icon {
+        quick_ui::icons::Icon::LayoutGrid
+    }
+
+    /// Typographic weight the top bar paints the clock with. Concept
+    /// `§2.2`: the center-band clock is `font-bold` / `font-mono`, so it
+    /// reads as the "focal glance value" of the chrome. Exposed so
+    /// integration tests can pin the contract — see visual-gap #7 in
+    /// `docs/nirios/visual-gaps.md`.
+    pub fn clock_text_weight(&self) -> TextWeight {
+        TextWeight::Bold
+    }
+
+    /// Typographic weight for the workspace-name pill (§2.1). Semibold so
+    /// it reads as a clickable title without tipping over into the h1/h2
+    /// weight tier the clock uses.
+    pub fn workspace_name_text_weight(&self) -> TextWeight {
+        TextWeight::Semibold
+    }
+
+    /// Typographic weight the collaborator-avatar initial letters render at.
+    /// Concept `CollaboratorPopover.tsx` paints initials at `font-bold`; the
+    /// avatar circles are small enough that a Regular weight fades into the
+    /// peer-colour fill (visual-gap #7).
+    pub fn avatar_initial_text_weight(&self) -> TextWeight {
+        TextWeight::Bold
+    }
+
+    /// Typographic weight for the system-monitor row's acronym labels ("CPU",
+    /// "RAM", "TMP"). Concept uses `font-mono font-semibold` for labels while
+    /// the numeric values take `font-bold` — [`Self::system_monitor_value_text_weight`]
+    /// exposes that tier. Splitting the two makes the strip scannable at a
+    /// glance without every label shouting.
+    pub fn system_monitor_label_text_weight(&self) -> TextWeight {
+        TextWeight::Semibold
+    }
+
+    /// Typographic weight for the numeric values in the system-monitor row
+    /// (e.g. "12%", "40°"). Concept tier: `font-mono font-bold`.
+    pub fn system_monitor_value_text_weight(&self) -> TextWeight {
+        TextWeight::Bold
+    }
+
     /// Bounding rect of the overview button. Populated during `draw`;
     /// exposed so integration tests can hit-test click coordinates against
     /// the exact geometry the widget uses internally.
@@ -345,23 +392,30 @@ impl Widget for TopBarChrome {
         // --- Left cluster: overview icon + chevrons + workspace name ---
         let mut x = self.rect.x0 + pad_x;
 
-        // Overview "grid" icon: 2x2 mini-squares.
-        let cell = (icon_size - 4.0) / 2.0;
+        // Overview glyph: lucide `LayoutGrid` (gap #5). Drawn as stroked
+        // rounded rects via `quick_ui::icons::draw_icon` so it matches
+        // the concept's lucide-react lockup instead of the ad-hoc four
+        // filled squares we used before.
         self.overview_btn_rect = Rect::new(
             x - 4.0,
             center_y - icon_size / 2.0 - 4.0,
             x + icon_size + 4.0,
             center_y + icon_size / 2.0 + 4.0,
         );
-        for (cx, cy) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
-            let r = Rect::new(
-                x + cx * (cell + 2.0),
-                center_y - icon_size / 2.0 + cy * (cell + 2.0),
-                x + cx * (cell + 2.0) + cell,
-                center_y - icon_size / 2.0 + cy * (cell + 2.0) + cell,
-            );
-            scene.fill(Fill::NonZero, transform, colors.text_dim, None, &r);
-        }
+        let overview_icon_rect = Rect::new(
+            x,
+            center_y - icon_size / 2.0,
+            x + icon_size,
+            center_y + icon_size / 2.0,
+        );
+        quick_ui::icons::draw_icon(
+            scene,
+            transform,
+            overview_icon_rect,
+            Self::overview_glyph_icon(),
+            colors.text_dim,
+            quick_ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
         x += icon_size + tokens.spacing.s3 as f64;
 
         // Vertical divider
@@ -422,7 +476,11 @@ impl Widget for TopBarChrome {
             "{}  {}/{}",
             self.workspace_name, self.workspace_index + 1, self.workspace_total
         );
-        let (ws_w, ws_h) = text_renderer.measure(&ws_label, ws_text_size, None);
+        // Concept §2.1: workspace-name label is `font-semibold`. Measure with
+        // the same weight so the pill width tracks the glyph advance at
+        // Semibold, not at the Regular fallback — visual-gap #7.
+        let ws_weight = self.workspace_name_text_weight();
+        let (ws_w, ws_h) = text_renderer.measure_weighted(&ws_label, ws_text_size, None, ws_weight);
         let ws_y = center_y - ws_h as f64 / 2.0;
         // Subtle pill backdrop so the workspace name reads as clickable.
         let ws_pill_outer = Rect::new(
@@ -434,26 +492,33 @@ impl Widget for TopBarChrome {
         self.ws_pill_rect = ws_pill_outer;
         let pill = RoundedRect::from_rect(ws_pill_outer, tokens.radii.sm as f64);
         scene.fill(Fill::NonZero, transform, colors.surfaces.raised, None, &pill);
-        text_renderer.draw_text(
+        text_renderer.draw_text_weighted(
             scene,
             &ws_label,
             ws_text_size,
             colors.text_primary,
             transform * Affine::translate((x, ws_y)),
             None,
+            ws_weight,
         );
         let gear_x = x + ws_w as f64 + 6.0;
-        // Gear placeholder: small circle with a dot inside.
-        let gear_ring = vello::kurbo::Circle::new(Point::new(gear_x + 4.0, center_y), 4.5);
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.2),
-            transform,
-            colors.text_dim,
-            None,
-            &gear_ring,
+        // Gear glyph: lucide `Settings2` (gap #5). The ad-hoc ring+dot
+        // placeholder read as generic rather than "open settings"; the
+        // lucide sliders+knobs glyph matches the concept's affordance.
+        let gear_rect = Rect::new(
+            gear_x - 2.0,
+            center_y - 6.0,
+            gear_x + 10.0,
+            center_y + 6.0,
         );
-        let gear_hole = vello::kurbo::Circle::new(Point::new(gear_x + 4.0, center_y), 1.3);
-        scene.fill(Fill::NonZero, transform, colors.text_dim, None, &gear_hole);
+        quick_ui::icons::draw_icon(
+            scene,
+            transform,
+            gear_rect,
+            quick_ui::icons::Icon::Settings2,
+            colors.text_dim,
+            quick_ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
 
         // --- Center cluster: carousel band with 3 dots + active widget ---
         let band_w = 360.0_f64;
@@ -513,16 +578,22 @@ impl Widget for TopBarChrome {
             CenterWidget::Clock => {
                 let s = Self::current_clock_string();
                 let size = tokens.typography.scale.base;
-                let (tw, th) = text_renderer.measure(&s, size, None);
+                // Concept §2.2: clock is `font-bold`. Bold glyphs advance
+                // wider than Regular, so the measure call uses the same
+                // weight as the draw call — centering would drift by a few
+                // pixels otherwise. Visual-gap #7.
+                let weight = self.clock_text_weight();
+                let (tw, th) = text_renderer.measure_weighted(&s, size, None, weight);
                 let tx = content_cx - tw as f64 / 2.0;
                 let ty = center_y - th as f64 / 2.0;
-                text_renderer.draw_text(
+                text_renderer.draw_text_weighted(
                     scene,
                     &s,
                     size,
                     colors.text_primary,
                     transform * Affine::translate((tx, ty)),
                     None,
+                    weight,
                 );
             }
             CenterWidget::SystemMonitor => {
@@ -539,22 +610,25 @@ impl Widget for TopBarChrome {
                 let cpu_str = format!("{cpu}%");
                 let ram_str = format!("{ram}%");
                 let tmp_str = format!("{tmp}°");
-                // Left: CPU label + value.
-                text_renderer.draw_text(
+                // Left: CPU label + value. Concept monitor labels are
+                // `font-mono font-semibold`; values are `font-mono font-bold`.
+                text_renderer.draw_text_weighted(
                     scene,
                     "CPU",
                     sm_size,
                     colors.accent[4],
                     transform * Affine::translate((content_x0, center_y - 6.0)),
                     None,
+                    TextWeight::Semibold,
                 );
-                text_renderer.draw_text(
+                text_renderer.draw_text_weighted(
                     scene,
                     &cpu_str,
                     tokens.typography.scale.sm,
                     colors.text_primary,
                     transform * Affine::translate((content_x0 + 26.0, center_y - 7.0)),
                     None,
+                    TextWeight::Bold,
                 );
                 // Sparkline: 20 bars between CPU label and RAM cluster.
                 let spark_x0 = content_x0 + 70.0;
@@ -572,38 +646,43 @@ impl Widget for TopBarChrome {
                     let b = Rect::new(bx, center_y + 6.0 - h, bx + bar_w, center_y + 6.0);
                     scene.fill(Fill::NonZero, transform, colors.accent[4], None, &b);
                 }
-                // Right: RAM + TMP chips.
-                text_renderer.draw_text(
+                // Right: RAM + TMP chips. Same Semibold label / Bold value
+                // tiering as the CPU cluster so the strip reads uniformly.
+                text_renderer.draw_text_weighted(
                     scene,
                     "RAM",
                     sm_size,
                     colors.accent[5],
                     transform * Affine::translate((content_x1 - 96.0, center_y - 6.0)),
                     None,
+                    TextWeight::Semibold,
                 );
-                text_renderer.draw_text(
+                text_renderer.draw_text_weighted(
                     scene,
                     &ram_str,
                     tokens.typography.scale.sm,
                     colors.text_primary,
                     transform * Affine::translate((content_x1 - 70.0, center_y - 7.0)),
                     None,
+                    TextWeight::Bold,
                 );
-                text_renderer.draw_text(
+                text_renderer.draw_text_weighted(
                     scene,
                     "TMP",
                     sm_size,
                     colors.text_dim,
                     transform * Affine::translate((content_x1 - 40.0, center_y - 6.0)),
                     None,
+                    TextWeight::Semibold,
                 );
-                text_renderer.draw_text(
+                text_renderer.draw_text_weighted(
                     scene,
                     &tmp_str,
                     tokens.typography.scale.sm,
                     colors.text_primary,
                     transform * Affine::translate((content_x1 - 18.0, center_y - 7.0)),
                     None,
+                    TextWeight::Bold,
                 );
             }
             CenterWidget::Calendar => {
@@ -614,38 +693,46 @@ impl Widget for TopBarChrome {
                 let event = "Design Sync";
                 let time = "15:30";
                 let size = tokens.typography.scale.sm;
-                let (pw, ph) = text_renderer.measure(prefix, size, None);
-                let (ew, _) = text_renderer.measure(event, size, None);
-                let (tw, _) = text_renderer.measure(time, tokens.typography.scale.xs, None);
+                // Concept calendar-strip tiers: prefix + time as dim Medium
+                // pieces, the event name as a Semibold primary-colour anchor.
+                let prefix_weight = TextWeight::Medium;
+                let event_weight = TextWeight::Semibold;
+                let time_weight = TextWeight::Medium;
+                let (pw, ph) = text_renderer.measure_weighted(prefix, size, None, prefix_weight);
+                let (ew, _) = text_renderer.measure_weighted(event, size, None, event_weight);
+                let (tw, _) = text_renderer.measure_weighted(time, tokens.typography.scale.xs, None, time_weight);
                 let gap = 8.0;
                 let total = pw as f64 + gap + ew as f64 + gap + tw as f64;
                 let mut tx = content_cx - total / 2.0;
                 let ty = center_y - ph as f64 / 2.0;
-                text_renderer.draw_text(
+                text_renderer.draw_text_weighted(
                     scene,
                     prefix,
                     size,
                     colors.text_dim,
                     transform * Affine::translate((tx, ty)),
                     None,
+                    prefix_weight,
                 );
                 tx += pw as f64 + gap;
-                text_renderer.draw_text(
+                text_renderer.draw_text_weighted(
                     scene,
                     event,
                     size,
                     colors.text_primary,
                     transform * Affine::translate((tx, ty)),
                     None,
+                    event_weight,
                 );
                 tx += ew as f64 + gap;
-                text_renderer.draw_text(
+                text_renderer.draw_text_weighted(
                     scene,
                     time,
                     tokens.typography.scale.xs,
                     colors.text_dim,
                     transform * Affine::translate((tx, ty + 1.0)),
                     None,
+                    time_weight,
                 );
             }
         }
@@ -670,10 +757,32 @@ impl Widget for TopBarChrome {
             tray_h / 2.0,
         );
         scene.fill(Fill::NonZero, transform, colors.surfaces.raised, None, &tray);
-        for i in 0..3 {
-            let dx = rx - tray_w + 12.0 + i as f64 * 12.0;
-            let c = vello::kurbo::Circle::new(Point::new(dx, center_y), 2.0);
-            scene.fill(Fill::NonZero, transform, colors.text_dim, None, &c);
+        // Tray glyphs: lucide Wifi / Monitor / Battery (gap #5). The
+        // earlier three-filled-dots lockup was generic ornament; the
+        // real lucide trio tells the user what the pill is for at a
+        // glance, matching the concept's right-cluster icon row.
+        let tray_icon_size = 14.0_f64;
+        let tray_icons = [
+            quick_ui::icons::Icon::Wifi,
+            quick_ui::icons::Icon::Monitor,
+            quick_ui::icons::Icon::Battery,
+        ];
+        for (i, icon) in tray_icons.iter().enumerate() {
+            let dx = rx - tray_w + 12.0 + i as f64 * 14.0;
+            let icon_rect = Rect::new(
+                dx - tray_icon_size / 2.0,
+                center_y - tray_icon_size / 2.0,
+                dx + tray_icon_size / 2.0,
+                center_y + tray_icon_size / 2.0,
+            );
+            quick_ui::icons::draw_icon(
+                scene,
+                transform,
+                icon_rect,
+                *icon,
+                colors.text_dim,
+                quick_ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
         }
         rx -= tray_w + tokens.spacing.s3 as f64;
 
@@ -714,14 +823,16 @@ impl Widget for TopBarChrome {
                 &vello::kurbo::Circle::new(center, 7.5),
             );
             let s = initial.to_string();
-            let (tw, th) = text_renderer.measure(&s, tokens.typography.scale.sm, None);
-            text_renderer.draw_text(
+            let initial_weight = TextWeight::Bold;
+            let (tw, th) = text_renderer.measure_weighted(&s, tokens.typography.scale.sm, None, initial_weight);
+            text_renderer.draw_text_weighted(
                 scene,
                 &s,
                 tokens.typography.scale.sm,
                 colors.text_primary,
                 transform * Affine::translate((center.x - tw as f64 / 2.0, center.y - th as f64 / 2.0)),
                 None,
+                initial_weight,
             );
         }
 
@@ -747,14 +858,16 @@ impl Widget for TopBarChrome {
                 &vello::kurbo::Circle::new(center, 7.5),
             );
             let s = format!("+{}", self.collaborator_overflow);
-            let (tw, th) = text_renderer.measure(&s, tokens.typography.scale.xs, None);
-            text_renderer.draw_text(
+            let overflow_weight = TextWeight::Semibold;
+            let (tw, th) = text_renderer.measure_weighted(&s, tokens.typography.scale.xs, None, overflow_weight);
+            text_renderer.draw_text_weighted(
                 scene,
                 &s,
                 tokens.typography.scale.xs,
                 colors.text_dim,
                 transform * Affine::translate((center.x - tw as f64 / 2.0, center.y - th as f64 / 2.0)),
                 None,
+                overflow_weight,
             );
         }
 
