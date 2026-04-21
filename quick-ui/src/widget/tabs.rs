@@ -437,28 +437,41 @@ impl TabBar {
             scene.pop_layer();
         }
 
-        // Close button.
+        // Close button. Mirrors the concept's `hover:bg-red-500/80`
+        // (WindowFrame.tsx:334): on close-hover we tint the chip with
+        // the destructive semantic red at ~80% alpha so the user reads
+        // the action before they commit. When the tab is only hovered
+        // (but the cursor hasn't zeroed in on the ×), we keep a subtle
+        // white tint as a "you can close me" hint.
         let close_r = self.close_rects[i] + vello::kurbo::Vec2::new(dx, dy);
         let close_hover = !suppress_hover && Some(i) == self.hover_close_idx;
-        let close_chip_alpha: u8 = if close_hover {
-            64
+        let (close_chip_color, close_chip_visible) = if close_hover {
+            // red-500/80 — `semantic.danger` is rgb(239, 68, 68); at 0.8
+            // alpha this matches Tailwind's `bg-red-500/80` (≈ 204/255).
+            (
+                theme.tokens.colors.semantic.danger.with_alpha_factor(0.8),
+                true,
+            )
         } else if is_hover {
-            28
+            (vello::peniko::Color::rgba8(255, 255, 255, 28), true)
         } else {
-            0
+            (vello::peniko::Color::rgba8(0, 0, 0, 0), false)
         };
-        if close_chip_alpha > 0 {
+        if close_chip_visible {
             let chip = RoundedRect::from_rect(close_r, close_r.height() / 2.0);
-            let chip_color = vello::peniko::Color::rgba8(255, 255, 255, close_chip_alpha);
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                chip_color,
+                close_chip_color,
                 None,
                 &chip,
             );
         }
-        let glyph_color = if is_active || close_hover {
+        let glyph_color = if close_hover {
+            // Concept's `hover:text-white` — full white on close-hover
+            // so the × reads crisp against the red-500/80 fill.
+            vello::peniko::Color::rgba8(255, 255, 255, 255)
+        } else if is_active {
             text_primary
         } else {
             text_dim
@@ -871,6 +884,57 @@ impl TabBar {
     #[cfg(test)]
     pub(crate) fn drop_zone_target(&self) -> Option<usize> {
         self.drop_zone_target
+    }
+
+    /// Test hook: returns the close-chip fill color `draw_pill_inner`
+    /// would paint for tab `idx` under the current theme + hover state,
+    /// or `None` when the chip wouldn't paint at all (neither the tab
+    /// nor the close glyph is hovered). Pairs with
+    /// `close_glyph_color_for_tests` so the red-500/80 hover parity
+    /// with the concept (`hover:bg-red-500/80`) is exercised without a
+    /// GPU draw.
+    #[cfg(test)]
+    pub(crate) fn close_chip_color_for_tests(
+        &self,
+        idx: usize,
+        theme: &Theme,
+    ) -> Option<vello::peniko::Color> {
+        if idx >= self.tabs.len() {
+            return None;
+        }
+        let close_hover = Some(idx) == self.hover_close_idx;
+        let is_hover = Some(idx) == self.hover_idx;
+        if close_hover {
+            Some(theme.tokens.colors.semantic.danger.with_alpha_factor(0.8))
+        } else if is_hover {
+            Some(vello::peniko::Color::rgba8(255, 255, 255, 28))
+        } else {
+            None
+        }
+    }
+
+    /// Test hook: returns the glyph color `draw_pill_inner` would use
+    /// for the close `×` icon on tab `idx`. Mirrors the concept's
+    /// `hover:text-white` — close-hover always yields opaque white;
+    /// otherwise idle/active states fall back to theme text colors.
+    #[cfg(test)]
+    pub(crate) fn close_glyph_color_for_tests(
+        &self,
+        idx: usize,
+        theme: &Theme,
+    ) -> Option<vello::peniko::Color> {
+        if idx >= self.tabs.len() {
+            return None;
+        }
+        let close_hover = Some(idx) == self.hover_close_idx;
+        let is_active = self.tabs[idx].id == self.active_id;
+        Some(if close_hover {
+            vello::peniko::Color::rgba8(255, 255, 255, 255)
+        } else if is_active {
+            theme.tokens.colors.text_primary
+        } else {
+            theme.tokens.colors.text_dim
+        })
     }
 }
 
@@ -2725,5 +2789,79 @@ mod tests {
         // Retain these so the compiler doesn't warn about unused bindings
         // even though the assertions above already cover them.
         let _ = (before_count, before_tabs);
+    }
+
+    /// Concept parity: the per-tab close pill in
+    /// `nirios-concept/src/components/WindowFrame.tsx:334` uses
+    /// `hover:bg-red-500/80`. Our implementation must render the same
+    /// red-500 fill at 80% alpha (≈ rgba(239, 68, 68, 204)) when the
+    /// cursor is over the close glyph. This pins the semantic token
+    /// path end-to-end: `semantic.danger` is red-500, and we multiply
+    /// by 0.8 at paint time rather than hard-coding a literal.
+    #[test]
+    fn close_hover_uses_red_500_fill() {
+        let mut b = bar();
+        // Synthetic pill/close layout. The numbers don't matter — the
+        // chip-color decision only consults hover state.
+        b.rect = Rect::new(0.0, 0.0, 80.0, 40.0);
+        b.tab_rects = vec![Rect::new(0.0, 6.0, 80.0, 34.0)];
+        b.close_rects = vec![Rect::new(60.0, 10.0, 78.0, 30.0)];
+        b.hover_idx = Some(0);
+        b.hover_close_idx = Some(0);
+
+        let theme = Theme::dark();
+        let color = b
+            .close_chip_color_for_tests(0, &theme)
+            .expect("close-hover must produce a chip fill");
+        assert_eq!(
+            (color.r, color.g, color.b, color.a),
+            (239, 68, 68, 204),
+            "close-hover must paint red-500 at 80% alpha (concept: hover:bg-red-500/80)",
+        );
+
+        // Without close-hover (tab hovered only) we should fall back
+        // to the subtle white tint — the "you can close me" hint.
+        b.hover_close_idx = None;
+        let color = b
+            .close_chip_color_for_tests(0, &theme)
+            .expect("tab hover must still produce a subtle chip fill");
+        assert_eq!(
+            (color.r, color.g, color.b, color.a),
+            (255, 255, 255, 28),
+            "tab-only hover must stay as the subtle white tint",
+        );
+
+        // Neither hovered → no chip fill at all.
+        b.hover_idx = None;
+        assert!(
+            b.close_chip_color_for_tests(0, &theme).is_none(),
+            "idle close chip must not paint a fill",
+        );
+    }
+
+    /// Concept parity: the close glyph promotes to full white on
+    /// close-hover (`hover:text-white` in WindowFrame.tsx). Previous
+    /// implementation rendered `text_primary`, which under dark themes
+    /// can be slightly off-white — against a red-500/80 fill that
+    /// reads as a grayish × rather than the crisp white the concept
+    /// shows.
+    #[test]
+    fn close_hover_glyph_is_full_white() {
+        let mut b = bar();
+        b.rect = Rect::new(0.0, 0.0, 80.0, 40.0);
+        b.tab_rects = vec![Rect::new(0.0, 6.0, 80.0, 34.0)];
+        b.close_rects = vec![Rect::new(60.0, 10.0, 78.0, 30.0)];
+        b.hover_idx = Some(0);
+        b.hover_close_idx = Some(0);
+
+        let theme = Theme::dark();
+        let color = b
+            .close_glyph_color_for_tests(0, &theme)
+            .expect("close glyph color must always be defined for a live tab");
+        assert_eq!(
+            (color.r, color.g, color.b, color.a),
+            (255, 255, 255, 255),
+            "close-hover glyph must be opaque white (concept: hover:text-white)",
+        );
     }
 }
