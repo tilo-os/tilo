@@ -226,6 +226,18 @@ impl WindowGroup {
     /// for cross-group drag tests that need to assert on activation flow
     /// (e.g. detaching the active tab must promote a sibling to active).
     pub fn active_tab_id(&self) -> u64 { self.bar.active_id() }
+
+    /// True while this group's `TabBar` has a drag in flight. Exposed so
+    /// the parent `GroupRow` can paint inter-group drop-zone indicators
+    /// while any child is dragging.
+    pub fn drag_in_flight(&self) -> bool { self.bar.drag_in_flight() }
+
+    /// Test-only mutable accessor for the underlying `TabBar`. Used by
+    /// `GroupRow` tests that need to publish a synthetic `pending_detach`
+    /// to exercise the post-dispatch detach sweep without staging a full
+    /// press/drag/release event sequence.
+    #[cfg(test)]
+    pub(crate) fn bar_mut(&mut self) -> &mut crate::widget::TabBar { &mut self.bar }
 }
 
 impl Widget for WindowGroup {
