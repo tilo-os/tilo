@@ -266,6 +266,28 @@ fn topbar_right_tray_renders_collaborators_and_opens_quick_settings() {
 }
 
 #[test]
+fn topbar_chrome_maps_two_peers_to_two_distinct_avatar_hues() {
+    use quick_desktop::shell::topbar_chrome::TopBarChrome;
+    use quick_desktop::shell::state::{WorkspaceTree, Collaborator, Workspace, WorkspaceId};
+    let mut tree = WorkspaceTree {
+        workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+        active: WorkspaceId::from(0),
+        active_strip: Default::default(),
+        collaborators: vec![
+            Collaborator::new("alice", "Ada"),
+            Collaborator::new("bob", "Bo"),
+        ],
+    };
+    tree.active = tree.workspaces[0].id;
+    let chrome = TopBarChrome::from_tree(&tree);
+    let colors = chrome.collaborator_colors();
+    assert_eq!(colors.len(), 2);
+    // Two peers with distinct ids must resolve to distinct hues; otherwise
+    // overlapping avatars collapse into a single indigo blob (gap #9).
+    assert_ne!(colors[0], colors[1]);
+}
+
+#[test]
 fn sidebar_wheel_switches_active_strip() {
     use quick_desktop::shell::sidebar_wheel::SidebarWheel;
     use quick_desktop::shell::state::{WorkspaceTree, Workspace, WorkspaceId, Strip, StripId};
