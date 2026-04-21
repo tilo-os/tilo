@@ -61,6 +61,15 @@ this wheel in the middle to move it to another strip of windows."*
 - **Plane-level**: the disc does NOT absorb clicks meant for the topbar or
   for windows. Its bounding box is the disc itself, not a 96-px strip.
 
+### Status — 2026-04-21
+
+- **Widget built** (`quick-shell/src/shell/sidebar_wheel_disc.rs`, commit
+  `2a7ec2b`). 240-px disc, spokes-as-strips layout, drag-rotate with
+  snap-to-nearest-spoke. Snapshot test + 4 interaction tests pass.
+- **Not wired** into `build_nirios_root_with_chrome` yet —
+  `SidebarWheelChrome` still renders in the live shell. Next iteration:
+  add a feature flag / env var and swap construction paths.
+
 ### Proposed structure
 
 New file: `quick-shell/src/shell/sidebar_wheel_disc.rs`.
