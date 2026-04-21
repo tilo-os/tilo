@@ -40,7 +40,7 @@ concept, mandated by the user's 2026-04-21 spec.
 | Workspace representation | Vertical list of cards | Radial spokes |
 | Interaction | Click a card / scroll to switch | Press-drag-rotate, release snaps |
 | Active cue | Pill fill + indigo ring | Rim arc glow at active spoke's angle |
-| Collaborator dots | Per-card presence dots | **TBD** — not yet re-applied to spokes |
+| Collaborator dots | Per-card presence dots | Up to 3 per-spoke presence dots outside the tip label (commit `4ffb786`) |
 | Plus button | "+" card at tail | Plus-button slot below the hub; press appends + activates a new workspace (commit `dc8956a`) |
 
 ## Implementation pointer
@@ -118,9 +118,7 @@ mental model: *pull the wheel down to reveal the next workspace below*.
    spoke angle lands in (90°, 270°) get an extra π rotation so glyphs
    stay upright.
 
-3. **Collaborator presence on spokes** — concept's wheel cards show up
-   to 3 per-card presence dots. Not yet re-applied to spokes. Needs
-   design: a small dot cluster along the spoke or near the tip label.
+3. ~~**Collaborator presence on spokes**~~ — **resolved in `4ffb786`**. The disc now queries `PresenceCtx::peers_on(PresenceKey::Workspace { id })` for each spoke and renders up to 3 per-peer dots 16 px outside the tip label, tangent to the rim. Colours come from `PresenceCtx::color_for` so palette pins survive.
 
 4. ~~**Plus button**~~ — **resolved in `dc8956a`**. The disc now renders
    a dedicated Plus slot below the hub; pressing inside it calls
@@ -149,6 +147,8 @@ mental model: *pull the wheel down to reveal the next workspace below*.
 | `disc_without_chrome_snaps_without_panicking` | same | `with_chrome` is optional — `snap_to_nearest` no-ops cleanly when unset |
 | `snap_animates_rotation_over_multiple_ticks` | same | Release starts a spring; `rotation_deg` reaches target within 1° after `update` pumps at 60 Hz |
 | `sidebar_wheel_disc_renders_a_spoke_per_workspace` | `tests/sidebar_wheel_disc_snapshot.rs` | Snapshot test: 3 spokes labelled Home/Research/Design, active arc at Home's angle |
+| `disc_renders_dot_per_seeded_peer_on_workspace` | `sidebar_wheel_disc.rs` module tests | Seeds 2 peers on `PresenceKey::Workspace { id: "77" }`; `presence_dot_hit_count` returns 2 (closes known-gap #3) |
+| `disc_caps_presence_dots_at_three_per_spoke` | same | Seeds 5 peers on the same workspace; helper still caps at 3 dots per spoke |
 
 ## Removing the old sidebar
 

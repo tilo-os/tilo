@@ -60,31 +60,26 @@ and `target/nirios-screenshots/06-overview-open-vertical.png`) against
   text" was **not** in the concept — concept is `bg-white/10 text-white`,
   which is what we now render.
 
-### 3. No `backdrop-blur` anywhere — overlays/chrome look like flat rectangles — High
+### 3. ~~No `backdrop-blur` anywhere~~ — Translucent-tint fallback shipped (2026-04-21, submodule `faf4e7c`)
 
-- **What the concept shows:** Top bar uses `bg-black/80 backdrop-blur-xl`
-  (§1.1). Collaborator popover and QuickSettings popover use
-  `bg-slate-900/80 backdrop-blur-md` (§1.1, §3.1). GlobalSearch and the
-  settings modal use `bg-slate-900/70 backdrop-blur-md` with a
-  `backdrop-blur-[1px]` scrim over the whole page (§5.1, §4.1). The
-  universal feel is "frosted glass over the desktop", not opaque fill.
-- **What we render today:** `quick-shell/src/shell/topbar_chrome.rs:271` just
-  fills `colors.surfaces.overlay` — a flat dark grey. No convolution, no
-  translucency over the gradient behind. In `07-theme-tightened.png` the
-  top bar reads as a separate opaque plate, and in `06-overview-open-vertical.png`
-  the inactive workspace card underneath "Design Sprint" also looks painted,
-  not frosted. `quick-ui/src/tokens/elevation.rs` defines `blur` values but
-  nothing consumes them as an actual filter; `Grep "GaussianBlur|blur_layer"`
-  in `quick-shell/` and `quick-ui/` returns zero matches.
-- **Concrete fix:** Introduce a single helper `push_frosted_layer(scene,
-  rect, radius, tint, blur_px)` in `quick-ui/src/widget/mod.rs` that uses
-  `scene.push_blur_layer` (now in Vello main) with a fall-back to
-  "darker translucent tint of the wallpaper" when unavailable. Call it from
-  `topbar_chrome::draw` before the top-bar rect fill, and from every
-  popover surface (QuickSettings, collaborators, search, modal). Until the
-  blur primitive lands we should at least honour the `/80` vs `/70` alpha
-  split so the bar isn't fully opaque.
-- **Estimated effort:** L (if Vello blur) / M (translucent fallback first)
+- **What the concept shows:** Top bar `bg-black/80 backdrop-blur-xl` (§1.1);
+  Collaborator + QuickSettings popovers `bg-slate-900/80 backdrop-blur-md`
+  (§1.1, §3.1); GlobalSearch + settings modal `bg-slate-900/70 backdrop-blur-md`
+  with a `backdrop-blur-[1px]` page scrim (§5.1, §4.1).
+- **What shipped:** Vello 0.2.1 has no `push_blur_layer` primitive, so we
+  ship the alpha-tint half of the spec today and revisit convolution when
+  the Vello bump lands. Pinned constants: `TOP_BAR_SURFACE_ALPHA = 0.80`,
+  `POPOVER_SURFACE_ALPHA = 0.80` (collaborators + QuickSettings),
+  `PALETTE_SURFACE_ALPHA = 0.70` (GlobalSearch via theme override so
+  quick-ui's shared `CommandPalette` stays untouched),
+  `MODAL_SURFACE_ALPHA = 0.70` (WorkspaceSettings), `MODAL_SCRIM_ALPHA = 0.20`
+  (page scrim, down from 0.30). Regression tests:
+  `topbar_chrome_surface_alpha_is_80_percent` + `global_search_surface_alpha_is_70_percent`
+  pin the accessors so future reverts to opaque flip red without a pixel snapshot.
+- **Remaining work (deferred):** real Gaussian convolution lands when Vello
+  grows a blur primitive — the alpha-tint delta already makes the chrome
+  read as translucent over the gradient, so the user-facing gap is closed
+  enough to drop from "High" to "parked".
 
 ### 4. ~~Overview active-row glow is a crisp rectangle "pale halo"~~ — Shipped (2026-04-21, commit `4b12846`)
 
