@@ -1961,37 +1961,28 @@ impl ShellOverlayHost {
                 None,
                 &perm_rr,
             );
-            // Shield glyph: lucide `Shield` SVG path traced as a stroked
-            // BezPath. Source viewBox is 24×24; we scale into a 12×12
-            // destination box at (perm_rect.x0 + 12, perm_rect.y0 + 10).
-            // The concept uses `text-indigo-400` (accent[4]) for this
-            // icon, not emerald. Label + "Permissions" sits to its right.
-            {
-                use vello::kurbo::{BezPath, Point};
-                let sx = 12.0 / 24.0;
-                let sy = 12.0 / 24.0;
-                let ox = perm_rect.x0 + 12.0;
-                let oy = perm_rect.y0 + 10.0;
-                let p = |x: f64, y: f64| Point::new(ox + x * sx, oy + y * sy);
-
-                let mut shield = BezPath::new();
-                shield.move_to(p(12.0, 22.0));
-                shield.curve_to(p(16.418, 22.0), p(20.0, 18.0), p(20.0, 12.0));
-                shield.line_to(p(20.0, 5.0));
-                shield.line_to(p(12.0, 2.0));
-                shield.line_to(p(4.0, 5.0));
-                shield.line_to(p(4.0, 12.0));
-                shield.curve_to(p(4.0, 18.0), p(7.582, 22.0), p(12.0, 22.0));
-                shield.close_path();
-
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.5),
-                    card_xform,
-                    colors.accent[4],
-                    None,
-                    &shield,
-                );
-            }
+            // Shield glyph: lucide `Shield` via `quick_ui::icons`
+            // (gap #5). The previous hand-traced BezPath was a
+            // close-enough imitation; routing through the shared icon
+            // table gets us the authoritative lucide path plus the
+            // correct rounded caps/joins. Colour flips from indigo to
+            // `semantic.success` (emerald-500) so the Permissions card
+            // reads as an "all good" affordance, matching the
+            // emerald-shield treatment in the concept mock.
+            let shield_rect = Rect::new(
+                perm_rect.x0 + 12.0,
+                perm_rect.y0 + 10.0,
+                perm_rect.x0 + 24.0,
+                perm_rect.y0 + 22.0,
+            );
+            quick_ui::icons::draw_icon(
+                scene,
+                card_xform,
+                shield_rect,
+                quick_ui::icons::Icon::Shield,
+                colors.semantic.success,
+                quick_ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
             text_renderer.draw_text(
                 scene,
                 "Permissions",
