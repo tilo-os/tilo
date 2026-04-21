@@ -187,8 +187,14 @@ source of truth for every consumer.
 See `docs/nirios/visual-gaps.md` for the full list.
 
 **Closed** as of 2026-04-21 iteration:
+- Drag-ghost translucent preview on tab drag (source dims to 0.35, ghost
+  paints at 0.6 at `last_cursor - drag_offset`) — commit `4e579ac`
 - Lucide X/Maximize2/Minimize2/Search on tab decorations + maximized
   controls — commit `62c5c53`
+- Real peer presence populating `PresenceCtx::remote_cursors` (shell
+  overlay now sees real peers) — commits `44e7053` + `ab62d41`
+- Real-socket two-peer collab E2E (`CollabEvent::CRDTIncremental` +
+  `RemotePresenceUpdate` fanout over Unix socket) — commit `066e112`
 - #1 content card drop shadow (radial sprite) — commit `5837eee`
 - #2 tab contrast — commit `4d6df4c`
 - #4 overview active-row halo (4-ring fade) — commit `4b12846`
@@ -218,8 +224,9 @@ shipped; Gaussian convolution deferred).
 
 **Remaining highest-priority (structural / functional):**
 - Tab/window decoration polish — lucide X/Maximize2/Minimize2/Search
-  shipped in commit `62c5c53`. Still pending: per-tile close hover,
-  drag-ghost preview, minimize animation.
+  shipped in commit `62c5c53`; drag-ghost preview shipped in commit
+  `4e579ac`. Still pending: per-tile close hover, tab-close fade-out,
+  window-minimize animation.
 - Concept-matched animation pass (overview zoom, tile spawn/despawn,
   wheel snap spring — spring already partial via `7916273`).
 - CRDT-driven undo/redo coverage across every widget (text input done;
