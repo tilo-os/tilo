@@ -378,6 +378,31 @@ impl Widget for GroupRow {
             }
         }
 
+        // Group-close prune sweep: any child whose group-level close
+        // fade has fully elapsed is dropped from `self.groups` and
+        // the structure is flagged dirty so `App` rebuilds the taffy
+        // tree. Mirrors the tab-close sweep inside `WindowGroup`:
+        // the fade plays out in place, then the parent reaps the
+        // shell only once the curve has settled. Collected
+        // highest-index-first so the removals don't shift indices
+        // out from under the loop. Children still in-flight
+        // (`is_closing() && !close_complete()`) are left alone; the
+        // group keeps painting its shrink.
+        let mut prune: Vec<usize> = self
+            .groups
+            .iter()
+            .enumerate()
+            .filter(|(_, g)| g.close_complete())
+            .map(|(i, _)| i)
+            .collect();
+        if !prune.is_empty() {
+            prune.sort_unstable_by(|a, b| b.cmp(a));
+            for i in prune {
+                self.groups.remove(i);
+            }
+            self.structure_dirty = true;
+        }
+
         // Belt-and-suspenders: if dispatch (or our own release branch
         // above) cleared every child's drag, drop any lingering hover
         // target so `draw` can't paint a ghost indicator next frame. The
@@ -1011,6 +1036,91 @@ mod tests {
         assert_eq!(
             row.hover_gap_idx, None,
             "MouseInput::Released must clear hover_gap_idx so no ghost indicator persists"
+        );
+    }
+
+    /// When a child `WindowGroup` has finished its close fade
+    /// (`close_complete()` returns true), the next `handle_event`
+    /// tick must drop it from `self.groups` and flag
+    /// `structure_dirty` so the App rebuilds the taffy tree. This
+    /// is the pruning path the pre-feature code was missing — the
+    /// only existing prune path was `split_tab_into_new_group`,
+    /// so a tab-close-emptied group used to hang around forever.
+    #[test]
+    fn group_pruned_after_close_fade_completes() {
+        use std::time::{Duration, Instant};
+        use winit::event::WindowEvent;
+
+        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+        // Seed group 0 with an already-elapsed close timestamp so
+        // the sweep treats it as ready-to-prune on the very next
+        // tick.
+        row.groups[0].set_closing_at_for_tests(
+            Instant::now() - Duration::from_millis(200),
+        );
+        assert_eq!(row.groups.len(), 2, "precondition: two groups before prune");
+
+        // Drive a no-op CursorMoved to trigger the sweep.
+        let event = WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(5000.0, 5000.0),
+        };
+        let mut doc = AutoCommit::new();
+        let doc_root = automerge::ROOT.clone();
+        let modifiers = Modifiers::default();
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        row.handle_event(
+            &event, 1.0, &modifiers, &mut doc, &doc_root,
+            &mut handled, &mut focus, root, &taffy,
+        );
+
+        assert_eq!(
+            row.groups.len(),
+            1,
+            "fully-faded group must be dropped from self.groups",
+        );
+        assert!(
+            row.take_structure_dirty(),
+            "prune must flag structure_dirty so App rebuilds taffy",
+        );
+    }
+
+    /// Mirror of the prune test: a group whose close fade is still
+    /// in flight (elapsed < `GROUP_CLOSE_FADE_MS`) must be left
+    /// alone. The prune only fires once `close_complete()` returns
+    /// true. Guards against a too-aggressive sweep that reaps the
+    /// group before the user sees the animation.
+    #[test]
+    fn group_retained_during_close_fade() {
+        use std::time::Instant;
+        use winit::event::WindowEvent;
+
+        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+        // Freshly-latched close — fade window has barely started,
+        // far from elapsed.
+        row.groups[0].set_closing_at_for_tests(Instant::now());
+        assert!(row.groups[0].is_closing());
+        assert!(!row.groups[0].close_complete());
+
+        let event = WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(5000.0, 5000.0),
+        };
+        let mut doc = AutoCommit::new();
+        let doc_root = automerge::ROOT.clone();
+        let modifiers = Modifiers::default();
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        row.handle_event(
+            &event, 1.0, &modifiers, &mut doc, &doc_root,
+            &mut handled, &mut focus, root, &taffy,
+        );
+
+        assert_eq!(
+            row.groups.len(),
+            2,
+            "group mid-fade must NOT be pruned — the user is still watching the animation",
         );
     }
 
