@@ -93,6 +93,19 @@ pub struct SidebarWheelDisc {
     /// `update` once `is_settled()` returns true so `needs_animation_frame`
     /// stops asking for redraws.
     pub rotation_spring: Option<Spring>,
+    /// Cached bounding rect of the "+" add-workspace slot painted below
+    /// the disc's rim. Populated by `draw`; consumed by `handle_event`
+    /// on press to hit-test the slot. `Rect::ZERO` until the first draw
+    /// pass runs — mirrors the pattern used by `TopBarChrome` for its
+    /// `tray_pill_rect` / `avatar_stack_rect` caches. Closes the concept's
+    /// `## Known gaps` #4 ("Plus button") in `docs/nirios/wheel-disc-design.md`.
+    pub plus_rect: Rect,
+    /// Most-recent cursor position in logical pixels, regardless of
+    /// whether it sits inside the disc. `drag_from` only tracks cursors
+    /// that hover *inside* the disc (so it can anchor a drag); the plus
+    /// slot lives *outside* the rim, so press-hit-testing it needs its
+    /// own position cache. Updated on every `CursorMoved`.
+    pub last_cursor_pos: Option<Point>,
 }
 
 impl SidebarWheelDisc {
@@ -109,6 +122,8 @@ impl SidebarWheelDisc {
             diameter_px: 240.0,
             chrome: None,
             rotation_spring: None,
+            plus_rect: Rect::ZERO,
+            last_cursor_pos: None,
         }
     }
 
@@ -321,6 +336,61 @@ impl Widget for SidebarWheelDisc {
             None,
             &cross,
         );
+
+        // ---- "+" add-workspace slot --------------------------------------
+        // A small round button pinned directly below the disc's rim, 20 px
+        // of vertical gap between the disc's outer edge and the slot's top
+        // (so the two shapes read as "related controls" but not a unified
+        // outline). 28 px diameter; fill = `surfaces.overlay` so it picks
+        // up the same translucent tint the topbar uses, rim = 1 px
+        // `neutral[3]` to match the disc's own rim, glyph = two
+        // `text_primary` strokes forming a "+" at ~40% of slot width.
+        //
+        // Interaction is handled in `handle_event` via `plus_rect`, which
+        // we cache here so the press path can hit-test the slot without
+        // re-deriving the geometry.
+        let slot_diam = 28.0_f64;
+        let slot_radius = slot_diam / 2.0;
+        let slot_cx = cx;
+        let slot_cy = cy + radius + 20.0;
+        self.plus_rect = Rect::new(
+            slot_cx - slot_radius,
+            slot_cy - slot_radius,
+            slot_cx + slot_radius,
+            slot_cy + slot_radius,
+        );
+        let slot_circle = Circle::new((slot_cx, slot_cy), slot_radius);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surfaces.overlay,
+            None,
+            &slot_circle,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            colors.neutral[3],
+            None,
+            &slot_circle,
+        );
+        // Plus glyph: two orthogonal strokes centred on the slot. Arm
+        // half-length = 40% of radius so the glyph reads as a clear "+"
+        // without crowding the slot's rim.
+        let arm = slot_radius * 0.4;
+        let plus = BezPath::from_iter([
+            PathEl::MoveTo(Point::new(slot_cx - arm, slot_cy)),
+            PathEl::LineTo(Point::new(slot_cx + arm, slot_cy)),
+            PathEl::MoveTo(Point::new(slot_cx, slot_cy - arm)),
+            PathEl::LineTo(Point::new(slot_cx, slot_cy + arm)),
+        ]);
+        scene.stroke(
+            &Stroke::new(1.5),
+            transform,
+            colors.text_primary,
+            None,
+            &plus,
+        );
     }
 
     fn handle_event(
@@ -341,6 +411,27 @@ impl Widget for SidebarWheelDisc {
                 button: winit::event::MouseButton::Left,
                 ..
             } => {
+                // Plus-button hit-test comes first: the slot lives *outside*
+                // the disc's rim, so it must never be swallowed by the
+                // drag-start branch below. Use `last_cursor_pos` rather than
+                // `drag_from` — the latter only tracks cursors inside the
+                // disc, but the plus slot lives below the rim. A press in
+                // the slot appends a new workspace + activates it via the
+                // shared chrome handle and consumes the event without
+                // opening the workspace-settings modal (direct create,
+                // matching the concept's Plus button behaviour).
+                if self.plus_rect.area() > 0.0
+                    && self
+                        .last_cursor_pos
+                        .map(|p| self.plus_rect.contains(p))
+                        .unwrap_or(false)
+                {
+                    if let Some(chrome) = self.chrome.as_ref() {
+                        chrome.borrow_mut().add_workspace("Untitled");
+                    }
+                    *handled = true;
+                    return;
+                }
                 // Begin drag if we have a last-known cursor inside the disc.
                 // The event itself has no position, so we rely on a prior
                 // `CursorMoved` having set `drag_from` as an anchor. To keep
@@ -370,6 +461,11 @@ impl Widget for SidebarWheelDisc {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                // Always cache the latest cursor position so the plus-slot
+                // press hit-test (which lives outside the disc's rim) can
+                // consult it. `drag_from` keeps its narrower semantics —
+                // only cursors *inside* the disc anchor a drag.
+                self.last_cursor_pos = Some(p);
                 // If no drag yet, stash the cursor as a potential anchor
                 // so a subsequent Pressed inside the disc can start a drag
                 // without needing a synthetic anchor.
@@ -853,6 +949,89 @@ mod tests {
             "visual rotation {} must be within 1° of target {}",
             visual,
             target
+        );
+    }
+
+    /// The plus-slot rect is a `draw`-time artefact — until the widget
+    /// has been painted, `handle_event` must see `Rect::ZERO` so the
+    /// press path cannot accidentally hit-test an undefined region.
+    /// Mirrors the `tray_pill_rect` / `avatar_stack_rect` `ZERO`-on-new
+    /// contract in `TopBarChrome`.
+    #[test]
+    fn new_starts_with_plus_rect_zero() {
+        let d = mk(&["Home", "Research", "Design"]);
+        assert_eq!(
+            d.plus_rect,
+            Rect::ZERO,
+            "plus_rect must be ZERO until the first draw pass populates it"
+        );
+        assert!(d.last_cursor_pos.is_none());
+    }
+
+    /// Pressing inside the cached `plus_rect` must call
+    /// `ChromeState::add_workspace` — the disc's direct-create path for a
+    /// new workspace. Mirrors `snap_publishes_active_workspace_to_chrome`'s
+    /// chrome-setup pattern but exercises the press-on-plus branch rather
+    /// than the drag→snap branch.
+    #[test]
+    fn press_on_plus_rect_calls_chrome_add_workspace() {
+        use crate::shell::chrome_state::ChromeState;
+        use crate::shell::state::WorkspaceTree;
+
+        // Minimal tree — `bootstrap_default` gives one workspace, which
+        // is enough to assert the plus-press grows the count.
+        let tree = WorkspaceTree::bootstrap_default();
+        let initial_count = tree.workspaces.len();
+        let initial_active = tree.active;
+        let chrome = ChromeState::new(tree);
+
+        // Manually populate the disc's geometry so we can hit-test without
+        // running a full draw pass (there's no wgpu in unit tests — the
+        // snapshot harness gates on an offscreen renderer). The `draw`
+        // implementation sets `plus_rect` to a 28 px disc centred at
+        // `(cx, cy + radius + 20)`, so we synthesise the same rect here
+        // to decouple from the exact draw-time arithmetic.
+        let mut d = SidebarWheelDisc::new(vec![SpokeLabel {
+            text: "Home".into(),
+            workspace_id: None,
+        }])
+        .with_chrome(chrome.clone());
+        d.rect = Rect::new(0.0, 0.0, d.diameter_px, d.diameter_px);
+        let cx = d.diameter_px / 2.0;
+        let cy = d.diameter_px / 2.0;
+        let radius = (d.diameter_px / 2.0) - 1.0;
+        let slot_radius = 14.0_f64;
+        let slot_cx = cx;
+        let slot_cy = cy + radius + 20.0;
+        d.plus_rect = Rect::new(
+            slot_cx - slot_radius,
+            slot_cy - slot_radius,
+            slot_cx + slot_radius,
+            slot_cy + slot_radius,
+        );
+
+        // Move the cursor to the slot's centre so `last_cursor_pos` picks
+        // it up — the press handler consults that cache (not the event,
+        // which has no position field) to hit-test the plus slot.
+        pump(&mut d, cursor_event(slot_cx, slot_cy));
+        assert!(pump(&mut d, press_event()), "press on plus slot must be handled");
+
+        let state = chrome.borrow();
+        assert_eq!(
+            state.tree.workspaces.len(),
+            initial_count + 1,
+            "plus-press must grow the workspace count by exactly 1"
+        );
+        assert_ne!(
+            state.tree.active, initial_active,
+            "plus-press must activate the newly-created workspace"
+        );
+        // Drag must not start from a plus-slot press — the press path
+        // returns early before the drag-anchor block. This guards against
+        // the "press-on-plus also grabs the rotation" regression.
+        assert!(
+            d.drag_from.is_none(),
+            "plus-press must not start a rotation drag"
         );
     }
 }
