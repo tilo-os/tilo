@@ -239,6 +239,16 @@ See `docs/nirios/visual-gaps.md` for the full list.
   sweep that drops groups whose `close_complete()` returns true and
   flags `structure_dirty`. Fills the tab-close-empties-group prune gap
   that previously left empty shells in place — commit `3c733e6`.
+  Maximized-close bypass + drop-onto-closing-group edge cases resolved
+  in `0c9a55d` (maximized-close routes through same deferred flow;
+  cross-group drop onto `is_closing()` target falls through to new-group
+  creation).
+- Close-button red-500/80 hover tint + full-white glyph promotion on
+  both per-tab close pill and maximized floating close chip — matches
+  concept's `hover:bg-red-500/80` + `hover:text-white` (WindowFrame.tsx:
+  249 + :334). Uses existing `theme.tokens.colors.semantic.danger`
+  token with `with_alpha_factor(0.8)` — no hard-coded literals —
+  commit `ee7f27f`.
 - Earlier: shield/backdrop work
 
 **Remaining visual gap:** none open — all visual-gaps.md items are either
@@ -269,10 +279,10 @@ shipped; Gaussian convolution deferred).
 - Tab/window decoration polish — lucide X/Maximize2/Minimize2/Search
   shipped in commit `62c5c53`; drag-ghost preview shipped in commit
   `4e579ac`; tab-close fade-out shipped in `6ad564a`; tile-spawn fade
-  wired in `f290b89`; group-close fade-out shipped in `3c733e6`. Still
-  pending: per-tile close hover (hover tint / icon swap on × button),
-  window-minimize animation, and the three known follow-ups from
-  `3c733e6` listed in the "Known follow-ups" block below.
+  wired in `f290b89`; group-close fade-out shipped in `3c733e6`; red
+  close-hover tint shipped in `ee7f27f`. Still pending:
+  window-minimize animation + the remaining cross-submodule follow-up
+  (workspace active-group pointer nudge).
 - Concept-matched animation pass (overview zoom, tile spawn/despawn,
   wheel snap spring — spring already partial via `7916273`).
 - CRDT-driven undo/redo coverage across every widget.
