@@ -153,10 +153,25 @@ cursor. Real peer presence never lights up a cursor today.
 
 ## Visual gaps (pointer)
 
-See `docs/nirios/visual-gaps.md` for the full list. Blockers #1, #3
-(fallback), #6 and #5 (shield only) are closed as of this iteration.
-Remaining: full lucide icon pass, real Gaussian blur on overlays
-(vello upgrade), tab-drop DropZone animation timing.
+See `docs/nirios/visual-gaps.md` for the full list. **Closed** as of
+2026-04-21 iteration: #2 (tab contrast — commit `4d6df4c`), #6
+(sidebar card fill — superseded by wheel disc), and the earlier
+shield/backdrop work.
+
+**In flight** (parallel subagents dispatched): #4 (overview active-row
+halo — 4-ring fade) and #9 (per-peer collaborator avatar colors).
+
+**Remaining highest-priority:**
+- #1 content card shadow — Blocker, needs Vello blur or pre-rendered
+  radial-gradient sprites (M effort).
+- #3 backdrop blur on overlays/topbar — High, needs Vello blur layer
+  or translucent fallback.
+- #5 full lucide icon pass — High, L one-time cost.
+- #7 text weight pass — Medium, S effort.
+- #8 topbar clock pill active-dot contrast — Medium.
+- #10 desktop noise overlay — Low.
+- #12 overview header typography — Low.
+- #13 overview scrim `slate-950` flat — Low.
 
 ## Process reminder
 
