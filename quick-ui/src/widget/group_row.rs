@@ -15,8 +15,8 @@ use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{Dimension, Display, FlexDirection, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{Modifiers, WindowEvent};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -41,6 +41,15 @@ pub struct GroupRow {
     /// this signal, `apply_layout` would walk `node_ids` that don't cover
     /// the new group and skip it entirely.
     structure_dirty: bool,
+    /// Index of the inter-group gap the cursor is currently hovering over
+    /// while a child `TabBar` has a drag in flight. `None` when no drag
+    /// is active or the cursor is inside a group's own rect. `draw` reads
+    /// this to paint a single indigo capsule at the hovered gap so the
+    /// user sees "drop here" feedback before releasing. Cleared on mouse
+    /// release regardless of the drop resolution, and whenever no child
+    /// reports `drag_in_flight()` so stale indicators don't persist past
+    /// the gesture that set them.
+    hover_gap_idx: Option<usize>,
 }
 
 impl GroupRow {
@@ -51,6 +60,7 @@ impl GroupRow {
             node_ids: Vec::new(),
             last_cursor: Point::ZERO,
             structure_dirty: false,
+            hover_gap_idx: None,
         }
     }
 
@@ -272,45 +282,42 @@ impl Widget for GroupRow {
             g.draw(scene, transform, tr, theme, presence);
         }
 
-        // Inter-group drop-zone indicators: while any child has a drag in
-        // flight, paint a translucent indigo vertical bar in each gap
-        // between groups and one at each end of the row. Mirrors the
-        // concept's `DropZone` component in `DesktopView.tsx:414` that
-        // wraps every pair of groups with a visible gap target. Without
-        // this, users dragging a tab "to a new window" had no visual
-        // signal that the gap was a valid target, which is half of the
-        // reported bug.
-        //
-        // Minimum viable feedback: a solid translucent indigo bar per
-        // gap, no hover expansion. See `docs/nirios/visual-gaps.md` for
-        // the full concept-faithful hover-scale + shadow glow treatment
-        // (TODO: wire hover tracking via `last_cursor` and animate width
-        // from 8→48 px with ease-out-cubic on enter/leave).
-        let any_drag =
-            self.groups.iter().any(|g| g.drag_in_flight()) && !self.groups.is_empty();
-        if any_drag {
-            let indigo = theme.tokens.colors.accent[5].with_alpha_factor(0.35);
-            let bar_w = 8.0_f64;
-            let y0 = self.rect.y0 + 8.0;
-            let y1 = self.rect.y1 - 8.0;
-            // Gap 0 (before first group).
-            let first_x = self.groups[0].get_rect().x0;
-            if first_x - bar_w > self.rect.x0 {
-                let r = Rect::new(first_x - bar_w - 4.0, y0, first_x - 4.0, y1);
-                scene.fill(vello::peniko::Fill::NonZero, transform, indigo, None, &r);
-            }
-            // Between pairs.
-            for i in 1..self.groups.len() {
-                let lx = self.groups[i - 1].get_rect().x1;
-                let rx = self.groups[i].get_rect().x0;
-                let mid = (lx + rx) / 2.0;
-                let r = Rect::new(mid - bar_w / 2.0, y0, mid + bar_w / 2.0, y1);
-                scene.fill(vello::peniko::Fill::NonZero, transform, indigo, None, &r);
-            }
-            // Gap N (after last group).
-            let last_x = self.groups.last().unwrap().get_rect().x1;
-            let r = Rect::new(last_x + 4.0, y0, last_x + 4.0 + bar_w, y1);
-            scene.fill(vello::peniko::Fill::NonZero, transform, indigo, None, &r);
+        // Inter-group drop-zone indicator: while any child has a drag in
+        // flight and the cursor is hovering an inter-group gap, paint a
+        // single translucent indigo capsule centred on that gap. Mirrors
+        // the concept's `DropZone` component in `DesktopView.tsx:414`,
+        // which only highlights the gap the cursor is over (not every
+        // gap in the row) — this is the "drop here" confirmation that
+        // was missing from the previous feel-bad "zones always visible"
+        // treatment.
+        let any_drag = self.groups.iter().any(|g| g.drag_in_flight());
+        if any_drag
+            && !self.groups.is_empty()
+            && let Some(idx) = self.hover_gap_idx
+        {
+            let fill = theme.tokens.colors.accent[5].with_alpha_factor(0.5);
+            let bar_w = 4.0_f64;
+            let radius = 2.0_f64;
+            let mid_x = if idx == 0 {
+                self.groups[0].get_rect().x0 - 4.0
+            } else if idx >= self.groups.len() {
+                self.groups.last().unwrap().get_rect().x1 + 4.0
+            } else {
+                (self.groups[idx - 1].get_rect().x1
+                    + self.groups[idx].get_rect().x0)
+                    / 2.0
+            };
+            let capsule = RoundedRect::from_rect(
+                Rect::new(mid_x - bar_w / 2.0, self.rect.y0, mid_x + bar_w / 2.0, self.rect.y1),
+                radius,
+            );
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                fill,
+                None,
+                &capsule,
+            );
         }
     }
 
@@ -330,6 +337,30 @@ impl Widget for GroupRow {
         // sibling bars even after a child has swallowed the event.
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+            // While any child has a drag in flight, publish the inter-group
+            // gap the cursor is currently over so `draw` can paint the
+            // "drop here" indicator. We explicitly gate on an active drag
+            // so the indicator never shows for idle cursor motion — the
+            // concept only surfaces gap targets *during* a drag gesture.
+            let any_drag = self.groups.iter().any(|g| g.drag_in_flight());
+            self.hover_gap_idx = if any_drag {
+                self.gap_index_for(self.last_cursor)
+            } else {
+                None
+            };
+        }
+
+        // Drop is resolved on release — the indicator has served its
+        // purpose, and leaving it set would let a stale gap highlight
+        // persist into the next frame (and possibly the next gesture,
+        // since a fresh press replays CursorMoved before any drag starts).
+        if let WindowEvent::MouseInput {
+            state: ElementState::Released,
+            button: MouseButton::Left,
+            ..
+        } = event
+        {
+            self.hover_gap_idx = None;
         }
 
         // Dispatch to every child; stop once one claims the event. We
@@ -345,6 +376,19 @@ impl Widget for GroupRow {
             if *handled {
                 break;
             }
+        }
+
+        // Belt-and-suspenders: if dispatch (or our own release branch
+        // above) cleared every child's drag, drop any lingering hover
+        // target so `draw` can't paint a ghost indicator next frame. The
+        // CursorMoved branch only reclassifies on motion, so without this
+        // sweep a child that dropped its `pending_drag` internally (e.g.
+        // a canceled press) could leave `hover_gap_idx` stuck at its last
+        // value until the cursor moves again.
+        if self.hover_gap_idx.is_some()
+            && !self.groups.iter().any(|g| g.drag_in_flight())
+        {
+            self.hover_gap_idx = None;
         }
 
         // Post-dispatch sweep: any child with a pending detach?
@@ -870,6 +914,124 @@ mod tests {
             row.groups[1].active_tab_id(),
             1,
             "dragged tab should be active in its new group"
+        );
+    }
+
+    /// Stage a drag-in-flight on the given group's `TabBar` by setting
+    /// its `pending_drag` directly. Mirrors what `TabBar::handle_event`
+    /// does once the press-to-drag threshold is crossed, without needing
+    /// us to replay a full press → move-past-threshold gesture. Shared
+    /// by the three `hover_gap_idx` tests below.
+    fn start_drag(row: &mut GroupRow, group_idx: usize, tab_id: u64) {
+        use crate::dnd::DragPayload;
+        row.groups[group_idx].bar_mut().pending_drag = Some(DragPayload::Tab {
+            group: 0,
+            tab: tab_id,
+        });
+    }
+
+    /// Dispatch a `CursorMoved` at the given logical-space point through
+    /// `GroupRow::handle_event`. Uses scale_factor=1 so the logical
+    /// coords we pass are what `last_cursor` sees. Returns nothing — the
+    /// test reads state off the row afterwards.
+    fn fire_cursor_moved(row: &mut GroupRow, taffy: &TaffyTree<()>, root: NodeId, p: Point) {
+        let event = WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+        };
+        let mut doc = AutoCommit::new();
+        let doc_root = automerge::ROOT.clone();
+        let modifiers = Modifiers::default();
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        row.handle_event(
+            &event, 1.0, &modifiers, &mut doc, &doc_root,
+            &mut handled, &mut focus, root, taffy,
+        );
+    }
+
+    #[test]
+    fn hover_gap_tracks_cursor_during_drag() {
+        // Regression guard for outstanding-work item #2 sub-3: while a
+        // child TabBar has a drag in flight, `GroupRow` must classify
+        // the cursor's current position against its inter-group gaps and
+        // publish the result as `hover_gap_idx` so `draw` can paint a
+        // "drop here" indicator. Without this, the user gets no visual
+        // confirmation that releasing will split into a new window.
+        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+        start_drag(&mut row, 0, 1);
+        // Target the gap between group 0 and group 1 (gap_idx == 1).
+        let r0 = row.groups[0].get_rect();
+        let r1 = row.groups[1].get_rect();
+        let mid_y = (row.rect.y0 + row.rect.y1) / 2.0;
+        let mid_gap = Point::new((r0.x1 + r1.x0) / 2.0, mid_y);
+
+        fire_cursor_moved(&mut row, &taffy, root, mid_gap);
+
+        assert_eq!(
+            row.hover_gap_idx,
+            Some(1),
+            "cursor in the gap between groups 0 and 1 must set hover_gap_idx = Some(1)"
+        );
+    }
+
+    #[test]
+    fn hover_gap_clears_on_release() {
+        // After a drop is resolved (mouse released), the indicator must
+        // vanish regardless of whether the release happened over a valid
+        // gap or fell through. Leaving it set would persist a ghost
+        // highlight into the next frame — the exact "zones don't go
+        // away" feel-bad outstanding-work item #2 was about.
+        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+        start_drag(&mut row, 0, 1);
+        let r0 = row.groups[0].get_rect();
+        let r1 = row.groups[1].get_rect();
+        let mid_y = (row.rect.y0 + row.rect.y1) / 2.0;
+        let mid_gap = Point::new((r0.x1 + r1.x0) / 2.0, mid_y);
+        fire_cursor_moved(&mut row, &taffy, root, mid_gap);
+        assert!(row.hover_gap_idx.is_some(), "precondition: drag tracked the gap");
+
+        // Release — the drop is now resolved. `handle_event` clears the
+        // indicator unconditionally on left-button release.
+        let event = WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        };
+        let mut doc = AutoCommit::new();
+        let doc_root = automerge::ROOT.clone();
+        let modifiers = Modifiers::default();
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        row.handle_event(
+            &event, 1.0, &modifiers, &mut doc, &doc_root,
+            &mut handled, &mut focus, root, &taffy,
+        );
+
+        assert_eq!(
+            row.hover_gap_idx, None,
+            "MouseInput::Released must clear hover_gap_idx so no ghost indicator persists"
+        );
+    }
+
+    #[test]
+    fn hover_gap_is_none_when_no_drag() {
+        // Motion without a drag must *never* populate `hover_gap_idx` —
+        // the gap indicators are strictly a drag-time affordance. If we
+        // classified idle cursor motion, the indicator would flash
+        // during plain hover, which is not the concept's behaviour.
+        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+        // Intentionally NO `start_drag` call.
+        let r0 = row.groups[0].get_rect();
+        let r1 = row.groups[1].get_rect();
+        let mid_y = (row.rect.y0 + row.rect.y1) / 2.0;
+        let mid_gap = Point::new((r0.x1 + r1.x0) / 2.0, mid_y);
+
+        fire_cursor_moved(&mut row, &taffy, root, mid_gap);
+
+        assert_eq!(
+            row.hover_gap_idx, None,
+            "cursor motion without an active drag must not publish a hover_gap_idx"
         );
     }
 }
