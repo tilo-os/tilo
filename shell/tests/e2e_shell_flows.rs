@@ -62,6 +62,16 @@ use quick_ui::widget::{AppKind, TabBar, TabDescriptor, TileContent, Widget, Wind
 mod support;
 
 use support::offscreen::OffscreenRenderer;
+use support::snapshot::SnapshotAssertion;
+
+/// Directory under the crate root where golden PNGs are committed.
+/// Mirrors `screenshots_dir()` but lives in source, not `target/`.
+fn goldens_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("snapshots")
+        .join("e2e")
+}
 
 // ---------------------------------------------------------------------------
 // Shared harness plumbing
@@ -368,6 +378,14 @@ fn e2e_open_close_overview() {
         ] {
             assert_png_nonempty(&out_dir.join(name));
         }
+        // Pin the settled open-overview render against its committed
+        // golden. The pre-click and post-Esc frames aren't pinned —
+        // they're the same "desktop" steady state, so one golden
+        // suffices for the flow. The soft-skip above (no GPU → skip
+        // PNG assertions entirely) keeps sandboxed CI green.
+        let rendered = out_dir.join("e2e-02-overview-open.png");
+        SnapshotAssertion::new(rendered, goldens_dir().join("e2e-open-close-overview-settled.png"))
+            .assert();
     } else {
         eprintln!(
             "offscreen: no wgpu adapter — e2e_open_close_overview asserted state transitions only"
@@ -875,7 +893,23 @@ fn e2e_open_quick_settings() {
         &out_dir.join("e2e-07-quick-settings-open.png"),
     );
     if renderer_opt.is_some() {
-        assert_png_nonempty(&out_dir.join("e2e-07-quick-settings-open.png"));
+        let rendered = out_dir.join("e2e-07-quick-settings-open.png");
+        assert_png_nonempty(&rendered);
+        // Pin the settled open quick-settings tray against its golden.
+        //
+        // The topbar clock (`chrono::Local` in `topbar_chrome.rs`) is
+        // still visible behind the quick-settings popover, so this
+        // render is wall-clock-dependent — the captured HH:MM drifts
+        // across runs. Rather than pinning a flaky golden (which would
+        // turn every PR red once the minute ticks), this test only
+        // asserts the state transition + non-empty PNG. When the clock
+        // is mockable, re-enable via:
+        //
+        //     SnapshotAssertion::new(
+        //         rendered,
+        //         goldens_dir().join("e2e-open-quick-settings-settled.png"),
+        //     )
+        //     .assert();
     } else {
         eprintln!("offscreen: no wgpu adapter — e2e_open_quick_settings asserted state only");
     }
