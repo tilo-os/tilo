@@ -164,10 +164,23 @@ Previously all collab tests went through in-process `MemoryRelay`; the
 real wire protocol (4-byte LE length prefix + JSON body) was unexercised
 until this commit.
 
-### 5. Presence over real socket
+### 5. Presence over real socket — resolved (2026-04-21)
 
-`RemoteCursorOverlay` renders `SimulatedFeed` — a demo peer with a fake
-cursor. Real peer presence never lights up a cursor today.
+Commits `44e7053` + `ab62d41` close the loop: `PresenceCtx` gained
+`upsert_remote_cursor(user_id, position, display_name)` which resolves
+colours via `color_for(&UserId)` (pinned palette + FNV→HSL fallback),
+and all three `CollabEvent::RemoteCursorMoved` handlers in
+`quick-ui/src/app.rs` (`poll_and_apply_collab_events`,
+`apply_collab_event_for_test`, `Event::AboutToWait`) now feed it. The
+`CollabEvent::Context` seed also upserts once per collaborator so
+display names are attached before the first cursor move. Tests:
+`remote_cursor_presence::{remote_cursor_move_populates_presence_ctx,
+remote_cursor_move_updates_existing_entry_in_place}`.
+
+**Follow-up (not blocking):** the legacy `State.collab.cursors`
+`HashMap` is still written + read by `App::run`'s in-app cursor-arrow
+paint; it can be deleted once `RemoteCursorOverlay` is the single
+source of truth for every consumer.
 
 ## Visual gaps (pointer)
 
@@ -201,7 +214,7 @@ shipped or parked pending a Vello blur primitive (#3 alpha-tint half already
 shipped; Gaussian convolution deferred).
 
 **In flight** (parallel subagents dispatched):
-- Real peer presence feeding `PresenceCtx::remote_cursors` (§3 #5)
+- (none — waiting on next dispatch decision)
 
 **Remaining highest-priority (structural / functional):**
 - Tab/window decoration polish — lucide X/Maximize2/Minimize2/Search
