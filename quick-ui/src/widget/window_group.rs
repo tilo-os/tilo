@@ -4,9 +4,11 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{WindowEvent, MouseButton, ElementState};
 use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use taffy::style_helpers::length;
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use crate::icons;
 use crate::widget::{Widget, TabBar, TabDescriptor, TileContent, TileHost};
+use crate::widget::tabs::CLOSE_FADE_MS;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::presence::PresenceCtx;
@@ -79,6 +81,19 @@ pub struct WindowGroup {
     /// create a brand-new group (e.g. split-tab-into-new-group in
     /// [`crate::widget::GroupRow::split_tab_into_new_group`]).
     spawned_at: Option<Instant>,
+    /// Hosts whose matching tab pill is in the middle of the
+    /// concept-parity close fade. Keyed by `(tab_id, Instant)` where
+    /// the `Instant` is the close-start timestamp — the same stamp
+    /// the bar snapshots into its `closing_tabs` so the two
+    /// animations stay in lockstep. While an entry is present the
+    /// `TileHost` is kept in `hosts` and still occupies its index;
+    /// once `elapsed > CLOSE_FADE_MS` a sweep at the top of
+    /// `handle_event` drops the entry, removes the host from
+    /// `hosts`, and calls `bar.finalize_close(id)` so the pill
+    /// stops rendering. Side-table rather than a field on `TileHost`
+    /// to keep the `TileHost` shape stable and avoid a touch to
+    /// `tile_host.rs`.
+    closing_hosts: HashMap<u64, Instant>,
 }
 
 impl WindowGroup {
@@ -101,6 +116,7 @@ impl WindowGroup {
             close_hover: false,
             last_cursor: Point::ZERO,
             spawned_at: None,
+            closing_hosts: HashMap::new(),
         }
     }
     pub fn width(&self) -> WindowWidth { self.width }
@@ -205,6 +221,7 @@ impl WindowGroup {
             close_hover: false,
             last_cursor: Point::ZERO,
             spawned_at: None,
+            closing_hosts: HashMap::new(),
         }
     }
 
@@ -260,6 +277,40 @@ impl WindowGroup {
     /// pair — paired with `window_group_restore_pill_uses_minimize2`.
     #[cfg(test)]
     pub fn restore_glyph_icon_for_tests() -> icons::Icon { icons::Icon::Minimize2 }
+
+    /// Test-only: number of hosts currently in the bar's host list.
+    /// Used by the close-fade tests to verify a host stays until the
+    /// fade elapses.
+    #[cfg(test)]
+    pub fn host_count(&self) -> usize { self.hosts.len() }
+
+    /// Test-only: whether a host with `id` is still present. Paired
+    /// with `host_count` for the "closing host stays until fade
+    /// complete" assertion.
+    #[cfg(test)]
+    pub fn has_host(&self, id: u64) -> bool {
+        self.hosts.iter().any(|(i, _)| *i == id)
+    }
+
+    /// Test-only: force the closing-fade start timestamp for `id`
+    /// to an already-expired `Instant` so the next `handle_event`
+    /// sweep finalises the host removal. Lets tests drive the close
+    /// flow deterministically without sleeping past `CLOSE_FADE_MS`.
+    #[cfg(test)]
+    pub fn force_expire_closing(&mut self, id: u64) {
+        if self.closing_hosts.contains_key(&id) {
+            self.closing_hosts
+                .insert(id, Instant::now() - Duration::from_millis(CLOSE_FADE_MS as u64 + 50));
+        }
+    }
+
+    /// Test-only accessor: is there at least one host currently in
+    /// the closing-fade window? Mirrors the predicate used inside
+    /// `needs_animation_frame`.
+    #[cfg(test)]
+    pub fn has_closing_host(&self, id: u64) -> bool {
+        self.closing_hosts.contains_key(&id)
+    }
 }
 
 impl Widget for WindowGroup {
@@ -363,6 +414,53 @@ impl Widget for WindowGroup {
         if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == active_id) {
             h.set_focused(focused);
             h.draw(scene, transform, tr, theme, presence);
+        }
+        // Concept-parity close fade-out pass on hosts. Mirrors the
+        // per-tile spawn curve in `tile_host.rs` — opacity 1 → 0,
+        // scale 1 → 0.95, y 0 → -20 over `CLOSE_FADE_MS`. Painted
+        // over the active host so the closing tile visibly settles
+        // away instead of popping. Snapshotted id list so we can
+        // borrow `self.hosts` mutably inside the loop without
+        // fighting the borrow checker against `self.closing_hosts`.
+        let close_window = Duration::from_millis(CLOSE_FADE_MS as u64);
+        let closing_ids: Vec<(u64, Instant)> = self
+            .closing_hosts
+            .iter()
+            .filter(|(_, t)| t.elapsed() < close_window)
+            .map(|(id, t)| (*id, *t))
+            .collect();
+        for (id, started) in closing_ids {
+            let elapsed = started.elapsed().as_secs_f64();
+            let raw = (elapsed / (CLOSE_FADE_MS as f64 / 1000.0)).clamp(0.0, 1.0);
+            let eased = 1.0 - (1.0 - raw).powi(3);
+            let alpha = (1.0 - eased) as f32;
+            let scale = 1.0 + (-0.05) * eased; // 1.0 → 0.95
+            let y_offset = -20.0 * eased;
+            if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == id) {
+                let rect = h.get_rect();
+                // Generous clip: match the tile-spawn clip so shadow
+                // sprites aren't chopped as the host shrinks.
+                let clip = Rect::new(
+                    rect.x0 - 160.0,
+                    rect.y0 - 160.0,
+                    rect.x1 + 160.0,
+                    rect.y1 + 160.0,
+                );
+                scene.push_layer(
+                    vello::peniko::BlendMode::default(),
+                    alpha.max(0.0),
+                    transform,
+                    &clip,
+                );
+                let centre = rect.center();
+                let close_transform = transform
+                    * Affine::translate((0.0, y_offset))
+                    * Affine::translate((centre.x, centre.y))
+                    * Affine::scale(scale)
+                    * Affine::translate((-centre.x, -centre.y));
+                h.draw(scene, close_transform, tr, theme, presence);
+                scene.pop_layer();
+            }
         }
         // resize handle visualization
         let handle_rect = Rect::new(self.rect.x1 - RESIZE_HANDLE_PX, self.rect.y0, self.rect.x1, self.rect.y1);
@@ -655,12 +753,39 @@ impl Widget for WindowGroup {
         }
         self.bar.handle_event(event, scale_factor, m, s, p, handled, focus_target, children[0], taffy);
 
-        // Close a tab: drop its host + mirror the removal in the bar.
-        if let Some(close_id) = self.bar.take_close() {
-            if let Some(idx) = self.hosts.iter().position(|(i, _)| *i == close_id) {
+        // Sweep any hosts whose close fade-out has fully elapsed.
+        // `self.bar.start_closing` runs on the press frame (inside
+        // `self.bar.handle_event` above) and simultaneously publishes
+        // `pending_close` for us to drain below. Actual host removal
+        // is deferred so the fade curve plays out with the tile
+        // still in place. Mirrors the tile-level spawn-in pattern in
+        // `tile_host.rs` — both sides of the animation live in the
+        // widget layer, not the shell.
+        let close_window = Duration::from_millis(CLOSE_FADE_MS as u64);
+        let expired: Vec<u64> = self
+            .closing_hosts
+            .iter()
+            .filter(|(_, started)| started.elapsed() >= close_window)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in expired {
+            self.closing_hosts.remove(&id);
+            if let Some(idx) = self.hosts.iter().position(|(i, _)| *i == id) {
                 self.hosts.remove(idx);
             }
-            self.bar.remove_tab(close_id);
+            self.bar.finalize_close(id);
+        }
+
+        // Close a tab: drain the bar's one-shot `pending_close` and
+        // latch the host-level fade-out. The bar has already shifted
+        // active-id to the neighbour and snapshotted its pill into
+        // `closing_tabs` so the pill keeps painting while the host
+        // fades out. We keep the `TileHost` in `self.hosts` for the
+        // duration of `CLOSE_FADE_MS`, then the sweep above drops it.
+        if let Some(close_id) = self.bar.take_close() {
+            self.closing_hosts
+                .entry(close_id)
+                .or_insert_with(Instant::now);
             *handled = true;
         }
 
@@ -724,7 +849,18 @@ impl Widget for WindowGroup {
             .spawned_at
             .map(|t| t.elapsed() < Duration::from_millis(SPAWN_ANIM_MS))
             .unwrap_or(false);
+        // Per-host close fade (180 ms). Same idea as `spawn_in_flight`
+        // but for the concept's `exit={{ opacity: 0, scale: 0.95, y: -20 }}`
+        // tab-close curve: while any host is within its fade window
+        // we need to keep pumping redraws so the pill + host shrink
+        // + fade visibly plays out instead of popping.
+        let close_window = Duration::from_millis(CLOSE_FADE_MS as u64);
+        let close_in_flight = self
+            .closing_hosts
+            .values()
+            .any(|t| t.elapsed() < close_window);
         spawn_in_flight
+            || close_in_flight
             || self.bar.needs_animation_frame()
             || self
                 .hosts
@@ -840,6 +976,141 @@ mod tests {
         assert!(
             inserted.1.spawn_in_flight(),
             "inserting a detached tab must fire the tile-level spawn fade",
+        );
+    }
+
+    /// Drive the close flow end-to-end: the host must survive until
+    /// the fade window elapses, then the sweep at the top of
+    /// `handle_event` drops it from `self.hosts`. Uses
+    /// `force_expire_closing` to move the timestamp into the past so
+    /// the test doesn't need a real `sleep(CLOSE_FADE_MS)`.
+    #[test]
+    fn closing_host_stays_until_fade_complete() {
+        use taffy::Style;
+        use taffy::prelude::TaffyMaxContent;
+        use crate::theme::Theme;
+        use std::collections::HashMap;
+
+        let mut g = make_group();
+        // Run one layout pass so the bar has authoritative
+        // pill / close rects — `start_closing` snapshots those into
+        // its `closing_tabs` vec.
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(Style::default(), &[group_node])
+            .unwrap();
+        taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
+        g.apply_layout(&taffy, group_node, Point::ZERO);
+
+        // Latch the close via the bar API. `start_closing` both
+        // moves tab 2 into `closing_tabs` and publishes
+        // `pending_close = Some(2)` so the `WindowGroup::handle_event`
+        // drain below can seed `closing_hosts` without us having to
+        // simulate a full press/click sequence through the bar.
+        g.bar_mut().start_closing(2);
+
+        // Run a handle_event so the WindowGroup drain code path
+        // seeds `closing_hosts`. We use a `CursorMoved` way off the
+        // rect so no hover handlers fire and the event reaches the
+        // close-drain block at the bottom of `handle_event`.
+        let mut handled = false;
+        let mut focus_target = None;
+        let mut state = automerge::AutoCommit::new();
+        let root_id = automerge::ROOT;
+        let moved = WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(1000.0, 1000.0),
+        };
+        g.handle_event(
+            &moved,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut state,
+            &root_id,
+            &mut handled,
+            &mut focus_target,
+            group_node,
+            &taffy,
+        );
+
+        assert!(
+            g.has_closing_host(2),
+            "drain must latch the host-level close fade",
+        );
+        assert!(
+            g.needs_animation_frame(),
+            "in-flight close fade must pump redraws",
+        );
+        assert!(
+            g.has_host(2),
+            "host stays in `hosts` for the fade duration",
+        );
+        let host_count_during = g.host_count();
+
+        // Force the close fade to be expired, then run another
+        // `handle_event` so the sweep at the top runs. The host
+        // should drop.
+        g.force_expire_closing(2);
+        let moved2 = WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(1000.0, 1000.0),
+        };
+        let mut handled2 = false;
+        g.handle_event(
+            &moved2,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut state,
+            &root_id,
+            &mut handled2,
+            &mut focus_target,
+            group_node,
+            &taffy,
+        );
+        assert!(
+            !g.has_host(2),
+            "sweep drops the host after the fade expires",
+        );
+        assert_eq!(
+            g.host_count(),
+            host_count_during - 1,
+            "exactly one host removed",
+        );
+        assert!(
+            !g.has_closing_host(2),
+            "sweep clears the closing_hosts entry",
+        );
+    }
+
+    /// `needs_animation_frame` must report true during the close
+    /// fade so the `App` run loop keeps pumping redraws until the
+    /// curve settles. Pinned independently of the full
+    /// close-host-stays test so a regression that breaks only the
+    /// frame-pump signal is caught in isolation.
+    #[test]
+    fn window_group_needs_animation_frame_during_close() {
+        let mut g = make_group();
+        assert!(
+            !g.needs_animation_frame(),
+            "precondition: idle group doesn't demand frames",
+        );
+        // Directly seed `closing_hosts` — bypasses the full event
+        // drive so this test stays narrow. Simulates what happens
+        // after `handle_event` drains a `pending_close`.
+        g.closing_hosts.insert(1, Instant::now());
+        assert!(
+            g.needs_animation_frame(),
+            "a fresh closing host must pump the run loop",
+        );
+        // Expired: no more frames needed.
+        g.closing_hosts
+            .insert(1, Instant::now() - Duration::from_millis(CLOSE_FADE_MS as u64 + 20));
+        assert!(
+            !g.needs_animation_frame(),
+            "after the fade window elapses the group goes idle again",
         );
     }
 }
