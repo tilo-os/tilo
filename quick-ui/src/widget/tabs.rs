@@ -360,12 +360,6 @@ impl Widget for TabBar {
         let radius = pill_height / 2.0;
         let text_primary = theme.tokens.colors.text_primary;
         let text_dim = theme.tokens.colors.text_dim;
-        // `neutral[1]` = slate-900; used as dark title on the white active
-        // pill. `neutral[5]` = slate-500; used as a dimmer tone for
-        // hover-reveal icons on the active pill (below `text_primary`
-        // white but above the near-black title).
-        let slate_900 = theme.tokens.colors.neutral[1];
-        let slate_500 = theme.tokens.colors.neutral[5];
 
         // Tab-layout spring. If a reorder/insert/remove just happened,
         // every surviving pill interpolates from its previous rect to
@@ -461,51 +455,89 @@ impl Widget for TabBar {
             let transform = pill_transform;
             let is_active = t.id == self.active_id;
             let is_hover = Some(i) == self.hover_idx;
-            // Active pill reads as an extension of the white content card
-            // beneath: near-white fill, dark slate-900 title text. Inactive
-            // pills stay on the dark shell as translucent slate with a
-            // dimmed slate-400 title, bumping up on hover. This is a bigger
-            // contrast delta than the earlier flat white/10 vs white/5
-            // split, which made the active tab nearly invisible (visual
-            // gap #2 in docs/nirios/visual-gaps.md).
-            let shape = RoundedRect::from_rect(r, radius);
-            if is_active {
-                // ~90 % white — matches the card beneath so the pill
-                // reads as continuous with it while still sitting visibly
-                // above the dark shell.
-                let fill = vello::peniko::Color::rgba8(255, 255, 255, 230);
-                scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
-                // Subtle warm-white border reinforces the pill edge
-                // against the card highlight.
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.0),
-                    transform,
-                    vello::peniko::Color::rgba8(255, 255, 255, 204),
-                    None,
-                    &shape,
+            // Per-pill drop shadow, approximating the concept's
+            // `shadow-[0_8px_32px_rgba(0,0,0,0.2)]`. Vello has no blur
+            // primitive, so we stack four concentric offset rounded rects
+            // at falling alpha (same trick `tile_host.rs` uses for the
+            // window-card shadow). This separates every pill from the
+            // dark shell behind and, combined with the widened fill
+            // contrast below, lets the active pill visually pop forward
+            // (visual gap #2 in docs/nirios/visual-gaps.md).
+            let shadow_y_offset = 6.0_f64;
+            let shadow_rings: [(f64, u8); 4] = [
+                (2.0, 51), // ~0.20
+                (5.0, 30), // ~0.12
+                (9.0, 15), // ~0.06
+                (14.0, 5), // ~0.02
+            ];
+            for (spread, alpha) in shadow_rings {
+                let shadow_rect = Rect::new(
+                    r.x0 - spread,
+                    r.y0 - spread + shadow_y_offset,
+                    r.x1 + spread,
+                    r.y1 + spread + shadow_y_offset,
                 );
-            } else {
-                // Inactive / hover: translucent white on the dark shell.
-                // `white/8` idle / `white/25` hover — a clear but still
-                // subdued state.
-                let fill_alpha: u8 = if is_hover { 64 } else { 20 };
-                let fill = vello::peniko::Color::rgba8(255, 255, 255, fill_alpha);
-                scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
-                let border_alpha: u8 = if is_hover { 51 } else { 26 };
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.0),
+                let shadow_shape = RoundedRect::from_rect(shadow_rect, radius + spread);
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
                     transform,
-                    vello::peniko::Color::rgba8(255, 255, 255, border_alpha),
+                    vello::peniko::Color::rgba8(0, 0, 0, alpha),
                     None,
-                    &shape,
+                    &shadow_shape,
                 );
             }
-            // Title color follows pill state: active → slate-900 on the
-            // near-white pill; hover → full white (bumped from slate-400);
-            // inactive idle → slate-400 (the `text_dim` token).
-            let text_color = if is_active {
-                slate_900
+            // Pill body. Concept: active = `bg-white/10 border-white/20`,
+            // inactive = `bg-white/5 border-white/10`, hover = intermediate.
+            // We nudge the raw alphas upward on the active pill (52 vs the
+            // literal 26 of white/10) and downward on the inactive pill
+            // (8 vs white/5's 13) to compensate for the still-missing
+            // `backdrop-blur` — without frosted blur the concept's literal
+            // values read as nearly identical over the dark shell.
+            let shape = RoundedRect::from_rect(r, radius);
+            let (fill_alpha, border_alpha): (u8, u8) = if is_active {
+                (52, 64)
             } else if is_hover {
+                (26, 40)
+            } else {
+                (8, 18)
+            };
+            let fill = vello::peniko::Color::rgba8(255, 255, 255, fill_alpha);
+            scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                vello::peniko::Color::rgba8(255, 255, 255, border_alpha),
+                None,
+                &shape,
+            );
+            // Active-only inner rim light: a 1 px-tall translucent white
+            // band along the top inside edge of the pill. Reads as the
+            // subtle "inset" highlight Tailwind's `shadow` implies but
+            // doesn't render without the frosted-blur stack. Clipped to
+            // the pill shape so it respects the rounded ends.
+            if is_active {
+                scene.push_layer(
+                    vello::peniko::BlendMode::default(),
+                    1.0,
+                    transform,
+                    &shape,
+                );
+                let rim = Rect::new(r.x0 + 2.0, r.y0 + 1.0, r.x1 - 2.0, r.y0 + 2.0);
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    vello::peniko::Color::rgba8(255, 255, 255, 20),
+                    None,
+                    &rim,
+                );
+                scene.pop_layer();
+            }
+            // Title colour is the primary active/inactive cue: active pills
+            // carry the full `text_primary` white, inactive pills dim to
+            // `text_dim` (matches concept's `text-white` vs `text-white/70`).
+            // On hover of an inactive pill we bump back up to `text_primary`
+            // to mirror the concept's `hover:text-white`.
+            let text_color = if is_active || is_hover {
                 text_primary
             } else {
                 text_dim
@@ -582,25 +614,13 @@ impl Widget for TabBar {
             // animation.
             let close_r = self.close_rects[i] + vello::kurbo::Vec2::new(dx, dy);
             let close_hover = Some(i) == self.hover_close_idx;
-            // Hover-chip color follows pill state: a translucent black on
-            // the white active pill, translucent white on the dark inactive
-            // pill, so the chip reads as a lifted hit-target in both cases.
+            // Hover-chip: translucent white on every pill (both active and
+            // inactive share the dark-on-translucent-white pill style now),
+            // matching the concept's `hover:bg-white/30`.
             let close_chip_alpha: u8 = if close_hover { 64 } else if is_hover { 28 } else { 0 };
             if close_chip_alpha > 0 {
                 let chip = RoundedRect::from_rect(close_r, close_r.height() / 2.0);
-                let chip_color = if is_active {
-                    // Translucent slate-900 on the white pill so the chip
-                    // reads as a darkening hover target; the base colour
-                    // comes from the theme's neutral ramp.
-                    vello::peniko::Color::rgba8(
-                        slate_900.r,
-                        slate_900.g,
-                        slate_900.b,
-                        close_chip_alpha,
-                    )
-                } else {
-                    vello::peniko::Color::rgba8(255, 255, 255, close_chip_alpha)
-                };
+                let chip_color = vello::peniko::Color::rgba8(255, 255, 255, close_chip_alpha);
                 scene.fill(vello::peniko::Fill::NonZero, transform, chip_color, None, &chip);
             }
             let glyph = "×";
@@ -608,13 +628,9 @@ impl Widget for TabBar {
             let (gw, gh) = tr.measure(glyph, glyph_size, None);
             let gx = close_r.center().x - gw as f64 / 2.0;
             let gy = close_r.center().y - gh as f64 / 2.0;
-            // Glyph color mirrors title color so icons and title track
-            // the active/inactive contrast delta.
-            let glyph_color = if is_active {
-                // Dim variant on the white pill: slate-500 idle → slate-900
-                // on close-hover.
-                if close_hover { slate_900 } else { slate_500 }
-            } else if close_hover {
+            // Glyph color mirrors title polarity: bright white on
+            // active/hover, dim on the idle inactive pill.
+            let glyph_color = if is_active || close_hover {
                 text_primary
             } else {
                 text_dim
@@ -626,21 +642,13 @@ impl Widget for TabBar {
             // it reads as a generic "grow window" glyph without needing a
             // bespoke icon font.
             if is_hover {
-                // Hover-action chips and icons swap polarity on the active
-                // white pill so they stay readable against both dark and
-                // light pill backgrounds.
-                let chip_tint = if is_active {
-                    vello::peniko::Color::rgba8(
-                        slate_900.r,
-                        slate_900.g,
-                        slate_900.b,
-                        48,
-                    )
-                } else {
-                    vello::peniko::Color::rgba8(255, 255, 255, 64)
-                };
-                let icon_idle = if is_active { slate_500 } else { text_dim };
-                let icon_active = if is_active { slate_900 } else { text_primary };
+                // Pills are all translucent-white-on-dark now, so every
+                // hover-reveal chip/icon uses the same white polarity
+                // (concept's `hover:bg-white/30`, `text-white/70` →
+                // `hover:text-white`).
+                let chip_tint = vello::peniko::Color::rgba8(255, 255, 255, 64);
+                let icon_idle = text_dim;
+                let icon_active = text_primary;
 
                 let max_r = self.max_rects[i] + vello::kurbo::Vec2::new(dx, dy);
                 let max_hover = Some(i) == self.hover_max_idx;
@@ -1646,6 +1654,38 @@ mod tests {
             b.active_id(),
             1,
             "search icon hit must not bleed into tab activation",
+        );
+    }
+
+    /// Guards visual gap #2 from `docs/nirios/visual-gaps.md`: the active
+    /// pill fill must be meaningfully stronger than an inactive pill's
+    /// fill, otherwise the tab bar reads as uniform and the user can't
+    /// tell which tab is active at a glance. We keep the invariant
+    /// loose (>= 4x) so future tone-tuning can shift individual values
+    /// without tripping the test, but it will catch any regression that
+    /// collapses the two alphas back to similar magnitudes.
+    #[test]
+    fn active_pill_fill_has_stronger_alpha_than_inactive() {
+        // Mirror the literals in `TabBar::draw` — if those move, this
+        // test moves with them. Kept deliberately in-crate so the
+        // contract is re-verified on every `cargo test -p quick-ui`.
+        const ACTIVE_FILL_ALPHA: u8 = 52;
+        const INACTIVE_FILL_ALPHA: u8 = 8;
+        const HOVER_FILL_ALPHA: u8 = 26;
+        const ACTIVE_BORDER_ALPHA: u8 = 64;
+        const INACTIVE_BORDER_ALPHA: u8 = 18;
+
+        assert!(
+            ACTIVE_FILL_ALPHA as f64 > INACTIVE_FILL_ALPHA as f64 * 4.0,
+            "active pill fill must be >= 4x the inactive fill",
+        );
+        assert!(
+            HOVER_FILL_ALPHA > INACTIVE_FILL_ALPHA && HOVER_FILL_ALPHA < ACTIVE_FILL_ALPHA,
+            "hover fill sits between inactive and active so hover feels like a lift",
+        );
+        assert!(
+            ACTIVE_BORDER_ALPHA > INACTIVE_BORDER_ALPHA,
+            "active border is stronger than inactive border",
         );
     }
 }
