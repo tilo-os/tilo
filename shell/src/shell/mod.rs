@@ -1196,7 +1196,9 @@ pub fn build_nirios_overlay_host_with_chrome(
         .position(|w| w.id == tree.active)
         .unwrap_or(0);
     let sidebar: Box<dyn Widget> = Box::new(
-        sidebar_wheel_disc::SidebarWheelDisc::new(spokes).with_active_idx(active_idx),
+        sidebar_wheel_disc::SidebarWheelDisc::new(spokes)
+            .with_active_idx(active_idx)
+            .with_chrome(chrome.clone()),
     );
 
     let root: Box<dyn Widget> = Box::new(
