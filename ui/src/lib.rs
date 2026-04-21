@@ -11,6 +11,7 @@ pub mod permissions;
 pub mod dnd;
 pub mod animation;
 pub mod overlay;
+pub mod icons;
 
 pub use app::App;
 pub use state::{State, UndoEntry};
