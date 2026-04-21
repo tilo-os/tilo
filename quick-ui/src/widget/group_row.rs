@@ -426,11 +426,31 @@ impl Widget for GroupRow {
 
         for (src_idx, tab_id, release_point) in detaches {
             // Find a sibling whose bar rect contains the release point.
+            // Closing groups are filtered out: a `WindowGroup` whose
+            // group-level close fade has latched still paints its bar
+            // rect for the 180 ms shrink, so a cross-group drop can
+            // visually resolve onto a group that's in the process of
+            // disappearing. `insert_detached_tab` doesn't clear
+            // `closing_at`, so the re-inserted tab would get pruned
+            // alongside the group at fade-end — the tab would be
+            // silently lost. Treating closing groups as if they
+            // weren't there at all lets the drop fall through to the
+            // gap-based new-group path below, where we splice the
+            // dropped tab into a brand-new group in the gap to the
+            // LEFT of the closing group. That's the cleanest UX: the
+            // dragged tab lands next to where the user aimed (the
+            // closing group is about to vacate the slot anyway) and
+            // the user gets immediate visual confirmation that their
+            // drop produced a new window.
             let target_idx = self
                 .groups
                 .iter()
                 .enumerate()
-                .find(|(i, g)| *i != src_idx && g.bar_rect().contains(release_point))
+                .find(|(i, g)| {
+                    *i != src_idx
+                        && !g.is_closing()
+                        && g.bar_rect().contains(release_point)
+                })
                 .map(|(i, _)| i);
             if let Some(tgt_idx) = target_idx {
                 // Resolve the per-pill drop index against the target's tab
@@ -440,6 +460,29 @@ impl Widget for GroupRow {
                 let detached = self.groups[src_idx].detach_tab(tab_id);
                 if let Some((desc, host)) = detached {
                     self.groups[tgt_idx].insert_detached_tab(drop_idx, desc, host);
+                    *handled = true;
+                }
+                continue;
+            }
+            // The release may have landed on a *closing* sibling's bar
+            // rect — the filter above treated it as not-there, but the
+            // rect still exists geometrically, so `gap_index_for` will
+            // return `None` (release is "inside a group"). Fall back
+            // to the left-of-closing-group gap so the dropped tab
+            // still produces a new window in approximately the right
+            // spot instead of being silently dropped.
+            let closing_target = self
+                .groups
+                .iter()
+                .enumerate()
+                .find(|(i, g)| {
+                    *i != src_idx
+                        && g.is_closing()
+                        && g.bar_rect().contains(release_point)
+                })
+                .map(|(i, _)| i);
+            if let Some(tgt_idx) = closing_target {
+                if self.split_tab_into_new_group(src_idx, tab_id, tgt_idx) {
                     *handled = true;
                 }
                 continue;
@@ -1121,6 +1164,114 @@ mod tests {
             row.groups.len(),
             2,
             "group mid-fade must NOT be pruned — the user is still watching the animation",
+        );
+    }
+
+    /// A cross-group tab drop whose release point lands on a
+    /// `WindowGroup` that is currently mid-close-fade must NOT be
+    /// inserted into that group. `insert_detached_tab` doesn't
+    /// clear `closing_at`, so the re-inserted tab would be pruned
+    /// alongside the group at fade-end — the tab is silently lost.
+    ///
+    /// The fix filters closing groups out of the sibling bar-rect
+    /// resolution, then falls through to a gap-based split: a
+    /// brand-new group gets spliced in at the closing group's
+    /// current slot (the gap to its LEFT), so the dragged tab
+    /// ends up in a fresh adjacent window. This test seeds B as
+    /// closing, drives a detach from A targeting B's bar rect,
+    /// and asserts that B's tab list is unchanged and that a new
+    /// group carrying A's dragged tab appears at B's position.
+    #[test]
+    fn drop_onto_closing_group_creates_new_group_instead() {
+        use std::time::Instant;
+        use winit::event::WindowEvent;
+
+        // Two multi-tab groups so neither gets pruned by the
+        // detach-empties-source rule — we want to assert specifically
+        // on the drop-target side.
+        let (mut row, taffy, root) =
+            make_row_with_groups_with_taffy(&[&[1, 2], &[10, 11]]);
+
+        // B is at index 1. Mark it as closing (fresh latch so the
+        // prune sweep won't touch it this tick — only
+        // `close_complete()` triggers prune).
+        row.groups[1].set_closing_at_for_tests(Instant::now());
+        assert!(row.groups[1].is_closing());
+        assert!(!row.groups[1].close_complete());
+        let b_tabs_before: Vec<u64> =
+            row.groups[1].tabs().iter().map(|t| t.id).collect();
+        assert_eq!(b_tabs_before, vec![10, 11]);
+
+        // Release point: inside B's bar rect. That's the exact
+        // geometry the pre-fix code would resolve to B as a
+        // cross-group drop target.
+        let b_bar = row.groups[1].bar_rect();
+        let release = Point::new(
+            (b_bar.x0 + b_bar.x1) / 2.0,
+            (b_bar.y0 + b_bar.y1) / 2.0,
+        );
+        // Publish a pending detach on A's bar — mimics what
+        // `TabBar::handle_event` does when a drag release lands
+        // outside A's own bar rect.
+        row.groups[0].bar_mut().pending_detach = Some((1, release));
+
+        // Drive a no-op CursorMoved so the detach sweep runs.
+        let mut doc = AutoCommit::new();
+        let doc_root = automerge::ROOT.clone();
+        let modifiers = Modifiers::default();
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        let event = WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(release.x, release.y),
+        };
+        row.handle_event(
+            &event, 1.0, &modifiers, &mut doc, &doc_root,
+            &mut handled, &mut focus, root, &taffy,
+        );
+
+        // B's tab list must be untouched — the drop was diverted
+        // away from the closing group.
+        let b_idx = row
+            .groups
+            .iter()
+            .position(|g| g.is_closing())
+            .expect("B should still be present (mid-fade)");
+        let b_tabs_after: Vec<u64> =
+            row.groups[b_idx].tabs().iter().map(|t| t.id).collect();
+        assert_eq!(
+            b_tabs_after, b_tabs_before,
+            "closing group's tabs must be unchanged — the drop must not insert into it",
+        );
+
+        // The dragged tab (id 1) must have landed in a brand-new
+        // group adjacent to (specifically: at the slot of) B.
+        // Row now contains 3 groups: A (minus tab 1), new group
+        // (tab 1), B (closing). The new group sits at what used
+        // to be B's index.
+        assert_eq!(
+            row.groups.len(),
+            3,
+            "drop-onto-closing falls through to split-into-new-group",
+        );
+        let a_tabs: Vec<u64> =
+            row.groups[0].tabs().iter().map(|t| t.id).collect();
+        assert_eq!(a_tabs, vec![2], "A lost its dragged tab (id 1)");
+        // The new group carries only tab 1 and is NOT the closing
+        // group. Find it positionally: closing group is at index 2.
+        assert!(
+            row.groups[2].is_closing(),
+            "B (closing) should still be present at the right of the row",
+        );
+        let new_group_tabs: Vec<u64> =
+            row.groups[1].tabs().iter().map(|t| t.id).collect();
+        assert_eq!(
+            new_group_tabs, vec![1],
+            "dragged tab must end up in a fresh group, not in the closing group",
+        );
+        assert!(
+            !row.groups[1].is_closing(),
+            "the new group must NOT inherit the closing state",
         );
     }
 

@@ -810,15 +810,31 @@ impl Widget for WindowGroup {
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. }
                 if self.maximized && self.close_rect.contains(self.last_cursor) =>
             {
-                // Close-glyph click on a maximized group: drop the active
-                // tab's host, remove the tab from the bar, and exit
-                // maximize so the group stops drawing floating controls
-                // that now point at a stale tab.
+                // Close-glyph click on a maximized group: route through
+                // the same deferred fade flow the per-tab × click uses
+                // (`bar.start_closing` → `closing_hosts` → sweep). A
+                // previous version mutated `self.hosts` + `self.bar`
+                // synchronously here, which meant the 180 ms tab pill
+                // fade and the follow-on group-close fade were both
+                // skipped: the entire group just popped out of
+                // existence. Now we only latch the close; the sweep at
+                // the bottom of `handle_event` runs on the next tick
+                // and removes the host + finalises the pill + (when
+                // tabs empty) starts the group-level close fade, so
+                // the user sees a coherent shrink whether they close
+                // from maximised or the tab bar.
+                //
+                // We still exit maximize immediately so the floating
+                // restore / close chrome stops painting — it's latched
+                // to the active tab and that tab is on its way out;
+                // keeping the chrome up for one extra frame would
+                // render it over a fading tile that no longer owns
+                // the interaction.
                 let active_id = self.bar.active_id();
-                if let Some(idx) = self.hosts.iter().position(|(i, _)| *i == active_id) {
-                    self.hosts.remove(idx);
-                }
-                self.bar.remove_tab(active_id);
+                self.bar.start_closing(active_id);
+                self.closing_hosts
+                    .entry(active_id)
+                    .or_insert_with(Instant::now);
                 self.maximized = false;
                 *handled = true;
                 return;
@@ -1377,6 +1393,120 @@ mod tests {
         assert!(
             !g.needs_animation_frame(),
             "after the fade window elapses, frames are no longer required",
+        );
+    }
+
+    /// A maximized-mode close press must route through the same
+    /// deferred tab-fade + group-close-fade flow as the normal
+    /// per-tab × click. Previously this path mutated `self.hosts`
+    /// and called `bar.remove_tab` synchronously, so closing the
+    /// last tab from maximised mode popped the entire group out of
+    /// existence with zero animation. The fix calls
+    /// `bar.start_closing` + inserts into `closing_hosts`, drops
+    /// maximize, and lets the sweep finish the teardown on the
+    /// next tick(s). End-to-end this test drives the close press,
+    /// asserts the deferred state, then runs a second tick with
+    /// the close fade forced-expired and asserts the host +
+    /// bar-tab are gone and the group-level close fade is latched.
+    #[test]
+    fn maximized_close_uses_deferred_flow() {
+        use std::collections::HashMap;
+        use taffy::Style;
+        use taffy::prelude::TaffyMaxContent;
+        use crate::theme::Theme;
+        use winit::event::{ElementState, MouseButton};
+
+        // Single-tab group so the sweep has a clear "last tab just
+        // left" trigger for the group-level close fade.
+        let tabs: Vec<(TabDescriptor, TileContent)> = vec![(
+            TabDescriptor::new(1, "solo"),
+            TileContent::Stub { kind: AppKind::Settings, label: "a".into() },
+        )];
+        let mut g = WindowGroup::new(10, tabs, 1, WindowWidth::Normal);
+
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(Style::default(), &[group_node])
+            .unwrap();
+        taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
+        g.apply_layout(&taffy, group_node, Point::ZERO);
+
+        // Put the group into maximized mode and seed `close_rect`
+        // + `last_cursor` so the close-press arm matches. The
+        // close_rect normally gets populated in `draw` while
+        // maximized; tests don't paint so we seed it directly.
+        g.maximized = true;
+        g.close_rect = Rect::new(0.0, 0.0, 20.0, 20.0);
+        g.last_cursor = Point::new(5.0, 5.0);
+
+        let press = WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        };
+
+        let mut handled = false;
+        let mut focus_target = None;
+        let mut state = automerge::AutoCommit::new();
+        let root_id = automerge::ROOT;
+        g.handle_event(
+            &press, 1.0, &winit::event::Modifiers::default(),
+            &mut state, &root_id, &mut handled, &mut focus_target,
+            group_node, &taffy,
+        );
+
+        // Deferred flow: maximize dropped, host still present
+        // (fade in-flight), bar has latched the pill-close, and
+        // our own closing_hosts carries the active id.
+        assert!(handled, "press must be consumed by the close arm");
+        assert!(!g.maximized, "maximize must drop immediately");
+        assert!(
+            g.has_host(1),
+            "host stays in `hosts` for the fade duration — no synchronous removal",
+        );
+        assert!(
+            g.bar.closing_tab_ids().contains(&1),
+            "bar.start_closing must have latched the tab pill fade",
+        );
+        assert!(
+            g.has_closing_host(1),
+            "closing_hosts must carry the active id so the host fade runs",
+        );
+        // And the group itself is NOT closing yet — a host fade is
+        // still in flight; the group-level close only latches once
+        // the sweep drains the last host.
+        assert!(
+            !g.is_closing(),
+            "group close must NOT fire while a host-level close is still in flight",
+        );
+
+        // Now force-expire the host close and drive another tick.
+        // The sweep drops the host + finalises the pill, then the
+        // "empty group" check latches the group-level close fade.
+        g.force_expire_closing(1);
+        let moved = WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(9000.0, 9000.0),
+        };
+        let mut handled2 = false;
+        g.handle_event(
+            &moved, 1.0, &winit::event::Modifiers::default(),
+            &mut state, &root_id, &mut handled2, &mut focus_target,
+            group_node, &taffy,
+        );
+
+        assert!(!g.has_host(1), "sweep drops the host once the fade expires");
+        assert!(
+            !g.bar.closing_tab_ids().contains(&1),
+            "bar.finalize_close clears the closing pill entry",
+        );
+        assert!(g.bar.tabs().is_empty(), "bar has no live tabs left");
+        assert!(
+            g.is_closing(),
+            "group-level close fade must latch once the last host has swept out",
         );
     }
 
