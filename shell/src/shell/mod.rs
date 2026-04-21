@@ -1177,11 +1177,26 @@ pub fn build_nirios_overlay_host_with_chrome(
     let foreground_col = Column::new().push(topbar).push(Box::new(content_col));
     let stack = Stack::new().push(backdrop).push(Box::new(foreground_col));
 
-    // Sidebar wheel is no longer a left-leaf of a SplitRow — it floats as
-    // an absolute-positioned overlay inside `ShellOverlayHost` (matching
-    // the concept's `absolute left-0 top-0 bottom-0 w-24 z-40` wheel).
+    // Wheel disc is the only sidebar — each workspace is a spoke. Dragging
+    // rotates spokes; releasing snaps to the nearest workspace. Per user
+    // spec 2026-04-21: "No permanent sidebar, but workspaces appear as
+    // rotated axes of the wheel disc, meaning you can go to the left and
+    // drag it to move between workspaces."
+    let spokes: Vec<sidebar_wheel_disc::SpokeLabel> = tree
+        .workspaces
+        .iter()
+        .map(|w| sidebar_wheel_disc::SpokeLabel {
+            text: w.name.clone(),
+            workspace_id: Some(w.id.0),
+        })
+        .collect();
+    let active_idx = tree
+        .workspaces
+        .iter()
+        .position(|w| w.id == tree.active)
+        .unwrap_or(0);
     let sidebar: Box<dyn Widget> = Box::new(
-        sidebar_wheel_chrome::SidebarWheelChrome::from_tree(tree).with_chrome(chrome.clone()),
+        sidebar_wheel_disc::SidebarWheelDisc::new(spokes).with_active_idx(active_idx),
     );
 
     let root: Box<dyn Widget> = Box::new(
@@ -1189,15 +1204,16 @@ pub fn build_nirios_overlay_host_with_chrome(
             .with_child(Box::new(stack))
             .filling(),
     );
-    // The real topbar bottom accounts for the outer `Container` (padding
-    // = `padding_standard`) wrapping a `Column` (padding =
-    // `padding_standard * 2`) — so the topbar sits at y = `padding
-    // _standard * 3` and ends at that + `TOPBAR_HEIGHT_PX`. Mirroring
-    // this here keeps the floating sidebar wheel aligned with the real
-    // topbar bottom instead of with the bare 40 px assumed by
-    // `SIDEBAR_TOP_OFFSET_PX`; without the override the sidebar's rect
-    // overlaps the topbar band and swallows the overview-toggle click
-    // (see `full_root_click_toggles_overview_via_topbar_button`).
+    // The disc is vertically centred within its absolute-positioned
+    // sidebar slot (see `ShellOverlayHost::build_layout`, which sets
+    // `top: sidebar_top_y, bottom: 0` and relies on `align_self: Center`
+    // on the disc's leaf to pin it mid-column). We still pin the slot's
+    // top below the real topbar so the sidebar's click-guard rect doesn't
+    // overlap the overview-toggle grid icon (see
+    // `full_root_click_toggles_overview_via_topbar_button`). The real
+    // topbar sits at `y = padding_standard * 3` and spans
+    // `TOPBAR_HEIGHT_PX`, matching the outer `Container` + `Column`
+    // padding chain around the topbar.
     let padding_standard = quick_ui::tokens::Spacing::default().s3;
     let sidebar_top = padding_standard * 3.0 + topbar_chrome::TOPBAR_HEIGHT_PX;
     let host = overlay_host::ShellOverlayHost::new(root)
