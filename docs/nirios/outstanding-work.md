@@ -24,14 +24,25 @@ The long-term pre-event-hook idea (`App::add_pre_event_filter`) is not
 needed today — revisit only if the shell grows hotkeys that must fire
 with zero widget-tree walking (e.g. global screen-record toggle).
 
-### 2. Tab-drag to new window unreliable — fix in flight
+### 2. Tab-drag to new window unreliable — resolved (2026-04-21)
 
-Root causes documented in `group_row.rs` comments after subagent ae0ea2b…
-  lands:
-- `gap_index_for` y-band check rejects releases outside the row's exact
-  rect.
-- `split_tab_into_new_group` refusal rule blocks every single-tab source.
-- No inter-group drop-zone indicator exists; only intra-bar reorder zones.
+All three root causes are addressed:
+- ~~`gap_index_for` y-band check~~ — removed; release point comes from
+  the in-row `TabBar` so a drop anywhere in screen space that doesn't
+  land on a group is now correctly classified as a new-window gap
+  (`quick-ui/src/widget/group_row.rs:107-113`).
+- ~~`split_tab_into_new_group` refusal for single-tab sources~~ — removed;
+  the refuse rule was costing every drag-out of a sole tab
+  (`group_row.rs:383-392`).
+- ~~Missing inter-group drop-zone indicator~~ — commit `f611af6`. While
+  any child `TabBar` reports `drag_in_flight() == true`, `GroupRow`
+  tracks the hover-gap index via `gap_index_for` on `CursorMoved` and
+  paints a translucent indigo capsule (2 px radius, 4 px wide, full
+  row height, `accent[5] @ 0.5`) between the two neighbouring groups.
+  The indicator clears on release (so nothing lingers after a drop)
+  and never paints without an active drag. Regression tests:
+  `hover_gap_tracks_cursor_during_drag`, `hover_gap_clears_on_release`,
+  `hover_gap_is_none_when_no_drag`.
 
 ## Redesign — left wheel as in-plane disc
 
@@ -169,23 +180,32 @@ See `docs/nirios/visual-gaps.md` for the full list.
 - #12 overview header typography (≥32 px bold) — commit `687e7ee`
 - #13 overview scrim slate-950 — commit `687e7ee`
 - Wheel-disc Plus button (closes wheel-disc-design known-gap #4) — commit `dc8956a`
+- Wheel-disc per-spoke presence dots (closes wheel-disc-design known-gap #3) — commit `4ffb786`
+- #3 backdrop-blur translucent-tint fallback (topbar 0.80 / popovers 0.80 /
+  palette+modal 0.70 / scrim 0.20) — submodule commit `faf4e7c`
+- Inter-group tab drop-zone indicator (closes §1 #2 third subitem) — commit `f611af6`
+- Overview header Bold weight + clock/ws-name tier pins — submodule `255e9bb`
 - Earlier: shield/backdrop work
 
-**Remaining visual gap:** #3 backdrop blur — needs Vello blur primitive
-or translucent-tint fallback; does not generalise from the #1 sprite
-trick (blur must track content underneath).
+**Remaining visual gap:** none open — all visual-gaps.md items are either
+shipped or parked pending a Vello blur primitive (#3 alpha-tint half already
+shipped; Gaussian convolution deferred).
 
 **In flight** (parallel subagents dispatched):
 - Real-socket two-peer collab E2E (closes §3 #4 below)
 
-**Remaining highest-priority:**
-- #1 content card shadow — Blocker, needs Vello blur or pre-rendered
-  radial-gradient sprites (M effort).
-- #3 backdrop blur on overlays/topbar — High, needs Vello blur layer
-  or translucent fallback.
-- #5 full lucide icon pass — High, L one-time cost.
-- #7 text weight pass — Medium, S effort (cross-cutting; needs
-  `TextRenderer::draw_text` to grow a weight param).
+**Remaining highest-priority (structural / functional):**
+- Real-socket two-peer collab E2E (§3 #4).
+- Real peer presence lighting up `RemoteCursorOverlay` (§3 #5).
+- Tab/window decoration polish to concept parity (min/max glyphs, per-tile
+  close hover, drag ghost).
+- Concept-matched animation pass (overview zoom, tile spawn/despawn,
+  wheel snap spring — spring already partial via `7916273`).
+- CRDT-driven undo/redo coverage across every widget (text input done;
+  reorder / split / close still pending a single-commit per gesture).
+- Full automated E2E navigation tests w/ screenshot diffing for the
+  golden-path flows (open overview → switch workspace → drag tab to new
+  window → collab join → undo).
 
 ## Process reminder
 
