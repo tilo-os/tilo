@@ -41,7 +41,7 @@ concept, mandated by the user's 2026-04-21 spec.
 | Interaction | Click a card / scroll to switch | Press-drag-rotate, release snaps |
 | Active cue | Pill fill + indigo ring | Rim arc glow at active spoke's angle |
 | Collaborator dots | Per-card presence dots | **TBD** — not yet re-applied to spokes |
-| Plus button | "+" card at tail | **TBD** — no "add workspace" affordance yet |
+| Plus button | "+" card at tail | Plus-button slot below the hub; press appends + activates a new workspace (commit `dc8956a`) |
 
 ## Implementation pointer
 
@@ -122,10 +122,11 @@ mental model: *pull the wheel down to reveal the next workspace below*.
    to 3 per-card presence dots. Not yet re-applied to spokes. Needs
    design: a small dot cluster along the spoke or near the tip label.
 
-4. **Plus button** — concept's wheel has an explicit "add workspace"
-   affordance. The disc has no equivalent yet; adding a new workspace
-   today only happens via the topbar chevrons after the fact, which
-   doesn't map onto the disc metaphor.
+4. ~~**Plus button**~~ — **resolved in `dc8956a`**. The disc now renders
+   a dedicated Plus slot below the hub; pressing inside it calls
+   `ChromeState::add_workspace` which appends a new workspace and sets
+   it active. Covered by
+   `sidebar_wheel_management_button_creates_workspace`.
 
 5. ~~**Animations**~~ — **partially resolved in `7916273`**.
    On release the disc now springs `rotation_deg` toward the snapped

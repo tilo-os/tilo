@@ -162,28 +162,16 @@ See `docs/nirios/wheel-disc-design.md` for the full design reference.
   depending on platform); we should target Inter or DejaVu Sans explicitly.
 - **Estimated effort:** S
 
-### 8. Top-bar center pill misses the `/` separation + format details — Medium
+### 8. ~~Top-bar center pill misses the `/` separation + format details~~ — Shipped (2026-04-21, commit `3b786c2`)
 
-- **What the concept shows:** The center band has a `rounded-lg hover:bg-white/10`
-  hover state and the clock is `text-sm font-bold tracking-wide text-white`
-  with format `HH:MM` — and on the *left* of the band a 3-dot *vertical*
-  indicator column where the active dot is `indigo-400` scaled 1.2× (§2.1,
-  §2.2).
-- **What we render today:** `topbar_chrome.rs:398-433` does paint a vertical
-  3-dot indicator. Good. But in `07-theme-tightened.png` the band shows
-  "23:17" centered inside a wide pill — the dots *are* barely visible on
-  the far left (tiny). The contrast between the active dot and inactive
-  dots is too small (our `dot_size * 1.4` active vs `dot_size * 1.0`
-  inactive on the same `text_dim` colour). The concept's active dot uses
-  `indigo-400` which contrasts much more against the inactive
-  `rgba(255,255,255,0.2)`.
-- **Concrete fix:** At `topbar_chrome.rs:423`, confirm the active colour
-  actually resolves to a saturated indigo (currently `colors.accent[5]`);
-  if the theme maps accent[5] to indigo-500, that's fine, but verify by
-  eye — the 07 screenshot's active dot looks grey, not indigo. Also
-  increase active radius to 1.6× and add a subtle opacity bump for
-  non-active dots (0.3 → 0.35) so they read without shouting.
-- **Estimated effort:** S
+- **What concept shows:** the vertical 3-dot column has an `indigo-400`
+  active dot visibly larger + brighter than the `rgba(255,255,255,0.2)`
+  inactive dots.
+- **What shipped:** `topbar_chrome.rs` now paints the active dot at
+  `1.6×` base radius (indigo `accent[5]`) and brightens the inactive dots
+  by bumping their opacity. Regression test
+  `topbar_chrome_active_center_dot_is_larger_than_inactive` pins the
+  geometric contrast.
 
 ### 9. ~~Collaborator avatars are solid indigo, not personalised/gradient~~ — Shipped (2026-04-21, commit `730e6c4`)
 
@@ -199,21 +187,15 @@ See `docs/nirios/wheel-disc-design.md` for the full design reference.
   disc, producing the 2 px black ring between stacked circles. Covered
   by `topbar_chrome_maps_two_peers_to_two_distinct_avatar_hues`.
 
-### 10. Desktop backdrop grid is there but the noise-overlay is missing — Low
+### 10. ~~Desktop backdrop grid is there but the noise-overlay is missing~~ — Shipped (2026-04-21, commit `722ad07`)
 
-- **What the concept shows:** `bg-[url('noise.svg')] opacity-20 mix-blend-overlay`
-  (`DesktopView.tsx:216`) on top of the gradient — subtle, but responsible
-  for the "not a flat gradient" look in the concept.
-- **What we render today:** `desktop_backdrop.rs:52-100` paints the gradient
-  + 24 px grid lines only; a code comment at `:8` says "noise skipped —
-  requires an image resource". In `07-theme-tightened.png` the background
-  between grid lines reads as a flat smooth gradient (visible banding
-  along the right edge), whereas the concept's is gently stippled.
-- **Concrete fix:** Bake a small tileable noise PNG (~64×64) into the
-  binary via `include_bytes!`, upload it as a Vello image once, and tile
-  it with `opacity 0.08` over the backdrop. Same fix pattern already used
-  elsewhere for static resources.
-- **Estimated effort:** M
+- **What concept shows:** `bg-[url('noise.svg')] opacity-20 mix-blend-overlay`
+  (`DesktopView.tsx:216`) on top of the gradient.
+- **What shipped:** `desktop_backdrop.rs` bakes a tileable noise texture
+  (deterministic 64×64 pattern) and tiles it over the gradient beneath
+  the grid lines. Breaks the smooth banding visible in the old
+  `07-theme-tightened.png` capture without eating a full-res asset in
+  the binary.
 
 ### 11. Permissions shield is still a stub square in overview — Low
 
@@ -227,44 +209,41 @@ See `docs/nirios/wheel-disc-design.md` for the full design reference.
   canonical first consumer.
 - **Estimated effort:** S (once #5 lands)
 
-### 12. Overview header typography is not large / bold enough — Low
+### 12. ~~Overview header typography is not large / bold enough~~ — Shipped (2026-04-21, commit `687e7ee`)
 
-- **What the concept shows:** Header is `h1 text-4xl font-bold text-white
-  mb-4 tracking-tight` + `p text-slate-400 text-lg`.
-- **What we render today:** In `06-overview-open-vertical.png` the
-  "Workspaces" title looks about 28–30 px and has only modest boldness —
-  close but thinner than `font-bold text-4xl` (32 px / Tailwind's 36 px).
-  The subtitle "Your workspaces, side by side" looks right.
-- **Concrete fix:** In `overlay_host.rs` overview header, use
-  `tokens.typography.scale.xxl` (or `h1`) with weight 700. If our scale
-  doesn't include a size large enough, widen `xxl` in `quick-ui`
-  `typography.rs`.
-- **Estimated effort:** S
+- **What concept shows:** `h1 text-4xl font-bold text-white mb-4
+  tracking-tight`.
+- **What shipped:** overview header in `overlay_host.rs` now renders at
+  ≥32 px with `font-bold` weight, pinned by the
+  `overview_header_font_size_is_at_least_32px` regression test.
 
-### 13. Scrim for overview mode is absent / indistinct — Low
+### 13. ~~Scrim for overview mode is absent / indistinct~~ — Shipped (2026-04-21, commit `687e7ee`)
 
-- **What the concept shows:** Not a hard scrim for the overview view
-  itself (it fully replaces the desktop), but the view is set on
-  `bg-slate-950` (`#020617`) so there's a distinct "darker than desktop"
-  shift when entering overview.
-- **What we render today:** `06-overview-open-vertical.png` uses what looks
-  like the same desktop gradient background, not the darker slate-950
-  flat. The overview reads as "same wall with cards on it" rather than
-  "entered a darker room".
-- **Concrete fix:** In overlay_host's overview render path, force the root
-  fill to `colors.neutral[0]` (slate-950) instead of whatever currently
-  shows the desktop gradient through.
-- **Estimated effort:** S
+- **What concept shows:** overview lives on `bg-slate-950` (`#020617`)
+  so entering it feels like "the desktop dimmed behind a plate".
+- **What shipped:** overview render path in `overlay_host.rs` now paints
+  a full-bleed slate-950 scrim before placing the cards, giving the
+  distinct "entered a darker room" transition instead of showing the
+  gradient through.
 
 ---
 
 ## Recommended prioritization for the next ralph iteration
 
-The three **highest-impact** gaps are #1 (no real shadow), #2 (active-tab
-contrast), and #3 (no backdrop blur). Of these, **gap #2** is the cheapest
-to ship and has the most "instant wow" return — changing two alpha values
-and the inactive title colour in `quick-ui/src/widget/tabs.rs` immediately
-makes "which tab am I on" obvious, which is the first thing the eye lands
-on. Gap #4 (overview active-row halo) is similarly cheap and fixes a
-clearly visible bug. Shadow-fidelity (#1) is a bigger undertaking because
-it touches the Vello layer-blur or sprite path.
+Gaps #2, #4, #8, #9, #10, #12, and #13 have shipped (see ✓ markers
+above). The **remaining open** gaps and their priorities:
+
+- **#1 Content card drop shadow** — Blocker. Needs Vello blur layer or a
+  pre-rendered radial-gradient sprite; highest visual-impact miss.
+- **#3 Backdrop blur** — High. Same Vello dependency as #1 (frosted
+  layers on top-bar / popovers / search / modal).
+- **#5 Lucide icon glyphs** — High. L-size one-off lift; unblocks #11
+  permissions shield + the tray/gear/maximize-glyph polish.
+- **#7 Font weight** — Medium, S effort. Request weight 500/700
+  explicitly in `cosmic-text`.
+- **#11 Permissions shield stub** — Low, blocked on #5 landing.
+
+Both #1 and #3 converge on the same Vello blur-layer primitive, so
+either plumbing that in or committing to the sprite-fallback approach is
+the next structural unlock. #5 is independent and has the longest
+reward tail (every subsequent chrome polish reuses it).
