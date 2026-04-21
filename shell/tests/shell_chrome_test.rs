@@ -287,6 +287,29 @@ fn topbar_chrome_maps_two_peers_to_two_distinct_avatar_hues() {
     assert_ne!(colors[0], colors[1]);
 }
 
+/// Gap #8: the center-band active dot must read as a focused indicator,
+/// not just a slightly tinted sibling. The concept achieves this with a
+/// saturated indigo fill plus a 1.2×–1.6× scale-up; if the radii ever
+/// converge the three-dot stack collapses back into three identical
+/// circles and the carousel loses its "where are we" affordance.
+#[test]
+fn topbar_chrome_active_center_dot_is_larger_than_inactive() {
+    use quick_desktop::shell::topbar_chrome::TopBarChrome;
+    let tree = WorkspaceTree {
+        workspaces: vec![mk_workspace(0, "A")],
+        active: WorkspaceId::from(0),
+        active_strip: Default::default(),
+        collaborators: vec![],
+    };
+    let chrome = TopBarChrome::from_tree(&tree);
+    assert!(
+        chrome.active_dot_radius() > chrome.inactive_dot_radius(),
+        "active dot radius {} must exceed inactive {}",
+        chrome.active_dot_radius(),
+        chrome.inactive_dot_radius(),
+    );
+}
+
 #[test]
 fn sidebar_wheel_switches_active_strip() {
     use quick_desktop::shell::sidebar_wheel::SidebarWheel;
