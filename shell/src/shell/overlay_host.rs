@@ -30,7 +30,7 @@ use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use quick_ui::presence::{PresenceCtx, PresenceKey};
-use quick_ui::text_render::TextRenderer;
+use quick_ui::text_render::{TextRenderer, TextWeight};
 use quick_ui::theme::Theme;
 use quick_ui::widget::Widget;
 use quick_ui::{CommandEntry, CommandPalette};
@@ -1705,16 +1705,21 @@ impl ShellOverlayHost {
         // the text renderer applies — visual gap #12.
         let title = "Workspaces";
         let title_size = Self::overview_header_font_size_for(tokens);
-        let (tw, th) = text_renderer.measure(title, title_size, None);
+        // Concept `text-4xl font-bold tracking-tight`: h1 sits at the Bold
+        // weight tier. Measure with the same weight so the centered header
+        // stays centered at Bold's wider advance — visual-gap #7.
+        let title_weight = TextWeight::Bold;
+        let (tw, th) = text_renderer.measure_weighted(title, title_size, None, title_weight);
         let tx = (col.x0 + col.x1) / 2.0 - tw as f64 / 2.0;
         let ty = col.y0 + 8.0;
-        text_renderer.draw_text(
+        text_renderer.draw_text_weighted(
             scene,
             title,
             title_size,
             colors.text_primary,
             transform * Affine::translate((tx, ty)),
             None,
+            title_weight,
         );
         let subtitle = "Your workspaces, side by side";
         // Concept subtitle: `text-slate-400 text-lg` (~18 px). `lg` = 16 px
