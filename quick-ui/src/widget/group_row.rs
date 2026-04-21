@@ -98,14 +98,21 @@ impl GroupRow {
     /// tile area still falls through to the sibling-bar detection above.
     pub fn gap_index_for(&self, release_point: Point) -> Option<usize> {
         if self.groups.is_empty() {
-            // Empty row → any drop inside its rect becomes the first group.
-            return if self.rect.contains(release_point) { Some(0) } else { None };
+            // Empty row → any drop becomes the first group. We don't
+            // y-band-restrict: a fresh shell with no groups has a degenerate
+            // row rect and we still want drops anywhere in the strip to
+            // land as "first group".
+            return Some(0);
         }
-        // Y must be within the row's vertical band.
-        if release_point.y < self.rect.y0 || release_point.y > self.rect.y1 {
-            return None;
-        }
-        // Inside any group rect → not a gap drop.
+        // Don't y-band-restrict: the release point comes from the source
+        // `TabBar` which is always in our row, so a drop anywhere in
+        // screen space that doesn't land on one of our groups is a
+        // new-window gap. The strip area below / above the row's rendered
+        // rect was silently refused by the old y-band check — that was
+        // the root cause of the "drop zones show but drop has no effect"
+        // bug. See `drop_into_new_window_works_when_release_is_…` tests.
+        // Inside any group rect → not a gap drop (within-group / sibling
+        // reorder is handled elsewhere).
         for g in &self.groups {
             if g.get_rect().contains(release_point) {
                 return None;
@@ -264,6 +271,47 @@ impl Widget for GroupRow {
         for g in &mut self.groups {
             g.draw(scene, transform, tr, theme, presence);
         }
+
+        // Inter-group drop-zone indicators: while any child has a drag in
+        // flight, paint a translucent indigo vertical bar in each gap
+        // between groups and one at each end of the row. Mirrors the
+        // concept's `DropZone` component in `DesktopView.tsx:414` that
+        // wraps every pair of groups with a visible gap target. Without
+        // this, users dragging a tab "to a new window" had no visual
+        // signal that the gap was a valid target, which is half of the
+        // reported bug.
+        //
+        // Minimum viable feedback: a solid translucent indigo bar per
+        // gap, no hover expansion. See `docs/nirios/visual-gaps.md` for
+        // the full concept-faithful hover-scale + shadow glow treatment
+        // (TODO: wire hover tracking via `last_cursor` and animate width
+        // from 8→48 px with ease-out-cubic on enter/leave).
+        let any_drag =
+            self.groups.iter().any(|g| g.drag_in_flight()) && !self.groups.is_empty();
+        if any_drag {
+            let indigo = theme.tokens.colors.accent[5].with_alpha_factor(0.35);
+            let bar_w = 8.0_f64;
+            let y0 = self.rect.y0 + 8.0;
+            let y1 = self.rect.y1 - 8.0;
+            // Gap 0 (before first group).
+            let first_x = self.groups[0].get_rect().x0;
+            if first_x - bar_w > self.rect.x0 {
+                let r = Rect::new(first_x - bar_w - 4.0, y0, first_x - 4.0, y1);
+                scene.fill(vello::peniko::Fill::NonZero, transform, indigo, None, &r);
+            }
+            // Between pairs.
+            for i in 1..self.groups.len() {
+                let lx = self.groups[i - 1].get_rect().x1;
+                let rx = self.groups[i].get_rect().x0;
+                let mid = (lx + rx) / 2.0;
+                let r = Rect::new(mid - bar_w / 2.0, y0, mid + bar_w / 2.0, y1);
+                scene.fill(vello::peniko::Fill::NonZero, transform, indigo, None, &r);
+            }
+            // Gap N (after last group).
+            let last_x = self.groups.last().unwrap().get_rect().x1;
+            let r = Rect::new(last_x + 4.0, y0, last_x + 4.0 + bar_w, y1);
+            scene.fill(vello::peniko::Fill::NonZero, transform, indigo, None, &r);
+        }
     }
 
     fn handle_event(
@@ -331,20 +379,20 @@ impl Widget for GroupRow {
             // Matches the concept's `DropZone` between every pair of
             // groups in `DesktopView.tsx:414`, which calls
             // `onMoveTab(src, 'new', tab, idx)` to splice a new group.
-            if let Some(gap_idx) = self.gap_index_for(release_point) {
-                // Refuse the degenerate case where the source is a
-                // single-tab group and the user is just dropping the tab
-                // back next to itself — that would destroy and recreate
-                // the same group in the same slot for no visible effect.
-                let src_only_tab = self.groups[src_idx].tab_count() == 1;
-                let right_of_src = gap_idx == src_idx + 1;
-                let left_of_src = gap_idx == src_idx;
-                if src_only_tab && (right_of_src || left_of_src) {
-                    continue;
-                }
-                if self.split_tab_into_new_group(src_idx, tab_id, gap_idx) {
-                    *handled = true;
-                }
+            //
+            // We deliberately do NOT refuse the "single-tab source dropped
+            // into an adjacent gap" case. Previously this was blanket-
+            // refused as a suspected degenerate "drop-in-place", but for
+            // single-tab rows that refuse rule blocks *every* drag-out
+            // (gap_idx can only be 0 or 1 with a single group, and both
+            // are adjacent). The detach + insert + prune flow produces
+            // the correct state even when the visible result is identical
+            // to the pre-drag state — so the refuse was costing us all
+            // drag-out-to-new-window flows to fix a cosmetic no-op.
+            if let Some(gap_idx) = self.gap_index_for(release_point)
+                && self.split_tab_into_new_group(src_idx, tab_id, gap_idx)
+            {
+                *handled = true;
             }
         }
     }
@@ -600,10 +648,13 @@ mod tests {
             None,
             "drops inside a group tile should not be inter-group gaps"
         );
-        // Above the row (y outside) → None.
+        // Above the row (y outside) → still resolves to a gap. The
+        // y-band restriction was removed so drops into the strip area
+        // above/below the row's rect no longer silently fail (see
+        // `drop_into_new_window_works_when_release_is_above_row`).
         assert_eq!(
             row.gap_index_for(Point::new(r0.x0 - 4.0, row_rect.y0 - 10.0)),
-            None
+            Some(0)
         );
         // Between groups, if the layout left any gap — only assert if
         // one exists, since flex with gap=8 should give us some space.
@@ -611,6 +662,181 @@ mod tests {
             let mid = (r0.x1 + r1.x0) / 2.0;
             assert_eq!(row.gap_index_for(Point::new(mid, y)), Some(1));
         }
+    }
+
+    /// Build a row with N groups (one per sub-slice) and drive a taffy
+    /// layout pass so each group's rect and the row's rect are populated.
+    /// The viewport defaults to 2000×600 so groups always fit and the
+    /// row fills the vertical axis (`height: percent(1.0)` on each
+    /// `WindowGroup`). Returns the row alongside the taffy tree + root
+    /// node id so callers can invoke `handle_event` with a live tree.
+    fn make_row_with_groups_with_taffy(
+        tab_specs: &[&[u64]],
+    ) -> (GroupRow, TaffyTree<()>, NodeId) {
+        use std::collections::HashMap;
+        use taffy::{AvailableSpace, Size as TSize, TaffyTree};
+
+        let groups: Vec<WindowGroup> = tab_specs
+            .iter()
+            .enumerate()
+            .map(|(i, ids)| make_group(100 + i as u64 * 100, ids))
+            .collect();
+        let mut row = GroupRow::new(groups);
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
+        let root = row.build_layout(&mut taffy, &theme, &mut node_map);
+        let viewport = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(2000.0),
+                        height: Dimension::length(600.0),
+                    },
+                    ..Default::default()
+                },
+                &[root],
+            )
+            .unwrap();
+        taffy
+            .compute_layout_with_measure(
+                viewport,
+                TSize {
+                    width: AvailableSpace::Definite(2000.0),
+                    height: AvailableSpace::Definite(600.0),
+                },
+                |_, _, _, _, _| taffy::Size::ZERO,
+            )
+            .expect("taffy compute_layout");
+        row.apply_layout(&taffy, root, Point::ORIGIN);
+        (row, taffy, root)
+    }
+
+    /// Layout-only helper: discards the taffy tree + root after setting
+    /// the row's rects. Most drop-zone tests only probe `gap_index_for`
+    /// and don't need a live tree.
+    fn make_row_with_groups(tab_specs: &[&[u64]]) -> GroupRow {
+        make_row_with_groups_with_taffy(tab_specs).0
+    }
+
+    #[test]
+    fn drop_into_new_window_works_when_release_is_in_empty_strip_area_below_group() {
+        // Regression for the "drop zones show but drop has no effect" bug:
+        // when the user drags a tab and releases into the strip area below
+        // the row's rect (common because the shell's strip is taller than
+        // any single group's rendered height, and mouse release jitter
+        // pushes past the row edge), `gap_index_for` must still resolve to
+        // an inter-group gap so `split_tab_into_new_group` can fire. Today
+        // the y-band check in `gap_index_for` returns None for any point
+        // outside `[rect.y0, rect.y1]`, silently dropping the action.
+        let row = make_row_with_groups(&[&[1, 2, 3, 4]]);
+        // 20 px below the row's lower edge, 4 px right of the only group's
+        // right edge: classic "drop into empty strip" position.
+        let release = Point::new(row.groups[0].get_rect().x1 + 4.0, row.rect.y1 + 20.0);
+        assert_eq!(
+            row.gap_index_for(release),
+            Some(1),
+            "release below the row's vertical band should still resolve to the right-of-last gap so \
+             the tab splits into a new window"
+        );
+    }
+
+    #[test]
+    fn drop_into_new_window_works_when_release_is_above_row() {
+        // Companion to the "below" case above: if the user drags a tab up
+        // and slightly overshoots the top of the row (into the strip's
+        // header chrome), the release must still splice a new group at
+        // the correct gap rather than falling through silently.
+        let row = make_row_with_groups(&[&[1, 2], &[10, 11]]);
+        let r0 = row.groups[0].get_rect();
+        // 15 px above row.y0, x left of the first group → gap 0.
+        let release = Point::new(r0.x0 - 4.0, row.rect.y0 - 15.0);
+        assert_eq!(
+            row.gap_index_for(release),
+            Some(0),
+            "release above the row should resolve to the left-of-first gap"
+        );
+    }
+
+    #[test]
+    fn single_tab_group_can_split_into_new_group_on_any_adjacent_gap() {
+        // Regression for the refuse rule in `handle_event` that blocked
+        // single-tab source groups from splitting into a new window when
+        // the dropped gap was adjacent (the only kind of gap available in
+        // a one-group row). The direct API has no refuse — the sweep did.
+        // See `single_tab_group_split_is_not_refused_by_handle_event_sweep`
+        // for the end-to-end event-driven counterpart. Keeping this as a
+        // unit guard so `split_tab_into_new_group` stays callable for any
+        // gap_idx regardless of source tab count.
+        let mut row = make_row_with_groups(&[&[1]]);
+        // Adjacent gap to the right of the sole group.
+        assert!(
+            row.split_tab_into_new_group(0, 1, 1),
+            "single-tab group must be splittable into an adjacent gap"
+        );
+        // Source was pruned (empty after detach), new group took its slot.
+        assert_eq!(row.groups.len(), 1);
+        assert_eq!(row.groups[0].tabs().len(), 1);
+        assert_eq!(row.groups[0].tabs()[0].id, 1);
+        assert!(row.take_structure_dirty(), "split must flag structure_dirty");
+    }
+
+    #[test]
+    fn single_tab_group_split_is_not_refused_by_handle_event_sweep() {
+        // The direct `split_tab_into_new_group` API never had the refuse
+        // rule — it lived in the post-dispatch sweep inside `handle_event`.
+        // This test drives the sweep end-to-end: we publish a pending
+        // detach on the source group's TabBar and dispatch a no-op event,
+        // then assert a new group was spliced (source pruned because it
+        // was single-tab). Before the fix, the sweep's
+        // `src_only_tab && (left_of_src || right_of_src)` guard silently
+        // refused the split.
+        use winit::event::WindowEvent;
+
+        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[7]]);
+        let g0_rect = row.groups[0].get_rect();
+        // Release point: right of the group (gap 1), inside the row's
+        // y-band so the y-check passes today; this isolates the refuse
+        // rule as the sole failing gate.
+        let release = Point::new(g0_rect.x1 + 10.0, (g0_rect.y0 + g0_rect.y1) / 2.0);
+        // Manually publish a detach on the source's TabBar — mimics what
+        // `TabBar::handle_event` does when a drag release lands outside
+        // its own rect.
+        row.groups[0].bar_mut().pending_detach = Some((7, release));
+
+        // Drive a handle_event pass; a CursorMoved event is a no-op that
+        // triggers the post-dispatch detach sweep.
+        let mut doc = AutoCommit::new();
+        let doc_root = automerge::ROOT.clone();
+        let modifiers = Modifiers::default();
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        let event = WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(release.x, release.y),
+        };
+        row.handle_event(
+            &event, 1.0, &modifiers, &mut doc, &doc_root,
+            &mut handled, &mut focus, root, &taffy,
+        );
+
+        // Post-sweep: the split must have fired end-to-end. The
+        // observable signal is `structure_dirty` — `split_tab_into_new_group`
+        // sets it on success; the refuse path never does.
+        assert!(
+            row.take_structure_dirty(),
+            "single-tab source must split into adjacent gap: handle_event sweep should \
+             flag structure_dirty. Today the `src_only_tab && adjacent` refuse rule \
+             silently skips this path"
+        );
+        // And the group bookkeeping: row ends up with exactly one group
+        // (new group inserted, then source pruned) carrying tab id 7.
+        assert_eq!(row.groups.len(), 1);
+        assert_eq!(row.groups[0].tabs().len(), 1);
+        assert_eq!(row.groups[0].tabs()[0].id, 7);
+        // And the source's pending_detach must have been drained by the
+        // sweep (consumed, not left pending for the next tick).
+        assert!(row.groups[0].bar_mut().pending_detach.is_none());
     }
 
     #[test]
