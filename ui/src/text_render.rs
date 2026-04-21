@@ -1,9 +1,53 @@
 use std::collections::HashMap;
 use std::fs;
 use cosmic_text::{FontSystem, SwashCache, Buffer, Metrics, Shaping, Wrap};
+use cosmic_text::fontdb::Weight;
 use vello::Scene;
 use vello::kurbo::Affine;
 use vello::peniko::{Color, Font, StyleRef};
+
+/// Concept-aligned named weight tiers for shell chrome.
+///
+/// Tailwind's `font-medium` / `font-semibold` / `font-bold` map 1:1 to
+/// [`cosmic_text::fontdb::Weight`]'s numeric constants. We expose them as an
+/// enum so widget call sites read declaratively (e.g.
+/// `draw_text_weighted(..., TextWeight::Bold)`) rather than passing raw u16s
+/// around. See visual-gap #7 in `docs/nirios/visual-gaps.md`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TextWeight {
+    /// 400 — body / subtitle / explanatory text. Default.
+    Regular,
+    /// 500 — most chrome labels (buttons, secondary titles).
+    Medium,
+    /// 600 — active chrome titles (tab titles, workspace-name pill).
+    Semibold,
+    /// 700 — h1/h2, clock, numeric monospace values.
+    Bold,
+}
+
+impl TextWeight {
+    /// Numeric OpenType weight (400 / 500 / 600 / 700).
+    pub const fn to_u16(self) -> u16 {
+        match self {
+            TextWeight::Regular => 400,
+            TextWeight::Medium => 500,
+            TextWeight::Semibold => 600,
+            TextWeight::Bold => 700,
+        }
+    }
+
+    /// Matching [`cosmic_text::fontdb::Weight`] constant to feed to
+    /// [`cosmic_text::Attrs::weight`].
+    pub const fn to_cosmic_weight(self) -> Weight {
+        Weight(self.to_u16())
+    }
+}
+
+impl Default for TextWeight {
+    fn default() -> Self {
+        TextWeight::Regular
+    }
+}
 
 pub struct TextRenderer {
     pub font_system: FontSystem,
@@ -21,12 +65,26 @@ impl TextRenderer {
     }
 
     pub fn measure(&mut self, text: &str, size: f32, max_width: Option<f32>) -> (f32, f32) {
+        self.measure_weighted(text, size, max_width, TextWeight::Regular)
+    }
+
+    /// Same as [`TextRenderer::measure`] but respects a typographic weight.
+    /// Heavier weights generally advance wider, so measurements must use
+    /// the same weight the draw path will render with (visual-gap #7).
+    pub fn measure_weighted(
+        &mut self,
+        text: &str,
+        size: f32,
+        max_width: Option<f32>,
+        weight: TextWeight,
+    ) -> (f32, f32) {
         if text.is_empty() { return (0.0, 0.0); }
-        
+
         let line_height = size * 1.25;
         let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(size, line_height));
-        buffer.set_text(&mut self.font_system, text, &cosmic_text::Attrs::new(), Shaping::Advanced, None);
-        
+        let attrs = cosmic_text::Attrs::new().weight(weight.to_cosmic_weight());
+        buffer.set_text(&mut self.font_system, text, &attrs, Shaping::Advanced, None);
+
         buffer.set_size(&mut self.font_system, max_width, None);
         // Explicitly set wrap mode. Word wrap is standard for UI labels.
         buffer.set_wrap(&mut self.font_system, Wrap::Word);
@@ -51,11 +109,29 @@ impl TextRenderer {
         transform: Affine,
         max_width: Option<f32>,
     ) {
+        self.draw_text_weighted(scene, text, size, color, transform, max_width, TextWeight::Regular)
+    }
+
+    /// Same as [`TextRenderer::draw_text`] but takes an explicit typographic
+    /// [`TextWeight`]. Use this for chrome labels that need to lift off the
+    /// body (e.g. top-bar clock at [`TextWeight::Bold`], tab titles at
+    /// [`TextWeight::Semibold`]). See visual-gap #7.
+    pub fn draw_text_weighted(
+        &mut self,
+        scene: &mut Scene,
+        text: &str,
+        size: f32,
+        color: Color,
+        transform: Affine,
+        max_width: Option<f32>,
+        weight: TextWeight,
+    ) {
         if text.is_empty() { return; }
-        
+
         let line_height = size * 1.25;
         let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(size, line_height));
-        buffer.set_text(&mut self.font_system, text, &cosmic_text::Attrs::new(), Shaping::Advanced, None);
+        let attrs = cosmic_text::Attrs::new().weight(weight.to_cosmic_weight());
+        buffer.set_text(&mut self.font_system, text, &attrs, Shaping::Advanced, None);
         buffer.set_size(&mut self.font_system, max_width, None);
         buffer.set_wrap(&mut self.font_system, Wrap::Word);
         buffer.shape_until_scroll(&mut self.font_system, false);
@@ -126,5 +202,28 @@ impl TextRenderer {
                 StyleRef::Fill(vello::peniko::Fill::NonZero),
                 vello_glyphs.into_iter()
             );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Visual-gap #7: the named weight tiers must resolve to Tailwind's
+    /// numeric OpenType weights so chrome call sites can ask for
+    /// `TextWeight::Bold` and trust they will get a `Weight(700)` handoff
+    /// to cosmic-text. Any drift here would silently collapse every
+    /// chrome label back onto the fallback font's single weight.
+    #[test]
+    fn named_weights_resolve_to_tailwind_numeric_values() {
+        assert_eq!(TextWeight::Regular.to_u16(), 400);
+        assert_eq!(TextWeight::Medium.to_u16(), 500);
+        assert_eq!(TextWeight::Semibold.to_u16(), 600);
+        assert_eq!(TextWeight::Bold.to_u16(), 700);
+        assert_eq!(TextWeight::Bold.to_cosmic_weight(), Weight(700));
+        assert_eq!(TextWeight::Regular.to_cosmic_weight(), Weight::NORMAL);
+        // Default must be Regular so existing call sites that go through
+        // the legacy `draw_text` wrapper keep their 400-weight behaviour.
+        assert_eq!(TextWeight::default(), TextWeight::Regular);
     }
 }
