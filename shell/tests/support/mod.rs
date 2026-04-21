@@ -7,3 +7,4 @@
 //! the `quick-ui` crate doesn't export.
 
 pub mod offscreen;
+pub mod snapshot;
