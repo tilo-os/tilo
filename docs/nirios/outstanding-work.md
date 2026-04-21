@@ -69,12 +69,23 @@ So: spokes = **workspaces** (not strips). The disc **replaces**
 
 ### Status — 2026-04-21
 
-- **Widget built** (`quick-shell/src/shell/sidebar_wheel_disc.rs`, commit
-  `2a7ec2b`). 240-px disc, spokes-as-strips layout, drag-rotate with
-  snap-to-nearest-spoke. Snapshot test + 4 interaction tests pass.
-- **Not wired** into `build_nirios_root_with_chrome` yet —
-  `SidebarWheelChrome` still renders in the live shell. Next iteration:
-  add a feature flag / env var and swap construction paths.
+- **Widget built and wired** as the primary sidebar. Commits:
+  `2a7ec2b` (widget scaffold) → `2337b21` (rename spokes to workspaces +
+  mount in `build_nirios_overlay_host_with_chrome`). Superproject
+  pointers: `3e5728c`, `c835ba0`.
+- 240-px disc, spokes = **workspaces** (one spoke per `tree.workspaces`
+  entry), drag-rotate with snap-to-nearest-spoke. Active workspace
+  determines `active_idx`.
+- `SidebarWheelChrome::from_tree(...)` no longer mounts in the live
+  shell. The module file still exists for reference; a follow-up can
+  delete it once the disc is proven.
+- **Known gap:** snapping a spoke into the active position does NOT
+  yet write `tree.active` via the CRDT — `sync()` is empty and the
+  widget doesn't have a back-channel. Rotating the disc currently
+  updates the label highlighting only; the workspace doesn't actually
+  switch. Next iteration must add a commit path (either via a callback
+  closure passed at construction time, or a `PresenceCtx`-style
+  broadcast that the shell picks up in its pre-frame sync).
 
 ### Proposed structure
 
