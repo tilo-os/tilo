@@ -171,6 +171,11 @@ impl App {
                         cursor.x = x;
                         cursor.y = y;
                     }
+                    // Mirror the update into PresenceCtx so the shell's
+                    // RemoteCursorOverlay (which reads from
+                    // `presence_ctx.remote_cursors`, not the legacy
+                    // `state.collab.cursors` map) lights up too.
+                    self.presence_ctx.upsert_remote_cursor(user_id, [x, y], None);
                 }
                 CollabEvent::RemotePresenceUpdate { user_id, key, payload } => {
                     self.apply_remote_presence(user_id, key, payload);
@@ -191,7 +196,7 @@ impl App {
                 self.apply_remote_presence(user_id, key, payload);
             }
             CollabEvent::RemoteCursorMoved { user_id, x, y } => {
-                let entry = self.state.collab.cursors.entry(user_id).or_insert(
+                let entry = self.state.collab.cursors.entry(user_id.clone()).or_insert(
                     crate::state::RemoteCursor {
                         x: 0.0,
                         y: 0.0,
@@ -201,6 +206,10 @@ impl App {
                 );
                 entry.x = x;
                 entry.y = y;
+                // Also drive the PresenceCtx overlay path so integration
+                // tests can assert on remote cursors via the public presence
+                // surface instead of the legacy cursors HashMap.
+                self.presence_ctx.upsert_remote_cursor(user_id, [x, y], None);
             }
             CollabEvent::CRDTIncremental { data } => {
                 // Mirror the production path so tests can exercise the
@@ -610,8 +619,18 @@ impl App {
                                     self.state.collab.cursors.entry(c.id.clone()).or_insert(crate::state::RemoteCursor {
                                         x: 0.0, y: 0.0,
                                         color: Color::rgb(c.color[0] as f64, c.color[1] as f64, c.color[2] as f64),
-                                        name: c.name,
+                                        name: c.name.clone(),
                                     });
+                                    // Seed the overlay-side presence so peer
+                                    // labels come through with the server-
+                                    // announced friendly name (later cursor
+                                    // moves will preserve that label because
+                                    // they pass display_name=None).
+                                    self.presence_ctx.upsert_remote_cursor(
+                                        c.id.clone(),
+                                        [0.0, 0.0],
+                                        Some(&c.name),
+                                    );
                                 }
                             }
                             CollabEvent::RemoteCursorMoved { user_id, x, y } => {
@@ -620,6 +639,11 @@ impl App {
                                     cursor.y = y;
                                     window.request_redraw();
                                 }
+                                // Always mirror into PresenceCtx — a peer
+                                // can send cursor moves before we've seen
+                                // their Context entry, and the overlay still
+                                // needs to paint them.
+                                self.presence_ctx.upsert_remote_cursor(user_id, [x, y], None);
                             }
                             CollabEvent::CRDTUpdate { data } => {
                                 if let Ok(new_state) = State::load(&data) {
