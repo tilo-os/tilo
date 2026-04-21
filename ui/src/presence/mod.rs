@@ -213,6 +213,54 @@ impl PresenceCtx {
         }
         user_color(&user.0)
     }
+
+    /// Upsert a remote peer's cursor into `remote_cursors`. The color is
+    /// resolved via `color_for(&UserId)` so pinned palette ids (alice/bob/
+    /// charlie/me) keep their reference colors and unknown ids fall through
+    /// to the FNV→HSL fallback. The label defaults to `user_id` when
+    /// `display_name` is None (peers can announce a friendlier name via
+    /// `CollabEvent::Context`).
+    pub fn upsert_remote_cursor(
+        &mut self,
+        user_id: String,
+        position: [f32; 2],
+        display_name: Option<&str>,
+    ) {
+        let uid = UserId(user_id.clone());
+        let (r, g, b) = self.color_for(&uid);
+        let color = [
+            r as f32 / 255.0,
+            g as f32 / 255.0,
+            b as f32 / 255.0,
+            1.0,
+        ];
+        let label = display_name
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| user_id.clone());
+        if let Some(existing) = self
+            .remote_cursors
+            .iter_mut()
+            .find(|c| c.user_id == user_id)
+        {
+            existing.position = position;
+            existing.color = color;
+            // Don't overwrite an existing friendly label with the raw id.
+            if display_name.is_some() {
+                existing.label = label;
+            }
+        } else {
+            self.remote_cursors.push(RemoteCursor {
+                user_id,
+                color,
+                position,
+                label,
+            });
+        }
+    }
+
+    pub fn remove_remote_cursor(&mut self, user_id: &str) {
+        self.remote_cursors.retain(|c| c.user_id != user_id);
+    }
 }
 
 /// Parse a `#rgb` / `#rrggbb` / `#rrggbbaa` colour string to an RGB triple.
@@ -342,5 +390,72 @@ mod color_override_tests {
         ctx.set_color_override(UserId("alice".into()), "#abcdef");
         ctx.set_color_override(UserId("alice".into()), "nonsense");
         assert_eq!(ctx.color_for(&UserId("alice".into())), user_color("alice"));
+    }
+}
+
+#[cfg(test)]
+mod remote_cursor_tests {
+    use super::*;
+
+    #[test]
+    fn upsert_remote_cursor_inserts_new_entry() {
+        let mut ctx = PresenceCtx::empty();
+        ctx.upsert_remote_cursor("alice".into(), [42.0, 17.0], None);
+        assert_eq!(ctx.remote_cursors.len(), 1);
+        let c = &ctx.remote_cursors[0];
+        assert_eq!(c.user_id, "alice");
+        assert_eq!(c.position, [42.0, 17.0]);
+        // display_name=None falls through to the raw user_id as label.
+        assert_eq!(c.label, "alice");
+        // Color should come from the pinned palette for "alice".
+        let (r, g, b) = user_color("alice");
+        assert!((c.color[0] - r as f32 / 255.0).abs() < 1e-3);
+        assert!((c.color[1] - g as f32 / 255.0).abs() < 1e-3);
+        assert!((c.color[2] - b as f32 / 255.0).abs() < 1e-3);
+        assert_eq!(c.color[3], 1.0);
+    }
+
+    #[test]
+    fn upsert_remote_cursor_updates_existing_in_place() {
+        let mut ctx = PresenceCtx::empty();
+        ctx.upsert_remote_cursor("bob".into(), [10.0, 10.0], None);
+        ctx.upsert_remote_cursor("bob".into(), [200.0, 300.0], None);
+        assert_eq!(
+            ctx.remote_cursors.len(),
+            1,
+            "second upsert for same user_id must not push a duplicate",
+        );
+        assert_eq!(ctx.remote_cursors[0].position, [200.0, 300.0]);
+    }
+
+    #[test]
+    fn upsert_remote_cursor_preserves_friendly_label_when_display_name_is_none() {
+        let mut ctx = PresenceCtx::empty();
+        // Seed with a friendly name (e.g. from CollabEvent::Context).
+        ctx.upsert_remote_cursor("alice".into(), [0.0, 0.0], Some("Alice Smith"));
+        assert_eq!(ctx.remote_cursors[0].label, "Alice Smith");
+
+        // A later cursor move with None must not clobber the friendly label.
+        ctx.upsert_remote_cursor("alice".into(), [50.0, 50.0], None);
+        assert_eq!(ctx.remote_cursors.len(), 1);
+        assert_eq!(ctx.remote_cursors[0].position, [50.0, 50.0]);
+        assert_eq!(
+            ctx.remote_cursors[0].label, "Alice Smith",
+            "display_name=None must not overwrite a previously-set friendly label",
+        );
+    }
+
+    #[test]
+    fn remove_remote_cursor_clears_entry() {
+        let mut ctx = PresenceCtx::empty();
+        ctx.upsert_remote_cursor("alice".into(), [1.0, 2.0], None);
+        ctx.upsert_remote_cursor("bob".into(), [3.0, 4.0], None);
+        assert_eq!(ctx.remote_cursors.len(), 2);
+        ctx.remove_remote_cursor("alice");
+        assert_eq!(ctx.remote_cursors.len(), 1);
+        assert_eq!(ctx.remote_cursors[0].user_id, "bob");
+        // Removing an unknown id is a no-op.
+        ctx.remove_remote_cursor("nobody");
+        assert_eq!(ctx.remote_cursors.len(), 1);
     }
 }
