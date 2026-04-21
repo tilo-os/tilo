@@ -5,13 +5,19 @@
 //!   1. Linear gradient top-left → bottom-right, slate-900 (#0f172a) to
 //!      slate-950 (#020617).
 //!   2. 24×24 px grid of 1px lines at `rgba(128, 128, 128, 0.07)`.
-//!   3. (Noise SVG overlay skipped for now — requires an image resource.)
+//!   3. A tiled 64×64 noise overlay at low opacity that breaks banding on
+//!      the gradient. The concept uses `bg-[url('noise.svg')] opacity-20
+//!      mix-blend-overlay`; we approximate with a procedurally-generated
+//!      RGBA8 buffer uploaded to a Vello `Image` with `Extend::Repeat` so
+//!      it tiles across the full backdrop rect.
 //!
 //! Structurally, this widget is a thin `Container`-style wrapper around an
 //! optional single child: it forwards sync/layout/events/presence/commit
 //! exactly like [`quick_ui::widget::Container`], but with no padding and
 //! no rounded-rect chrome — just the flat gradient + grid beneath the
 //! child.
+
+use std::sync::Arc;
 
 use automerge::{AutoCommit, ObjId};
 use quick_ui::presence::{PresenceCtx, PresenceKey};
@@ -23,17 +29,77 @@ use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
-use vello::peniko::{Brush, Color, ColorStop, ColorStops, Extend, Fill, Gradient, GradientKind};
+use vello::peniko::{
+    Blob, Brush, Color, ColorStop, ColorStops, Extend, Fill, Format, Gradient, GradientKind, Image,
+};
 use winit::event::{Modifiers, WindowEvent};
 
 /// Size (in logical pixels) of one grid cell.
 const GRID_STEP: f64 = 24.0;
 
-/// Widget that paints the nirios desktop backdrop (gradient + grid) behind
-/// its single child.
+/// Edge length (in pixels) of the tileable noise texture.
+const NOISE_SIZE: u32 = 64;
+
+/// Opacity applied when tiling the noise image across the backdrop. The
+/// concept uses `opacity-20 mix-blend-overlay` which — because overlay
+/// dampens mid-grey against a near-black gradient — works out to roughly
+/// this value. Dial this up only if banding is still visible; the dots
+/// should not be individually distinguishable.
+const NOISE_ALPHA: f32 = 0.08;
+
+/// Deterministic seed for the noise PRNG. Keeping this fixed means every
+/// session renders the exact same grain pattern, which in turn keeps the
+/// backdrop byte-identical across the headless render tests.
+const NOISE_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
+
+/// Generate a 64×64 RGBA8 buffer of deterministic white-noise specks
+/// suitable for tiling. Each pixel is `(0xFF, 0xFF, 0xFF, alpha)` where
+/// `alpha ∈ [0, 40]` — keeping the peak alpha low ensures the overlay
+/// stays subtle even before the layer-wide [`NOISE_ALPHA`] multiplier is
+/// applied on top.
+///
+/// Uses a tiny hand-rolled xorshift64 PRNG (no `rand` dep needed) seeded
+/// from [`NOISE_SEED`] so the output is bit-for-bit reproducible.
+fn generate_noise_bytes() -> Vec<u8> {
+    let pixel_count = (NOISE_SIZE as usize) * (NOISE_SIZE as usize);
+    let mut bytes = Vec::with_capacity(pixel_count * 4);
+
+    // xorshift64 state — must be non-zero.
+    let mut state: u64 = NOISE_SEED;
+    for _ in 0..pixel_count {
+        // xorshift64 step
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+
+        let alpha = (state & 0xFF) as u8;
+        // Map [0, 255] → [0, 40] so the tallest speck is barely visible.
+        let alpha = (alpha as u16 * 40 / 255) as u8;
+        bytes.push(0xFF);
+        bytes.push(0xFF);
+        bytes.push(0xFF);
+        bytes.push(alpha);
+    }
+    bytes
+}
+
+/// Build the tileable noise Image used by every [`DesktopBackdrop`]
+/// instance. Constructed once at widget creation; cloning the `Image`
+/// only bumps the internal `Arc` so repeated draws don't reallocate.
+fn build_noise_image() -> Image {
+    let bytes = generate_noise_bytes();
+    let blob = Blob::new(Arc::new(bytes));
+    Image::new(blob, Format::Rgba8, NOISE_SIZE, NOISE_SIZE).with_extend(Extend::Repeat)
+}
+
+/// Widget that paints the nirios desktop backdrop (gradient + grid + noise)
+/// behind its single child.
 pub struct DesktopBackdrop {
     child: Option<Box<dyn Widget>>,
     rect: Rect,
+    /// Pre-baked tileable noise texture. Uploaded once on construction and
+    /// reused on every draw via `Extend::Repeat`.
+    noise: Image,
 }
 
 impl DesktopBackdrop {
@@ -41,12 +107,20 @@ impl DesktopBackdrop {
         Self {
             child: None,
             rect: Rect::ZERO,
+            noise: build_noise_image(),
         }
     }
 
     pub fn with_child(mut self, child: Box<dyn Widget>) -> Self {
         self.child = Some(child);
         self
+    }
+
+    /// Length in bytes of the raw RGBA8 noise buffer backing the tiled
+    /// overlay. Exposed for tests; there is no runtime consumer.
+    #[cfg(test)]
+    pub(crate) fn noise_bytes_len(&self) -> usize {
+        self.noise.data.len()
     }
 
     fn paint_backdrop(&self, scene: &mut Scene, transform: Affine) {
@@ -104,6 +178,30 @@ impl DesktopBackdrop {
             y += GRID_STEP;
         }
 
+        scene.pop_layer();
+
+        // 3. Noise overlay — tile the 64×64 repeating Image across the
+        //    backdrop rect. The fill shape is the rect itself; `Extend::Repeat`
+        //    on the Image makes it wrap. A `push_layer` with `NOISE_ALPHA`
+        //    dampens the already-subtle per-pixel alpha further so the effect
+        //    registers as grain rather than visible dots.
+        scene.push_layer(
+            vello::peniko::BlendMode::default(),
+            NOISE_ALPHA,
+            transform,
+            &self.rect,
+        );
+        // Align the noise pattern with the backdrop's top-left corner so
+        // the tiling is stable across draws (Image uv defaults to (0, 0) at
+        // the origin in brush-transform space).
+        let brush_transform = Affine::translate((self.rect.x0, self.rect.y0));
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            &self.noise,
+            Some(brush_transform),
+            &self.rect,
+        );
         scene.pop_layer();
     }
 }
@@ -278,5 +376,41 @@ impl Widget for DesktopBackdrop {
 
     fn permission_scope(&self) -> Option<PermissionScope> {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The backdrop's baked noise texture must exist and have the right
+    /// byte-size (64×64 RGBA8 = 16384 bytes). Guards against someone
+    /// accidentally dropping the `include_bytes!` / procedural generation
+    /// path and reverting the visual gap documented in
+    /// `docs/nirios/visual-gaps.md` item #10.
+    #[test]
+    fn noise_buffer_is_populated() {
+        let backdrop = DesktopBackdrop::new();
+        let expected = (NOISE_SIZE as usize) * (NOISE_SIZE as usize) * 4;
+        assert_eq!(backdrop.noise_bytes_len(), expected);
+        assert_eq!(backdrop.noise.width, NOISE_SIZE);
+        assert_eq!(backdrop.noise.height, NOISE_SIZE);
+    }
+
+    /// The noise should actually have some non-zero alpha pixels; a
+    /// buffer of all zeros would render nothing and silently regress the
+    /// overlay without tripping the size assertion above.
+    #[test]
+    fn noise_buffer_has_nonzero_alpha() {
+        let bytes = generate_noise_bytes();
+        let any_visible = bytes.chunks_exact(4).any(|px| px[3] > 0);
+        assert!(any_visible, "generated noise has no visible specks");
+    }
+
+    /// The PRNG must be deterministic — regenerating must produce the
+    /// same bytes. Keeps headless render snapshots stable.
+    #[test]
+    fn noise_generation_is_deterministic() {
+        assert_eq!(generate_noise_bytes(), generate_noise_bytes());
     }
 }
