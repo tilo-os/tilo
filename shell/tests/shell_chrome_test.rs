@@ -318,6 +318,35 @@ fn topbar_chrome_clock_renders_at_bold_weight() {
     );
 }
 
+/// Gap #3: the top-bar surface is tinted at `bg-black/80` (α = 0.80) until
+/// the pinned Vello supports the real `backdrop-blur-xl` primitive. Pin
+/// the exact numeric alpha via the `TopBarChrome::top_bar_alpha` accessor
+/// so a future regression that reverts the topbar to an opaque fill
+/// (α = 1.0) flips this test to red without needing a pixel snapshot.
+#[test]
+fn topbar_chrome_surface_alpha_is_80_percent() {
+    use quick_desktop::shell::topbar_chrome::TopBarChrome;
+    let a = TopBarChrome::top_bar_alpha();
+    assert!(
+        (a - 0.80).abs() < f32::EPSILON,
+        "top-bar surface alpha must be 0.80 per visual-gap #3; got {a}"
+    );
+}
+
+/// Gap #3: the GlobalSearch palette surface is tinted at `bg-slate-900/70`
+/// (α = 0.70). Same regression-guard contract as the topbar test above —
+/// the `GlobalSearch::surface_alpha` accessor pins the numeric value the
+/// draw path uses so the palette can't silently revert to an opaque fill.
+#[test]
+fn global_search_surface_alpha_is_70_percent() {
+    use quick_desktop::shell::search::GlobalSearch;
+    let a = GlobalSearch::surface_alpha();
+    assert!(
+        (a - 0.70).abs() < f32::EPSILON,
+        "GlobalSearch surface alpha must be 0.70 per visual-gap #3; got {a}"
+    );
+}
+
 /// Gap #5: the top-bar overview button paints lucide `LayoutGrid` via
 /// the shared `quick_ui::icons` module, not the legacy 4-filled-rect
 /// quad. Route the assertion through the `overview_glyph_icon()`
