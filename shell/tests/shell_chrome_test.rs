@@ -287,6 +287,37 @@ fn topbar_chrome_maps_two_peers_to_two_distinct_avatar_hues() {
     assert_ne!(colors[0], colors[1]);
 }
 
+/// Gap #7: the top-bar clock must draw at the Bold (700) weight tier so
+/// it reads as the focal "glance value" on the dark chrome instead of
+/// collapsing onto the fallback font's single weight. Pinning the
+/// widget-level weight contract guards the explicit
+/// `draw_text_weighted(..., TextWeight::Bold)` swap in the Clock branch
+/// of `TopBarChrome::draw` against accidental reverts to `draw_text`
+/// (which defaults to Regular).
+#[test]
+fn topbar_chrome_clock_renders_at_bold_weight() {
+    use quick_desktop::shell::topbar_chrome::TopBarChrome;
+    use quick_ui::text_render::TextWeight;
+    let tree = WorkspaceTree {
+        workspaces: vec![mk_workspace(0, "A")],
+        active: WorkspaceId::from(0),
+        active_strip: Default::default(),
+        collaborators: vec![],
+    };
+    let chrome = TopBarChrome::from_tree(&tree);
+    assert_eq!(
+        chrome.clock_text_weight(),
+        TextWeight::Bold,
+        "clock must render at Bold (700) per concept §2.2 / visual-gap #7",
+    );
+    // Workspace-name pill sits one tier below the clock — Semibold (600).
+    assert_eq!(
+        chrome.workspace_name_text_weight(),
+        TextWeight::Semibold,
+        "workspace-name pill must render at Semibold (600) per concept §2.1",
+    );
+}
+
 /// Gap #5: the top-bar overview button paints lucide `LayoutGrid` via
 /// the shared `quick_ui::icons` module, not the legacy 4-filled-rect
 /// quad. Route the assertion through the `overview_glyph_icon()`
