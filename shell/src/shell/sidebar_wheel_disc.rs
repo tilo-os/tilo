@@ -34,11 +34,11 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{AlignItems, Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, PathEl, Point, Rect, Stroke};
-use vello::peniko::Fill;
+use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
 use quick_ui::animation::Spring;
-use quick_ui::presence::PresenceCtx;
+use quick_ui::presence::{PresenceCtx, PresenceKey};
 use quick_ui::text_render::TextRenderer;
 use quick_ui::theme::Theme;
 use quick_ui::tokens::SpringPresets;
@@ -211,7 +211,7 @@ impl Widget for SidebarWheelDisc {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
@@ -312,6 +312,48 @@ impl Widget for SidebarWheelDisc {
                     * Affine::rotate(angle_rad + extra)
                     * Affine::translate((-(w as f64) / 2.0, -(h as f64) / 2.0));
                 text_renderer.draw_text(scene, &spoke.text, size, color, label_xform, None);
+            }
+        }
+
+        // ---- Pass 4: per-spoke collaborator presence dots -----------------
+        // Closes wheel-disc-design known-gap #3. Each spoke that carries a
+        // `workspace_id` queries `PresenceCtx::peers_on(PresenceKey::Workspace
+        // { id })` (same key the rest of the shell uses — see
+        // `overlay_host.rs:2489-2491`) and paints up to 3 small 4 px dots
+        // tangent to the rim, 16 px outside the tip label (i.e. at
+        // `radius - 8 px`, still inside the rim so the dots never overlap
+        // the outer stroke). Colour comes from `PresenceCtx::color_for` so
+        // palette-pinned peers (me=indigo, alice=pink, bob=orange,
+        // charlie=emerald) keep their identity everywhere.
+        if !self.spokes.is_empty() {
+            let dots_radius = radius - 8.0;
+            let gap = self.spoke_gap_deg();
+            for (i, spoke) in self.spokes.iter().enumerate() {
+                let Some(ws_id) = spoke.workspace_id else { continue };
+                let key = PresenceKey::Workspace { id: format!("{}", ws_id) };
+                let peers = presence.peers_on(&key);
+                if peers.is_empty() {
+                    continue;
+                }
+                let peer_count = peers.len().min(3);
+                let angle_deg = visual_rotation_deg + i as f32 * gap;
+                let angle_rad = (angle_deg as f64).to_radians();
+                let tip_x = cx + dots_radius * angle_rad.cos();
+                let tip_y = cy + dots_radius * angle_rad.sin();
+                // Perpendicular to the spoke direction (tangent to the rim).
+                let perp_x = -angle_rad.sin();
+                let perp_y = angle_rad.cos();
+                let spacing = 10.0_f64;
+                let centre_bias = (peer_count as f64 - 1.0) / 2.0;
+                for (k, user) in peers.iter().take(peer_count).enumerate() {
+                    let offset = (k as f64 - centre_bias) * spacing;
+                    let dx = perp_x * offset;
+                    let dy = perp_y * offset;
+                    let (r, g, b) = presence.color_for(user);
+                    let color = Color::rgb8(r, g, b);
+                    let dot = Circle::new((tip_x + dx, tip_y + dy), 4.0);
+                    scene.fill(Fill::NonZero, transform, color, None, &dot);
+                }
             }
         }
 
@@ -593,6 +635,27 @@ impl SidebarWheelDisc {
         let new_idx = ((self.active_idx as f32 + delta).rem_euclid(n as f32)) as usize;
         self.active_idx = new_idx % n;
         self.publish_active_to_chrome();
+    }
+
+    /// Test helper: replays the same math as `draw`'s presence-dot pass
+    /// and returns the total number of dots that would be painted for
+    /// the given `PresenceCtx`, without touching Vello. Mirrors the cap
+    /// (3 per spoke), the `workspace_id.is_some()` skip, and the
+    /// empty-peers skip. Lets unit tests assert dot counts without a
+    /// GPU-backed scene.
+    #[cfg(test)]
+    pub fn presence_dot_hit_count(&self, ctx: &PresenceCtx) -> usize {
+        let mut total = 0usize;
+        for spoke in &self.spokes {
+            let Some(ws_id) = spoke.workspace_id else { continue };
+            let key = PresenceKey::Workspace { id: format!("{}", ws_id) };
+            let peers = ctx.peers_on(&key);
+            if peers.is_empty() {
+                continue;
+            }
+            total += peers.len().min(3);
+        }
+        total
     }
 
     /// If a chrome handle is attached and the active spoke carries a
@@ -1032,6 +1095,69 @@ mod tests {
         assert!(
             d.drag_from.is_none(),
             "plus-press must not start a rotation drag"
+        );
+    }
+
+    /// Closes wheel-disc-design known-gap #3: each spoke should render
+    /// one presence dot per peer currently registered on its workspace
+    /// key (up to 3). Seeds two peers on workspace 77, builds a disc with
+    /// a single spoke keyed to that workspace, and asserts the helper
+    /// reports exactly 2 dots — matching the `presence.peers_on(...)`
+    /// count for that spoke's `PresenceKey::Workspace`.
+    #[test]
+    fn disc_renders_dot_per_seeded_peer_on_workspace() {
+        use quick_ui::permissions::UserId;
+        use quick_ui::presence::{PresenceCtx, PresenceKey};
+
+        let mut ctx = PresenceCtx::empty();
+        let key = PresenceKey::Workspace { id: "77".to_string() };
+        ctx.register_presence(&key, UserId("alice".to_string()));
+        ctx.register_presence(&key, UserId("bob".to_string()));
+
+        let d = SidebarWheelDisc::new(vec![SpokeLabel {
+            text: "Research".to_string(),
+            workspace_id: Some(77),
+        }]);
+
+        // Baseline: an empty PresenceCtx produces no dots.
+        let empty = PresenceCtx::empty();
+        assert_eq!(
+            d.presence_dot_hit_count(&empty),
+            0,
+            "baseline with empty presence must not paint any dots"
+        );
+        // Seeded: exactly 2 peers → exactly 2 dots on the one spoke.
+        assert_eq!(
+            d.presence_dot_hit_count(&ctx),
+            2,
+            "two seeded peers on workspace 77 must yield 2 dots"
+        );
+    }
+
+    /// Closes wheel-disc-design known-gap #3 (cap branch): the disc caps
+    /// the per-spoke dot cluster at 3 even when more peers are registered,
+    /// matching the concept's wheel-card design. Seeds 5 peers on the
+    /// same workspace and asserts the helper reports exactly 3.
+    #[test]
+    fn disc_caps_presence_dots_at_three_per_spoke() {
+        use quick_ui::permissions::UserId;
+        use quick_ui::presence::{PresenceCtx, PresenceKey};
+
+        let mut ctx = PresenceCtx::empty();
+        let key = PresenceKey::Workspace { id: "77".to_string() };
+        for name in ["alice", "bob", "charlie", "dave", "eve"] {
+            ctx.register_presence(&key, UserId(name.to_string()));
+        }
+
+        let d = SidebarWheelDisc::new(vec![SpokeLabel {
+            text: "Research".to_string(),
+            workspace_id: Some(77),
+        }]);
+
+        assert_eq!(
+            d.presence_dot_hit_count(&ctx),
+            3,
+            "5 seeded peers must still cap at 3 dots per spoke"
         );
     }
 }
