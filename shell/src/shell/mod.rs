@@ -1048,6 +1048,20 @@ fn to_ui_kind(k: &ShellKind) -> UiKind {
     }
 }
 
+/// Test-only probe into [`to_ui_tile`]: returns `"App"` if the persisted
+/// tile resolved into a live `UiTile::App`, `"Stub"` otherwise. Integration
+/// tests use this to assert that `AppPlaceholder { kind: Terminal }` /
+/// `AppPlaceholder { kind: FileExplorer }` come online as live app widgets
+/// instead of silently falling through to a stub card. Keeps the full
+/// `UiTile` type (and its boxed `AppWidget`) out of the public surface.
+#[cfg(any(test, debug_assertions))]
+pub fn resolve_tile_shape_for_test(t: &ShellTile) -> &'static str {
+    match to_ui_tile(t) {
+        UiTile::App(_) => "App",
+        UiTile::Stub { .. } => "Stub",
+    }
+}
+
 fn to_ui_tile(t: &ShellTile) -> UiTile {
     match t {
         ShellTile::Stub { kind, label } => UiTile::Stub {
@@ -1055,10 +1069,27 @@ fn to_ui_tile(t: &ShellTile) -> UiTile {
             label: label.clone(),
         },
         ShellTile::AppPlaceholder { kind, label } => match kind {
-            // Notes is the only placeholder wired to a live AppWidget in the
-            // persisted render path today. Other placeholders still fall
-            // through to Stub; bringing Terminal/Files online from the
-            // persisted state path is tracked in Plan 3's follow-up.
+            // Terminal — spawn a real PTY; on failure fall back to a Stub per
+            // spec §9a, mirroring the same pattern `default_demo_tabs` uses
+            // for the eager-constructed demo workspace.
+            ShellKind::Terminal => match TerminalWidget::spawn_default() {
+                Ok(w) => UiTile::App(Box::new(w)),
+                Err(e) => {
+                    tracing::warn!("terminal spawn failed: {e}; falling back to stub");
+                    UiTile::Stub {
+                        kind: to_ui_kind(kind),
+                        label: format!("Terminal: {e}"),
+                    }
+                }
+            },
+            // File-explorer — `new` is infallible; the widget surfaces any
+            // directory-read errors via its own in-pane status bar.
+            ShellKind::FileExplorer => {
+                UiTile::App(Box::new(FileExplorerWidget::new()))
+            }
+            // Notes and Editor placeholders resolve to the shell's CRDT-
+            // backed apps. Everything else falls through to a Stub until a
+            // dedicated widget is wired up.
             ShellKind::Other(s) if s.eq_ignore_ascii_case("Notes") => {
                 let seed = "Welcome to nirios.\n\n\
                      These notes sync live with anyone invited to this workspace — \
