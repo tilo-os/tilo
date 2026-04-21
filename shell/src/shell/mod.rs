@@ -1091,6 +1091,19 @@ pub fn build_nirios_root(tree: &WorkspaceTree) -> Box<dyn Widget> {
 pub fn build_nirios_root_with_chrome(
     tree: &WorkspaceTree,
 ) -> (Box<dyn Widget>, chrome_state::Chrome) {
+    let (host, chrome) = build_nirios_overlay_host_with_chrome(tree);
+    (Box::new(host) as Box<dyn Widget>, chrome)
+}
+
+/// Test-only variant of [`build_nirios_root_with_chrome`] that returns the
+/// concrete [`overlay_host::ShellOverlayHost`] instead of a boxed trait
+/// object. Integration tests use this to assert on host-local state like
+/// `palette_visible()` — the live binary wiring (`main.rs`) goes through
+/// the boxed `build_nirios_root` so this extra surface stays out of
+/// production code paths.
+pub fn build_nirios_overlay_host_with_chrome(
+    tree: &WorkspaceTree,
+) -> (overlay_host::ShellOverlayHost, chrome_state::Chrome) {
     let chrome = chrome_state::ChromeState::new(tree.clone());
 
     let strips_for_view: Vec<String> = tree
@@ -1191,7 +1204,6 @@ pub fn build_nirios_root_with_chrome(
         .with_chrome(chrome.clone())
         .with_sidebar(sidebar)
         .with_sidebar_top(sidebar_top);
-    let host: Box<dyn Widget> = Box::new(host);
     (host, chrome)
 }
 
