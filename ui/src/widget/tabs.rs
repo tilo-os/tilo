@@ -6,7 +6,7 @@ use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use crate::widget::Widget;
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::presence::{PresenceCtx, PresenceKey};
 use crate::dnd::{DragPayload, DRAG_START_THRESHOLD_PX};
@@ -543,7 +543,13 @@ impl Widget for TabBar {
                 text_dim
             };
             let text_size = theme.tokens.typography.scale.sm;
-            let (tw, th) = tr.measure(&t.title, text_size, None);
+            // Concept §7.4: tab titles are `font-semibold`. Active vs inactive
+            // pills differ only via colour/alpha (visual-gap #2) — both share
+            // the Semibold weight. Measure at the same weight the draw call
+            // will use so clip-rect widths track actual glyph advances.
+            // Visual-gap #7.
+            let title_weight = TextWeight::Semibold;
+            let (tw, th) = tr.measure_weighted(&t.title, text_size, None, title_weight);
             // Paint the leading app-kind icon when one is set — a small
             // vector glyph centered in a 14 px-wide slot on the left of
             // the pill. The title is shifted right by (icon + gap) so
@@ -570,7 +576,15 @@ impl Widget for TabBar {
             // titles truncate cleanly instead of overlapping the "×".
             let clip_r = Rect::new(r.x0, r.y0, self.close_rects[i].x0 - 2.0, r.y1);
             scene.push_layer(vello::peniko::BlendMode::default(), 1.0, transform, &clip_r);
-            tr.draw_text(scene, &t.title, text_size, text_color, transform * Affine::translate((title_x, title_y)), None);
+            tr.draw_text_weighted(
+                scene,
+                &t.title,
+                text_size,
+                text_color,
+                transform * Affine::translate((title_x, title_y)),
+                None,
+                title_weight,
+            );
             let _ = tw;
             scene.pop_layer();
 
