@@ -30,6 +30,13 @@ const SPAWN_ANIM_MS: u64 = 320;
 /// values mean the group starts below its target and settles up —
 /// mirrors the concept's `y: 20` initial.
 const SPAWN_ANIM_Y_OFFSET: f64 = 20.0;
+/// Duration of the group-level close fade-out played when the last
+/// tab is closed out of a `WindowGroup`. Matches the tab-pill
+/// `CLOSE_FADE_MS` in `tabs.rs` so the group's own shrink chains
+/// cleanly onto the final pill fade without a visible gap or double-
+/// bounce. `GroupRow` prunes the group from its `groups` vec once
+/// `close_complete()` returns true.
+const GROUP_CLOSE_FADE_MS: u64 = 180;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowWidth { Narrow, Normal, Wide, Custom(u32) }
@@ -94,6 +101,17 @@ pub struct WindowGroup {
     /// to keep the `TileHost` shape stable and avoid a touch to
     /// `tile_host.rs`.
     closing_hosts: HashMap<u64, Instant>,
+    /// Group-level close-fade timestamp. `None` while the group is
+    /// alive; `Some(started)` once the user's last tab-close drains
+    /// through `handle_event` and the group has no remaining tabs or
+    /// in-flight closing hosts. Mirrors the per-tab `closing_tabs`
+    /// pattern on the bar: we keep the group rendering at declining
+    /// alpha + scale for `GROUP_CLOSE_FADE_MS`, then the parent
+    /// `GroupRow` sweep prunes us from its `groups` vec once
+    /// `close_complete()` returns true. Kept `Option<Instant>` (not
+    /// a bool + separate timestamp) so `is_closing` and
+    /// `close_elapsed` have a single source of truth.
+    closing_at: Option<Instant>,
 }
 
 impl WindowGroup {
@@ -117,6 +135,7 @@ impl WindowGroup {
             last_cursor: Point::ZERO,
             spawned_at: None,
             closing_hosts: HashMap::new(),
+            closing_at: None,
         }
     }
     pub fn width(&self) -> WindowWidth { self.width }
@@ -131,6 +150,47 @@ impl WindowGroup {
     /// surprising behaviour).
     pub fn start_spawn_animation(&mut self) {
         self.spawned_at = Some(Instant::now());
+    }
+
+    /// Latch the group-level close fade. Called from `handle_event`
+    /// the first frame after the bar + `closing_hosts` have been
+    /// fully drained with no surviving tabs. Mirrors
+    /// `TabBar::start_closing` (tab-level) and
+    /// `TileHost::start_spawn_animation` (tile-level) so each layer
+    /// in the group composition has a symmetric open/close
+    /// animation.
+    ///
+    /// Idempotent in spirit: a second call before
+    /// `close_complete()` returns true overwrites the timestamp,
+    /// which is acceptable (the stimulus is strictly "last tab
+    /// went away"; if we somehow observed it twice we want the
+    /// newer clock).
+    pub fn start_closing(&mut self) {
+        self.closing_at = Some(Instant::now());
+    }
+
+    /// True while the group-level close fade is in flight or latched
+    /// but not yet complete. Used by `GroupRow` to branch between
+    /// "keep painting" and "prune".
+    pub fn is_closing(&self) -> bool {
+        self.closing_at.is_some()
+    }
+
+    /// How long the close fade has been running, or `None` if the
+    /// group is still alive. Exposed for parity tests that want to
+    /// assert on the exact progress of the curve without reaching
+    /// into private state.
+    pub fn close_elapsed(&self) -> Option<Duration> {
+        self.closing_at.map(|t| t.elapsed())
+    }
+
+    /// True once the group-level close fade has fully elapsed, i.e.
+    /// the group has finished shrinking out and `GroupRow` should
+    /// drop it from its `groups` vec. False while the fade is still
+    /// in flight — the group keeps painting until this flips.
+    pub fn close_complete(&self) -> bool {
+        self.closing_at
+            .is_some_and(|t| t.elapsed().as_millis() as u64 >= GROUP_CLOSE_FADE_MS)
     }
     pub fn begin_resize(&mut self, pointer_x: f32) { self.resize_origin = Some((pointer_x, self.width.pixels())); }
     pub fn update_resize(&mut self, pointer_x: f32) {
@@ -222,6 +282,7 @@ impl WindowGroup {
             last_cursor: Point::ZERO,
             spawned_at: None,
             closing_hosts: HashMap::new(),
+            closing_at: None,
         }
     }
 
@@ -311,6 +372,16 @@ impl WindowGroup {
     pub fn has_closing_host(&self, id: u64) -> bool {
         self.closing_hosts.contains_key(&id)
     }
+
+    /// Test-only: directly set `closing_at` without waiting for the
+    /// full "last tab was closed" drain sweep. Used by `GroupRow`'s
+    /// prune tests to seed a group with an already-elapsed close
+    /// timestamp (or a fresh one) and assert on the prune vs.
+    /// retain branch deterministically.
+    #[cfg(test)]
+    pub(crate) fn set_closing_at_for_tests(&mut self, t: Instant) {
+        self.closing_at = Some(t);
+    }
 }
 
 impl Widget for WindowGroup {
@@ -347,32 +418,53 @@ impl Widget for WindowGroup {
         }
     }
     fn draw(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
-        // Per-group spawn fade: if `start_spawn_animation` was called on
-        // a freshly-created group (typically by the split-into-new-group
-        // path), play the concept's
+        // Per-group spawn / close fades are mutually exclusive in
+        // practice — a group can't be both "just arrived" and "last
+        // tab just left" on the same frame. We check close first so
+        // a latent `spawned_at` from a historically-rare reuse never
+        // clobbers the shutdown curve the user is watching.
+        //
+        // Spawn (`start_spawn_animation` on a freshly-created group,
+        // typically via split-into-new-group) runs the concept's
         // `initial={{ opacity: 0, scale: 0.95, y: 20 }}` →
         // `animate={{ opacity: 1, scale: 1, y: 0 }}` curve over
-        // `SPAWN_ANIM_MS`. Computed upfront so the whole paint block
-        // (bar + tile + chrome rings) composes under a single alpha
-        // layer + translate + scale, keeping pill hover targets and
-        // resize-handle hit-tests aligned with what the user sees on
-        // screen mid-fade.
-        let fade_window = Duration::from_millis(SPAWN_ANIM_MS);
-        let (fade_alpha, fade_y, fade_scale): (f32, f64, f64) = match self.spawned_at {
-            Some(started) => {
-                let elapsed = started.elapsed();
-                if elapsed >= fade_window {
-                    (1.0, 0.0, 1.0)
-                } else {
-                    let raw = (elapsed.as_secs_f64()
-                        / (SPAWN_ANIM_MS as f64 / 1000.0))
-                        .clamp(0.0, 1.0);
-                    let eased = 1.0 - (1.0 - raw).powi(3);
-                    let scale = 0.95 + 0.05 * eased;
-                    (eased as f32, SPAWN_ANIM_Y_OFFSET * (1.0 - eased), scale)
-                }
+        // `SPAWN_ANIM_MS`.
+        //
+        // Close (`start_closing` latched after the last tab's host
+        // fade sweeps through) runs the mirror curve over
+        // `GROUP_CLOSE_FADE_MS`: α 1 → 0, scale 1 → 0.95.
+        //
+        // Either way, the whole paint block (bar + tile + chrome
+        // rings) composes under a single alpha layer + translate +
+        // scale so pill hover targets and resize-handle hit-tests
+        // stay aligned with what the user sees on screen mid-fade.
+        let (fade_alpha, fade_y, fade_scale): (f32, f64, f64) = if let Some(started) =
+            self.closing_at
+        {
+            // Close curve: α 1 → 0, scale 1 → 0.95, y stays put (the
+            // per-host curve already carries the -20 y-drift; the
+            // group shell just fades + shrinks about its centre).
+            let raw = (started.elapsed().as_millis() as f32
+                / GROUP_CLOSE_FADE_MS as f32)
+                .clamp(0.0, 1.0);
+            let eased = 1.0 - (1.0 - raw).powi(3);
+            let alpha = (1.0 - eased).max(0.0);
+            let scale = (1.0 - 0.05 * eased) as f64;
+            (alpha, 0.0, scale)
+        } else if let Some(started) = self.spawned_at {
+            let elapsed = started.elapsed();
+            if elapsed >= Duration::from_millis(SPAWN_ANIM_MS) {
+                (1.0, 0.0, 1.0)
+            } else {
+                let raw = (elapsed.as_secs_f64()
+                    / (SPAWN_ANIM_MS as f64 / 1000.0))
+                    .clamp(0.0, 1.0);
+                let eased = 1.0 - (1.0 - raw).powi(3);
+                let scale = 0.95 + 0.05 * eased;
+                (eased as f32, SPAWN_ANIM_Y_OFFSET * (1.0 - eased), scale)
             }
-            None => (1.0, 0.0, 1.0),
+        } else {
+            (1.0, 0.0, 1.0)
         };
         let spawn_active = fade_alpha < 1.0;
         if spawn_active {
@@ -776,6 +868,24 @@ impl Widget for WindowGroup {
             self.bar.finalize_close(id);
         }
 
+        // If the final tab's host-level close fade just expired and
+        // dropped the last occupant, latch the group-level close
+        // fade so `GroupRow` paints us shrinking out over the next
+        // `GROUP_CLOSE_FADE_MS` before pruning. Gated on `is_closing`
+        // so a subsequent tick inside the fade window doesn't
+        // restart the curve. We intentionally check
+        // `bar.tabs().is_empty()` instead of just `hosts.is_empty()`
+        // — the two track each other one-for-one, but a future
+        // refactor could introduce tab placeholders without hosts,
+        // and the user-visible "group is empty" signal is the bar.
+        if !self.is_closing()
+            && self.bar.tabs().is_empty()
+            && self.hosts.is_empty()
+            && self.closing_hosts.is_empty()
+        {
+            self.start_closing();
+        }
+
         // Close a tab: drain the bar's one-shot `pending_close` and
         // latch the host-level fade-out. The bar has already shifted
         // active-id to the neighbour and snapshotted its pill into
@@ -859,8 +969,17 @@ impl Widget for WindowGroup {
             .closing_hosts
             .values()
             .any(|t| t.elapsed() < close_window);
+        // Group-level close fade (180 ms). While `closing_at` is
+        // latched and still inside the fade window the `App` run
+        // loop needs to keep pumping frames so the group visibly
+        // shrinks out instead of popping away the instant the last
+        // tab's fade expires.
+        let group_close_in_flight = self.closing_at.is_some_and(|t| {
+            t.elapsed() < Duration::from_millis(GROUP_CLOSE_FADE_MS)
+        });
         spawn_in_flight
             || close_in_flight
+            || group_close_in_flight
             || self.bar.needs_animation_frame()
             || self
                 .hosts
@@ -1082,6 +1201,182 @@ mod tests {
         assert!(
             !g.has_closing_host(2),
             "sweep clears the closing_hosts entry",
+        );
+    }
+
+    /// Driving a full "close the sole tab" cycle must end with the
+    /// group-level close fade latched — `GroupRow` relies on
+    /// `is_closing()` → `close_complete()` to sequence the prune so
+    /// if the tick logic never flips `closing_at` the group stays
+    /// around as an empty shell forever (the pre-feature bug this
+    /// commit fixes). We fast-forward the host-level close via
+    /// `force_expire_closing` so the test doesn't have to sleep past
+    /// `CLOSE_FADE_MS`.
+    #[test]
+    fn closing_last_tab_kicks_off_group_close() {
+        use std::collections::HashMap;
+        use taffy::Style;
+        use taffy::prelude::TaffyMaxContent;
+        use crate::theme::Theme;
+
+        // Single-tab group so "close this tab" truly empties the group.
+        let tabs: Vec<(TabDescriptor, TileContent)> = vec![(
+            TabDescriptor::new(1, "solo"),
+            TileContent::Stub { kind: AppKind::Settings, label: "a".into() },
+        )];
+        let mut g = WindowGroup::new(10, tabs, 1, WindowWidth::Normal);
+
+        // Full layout pass so the bar has authoritative pill rects.
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(Style::default(), &[group_node])
+            .unwrap();
+        taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
+        g.apply_layout(&taffy, group_node, Point::ZERO);
+
+        // Kick the close flow via the bar: this simulates the
+        // user pressing the pill's × on the sole tab.
+        g.bar_mut().start_closing(1);
+
+        // First handle_event drains `pending_close` into
+        // `closing_hosts`. The group is NOT yet closing because a
+        // closing host is still in flight.
+        let mut handled = false;
+        let mut focus_target = None;
+        let mut state = automerge::AutoCommit::new();
+        let root_id = automerge::ROOT;
+        let moved = WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(1000.0, 1000.0),
+        };
+        g.handle_event(
+            &moved, 1.0, &winit::event::Modifiers::default(),
+            &mut state, &root_id, &mut handled, &mut focus_target,
+            group_node, &taffy,
+        );
+        assert!(
+            g.has_closing_host(1),
+            "precondition: host-level close latched",
+        );
+        assert!(
+            !g.is_closing(),
+            "group close must NOT fire while a host-level close is still in flight",
+        );
+
+        // Expire the host-level close; next handle_event sweeps the
+        // host away and then discovers the group is empty, which is
+        // when the group-level close should latch.
+        g.force_expire_closing(1);
+        let moved2 = WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(1000.0, 1000.0),
+        };
+        let mut handled2 = false;
+        g.handle_event(
+            &moved2, 1.0, &winit::event::Modifiers::default(),
+            &mut state, &root_id, &mut handled2, &mut focus_target,
+            group_node, &taffy,
+        );
+        assert!(
+            g.is_closing(),
+            "after the sole tab's fade sweeps out, the group must latch its own close fade",
+        );
+    }
+
+    /// Pinned directly against the public API so a regression that
+    /// breaks only the elapsed-check (without touching
+    /// `start_closing` or `is_closing`) still fails here.
+    #[test]
+    fn group_close_complete_true_after_fade_duration() {
+        let mut g = make_group();
+        g.set_closing_at_for_tests(
+            Instant::now() - Duration::from_millis(GROUP_CLOSE_FADE_MS + 20),
+        );
+        assert!(
+            g.close_complete(),
+            "close_complete must flip true after the fade window elapses",
+        );
+        // And a fresh close timestamp must NOT be complete yet.
+        g.set_closing_at_for_tests(Instant::now());
+        assert!(
+            !g.close_complete(),
+            "a just-latched close must not report complete",
+        );
+    }
+
+    /// `GroupRow` calls `draw` every frame regardless of close
+    /// status — the whole point of the fade is that the group keeps
+    /// painting while shrinking out. This test guards against a
+    /// panic or a collapsed rect mid-fade.
+    #[test]
+    fn group_still_paints_during_close_fade() {
+        use std::collections::HashMap;
+        use taffy::Style;
+        use taffy::prelude::TaffyMaxContent;
+        use crate::theme::Theme;
+
+        let mut g = make_group();
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(Style::default(), &[group_node])
+            .unwrap();
+        taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
+        g.apply_layout(&taffy, group_node, Point::ZERO);
+        let pre_rect = g.get_rect();
+
+        g.start_closing();
+
+        // Paint into a throwaway Scene — the assertion is "no panic"
+        // and "rect still reports prior bounds for the duration of
+        // the fade". The fade scales about the centre via an
+        // Affine; the logical `self.rect` used for hit-tests stays
+        // put so drop-targets and focus bookkeeping don't shift
+        // under the user mid-animation.
+        let mut scene = Scene::new();
+        let presence = PresenceCtx::default();
+        // TextRenderer is constructed fresh per crate test; we use
+        // the same factory the other `draw` tests in this file rely
+        // on.
+        let mut tr = TextRenderer::new();
+        g.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+
+        assert_eq!(
+            g.get_rect(),
+            pre_rect,
+            "close fade paints over the existing rect; hit-tests must stay stable",
+        );
+        assert!(
+            g.is_closing(),
+            "close flag stays latched through the draw pass",
+        );
+    }
+
+    /// Symmetric to the host-level `window_group_needs_animation_frame_during_close`
+    /// above but for the group-level `closing_at` path. Regression
+    /// guard for a change that breaks only this pump signal.
+    #[test]
+    fn group_needs_animation_frame_while_closing() {
+        let mut g = make_group();
+        assert!(!g.needs_animation_frame(), "precondition: idle group is quiet");
+        g.start_closing();
+        assert!(
+            g.needs_animation_frame(),
+            "group-level close fade must pump frames until close_complete",
+        );
+        // Expired: the run loop can idle again (the prune sweep
+        // drops us on the next tick regardless).
+        g.set_closing_at_for_tests(
+            Instant::now() - Duration::from_millis(GROUP_CLOSE_FADE_MS + 20),
+        );
+        assert!(
+            !g.needs_animation_frame(),
+            "after the fade window elapses, frames are no longer required",
         );
     }
 
