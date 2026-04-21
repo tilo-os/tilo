@@ -151,11 +151,18 @@ the stub widget since `apps/browser` depends on `libservo` from a git
 source that doesn't publish the crate (CI can't resolve it offline).
 Not a blocker for the current iteration.
 
-### 4. Real-socket collab E2E
+### 4. Real-socket collab E2E — resolved (2026-04-21)
 
-`quick-ui/src/collaboration.rs` supports a Unix socket, but all current
-tests go through in-process `MemoryRelay`. No two-binary test exists that
-confirms CRDT sync across processes.
+Commit `066e112` adds `quick-ui/tests/real_socket_two_peer.rs`: a
+test-only Unix-socket broker accepts two `CollaborationManager`
+connections, fans each peer's `CollabRequest` to the opposite side as
+the matching `CollabEvent`, and asserts `SyncIncremental` ↔
+`CRDTIncremental` plus `Presence` ↔ `RemotePresenceUpdate` round-trips.
+Runs in `cargo test -p quick-ui --test real_socket_two_peer` in 0.20s.
+
+Previously all collab tests went through in-process `MemoryRelay`; the
+real wire protocol (4-byte LE length prefix + JSON body) was unexercised
+until this commit.
 
 ### 5. Presence over real socket
 
@@ -192,10 +199,9 @@ shipped or parked pending a Vello blur primitive (#3 alpha-tint half already
 shipped; Gaussian convolution deferred).
 
 **In flight** (parallel subagents dispatched):
-- Real-socket two-peer collab E2E (closes §3 #4 below)
+- Lucide glyphs on tab/window decorations (min/max/close, drag ghost polish)
 
 **Remaining highest-priority (structural / functional):**
-- Real-socket two-peer collab E2E (§3 #4).
 - Real peer presence lighting up `RemoteCursorOverlay` (§3 #5).
 - Tab/window decoration polish to concept parity (min/max glyphs, per-tile
   close hover, drag ghost).
