@@ -1,9 +1,8 @@
-//! Screenshot harness for the new `SidebarWheelDisc` widget.
+//! Screenshot harness for the `SidebarWheelDisc` widget.
 //!
-//! Renders a 3-spoke disc onto a 280×280 canvas and writes it to
-//! `target/nirios-screenshots/wheel-disc-01-baseline.png` for eyeball
-//! verification. No pixel asserts — per the widget's scope (build +
-//! test + snapshot, no live-shell wiring yet) the goal is to catch
+//! Renders a 3-spoke disc (one spoke per workspace) onto a 280×280 canvas
+//! and writes it to `target/nirios-screenshots/wheel-disc-01-baseline.png`
+//! for eyeball verification. No pixel asserts — the goal is to catch
 //! visual regressions by hand during review.
 //!
 //! Soft-skips when no wgpu adapter is available (same pattern as
@@ -49,18 +48,18 @@ fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
 }
 
 #[test]
-fn sidebar_wheel_disc_renders_a_spoke_per_strip() {
+fn sidebar_wheel_disc_renders_a_spoke_per_workspace() {
     let Some(mut renderer) = try_new_renderer(CANVAS, CANVAS) else {
         eprintln!("skip: no wgpu adapter available for offscreen render");
         return;
     };
 
-    let strips = vec![
-        SpokeLabel { text: "Home".into(), strip_id: Some(1) },
-        SpokeLabel { text: "Research".into(), strip_id: Some(2) },
-        SpokeLabel { text: "Design".into(), strip_id: Some(3) },
+    let spokes = vec![
+        SpokeLabel { text: "Home".into(), workspace_id: Some(1) },
+        SpokeLabel { text: "Research".into(), workspace_id: Some(2) },
+        SpokeLabel { text: "Design".into(), workspace_id: Some(3) },
     ];
-    let mut disc = SidebarWheelDisc::new(strips);
+    let mut disc = SidebarWheelDisc::new(spokes);
     // Keep the default 240 px diameter; canvas has 20 px of margin on
     // each side so the rim isn't flush with the edge.
 
