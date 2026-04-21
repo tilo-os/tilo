@@ -156,16 +156,24 @@ cursor. Real peer presence never lights up a cursor today.
 See `docs/nirios/visual-gaps.md` for the full list.
 
 **Closed** as of 2026-04-21 iteration:
+- #1 content card drop shadow (radial sprite) — commit `5837eee`
 - #2 tab contrast — commit `4d6df4c`
 - #4 overview active-row halo (4-ring fade) — commit `4b12846`
+- #5 lucide icon module + chrome swap — commits `e2fad05` + `59be5eb`
 - #6 sidebar card fill — superseded by wheel disc
+- #7 TextWeight plumbing + chrome adoption — commits `7dd9fa1` + `9a018e3`
 - #8 topbar clock active-dot contrast — commit `3b786c2`
 - #9 per-peer collaborator avatar colors — commit `730e6c4`
 - #10 desktop noise overlay — commit `722ad07`
+- #11 permissions shield (closed via gap #5) — commit `59be5eb`
 - #12 overview header typography (≥32 px bold) — commit `687e7ee`
 - #13 overview scrim slate-950 — commit `687e7ee`
 - Wheel-disc Plus button (closes wheel-disc-design known-gap #4) — commit `dc8956a`
 - Earlier: shield/backdrop work
+
+**Remaining visual gap:** #3 backdrop blur — needs Vello blur primitive
+or translucent-tint fallback; does not generalise from the #1 sprite
+trick (blur must track content underneath).
 
 **In flight** (parallel subagents dispatched):
 - Real-socket two-peer collab E2E (closes §3 #4 below)
