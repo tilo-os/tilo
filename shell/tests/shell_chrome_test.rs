@@ -570,3 +570,24 @@ fn right_click_on_tile_opens_default_context_menu() {
     assert!(labels.iter().any(|l| l == "Split Right"));
     assert!(labels.iter().any(|l| l == "Move to New Group"));
 }
+
+// ---------------------------------------------------------------------------
+// Visual gap #12 — overview header typography pinned to ≥ 32 px so the
+// "Workspaces" h1 always reads as large/bold (Tailwind `text-4xl` = 36 px
+// in the concept). Regression guard: if someone later drops the header
+// back down to `scale.x3l`/`base`, this catches it before screenshots drift.
+// ---------------------------------------------------------------------------
+#[test]
+fn overview_header_font_size_is_at_least_32px() {
+    use quick_desktop::shell::state::WorkspaceTree;
+    use quick_ui::theme::Theme;
+    let tree = WorkspaceTree::bootstrap_default();
+    let (host, _chrome) =
+        quick_desktop::shell::build_nirios_overlay_host_with_chrome(&tree);
+    let theme = Theme::dark();
+    let size = host.overview_header_font_size(&theme);
+    assert!(
+        size >= 32.0,
+        "overview header font size must be ≥ 32 px to match concept's text-4xl; got {size}"
+    );
+}

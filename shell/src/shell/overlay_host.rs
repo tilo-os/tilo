@@ -334,6 +334,21 @@ impl ShellOverlayHost {
         self.palette_visible
     }
 
+    /// Font size the overview "Workspaces" h1 is drawn at, in logical pixels.
+    /// Exposed so the shell-chrome test can pin "header reads as large/bold"
+    /// (visual gap #12 — concept is Tailwind `text-4xl`, 36 px). This is
+    /// a method so it tracks the active theme's typography token, not a
+    /// hard-coded number.
+    pub fn overview_header_font_size(&self, theme: &Theme) -> f32 {
+        Self::overview_header_font_size_for(&theme.tokens)
+    }
+
+    fn overview_header_font_size_for(tokens: &quick_ui::tokens::Tokens) -> f32 {
+        // Largest step in the type scale — currently 40 px, well above the
+        // 32 px floor the concept's `text-4xl` implies.
+        tokens.typography.scale.x4l
+    }
+
     /// Dispatch the shell action associated with a palette command id,
     /// then close the palette. Returns `true` if the id matched a known
     /// command. Callers still close the palette on unknown ids to avoid
@@ -749,12 +764,23 @@ impl Widget for ShellOverlayHost {
             } else {
                 transform
             };
+            // Concept `OverviewView.tsx` root uses `bg-slate-950` (#020617)
+            // — the overview view is a distinct "darker room" from the
+            // desktop gradient. Paint the flat slate-950 backdrop at the
+            // *un*-scaled outer transform so it covers the entire viewport
+            // even during the 0.95 → 1.0 zoom-in animation (visual gap
+            // #13 in `docs/nirios/visual-gaps.md`). It sits above the
+            // black/30 scrim and below the cards / header so nothing from
+            // the desktop gradient can bleed through around the edges.
+            let slate_950 = theme.tokens.colors.neutral[0];
             if overview_alpha >= 0.999 && (overview_scale - 1.0).abs() <= f64::EPSILON {
                 draw_scrim(scene, transform, self.rect);
+                scene.fill(Fill::NonZero, transform, slate_950, None, &self.rect);
                 self.draw_overview(scene, transform, text_renderer, theme);
             } else {
                 scene.push_layer(BlendMode::default(), overview_alpha, transform, &self.rect);
                 draw_scrim(scene, transform, self.rect);
+                scene.fill(Fill::NonZero, transform, slate_950, None, &self.rect);
                 self.draw_overview(scene, overview_xform, text_renderer, theme);
                 scene.pop_layer();
             }
@@ -1663,23 +1689,22 @@ impl ShellOverlayHost {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
 
-        // Base backdrop — concept root uses `bg-slate-950` (opaque dark
-        // canvas). The overlay sits above a scrim so this paints only the
-        // centered content column's backing, but we darken the full rect
-        // to keep the desktop fully obscured while the overview is up.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.neutral[0], // slate-950
-            None,
-            &self.rect,
-        );
+        // NOTE: the slate-950 scrim fill is painted in the caller (the
+        // top-level `draw` method) at the *un*-scaled transform, so the
+        // desktop gradient can never bleed through around the edges of the
+        // scaled overview layer during the zoom-in animation. See visual
+        // gap #13 in `docs/nirios/visual-gaps.md`.
 
         let col = self.overview_column_rect();
 
         // -- Header: "Workspaces" h1 + subtitle ---------------------------
+        // Concept `OverviewView.tsx`: `h1 text-4xl font-bold
+        // text-white mb-4 tracking-tight`. Tailwind `text-4xl` = 36 px;
+        // we pick the largest token step (`x4l` = 40 px) so the header
+        // reads as clearly "large / bold" at the default 1.0 scale factor
+        // the text renderer applies — visual gap #12.
         let title = "Workspaces";
-        let title_size = tokens.typography.scale.x3l; // close to text-4xl
+        let title_size = Self::overview_header_font_size_for(tokens);
         let (tw, th) = text_renderer.measure(title, title_size, None);
         let tx = (col.x0 + col.x1) / 2.0 - tw as f64 / 2.0;
         let ty = col.y0 + 8.0;
@@ -1692,7 +1717,10 @@ impl ShellOverlayHost {
             None,
         );
         let subtitle = "Your workspaces, side by side";
-        let sub_size = tokens.typography.scale.base;
+        // Concept subtitle: `text-slate-400 text-lg` (~18 px). `lg` = 16 px
+        // is the closest existing token step and still clearly larger than
+        // the body `base` (14 px).
+        let sub_size = tokens.typography.scale.lg;
         let (sw, _sh) = text_renderer.measure(subtitle, sub_size, None);
         let sx = (col.x0 + col.x1) / 2.0 - sw as f64 / 2.0;
         let sy = ty + th as f64 + 8.0;
