@@ -12,25 +12,23 @@ and `target/nirios-screenshots/06-overview-open-vertical.png`) against
 
 ## Gaps
 
-### 1. Content card has no real drop shadow — Blocker
+### 1. ~~Content card has no real drop shadow~~ — Shipped (2026-04-21, commit `5837eee`)
 
-- **What the concept shows:** The white window card uses Tailwind `shadow-2xl`
-  (`0 25px 50px -12px rgba(0,0,0,0.25)`) plus the focused variant adds a
-  `shadow-[0_0_60px_rgba(99,102,241,0.6)]` bloom (`concept-features.md` §7.1
-  "Content card" at `WindowFrame.tsx:354-369`). The white card reads as
-  floating above a very dark desktop with a genuinely soft, diffuse fall-off.
-- **What we render today:** `quick-ui/src/widget/tile_host.rs:76-98` stacks
-  four concentric offset rounded rects at alphas 24/18/10/4. Because Vello has
-  no blur primitive, the union is a crisp rectangle halo — visible as a
-  stepped grey band under and around the Notes card in
-  `07-theme-tightened.png` (right edge ~x=720 has a hard stair-step instead
-  of a soft gradient). The shadow reads "dirty / aliased" rather than "lifted".
-- **Concrete fix:** Either (a) push these rects through a `GaussianBlur`
-  image-filter layer (Vello supports `scene.push_blur_layer` in newer revs),
-  or (b) switch to a pre-rendered radial-gradient rounded-rect sprite (one
-  per radius bucket) and scale it. Tune `tile_host.rs` fallout curve from
-  the current linear geometry to an exponential (`alpha ≈ exp(-d/k)`).
-- **Estimated effort:** M
+- **What concept shows:** Tailwind `shadow-2xl`
+  (`0 25px 50px -12px rgba(0,0,0,0.25)`) under every card, plus an
+  indigo bloom `shadow-[0_0_60px_rgba(99,102,241,0.6)]` on the focused
+  variant (`WindowFrame.tsx:354-369`).
+- **What shipped:** `tile_host.rs` now paints a pre-baked 256 × 256
+  radial Gaussian sprite (`alpha = exp(-((d - d_peak)/k)²)` with
+  `k ≈ 0.35` and `d_peak ≈ 0.30`) underneath each content card. The
+  dual-shoulder envelope clamps alpha to zero at both the card edge and
+  the sprite's boundary, so the composite has no square halo and no
+  double-darkening over the card fill. Focused tiles additionally paint
+  an indigo-500 bloom driven by `WindowGroup::search_active` —
+  `set_focused(focused)` on the active `TileHost` before draw. The old
+  four-concentric-rounded-rect stack is removed; the new sprite reads as
+  a single soft gradient instead of a stair-stepped halo. Regression
+  test: `shadow_sprite_peaks_in_interior_not_centre_or_edge`.
 
 ### 2. ~~Active tab has almost no contrast against inactive tabs~~ — Shipped (2026-04-21, commit `4d6df4c`)
 
@@ -100,33 +98,21 @@ and `target/nirios-screenshots/06-overview-open-vertical.png`) against
   emulates a gaussian fade; cheap to paint (4 rounded-rect fills per
   active row).
 
-### 5. Icons are kurbo primitives, not lucide glyphs — High
+### 5. ~~Icons are kurbo primitives, not lucide glyphs~~ — Shipped (2026-04-21, commits `e2fad05` + `59be5eb`)
 
-- **What the concept shows:** All icons are lucide-react: the top-bar
-  overview grid is `LayoutGrid`, workspace chevrons are `ChevronUp/Down`,
-  the workspace name has `Settings2`, QuickSettings trigger shows actual
-  `Wifi`/`Monitor`/`Battery` at `w-4 h-4` with a 1.5 px stroke
-  (§1.1). Tab close is an `X`; tab icons are app-type lucide icons. Tab
-  maximize is `Maximize2`/`Minimize2`. Permissions in overview uses a
-  `Shield` glyph (§8.1).
-- **What we render today:** `topbar_chrome.rs:289-304` paints the overview
-  glyph as four filled rectangles (a 2×2 quad of solid squares), not a
-  stroked grid. The "gear" next to the workspace name (`:386-396`) is a
-  stroked circle with a filled dot inside — not a gear at all. The tray
-  pill shows three filled dots (`:600-603`) instead of Wifi/Monitor/Battery
-  glyphs. In overview, `overlay_host.rs:1870-1884` draws the permissions
-  shield as an *emerald square* with a code comment acknowledging the stub.
-  Tab `×` is a text glyph (works OK) but tab maximize is a drawn square
-  outline. Side-by-side, our chrome has a distinctly "geometric toy"
-  quality vs the concept's crisp vector-icon shell.
-- **Concrete fix:** Embed the lucide SVG paths (MIT-licensed) into a
-  `quick_ui::icons` module as `kurbo::BezPath` constants; add
-  `draw_icon(scene, transform, rect, Icon::LayoutGrid, color)` taking a 1.5 px
-  stroke width. Swap the top-bar grid (`topbar_chrome.rs:289-304`), the
-  gear (`:386-396`), the tray icons (`:600-603`), the permissions shield
-  (`overlay_host.rs:1870-1884`) and the tab maximize glyph (`tabs.rs:~580`)
-  to use it.
-- **Estimated effort:** L (one-time cost, reused forever)
+- **What concept shows:** lucide-react glyphs throughout: `LayoutGrid`,
+  `Settings2`, `Wifi` / `Monitor` / `Battery`, `Shield`, `Maximize2` /
+  `Minimize2`, `X`, `ChevronUp` / `Down`, `Plus` — all at 1.5 px stroke.
+- **What shipped:** new `quick_ui::icons` module (`e2fad05`) embedding
+  lucide's BezPaths on the 24 × 24 viewBox plus a pure `draw_icon(scene,
+  transform, rect, icon, color, stroke_px)` helper with round caps and
+  round joins. Shell chrome (`59be5eb`) now routes through it for the
+  top-bar overview grid, workspace-name gear, tray Wifi/Monitor/Battery
+  triad, and the overview permissions shield. Closes gap #11 (the
+  emerald-square shield stub) as a side effect. Unit tests pin
+  non-empty subpaths per icon; `shell_chrome_test` asserts the overview
+  button routes through `Icon::LayoutGrid`. Remaining call sites (tab
+  maximize, tab-kind leading icons) can ride a later batch.
 
 ### 6. ~~Sidebar wheel card uses solid indigo fill~~ — Superseded (2026-04-21)
 
@@ -141,26 +127,22 @@ not follow the concept's card styling here.
 
 See `docs/nirios/wheel-disc-design.md` for the full design reference.
 
-### 7. Text is rendered with heavy-looking weight — Medium
+### 7. ~~Text is rendered with heavy-looking weight~~ — Shipped (2026-04-21, commits `7dd9fa1` + `9a018e3`)
 
-- **What the concept shows:** Body is Tailwind default (`font-sans` →
-  system-ui stack) with deliberate weight tiers: `font-medium`/`font-semibold`
-  for most chrome, `font-bold` for titles, `font-mono` for values
-  (clock / system-monitor). Most chrome text is `font-semibold` + light
-  tracking.
-- **What we render today:** In `07-theme-tightened.png` the "Notes" card
-  heading, the tab titles, and the top-bar "Home 1/1" all read significantly
-  heavier than the concept — almost as if every font were bold. The likely
-  cause: `text_primary` is a near-white and the text renderer uses a single
-  weight. Check if `cosmic-text` is being asked for a specific weight; if
-  not, we'll get the platform's default regular but it may not be the same
-  family as the concept's system-ui (Inter/SF/Segoe depending on OS).
-- **Concrete fix:** Explicitly request weight 500 (medium) for most labels
-  and 700 (bold) for `h1`/`h2` in the overview + top-bar title in
-  `text_render::TextRenderer`. Also verify fallback fonts match — the
-  concept selects `sans-serif` (browser picks Arial/Helvetica/Segoe UI
-  depending on platform); we should target Inter or DejaVu Sans explicitly.
-- **Estimated effort:** S
+- **What concept shows:** Tailwind-aligned weight tiers —
+  `font-medium` (500), `font-semibold` (600), `font-bold` (700).
+- **What shipped:** `quick_ui::TextWeight` enum with Regular / Medium /
+  Semibold / Bold variants that proxy through to
+  `cosmic_text::fontdb::Weight` (commit `7dd9fa1`). `TextRenderer` now
+  exposes `draw_text_weighted` and `measure_weighted`; legacy
+  `draw_text` defaults to Regular so untouched call sites keep
+  behaviour. Consumer adoption (commit `9a018e3` on the shell side)
+  covers: clock = Bold, workspace-name pill = Semibold, tab titles =
+  Semibold, overview header = Bold, overview subtitle = Regular,
+  collaborator avatar initials = Bold, overflow "+N" = Semibold,
+  system-monitor labels = Semibold / values = Bold, calendar prefix +
+  time = Medium / event = Semibold. Weight accessors on
+  `TopBarChrome` pin the tiers for regression tests.
 
 ### 8. ~~Top-bar center pill misses the `/` separation + format details~~ — Shipped (2026-04-21, commit `3b786c2`)
 
@@ -197,17 +179,14 @@ See `docs/nirios/wheel-disc-design.md` for the full design reference.
   `07-theme-tightened.png` capture without eating a full-res asset in
   the binary.
 
-### 11. Permissions shield is still a stub square in overview — Low
+### 11. ~~Permissions shield is still a stub square in overview~~ — Shipped (2026-04-21, commit `59be5eb`, via gap #5)
 
-- **What the concept shows:** `Shield` lucide icon at `w-4 h-4
-  text-emerald-400` leading the "Permissions" label (§8.1 `OverviewView.tsx:83-103`).
-- **What we render today:** `overlay_host.rs:1870-1884` has an explicit
-  code comment: *"Shield glyph stubbed as a small emerald square"*. In
-  `06-overview-open-vertical.png` you can see a 10 px filled square
-  labelled "Permissions" — clearly wrong.
-- **Concrete fix:** Covered by gap #5 (icon embedding); this is the
-  canonical first consumer.
-- **Estimated effort:** S (once #5 lands)
+- **What concept shows:** `Shield` lucide icon at `w-4 h-4
+  text-emerald-400` leading the "Permissions" label.
+- **What shipped:** the emerald-square stub in `overlay_host.rs` is
+  gone — the `quick_ui::icons::Icon::Shield` BezPath is stroked at
+  `colors.status.success` directly from the overview permissions row,
+  matching lucide's proportions and 1.5 px stroke.
 
 ### 12. ~~Overview header typography is not large / bold enough~~ — Shipped (2026-04-21, commit `687e7ee`)
 
@@ -230,20 +209,18 @@ See `docs/nirios/wheel-disc-design.md` for the full design reference.
 
 ## Recommended prioritization for the next ralph iteration
 
-Gaps #2, #4, #8, #9, #10, #12, and #13 have shipped (see ✓ markers
-above). The **remaining open** gaps and their priorities:
+Gaps #1, #2, #4, #5, #7, #8, #9, #10, #11, #12, #13 have shipped; #6
+was superseded by the wheel disc. The **only remaining open gap** is:
 
-- **#1 Content card drop shadow** — Blocker. Needs Vello blur layer or a
-  pre-rendered radial-gradient sprite; highest visual-impact miss.
-- **#3 Backdrop blur** — High. Same Vello dependency as #1 (frosted
-  layers on top-bar / popovers / search / modal).
-- **#5 Lucide icon glyphs** — High. L-size one-off lift; unblocks #11
-  permissions shield + the tray/gear/maximize-glyph polish.
-- **#7 Font weight** — Medium, S effort. Request weight 500/700
-  explicitly in `cosmic-text`.
-- **#11 Permissions shield stub** — Low, blocked on #5 landing.
+- **#3 Backdrop blur** — High. Needs either Vello's
+  `scene.push_blur_layer` (requires bumping Vello; verify the pinned
+  version supports it) or a translucent-tint fallback that at least
+  honours the `/80` vs `/70` alpha split on the top bar, popovers,
+  GlobalSearch, and the settings modal. The radial-sprite trick from
+  #1 does not generalise here because the blur has to track whatever's
+  under the chrome — a frozen sprite can't.
 
-Both #1 and #3 converge on the same Vello blur-layer primitive, so
-either plumbing that in or committing to the sprite-fallback approach is
-the next structural unlock. #5 is independent and has the longest
-reward tail (every subsequent chrome polish reuses it).
+Next structural unlocks beyond visual parity live in
+`docs/nirios/outstanding-work.md`: real-socket collaboration E2E,
+presence dots on wheel-disc spokes, tab maximize/minimize lucide
+glyph swap.
