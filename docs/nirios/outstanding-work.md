@@ -79,13 +79,13 @@ So: spokes = **workspaces** (not strips). The disc **replaces**
 - `SidebarWheelChrome::from_tree(...)` no longer mounts in the live
   shell. The module file still exists for reference; a follow-up can
   delete it once the disc is proven.
-- **Known gap:** snapping a spoke into the active position does NOT
-  yet write `tree.active` via the CRDT — `sync()` is empty and the
-  widget doesn't have a back-channel. Rotating the disc currently
-  updates the label highlighting only; the workspace doesn't actually
-  switch. Next iteration must add a commit path (either via a callback
-  closure passed at construction time, or a `PresenceCtx`-style
-  broadcast that the shell picks up in its pre-frame sync).
+- **CRDT write-back — resolved (2026-04-21).** Commit `65d105d` added
+  `SidebarWheelDisc::with_chrome(Rc<RefCell<ChromeState>>)`; on snap
+  the widget calls `chrome.borrow_mut().tree.set_active(ws_id)` so the
+  rest of the shell picks up the new active workspace on the next
+  frame. Same commit fixed label readability — labels whose spoke
+  angle lands in (90°, 270°) get an extra π rotation so glyphs stay
+  upright.
 
 ### Proposed structure
 
