@@ -161,6 +161,33 @@ const QS_OPEN_ANIM_MS: u64 = 180;
 /// contents rather than a tray affordance.
 const MODAL_OPEN_ANIM_MS: u64 = 220;
 
+// ---------------------------------------------------------------------------
+// Translucent-tint fallback alphas (gap #3 in `docs/nirios/visual-gaps.md`).
+// The concept uses `backdrop-blur-xl` / `backdrop-blur-md` on top of
+// `bg-slate-900/80` + `/70` tints, but the pinned Vello lacks
+// `scene.push_blur_layer`. The shell therefore honours the alpha split
+// alone — the surfaces sit translucent over whatever is beneath them, so a
+// gradient wallpaper still bleeds through even without a convolution pass.
+// Centralised so the `shell_chrome_test` suite can pin the numeric values.
+// ---------------------------------------------------------------------------
+
+/// Alpha applied to the collaborator and QuickSettings popover surfaces.
+/// Concept §1.1 / §3.1 specifies `bg-slate-900/80`.
+pub const POPOVER_SURFACE_ALPHA: f32 = 0.80;
+
+/// Alpha applied to the GlobalSearch palette and Workspace-Settings modal
+/// surfaces. Concept §4.1 / §5.1 specifies `bg-slate-900/70` — a step
+/// softer than the dropdown popovers to emphasise the "page-on-top-of-page"
+/// affordance of a modal. Kept numerically in sync with
+/// [`crate::shell::search::PALETTE_SURFACE_ALPHA`].
+pub const MODAL_SURFACE_ALPHA: f32 = 0.70;
+
+/// Alpha applied to the scrim painted beneath the WorkspaceSettings modal.
+/// Concept §4.1 uses `bg-black/30 backdrop-blur-[1px]`; without the 1-px
+/// blur we dim the scrim a step further to 0.20 so the desktop still
+/// reads as the focused surface and the modal lifts out of it.
+pub const MODAL_SCRIM_ALPHA: f32 = 0.20;
+
 impl ShellOverlayHost {
     pub fn new(content: Box<dyn Widget>) -> Self {
         let mut palette = CommandPalette::new();
@@ -814,7 +841,10 @@ impl Widget for ShellOverlayHost {
         }
         self.ws_settings_was_open = flags.ws_settings;
         if flags.ws_settings {
-            draw_scrim(scene, transform, self.rect);
+            // Settings modal: concept §4.1 uses `bg-black/30 backdrop-blur-[1px]`
+            // — the softer modal scrim rather than the stronger overview /
+            // palette dimmer.
+            draw_modal_scrim(scene, transform, self.rect);
             let (alpha, dy, scale) = modal_open_curve(self.ws_settings_opened_at, 0.95);
             let in_flight = alpha < 1.0;
             let panel_rect = self.ws_settings_rect();
@@ -935,8 +965,15 @@ impl Widget for ShellOverlayHost {
             } else {
                 transform
             };
+            // Re-theme just the palette surface to the concept's
+            // `bg-slate-900/70` glass tint (visual-gap #3). The
+            // `CommandPalette` widget lives in `quick-ui` and paints its
+            // own surface from `surfaces.raised`, so we hand it a cloned
+            // theme whose `surfaces.raised` is pre-tinted rather than
+            // reaching inside the shared widget to plumb an override.
+            let palette_theme = palette_surface_theme(theme, MODAL_SURFACE_ALPHA);
             self.palette
-                .draw(scene, palette_xform, text_renderer, theme, presence);
+                .draw(scene, palette_xform, text_renderer, &palette_theme, presence);
             // Search-banner rides along with the panel so the two read
             // as one composed unit during the entry curve.
             self.draw_search_banner(scene, palette_xform, text_renderer, theme);
@@ -1545,6 +1582,48 @@ fn draw_scrim(scene: &mut Scene, transform: Affine, rect: Rect) {
         None,
         &rect,
     );
+}
+
+/// Scrim tuned for the settings modal. Concept §4.1 uses
+/// `bg-black/30 backdrop-blur-[1px]`; without the 1-px blur primitive we
+/// drop the alpha to 0.20 ([`MODAL_SCRIM_ALPHA`]) so the desktop keeps
+/// enough visual presence to read as "still there, just dimmed" instead
+/// of "flat gray wash". Kept in lock-step with the pub constant so the
+/// chrome-test suite can pin the exact value without sampling pixels.
+fn draw_modal_scrim(scene: &mut Scene, transform: Affine, rect: Rect) {
+    let alpha = (MODAL_SCRIM_ALPHA * 255.0).round().clamp(0.0, 255.0) as u8;
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        Color::rgba8(0, 0, 0, alpha),
+        None,
+        &rect,
+    );
+}
+
+/// Slate-900 tint at the given alpha. Centralised helper so every overlay
+/// surface paints the same hue (concept's glass tint is rooted at
+/// `slate-900` / `#0f172a`) and the numeric alpha is the only knob.
+fn slate_900_tint(theme: &Theme, alpha: f32) -> Color {
+    // `neutral[1]` is slate-900 in the dark ramp (see
+    // `quick_ui::tokens::colors::ColorRamp`). Using the theme token rather
+    // than hard-coding #0f172a keeps the light-theme variant falling back
+    // to its own near-darkest slot automatically.
+    theme.tokens.colors.neutral[1].with_alpha_factor(alpha)
+}
+
+/// Clone `theme` with `surfaces.raised` re-tinted to the glass slate-900
+/// at `alpha`. Used by the GlobalSearch palette draw site: the
+/// `CommandPalette` widget (in `quick_ui`) paints its own surface from
+/// `surfaces.raised`, so we can't inject a translucent fill without either
+/// plumbing a per-draw override (too invasive for a shared widget) or
+/// handing it a locally-rebuilt theme (this helper). The stroke still uses
+/// `border_standard`, which the palette inherits from the original theme
+/// via the returned clone — only the fill token gets the tint.
+fn palette_surface_theme(theme: &Theme, alpha: f32) -> Theme {
+    let mut themed = theme.clone();
+    themed.tokens.colors.surfaces.raised = slate_900_tint(theme, alpha);
+    themed
 }
 
 /// Shared ease-out-cubic curve for modal-style open animations. Both
@@ -2268,7 +2347,17 @@ impl ShellOverlayHost {
             cy + modal_h / 2.0,
         );
         let card = RoundedRect::from_rect(rect, tokens.radii.lg as f64);
-        scene.fill(Fill::NonZero, transform, colors.surfaces.raised, None, &card);
+        // Settings modal surface — concept §4.1: `bg-slate-900/70
+        // backdrop-blur-md`. Blur primitive unavailable on the pinned Vello,
+        // so we just honour the 0.70 alpha split (visual-gap #3) and let
+        // the modal sit translucent over its scrim / the desktop.
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            slate_900_tint(theme, MODAL_SURFACE_ALPHA),
+            None,
+            &card,
+        );
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
@@ -2580,7 +2669,17 @@ impl ShellOverlayHost {
         }
 
         let card = RoundedRect::from_rect(banner, tokens.radii.sm as f64);
-        scene.fill(Fill::NonZero, transform, colors.surfaces.overlay, None, &card);
+        // Search banner rides with the GlobalSearch palette surface. Concept
+        // §5.1: `bg-slate-900/70 backdrop-blur-md`. We tint with the same
+        // [`MODAL_SURFACE_ALPHA`] as the palette so the pair read as one
+        // composed "frosted" unit over the scrim.
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            slate_900_tint(theme, MODAL_SURFACE_ALPHA),
+            None,
+            &card,
+        );
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
@@ -2660,7 +2759,15 @@ impl ShellOverlayHost {
 
         let rect = self.quick_settings_rect();
         let card = RoundedRect::from_rect(rect, tokens.radii.lg as f64);
-        scene.fill(Fill::NonZero, transform, colors.surfaces.raised, None, &card);
+        // QuickSettings popover surface — concept §3.1: `bg-slate-900/80
+        // backdrop-blur-md`. See visual-gap #3 / [`POPOVER_SURFACE_ALPHA`].
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            slate_900_tint(theme, POPOVER_SURFACE_ALPHA),
+            None,
+            &card,
+        );
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
@@ -2746,7 +2853,15 @@ impl ShellOverlayHost {
         let colors = &tokens.colors;
         let rect = self.collaborators_rect();
         let card = RoundedRect::from_rect(rect, tokens.radii.lg as f64);
-        scene.fill(Fill::NonZero, transform, colors.surfaces.raised, None, &card);
+        // Collaborators popover surface — concept §1.1: `bg-slate-900/80
+        // backdrop-blur-md`. See visual-gap #3 / [`POPOVER_SURFACE_ALPHA`].
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            slate_900_tint(theme, POPOVER_SURFACE_ALPHA),
+            None,
+            &card,
+        );
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
