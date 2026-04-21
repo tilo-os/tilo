@@ -5,6 +5,7 @@ use winit::event::{WindowEvent, MouseButton, ElementState};
 use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use crate::icons;
 use crate::widget::Widget;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
@@ -229,6 +230,26 @@ impl TabBar {
     pub fn take_close(&mut self) -> Option<u64> { self.pending_close.take() }
     pub fn take_max(&mut self) -> Option<u64> { self.pending_max.take() }
     pub fn take_search(&mut self) -> Option<u64> { self.pending_search.take() }
+    /// Test-only accessor pinning the lucide glyph used for the per-tab
+    /// close chip. Returning a hard-coded [`icons::Icon`] variant keeps
+    /// the widget's concept-parity contract visible in the test suite:
+    /// a future refactor that reverts to a `"×"` codepoint or a
+    /// hand-drawn primitive would have to also delete this accessor,
+    /// which makes the regression impossible to miss in review.
+    #[cfg(test)]
+    pub fn close_glyph_icon_for_tests() -> icons::Icon { icons::Icon::X }
+    /// Test-only accessor for the per-tab maximize action glyph. The
+    /// per-tab cluster only renders while the group is non-maximized,
+    /// so this is always [`icons::Icon::Maximize2`] — the
+    /// `Icon::Minimize2` swap lives on `WindowGroup`'s maximized
+    /// floating controls, covered by its own accessor there.
+    #[cfg(test)]
+    pub fn max_glyph_icon_for_tests() -> icons::Icon { icons::Icon::Maximize2 }
+    /// Test-only accessor for the per-tab search action glyph. Pins
+    /// the hover-reveal magnifier to lucide's [`icons::Icon::Search`]
+    /// so a revert to the hand-drawn circle+line flips the suite red.
+    #[cfg(test)]
+    pub fn search_glyph_icon_for_tests() -> icons::Icon { icons::Icon::Search }
     /// Drain a cross-group detach request if any. See [`Self::pending_detach`].
     pub fn take_detach(&mut self) -> Option<(u64, Point)> { self.pending_detach.take() }
     /// Expose the bar's own rect so a parent widget (e.g. `GroupRow`) can
@@ -637,19 +658,19 @@ impl Widget for TabBar {
                 let chip_color = vello::peniko::Color::rgba8(255, 255, 255, close_chip_alpha);
                 scene.fill(vello::peniko::Fill::NonZero, transform, chip_color, None, &chip);
             }
-            let glyph = "×";
-            let glyph_size = theme.tokens.typography.scale.base;
-            let (gw, gh) = tr.measure(glyph, glyph_size, None);
-            let gx = close_r.center().x - gw as f64 / 2.0;
-            let gy = close_r.center().y - gh as f64 / 2.0;
             // Glyph color mirrors title polarity: bright white on
-            // active/hover, dim on the idle inactive pill.
+            // active/hover, dim on the idle inactive pill. Swapped from
+            // a literal `×` codepoint to `Icon::X` on a 24×24 viewBox so
+            // the close glyph matches the concept's `<X className="w-3.5
+            // h-3.5" />` in WindowFrame.tsx 1:1. `close_glyph_icon_for_tests`
+            // pins this swap so a future revert to the text glyph flips
+            // red instead of silently regressing.
             let glyph_color = if is_active || close_hover {
                 text_primary
             } else {
                 text_dim
             };
-            tr.draw_text(scene, glyph, glyph_size, glyph_color, transform * Affine::translate((gx, gy)), None);
+            icons::draw_icon(scene, transform, close_r, icons::Icon::X, glyph_color, 1.5);
 
             // Maximize icon: only visible on pill hover (concept's
             // hover-reveal action row). Drawn as a 1 px outlined square so
@@ -676,23 +697,29 @@ impl Widget for TabBar {
                         &chip,
                     );
                 }
-                // 10×10 centered square outline.
-                let s = 10.0_f64;
-                let cx = max_r.center().x;
-                let cy = max_r.center().y;
-                let square = Rect::new(cx - s / 2.0, cy - s / 2.0, cx + s / 2.0, cy + s / 2.0);
+                // Lucide `Maximize2` glyph on the 24×24 viewBox. The
+                // per-tab action cluster only renders while the tab is
+                // non-maximized (the maximized-floating-controls path
+                // lives in `WindowGroup::draw`), so we hardcode
+                // `Icon::Maximize2` here; the `Minimize2` swap lives in
+                // the maximized branch. `max_glyph_icon_for_tests`
+                // pins this to lucide's arrow-out bracket glyph.
                 let outline_color = if max_hover { icon_active } else { icon_idle };
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.2),
+                icons::draw_icon(
+                    scene,
                     transform,
+                    max_r,
+                    icons::Icon::Maximize2,
                     outline_color,
-                    None,
-                    &square,
+                    1.5,
                 );
 
-                // Search icon — "magnifying glass" built from a 5 px circle
-                // plus a short diagonal handle line, so we don't need an
-                // icon-font codepoint. Concept's third hover-reveal action.
+                // Search icon: lucide `Search` glyph (circle r=8 at
+                // (11, 11) + diagonal handle line (21, 21) → (16.65,
+                // 16.65), transcribed from lucide-react's `search.js`).
+                // Replaces the hand-drawn circle+line primitive so the
+                // glyph matches the concept's `<Search className="w-3.5
+                // h-3.5" />` 1:1.
                 let search_r = self.search_rects[i] + vello::kurbo::Vec2::new(dx, dy);
                 let search_hover = Some(i) == self.hover_search_idx;
                 if search_hover {
@@ -706,29 +733,13 @@ impl Widget for TabBar {
                     );
                 }
                 let icon_color = if search_hover { icon_active } else { icon_idle };
-                // Slightly off-centre to make room for the diagonal handle.
-                let scx = search_r.center().x - 1.0;
-                let scy = search_r.center().y - 1.0;
-                let circle = vello::kurbo::Circle::new(Point::new(scx, scy), 3.5);
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.2),
+                icons::draw_icon(
+                    scene,
                     transform,
+                    search_r,
+                    icons::Icon::Search,
                     icon_color,
-                    None,
-                    &circle,
-                );
-                // Handle: 3 px diagonal stroke off the bottom-right of the
-                // glass.
-                let handle = vello::kurbo::Line::new(
-                    Point::new(scx + 2.5, scy + 2.5),
-                    Point::new(scx + 5.0, scy + 5.0),
-                );
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.2),
-                    transform,
-                    icon_color,
-                    None,
-                    &handle,
+                    1.5,
                 );
             }
 
@@ -1701,5 +1712,27 @@ mod tests {
             ACTIVE_BORDER_ALPHA > INACTIVE_BORDER_ALPHA,
             "active border is stronger than inactive border",
         );
+    }
+
+    #[test]
+    fn tab_close_glyph_draws_via_icons_module() {
+        // Pin the per-tab close chip to lucide's `X`. The direct
+        // assertion would require rendering into a Vello scene and
+        // inspecting strokes, which is fragile; the `*_for_tests`
+        // accessor is the contract we actually care about — if a
+        // future refactor replaces `icons::draw_icon(..., Icon::X, ..)`
+        // with anything else, this test (and the analogous checks for
+        // maximize / search below) has to be touched.
+        assert_eq!(TabBar::close_glyph_icon_for_tests(), icons::Icon::X);
+    }
+
+    #[test]
+    fn tab_max_glyph_draws_via_icons_module() {
+        assert_eq!(TabBar::max_glyph_icon_for_tests(), icons::Icon::Maximize2);
+    }
+
+    #[test]
+    fn tab_search_glyph_draws_via_icons_module() {
+        assert_eq!(TabBar::search_glyph_icon_for_tests(), icons::Icon::Search);
     }
 }

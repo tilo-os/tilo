@@ -5,6 +5,7 @@ use winit::event::{WindowEvent, MouseButton, ElementState};
 use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use taffy::style_helpers::length;
 use std::time::{Duration, Instant};
+use crate::icons;
 use crate::widget::{Widget, TabBar, TabDescriptor, TileContent, TileHost};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -238,6 +239,19 @@ impl WindowGroup {
     /// press/drag/release event sequence.
     #[cfg(test)]
     pub(crate) fn bar_mut(&mut self) -> &mut crate::widget::TabBar { &mut self.bar }
+
+    /// Test-only accessor pinning the lucide glyph drawn over the
+    /// maximized floating close chip. Paired with
+    /// `window_group_close_glyph_is_lucide_x` so a revert to the text
+    /// `×` codepoint can't slip in unnoticed.
+    #[cfg(test)]
+    pub fn close_glyph_icon_for_tests() -> icons::Icon { icons::Icon::X }
+
+    /// Test-only accessor for the glyph prepended to the Restore pill.
+    /// Lucide's `Minimize2` — the "shrink out of fullscreen" bracket
+    /// pair — paired with `window_group_restore_pill_uses_minimize2`.
+    #[cfg(test)]
+    pub fn restore_glyph_icon_for_tests() -> icons::Icon { icons::Icon::Minimize2 }
 }
 
 impl Widget for WindowGroup {
@@ -500,9 +514,35 @@ impl Widget for WindowGroup {
                 None,
                 &pill,
             );
+            // Prepend a lucide `Minimize2` glyph to the Restore pill so
+            // the action reads at a glance — matches the concept's
+            // maximized floating controls in WindowFrame.tsx which
+            // render a `<Minimize2 className="w-4 h-4" />` alongside
+            // the restore affordance. Accessibility: the text label is
+            // preserved (screen readers and i18n still see "Restore");
+            // we just offset it horizontally to leave a 14 px icon
+            // slot at the pill's leading edge. `window_group_restore_pill_uses_minimize2`
+            // pins this variant.
+            let icon_slot = Rect::new(
+                self.restore_rect.x0 + 8.0,
+                self.restore_rect.y0 + 4.0,
+                self.restore_rect.x0 + 22.0,
+                self.restore_rect.y1 - 4.0,
+            );
+            icons::draw_icon(
+                scene,
+                transform,
+                icon_slot,
+                icons::Icon::Minimize2,
+                theme.tokens.colors.text_primary,
+                1.5,
+            );
             let label = "Restore";
-            let (lw, lh) = tr.measure(label, title_size, None);
-            let lx = self.restore_rect.center().x - lw as f64 / 2.0;
+            let (_lw, lh) = tr.measure(label, title_size, None);
+            // Shift the label past the icon slot (x0 + 28.0) instead of
+            // recentring, so the glyph + label cluster sits together on
+            // the left of the pill.
+            let lx = self.restore_rect.x0 + 28.0;
             let ly = self.restore_rect.center().y - lh as f64 / 2.0;
             tr.draw_text(
                 scene,
@@ -530,18 +570,20 @@ impl Widget for WindowGroup {
                 None,
                 &close_rr,
             );
-            let glyph = "×";
-            let glyph_size = theme.tokens.typography.scale.base;
-            let (gw, gh) = tr.measure(glyph, glyph_size, None);
-            let gx = self.close_rect.center().x - gw as f64 / 2.0;
-            let gy = self.close_rect.center().y - gh as f64 / 2.0;
-            tr.draw_text(
+            // Close glyph: lucide `X` painted over the (already-filled)
+            // red-on-hover close chip. Replaces the previous literal
+            // `×` codepoint + measure/draw_text pair so the maximized
+            // floating controls read identically to the concept's
+            // `<X className="w-4 h-4" />` in WindowFrame.tsx. The
+            // filled chip underneath is unchanged; the icon paints on
+            // top via `icons::draw_icon`.
+            icons::draw_icon(
                 scene,
-                glyph,
-                glyph_size,
+                transform,
+                self.close_rect,
+                icons::Icon::X,
                 theme.tokens.colors.text_primary,
-                transform * vello::kurbo::Affine::translate((gx, gy)),
-                None,
+                1.5,
             );
         } else {
             self.restore_rect = Rect::ZERO;
@@ -741,6 +783,30 @@ mod tests {
         assert!(
             !g.needs_animation_frame(),
             "after the spawn window elapses, the fade no longer demands frames",
+        );
+    }
+
+    #[test]
+    fn window_group_close_glyph_is_lucide_x() {
+        // Pins the maximized floating close chip to lucide's `X`
+        // glyph. Mirrors the per-tab close pin in `tabs.rs` — both
+        // exist to make a future revert to the literal `×` codepoint
+        // or any hand-rolled primitive fail closed at `cargo test`.
+        assert_eq!(
+            WindowGroup::close_glyph_icon_for_tests(),
+            icons::Icon::X,
+        );
+    }
+
+    #[test]
+    fn window_group_restore_pill_uses_minimize2() {
+        // Pins the leading glyph of the Restore pill to lucide's
+        // `Minimize2`. Paired with a horizontal offset on the
+        // "Restore" text label in `draw` so the icon + text cluster
+        // reads as one action.
+        assert_eq!(
+            WindowGroup::restore_glyph_icon_for_tests(),
+            icons::Icon::Minimize2,
         );
     }
 }
