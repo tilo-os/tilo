@@ -32,7 +32,7 @@ and `target/nirios-screenshots/06-overview-open-vertical.png`) against
   the current linear geometry to an exponential (`alpha ≈ exp(-d/k)`).
 - **Estimated effort:** M
 
-### 2. Active tab has almost no contrast against inactive tabs — Blocker
+### 2. ~~Active tab has almost no contrast against inactive tabs~~ — Shipped (2026-04-21, commit `4d6df4c`)
 
 - **What the concept shows:** Active + focused pill has `bg-white/10` fill,
   pure `text-white`, and `border-white/20`; inactive pills are `bg-white/5`,
@@ -54,6 +54,13 @@ and `target/nirios-screenshots/06-overview-open-vertical.png`) against
   (currently absent — there is no `shadow` call around tabs), which also
   separates the strip from the card beneath it.
 - **Estimated effort:** S
+- **Shipped:** commit `4d6df4c` (2026-04-21). Fill alphas now 52 active /
+  8 inactive / 26 hover; border alphas 64/18/40; inactive title → `text_dim`;
+  per-pill 4-ring shadow + 1 px white inner rim on active. New regression
+  test `active_pill_fill_has_stronger_alpha_than_inactive`. Also removed
+  prior drift: the previous "active as a near-white card with slate-900
+  text" was **not** in the concept — concept is `bg-white/10 text-white`,
+  which is what we now render.
 
 ### 3. No `backdrop-blur` anywhere — overlays/chrome look like flat rectangles — High
 
