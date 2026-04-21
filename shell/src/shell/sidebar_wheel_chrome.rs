@@ -442,14 +442,64 @@ impl Widget for SidebarWheelChrome {
                 transform
             };
             let pill = RoundedRect::from_rect(card.rect, tokens.radii.md as f64);
-            let fill = if is_active {
-                colors.accent[5]
-            } else if is_hover {
-                colors.surfaces.raised
+            if is_active {
+                // Glass-pill treatment per concept `DesktopView.tsx` sidebar
+                // wheel: `bg-white/5 border border-white/10 rounded-full`
+                // plus an indigo glow for the active state. Three layers:
+                //
+                //   1. Outer soft glow (~12 px bleed, indigo-500 @ ~8 %)
+                //   2. Inner glow            (~6 px bleed, indigo-500 @ ~16 %)
+                //   3. Translucent indigo pill fill (indigo-500 @ ~15 %)
+                //
+                // The crisp accent ring is drawn below (unchanged apart
+                // from now sitting on glass rather than a solid block).
+                let outer_glow = RoundedRect::from_rect(
+                    Rect::new(
+                        card.rect.x0 - 12.0,
+                        card.rect.y0 - 12.0,
+                        card.rect.x1 + 12.0,
+                        card.rect.y1 + 12.0,
+                    ),
+                    (tokens.radii.md + 12.0) as f64,
+                );
+                scene.fill(
+                    Fill::NonZero,
+                    card_xform,
+                    Color::rgba8(99, 102, 241, 20),
+                    None,
+                    &outer_glow,
+                );
+                let inner_glow = RoundedRect::from_rect(
+                    Rect::new(
+                        card.rect.x0 - 6.0,
+                        card.rect.y0 - 6.0,
+                        card.rect.x1 + 6.0,
+                        card.rect.y1 + 6.0,
+                    ),
+                    (tokens.radii.md + 6.0) as f64,
+                );
+                scene.fill(
+                    Fill::NonZero,
+                    card_xform,
+                    Color::rgba8(99, 102, 241, 40),
+                    None,
+                    &inner_glow,
+                );
+                scene.fill(
+                    Fill::NonZero,
+                    card_xform,
+                    Color::rgba8(99, 102, 241, 38),
+                    None,
+                    &pill,
+                );
             } else {
-                colors.neutral[1] // slate-900
-            };
-            scene.fill(Fill::NonZero, card_xform, fill, None, &pill);
+                let fill = if is_hover {
+                    colors.surfaces.raised
+                } else {
+                    colors.neutral[1] // slate-900
+                };
+                scene.fill(Fill::NonZero, card_xform, fill, None, &pill);
+            }
             if is_active {
                 // Subtle ring / inner-stroke to echo the indigo glow.
                 // Active card doesn't hover-scale (it's already the
