@@ -640,6 +640,25 @@ fn e2e_tab_drag_reorder() {
         "dropping Files (idx 1) onto Browser (idx 3) should shift it to the end"
     );
 
+    // Let the TabBar's layout-spring elapse. `LAYOUT_ANIM_MS = 180`
+    // in `quick-ui/src/widget/tabs.rs`; a 250 ms sleep gives a
+    // comfortable margin so every surviving pill has converged from
+    // its pre-drop `prev_rect` to its post-drop `tab_rects[i]` before
+    // we capture the golden. Without this sleep the spring would
+    // still be interpolating at ~70 % and back-to-back runs would
+    // diverge by whatever wall-time slop existed between the release
+    // pump and the render call.
+    std::thread::sleep(Duration::from_millis(250));
+    // One more pump + draw so the bar's `layout_anim_started`
+    // timestamp-derived interpolation lands on t=1 (target rects),
+    // and `needs_animation_frame` flips false. Event-less pump is
+    // fine here — we just want the bar to see "post-LAYOUT_ANIM_MS"
+    // on its next draw.
+    {
+        let mut s = Scene::new();
+        group.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
+    }
+
     // One final render so the settled state is captured too.
     if let Some(r) = renderer_opt.as_mut() {
         let mut s = Scene::new();
@@ -659,6 +678,19 @@ fn e2e_tab_drag_reorder() {
         ] {
             assert_png_nonempty(&out_dir.join(name));
         }
+        // Pin the post-drop settled render. The initial + midway
+        // frames aren't pinned — midway is mid-animation (ghost
+        // position + drop-zone expand are frame-timer driven) and
+        // would be inherently flaky. Only the final, post-spring
+        // state is deterministic enough to lock into a golden.
+        // Soft-skip above (no GPU → skip PNG assertions entirely)
+        // keeps sandboxed CI green.
+        let rendered = out_dir.join("e2e-06-tabs-reordered.png");
+        SnapshotAssertion::new(
+            rendered,
+            goldens_dir().join("e2e-tab-drag-reorder-settled.png"),
+        )
+        .assert();
     } else {
         eprintln!("offscreen: no wgpu adapter — e2e_tab_drag_reorder asserted drop-order only");
     }
@@ -913,6 +945,286 @@ fn e2e_open_quick_settings() {
     } else {
         eprintln!("offscreen: no wgpu adapter — e2e_open_quick_settings asserted state only");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Test 4: maximized tile renders the floating-controls chrome
+// ---------------------------------------------------------------------------
+//
+// Drives the per-tab hover-cluster's Maximize2 click on a standalone
+// `WindowGroup` and captures the resulting maximized render, which
+// should include the title pill + `[Restore][×]` floating-controls
+// cluster WindowGroup paints on top of its own rect while `maximized
+// == true`. Mirrors `e2e_tab_drag_reorder`'s pattern (standalone group
+// rather than `build_nirios_overlay_host_with_chrome`) because:
+//
+//   1. `max_rects` has no public accessor on `TabBar`, so the only way
+//      to hit the maximize glyph from a click-coordinate is to derive
+//      its position from `tab_rects()[active_idx]` + the inset offsets
+//      defined inside `TabBar::apply_layout` (close_w = 18, close_inset
+//      = 4, max_w = 16, 2 px gap between close and max → max_rect.x0 =
+//      tab.x1 - 40, max_rect.x1 = tab.x1 - 24). Deriving those against
+//      the live shell's full widget tree would work, but:
+//
+//   2. The post-click assertion needs to observe `WindowGroup.maximized
+//      == true`. That field is `pub` on the concrete type, but behind
+//      the `Box<dyn Widget>` the shell builds there's no public walker
+//      to fish out a specific group. Adding one would require a new
+//      widget accessor, which the task explicitly disallows.
+//
+// The standalone-group approach gives direct access to
+// `.maximized`, and still exercises the full tabs.rs click pipeline
+// (max_rects hit-test → pending_max → WindowGroup::take_max → flip
+// maximized → floating-controls draw). The golden therefore locks the
+// actual floating-controls chrome rendering end-to-end, just at a
+// smaller viewport than the full shell.
+#[test]
+fn e2e_maximized_tile_floating_controls() {
+    let tabs: Vec<(TabDescriptor, TileContent)> = vec![
+        tab_stub(1, "Notes", AppKind::Editor, "notes"),
+        tab_stub(2, "Files", AppKind::Files, "files"),
+        tab_stub(3, "Terminal", AppKind::Terminal, "terminal"),
+        tab_stub(4, "Browser", AppKind::Browser, "browser"),
+    ];
+    let mut group = WindowGroup::new(
+        200,
+        tabs,
+        /* active_id */ 1,
+        WindowWidth::Normal,
+    );
+    assert!(!group.maximized, "group starts un-maximized");
+
+    let theme = Theme::dark();
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let child = group.build_layout(&mut taffy, &theme, &mut node_map);
+    let vp = taffy
+        .new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(960.0),
+                    height: Dimension::length(540.0),
+                },
+                ..Default::default()
+            },
+            &[child],
+        )
+        .unwrap();
+    let mut tr = TextRenderer::new();
+    let map_for_measure = node_map.clone();
+    taffy
+        .compute_layout_with_measure(
+            vp,
+            Size {
+                width: AvailableSpace::Definite(960.0),
+                height: AvailableSpace::Definite(540.0),
+            },
+            |known, available, node_id, _, _| {
+                if let Some(&ptr) = map_for_measure.get(&node_id) {
+                    unsafe { (*ptr).measure(known, available, &mut tr) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        )
+        .expect("compute_layout");
+    group.apply_layout(&taffy, child, Point::ORIGIN);
+
+    // Prime the bar so `tab_rects` is populated — max_rect coordinates
+    // are derived from the active tab's pill rect.
+    let presence = PresenceCtx::default();
+    {
+        let mut s = Scene::new();
+        group.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
+    }
+
+    // Derive the active tab's Maximize2 rect from its pill rect +
+    // the hover-cluster offsets baked into `TabBar::apply_layout`
+    // (see comment on this test for the arithmetic).
+    let tab_rects = probe_tab_rects();
+    let active_idx = 0usize;
+    let pill = tab_rects[active_idx];
+    // close_w=18, close_inset=4 → close_x0 = pill.x1 - 22
+    // max_w=16, 2 px gap → max_x0 = close_x0 - 18 = pill.x1 - 40
+    let max_rect = vello::kurbo::Rect::new(
+        pill.x1 - 40.0,
+        pill.y0 + 4.0,
+        pill.x1 - 24.0,
+        pill.y1 - 4.0,
+    );
+    let max_center = Point::new(
+        (max_rect.x0 + max_rect.x1) / 2.0,
+        (max_rect.y0 + max_rect.y1) / 2.0,
+    );
+
+    // Synthesise the click: CursorMoved (populates `last_cursor` + the
+    // hover_max_idx cache), then press+release at the same spot.
+    let mut doc = AutoCommit::new();
+    let doc_root = automerge::ROOT.clone();
+    let modifiers = Modifiers::default();
+    let mut focus: Option<NodeId> = None;
+    // Wrap `group` in a Box<dyn Widget>-compatible mutable reference
+    // so `pump` can drive it. `pump` wants `&mut Box<dyn Widget>`;
+    // boxing here lets us retain access to the concrete `.maximized`
+    // after the drive via `Box::into_inner`-style unpacking. Simpler:
+    // just call `group.handle_event` directly.
+    let root_node = child;
+    let mut pump_ev = |group: &mut WindowGroup, event: WindowEvent| {
+        let mut handled = false;
+        group.handle_event(
+            &event,
+            1.0,
+            &modifiers,
+            &mut doc,
+            &doc_root,
+            &mut handled,
+            &mut focus,
+            root_node,
+            &taffy,
+        );
+    };
+    pump_ev(
+        &mut group,
+        WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: PhysicalPosition::new(max_center.x, max_center.y),
+        },
+    );
+    pump_ev(
+        &mut group,
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        },
+    );
+    // Release isn't strictly required — `TabBar::handle_event` publishes
+    // `pending_max` on Pressed, and `WindowGroup::handle_event` drains
+    // it at the end of the same event. But a release keeps the event
+    // stream realistic and matches how the live binary forwards clicks.
+    pump_ev(
+        &mut group,
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        },
+    );
+
+    assert!(
+        group.maximized,
+        "clicking the active tab's Maximize2 glyph should toggle `maximized = true`"
+    );
+
+    // Settle any spawn-fade / animation timers the group might still
+    // be pumping (defensive — a freshly-built group without a
+    // `start_spawn_animation` call shouldn't have one in flight).
+    std::thread::sleep(Duration::from_millis(50));
+    {
+        let mut s = Scene::new();
+        group.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
+    }
+
+    let mut renderer_opt = try_new_renderer(960, 540);
+    let out_dir = screenshots_dir();
+    if let Some(r) = renderer_opt.as_mut() {
+        let mut s = Scene::new();
+        group.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
+        r.render_png(
+            &s,
+            Color::rgb8(0x02, 0x06, 0x14),
+            out_dir.join("e2e-maximized-tile-controls.png"),
+        );
+        let rendered = out_dir.join("e2e-maximized-tile-controls.png");
+        assert_png_nonempty(&rendered);
+        // Pin the maximized render against its committed golden. The
+        // floating-controls chrome (title pill + `[Restore][×]`) is
+        // what regresses if the hover-cluster geometry or the post-
+        // click chrome ever drifts.
+        SnapshotAssertion::new(
+            rendered,
+            goldens_dir().join("e2e-maximized-tile-controls.png"),
+        )
+        .assert();
+    } else {
+        eprintln!(
+            "offscreen: no wgpu adapter — e2e_maximized_tile_floating_controls asserted state only"
+        );
+    }
+}
+
+/// Probe helper: build a sibling `TabBar` with the same tab set as
+/// `e2e_maximized_tile_floating_controls` and return the computed
+/// `tab_rects` after layout. Shares its shape with `probe_tab_centers`
+/// but returns the full rects so callers can derive per-pill hover-
+/// cluster coordinates (max / close / search icon rects) without
+/// needing a new `TabBar` accessor.
+fn probe_tab_rects() -> Vec<vello::kurbo::Rect> {
+    let mut concrete = TabBar::new(
+        "g200",
+        vec![
+            TabDescriptor {
+                id: 1,
+                title: "Notes".into(),
+                app_kind: Some(AppKind::Editor),
+            },
+            TabDescriptor {
+                id: 2,
+                title: "Files".into(),
+                app_kind: Some(AppKind::Files),
+            },
+            TabDescriptor {
+                id: 3,
+                title: "Terminal".into(),
+                app_kind: Some(AppKind::Terminal),
+            },
+            TabDescriptor {
+                id: 4,
+                title: "Browser".into(),
+                app_kind: Some(AppKind::Browser),
+            },
+        ],
+        1,
+    );
+    let theme = Theme::dark();
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let child = concrete.build_layout(&mut taffy, &theme, &mut map);
+    let vp = taffy
+        .new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(960.0),
+                    height: Dimension::length(40.0),
+                },
+                ..Default::default()
+            },
+            &[child],
+        )
+        .unwrap();
+    let mut tr = TextRenderer::new();
+    let map_copy = map.clone();
+    taffy
+        .compute_layout_with_measure(
+            vp,
+            Size {
+                width: AvailableSpace::Definite(960.0),
+                height: AvailableSpace::Definite(40.0),
+            },
+            |known, available, node_id, _, _| {
+                if let Some(&ptr) = map_copy.get(&node_id) {
+                    unsafe { (*ptr).measure(known, available, &mut tr) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        )
+        .expect("compute_layout");
+    concrete.apply_layout(&taffy, child, Point::ORIGIN);
+    let mut s = Scene::new();
+    let presence = PresenceCtx::default();
+    concrete.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
+    concrete.tab_rects().to_vec()
 }
 
 // ---------------------------------------------------------------------------
