@@ -234,8 +234,23 @@ shipped; Gaussian convolution deferred).
   window-minimize animation.
 - Concept-matched animation pass (overview zoom, tile spawn/despawn,
   wheel snap spring — spring already partial via `7916273`).
-- CRDT-driven undo/redo coverage across every widget (text input done;
-  reorder / split / close still pending a single-commit per gesture).
+- CRDT-driven undo/redo coverage across every widget.
+  - **Text input (editor typing): working** — 1 entry per char, verified
+    in `e2e_undo_redo_round_trip_restores_golden` + the redo golden
+    (submodule `02e7105`, superproject `a9e2129`).
+  - **Window-management gestures (close / reorder / maximize): not
+    persisted in the CRDT at all.** `TabBar::sync` is empty,
+    `WindowGroup::handle_event` uses `Vec::remove` + `bar.remove_tab`
+    with no `state.doc` mutation, so `commit_action()` finds no ops and
+    `undo_stack` stays empty. Fixing this is a structural change —
+    either promote tab structure into the CRDT (preferred; aligns with
+    "collaborative by default") or extend the undo system to snapshot
+    widget state. Neither is trivial.
+  - **`State::undo` drops `widget_metadata` on redo_stack push**
+    (`quick-ui/src/state/mod.rs:74-79`) — redo cannot restore
+    widget-local caret/cursor state. `e2e_redo_after_undo_rehydrates_golden`
+    works around this by re-parking the caret via `NamedKey::End` after
+    redo; the plumbing gap itself remains.
 - Full automated E2E navigation tests w/ screenshot diffing for the
   golden-path flows (open overview → switch workspace → drag tab to new
   window → collab join → undo). **Harness in place** (commits `8c3d619`
@@ -243,8 +258,9 @@ shipped; Gaussian convolution deferred).
   refresh, golden PNGs committed under `quick-shell/tests/snapshots/`.
   Pinned so far: overview settled, wheel-disc three-spokes, tab-drag
   reorder settled, maximized-tile floating controls (submodule
-  `7b47b42`, superproject `3be9db2`). Remaining: quick-settings (needs
-  clock mock or text-mask region), collab join, undo-redo round-trip.
+  `7b47b42`, superproject `3be9db2`), undo-restored + redo-rehydrated
+  (submodule `02e7105`, superproject `a9e2129`). Remaining:
+  quick-settings (needs clock mock or text-mask region), collab join.
 
 ## Process reminder
 
