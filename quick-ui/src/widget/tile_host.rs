@@ -1,5 +1,6 @@
 use automerge::{AutoCommit, ObjId};
 use std::sync::{Arc, OnceLock};
+use std::time::Instant;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Blob, Format, Image};
@@ -10,6 +11,18 @@ use crate::widget::app_widget::AppWidget;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::presence::PresenceCtx;
+
+/// Duration of the concept-parity spawn fade-in applied to a newly
+/// created `TileHost`. Mirrors the nirios-concept `WindowTile`
+/// `motion.initial={{ scale: 0.95, opacity: 0 }}` →
+/// `motion.animate={{ scale: 1, opacity: 1 }}` pattern — kept short
+/// (~180 ms) so tiles read as "arriving" without delaying the user's
+/// next interaction with the tile contents.
+const SPAWN_FADE_MS: f32 = 180.0;
+/// Initial uniform scale of the spawn curve. Matches the concept's
+/// `scale: 0.95` starting keyframe; the eased progress closes the gap
+/// back to 1.0 at the end of `SPAWN_FADE_MS`.
+const SPAWN_SCALE_START: f64 = 0.95;
 
 /// Side length of the pre-baked radial shadow sprite. 256 px keeps the
 /// one-shot RGBA8 allocation tiny (256 KiB) while being large enough
@@ -160,11 +173,24 @@ pub struct TileHost {
     /// `shadow-[0_0_60px_rgba(99,102,241,0.6)]` bloom
     /// (`WindowFrame.tsx:359`) is painted only when this is true.
     pub focused: bool,
+    /// Timestamp at which this TileHost was marked "newly spawned".
+    /// When set, `draw` applies an ease-out-cubic fade + uniform scale
+    /// curve over `SPAWN_FADE_MS`, mirroring the nirios-concept
+    /// `WindowTile` framer-motion
+    /// `initial={{ scale: 0.95, opacity: 0 }}` →
+    /// `animate={{ scale: 1, opacity: 1 }}` pattern. Cleared back to
+    /// `None` at the top of `draw` once the curve has elapsed so
+    /// subsequent frames render at steady state and don't pay the
+    /// layer push/pop cost. Tests that construct a `TileHost` via
+    /// `TileHost::new` get `None` here by default, matching the
+    /// "animations only fire for runtime insertions" invariant used
+    /// by `TabBar`'s insert fade.
+    spawned_at: Option<Instant>,
 }
 
 impl TileHost {
     pub fn new(content: TileContent) -> Self {
-        Self { content, rect: Rect::ZERO, focused: false }
+        Self { content, rect: Rect::ZERO, focused: false, spawned_at: None }
     }
     pub fn kind_string(&self) -> String {
         match &self.content {
@@ -176,6 +202,45 @@ impl TileHost {
     /// Toggle the indigo-bloom shadow. Called by `WindowGroup::draw`
     /// before dispatching to the active host.
     pub fn set_focused(&mut self, focused: bool) { self.focused = focused; }
+
+    /// Latch the concept-parity spawn fade-in (opacity 0→1, scale
+    /// 0.95→1.0 with an ease-out-cubic curve over `SPAWN_FADE_MS`).
+    /// Callers that create a brand-new `TileHost` — e.g. a future
+    /// `WindowGroup::add_tab` path or the detach/insert flow in
+    /// `GroupRow` — invoke this immediately after construction so the
+    /// tile reads as "arriving" rather than popping in opaque. A call
+    /// inside the animation window simply restarts the curve.
+    pub fn start_spawn_animation(&mut self) {
+        self.spawned_at = Some(Instant::now());
+    }
+
+    /// True while the spawn fade is still within its `SPAWN_FADE_MS`
+    /// window. Used by the `draw` path to decide whether to compose
+    /// the alpha/scale layer and by `needs_animation_frame` to keep
+    /// pumping redraws.
+    pub fn spawn_in_flight(&self) -> bool {
+        match self.spawned_at {
+            Some(t) => t.elapsed().as_millis() < SPAWN_FADE_MS as u128,
+            None => false,
+        }
+    }
+
+    /// Ease-out-cubic progress of the spawn curve in `[0.0, 1.0]`, or
+    /// `None` when no spawn animation is in flight. Exposed for tests
+    /// so the curve shape can be pinned without peeking into Vello's
+    /// scene buffer.
+    #[cfg(test)]
+    pub fn spawn_alpha(&self) -> Option<f32> {
+        self.spawned_at.and_then(|t| {
+            let elapsed = t.elapsed().as_millis() as f32;
+            if elapsed >= SPAWN_FADE_MS {
+                None
+            } else {
+                let raw = (elapsed / SPAWN_FADE_MS).clamp(0.0, 1.0);
+                Some(1.0 - (1.0 - raw).powi(3))
+            }
+        })
+    }
 }
 
 impl Widget for TileHost {
@@ -203,6 +268,103 @@ impl Widget for TileHost {
         }
     }
     fn draw(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
+        // Clear an expired spawn timestamp before branching so
+        // `spawn_in_flight()` can't stay `Some` forever once the curve
+        // has ended — otherwise subsequent steady-state frames would
+        // still carry the Option around for no reason.
+        if let Some(t) = self.spawned_at {
+            if t.elapsed().as_millis() >= SPAWN_FADE_MS as u128 {
+                self.spawned_at = None;
+            }
+        }
+        // Spawn-fade branch: compose the concept-parity
+        // `initial={{ scale: 0.95, opacity: 0 }}` →
+        // `animate={{ scale: 1, opacity: 1 }}` curve by wrapping the
+        // steady-state paint in a single alpha layer + centre-pivot
+        // scale. The whole tile (shadow sprites + card + content) is
+        // scaled and faded together so the motion reads as one unit,
+        // matching `WindowTile.tsx`'s top-level `<motion.div>`.
+        if self.spawn_in_flight() {
+            let started = self.spawned_at.expect("spawn_in_flight guards Some");
+            let elapsed = started.elapsed().as_millis() as f32;
+            let t = (elapsed / SPAWN_FADE_MS).clamp(0.0, 1.0);
+            let eased = 1.0 - (1.0 - t).powi(3);
+            let alpha = eased;
+            let scale = SPAWN_SCALE_START + (1.0 - SPAWN_SCALE_START) * eased as f64;
+            // Wide clip so the shadow sprites (`ambient_pad = 50`,
+            // `bloom_pad = 120`) aren't chopped mid-fade. 160 px is a
+            // touch wider than the bloom's outer extent to leave
+            // headroom if future tweaks widen the glow.
+            let clip = Rect::new(
+                self.rect.x0 - 160.0,
+                self.rect.y0 - 160.0,
+                self.rect.x1 + 160.0,
+                self.rect.y1 + 160.0,
+            );
+            scene.push_layer(
+                vello::peniko::BlendMode::default(),
+                alpha,
+                transform,
+                &clip,
+            );
+            let centre = self.rect.center();
+            let anim_transform = transform
+                * Affine::translate((centre.x, centre.y))
+                * Affine::scale(scale)
+                * Affine::translate((-centre.x, -centre.y));
+            self.draw_steady_state(scene, anim_transform, tr, theme, presence);
+            scene.pop_layer();
+            return;
+        }
+        self.draw_steady_state(scene, transform, tr, theme, presence);
+    }
+    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, m: &winit::event::Modifiers, s: &mut AutoCommit, p: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, taffy: &TaffyTree<()>) {
+        if let TileContent::App(w) = &mut self.content {
+            let child_node = taffy.children(node_id).unwrap()[0];
+            w.handle_event(event, scale_factor, m, s, p, handled, focus_target, child_node, taffy);
+        }
+    }
+    fn name(&self) -> &str { "TileHost" }
+    fn get_rect(&self) -> Rect { self.rect }
+    fn take_structure_dirty(&mut self) -> bool {
+        // A hosted app widget could itself mutate its subtree (e.g. a file
+        // explorer that spawns a new pane). Forward through so App can
+        // rebuild the taffy tree when the inner widget reports dirty.
+        if let TileContent::App(w) = &mut self.content {
+            w.take_structure_dirty()
+        } else {
+            false
+        }
+    }
+    fn needs_animation_frame(&self) -> bool {
+        // `TileHost` doesn't expose children via `children()`, so the
+        // default `Widget::needs_animation_frame` (which recurses into
+        // `children()`) would return `false` for every host. Override
+        // explicitly so (a) the spawn fade keeps pumping frames until
+        // it settles, and (b) any hosted `AppWidget`'s own animation
+        // signal still bubbles up through the tile to `App::run`.
+        let inner = match &self.content {
+            TileContent::App(w) => w.needs_animation_frame(),
+            TileContent::Stub { .. } => false,
+        };
+        self.spawn_in_flight() || inner
+    }
+}
+
+impl TileHost {
+    /// Steady-state paint: ambient shadow → focused-only indigo bloom
+    /// → white card + border → hosted `AppWidget` or stub contents.
+    /// Extracted from `draw` so the spawn-fade branch can wrap the
+    /// exact same paint under a single `push_layer` + scaled
+    /// `transform` without duplicating the underlying paint code.
+    fn draw_steady_state(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
         let radius = theme.tokens.radii.xl as f64;
         // Ambient `shadow-2xl` (`0 25px 50px -12px rgba(0,0,0,0.25)`):
         // stretch the cached radial-Gaussian sprite beneath the card
@@ -277,29 +439,12 @@ impl Widget for TileHost {
             }
         }
     }
-    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, m: &winit::event::Modifiers, s: &mut AutoCommit, p: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, taffy: &TaffyTree<()>) {
-        if let TileContent::App(w) = &mut self.content {
-            let child_node = taffy.children(node_id).unwrap()[0];
-            w.handle_event(event, scale_factor, m, s, p, handled, focus_target, child_node, taffy);
-        }
-    }
-    fn name(&self) -> &str { "TileHost" }
-    fn get_rect(&self) -> Rect { self.rect }
-    fn take_structure_dirty(&mut self) -> bool {
-        // A hosted app widget could itself mutate its subtree (e.g. a file
-        // explorer that spawns a new pane). Forward through so App can
-        // rebuild the taffy tree when the inner widget reports dirty.
-        if let TileContent::App(w) = &mut self.content {
-            w.take_structure_dirty()
-        } else {
-            false
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     fn sprite_alpha_at(sprite: &Image, x: u32, y: u32) -> u8 {
         let bytes: &[u8] = sprite.data.data().as_ref();
@@ -336,6 +481,98 @@ mod tests {
         assert!(
             a_peak > a_tail,
             "peak (0.3d={a_peak}) must exceed tail (0.9d={a_tail})",
+        );
+    }
+
+    fn stub_host() -> TileHost {
+        TileHost::new(TileContent::Stub {
+            kind: AppKind::Terminal,
+            label: "t".into(),
+        })
+    }
+
+    #[test]
+    fn start_spawn_animation_records_timestamp() {
+        let mut h = stub_host();
+        assert!(h.spawned_at.is_none(), "fresh host has no spawn timestamp");
+        h.start_spawn_animation();
+        assert!(
+            h.spawned_at.is_some(),
+            "start_spawn_animation must record an Instant",
+        );
+    }
+
+    #[test]
+    fn spawn_in_flight_returns_true_within_duration() {
+        let mut h = stub_host();
+        h.start_spawn_animation();
+        // Sleep well inside the fade window so the elapsed check
+        // can't race a slow CI box past `SPAWN_FADE_MS`.
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(
+            h.spawn_in_flight(),
+            "spawn_in_flight must be true within SPAWN_FADE_MS",
+        );
+        let alpha = h.spawn_alpha().expect("alpha in flight");
+        assert!(
+            (0.0..1.0).contains(&alpha),
+            "eased alpha mid-flight must be in [0, 1); got {alpha}",
+        );
+    }
+
+    #[test]
+    fn spawn_in_flight_returns_false_after_duration() {
+        let mut h = stub_host();
+        h.start_spawn_animation();
+        // Sleep past `SPAWN_FADE_MS + 20` so the elapsed check
+        // definitively exceeds the window even with timer jitter.
+        std::thread::sleep(Duration::from_millis(SPAWN_FADE_MS as u64 + 20));
+        assert!(
+            !h.spawn_in_flight(),
+            "spawn_in_flight must be false after SPAWN_FADE_MS elapses",
+        );
+        assert!(
+            h.spawn_alpha().is_none(),
+            "expired spawn must report no alpha",
+        );
+    }
+
+    #[test]
+    fn draw_without_spawn_animation_does_not_push_extra_layer() {
+        // Indirect assertion: when no spawn animation has been
+        // started, `spawn_in_flight` is false, `spawn_alpha` is None,
+        // and the `draw` path skips the wrapper `push_layer`/centre-
+        // pivot-scale block entirely. Pinning that pair keeps future
+        // edits from accidentally making the wrapper always-on — which
+        // would regress steady-state cost by one layer + one affine
+        // compose per frame per tile.
+        let h = stub_host();
+        assert!(
+            !h.spawn_in_flight(),
+            "fresh host must not be in flight",
+        );
+        assert!(
+            h.spawn_alpha().is_none(),
+            "fresh host must report no spawn alpha",
+        );
+    }
+
+    #[test]
+    fn needs_animation_frame_reflects_spawn_anim_state() {
+        let mut h = stub_host();
+        assert!(
+            !h.needs_animation_frame(),
+            "static host must not demand animation frames",
+        );
+        h.start_spawn_animation();
+        assert!(
+            h.needs_animation_frame(),
+            "in-flight spawn must pump the App run loop",
+        );
+        std::thread::sleep(Duration::from_millis(SPAWN_FADE_MS as u64 + 20));
+        assert!(
+            !h.needs_animation_frame(),
+            "after the spawn window elapses, no more frames are needed",
         );
     }
 }
