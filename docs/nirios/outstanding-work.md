@@ -159,15 +159,15 @@ See `docs/nirios/visual-gaps.md` for the full list.
 - #2 tab contrast — commit `4d6df4c`
 - #4 overview active-row halo (4-ring fade) — commit `4b12846`
 - #6 sidebar card fill — superseded by wheel disc
+- #8 topbar clock active-dot contrast — commit `3b786c2`
 - #9 per-peer collaborator avatar colors — commit `730e6c4`
+- #10 desktop noise overlay — commit `722ad07`
+- #12 overview header typography (≥32 px bold) — commit `687e7ee`
+- #13 overview scrim slate-950 — commit `687e7ee`
+- Wheel-disc Plus button (closes wheel-disc-design known-gap #4) — commit `dc8956a`
 - Earlier: shield/backdrop work
 
 **In flight** (parallel subagents dispatched):
-- #8 topbar clock active-dot contrast
-- #10 desktop noise overlay
-- #12 overview header typography
-- #13 overview scrim slate-950
-- Wheel-disc Plus button (workspace add affordance)
 - Real-socket two-peer collab E2E (closes §3 #4 below)
 
 **Remaining highest-priority:**
