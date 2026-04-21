@@ -34,14 +34,23 @@ fn undo_for_author_skips_entries_owned_by_other_users() {
     state.commit_action_authored(None, None, Some(UserId("alice".into())));
 
     // Alice's undo should pop the top entry (alice's own, v=3 becomes v=2).
-    let popped = state.undo_for_author(&UserId("alice".into())).expect("alice entry");
+    // This test doesn't care about caret state, so pass None/None.
+    let popped = state
+        .undo_for_author(&UserId("alice".into()), None, None)
+        .expect("alice entry");
     assert_eq!(popped.author, Some(UserId("alice".into())));
     // Next alice undo: must skip bob's entry and pop the earlier alice entry.
-    let popped = state.undo_for_author(&UserId("alice".into())).expect("alice entry again");
+    let popped = state
+        .undo_for_author(&UserId("alice".into()), None, None)
+        .expect("alice entry again");
     assert_eq!(popped.author, Some(UserId("alice".into())));
     // No more alice entries: return None (bob's remains untouched).
-    assert!(state.undo_for_author(&UserId("alice".into())).is_none());
+    assert!(state
+        .undo_for_author(&UserId("alice".into()), None, None)
+        .is_none());
     // Bob can still undo his entry.
-    let popped = state.undo_for_author(&UserId("bob".into())).expect("bob entry");
+    let popped = state
+        .undo_for_author(&UserId("bob".into()), None, None)
+        .expect("bob entry");
     assert_eq!(popped.author, Some(UserId("bob".into())));
 }
