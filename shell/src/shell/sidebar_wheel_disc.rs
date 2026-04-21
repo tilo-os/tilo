@@ -1,16 +1,15 @@
 //! `SidebarWheelDisc` — circular wheel-disc that sits in-plane with window
-//! strips, rendering each strip as a radial spoke.
+//! content, rendering each **workspace** as a radial spoke.
 //!
 //! User-facing spec (verbatim, 2026-04-21):
-//! *"I want a rounded, wheel like thingy on the left, placed on the same
-//! plane as actual windows (a strip should be an axis going out from that
-//! middle → basically a big circle). You can then drag this wheel in the
-//! middle to move it to another strip of windows."*
+//! *"No permanent sidebar, but workspaces appear as rotated axes of the
+//! wheel disc, meaning you can go to the left and drag it to move between
+//! workspaces."*
 //!
 //! Design notes are in `docs/nirios/outstanding-work.md` §"Redesign — left
-//! wheel as in-plane disc". This file implements the widget skeleton + unit
-//! tests + screenshot harness only; it is **not yet wired** into
-//! `build_nirios_root_with_chrome`. That migration is a follow-up.
+//! wheel as in-plane disc". This widget is the **sole** left-side
+//! navigation in `build_nirios_overlay_host_with_chrome`; the legacy
+//! `SidebarWheelChrome` module is no longer mounted in the live shell.
 //!
 //! Interaction model:
 //! - Press inside the disc → capture `drag_from`.
@@ -36,23 +35,23 @@ use quick_ui::text_render::TextRenderer;
 use quick_ui::theme::Theme;
 use quick_ui::widget::Widget;
 
-/// A single spoke-label. `strip_id` is an opaque correlator the host uses
-/// to map the active spoke back to a strip in the workspace tree; the
+/// A single spoke-label. `workspace_id` is an opaque correlator the host
+/// uses to map the active spoke back to a workspace in the tree; the
 /// widget itself never dereferences it.
 #[derive(Clone, Debug)]
 pub struct SpokeLabel {
     pub text: String,
-    pub strip_id: Option<u64>,
+    pub workspace_id: Option<u64>,
 }
 
 /// In-plane wheel disc. See module-level docs for the interaction model.
 pub struct SidebarWheelDisc {
-    /// Spokes, one per strip in the active workspace. Rendered
-    /// radially around the rim; the label at index `active_idx` is drawn
-    /// with the primary text colour, the rest with `text_dim`.
-    pub strips: Vec<SpokeLabel>,
-    /// Index of the spoke currently "up" — i.e. the strip the user would
-    /// return to if they released without further dragging.
+    /// Spokes, one per workspace in the tree. Rendered radially around the
+    /// rim; the label at index `active_idx` is drawn with the primary
+    /// text colour, the rest with `text_dim`.
+    pub spokes: Vec<SpokeLabel>,
+    /// Index of the spoke currently "up" — i.e. the workspace the user
+    /// would return to if they released without further dragging.
     pub active_idx: usize,
     /// Current visual rotation in degrees. Snapped to a multiple of
     /// `spoke_gap_deg()` on release; free-running during a drag.
@@ -74,9 +73,9 @@ pub struct SidebarWheelDisc {
 impl SidebarWheelDisc {
     /// Construct a fresh disc with the given spoke labels. Starts at
     /// `active_idx = 0`, `rotation_deg = 0.0`, default 240 px diameter.
-    pub fn new(strips: Vec<SpokeLabel>) -> Self {
+    pub fn new(spokes: Vec<SpokeLabel>) -> Self {
         Self {
-            strips,
+            spokes,
             active_idx: 0,
             rotation_deg: 0.0,
             drag_from: None,
@@ -93,11 +92,20 @@ impl SidebarWheelDisc {
         self
     }
 
-    /// Degrees between adjacent spokes, given the current strip count.
-    /// Always `> 0.0`; a 0- or 1-strip disc is treated as a single
+    /// Builder-style override for the initially-active spoke index. Used
+    /// by the live-shell wiring to surface the tree's currently-active
+    /// workspace under the indigo glow; tests construct the disc and
+    /// mutate `active_idx` directly.
+    pub fn with_active_idx(mut self, idx: usize) -> Self {
+        self.active_idx = idx;
+        self
+    }
+
+    /// Degrees between adjacent spokes, given the current workspace count.
+    /// Always `> 0.0`; a 0- or 1-workspace disc is treated as a single
     /// 360-degree spoke slot so snap math doesn't divide by zero.
     pub fn spoke_gap_deg(&self) -> f32 {
-        let n = self.strips.len().max(1);
+        let n = self.spokes.len().max(1);
         360.0 / n as f32
     }
 
@@ -184,7 +192,7 @@ impl Widget for SidebarWheelDisc {
         // because vello 0.2 doesn't take `kurbo::Arc` directly in a stroke
         // call — the polyline-approximated bezier here looks the same at
         // these radii.
-        if !self.strips.is_empty() {
+        if !self.spokes.is_empty() {
             let active_angle_deg = self.rotation_deg
                 + (self.active_idx as f32) * self.spoke_gap_deg();
             let arc_sweep_deg = 24.0_f32;
@@ -212,11 +220,11 @@ impl Widget for SidebarWheelDisc {
         // along the spoke. We centre the glyph on the tip point by
         // translating to (tip_x, tip_y), rotating, then offsetting by
         // (-measured_w/2, -measured_h/2).
-        if !self.strips.is_empty() {
+        if !self.spokes.is_empty() {
             let label_radius = radius - 24.0;
             let gap = self.spoke_gap_deg();
             let size = tokens.typography.scale.xs;
-            for (i, spoke) in self.strips.iter().enumerate() {
+            for (i, spoke) in self.spokes.iter().enumerate() {
                 let angle_deg = self.rotation_deg + i as f32 * gap;
                 let angle_rad = (angle_deg as f64).to_radians();
                 let tx = cx + label_radius * angle_rad.cos();
@@ -367,11 +375,11 @@ impl SidebarWheelDisc {
     /// positive drag is 0 and for a larger one is the next multiple).
     /// `active_idx` advances by `-nearest_offset` so dragging down
     /// brings spoke `+1` into view — matching the user's mental model
-    /// of "pull the wheel down to reveal the next strip below".
+    /// of "pull the wheel down to reveal the next workspace below".
     pub fn snap_to_nearest(&mut self) {
-        let n = self.strips.len();
+        let n = self.spokes.len();
         if n <= 1 {
-            // Single-strip disc: snap rotation back to 0 so the lone
+            // Single-workspace disc: snap rotation back to 0 so the lone
             // label doesn't drift; active_idx is always 0.
             self.rotation_deg = 0.0;
             self.active_idx = 0;
@@ -399,7 +407,7 @@ mod tests {
     fn labels(names: &[&str]) -> Vec<SpokeLabel> {
         names
             .iter()
-            .map(|n| SpokeLabel { text: (*n).to_string(), strip_id: None })
+            .map(|n| SpokeLabel { text: (*n).to_string(), workspace_id: None })
             .collect()
     }
 
@@ -534,9 +542,9 @@ mod tests {
     }
 
     #[test]
-    fn single_strip_disc_never_snaps_past_itself() {
+    fn single_spoke_disc_never_snaps_past_itself() {
         let mut d = mk(&["Only"]);
-        assert_eq!(d.strips.len(), 1);
+        assert_eq!(d.spokes.len(), 1);
         let diameter = d.diameter_px;
         let start_y = diameter / 2.0;
         let cx = diameter / 2.0;
