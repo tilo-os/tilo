@@ -29,6 +29,15 @@ use crate::shell::state::WorkspaceTree;
 
 pub const TOPBAR_HEIGHT_PX: f32 = 40.0;
 
+/// Concept §1.1 top-bar backdrop is `bg-black/80 backdrop-blur-xl`. Until the
+/// pinned Vello supports `push_blur_layer`, we honour just the alpha split
+/// (gap #3 in `docs/nirios/visual-gaps.md`): the top-bar surface is tinted
+/// at 0.80 over whatever sits beneath it. The `surfaces.overlay` token in
+/// `quick_ui::tokens::colors` is defined as `rgba8(0, 0, 0, 204)` —
+/// `204 / 255 ≈ 0.8` — so this constant is the single source of truth the
+/// `shell_chrome_test` suite pins the token against.
+pub const TOP_BAR_SURFACE_ALPHA: f32 = 0.80;
+
 /// Which center-widget variant is active in the top-bar carousel.
 /// Scroll-wheel over the center band cycles between these; a three-dot
 /// indicator on the left of the band shows the current position.
@@ -302,6 +311,15 @@ impl TopBarChrome {
     /// the exact geometry the widget uses internally.
     pub fn overview_btn_rect(&self) -> Rect {
         self.overview_btn_rect
+    }
+
+    /// Translucent-tint fallback alpha for the top-bar surface. Concept
+    /// §1.1 uses `bg-black/80 backdrop-blur-xl`; without the `backdrop-blur`
+    /// primitive we at least honour the /80 alpha split (visual-gap #3 in
+    /// `docs/nirios/visual-gaps.md`). Pinned so a future regression that
+    /// reverts the topbar to an opaque fill fails the chrome-test suite.
+    pub fn top_bar_alpha() -> f32 {
+        TOP_BAR_SURFACE_ALPHA
     }
 
     /// Bounding rect of the quick-settings tray pill (three-dot widget on
