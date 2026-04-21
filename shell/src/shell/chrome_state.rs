@@ -139,6 +139,24 @@ impl ChromeState {
         tab_id
     }
 
+    /// Append a new empty workspace to `tree.workspaces`, activate it,
+    /// and bump the revision counter so widgets re-sync on the next
+    /// frame. Returns the new workspace's id.
+    ///
+    /// This is the plain "add workspace" entrypoint — the wheel-disc's
+    /// "+" slot (`sidebar_wheel_disc::SidebarWheelDisc::plus_rect`) calls
+    /// it directly on press. The concept's sidebar `+` button has the
+    /// same semantics: it creates a fresh workspace and switches to it
+    /// without opening any settings modal. Closes the concept's
+    /// `## Known gaps` #4 ("Plus button") in
+    /// `docs/nirios/wheel-disc-design.md`.
+    pub fn add_workspace(&mut self, name: impl Into<String>) -> crate::shell::state::WorkspaceId {
+        let id = self.tree.append_empty_workspace(&name.into());
+        self.tree.set_active(id);
+        self.bump();
+        id
+    }
+
     /// Switch to the workspace at the given direction (±1). Returns true
     /// if the active workspace changed.
     pub fn switch_workspace(&mut self, dir: i32) -> bool {
