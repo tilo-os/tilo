@@ -334,7 +334,12 @@ impl Widget for WindowGroup {
         };
         self.bar.draw(scene, transform, tr, theme, presence);
         let active_id = self.bar.active_id();
+        // Mirror `search_active` onto the active host so its card paints
+        // the concept's focused indigo bloom
+        // (`shadow-[0_0_60px_rgba(99,102,241,0.6)]`, WindowFrame.tsx:359).
+        let focused = self.search_active;
         if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == active_id) {
+            h.set_focused(focused);
             h.draw(scene, transform, tr, theme, presence);
         }
         // resize handle visualization
