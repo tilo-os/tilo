@@ -73,21 +73,43 @@ impl Widget for TileHost {
         }
     }
     fn draw(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
-        // Shadow-2xl approximation beneath the card (concept:
-        // `shadow-2xl` ≈ `0 25px 50px -12px rgba(0, 0, 0, 0.25)`).
-        // Vello has no native gaussian blur so we approximate with four
-        // progressively larger, translated-down, alpha-diminishing
-        // rounded rects stacked behind the card. Each ring contributes
-        // ~6 % alpha so their union reads as a soft 30 % drop shadow.
+        // shadow-2xl approximation: 0 25px 50px -12px rgba(0,0,0,0.25)
         let radius = theme.tokens.radii.xl as f64;
-        for (spread, dy, alpha) in [(2.0_f64, 6.0_f64, 24u8), (6.0, 12.0, 18), (14.0, 20.0, 10), (24.0, 28.0, 4)] {
+        let shadow_y_offset = 14.0_f64;
+        let shadow_rings: [(f64, u8); 24] = [
+            (2.0, 4),
+            (4.0, 4),
+            (6.0, 4),
+            (8.0, 4),
+            (10.0, 4),
+            (13.0, 4),
+            (16.0, 4),
+            (19.0, 4),
+            (22.0, 4),
+            (26.0, 3),
+            (30.0, 3),
+            (34.0, 3),
+            (38.0, 3),
+            (43.0, 3),
+            (48.0, 3),
+            (53.0, 2),
+            (58.0, 2),
+            (64.0, 2),
+            (70.0, 2),
+            (76.0, 2),
+            (82.0, 2),
+            (89.0, 1),
+            (96.0, 1),
+            (104.0, 1),
+        ];
+        for (spread, alpha) in shadow_rings {
             let shadow_rect = Rect::new(
                 self.rect.x0 - spread,
-                self.rect.y0 + dy - spread * 0.3,
+                self.rect.y0 - spread + shadow_y_offset,
                 self.rect.x1 + spread,
-                self.rect.y1 + dy + spread,
+                self.rect.y1 + spread + shadow_y_offset,
             );
-            let shadow_shape = RoundedRect::from_rect(shadow_rect, radius + spread * 0.5);
+            let shadow_shape = RoundedRect::from_rect(shadow_rect, radius + spread);
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
