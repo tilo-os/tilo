@@ -924,3 +924,134 @@ fn assert_png_nonempty(path: &Path) {
         path.display()
     );
 }
+
+// ---------------------------------------------------------------------------
+// Test 5: live-binary global hotkey routing
+// ---------------------------------------------------------------------------
+//
+// Guards the Cmd+K / Cmd+Tab / Escape hotkeys that fire in the running
+// `quick-desktop` binary. The shell-layer `Shell::dispatch_key` table lives
+// in `src/shell/mod.rs:522` but is *never constructed* by `src/main.rs` —
+// main builds the widget tree via `build_nirios_root` and hands it to
+// `quick_ui::App`, bypassing the `Shell` struct. So the only hotkey path
+// that actually fires for a real user is the pre-pass inside
+// `ShellOverlayHost::handle_event`. These tests pin that pre-pass so the
+// live-binary keyboard shortcuts don't silently regress again.
+
+/// Build a `KeyEvent` via the same zero-init workaround as [`escape_event`].
+/// Winit 0.30 keeps `KeyEventExtra` `pub(crate)`, so we can't construct a
+/// `KeyEvent` through a struct literal; we hand-write one over a zeroed
+/// buffer and overwrite the pub fields the shell actually reads.
+fn key_press(logical_key: Key) -> WindowEvent {
+    // SAFETY: see the note on `escape_event` — all pub fields of `KeyEvent`
+    // tolerate the all-zero bit pattern, and the overlay-host pre-pass
+    // only inspects `logical_key` + `state`.
+    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+    ev.logical_key = logical_key;
+    ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+    ev.location = KeyLocation::Standard;
+    ev.state = ElementState::Pressed;
+    ev.repeat = false;
+    ev.text = None;
+    WindowEvent::KeyboardInput {
+        device_id: unsafe { std::mem::zeroed() },
+        event: ev,
+        is_synthetic: false,
+    }
+}
+
+/// Dispatch one winit `WindowEvent` into `host.handle_event` with `modifiers`.
+/// Returns whether the host consumed the event. We build a throwaway
+/// `AutoCommit` + empty taffy tree so the hotkey pre-pass short-circuits
+/// before it would otherwise try to walk the widget tree's children.
+fn pump_host(
+    host: &mut quick_desktop::shell::overlay_host::ShellOverlayHost,
+    event: &WindowEvent,
+    modifiers: &Modifiers,
+) -> bool {
+    let mut doc = AutoCommit::new();
+    let root = automerge::ROOT.clone();
+    let mut handled = false;
+    let mut focus_target: Option<NodeId> = None;
+    let taffy: TaffyTree<()> = TaffyTree::new();
+    // `node_id` is only dereferenced when the host walks into children;
+    // the global-hotkey pre-pass returns before that.
+    let dummy_node: NodeId = unsafe { std::mem::zeroed() };
+    host.handle_event(
+        event,
+        1.0,
+        modifiers,
+        &mut doc,
+        &root,
+        &mut handled,
+        &mut focus_target,
+        dummy_node,
+        &taffy,
+    );
+    handled
+}
+
+#[test]
+fn e2e_ctrl_k_opens_search_palette_in_live_binary_path() {
+    // Same fixture path as `e2e_open_close_overview`: build the full
+    // shell chrome via `build_nirios_overlay_host_with_chrome` (the
+    // concrete-type sibling of `build_nirios_root_with_chrome` used by
+    // the live binary) so we exercise the real widget tree, not a
+    // hand-rolled stub.
+    let tree = WorkspaceTree::bootstrap_default();
+    let (mut host, _chrome) =
+        quick_desktop::shell::build_nirios_overlay_host_with_chrome(&tree);
+    assert!(!host.palette_visible(), "palette starts closed");
+
+    let mods = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+    let handled = pump_host(&mut host, &key_press(Key::Character("k".into())), &mods);
+    assert!(handled, "Ctrl+K must be consumed by the overlay host");
+    assert!(
+        host.palette_visible(),
+        "Ctrl+K must open the global-search palette in the live-binary event path"
+    );
+}
+
+#[test]
+fn e2e_escape_closes_search_palette() {
+    let tree = WorkspaceTree::bootstrap_default();
+    let (mut host, _chrome) =
+        quick_desktop::shell::build_nirios_overlay_host_with_chrome(&tree);
+
+    // Open via Ctrl+K first so we're not bypassing the host's own state
+    // machine. Asserts above already cover the toggle; re-checking here
+    // guards against a mutation ordering regression.
+    let mods = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+    let _ = pump_host(&mut host, &key_press(Key::Character("k".into())), &mods);
+    assert!(host.palette_visible());
+
+    // Escape with no modifiers must close the palette (priority order:
+    // palette > overview > ws_settings > quick_settings).
+    let no_mods = Modifiers::default();
+    let handled = pump_host(
+        &mut host,
+        &key_press(Key::Named(NamedKey::Escape)),
+        &no_mods,
+    );
+    assert!(handled, "Escape must be consumed while the palette is open");
+    assert!(
+        !host.palette_visible(),
+        "Escape must close the global-search palette"
+    );
+}
+
+#[test]
+fn e2e_ctrl_tab_toggles_overview_in_live_binary_path() {
+    let tree = WorkspaceTree::bootstrap_default();
+    let (mut host, chrome) =
+        quick_desktop::shell::build_nirios_overlay_host_with_chrome(&tree);
+    assert!(!chrome.borrow().overlays.overview);
+
+    let mods = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+    let handled = pump_host(&mut host, &key_press(Key::Named(NamedKey::Tab)), &mods);
+    assert!(handled, "Ctrl+Tab must be consumed by the overlay host");
+    assert!(
+        chrome.borrow().overlays.overview,
+        "Ctrl+Tab must toggle the overview overlay in the live-binary event path"
+    );
+}

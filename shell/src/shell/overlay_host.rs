@@ -326,6 +326,14 @@ impl ShellOverlayHost {
         self.palette_visible = !self.palette_visible;
     }
 
+    /// Read-only accessor for the command-palette ("global search")
+    /// visibility flag. Exposed so integration tests that only hold the
+    /// host through `Box<dyn Widget>` can still assert on the live-binary
+    /// hotkey path — the flag itself stays internal to this module.
+    pub fn palette_visible(&self) -> bool {
+        self.palette_visible
+    }
+
     /// Dispatch the shell action associated with a palette command id,
     /// then close the palette. Returns `true` if the id matched a known
     /// command. Callers still close the palette on unknown ids to avoid
