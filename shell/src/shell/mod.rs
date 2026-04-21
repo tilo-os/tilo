@@ -44,7 +44,7 @@ pub mod workspace_drop;
 pub mod workspace_settings;
 
 use quick_ui::widget::{
-    AppKind as UiKind, AppWidget, Column, Container, GroupRow, StripView, TabDescriptor,
+    AppKind as UiKind, AppWidget, Column, Container, GroupRow, Stack, StripView, TabDescriptor,
     TileContent as UiTile, Widget, WindowGroup as UiGroup, WindowWidth as UiWidth,
     WorkspaceView,
     context_menu::{ContextMenu, MenuItem},
@@ -1156,9 +1156,12 @@ pub fn build_nirios_root_with_chrome(
         }
     }
 
-    let content: Box<dyn Widget> = Box::new(
-        desktop_backdrop::DesktopBackdrop::new().with_child(Box::new(content_col)),
-    );
+    // Backdrop as a full-screen siblings-underneath layer so the translucent
+    // topbar (alpha 204 via `surfaces.overlay`) can pick up the gradient
+    // tint behind it — a Vello-friendly stand-in for backdrop-blur.
+    let backdrop: Box<dyn Widget> = Box::new(desktop_backdrop::DesktopBackdrop::new());
+    let foreground_col = Column::new().push(topbar).push(Box::new(content_col));
+    let stack = Stack::new().push(backdrop).push(Box::new(foreground_col));
 
     // Sidebar wheel is no longer a left-leaf of a SplitRow — it floats as
     // an absolute-positioned overlay inside `ShellOverlayHost` (matching
@@ -1167,13 +1170,9 @@ pub fn build_nirios_root_with_chrome(
         sidebar_wheel_chrome::SidebarWheelChrome::from_tree(tree).with_chrome(chrome.clone()),
     );
 
-    // Shell root: top bar stacked above the desktop content. The content
-    // now spans the full width — the wheel floats on top of it.
-    let root_col = Column::new().push(topbar).push(content);
-
     let root: Box<dyn Widget> = Box::new(
         Container::new()
-            .with_child(Box::new(root_col))
+            .with_child(Box::new(stack))
             .filling(),
     );
     // The real topbar bottom accounts for the outer `Container` (padding
