@@ -233,6 +233,12 @@ See `docs/nirios/visual-gaps.md` for the full list.
   keeps the caret where it was pre-gesture. Caller in `App::run` uses
   `root_widget.get_state()` (non-mutating) + `focusable_order` index
   lookup — commit `b6aa0d0` (submodule `df4f653`).
+- Group-close fade-out mirror: when `WindowGroup` loses its last tab
+  (sweep drains `hosts` + `closing_hosts`), `start_closing()` latches a
+  180 ms α 1→0 + scale 1→0.95 fade. `GroupRow` runs a per-tick prune
+  sweep that drops groups whose `close_complete()` returns true and
+  flags `structure_dirty`. Fills the tab-close-empties-group prune gap
+  that previously left empty shells in place — commit `3c733e6`.
 - Earlier: shield/backdrop work
 
 **Remaining visual gap:** none open — all visual-gaps.md items are either
@@ -240,18 +246,27 @@ shipped or parked pending a Vello blur primitive (#3 alpha-tint half already
 shipped; Gaussian convolution deferred).
 
 **In flight** (parallel subagents dispatched):
-- Group-close fade-out mirror: when a `WindowGroup` loses its last tab,
-  fade + scale-collapse the whole group over 180 ms before `GroupRow`
-  prunes it. Fills the prune gap for tab-close-emptied-groups (currently
-  only detach-emptied groups are pruned).
+- (none — waiting on next dispatch decision)
+
+**Known follow-ups from group-close agent (`3c733e6`)**:
+- Workspace active-group pointer may still target a closing group for
+  ~180 ms; should nudge to surviving sibling at `start_closing()`.
+- Maximized-close path (`maximized && close_rect` press) bypasses the
+  deferred-close flow and empties synchronously — reintroduces abrupt
+  disappearance for that specific codepath only.
+- Tab drop-back onto a closing group: `insert_detached_tab` doesn't
+  clear `closing_at`; the re-inserted tab gets pruned with the group.
+  Fix is either "clear closing_at on insert" or "GroupRow rejects
+  drops onto `is_closing()` groups".
 
 **Remaining highest-priority (structural / functional):**
 - Tab/window decoration polish — lucide X/Maximize2/Minimize2/Search
   shipped in commit `62c5c53`; drag-ghost preview shipped in commit
   `4e579ac`; tab-close fade-out shipped in `6ad564a`; tile-spawn fade
-  wired in `f290b89`. Still pending: per-tile close hover (hover tint /
-  icon swap on × button), window-minimize animation, group-close
-  fade-out mirror.
+  wired in `f290b89`; group-close fade-out shipped in `3c733e6`. Still
+  pending: per-tile close hover (hover tint / icon swap on × button),
+  window-minimize animation, and the three known follow-ups from
+  `3c733e6` listed in the "Known follow-ups" block below.
 - Concept-matched animation pass (overview zoom, tile spawn/despawn,
   wheel snap spring — spring already partial via `7916273`).
 - CRDT-driven undo/redo coverage across every widget.
