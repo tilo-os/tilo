@@ -12,6 +12,14 @@
 
 use quick_ui::widget::command_palette::{CommandEntry, CommandPalette};
 
+/// Alpha the shell overlay host tints the GlobalSearch palette surface
+/// with. Concept §5.1 specifies `bg-slate-900/70 backdrop-blur-md`; until
+/// the pinned Vello grows a blur primitive we honour just the /70 alpha
+/// split (visual-gap #3 in `docs/nirios/visual-gaps.md`). This constant is
+/// the source of truth the `shell_chrome_test` suite pins the palette tint
+/// against, and it is kept in sync with `overlay_host::MODAL_SURFACE_ALPHA`.
+pub const PALETTE_SURFACE_ALPHA: f32 = 0.70;
+
 /// Which slice of the command catalog the palette is focusing on.
 ///
 /// `Any` shows everything; the narrower variants restrict to a prefix family
@@ -64,6 +72,15 @@ impl GlobalSearch {
 
     pub fn context(&self) -> &SearchContext {
         &self.context
+    }
+
+    /// Translucent-tint fallback alpha for the palette surface. See
+    /// [`PALETTE_SURFACE_ALPHA`] for background — the palette sits at
+    /// `bg-slate-900/70` over the desktop scrim, and losing this alpha
+    /// step would collapse the command palette back into an opaque flat
+    /// rectangle (visual-gap #3).
+    pub fn surface_alpha() -> f32 {
+        PALETTE_SURFACE_ALPHA
     }
 
     /// Install a context-aware filter on the underlying palette.
