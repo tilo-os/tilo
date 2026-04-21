@@ -174,6 +174,8 @@ cursor. Real peer presence never lights up a cursor today.
 See `docs/nirios/visual-gaps.md` for the full list.
 
 **Closed** as of 2026-04-21 iteration:
+- Lucide X/Maximize2/Minimize2/Search on tab decorations + maximized
+  controls — commit `62c5c53`
 - #1 content card drop shadow (radial sprite) — commit `5837eee`
 - #2 tab contrast — commit `4d6df4c`
 - #4 overview active-row halo (4-ring fade) — commit `4b12846`
@@ -199,12 +201,12 @@ shipped or parked pending a Vello blur primitive (#3 alpha-tint half already
 shipped; Gaussian convolution deferred).
 
 **In flight** (parallel subagents dispatched):
-- Lucide glyphs on tab/window decorations (min/max/close, drag ghost polish)
+- Real peer presence feeding `PresenceCtx::remote_cursors` (§3 #5)
 
 **Remaining highest-priority (structural / functional):**
-- Real peer presence lighting up `RemoteCursorOverlay` (§3 #5).
-- Tab/window decoration polish to concept parity (min/max glyphs, per-tile
-  close hover, drag ghost).
+- Tab/window decoration polish — lucide X/Maximize2/Minimize2/Search
+  shipped in commit `62c5c53`. Still pending: per-tile close hover,
+  drag-ghost preview, minimize animation.
 - Concept-matched animation pass (overview zoom, tile spawn/despawn,
   wheel snap spring — spring already partial via `7916273`).
 - CRDT-driven undo/redo coverage across every widget (text input done;
