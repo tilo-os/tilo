@@ -35,10 +35,18 @@ Root causes documented in `group_row.rs` comments after subagent ae0ea2b…
 
 ## Redesign — left wheel as in-plane disc
 
-User spec (verbatim): *"I want a rounded, wheel like thingy on the left,
-placed on the same plane as actual windows (a strip should be an axis
-going out from that middle -> basically a big circle). You can then drag
-this wheel in the middle to move it to another strip of windows."*
+User spec (verbatim, 2026-04-21): *"I want a rounded, wheel like thingy
+on the left, placed on the same plane as actual windows (a strip should
+be an axis going out from that middle -> basically a big circle). You
+can then drag this wheel in the middle to move it to another strip of
+windows."*
+
+**Clarified later (2026-04-21):** *"No permanent sidebar, but workspaces
+appear as rotated axes of the wheel disc, meaning you can go to the left
+and drag it to move between workspaces."*
+
+So: spokes = **workspaces** (not strips). The disc **replaces**
+`SidebarWheelChrome` outright — no env-var gate, no fallback.
 
 ### Interpretation
 
@@ -48,15 +56,14 @@ this wheel in the middle to move it to another strip of windows."*
   overlay. It occupies its own horizontal slot inside the workspace row
   (i.e. replace the floating `SidebarWheelChrome` with a disc widget that
   sits to the left of the GroupRow, not above it).
-- Each **strip** of the current workspace appears as a **spoke/ray**
-  extending radially from the disc's centre. A strip is "axial" in the
-  sense that its row of window groups is conceptually attached to that
-  ray; in the 2D render we paint each strip label at its ray's tip.
+- Each **workspace** appears as a **spoke/ray** extending radially from
+  the disc's centre. Each spoke's tip is labelled with the workspace
+  name. Rotating the disc snaps the active workspace.
 - **Interaction:** press-and-drag anywhere on the disc's body rotates the
-  spoke set. Releasing snaps to the nearest spoke (that strip becomes
-  active). `|delta y| > threshold` switches strips. Current (`:732-781`)
-  drag-to-rotate already implements a vertical-drag→angle mapping; reuse
-  it.
+  spoke set. Releasing snaps to the nearest spoke (that workspace becomes
+  active). `|delta y| > threshold` switches workspaces. Current
+  (`:732-781`) drag-to-rotate already implements a vertical-drag→angle
+  mapping; reuse it.
 - **Plane-level**: the disc does NOT absorb clicks meant for the topbar or
   for windows. Its bounding box is the disc itself, not a 96-px strip.
 
