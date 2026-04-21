@@ -163,10 +163,18 @@ impl WindowGroup {
     /// Insert a previously-detached tab at `idx`, becoming the new active
     /// tab. The content order is kept aligned with the bar's descriptor
     /// order so a subsequent reorder inside this group stays coherent.
-    pub fn insert_detached_tab(&mut self, idx: usize, desc: TabDescriptor, host: TileHost) {
+    ///
+    /// Fires the per-tile spawn fade on the incoming `TileHost` so a
+    /// tab dragged into an existing group arrives with the concept's
+    /// ease-out opacity+scale motion rather than popping in opaque.
+    /// The sibling path — splitting a dragged tab into a *brand-new*
+    /// group — lives in `GroupRow::split_tab_into_new_group` and plays
+    /// the group-level fade instead, so we never double up.
+    pub fn insert_detached_tab(&mut self, idx: usize, desc: TabDescriptor, mut host: TileHost) {
         let id = desc.id;
         self.bar.insert_tab(idx, desc);
         let clamped = idx.min(self.hosts.len());
+        host.start_spawn_animation();
         self.hosts.insert(clamped, (id, host));
     }
 
@@ -807,6 +815,31 @@ mod tests {
         assert_eq!(
             WindowGroup::restore_glyph_icon_for_tests(),
             icons::Icon::Minimize2,
+        );
+    }
+
+    #[test]
+    fn insert_detached_tab_plays_tile_spawn_animation() {
+        // A tab dragged into an existing `WindowGroup` must fire the
+        // per-tile spawn fade so the new pill's content reads as
+        // "arriving" rather than popping in opaque. The sibling
+        // split-into-new-group path plays the group-level fade
+        // instead; we never double up.
+        let mut group = WindowGroup::new(0, vec![], 0, WindowWidth::Normal);
+        let host = TileHost::new(TileContent::Stub {
+            kind: AppKind::Settings,
+            label: "stub".to_string(),
+        });
+        let desc = TabDescriptor::new(42, "new");
+        group.insert_detached_tab(0, desc, host);
+        let inserted = group
+            .hosts
+            .iter()
+            .find(|(i, _)| *i == 42)
+            .expect("inserted host present");
+        assert!(
+            inserted.1.spawn_in_flight(),
+            "inserting a detached tab must fire the tile-level spawn fade",
         );
     }
 }
