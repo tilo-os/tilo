@@ -287,6 +287,23 @@ fn topbar_chrome_maps_two_peers_to_two_distinct_avatar_hues() {
     assert_ne!(colors[0], colors[1]);
 }
 
+/// Gap #5: the top-bar overview button paints lucide `LayoutGrid` via
+/// the shared `quick_ui::icons` module, not the legacy 4-filled-rect
+/// quad. Route the assertion through the `overview_glyph_icon()`
+/// accessor so a future revert (e.g. someone replacing `draw_icon` with
+/// a hand-rolled shape again) flips this test to red without needing a
+/// pixel snapshot harness.
+#[test]
+fn topbar_chrome_overview_glyph_is_lucide_layout_grid() {
+    use quick_desktop::shell::topbar_chrome::TopBarChrome;
+    use quick_ui::icons::Icon;
+    assert_eq!(
+        TopBarChrome::overview_glyph_icon(),
+        Icon::LayoutGrid,
+        "overview glyph must be lucide LayoutGrid per visual-gap #5",
+    );
+}
+
 /// Gap #8: the center-band active dot must read as a focused indicator,
 /// not just a slightly tinted sibling. The concept achieves this with a
 /// saturated indigo fill plus a 1.2×–1.6× scale-up; if the radii ever
