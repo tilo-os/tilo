@@ -1706,7 +1706,7 @@ fn e2e_undo_redo_round_trip_restores_golden() {
     // --- Undo via the direct state API. ---
     let entry = h
         .state
-        .undo()
+        .undo(None, None)
         .expect("state.undo() must restore the pre-mutation snapshot");
     let _ = entry;
     assert!(
@@ -1796,13 +1796,13 @@ fn e2e_redo_after_undo_rehydrates_golden() {
     // Undo, then immediately redo. The redo stack should have one
     // entry after the undo; after the redo the undo stack should be
     // populated again and the redo stack empty.
-    let _ = h.state.undo().expect("undo must succeed");
+    let _ = h.state.undo(None, None).expect("undo must succeed");
     h.render_to(
         renderer_opt.as_mut(),
         &out_dir.join("e2e-redo-mid-undo.png"),
     );
 
-    let _ = h.state.redo().expect(
+    let _ = h.state.redo(None, None).expect(
         "redo must succeed — if this fires None the undo didn't push onto \
          redo_stack, which breaks Ctrl+Shift+Z in the live binary",
     );
@@ -1816,16 +1816,15 @@ fn e2e_redo_after_undo_rehydrates_golden() {
     // shot. Widget-local state captured in `UndoEntry::widget_metadata`
     // (e.g. `EditorApp`'s cursor byte-offset via `get_state`/`set_state`)
     // is applied by `quick_ui::App::apply_undo_entry:292-298`, which
-    // this test doesn't run. Worse: `State::undo` pushes onto `redo_
-    // stack` with `widget_metadata: None`
-    // (`quick-ui/src/state/mod.rs:74-79`), so even a faithful
-    // `apply_undo_entry` invocation after `redo()` couldn't restore
-    // cursor position. To match the original post-mutation render
-    // pixel-for-pixel, we re-sync (picks up the redone `"a"` body) and
-    // then send `End` to park the cursor at the line end — matching
-    // where it sat just after the `char_key_press("a")` gesture. This
-    // is a known gap in quick-ui's undo plumbing, not a test-only
-    // workaround.
+    // this harness doesn't run — we drive `WindowGroup` directly, not
+    // through `App`. As of the "preserve widget metadata + focus across
+    // undo/redo" fix, `State::redo` *does* carry the pre-undo metadata
+    // on the returned `UndoEntry`, but someone has to call
+    // `apply_undo_entry` on it; we don't. To match the original post-
+    // mutation render pixel-for-pixel, we re-sync (picks up the redone
+    // `"a"` body) and then send `End` to park the cursor at the line
+    // end — matching where it sat just after the `char_key_press("a")`
+    // gesture.
     h.render_to(
         renderer_opt.as_mut(),
         &out_dir.join("e2e-redo-rehydrated-precaret.png"),
