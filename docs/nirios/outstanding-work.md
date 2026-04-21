@@ -6,24 +6,23 @@ functional gaps, architectural misses, and redesign asks.
 
 ## Functional — shell wiring
 
-### 1. Cmd+K / Cmd+Tab not routed in live binary — **Blocker**
+### 1. Cmd+K / Cmd+Tab routing — resolved (2026-04-21)
 
-`quick-shell/src/shell/mod.rs:522` defines `Shell::dispatch_key` and
-`:576 handle_window_event`, but `quick-shell/src/main.rs:7-32` does not
-construct a `Shell` at all. It builds root widgets via `build_nirios_root`
-and hands them straight to `quick_ui::App`. Result: in the running binary,
-global hotkeys never fire — search palette, overview toggle, and Escape
-routing are all dead.
+Earlier this doc claimed the hotkeys were dead because `main.rs` never
+builds a `Shell`. That was incorrect: the short-term fix was *already*
+implemented in `ShellOverlayHost::handle_event`
+(`quick-shell/src/shell/overlay_host.rs:951-1040`, added in commit
+`e5c134d`). That pre-pass sees every `WindowEvent::KeyboardInput` because
+`quick_ui::App::run` routes them through `root_widget.handle_event`
+(`quick-ui/src/app.rs:575`).
 
-Fix directions:
-- Short-term: re-implement Cmd+K / Cmd+Tab interception inside the root
-  `ShellOverlayHost` widget, which already sees every event in the widget
-  tree. Add a pre-pass that checks modifier+key and mutates overlay flags
-  directly.
-- Long-term: expose a pre-event hook on `quick_ui::App` (e.g.
-  `App::add_pre_event_filter(Box<dyn Fn(&WindowEvent) -> ControlFlow>)`)
-  so the shell can mount a `Shell` instance and keep the existing
-  `dispatch_key` table authoritative.
+Integration tests pinning all three shortcuts (Ctrl+K / Ctrl+Tab /
+Escape) now live in `quick-shell/tests/e2e_shell_flows.rs` so a future
+regression is caught.
+
+The long-term pre-event-hook idea (`App::add_pre_event_filter`) is not
+needed today — revisit only if the shell grows hotkeys that must fire
+with zero widget-tree walking (e.g. global screen-record toggle).
 
 ### 2. Tab-drag to new window unreliable — fix in flight
 
