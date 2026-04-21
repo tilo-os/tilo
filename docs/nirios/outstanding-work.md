@@ -218,6 +218,9 @@ See `docs/nirios/visual-gaps.md` for the full list.
   palette+modal 0.70 / scrim 0.20) — submodule commit `faf4e7c`
 - Inter-group tab drop-zone indicator (closes §1 #2 third subitem) — commit `f611af6`
 - Overview header Bold weight + clock/ws-name tier pins — submodule `255e9bb`
+- TileHost spawn fade+scale-in animation (180 ms ease-out-cubic, α 0→1,
+  scale 0.95→1.0) — commit `9fa86fd`. **Dormant**: no caller yet; follow-up
+  below.
 - Earlier: shield/backdrop work
 
 **Remaining visual gap:** none open — all visual-gaps.md items are either
@@ -225,7 +228,10 @@ shipped or parked pending a Vello blur primitive (#3 alpha-tint half already
 shipped; Gaussian convolution deferred).
 
 **In flight** (parallel subagents dispatched):
-- (none — waiting on next dispatch decision)
+- Wire `TileHost::start_spawn_animation()` into `WindowGroup::add_tab` and
+  the detach-insert path in `GroupRow` so spawn fades actually play at
+  runtime. Widget + tests shipped in `9fa86fd`; caller hookup is still
+  open.
 
 **Remaining highest-priority (structural / functional):**
 - Tab/window decoration polish — lucide X/Maximize2/Minimize2/Search
