@@ -95,7 +95,7 @@ mod text;        pub use text::Text;
 mod spacer;      pub use spacer::Spacer;
 mod slider;      pub use slider::Slider;
 mod text_input;  pub use text_input::TextInput;
-mod tabs;        pub use tabs::{TabBar, TabDescriptor};
+pub mod tabs;    pub use tabs::{TabBar, TabDescriptor};
 mod scrollable;  pub use scrollable::{Scrollable, ScrollAxis};
 mod tile_host;   pub use tile_host::{TileHost, TileContent, AppKind};
 mod app_widget;  pub use app_widget::{AppCommand, AppWidget, IconDescriptor};
