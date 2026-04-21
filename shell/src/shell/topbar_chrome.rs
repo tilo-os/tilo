@@ -228,6 +228,28 @@ impl TopBarChrome {
         self.center_widget
     }
 
+    /// Base (unscaled) radius used for the center-band three-dot stack.
+    pub const DOT_BASE_SIZE: f64 = 3.0;
+    /// Rendered radius of the *active* center-band dot. Sized 1.6× the
+    /// base so the saturated indigo fill reads as the focused indicator;
+    /// see gap #8 in `docs/nirios/visual-gaps.md`.
+    pub const DOT_ACTIVE_RADIUS: f64 = Self::DOT_BASE_SIZE * 1.6;
+    /// Rendered radius of the two inactive center-band dots.
+    pub const DOT_INACTIVE_RADIUS: f64 = Self::DOT_BASE_SIZE * 1.0;
+
+    /// Radius at which the active center-band dot is painted. Exposed so
+    /// tests can assert it is strictly larger than the inactive radius
+    /// (the contrast affordance is the scale-up + saturated indigo, not
+    /// the scale alone).
+    pub fn active_dot_radius(&self) -> f64 {
+        Self::DOT_ACTIVE_RADIUS
+    }
+
+    /// Radius at which each inactive center-band dot is painted.
+    pub fn inactive_dot_radius(&self) -> f64 {
+        Self::DOT_INACTIVE_RADIUS
+    }
+
     /// Bounding rect of the overview button. Populated during `draw`;
     /// exposed so integration tests can hit-test click coordinates against
     /// the exact geometry the widget uses internally.
@@ -450,15 +472,28 @@ impl Widget for TopBarChrome {
 
         // Three-dot indicator on the left of the band (vertical stack).
         let dot_x = band.x0 + 12.0;
-        let dot_size = 3.0_f64;
+        let dot_size = Self::DOT_BASE_SIZE;
         let dot_gap = 4.0_f64;
         let dot_col_h = 3.0 * dot_size + 2.0 * dot_gap;
         let dot_top = center_y - dot_col_h / 2.0;
         for i in 0..3 {
             let cy = dot_top + i as f64 * (dot_size + dot_gap) + dot_size / 2.0;
             let active = self.center_widget.index() == i;
-            let r = dot_size * if active { 1.4 } else { 1.0 };
-            let color = if active { colors.accent[5] } else { colors.text_dim };
+            // Active dot is scaled up 1.6× and painted in the saturated
+            // indigo accent (`accent[5]` = indigo-500 in the token ramp).
+            // Inactive dots use `neutral[7]` (slate-300) so they sit clearly
+            // above `text_dim` (slate-400) but still read below
+            // `text_primary` — this is the contrast bump from gap #8.
+            let r = if active {
+                Self::DOT_ACTIVE_RADIUS
+            } else {
+                Self::DOT_INACTIVE_RADIUS
+            };
+            let color = if active {
+                colors.accent[5]
+            } else {
+                colors.neutral[7]
+            };
             // Store dot hit region (generous 10 px square for clickability).
             self.center_dot_rects[i] = Rect::new(
                 dot_x - 10.0,
@@ -869,5 +904,43 @@ impl Widget for TopBarChrome {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
+
+    fn sample_chrome() -> TopBarChrome {
+        let mut tree = WorkspaceTree {
+            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+            active: WorkspaceId::from(0),
+            active_strip: Default::default(),
+            collaborators: Vec::new(),
+        };
+        tree.active = tree.workspaces[0].id;
+        TopBarChrome::from_tree(&tree)
+    }
+
+    /// Gap #8: the active center-band dot must be strictly larger than an
+    /// inactive dot. The indigo-500 fill plus the scale-up together give
+    /// the "where are we in the carousel" affordance; losing the scale
+    /// delta would collapse the indicator into three same-size circles.
+    #[test]
+    fn active_center_dot_radius_is_strictly_larger_than_inactive() {
+        let chrome = sample_chrome();
+        assert!(
+            chrome.active_dot_radius() > chrome.inactive_dot_radius(),
+            "active dot radius {} must be strictly larger than inactive {}",
+            chrome.active_dot_radius(),
+            chrome.inactive_dot_radius(),
+        );
+        // Guard the specific 1.6× ratio from the concept so a future tweak
+        // is an intentional decision, not a silent regression.
+        assert!(
+            (chrome.active_dot_radius() - TopBarChrome::DOT_BASE_SIZE * 1.6).abs() < f64::EPSILON,
+            "active dot radius should be 1.6× the base size",
+        );
     }
 }
