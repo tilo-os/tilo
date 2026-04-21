@@ -127,10 +127,14 @@ mental model: *pull the wheel down to reveal the next workspace below*.
    today only happens via the topbar chevrons after the fact, which
    doesn't map onto the disc metaphor.
 
-5. **Animations** — no easing on snap (instant jump), no settle
-   oscillation, no ease-in when the user first grabs the hub. Concept
-   uses `motion` spring `damping: 25, stiffness: 200` for almost
-   everything. Follow-up.
+5. ~~**Animations**~~ — **partially resolved in `7916273`**.
+   On release the disc now springs `rotation_deg` toward the snapped
+   target using the `snappy` preset (stiffness 260, damping 28 — close
+   to the concept's 200/25). `active_idx` and the CRDT write-back still
+   commit synchronously at release time; only the visual rotation eases.
+   Grabbing the hub still feels instant (no ease-in) — keeping that gap
+   open is intentional: physical knobs don't ease *into* drag. Covered
+   by `snap_animates_rotation_over_multiple_ticks`.
 
 ## Test coverage
 
@@ -139,7 +143,10 @@ mental model: *pull the wheel down to reveal the next workspace below*.
 | `new_starts_with_active_idx_zero_and_rotation_zero` | `sidebar_wheel_disc.rs` module tests | Default state |
 | `drag_and_release_snaps_to_nearest_spoke` | same | Full-diameter drag advances `active_idx` by exactly 1 |
 | `drag_without_release_keeps_rotation_continuous` | same | During drag, `rotation_deg` is non-snapped; `active_idx` unchanged |
-| `single_strip_disc_never_snaps_past_itself` | same | n=1 case — `spoke_gap_deg` doesn't divide by zero |
+| `single_spoke_disc_never_snaps_past_itself` | same | n=1 case — `spoke_gap_deg` doesn't divide by zero |
+| `snap_publishes_active_workspace_to_chrome` | same | `chrome.tree.active` receives the snapped workspace id |
+| `disc_without_chrome_snaps_without_panicking` | same | `with_chrome` is optional — `snap_to_nearest` no-ops cleanly when unset |
+| `snap_animates_rotation_over_multiple_ticks` | same | Release starts a spring; `rotation_deg` reaches target within 1° after `update` pumps at 60 Hz |
 | `sidebar_wheel_disc_renders_a_spoke_per_workspace` | `tests/sidebar_wheel_disc_snapshot.rs` | Snapshot test: 3 spokes labelled Home/Research/Design, active arc at Home's angle |
 
 ## Removing the old sidebar
