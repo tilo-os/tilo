@@ -153,13 +153,22 @@ cursor. Real peer presence never lights up a cursor today.
 
 ## Visual gaps (pointer)
 
-See `docs/nirios/visual-gaps.md` for the full list. **Closed** as of
-2026-04-21 iteration: #2 (tab contrast — commit `4d6df4c`), #6
-(sidebar card fill — superseded by wheel disc), and the earlier
-shield/backdrop work.
+See `docs/nirios/visual-gaps.md` for the full list.
 
-**In flight** (parallel subagents dispatched): #4 (overview active-row
-halo — 4-ring fade) and #9 (per-peer collaborator avatar colors).
+**Closed** as of 2026-04-21 iteration:
+- #2 tab contrast — commit `4d6df4c`
+- #4 overview active-row halo (4-ring fade) — commit `4b12846`
+- #6 sidebar card fill — superseded by wheel disc
+- #9 per-peer collaborator avatar colors — commit `730e6c4`
+- Earlier: shield/backdrop work
+
+**In flight** (parallel subagents dispatched):
+- #8 topbar clock active-dot contrast
+- #10 desktop noise overlay
+- #12 overview header typography
+- #13 overview scrim slate-950
+- Wheel-disc Plus button (workspace add affordance)
+- Real-socket two-peer collab E2E (closes §3 #4 below)
 
 **Remaining highest-priority:**
 - #1 content card shadow — Blocker, needs Vello blur or pre-rendered
@@ -167,11 +176,8 @@ halo — 4-ring fade) and #9 (per-peer collaborator avatar colors).
 - #3 backdrop blur on overlays/topbar — High, needs Vello blur layer
   or translucent fallback.
 - #5 full lucide icon pass — High, L one-time cost.
-- #7 text weight pass — Medium, S effort.
-- #8 topbar clock pill active-dot contrast — Medium.
-- #10 desktop noise overlay — Low.
-- #12 overview header typography — Low.
-- #13 overview scrim `slate-950` flat — Low.
+- #7 text weight pass — Medium, S effort (cross-cutting; needs
+  `TextRenderer::draw_text` to grow a weight param).
 
 ## Process reminder
 
