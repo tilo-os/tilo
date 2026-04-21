@@ -67,14 +67,22 @@ impl State {
         self.undo_stack.last()
     }
 
-    pub fn undo(&mut self) -> Option<UndoEntry> {
+    /// Undo the most recent action. Callers pass the *current* focus index
+    /// and widget metadata so the opposite-stack entry (pushed onto
+    /// `redo_stack`) carries the caret/focus state at the moment undo
+    /// fired — otherwise Ctrl+Shift+Z would rehydrate the text body but
+    /// leave the caret at offset 0.
+    pub fn undo(
+        &mut self,
+        current_focused_idx: Option<usize>,
+        current_metadata: Option<String>,
+    ) -> Option<UndoEntry> {
         if let Some(entry) = self.undo_stack.pop() {
             let current_snapshot = self.doc.save();
-            // Note: We'd ideally want to store current metadata here too for Redo
             self.redo_stack.push(UndoEntry {
                 snapshot: current_snapshot,
-                focused_node_idx: None,
-                widget_metadata: None,
+                focused_node_idx: current_focused_idx,
+                widget_metadata: current_metadata,
                 author: entry.author.clone(),
             });
 
@@ -90,7 +98,16 @@ impl State {
     /// Multi-user aware undo. Pops the topmost entry whose `author` equals
     /// `author`. Entries from other users are preserved in the stack so
     /// that one collaborator's undo never reverts another's work.
-    pub fn undo_for_author(&mut self, author: &UserId) -> Option<UndoEntry> {
+    ///
+    /// `current_focused_idx` / `current_metadata` are captured on the
+    /// redo stack so a subsequent redo can restore the caret — same
+    /// rationale as [`undo`].
+    pub fn undo_for_author(
+        &mut self,
+        author: &UserId,
+        current_focused_idx: Option<usize>,
+        current_metadata: Option<String>,
+    ) -> Option<UndoEntry> {
         let idx = self.undo_stack.iter().rposition(|e| {
             matches!(&e.author, Some(a) if a == author)
         })?;
@@ -98,8 +115,8 @@ impl State {
         let current_snapshot = self.doc.save();
         self.redo_stack.push(UndoEntry {
             snapshot: current_snapshot,
-            focused_node_idx: None,
-            widget_metadata: None,
+            focused_node_idx: current_focused_idx,
+            widget_metadata: current_metadata,
             author: entry.author.clone(),
         });
         if let Ok(new_doc) = AutoCommit::load(&entry.snapshot) {
@@ -110,12 +127,19 @@ impl State {
         None
     }
 
-    pub fn redo(&mut self) -> Option<UndoEntry> {
+    /// Redo the most recently undone action. `current_focused_idx` /
+    /// `current_metadata` are captured on the undo stack so a subsequent
+    /// undo can park the caret back where it was pre-redo.
+    pub fn redo(
+        &mut self,
+        current_focused_idx: Option<usize>,
+        current_metadata: Option<String>,
+    ) -> Option<UndoEntry> {
         if let Some(entry) = self.redo_stack.pop() {
             self.undo_stack.push(UndoEntry {
                 snapshot: self.last_snapshot.clone(),
-                focused_node_idx: None,
-                widget_metadata: None,
+                focused_node_idx: current_focused_idx,
+                widget_metadata: current_metadata,
                 author: entry.author.clone(),
             });
 
@@ -172,5 +196,57 @@ impl State {
     /// CRDT sync.
     pub fn save_incremental(&mut self) -> Vec<u8> {
         self.doc.save_incremental()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use automerge::{transaction::Transactable, ReadDoc, ScalarValue};
+
+    /// A single commit_action → undo → redo round-trip must preserve the
+    /// focus index and widget metadata captured on the stacks — that's
+    /// what restores the caret in `EditorApp` after Ctrl+Shift+Z. Pre-fix
+    /// the redo stack was always pushed with `None, None`, so the entry
+    /// returned by `redo(...)` lost both fields.
+    #[test]
+    fn redo_entry_carries_current_focus_and_metadata() {
+        let mut state = State::new();
+
+        // Seed a mutation so commit_action has something to push.
+        state
+            .doc
+            .put(&automerge::ROOT, "k", ScalarValue::Str("v".into()))
+            .unwrap();
+        state.commit_action(Some(7), Some("meta1".into()));
+
+        // Simulate a second mutation whose current caret/focus should
+        // be the one we expect redo to rehydrate.
+        state
+            .doc
+            .put(&automerge::ROOT, "k", ScalarValue::Str("v2".into()))
+            .unwrap();
+
+        // Undo with *current* state (Some(3) / "meta_current") — this is
+        // what callers like `App::commit_action` pass through.
+        let popped = state
+            .undo(Some(3), Some("meta_current".into()))
+            .expect("undo must pop the seeded entry");
+        assert_eq!(popped.focused_node_idx, Some(7));
+        assert_eq!(popped.widget_metadata, Some("meta1".into()));
+
+        // Redo — the test-only callers here don't need to bump the stack,
+        // so pass None/None. The returned entry must reflect the state
+        // that was current at the moment `undo(...)` fired.
+        let redone = state
+            .redo(None, None)
+            .expect("redo must pop the redo-stack entry");
+        assert_eq!(redone.focused_node_idx, Some(3));
+        assert_eq!(redone.widget_metadata, Some("meta_current".into()));
+
+        // Sanity: the doc itself is back at the post-second-mutation
+        // state so renderers stay in sync.
+        let (val, _) = state.doc.get(&automerge::ROOT, "k").unwrap().unwrap();
+        assert_eq!(val.to_str(), Some("v2"));
     }
 }
