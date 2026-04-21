@@ -18,10 +18,11 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::Fill;
 use winit::event::WindowEvent;
 
-use quick_ui::presence::PresenceCtx;
+use quick_ui::presence::{PresenceCtx, parse_hex_color, user_color};
 use quick_ui::text_render::TextRenderer;
 use quick_ui::theme::Theme;
 use quick_ui::widget::Widget;
+use vello::peniko::Color;
 
 use crate::shell::chrome_state::Chrome;
 use crate::shell::state::WorkspaceTree;
@@ -81,6 +82,12 @@ pub struct TopBarChrome {
     workspace_index: usize,
     workspace_total: usize,
     collaborator_initials: Vec<char>,
+    /// Per-peer fill colour for the avatar circles (one per entry in
+    /// `collaborator_initials`, same index). Resolved from the
+    /// collaborator's `cursor_color` override when present and otherwise
+    /// from [`quick_ui::presence::user_color`], so the top-bar stack
+    /// matches the concept's `USERS[*].cursorColor` palette.
+    collaborator_colors: Vec<Color>,
     /// Count of collaborators beyond the three rendered as avatars. When
     /// nonzero the top bar paints a "+N" chip after the stack; concept
     /// keeps the chip's visual weight lighter than a real avatar.
@@ -128,6 +135,7 @@ impl TopBarChrome {
             workspace_index: 0,
             workspace_total: 1,
             collaborator_initials: Vec::new(),
+            collaborator_colors: Vec::new(),
             collaborator_overflow: 0,
             chrome: None,
             synced_revision: 0,
@@ -168,12 +176,25 @@ impl TopBarChrome {
             .unwrap_or((0, String::from("Workspace")));
         self.workspace_index = idx;
         self.workspace_name = name;
-        self.collaborator_initials = tree
-            .collaborators
-            .iter()
-            .take(3)
-            .filter_map(|c| c.name.chars().next().map(|ch| ch.to_ascii_uppercase()))
-            .collect();
+        // Walk the roster in tandem so initial-index N aligns with
+        // colour-index N in the render path. Drop collaborators whose
+        // name has no starting char (matches the previous filter) and
+        // take at most 3 — the rest flows into `collaborator_overflow`.
+        self.collaborator_initials.clear();
+        self.collaborator_colors.clear();
+        for c in tree.collaborators.iter() {
+            let Some(ch) = c.name.chars().next() else { continue };
+            if self.collaborator_initials.len() == 3 {
+                break;
+            }
+            self.collaborator_initials.push(ch.to_ascii_uppercase());
+            let (r, g, b) = c
+                .cursor_color
+                .as_deref()
+                .and_then(parse_hex_color)
+                .unwrap_or_else(|| user_color(&c.id));
+            self.collaborator_colors.push(Color::rgb8(r, g, b));
+        }
         self.collaborator_overflow = tree.collaborators.len().saturating_sub(3);
     }
 
@@ -184,6 +205,15 @@ impl TopBarChrome {
     /// Initials painted as avatars (up to 3). Exposed for integration tests.
     pub fn collaborator_initials(&self) -> &[char] {
         &self.collaborator_initials
+    }
+
+    /// Resolved avatar fill colours (one per entry in
+    /// `collaborator_initials`, same index). Each peer's own
+    /// `cursor_color` takes precedence; otherwise the palette-pinned
+    /// [`quick_ui::presence::user_color`] is used. Exposed so tests can
+    /// assert two different peers map to two different hues.
+    pub fn collaborator_colors(&self) -> &[Color] {
+        &self.collaborator_colors
     }
 
     /// Count of collaborators beyond the three rendered as avatars.
@@ -618,21 +648,33 @@ impl Widget for TopBarChrome {
         let stack_right_x = rx;
 
         // Avatar stack: up to 3 circles, overlapping by 4 px, newest on top.
+        // Each circle uses the peer's own `cursor_color` (or the palette-pinned
+        // `user_color` fallback), with a 2 px black separator ring so that
+        // overlapping avatars stay visually distinct — concept's
+        // `border-2 border-black` behaviour.
         for (i, initial) in self.collaborator_initials.iter().enumerate() {
             let cx = rx - i as f64 * (14.0 - 4.0);
             let center = Point::new(cx - 7.0, center_y);
-            // Background plate (slight ring so overlapping circles stay readable).
+            // Black separator ring (2 px): paint a slightly larger black disc
+            // under the fill so the visible annulus between r=9 and r=7.5 is
+            // pure black, matching the concept's `border-2 border-black`
+            // between overlapping circles.
             scene.fill(
                 Fill::NonZero,
                 transform,
-                colors.surfaces.overlay,
+                Color::rgb8(0, 0, 0),
                 None,
                 &vello::kurbo::Circle::new(center, 9.0),
             );
+            let fill = self
+                .collaborator_colors
+                .get(i)
+                .copied()
+                .unwrap_or(colors.accent[5]);
             scene.fill(
                 Fill::NonZero,
                 transform,
-                colors.accent[5],
+                fill,
                 None,
                 &vello::kurbo::Circle::new(center, 7.5),
             );
