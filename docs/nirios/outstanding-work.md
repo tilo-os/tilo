@@ -241,9 +241,10 @@ shipped; Gaussian convolution deferred).
   window → collab join → undo). **Harness in place** (commits `8c3d619`
   + `6a9c677` + `5f0df57`): `SnapshotAssertion` with `UPDATE_SNAPSHOTS=1`
   refresh, golden PNGs committed under `quick-shell/tests/snapshots/`.
-  Pinned so far: overview settled + wheel-disc three-spokes. Remaining:
-  tab-drag reorder flow, quick-settings (needs clock mock or text-mask
-  region), collab join, undo-redo round-trip.
+  Pinned so far: overview settled, wheel-disc three-spokes, tab-drag
+  reorder settled, maximized-tile floating controls (submodule
+  `7b47b42`, superproject `3be9db2`). Remaining: quick-settings (needs
+  clock mock or text-mask region), collab join, undo-redo round-trip.
 
 ## Process reminder
 
