@@ -21,7 +21,9 @@
 //! (`rotation_deg / spoke_gap_deg`) stays readable; trig converts to
 //! radians at the callsite.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{AlignItems, Dimension, NodeId, Size, Style, TaffyTree};
@@ -34,6 +36,9 @@ use quick_ui::presence::PresenceCtx;
 use quick_ui::text_render::TextRenderer;
 use quick_ui::theme::Theme;
 use quick_ui::widget::Widget;
+
+use crate::shell::chrome_state::ChromeState;
+use crate::shell::state::WorkspaceId;
 
 /// A single spoke-label. `workspace_id` is an opaque correlator the host
 /// uses to map the active spoke back to a workspace in the tree; the
@@ -68,6 +73,11 @@ pub struct SidebarWheelDisc {
     /// the drag→angle mapping (one half-radius of vertical drag maps
     /// to ~1 radian of rotation).
     pub diameter_px: f64,
+    /// Optional shared chrome handle. When present, a snap that lands on
+    /// a spoke whose `workspace_id` is known writes the new active
+    /// workspace back to `chrome.tree`. Kept `Option` so the widget
+    /// still runs in isolation (unit tests, snapshot harness).
+    pub chrome: Option<Rc<RefCell<ChromeState>>>,
 }
 
 impl SidebarWheelDisc {
@@ -82,7 +92,16 @@ impl SidebarWheelDisc {
             drag_rotation_origin: 0.0,
             rect: Rect::ZERO,
             diameter_px: 240.0,
+            chrome: None,
         }
+    }
+
+    /// Attach a shared chrome handle. After a snap commits a new
+    /// `active_idx`, the disc writes the new active workspace back to
+    /// `chrome.tree` via `set_active` (mirrors `SidebarWheelChrome`).
+    pub fn with_chrome(mut self, chrome: Rc<RefCell<ChromeState>>) -> Self {
+        self.chrome = Some(chrome);
+        self
     }
 
     /// Override the disc diameter (rare — tests use this to validate
@@ -235,12 +254,22 @@ impl Widget for SidebarWheelDisc {
                 } else {
                     colors.text_dim
                 };
+                // Readability flip: on the left half of the disc (angle
+                // in (90°, 270°)) the naive rotation makes text read
+                // upside-down. Add π so the label reads outward along
+                // the spoke instead of inward — the concept does the
+                // same. `rotation_deg` is free-running during drag, so
+                // normalise to [0, 360) before the comparison.
+                let angle_deg_f64 = angle_deg as f64;
+                let a = (angle_deg_f64 % 360.0 + 360.0) % 360.0;
+                let upside_down = a > 90.0 && a < 270.0;
+                let extra = if upside_down { std::f64::consts::PI } else { 0.0 };
                 // Rotate the glyph along the spoke. `Affine::rotate` is
                 // around the origin, so chain: translate-to-tip ·
                 // rotate · translate-to-glyph-centre.
                 let label_xform = transform
                     * Affine::translate((tx, ty))
-                    * Affine::rotate(angle_rad)
+                    * Affine::rotate(angle_rad + extra)
                     * Affine::translate((-(w as f64) / 2.0, -(h as f64) / 2.0));
                 text_renderer.draw_text(scene, &spoke.text, size, color, label_xform, None);
             }
@@ -383,6 +412,10 @@ impl SidebarWheelDisc {
             // label doesn't drift; active_idx is always 0.
             self.rotation_deg = 0.0;
             self.active_idx = 0;
+            // Even with a single workspace, keep the chrome's active id
+            // in sync so the "first frame after boot" invariant holds —
+            // no-op unless the id differs.
+            self.publish_active_to_chrome();
             return;
         }
         let gap = self.spoke_gap_deg();
@@ -391,6 +424,26 @@ impl SidebarWheelDisc {
         let delta = (-nearest_offset).rem_euclid(n as f32);
         let new_idx = ((self.active_idx as f32 + delta).rem_euclid(n as f32)) as usize;
         self.active_idx = new_idx % n;
+        self.publish_active_to_chrome();
+    }
+
+    /// If a chrome handle is attached and the active spoke carries a
+    /// `workspace_id`, push the new active workspace to `chrome.tree`.
+    /// Matches the `SidebarWheelChrome` write pattern: `tree.set_active`
+    /// + `bump()` so the rest of the shell re-syncs on the next frame.
+    fn publish_active_to_chrome(&self) {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return;
+        };
+        let Some(spoke) = self.spokes.get(self.active_idx) else {
+            return;
+        };
+        let Some(id) = spoke.workspace_id else {
+            return;
+        };
+        let mut state = chrome.borrow_mut();
+        state.tree.set_active(WorkspaceId(id));
+        state.bump();
     }
 }
 
@@ -561,5 +614,91 @@ mod tests {
         pump(&mut d, cursor_event(cx, start_y - 10_000.0));
         assert!(pump(&mut d, release_event()));
         assert_eq!(d.active_idx, 0);
+    }
+
+    #[test]
+    fn snap_publishes_active_workspace_to_chrome() {
+        use crate::shell::chrome_state::ChromeState;
+        use crate::shell::state::WorkspaceTree;
+
+        // Seed a 3-workspace tree. `bootstrap_default` plus two appends =
+        // three workspaces in a known order, matching the spoke layout.
+        let mut tree = WorkspaceTree::bootstrap_default();
+        tree.append_empty_workspace("Research");
+        tree.append_empty_workspace("Design");
+        assert_eq!(tree.workspaces.len(), 3);
+        let ws_ids: Vec<_> = tree.workspaces.iter().map(|w| w.id).collect();
+        let initial_active = tree.active;
+        assert_eq!(
+            initial_active, ws_ids[0],
+            "bootstrap_default should leave active = ws_ids[0]"
+        );
+
+        // Wire up chrome + disc. Spokes carry the workspace ids so the
+        // write-back can map active_idx → WorkspaceId.
+        let chrome = ChromeState::new(tree);
+        let spokes: Vec<SpokeLabel> = ws_ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| SpokeLabel {
+                text: format!("WS-{}", i),
+                workspace_id: Some(id.0),
+            })
+            .collect();
+        let mut d = SidebarWheelDisc::new(spokes).with_chrome(chrome.clone());
+        d.rect = Rect::new(0.0, 0.0, d.diameter_px, d.diameter_px);
+
+        // Synthesise press+move+release sequence. `snap_to_nearest`'s
+        // delta formula `(-nearest_offset).rem_euclid(n)` means a
+        // full-diameter downward drag (≈114.6° of rotation, rounded to a
+        // single +120° gap) shifts active_idx by `-1 mod 3 = 2`, so we
+        // land on spoke 2. That's the same math `drag_and_release_
+        // snaps_to_nearest_spoke` relies on — we just need to know which
+        // spoke it is so we can check the CRDT write-back lands on the
+        // matching workspace id.
+        let diameter = d.diameter_px;
+        let start_y = diameter / 2.0;
+        let cx = diameter / 2.0;
+        pump(&mut d, cursor_event(cx, start_y));
+        assert!(pump(&mut d, press_event()));
+        pump(&mut d, cursor_event(cx, start_y + diameter));
+        assert!(pump(&mut d, release_event()));
+
+        assert_ne!(
+            d.active_idx, 0,
+            "a full-diameter drag must advance past the initial spoke"
+        );
+        // And chrome.tree.active must now point at the workspace id
+        // that matches the new active_idx — this is the CRDT write-back
+        // contract the disc now fulfils via `publish_active_to_chrome`.
+        let expected_id = ws_ids[d.active_idx];
+        assert_eq!(
+            chrome.borrow().tree.active,
+            expected_id,
+            "snap_to_nearest must publish the new active workspace id to chrome"
+        );
+        assert_ne!(
+            chrome.borrow().tree.active,
+            initial_active,
+            "chrome's tree.active must have changed after the snap"
+        );
+    }
+
+    #[test]
+    fn disc_without_chrome_snaps_without_panicking() {
+        // The widget must still be usable in isolation (snapshot test,
+        // unit tests that don't plumb chrome). Drag+release with
+        // `chrome = None` should just update `active_idx` locally.
+        let mut d = mk(&["Home", "Research", "Design"]);
+        assert!(d.chrome.is_none());
+        let idx_before = d.active_idx;
+        let diameter = d.diameter_px;
+        let start_y = diameter / 2.0;
+        let cx = diameter / 2.0;
+        pump(&mut d, cursor_event(cx, start_y));
+        assert!(pump(&mut d, press_event()));
+        pump(&mut d, cursor_event(cx, start_y + diameter));
+        assert!(pump(&mut d, release_event()));
+        assert_ne!(d.active_idx, idx_before);
     }
 }
