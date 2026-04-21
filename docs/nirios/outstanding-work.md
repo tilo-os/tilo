@@ -240,7 +240,10 @@ shipped or parked pending a Vello blur primitive (#3 alpha-tint half already
 shipped; Gaussian convolution deferred).
 
 **In flight** (parallel subagents dispatched):
-- (none — waiting on next dispatch decision)
+- Group-close fade-out mirror: when a `WindowGroup` loses its last tab,
+  fade + scale-collapse the whole group over 180 ms before `GroupRow`
+  prunes it. Fills the prune gap for tab-close-emptied-groups (currently
+  only detach-emptied groups are pruned).
 
 **Remaining highest-priority (structural / functional):**
 - Tab/window decoration polish — lucide X/Maximize2/Minimize2/Search
