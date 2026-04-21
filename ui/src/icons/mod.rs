@@ -57,6 +57,7 @@ pub enum Icon {
     ChevronUp,
     ChevronDown,
     Plus,
+    Search,
 }
 
 /// Lucide's fixed viewBox. Every stored path assumes this coordinate
@@ -176,6 +177,13 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("M5 12h14"),
             path_from_d("M12 5v14"),
         ],
+        // Magnifier: circle r=8 at (11, 11) + diagonal handle line
+        // (21, 21) → (16.65, 16.65). Transcribed verbatim from
+        // lucide's `search.js` (v0.546.0).
+        Icon::Search => vec![
+            circle_path(11.0, 11.0, 8.0),
+            path_from_d("m21 21-4.3-4.3"),
+        ],
     }
 }
 
@@ -287,6 +295,19 @@ mod tests {
     }
 
     #[test]
+    fn icon_search_parses_to_non_empty_bezpath() {
+        // Lucide's `search` glyph = one circle (magnifier body) + one
+        // diagonal line (handle). Both subpaths must be non-empty so
+        // the concept-parity swap in tabs/window-group doesn't ship
+        // blank chrome if the enum is accidentally reverted.
+        let sub = icon_subpaths(Icon::Search);
+        assert_eq!(sub.len(), 2, "search = circle + handle line");
+        for p in &sub {
+            assert!(element_count(p) > 0, "search subpath must emit elements");
+        }
+    }
+
+    #[test]
     fn draw_icon_does_not_panic_on_zero_rect() {
         // The guard in draw_icon makes zero-size rects a no-op rather
         // than a divide-by-zero. Cheap regression check.
@@ -319,6 +340,7 @@ mod tests {
             Icon::ChevronUp,
             Icon::ChevronDown,
             Icon::Plus,
+            Icon::Search,
         ] {
             let sub = icon_subpaths(icon);
             assert!(!sub.is_empty(), "{icon:?} produced no subpaths");
