@@ -249,15 +249,21 @@ shipped; Gaussian convolution deferred).
 - (none — waiting on next dispatch decision)
 
 **Known follow-ups from group-close agent (`3c733e6`)**:
+- ~~Maximized-close bypass~~ — resolved in `0c9a55d`. Maximized-close
+  now routes through `bar.start_closing` + `closing_hosts` insert so
+  the 180 ms tab fade + group-close fade play the same as a normal
+  close.
+- ~~Tab drop-back onto closing group~~ — resolved in `0c9a55d`.
+  `GroupRow` drop sweep filters out `is_closing()` siblings and
+  routes the drop through `split_tab_into_new_group` at the closing
+  group's slot (tab lands where the user aimed, closing group shifts
+  right).
 - Workspace active-group pointer may still target a closing group for
   ~180 ms; should nudge to surviving sibling at `start_closing()`.
-- Maximized-close path (`maximized && close_rect` press) bypasses the
-  deferred-close flow and empties synchronously — reintroduces abrupt
-  disappearance for that specific codepath only.
-- Tab drop-back onto a closing group: `insert_detached_tab` doesn't
-  clear `closing_at`; the re-inserted tab gets pruned with the group.
-  Fix is either "clear closing_at on insert" or "GroupRow rejects
-  drops onto `is_closing()` groups".
+  Cross-submodule fix (shell-layer workspace pointer), deferred.
+- `GroupRow::transfer_tab` public API does not check `is_closing()`
+  on the destination. No production callers today; harden only if a
+  programmatic caller ever lands.
 
 **Remaining highest-priority (structural / functional):**
 - Tab/window decoration polish — lucide X/Maximize2/Minimize2/Search
