@@ -538,14 +538,24 @@ impl App {
                             if !handled && self.modifiers.state().control_key() {
                                 if let WindowEvent::KeyboardInput { event: winit::event::KeyEvent { logical_key: winit::keyboard::Key::Character(ref c), state: winit::event::ElementState::Pressed, .. }, .. } = event {
                                     let shift = self.modifiers.state().shift_key();
+                                    // Capture the *current* focus + widget metadata so the
+                                    // opposite-stack entry carries where the caret is right
+                                    // now — otherwise round-tripping undo/redo loses caret
+                                    // position. `get_state()` is the non-mutating read half
+                                    // of the get/set pair (default returns None, so widgets
+                                    // that don't opt in are safe).
+                                    let current_meta = self.root_widget.get_state();
+                                    let current_focus_idx = self.focused_node.and_then(|id|
+                                        self.focusable_order.iter().position(|x| *x == id)
+                                    );
                                     match c.as_str() {
                                         // Ctrl+Shift+Z is the Linux/Mac-native redo binding
                                         // and winit delivers it as character "Z" while shift is
                                         // held, so check the modifier directly rather than
                                         // relying on the capital-letter cue.
-                                        "z" | "Z" if shift => { if let Some(e) = self.state.redo() { self.apply_undo_entry(e); } is_undo_redo = true; handled = true; }
-                                        "z" | "Z" => { if let Some(e) = self.state.undo() { self.apply_undo_entry(e); } is_undo_redo = true; handled = true; }
-                                        "y" | "Y" => { if let Some(e) = self.state.redo() { self.apply_undo_entry(e); } is_undo_redo = true; handled = true; }
+                                        "z" | "Z" if shift => { if let Some(e) = self.state.redo(current_focus_idx, current_meta.clone()) { self.apply_undo_entry(e); } is_undo_redo = true; handled = true; }
+                                        "z" | "Z" => { if let Some(e) = self.state.undo(current_focus_idx, current_meta.clone()) { self.apply_undo_entry(e); } is_undo_redo = true; handled = true; }
+                                        "y" | "Y" => { if let Some(e) = self.state.redo(current_focus_idx, current_meta.clone()) { self.apply_undo_entry(e); } is_undo_redo = true; handled = true; }
                                         _ => {}
                                     }
                                 }
