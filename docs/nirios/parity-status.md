@@ -12,7 +12,7 @@ Current state of the Rust implementation vs. the concept described in
 
 | Item | Status | Notes |
 |---|---|---|
-| Desktop view (sidebar + strips + groups) | ✅ | Top bar + left SidebarWheelChrome + one horizontal Row per strip (groups tile left-to-right). Strips stack vertically inside the content Column. Background now painted by `DesktopBackdrop` (slate-900→slate-950 diagonal gradient + 24×24 px grid at `rgba(128,128,128,0.07)`, matching `DesktopView.tsx:210-217`). Noise-SVG overlay deferred — needs image asset pipeline. |
+| Desktop view (sidebar + strips + groups) | ✅ | Top bar + left in-plane `SidebarWheelDisc` + one horizontal Row per strip (groups tile left-to-right). Strips stack vertically inside the content Column. Background now painted by `DesktopBackdrop` (slate-900→slate-950 diagonal gradient + 24×24 px grid at `rgba(128,128,128,0.07)`, matching `DesktopView.tsx:210-217`). Noise-SVG overlay deferred — needs image asset pipeline. |
 | Overview view | ✅ | `ShellOverlayHost::draw_overview` now renders the concept's **vertical workspace list** (`OverviewView.tsx:44-135`): a centred `max-w-5xl` column of full-width rows, one per workspace, tiling top-to-bottom with a 32 px gap on a slate-950 backdrop. Each row is a 24 px-radius card containing a left 256 px sidebar (workspace name + `WS-N` monospace pill + optional "Current" marker, slate-950 permissions panel with emerald shield + blue/purple Roles/Files badges, collaborator stack with up to 4 indigo avatars + a slate plus-button invite affordance, footer "N windows" counter) and a right column of horizontal MiniWindow previews (one per active group across strips, 80 px tall, tab dots atop a slate-800 app-card body). Active row: solid slate-900 fill + 2 px indigo-500 ring + soft indigo glow halo; inactive rows: slate-900/50 translucent that upgrades to slate-700 border on hover with a 1.01 whileHover-scale. Vertical slate-800 rail runs behind the rows with a 16 px dot in front of each (indigo on the active row, slate-700 otherwise). `hit_test_overview` + `overview_row_rect` remain the shared geometry oracle; click-to-activate still closes the overview. |
 | Z-ordered overlay host | ✅ | `ShellOverlayHost` draws palette, overview, quick-settings, workspace-settings + scrim above content. |
 | View-swap animation | ✅ | `ShellOverlayHost` crossfades desktop ↔ overview via a sequential two-phase animation matching the concept's `AnimatePresence mode="wait"` wrapper (`App.tsx:427-487`). Total duration 400 ms. Phase 1 (t ∈ [0, 0.5]): outgoing view fades + shrinks from `scale 1.0 → 0.95` anchored to scene centre. Phase 2 (t ∈ [0.5, 1.0]): incoming view fades + zooms from `0.95 → 1.0`. Each half eased with smoothstep `p*p*(3-2p)`; the split happens in the pure helper `compose_overlay_transition(t, target)`. Leaving overview reverses the phase order (overview shrink-out then desktop zoom-in). `ShellOverlayHost::needs_animation_frame()` returns true while `transition_started.is_some()` so `App` pumps redraws in `AboutToWait` until the curve settles — without this the overview stalled at `t ≈ 0` after the click and the button appeared non-functional. 6 unit tests cover idle / at-rest composition / half-split scales at t=0.25 & 0.75 / reverse-phase scales / mid-flight re-toggle plus a full-root click E2E and an animation-frame-pump E2E. |
@@ -38,7 +38,7 @@ Current state of the Rust implementation vs. the concept described in
 | 3D wheel rotation | ✅ | **`SidebarWheelDisc`** (`quick-shell/src/shell/sidebar_wheel_disc.rs`, commit `2337b21`). 240 px circular disc, mounted in-plane with the workspace content (not as a chrome column). Each workspace appears as a radial **spoke**; labels are painted at the spoke's tip, with the active spoke in `text_primary` + a 24° indigo arc glow on the rim. Press-and-drag rotates spokes continuously (`rotation_deg = origin + dy * deg_per_pixel`); release snaps `rotation_deg` to the nearest spoke and commits a new `active_idx`. Central hub dot + crosshair reads as a grabbable control. Unit tests: `new_starts_with_active_idx_zero_and_rotation_zero`, `drag_and_release_snaps_to_nearest_spoke`, `drag_without_release_keeps_rotation_continuous`, `single_strip_disc_never_snaps_past_itself`. Snapshot: `target/nirios-screenshots/wheel-disc-01-baseline.png`. CRDT write-back wired in commit `65d105d` — `with_chrome(Rc<RefCell<ChromeState>>)` + `chrome.borrow_mut().tree.set_active(ws_id)` on snap, covered by `snap_publishes_active_workspace_to_chrome`. Labels in (90°, 270°) auto-rotate by π so glyphs stay upright. |
 | Per-strip label + avatars | ✅ | Workspace name + card chrome shown; every card paints up to 3 presence dots (overflow as "+N") read from its own `Workspace::collaborators`. Inactive cards render at 55% alpha so the active card still anchors focus. Tree-level collaborators only backfill the active card when the workspace itself has no per-ws roster (demo-tree convenience). |
 | Scroll/pan to switch strips | ✅ | Scroll-wheel over the sidebar accumulates line-units; crossing ±1 calls `ChromeState::switch_workspace`. Click-to-activate a workspace card + plus-button-append-and-activate are both wired. |
-| Rim / gradient line on expand | ✅ | `SidebarWheelChrome::draw` paints an 8-step alpha-ramped `neutral[0]` fade at the top and bottom of the wheel (36 px each, peak ~60% alpha), so cards appear to slip into / out of the chrome as they approach the edge. A 1 px indigo @ 35% hairline rim draws at the absolute top and bottom — matching the concept's subtle focus-glow trim. |
+| Rim / gradient line on expand | 🟧 Superseded | The concept's edge-fade was a feature of the 96 px rectangular `SidebarWheelChrome` column. The new `SidebarWheelDisc` is a circular widget without vertical edges; the equivalent rim-emphasis is the 24° accent arc glow painted at the active spoke's angle (`sidebar_wheel_disc.rs`). Module `sidebar_wheel_chrome.rs` remains in-tree for reference but is not mounted. |
 | Current "workspace 1/1" text | ✅ | WorkspaceView renders it. |
 
 ## 4. Window groups, tabs, frames
@@ -235,19 +235,13 @@ for chrome density). Outstanding infrastructure-level items:
    palette_rising_edge_stamps_opened_at_and_pumps_frames,
    ws_settings_close_clears_opened_at}`).
 
-7. **Sidebar card hover-scale** — ✅ concept's `DesktopView.tsx:446`
-   `whileHover={{ scale: 1.05 }}` on each workspace card in the left
-   sidebar wheel ported to `SidebarWheelChrome::draw`. For every
-   non-active card, when the hover bookkeeping marks the card as
-   hovered we compose `transform * translate(cx, cy) * scale(1.05) *
-   translate(-cx, -cy)` (scale-about-center) and route the pill fill,
-   glyph text, subtitle text, per-peer presence dots, and overflow
-   `+N` chip through that derived `card_xform`. The active card's
-   indigo ring stays on the base transform (intentional — it keeps
-   its geometric anchor while hovered neighbours lift toward the
-   cursor). Opt-in by construction: non-hovered or active cards
-   continue to paint on the base transform, so no regression for the
-   steady-state render path.
+7. **Sidebar card hover-scale** — 🟧 Superseded along with
+   `SidebarWheelChrome`. The old rectangular workspace cards had a
+   `scale(1.05)` hover lift; the new `SidebarWheelDisc` uses radial
+   spokes instead of cards, so per-card hover-scale doesn't map onto
+   the new widget. If a later iteration wants a hover cue on the disc,
+   it would naturally apply to the spoke label (e.g. brightening
+   `text_dim` → `text_primary`), not to any rectangular chrome.
 
 8. **Overview card hover-scale** — ✅ concept's `OverviewView.tsx:66`
    `whileHover={{ scale: 1.01 }}` on each workspace card in the
