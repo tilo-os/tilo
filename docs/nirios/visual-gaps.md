@@ -129,26 +129,18 @@ and `target/nirios-screenshots/06-overview-open-vertical.png`) against
   to use it.
 - **Estimated effort:** L (one-time cost, reused forever)
 
-### 6. Sidebar wheel card uses solid indigo fill and too-small label — High
+### 6. ~~Sidebar wheel card uses solid indigo fill~~ — Superseded (2026-04-21)
 
-- **What the concept shows:** The active strip's pill is not a solid filled
-  rectangle — it's a `bg-white/5 border border-white/10` inset-4 pill the
-  card text sits *on top of*, with a vertically-oriented label
-  (`[writing-mode:vertical-rl] rotate-180 text-[10px] font-black uppercase
-  tracking-[0.4em] text-white/40 hover:text-white/90`) and a 3-avatar
-  vertical stack centered in it (§6.2). The card is mostly transparent —
-  the rail and pill bloom behind it do the visual work.
-- **What we render today:** In `07-theme-tightened.png` the "H" card is a
-  fully opaque indigo-500 rounded-rect with "H" at ~24 px and "1 strip"
-  in tiny type centered below. The card looks like a Material app-tile,
-  not like the concept's "glassy strip pill + vertical label on top of a
-  rotating wheel". See `sidebar_wheel_chrome.rs` lines ~423+ where each
-  card is filled and labelled.
-- **Concrete fix:** Remove the solid-fill card path. Paint only the pill
-  (already present) and draw the workspace initial + vertical-rotated name
-  label directly on top, using `text-white/40` for idle. Keep the bloom
-  on active but via border + faint tint, not via opaque fill.
-- **Estimated effort:** M
+The sidebar-wheel-card gap no longer applies. The user's 2026-04-21 spec
+deliberately diverges from the concept's 96 px permanent sidebar in
+favour of an in-plane **wheel disc** (`quick-shell/src/shell/sidebar_wheel_disc.rs`,
+commits `2a7ec2b` + `2337b21` + `65d105d`). Spokes render as radial
+labels around a central hub, not as rectangular cards. The concept's
+vertical-rl rotated labels are closest in spirit to the spokes on the
+horizontal axis, but the wheel's rotated-layout requirement means we do
+not follow the concept's card styling here.
+
+See `docs/nirios/wheel-disc-design.md` for the full design reference.
 
 ### 7. Text is rendered with heavy-looking weight — Medium
 
