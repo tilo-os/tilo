@@ -88,25 +88,17 @@ and `target/nirios-screenshots/06-overview-open-vertical.png`) against
   split so the bar isn't fully opaque.
 - **Estimated effort:** L (if Vello blur) / M (translucent fallback first)
 
-### 4. Overview active-row glow is a crisp rectangle "pale halo" — High
+### 4. ~~Overview active-row glow is a crisp rectangle "pale halo"~~ — Shipped (2026-04-21, commit `4b12846`)
 
-- **What the concept shows:** Active workspace card has
-  `border-indigo-500 shadow-[0_0_40px_-10px_rgba(99,102,241,0.3)]` (§8.1
-  `OverviewView.tsx:60-68`). That shadow spreads gently and softly from the
-  card perimeter, fading into the `slate-950` background — no visible edge.
-- **What we render today:** `quick-shell/src/shell/overlay_host.rs:1704-1731`
-  paints a *single* rounded rect 12 px outside the card filled with
-  `indigo-500 @ alpha 0.18`. In `06-overview-open-vertical.png` this is
-  directly visible as a pale, slightly bluish-grey rectangle sitting
-  *outside* the indigo border of the Home row, with a sharp outer edge —
-  the exact effect the user called "pale gray halo outside the ring". It
-  reads as a bug rather than an intentional glow.
-- **Concrete fix:** Same blur-layer helper as #3, OR replace the single
-  fill with four concentric rings at 0.10 / 0.06 / 0.03 / 0.01 alpha and
-  `spread` values 6/14/28/48 so the edge fades rather than stops. Keep the
-  indigo hue but clamp the near-card ring at a much lower alpha (~0.08)
-  so it doesn't compete with the border.
-- **Estimated effort:** S
+- **What concept shows:** indigo bloom
+  `shadow-[0_0_40px_-10px_rgba(99,102,241,0.3)]` fading into `slate-950`.
+- **What shipped:** `overlay_host.rs` now paints four concentric rings at
+  alphas 0.10 / 0.06 / 0.03 / 0.01 and spreads 6 / 14 / 28 / 48 px, using
+  `accent[5]` (indigo-500). The near-card ring stays below the 2 px indigo
+  border, and the outer ring softly blends into the scrim — no visible
+  rectangular edge. Since Vello has no blur primitive, the ring-stack
+  emulates a gaussian fade; cheap to paint (4 rounded-rect fills per
+  active row).
 
 ### 5. Icons are kurbo primitives, not lucide glyphs — High
 
@@ -193,21 +185,19 @@ See `docs/nirios/wheel-disc-design.md` for the full design reference.
   non-active dots (0.3 → 0.35) so they read without shouting.
 - **Estimated effort:** S
 
-### 9. Collaborator avatars are solid indigo, not personalised/gradient — Medium
+### 9. ~~Collaborator avatars are solid indigo, not personalised/gradient~~ — Shipped (2026-04-21, commit `730e6c4`)
 
-- **What the concept shows:** Each avatar uses the collaborator's own
-  `cursorColor` as `backgroundColor` (inline style, §1.1) with a
-  `border-2 border-black` separator between overlapping avatars. Each
-  peer has a distinct hue — pink, purple, emerald, etc.
-- **What we render today:** `topbar_chrome.rs:613-641` paints every avatar
-  with `colors.accent[5]` (a single indigo). In `07-theme-tightened.png`
-  we see only one "Ada" remote cursor (as a coloured dot next to the name
-  pill), but the top-bar stack would all be monochrome indigo. The
-  `Collaborator::color` field is presumably populated but unused here.
-- **Concrete fix:** Read `Collaborator::color` (or hash the name via
-  `presence.color_for`) and pass it to the circle fill. Add the black
-  border ring between stacked circles.
-- **Estimated effort:** S
+- **What concept shows:** each avatar uses its peer's `cursorColor`
+  inline, with `border-2 border-black` between overlapping circles.
+- **What shipped:** `topbar_chrome.rs` caches a `Vec<Color>` alongside
+  `collaborator_initials` in `sync_from_tree`. Each entry resolves a peer
+  via `Collaborator.cursor_color` (falls through to
+  `quick_ui::presence::user_color` hash when unset), so the canonical
+  four `me / alice / bob / charlie` stay at their concept-matched hues
+  (indigo / pink / orange / emerald) and unknown ids get a stable hash
+  colour. Draw site paints a 9 px black disc under a 7.5 px peer-colour
+  disc, producing the 2 px black ring between stacked circles. Covered
+  by `topbar_chrome_maps_two_peers_to_two_distinct_avatar_hues`.
 
 ### 10. Desktop backdrop grid is there but the noise-overlay is missing — Low
 
