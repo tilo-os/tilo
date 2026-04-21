@@ -98,6 +98,17 @@ pub struct TabBar {
     hover_max_idx: Option<usize>,
     hover_search_idx: Option<usize>,
     press_origin: Option<(usize, Point)>,
+    /// Offset from the pressed pill's top-left corner to the cursor at
+    /// press time. Populated in the `Pressed` branch alongside
+    /// `press_origin` and cleared on `Released`. Used by `draw` to paint
+    /// the drag-ghost at `last_cursor - drag_offset` so the ghost pill
+    /// tracks the cursor with the same "grab point" the user initially
+    /// grabbed — matches the concept's `WindowFrame.tsx` drag preview
+    /// where the native HTML5 drag image sits under the cursor at the
+    /// original grab offset. `DragPayload::Tab` currently only carries
+    /// `{ group, tab }`, so we cache the offset here rather than threading
+    /// it through the payload.
+    drag_offset: Option<vello::kurbo::Vec2>,
     last_cursor: Point,
     pub pending_drag: Option<DragPayload>,
     pub pending_reorder: Option<(usize, usize)>,
@@ -153,6 +164,21 @@ pub struct TabBar {
 }
 
 impl TabBar {
+    /// Opacity the source pill renders at while the drag-ghost is
+    /// visible. Matches the concept's "pulled out" fade that
+    /// `WindowFrame.tsx`'s native HTML5 drag handler produces via the
+    /// browser's default drag visual. Pinned to 0.35 so the slot still
+    /// reads as present in the bar (no neighbour reflow) but clearly
+    /// inactive — the ghost at `GHOST_PILL_ALPHA` is almost twice as
+    /// opaque so the cursor-following copy dominates.
+    pub const SOURCE_PILL_DIM_ALPHA: f32 = 0.35;
+    /// Opacity the translucent drag-ghost pill renders at while a drag
+    /// is in flight. Mirrors the concept's drag preview
+    /// semi-transparency; high enough that the full pill chrome (icon,
+    /// title, close glyph) stays readable as the cursor drifts, low
+    /// enough that neighbouring pills peek through.
+    pub const GHOST_PILL_ALPHA: f32 = 0.6;
+
     pub fn new(group_id_tag: &str, tabs: Vec<TabDescriptor>, active_id: u64) -> Self {
         Self {
             group_id_tag: group_id_tag.into(),
@@ -168,6 +194,7 @@ impl TabBar {
             hover_max_idx: None,
             hover_search_idx: None,
             press_origin: None,
+            drag_offset: None,
             last_cursor: Point::ZERO,
             pending_drag: None,
             pending_reorder: None,
@@ -198,6 +225,298 @@ impl TabBar {
         }
         self.prev_tab_rects_by_id = snap;
         self.layout_anim_started = Some(Instant::now());
+    }
+
+    /// Paint a single pill's full chrome (drop shadow, body fill, border,
+    /// active rim, leading app icon, title, collaborator presence glow,
+    /// close / max / search glyphs) at an arbitrary rect. Used by both
+    /// the normal per-pill pass in `draw` (where `r` is the pill's
+    /// layout-sprung visual rect) and the drag-ghost pass (where `r` is
+    /// the cursor-following ghost rect). Hover-reveal affordances are
+    /// gated by `suppress_hover` — the ghost passes `true` so the ghost
+    /// never shows search / maximize glyphs even if the source pill was
+    /// hovered at drag-start.
+    ///
+    /// The close / max / search hit rects stored on `self.close_rects`
+    /// etc. are at the pill's *target* position, so we offset them by
+    /// `r - self.tab_rects[i]` before painting. Hit-testing still
+    /// consults the unoffset rects so the cursor interacts with the
+    /// layout position even while the pill's glyph visibly drifts.
+    fn draw_pill_inner(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        i: usize,
+        r: Rect,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        suppress_hover: bool,
+    ) {
+        let t = &self.tabs[i];
+        let pill_height = (self.rect.height() - 2.0 * TAB_PILL_INSET_Y).max(0.0);
+        let radius = pill_height / 2.0;
+        let text_primary = theme.tokens.colors.text_primary;
+        let text_dim = theme.tokens.colors.text_dim;
+        let target = self.tab_rects[i];
+        let dx = r.x0 - target.x0;
+        let dy = r.y0 - target.y0;
+
+        let is_active = t.id == self.active_id;
+        let is_hover = !suppress_hover && Some(i) == self.hover_idx;
+        // Per-pill drop shadow, approximating the concept's
+        // `shadow-[0_8px_32px_rgba(0,0,0,0.2)]`.
+        let shadow_y_offset = 6.0_f64;
+        let shadow_rings: [(f64, u8); 4] = [
+            (2.0, 51), // ~0.20
+            (5.0, 30), // ~0.12
+            (9.0, 15), // ~0.06
+            (14.0, 5), // ~0.02
+        ];
+        for (spread, alpha) in shadow_rings {
+            let shadow_rect = Rect::new(
+                r.x0 - spread,
+                r.y0 - spread + shadow_y_offset,
+                r.x1 + spread,
+                r.y1 + spread + shadow_y_offset,
+            );
+            let shadow_shape = RoundedRect::from_rect(shadow_rect, radius + spread);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                vello::peniko::Color::rgba8(0, 0, 0, alpha),
+                None,
+                &shadow_shape,
+            );
+        }
+        // Pill body. Active / hover / idle mirror the concept's Tailwind
+        // tiers — see `draw` for the derivation.
+        let shape = RoundedRect::from_rect(r, radius);
+        let (fill_alpha, border_alpha): (u8, u8) = if is_active {
+            (52, 64)
+        } else if is_hover {
+            (26, 40)
+        } else {
+            (8, 18)
+        };
+        let fill = vello::peniko::Color::rgba8(255, 255, 255, fill_alpha);
+        scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            vello::peniko::Color::rgba8(255, 255, 255, border_alpha),
+            None,
+            &shape,
+        );
+        // Active-only inner rim light.
+        if is_active {
+            scene.push_layer(
+                vello::peniko::BlendMode::default(),
+                1.0,
+                transform,
+                &shape,
+            );
+            let rim = Rect::new(r.x0 + 2.0, r.y0 + 1.0, r.x1 - 2.0, r.y0 + 2.0);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                vello::peniko::Color::rgba8(255, 255, 255, 20),
+                None,
+                &rim,
+            );
+            scene.pop_layer();
+        }
+        let text_color = if is_active || is_hover {
+            text_primary
+        } else {
+            text_dim
+        };
+        let text_size = theme.tokens.typography.scale.sm;
+        let title_weight = TextWeight::Semibold;
+        let (_tw, th) = tr.measure_weighted(&t.title, text_size, None, title_weight);
+        let leading_shift = if let Some(kind) = t.app_kind {
+            let icon_x0 = r.x0 + 10.0;
+            let icon_rect = Rect::new(
+                icon_x0,
+                r.center().y - 7.0,
+                icon_x0 + 14.0,
+                r.center().y + 7.0,
+            );
+            draw_app_icon(scene, transform, icon_rect, kind, text_color);
+            14.0 + 6.0
+        } else {
+            0.0
+        };
+        let title_x = r.x0 + 12.0 + leading_shift;
+        let title_y = r.center().y - th as f64 / 2.0;
+        // Clip the title relative to the close glyph's x-position on the
+        // *visual* rect (target + offset), so titles truncate at the
+        // same relative distance no matter where the pill is painted.
+        let close_x_visual = self.close_rects[i].x0 + dx;
+        let clip_r = Rect::new(r.x0, r.y0, close_x_visual - 2.0, r.y1);
+        scene.push_layer(vello::peniko::BlendMode::default(), 1.0, transform, &clip_r);
+        tr.draw_text_weighted(
+            scene,
+            &t.title,
+            text_size,
+            text_color,
+            transform * Affine::translate((title_x, title_y)),
+            None,
+            title_weight,
+        );
+        scene.pop_layer();
+
+        // Per-tab collaborator presence indicators.
+        let tab_key = PresenceKey::Tab { id: format!("{:x}", t.id) };
+        let peers = presence.peers_on(&tab_key);
+        if !peers.is_empty() {
+            scene.push_layer(vello::peniko::BlendMode::default(), 1.0, transform, &shape);
+            let dot_r = 8.0_f64;
+            let span = (peers.len().min(4) as f64 - 1.0) * 10.0;
+            let base_x = r.center().x - span / 2.0;
+            let bottom = r.y1 + 2.0;
+            for (pi, peer) in peers.iter().take(4).enumerate() {
+                let (cr, cg, cb) = presence.color_for(peer);
+                let cx = base_x + pi as f64 * 10.0;
+                let c = vello::kurbo::Circle::new(Point::new(cx, bottom), dot_r);
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    vello::peniko::Color::rgba8(cr, cg, cb, 140),
+                    None,
+                    &c,
+                );
+            }
+            scene.pop_layer();
+        }
+
+        // Close button.
+        let close_r = self.close_rects[i] + vello::kurbo::Vec2::new(dx, dy);
+        let close_hover = !suppress_hover && Some(i) == self.hover_close_idx;
+        let close_chip_alpha: u8 = if close_hover {
+            64
+        } else if is_hover {
+            28
+        } else {
+            0
+        };
+        if close_chip_alpha > 0 {
+            let chip = RoundedRect::from_rect(close_r, close_r.height() / 2.0);
+            let chip_color = vello::peniko::Color::rgba8(255, 255, 255, close_chip_alpha);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                chip_color,
+                None,
+                &chip,
+            );
+        }
+        let glyph_color = if is_active || close_hover {
+            text_primary
+        } else {
+            text_dim
+        };
+        icons::draw_icon(scene, transform, close_r, icons::Icon::X, glyph_color, 1.5);
+
+        // Hover-reveal action cluster (maximize + search). Suppressed on
+        // the drag-ghost so the ghost stays visually simple.
+        if is_hover {
+            let chip_tint = vello::peniko::Color::rgba8(255, 255, 255, 64);
+            let icon_idle = text_dim;
+            let icon_active = text_primary;
+
+            let max_r = self.max_rects[i] + vello::kurbo::Vec2::new(dx, dy);
+            let max_hover = Some(i) == self.hover_max_idx;
+            if max_hover {
+                let chip = RoundedRect::from_rect(max_r, max_r.height() / 2.0);
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    chip_tint,
+                    None,
+                    &chip,
+                );
+            }
+            let outline_color = if max_hover { icon_active } else { icon_idle };
+            icons::draw_icon(
+                scene,
+                transform,
+                max_r,
+                icons::Icon::Maximize2,
+                outline_color,
+                1.5,
+            );
+
+            let search_r = self.search_rects[i] + vello::kurbo::Vec2::new(dx, dy);
+            let search_hover = Some(i) == self.hover_search_idx;
+            if search_hover {
+                let chip = RoundedRect::from_rect(search_r, search_r.height() / 2.0);
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    chip_tint,
+                    None,
+                    &chip,
+                );
+            }
+            let icon_color = if search_hover { icon_active } else { icon_idle };
+            icons::draw_icon(
+                scene,
+                transform,
+                search_r,
+                icons::Icon::Search,
+                icon_color,
+                1.5,
+            );
+        }
+    }
+
+    /// Compute the top-left corner the drag-ghost should render at. The
+    /// ghost's top-left = `last_cursor - drag_offset` so the pill
+    /// follows the cursor at whatever relative grab point the user
+    /// pressed. Returns `None` when no drag is in flight or the source
+    /// tab is gone. Exposed to `draw` and (via `ghost_rect`) to tests.
+    fn compute_ghost_rect(&self) -> Option<Rect> {
+        let source_idx = match &self.pending_drag {
+            Some(DragPayload::Tab { tab, .. }) => {
+                self.tabs.iter().position(|t| t.id == *tab)?
+            }
+            _ => return None,
+        };
+        let offset = self.drag_offset.unwrap_or(vello::kurbo::Vec2::ZERO);
+        let pill = *self.tab_rects.get(source_idx)?;
+        let w = pill.width();
+        let h = pill.height();
+        let x0 = self.last_cursor.x - offset.x;
+        let y0 = self.last_cursor.y - offset.y;
+        Some(Rect::new(x0, y0, x0 + w, y0 + h))
+    }
+
+    /// Test-only accessor for the computed drag-ghost rect. `None` when
+    /// no drag is in flight; `Some(rect)` once the press → motion
+    /// threshold has latched `pending_drag`.
+    #[cfg(test)]
+    pub fn ghost_rect(&self) -> Option<Rect> {
+        self.compute_ghost_rect()
+    }
+
+    /// Test-only accessor for the per-pill draw alpha. Returns
+    /// `SOURCE_PILL_DIM_ALPHA` while this pill is the in-flight drag
+    /// source, `1.0` otherwise. Used by the ghost tests to pin the
+    /// source-pill dim without peeking into the vello scene.
+    #[cfg(test)]
+    pub fn pill_draw_alpha(&self, idx: usize) -> f32 {
+        let source_idx = match &self.pending_drag {
+            Some(DragPayload::Tab { tab, .. }) => {
+                self.tabs.iter().position(|t| t.id == *tab)
+            }
+            _ => None,
+        };
+        if source_idx == Some(idx) {
+            Self::SOURCE_PILL_DIM_ALPHA
+        } else {
+            1.0
+        }
     }
     pub fn tabs(&self) -> &[TabDescriptor] { &self.tabs }
     pub fn tabs_mut(&mut self) -> &mut Vec<TabDescriptor> { &mut self.tabs }
@@ -374,13 +693,11 @@ impl Widget for TabBar {
         }
     }
     fn draw(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
-        // No full-bar fill — pills sit directly on the dark shell background.
-        // Radius is based on pill height (bar minus 2 × inset), not the full
-        // bar, so pills stay `rounded-full` even when the outer bar grows.
-        let pill_height = (self.rect.height() - 2.0 * TAB_PILL_INSET_Y).max(0.0);
-        let radius = pill_height / 2.0;
-        let text_primary = theme.tokens.colors.text_primary;
-        let text_dim = theme.tokens.colors.text_dim;
+        // Per-pill styling constants (radius, colors) live in
+        // `draw_pill_inner` — this top-level draw is purely the
+        // per-frame timeline: layout spring, insert fade, source dim,
+        // drop-zone, and ghost. Keeps the draw routine focused on
+        // scheduling the paint passes rather than pill chrome.
 
         // Tab-layout spring. If a reorder/insert/remove just happened,
         // every surviving pill interpolates from its previous rect to
@@ -406,6 +723,17 @@ impl Widget for TabBar {
         self.inserted_at
             .retain(|_, started| started.elapsed() < fade_window);
 
+        // Source index of the in-flight drag, resolved from
+        // `pending_drag`. `None` when no drag is active; also `None` if
+        // the tab was removed mid-drag (defensive — shouldn't happen but
+        // we don't want a panic during the ghost pass).
+        let drag_source_idx: Option<usize> = match &self.pending_drag {
+            Some(DragPayload::Tab { tab, .. }) => {
+                self.tabs.iter().position(|t| t.id == *tab)
+            }
+            _ => None,
+        };
+
         for (i, t) in self.tabs.iter().enumerate() {
             let target = self.tab_rects[i];
             // Visual rect = interpolation of prev → target if we have a
@@ -420,8 +748,6 @@ impl Widget for TabBar {
                 ),
                 _ => target,
             };
-            let dx = r.x0 - target.x0;
-            let dy = r.y0 - target.y0;
 
             // Per-pill insert fade: tabs spliced in by `insert_tab` fade
             // from alpha=0 + y=-10 to alpha=1 + y=0 over `INSERT_FADE_MS`.
@@ -445,6 +771,21 @@ impl Widget for TabBar {
                 }
                 None => (1.0, 0.0),
             };
+
+            // Source-dim: while this tab is the one being dragged, dim
+            // the in-place pill to 0.35 so the slot reads as "pulled
+            // out" while the ghost paints on top. Concept parity with
+            // `WindowFrame.tsx` where the native HTML5 drag image takes
+            // over and the source element dims via the browser's
+            // default drag visual. Combines multiplicatively with
+            // `fade_alpha` so an insert-fade mid-drag still composes.
+            let source_dim = if drag_source_idx == Some(i) {
+                Self::SOURCE_PILL_DIM_ALPHA
+            } else {
+                1.0
+            };
+            let combined_alpha = fade_alpha * source_dim;
+
             // If this pill is mid-fade, push a pill-scoped alpha layer and
             // shift the transform vertically. The dx/dy for the layout
             // spring still apply — a just-inserted pill has no prev rect so
@@ -454,7 +795,7 @@ impl Widget for TabBar {
             } else {
                 transform
             };
-            let pill_alpha_active = fade_alpha < 1.0;
+            let pill_alpha_active = combined_alpha < 1.0;
             if pill_alpha_active {
                 // Clip rect generous around the pill so the hover-reveal
                 // action icons also fade in cleanly.
@@ -466,282 +807,14 @@ impl Widget for TabBar {
                 );
                 scene.push_layer(
                     vello::peniko::BlendMode::default(),
-                    fade_alpha,
+                    combined_alpha,
                     transform,
                     &clip,
                 );
             }
             // All per-pill paint below uses `pill_transform` so the fade's
             // vertical offset composes with any layout-spring dx/dy.
-            let transform = pill_transform;
-            let is_active = t.id == self.active_id;
-            let is_hover = Some(i) == self.hover_idx;
-            // Per-pill drop shadow, approximating the concept's
-            // `shadow-[0_8px_32px_rgba(0,0,0,0.2)]`. Vello has no blur
-            // primitive, so we stack four concentric offset rounded rects
-            // at falling alpha (same trick `tile_host.rs` uses for the
-            // window-card shadow). This separates every pill from the
-            // dark shell behind and, combined with the widened fill
-            // contrast below, lets the active pill visually pop forward
-            // (visual gap #2 in docs/nirios/visual-gaps.md).
-            let shadow_y_offset = 6.0_f64;
-            let shadow_rings: [(f64, u8); 4] = [
-                (2.0, 51), // ~0.20
-                (5.0, 30), // ~0.12
-                (9.0, 15), // ~0.06
-                (14.0, 5), // ~0.02
-            ];
-            for (spread, alpha) in shadow_rings {
-                let shadow_rect = Rect::new(
-                    r.x0 - spread,
-                    r.y0 - spread + shadow_y_offset,
-                    r.x1 + spread,
-                    r.y1 + spread + shadow_y_offset,
-                );
-                let shadow_shape = RoundedRect::from_rect(shadow_rect, radius + spread);
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    vello::peniko::Color::rgba8(0, 0, 0, alpha),
-                    None,
-                    &shadow_shape,
-                );
-            }
-            // Pill body. Concept: active = `bg-white/10 border-white/20`,
-            // inactive = `bg-white/5 border-white/10`, hover = intermediate.
-            // We nudge the raw alphas upward on the active pill (52 vs the
-            // literal 26 of white/10) and downward on the inactive pill
-            // (8 vs white/5's 13) to compensate for the still-missing
-            // `backdrop-blur` — without frosted blur the concept's literal
-            // values read as nearly identical over the dark shell.
-            let shape = RoundedRect::from_rect(r, radius);
-            let (fill_alpha, border_alpha): (u8, u8) = if is_active {
-                (52, 64)
-            } else if is_hover {
-                (26, 40)
-            } else {
-                (8, 18)
-            };
-            let fill = vello::peniko::Color::rgba8(255, 255, 255, fill_alpha);
-            scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                vello::peniko::Color::rgba8(255, 255, 255, border_alpha),
-                None,
-                &shape,
-            );
-            // Active-only inner rim light: a 1 px-tall translucent white
-            // band along the top inside edge of the pill. Reads as the
-            // subtle "inset" highlight Tailwind's `shadow` implies but
-            // doesn't render without the frosted-blur stack. Clipped to
-            // the pill shape so it respects the rounded ends.
-            if is_active {
-                scene.push_layer(
-                    vello::peniko::BlendMode::default(),
-                    1.0,
-                    transform,
-                    &shape,
-                );
-                let rim = Rect::new(r.x0 + 2.0, r.y0 + 1.0, r.x1 - 2.0, r.y0 + 2.0);
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    vello::peniko::Color::rgba8(255, 255, 255, 20),
-                    None,
-                    &rim,
-                );
-                scene.pop_layer();
-            }
-            // Title colour is the primary active/inactive cue: active pills
-            // carry the full `text_primary` white, inactive pills dim to
-            // `text_dim` (matches concept's `text-white` vs `text-white/70`).
-            // On hover of an inactive pill we bump back up to `text_primary`
-            // to mirror the concept's `hover:text-white`.
-            let text_color = if is_active || is_hover {
-                text_primary
-            } else {
-                text_dim
-            };
-            let text_size = theme.tokens.typography.scale.sm;
-            // Concept §7.4: tab titles are `font-semibold`. Active vs inactive
-            // pills differ only via colour/alpha (visual-gap #2) — both share
-            // the Semibold weight. Measure at the same weight the draw call
-            // will use so clip-rect widths track actual glyph advances.
-            // Visual-gap #7.
-            let title_weight = TextWeight::Semibold;
-            let (tw, th) = tr.measure_weighted(&t.title, text_size, None, title_weight);
-            // Paint the leading app-kind icon when one is set — a small
-            // vector glyph centered in a 14 px-wide slot on the left of
-            // the pill. The title is shifted right by (icon + gap) so
-            // the title's baseline stays aligned with the pill centre.
-            // Falls back to no icon when `app_kind == None` (test fixtures,
-            // cross-group detached tabs mid-drag).
-            let leading_shift = if let Some(kind) = t.app_kind {
-                let icon_x0 = r.x0 + 10.0;
-                let icon_rect = Rect::new(
-                    icon_x0,
-                    r.center().y - 7.0,
-                    icon_x0 + 14.0,
-                    r.center().y + 7.0,
-                );
-                draw_app_icon(scene, transform, icon_rect, kind, text_color);
-                14.0 + 6.0
-            } else {
-                0.0
-            };
-            // Offset title left so the close button has room.
-            let title_x = r.x0 + 12.0 + leading_shift;
-            let title_y = r.center().y - th as f64 / 2.0;
-            // Clip the title to the area before the close button so long
-            // titles truncate cleanly instead of overlapping the "×".
-            let clip_r = Rect::new(r.x0, r.y0, self.close_rects[i].x0 - 2.0, r.y1);
-            scene.push_layer(vello::peniko::BlendMode::default(), 1.0, transform, &clip_r);
-            tr.draw_text_weighted(
-                scene,
-                &t.title,
-                text_size,
-                text_color,
-                transform * Affine::translate((title_x, title_y)),
-                None,
-                title_weight,
-            );
-            let _ = tw;
-            scene.pop_layer();
-
-            // Per-tab collaborator presence indicators. Matches the concept's
-            // foggy blur: each peer active on this tab paints a low-alpha
-            // colored circle at the bottom of the pill, colored by a stable
-            // hash of their user id so the same person keeps the same hue
-            // everywhere the UI renders them.
-            let tab_key = PresenceKey::Tab { id: format!("{:x}", t.id) };
-            let peers = presence.peers_on(&tab_key);
-            if !peers.is_empty() {
-                // Clip to the pill so the colored glow doesn't bleed into
-                // adjacent tabs or the dark shell background.
-                scene.push_layer(vello::peniko::BlendMode::default(), 1.0, transform, &shape);
-                let dot_r = 8.0_f64;
-                let span = (peers.len().min(4) as f64 - 1.0) * 10.0;
-                let base_x = r.center().x - span / 2.0;
-                let bottom = r.y1 + 2.0;
-                for (pi, peer) in peers.iter().take(4).enumerate() {
-                    let (cr, cg, cb) = presence.color_for(peer);
-                    let cx = base_x + pi as f64 * 10.0;
-                    let c = vello::kurbo::Circle::new(Point::new(cx, bottom), dot_r);
-                    scene.fill(
-                        vello::peniko::Fill::NonZero,
-                        transform,
-                        vello::peniko::Color::rgba8(cr, cg, cb, 140),
-                        None,
-                        &c,
-                    );
-                }
-                scene.pop_layer();
-            }
-
-            // Close button: rendered always but emphasised on hover of the
-            // tab or the close rect itself. Concept-aligned: a "×" glyph on
-            // a subtle hover chip.
-            // During a layout spring, offset the hit-test rect by (dx, dy)
-            // so the glyph tracks the pill. Hit-testing still uses
-            // `self.close_rects[i]` unchanged, so the cursor interacts
-            // with the target position — a reasonable trade for a 180 ms
-            // animation.
-            let close_r = self.close_rects[i] + vello::kurbo::Vec2::new(dx, dy);
-            let close_hover = Some(i) == self.hover_close_idx;
-            // Hover-chip: translucent white on every pill (both active and
-            // inactive share the dark-on-translucent-white pill style now),
-            // matching the concept's `hover:bg-white/30`.
-            let close_chip_alpha: u8 = if close_hover { 64 } else if is_hover { 28 } else { 0 };
-            if close_chip_alpha > 0 {
-                let chip = RoundedRect::from_rect(close_r, close_r.height() / 2.0);
-                let chip_color = vello::peniko::Color::rgba8(255, 255, 255, close_chip_alpha);
-                scene.fill(vello::peniko::Fill::NonZero, transform, chip_color, None, &chip);
-            }
-            // Glyph color mirrors title polarity: bright white on
-            // active/hover, dim on the idle inactive pill. Swapped from
-            // a literal `×` codepoint to `Icon::X` on a 24×24 viewBox so
-            // the close glyph matches the concept's `<X className="w-3.5
-            // h-3.5" />` in WindowFrame.tsx 1:1. `close_glyph_icon_for_tests`
-            // pins this swap so a future revert to the text glyph flips
-            // red instead of silently regressing.
-            let glyph_color = if is_active || close_hover {
-                text_primary
-            } else {
-                text_dim
-            };
-            icons::draw_icon(scene, transform, close_r, icons::Icon::X, glyph_color, 1.5);
-
-            // Maximize icon: only visible on pill hover (concept's
-            // hover-reveal action row). Drawn as a 1 px outlined square so
-            // it reads as a generic "grow window" glyph without needing a
-            // bespoke icon font.
-            if is_hover {
-                // Pills are all translucent-white-on-dark now, so every
-                // hover-reveal chip/icon uses the same white polarity
-                // (concept's `hover:bg-white/30`, `text-white/70` →
-                // `hover:text-white`).
-                let chip_tint = vello::peniko::Color::rgba8(255, 255, 255, 64);
-                let icon_idle = text_dim;
-                let icon_active = text_primary;
-
-                let max_r = self.max_rects[i] + vello::kurbo::Vec2::new(dx, dy);
-                let max_hover = Some(i) == self.hover_max_idx;
-                if max_hover {
-                    let chip = RoundedRect::from_rect(max_r, max_r.height() / 2.0);
-                    scene.fill(
-                        vello::peniko::Fill::NonZero,
-                        transform,
-                        chip_tint,
-                        None,
-                        &chip,
-                    );
-                }
-                // Lucide `Maximize2` glyph on the 24×24 viewBox. The
-                // per-tab action cluster only renders while the tab is
-                // non-maximized (the maximized-floating-controls path
-                // lives in `WindowGroup::draw`), so we hardcode
-                // `Icon::Maximize2` here; the `Minimize2` swap lives in
-                // the maximized branch. `max_glyph_icon_for_tests`
-                // pins this to lucide's arrow-out bracket glyph.
-                let outline_color = if max_hover { icon_active } else { icon_idle };
-                icons::draw_icon(
-                    scene,
-                    transform,
-                    max_r,
-                    icons::Icon::Maximize2,
-                    outline_color,
-                    1.5,
-                );
-
-                // Search icon: lucide `Search` glyph (circle r=8 at
-                // (11, 11) + diagonal handle line (21, 21) → (16.65,
-                // 16.65), transcribed from lucide-react's `search.js`).
-                // Replaces the hand-drawn circle+line primitive so the
-                // glyph matches the concept's `<Search className="w-3.5
-                // h-3.5" />` 1:1.
-                let search_r = self.search_rects[i] + vello::kurbo::Vec2::new(dx, dy);
-                let search_hover = Some(i) == self.hover_search_idx;
-                if search_hover {
-                    let chip = RoundedRect::from_rect(search_r, search_r.height() / 2.0);
-                    scene.fill(
-                        vello::peniko::Fill::NonZero,
-                        transform,
-                        chip_tint,
-                        None,
-                        &chip,
-                    );
-                }
-                let icon_color = if search_hover { icon_active } else { icon_idle };
-                icons::draw_icon(
-                    scene,
-                    transform,
-                    search_r,
-                    icons::Icon::Search,
-                    icon_color,
-                    1.5,
-                );
-            }
+            self.draw_pill_inner(scene, pill_transform, i, r, tr, theme, presence, false);
 
             // Close out the insert-fade layer, if one was pushed at the
             // top of this iteration. The branch must mirror the push
@@ -835,6 +908,56 @@ impl Widget for TabBar {
                 }
             }
         }
+
+        // Drag-ghost: translucent copy of the pill being dragged,
+        // painted LAST so it composites over every other pill and over
+        // the drop-zone indicators. Follows `last_cursor` at the
+        // original grab offset so the pill reads as "attached" to the
+        // cursor. Concept parity with `WindowFrame.tsx` where the
+        // native HTML5 drag image provides the same effect. The ghost
+        // does not participate in hit-testing — hit-tests still use the
+        // original `tab_rects`.
+        //
+        // Deliberately not clipped to `self.rect`: the concept's drag
+        // image is allowed to drift into the row above/below, and
+        // cross-group drag handoff (`GroupRow::handle_event`) reads the
+        // raw cursor position, not the ghost.
+        if let Some(ghost_rect) = self.compute_ghost_rect() {
+            if let Some(source_idx) = match &self.pending_drag {
+                Some(DragPayload::Tab { tab, .. }) => {
+                    self.tabs.iter().position(|t| t.id == *tab)
+                }
+                _ => None,
+            } {
+                // A generous layer rect so the ghost's drop shadow +
+                // optional presence bleed paints without clipping. The
+                // ghost pill's own chrome sits inside `ghost_rect`; the
+                // surrounding padding matches the shadow spread.
+                let clip = Rect::new(
+                    ghost_rect.x0 - 20.0,
+                    ghost_rect.y0 - 20.0,
+                    ghost_rect.x1 + 20.0,
+                    ghost_rect.y1 + 40.0,
+                );
+                scene.push_layer(
+                    vello::peniko::BlendMode::default(),
+                    Self::GHOST_PILL_ALPHA,
+                    transform,
+                    &clip,
+                );
+                self.draw_pill_inner(
+                    scene,
+                    transform,
+                    source_idx,
+                    ghost_rect,
+                    tr,
+                    theme,
+                    presence,
+                    true,
+                );
+                scene.pop_layer();
+            }
+        }
     }
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, _m: &winit::event::Modifiers, _s: &mut AutoCommit, _p: &ObjId, handled: &mut bool, _focus_target: &mut Option<NodeId>, _node_id: NodeId, _taffy: &TaffyTree<()>) {
         match event {
@@ -920,6 +1043,17 @@ impl Widget for TabBar {
                 if let Some(idx) = self.hover_idx {
                     let origin = self.tab_rects[idx].center();
                     self.press_origin = Some((idx, origin));
+                    // Cache the grab offset within the pill. `DragPayload::Tab`
+                    // doesn't carry this, but `draw` needs it to position
+                    // the drag-ghost under the cursor at the same relative
+                    // offset the user originally clicked — concept parity
+                    // with the HTML5 drag-image behaviour in
+                    // `WindowFrame.tsx`.
+                    let pill = self.tab_rects[idx];
+                    self.drag_offset = Some(vello::kurbo::Vec2::new(
+                        self.last_cursor.x - pill.x0,
+                        self.last_cursor.y - pill.y0,
+                    ));
                     self.active_id = self.tabs[idx].id;
                     *handled = true;
                 }
@@ -954,6 +1088,10 @@ impl Widget for TabBar {
                     self.pending_drag = None;
                 }
                 self.press_origin = None;
+                // Drag is over — clear the cached grab offset so a fresh
+                // press computes it from its own cursor position and the
+                // ghost stops painting.
+                self.drag_offset = None;
                 // Drag is over — stop pumping redraws for the drop-zone
                 // animation and clear the target so a fresh drag starts
                 // with no stale zone visible.
@@ -1734,5 +1872,313 @@ mod tests {
     #[test]
     fn tab_search_glyph_draws_via_icons_module() {
         assert_eq!(TabBar::search_glyph_icon_for_tests(), icons::Icon::Search);
+    }
+
+    /// Press on a pill, drag past the threshold, and verify the ghost
+    /// rect positions itself at `last_cursor - drag_offset` with the
+    /// source pill's dimensions. Pinned because the ghost is the
+    /// cursor-following drag preview (concept parity with
+    /// `WindowFrame.tsx`): if a refactor drops the rect computation the
+    /// user loses the visual cue that a drag is in flight.
+    #[test]
+    fn drag_ghost_paints_at_cursor_while_drag_in_flight() {
+        let mut b = bar();
+        // Hand-built layout: three pills, each 80 px wide, bar covers
+        // [0..240, 0..40]. Pill A sits at [0..80, 6..34]; the press
+        // will land inside it.
+        b.rect = Rect::new(0.0, 0.0, 240.0, 40.0);
+        b.tab_rects = vec![
+            Rect::new(0.0, 6.0, 80.0, 34.0),
+            Rect::new(80.0, 6.0, 160.0, 34.0),
+            Rect::new(160.0, 6.0, 240.0, 34.0),
+        ];
+        b.close_rects = vec![
+            Rect::new(60.0, 10.0, 78.0, 30.0),
+            Rect::new(140.0, 10.0, 158.0, 30.0),
+            Rect::new(220.0, 10.0, 238.0, 30.0),
+        ];
+        b.max_rects = vec![
+            Rect::new(40.0, 10.0, 56.0, 30.0),
+            Rect::new(120.0, 10.0, 136.0, 30.0),
+            Rect::new(200.0, 10.0, 216.0, 30.0),
+        ];
+        b.search_rects = vec![
+            Rect::new(20.0, 10.0, 36.0, 30.0),
+            Rect::new(100.0, 10.0, 116.0, 30.0),
+            Rect::new(180.0, 10.0, 196.0, 30.0),
+        ];
+
+        let mut tree = TaffyTree::<()>::new();
+        let node = tree.new_leaf(Style::default()).unwrap();
+        let mut state = automerge::AutoCommit::new();
+        let root_id = automerge::ROOT;
+
+        // Step 1: CursorMoved to (10, 15) — inside pill A, 10 px from
+        // its left edge and 9 px from its top. Deliberately left of
+        // A's search_rect (starts at x=20) so the press doesn't get
+        // intercepted as a search-icon hit. `last_cursor` updates every
+        // CursorMoved regardless of press state; this also primes the
+        // hover caches.
+        let press_cursor = Point::new(10.0, 15.0);
+        let move_in = WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(press_cursor.x, press_cursor.y),
+        };
+        let mut handled = false;
+        let mut focus_target = None;
+        b.handle_event(
+            &move_in,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut state,
+            &root_id,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &tree,
+        );
+
+        // Step 2: Press on A.
+        let press = WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        };
+        b.handle_event(
+            &press,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut state,
+            &root_id,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &tree,
+        );
+        assert!(
+            b.drag_offset.is_some(),
+            "press must latch a drag_offset",
+        );
+        // No ghost yet — drag hasn't exceeded the motion threshold.
+        assert!(
+            b.ghost_rect().is_none(),
+            "pre-threshold press must not paint a ghost",
+        );
+
+        // Step 3: Move past the threshold to (120, 60). This promotes
+        // press → drag and `pending_drag` is latched.
+        let drag_cursor = Point::new(120.0, 60.0);
+        let move_past = WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(drag_cursor.x, drag_cursor.y),
+        };
+        b.handle_event(
+            &move_past,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut state,
+            &root_id,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &tree,
+        );
+        assert!(
+            b.drag_in_flight(),
+            "move past threshold must latch pending_drag",
+        );
+
+        // Ghost rect: top-left = last_cursor - drag_offset
+        //   drag_offset was (10 - 0, 15 - 6) = (10, 9) at press time.
+        //   last_cursor = (120, 60) after the threshold-crossing move.
+        //   → ghost top-left = (120 - 10, 60 - 9) = (110, 51).
+        //   → ghost size = source pill (A) = 80 x 28.
+        let ghost = b
+            .ghost_rect()
+            .expect("drag-ghost must be present during drag");
+        assert!(
+            (ghost.x0 - 110.0).abs() < 0.01,
+            "ghost x0 = cursor.x - offset.x (got {})",
+            ghost.x0,
+        );
+        assert!(
+            (ghost.y0 - 51.0).abs() < 0.01,
+            "ghost y0 = cursor.y - offset.y (got {})",
+            ghost.y0,
+        );
+        assert!(
+            (ghost.width() - 80.0).abs() < 0.01,
+            "ghost width tracks source pill width (got {})",
+            ghost.width(),
+        );
+        assert!(
+            (ghost.height() - 28.0).abs() < 0.01,
+            "ghost height tracks source pill height (got {})",
+            ghost.height(),
+        );
+    }
+
+    /// Release during a drag must clear `ghost_rect()`. Otherwise the
+    /// pill would keep painting at the last cursor position after the
+    /// drop commits — a visible ghost stuck at the edge of the screen.
+    #[test]
+    fn drag_ghost_clears_on_release() {
+        let mut b = bar();
+        b.rect = Rect::new(0.0, 0.0, 240.0, 40.0);
+        b.tab_rects = vec![
+            Rect::new(0.0, 6.0, 80.0, 34.0),
+            Rect::new(80.0, 6.0, 160.0, 34.0),
+            Rect::new(160.0, 6.0, 240.0, 34.0),
+        ];
+        b.close_rects = vec![
+            Rect::new(60.0, 10.0, 78.0, 30.0),
+            Rect::new(140.0, 10.0, 158.0, 30.0),
+            Rect::new(220.0, 10.0, 238.0, 30.0),
+        ];
+        b.max_rects = vec![
+            Rect::new(40.0, 10.0, 56.0, 30.0),
+            Rect::new(120.0, 10.0, 136.0, 30.0),
+            Rect::new(200.0, 10.0, 216.0, 30.0),
+        ];
+        b.search_rects = vec![
+            Rect::new(20.0, 10.0, 36.0, 30.0),
+            Rect::new(100.0, 10.0, 116.0, 30.0),
+            Rect::new(180.0, 10.0, 196.0, 30.0),
+        ];
+
+        let mut tree = TaffyTree::<()>::new();
+        let node = tree.new_leaf(Style::default()).unwrap();
+        let mut state = automerge::AutoCommit::new();
+        let root_id = automerge::ROOT;
+        let mut handled = false;
+        let mut focus_target = None;
+
+        // Press + drag past threshold. Cursor starts at (10, 15) —
+        // inside pill A, left of every icon rect so the press isn't
+        // intercepted as a search / max / close hit.
+        let move_in = WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(10.0, 15.0),
+        };
+        b.handle_event(
+            &move_in,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut state,
+            &root_id,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &tree,
+        );
+        let press = WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        };
+        b.handle_event(
+            &press,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut state,
+            &root_id,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &tree,
+        );
+        let move_past = WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(120.0, 20.0),
+        };
+        b.handle_event(
+            &move_past,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut state,
+            &root_id,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &tree,
+        );
+        assert!(b.ghost_rect().is_some(), "precondition: ghost visible");
+
+        // Release inside the bar — doesn't matter where; all branches
+        // of Released must clear the ghost.
+        let release = WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        };
+        b.handle_event(
+            &release,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut state,
+            &root_id,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &tree,
+        );
+        assert_eq!(
+            b.ghost_rect(),
+            None,
+            "release must clear the ghost so the pill stops painting",
+        );
+        assert!(
+            b.drag_offset.is_none(),
+            "release must also clear the cached drag offset",
+        );
+    }
+
+    /// A freshly constructed bar has nothing dragging, so the ghost
+    /// accessor must return `None`. This is the baseline the other
+    /// tests implicitly rely on — if it ever changes, the ghost paint
+    /// path would fire on idle frames.
+    #[test]
+    fn drag_ghost_is_none_when_no_drag() {
+        let b = bar();
+        assert_eq!(b.ghost_rect(), None);
+        assert!(b.drag_offset.is_none());
+        assert!(!b.drag_in_flight());
+    }
+
+    /// The source pill — the one whose tab is being dragged — must
+    /// render at `SOURCE_PILL_DIM_ALPHA` (0.35) while the ghost is
+    /// visible, matching the concept's "pulled out" fade of the
+    /// original slot. Non-source pills stay at full opacity.
+    #[test]
+    fn source_pill_alpha_dims_while_dragged() {
+        let mut b = bar();
+        // Idle (no drag) — every pill renders at full alpha.
+        assert!((b.pill_draw_alpha(0) - 1.0).abs() < f32::EPSILON);
+        assert!((b.pill_draw_alpha(1) - 1.0).abs() < f32::EPSILON);
+        assert!((b.pill_draw_alpha(2) - 1.0).abs() < f32::EPSILON);
+
+        // Simulate a drag in flight on tab id 2 (index 1). Only the
+        // source pill dims; its neighbours keep full opacity.
+        b.pending_drag = Some(DragPayload::Tab { group: 0, tab: 2 });
+        assert!(
+            (b.pill_draw_alpha(0) - 1.0).abs() < f32::EPSILON,
+            "non-source pill stays at full alpha",
+        );
+        assert!(
+            (b.pill_draw_alpha(1) - TabBar::SOURCE_PILL_DIM_ALPHA).abs() < f32::EPSILON,
+            "source pill dims to SOURCE_PILL_DIM_ALPHA (got {})",
+            b.pill_draw_alpha(1),
+        );
+        assert!(
+            (b.pill_draw_alpha(2) - 1.0).abs() < f32::EPSILON,
+            "non-source pill stays at full alpha",
+        );
+        // Source-dim constant is distinct from the ghost constant so
+        // the ghost stays the dominant visual even when the source
+        // slot hasn't reflowed.
+        assert!(
+            TabBar::SOURCE_PILL_DIM_ALPHA < TabBar::GHOST_PILL_ALPHA,
+            "source dim must be more transparent than the ghost",
+        );
     }
 }
