@@ -126,13 +126,19 @@ tests for rotation math + spoke hit-testing.
 
 ## Integration / apps
 
-### 3. Terminal + file-explorer not live as shell tabs
+### 3. Terminal + file-explorer live tabs — resolved (2026-04-21)
 
-`apps/terminal` (`quick-terminal`) and `apps/file-explorer` (`file-explorer`
-crate) are workspace members but the Notes / Files / Terminal / Browser
-tabs in the live shell still render stub `EditorApp`s. The
-`AppPlaceholder` → real widget path needs wiring in
-`shell/mod.rs::to_ui_tile`.
+Commit `8a954dc` extended `to_ui_tile` to route `ShellKind::Terminal`
+→ `TerminalWidget::spawn_default()` (fallback to stub on PTY spawn
+failure) and `ShellKind::FileExplorer` → `FileExplorerWidget::new()`.
+New integration test `persisted_app_placeholders.rs` asserts both
+routes resolve to `UiTile::App` (or `Stub` for Terminal under
+sandboxed spawn).
+
+Known follow-up: Browser (`ShellKind::Browser`) still falls through to
+the stub widget since `apps/browser` depends on `libservo` from a git
+source that doesn't publish the crate (CI can't resolve it offline).
+Not a blocker for the current iteration.
 
 ### 4. Real-socket collab E2E
 
