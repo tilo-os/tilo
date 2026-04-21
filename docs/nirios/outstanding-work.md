@@ -219,8 +219,11 @@ See `docs/nirios/visual-gaps.md` for the full list.
 - Inter-group tab drop-zone indicator (closes §1 #2 third subitem) — commit `f611af6`
 - Overview header Bold weight + clock/ws-name tier pins — submodule `255e9bb`
 - TileHost spawn fade+scale-in animation (180 ms ease-out-cubic, α 0→1,
-  scale 0.95→1.0) — commit `9fa86fd`. **Dormant**: no caller yet; follow-up
-  below.
+  scale 0.95→1.0) — widget `9fa86fd`, caller wire-up in
+  `WindowGroup::insert_detached_tab` (covers both `move_tab_between_groups`
+  and the drop-release path) — commit `f290b89`. `split_tab_into_new_group`
+  deliberately unchanged (group-level fade already plays, double-fade is
+  wrong). Cold-boot `WindowGroup::new` also unchanged (launch would blink).
 - Earlier: shield/backdrop work
 
 **Remaining visual gap:** none open — all visual-gaps.md items are either
@@ -228,10 +231,10 @@ shipped or parked pending a Vello blur primitive (#3 alpha-tint half already
 shipped; Gaussian convolution deferred).
 
 **In flight** (parallel subagents dispatched):
-- Wire `TileHost::start_spawn_animation()` into `WindowGroup::add_tab` and
-  the detach-insert path in `GroupRow` so spawn fades actually play at
-  runtime. Widget + tests shipped in `9fa86fd`; caller hookup is still
-  open.
+- `State::undo`/`redo` widget-metadata plumbing fix (drops caret/focus on
+  opposite-stack push). Agent editing `quick-ui/src/state/mod.rs` +
+  `quick-ui/src/app.rs` keyboard handler, aiming to drop the
+  `NamedKey::End` workaround in the redo golden.
 
 **Remaining highest-priority (structural / functional):**
 - Tab/window decoration polish — lucide X/Maximize2/Minimize2/Search
