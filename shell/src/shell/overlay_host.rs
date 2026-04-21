@@ -1753,18 +1753,23 @@ impl ShellOverlayHost {
             // concept's `shadow-[0_0_40px_-10px_rgba(99,102,241,0.3)]`
             // by painting a concentric-ring glow beneath the card. A
             // single flat outer rect reads as a hard-edged pale halo
-            // (visual gap #4 in docs/nirios/visual-gaps.md); three rings
-            // with decreasing alpha + increasing spread produce a soft
-            // fall-off that fades into the slate-950 backdrop.
+            // (visual gap #4 in docs/nirios/visual-gaps.md); four rings
+            // at decreasing alpha and increasing spread (6/14/28/48 px
+            // at 0.10/0.06/0.03/0.01) produce a soft fall-off that
+            // fades into the slate-950 backdrop rather than stopping at
+            // a sharp outer edge.
             let card = RoundedRect::from_rect(rect, OVERVIEW_ROW_RADIUS_PX);
             if is_active {
                 let indigo = colors.accent[5];
-                // (spread_px, alpha). Near-card ring stays low so it
-                // doesn't compete with the 2 px indigo border.
-                let glow_steps: [(f64, f64); 3] = [
-                    (4.0, 0.18),
-                    (8.0, 0.08),
-                    (12.0, 0.04),
+                // (spread_px, alpha). Near-card alpha stays ≤ 0.10 so
+                // it doesn't compete with the 2 px indigo border; the
+                // outermost 48 px ring at 0.01 fades imperceptibly into
+                // the backdrop instead of stopping.
+                let glow_steps: [(f64, f64); 4] = [
+                    (6.0, 0.10),
+                    (14.0, 0.06),
+                    (28.0, 0.03),
+                    (48.0, 0.01),
                 ];
                 for (spread, alpha) in glow_steps.iter() {
                     let glow_rect = Rect::new(
