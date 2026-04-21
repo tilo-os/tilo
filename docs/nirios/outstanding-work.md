@@ -224,6 +224,15 @@ See `docs/nirios/visual-gaps.md` for the full list.
   and the drop-release path) — commit `f290b89`. `split_tab_into_new_group`
   deliberately unchanged (group-level fade already plays, double-fade is
   wrong). Cold-boot `WindowGroup::new` also unchanged (launch would blink).
+- Tab-close fade-out animation (180 ms, α 1→0, scale 1→0.95, y 0→-20
+  matching concept's `exit={{ opacity: 0, scale: 0.95, y: -20 }}`) with
+  deferred host removal, neighbour-active-shift, and idempotent mid-fade
+  re-click — commit `6ad564a`.
+- `State::undo`/`redo`/`undo_for_author` now preserve current focus +
+  widget metadata on the opposite-stack push; Ctrl+Shift+Z round-trip
+  keeps the caret where it was pre-gesture. Caller in `App::run` uses
+  `root_widget.get_state()` (non-mutating) + `focusable_order` index
+  lookup — commit `b6aa0d0` (submodule `df4f653`).
 - Earlier: shield/backdrop work
 
 **Remaining visual gap:** none open — all visual-gaps.md items are either
@@ -231,16 +240,15 @@ shipped or parked pending a Vello blur primitive (#3 alpha-tint half already
 shipped; Gaussian convolution deferred).
 
 **In flight** (parallel subagents dispatched):
-- `State::undo`/`redo` widget-metadata plumbing fix (drops caret/focus on
-  opposite-stack push). Agent editing `quick-ui/src/state/mod.rs` +
-  `quick-ui/src/app.rs` keyboard handler, aiming to drop the
-  `NamedKey::End` workaround in the redo golden.
+- (none — waiting on next dispatch decision)
 
 **Remaining highest-priority (structural / functional):**
 - Tab/window decoration polish — lucide X/Maximize2/Minimize2/Search
   shipped in commit `62c5c53`; drag-ghost preview shipped in commit
-  `4e579ac`. Still pending: per-tile close hover, tab-close fade-out,
-  window-minimize animation.
+  `4e579ac`; tab-close fade-out shipped in `6ad564a`; tile-spawn fade
+  wired in `f290b89`. Still pending: per-tile close hover (hover tint /
+  icon swap on × button), window-minimize animation, group-close
+  fade-out mirror.
 - Concept-matched animation pass (overview zoom, tile spawn/despawn,
   wheel snap spring — spring already partial via `7916273`).
 - CRDT-driven undo/redo coverage across every widget.
@@ -255,11 +263,16 @@ shipped; Gaussian convolution deferred).
     either promote tab structure into the CRDT (preferred; aligns with
     "collaborative by default") or extend the undo system to snapshot
     widget state. Neither is trivial.
-  - **`State::undo` drops `widget_metadata` on redo_stack push**
-    (`quick-ui/src/state/mod.rs:74-79`) — redo cannot restore
-    widget-local caret/cursor state. `e2e_redo_after_undo_rehydrates_golden`
-    works around this by re-parking the caret via `NamedKey::End` after
-    redo; the plumbing gap itself remains.
+  - ~~**`State::undo` drops `widget_metadata` on redo_stack push**~~ —
+    resolved in commit `b6aa0d0`. `State::undo`/`redo`/`undo_for_author`
+    now accept `current_focused_idx` + `current_metadata` and push them
+    onto the opposite stack. `App::run` keyboard handler pulls them
+    from `root_widget.get_state()` + focusable_order.
+    `e2e_redo_after_undo_rehydrates_golden` still sends `NamedKey::End`
+    — but for a different reason: the harness drives `State::redo`
+    directly and does NOT call `apply_undo_entry`, so the metadata is
+    present on the returned entry but never applied in that codepath.
+    Not a plumbing gap — a test-driver limitation.
 - Full automated E2E navigation tests w/ screenshot diffing for the
   golden-path flows (open overview → switch workspace → drag tab to new
   window → collab join → undo). **Harness in place** (commits `8c3d619`
