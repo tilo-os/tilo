@@ -187,6 +187,11 @@ source of truth for every consumer.
 See `docs/nirios/visual-gaps.md` for the full list.
 
 **Closed** as of 2026-04-21 iteration:
+- Golden-image snapshot diff harness with `UPDATE_SNAPSHOTS=1` refresh
+  hook — submodule commits `8c3d619` + `6a9c677`, superproject bump
+  `5f0df57`. Pins `e2e_open_close_overview` and
+  `sidebar_wheel_disc_renders_a_spoke_per_workspace` against committed
+  PNG goldens at `quick-shell/tests/snapshots/`.
 - Drag-ghost translucent preview on tab drag (source dims to 0.35, ghost
   paints at 0.6 at `last_cursor - drag_offset`) — commit `4e579ac`
 - Lucide X/Maximize2/Minimize2/Search on tab decorations + maximized
@@ -233,7 +238,12 @@ shipped; Gaussian convolution deferred).
   reorder / split / close still pending a single-commit per gesture).
 - Full automated E2E navigation tests w/ screenshot diffing for the
   golden-path flows (open overview → switch workspace → drag tab to new
-  window → collab join → undo).
+  window → collab join → undo). **Harness in place** (commits `8c3d619`
+  + `6a9c677` + `5f0df57`): `SnapshotAssertion` with `UPDATE_SNAPSHOTS=1`
+  refresh, golden PNGs committed under `quick-shell/tests/snapshots/`.
+  Pinned so far: overview settled + wheel-disc three-spokes. Remaining:
+  tab-drag reorder flow, quick-settings (needs clock mock or text-mask
+  region), collab join, undo-redo round-trip.
 
 ## Process reminder
 
