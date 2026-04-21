@@ -14,8 +14,13 @@
 //! Interaction model:
 //! - Press inside the disc → capture `drag_from`.
 //! - Motion while pressed → rotate the spokes continuously.
-//! - Release → snap to the nearest spoke (the `active_idx` changes). No
-//!   animated easing yet; the spring is a later polish pass.
+//! - Release → snap to the nearest spoke (the `active_idx` changes, and
+//!   the CRDT write-back publishes the new active workspace). The
+//!   *logical* `rotation_deg` is set to the snapped value synchronously
+//!   so tests and downstream state see the final pose immediately;
+//!   visually the rim eases from the pre-snap value to the snapped one
+//!   via a "snappy" `Spring` (stiffness 260, damping 28). `draw` prefers
+//!   `rotation_spring.value()` while the spring is in flight.
 //!
 //! Rotation math uses degrees internally so the snap threshold arithmetic
 //! (`rotation_deg / spoke_gap_deg`) stays readable; trig converts to
@@ -32,9 +37,11 @@ use vello::kurbo::{Affine, BezPath, Circle, PathEl, Point, Rect, Stroke};
 use vello::peniko::Fill;
 use winit::event::WindowEvent;
 
+use quick_ui::animation::Spring;
 use quick_ui::presence::PresenceCtx;
 use quick_ui::text_render::TextRenderer;
 use quick_ui::theme::Theme;
+use quick_ui::tokens::SpringPresets;
 use quick_ui::widget::Widget;
 
 use crate::shell::chrome_state::ChromeState;
@@ -78,6 +85,14 @@ pub struct SidebarWheelDisc {
     /// workspace back to `chrome.tree`. Kept `Option` so the widget
     /// still runs in isolation (unit tests, snapshot harness).
     pub chrome: Option<Rc<RefCell<ChromeState>>>,
+    /// `Some(spring)` while a post-release snap is easing the visible
+    /// rim from the pre-snap rotation to the snapped target. `None` when
+    /// idle. Constructed lazily on release using the `snappy` preset
+    /// (stiffness 260, damping 28 — the closest builtin to the concept's
+    /// `damping: 25, stiffness: 200`). Dropped back to `None` by
+    /// `update` once `is_settled()` returns true so `needs_animation_frame`
+    /// stops asking for redraws.
+    pub rotation_spring: Option<Spring>,
 }
 
 impl SidebarWheelDisc {
@@ -93,6 +108,7 @@ impl SidebarWheelDisc {
             rect: Rect::ZERO,
             diameter_px: 240.0,
             chrome: None,
+            rotation_spring: None,
         }
     }
 
@@ -192,6 +208,15 @@ impl Widget for SidebarWheelDisc {
             return;
         }
 
+        // Prefer the spring's value while a post-snap ease is in flight so
+        // the rim visibly springs to the snapped target instead of jumping.
+        // `rotation_deg` is the logical (already-snapped) pose — drawing
+        // reads the animated version but state/tests see the snapped one.
+        let visual_rotation_deg = match self.rotation_spring.as_ref() {
+            Some(s) if !s.is_settled() => s.value(),
+            _ => self.rotation_deg,
+        };
+
         // ---- Pass 1: outer disc rim ---------------------------------------
         // 1-px stroked circle in neutral-3; reads as a hairline ring around
         // the whole disc. No fill — the wallpaper / desktop behind shows
@@ -212,7 +237,7 @@ impl Widget for SidebarWheelDisc {
         // call — the polyline-approximated bezier here looks the same at
         // these radii.
         if !self.spokes.is_empty() {
-            let active_angle_deg = self.rotation_deg
+            let active_angle_deg = visual_rotation_deg
                 + (self.active_idx as f32) * self.spoke_gap_deg();
             let arc_sweep_deg = 24.0_f32;
             let arc_start = (active_angle_deg - arc_sweep_deg / 2.0).to_radians() as f64;
@@ -244,7 +269,7 @@ impl Widget for SidebarWheelDisc {
             let gap = self.spoke_gap_deg();
             let size = tokens.typography.scale.xs;
             for (i, spoke) in self.spokes.iter().enumerate() {
-                let angle_deg = self.rotation_deg + i as f32 * gap;
+                let angle_deg = visual_rotation_deg + i as f32 * gap;
                 let angle_rad = (angle_deg as f64).to_radians();
                 let tx = cx + label_radius * angle_rad.cos();
                 let ty = cy + label_radius * angle_rad.sin();
@@ -332,6 +357,12 @@ impl Widget for SidebarWheelDisc {
                     (self.rect.y0 + self.rect.y1) / 2.0,
                 ));
                 if self.rect.contains(anchor) {
+                    // A fresh press interrupts any in-flight snap spring —
+                    // the user is taking over the rotation again, so the
+                    // spring's target is stale. Drop it so subsequent
+                    // `draw` calls read the (drag-updated) `rotation_deg`
+                    // directly.
+                    self.rotation_spring = None;
                     self.drag_from = Some(anchor);
                     self.drag_rotation_origin = self.rotation_deg;
                     *handled = true;
@@ -367,7 +398,24 @@ impl Widget for SidebarWheelDisc {
                 ..
             } => {
                 if self.drag_from.is_some() {
+                    // Capture the pre-snap angle before `snap_to_nearest`
+                    // rewrites `rotation_deg` — the spring needs this as
+                    // its starting value so the ease begins exactly where
+                    // the drag left off (no visual jump on release).
+                    let pre_snap_deg = self.rotation_deg;
                     self.snap_to_nearest();
+                    let snapped_deg = self.rotation_deg;
+                    // Only spawn a spring if there's actually a distance
+                    // to travel; a release on a perfectly-aligned spoke
+                    // doesn't need an animation frame.
+                    if (pre_snap_deg - snapped_deg).abs() > f32::EPSILON {
+                        let params = SpringPresets::default().snappy;
+                        let mut s = Spring::new(pre_snap_deg, params);
+                        s.set_target(snapped_deg);
+                        self.rotation_spring = Some(s);
+                    } else {
+                        self.rotation_spring = None;
+                    }
                     self.drag_from = None;
                     *handled = true;
                 }
@@ -381,7 +429,31 @@ impl Widget for SidebarWheelDisc {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        false
+        // Keep the redraw pump running while the post-release snap is
+        // still easing — once the spring settles `update` drops it and
+        // this returns false, letting `App` stop scheduling redraws.
+        self.rotation_spring
+            .as_ref()
+            .map(|s| !s.is_settled())
+            .unwrap_or(false)
+    }
+
+    fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
+        // Step the snap-spring at a fixed 60 Hz to match the rest of the
+        // toolkit (`WorkspaceView::update` does the same). Using a fixed
+        // dt rather than wall-clock time keeps the animation
+        // deterministic for tests; the App pumps `update` once per tick
+        // via its `needs_animation_frame` loop. Once the spring settles
+        // we drop it so future frames aren't kept alive.
+        let Some(spring) = self.rotation_spring.as_mut() else {
+            return false;
+        };
+        if spring.is_settled() {
+            self.rotation_spring = None;
+            return false;
+        }
+        spring.step(1.0 / 60.0);
+        true
     }
 
     fn name(&self) -> &str {
@@ -700,5 +772,87 @@ mod tests {
         pump(&mut d, cursor_event(cx, start_y + diameter));
         assert!(pump(&mut d, release_event()));
         assert_ne!(d.active_idx, idx_before);
+    }
+
+    #[test]
+    fn snap_animates_rotation_over_multiple_ticks() {
+        // Build a 4-spoke disc so a full-diameter downward drag
+        // (≈114.6° of rotation) falls between spoke gaps (90°) and
+        // rounds to exactly one gap — guaranteeing `pre_snap_deg !=
+        // snapped_deg` and therefore a non-trivial spring animation.
+        let mut d = mk(&["A", "B", "C", "D"]);
+        assert!((d.spoke_gap_deg() - 90.0).abs() < 1e-4);
+        let diameter = d.diameter_px;
+        let start_y = diameter / 2.0;
+        let cx = diameter / 2.0;
+
+        pump(&mut d, cursor_event(cx, start_y));
+        assert!(pump(&mut d, press_event()));
+        // Drag by a full diameter — yields ~114.6° of free-running rotation.
+        pump(&mut d, cursor_event(cx, start_y + diameter));
+        let pre_snap_deg = d.rotation_deg;
+        assert!(pre_snap_deg > 0.0);
+        assert!(pump(&mut d, release_event()));
+
+        // Immediately after release: spring is live and unsettled.
+        let spring = d
+            .rotation_spring
+            .as_ref()
+            .expect("release should spawn a snap spring");
+        assert!(
+            !spring.is_settled(),
+            "spring must still be moving on the first frame after release"
+        );
+        // The spring starts at the pre-snap rotation, not the snapped
+        // target — otherwise nothing would animate visually.
+        assert!(
+            (spring.value() - pre_snap_deg).abs() < 1e-3,
+            "spring should start at pre-snap rotation {} (got {})",
+            pre_snap_deg,
+            spring.value()
+        );
+        // `needs_animation_frame` must light up so `App` keeps pumping
+        // redraws while the ease plays out.
+        assert!(d.needs_animation_frame());
+
+        // Pump the per-frame update hook at 60 Hz. The "snappy" preset
+        // (stiffness 260, damping 28, mass 1) has ω ≈ 16.1 rad/s and
+        // damping ratio ≈ 0.87 — underdamped, so it takes a few cycles
+        // to land inside `is_settled`'s 0.1° / 0.1 °/s window for a
+        // 90° displacement. 180 frames (~3 s) is well over the budget
+        // with headroom for the integrator's step bias.
+        use automerge::AutoCommit;
+        let mut doc = AutoCommit::new();
+        let path = automerge::ROOT.clone();
+        for _ in 0..180 {
+            d.update(&mut doc, &path);
+        }
+
+        // After settling, `update` drops the spring so further frames
+        // don't keep the animation loop alive. We assert on both the
+        // spec'd invariant (spring settled or gone) and the visible
+        // rotation landing on the target within 1°.
+        if let Some(spring) = d.rotation_spring.as_ref() {
+            assert!(
+                spring.is_settled(),
+                "spring should be settled after 30 frames"
+            );
+        }
+        assert!(
+            !d.needs_animation_frame(),
+            "settled spring must stop asking for frames"
+        );
+        let target = d.rotation_deg;
+        let visual = d
+            .rotation_spring
+            .as_ref()
+            .map(|s| s.value())
+            .unwrap_or(target);
+        assert!(
+            (visual - target).abs() < 1.0,
+            "visual rotation {} must be within 1° of target {}",
+            visual,
+            target
+        );
     }
 }
