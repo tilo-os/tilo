@@ -109,14 +109,14 @@ mental model: *pull the wheel down to reveal the next workspace below*.
 
 ## Known gaps (as of 2026-04-21)
 
-1. **CRDT write-back** — the widget updates `active_idx` internally on
-   snap but does not yet call `chrome.borrow_mut().tree.set_active(...)`.
-   The rest of the shell still reads workspace state from the CRDT, so
-   the wheel rotates visually but the workspace doesn't switch. Fix in
-   flight; see outstanding-work §"Sidebar wheel-disc widget".
+1. ~~**CRDT write-back**~~ — **resolved in `65d105d`**. The widget
+   now takes `Rc<RefCell<ChromeState>>` via `with_chrome(...)` and
+   calls `chrome.borrow_mut().tree.set_active(ws_id)` on snap. Tested
+   by `snap_publishes_active_workspace_to_chrome`.
 
-2. **Label readability** — spokes at angles 90°<a<270° render
-   upside-down. Planned fix: flip labels by π in that band.
+2. ~~**Label readability**~~ — **resolved in `65d105d`**. Labels whose
+   spoke angle lands in (90°, 270°) get an extra π rotation so glyphs
+   stay upright.
 
 3. **Collaborator presence on spokes** — concept's wheel cards show up
    to 3 per-card presence dots. Not yet re-applied to spokes. Needs
