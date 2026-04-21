@@ -25,6 +25,15 @@ use quick_ui::widget::Widget;
 mod support;
 
 use support::offscreen::OffscreenRenderer;
+use support::snapshot::SnapshotAssertion;
+
+/// Directory under the crate root where golden PNGs are committed.
+fn goldens_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("snapshots")
+        .join("wheel_disc")
+}
 
 const CANVAS: u32 = 280;
 
@@ -111,4 +120,12 @@ fn sidebar_wheel_disc_renders_a_spoke_per_workspace() {
     let bg = Color::rgb8(0x02, 0x06, 0x14);
     renderer.render_png(&scene, bg, &path);
     assert!(path.exists(), "snapshot PNG should be written to {:?}", path);
+
+    // Pin against the committed golden. Guarded on `path.exists()` to
+    // match the soft-skip-on-missing-GPU convention: if the renderer
+    // couldn't produce the PNG we've already returned above, but belt-
+    // and-braces here too.
+    if path.exists() {
+        SnapshotAssertion::new(path, goldens_dir().join("three-spokes.png")).assert();
+    }
 }
