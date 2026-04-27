@@ -678,6 +678,7 @@ impl Shell {
                 .collect(),
             active: active_ws,
             active_strip: Default::default(),
+            active_group: Default::default(),
             collaborators: vec![],
         };
         // Seed the active-strip entry for the active workspace.
@@ -739,6 +740,7 @@ impl Shell {
             )],
             active: state::WorkspaceId::from(0),
             active_strip: Default::default(),
+            active_group: Default::default(),
             collaborators: vec![],
         };
         scratch.active = scratch.workspaces[0].id;
@@ -782,6 +784,7 @@ impl Shell {
             )],
             active: state::WorkspaceId::from(0),
             active_strip: Default::default(),
+            active_group: Default::default(),
             collaborators: vec![],
         };
         scratch.active = scratch.workspaces[0].id;
