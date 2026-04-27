@@ -1,5 +1,18 @@
 use vello::peniko::Color;
 
+/// Index into the accent ramp that maps to the concept's dominant
+/// indigo-500 fill (`#6366f1`). Used wherever a widget needs the "primary
+/// accent" colour (active dot, slider active track, checkbox tick,
+/// toggle on-state, etc.). The concept uses indigo-500 14× across
+/// `nirios-concept/src/components/` versus indigo-600 (4 hits) which is
+/// reserved for the *hover* state.
+pub const ACCENT_PRIMARY_IDX: usize = 5;
+
+/// Index into the accent ramp that maps to the concept's hover-state
+/// indigo-600 (`#4f46e5`). Bound to a const so future ramp swaps stay
+/// coherent with [`ACCENT_PRIMARY_IDX`].
+pub const ACCENT_HOVER_IDX: usize = 4;
+
 #[derive(Clone, Debug)]
 pub struct ColorRamp { pub stops: [Color; 11] }
 

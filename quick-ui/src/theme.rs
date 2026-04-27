@@ -1,5 +1,6 @@
 use vello::peniko::Color;
 use crate::tokens::Tokens;
+use crate::tokens::colors::{ACCENT_HOVER_IDX, ACCENT_PRIMARY_IDX};
 
 #[derive(Clone, Debug)]
 pub struct Theme {
@@ -14,7 +15,14 @@ pub struct Theme {
     pub border_focus: Color,
     pub text_primary: Color,
     pub text_dim: Color,
+    /// Concept's dominant accent fill (indigo-500 `#6366f1`). Use for
+    /// active states (slider active track, checkbox tick, toggle
+    /// on-state, focused caret, currently-selected dot, etc.). For
+    /// hover states use [`Theme::accent_hover`] instead.
     pub accent_primary: Color,
+    /// Concept's hover-state accent (indigo-600 `#4f46e5`). One step
+    /// darker than [`Theme::accent_primary`].
+    pub accent_hover: Color,
     pub status_success: Color,
     pub radius_standard: f64,
     pub padding_standard: f32,
@@ -36,7 +44,8 @@ impl Theme {
             border_focus: c.border_focus,
             text_primary: c.text_primary,
             text_dim: c.text_dim,
-            accent_primary: c.accent[4],
+            accent_primary: c.accent[ACCENT_PRIMARY_IDX],
+            accent_hover: c.accent[ACCENT_HOVER_IDX],
             status_success: c.semantic.success,
             radius_standard: tokens.radii.md as f64,
             padding_standard: tokens.spacing.s3,
@@ -83,5 +92,40 @@ impl Theme {
         t.colors.border_focus = Color::rgb8(38, 139, 210);
         t.radii.md = 0.0;
         Self::from_tokens("Solarized", t)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Pin the dark theme's accent shortcuts so a swap of the indigo
+    //! ramp or the [`ACCENT_PRIMARY_IDX`] / [`ACCENT_HOVER_IDX`] indices
+    //! becomes a visible test failure rather than a silent visual
+    //! regression. The concept (`nirios-concept/src/components/`) uses
+    //! indigo-500 (`#6366f1`) 14× as the dominant accent fill and
+    //! indigo-600 (`#4f46e5`) only 4× as the hover shade — pin both.
+    use super::*;
+    use crate::tokens::colors::{ACCENT_HOVER_IDX, ACCENT_PRIMARY_IDX};
+
+    fn rgb(c: Color) -> [u8; 3] { [c.r, c.g, c.b] }
+
+    #[test]
+    fn dark_accent_primary_maps_to_indigo_500() {
+        let theme = Theme::dark();
+        assert_eq!(rgb(theme.accent_primary), [0x63, 0x66, 0xf1], "indigo-500 #6366f1");
+    }
+
+    #[test]
+    fn dark_accent_hover_maps_to_indigo_600() {
+        let theme = Theme::dark();
+        assert_eq!(rgb(theme.accent_hover), [0x4f, 0x46, 0xe5], "indigo-600 #4f46e5");
+    }
+
+    #[test]
+    fn accent_indices_pin_to_concept_palette_positions() {
+        // If these constants ever drift the rest of the assertions in
+        // this module are rendered meaningless — pin them here so a
+        // ramp re-ordering trips this test first.
+        assert_eq!(ACCENT_PRIMARY_IDX, 5);
+        assert_eq!(ACCENT_HOVER_IDX, 4);
     }
 }
