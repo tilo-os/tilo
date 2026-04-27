@@ -83,7 +83,10 @@ impl Widget for Checkbox {
 
     fn draw(&mut self, scene: &mut Scene, transform: Affine, _text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
         let box_color = if self.is_checked {
-            theme.tokens.colors.accent[4]
+            // Checked = active fill, not hover — concept uses indigo-500
+            // (`bg-indigo-500`) for the on-state and reserves indigo-600
+            // for the hover shade.
+            theme.accent_primary
         } else if self.is_hovered {
             theme.bg_hover
         } else {
