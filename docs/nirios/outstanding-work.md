@@ -268,9 +268,15 @@ shipped; Gaussian convolution deferred).
   routes the drop through `split_tab_into_new_group` at the closing
   group's slot (tab lands where the user aimed, closing group shifts
   right).
-- Workspace active-group pointer may still target a closing group for
-  ~180 ms; should nudge to surviving sibling at `start_closing()`.
-  Cross-submodule fix (shell-layer workspace pointer), deferred.
+- Workspace active-group pointer data-layer reconciler shipped in
+  `136a0da` (submodule `f40e43e`): `WorkspaceTree::active_group:
+  HashMap<StripId, GroupId>` + `nudge_active_group_off_closing` does a
+  right-then-left scan to advance to the next non-closing sibling, or
+  removes the entry if every sibling is also closing. 8 new state
+  tests, all e2e passing. **Per-frame wire-up still pending** — the
+  shell run-loop has not yet been hooked to walk the widget tree's
+  `is_closing()` set and feed it into the reconciler each tick. Live
+  binary still won't observe the new pointer until that lands.
 - `GroupRow::transfer_tab` public API does not check `is_closing()`
   on the destination. No production callers today; harden only if a
   programmatic caller ever lands.
