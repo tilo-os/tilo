@@ -40,3 +40,8 @@ tokio-test = "0.4"
 pollster = "0.4.0"
 wgpu = "0.20"
 png = "0.17"
+# Scene-encoding inspection used by `tests/concept_parity_spec.rs` to walk
+# `Scene::encoding().draw_data` for solid-colour brushes and image-paint
+# tags without round-tripping pixels through wgpu. Same minor version as
+# the `vello = "0.2.1"` runtime dep; Cargo collapses to a single copy.
+vello_encoding = "0.2.1"

@@ -237,6 +237,19 @@ impl TopBarChrome {
         self.center_widget
     }
 
+    /// Test-only setter: jump the center-band widget directly to a
+    /// variant without driving the scroll-wheel event path. Used by the
+    /// concept-parity spec tests to put the bar into SystemMonitor mode
+    /// so they can assert the CPU/RAM label colours match the concept's
+    /// emerald-400/blue-400 semantic palette (visual-gap #11/#12 in the
+    /// concept-coverage audit). Production code mutates `center_widget`
+    /// only via `handle_event`'s scroll/click branches; this accessor is
+    /// gated to test/debug builds so it can't leak into release.
+    #[cfg(any(test, debug_assertions))]
+    pub fn set_center_widget_for_tests(&mut self, w: CenterWidget) {
+        self.center_widget = w;
+    }
+
     /// Base (unscaled) radius used for the center-band three-dot stack.
     pub const DOT_BASE_SIZE: f64 = 3.0;
     /// Rendered radius of the *active* center-band dot. Sized 1.6× the
