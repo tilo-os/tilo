@@ -13,7 +13,7 @@ use smithay::{
     wayland::{
         compositor::{
             CompositorClientState, CompositorHandler, CompositorState, SurfaceAttributes,
-            with_states, Cacheable,
+            with_states,
         },
         buffer::BufferHandler,
         selection::{
