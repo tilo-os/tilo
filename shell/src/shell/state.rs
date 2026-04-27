@@ -315,6 +315,21 @@ pub struct WorkspaceTree {
     pub workspaces: Vec<Workspace>,
     pub active: WorkspaceId,
     pub active_strip: HashMap<WorkspaceId, StripId>,
+    /// Per-strip "active group" pointer — the [`GroupId`] inside each strip
+    /// that currently owns focus / keyboard input / presence broadcasts.
+    /// Parallels [`Self::active_strip`] (per-workspace) but at one level
+    /// deeper: each strip carries its own active group independently so
+    /// switching strips doesn't drag focus back to a stale group.
+    ///
+    /// Optional per strip — `None`/missing means "no explicit selection;
+    /// resolvers should fall back to the first non-closing group" (see
+    /// [`Self::resolve_active_group`]).
+    ///
+    /// `#[serde(default)]` so persisted state files written before this
+    /// field existed still load — they boot with an empty map and the
+    /// shell seeds entries lazily on first focus.
+    #[serde(default)]
+    pub active_group: HashMap<StripId, GroupId>,
     pub collaborators: Vec<Collaborator>,
 }
 
@@ -379,10 +394,13 @@ impl WorkspaceTree {
         };
         let mut active_strip = HashMap::new();
         active_strip.insert(ws_id, strip_id);
+        let mut active_group = HashMap::new();
+        active_group.insert(strip_id, group_id);
         Self {
             workspaces: vec![ws],
             active: ws_id,
             active_strip,
+            active_group,
             collaborators: vec![],
         }
     }
@@ -445,6 +463,138 @@ impl WorkspaceTree {
         }
         self.active = self.workspaces[idx + 1].id;
         true
+    }
+
+    // -----------------------------------------------------------------
+    // Active-group pointer
+    // -----------------------------------------------------------------
+    //
+    // The shell picks one [`GroupId`] per [`StripId`] as the "active"
+    // group — the receiver of focus, keyboard input, and presence
+    // broadcasts. The pointer lives here (in the persisted state tree)
+    // so multiple chrome surfaces can read it without threading a
+    // separate handle through, and so it survives reload.
+    //
+    // The interesting case is the close fade: when the user closes the
+    // last tab of the active group, the widget tree latches a 180 ms
+    // alpha+scale shrink before pruning (see `WindowGroup::start_closing`
+    // in `quick-ui`). Without intervention the active-group pointer
+    // continues to resolve to the closing group for the duration of the
+    // animation, sending focus and keyboard input to a fading corpse.
+    // [`Self::nudge_active_group_off_closing`] is the reconciler that
+    // advances the pointer to the next surviving sibling at fade-start
+    // time; the shell is expected to call it from its per-tick loop with
+    // the set of group ids whose widgets currently report
+    // `is_closing()`.
+
+    /// Look up the currently-active [`GroupId`] for the given strip, or
+    /// `None` if no entry has been seeded. Callers that want a default
+    /// (the leftmost group, say) compose this with their own fallback.
+    pub fn active_group_for(&self, strip_id: StripId) -> Option<GroupId> {
+        self.active_group.get(&strip_id).copied()
+    }
+
+    /// Mark `group_id` as the active group of `strip_id`. The id is not
+    /// validated against the strip's actual `window_groups` membership —
+    /// callers that care can check first; the shell's reconciler is
+    /// expected to be the sole writer.
+    pub fn set_active_group(&mut self, strip_id: StripId, group_id: GroupId) {
+        self.active_group.insert(strip_id, group_id);
+    }
+
+    /// Resolve the active group on `strip_id`, *as observed under the
+    /// given `is_closing` predicate*. If the recorded active group is
+    /// reported closing, this returns the next non-closing sibling to
+    /// the right; if there isn't one, it falls back to the previous
+    /// non-closing sibling. Pure read — does not mutate the map.
+    /// Returns `None` if the strip has no surviving (i.e. non-closing)
+    /// groups at all, or if the strip itself doesn't exist.
+    pub fn resolve_active_group(
+        &self,
+        strip_id: StripId,
+        is_closing: impl Fn(GroupId) -> bool,
+    ) -> Option<GroupId> {
+        let strip = self
+            .workspaces
+            .iter()
+            .flat_map(|w| w.strips.iter())
+            .find(|s| s.id == strip_id)?;
+        let recorded = self.active_group.get(&strip_id).copied();
+        // Helper: first non-closing group in the strip starting at
+        // `idx`, walking right (`step = 1`) or left (`step = -1`).
+        let scan_from = |start: isize, step: isize| -> Option<GroupId> {
+            let n = strip.window_groups.len() as isize;
+            let mut i = start;
+            while i >= 0 && i < n {
+                let g = &strip.window_groups[i as usize];
+                if !is_closing(g.id) {
+                    return Some(g.id);
+                }
+                i += step;
+            }
+            None
+        };
+        match recorded {
+            Some(id) => {
+                if !is_closing(id) {
+                    return Some(id);
+                }
+                // Recorded group is closing — find its index, then
+                // scan right for a survivor; if none, scan left.
+                let idx = strip
+                    .window_groups
+                    .iter()
+                    .position(|g| g.id == id)
+                    .map(|i| i as isize)
+                    .unwrap_or(-1);
+                if idx < 0 {
+                    // Recorded group no longer in the strip; fall
+                    // through to "first non-closing" as a default.
+                    return scan_from(0, 1);
+                }
+                scan_from(idx + 1, 1).or_else(|| scan_from(idx - 1, -1))
+            }
+            None => scan_from(0, 1),
+        }
+    }
+
+    /// Reconcile the active-group pointer against the set of currently-
+    /// closing groups in `strip_id`. If the recorded active group is in
+    /// `closing_ids`, advance the pointer to the next non-closing
+    /// sibling using the same right-then-left search as
+    /// [`Self::resolve_active_group`]. Returns the group id the pointer
+    /// landed on, or `None` if every group in the strip is closing
+    /// (in which case the entry is removed from the map — "no active
+    /// group" is the explicit chosen behaviour for an emptying strip,
+    /// not a clamp to a closing-group corpse).
+    ///
+    /// Idempotent: a no-op when the recorded pointer is not in the
+    /// closing set, or when `strip_id` has no recorded pointer at all.
+    pub fn nudge_active_group_off_closing(
+        &mut self,
+        strip_id: StripId,
+        closing_ids: &[GroupId],
+    ) -> Option<GroupId> {
+        let recorded = self.active_group.get(&strip_id).copied()?;
+        if !closing_ids.contains(&recorded) {
+            return Some(recorded);
+        }
+        let resolved =
+            self.resolve_active_group(strip_id, |id| closing_ids.contains(&id));
+        match resolved {
+            Some(next) => {
+                self.active_group.insert(strip_id, next);
+                Some(next)
+            }
+            None => {
+                // No surviving sibling — the whole strip is fading
+                // away. Drop the entry rather than leave a dangling
+                // pointer; the shell can re-seed when fresh groups
+                // land in the strip.
+                self.active_group.remove(&strip_id);
+                None
+            }
+        }
     }
 }
 
@@ -528,5 +678,208 @@ mod collaborator_tests {
         let json = serde_json::to_string(&c).unwrap();
         let back: Collaborator = serde_json::from_str(&json).unwrap();
         assert_eq!(back, c);
+    }
+}
+
+#[cfg(test)]
+mod active_group_tests {
+    //! Coverage for the active-group pointer + close-fade reconciler.
+    //!
+    //! The shell layer keeps a per-strip "active group" pointer so
+    //! focus / keyboard input / presence broadcasts have a single
+    //! authoritative target. When the user closes the last tab of the
+    //! active group the widget tree latches a 180 ms fade before
+    //! pruning; the reconciler here advances the pointer to a
+    //! surviving sibling at fade-start so input doesn't dwell on a
+    //! corpse for the duration of the animation.
+    //!
+    //! Tests build a minimal `WorkspaceTree` via the same field
+    //! literals already used elsewhere in the file, then drive the
+    //! reconciler with the closing-group set the shell would harvest
+    //! from the widget tree (`g.id` filtered by `g.is_closing()`).
+    //! Calling the reconciler directly (rather than spinning up a
+    //! whole widget tree) keeps the test focused on the data-layer
+    //! contract — coupling the data layer to live widgets would
+    //! reintroduce the GPU dependency that quick-shell's other unit
+    //! tests deliberately avoid.
+
+    use super::*;
+
+    /// Build a single-workspace, single-strip tree carrying `n` empty
+    /// window groups with monotonic ids `1..=n`. Groups have no tabs;
+    /// the tests only exercise the active-group pointer logic, not
+    /// rendering. Returns the strip id alongside the tree so callers
+    /// can drive the reconciler without re-walking the structure.
+    fn tree_with_n_groups(n: u64) -> (WorkspaceTree, StripId, Vec<GroupId>) {
+        let ws_id = WorkspaceId::new();
+        let strip_id = StripId::new();
+        let group_ids: Vec<GroupId> = (1..=n).collect();
+        let strip = Strip {
+            id: strip_id,
+            name: "Main".into(),
+            window_groups: group_ids
+                .iter()
+                .map(|gid| WindowGroup {
+                    id: *gid,
+                    tabs: vec![],
+                    active_tab: 0,
+                    width: WindowWidth::Normal,
+                })
+                .collect(),
+        };
+        let ws = Workspace {
+            id: ws_id,
+            name: "Test".into(),
+            strips: vec![strip],
+            roles: vec![],
+            workspace_files: vec![],
+            collaborators: vec![],
+        };
+        let mut active_strip = HashMap::new();
+        active_strip.insert(ws_id, strip_id);
+        let tree = WorkspaceTree {
+            workspaces: vec![ws],
+            active: ws_id,
+            active_strip,
+            active_group: HashMap::new(),
+            collaborators: vec![],
+        };
+        (tree, strip_id, group_ids)
+    }
+
+    #[test]
+    fn active_group_advances_when_active_group_starts_closing() {
+        // Two groups [A, B] with A active. When A starts closing the
+        // pointer must immediately advance to B — the surviving
+        // right-hand sibling — so focus / keyboard / presence stop
+        // targeting the fading-away group.
+        let (mut tree, strip_id, ids) = tree_with_n_groups(2);
+        let (a, b) = (ids[0], ids[1]);
+        tree.set_active_group(strip_id, a);
+        assert_eq!(tree.active_group_for(strip_id), Some(a));
+
+        let landed = tree.nudge_active_group_off_closing(strip_id, &[a]);
+
+        assert_eq!(landed, Some(b));
+        assert_eq!(
+            tree.active_group_for(strip_id),
+            Some(b),
+            "active-group pointer must advance to the next surviving sibling at fade-start, not after the 180 ms fade",
+        );
+    }
+
+    #[test]
+    fn active_group_advances_to_previous_when_last_group_starts_closing() {
+        // Two groups [A, B] with B active (i.e. B is the rightmost
+        // group and is the one closing). With no surviving sibling
+        // to the right, the reconciler falls back to A on the left.
+        // The chosen behaviour: prefer right-hand survivor first,
+        // then walk left. Documented here so the next reader doesn't
+        // assume a clamp-to-index-0 semantic.
+        let (mut tree, strip_id, ids) = tree_with_n_groups(2);
+        let (a, b) = (ids[0], ids[1]);
+        tree.set_active_group(strip_id, b);
+
+        let landed = tree.nudge_active_group_off_closing(strip_id, &[b]);
+
+        assert_eq!(landed, Some(a));
+        assert_eq!(tree.active_group_for(strip_id), Some(a));
+    }
+
+    #[test]
+    fn active_group_doesnt_advance_when_non_active_group_closes() {
+        // Two groups [A, B] with A active. B closes — the pointer
+        // must stay on A. Idempotency: a stray reconcile pass when
+        // the active group itself isn't in the closing set is a
+        // no-op so the shell can call it freely from a per-tick
+        // loop.
+        let (mut tree, strip_id, ids) = tree_with_n_groups(2);
+        let (a, b) = (ids[0], ids[1]);
+        tree.set_active_group(strip_id, a);
+
+        let landed = tree.nudge_active_group_off_closing(strip_id, &[b]);
+
+        assert_eq!(landed, Some(a));
+        assert_eq!(tree.active_group_for(strip_id), Some(a));
+    }
+
+    #[test]
+    fn active_group_clears_when_every_group_is_closing() {
+        // Pathological case: every group in the strip is closing
+        // (e.g. the user nuked them in quick succession). The
+        // pointer can't land anywhere, so the entry is dropped —
+        // documented behaviour, not a clamp to a closing-group id.
+        // The shell's "no active group" state is the absence of an
+        // entry in `active_group`, which `active_group_for` already
+        // returns as `None`.
+        let (mut tree, strip_id, ids) = tree_with_n_groups(2);
+        let (a, b) = (ids[0], ids[1]);
+        tree.set_active_group(strip_id, a);
+
+        let landed = tree.nudge_active_group_off_closing(strip_id, &[a, b]);
+
+        assert_eq!(landed, None);
+        assert_eq!(tree.active_group_for(strip_id), None);
+    }
+
+    #[test]
+    fn nudge_is_noop_when_strip_has_no_recorded_pointer() {
+        // No call to `set_active_group` first. The reconciler must
+        // return `None` and not insert a phantom entry — otherwise a
+        // shell that never seeded the pointer would see one
+        // suddenly appear after the first close.
+        let (mut tree, strip_id, ids) = tree_with_n_groups(2);
+        let (a, _b) = (ids[0], ids[1]);
+        let landed = tree.nudge_active_group_off_closing(strip_id, &[a]);
+        assert_eq!(landed, None);
+        assert_eq!(tree.active_group_for(strip_id), None);
+    }
+
+    #[test]
+    fn resolve_active_group_returns_recorded_when_not_closing() {
+        // Pure read path: with the recorded pointer not in the
+        // closing set, `resolve_active_group` must return it
+        // unchanged. Different from `nudge_*` in that it doesn't
+        // mutate the map.
+        let (mut tree, strip_id, ids) = tree_with_n_groups(3);
+        let (a, b, c) = (ids[0], ids[1], ids[2]);
+        tree.set_active_group(strip_id, b);
+        let resolved = tree.resolve_active_group(strip_id, |id| id == a || id == c);
+        assert_eq!(resolved, Some(b));
+        // Map is unchanged.
+        assert_eq!(tree.active_group_for(strip_id), Some(b));
+    }
+
+    #[test]
+    fn resolve_active_group_walks_right_then_left() {
+        // Three groups [A, B, C] with B active and B closing. The
+        // reconciler must prefer C (right) over A (left) so focus
+        // moves "forward" through the strip rather than ping-ponging
+        // back to the start.
+        let (mut tree, strip_id, ids) = tree_with_n_groups(3);
+        let (_a, b, c) = (ids[0], ids[1], ids[2]);
+        tree.set_active_group(strip_id, b);
+
+        let landed = tree.nudge_active_group_off_closing(strip_id, &[b]);
+
+        assert_eq!(landed, Some(c));
+    }
+
+    #[test]
+    fn legacy_json_without_active_group_field_still_deserializes() {
+        // Persisted trees written before this field existed must
+        // continue to load — `#[serde(default)]` keeps the upgrade
+        // path lossless. We write a minimal JSON payload omitting
+        // `active_group` and assert the field defaults to an empty
+        // map, mirroring the parallel test for `Collaborator`'s
+        // concept fields.
+        let legacy = r#"{
+            "workspaces": [],
+            "active": 0,
+            "active_strip": {},
+            "collaborators": []
+        }"#;
+        let tree: WorkspaceTree = serde_json::from_str(legacy).unwrap();
+        assert!(tree.active_group.is_empty());
     }
 }

@@ -1048,6 +1048,7 @@ mod tests {
             workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
             active: WorkspaceId::from(0),
             active_strip: Default::default(),
+            active_group: Default::default(),
             collaborators: Vec::new(),
         };
         tree.active = tree.workspaces[0].id;

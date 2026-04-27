@@ -30,6 +30,7 @@ fn overview_view_click_activates_workspace() {
         workspaces: vec![],
         active: WorkspaceId::from(0),
         active_strip: Default::default(),
+        active_group: Default::default(),
         collaborators: vec![],
     };
     let a = mk_workspace(1, "Alpha");
@@ -212,6 +213,7 @@ fn topbar_leftnav_navigates_workspaces() {
         workspaces: vec![],
         active: WorkspaceId::from(0),
         active_strip: Default::default(),
+        active_group: Default::default(),
         collaborators: vec![],
     };
     tree.workspaces = vec![
@@ -247,6 +249,7 @@ fn topbar_right_tray_renders_collaborators_and_opens_quick_settings() {
         workspaces: vec![],
         active: WorkspaceId::from(0),
         active_strip: Default::default(),
+        active_group: Default::default(),
         collaborators: vec![],
     };
     tree.workspaces = vec![Workspace::new(WorkspaceId::new(), "A")];
@@ -273,6 +276,7 @@ fn topbar_chrome_maps_two_peers_to_two_distinct_avatar_hues() {
         workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
         active: WorkspaceId::from(0),
         active_strip: Default::default(),
+        active_group: Default::default(),
         collaborators: vec![
             Collaborator::new("alice", "Ada"),
             Collaborator::new("bob", "Bo"),
@@ -302,6 +306,7 @@ fn topbar_chrome_clock_renders_at_bold_weight() {
         workspaces: vec![mk_workspace(0, "A")],
         active: WorkspaceId::from(0),
         active_strip: Default::default(),
+        active_group: Default::default(),
         collaborators: vec![],
     };
     let chrome = TopBarChrome::from_tree(&tree);
@@ -376,6 +381,7 @@ fn topbar_chrome_active_center_dot_is_larger_than_inactive() {
         workspaces: vec![mk_workspace(0, "A")],
         active: WorkspaceId::from(0),
         active_strip: Default::default(),
+        active_group: Default::default(),
         collaborators: vec![],
     };
     let chrome = TopBarChrome::from_tree(&tree);
@@ -401,6 +407,7 @@ fn sidebar_wheel_switches_active_strip() {
         workspaces: vec![],
         active: WorkspaceId::from(0),
         active_strip: Default::default(),
+        active_group: Default::default(),
         collaborators: vec![],
     };
     let ws_id = ws.id;
@@ -428,6 +435,7 @@ fn sidebar_wheel_overscroll_commits_new_workspace_past_threshold() {
         workspaces: vec![],
         active: WorkspaceId::from(0),
         active_strip: Default::default(),
+        active_group: Default::default(),
         collaborators: vec![],
     };
     let ws_id = ws.id;
@@ -467,6 +475,7 @@ fn sidebar_wheel_overscroll_below_threshold_snaps_back() {
         workspaces: vec![],
         active: WorkspaceId::from(0),
         active_strip: Default::default(),
+        active_group: Default::default(),
         collaborators: vec![],
     };
     tree.workspaces = vec![Workspace::new(WorkspaceId::new(), "A")];
@@ -487,6 +496,7 @@ fn sidebar_wheel_management_button_creates_workspace() {
         workspaces: vec![],
         active: WorkspaceId::from(0),
         active_strip: Default::default(),
+        active_group: Default::default(),
         collaborators: vec![],
     };
     tree.workspaces = vec![Workspace::new(WorkspaceId::new(), "A")];
