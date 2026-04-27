@@ -1,4 +1,4 @@
-use quick_ui::tokens::{Tokens, ColorRamp, Spacing, Radii};
+use quick_ui::tokens::{Tokens, Spacing, Radii};
 use quick_ui::Theme;
 
 #[test]
