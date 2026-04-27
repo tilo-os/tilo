@@ -315,14 +315,19 @@ Spot-check of 5 ✅ rows against the actual code:
    `topbar_chrome.rs:824-862`. Per-peer color, 2 px black separator
    ring, +N overflow chip — all present. ✅ accurate.
 5. **§9 "Glow shadows for focus / drag-over ✅"** — drag-over ring
-   accurate. **Search-active glow** claim says 8 px @ 24% outer + 4 px
-   @ 50% inner; the concept calls for `shadow-[0_0_60px
-   rgba(99,102,241,0.6)]` which `tile_host.rs` actually has a
-   precomputed `indigo_bloom_sprite` for, but the shell's
-   search-active path appears to use only the two strokes (no sprite
-   composition). Suggest re-grading to 🟧 Partial — the concept's
-   60 px bloom is documented but not wired in the search-active
-   draw path.
+   accurate. **Search-active glow** — the original audit suggested the
+   60 px `shadow-[0_0_60px rgba(99,102,241,0.6)]` bloom wasn't wired,
+   but `WindowGroup::draw` (window_group.rs:541-548) calls
+   `host.set_focused(self.search_active)` which routes through the
+   `TileHost::focused` path that DOES compose the precomputed
+   `indigo_bloom_sprite` (tile_host.rs:396-411). So the bloom IS in
+   the search-active draw path; the two strokes are an *additional*
+   ring on top of the bloom (concept TSX paints a `ring-4` *and* a
+   `shadow-[0_0_60px]`, both layered). ✅ — this row is accurate.
+   The `concept_parity_spec::search_active_glow_uses_60px_bloom_not_two_strokes`
+   spec test originally drafted for this row was withdrawn after the
+   audit reconciled with the code path (kept its accurate-after-recheck
+   verdict).
 6. **§3 "Per-strip label + avatars ✅"** (re-check, since user is
    most sensitive to the wheel area): the disc paints workspace
    labels at spoke tips, not per-strip labels in the concept's
