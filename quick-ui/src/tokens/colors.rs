@@ -130,3 +130,109 @@ impl Colors {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Pin the dark theme's palette to Tailwind ground truth so that
+    //! drift away from the nirios-concept palette becomes a visible
+    //! test failure rather than a silent visual regression. Each
+    //! assertion below references the Tailwind class the value is
+    //! sourced from; see https://tailwindcss.com/docs/customizing-colors
+    //! for the canonical hex codes.
+    //!
+    //! These tests do not rely on cross-crate state: they exercise
+    //! `Colors::dark()` directly, so they are cheap to run via
+    //! `cargo test -p quick-ui --lib tokens`.
+    use super::*;
+
+    fn rgb(c: Color) -> [u8; 3] {
+        // peniko 0.1.x exposes straight (non-premultiplied) u8
+        // components directly on `Color`.
+        [c.r, c.g, c.b]
+    }
+
+    fn rgba(c: Color) -> [u8; 4] {
+        [c.r, c.g, c.b, c.a]
+    }
+
+    #[test]
+    fn dark_neutral_ramp_is_tailwind_slate_950_through_50() {
+        let n = &Colors::dark().neutral;
+        assert_eq!(rgb(n[0]),  [  2,   6,  23], "slate-950 #020617");
+        assert_eq!(rgb(n[1]),  [ 15,  23,  42], "slate-900 #0f172a");
+        assert_eq!(rgb(n[2]),  [ 30,  41,  59], "slate-800 #1e293b");
+        assert_eq!(rgb(n[3]),  [ 51,  65,  85], "slate-700 #334155");
+        assert_eq!(rgb(n[4]),  [ 71,  85, 105], "slate-600 #475569");
+        assert_eq!(rgb(n[5]),  [100, 116, 139], "slate-500 #64748b");
+        assert_eq!(rgb(n[6]),  [148, 163, 184], "slate-400 #94a3b8");
+        assert_eq!(rgb(n[7]),  [203, 213, 225], "slate-300 #cbd5e1");
+        assert_eq!(rgb(n[8]),  [226, 232, 240], "slate-200 #e2e8f0");
+        assert_eq!(rgb(n[9]),  [241, 245, 249], "slate-100 #f1f5f9");
+        assert_eq!(rgb(n[10]), [248, 250, 252], "slate-50  #f8fafc");
+    }
+
+    #[test]
+    fn dark_accent_ramp_is_tailwind_indigo_950_through_50() {
+        let a = &Colors::dark().accent;
+        assert_eq!(rgb(a[0]),  [ 30,  27,  75], "indigo-950 #1e1b4b");
+        assert_eq!(rgb(a[1]),  [ 49,  46, 129], "indigo-900 #312e81");
+        assert_eq!(rgb(a[2]),  [ 55,  48, 163], "indigo-800 #3730a3");
+        assert_eq!(rgb(a[3]),  [ 67,  56, 202], "indigo-700 #4338ca");
+        assert_eq!(rgb(a[4]),  [ 79,  70, 229], "indigo-600 #4f46e5");
+        // accent[5] is the concept's primary `bg-indigo-500` (most-used
+        // accent fill in the concept — 14 occurrences vs 4 for indigo-600).
+        assert_eq!(rgb(a[5]),  [ 99, 102, 241], "indigo-500 #6366f1");
+        assert_eq!(rgb(a[6]),  [129, 140, 248], "indigo-400 #818cf8");
+        assert_eq!(rgb(a[7]),  [165, 180, 252], "indigo-300 #a5b4fc");
+        assert_eq!(rgb(a[8]),  [199, 210, 254], "indigo-200 #c7d2fe");
+        assert_eq!(rgb(a[9]),  [224, 231, 255], "indigo-100 #e0e7ff");
+        assert_eq!(rgb(a[10]), [238, 242, 255], "indigo-50  #eef2ff");
+    }
+
+    #[test]
+    fn dark_semantic_colors_match_tailwind() {
+        let s = &Colors::dark().semantic;
+        assert_eq!(rgb(s.success), [ 16, 185, 129], "emerald-500 #10b981");
+        assert_eq!(rgb(s.warning), [245, 158,  11], "amber-500   #f59e0b");
+        assert_eq!(rgb(s.danger),  [239,  68,  68], "red-500     #ef4444");
+        assert_eq!(rgb(s.info),    [ 96, 165, 250], "blue-400    #60a5fa");
+    }
+
+    #[test]
+    fn dark_surfaces_match_concept_layered_palette() {
+        let s = &Colors::dark().surfaces;
+        // base: solid slate-900 — concept's gradient bottom anchor
+        // (`from-slate-900 to-slate-950`, DesktopView.tsx:210).
+        assert_eq!(rgb(s.base),   [ 15,  23,  42], "slate-900 #0f172a");
+        // raised: slate-800 — concept's `bg-slate-800` card fill
+        // (e.g. WorkspaceSettingsModal avatar tile, OverviewView pill).
+        assert_eq!(rgb(s.raised), [ 30,  41,  59], "slate-800 #1e293b");
+        // overlay: black/80 — concept's top-bar `bg-black/80`.
+        // alpha 204 ≈ 0.80 × 255 (rounds to 204, not 205).
+        assert_eq!(rgba(s.overlay), [0, 0, 0, 204], "black/80");
+        // glass: slate-900/80 — concept's QuickSettings + Collaborators
+        // popover `bg-slate-900/80 backdrop-blur-md`.
+        assert_eq!(rgba(s.glass), [ 15,  23,  42, 204], "slate-900/80");
+        // window_card: WHITE — concept's `bg-white shadow-2xl` window frame.
+        assert_eq!(rgba(s.window_card), [255, 255, 255, 255], "white");
+        // window_card_border: white/20 — concept's `border-white/20`.
+        // alpha 51 ≈ 0.20 × 255.
+        assert_eq!(rgba(s.window_card_border), [255, 255, 255, 51], "white/20");
+    }
+
+    #[test]
+    fn dark_text_and_border_tokens_match_concept() {
+        let c = Colors::dark();
+        assert_eq!(rgba(c.text_primary), [255, 255, 255, 255], "white");
+        // text_dim → slate-400 (most common dim text in the concept;
+        // the smaller-caption `text-slate-500` use-case is intentionally
+        // not represented as its own token — see audit notes).
+        assert_eq!(rgb(c.text_dim), [148, 163, 184], "slate-400 #94a3b8");
+        // border_standard → slate-700, the explicit border colour
+        // QuickSettings and the OverviewView mini-window cards use under
+        // their slate-900 fills (`border border-slate-700`).
+        assert_eq!(rgb(c.border_standard), [ 51,  65,  85], "slate-700 #334155");
+        // border_focus → indigo-500, the concept's focus-ring colour.
+        assert_eq!(rgb(c.border_focus), [ 99, 102, 241], "indigo-500 #6366f1");
+    }
+}
