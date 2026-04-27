@@ -188,7 +188,11 @@ impl Widget for NotesApp {
         let tokens = &theme.tokens;
         let text_color = tokens.colors.neutral[1];
         let dim = tokens.colors.neutral[4];
-        let accent = tokens.colors.accent[4];
+        // Caret is a *fill* state (focused-but-not-hovered), so use the
+        // semantic `accent_primary` (indigo-500) accessor — the concept's
+        // dominant accent — rather than the raw `accent[4]` (indigo-600)
+        // ramp slot, which is the hover shade.
+        let accent = theme.accent_primary;
 
         let content_x = self.rect.x0 + PADDING;
         let content_y = self.rect.y0 + PADDING;

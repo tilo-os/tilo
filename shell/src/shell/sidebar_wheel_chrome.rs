@@ -1,5 +1,11 @@
 //! Left-edge workspace wheel chrome widget.
 //!
+//! TODO: superseded chrome — replaced by `SidebarWheelDisc`
+//! (`sidebar_wheel_disc.rs`). Module retained in-tree for reference but
+//! is not mounted; see `docs/nirios/parity-status.md` row §3 for the
+//! switchover. Do not theme-migrate raw `colors.accent[4]` reads here
+//! (e.g. line 519) — the file is dead code paths.
+//!
 //! Paints a 96 px wide vertical strip of workspace cards. The active
 //! workspace's card is highlighted with accent-500 fill; inactive cards
 //! render as raised-surface pills with a dim label. A trailing "+" card
