@@ -1159,6 +1159,14 @@ pub fn build_nirios_overlay_host_with_chrome(
 
     let mut content_col = Column::new().push(workspace_view).push(strip_view);
 
+    // Per-strip raw pointers to the live `GroupRow` widgets we're about to
+    // box into `content_col`. Captured at construction so the host's
+    // per-frame `reconcile_active_group_off_closing` hook can harvest
+    // `WindowGroup::is_closing()` ids without re-walking a `&dyn Widget`
+    // tree. SAFETY contract documented on `ShellOverlayHost::group_row_ptrs`.
+    let mut group_row_ptrs: std::collections::HashMap<state::StripId, *mut GroupRow> =
+        std::collections::HashMap::new();
+
     if let Some(ws) = tree.active_workspace() {
         // One horizontal Row per strip: the concept lays groups out as a
         // horizontal row inside each strip, with strips themselves stacking
@@ -1199,8 +1207,13 @@ pub fn build_nirios_overlay_host_with_chrome(
                     UiGroup::new(g.id, tabs_with_content, g.active_tab, to_ui_width(g.width))
                 })
                 .collect();
-            let strip_row = GroupRow::new(groups);
-            content_col = content_col.push(Box::new(strip_row));
+            let mut strip_row: Box<GroupRow> = Box::new(GroupRow::new(groups));
+            // Capture the heap address before unsizing into `Box<dyn Widget>`.
+            // The unsizing coercion preserves the pointee's address, so this
+            // remains a valid `*mut GroupRow` for the lifetime of the host.
+            let row_ptr: *mut GroupRow = &mut *strip_row;
+            group_row_ptrs.insert(strip.id, row_ptr);
+            content_col = content_col.push(strip_row as Box<dyn Widget>);
         }
     }
 
@@ -1255,7 +1268,8 @@ pub fn build_nirios_overlay_host_with_chrome(
     let host = overlay_host::ShellOverlayHost::new(root)
         .with_chrome(chrome.clone())
         .with_sidebar(sidebar)
-        .with_sidebar_top(sidebar_top);
+        .with_sidebar_top(sidebar_top)
+        .with_group_row_ptrs(group_row_ptrs);
     (host, chrome)
 }
 

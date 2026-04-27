@@ -32,10 +32,11 @@ use winit::keyboard::{Key, NamedKey};
 use quick_ui::presence::{PresenceCtx, PresenceKey};
 use quick_ui::text_render::{TextRenderer, TextWeight};
 use quick_ui::theme::Theme;
-use quick_ui::widget::Widget;
+use quick_ui::widget::{GroupRow, Widget, WindowGroup as UiWindowGroup};
 use quick_ui::{CommandEntry, CommandPalette};
 
 use crate::shell::chrome_state::Chrome;
+use crate::shell::state::{GroupId, StripId};
 
 pub struct ShellOverlayHost {
     rect: Rect,
@@ -114,6 +115,20 @@ pub struct ShellOverlayHost {
     /// `animate={{ opacity: 1, scale: 1, y: 0 }}`. Cleared on close.
     palette_opened_at: Option<Instant>,
     palette_was_visible: bool,
+    /// Per-strip raw pointers to the [`GroupRow`] widgets inside `content`.
+    /// Captured at [`build_nirios_overlay_host_with_chrome`] time and used
+    /// each frame by [`Self::reconcile_active_group_off_closing`] to harvest
+    /// the [`UiWindowGroup::is_closing`] set without having to downcast a
+    /// `&dyn Widget`. Empty by default — tests that build a bare host
+    /// through [`Self::new`] don't get the per-frame reconcile path until
+    /// they call [`Self::with_group_row_ptrs`] explicitly.
+    ///
+    /// SAFETY: each pointer is the heap address of a `GroupRow` owned by
+    /// the chrome's content tree. `Box<T>` -> `Box<dyn Widget>` unsizing
+    /// keeps the heap allocation at the same address, and the host owns
+    /// the content for the rest of the process lifetime, so the pointer
+    /// remains valid as long as `&mut self` does.
+    group_row_ptrs: HashMap<StripId, *mut GroupRow>,
     /// Vertical inset at which the floating sidebar wheel starts. Defaults
     /// to [`SIDEBAR_TOP_OFFSET_PX`] (matches `TOPBAR_HEIGHT_PX`) but the
     /// real shell wraps its topbar in a padded `Column`/`Container`, so
@@ -224,6 +239,7 @@ impl ShellOverlayHost {
             ws_settings_was_open: false,
             palette_opened_at: None,
             palette_was_visible: false,
+            group_row_ptrs: HashMap::new(),
             sidebar_top_y: SIDEBAR_TOP_OFFSET_PX,
         }
     }
@@ -347,6 +363,103 @@ impl ShellOverlayHost {
     pub fn with_sidebar_top(mut self, y: f32) -> Self {
         self.sidebar_top_y = y;
         self
+    }
+
+    /// Register the per-strip [`GroupRow`] raw pointers harvested at build
+    /// time. The host uses these each frame in
+    /// [`Self::reconcile_active_group_off_closing`] to feed the data-layer
+    /// reconciler without re-walking the widget tree.
+    ///
+    /// SAFETY: every pointer in `ptrs` must address a `GroupRow` owned by
+    /// the content subtree this host wraps. The caller (currently
+    /// [`build_nirios_overlay_host_with_chrome`]) is responsible for
+    /// upholding that invariant by capturing the pointer immediately after
+    /// `Box::new(strip_row)` and passing the same `Box` into the content
+    /// tree — the `Box<T>` -> `Box<dyn Widget>` unsizing coercion keeps
+    /// the heap address stable.
+    pub fn with_group_row_ptrs(
+        mut self,
+        ptrs: HashMap<StripId, *mut GroupRow>,
+    ) -> Self {
+        self.group_row_ptrs = ptrs;
+        self
+    }
+
+    /// Per-tick wire-up for the data-layer active-group reconciler.
+    ///
+    /// Walks the captured [`GroupRow`] pointers, harvests the set of
+    /// [`UiWindowGroup`] ids whose [`UiWindowGroup::is_closing`] returns
+    /// true grouped by strip, and feeds each non-empty set into
+    /// [`crate::shell::state::WorkspaceTree::nudge_active_group_off_closing`].
+    /// Strips with no closing groups are skipped — the reconciler is a
+    /// no-op there anyway, and the early-return saves a chrome borrow per
+    /// quiescent strip.
+    ///
+    /// Without this hook the active-group pointer would dwell on a closing
+    /// group for the duration of the 180 ms close fade, sending focus,
+    /// keyboard input, and presence broadcasts to a fading-away corpse.
+    /// Called from [`Widget::update`] so it runs every frame the App
+    /// pumps.
+    fn reconcile_active_group_off_closing(&mut self) {
+        if self.group_row_ptrs.is_empty() {
+            return;
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        // Take a snapshot first so the chrome borrow is dropped before the
+        // mutable reconcile borrow below — avoids RefCell aliasing if any
+        // reconciler step ever calls into a chrome-borrowing helper.
+        let mut closing_per_strip: Vec<(StripId, Vec<GroupId>)> =
+            Vec::with_capacity(self.group_row_ptrs.len());
+        for (&strip_id, &ptr) in &self.group_row_ptrs {
+            // SAFETY: pointer was captured from a `Box<GroupRow>` we own
+            // through the content tree (see `with_group_row_ptrs`). The
+            // host outlives the content, and we're inside `&mut self`, so
+            // the pointer is unaliased.
+            let row: &GroupRow = unsafe { &*ptr };
+            let closing: Vec<GroupId> =
+                row.groups.iter().filter(|g| g.is_closing()).map(|g| g.id).collect();
+            if !closing.is_empty() {
+                closing_per_strip.push((strip_id, closing));
+            }
+        }
+        if closing_per_strip.is_empty() {
+            return;
+        }
+        let mut st = chrome.borrow_mut();
+        for (strip_id, closing) in closing_per_strip {
+            st.tree.nudge_active_group_off_closing(strip_id, &closing);
+        }
+    }
+
+    /// Test-only escape hatch: lend out a mutable reference to the
+    /// [`UiWindowGroup`] at `(strip_id, group_idx)`. Lets integration
+    /// tests drive the close fade through public widget APIs (e.g.
+    /// [`UiWindowGroup::start_closing`]) without having to downcast a
+    /// `&dyn Widget` they only know through the boxed root.
+    ///
+    /// SAFETY mirrors [`Self::with_group_row_ptrs`]: the pointer is valid
+    /// for the host's lifetime, and the `&mut self` borrow on this method
+    /// keeps any other reconcile path from aliasing.
+    #[cfg(any(test, debug_assertions))]
+    pub fn group_at_for_tests(
+        &mut self,
+        strip_id: StripId,
+        group_idx: usize,
+    ) -> Option<&mut UiWindowGroup> {
+        let &ptr = self.group_row_ptrs.get(&strip_id)?;
+        // SAFETY: see field doc on `group_row_ptrs`.
+        let row: &mut GroupRow = unsafe { &mut *ptr };
+        row.groups.get_mut(group_idx)
+    }
+
+    /// Test-only one-shot reconcile: lets integration tests invoke the
+    /// per-frame wire-up from outside `update` without spinning up a full
+    /// `App` render loop. Mirrors what [`Widget::update`] runs.
+    #[cfg(any(test, debug_assertions))]
+    pub fn tick_active_group_reconcile_for_tests(&mut self) {
+        self.reconcile_active_group_off_closing();
     }
 
     fn toggle_palette(&mut self) {
@@ -607,6 +720,11 @@ impl Widget for ShellOverlayHost {
             .as_mut()
             .map(|w| w.update(s, p))
             .unwrap_or(false);
+        // Per-frame wire-up: nudge the data-layer active-group pointer off
+        // any group whose widget tree latched the 180 ms close fade. Has
+        // to run after `content.update` so any close fade started by the
+        // current frame's events is observable in the harvest below.
+        self.reconcile_active_group_off_closing();
         a || b || c
     }
 
