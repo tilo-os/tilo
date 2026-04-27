@@ -3,6 +3,7 @@ use quick_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 #[derive(Clone)]
 struct Row {
     name: String,
+    #[allow(dead_code)] // fixture column; only `name` is read in current assertions
     size: u64,
 }
 
