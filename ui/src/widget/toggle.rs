@@ -82,7 +82,9 @@ impl Widget for Toggle {
 
     fn draw(&mut self, scene: &mut Scene, transform: Affine, _text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
         let track_color = if self.is_checked {
-            theme.tokens.colors.accent[4]
+            // On-state = active fill — concept renders the on-state at
+            // indigo-500 and reserves indigo-600 for hover.
+            theme.accent_primary
         } else {
             theme.tokens.colors.neutral[3]
         };
