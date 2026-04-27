@@ -1,5 +1,4 @@
 use quick_ui::{AppWidget, AppKind, IconDescriptor, Widget, Theme};
-use quick_ui::widget::AppCommand;
 use quick_ui::presence::PresenceCtx;
 use automerge::{AutoCommit, ObjId};
 

@@ -1,5 +1,4 @@
 use quick_ui::widget::{WorkspaceView, WorkspaceSwitchDirection};
-use quick_ui::animation::Spring;
 
 #[test]
 fn workspace_view_switch_up_down_sets_slide_target() {
