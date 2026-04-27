@@ -1,4 +1,4 @@
-use quick_ui::overlay::{OverlayStack, OverlayId, Modal, Popover, FocusTrap};
+use quick_ui::overlay::{OverlayStack, Modal, Popover, FocusTrap};
 use vello::kurbo::Point;
 
 #[test]
@@ -15,7 +15,7 @@ fn overlay_stack_push_pop_order() {
 
 #[test]
 fn focus_trap_cycles_only_within_members() {
-    let mut trap = FocusTrap::new(vec![1, 2, 3]);
+    let trap = FocusTrap::new(vec![1, 2, 3]);
     assert_eq!(trap.next_from(1), 2);
     assert_eq!(trap.next_from(3), 1);
     assert_eq!(trap.prev_from(1), 3);
