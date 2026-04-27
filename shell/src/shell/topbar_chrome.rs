@@ -634,7 +634,11 @@ impl Widget for TopBarChrome {
                     scene,
                     "CPU",
                     sm_size,
-                    colors.accent[4],
+                    // CPU label is a static *fill* — not hover/active —
+                    // so use the semantic `accent_primary` (indigo-500)
+                    // rather than the raw `accent[4]` (indigo-600) ramp
+                    // slot, which is the hover shade.
+                    theme.accent_primary,
                     transform * Affine::translate((content_x0, center_y - 6.0)),
                     None,
                     TextWeight::Semibold,
@@ -662,7 +666,10 @@ impl Widget for TopBarChrome {
                     let h = 4.0 + (seed as f64) * 0.08;
                     let bx = spark_x0 + i as f64 * (bar_w + bar_gap);
                     let b = Rect::new(bx, center_y + 6.0 - h, bx + bar_w, center_y + 6.0);
-                    scene.fill(Fill::NonZero, transform, colors.accent[4], None, &b);
+                    // Sparkline bars are a static *fill* — not a hover —
+                    // so use semantic `accent_primary` (indigo-500), not
+                    // the raw `accent[4]` (indigo-600 hover shade).
+                    scene.fill(Fill::NonZero, transform, theme.accent_primary, None, &b);
                 }
                 // Right: RAM + TMP chips. Same Semibold label / Bold value
                 // tiering as the CPU cluster so the strip reads uniformly.
