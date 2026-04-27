@@ -126,12 +126,12 @@ surface alphas match the concept's `/70` and `/80` conventions.
 | Item | Status | Notes |
 |---|---|---|
 | ⌘K / ⌘Tab / Esc | ✅ | ⌘K toggles palette; ⌘Tab toggles overview; Esc closes the top-most overlay. |
-| Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z | ✅ | `quick-ui`'s App event loop wires undo (Ctrl+Z) + redo (Ctrl+Y or Ctrl+Shift+Z), which the shell inherits since it runs via `quick_ui::App`. |
+| Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z | ✅ | `quick-ui`'s App event loop wires undo (Ctrl+Z) + redo (Ctrl+Y or Ctrl+Shift+Z), which the shell inherits since it runs via `quick_ui::App`. **Widget metadata + focus survive the round-trip** (commit `b6aa0d0`): `State::undo`/`redo`/`undo_for_author` now accept `current_focused_idx` + `current_metadata` and push them onto the opposite stack, so Ctrl+Shift+Z rehydrates not just the text body but the caret position too. Caller in `App::run` reads `root_widget.get_state()` (non-mutating) + resolves the current focused node through `focusable_order` index lookup before calling. Window-management gestures (close/reorder/maximize) are still **outside undo scope** — `TabBar::sync` is empty, `WindowGroup::handle_event` mutates widget state directly without touching `state.doc`, so `commit_action()` finds no ops and `undo_stack` stays empty for those gestures. Promoting tab structure into the CRDT is the structural fix; tracked in `outstanding-work.md`. |
 | ⌘↑ / ⌘↓ workspace switch | ✅ | Wired through `ShellOverlayHost` → `chrome.switch_workspace`. |
 | Mouse wheel over strip | ✅ | 600 ms cooldown in `StripView`. |
 | Tab click | ✅ | `TabBar` handles it. |
 | Tab drag-to-reorder | ✅ | Drag starts after 4 px threshold, release hit-tests position within the bar and reorders. Releases outside the bar publish `TabBar::pending_detach`, which the parent `GroupRow` consumes to move the tab into a sibling group whose `bar_rect` contains the release point. |
-| Tab close | ✅ | "×" glyph inside each pill's right edge; click propagates `pending_close` → `WindowGroup` drops the host + removes the tab. |
+| Tab close | ✅ | "×" glyph inside each pill's right edge. Click triggers a deferred 180 ms fade-out instead of synchronous removal: `TabBar::start_closing(id)` puts the pill into `closing_tabs` (snapshotting its desc + pill_rect + close_rect + started_at), `WindowGroup::closing_hosts` keeps the host alive for the same window, both layers fade their α 1→0 with a scale 1→0.95 + y 0→-20 transform matching the concept's `exit={{ opacity: 0, scale: 0.95, y: -20 }}` (commit `6ad564a`). Active-id shifts to the neighbour at close-start so the user never sees a "ghost active" frame. Hit-testing skips closing pills so a stale press can't reactivate a fading tab. Once the last tab fades out, `WindowGroup::start_closing()` latches a 180 ms group-level fade-out (α 1→0, scale 1→0.95) and `GroupRow` prunes the group only after `close_complete()` returns true (commit `3c733e6`). Maximized-mode close routes through the same deferred flow (`0c9a55d`); cross-group drops onto an `is_closing()` group fall through to new-group creation so the dragged tab isn't eaten by the fade. Close-glyph hover paints `theme.tokens.colors.semantic.danger.with_alpha_factor(0.8)` (red-500/80, concept's `hover:bg-red-500/80`) with full-white glyph promotion — commit `ee7f27f`. |
 | Group resize drag | ✅ | Handle + pointer accumulation work. |
 | Sidebar wheel scroll/pan | ✅ | Click-to-activate + plus-button-create + scroll-wheel accumulator (crosses ±1 on the wheel rect) all wired. |
 | Hover reveals tab actions | ✅ | Close "×" sits in the pill always; hovering the pill additionally reveals a magnifying-glass (search) + maximize-icon to its left. Click search toggles `WindowGroup::search_active`, which paints the concept's indigo ring-4 + outer glow around the whole card. Click maximize toggles `WindowGroup::maximized`. Pin / split / move still not drawn — lower-priority concept affordances. |
@@ -195,6 +195,30 @@ for chrome density). Outstanding infrastructure-level items:
    offscreen renders stay deterministic. Covered by
    `window_group::tests::start_spawn_animation_records_timestamp_and_pumps_frames`
    and `spawn_fade_window_clears_after_duration`.
+
+3a. **Per-tile spawn fade-in animation** — ✅ commit `9fa86fd` adds
+   `TileHost::start_spawn_animation()` for the inner-content layer
+   (180 ms ease-out-cubic, α 0→1, scale 0.95→1.0). Caller wire-up
+   in `WindowGroup::insert_detached_tab` (commit `f290b89`) covers
+   both `GroupRow::move_tab_between_groups` and the drop-via-release
+   path so any time a dragged-out tab lands inside an existing group
+   its tile fades in. `split_tab_into_new_group` is deliberately
+   skipped (group-level fade already plays — double-fade would be
+   wrong). Cold-boot `WindowGroup::new` is also skipped (launch
+   would blink).
+
+3b. **Per-tile + per-group close fade-out** — ✅ commit `3c733e6`.
+   `WindowGroup` gains `closing_at: Option<Instant>` + `start_closing()`
+   + `close_complete()`; `draw` wraps the whole group paint in a
+   `push_layer` alpha fade composed with a center-anchored scale
+   (1.0→0.95) when `is_closing()`. Mutually exclusive with the spawn
+   fade (close checked first, spawn falls through). `GroupRow` adds
+   a per-tick prune sweep that drops groups whose `close_complete()`
+   returns true and flags `structure_dirty`. Edge cases resolved in
+   `0c9a55d`: maximized-close routes through the same deferred flow
+   (no abrupt path); cross-group drops onto `is_closing()` siblings
+   fall through to `split_tab_into_new_group` so the dragged tab
+   never lands in a fading corpse. 6 new tests cover the full sweep.
 
 4. **Shadow-2xl beneath window card** — ✅ concept's `shadow-2xl`
    on the white window card (`WindowFrame.tsx:357` `bg-white shadow-2xl`)
