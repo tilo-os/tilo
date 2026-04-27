@@ -112,7 +112,9 @@ impl Widget for Slider {
             track_rect.y1,
         );
         let active_track_shape = RoundedRect::from_rect(active_track_rect, 3.0);
-        scene.fill(vello::peniko::Fill::NonZero, transform, theme.tokens.colors.accent[4], None, &active_track_shape);
+        // Active track = filled portion of the slider — concept uses
+        // indigo-500 here, indigo-600 only for hover affordances.
+        scene.fill(vello::peniko::Fill::NonZero, transform, theme.accent_primary, None, &active_track_shape);
 
         // Knob
         let knob_radius = 10.0;
