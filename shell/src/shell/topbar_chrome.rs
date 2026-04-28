@@ -48,6 +48,21 @@ pub enum CenterWidget {
     Calendar,
 }
 
+/// Identifies a metric column in the SystemMonitor center-widget. The
+/// concept paints each metric in its own semantic colour (CPU emerald,
+/// RAM blue, TMP orange — see `nirios-concept/src/components/\
+/// TopBarWidgets.tsx:60-110`); routing through
+/// [`TopBarChrome::metric_label_color`] keeps the per-metric colour
+/// cue as a single source of truth so a future regression collapsing
+/// the strip back to a monotone token surfaces at the helper rather
+/// than scattered through the draw branch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MetricKind {
+    Cpu,
+    Ram,
+    Tmp,
+}
+
 impl CenterWidget {
     pub fn next(self) -> Self {
         match self {
@@ -317,6 +332,41 @@ impl TopBarChrome {
     /// (e.g. "12%", "40°"). Concept tier: `font-mono font-bold`.
     pub fn system_monitor_value_text_weight(&self) -> TextWeight {
         TextWeight::Bold
+    }
+
+    /// Per-metric label colour used by the SystemMonitor center widget.
+    /// Concept reference (`nirios-concept/src/components/\
+    /// TopBarWidgets.tsx:60-110`): CPU is `text-emerald-400` (#4ade80),
+    /// RAM is `text-blue-400` (#60a5fa), TMP is `text-orange-400`
+    /// (#fb923c). Pinned through this helper so the draw branch never
+    /// hard-codes `theme.accent_primary` for these labels — that monotone
+    /// indigo collapsed the "different semantic colour per metric" cue
+    /// the concept relies on (audit row `concept-coverage.md:23,163-166`,
+    /// visual-gap #11/#12).
+    pub fn metric_label_color(&self, k: MetricKind) -> Color {
+        match k {
+            // concept: text-emerald-400 (#4ade80)
+            MetricKind::Cpu => Color::rgba8(0x4a, 0xde, 0x80, 0xff),
+            // concept: text-blue-400 (#60a5fa)
+            MetricKind::Ram => Color::rgba8(0x60, 0xa5, 0xfa, 0xff),
+            // concept: text-orange-400 (#fb923c)
+            MetricKind::Tmp => Color::rgba8(0xfb, 0x92, 0x3c, 0xff),
+        }
+    }
+
+    /// Fill colour for the SystemMonitor sparkline bars. Concept paints
+    /// every bar at `bg-emerald-500/30` (Tailwind emerald-500 = `#10b981`
+    /// at 30% alpha, `0x4d` ≈ 0.30 × 255) regardless of the active
+    /// metric — the sparkline reads as the CPU history strip and stays
+    /// emerald even when the chip cluster on either side advertises
+    /// RAM/TMP. Audit row: `concept-coverage.md:23,160-162` — replaces
+    /// the previous `theme.accent_primary` (indigo-500) which was the
+    /// wrong colour family entirely. The `_k` parameter is reserved so
+    /// the per-metric switching variant from `TopBarWidgets.tsx` can be
+    /// wired in later without changing the helper signature.
+    pub fn sparkline_fill(&self, _k: MetricKind) -> Color {
+        // concept: bg-emerald-500/30 (#10b981 at 0x4d ≈ 30% alpha)
+        Color::rgba8(0x10, 0xb9, 0x81, 0x4d)
     }
 
     /// Bounding rect of the overview button. Populated during `draw`;
@@ -647,11 +697,13 @@ impl Widget for TopBarChrome {
                     scene,
                     "CPU",
                     sm_size,
-                    // CPU label is a static *fill* — not hover/active —
-                    // so use the semantic `accent_primary` (indigo-500)
-                    // rather than the raw `accent[4]` (indigo-600) ramp
-                    // slot, which is the hover shade.
-                    theme.accent_primary,
+                    // Concept paints each metric in its own semantic hue —
+                    // CPU is `text-emerald-400` (#4ade80). Routing through
+                    // `metric_label_color` keeps the per-metric colour cue
+                    // the concept relies on (audit `concept-coverage.md:\
+                    // 23,163-166`, visual-gap #11/#12) and prevents a
+                    // future drift back to monotone indigo.
+                    self.metric_label_color(MetricKind::Cpu),
                     transform * Affine::translate((content_x0, center_y - 6.0)),
                     None,
                     TextWeight::Semibold,
@@ -679,10 +731,19 @@ impl Widget for TopBarChrome {
                     let h = 4.0 + (seed as f64) * 0.08;
                     let bx = spark_x0 + i as f64 * (bar_w + bar_gap);
                     let b = Rect::new(bx, center_y + 6.0 - h, bx + bar_w, center_y + 6.0);
-                    // Sparkline bars are a static *fill* — not a hover —
-                    // so use semantic `accent_primary` (indigo-500), not
-                    // the raw `accent[4]` (indigo-600 hover shade).
-                    scene.fill(Fill::NonZero, transform, theme.accent_primary, None, &b);
+                    // Concept paints the sparkline at `bg-emerald-500/30`
+                    // (#10b981 at 30% alpha) — see `nirios-concept/src/\
+                    // components/TopBarWidgets.tsx:120-124`. The previous
+                    // `theme.accent_primary` (indigo-500) was the wrong
+                    // colour family entirely (audit `concept-coverage.md:\
+                    // 23,160-162`).
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        self.sparkline_fill(MetricKind::Cpu),
+                        None,
+                        &b,
+                    );
                 }
                 // Right: RAM + TMP chips. Same Semibold label / Bold value
                 // tiering as the CPU cluster so the strip reads uniformly.
@@ -690,7 +751,12 @@ impl Widget for TopBarChrome {
                     scene,
                     "RAM",
                     sm_size,
-                    colors.accent[5],
+                    // Concept: RAM label is `text-blue-400` (#60a5fa) —
+                    // see `nirios-concept/src/components/\
+                    // TopBarWidgets.tsx:60-110`. Previously `colors\
+                    // .accent[5]` (indigo-500), which collapsed the
+                    // per-metric semantic colour cue.
+                    self.metric_label_color(MetricKind::Ram),
                     transform * Affine::translate((content_x1 - 96.0, center_y - 6.0)),
                     None,
                     TextWeight::Semibold,
@@ -708,7 +774,12 @@ impl Widget for TopBarChrome {
                     scene,
                     "TMP",
                     sm_size,
-                    colors.text_dim,
+                    // Concept: TMP label is `text-orange-400` (#fb923c) —
+                    // see `nirios-concept/src/components/\
+                    // TopBarWidgets.tsx:60-110`. Previously `colors\
+                    // .text_dim`, which dropped the temperature-warning
+                    // hue the concept relies on.
+                    self.metric_label_color(MetricKind::Tmp),
                     transform * Affine::translate((content_x1 - 40.0, center_y - 6.0)),
                     None,
                     TextWeight::Semibold,
@@ -1094,5 +1165,47 @@ mod tests {
             (chrome.active_dot_radius() - TopBarChrome::DOT_BASE_SIZE * 1.6).abs() < f64::EPSILON,
             "active dot radius should be 1.6× the base size",
         );
+    }
+
+    /// Gap #11/#12: the SystemMonitor strip must use a different semantic
+    /// colour for each metric — emerald-400 for CPU, blue-400 for RAM,
+    /// orange-400 for TMP — matching `nirios-concept/src/components/\
+    /// TopBarWidgets.tsx:60-110`. The previous implementation rendered
+    /// every label in `theme.accent_primary` (indigo-500), collapsing the
+    /// per-metric colour cue. Pin the helper that the draw branch consults
+    /// so a future regression that reroutes any of the three back to a
+    /// monotone token fails this test loudly.
+    #[test]
+    fn system_monitor_metric_label_colors_are_semantic() {
+        let chrome = sample_chrome();
+        let cpu = chrome.metric_label_color(MetricKind::Cpu);
+        let ram = chrome.metric_label_color(MetricKind::Ram);
+        let tmp = chrome.metric_label_color(MetricKind::Tmp);
+        // emerald-400
+        assert_eq!(cpu, Color::rgba8(0x4a, 0xde, 0x80, 0xff));
+        // blue-400
+        assert_eq!(ram, Color::rgba8(0x60, 0xa5, 0xfa, 0xff));
+        // orange-400
+        assert_eq!(tmp, Color::rgba8(0xfb, 0x92, 0x3c, 0xff));
+        // Guard rail: none of the three may be indigo-500 again.
+        let indigo = Color::rgba8(0x63, 0x66, 0xf1, 0xff);
+        assert_ne!(cpu, indigo);
+        assert_ne!(ram, indigo);
+        assert_ne!(tmp, indigo);
+    }
+
+    /// Gap #11/#12 — sparkline pair test. Concept paints the sparkline
+    /// bars at `bg-emerald-500/30` (Tailwind emerald-500 = `#10b981`
+    /// at 30% alpha = `0x4d`). Pin the helper so the bar paint loop in
+    /// `draw` cannot drift back to indigo-500 without flipping this test.
+    #[test]
+    fn sparkline_fill_is_emerald_500_at_30_percent_alpha() {
+        let chrome = sample_chrome();
+        let fill = chrome.sparkline_fill(MetricKind::Cpu);
+        // Tailwind emerald-500 (#10b981) at 30% alpha (0x4d ≈ 0.30 × 255).
+        // The integration spec test pairs with this — see
+        // `concept_parity_spec::topbar_system_monitor_sparkline_is_\
+        // emerald_500_not_indigo`.
+        assert_eq!(fill, Color::rgba8(0x10, 0xb9, 0x81, 0x4d));
     }
 }
