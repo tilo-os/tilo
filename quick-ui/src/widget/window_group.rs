@@ -38,6 +38,17 @@ const SPAWN_ANIM_Y_OFFSET: f64 = 20.0;
 /// `close_complete()` returns true.
 const GROUP_CLOSE_FADE_MS: u64 = 180;
 
+/// Vertical reveal band (px) for the maximized floating chrome. Matches
+/// the concept's `WindowFrame.tsx:108-123` `useEffect` that watches
+/// `clientY <= 80` and toggles `chromeVisible`. While the cursor sits
+/// at or above this y, the floating title pill + restore + close
+/// cluster paint; once the cursor moves below, the chrome hides so the
+/// maximized content fills the tile uninterrupted. Hit-testing math is
+/// untouched — only the rendering is gated, so a click that lands on
+/// the chrome rects while the cursor is still in the reveal band still
+/// resolves through the existing handle_event arms.
+const MAXIMIZED_CHROME_REVEAL_Y: f64 = 80.0;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowWidth { Narrow, Normal, Wide, Custom(u32) }
 
@@ -192,6 +203,23 @@ impl WindowGroup {
         self.closing_at
             .is_some_and(|t| t.elapsed().as_millis() as u64 >= GROUP_CLOSE_FADE_MS)
     }
+    /// Concept-parity gate for the maximized floating chrome (title
+    /// pill + Restore + close cluster). The chrome paints only while
+    /// the group is maximized AND the most recent cursor y sits at or
+    /// above [`MAXIMIZED_CHROME_REVEAL_Y`]. Mirrors
+    /// `WindowFrame.tsx:108-123` where the React effect toggles a
+    /// `chromeVisible` boolean off `clientY <= 80`. Exposed as a
+    /// public predicate so the parity tests can pin both branches
+    /// without poking the draw path.
+    ///
+    /// Hit-testing is unaffected: `handle_event` keeps populating
+    /// `restore_rect`/`close_rect` and resolving clicks through them,
+    /// so a press that lands in the band while chrome is visible still
+    /// works. Only the rendering is gated.
+    pub fn should_show_maximized_chrome(&self, cursor_y: Option<f64>) -> bool {
+        self.maximized && cursor_y.is_some_and(|y| y <= MAXIMIZED_CHROME_REVEAL_Y)
+    }
+
     pub fn begin_resize(&mut self, pointer_x: f32) { self.resize_origin = Some((pointer_x, self.width.pixels())); }
     pub fn update_resize(&mut self, pointer_x: f32) {
         if let Some((origin_x, origin_w)) = self.resize_origin {
@@ -671,6 +699,18 @@ impl Widget for WindowGroup {
                 &outline,
             );
 
+            // Concept-parity auto-hide: only paint the floating chrome
+            // (title pill + Restore + close) while the cursor sits in
+            // the reveal band (y <= MAXIMIZED_CHROME_REVEAL_Y). Mirrors
+            // `WindowFrame.tsx:108-123` where `clientY <= 80` toggles
+            // `chromeVisible`; outside the band the chrome fades out so
+            // the maximized content reads cleanly. Hit-test math
+            // (restore_rect/close_rect) keeps running below — just gate
+            // the visual paint here so a click that lands on the chrome
+            // while it's visible still resolves through the existing
+            // handle_event arms.
+            if self.should_show_maximized_chrome(Some(self.last_cursor.y)) {
+
             // Floating controls at the top of the maximized group, matching
             // the concept's `[app title]  …  [Restore][×]` layout.
             let pad = 6.0_f64;
@@ -831,6 +871,7 @@ impl Widget for WindowGroup {
                 glyph_color,
                 1.5,
             );
+            }
         } else {
             self.restore_rect = Rect::ZERO;
             self.close_rect = Rect::ZERO;
@@ -1630,5 +1671,39 @@ mod tests {
             (255, 255, 255, 255),
             "hover glyph promotes to opaque white (concept: hover:text-white)",
         );
+    }
+
+    /// Concept parity: `WindowFrame.tsx:108-123` only shows the
+    /// floating chrome (title pill + restore + close cluster) when
+    /// `clientY <= 80`. Outside that band the chrome is hidden so the
+    /// maximized content fills the tile cleanly. Pin both branches of
+    /// `should_show_maximized_chrome` so a regression that drops the
+    /// y-gate or shifts the threshold fails closed at `cargo test`.
+    #[test]
+    fn maximized_chrome_visible_when_cursor_y_le_80() {
+        let mut g = make_group();
+        g.maximized = true;
+        assert!(g.should_show_maximized_chrome(Some(40.0)));
+        assert!(g.should_show_maximized_chrome(Some(80.0)));
+        assert!(!g.should_show_maximized_chrome(Some(81.0)));
+        assert!(!g.should_show_maximized_chrome(Some(400.0)));
+        // Cursor not yet observed — concept treats the absence of a
+        // cursor signal as "below the band", so the chrome stays
+        // hidden until the user moves the pointer into the reveal
+        // strip.
+        assert!(!g.should_show_maximized_chrome(None));
+    }
+
+    /// Belt-and-braces: even if the gate predicate is asked about a
+    /// y inside the reveal band, an un-maximized group must never
+    /// claim its chrome is visible (there is no chrome to paint when
+    /// the tile is tiled).
+    #[test]
+    fn maximized_chrome_always_hidden_when_not_maximized() {
+        let g = make_group();
+        assert!(!g.maximized, "fresh group is not maximized");
+        assert!(!g.should_show_maximized_chrome(Some(20.0)));
+        assert!(!g.should_show_maximized_chrome(Some(80.0)));
+        assert!(!g.should_show_maximized_chrome(None));
     }
 }
