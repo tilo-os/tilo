@@ -14,9 +14,11 @@ use std::sync::Arc;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::peniko::Color;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::icons::{self, Icon};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -78,6 +80,20 @@ fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
         }
     }
     if qi < q.len() { None } else { Some(matches - gaps) }
+}
+
+/// Geometry split of the prompt row into its three concept-spec slots.
+///
+/// Concept (`nirios-concept/src/components/GlobalSearch.tsx:138-153`)
+/// places a leading lucide `Search` glyph + input + trailing `⌘K` kbd
+/// chip inside the same row; this struct exposes the split so both
+/// `draw` and the concept-parity tests share the same layout source of
+/// truth.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InputRowLayout {
+    pub icon_rect: Rect,
+    pub input_rect: Rect,
+    pub kbd_chip_rect: Rect,
 }
 
 pub struct CommandPalette {
@@ -174,6 +190,67 @@ impl CommandPalette {
         })
     }
 
+    /// Concept (`nirios-concept/src/components/GlobalSearch.tsx:120-150`)
+    /// wraps the palette card in `rounded-3xl` (Tailwind = 24 px). Pin
+    /// here so the radius is one source of truth shared by `draw` and
+    /// the concept-parity tests.
+    pub fn surface_radius_px(&self) -> f64 {
+        24.0
+    }
+
+    /// Splits the input row into three sub-rects: a leading 24 px icon
+    /// slot (lucide `Search`), the input field, and a trailing 56 px
+    /// kbd-chip slot (`⌘K`). Both flanking slots are inset 12 px from
+    /// the row edge, with another 12 px gap before/after the input.
+    ///
+    /// Concept ref: `GlobalSearch.tsx:138-153` — leading magnifier glyph
+    /// + input + trailing `⌘K` kbd pill.
+    pub fn compute_input_layout(&self, row: Rect) -> InputRowLayout {
+        const ICON_W: f64 = 24.0;
+        const CHIP_W: f64 = 48.0;
+        const EDGE: f64 = 12.0;
+        const GAP: f64 = 12.0;
+        let cy = (row.y0 + row.y1) / 2.0;
+        let icon_y0 = cy - ICON_W / 2.0;
+        let icon_rect = Rect::new(
+            row.x0 + EDGE,
+            icon_y0,
+            row.x0 + EDGE + ICON_W,
+            icon_y0 + ICON_W,
+        );
+        let chip_h = (row.height() - EDGE).max(20.0);
+        let chip_y0 = cy - chip_h / 2.0;
+        let kbd_chip_rect = Rect::new(
+            row.x1 - EDGE - CHIP_W,
+            chip_y0,
+            row.x1 - EDGE,
+            chip_y0 + chip_h,
+        );
+        let input_rect = Rect::new(
+            icon_rect.x1 + GAP,
+            row.y0,
+            kbd_chip_rect.x0 - GAP,
+            row.y1,
+        );
+        InputRowLayout {
+            icon_rect,
+            input_rect,
+            kbd_chip_rect,
+        }
+    }
+
+    /// Rect of the prompt row inside the post-layout palette rect.
+    /// Used by [`compute_input_layout`] callers that don't want to
+    /// reconstruct the inset arithmetic at every call site.
+    pub fn input_row_rect(&self) -> Rect {
+        Rect::new(
+            self.rect.x0 + PADDING,
+            self.rect.y0 + PADDING,
+            self.rect.x1 - PADDING,
+            self.rect.y0 + PADDING + INPUT_HEIGHT,
+        )
+    }
+
     fn rebuild(&mut self) {
         self.visible.clear();
         for (i, e) in self.entries.iter().enumerate() {
@@ -235,8 +312,10 @@ impl Widget for CommandPalette {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // Popover-shaped surface with a soft border.
-        let shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
+        // Popover-shaped surface with a soft border. Concept's
+        // `rounded-3xl` (= 24 px) lives in [`surface_radius_px`] so the
+        // value is pinned by the radius test and reused here.
+        let shape = RoundedRect::from_rect(self.rect, self.surface_radius_px());
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -252,14 +331,12 @@ impl Widget for CommandPalette {
             &shape,
         );
 
-        // Query input row at the top.
-        let input_rect = Rect::new(
-            self.rect.x0 + PADDING,
-            self.rect.y0 + PADDING,
-            self.rect.x1 - PADDING,
-            self.rect.y0 + PADDING + INPUT_HEIGHT,
-        );
-        let input_shape = RoundedRect::from_rect(input_rect, theme.tokens.radii.sm as f64);
+        // Split the prompt row into leading-icon / input / trailing
+        // kbd-chip slots — concept `GlobalSearch.tsx:138-153`.
+        let row_rect = self.input_row_rect();
+        let layout = self.compute_input_layout(row_rect);
+        let input_shape =
+            RoundedRect::from_rect(layout.input_rect, theme.tokens.radii.sm as f64);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -279,34 +356,89 @@ impl Widget for CommandPalette {
             None,
             &input_shape,
         );
-        let display = if self.query.is_empty() { "Search…" } else { &self.query };
+
+        // Leading lucide `Search` glyph (slate-400 = `text_dim`). Drawn
+        // unconditionally whenever the palette is open — concept never
+        // hover-gates this affordance.
+        icons::draw_icon(
+            scene,
+            transform,
+            layout.icon_rect,
+            Icon::Search,
+            theme.tokens.colors.text_dim,
+            1.5,
+        );
+
+        // Trailing `⌘K` kbd chip — `bg-white/5 border border-white/10
+        // text-slate-300 font-mono rounded-md`. Body fill + border
+        // stroke + small mono label.
+        let chip_shape = RoundedRect::from_rect(layout.kbd_chip_rect, 6.0);
+        // Concept: `bg-white/5 border border-white/10` — semi-transparent
+        // white at 5% / 10% opacity over the slate-900 surface tint.
+        let chip_body = Color::rgba8(255, 255, 255, 13);
+        let chip_border = Color::rgba8(255, 255, 255, 26);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            chip_body,
+            None,
+            &chip_shape,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            chip_border,
+            None,
+            &chip_shape,
+        );
+        let chip_text = "\u{2318}K"; // ⌘K
+        let chip_text_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
+        let (cw, ch) = text_renderer.measure(chip_text, chip_text_size, None);
+        let chip_text_x = (layout.kbd_chip_rect.x0 + layout.kbd_chip_rect.x1) / 2.0
+            - cw as f64 / 2.0;
+        let chip_text_y = (layout.kbd_chip_rect.y0 + layout.kbd_chip_rect.y1) / 2.0
+            - ch as f64 / 2.0;
+        text_renderer.draw_text(
+            scene,
+            chip_text,
+            chip_text_size,
+            theme.tokens.colors.text_dim,
+            transform * Affine::translate((chip_text_x, chip_text_y)),
+            None,
+        );
+
+        // Query / placeholder text inside the input slot.
+        let display = if self.query.is_empty() { "Search\u{2026}" } else { &self.query };
         let text_color = if self.query.is_empty() {
             theme.tokens.colors.text_dim
         } else {
             theme.tokens.colors.text_primary
         };
         let text_size = theme.tokens.typography.scale.sm;
-        let text_y = input_rect.y0 + (input_rect.height() - text_size as f64) / 2.0;
+        let text_y = layout.input_rect.y0
+            + (layout.input_rect.height() - text_size as f64) / 2.0;
         text_renderer.draw_text(
             scene,
             display,
             text_size,
             text_color,
-            transform * Affine::translate((input_rect.x0 + 8.0, text_y)),
+            transform * Affine::translate((layout.input_rect.x0 + 8.0, text_y)),
             None,
         );
 
         // Vertical list of visible entries.
-        let list_top = input_rect.y1 + PADDING;
+        let list_top = row_rect.y1 + PADDING;
         for (i, &entry_idx) in self.visible.iter().enumerate() {
             let y0 = list_top + (i as f64) * ROW_HEIGHT;
             let y1 = y0 + ROW_HEIGHT;
             if y1 > self.rect.y1 - PADDING {
                 break;
             }
-            let row_rect = Rect::new(self.rect.x0 + PADDING, y0, self.rect.x1 - PADDING, y1);
+            let entry_rect =
+                Rect::new(self.rect.x0 + PADDING, y0, self.rect.x1 - PADDING, y1);
             if i == self.cursor {
-                let highlight = RoundedRect::from_rect(row_rect, theme.tokens.radii.sm as f64);
+                let highlight =
+                    RoundedRect::from_rect(entry_rect, theme.tokens.radii.sm as f64);
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
@@ -316,13 +448,13 @@ impl Widget for CommandPalette {
                 );
             }
             let label = &self.entries[entry_idx].label;
-            let label_y = row_rect.y0 + (row_rect.height() - text_size as f64) / 2.0;
+            let label_y = entry_rect.y0 + (entry_rect.height() - text_size as f64) / 2.0;
             text_renderer.draw_text(
                 scene,
                 label,
                 text_size,
                 theme.tokens.colors.text_primary,
-                transform * Affine::translate((row_rect.x0 + 8.0, label_y)),
+                transform * Affine::translate((entry_rect.x0 + 8.0, label_y)),
                 None,
             );
         }
@@ -430,6 +562,44 @@ mod tests {
         p.push(CommandEntry::new("a", "Alpha"));
         p.set_filter(Box::new(|_| false));
         assert_eq!(p.selected_id(), None);
+    }
+
+    #[test]
+    fn palette_card_radius_is_24_px() {
+        let palette = CommandPalette::new();
+        assert_eq!(
+            palette.surface_radius_px(),
+            24.0,
+            "concept palette uses rounded-3xl = 24 px"
+        );
+    }
+
+    #[test]
+    fn input_row_layout_reserves_leading_icon_and_kbd_chip() {
+        let palette = CommandPalette::new();
+        let layout = palette.compute_input_layout(Rect::new(0.0, 0.0, 640.0, 56.0));
+        assert!(
+            layout.icon_rect.width() >= 24.0 && layout.icon_rect.width() <= 40.0,
+            "leading icon slot must be 24..=40 px wide; got {}",
+            layout.icon_rect.width()
+        );
+        assert!(
+            layout.kbd_chip_rect.width() >= 48.0,
+            "Cmd+K chip needs at least 48 px; got {}",
+            layout.kbd_chip_rect.width()
+        );
+        assert!(
+            layout.kbd_chip_rect.x1 < 640.0,
+            "kbd chip must be inside the row"
+        );
+        assert!(
+            layout.input_rect.x0 > layout.icon_rect.x1,
+            "input must start after the icon"
+        );
+        assert!(
+            layout.input_rect.x1 < layout.kbd_chip_rect.x0,
+            "input must end before the kbd chip"
+        );
     }
 
     #[test]
