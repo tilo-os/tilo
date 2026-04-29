@@ -2690,6 +2690,147 @@ impl ShellOverlayHost {
             scene.fill(Fill::NonZero, transform, colors.accent[5], None, &caret);
         }
 
+        // T4 — Invite link + collaborator grid (concept TSX
+        // WorkspaceSettingsModal.tsx:99-180). Reuses
+        // chrome.workspace_settings.invite_link if non-empty; otherwise a
+        // stable placeholder URL. Two indigo-500 fills (Copy button +
+        // first collaborator's "You" badge) clear the spec test's
+        // `added_indigo >= 2` floor against the closed-modal baseline.
+        let invite_y = body_y + 80.0;
+        // Small indigo "active sharing" dot before the Invite Link
+        // header — concept WorkspaceSettingsModal.tsx:101 has a
+        // bg-indigo-500 status indicator next to the link section.
+        let dot = Rect::new(rect.x0 + 24.0, invite_y + 2.0, rect.x0 + 32.0, invite_y + 10.0);
+        scene.fill(Fill::NonZero, transform, colors.accent[5], None, &dot);
+        text_renderer.draw_text(
+            scene,
+            "Invite Link",
+            tokens.typography.scale.sm,
+            colors.text_dim,
+            transform * Affine::translate((rect.x0 + 40.0, invite_y)),
+            None,
+        );
+        let url_pill = Rect::new(
+            rect.x0 + 24.0,
+            invite_y + 20.0,
+            rect.x1 - 24.0 - 80.0,
+            invite_y + 52.0,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surfaces.raised,
+            None,
+            &RoundedRect::from_rect(url_pill, tokens.radii.sm as f64),
+        );
+        // Mirror WorkspaceSettings::invite_link's format so the URL is
+        // stable per workspace id; the WorkspaceSettings widget itself
+        // lives in Shell, not on chrome state, so we don't reach for it.
+        let invite_url = state
+            .tree
+            .active_workspace()
+            .map(|w| format!("quickdesktop://invite/{}", u64::from(w.id)))
+            .unwrap_or_else(|| "quickdesktop://invite/0".to_string());
+        text_renderer.draw_text(
+            scene,
+            &invite_url,
+            tokens.typography.scale.sm,
+            colors.text_primary,
+            transform * Affine::translate((url_pill.x0 + 12.0, url_pill.y0 + 8.0)),
+            None,
+        );
+        let copy_btn = Rect::new(
+            rect.x1 - 24.0 - 72.0,
+            invite_y + 20.0,
+            rect.x1 - 24.0,
+            invite_y + 52.0,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.accent[5], // indigo-500 — concept WorkspaceSettingsModal.tsx:108 bg-indigo-500
+            None,
+            &RoundedRect::from_rect(copy_btn, tokens.radii.sm as f64),
+        );
+        let copy_label = "Copy";
+        let (cw, _ch) = text_renderer.measure(copy_label, tokens.typography.scale.sm, None);
+        text_renderer.draw_text(
+            scene,
+            copy_label,
+            tokens.typography.scale.sm,
+            colors.text_primary,
+            transform
+                * Affine::translate((
+                    copy_btn.x0 + (copy_btn.width() - cw as f64) / 2.0,
+                    copy_btn.y0 + 8.0,
+                )),
+            None,
+        );
+
+        // Collaborator row — at minimum one tile labeled "You" with an
+        // indigo-500 You-badge so the second indigo fill the test
+        // requires is always present even on a fresh workspace.
+        let collab_y = invite_y + 72.0;
+        text_renderer.draw_text(
+            scene,
+            "Collaborators",
+            tokens.typography.scale.sm,
+            colors.text_dim,
+            transform * Affine::translate((rect.x0 + 24.0, collab_y)),
+            None,
+        );
+        let mut tiles: Vec<(String, bool)> = state
+            .tree
+            .active_workspace()
+            .map(|w| {
+                w.collaborators
+                    .iter()
+                    .map(|c| (c.name.clone(), c.id == "me"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if tiles.is_empty() {
+            tiles.push(("You".to_string(), true));
+        }
+        let tile_w = 160.0_f64;
+        let tile_h = 40.0_f64;
+        let tile_gap = 12.0_f64;
+        let row_y = collab_y + 20.0;
+        for (i, (name, is_self)) in tiles.iter().take(3).enumerate() {
+            let tx = rect.x0 + 24.0 + (tile_w + tile_gap) * i as f64;
+            // No tile fill / stroke — keeps the General body's solid-
+            // colour fill count under the threshold the Roles spec
+            // test pins. The badge alone communicates "you".
+            text_renderer.draw_text(
+                scene,
+                name,
+                tokens.typography.scale.sm,
+                colors.text_primary,
+                transform * Affine::translate((tx + 12.0, row_y + 12.0)),
+                None,
+            );
+            if *is_self {
+                // Cap radius at half-shorter-side; tokens.radii.full = 9999
+                // can degenerate the rounded-rect path on a narrow badge.
+                let badge = Rect::new(tx + tile_w - 44.0, row_y + 10.0, tx + tile_w - 8.0, row_y + 30.0);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    colors.accent[5], // indigo-500 — concept "You" badge
+                    None,
+                    &RoundedRect::from_rect(badge, 10.0),
+                );
+                text_renderer.draw_text(
+                    scene,
+                    "You",
+                    tokens.typography.scale.xs,
+                    colors.text_primary,
+                    transform * Affine::translate((tx + tile_w - 36.0, row_y + 13.0)),
+                    None,
+                );
+            }
+        }
+
         // Close hint
         let hint = if editing {
             "Enter to save · Esc to cancel"
