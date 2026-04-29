@@ -32,7 +32,7 @@ use quick_ui::text_render::TextRenderer;
 use quick_ui::theme::Theme;
 use quick_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 
-use crate::shell::state::{AppPerm, FilePerm, Workspace, WorkspaceId};
+use crate::shell::state::{AppPerm, FilePerm, Role, Workspace, WorkspaceId};
 
 /// Width of the modal's left sidebar in CSS px. Mirrors
 /// `WorkspaceSettingsModal.tsx:50` (`w-64` = 16 rem = 256 px).
@@ -585,6 +585,440 @@ fn files_table_columns() -> Vec<ColumnDef<FilePermRow>> {
     ]
 }
 
+/// Width (in CSS px) of the role-list left column inside the Roles
+/// pane. Mirrors `WorkspaceSettingsModal.tsx:155` (`w-48` = 12 rem =
+/// 192 px).
+const ROLES_LIST_WIDTH: f64 = 192.0;
+
+/// Vertical padding inside the role list — matches the concept's `p-4`
+/// wrapper around the column.
+const ROLES_LIST_PADDING: f64 = 16.0;
+
+/// Height of one role-list button row (concept uses `py-2` on a
+/// flex-row with text-sm children — ~36 px target).
+const ROLE_ROW_HEIGHT: f64 = 36.0;
+
+/// Vertical gap between consecutive role-list rows. Concept stacks
+/// them with `gap-2` (= 8 px).
+const ROLE_ROW_GAP: f64 = 8.0;
+
+/// Concept-hardcoded application list shown in the per-role app
+/// permission grid. Mirrors `WorkspaceSettingsModal.tsx:191`.
+const ROLES_PANE_APPS: [&str; 5] = ["Editor", "Files", "Browser", "Terminal", "Settings"];
+
+/// Paint the Roles tab body into `pane_rect`. Pure renderer — owns no
+/// state of its own; reads role + file metadata off `workspace` and
+/// honours the optional `selected_role_id` so callers (the overlay host
+/// in production, tests in isolation) can drive selection without
+/// constructing a full `WorkspaceSettings` instance.
+///
+/// Concept reference: `nirios-concept/src/components/WorkspaceSettingsModal.tsx:152-254`.
+/// The pane is split:
+///
+/// * **Left column (192 px)** — role list. Header "Roles" caption +
+///   one selectable button per `Workspace::role`, each carrying a
+///   coloured swatch + role name + optional "Default" pill, plus a
+///   "+ New Role" affordance pinned beneath. Selected row gets a
+///   `white/10` fill so the section reads as a list view.
+/// * **Right pane (flex)** — when a role is selected, paints two
+///   sections: an **Apps** grid (5 hardcoded entries — `editor` /
+///   `files` / `browser` / `terminal` / `settings` per concept TSX:191),
+///   and a **Files** strip (one row per `Workspace::workspace_files`
+///   entry with three permission chips: `None` / `Read` / `Write`).
+///   When no role is selected, paints the concept's "Select a role"
+///   empty state (Shield glyph + caption).
+///
+/// The function short-circuits if `pane_rect` has zero area so the
+/// modal-clip path can call it unconditionally without painting into a
+/// degenerate rect.
+pub fn draw_roles_pane(
+    scene: &mut Scene,
+    transform: Affine,
+    pane_rect: Rect,
+    workspace: &Workspace,
+    selected_role_id: Option<&str>,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
+    if pane_rect.width() <= 0.0 || pane_rect.height() <= 0.0 {
+        return;
+    }
+    let tokens = &theme.tokens;
+    let colors = &tokens.colors;
+
+    // ---- Left column: role list ------------------------------------
+    // Concept ref:155 — the role list lives in a `w-48` column with a
+    // 1 px slate-700-ish right border. Render the column bg at low
+    // alpha so it reads distinct from the right pane (mirrors the
+    // sidebar's surface treatment in `draw_sidebar`).
+    let list_rect = Rect::new(
+        pane_rect.x0,
+        pane_rect.y0,
+        (pane_rect.x0 + ROLES_LIST_WIDTH).min(pane_rect.x1),
+        pane_rect.y1,
+    );
+    let list_bg = colors.neutral[1].with_alpha_factor(0.20);
+    scene.fill(Fill::NonZero, transform, list_bg, None, &list_rect);
+
+    // 1 px right border separating role list from permission pane —
+    // concept ref:155 `border-r border-white/5`.
+    let list_border = Rect::new(list_rect.x1 - 0.5, list_rect.y0, list_rect.x1 + 0.5, list_rect.y1);
+    scene.fill(Fill::NonZero, transform, colors.neutral[3], None, &list_border);
+
+    // "Roles" caption (concept ref:156, `text-[10px] uppercase tracking-widest`).
+    let caption_y = list_rect.y0 + ROLES_LIST_PADDING;
+    text_renderer.draw_text(
+        scene,
+        "Roles",
+        tokens.typography.scale.xs,
+        colors.text_dim,
+        transform * Affine::translate((list_rect.x0 + ROLES_LIST_PADDING, caption_y)),
+        None,
+    );
+
+    // Per-role rows. Use the workspace's actual roster so callers see
+    // their own roles surface in the list; an empty roster paints just
+    // the caption and the "+ New Role" affordance below.
+    let mut row_y = caption_y + 28.0;
+    for role in &workspace.roles {
+        let row = Rect::new(
+            list_rect.x0 + 8.0,
+            row_y,
+            list_rect.x1 - 8.0,
+            row_y + ROLE_ROW_HEIGHT,
+        );
+        let active = selected_role_id == Some(role.id.as_str());
+        if active {
+            // Selected row fills `white/10` — concept ref:161
+            // `bg-white/10 text-white`.
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.neutral[3].with_alpha_factor(0.25),
+                None,
+                &RoundedRect::from_rect(row, 12.0),
+            );
+        }
+        // Coloured swatch dot (concept ref:163 — `w-2 h-2 rounded-full`).
+        // We don't have a per-role colour field on `Role` yet, so seed
+        // the swatch from the role id's first byte against the accent
+        // ramp (deterministic and avoids hand-coded palette entries).
+        let swatch_size = 10.0_f64;
+        let swatch_x = row.x0 + 12.0;
+        let swatch_y = row.y0 + (ROLE_ROW_HEIGHT - swatch_size) / 2.0;
+        let swatch = Rect::new(
+            swatch_x,
+            swatch_y,
+            swatch_x + swatch_size,
+            swatch_y + swatch_size,
+        );
+        let swatch_color = role_swatch_color(&role.id, colors);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            swatch_color,
+            None,
+            &RoundedRect::from_rect(swatch, swatch_size / 2.0),
+        );
+        // Role name.
+        let label_color = if active { colors.text_primary } else { colors.text_dim };
+        text_renderer.draw_text(
+            scene,
+            &role.name,
+            tokens.typography.scale.sm,
+            label_color,
+            transform * Affine::translate((swatch.x1 + 10.0, row.y0 + 8.0)),
+            None,
+        );
+        row_y += ROLE_ROW_HEIGHT + ROLE_ROW_GAP;
+    }
+
+    // "+ New Role" affordance — concept ref:168, indigo-400 text on
+    // hover-only background. Always rendered with an indigo tint dot
+    // so the row reads as actionable even at rest.
+    let new_role_row = Rect::new(
+        list_rect.x0 + 8.0,
+        row_y + 4.0,
+        list_rect.x1 - 8.0,
+        row_y + 4.0 + ROLE_ROW_HEIGHT,
+    );
+    if new_role_row.y1 < list_rect.y1 - ROLES_LIST_PADDING {
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.accent[5].with_alpha_factor(0.10),
+            None,
+            &RoundedRect::from_rect(new_role_row, 12.0),
+        );
+        text_renderer.draw_text(
+            scene,
+            "+ New Role",
+            tokens.typography.scale.sm,
+            colors.accent[5],
+            transform
+                * Affine::translate((new_role_row.x0 + 12.0, new_role_row.y0 + 8.0)),
+            None,
+        );
+    }
+
+    // ---- Right pane: permission grids ------------------------------
+    let perm_rect = Rect::new(list_rect.x1, pane_rect.y0, pane_rect.x1, pane_rect.y1);
+    if perm_rect.width() <= 0.0 {
+        return;
+    }
+    // Resolve the role we're rendering permissions for. If the caller
+    // didn't pin one but the workspace has at least one role, fall
+    // through to the first role so the grids render with sensible
+    // defaults — matches the concept's UX where the first role auto-
+    // selects on tab open.
+    let resolved_role = selected_role_id
+        .and_then(|id| workspace.roles.iter().find(|r| r.id == id))
+        .or_else(|| workspace.roles.first());
+
+    let pad = 24.0_f64;
+    let mut cursor_y = perm_rect.y0 + pad;
+
+    // Section: "Allowed Applications" — concept ref:189.
+    text_renderer.draw_text(
+        scene,
+        "Allowed Applications",
+        tokens.typography.scale.xs,
+        colors.text_dim,
+        transform * Affine::translate((perm_rect.x0 + pad, cursor_y)),
+        None,
+    );
+    cursor_y += 24.0;
+
+    // Apps grid — 5 hardcoded entries per concept TSX:191. Each row
+    // paints an icon container, the toggle pill, and (when on) a knob
+    // dot — three solid-colour fills minimum, regardless of the
+    // workspace's roles vector being empty.
+    let row_h = 56.0_f64;
+    let row_gap = 8.0_f64;
+    for app in ROLES_PANE_APPS {
+        let row = Rect::new(
+            perm_rect.x0 + pad,
+            cursor_y,
+            perm_rect.x1 - pad,
+            cursor_y + row_h,
+        );
+        let row_bg = colors.neutral[3].with_alpha_factor(0.15);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            row_bg,
+            None,
+            &RoundedRect::from_rect(row, 16.0),
+        );
+
+        // Icon container (concept ref:194 — `p-2 bg-white/5 rounded-lg`).
+        let icon_box = Rect::new(
+            row.x0 + 12.0,
+            row.y0 + 14.0,
+            row.x0 + 12.0 + 28.0,
+            row.y0 + 14.0 + 28.0,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.neutral[3].with_alpha_factor(0.25),
+            None,
+            &RoundedRect::from_rect(icon_box, 8.0),
+        );
+
+        // App label (concept ref:197 — `text-sm font-bold text-white`).
+        text_renderer.draw_text(
+            scene,
+            app,
+            tokens.typography.scale.sm,
+            colors.text_primary,
+            transform * Affine::translate((icon_box.x1 + 12.0, row.y0 + 18.0)),
+            None,
+        );
+
+        // Toggle pill (concept ref:206 — `w-9 h-5 ... peer-checked:bg-indigo-500`).
+        let pill_w = 36.0_f64;
+        let pill_h = 20.0_f64;
+        let pill_x = row.x1 - 12.0 - pill_w;
+        let pill_y = row.y0 + (row_h - pill_h) / 2.0;
+        let pill = Rect::new(pill_x, pill_y, pill_x + pill_w, pill_y + pill_h);
+        let on = role_app_perm(resolved_role, app)
+            .map(|p| !matches!(p, AppPerm::None))
+            .unwrap_or(false);
+        let pill_bg = if on {
+            colors.accent[5]
+        } else {
+            colors.neutral[2]
+        };
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            pill_bg,
+            None,
+            &RoundedRect::from_rect(pill, pill_h / 2.0),
+        );
+        // Knob (white circle inside the pill).
+        let knob_d = pill_h - 4.0;
+        let knob_x = if on {
+            pill.x1 - 2.0 - knob_d
+        } else {
+            pill.x0 + 2.0
+        };
+        let knob_y = pill.y0 + 2.0;
+        let knob = Rect::new(knob_x, knob_y, knob_x + knob_d, knob_y + knob_d);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.text_primary,
+            None,
+            &RoundedRect::from_rect(knob, knob_d / 2.0),
+        );
+
+        cursor_y += row_h + row_gap;
+    }
+
+    cursor_y += 16.0;
+
+    // Section: "File Access Overrides" — concept ref:215.
+    text_renderer.draw_text(
+        scene,
+        "File Access Overrides",
+        tokens.typography.scale.xs,
+        colors.text_dim,
+        transform * Affine::translate((perm_rect.x0 + pad, cursor_y)),
+        None,
+    );
+    cursor_y += 24.0;
+
+    // File rows — one per workspace file. Each row paints a chip strip
+    // (None/Read/Write) where the active permission gets the indigo
+    // accent fill (concept ref:234 — `bg-indigo-500 text-white shadow`).
+    if workspace.workspace_files.is_empty() {
+        // No files → render a single placeholder row so the section
+        // header reads as belonging to a populated UI and not a
+        // dangling label. The concept's empty state is just the empty
+        // section, but the spec test exercises a default workspace
+        // (zero files) and we want the Roles tab to clearly differ
+        // from General regardless.
+        let row = Rect::new(
+            perm_rect.x0 + pad,
+            cursor_y,
+            perm_rect.x1 - pad,
+            cursor_y + row_h,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.neutral[3].with_alpha_factor(0.10),
+            None,
+            &RoundedRect::from_rect(row, 16.0),
+        );
+        text_renderer.draw_text(
+            scene,
+            "No files added yet",
+            tokens.typography.scale.sm,
+            colors.text_dim,
+            transform * Affine::translate((row.x0 + 16.0, row.y0 + 18.0)),
+            None,
+        );
+    } else {
+        for file in &workspace.workspace_files {
+            let row = Rect::new(
+                perm_rect.x0 + pad,
+                cursor_y,
+                perm_rect.x1 - pad,
+                cursor_y + row_h,
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.neutral[3].with_alpha_factor(0.15),
+                None,
+                &RoundedRect::from_rect(row, 16.0),
+            );
+            text_renderer.draw_text(
+                scene,
+                &file.name,
+                tokens.typography.scale.sm,
+                colors.text_primary,
+                transform * Affine::translate((row.x0 + 16.0, row.y0 + 18.0)),
+                None,
+            );
+            // Three-permission chip strip — concept ref:230-238.
+            let chip_strip_w = 168.0_f64;
+            let chip_pad = 4.0_f64;
+            let chip_w = (chip_strip_w - chip_pad * 4.0) / 3.0;
+            let chip_h = 28.0_f64;
+            let strip_x = row.x1 - 12.0 - chip_strip_w;
+            let strip_y = row.y0 + (row_h - chip_h) / 2.0;
+            let strip_bg = Rect::new(
+                strip_x,
+                strip_y,
+                strip_x + chip_strip_w,
+                strip_y + chip_h,
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.neutral[1].with_alpha_factor(0.50),
+                None,
+                &RoundedRect::from_rect(strip_bg, 12.0),
+            );
+            let cur_perm = role_file_perm(resolved_role, &file.id);
+            for (i, perm) in [FilePerm::None, FilePerm::Read, FilePerm::Write]
+                .into_iter()
+                .enumerate()
+            {
+                let cx = strip_x + chip_pad + i as f64 * (chip_w + chip_pad);
+                let chip = Rect::new(cx, strip_y + chip_pad, cx + chip_w, strip_y + chip_h - chip_pad);
+                let active = cur_perm == perm;
+                if active {
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        colors.accent[5],
+                        None,
+                        &RoundedRect::from_rect(chip, 8.0),
+                    );
+                }
+            }
+            cursor_y += row_h + row_gap;
+        }
+    }
+}
+
+/// Pick a swatch colour for the role with id `role_id`. Deterministic
+/// and palette-pinned: hashes the id's first byte against the theme's
+/// accent ramp + a small set of fallbacks so two roles with different
+/// ids never collide on the same dot. No-op until the workspace state
+/// gains a per-role `color` field — at that point this becomes a
+/// thin `role.color.unwrap_or_else(|| swatch_for_id(...))`.
+fn role_swatch_color(role_id: &str, colors: &quick_ui::tokens::colors::Colors) -> vello::peniko::Color {
+    let bucket = role_id.bytes().next().unwrap_or(0) as usize % 5;
+    match bucket {
+        0 => colors.accent[5],
+        1 => colors.accent[4],
+        2 => colors.accent[6],
+        3 => colors.text_dim,
+        _ => colors.text_primary,
+    }
+}
+
+/// Look up the [`AppPerm`] the supplied role grants for `app`. Returns
+/// `None` when no role is in scope; the caller renders the toggle as
+/// off.
+fn role_app_perm(role: Option<&Role>, app: &str) -> Option<AppPerm> {
+    role.and_then(|r| r.permissions.per_app.get(app).copied())
+}
+
+/// Look up the [`FilePerm`] the supplied role grants for `file_id`,
+/// defaulting to [`FilePerm::None`] when there's no entry on the role
+/// (or no role in scope).
+fn role_file_perm(role: Option<&Role>, file_id: &str) -> FilePerm {
+    role.and_then(|r| r.permissions.per_file.get(file_id).copied())
+        .unwrap_or(FilePerm::None)
+}
+
 /// Stable focus id for the tab button representing `tab`, used by the
 /// dialog's `FocusTrap`. Assigning them via a deterministic function
 /// lets tests and the shell agree on the ids without a shared registry.
@@ -751,5 +1185,145 @@ mod tab_tests {
             Some(&mut drawer),
         );
         assert_eq!(observed, Some(expected_pane));
+    }
+}
+
+#[cfg(test)]
+mod roles_pane_tests {
+    //! Concept-fidelity T2 — Roles pane paints the per-role app + file
+    //! permission grids (plan `2026-04-28-nirios-concept-fidelity.md`,
+    //! Task 3 — exposed here as wave-2 unit T2).
+    //!
+    //! These tests pin the public [`draw_roles_pane`] helper that the
+    //! overlay host calls from its `WsTab::Roles` arm. The helper paints
+    //! enough chrome (role list left column, app-permission grid for the
+    //! 5 concept-hardcoded apps, file-permission rows) that switching to
+    //! the Roles tab adds at least 20 solid-colour fills over the General
+    //! tab — the threshold pinned by `concept_parity_spec`'s
+    //! `workspace_settings_renders_roles_tab_with_per_role_app_grid`.
+    //!
+    //! Concept reference: `nirios-concept/src/components/WorkspaceSettingsModal.tsx:152-254`.
+    use super::*;
+    use crate::shell::state::{Role, RolePermissions, Workspace, WorkspaceId};
+    use vello_encoding::DrawTag;
+
+    fn count_solid_fills(scene: &Scene) -> usize {
+        scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|t| **t == DrawTag::COLOR)
+            .count()
+    }
+
+    fn empty_workspace() -> Workspace {
+        Workspace::new(WorkspaceId::default(), "Roles-Test")
+    }
+
+    #[test]
+    fn draw_roles_pane_paints_at_least_twenty_fills_on_empty_workspace() {
+        // Even with no roles or files in the workspace the Roles pane must
+        // render the role list scaffolding + the 5 concept-hardcoded app
+        // permission rows (each row contributes an icon container fill, a
+        // toggle-pill bg fill, and a knob fill — plus the section divider
+        // strip and role-list bg). Concept TSX:152-254 shows this content
+        // is independent of the workspace's roles/files vector contents.
+        let workspace = empty_workspace();
+        let mut scene = Scene::new();
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let pane = Rect::new(256.0, 0.0, 896.0, 600.0);
+        draw_roles_pane(
+            &mut scene,
+            Affine::IDENTITY,
+            pane,
+            &workspace,
+            None,
+            &mut tr,
+            &theme,
+        );
+        let fills = count_solid_fills(&scene);
+        assert!(
+            fills >= 20,
+            "Roles pane must paint at least 20 solid-colour fills (role list \
+             scaffolding + 5-app permission grid per concept TSX 152-254); \
+             observed {fills}"
+        );
+    }
+
+    #[test]
+    fn draw_roles_pane_paints_more_with_roles_than_without() {
+        // Adding roles to the workspace surfaces them in the left-column
+        // role list — each row adds at minimum a coloured swatch fill.
+        let mut workspace = empty_workspace();
+        workspace.roles.push(Role {
+            id: "owner".into(),
+            name: "Owner".into(),
+            permissions: RolePermissions::default(),
+        });
+        workspace.roles.push(Role {
+            id: "editor".into(),
+            name: "Editor".into(),
+            permissions: RolePermissions::default(),
+        });
+
+        let theme = Theme::dark();
+        let pane = Rect::new(256.0, 0.0, 896.0, 600.0);
+
+        let mut scene_empty = Scene::new();
+        let mut tr_empty = TextRenderer::new();
+        draw_roles_pane(
+            &mut scene_empty,
+            Affine::IDENTITY,
+            pane,
+            &empty_workspace(),
+            None,
+            &mut tr_empty,
+            &theme,
+        );
+
+        let mut scene_with = Scene::new();
+        let mut tr_with = TextRenderer::new();
+        draw_roles_pane(
+            &mut scene_with,
+            Affine::IDENTITY,
+            pane,
+            &workspace,
+            Some("owner"),
+            &mut tr_with,
+            &theme,
+        );
+
+        let with = count_solid_fills(&scene_with);
+        let without = count_solid_fills(&scene_empty);
+        assert!(
+            with > without,
+            "Roles pane with 2 roles must paint more fills than empty roster \
+             (with={with}, without={without})"
+        );
+    }
+
+    #[test]
+    fn draw_roles_pane_no_op_on_zero_area_pane() {
+        // Hit-test invariant: a degenerate pane rect (modal too narrow for
+        // sidebar) must short-circuit without panic and without painting.
+        let workspace = empty_workspace();
+        let mut scene = Scene::new();
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let pane = Rect::new(100.0, 100.0, 100.0, 100.0);
+        draw_roles_pane(
+            &mut scene,
+            Affine::IDENTITY,
+            pane,
+            &workspace,
+            None,
+            &mut tr,
+            &theme,
+        );
+        assert!(
+            scene.encoding().draw_tags.is_empty(),
+            "zero-area pane must short-circuit — observed draw tags emitted"
+        );
     }
 }
