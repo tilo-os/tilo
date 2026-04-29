@@ -56,6 +56,7 @@ pub enum Icon {
     X,
     ChevronUp,
     ChevronDown,
+    ChevronLeft,
     Plus,
     Search,
 }
@@ -173,6 +174,7 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
         ],
         Icon::ChevronUp => vec![path_from_d("m18 15-6-6-6 6")],
         Icon::ChevronDown => vec![path_from_d("m6 9 6 6 6-6")],
+        Icon::ChevronLeft => vec![path_from_d("m15 18-6-6 6-6")],
         Icon::Plus => vec![
             path_from_d("M5 12h14"),
             path_from_d("M12 5v14"),
@@ -339,6 +341,7 @@ mod tests {
             Icon::X,
             Icon::ChevronUp,
             Icon::ChevronDown,
+            Icon::ChevronLeft,
             Icon::Plus,
             Icon::Search,
         ] {
