@@ -943,29 +943,27 @@ fn quick_settings_supports_wifi_drill_in_render() {
     assert_eq!(qs_root.current_level(), &QsLevel::Root);
     assert_eq!(qs_wifi.current_level(), &QsLevel::Wifi);
 
-    // Render the popover for each. The current overlay-host pulls only
-    // `chrome.quick_settings` (a struct of flat bools/floats — no
-    // nav_stack), so changing `qs_*` does not reach the renderer.
-    // That's the gap. To compose this test we install both QS instances
-    // through a chrome-state side-channel (today: just the brightness
-    // delta, since that's the only state the renderer reads). When the
-    // renderer learns to consume nav_stack, the `wifi` branch will
-    // emit additional fills (back-chevron + per-network rows + signal
-    // bars).
+    // Render the popover at root level vs. the WiFi drill-in level. The
+    // chrome's `QuickSettingsState::nav_stack` is the single source of
+    // truth that the overlay host's `draw_quick_settings` dispatches on;
+    // pushing a level on a `QuickSettings` instance and propagating it
+    // into the chrome lights the WiFi branch in the renderer.
     let tree = WorkspaceTree::bootstrap_default();
 
     // Render with the popover open and "root level" (brightness 0.5).
     qs_root.set_brightness(50.0);
-    let (root_fills, _) = render_quick_settings_open(&tree);
+    let (root_fills, _) = render_quick_settings_open(&tree, |_| {});
 
-    // Now mutate qs to "wifi level". The point of this test is that the
-    // renderer should *care* — pushing a WiFi level should change what
-    // is drawn. Since chrome-state has no nav_stack field, this test
-    // pushes the wifi level on a *side* QuickSettings instance to keep
-    // the API explicit; when the renderer learns nav_stack the test's
-    // setup line below changes from a no-op to a real injection.
-    let _ = qs_wifi; // Silence unused-binding pending the renderer wire-up.
-    let (wifi_fills, _) = render_quick_settings_open(&tree);
+    // Now drive the renderer through the WiFi level via the chrome side-
+    // channel — using `qs_wifi` as the level source keeps the API
+    // explicit (every pushed level is `QuickSettings`-shaped).
+    let target_level = qs_wifi.current_level().clone();
+    let (wifi_fills, _) = render_quick_settings_open(&tree, |chrome| {
+        chrome
+            .borrow_mut()
+            .quick_settings
+            .push_level(target_level.clone());
+    });
 
     // EXPECTED: root_fills ≠ wifi_fills (drill-in adds back-chevron +
     // network rows). CURRENT: equal — drill-in path is unwired.
@@ -980,9 +978,13 @@ fn quick_settings_supports_wifi_drill_in_render() {
     );
 }
 
-fn render_quick_settings_open(tree: &WorkspaceTree) -> (usize, Chrome) {
+fn render_quick_settings_open(
+    tree: &WorkspaceTree,
+    mutate_chrome: impl FnOnce(&Chrome),
+) -> (usize, Chrome) {
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(tree);
     chrome.borrow_mut().overlays.quick_settings = true;
+    mutate_chrome(&chrome);
     let theme = Theme::dark();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
