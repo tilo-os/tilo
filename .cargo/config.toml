@@ -1,0 +1,8 @@
+[build]
+# Resolve sccache via PATH so this works both on the Silverblue host
+# (linuxbrew sccache at /home/linuxbrew/.linuxbrew/bin/sccache) and inside
+# the my-distrobox toolbox (Fedora dnf-installed sccache at /usr/bin/sccache).
+# The home-level ~/.cargo/config.toml hardcodes the linuxbrew absolute path,
+# which doesn't exist inside the container — this project-level override
+# fixes that without forcing every cargo invocation to set RUSTC_WRAPPER=.
+rustc-wrapper = "sccache"
