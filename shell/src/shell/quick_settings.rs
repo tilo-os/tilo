@@ -38,6 +38,29 @@ pub enum QsLevel {
     BluetoothDetails(String),
 }
 
+/// A single WiFi entry rendered in the drill-in list. `signal` is a
+/// signal-strength bucket in `[0, 4]` (mapped to bar-count in the
+/// renderer); `secure` flips the lock-icon trailing affordance;
+/// `connected` flags the active-radio dot. Mock data until real
+/// scanning lands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WifiNetwork {
+    pub ssid: String,
+    pub signal: u8,
+    pub secure: bool,
+    pub connected: bool,
+}
+
+/// A single Bluetooth device entry rendered in the drill-in list.
+/// `battery` is a percentage in `[0, 100]`; `connected` flags the
+/// active-radio dot. Mock data until real pairing lands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BtDevice {
+    pub name: String,
+    pub battery: u8,
+    pub connected: bool,
+}
+
 /// Power-management profile shown in the Power Profile row at the bottom
 /// of the QuickSettings popover. Concept ref:
 /// `QuickSettings.tsx:249-258` — "Balanced" is the only label rendered in

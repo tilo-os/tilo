@@ -1344,14 +1344,72 @@ impl Widget for ShellOverlayHost {
                         if let Some(chrome) = self.chrome.clone() {
                             let mut st = chrome.borrow_mut();
                             st.overlays.quick_settings = false;
+                            // Reset nav-stack on close so the next open
+                            // starts at root rather than dropping the user
+                            // back into the WiFi / BT list they last
+                            // visited.
+                            st.quick_settings.nav_stack =
+                                vec![crate::shell::quick_settings::QsLevel::Root];
                             st.bump();
                         }
                         *handled = true;
                         return;
                     }
-                    // Click inside the popover: route to slider / toggle
-                    // hit-testing. Sliders snap to click x; toggles flip.
+                    // Click inside the popover: branch on the current
+                    // nav-stack level. Drill-in panes only have a back
+                    // chevron + scroll list; root has sliders + toggle
+                    // cards + power profile.
+                    let current_level = self
+                        .chrome
+                        .as_ref()
+                        .map(|c| c.borrow().quick_settings.current_level().clone())
+                        .unwrap_or(crate::shell::quick_settings::QsLevel::Root);
+                    if !matches!(
+                        current_level,
+                        crate::shell::quick_settings::QsLevel::Root
+                    ) {
+                        // Drill-in pane: only the back-chevron pops the
+                        // stack; everything else inside the popover is
+                        // swallowed (per-row actions land in a follow-up).
+                        let back = self.qs_back_chevron_rect();
+                        if back.contains(p) {
+                            if let Some(chrome) = self.chrome.clone() {
+                                let mut st = chrome.borrow_mut();
+                                st.quick_settings.pop_level();
+                                st.bump();
+                            }
+                            *handled = true;
+                            return;
+                        }
+                        *handled = true;
+                        return;
+                    }
                     if let Some(chrome) = self.chrome.clone() {
+                        // Toggle-card chevron: drill into WiFi / Bluetooth
+                        // pane. Tested *before* the toggle hit so the
+                        // chevron region wins over the toggle's full-card
+                        // hit rect. Concept ref: `QuickSettings.tsx:218-246`
+                        // — chevron on the right of each card reads as
+                        // "drill in for details".
+                        let mut pushed_level = None;
+                        for i in 0..2 {
+                            let chev = self.quick_settings_toggle_chevron_rect(i);
+                            if chev.contains(p) {
+                                pushed_level = Some(if i == 0 {
+                                    crate::shell::quick_settings::QsLevel::Wifi
+                                } else {
+                                    crate::shell::quick_settings::QsLevel::Bluetooth
+                                });
+                                break;
+                            }
+                        }
+                        if let Some(level) = pushed_level {
+                            let mut st = chrome.borrow_mut();
+                            st.quick_settings.push_level(level);
+                            st.bump();
+                            *handled = true;
+                            return;
+                        }
                         let mut st = chrome.borrow_mut();
                         let mut changed = false;
                         for i in 0..2 {
@@ -2916,7 +2974,7 @@ impl ShellOverlayHost {
         let qs = self
             .chrome
             .as_ref()
-            .map(|c| c.borrow().quick_settings)
+            .map(|c| c.borrow().quick_settings.clone())
             .unwrap_or_default();
 
         let rect = self.quick_settings_rect();
@@ -2939,6 +2997,24 @@ impl ShellOverlayHost {
             None,
             &card,
         );
+
+        // Dispatch on `qs.current_level()` — root level renders the action
+        // row + sliders + toggles + power profile; Wifi/Bluetooth levels
+        // replace the body with a header-row + scrollable list.
+        // Concept ref: `QuickSettings.tsx:101-162` — drill-in views.
+        match qs.current_level() {
+            crate::shell::quick_settings::QsLevel::Wifi
+            | crate::shell::quick_settings::QsLevel::WifiDetails(_) => {
+                self.draw_qs_wifi_list(scene, transform, text_renderer, theme, &qs);
+                return;
+            }
+            crate::shell::quick_settings::QsLevel::Bluetooth
+            | crate::shell::quick_settings::QsLevel::BluetoothDetails(_) => {
+                self.draw_qs_bt_list(scene, transform, text_renderer, theme, &qs);
+                return;
+            }
+            crate::shell::quick_settings::QsLevel::Root => {}
+        }
 
         // -------- Section 1: Action row (Settings / Camera / Power) --------
         // Concept ref: `QuickSettings.tsx:181-201` — three equal-width tiles
@@ -3217,6 +3293,271 @@ impl ShellOverlayHost {
             None,
             &chev,
         );
+    }
+
+    /// Draw the QuickSettings drill-in header — back-chevron on the left
+    /// and a centred title. Used for both WiFi and Bluetooth panes; the
+    /// back-chevron's hit rect is exposed via [`Self::qs_back_chevron_rect`].
+    fn draw_qs_drill_in_header(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        title: &str,
+    ) {
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let rect = self.quick_settings_rect();
+        let header_h = 48.0_f64;
+        let chev_rect = self.qs_back_chevron_rect();
+        quick_ui::icons::draw_icon(
+            scene,
+            transform,
+            chev_rect,
+            quick_ui::icons::Icon::ChevronLeft,
+            colors.text_primary,
+            quick_ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+
+        // Centred title (14 px Semibold white, per concept).
+        let (tw, th) =
+            text_renderer.measure(title, tokens.typography.scale.sm, None);
+        let tx = rect.x0 + (rect.width() - tw as f64) / 2.0;
+        let ty = rect.y0 + (header_h - th as f64) / 2.0;
+        text_renderer.draw_text_weighted(
+            scene,
+            title,
+            tokens.typography.scale.sm,
+            colors.text_primary,
+            transform * Affine::translate((tx, ty)),
+            None,
+            TextWeight::Semibold,
+        );
+    }
+
+    /// Hit rect for the back-chevron in the drill-in header. Click here
+    /// pops `nav_stack`. Sized 32×32 with a small expansion for forgiving
+    /// touch targets — the painted glyph is 24×24 inside.
+    fn qs_back_chevron_rect(&self) -> Rect {
+        let r = self.quick_settings_rect();
+        Rect::new(r.x0 + 8.0, r.y0 + 8.0, r.x0 + 40.0, r.y0 + 40.0)
+    }
+
+    /// Toggle-card chevron-affordance hit rect — clicking here pushes
+    /// `QsLevel::Wifi` (i==0) / `QsLevel::Bluetooth` (i==1) onto the
+    /// nav stack instead of flipping the toggle bool. Concept ref:
+    /// `QuickSettings.tsx:218-246` — chevron on the right of each card
+    /// reads as "drill in for details".
+    fn quick_settings_toggle_chevron_rect(&self, i: usize) -> Rect {
+        let card = self.quick_settings_toggle_geometry(i);
+        // The painted chevron sits at `(card.x1 - 16.0, card.y0 + 22.0)`
+        // with a 3 px radius — give a generous 32×32 hit rect anchored
+        // around it.
+        let cx = card.x1 - 16.0;
+        let cy = card.y0 + 22.0;
+        Rect::new(cx - 16.0, cy - 16.0, cx + 16.0, cy + 16.0)
+    }
+
+    /// Render the WiFi drill-in pane: header + list of `wifi_networks`
+    /// rows (SSID + signal-bars + active-radio dot). Concept ref:
+    /// `QuickSettings.tsx:108-128`.
+    fn draw_qs_wifi_list(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        qs: &crate::shell::chrome_state::QuickSettingsState,
+    ) {
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let rect = self.quick_settings_rect();
+
+        self.draw_qs_drill_in_header(scene, transform, text_renderer, theme, "Wi-Fi");
+
+        let row_h = 56.0_f64;
+        let list_y0 = rect.y0 + 56.0;
+        for (i, net) in qs.wifi_networks.iter().enumerate() {
+            let row_y = list_y0 + i as f64 * row_h;
+            let row_rect = Rect::new(rect.x0 + 12.0, row_y, rect.x1 - 12.0, row_y + row_h - 4.0);
+            // First row reads as "primary" with a subtle slate-800/50 wash;
+            // the rest stay transparent (concept's hover state is on
+            // `:hover white/5` which we omit until we have hover tracking).
+            if i == 0 {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    colors.neutral[2].with_alpha_factor(0.50),
+                    None,
+                    &RoundedRect::from_rect(row_rect, 12.0),
+                );
+            }
+
+            // Leading Wifi glyph (signal-strength).
+            let glyph_box = Rect::new(
+                row_rect.x0 + 12.0,
+                row_rect.y0 + (row_rect.height() - 20.0) / 2.0,
+                row_rect.x0 + 12.0 + 20.0,
+                row_rect.y0 + (row_rect.height() + 20.0) / 2.0,
+            );
+            quick_ui::icons::draw_icon(
+                scene,
+                transform,
+                glyph_box,
+                quick_ui::icons::Icon::Wifi,
+                colors.text_primary,
+                quick_ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
+
+            // SSID label.
+            let label_x = glyph_box.x1 + 12.0;
+            let label_y = row_rect.y0 + (row_rect.height() - 14.0) / 2.0;
+            text_renderer.draw_text_weighted(
+                scene,
+                &net.ssid,
+                tokens.typography.scale.sm,
+                colors.text_primary,
+                transform * Affine::translate((label_x, label_y)),
+                None,
+                TextWeight::Medium,
+            );
+
+            // Trailing: signal-strength bars. We paint `signal` bars (out
+            // of 4) growing right→left so a stronger signal lights more
+            // bars — encoded as a stack of small rounded rects.
+            let bars_x1 = row_rect.x1 - 36.0;
+            let bars_w = 14.0_f64;
+            let bars_h_max = 12.0_f64;
+            let bars_baseline = row_rect.y0 + row_rect.height() / 2.0 + bars_h_max / 2.0;
+            for b in 0..4u8 {
+                let x = bars_x1 - bars_w + (b as f64) * 4.0 - 12.0;
+                let h = ((b + 1) as f64) * (bars_h_max / 4.0);
+                let bar_rect = Rect::new(x, bars_baseline - h, x + 3.0, bars_baseline);
+                let on = b < net.signal;
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    if on {
+                        colors.text_primary.with_alpha_factor(0.85)
+                    } else {
+                        colors.text_primary.with_alpha_factor(0.20)
+                    },
+                    None,
+                    &RoundedRect::from_rect(bar_rect, 1.0),
+                );
+            }
+
+            // Trailing-most: active-radio dot (indigo) for the connected
+            // network. Concept paints this as a check inside an indigo
+            // ring; we render an indigo-filled dot until the ring path
+            // lands.
+            if net.connected {
+                let cx = row_rect.x1 - 14.0;
+                let cy = row_rect.y0 + row_rect.height() / 2.0;
+                let dot = vello::kurbo::Circle::new(Point::new(cx, cy), 5.0);
+                scene.fill(Fill::NonZero, transform, colors.accent[5], None, &dot);
+            }
+        }
+    }
+
+    /// Render the Bluetooth drill-in pane: header + list of `bt_devices`
+    /// rows (name + battery-icon + active-radio dot). Concept ref:
+    /// `QuickSettings.tsx:140-160`.
+    fn draw_qs_bt_list(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        qs: &crate::shell::chrome_state::QuickSettingsState,
+    ) {
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let rect = self.quick_settings_rect();
+
+        self.draw_qs_drill_in_header(scene, transform, text_renderer, theme, "Bluetooth");
+
+        let row_h = 56.0_f64;
+        let list_y0 = rect.y0 + 56.0;
+        for (i, dev) in qs.bt_devices.iter().enumerate() {
+            let row_y = list_y0 + i as f64 * row_h;
+            let row_rect = Rect::new(rect.x0 + 12.0, row_y, rect.x1 - 12.0, row_y + row_h - 4.0);
+            if i == 0 {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    colors.neutral[2].with_alpha_factor(0.50),
+                    None,
+                    &RoundedRect::from_rect(row_rect, 12.0),
+                );
+            }
+
+            // Leading device-glyph placeholder ring (no lucide
+            // `Bluetooth` glyph in the icon set yet — keeps the row
+            // from looking blank).
+            let glyph_box = Rect::new(
+                row_rect.x0 + 12.0,
+                row_rect.y0 + (row_rect.height() - 20.0) / 2.0,
+                row_rect.x0 + 12.0 + 20.0,
+                row_rect.y0 + (row_rect.height() + 20.0) / 2.0,
+            );
+            let cx = (glyph_box.x0 + glyph_box.x1) / 2.0;
+            let cy = (glyph_box.y0 + glyph_box.y1) / 2.0;
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.5),
+                transform,
+                colors.text_primary,
+                None,
+                &vello::kurbo::Circle::new(Point::new(cx, cy), 7.0),
+            );
+
+            // Device name label.
+            let label_x = glyph_box.x1 + 12.0;
+            let label_y = row_rect.y0 + (row_rect.height() - 14.0) / 2.0;
+            text_renderer.draw_text_weighted(
+                scene,
+                &dev.name,
+                tokens.typography.scale.sm,
+                colors.text_primary,
+                transform * Affine::translate((label_x, label_y)),
+                None,
+                TextWeight::Medium,
+            );
+
+            // Trailing: battery icon.
+            let bat_box = Rect::new(
+                row_rect.x1 - 64.0,
+                row_rect.y0 + (row_rect.height() - 18.0) / 2.0,
+                row_rect.x1 - 64.0 + 22.0,
+                row_rect.y0 + (row_rect.height() + 18.0) / 2.0,
+            );
+            // Battery glyph tinted by charge level: > 50% → success
+            // green, > 20% → text_primary, else → danger red.
+            let bat_color = if dev.battery > 50 {
+                colors.semantic.success
+            } else if dev.battery > 20 {
+                colors.text_primary
+            } else {
+                colors.semantic.danger
+            };
+            quick_ui::icons::draw_icon(
+                scene,
+                transform,
+                bat_box,
+                quick_ui::icons::Icon::Battery,
+                bat_color,
+                quick_ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
+
+            // Trailing-most: active-radio dot for the connected device.
+            if dev.connected {
+                let cx = row_rect.x1 - 14.0;
+                let cy = row_rect.y0 + row_rect.height() / 2.0;
+                let dot = vello::kurbo::Circle::new(Point::new(cx, cy), 5.0);
+                scene.fill(Fill::NonZero, transform, colors.accent[5], None, &dot);
+            }
+        }
     }
 
     /// Collaborators dropdown: a peer-roster popover anchored under the
