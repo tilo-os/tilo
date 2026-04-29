@@ -15,6 +15,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::shell::quick_settings::{BtDevice, QsLevel, WifiNetwork};
 use crate::shell::state::WorkspaceTree;
 
 /// Snapshot of which shell overlays are currently on screen.
@@ -53,7 +54,7 @@ impl SearchScope {
 /// Quick-settings tray values. Local UI state; does not sync to peers —
 /// device settings like brightness, volume, and radio toggles are always
 /// per-device, never shared.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct QuickSettingsState {
     /// Brightness level, 0.0..=1.0.
     pub brightness: f32,
@@ -61,6 +62,17 @@ pub struct QuickSettingsState {
     pub volume: f32,
     pub wifi: bool,
     pub bluetooth: bool,
+    /// Navigation stack for the popover. The renderer dispatches on
+    /// `nav_stack.last()` (always at least `Root`) — pushing `Wifi` or
+    /// `Bluetooth` flips the popover body to the drill-in list.
+    /// Concept ref: `QuickSettings.tsx:108-128, 101-162`.
+    pub nav_stack: Vec<QsLevel>,
+    /// Demo WiFi networks rendered in the WiFi drill-in list. Mock data
+    /// until real scanning lands; concept ref: `QuickSettings.tsx:108-128`.
+    pub wifi_networks: Vec<WifiNetwork>,
+    /// Demo Bluetooth devices rendered in the BT drill-in list. Mock data
+    /// until real pairing lands; concept ref: `QuickSettings.tsx:140-160`.
+    pub bt_devices: Vec<BtDevice>,
 }
 
 impl Default for QuickSettingsState {
@@ -70,6 +82,72 @@ impl Default for QuickSettingsState {
             volume: 0.4,
             wifi: true,
             bluetooth: false,
+            nav_stack: vec![QsLevel::Root],
+            wifi_networks: vec![
+                WifiNetwork {
+                    ssid: "Home_Network".to_string(),
+                    signal: 4,
+                    secure: true,
+                    connected: true,
+                },
+                WifiNetwork {
+                    ssid: "Cafe_Guest".to_string(),
+                    signal: 3,
+                    secure: false,
+                    connected: false,
+                },
+                WifiNetwork {
+                    ssid: "Neighbour_5G".to_string(),
+                    signal: 2,
+                    secure: true,
+                    connected: false,
+                },
+                WifiNetwork {
+                    ssid: "FreeWiFi".to_string(),
+                    signal: 1,
+                    secure: false,
+                    connected: false,
+                },
+            ],
+            bt_devices: vec![
+                BtDevice {
+                    name: "AirPods Pro".to_string(),
+                    battery: 80,
+                    connected: true,
+                },
+                BtDevice {
+                    name: "Magic Mouse".to_string(),
+                    battery: 65,
+                    connected: false,
+                },
+                BtDevice {
+                    name: "Keychron K2".to_string(),
+                    battery: 40,
+                    connected: false,
+                },
+            ],
+        }
+    }
+}
+
+impl QuickSettingsState {
+    /// Currently visible level — the renderer's dispatch key. Defaults to
+    /// `Root` if the stack is somehow empty (`new()` always seeds it).
+    pub fn current_level(&self) -> &QsLevel {
+        self.nav_stack.last().unwrap_or(&QsLevel::Root)
+    }
+
+    /// Push a new level onto the nav stack. Used by the toggle-card
+    /// chevron-affordance click in `draw_quick_settings`.
+    pub fn push_level(&mut self, level: QsLevel) {
+        self.nav_stack.push(level);
+    }
+
+    /// Pop the top level. No-op when only `Root` remains so the popover
+    /// can't be emptied.
+    pub fn pop_level(&mut self) {
+        if self.nav_stack.len() > 1 {
+            self.nav_stack.pop();
         }
     }
 }
