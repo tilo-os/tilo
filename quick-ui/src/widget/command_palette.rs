@@ -10,6 +10,7 @@
 //! matching `quick-ui`'s direct-mutation event model.
 
 use automerge::{AutoCommit, ObjId};
+use std::collections::HashSet;
 use std::sync::Arc;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -23,6 +24,82 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::Widget;
+
+/// Scope chip in the GlobalSearch filter strip — concept renders these
+/// as pill toggles immediately under the prompt row
+/// (`nirios-concept/src/components/GlobalSearch.tsx:184-197`).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum SearchScope {
+    /// Limit results to the active workspace.
+    Workspace,
+    /// Search across every workspace.
+    All,
+}
+
+/// Filetype filter chip — concept paints multi-select pills next to
+/// the scope chips (`GlobalSearch.tsx:201-221`). The variant set here
+/// matches the four buckets surfaced in the prompt; the underlying
+/// command list still supplies its own filtering predicate.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Filetype {
+    Docs,
+    Code,
+    Image,
+    Video,
+}
+
+impl Filetype {
+    pub const ALL: [Filetype; 4] =
+        [Filetype::Docs, Filetype::Code, Filetype::Image, Filetype::Video];
+
+    /// Short, all-caps label rendered inside the chip (per concept's
+    /// `text-[10px] font-bold uppercase`).
+    pub fn label(&self) -> &'static str {
+        match self {
+            Filetype::Docs => "DOCS",
+            Filetype::Code => "CODE",
+            Filetype::Image => "IMG",
+            Filetype::Video => "VID",
+        }
+    }
+}
+
+/// Visual + interaction state for the filter strip painted under the
+/// prompt row. Concept `GlobalSearch.tsx:184-244` — scope chips +
+/// filetype chips + a full-text toggle.
+///
+/// Kept inside the palette widget for now; once `quick-shell::search`
+/// gains its own `SearchFilter` (plan task T6 step 3), the chrome can
+/// keep that as the source of truth and mirror it onto the palette
+/// each frame via the existing per-frame draw path.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SearchFilter {
+    pub scope: SearchScope,
+    pub filetypes: HashSet<Filetype>,
+    pub full_text: bool,
+}
+
+impl Default for SearchFilter {
+    fn default() -> Self {
+        Self {
+            scope: SearchScope::Workspace,
+            filetypes: HashSet::new(),
+            full_text: false,
+        }
+    }
+}
+
+impl SearchFilter {
+    pub fn toggle_full_text(&mut self) { self.full_text = !self.full_text; }
+
+    pub fn toggle_filetype(&mut self, ft: Filetype) {
+        if !self.filetypes.remove(&ft) {
+            self.filetypes.insert(ft);
+        }
+    }
+
+    pub fn set_scope(&mut self, scope: SearchScope) { self.scope = scope; }
+}
 
 type SelectFn = dyn Fn(&mut AutoCommit, &ObjId) + Send + Sync;
 
@@ -104,6 +181,7 @@ pub struct CommandPalette {
     cursor: usize,
     rect: Rect,
     is_focused: bool,
+    search_filter: SearchFilter,
 }
 
 impl Default for CommandPalette {
@@ -120,7 +198,15 @@ impl CommandPalette {
             cursor: 0,
             rect: Rect::ZERO,
             is_focused: false,
+            search_filter: SearchFilter::default(),
         }
+    }
+
+    /// Mutable handle to the filter strip's state — callers wire chip
+    /// clicks to `search_filter_mut().toggle_*()`.
+    pub fn search_filter(&self) -> &SearchFilter { &self.search_filter }
+    pub fn search_filter_mut(&mut self) -> &mut SearchFilter {
+        &mut self.search_filter
     }
 
     pub fn push(&mut self, e: CommandEntry) {
@@ -172,13 +258,23 @@ impl CommandPalette {
         if i >= self.visible.len() {
             return None;
         }
-        let list_top = self.rect.y0 + PADDING + INPUT_HEIGHT + PADDING;
+        let list_top = self.list_top_y();
         let y0 = list_top + (i as f64) * ROW_HEIGHT;
         let y1 = y0 + ROW_HEIGHT;
-        if y1 > self.rect.y1 - PADDING {
+        // The footer + its gap eat into the bottom of the card; cap at
+        // the start of the footer band rather than `rect.y1 - PADDING`.
+        let max_y = self.footer_rect().y0 - PADDING;
+        if y1 > max_y {
             return None;
         }
         Some(Rect::new(self.rect.x0 + PADDING, y0, self.rect.x1 - PADDING, y1))
+    }
+
+    /// Y coordinate where the result list begins (immediately under the
+    /// filter strip + its gap). Shared by `row_rect` and `draw`.
+    fn list_top_y(&self) -> f64 {
+        self.rect.y0 + PADDING + INPUT_HEIGHT + PADDING
+            + FILTER_STRIP_HEIGHT + PADDING
     }
 
     /// Index of the visible row whose rect contains `p`, if any. Used by
@@ -251,6 +347,269 @@ impl CommandPalette {
         )
     }
 
+    /// 40 px filter strip painted directly under the prompt row. Holds
+    /// scope chips on the left, filetype chips in the middle, and a
+    /// full-text toggle on the right (concept
+    /// `GlobalSearch.tsx:184-244`).
+    pub fn filter_strip_rect(&self) -> Rect {
+        let row = self.input_row_rect();
+        let y0 = row.y1 + PADDING;
+        Rect::new(row.x0, y0, row.x1, y0 + FILTER_STRIP_HEIGHT)
+    }
+
+    /// Footer band painted at the bottom of the palette card with
+    /// `↑↓ Navigate / Enter Select` kbd-chip hints + a right-aligned
+    /// scope label. Concept `GlobalSearch.tsx:274-280`.
+    pub fn footer_rect(&self) -> Rect {
+        Rect::new(
+            self.rect.x0 + PADDING,
+            self.rect.y1 - PADDING - FOOTER_HEIGHT,
+            self.rect.x1 - PADDING,
+            self.rect.y1 - PADDING,
+        )
+    }
+
+    /// Layout split for one filter chip. Each chip is a rounded-full
+    /// pill `px-2 py-1` (≈ 12 px horizontal padding) centred vertically
+    /// in the strip.
+    fn chip_rect(strip: Rect, x: f64, width: f64) -> Rect {
+        let h = (strip.height() - 8.0).max(20.0);
+        let cy = (strip.y0 + strip.y1) / 2.0;
+        Rect::new(x, cy - h / 2.0, x + width, cy + h / 2.0)
+    }
+
+    /// Paint scope chips + filetype chips + full-text toggle into the
+    /// filter strip. Active chip = `accent_primary` (indigo-500) fill +
+    /// `text_primary` (white) text; idle = white/5 fill + `text_dim`
+    /// (slate-400) text. The full-text toggle uses `accent[2]` (≈
+    /// emerald-500) when on, matching concept `bg-emerald-500/20`.
+    fn draw_filter_strip(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let strip = self.filter_strip_rect();
+        let chip_text_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
+
+        let active_fill = theme.tokens.colors.accent[5];
+        let idle_fill = Color::rgba8(255, 255, 255, 13);  // white/5
+        let active_text = theme.tokens.colors.text_primary;
+        let idle_text = theme.tokens.colors.text_dim;
+
+        // Scope chips on the left.
+        let mut x = strip.x0;
+        for (scope, label) in [
+            (SearchScope::Workspace, "WORKSPACE"),
+            (SearchScope::All, "ALL"),
+        ] {
+            let (w, _) = text_renderer.measure(label, chip_text_size, None);
+            let chip_w = w as f64 + 16.0;
+            let chip = Self::chip_rect(strip, x, chip_w);
+            let active = self.search_filter.scope == scope;
+            self.draw_chip(
+                scene,
+                transform,
+                text_renderer,
+                chip,
+                label,
+                chip_text_size,
+                if active { active_fill } else { idle_fill },
+                if active { active_text } else { idle_text },
+            );
+            x += chip_w + 6.0;
+        }
+
+        // Right-anchored full-text toggle.
+        let ft_label = "FULL TEXT";
+        let (ft_w, _) = text_renderer.measure(ft_label, chip_text_size, None);
+        let ft_chip_w = ft_w as f64 + 16.0;
+        let ft_chip = Self::chip_rect(strip, strip.x1 - ft_chip_w, ft_chip_w);
+        let ft_on = self.search_filter.full_text;
+        // Concept `GlobalSearch.tsx:227-231`: `bg-emerald-500/20
+        // text-emerald-400` when on. Hex literals are pinned by the
+        // plan's palette table.
+        let ft_active_fill = Color::rgba8(34, 197, 94, 51);  // emerald-500/20
+        let ft_active_text = Color::rgba8(0x4a, 0xde, 0x80, 0xff);  // emerald-400
+        self.draw_chip(
+            scene,
+            transform,
+            text_renderer,
+            ft_chip,
+            ft_label,
+            chip_text_size,
+            if ft_on { ft_active_fill } else { idle_fill },
+            if ft_on { ft_active_text } else { idle_text },
+        );
+
+        // Filetype chips fill the gap between scope chips and the
+        // full-text toggle. Right-bound stops 8 px before the toggle.
+        let mut fx = x;
+        let max_x = ft_chip.x0 - 8.0;
+        for ft in Filetype::ALL {
+            let label = ft.label();
+            let (w, _) = text_renderer.measure(label, chip_text_size, None);
+            let chip_w = w as f64 + 16.0;
+            if fx + chip_w > max_x { break; }
+            let chip = Self::chip_rect(strip, fx, chip_w);
+            let active = self.search_filter.filetypes.contains(&ft);
+            self.draw_chip(
+                scene,
+                transform,
+                text_renderer,
+                chip,
+                label,
+                chip_text_size,
+                if active { active_fill } else { idle_fill },
+                if active { active_text } else { idle_text },
+            );
+            fx += chip_w + 6.0;
+        }
+    }
+
+    /// Single chip body + label. Shared by scope/filetype/full-text
+    /// renders so they all pin to the same `rounded-full` shape.
+    fn draw_chip(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        chip: Rect,
+        label: &str,
+        text_size: f32,
+        body: Color,
+        text_color: Color,
+    ) {
+        // `rounded-full` ≈ half-height radius.
+        let radius = chip.height() / 2.0;
+        let shape = RoundedRect::from_rect(chip, radius);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            body,
+            None,
+            &shape,
+        );
+        let (w, h) = text_renderer.measure(label, text_size, None);
+        let tx = (chip.x0 + chip.x1) / 2.0 - w as f64 / 2.0;
+        let ty = (chip.y0 + chip.y1) / 2.0 - h as f64 / 2.0;
+        text_renderer.draw_text(
+            scene,
+            label,
+            text_size,
+            text_color,
+            transform * Affine::translate((tx, ty)),
+            None,
+        );
+    }
+
+    /// Footer paint: `↑↓ Navigate / Enter Select` on the left and the
+    /// active scope label on the right, on top of a `bg-black/20` band
+    /// with a 1 px slate-700 top border.
+    fn draw_footer(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let footer = self.footer_rect();
+        // `bg-black/20` band — 20% black over the slate surface.
+        let band_body = Color::rgba8(0, 0, 0, 51);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            band_body,
+            None,
+            &footer,
+        );
+        // 1 px top border (slate-700 ≈ `border_standard`).
+        let border = vello::kurbo::Line::new(
+            (footer.x0, footer.y0),
+            (footer.x1, footer.y0),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.border_standard,
+            None,
+            &border,
+        );
+
+        let chip_text_size = (theme.tokens.typography.scale.sm - 2.0).max(9.0);
+        let chip_body = Color::rgba8(255, 255, 255, 13);  // white/5
+        let chip_border = Color::rgba8(255, 255, 255, 26);  // white/10
+        let dim = theme.tokens.colors.text_dim;
+        let chip_h = (footer.height() - 14.0).max(14.0);
+        let cy = (footer.y0 + footer.y1) / 2.0;
+
+        // Left cluster: kbd chip + label, repeated for ↑↓ / Enter.
+        let mut x = footer.x0 + 4.0;
+        for (key, label) in [("\u{2191}\u{2193}", "Navigate"), ("Enter", "Select")] {
+            let (kw, kh) = text_renderer.measure(key, chip_text_size, None);
+            let chip_w = kw as f64 + 10.0;
+            let chip_rect =
+                Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
+            let chip_shape = RoundedRect::from_rect(chip_rect, 4.0);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                chip_body,
+                None,
+                &chip_shape,
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                chip_border,
+                None,
+                &chip_shape,
+            );
+            text_renderer.draw_text(
+                scene,
+                key,
+                chip_text_size,
+                dim,
+                transform
+                    * Affine::translate((
+                        chip_rect.x0 + (chip_rect.width() - kw as f64) / 2.0,
+                        chip_rect.y0 + (chip_rect.height() - kh as f64) / 2.0,
+                    )),
+                None,
+            );
+            x = chip_rect.x1 + 4.0;
+            let (lw, lh) = text_renderer.measure(label, chip_text_size, None);
+            text_renderer.draw_text(
+                scene,
+                label,
+                chip_text_size,
+                dim,
+                transform * Affine::translate((x, cy - lh as f64 / 2.0)),
+                None,
+            );
+            x += lw as f64 + 12.0;
+        }
+
+        // Right-anchored scope label.
+        let scope_label = match self.search_filter.scope {
+            SearchScope::Workspace => "in Workspace",
+            SearchScope::All => "in All Workspaces",
+        };
+        let (sw, sh) = text_renderer.measure(scope_label, chip_text_size, None);
+        text_renderer.draw_text(
+            scene,
+            scope_label,
+            chip_text_size,
+            dim,
+            transform * Affine::translate((
+                footer.x1 - sw as f64 - 4.0,
+                cy - sh as f64 / 2.0,
+            )),
+            None,
+        );
+    }
+
     fn rebuild(&mut self) {
         self.visible.clear();
         for (i, e) in self.entries.iter().enumerate() {
@@ -269,6 +628,12 @@ impl CommandPalette {
 const ROW_HEIGHT: f64 = 32.0;
 const INPUT_HEIGHT: f64 = 36.0;
 const PADDING: f64 = 8.0;
+/// Concept `GlobalSearch.tsx:184` — a `py-2` strip (≈ 40 px) wrapping
+/// the chip row.
+const FILTER_STRIP_HEIGHT: f64 = 40.0;
+/// Concept `GlobalSearch.tsx:274-280` — a `p-3` band (≈ 36 px) holding
+/// the kbd-chip hints + scope label.
+const FOOTER_HEIGHT: f64 = 36.0;
 
 impl Widget for CommandPalette {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
@@ -280,7 +645,17 @@ impl Widget for CommandPalette {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let rows = self.visible.len().min(10).max(1) as f32;
-        let height = (INPUT_HEIGHT as f32) + rows * (ROW_HEIGHT as f32) + (PADDING as f32) * 2.0;
+        // padding (top) + input row + gap + filter strip + gap + list +
+        // gap + footer + padding (bottom). The `gap` between sections
+        // reuses `PADDING` so the surface stays a single visual rhythm.
+        let height = (PADDING as f32) * 2.0
+            + INPUT_HEIGHT as f32
+            + PADDING as f32
+            + FILTER_STRIP_HEIGHT as f32
+            + PADDING as f32
+            + rows * ROW_HEIGHT as f32
+            + PADDING as f32
+            + FOOTER_HEIGHT as f32;
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -426,12 +801,17 @@ impl Widget for CommandPalette {
             None,
         );
 
+        // Filter strip — scope chips, filetype chips, full-text toggle.
+        // Concept `nirios-concept/src/components/GlobalSearch.tsx:184-244`.
+        self.draw_filter_strip(scene, transform, text_renderer, theme);
+
         // Vertical list of visible entries.
-        let list_top = row_rect.y1 + PADDING;
+        let list_top = self.list_top_y();
+        let footer_top = self.footer_rect().y0;
         for (i, &entry_idx) in self.visible.iter().enumerate() {
             let y0 = list_top + (i as f64) * ROW_HEIGHT;
             let y1 = y0 + ROW_HEIGHT;
-            if y1 > self.rect.y1 - PADDING {
+            if y1 > footer_top - PADDING {
                 break;
             }
             let entry_rect =
@@ -458,6 +838,10 @@ impl Widget for CommandPalette {
                 None,
             );
         }
+
+        // Footer band: kbd-chip hints on the left + scope label on the
+        // right. Concept `GlobalSearch.tsx:274-280`.
+        self.draw_footer(scene, transform, text_renderer, theme);
     }
 
     fn handle_event(
@@ -608,10 +992,103 @@ mod tests {
         p.push(CommandEntry::new("a", "Alpha"));
         p.push(CommandEntry::new("b", "Bravo"));
         // Seat the palette rect so row_rect has meaningful coordinates.
-        p.rect = Rect::new(0.0, 0.0, 360.0, 200.0);
+        // Height must accommodate input row + filter strip + 2 result
+        // rows + footer band — see `build_layout`.
+        p.rect = Rect::new(0.0, 0.0, 360.0, 280.0);
         let mid_row_1 = p.row_rect(1).unwrap().center();
         assert_eq!(p.row_at(mid_row_1), Some(1));
         // Clicks outside the rect return None.
         assert!(p.row_at(Point::new(1000.0, 1000.0)).is_none());
+    }
+
+    // -------------------------------------------------------------------
+    // Task 6 — filter strip + footer hints
+    //
+    // Failing tests added FIRST (per the plan's TDD discipline). They
+    // pin the SearchFilter state machine and the filter-strip / footer
+    // layout split. Concept ref:
+    // `nirios-concept/src/components/GlobalSearch.tsx:184-244,274-280`.
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn search_filter_full_text_toggles() {
+        let mut f = SearchFilter::default();
+        assert!(!f.full_text);
+        f.toggle_full_text();
+        assert!(f.full_text);
+        f.toggle_full_text();
+        assert!(!f.full_text);
+    }
+
+    #[test]
+    fn search_filter_filetypes_multi_select() {
+        let mut f = SearchFilter::default();
+        f.toggle_filetype(Filetype::Code);
+        f.toggle_filetype(Filetype::Docs);
+        assert!(f.filetypes.contains(&Filetype::Code));
+        assert!(f.filetypes.contains(&Filetype::Docs));
+        // Toggling again removes the entry — multi-select acts like a set.
+        f.toggle_filetype(Filetype::Code);
+        assert!(!f.filetypes.contains(&Filetype::Code));
+        assert!(f.filetypes.contains(&Filetype::Docs));
+    }
+
+    #[test]
+    fn search_filter_default_scope_is_workspace() {
+        let f = SearchFilter::default();
+        assert_eq!(f.scope, SearchScope::Workspace);
+    }
+
+    #[test]
+    fn filter_strip_sits_below_input_row_and_above_results() {
+        let mut p = CommandPalette::new();
+        p.push(CommandEntry::new("a", "Alpha"));
+        p.rect = Rect::new(0.0, 0.0, 360.0, 280.0);
+        let input = p.input_row_rect();
+        let strip = p.filter_strip_rect();
+        let row0 = p.row_rect(0).expect("seeded row 0 must lay out");
+        assert!(
+            strip.y0 >= input.y1,
+            "filter strip must start at or below input row (input.y1={}, strip.y0={})",
+            input.y1,
+            strip.y0,
+        );
+        assert!(
+            strip.y1 <= row0.y0,
+            "results list must start at or below filter strip (strip.y1={}, row0.y0={})",
+            strip.y1,
+            row0.y0,
+        );
+        assert!(
+            strip.height() >= 32.0,
+            "filter strip must be tall enough for chip pills (got {})",
+            strip.height(),
+        );
+    }
+
+    #[test]
+    fn footer_sits_below_results_at_card_bottom() {
+        let mut p = CommandPalette::new();
+        p.push(CommandEntry::new("a", "Alpha"));
+        p.rect = Rect::new(0.0, 0.0, 360.0, 280.0);
+        let row0 = p.row_rect(0).expect("seeded row 0 must lay out");
+        let footer = p.footer_rect();
+        assert!(
+            footer.y0 >= row0.y1,
+            "footer must sit below the result list (row0.y1={}, footer.y0={})",
+            row0.y1,
+            footer.y0,
+        );
+        assert!(
+            footer.y1 <= p.rect.y1,
+            "footer must stay inside the card (rect.y1={}, footer.y1={})",
+            p.rect.y1,
+            footer.y1,
+        );
+        assert!(
+            footer.height() >= 24.0,
+            "footer must be tall enough for kbd chips (got {})",
+            footer.height(),
+        );
     }
 }
