@@ -2705,6 +2705,16 @@ impl ShellOverlayHost {
             }
         }
 
+        // Defensive gate: every non-General arm above already returns,
+        // so this is unreachable today — but a new `WsTab` variant
+        // added without a matching arm would otherwise fall through and
+        // paint the General body over the new pane (the pre-T5 symptom
+        // was the "Press Esc to close" hint + Name label bleeding into
+        // ws-settings-roles.png).
+        if !matches!(active_tab, WsTab::General) {
+            return;
+        }
+
         // Name input — edits fall through to `editing_workspace_name`.
         let body_y = rect.y0 + 168.0;
         text_renderer.draw_text(

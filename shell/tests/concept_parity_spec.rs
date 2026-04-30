@@ -505,6 +505,80 @@ fn ws_settings_files_tab_does_not_leak_magic_string_into_name_input() {
     );
 }
 
+// ===========================================================================
+// 3c. WorkspaceSettings — Roles tab must fully replace the General body
+// ===========================================================================
+
+/// Wave-3 T5 regression pin: when the Roles tab is active, the modal
+/// body region belongs entirely to the Roles pane. Previously the
+/// General body (Name input, Invite Link header + dot, URL pill, Copy
+/// button, Collaborators tile row, "Press Esc to close" hint) painted
+/// *under* the Roles pane content because the body block in
+/// `draw_ws_settings` ran as the unconditional fall-through after the
+/// per-tab match — visible as "Press Esc to close" + the General "Name"
+/// label bleeding through `ws-settings-roles.png`.
+///
+/// The fix is a structural gate: the General body block is reachable
+/// only in the `WsTab::General` arm of the match. Each non-General arm
+/// `return`s after drawing its pane, AND the General body block is
+/// itself wrapped in an explicit `if !matches!(active_tab,
+/// WsTab::General) { return; }` — so the body cannot be reached from
+/// any future tab variant added without a matching arm.
+///
+/// We pin the property the same way [`ws_settings_files_tab_does_not_leak_magic_string_into_name_input`]
+/// does for the Files tab: render Roles twice with different
+/// `editing_workspace_name` contents and assert the fill counts match.
+/// Pre-fix, the General body fall-through would have re-rendered the
+/// Name-input edit buffer (with caret + thicker stroke + the literal
+/// hint text drawn over the Roles pane), changing the fill count.
+/// Post-fix, the Roles pane is invariant to the Name-input buffer
+/// because the General body never runs.
+#[test]
+fn roles_tab_does_not_render_press_esc_to_close_text() {
+    let tree = WorkspaceTree::bootstrap_default();
+
+    // Render Roles-tab + clean Name-input buffer.
+    let (mut host_a, chrome_a) = build_nirios_overlay_host_with_chrome(&tree);
+    {
+        let mut st = chrome_a.borrow_mut();
+        st.overlays.ws_settings = true;
+        st.ws_settings_tab = WsTab::Roles;
+        st.editing_workspace_name = None;
+    }
+    let scene_a = render_host_to_scene(&mut host_a);
+    let fills_a = collect_solid_colors(&scene_a).len();
+
+    // Render Roles-tab + a non-empty Name-input buffer that, if the
+    // General body were still falling through under the Roles pane,
+    // would re-emit the Name-input rect fill, the editing-mode caret
+    // fill (`accent[5]`), and a thicker stroke. Any leak shows up as
+    // a different solid-colour fill count.
+    let (mut host_b, chrome_b) = build_nirios_overlay_host_with_chrome(&tree);
+    {
+        let mut st = chrome_b.borrow_mut();
+        st.overlays.ws_settings = true;
+        st.ws_settings_tab = WsTab::Roles;
+        st.editing_workspace_name = Some("Press Esc to close".into());
+    }
+    let scene_b = render_host_to_scene(&mut host_b);
+    let fills_b = collect_solid_colors(&scene_b).len();
+
+    assert_eq!(
+        fills_a, fills_b,
+        "Roles-tab render must be invariant to `editing_workspace_name` \
+         contents — when the Roles tab is active, the General body \
+         (Name input, Invite Link, Copy button, Collaborators row, \
+         'Press Esc to close' hint) must not run. Got {fills_a} fills \
+         with editing_workspace_name=None vs {fills_b} with \
+         editing_workspace_name=Some(\"Press Esc to close\"); a \
+         difference indicates the General body is leaking into the \
+         Roles pane. Audit row: ws-settings-roles.png shows 'Press \
+         Esc to close' + Name label bleeding through under the Roles \
+         content. Fix `draw_ws_settings` so the General body block \
+         only runs in the `WsTab::General` arm."
+    );
+}
+
 /// Layout + draw a `ShellOverlayHost` already configured by the caller
 /// (chrome state pre-set on the host). Mirrors the body of
 /// `render_with_ws_settings_tab` minus the helper's chrome setup, so
