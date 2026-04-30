@@ -885,11 +885,10 @@ mod tests {
         use crate::shell::chrome_state::ChromeState;
         use crate::shell::state::WorkspaceTree;
 
-        // Seed a 3-workspace tree. `bootstrap_default` plus two appends =
-        // three workspaces in a known order, matching the spoke layout.
-        let mut tree = WorkspaceTree::bootstrap_default();
-        tree.append_empty_workspace("Research");
-        tree.append_empty_workspace("Design");
+        // Seed a 3-workspace tree. `bootstrap_default` already seeds
+        // Home / Research / Design — three workspaces in a known order
+        // matching the spoke layout — so no additional appends are needed.
+        let tree = WorkspaceTree::bootstrap_default();
         assert_eq!(tree.workspaces.len(), 3);
         let ws_ids: Vec<_> = tree.workspaces.iter().map(|w| w.id).collect();
         let initial_active = tree.active;
