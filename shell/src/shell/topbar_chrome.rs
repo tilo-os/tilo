@@ -191,6 +191,7 @@ impl TopBarChrome {
 
     pub fn sync_from_tree(&mut self, tree: &WorkspaceTree) {
         self.workspace_total = tree.workspaces.len().max(1);
+        let active_ws = tree.workspaces.iter().find(|w| w.id == tree.active);
         let (idx, name) = tree
             .workspaces
             .iter()
@@ -200,17 +201,26 @@ impl TopBarChrome {
             .unwrap_or((0, String::from("Workspace")));
         self.workspace_index = idx;
         self.workspace_name = name;
-        // Walk the roster in tandem so initial-index N aligns with
-        // colour-index N in the render path. Drop collaborators whose
-        // name has no starting char (matches the previous filter) and
-        // take at most 3 — the rest flows into `collaborator_overflow`.
+        // Roster source: prefer the active workspace's own collaborators
+        // (per-workspace seed in `WorkspaceTree::bootstrap_default`), and
+        // fall back to the tree-level roster only when the active workspace
+        // carries no peers — mirrors the precedence applied by
+        // `sidebar_wheel_chrome::sync_from_tree`. The local user (`id ==
+        // "me"`) is filtered out of the avatar stack: the right cluster
+        // shows *other* peers in the workspace, not the local user. Drop
+        // collaborators whose name has no starting char and take at most
+        // 3 — the rest flows into `collaborator_overflow`.
+        let roster: &[crate::shell::state::Collaborator] = match active_ws {
+            Some(ws) if ws.collaborators.iter().any(|c| c.id != "me") => {
+                &ws.collaborators
+            }
+            _ => &tree.collaborators,
+        };
         self.collaborator_initials.clear();
         self.collaborator_colors.clear();
-        for c in tree.collaborators.iter() {
+        let peer_count = roster.iter().filter(|c| c.id != "me").count();
+        for c in roster.iter().filter(|c| c.id != "me").take(3) {
             let Some(ch) = c.name.chars().next() else { continue };
-            if self.collaborator_initials.len() == 3 {
-                break;
-            }
             self.collaborator_initials.push(ch.to_ascii_uppercase());
             let (r, g, b) = c
                 .cursor_color
@@ -219,7 +229,7 @@ impl TopBarChrome {
                 .unwrap_or_else(|| user_color(&c.id));
             self.collaborator_colors.push(Color::rgb8(r, g, b));
         }
-        self.collaborator_overflow = tree.collaborators.len().saturating_sub(3);
+        self.collaborator_overflow = peer_count.saturating_sub(3);
     }
 
     fn current_clock_string() -> String {
