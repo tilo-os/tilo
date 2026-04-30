@@ -987,6 +987,98 @@ pub fn draw_roles_pane(
     }
 }
 
+/// Minimal Files-tab body — paints a "Files" caption header plus one
+/// row per [`Workspace::workspace_files`] entry. Standalone of the
+/// General body so the Files arm of the Workspace Settings modal does
+/// not depend on `editing_workspace_name` (which is the Name-input edit
+/// buffer for the General tab and unrelated to file-grid rendering).
+///
+/// This is the placeholder until the concept's full Files tab
+/// (`WorkspaceSettingsModal.tsx:257-303` — icon + name + type badge +
+/// assigned-roles avatar pile + Remove button per row) lands in T3's
+/// follow-up. Even in its minimal form, it owns enough geometry to
+/// keep `WsTab::Files` orthogonal to the General body's name edit
+/// state — the side-channel migration in `chrome_state::WsTab` relies
+/// on that orthogonality.
+pub fn draw_files_pane(
+    scene: &mut Scene,
+    transform: Affine,
+    pane_rect: Rect,
+    workspace: &Workspace,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
+    if pane_rect.width() <= 0.0 || pane_rect.height() <= 0.0 {
+        return;
+    }
+    let tokens = &theme.tokens;
+    let colors = &tokens.colors;
+
+    let pad = 16.0_f64;
+    let row_h = 40.0_f64;
+    let row_gap = 8.0_f64;
+    let mut cursor_y = pane_rect.y0 + pad;
+
+    text_renderer.draw_text(
+        scene,
+        "Files",
+        tokens.typography.scale.sm,
+        colors.text_dim,
+        transform * Affine::translate((pane_rect.x0 + pad, cursor_y)),
+        None,
+    );
+    cursor_y += 28.0;
+
+    if workspace.workspace_files.is_empty() {
+        let row = Rect::new(
+            pane_rect.x0 + pad,
+            cursor_y,
+            pane_rect.x1 - pad,
+            cursor_y + row_h,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.neutral[3].with_alpha_factor(0.10),
+            None,
+            &RoundedRect::from_rect(row, 12.0),
+        );
+        text_renderer.draw_text(
+            scene,
+            "No files added yet",
+            tokens.typography.scale.sm,
+            colors.text_dim,
+            transform * Affine::translate((row.x0 + 16.0, row.y0 + 12.0)),
+            None,
+        );
+    } else {
+        for file in &workspace.workspace_files {
+            let row = Rect::new(
+                pane_rect.x0 + pad,
+                cursor_y,
+                pane_rect.x1 - pad,
+                cursor_y + row_h,
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.neutral[3].with_alpha_factor(0.15),
+                None,
+                &RoundedRect::from_rect(row, 12.0),
+            );
+            text_renderer.draw_text(
+                scene,
+                &file.name,
+                tokens.typography.scale.sm,
+                colors.text_primary,
+                transform * Affine::translate((row.x0 + 16.0, row.y0 + 12.0)),
+                None,
+            );
+            cursor_y += row_h + row_gap;
+        }
+    }
+}
+
 /// Pick a swatch colour for the role with id `role_id`. Deterministic
 /// and palette-pinned: hashes the id's first byte against the theme's
 /// accent ramp + a small set of fallbacks so two roles with different
