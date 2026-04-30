@@ -1437,7 +1437,21 @@ impl Widget for TabBar {
                     }
                 }
                 if let Some(idx) = self.hover_idx {
-                    let origin = self.tab_rects[idx].center();
+                    // Defensive `.get` against a stale `hover_idx`: the
+                    // index was populated by the previous frame's
+                    // `CursorMoved` and a neighbouring widget's
+                    // `handle_event` may have shrunk `tabs`/`tab_rects`
+                    // (`start_closing` / `remove_tab` / cross-group
+                    // detach) between move and press. Mirrors the same
+                    // contract `draw` got in commit `3e01242` for the
+                    // anchor cross-group-drop crash. Clear the stale
+                    // index so the next `CursorMoved` repopulates it
+                    // against the current frame's rects.
+                    let Some(pill) = self.tab_rects.get(idx).copied() else {
+                        self.hover_idx = None;
+                        return;
+                    };
+                    let origin = pill.center();
                     self.press_origin = Some((idx, origin));
                     // Cache the grab offset within the pill. `DragPayload::Tab`
                     // doesn't carry this, but `draw` needs it to position
@@ -1445,12 +1459,16 @@ impl Widget for TabBar {
                     // offset the user originally clicked — concept parity
                     // with the HTML5 drag-image behaviour in
                     // `WindowFrame.tsx`.
-                    let pill = self.tab_rects[idx];
                     self.drag_offset = Some(vello::kurbo::Vec2::new(
                         self.last_cursor.x - pill.x0,
                         self.last_cursor.y - pill.y0,
                     ));
-                    self.active_id = self.tabs[idx].id;
+                    // `self.tabs` and `self.tab_rects` are populated
+                    // together in `apply_layout`, but guard against the
+                    // pathological case where they desync mid-frame.
+                    if let Some(tab) = self.tabs.get(idx) {
+                        self.active_id = tab.id;
+                    }
                     *handled = true;
                 }
             }
@@ -2878,5 +2896,76 @@ mod tests {
             (255, 255, 255, 255),
             "close-hover glyph must be opaque white (concept: hover:text-white)",
         );
+    }
+
+    /// Regression for B-6 (Family Cache-Stale): on `MouseInput::Pressed`,
+    /// the press handler used to index `self.tab_rects[idx]` where
+    /// `idx = self.hover_idx`. `hover_idx` is populated by the preceding
+    /// `CursorMoved` against the *previous* frame's `tab_rects`. If a
+    /// `start_closing` / `remove_tab` mutation in a neighbouring widget's
+    /// `handle_event` shrinks `tabs` (and `tab_rects`) between move and
+    /// press, the press indexes past the end and panics.
+    ///
+    /// The fix is the same defensive `.get(idx)` + early-return contract
+    /// already applied to the draw path in commit `3e01242` (anchor #1).
+    /// Test must drive a real `WindowEvent::MouseInput::Pressed` through
+    /// `handle_event` — not just a unit-of-logic — so we pin the actual
+    /// production codepath that exercised the bug.
+    #[test]
+    fn press_with_stale_hover_idx_does_not_panic() {
+        let mut b = bar();
+        // Worst-case staleness: `tab_rects` is empty (e.g. the previous
+        // frame's tabs were all closed/detached before this press
+        // arrived) but `hover_idx` still points into an arbitrary slot
+        // from the prior `CursorMoved`.
+        b.tab_rects.clear();
+        b.close_rects.clear();
+        b.max_rects.clear();
+        b.search_rects.clear();
+        b.hover_idx = Some(7);
+        // `last_cursor` must be set so the press handler's hit-tests
+        // run — the value itself doesn't matter because the rect vecs
+        // are empty.
+        b.last_cursor = Point::new(50.0, 20.0);
+
+        let press = WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        };
+        let mut tree = TaffyTree::<()>::new();
+        let node = tree.new_leaf(Style::default()).unwrap();
+        let mut handled = false;
+        let mut focus_target = None;
+        let mut state = automerge::AutoCommit::new();
+        let root_id = automerge::ROOT;
+        // Pre-fix this call panics with index-out-of-bounds at the
+        // `self.tab_rects[idx].center()` line. Post-fix the press path
+        // takes the `.get(idx)` fallthrough, clears the stale
+        // `hover_idx`, and returns cleanly.
+        b.handle_event(
+            &press,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut state,
+            &root_id,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &tree,
+        );
+        // After the early-return, the stale hover index must be
+        // cleared so the next CursorMoved repopulates it from the
+        // current frame's rects.
+        assert_eq!(
+            b.hover_idx, None,
+            "stale hover_idx must be cleared when the rect cache no \
+             longer covers it",
+        );
+        // No drag/select side effects should have fired off an empty
+        // bar — this also guards the `pill = self.tab_rects[idx]`
+        // line below the `origin` line.
+        assert!(b.press_origin.is_none());
+        assert!(b.drag_offset.is_none());
     }
 }
