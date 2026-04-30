@@ -394,7 +394,22 @@ impl WorkspaceTree {
             }],
             roles: vec![],
             workspace_files: vec![],
-            collaborators: vec![],
+            // Home is active on first boot; seed one demo peer so
+            // the top-bar avatar stack paints immediately.
+            // `TopBarChrome::sync_from_tree` prefers the active
+            // workspace's roster (with a tree-level fallback), so
+            // without this seed the right cluster would be empty
+            // until the user navigates to Research. The local user
+            // ("me") is deliberately not seeded here so
+            // `draw_ws_settings` synthesizes its "You" tile from the
+            // fallback path — keeping the General-tab fill count
+            // stable for the Roles-tab parity-spec contract. Hex
+            // matches `nirios-concept/src/data.ts`'s `cursorColor`.
+            collaborators: vec![
+                Collaborator::new("alice", "Alice")
+                    .with_cursor_color("#ec4899")
+                    .with_role("editor"),
+            ],
         };
 
         let mut active_strip = HashMap::new();

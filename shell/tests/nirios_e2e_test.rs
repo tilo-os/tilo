@@ -158,9 +158,19 @@ fn search_scope_defaults_to_workspace_and_mutates_through_chrome() {
 
 #[test]
 fn topbar_renders_up_to_three_avatars_then_overflow_chip() {
-    // 2 peers → 2 avatars, no overflow.
+    // The top bar reads the active workspace's roster first (with a
+    // tree-level fallback only when the workspace is empty), so this
+    // test seeds onto the active workspace directly.
     let mut tree = WorkspaceTree::bootstrap_default();
-    tree.collaborators = vec![
+    let active_id = tree.active;
+    let active_ws = tree
+        .workspaces
+        .iter_mut()
+        .find(|w| w.id == active_id)
+        .expect("active workspace");
+
+    // 2 peers → 2 avatars, no overflow.
+    active_ws.collaborators = vec![
         Collaborator::new("a", "Ada"),
         Collaborator::new("b", "Ben"),
     ];
@@ -169,7 +179,12 @@ fn topbar_renders_up_to_three_avatars_then_overflow_chip() {
     assert_eq!(top.collaborator_overflow(), 0);
 
     // 5 peers → first 3 initials drawn + "+2" chip.
-    tree.collaborators = vec![
+    let active_ws = tree
+        .workspaces
+        .iter_mut()
+        .find(|w| w.id == active_id)
+        .expect("active workspace");
+    active_ws.collaborators = vec![
         Collaborator::new("a", "Ada"),
         Collaborator::new("b", "Ben"),
         Collaborator::new("c", "Cae"),
@@ -182,16 +197,41 @@ fn topbar_renders_up_to_three_avatars_then_overflow_chip() {
 }
 
 #[test]
+fn topbar_falls_back_to_tree_collaborators_when_active_workspace_empty() {
+    // If the active workspace itself has no roster, the top bar must
+    // fall back to the tree-level roster — mirrors the precedence
+    // applied by `SidebarWheelChrome::sync_from_tree`. Without this
+    // path, single-workspace demo trees that only set
+    // `tree.collaborators` would render an empty avatar stack.
+    let mut tree = WorkspaceTree::bootstrap_default();
+    let active_id = tree.active;
+    let active_ws = tree
+        .workspaces
+        .iter_mut()
+        .find(|w| w.id == active_id)
+        .expect("active workspace");
+    active_ws.collaborators.clear();
+    tree.collaborators = vec![Collaborator::new("a", "Ada")];
+
+    let top = TopBarChrome::from_tree(&tree);
+    assert_eq!(top.collaborator_initials(), &['A']);
+    assert_eq!(top.collaborator_overflow(), 0);
+}
+
+#[test]
 fn sidebar_active_card_inherits_tree_collaborator_count() {
-    // No peers → no dots drawn.
-    let tree = WorkspaceTree::bootstrap_default();
+    // The default tree seeds Home with one demo collaborator (so the
+    // top-bar avatar stack lights up on first boot); strip it before
+    // exercising the tree-level fallback path.
+    let mut tree = WorkspaceTree::bootstrap_default();
+    for ws in tree.workspaces.iter_mut() {
+        ws.collaborators.clear();
+    }
     let wheel = SidebarWheelChrome::from_tree(&tree);
     assert_eq!(wheel.active_collaborator_count(), 0);
 
-    // Tree-level collaborators flow into the active card's presence count.
-    // Per-workspace presence isn't modeled yet, so a 5-peer tree shows "+N"
-    // overflow on the active card (clamped to 3 + "+2" chip).
-    let mut tree = WorkspaceTree::bootstrap_default();
+    // Tree-level collaborators flow into the active card's presence count
+    // when the active workspace's own roster is empty.
     tree.collaborators = vec![
         Collaborator::new("a", "Ada"),
         Collaborator::new("b", "Ben"),
@@ -242,14 +282,13 @@ fn sidebar_inactive_card_without_per_ws_roster_shows_zero_dots() {
     let mut tree = WorkspaceTree::bootstrap_default();
     let w0 = tree.workspaces[0].id;
     tree.append_empty_workspace("Second");
-    // `bootstrap_default` now seeds a couple of demo collaborators on the
-    // Research workspace so the top-bar avatar stack has data on first
-    // run; the fallback contract under test here is per-workspace
-    // emptiness, so explicitly clear every non-active card's roster.
+    // `bootstrap_default` now seeds demo collaborators on Home (alice)
+    // and on Research (alice + bob) so the top-bar avatar stack has
+    // data on first run; the fallback contract under test here is
+    // per-workspace emptiness, so explicitly clear every workspace's
+    // own roster (including the active one).
     for ws in tree.workspaces.iter_mut() {
-        if ws.id != w0 {
-            ws.collaborators.clear();
-        }
+        ws.collaborators.clear();
     }
     tree.collaborators = vec![
         Collaborator::new("a", "Ada"),
