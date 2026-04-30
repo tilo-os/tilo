@@ -1,15 +1,25 @@
-//! `SidebarWheelDisc` — circular wheel-disc that sits in-plane with window
-//! content, rendering each **workspace** as a radial spoke.
+//! `SidebarWheelDisc` — partial-arc wheel disc anchored OFF-SCREEN-LEFT,
+//! protruding only ~120° of its right edge into the viewport. Each
+//! **workspace** is a radial spoke; the user drags the visible arc to
+//! rotate, and a release snaps to the nearest spoke.
 //!
-//! User-facing spec (verbatim, 2026-04-21):
+//! User-facing spec (verbatim, 2026-04-21 + 2026-04-30):
 //! *"No permanent sidebar, but workspaces appear as rotated axes of the
 //! wheel disc, meaning you can go to the left and drag it to move between
 //! workspaces."*
+//! *"Should only see very small portion of it (e.g. 120 degrees at most)
+//! and be actually to left of the leftmost window group."*
 //!
-//! Design notes are in `docs/nirios/outstanding-work.md` §"Redesign — left
-//! wheel as in-plane disc". This widget is the **sole** left-side
-//! navigation in `build_nirios_overlay_host_with_chrome`; the legacy
+//! Design notes are in `docs/nirios/wheel-disc-design.md`. This widget is
+//! the **sole** left-side navigation in
+//! `build_nirios_overlay_host_with_chrome`; the legacy
 //! `SidebarWheelChrome` module is no longer mounted in the live shell.
+//!
+//! Geometry: the disc's logical centre `cx` sits `radius * 0.5` pixels
+//! LEFT of the viewport edge, so the rim crosses the viewport at
+//! `±60°` from due-east. The visible footprint is a `radius/2` × diameter
+//! sliver (60 × 240 px at the default 240 px diameter). `self.rect` is
+//! the visible footprint; drawing derives the off-screen `cx` from it.
 //!
 //! Interaction model:
 //! - Press inside the disc → capture `drag_from`.
@@ -108,7 +118,22 @@ pub struct SidebarWheelDisc {
     pub last_cursor_pos: Option<Point>,
 }
 
+/// Fraction of the disc's radius that protrudes into the viewport.
+/// `0.5` puts the rim's chord at the viewport's left edge at angles
+/// `±60°` from due-east — i.e. the visible arc spans 120°. Drawing and
+/// hit-testing derive the off-screen centre as
+/// `cx = rect.x0 - radius * VISIBLE_RADIUS_FRACTION`.
+pub(crate) const VISIBLE_RADIUS_FRACTION: f64 = 0.5;
+
 impl SidebarWheelDisc {
+    /// Visible width — the disc protrudes `radius * VISIBLE_RADIUS_FRACTION`
+    /// pixels into the viewport. For the default 240 px diameter, this is
+    /// 60 px. Used by `build_layout` so the leaf reserves the visible
+    /// sliver, not the full diameter.
+    pub fn visible_width_px(&self) -> f64 {
+        (self.diameter_px / 2.0) * VISIBLE_RADIUS_FRACTION
+    }
+
     /// Construct a fresh disc with the given spoke labels. Starts at
     /// `active_idx = 0`, `rotation_deg = 0.0`, default 240 px diameter.
     pub fn new(spokes: Vec<SpokeLabel>) -> Self {
@@ -165,6 +190,33 @@ impl SidebarWheelDisc {
     fn deg_per_pixel(&self) -> f32 {
         (180.0 / std::f32::consts::PI) / (self.diameter_px as f32 / 2.0)
     }
+
+    /// Logical centre of the disc in screen coordinates. The centre sits
+    /// `radius * VISIBLE_RADIUS_FRACTION` pixels LEFT of `rect.x0`, so the
+    /// rim crosses the viewport at `±60°` from due-east. Used by `draw`
+    /// and by the visible-arc hit-test.
+    fn center(&self) -> Point {
+        let radius = self.diameter_px / 2.0;
+        let cx = self.rect.x0 - radius * VISIBLE_RADIUS_FRACTION;
+        let cy = (self.rect.y0 + self.rect.y1) / 2.0;
+        Point::new(cx, cy)
+    }
+
+    /// True iff `p` falls inside the **visible** portion of the disc's
+    /// rim — i.e. inside the rect's footprint (so we never grab clicks
+    /// that landed off-screen-left of the viewport edge) AND within the
+    /// circle's radius. Corner pixels of the rect that aren't actually
+    /// covered by the arc are correctly rejected.
+    fn hit_visible_arc(&self, p: Point) -> bool {
+        if !self.rect.contains(p) {
+            return false;
+        }
+        let c = self.center();
+        let radius = self.diameter_px / 2.0;
+        let dx = p.x - c.x;
+        let dy = p.y - c.y;
+        dx * dx + dy * dy <= radius * radius
+    }
 }
 
 impl Widget for SidebarWheelDisc {
@@ -176,13 +228,16 @@ impl Widget for SidebarWheelDisc {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // Fixed-size square leaf. `align_self: Center` so a parent Column
-        // centres the disc vertically between the top/bottom chrome; no
-        // flex growth so it stays exactly `diameter_px` across.
+        // Leaf reserves only the visible sliver (~radius/2 px wide) and
+        // the full disc height. The disc's logical centre lands
+        // off-screen-left, so the rest of the diameter doesn't need to be
+        // counted in flex layouts. `align_self: Center` keeps the sliver
+        // vertically centred when the parent column is taller than the
+        // diameter; the sidebar's host slot relies on this.
         let node = taffy
             .new_leaf(Style {
                 size: Size {
-                    width: Dimension::length(self.diameter_px as f32),
+                    width: Dimension::length(self.visible_width_px() as f32),
                     height: Dimension::length(self.diameter_px as f32),
                 },
                 flex_grow: 0.0,
@@ -197,31 +252,14 @@ impl Widget for SidebarWheelDisc {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
-        // Wave-3 T1: at narrow viewports — and inside the live shell's
-        // 96 px sidebar slot, where the host overrides the disc's leaf
-        // style to a column narrower than `diameter_px` — the disc's
-        // visual left edge (`cx - radius`) can land in negative X and
-        // clip off-screen. Clamp `rect.x0` so the *drawn* disc keeps a
-        // >= 16 px left margin; `draw` derives `cx` from the rect's
-        // midpoint and uses `diameter_px / 2` as the radius, so the
-        // clamp must shift the rect right by enough that the leftmost
-        // rim point clears the margin.
-        //
-        // All hub/spoke geometry (`draw`, `plus_rect`, etc.) derives
-        // from `self.rect`, so the clamp cascades automatically.
-        const MIN_LEFT_MARGIN: f64 = 16.0;
-        let raw_x0 = origin.x + l.location.x as f64;
-        let raw_x1 = raw_x0 + l.size.width as f64;
-        let raw_cx = (raw_x0 + raw_x1) / 2.0;
-        let radius = self.diameter_px / 2.0;
-        // The visible disc spans `[cx - radius, cx + radius]`. Shift x0
-        // so `cx - radius >= MIN_LEFT_MARGIN`, preserving the rect's
-        // width. When raw_cx is already past `MIN_LEFT_MARGIN + radius`
-        // this is a no-op (max picks the existing position).
-        let min_cx = MIN_LEFT_MARGIN + radius;
-        let cx = raw_cx.max(min_cx);
-        let dx = cx - raw_cx;
-        let x0 = raw_x0 + dx;
+        // `rect` is the *visible footprint* — the sliver of the disc that
+        // protrudes into the viewport. The full circle is anchored
+        // off-screen-left in `draw` (`cx = rect.x0 - radius/2`); only the
+        // right ~120° arc lands in this rect. Hit-testing in
+        // `handle_event` uses the rect plus a circle-distance check so
+        // clicks in the rect's corners (outside the actual arc) don't
+        // grab the wheel.
+        let x0 = origin.x + l.location.x as f64;
         let y0 = origin.y + l.location.y as f64;
         self.rect = Rect::new(
             x0,
@@ -242,9 +280,15 @@ impl Widget for SidebarWheelDisc {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
 
-        let cx = (self.rect.x0 + self.rect.x1) / 2.0;
-        let cy = (self.rect.y0 + self.rect.y1) / 2.0;
+        // Anchor the centre OFF-SCREEN-LEFT: `cx = rect.x0 - radius/2`
+        // puts the rim's chord (at angles ±60° from due-east) exactly on
+        // `rect.x0`, so the visible arc is the right 120° of the circle.
+        // `rect.x1 = rect.x0 + radius/2` is the rightmost rim point.
+        // `cy` stays at the rect's vertical midpoint — the visible arc is
+        // symmetric top-to-bottom around due-east.
         let radius = (self.diameter_px / 2.0) - 1.0;
+        let cx = self.rect.x0 - radius * VISIBLE_RADIUS_FRACTION;
+        let cy = (self.rect.y0 + self.rect.y1) / 2.0;
         if radius <= 0.0 {
             return;
         }
@@ -406,21 +450,30 @@ impl Widget for SidebarWheelDisc {
         );
 
         // ---- "+" add-workspace slot --------------------------------------
-        // A small round button pinned directly below the disc's rim, 20 px
-        // of vertical gap between the disc's outer edge and the slot's top
-        // (so the two shapes read as "related controls" but not a unified
-        // outline). 28 px diameter; fill = `surfaces.overlay` so it picks
-        // up the same translucent tint the topbar uses, rim = 1 px
-        // `neutral[3]` to match the disc's own rim, glyph = two
-        // `text_primary` strokes forming a "+" at ~40% of slot width.
+        // Pinned just below the bottom-most visible-arc tip, inside the
+        // viewport. The disc's centre `cx` is off-screen-left, so the
+        // pre-redesign anchor of `(cx, cy + radius + 20)` would land
+        // entirely off-screen too; instead we centre the slot horizontally
+        // on the visible footprint and place it `slot_radius + 8 px`
+        // below the rim's bottom-most visible point. 28 px diameter;
+        // fill = `surfaces.overlay` (same translucent tint the topbar
+        // uses), rim = 1 px `neutral[3]`, glyph = two `text_primary`
+        // strokes forming a "+" at ~40% of slot width.
         //
         // Interaction is handled in `handle_event` via `plus_rect`, which
         // we cache here so the press path can hit-test the slot without
         // re-deriving the geometry.
         let slot_diam = 28.0_f64;
         let slot_radius = slot_diam / 2.0;
-        let slot_cx = cx;
-        let slot_cy = cy + radius + 20.0;
+        // Bottom-most visible-arc tip: at angle 60° below due-east the
+        // rim sits at `(cx + radius/2, cy + radius * sin(60°))`. Use
+        // that y for the slot's anchor and centre the slot on the
+        // visible footprint's horizontal midpoint so it reads as part
+        // of the same control cluster without intruding on workspace
+        // content to the right.
+        let arc_bottom_y = cy + radius * (60.0_f64.to_radians()).sin();
+        let slot_cx = (self.rect.x0 + self.rect.x1) / 2.0;
+        let slot_cy = arc_bottom_y + slot_radius + 8.0;
         self.plus_rect = Rect::new(
             slot_cx - slot_radius,
             slot_cy - slot_radius,
@@ -500,22 +553,31 @@ impl Widget for SidebarWheelDisc {
                     *handled = true;
                     return;
                 }
-                // Begin drag if we have a last-known cursor inside the disc.
-                // The event itself has no position, so we rely on a prior
-                // `CursorMoved` having set `drag_from` as an anchor. To keep
-                // the press path self-contained we fall back to the disc's
-                // centre when no cursor is known — tests call the private
-                // helpers directly so this branch only affects the live path.
+                // Begin drag if we have a last-known cursor inside the
+                // visible arc. The press event itself has no position;
+                // we rely on `drag_from` (set by a prior in-arc
+                // `CursorMoved`) or `last_cursor_pos` (set by *any* prior
+                // `CursorMoved`, in-arc or not). The off-screen part of
+                // the disc isn't grabbable, so a press that follows an
+                // off-screen cursor must be rejected rather than falling
+                // back to a synthetic in-arc anchor.
                 if self.rect.area() <= 0.0 {
                     return;
                 }
-                // If a CursorMoved hasn't fired yet, anchor to the disc's
-                // centre so subsequent moves still produce sensible deltas.
-                let anchor = self.drag_from.unwrap_or(Point::new(
-                    (self.rect.x0 + self.rect.x1) / 2.0,
-                    (self.rect.y0 + self.rect.y1) / 2.0,
-                ));
-                if self.rect.contains(anchor) {
+                let anchor = match (self.drag_from, self.last_cursor_pos) {
+                    (Some(d), _) => d,
+                    (None, Some(p)) => p,
+                    // No CursorMoved has fired at all — fall back to the
+                    // visible footprint's midpoint so synthetic test
+                    // sequences without a CursorMoved can still seed a
+                    // drag. The hit-test below still gates on
+                    // `hit_visible_arc`.
+                    (None, None) => Point::new(
+                        (self.rect.x0 + self.rect.x1) / 2.0,
+                        (self.rect.y0 + self.rect.y1) / 2.0,
+                    ),
+                };
+                if self.hit_visible_arc(anchor) {
                     // A fresh press interrupts any in-flight snap spring —
                     // the user is taking over the rotation again, so the
                     // spring's target is stale. Drop it so subsequent
@@ -542,14 +604,13 @@ impl Widget for SidebarWheelDisc {
                     let delta_deg = (dy as f32) * self.deg_per_pixel();
                     self.rotation_deg = self.drag_rotation_origin + delta_deg;
                     *handled = true;
-                } else if self.rect.contains(p) {
-                    // Idle hover inside the disc — remember the cursor so
-                    // a Pressed that follows can seed `drag_from` from a
-                    // real position rather than the geometric centre.
+                } else if self.hit_visible_arc(p) {
+                    // Idle hover inside the visible arc — remember the
+                    // cursor so a Pressed that follows can seed
+                    // `drag_from` from a real position rather than the
+                    // rect's midpoint. `drag_rotation_origin` is only
+                    // committed on Pressed.
                     self.drag_from = Some(p);
-                    // But don't treat this as an active drag yet — the
-                    // `drag_rotation_origin` is only committed on Pressed.
-                    // Clear on the next move outside the disc.
                 }
                 // Note: we intentionally don't clear `drag_from` when the
                 // cursor leaves the disc while a drag is active — the
@@ -730,9 +791,24 @@ mod tests {
 
     fn mk(names: &[&str]) -> SidebarWheelDisc {
         let mut d = SidebarWheelDisc::new(labels(names));
-        // Give the disc a concrete rect so `handle_event` accepts drags.
-        d.rect = Rect::new(0.0, 0.0, d.diameter_px, d.diameter_px);
+        // Give the disc a concrete visible-footprint rect so
+        // `handle_event` accepts drags. The new layout puts only a
+        // `radius/2`-wide sliver inside the viewport; the centre lives
+        // off-screen at `cx = -radius/2`. We pin the rect to the same
+        // sliver so cursors at `(rect.x0 + small_dx, rect.cy)` land
+        // inside the visible arc and `hit_visible_arc` accepts them.
+        let visible_w = d.visible_width_px();
+        d.rect = Rect::new(0.0, 0.0, visible_w, d.diameter_px);
         d
+    }
+
+    /// X coordinate that's reliably inside the visible arc at the
+    /// vertical midline (cy). The arc protrudes `visible_w` pixels into
+    /// the viewport from `rect.x0 = 0`, and the rim is rightmost at
+    /// `cy`, so a cursor at `(visible_w / 2, cy)` is comfortably inside
+    /// the disc circle.
+    fn drag_anchor_x(d: &SidebarWheelDisc) -> f64 {
+        d.visible_width_px() / 2.0
     }
 
     fn cursor_event(x: f64, y: f64) -> WindowEvent {
@@ -798,9 +874,11 @@ mod tests {
         let diameter = d.diameter_px;
         assert!((gap - 120.0).abs() < 1e-4);
 
-        // Cursor starts inside the disc so the Press can anchor there.
+        // Cursor starts inside the visible arc so the Press can anchor
+        // there. Disc centre is off-screen-left; the visible footprint
+        // is the rightmost ~60 px sliver.
         let start_y = diameter / 2.0;
-        let cx = diameter / 2.0;
+        let cx = drag_anchor_x(&d);
         pump(&mut d, cursor_event(cx, start_y));
         assert!(pump(&mut d, press_event()));
         assert!(d.drag_from.is_some(), "press inside disc must start drag");
@@ -836,7 +914,7 @@ mod tests {
         let mut d = mk(&["Home", "Research", "Design"]);
         let diameter = d.diameter_px;
         let start_y = diameter / 2.0;
-        let cx = diameter / 2.0;
+        let cx = drag_anchor_x(&d);
         pump(&mut d, cursor_event(cx, start_y));
         assert!(pump(&mut d, press_event()));
 
@@ -864,7 +942,7 @@ mod tests {
         assert_eq!(d.spokes.len(), 1);
         let diameter = d.diameter_px;
         let start_y = diameter / 2.0;
-        let cx = diameter / 2.0;
+        let cx = drag_anchor_x(&d);
 
         pump(&mut d, cursor_event(cx, start_y));
         assert!(pump(&mut d, press_event()));
@@ -909,7 +987,8 @@ mod tests {
             })
             .collect();
         let mut d = SidebarWheelDisc::new(spokes).with_chrome(chrome.clone());
-        d.rect = Rect::new(0.0, 0.0, d.diameter_px, d.diameter_px);
+        let visible_w = d.visible_width_px();
+        d.rect = Rect::new(0.0, 0.0, visible_w, d.diameter_px);
 
         // Synthesise press+move+release sequence. `snap_to_nearest`'s
         // delta formula `(-nearest_offset).rem_euclid(n)` means a
@@ -921,7 +1000,7 @@ mod tests {
         // matching workspace id.
         let diameter = d.diameter_px;
         let start_y = diameter / 2.0;
-        let cx = diameter / 2.0;
+        let cx = drag_anchor_x(&d);
         pump(&mut d, cursor_event(cx, start_y));
         assert!(pump(&mut d, press_event()));
         pump(&mut d, cursor_event(cx, start_y + diameter));
@@ -957,7 +1036,7 @@ mod tests {
         let idx_before = d.active_idx;
         let diameter = d.diameter_px;
         let start_y = diameter / 2.0;
-        let cx = diameter / 2.0;
+        let cx = drag_anchor_x(&d);
         pump(&mut d, cursor_event(cx, start_y));
         assert!(pump(&mut d, press_event()));
         pump(&mut d, cursor_event(cx, start_y + diameter));
@@ -975,7 +1054,7 @@ mod tests {
         assert!((d.spoke_gap_deg() - 90.0).abs() < 1e-4);
         let diameter = d.diameter_px;
         let start_y = diameter / 2.0;
-        let cx = diameter / 2.0;
+        let cx = drag_anchor_x(&d);
 
         pump(&mut d, cursor_event(cx, start_y));
         assert!(pump(&mut d, press_event()));
@@ -1082,22 +1161,23 @@ mod tests {
 
         // Manually populate the disc's geometry so we can hit-test without
         // running a full draw pass (there's no wgpu in unit tests — the
-        // snapshot harness gates on an offscreen renderer). The `draw`
-        // implementation sets `plus_rect` to a 28 px disc centred at
-        // `(cx, cy + radius + 20)`, so we synthesise the same rect here
-        // to decouple from the exact draw-time arithmetic.
+        // snapshot harness gates on an offscreen renderer). The new
+        // `draw` implementation sets `plus_rect` to a 28 px disc centred
+        // on the visible footprint's horizontal midpoint and 8 px below
+        // the bottom-most visible-arc tip; we synthesise the same rect
+        // here to decouple from the exact draw-time arithmetic.
         let mut d = SidebarWheelDisc::new(vec![SpokeLabel {
             text: "Home".into(),
             workspace_id: None,
         }])
         .with_chrome(chrome.clone());
-        d.rect = Rect::new(0.0, 0.0, d.diameter_px, d.diameter_px);
-        let cx = d.diameter_px / 2.0;
-        let cy = d.diameter_px / 2.0;
+        let visible_w = d.visible_width_px();
+        d.rect = Rect::new(0.0, 0.0, visible_w, d.diameter_px);
         let radius = (d.diameter_px / 2.0) - 1.0;
+        let cy = d.diameter_px / 2.0;
         let slot_radius = 14.0_f64;
-        let slot_cx = cx;
-        let slot_cy = cy + radius + 20.0;
+        let slot_cx = (d.rect.x0 + d.rect.x1) / 2.0;
+        let slot_cy = cy + radius * (60.0_f64.to_radians()).sin() + slot_radius + 8.0;
         d.plus_rect = Rect::new(
             slot_cx - slot_radius,
             slot_cy - slot_radius,
@@ -1166,67 +1246,138 @@ mod tests {
         );
     }
 
-    /// Wave-3 T1: at narrow viewports (and inside the live shell's 96 px
-    /// sidebar slot, where the host overrides the disc's leaf to be
-    /// narrower than `diameter_px`) the disc's *visible* rim — drawn at
-    /// `cx ± diameter_px / 2` from the rect's midpoint — would land in
-    /// negative X and clip off-screen. The `apply_layout` clamp must
-    /// guarantee `rect.x0 >= 16 px` AND a `>= 16 px` left margin to the
-    /// drawn rim, so the full disc remains visible regardless of where
-    /// the host mounts the leaf.
+    /// Partial-arc redesign (2026-04-30): the disc's logical centre must
+    /// sit OFF-SCREEN-LEFT so only the right ~120° arc protrudes into the
+    /// viewport. `apply_layout` reserves the visible sliver as `rect`,
+    /// and `draw`/`center()` derive the centre at
+    /// `cx = rect.x0 - radius * VISIBLE_RADIUS_FRACTION`. For a 240 px
+    /// disc that puts cx ~60 px LEFT of the viewport edge.
     #[test]
-    fn disc_rect_stays_inside_viewport_at_narrow_width() {
-        // Build a tiny taffy tree that mirrors the live shell's mount
-        // pattern: a flex column whose only child is the disc node, sized
-        // by the disc's own `build_layout`. We then drive `apply_layout`
-        // with an origin that — without the clamp — would yield x0 < 16.
+    fn disc_anchors_left_of_viewport_so_only_arc_intrudes() {
         let mut disc = SidebarWheelDisc::new(labels(&["A", "B", "C"]));
         let theme = Theme::default();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let disc_node = disc.build_layout(&mut taffy, &theme, &mut node_map);
 
-        // Compute the layout against an 800 px-wide root.
-        let viewport_w: f32 = 800.0;
-        let viewport_h: f32 = 600.0;
+        // Mount the disc at the host's left edge (origin x=0). The leaf
+        // reserves only the visible-width sliver, so `rect.x1 - rect.x0`
+        // is `radius/2`, not the full diameter.
         taffy
             .compute_layout(
                 disc_node,
                 Size {
-                    width: taffy::AvailableSpace::Definite(viewport_w),
-                    height: taffy::AvailableSpace::Definite(viewport_h),
+                    width: taffy::AvailableSpace::Definite(800.0),
+                    height: taffy::AvailableSpace::Definite(600.0),
                 },
             )
             .unwrap();
-
-        // Apply layout with a negative origin to simulate a sidebar
-        // mount point that — without the clamp — would push the disc's
-        // left edge off-screen. The clamp must lift x0 back to >= 16 px.
-        disc.apply_layout(&taffy, disc_node, Point::new(-200.0, 0.0));
+        disc.apply_layout(&taffy, disc_node, Point::ORIGIN);
         let rect = disc.rect_for_tests();
+
+        // Visible footprint width matches `radius/2`.
         assert!(
-            rect.x0 >= 16.0,
-            "disc must keep a >= 16 px left margin so its left curve never \
-             clips off-screen at narrow viewport widths; observed x0 = {}",
+            (rect.width() - disc.visible_width_px()).abs() < 1e-3,
+            "rect width must be the visible-arc sliver ({}px); got {}",
+            disc.visible_width_px(),
+            rect.width()
+        );
+
+        // Logical centre sits LEFT of the viewport edge — the chord at
+        // `±60°` from due-east lands on `rect.x0`, which is the user-visible
+        // boundary. For the default 240 px disc (radius 120), centre is
+        // at `rect.x0 - 60`, i.e. 60 px off-screen.
+        let c = disc.center();
+        let radius = disc.diameter_px / 2.0;
+        assert!(
+            c.x < rect.x0,
+            "disc centre must sit left of the visible footprint; cx={}, rect.x0={}",
+            c.x,
             rect.x0
         );
-        // The clamp must also preserve the disc's width — it shifts the
-        // rect right, never compresses it.
         assert!(
-            (rect.width() - disc.diameter_px).abs() < 1e-3,
-            "clamp must preserve the disc's width (diameter); got {} vs {}",
-            rect.width(),
-            disc.diameter_px
+            (c.x - (rect.x0 - radius * VISIBLE_RADIUS_FRACTION)).abs() < 1e-3,
+            "centre must be exactly `radius * VISIBLE_RADIUS_FRACTION` left of \
+             rect.x0; cx={}, expected={}",
+            c.x,
+            rect.x0 - radius * VISIBLE_RADIUS_FRACTION
         );
-        // And — critically — the *drawn* rim's left edge must clear the
-        // 16 px margin too. `draw` uses `cx ± diameter_px / 2` regardless
-        // of `rect.width()`, so a shrunken rect (live shell's 96 px slot
-        // case) still needs the clamp to push `cx` right enough.
-        let cx = (rect.x0 + rect.x1) / 2.0;
-        let visible_left = cx - disc.diameter_px / 2.0;
+        // The rightmost rim point lands inside the visible footprint
+        // (`rect.x0 + visible_width`).
+        let rim_right = c.x + radius;
         assert!(
-            visible_left >= 16.0,
-            "drawn rim's left edge must clear 16 px; cx={cx}, visible_left={visible_left}"
+            rim_right <= rect.x1 + 1e-3,
+            "rightmost rim must land inside the visible footprint; \
+             rim_right={}, rect.x1={}",
+            rim_right,
+            rect.x1
+        );
+    }
+
+    /// The user-spec cap: at most 120° of the rim should protrude. The
+    /// visible arc spans the angles where the rim is to the right of
+    /// `rect.x0`; that's `θ ∈ (-60°, 60°)` from due-east (a 120° wedge).
+    /// Any angle outside that range falls left of `rect.x0` and is
+    /// clipped by the viewport edge.
+    #[test]
+    fn disc_visible_arc_is_at_most_120_degrees() {
+        let disc = mk(&["A", "B", "C"]);
+        let c = disc.center();
+        let radius = disc.diameter_px / 2.0;
+        // Walk the rim in 1° steps and tally how many degrees fall inside
+        // the visible footprint (i.e. to the right of `rect.x0`).
+        let mut visible_deg = 0i32;
+        for deg in 0..360 {
+            let a = (deg as f64).to_radians();
+            let x = c.x + radius * a.cos();
+            if x >= disc.rect.x0 - 1e-6 {
+                visible_deg += 1;
+            }
+        }
+        assert!(
+            visible_deg <= 122,
+            "visible arc must be at most ~120°; counted {}°",
+            visible_deg
+        );
+        assert!(
+            visible_deg >= 118,
+            "visible arc must be at least ~120° (otherwise the disc is too \
+             far off-screen to grab); counted {}°",
+            visible_deg
+        );
+    }
+
+    /// A press whose anchor lands LEFT of the viewport edge (i.e.
+    /// outside `self.rect`) must NOT start a drag — the off-screen part
+    /// of the disc isn't grabbable. Mirrors the user-spec invariant
+    /// "should be actually to left of the leftmost window group" by
+    /// guaranteeing the disc never claims clicks beyond its visible arc.
+    #[test]
+    fn disc_hit_test_rejects_clicks_left_of_viewport_edge() {
+        let mut d = mk(&["Home", "Research", "Design"]);
+        // Cursor at the disc's logical centre (off-screen-left).
+        let c = d.center();
+        pump(&mut d, cursor_event(c.x, c.y));
+        // No drag was anchored on the move — `drag_from` stays None
+        // because the cursor is outside the visible-arc hit-test.
+        assert!(
+            d.drag_from.is_none(),
+            "off-screen cursor must not seed a drag anchor; drag_from={:?}",
+            d.drag_from
+        );
+        // And a Pressed event there (without a prior in-arc CursorMoved)
+        // must not start a drag either.
+        assert!(
+            !pump(&mut d, press_event()),
+            "press at off-screen-left location must NOT be handled by the disc"
+        );
+        assert!(
+            d.drag_from.is_none(),
+            "press at off-screen-left location must NOT start a drag"
+        );
+        assert!(
+            !d.wants_pointer_capture(),
+            "disc must not capture pointer when press lands off-screen"
         );
     }
 

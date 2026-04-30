@@ -69,8 +69,11 @@ fn sidebar_wheel_disc_renders_a_spoke_per_workspace() {
         SpokeLabel { text: "Design".into(), workspace_id: Some(3) },
     ];
     let mut disc = SidebarWheelDisc::new(spokes);
-    // Keep the default 240 px diameter; canvas has 20 px of margin on
-    // each side so the rim isn't flush with the edge.
+    // Keep the default 240 px diameter. The disc mounts at the canvas's
+    // LEFT edge so the partial-arc redesign reads correctly: only the
+    // right ~120° of the rim protrudes into the visible canvas, the rest
+    // sits off-screen-left (cx ≈ -60). `align_items: Center` keeps the
+    // sliver vertically centred.
 
     let theme = Theme::dark();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -84,7 +87,12 @@ fn sidebar_wheel_disc_renders_a_spoke_per_workspace() {
                     width: Dimension::length(CANVAS as f32),
                     height: Dimension::length(CANVAS as f32),
                 },
-                justify_content: Some(taffy::JustifyContent::Center),
+                // Pin the disc to the left edge — the live shell mounts
+                // it at `left: 0` of the absolute-positioned sidebar
+                // slot, so we mirror that here. The disc's logical
+                // centre then sits OFF-CANVAS to the left and only the
+                // visible-arc sliver paints inside the canvas.
+                justify_content: Some(taffy::JustifyContent::Start),
                 align_items: Some(taffy::AlignItems::Center),
                 ..Default::default()
             },
