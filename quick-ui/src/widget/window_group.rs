@@ -266,6 +266,15 @@ impl WindowGroup {
             .position(|t| t.id == tab_id)?;
         let desc = self.bar.tabs()[desc_idx].clone();
         self.bar.remove_tab(tab_id);
+        // If the tab was mid-close when it was detached, its entry in
+        // `closing_hosts` (and the bar's matching `closing_tabs` fade
+        // entry) would otherwise outlive the host itself. The host is
+        // gone after the `hosts.remove` above, so the fade has nothing
+        // to paint — but `needs_animation_frame` keeps pumping redraws
+        // until the timestamp ages past `CLOSE_FADE_MS`. Drop both
+        // sides together so the run loop quiets immediately.
+        self.closing_hosts.remove(&tab_id);
+        self.bar.finalize_close(tab_id);
         Some((desc, host))
     }
 
@@ -1358,6 +1367,41 @@ mod tests {
         assert!(
             inserted.1.spawn_in_flight(),
             "inserting a detached tab must fire the tile-level spawn fade",
+        );
+    }
+
+    /// Detaching a tab whose id is mid-close (it sits in
+    /// `closing_hosts` because of the leak path described in B-8 —
+    /// a stale entry whose timer never expires after the tab's host
+    /// has been moved) must drop the lingering close-fade state.
+    /// Otherwise `needs_animation_frame` keeps pumping redraws for
+    /// the remainder of the `CLOSE_FADE_MS` window even though the
+    /// host itself is gone. (B-8)
+    #[test]
+    fn detach_tab_clears_closing_state_for_moved_tab() {
+        let mut g = make_group();
+        // Seed `closing_hosts` directly with tab id 1 — this is the
+        // leak shape the plan calls out. The tab is still present in
+        // `bar.tabs` (so `detach_tab` can find it) and in `hosts`,
+        // but the side-table erroneously carries a fade timestamp.
+        g.closing_hosts.insert(1, Instant::now());
+        assert!(
+            g.closing_hosts.contains_key(&1),
+            "precondition: closing_hosts carries the moved tab id",
+        );
+
+        let detached = g.detach_tab(1);
+        assert!(detached.is_some(), "detach_tab returns the moved tab");
+
+        assert!(
+            !g.closing_hosts.contains_key(&1),
+            "detach_tab must clear closing_hosts for the moved tab so \
+             needs_animation_frame stops pumping for a host that's gone",
+        );
+        assert!(
+            !g.bar.closing_tab_ids().contains(&1),
+            "detach_tab must call bar.finalize_close so any pill-side \
+             fade state for the moved id is also dropped",
         );
     }
 
