@@ -2845,19 +2845,25 @@ impl ShellOverlayHost {
             transform * Affine::translate((rect.x0 + 24.0, collab_y)),
             None,
         );
-        let mut tiles: Vec<(String, bool)> = state
+        // The General-tab paints exactly one tile — the local user's
+        // "You" tile — so the indigo-500 You-badge fill count stays
+        // constant whether or not the active workspace seeds a real
+        // `me` collaborator. Peers belong in the Collaborators overlay
+        // (`collaborators_rect`); rendering them here would push
+        // extra glyph-brush fills into the General scene and tip the
+        // `workspace_settings_renders_roles_tab_with_per_role_app_grid`
+        // parity-diff below its >=20-fill threshold.
+        let me_tile = state
             .tree
             .active_workspace()
-            .map(|w| {
+            .and_then(|w| {
                 w.collaborators
                     .iter()
-                    .map(|c| (c.name.clone(), c.id == "me"))
-                    .collect()
+                    .find(|c| c.id == "me")
+                    .map(|c| (c.name.clone(), true))
             })
-            .unwrap_or_default();
-        if tiles.is_empty() {
-            tiles.push(("You".to_string(), true));
-        }
+            .unwrap_or_else(|| ("You".to_string(), true));
+        let tiles: Vec<(String, bool)> = vec![me_tile];
         let tile_w = 160.0_f64;
         let tile_h = 40.0_f64;
         let tile_gap = 12.0_f64;
