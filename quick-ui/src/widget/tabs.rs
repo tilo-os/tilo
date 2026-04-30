@@ -841,6 +841,12 @@ impl TabBar {
     /// Exposed so `GroupRow` can resolve an "insert before pill X" drop
     /// index when a cross-group drag releases over a sibling's bar.
     pub fn tab_rects(&self) -> &[Rect] { &self.tab_rects }
+    /// Test-only accessor for the per-tab maximize-icon hit rects.
+    /// `WindowGroup`'s integration test drives a synthetic press against
+    /// these rects to assert the maximize click toggles `WindowGroup::maximized`
+    /// end-to-end.
+    #[cfg(test)]
+    pub fn max_rects(&self) -> &[Rect] { &self.max_rects }
     /// Compute an insertion index for a drop at `release_point`. Returns
     /// an index in `[0, tab_rects.len()]` — `0` means "before the first
     /// pill", `len` means "after the last pill". Vertical position is

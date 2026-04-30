@@ -112,6 +112,10 @@ pub struct WindowGroup {
     /// to keep the `TileHost` shape stable and avoid a touch to
     /// `tile_host.rs`.
     closing_hosts: HashMap<u64, Instant>,
+    /// Set when `maximized` flips, so `take_structure_dirty` requests a
+    /// `build_layout` rebuild and the new flex_grow / width style takes
+    /// effect on the cached taffy node.
+    style_dirty: bool,
     /// Group-level close-fade timestamp. `None` while the group is
     /// alive; `Some(started)` once the user's last tab-close drains
     /// through `handle_event` and the group has no remaining tabs or
@@ -147,6 +151,7 @@ impl WindowGroup {
             spawned_at: None,
             closing_hosts: HashMap::new(),
             closing_at: None,
+            style_dirty: false,
         }
     }
     pub fn width(&self) -> WindowWidth { self.width }
@@ -311,6 +316,7 @@ impl WindowGroup {
             spawned_at: None,
             closing_hosts: HashMap::new(),
             closing_at: None,
+            style_dirty: false,
         }
     }
 
@@ -462,14 +468,24 @@ impl Widget for WindowGroup {
         } else {
             taffy.new_leaf(Style::default()).unwrap()
         };
-        let w_px = self.width.pixels() as f32;
-        let node = taffy.new_with_children(Style {
+        // Maximized groups absorb all remaining row width via a huge
+        // `flex_grow` + zero `flex_basis`, so siblings squeeze down to
+        // min-content. Mirrors the concept's `width: 100vw` on the
+        // fixed-position maximized window (`WindowFrame.tsx:188-200`)
+        // and gives the per-tab Maximize2 click a visible result.
+        let mut style = Style {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
-            size: Size { width: Dimension::length(w_px), height: Dimension::percent(1.0) },
+            size: Size { width: Dimension::length(self.width.pixels() as f32), height: Dimension::percent(1.0) },
             gap: taffy::Size { width: length(0.0), height: length(0.0) },
             ..Default::default()
-        }, &[bar_node, tile_node]).unwrap();
+        };
+        if self.maximized {
+            style.size.width = Dimension::auto();
+            style.flex_grow = 1.0e6;
+            style.flex_basis = Dimension::length(0.0);
+        }
+        let node = taffy.new_with_children(style, &[bar_node, tile_node]).unwrap();
         node_map.insert(node, self as *mut dyn Widget);
         node
     }
@@ -1004,12 +1020,14 @@ impl Widget for WindowGroup {
             *handled = true;
         }
 
-        // Maximize toggle from the tab bar's hover-action icon. We don't
-        // yet reshape the layout tree (the shell paints floating controls
-        // on top instead), so just flip the flag and let the shell pick it
-        // up on its next draw.
+        // Maximize toggle from the tab bar's hover-action icon. Flagging
+        // `style_dirty` makes `take_structure_dirty` request a
+        // `build_layout` rebuild so the new flex_grow / width style
+        // takes effect — without it the cached taffy node keeps the
+        // pre-toggle width and the click looks like a no-op.
         if let Some(_id) = self.bar.take_max() {
             self.maximized = !self.maximized;
+            self.style_dirty = true;
             *handled = true;
         }
 
@@ -1054,7 +1072,8 @@ impl Widget for WindowGroup {
             .iter_mut()
             .map(|(_, h)| h.take_structure_dirty())
             .fold(false, |acc, d| acc || d);
-        bar || hosts
+        let style = std::mem::take(&mut self.style_dirty);
+        bar || hosts || style
     }
     fn needs_animation_frame(&self) -> bool {
         // The tab bar runs a frame-driven drop-zone expand animation
@@ -1114,6 +1133,141 @@ mod tests {
             ),
         ];
         WindowGroup::new(10, tabs, 1, WindowWidth::Normal)
+    }
+
+    /// Pressing the per-tab Maximize2 hit rect flips
+    /// `WindowGroup::maximized` end-to-end (bar publishes `pending_max`
+    /// → WindowGroup drains it → flag toggles), and a second click
+    /// flips it back. Regression for the live-binary "doesn't work"
+    /// report.
+    #[test]
+    fn maximize_click_on_tab_pill_toggles_window_group_maximized() {
+        use std::collections::HashMap;
+        use taffy::Style;
+        use taffy::prelude::TaffyMaxContent;
+        use crate::theme::Theme;
+        use winit::event::{ElementState, MouseButton};
+
+        let mut g = make_group();
+        assert!(!g.maximized, "fresh group must start non-maximized");
+
+        // Full layout pass so the bar's `max_rects` are authoritative —
+        // the press arm in `TabBar::handle_event` does a fresh hit-test
+        // against `max_rects[i].contains(last_cursor)`, so the rect must
+        // be populated by `apply_layout` before we drive the click.
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(Style::default(), &[group_node])
+            .unwrap();
+        taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
+        g.apply_layout(&taffy, group_node, Point::ZERO);
+
+        // Aim the synthetic cursor at the centre of tab 0's maximize rect.
+        let max_rect = g.bar.max_rects()[0];
+        let click_pt = max_rect.center();
+
+        let moved = WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(click_pt.x, click_pt.y),
+        };
+        let press = WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        };
+
+        let mut state = automerge::AutoCommit::new();
+        let root_id = automerge::ROOT;
+        let mut handled = false;
+        let mut focus_target = None;
+        // Seed last_cursor on the icon — the bar's press arm uses the
+        // cached cursor for its fresh hit-test.
+        g.handle_event(
+            &moved, 1.0, &winit::event::Modifiers::default(),
+            &mut state, &root_id, &mut handled, &mut focus_target,
+            group_node, &taffy,
+        );
+        let mut handled = false;
+        g.handle_event(
+            &press, 1.0, &winit::event::Modifiers::default(),
+            &mut state, &root_id, &mut handled, &mut focus_target,
+            group_node, &taffy,
+        );
+
+        assert!(handled, "press on the maximize icon must be claimed");
+        assert!(
+            g.maximized,
+            "maximize click on a tab pill must drive WindowGroup::maximized true",
+        );
+
+        // Second click flips it back to non-maximized — concept's
+        // `setIsMaximized(!isMaximized)` is a click-to-toggle, not a
+        // one-way latch.
+        let mut handled = false;
+        g.handle_event(
+            &moved, 1.0, &winit::event::Modifiers::default(),
+            &mut state, &root_id, &mut handled, &mut focus_target,
+            group_node, &taffy,
+        );
+        let mut handled = false;
+        g.handle_event(
+            &press, 1.0, &winit::event::Modifiers::default(),
+            &mut state, &root_id, &mut handled, &mut focus_target,
+            group_node, &taffy,
+        );
+        assert!(
+            !g.maximized,
+            "second maximize click must restore (toggle off)",
+        );
+    }
+
+    /// Toggling `maximized` must report `take_structure_dirty()` so
+    /// `App` re-runs `build_layout` and the cached taffy node picks
+    /// up the new width style — otherwise the click visibly does
+    /// nothing.
+    #[test]
+    fn maximize_toggle_marks_structure_dirty_for_layout_rebuild() {
+        let mut g = make_group();
+        // Fresh group is clean.
+        assert!(!g.take_structure_dirty(), "fresh group is not dirty");
+
+        // Simulate the bar publishing a maximize request — same code
+        // path the per-tab click hits, just without driving the full
+        // event pump.
+        g.bar.pending_max = Some(1);
+        let mut handled = false;
+        let mut focus_target = None;
+        let mut state = automerge::AutoCommit::new();
+        let root_id = automerge::ROOT;
+        // A no-op cursor move drives the WindowGroup drain block, which
+        // is what reads `pending_max` → flips `maximized` → sets
+        // `style_dirty`.
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> = std::collections::HashMap::new();
+        let group_node = g.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        let root = taffy.new_with_children(Style::default(), &[group_node]).unwrap();
+        use taffy::prelude::TaffyMaxContent;
+        taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
+        let moved = WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(9000.0, 9000.0),
+        };
+        g.handle_event(
+            &moved, 1.0, &winit::event::Modifiers::default(),
+            &mut state, &root_id, &mut handled, &mut focus_target,
+            group_node, &taffy,
+        );
+
+        assert!(g.maximized, "maximize drain must flip the flag");
+        assert!(
+            g.take_structure_dirty(),
+            "maximize toggle must report structure dirty so App re-runs build_layout",
+        );
+        // Drained — second poll within the same frame is clean.
+        assert!(!g.take_structure_dirty(), "structure_dirty drains on poll");
     }
 
     #[test]
