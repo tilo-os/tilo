@@ -1680,6 +1680,226 @@ fn topbar_right_cluster_paints_avatar_stack_when_collaborators_present() {
 }
 
 // ===========================================================================
+// Overview "+ Add workspace" affordance
+// ===========================================================================
+
+/// Concept: the workspace overview ships an explicit create-affordance
+/// at the tail of the vertical workspace list. The wheel-disc plus slot
+/// (`sidebar_wheel_disc.rs::plus_rect`) is the spatial entry point —
+/// the overview's matching tile is the in-overview entry point so users
+/// reviewing all workspaces don't have to bounce back to the wheel just
+/// to add one.
+///
+/// Two assertions:
+///
+/// 1. After laying out + drawing with the overview open, the host's
+///    cached `add_workspace_rect` is non-empty (the draw path populated
+///    it inside the column layout).
+/// 2. The rect is positioned *below* the last workspace card — i.e. the
+///    affordance is at the tail of the list, not floating somewhere in
+///    the middle.
+///
+/// This pairs with `overview_add_workspace_click_appends_workspace`
+/// which exercises the click-to-create wiring.
+mod overview_add_workspace {
+    use super::*;
+    use quick_desktop::shell::overlay_host::ShellOverlayHost;
+    use vello::kurbo::Rect;
+    use winit::dpi::PhysicalPosition;
+    use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+
+    /// Owned harness that keeps the taffy tree + child node alive so
+    /// individual tests can pump synthesised winit events into the host
+    /// after the initial layout + draw pass. The host's
+    /// `handle_event` indexes `children[0]` of the passed taffy node, so
+    /// a throwaway leaf is not enough — we keep the real one populated
+    /// by `build_layout`.
+    struct OverviewHarness {
+        host: ShellOverlayHost,
+        chrome: Chrome,
+        taffy: TaffyTree<()>,
+        root_node: NodeId,
+    }
+
+    /// Build the host, force the overview to its settled-open state,
+    /// then run a full layout + draw pass so `add_workspace_rect` is
+    /// populated. Returns an [`OverviewHarness`] so individual tests can
+    /// inspect or pump further events through it.
+    fn build_settled_overview() -> OverviewHarness {
+        let tree = WorkspaceTree::bootstrap_default();
+        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        chrome.borrow_mut().overlays.overview = true;
+        host.force_overview_settled(true);
+
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let child = host.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(W),
+                        height: Dimension::length(H),
+                    },
+                    ..Default::default()
+                },
+                &[child],
+            )
+            .unwrap();
+        let mut tr = TextRenderer::new();
+        let measure_map = node_map.clone();
+        taffy
+            .compute_layout_with_measure(
+                root,
+                Size {
+                    width: AvailableSpace::Definite(W),
+                    height: AvailableSpace::Definite(H),
+                },
+                |known, avail, node_id, _, _| {
+                    if let Some(&ptr) = measure_map.get(&node_id) {
+                        unsafe { (*ptr).measure(known, avail, &mut tr) }
+                    } else {
+                        taffy::Size::ZERO
+                    }
+                },
+            )
+            .expect("compute_layout");
+        host.apply_layout(&taffy, child, Point::ORIGIN);
+
+        let mut scene = Scene::new();
+        let presence = PresenceCtx::default();
+        host.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        OverviewHarness {
+            host,
+            chrome,
+            taffy,
+            root_node: child,
+        }
+    }
+
+    /// The overview must paint a visible "+ Add workspace" affordance at
+    /// the tail of the workspace list. Asserted via the cached hit rect:
+    /// non-empty (draw populated it) and below the last workspace card
+    /// (concept positions the create-affordance after the existing
+    /// workspaces, not floating mid-list).
+    #[test]
+    fn overview_renders_add_workspace_button() {
+        let h = build_settled_overview();
+        let rect = h.host.add_workspace_rect_for_tests();
+
+        assert!(
+            rect.area() > 0.0,
+            "overview must render a visible 'Add workspace' affordance — \
+             cached hit rect is still ZERO after a full layout + draw with \
+             the overview settled open. Concept ref: \
+             nirios-concept/src/components/OverviewView.tsx (create-affordance)."
+        );
+
+        // Affordance sits below the first workspace card. Without a
+        // workspace-row geometry probe in the public API we use the row
+        // y-coord constants from the draw path; the assertion is loose
+        // (rect.y0 must be at least the column's outer padding y plus
+        // header) so a future move within "tail of list" doesn't break
+        // it but a regression to "above the cards" does.
+        assert!(
+            rect.y0 > 100.0,
+            "add-workspace tile must sit below the header and at least one \
+             workspace row; observed y0={:.1}",
+            rect.y0,
+        );
+    }
+
+    /// Synthesising a click at the centre of the cached add-workspace
+    /// rect must:
+    ///
+    /// 1. Append a new workspace to `chrome.tree.workspaces` (length+1).
+    /// 2. Activate the new workspace (`add_workspace` semantics — same
+    ///    contract as the wheel-disc plus slot).
+    /// 3. Keep the overview open so the user sees the new card slide in
+    ///    on the next frame (we deliberately do not auto-close like a
+    ///    workspace-card click does — the create flow stays in-overview).
+    #[test]
+    fn overview_add_workspace_click_appends_workspace() {
+        let mut h = build_settled_overview();
+        let rect = h.host.add_workspace_rect_for_tests();
+        assert!(rect.area() > 0.0, "add-workspace rect must be populated before clicking");
+
+        let initial_count = h.chrome.borrow().tree.workspaces.len();
+        assert!(initial_count >= 1, "bootstrap_default seeds at least one workspace");
+        let initial_active = h.chrome.borrow().tree.active;
+
+        // Simulate the cursor-then-press sequence the real shell sees
+        // from winit. `handle_event` reads `last_cursor` (set by
+        // CursorMoved) when MouseInput::Pressed arrives.
+        let centre = rect.center();
+        let mut doc = automerge::AutoCommit::new();
+        let doc_root = automerge::ObjId::Root;
+        let modifiers = Modifiers::default();
+        let mut focus: Option<NodeId> = None;
+        let mut handled = false;
+
+        h.host.handle_event(
+            &WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: PhysicalPosition::new(centre.x, centre.y),
+            },
+            1.0,
+            &modifiers,
+            &mut doc,
+            &doc_root,
+            &mut handled,
+            &mut focus,
+            h.root_node,
+            &h.taffy,
+        );
+        h.host.handle_event(
+            &WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+            1.0,
+            &modifiers,
+            &mut doc,
+            &doc_root,
+            &mut handled,
+            &mut focus,
+            h.root_node,
+            &h.taffy,
+        );
+
+        let st = h.chrome.borrow();
+        assert_eq!(
+            st.tree.workspaces.len(),
+            initial_count + 1,
+            "clicking the overview's '+ Add workspace' tile must append a \
+             new workspace via chrome.add_workspace()"
+        );
+        assert_ne!(
+            st.tree.active, initial_active,
+            "the newly-appended workspace must be activated, mirroring \
+             the wheel-disc plus slot's create-and-switch semantics"
+        );
+        assert!(
+            st.overlays.overview,
+            "overview must stay open after a create click so the new \
+             workspace card animates in on the next frame"
+        );
+        // Sanity: the new workspace exists in the tree under the active id.
+        let active_id = st.tree.active;
+        assert!(
+            st.tree.workspaces.iter().any(|w| w.id == active_id),
+            "active id must point at one of the workspaces in the tree"
+        );
+
+        // Hold-rect Rect import alive in case the file's other test
+        // helpers ever stop importing it transitively.
+        let _: Rect = rect;
+    }
+}
+
+// ===========================================================================
 // Sanity unit tests for the helpers above
 // ===========================================================================
 
