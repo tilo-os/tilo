@@ -1021,9 +1021,13 @@ impl Widget for WindowGroup {
             *handled = true;
         }
 
-        // Drag-reorder within the bar: apply the same permutation to hosts
-        // so the visible tab order matches the content order.
+        // Drag-reorder within the bar: apply the same permutation to
+        // both the bar's tab list AND the hosts vec so the visible
+        // pill order matches the content order. Previously only `hosts`
+        // got reordered while `self.bar.tabs` stayed in the original
+        // order — the user saw drop zones but no visible reorder.
         if let Some((from, to)) = self.bar.take_reorder() {
+            self.bar.reorder(from, to);
             if from < self.hosts.len() && to < self.hosts.len() {
                 let item = self.hosts.remove(from);
                 self.hosts.insert(to, item);
