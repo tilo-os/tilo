@@ -342,7 +342,11 @@ impl WorkspaceTree {
         let tab_files = next_id();
         let tab_terminal = next_id();
         let tab_browser = next_id();
-        let ws = Workspace {
+        // First (Home) workspace seeds the demo Notes/Files/Terminal/Browser
+        // tabs at `WindowWidth::Wide` so the rendered white card fills more
+        // than half the viewport on a 1600 px-wide first-run desktop —
+        // matches `WindowFrame.tsx`'s "fill the container" behaviour.
+        let home = Workspace {
             id: ws_id,
             name: "Home".into(),
             strips: vec![Strip {
@@ -385,24 +389,51 @@ impl WorkspaceTree {
                         },
                     ],
                     active_tab: tab_notes,
-                    width: WindowWidth::Normal,
+                    width: WindowWidth::Wide,
                 }],
             }],
             roles: vec![],
             workspace_files: vec![],
             collaborators: vec![],
         };
+
         let mut active_strip = HashMap::new();
         active_strip.insert(ws_id, strip_id);
         let mut active_group = HashMap::new();
         active_group.insert(strip_id, group_id);
-        Self {
-            workspaces: vec![ws],
+        let mut tree = Self {
+            workspaces: vec![home],
             active: ws_id,
             active_strip,
             active_group,
             collaborators: vec![],
+        };
+
+        // Research and Design seed empty strips so the overview overlay
+        // paints a meaningful 3-card grid on first run, matching the
+        // committed `e2e-open-close-overview-settled.png` golden. Research
+        // also seeds two demo collaborators so the top-bar avatar stack +
+        // per-tab presence dots have something to render — the canonical
+        // hex colours mirror `nirios-concept/src/data.ts`'s `cursorColor`.
+        let research_id = tree.append_empty_workspace("Research");
+        if let Some(ws) = tree.workspaces.iter_mut().find(|w| w.id == research_id) {
+            ws.collaborators.push(
+                Collaborator::new("alice", "Alice")
+                    .with_cursor_color("#ec4899")
+                    .with_role("editor"),
+            );
+            ws.collaborators.push(
+                Collaborator::new("bob", "Bob")
+                    .with_cursor_color("#f97316")
+                    .with_role("viewer"),
+            );
         }
+        tree.append_empty_workspace("Design");
+
+        // Home stays active — `append_empty_workspace` doesn't change
+        // `tree.active`, so the user lands on the populated workspace
+        // rather than an empty one on first boot.
+        tree
     }
 
     pub fn append_empty_workspace(&mut self, name: &str) -> WorkspaceId {
@@ -595,6 +626,71 @@ impl WorkspaceTree {
                 None
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod bootstrap_default_tests {
+    //! Coverage for [`WorkspaceTree::bootstrap_default`]'s seeded fixture.
+    //!
+    //! The compositor boots straight into this tree on first run, so what
+    //! lives here is what an end user sees when they install QuickDesktop
+    //! and log in for the first time. The asserts below pin the
+    //! concept-driven contract:
+    //!
+    //!   - At least three workspaces (Home / Research / Design) so the
+    //!     overview overlay paints a meaningful grid rather than a single
+    //!     lonely card.
+    //!   - At least one workspace seeded with collaborators so the top-bar
+    //!     avatar stack and per-tab presence dots have data to render.
+    //!   - The first group's [`WindowWidth`] is `Wide` (or wider) so the
+    //!     default tile fills more than half the viewport — matching
+    //!     `WindowFrame.tsx`'s "fill the container" behaviour.
+    //!
+    //! Updates here are intentional fixture changes — when the tests are
+    //! re-pinned the e2e goldens may also need re-seeding (see
+    //! `tests/e2e_shell_flows.rs` for the `e2e-open-close-overview-settled`
+    //! golden which is a downstream consumer of this fixture).
+
+    use super::*;
+
+    #[test]
+    fn bootstrap_default_seeds_three_demo_workspaces() {
+        let tree = WorkspaceTree::bootstrap_default();
+        assert!(
+            tree.workspaces.len() >= 3,
+            "default tree should seed at least 3 workspaces (Home / Research / \
+             Design) so the overview has meaningful content; got {}",
+            tree.workspaces.len()
+        );
+        // At least one workspace should have collaborators so the top-bar
+        // avatar stack has something to render.
+        assert!(
+            tree.workspaces.iter().any(|w| !w.collaborators.is_empty()),
+            "at least one default workspace should seed >=1 collaborator"
+        );
+    }
+
+    #[test]
+    fn bootstrap_default_first_group_uses_wide_or_larger() {
+        let tree = WorkspaceTree::bootstrap_default();
+        let first_ws = tree.workspaces.first().expect("at least one workspace");
+        let first_strip = first_ws.strips.first().expect("at least one strip");
+        let first_group = first_strip
+            .window_groups
+            .first()
+            .expect("at least one group");
+        let wide_enough = match first_group.width {
+            WindowWidth::Wide => true,
+            WindowWidth::Custom(w) => w >= 900,
+            _ => false,
+        };
+        assert!(
+            wide_enough,
+            "default group should be Wide+ so the white card fills more than \
+             half the viewport; got {:?}",
+            first_group.width
+        );
     }
 }
 
