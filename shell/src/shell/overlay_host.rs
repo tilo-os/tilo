@@ -130,6 +130,12 @@ pub struct ShellOverlayHost {
     /// the content for the rest of the process lifetime, so the pointer
     /// remains valid as long as `&mut self` does.
     group_row_ptrs: HashMap<StripId, *mut GroupRow>,
+    /// Hit rect for the "+ Add workspace" affordance painted at the tail
+    /// of the overview's vertical workspace list. `Rect::ZERO` until the
+    /// first overview draw populates it; cleared back to `Rect::ZERO`
+    /// when the overview is hidden so stale clicks during the crossfade
+    /// can't activate it.
+    add_workspace_rect: Rect,
     /// Vertical inset at which the floating sidebar wheel starts. Defaults
     /// to [`SIDEBAR_TOP_OFFSET_PX`] (matches `TOPBAR_HEIGHT_PX`) but the
     /// real shell wraps its topbar in a padded `Column`/`Container`, so
@@ -241,6 +247,7 @@ impl ShellOverlayHost {
             palette_opened_at: None,
             palette_was_visible: false,
             group_row_ptrs: HashMap::new(),
+            add_workspace_rect: Rect::ZERO,
             sidebar_top_y: SIDEBAR_TOP_OFFSET_PX,
         }
     }
@@ -463,6 +470,16 @@ impl ShellOverlayHost {
         self.reconcile_active_group_off_closing();
     }
 
+    /// Read-only accessor for the cached "+ Add workspace" tile rect.
+    /// Populated by `draw_overview` each frame the overview is visible
+    /// and reset to `Rect::ZERO` once the overview is fully hidden.
+    /// Exposed so concept-parity tests can both (a) assert the rect is
+    /// non-empty after a render and (b) drive a synthetic click at its
+    /// centre through the public `handle_event` path.
+    pub fn add_workspace_rect_for_tests(&self) -> Rect {
+        self.add_workspace_rect
+    }
+
     fn toggle_palette(&mut self) {
         self.palette_visible = !self.palette_visible;
     }
@@ -670,6 +687,18 @@ impl ShellOverlayHost {
         Rect::new(col.x0, y0, col.x1, y0 + OVERVIEW_ROW_HEIGHT_PX)
     }
 
+    /// Rect of the "+ Add workspace" affordance painted at the tail of
+    /// the overview's vertical workspace list. Concept reserves the
+    /// create-affordance as a light dashed-border tile below the last
+    /// workspace card; sharing the column width but a shorter row
+    /// height keeps it visually subordinate.
+    fn overview_add_workspace_rect_for(&self, ws_count: usize) -> Rect {
+        let col = self.overview_column_rect();
+        let top = self.overview_first_row_top();
+        let y0 = top + ws_count as f64 * (OVERVIEW_ROW_HEIGHT_PX + OVERVIEW_ROW_GAP_PX);
+        Rect::new(col.x0, y0, col.x1, y0 + OVERVIEW_ADD_ROW_HEIGHT_PX)
+    }
+
     /// Mirror of the geometry in `draw_overview`: return the index of the
     /// workspace card at logical position `p`, if any.
     fn hit_test_overview(&self, p: Point) -> Option<usize> {
@@ -713,6 +742,11 @@ const OVERVIEW_ROW_GAP_PX: f64 = 32.0;
 /// `items-start` so the row sizes to content; we lock it to a stable
 /// value so the vertical list reads as even rows.
 const OVERVIEW_ROW_HEIGHT_PX: f64 = 240.0;
+/// Height of the "+ Add workspace" tile painted at the tail of the
+/// vertical workspace list. Shorter than a full workspace row so it
+/// reads as a secondary, lightweight create-affordance rather than a
+/// peer of the existing workspace cards.
+const OVERVIEW_ADD_ROW_HEIGHT_PX: f64 = 72.0;
 const OVERVIEW_ROW_RADIUS_PX: f64 = 24.0;
 const OVERVIEW_ROW_BORDER_PX: f64 = 2.0;
 const OVERVIEW_CARD_PADDING_PX: f64 = 24.0;
@@ -936,6 +970,12 @@ impl Widget for ShellOverlayHost {
         // Overview grid (Cmd+Tab) scales+fades into place on the second
         // half of the crossfade (or, on the reverse, scales out on the
         // first half). Same scale-about-centre pivot as the desktop.
+        if overview_alpha <= 0.0 {
+            // Overview fully hidden — clear the cached "+ Add workspace"
+            // hit rect so a stray click during an in-flight close can't
+            // create a workspace.
+            self.add_workspace_rect = Rect::ZERO;
+        }
         if overview_alpha > 0.0 {
             let overview_xform = if (overview_scale - 1.0).abs() > f64::EPSILON {
                 scaled(overview_scale) * transform
@@ -1529,6 +1569,28 @@ impl Widget for ShellOverlayHost {
             let flags = self.overlay_flags();
             if flags.overview {
                 if let Some(p) = self.last_cursor {
+                    // "+ Add workspace" affordance — sits below the
+                    // last workspace card. Wins the hit-test before the
+                    // row-card scan so a click on it doesn't fall
+                    // through to "missed → close overview".
+                    if self.add_workspace_rect.area() > 0.0
+                        && self.add_workspace_rect.contains(p)
+                    {
+                        if let Some(chrome) = self.chrome.clone() {
+                            let mut st = chrome.borrow_mut();
+                            // Mirror the wheel-disc plus slot's literal
+                            // (`sidebar_wheel_disc.rs`): both create-
+                            // affordances feed `add_workspace`, both
+                            // seed the new workspace as "Untitled".
+                            st.add_workspace("Untitled");
+                            // Stay in the overview so the user sees the
+                            // newly-appended card animate in. The
+                            // workspace-slide tick handles the visual
+                            // transition on the next frame.
+                        }
+                        *handled = true;
+                        return;
+                    }
                     let hit = self.hit_test_overview(p);
                     if let Some(chrome) = self.chrome.clone() {
                         let mut st = chrome.borrow_mut();
@@ -2032,15 +2094,19 @@ impl ShellOverlayHost {
         // behind the cards, spanning the first row's top to the last
         // row's bottom so it tracks however many workspaces exist.
         let n = state.tree.workspaces.len();
+        let add_rect = self.overview_add_workspace_rect_for(n);
         if n > 0 {
+            // Extend the rail past the last workspace card so it ties
+            // into the "+ Add workspace" tile at the tail — the
+            // add-affordance reads as part of the same vertical list.
             let rail_x = col.x0 - OVERVIEW_RAIL_OFFSET_PX;
             let first = self.overview_row_rect(0);
-            let last = self.overview_row_rect(n - 1);
+            let last_y1 = self.overview_row_rect(n - 1).y1.max(add_rect.y1);
             let rail = Rect::new(
                 rail_x - OVERVIEW_RAIL_WIDTH_PX / 2.0,
                 first.y0,
                 rail_x + OVERVIEW_RAIL_WIDTH_PX / 2.0,
-                last.y1,
+                last_y1,
             );
             scene.fill(Fill::NonZero, transform, colors.neutral[2], None, &rail);
         }
@@ -2531,6 +2597,87 @@ impl ShellOverlayHost {
                 );
             }
         }
+
+        // -- "+ Add workspace" tile --------------------------------------
+        // Mirrors the wheel-disc plus slot's semantics
+        // (`sidebar_wheel_disc.rs::plus_rect`): clicking calls
+        // `chrome.add_workspace("Untitled")` and stays on the overview
+        // so the user sees the new card slide in. The wheel-disc plus is
+        // the spatial entry point; this tile is the in-overview entry
+        // point so reviewing-then-adding doesn't require bouncing back
+        // to the wheel.
+        let add_hover = self
+            .last_cursor
+            .map(|c| add_rect.contains(c))
+            .unwrap_or(false);
+        let add_rr = RoundedRect::from_rect(add_rect, OVERVIEW_ROW_RADIUS_PX);
+        let slate_900 = colors.neutral[1];
+        let add_fill = if add_hover {
+            slate_900
+        } else {
+            Color::rgba(
+                slate_900.r as f64,
+                slate_900.g as f64,
+                slate_900.b as f64,
+                0.30,
+            )
+        };
+        let accent_color = if add_hover {
+            colors.accent[5]
+        } else {
+            colors.text_dim
+        };
+        scene.fill(Fill::NonZero, transform, add_fill, None, &add_rr);
+        // Dashed stroke marks the tile as a create-affordance, matching
+        // the empty-windows placeholder treatment above.
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.5).with_dashes(0.0, [6.0, 6.0]),
+            transform,
+            if add_hover {
+                colors.accent[5]
+            } else {
+                colors.neutral[3]
+            },
+            None,
+            &add_rr,
+        );
+        // Plus glyph + label centered as a unit so they read as one
+        // button rather than two adjacent affordances.
+        let label = "Add workspace";
+        let label_size = tokens.typography.scale.lg;
+        let (lw, lh) = text_renderer.measure(label, label_size, None);
+        let icon_size = 20.0_f64;
+        let icon_label_gap = 10.0_f64;
+        let total_w = icon_size + icon_label_gap + lw as f64;
+        let unit_x0 = (add_rect.x0 + add_rect.x1) / 2.0 - total_w / 2.0;
+        let unit_cy = (add_rect.y0 + add_rect.y1) / 2.0;
+        let icon_rect = Rect::new(
+            unit_x0,
+            unit_cy - icon_size / 2.0,
+            unit_x0 + icon_size,
+            unit_cy + icon_size / 2.0,
+        );
+        quick_ui::icons::draw_icon(
+            scene,
+            transform,
+            icon_rect,
+            quick_ui::icons::Icon::Plus,
+            accent_color,
+            quick_ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+        text_renderer.draw_text(
+            scene,
+            label,
+            label_size,
+            accent_color,
+            transform
+                * Affine::translate((
+                    unit_x0 + icon_size + icon_label_gap,
+                    unit_cy - lh as f64 / 2.0,
+                )),
+            None,
+        );
+        self.add_workspace_rect = add_rect;
     }
 
     fn draw_ws_settings(
