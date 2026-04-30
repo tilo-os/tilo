@@ -101,7 +101,11 @@ fn quick_settings_state_defaults_and_mutates_through_chrome() {
         st.quick_settings.bluetooth = true;
         st.bump();
     }
-    let qs = chrome.borrow().quick_settings;
+    // `QuickSettingsState` no longer derives `Copy` — the WiFi/BT
+    // drill-in vectors made it un-Copyable in T9 — so we explicitly
+    // clone the value out from behind the `Ref` borrow before
+    // asserting against it.
+    let qs = chrome.borrow().quick_settings.clone();
     assert!((qs.brightness - 0.25).abs() < 1e-5);
     assert!(qs.bluetooth);
 }
@@ -238,12 +242,21 @@ fn sidebar_inactive_card_without_per_ws_roster_shows_zero_dots() {
     let mut tree = WorkspaceTree::bootstrap_default();
     let w0 = tree.workspaces[0].id;
     tree.append_empty_workspace("Second");
+    // `bootstrap_default` now seeds a couple of demo collaborators on the
+    // Research workspace so the top-bar avatar stack has data on first
+    // run; the fallback contract under test here is per-workspace
+    // emptiness, so explicitly clear every non-active card's roster.
+    for ws in tree.workspaces.iter_mut() {
+        if ws.id != w0 {
+            ws.collaborators.clear();
+        }
+    }
     tree.collaborators = vec![
         Collaborator::new("a", "Ada"),
         Collaborator::new("b", "Ben"),
     ];
     // Workspace 0 is active + has no per-ws roster: borrows tree (2).
-    // Workspace 1 is inactive + has no per-ws roster: stays at 0.
+    // Every other card is inactive + has no per-ws roster: stays at 0.
     tree.active = w0;
 
     let wheel = SidebarWheelChrome::from_tree(&tree);
