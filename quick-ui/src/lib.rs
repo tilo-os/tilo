@@ -12,6 +12,7 @@ pub mod dnd;
 pub mod animation;
 pub mod overlay;
 pub mod icons;
+pub mod offscreen;
 
 pub use app::App;
 pub use state::{State, UndoEntry};
