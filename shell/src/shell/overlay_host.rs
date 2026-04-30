@@ -711,6 +711,27 @@ impl ShellOverlayHost {
         }
         None
     }
+
+    /// True if `p` is contained in any currently-open overlay's hit rect.
+    ///
+    /// Used by [`Widget::handle_event`] to absorb every pointer event whose
+    /// cursor is over an open palette / collaborators dropdown / quick-
+    /// settings popover / workspace-settings modal — not just `Pressed`.
+    /// Without this gate, `Released` and `CursorMoved` events fall through
+    /// to the wrapped content (#7, B-2) and light up tab pills, hover
+    /// affordances, or stray drag-loop continuations underneath the modal.
+    ///
+    /// `pub(crate)` because the same predicate is reused by the
+    /// palette-focus / WS-settings-pill click branches in Wave 2 (Unit
+    /// 2-A) — keeping it a method on `ShellOverlayHost` lets those branches
+    /// stay in sync with the rect helpers above.
+    pub(crate) fn cursor_over_open_overlay(&self, p: Point) -> bool {
+        let f = self.overlay_flags();
+        (self.palette_visible && self.palette.get_rect().contains(p))
+            || (f.collaborators && self.collaborators_rect().contains(p))
+            || (f.quick_settings && self.quick_settings_rect().contains(p))
+            || (f.ws_settings && self.ws_settings_rect().contains(p))
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -1193,6 +1214,34 @@ impl Widget for ShellOverlayHost {
                 position.x / scale_factor,
                 position.y / scale_factor,
             ));
+        }
+
+        // Modal event-absorb gate (#7, B-2). The per-overlay `Pressed`
+        // branches further down handle outside-click-close + inside-rect-
+        // swallow for `MouseInput { state: Pressed }`, but `Released` and
+        // `CursorMoved` (and `MouseWheel`) used to fall straight through to
+        // `self.content.handle_event` — letting hovers light up tab pills
+        // under the modal, drags continue receiving CursorMoved across the
+        // palette, etc. Absorb every non-Pressed pointer event whose cursor
+        // is over an open overlay. `Pressed` is intentionally excluded so
+        // the existing scope-pill / slider / name-rect logic still gets to
+        // run for clicks *inside* the rect.
+        let is_absorbable_pointer = matches!(
+            event,
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::MouseWheel { .. }
+                | WindowEvent::MouseInput {
+                    state: ElementState::Released,
+                    ..
+                }
+        );
+        if is_absorbable_pointer {
+            if let Some(p) = self.last_cursor {
+                if self.cursor_over_open_overlay(p) {
+                    *handled = true;
+                    return;
+                }
+            }
         }
 
         // File-drop (§10, concept `DesktopView.tsx:187-205`) — route the
@@ -4553,5 +4602,323 @@ mod modal_curve_tests {
 
         // A point far outside the column (top-left corner) must return None.
         assert_eq!(h.hit_test_overview(Point::new(5.0, 5.0)), None);
+    }
+}
+
+#[cfg(test)]
+mod overlay_event_absorb_tests {
+    //! Pin the modal event-absorb gate (#7, B-2). The host must short-
+    //! circuit every pointer event whose cursor is over an open overlay so
+    //! `Released` and `CursorMoved` can't leak through to the underlying
+    //! content widget — hovers under the palette must NOT light up tab
+    //! pills, drag-loops on the wheel disc must NOT keep receiving
+    //! CursorMoved while QS is open, etc.
+    //!
+    //! Each test wires the host's content slot to a [`RecordingContent`]
+    //! mock so the assertion goes against the real production code path
+    //! (`host.handle_event(...)`) — not just the [`ShellOverlayHost::
+    //! cursor_over_open_overlay`] predicate. If the absorb gate fails, the
+    //! mock records the forwarded event and the assertion fires.
+    use super::*;
+    use crate::shell::chrome_state::ChromeState;
+    use crate::shell::state::WorkspaceTree;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::collections::HashMap as StdHashMap;
+    use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+    use vello::Scene;
+    use vello::kurbo::Affine;
+    use winit::dpi::PhysicalPosition;
+    use winit::event::{ElementState, MouseButton, WindowEvent};
+
+    /// A mock content widget that records every [`Widget::handle_event`]
+    /// invocation in a shared `Vec<String>`. The recorded label is the
+    /// event-variant name (e.g. `"CursorMoved"`, `"MouseInput::Released"`)
+    /// so tests can assert *which* event types reached the content — and,
+    /// critically, that absorbed events did NOT.
+    struct RecordingContent {
+        rect: Rect,
+        log: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl RecordingContent {
+        fn new(log: Rc<RefCell<Vec<String>>>) -> Self {
+            Self { rect: Rect::ZERO, log }
+        }
+    }
+
+    impl Widget for RecordingContent {
+        fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
+
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut StdHashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let style = Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
+                ..Default::default()
+            };
+            let node = taffy.new_leaf(style).unwrap();
+            node_map.insert(node, self as *mut dyn Widget);
+            node
+        }
+
+        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+            let l = taffy.layout(node).unwrap();
+            self.rect = Rect::new(
+                origin.x + l.location.x as f64,
+                origin.y + l.location.y as f64,
+                origin.x + l.location.x as f64 + l.size.width as f64,
+                origin.y + l.location.y as f64 + l.size.height as f64,
+            );
+        }
+
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _text_renderer: &mut TextRenderer,
+            _theme: &Theme,
+            _presence: &PresenceCtx,
+        ) {}
+
+        fn handle_event(
+            &mut self,
+            event: &WindowEvent,
+            _scale_factor: f64,
+            _modifiers: &winit::event::Modifiers,
+            _state: &mut AutoCommit,
+            _path: &ObjId,
+            _handled: &mut bool,
+            _focus_target: &mut Option<NodeId>,
+            _node_id: NodeId,
+            _taffy: &TaffyTree<()>,
+        ) {
+            let label = match event {
+                WindowEvent::CursorMoved { .. } => "CursorMoved",
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    ..
+                } => "MouseInput::Pressed",
+                WindowEvent::MouseInput {
+                    state: ElementState::Released,
+                    ..
+                } => "MouseInput::Released",
+                WindowEvent::MouseWheel { .. } => "MouseWheel",
+                _ => "Other",
+            };
+            self.log.borrow_mut().push(label.to_string());
+        }
+
+        fn name(&self) -> &str {
+            "RecordingContent"
+        }
+
+        fn get_rect(&self) -> Rect {
+            self.rect
+        }
+    }
+
+    /// Build a host wrapping a [`RecordingContent`] mock, lay it out at a
+    /// known viewport, and return everything the tests need to pump events.
+    /// The `log` is shared with the mock content; test assertions inspect
+    /// it after `host.handle_event(...)` to verify the absorb gate fired.
+    struct AbsorbHarness {
+        host: ShellOverlayHost,
+        chrome: crate::shell::chrome_state::Chrome,
+        taffy: TaffyTree<()>,
+        root_node: NodeId,
+        log: Rc<RefCell<Vec<String>>>,
+    }
+
+    fn build_harness() -> AbsorbHarness {
+        let tree = WorkspaceTree::bootstrap_default();
+        let chrome = ChromeState::new(tree);
+        let log = Rc::new(RefCell::new(Vec::<String>::new()));
+        let content = Box::new(RecordingContent::new(log.clone()));
+        let mut host = ShellOverlayHost::new(content).with_chrome(chrome.clone());
+
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: StdHashMap<NodeId, *mut dyn Widget> = StdHashMap::new();
+        let child = host.build_layout(&mut taffy, &theme, &mut node_map);
+        let viewport = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(1600.0),
+                        height: Dimension::length(900.0),
+                    },
+                    ..Default::default()
+                },
+                &[child],
+            )
+            .unwrap();
+        let mut tr = TextRenderer::new();
+        let measure_map = node_map.clone();
+        taffy
+            .compute_layout_with_measure(
+                viewport,
+                Size {
+                    width: AvailableSpace::Definite(1600.0),
+                    height: AvailableSpace::Definite(900.0),
+                },
+                |known, avail, node_id, _, _| {
+                    if let Some(&ptr) = measure_map.get(&node_id) {
+                        unsafe { (*ptr).measure(known, avail, &mut tr) }
+                    } else {
+                        taffy::Size::ZERO
+                    }
+                },
+            )
+            .expect("compute_layout");
+        host.apply_layout(&taffy, child, Point::ORIGIN);
+
+        AbsorbHarness {
+            host,
+            chrome,
+            taffy,
+            root_node: child,
+            log,
+        }
+    }
+
+    fn cursor_moved_at(p: Point) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: PhysicalPosition::new(p.x, p.y),
+        }
+    }
+
+    fn left_button_released() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        }
+    }
+
+    fn pump(h: &mut AbsorbHarness, event: &WindowEvent) -> bool {
+        let mut doc = AutoCommit::new();
+        let doc_root = automerge::ROOT.clone();
+        let modifiers = winit::event::Modifiers::default();
+        let mut focus: Option<NodeId> = None;
+        let mut handled = false;
+        h.host.handle_event(
+            event,
+            1.0,
+            &modifiers,
+            &mut doc,
+            &doc_root,
+            &mut handled,
+            &mut focus,
+            h.root_node,
+            &h.taffy,
+        );
+        handled
+    }
+
+    #[test]
+    fn overlay_absorbs_cursor_moved_when_palette_open() {
+        let mut h = build_harness();
+        h.host.set_palette_visible(true);
+        let palette_rect = h.host.palette.get_rect();
+        assert!(
+            palette_rect.area() > 0.0,
+            "palette must have a non-empty rect after layout"
+        );
+        let p = palette_rect.center();
+        let cm = cursor_moved_at(p);
+        let handled = pump(&mut h, &cm);
+
+        assert!(
+            handled,
+            "CursorMoved over the open palette must be absorbed (handled = true)"
+        );
+        let log = h.log.borrow();
+        assert!(
+            !log.iter().any(|s| s == "CursorMoved"),
+            "content.handle_event must NOT see CursorMoved when the palette absorbs it; log = {:?}",
+            *log
+        );
+    }
+
+    #[test]
+    fn overlay_absorbs_released_inside_qs() {
+        let mut h = build_harness();
+        h.chrome.borrow_mut().overlays.quick_settings = true;
+        let qs_rect = h.host.quick_settings_rect();
+        assert!(qs_rect.area() > 0.0, "qs rect must be non-empty");
+        let p = qs_rect.center();
+        // Released doesn't carry position data, so seed `last_cursor` via
+        // a CursorMoved first. Clear the log so the Released assertion is
+        // unambiguous.
+        pump(&mut h, &cursor_moved_at(p));
+        h.log.borrow_mut().clear();
+
+        let released = left_button_released();
+        let handled = pump(&mut h, &released);
+
+        assert!(
+            handled,
+            "MouseInput::Released over the open quick-settings popover must be absorbed"
+        );
+        let log = h.log.borrow();
+        assert!(
+            !log.iter().any(|s| s == "MouseInput::Released"),
+            "content.handle_event must NOT see Released when QS absorbs it; log = {:?}",
+            *log
+        );
+    }
+
+    #[test]
+    fn overlay_absorbs_cursor_moved_inside_ws_settings() {
+        let mut h = build_harness();
+        h.chrome.borrow_mut().overlays.ws_settings = true;
+        let ws_rect = h.host.ws_settings_rect();
+        assert!(ws_rect.area() > 0.0, "ws-settings rect must be non-empty");
+        let p = ws_rect.center();
+
+        let cm = cursor_moved_at(p);
+        let handled = pump(&mut h, &cm);
+
+        assert!(
+            handled,
+            "CursorMoved over the open ws-settings modal must be absorbed"
+        );
+        let log = h.log.borrow();
+        assert!(
+            !log.iter().any(|s| s == "CursorMoved"),
+            "content.handle_event must NOT see CursorMoved when ws-settings absorbs it; log = {:?}",
+            *log
+        );
+    }
+
+    #[test]
+    fn cursor_moved_outside_open_overlay_still_reaches_content() {
+        // Negative test: when the cursor sits outside every open overlay's
+        // rect, the absorb gate must NOT fire — regular content (e.g. the
+        // sidebar wheel, topbar tray) still needs to see hover events to
+        // light up. This pins that the gate is *bounded by rect*, not just
+        // "any pointer event while an overlay is open".
+        let mut h = build_harness();
+        h.host.set_palette_visible(true);
+        // A point in the top-left corner that the palette (centered modal)
+        // can't possibly contain.
+        let p = Point::new(8.0, 8.0);
+        let cm = cursor_moved_at(p);
+        let _ = pump(&mut h, &cm);
+
+        let log = h.log.borrow();
+        assert!(
+            log.iter().any(|s| s == "CursorMoved"),
+            "outside-overlay CursorMoved must still reach content; log = {:?}",
+            *log
+        );
     }
 }
