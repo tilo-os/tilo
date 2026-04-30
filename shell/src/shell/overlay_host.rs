@@ -35,9 +35,9 @@ use quick_ui::theme::Theme;
 use quick_ui::widget::{GroupRow, Widget, WindowGroup as UiWindowGroup};
 use quick_ui::{CommandEntry, CommandPalette};
 
-use crate::shell::chrome_state::Chrome;
+use crate::shell::chrome_state::{Chrome, WsTab};
 use crate::shell::state::{GroupId, StripId};
-use crate::shell::workspace_settings::draw_roles_pane;
+use crate::shell::workspace_settings::{draw_files_pane, draw_roles_pane};
 
 pub struct ShellOverlayHost {
     rect: Rect,
@@ -2598,19 +2598,27 @@ impl ShellOverlayHost {
             None,
         );
 
-        // The chrome-state side-channel `editing_workspace_name ==
-        // Some("__roles_tab__")` is the placeholder hook for "the user
-        // clicked the Roles & Permissions sidebar nav row" until the
-        // ChromeState carries a typed tab indicator. Flips the modal
-        // body to the per-role app + file permission grids.
-        let roles_active = state.editing_workspace_name.as_deref() == Some("__roles_tab__");
+        // Tab routing reads the typed `ws_settings_tab` field on chrome
+        // state. Previously this branched on a magic-string side-channel
+        // through `editing_workspace_name` (`"__roles_tab__"` /
+        // `"__files_tab__"`), which leaked literal placeholder strings
+        // into the General Name input whenever a non-General tab was
+        // requested through that path. The typed enum keeps tab routing
+        // and the name-edit buffer fully orthogonal — concept ref
+        // `WorkspaceSettingsModal.tsx:50-95`.
+        let active_tab = state.ws_settings_tab;
 
-        // Tabs header (General / Roles / Files).
+        // Tabs header (General / Roles / Files / Collaborators).
+        // The Collaborators pill is visual-only for now — `WsTab` has no
+        // `Collaborators` variant, so it never lights up.
         let tabs = ["General", "Roles", "Files", "Collaborators"];
         let mut tx = rect.x0 + 24.0;
         let ty = rect.y0 + 112.0;
         for (i, tab) in tabs.iter().enumerate() {
-            let active = if roles_active { i == 1 } else { i == 0 };
+            let active = matches!(
+                (i, active_tab),
+                (0, WsTab::General) | (1, WsTab::Roles) | (2, WsTab::Files)
+            );
             let (w, h) = text_renderer.measure(tab, lsize, None);
             let pill_rect = Rect::new(tx - 8.0, ty - 4.0, tx + w as f64 + 8.0, ty + h as f64 + 4.0);
             let pill = RoundedRect::from_rect(pill_rect, tokens.radii.md as f64);
@@ -2629,35 +2637,72 @@ impl ShellOverlayHost {
             tx += w as f64 + 32.0;
         }
 
-        if roles_active {
-            // Roles tab body sits below the tabs strip and uses the
-            // active workspace's roles/files for the permission grids.
-            let body_top = rect.y0 + 144.0;
-            let body_rect = Rect::new(rect.x0 + 16.0, body_top, rect.x1 - 16.0, rect.y1 - 16.0);
-            if let Some(ws) = state.tree.active_workspace() {
-                draw_roles_pane(
+        // Per-tab body dispatch. Roles owns its own body; Files falls
+        // through to the General body until T3's dedicated Files pane
+        // lands. General is the unconditional fall-through.
+        match active_tab {
+            WsTab::Roles => {
+                // Roles tab body sits below the tabs strip and uses the
+                // active workspace's roles/files for the permission grids.
+                let body_top = rect.y0 + 144.0;
+                let body_rect =
+                    Rect::new(rect.x0 + 16.0, body_top, rect.x1 - 16.0, rect.y1 - 16.0);
+                if let Some(ws) = state.tree.active_workspace() {
+                    draw_roles_pane(
+                        scene,
+                        transform,
+                        body_rect,
+                        ws,
+                        None,
+                        text_renderer,
+                        theme,
+                    );
+                }
+                // Close hint stays consistent across tabs.
+                let hint = "Press Esc to close";
+                let hsize = tokens.typography.scale.xs;
+                let (hw, _hh) = text_renderer.measure(hint, hsize, None);
+                text_renderer.draw_text(
                     scene,
-                    transform,
-                    body_rect,
-                    ws,
+                    hint,
+                    hsize,
+                    colors.text_dim,
+                    transform * Affine::translate((rect.x1 - hw as f64 - 24.0, rect.y1 - 24.0)),
                     None,
-                    text_renderer,
-                    theme,
                 );
+                return;
             }
-            // Close hint stays consistent across tabs.
-            let hint = "Press Esc to close";
-            let hsize = tokens.typography.scale.xs;
-            let (hw, _hh) = text_renderer.measure(hint, hsize, None);
-            text_renderer.draw_text(
-                scene,
-                hint,
-                hsize,
-                colors.text_dim,
-                transform * Affine::translate((rect.x1 - hw as f64 - 24.0, rect.y1 - 24.0)),
-                None,
-            );
-            return;
+            WsTab::Files => {
+                // Files tab body — minimal placeholder pane that lists
+                // `workspace_files`. Standalone of the General body so
+                // it never reads `editing_workspace_name`; the typed
+                // `WsTab` migration relies on this orthogonality so the
+                // Name-edit buffer can never leak into the Files render.
+                let body_top = rect.y0 + 144.0;
+                let body_rect =
+                    Rect::new(rect.x0 + 16.0, body_top, rect.x1 - 16.0, rect.y1 - 16.0);
+                if let Some(ws) = state.tree.active_workspace() {
+                    draw_files_pane(scene, transform, body_rect, ws, text_renderer, theme);
+                }
+                // Close hint mirrors the Roles arm — each non-General
+                // pane owns its own hint placement so the General body
+                // can stay self-contained.
+                let hint = "Press Esc to close";
+                let hsize = tokens.typography.scale.xs;
+                let (hw, _hh) = text_renderer.measure(hint, hsize, None);
+                text_renderer.draw_text(
+                    scene,
+                    hint,
+                    hsize,
+                    colors.text_dim,
+                    transform * Affine::translate((rect.x1 - hw as f64 - 24.0, rect.y1 - 24.0)),
+                    None,
+                );
+                return;
+            }
+            WsTab::General => {
+                // Fall through to the General body below.
+            }
         }
 
         // Name input — edits fall through to `editing_workspace_name`.
