@@ -505,6 +505,45 @@ impl Widget for GroupRow {
                 && self.split_tab_into_new_group(src_idx, tab_id, gap_idx)
             {
                 *handled = true;
+                continue;
+            }
+            // B-4: no valid drop target resolved — neither a non-closing
+            // sibling bar, nor a closing sibling's bar, nor an inter-
+            // group gap. The release point most commonly lands here
+            // when the user drops over a *closing* sibling's content
+            // area (below the bar): the closing-filter excludes it
+            // from the first branch, the bar-rect check excludes it
+            // from the second, and `gap_index_for` reports `None`
+            // because the release is geometrically inside a group.
+            // Treat as "cancel": the tab must remain in the source
+            // group exactly where it started.
+            //
+            // The matched branches above each call `detach_tab`
+            // lazily inside their own resolution path, so today an
+            // unmatched release leaves the source intact already
+            // (`tabs().any(...)` is true and the recovery below is
+            // skipped). The recovery is a defensive guard: if a
+            // future refactor ever moves the detach earlier in
+            // this loop, an unmatched release would otherwise
+            // silently drop the dragged tab on the floor. Sweeping
+            // every other group for the orphaned id and splicing
+            // it back onto source's head pins the post-condition
+            // — "no valid target → tab stays in source" — at the
+            // structural level rather than relying on the lazy-
+            // detach pattern remaining in place.
+            let tab_in_source =
+                self.groups[src_idx].tabs().iter().any(|t| t.id == tab_id);
+            if !tab_in_source {
+                // We just confirmed source doesn't have the tab, so
+                // its own `detach_tab` returns `None` and the search
+                // sweeps every other group looking for the orphan.
+                let recovered = self
+                    .groups
+                    .iter_mut()
+                    .find_map(|g| g.detach_tab(tab_id));
+                if let Some((desc, host)) = recovered {
+                    self.groups[src_idx].insert_detached_tab(0, desc, host);
+                }
             }
         }
     }
@@ -1272,6 +1311,122 @@ mod tests {
         assert!(
             !row.groups[1].is_closing(),
             "the new group must NOT inherit the closing state",
+        );
+    }
+
+    /// Regression for B-4: a cross-group drop whose release point lands
+    /// inside a *closing* sibling's content area (below its bar, but
+    /// still inside the group's outer rect) used to fall through every
+    /// resolution branch silently — the non-closing-bar branch filters
+    /// closing groups out, the closing-bar branch needs the release in
+    /// the bar rect, and `gap_index_for` returns `None` because the
+    /// release is inside a group's `get_rect`. Without an explicit
+    /// "no valid target → cancel" fallback the dragged tab is at risk
+    /// of being lost. This test pins the source-keeps-the-tab invariant
+    /// so the post-detach loop can never quietly drop it on the floor.
+    #[test]
+    fn cross_group_drop_into_closing_content_area_keeps_tab_in_source() {
+        use std::time::Instant;
+        use winit::event::WindowEvent;
+
+        // Two multi-tab groups. B (index 1) goes into the closing fade
+        // freshly so the prune sweep won't reap it this tick — only its
+        // `is_closing()` flag is set, which is the trigger that funnels
+        // the drop past both `target_idx` branches.
+        let (mut row, taffy, root) =
+            make_row_with_groups_with_taffy(&[&[1, 2], &[10, 11]]);
+        row.groups[1].set_closing_at_for_tests(Instant::now());
+        assert!(row.groups[1].is_closing());
+        assert!(!row.groups[1].close_complete());
+
+        // Release point: inside B's outer rect but BELOW B's bar rect —
+        // i.e. over its tile/content area. This is the gap the bug
+        // report calls out: the closing-filter excludes B from the
+        // first branch, the bar-rect check excludes B from the second
+        // branch, and `gap_index_for` reports `None` because the
+        // release is geometrically inside a group.
+        let b_rect = row.groups[1].get_rect();
+        let b_bar = row.groups[1].bar_rect();
+        let release = Point::new(
+            (b_rect.x0 + b_rect.x1) / 2.0,
+            (b_bar.y1 + b_rect.y1) / 2.0,
+        );
+        assert!(
+            b_rect.contains(release),
+            "precondition: release is inside B's outer rect",
+        );
+        assert!(
+            !b_bar.contains(release),
+            "precondition: release is OUTSIDE B's bar rect (content area)",
+        );
+        assert_eq!(
+            row.gap_index_for(release),
+            None,
+            "precondition: gap_index_for returns None for inside-group releases",
+        );
+
+        // Publish a pending detach on A (source) — mimics what
+        // `TabBar::handle_event` does when a drag release lands
+        // outside A's own bar rect. We pre-stage the detach marker
+        // (instead of replaying the full press → drag-past-threshold
+        // gesture) because `press_origin` is private; the existing
+        // sibling test `single_tab_group_split_is_not_refused_by_handle_event_sweep`
+        // uses the same shortcut.
+        let a_tabs_before: Vec<u64> =
+            row.groups[0].tabs().iter().map(|t| t.id).collect();
+        row.groups[0].bar_mut().pending_detach = Some((1, release));
+
+        // Drive the actual release: `MouseInput::Released` flows
+        // through `GroupRow::handle_event`'s post-dispatch detach
+        // loop, which is the bug site. Using the real release event
+        // (not a no-op `CursorMoved`) ensures we test the same path
+        // the user actually triggers.
+        let mut doc = AutoCommit::new();
+        let doc_root = automerge::ROOT.clone();
+        let modifiers = Modifiers::default();
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        let release_event = WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        };
+        row.handle_event(
+            &release_event, 1.0, &modifiers, &mut doc, &doc_root,
+            &mut handled, &mut focus, root, &taffy,
+        );
+
+        // Source group must still contain its original tab list — the
+        // dragged tab id 1 is still present. No data loss, no spurious
+        // new group spliced in, no tab inserted into the closing group.
+        let a_tabs_after: Vec<u64> =
+            row.groups[0].tabs().iter().map(|t| t.id).collect();
+        assert_eq!(
+            a_tabs_after, a_tabs_before,
+            "source group must keep the dragged tab when no valid target resolves",
+        );
+        // Row layout untouched: still exactly two groups, B still closing.
+        assert_eq!(
+            row.groups.len(),
+            2,
+            "no new group should be spliced in for a cancelled drop",
+        );
+        let b_idx = row
+            .groups
+            .iter()
+            .position(|g| g.is_closing())
+            .expect("B should still be present mid-fade");
+        let b_tabs_after: Vec<u64> =
+            row.groups[b_idx].tabs().iter().map(|t| t.id).collect();
+        assert_eq!(
+            b_tabs_after, vec![10, 11],
+            "closing group's tabs must be untouched — drop did not insert into it",
+        );
+        // The pending_detach marker must have been drained by the
+        // sweep — a leftover would re-fire next tick.
+        assert!(
+            row.groups[0].bar_mut().pending_detach.is_none(),
+            "post-dispatch sweep must drain pending_detach even when no target resolves",
         );
     }
 
