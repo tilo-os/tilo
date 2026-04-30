@@ -23,6 +23,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use quick_desktop::shell::build_nirios_overlay_host_with_chrome;
+use quick_desktop::shell::chrome_state::WsTab;
 use quick_desktop::shell::quick_settings::QsLevel;
 use quick_desktop::shell::state::WorkspaceTree;
 use quick_ui::offscreen::OffscreenRenderer;
@@ -269,16 +270,17 @@ fn render_scene(name: &str, w: f64, h: f64) -> Scene {
                 st.overlays.quick_settings = true;
                 st.quick_settings.push_level(QsLevel::Bluetooth);
             }
-            "ws-settings-general" => st.overlays.ws_settings = true,
+            "ws-settings-general" => {
+                st.overlays.ws_settings = true;
+                st.ws_settings_tab = WsTab::General;
+            }
             "ws-settings-roles" => {
                 st.overlays.ws_settings = true;
-                st.editing_workspace_name = Some("__roles_tab__".into());
+                st.ws_settings_tab = WsTab::Roles;
             }
             "ws-settings-files" => {
                 st.overlays.ws_settings = true;
-                // T3's side-channel mirrors __roles_tab__'s but flips the
-                // panel body to the Files grid.
-                st.editing_workspace_name = Some("__files_tab__".into());
+                st.ws_settings_tab = WsTab::Files;
             }
             other => panic!("unknown scene '{other}'"),
         }

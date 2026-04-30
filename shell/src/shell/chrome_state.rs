@@ -17,6 +17,11 @@ use std::rc::Rc;
 
 use crate::shell::quick_settings::{BtDevice, QsLevel, WifiNetwork};
 use crate::shell::state::WorkspaceTree;
+// Re-export WsTab so chrome users can refer to the tab routing enum
+// without reaching into `workspace_settings`. The enum itself lives
+// next to the modal widget; the chrome holds a copy of the active tab
+// as a typed field — see `ChromeState::ws_settings_tab`.
+pub use crate::shell::workspace_settings::WsTab;
 
 /// Snapshot of which shell overlays are currently on screen.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -167,6 +172,15 @@ pub struct ChromeState {
     /// banner above the palette, and clicking a pill rotates through the
     /// variants of [`SearchScope`].
     pub search_scope: SearchScope,
+    /// Currently-active tab inside the Workspace Settings modal.
+    /// Independent of [`Self::editing_workspace_name`] (which is only
+    /// the name-input edit buffer). `Default::default()` is
+    /// [`WsTab::General`]; the renderer dispatches its modal-body
+    /// content on this field.
+    ///
+    /// Concept ref: `WorkspaceSettingsModal.tsx:50-95` — the tabs are
+    /// independent UI state, never entangled with the name-edit buffer.
+    pub ws_settings_tab: WsTab,
     /// Monotonic counter bumped every time the tree is mutated. Widgets
     /// poll this in `update` to re-sync their caches; cheaper than running
     /// diff logic and easier than an event bus.
@@ -181,6 +195,7 @@ impl ChromeState {
             quick_settings: QuickSettingsState::default(),
             editing_workspace_name: None,
             search_scope: SearchScope::default(),
+            ws_settings_tab: WsTab::default(),
             revision: 0,
         }))
     }

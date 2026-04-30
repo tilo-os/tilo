@@ -74,7 +74,7 @@ use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
 use quick_desktop::shell::build_nirios_overlay_host_with_chrome;
-use quick_desktop::shell::chrome_state::Chrome;
+use quick_desktop::shell::chrome_state::{Chrome, WsTab};
 use quick_desktop::shell::quick_settings::{QsLevel, QuickSettings};
 use quick_desktop::shell::state::WorkspaceTree;
 use quick_desktop::shell::topbar_chrome::{CenterWidget, TopBarChrome};
@@ -351,9 +351,9 @@ fn workspace_settings_renders_roles_tab_with_per_role_app_grid() {
     let tree = WorkspaceTree::bootstrap_default();
 
     // Render with modal open + (default) General tab.
-    let (general_fills, _) = render_with_ws_settings_tab(&tree, /* roles */ false);
+    let (general_fills, _) = render_with_ws_settings_tab(&tree, WsTab::General);
     // Render with modal open + Roles tab.
-    let (roles_fills, _) = render_with_ws_settings_tab(&tree, /* roles */ true);
+    let (roles_fills, _) = render_with_ws_settings_tab(&tree, WsTab::Roles);
 
     // Concept's Roles tab adds at minimum: a role list (≥1 row × swatch +
     // label) + a 5-app permission grid (5 rows × 3 columns of toggle
@@ -386,14 +386,12 @@ fn workspace_settings_renders_roles_tab_with_per_role_app_grid() {
 fn workspace_settings_renders_files_tab_with_role_assignments() {
     let tree = WorkspaceTree::bootstrap_default();
 
-    let (general_fills, _) = render_with_ws_settings_tab(&tree, /* roles */ false);
-    // We don't have a `files` toggle on the chrome — both Files and
-    // Roles are part of the same "tab not General" behaviour; we encode
-    // Files via a side-channel below. For now: assert that *some* tab
-    // distinct from General produces a different render, since the
-    // current implementation can't distinguish General from Files at
-    // all.
-    let (roles_fills, _) = render_with_ws_settings_tab(&tree, /* roles */ true);
+    let (general_fills, _) = render_with_ws_settings_tab(&tree, WsTab::General);
+    // The Files tab spec assertion is anchored against the Roles render
+    // (which paints the workspace_files list as part of the per-role
+    // file-permission grid). Once a dedicated Files pane lands, swap
+    // these calls to `WsTab::Files`.
+    let (roles_fills, _) = render_with_ws_settings_tab(&tree, WsTab::Roles);
     // Concept's Files tab adds a grid of file rows (icon + name + type
     // badge + Remove pill per row) + section header — ≥ 8 extra fills
     // for even a single-file workspace, ≥ 20 for a populated one. We
@@ -425,7 +423,7 @@ fn workspace_settings_renders_files_tab_with_role_assignments() {
                 });
         }
     }
-    let (files_filled, _) = render_with_ws_settings_tab(&tree_with_files, /* roles */ true);
+    let (files_filled, _) = render_with_ws_settings_tab(&tree_with_files, WsTab::Roles);
     let added = files_filled.saturating_sub(roles_fills);
     assert!(
         added >= 6,
@@ -438,25 +436,135 @@ fn workspace_settings_renders_files_tab_with_role_assignments() {
     );
 }
 
-/// Helper for tests #2 and #3: render the host with the modal open and
-/// (optionally) try to drive it to a non-General tab. The "roles" bool
-/// is currently *advisory* — the implementation has no chrome-level
-/// switch for it, so this helper does the best it can: it sets
-/// `editing_workspace_name = Some(...)` to put the modal in a
-/// "non-default" inner state, which is the closest thing we can do
-/// today. When the WorkspaceSettingsModal tab-state is wired into
-/// chrome (audit fix #1), update this helper to use the real switch.
-fn render_with_ws_settings_tab(tree: &WorkspaceTree, roles: bool) -> (usize, Chrome) {
+// ===========================================================================
+// 3b. WorkspaceSettings — Files tab must not leak the magic-string side-
+//     channel into the General Name input
+// ===========================================================================
+
+/// Wave-3 T4 regression pin: before the typed `WsTab` chrome field
+/// landed, the only way to ask the renderer for "Files" was to set
+/// `editing_workspace_name = Some("__files_tab__".into())` — a
+/// side-channel that overloaded the General-tab Name input's edit
+/// buffer for tab routing. The General body unconditionally reads
+/// `editing_workspace_name` as a fallback display value, so the
+/// literal `"__files_tab__"` text was being painted *into* the Name
+/// input whenever the test (or `bin/shots`) tried to drive the
+/// renderer to Files via that knob.
+///
+/// The fix is the typed [`WsTab`] field on `ChromeState`: tab routing
+/// now flows through `state.ws_settings_tab`, leaving
+/// `editing_workspace_name` to mean exactly "active Name-input edit
+/// buffer" — never a tab dispatch token.
+///
+/// This test pins the orthogonality structurally: with `WsTab::Files`
+/// active, the rendered scene must be *invariant* to whatever
+/// `editing_workspace_name` is set to. Pre-migration, the General body
+/// would fall through, the Name input would re-render with the magic
+/// string and the editing-mode caret + thicker stroke would change the
+/// solid-colour-fill count. Post-migration, the Files arm has its own
+/// pane that ignores `editing_workspace_name`, so the two renders
+/// produce the same fill count.
+#[test]
+fn ws_settings_files_tab_does_not_leak_magic_string_into_name_input() {
+    let tree = WorkspaceTree::bootstrap_default();
+
+    // Render Files-tab + clean buffer. This is the canonical state.
+    let (mut host_a, chrome_a) = build_nirios_overlay_host_with_chrome(&tree);
+    {
+        let mut st = chrome_a.borrow_mut();
+        st.overlays.ws_settings = true;
+        st.ws_settings_tab = WsTab::Files;
+        st.editing_workspace_name = None;
+    }
+    let scene_a = render_host_to_scene(&mut host_a);
+    let fills_a = collect_solid_colors(&scene_a).len();
+
+    // Render Files-tab + the literal magic string in the Name buffer.
+    // After the typed-field migration, the Files arm must not consult
+    // `editing_workspace_name` at all, so this render's solid-colour
+    // fill count must match `fills_a` exactly.
+    let (mut host_b, chrome_b) = build_nirios_overlay_host_with_chrome(&tree);
+    {
+        let mut st = chrome_b.borrow_mut();
+        st.overlays.ws_settings = true;
+        st.ws_settings_tab = WsTab::Files;
+        st.editing_workspace_name = Some("__files_tab__".into());
+    }
+    let scene_b = render_host_to_scene(&mut host_b);
+    let fills_b = collect_solid_colors(&scene_b).len();
+
+    assert_eq!(
+        fills_a, fills_b,
+        "Files-tab render must be invariant to `editing_workspace_name` \
+         contents — the typed `WsTab` field is the sole tab dispatch surface, \
+         and the Name-input edit buffer must never bleed into the Files pane. \
+         Got {fills_a} fills with editing_workspace_name=None vs {fills_b} \
+         with editing_workspace_name=Some(\"__files_tab__\"); a difference \
+         indicates the Files arm is still falling back to General body, \
+         which paints the magic string into the Name input."
+    );
+}
+
+/// Layout + draw a `ShellOverlayHost` already configured by the caller
+/// (chrome state pre-set on the host). Mirrors the body of
+/// `render_with_ws_settings_tab` minus the helper's chrome setup, so
+/// callers that need to drive specific chrome state combinations can
+/// reuse the same plumbing without re-implementing the taffy +
+/// text-renderer dance.
+fn render_host_to_scene<W: Widget + ?Sized>(host: &mut W) -> Scene {
+    let theme = Theme::dark();
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let child = host.build_layout(&mut taffy, &theme, &mut node_map);
+    let root_node = taffy
+        .new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(W),
+                    height: Dimension::length(H),
+                },
+                ..Default::default()
+            },
+            &[child],
+        )
+        .unwrap();
+    let mut tr = TextRenderer::new();
+    let measure_map = node_map.clone();
+    taffy
+        .compute_layout_with_measure(
+            root_node,
+            Size {
+                width: AvailableSpace::Definite(W),
+                height: AvailableSpace::Definite(H),
+            },
+            |known, avail, node_id, _, _| {
+                if let Some(&ptr) = measure_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, avail, &mut tr) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        )
+        .expect("compute_layout");
+    host.apply_layout(&taffy, child, Point::ORIGIN);
+    let mut scene = Scene::new();
+    let presence = PresenceCtx::default();
+    host.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    scene
+}
+
+/// Helper for tests #2 and #3: render the host with the modal open at
+/// the requested tab. The chrome's `ws_settings_tab` field is the typed
+/// dispatch surface the renderer reads — it replaced an earlier
+/// `editing_workspace_name` magic-string side-channel
+/// (`"__roles_tab__"` / `"__files_tab__"`) that leaked the placeholder
+/// literal into the General Name input.
+fn render_with_ws_settings_tab(tree: &WorkspaceTree, tab: WsTab) -> (usize, Chrome) {
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(tree);
     {
         let mut st = chrome.borrow_mut();
         st.overlays.ws_settings = true;
-        if roles {
-            // Best-effort signal that "we're not on General". Today this
-            // is a no-op for the renderer — the Roles spec test fails
-            // because of that.
-            st.editing_workspace_name = Some(String::from("__roles_tab__"));
-        }
+        st.ws_settings_tab = tab;
     }
     let theme = Theme::dark();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
