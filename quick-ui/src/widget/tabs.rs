@@ -1006,6 +1006,15 @@ impl Widget for TabBar {
         }
     }
     fn draw(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
+        // Defensive: if `apply_layout` hasn't repopulated `tab_rects` to
+        // match the current `tabs` (can happen for one frame after a
+        // detach/insert mutates `tabs` outside the layout pass — e.g.
+        // GroupRow's drag-drop sweep splices a tab into a freshly-spawned
+        // group whose taffy node hasn't laid out yet), bail out so we
+        // don't index past the end. Next frame's apply_layout fixes it.
+        if self.tab_rects.len() != self.tabs.len() {
+            return;
+        }
         // Per-pill styling constants (radius, colors) live in
         // `draw_pill_inner` — this top-level draw is purely the
         // per-frame timeline: layout spring, insert fade, source dim,
