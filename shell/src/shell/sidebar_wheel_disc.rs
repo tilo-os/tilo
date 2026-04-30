@@ -197,11 +197,37 @@ impl Widget for SidebarWheelDisc {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
+        // Wave-3 T1: at narrow viewports — and inside the live shell's
+        // 96 px sidebar slot, where the host overrides the disc's leaf
+        // style to a column narrower than `diameter_px` — the disc's
+        // visual left edge (`cx - radius`) can land in negative X and
+        // clip off-screen. Clamp `rect.x0` so the *drawn* disc keeps a
+        // >= 16 px left margin; `draw` derives `cx` from the rect's
+        // midpoint and uses `diameter_px / 2` as the radius, so the
+        // clamp must shift the rect right by enough that the leftmost
+        // rim point clears the margin.
+        //
+        // All hub/spoke geometry (`draw`, `plus_rect`, etc.) derives
+        // from `self.rect`, so the clamp cascades automatically.
+        const MIN_LEFT_MARGIN: f64 = 16.0;
+        let raw_x0 = origin.x + l.location.x as f64;
+        let raw_x1 = raw_x0 + l.size.width as f64;
+        let raw_cx = (raw_x0 + raw_x1) / 2.0;
+        let radius = self.diameter_px / 2.0;
+        // The visible disc spans `[cx - radius, cx + radius]`. Shift x0
+        // so `cx - radius >= MIN_LEFT_MARGIN`, preserving the rect's
+        // width. When raw_cx is already past `MIN_LEFT_MARGIN + radius`
+        // this is a no-op (max picks the existing position).
+        let min_cx = MIN_LEFT_MARGIN + radius;
+        let cx = raw_cx.max(min_cx);
+        let dx = cx - raw_cx;
+        let x0 = raw_x0 + dx;
+        let y0 = origin.y + l.location.y as f64;
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
+            x0,
+            y0,
+            x0 + l.size.width as f64,
+            y0 + l.size.height as f64,
         );
     }
 
@@ -635,6 +661,13 @@ impl SidebarWheelDisc {
         let new_idx = ((self.active_idx as f32 + delta).rem_euclid(n as f32)) as usize;
         self.active_idx = new_idx % n;
         self.publish_active_to_chrome();
+    }
+
+    /// Test helper: pins the post-`apply_layout` rect for tests that
+    /// assert on the clamped position rather than a transient cache.
+    #[cfg(test)]
+    pub(crate) fn rect_for_tests(&self) -> Rect {
+        self.rect
     }
 
     /// Test helper: replays the same math as `draw`'s presence-dot pass
@@ -1131,6 +1164,70 @@ mod tests {
             d.presence_dot_hit_count(&ctx),
             2,
             "two seeded peers on workspace 77 must yield 2 dots"
+        );
+    }
+
+    /// Wave-3 T1: at narrow viewports (and inside the live shell's 96 px
+    /// sidebar slot, where the host overrides the disc's leaf to be
+    /// narrower than `diameter_px`) the disc's *visible* rim — drawn at
+    /// `cx ± diameter_px / 2` from the rect's midpoint — would land in
+    /// negative X and clip off-screen. The `apply_layout` clamp must
+    /// guarantee `rect.x0 >= 16 px` AND a `>= 16 px` left margin to the
+    /// drawn rim, so the full disc remains visible regardless of where
+    /// the host mounts the leaf.
+    #[test]
+    fn disc_rect_stays_inside_viewport_at_narrow_width() {
+        // Build a tiny taffy tree that mirrors the live shell's mount
+        // pattern: a flex column whose only child is the disc node, sized
+        // by the disc's own `build_layout`. We then drive `apply_layout`
+        // with an origin that — without the clamp — would yield x0 < 16.
+        let mut disc = SidebarWheelDisc::new(labels(&["A", "B", "C"]));
+        let theme = Theme::default();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let disc_node = disc.build_layout(&mut taffy, &theme, &mut node_map);
+
+        // Compute the layout against an 800 px-wide root.
+        let viewport_w: f32 = 800.0;
+        let viewport_h: f32 = 600.0;
+        taffy
+            .compute_layout(
+                disc_node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(viewport_w),
+                    height: taffy::AvailableSpace::Definite(viewport_h),
+                },
+            )
+            .unwrap();
+
+        // Apply layout with a negative origin to simulate a sidebar
+        // mount point that — without the clamp — would push the disc's
+        // left edge off-screen. The clamp must lift x0 back to >= 16 px.
+        disc.apply_layout(&taffy, disc_node, Point::new(-200.0, 0.0));
+        let rect = disc.rect_for_tests();
+        assert!(
+            rect.x0 >= 16.0,
+            "disc must keep a >= 16 px left margin so its left curve never \
+             clips off-screen at narrow viewport widths; observed x0 = {}",
+            rect.x0
+        );
+        // The clamp must also preserve the disc's width — it shifts the
+        // rect right, never compresses it.
+        assert!(
+            (rect.width() - disc.diameter_px).abs() < 1e-3,
+            "clamp must preserve the disc's width (diameter); got {} vs {}",
+            rect.width(),
+            disc.diameter_px
+        );
+        // And — critically — the *drawn* rim's left edge must clear the
+        // 16 px margin too. `draw` uses `cx ± diameter_px / 2` regardless
+        // of `rect.width()`, so a shrunken rect (live shell's 96 px slot
+        // case) still needs the clamp to push `cx` right enough.
+        let cx = (rect.x0 + rect.x1) / 2.0;
+        let visible_left = cx - disc.diameter_px / 2.0;
+        assert!(
+            visible_left >= 16.0,
+            "drawn rim's left edge must clear 16 px; cx={cx}, visible_left={visible_left}"
         );
     }
 
