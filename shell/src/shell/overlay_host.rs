@@ -475,6 +475,27 @@ impl ShellOverlayHost {
         self.palette_visible
     }
 
+    /// Force-set the palette visibility. Lets headless screenshot
+    /// harnesses (e.g. `bin/shots`) drive the palette scene without
+    /// staging a synthetic Ctrl+K key event through `handle_event`.
+    pub fn set_palette_visible(&mut self, v: bool) {
+        self.palette_visible = v;
+    }
+
+    /// Fast-forward the overview crossfade to its settled state
+    /// (`overview_t = overview_target = target`). Bypasses the 400 ms
+    /// AnimatePresence curve so headless single-frame renders see the
+    /// fully-opened (or fully-closed) layer instead of an alpha-zero
+    /// transition. Intended for screenshot harnesses + tests; the live
+    /// run-loop should keep using `tick_overview_transition`.
+    pub fn force_overview_settled(&mut self, target: bool) {
+        let t = if target { 1.0 } else { 0.0 };
+        self.overview_target = t;
+        self.overview_t = t;
+        self.transition_from = t;
+        self.transition_started = None;
+    }
+
     /// Font size the overview "Workspaces" h1 is drawn at, in logical pixels.
     /// Exposed so the shell-chrome test can pin "header reads as large/bold"
     /// (visual gap #12 — concept is Tailwind `text-4xl`, 36 px). This is
