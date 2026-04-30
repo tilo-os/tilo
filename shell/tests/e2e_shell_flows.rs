@@ -284,10 +284,9 @@ fn escape_event() -> WindowEvent {
 
 #[test]
 fn e2e_open_close_overview() {
-    // Seed: Home + 2 extras so the Overview grid has 3 cards to paint.
-    let mut tree = WorkspaceTree::bootstrap_default();
-    tree.append_empty_workspace("Research");
-    tree.append_empty_workspace("Design");
+    // Seed: `bootstrap_default` already provides Home + Research + Design,
+    // so the Overview grid has 3 cards to paint without further appends.
+    let tree = WorkspaceTree::bootstrap_default();
 
     let theme = Theme::dark();
     let mut renderer_opt = try_new_renderer(W as u32, H as u32);
