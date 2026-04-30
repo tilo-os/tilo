@@ -1496,6 +1496,116 @@ fn topbar_system_monitor_sparkline_is_emerald_500_not_indigo() {
 }
 
 // ===========================================================================
+// 14. TopBar right cluster — avatar stack must paint when collaborators
+// are present in the active workspace
+// ===========================================================================
+
+/// Wave-3 / T6 follow-up: the top-bar right cluster on first boot must
+/// show the per-peer avatar stack (and a recognizable 3-dot tray pill)
+/// rather than just a small wifi/cast icon. The `bootstrap_default` tree
+/// seeds Home (active on first run) with one demo collaborator and the
+/// Research workspace with two — so as long as the topbar reads its
+/// roster from the *active* workspace (with a tree-level fallback) the
+/// avatar circles paint with peer-coloured fills.
+///
+/// This test pins the behaviour: render `TopBarChrome` against the
+/// default tree, scan the encoded scene for the canonical peer hex
+/// (`#ec4899` / Tailwind pink-500 = (236, 72, 153) for Alice; matches
+/// `nirios-concept/src/data.ts`), and assert the colour shows up. If a
+/// future regression flips the roster source back to the empty
+/// tree-level field — or removes Home's seeded collaborator — this test
+/// fails loudly with the captured fills in the diagnostic.
+///
+/// Concept ref: `nirios-concept/src/components/TopBarWidgets.tsx` —
+/// collaborator avatar stack on the right cluster.
+#[test]
+fn topbar_right_cluster_paints_avatar_stack_when_collaborators_present() {
+    let tree = WorkspaceTree::bootstrap_default();
+    // Sanity: the bootstrap fixture must keep at least one collaborator
+    // somewhere in the active workspace (otherwise the test below is
+    // vacuously trivial).
+    let active_ws = tree
+        .active_workspace()
+        .expect("bootstrap_default leaves an active workspace");
+    let active_collabs = active_ws.collaborators.len();
+    let tree_collabs = tree.collaborators.len();
+    assert!(
+        active_collabs > 0 || tree_collabs > 0,
+        "bootstrap_default should seed collaborators reachable from the \
+         active workspace (per-ws or tree-level fallback) so the top-bar \
+         avatar stack has something to paint on first boot"
+    );
+
+    let mut chrome = TopBarChrome::from_tree(&tree);
+    let theme = Theme::dark();
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let child = chrome.build_layout(&mut taffy, &theme, &mut node_map);
+    let root = taffy
+        .new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(1280.0),
+                    height: Dimension::length(48.0),
+                },
+                ..Default::default()
+            },
+            &[child],
+        )
+        .unwrap();
+    let mut tr = TextRenderer::new();
+    let measure_map = node_map.clone();
+    taffy
+        .compute_layout_with_measure(
+            root,
+            Size {
+                width: AvailableSpace::Definite(1280.0),
+                height: AvailableSpace::Definite(48.0),
+            },
+            |known, avail, node_id, _, _| {
+                if let Some(&ptr) = measure_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, avail, &mut tr) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        )
+        .expect("compute_layout");
+    chrome.apply_layout(&taffy, child, Point::ORIGIN);
+    let mut scene = Scene::new();
+    let presence = PresenceCtx::default();
+    chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+
+    // The widget must have synced at least one initial out of the
+    // bootstrap fixture's roster.
+    assert!(
+        !chrome.collaborator_initials().is_empty(),
+        "TopBarChrome failed to pick up any collaborator initials from the \
+         bootstrap_default tree (active ws has {active_collabs}, \
+         tree-level has {tree_collabs}). Likely cause: \
+         `sync_from_tree` reads from the wrong roster source."
+    );
+
+    let fills = collect_solid_colors(&scene);
+    // Alice cursor color: `#ec4899` (Tailwind pink-500) = (236, 72, 153).
+    // Bob cursor color: `#f97316` (Tailwind orange-500) = (249, 115, 22).
+    // Plan-spec tolerance: ±8 per channel.
+    let has_alice = contains_color_close(&fills, (236, 72, 153), 8);
+    let has_bob = contains_color_close(&fills, (249, 115, 22), 8);
+    assert!(
+        has_alice || has_bob,
+        "TopBar right cluster must paint at least one peer-coloured \
+         avatar from the bootstrap roster (Alice #ec4899 or Bob #f97316; \
+         concept `nirios-concept/src/data.ts`). Observed solid fills: \
+         {fills:?}. If this fails, check that \
+         `TopBarChrome::sync_from_tree` reads from the active workspace's \
+         own collaborator list (with a tree-level fallback) and that \
+         `WorkspaceTree::bootstrap_default` still seeds Home with at \
+         least one collaborator."
+    );
+}
+
+// ===========================================================================
 // Sanity unit tests for the helpers above
 // ===========================================================================
 
