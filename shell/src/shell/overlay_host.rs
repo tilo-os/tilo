@@ -592,9 +592,15 @@ impl ShellOverlayHost {
     }
 
     /// Mirror of the geometry in `draw_ws_settings` — centered modal card.
+    /// Modal grows when Roles / Files tabs are active so the longer per-
+    /// app permission grid + file list fit without overflowing into the
+    /// workspace area below; click-detection geometry stays in sync.
     fn ws_settings_rect(&self) -> Rect {
         let modal_w = 520.0_f64;
-        let modal_h = 360.0_f64;
+        let modal_h = match self.chrome.as_ref().map(|c| c.borrow().ws_settings_tab) {
+            Some(WsTab::Roles) | Some(WsTab::Files) => 520.0_f64,
+            _ => 360.0_f64,
+        };
         let cx = (self.rect.x0 + self.rect.x1) / 2.0;
         let cy = (self.rect.y0 + self.rect.y1) / 2.0;
         Rect::new(
@@ -2540,7 +2546,15 @@ impl ShellOverlayHost {
         let colors = &tokens.colors;
 
         let modal_w = 520.0_f64;
-        let modal_h = 360.0_f64;
+        // Roles + Files tabs render long lists (5 apps, N files) that
+        // overflow the 360 px General-tab modal. Grow the modal when
+        // those tabs are active so the per-app permission grid + role
+        // sidebar fit without bleeding past the modal frame into the
+        // workspace area below.
+        let modal_h = match state.ws_settings_tab {
+            WsTab::Roles | WsTab::Files => 520.0_f64,
+            _ => 360.0_f64,
+        };
         let cx = (self.rect.x0 + self.rect.x1) / 2.0;
         let cy = (self.rect.y0 + self.rect.y1) / 2.0;
         let rect = Rect::new(
