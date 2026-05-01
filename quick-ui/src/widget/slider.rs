@@ -14,6 +14,13 @@ use crate::permissions::PermissionScope;
 /// cursor x and a 0..1 value, so it has to live in one place.
 const TRACK_PADDING: f64 = 5.0;
 
+/// Knob radius at rest. Hover and press scale this — see the
+/// `_SCALE` constants below. Pulled out so tests can pin the
+/// idle-vs-hover-vs-press contract without hard-coding pixels.
+const KNOB_RADIUS: f64 = 10.0;
+const KNOB_RADIUS_HOVER_SCALE: f64 = 1.08;
+const KNOB_RADIUS_PRESS_SCALE: f64 = 1.15;
+
 pub struct Slider {
     _id: String,
     rect: Rect,
@@ -66,6 +73,28 @@ impl Slider {
     fn value_from_cursor_x(&self, cursor_x: f64) -> f64 {
         let track_width = self.rect.width() - TRACK_PADDING * 2.0;
         ((cursor_x - (self.rect.x0 + TRACK_PADDING)) / track_width).clamp(0.0, 1.0)
+    }
+
+    /// Knob radius for the current visual state. Pressed > hover > idle.
+    /// Public so the size contract is testable without poking the scene.
+    pub fn knob_radius_for_state(&self) -> f64 {
+        if self.is_dragging {
+            KNOB_RADIUS * KNOB_RADIUS_PRESS_SCALE
+        } else if self.is_hovered {
+            KNOB_RADIUS * KNOB_RADIUS_HOVER_SCALE
+        } else {
+            KNOB_RADIUS
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_hovered_for_test(&mut self, hovered: bool) {
+        self.is_hovered = hovered;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_dragging_for_test(&mut self, dragging: bool) {
+        self.is_dragging = dragging;
     }
 
     /// Commit a new value to the CRDT iff it differs from the cached
@@ -152,21 +181,38 @@ impl Widget for Slider {
         // indigo-500 here, indigo-600 only for hover affordances.
         scene.fill(vello::peniko::Fill::NonZero, transform, theme.accent_primary, None, &active_track_shape);
 
-        // Knob
-        let knob_radius = 10.0;
+        // Knob — radius scales with state so hover/press are obvious
+        // even before you read the colors. Idle uses the translucent
+        // surface_white_10 token over a border_white_20 stroke, hover
+        // bumps the fill to surface_white_20, press fills with the
+        // accent and adds a soft halo.
+        let knob_radius = self.knob_radius_for_state();
         let knob_x = track_rect.x0 + self.value * track_rect.width();
         let knob_y = self.rect.y0 + self.rect.height() / 2.0;
-        let knob_shape = Circle::new(Point::new(knob_x, knob_y), knob_radius);
-        
-        let knob_color = if self.is_dragging {
-            theme.text_primary
+        let knob_center = Point::new(knob_x, knob_y);
+        let knob_shape = Circle::new(knob_center, knob_radius);
+
+        let colors = &theme.tokens.colors;
+        let (fill_color, border_color, border_width) = if self.is_dragging {
+            (theme.accent_primary, colors.border_white_20, 1.5)
         } else if self.is_hovered {
-            theme.text_dim
+            (colors.surface_white_20, theme.text_dim, 1.5)
         } else {
-            theme.border_standard
+            (colors.surface_white_10, colors.border_white_20, 1.5)
         };
-        
-        scene.fill(vello::peniko::Fill::NonZero, transform, knob_color, None, &knob_shape);
+
+        // Pressed halo: two nested strokes at decreasing alpha *outside*
+        // the knob so you get a visible glow on engage. Drawn before the
+        // fill so the knob sits cleanly on top.
+        if self.is_dragging {
+            let halo_outer = Circle::new(knob_center, knob_radius + 4.0);
+            let halo_inner = Circle::new(knob_center, knob_radius + 2.0);
+            scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, colors.border_white_10, None, &halo_outer);
+            scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, colors.border_white_20, None, &halo_inner);
+        }
+
+        scene.fill(vello::peniko::Fill::NonZero, transform, fill_color, None, &knob_shape);
+        scene.stroke(&vello::kurbo::Stroke::new(border_width), transform, border_color, None, &knob_shape);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, _modifiers: &winit::event::Modifiers, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, _taffy: &TaffyTree<()>) {
@@ -325,6 +371,24 @@ mod tests {
             node,
             &tree,
         );
+    }
+
+    #[test]
+    fn knob_radius_grows_on_hover_and_drag() {
+        // Idle < hover < pressed. Visual contract for state contrast —
+        // if this test fails the slider has stopped scaling the knob
+        // and the polish has regressed.
+        let mut s = Slider::new("test", "v");
+        let r0 = s.knob_radius_for_state();
+
+        s.set_hovered_for_test(true);
+        let r1 = s.knob_radius_for_state();
+
+        s.set_dragging_for_test(true);
+        let r2 = s.knob_radius_for_state();
+
+        assert!(r0 < r1, "hover must grow knob: idle={}, hover={}", r0, r1);
+        assert!(r1 < r2, "press must grow knob further: hover={}, press={}", r1, r2);
     }
 
     #[test]
