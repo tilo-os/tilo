@@ -396,10 +396,33 @@ impl Widget for GroupRow {
             .map(|(i, _)| i)
             .collect();
         if !prune.is_empty() {
+            // Parallel-vec hardening (Wave 2 / 2-D): `node_ids` is
+            // populated by `build_layout` to match `groups` 1:1 and is
+            // re-cleared / re-populated on the next layout pass after
+            // we set `structure_dirty = true` below. The intermediate
+            // post-prune state therefore has a *deliberately stale*
+            // `node_ids.len() == pre-prune groups.len()` until the App
+            // re-runs `build_layout`. The debug_assert below pins that
+            // expectation: if some future code path popped a `node_ids`
+            // slot outside the rebuild gate, the assert trips loudly.
+            // We snapshot the prune count *before* the loop because the
+            // `prune` vec is consumed by the removal walk.
+            let prune_count = prune.len();
             prune.sort_unstable_by(|a, b| b.cmp(a));
             for i in prune {
                 self.groups.remove(i);
             }
+            debug_assert_eq!(
+                self.node_ids.len(),
+                self.groups.len() + prune_count,
+                "GroupRow parallel-vec invariant violated: node_ids.len() ({}) \
+                 must equal pre-prune groups.len() (post-prune {} + pruned {}). \
+                 node_ids stays at the pre-prune length until structure_dirty \
+                 triggers a build_layout rebuild.",
+                self.node_ids.len(),
+                self.groups.len(),
+                prune_count,
+            );
             self.structure_dirty = true;
         }
 
@@ -1448,6 +1471,101 @@ mod tests {
         assert_eq!(
             row.hover_gap_idx, None,
             "cursor motion without an active drag must not publish a hover_gap_idx"
+        );
+    }
+
+    /// Parallel-vec invariant: the prune sweep in `GroupRow::handle_event`
+    /// removes every fully-faded group from `self.groups`. The companion
+    /// `node_ids` vector is rebuilt by the next `build_layout` pass —
+    /// `apply_layout` would walk a stale `node_ids` and crash if it ever
+    /// outlived the prune without a rebuild gate. Two safeguards keep
+    /// this honest:
+    ///
+    /// 1. The prune branch sets `structure_dirty = true`, so the App's
+    ///    tick handler re-runs `build_layout` before the next
+    ///    `apply_layout`, which clears and repopulates `node_ids`.
+    /// 2. The production code path debug-asserts that `node_ids.len()`
+    ///    after the prune still equals the *pre-prune* `groups.len()`
+    ///    — i.e. nobody silently popped a slot off `node_ids` outside
+    ///    the rebuild path. Fail-loud in debug builds; the test below
+    ///    drives that assert by pruning two groups in a single tick.
+    ///
+    /// Gated on `cfg(debug_assertions)` because the asserts being
+    /// exercised are themselves debug-only.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn group_prune_keeps_node_ids_aligned_in_debug() {
+        use std::time::{Duration, Instant};
+        use winit::event::WindowEvent;
+
+        // Three groups; mark the outer two as already-elapsed so the
+        // sweep prunes them on the next tick. Using non-adjacent prune
+        // indices (0 and 2) verifies the highest-index-first sort
+        // doesn't shift slots out from under the loop and that the
+        // pre-loop count is captured before any mutation.
+        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+        row.groups[0].set_closing_at_for_tests(
+            Instant::now() - Duration::from_millis(500),
+        );
+        row.groups[2].set_closing_at_for_tests(
+            Instant::now() - Duration::from_millis(500),
+        );
+
+        // Snapshot the pre-prune lengths. `node_ids` was populated by
+        // the build_layout call inside `make_row_with_groups_with_taffy`,
+        // so it must equal `groups.len()` here — that's the very
+        // invariant the production debug_assert protects.
+        let groups_pre = row.groups.len();
+        let node_ids_pre = row.node_ids.len();
+        assert_eq!(
+            groups_pre, 3,
+            "precondition: row was seeded with three groups",
+        );
+        assert_eq!(
+            node_ids_pre, groups_pre,
+            "precondition: node_ids must equal groups.len() after build_layout",
+        );
+
+        // Drive a no-op CursorMoved to trigger the prune sweep. If the
+        // production debug_assert ever fires (e.g. because someone
+        // popped a node_ids slot outside the build_layout path), this
+        // call would panic and the test would fail loudly.
+        let event = WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(5000.0, 5000.0),
+        };
+        let mut doc = AutoCommit::new();
+        let doc_root = automerge::ROOT.clone();
+        let modifiers = Modifiers::default();
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        row.handle_event(
+            &event, 1.0, &modifiers, &mut doc, &doc_root,
+            &mut handled, &mut focus, root, &taffy,
+        );
+
+        // Two of three groups should be pruned. The remaining group is
+        // the centre one (id-1 tab → groups[1] pre-prune).
+        assert_eq!(
+            row.groups.len(),
+            1,
+            "two fully-faded groups must be pruned in a single sweep",
+        );
+
+        // Either node_ids is in lockstep with groups (rebuilt-in-place
+        // path) OR structure_dirty was set so the App rebuilds the
+        // taffy tree before the next apply_layout pass. The plan
+        // explicitly accepts either; we just refuse the third option
+        // (drift with no rebuild gate) which would crash apply_layout.
+        let aligned_now = row.node_ids.len() == row.groups.len();
+        let dirty_for_rebuild = row.take_structure_dirty();
+        assert!(
+            aligned_now || dirty_for_rebuild,
+            "after prune: node_ids must either match groups.len() ({}) directly \
+             or structure_dirty must be set so build_layout rebuilds them \
+             (node_ids.len() = {})",
+            row.groups.len(),
+            row.node_ids.len(),
         );
     }
 }
