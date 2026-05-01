@@ -13,6 +13,7 @@
 
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 use taffy::{Dimension, Display, FlexDirection, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -22,6 +23,30 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{Widget, WindowGroup, WindowWidth};
+
+/// Idle threshold after the last wheel event before we kick off a
+/// snap-to-nearest-group animation. Mirrors the concept's
+/// `snap-x snap-proximity` heuristic in `DesktopView.tsx:396` —
+/// while the user is actively wheeling we don't snap; once they stop,
+/// the strip eases to the nearest group's left edge.
+const SNAP_IDLE_MS: u64 = 200;
+/// Duration of the snap animation itself (cubic-out ease). Matches the
+/// 200 ms feel the spawn animation in `window_group.rs` uses for
+/// secondary motions — long enough to read as eased, short enough to
+/// stay out of the user's way if they want to wheel again.
+const SNAP_ANIM_MS: u64 = 200;
+
+/// In-flight snap state: from `from` to `to` over `SNAP_ANIM_MS`,
+/// started at `started`. Cleared when the curve settles or the user
+/// starts wheeling again (a fresh wheel event resets `last_wheel_at`,
+/// and the next `tick_snap` call notices the snap target no longer
+/// matches the current scroll target and rebases).
+#[derive(Clone, Copy, Debug)]
+struct SnapAnim {
+    from: f64,
+    to: f64,
+    started: Instant,
+}
 
 pub struct GroupRow {
     pub groups: Vec<WindowGroup>,
@@ -66,6 +91,24 @@ pub struct GroupRow {
     /// `apply_layout` so `handle_event`'s wheel handler can clamp
     /// `scroll_x` without re-summing children.
     content_w: f64,
+    /// Per-group local x-positions (relative to the row's content origin),
+    /// captured during `apply_layout`. These are the snap targets — the
+    /// strip eases `scroll_x` to whichever entry is nearest after a
+    /// wheel-idle window. Re-built every layout pass so a structural
+    /// mutation that inserts / removes / reorders groups produces the
+    /// updated set of legal snap stops automatically.
+    group_left_edges: Vec<f64>,
+    /// Timestamp of the most recent `MouseWheel` event handled by this
+    /// row. `tick_snap` waits for `SNAP_IDLE_MS` of quiet on this
+    /// timestamp before kicking off the snap animation; a fresh wheel
+    /// event during a snap cancels the in-flight curve (the timestamp
+    /// jumps forward, the idle gate fails again, and the existing snap
+    /// is dropped on the next tick).
+    last_wheel_at: Option<Instant>,
+    /// In-flight snap animation, if any. `None` when the strip is at
+    /// rest or actively being wheeled. `Some` after the idle gate has
+    /// fired and we've committed to a target group's left edge.
+    snap_anim: Option<SnapAnim>,
 }
 
 impl GroupRow {
@@ -79,6 +122,9 @@ impl GroupRow {
             hover_gap_idx: None,
             scroll_x: 0.0,
             content_w: 0.0,
+            group_left_edges: Vec::new(),
+            last_wheel_at: None,
+            snap_anim: None,
         }
     }
 
@@ -100,6 +146,178 @@ impl GroupRow {
     /// the row's viewport rect, otherwise the overflow distance.
     pub fn max_scroll_x(&self) -> f64 {
         (self.content_w - self.rect.width()).max(0.0)
+    }
+
+    /// True while a snap-to-nearest-group animation is in flight, or
+    /// while the user just-wheeled (within the idle threshold). The
+    /// shell's `needs_animation_frame()` chain reads this so the App
+    /// keeps pumping redraws — without that, a wheel-then-idle would
+    /// freeze the strip mid-pan and never ease into the snap target.
+    fn snap_in_flight(&self) -> bool {
+        if self.snap_anim.is_some() {
+            return true;
+        }
+        // Pending snap: user has wheeled but the idle gate hasn't
+        // fired yet. Keep redraws pumping so `tick_snap` runs the
+        // moment the gate clears, even if no other event arrives.
+        if let Some(t) = self.last_wheel_at
+            && t.elapsed() < Duration::from_millis(SNAP_IDLE_MS + SNAP_ANIM_MS)
+            && !self.is_aligned_to_group()
+        {
+            return true;
+        }
+        false
+    }
+
+    /// True iff `scroll_x` is within 0.5 px of one of the group left
+    /// edges — i.e. the strip is already at rest at a snap stop, so
+    /// the idle gate's tick has nothing to do. Used to short-circuit
+    /// `snap_in_flight` after the snap settles so we stop pumping
+    /// redraws.
+    fn is_aligned_to_group(&self) -> bool {
+        if self.group_left_edges.is_empty() {
+            return true;
+        }
+        self.group_left_edges
+            .iter()
+            .any(|&e| (e - self.scroll_x).abs() < 0.5)
+    }
+
+    /// Find the snap target nearest to the current `scroll_x`, clamped
+    /// into `[0, max_scroll_x()]`. Returns `None` if there are no
+    /// groups (nothing to snap to) or if the strip can't actually
+    /// scroll (max_scroll_x == 0 — content fits).
+    fn nearest_group_edge(&self) -> Option<f64> {
+        if self.group_left_edges.is_empty() {
+            return None;
+        }
+        let max = self.max_scroll_x();
+        if max <= 0.0 {
+            return None;
+        }
+        let mut best: Option<f64> = None;
+        let mut best_dist = f64::MAX;
+        for &edge in &self.group_left_edges {
+            let candidate = edge.clamp(0.0, max);
+            let d = (candidate - self.scroll_x).abs();
+            if d < best_dist {
+                best_dist = d;
+                best = Some(candidate);
+            }
+        }
+        best
+    }
+
+    /// Per-frame snap tick. Called from `apply_layout` so the snap
+    /// animation runs whenever the App relayouts (which happens every
+    /// frame while `needs_animation_frame()` keeps redraws pumping
+    /// AND `take_structure_dirty()` keeps `layout_dirty` true). Split
+    /// out from `apply_layout` so headless tests can advance simulated
+    /// time deterministically without staging a full taffy tree.
+    ///
+    /// Behaviour:
+    /// - If a snap is in flight, ease `scroll_x` along the cubic-out
+    ///   curve from `from` to `to` over `SNAP_ANIM_MS`. Clear the snap
+    ///   when the curve settles.
+    /// - Otherwise, if `last_wheel_at` is set and at least `SNAP_IDLE_MS`
+    ///   has elapsed since the last wheel event, kick off a fresh snap
+    ///   targeting the nearest group's left edge.
+    pub fn tick_snap_at(&mut self, now: Instant) {
+        // No snap in flight — should we start one? Only if the user
+        // actually wheeled (`last_wheel_at` is set) AND has been quiet
+        // for at least the idle threshold AND the current scroll_x is
+        // not already aligned to a group edge. Kicking off here BEFORE
+        // the curve-advance branch lets the same `tick_snap_at` call
+        // both start the snap AND apply its first eased frame — the
+        // snap's `started` is anchored at `last_wheel_at + SNAP_IDLE_MS`
+        // so the eased frame reflects the elapsed time since the idle
+        // gate cleared, not since this particular tick fired.
+        if self.snap_anim.is_none() {
+            if let Some(last_wheel) = self.last_wheel_at {
+                let idle = now.saturating_duration_since(last_wheel);
+                if idle >= Duration::from_millis(SNAP_IDLE_MS) {
+                    if self.is_aligned_to_group() {
+                        self.last_wheel_at = None;
+                    } else if let Some(target) = self.nearest_group_edge() {
+                        if (target - self.scroll_x).abs() < 0.5 {
+                            self.scroll_x = target;
+                            self.last_wheel_at = None;
+                        } else {
+                            // Anchor `started` at the moment the idle
+                            // gate was met (`last_wheel + SNAP_IDLE_MS`),
+                            // not `now`. That way the very tick that
+                            // detected idle already applies the curve's
+                            // first eased frame for whatever duration
+                            // has passed since the gate cleared.
+                            let started = last_wheel
+                                + Duration::from_millis(SNAP_IDLE_MS);
+                            self.snap_anim = Some(SnapAnim {
+                                from: self.scroll_x,
+                                to: target,
+                                started,
+                            });
+                        }
+                    } else {
+                        self.last_wheel_at = None;
+                    }
+                }
+            }
+        }
+        // Active snap (either pre-existing OR freshly kicked off
+        // above): advance the cubic-out curve.
+        if let Some(anim) = self.snap_anim {
+            let elapsed = now.saturating_duration_since(anim.started);
+            let total = Duration::from_millis(SNAP_ANIM_MS);
+            if elapsed >= total {
+                self.scroll_x = anim.to;
+                self.snap_anim = None;
+                self.last_wheel_at = None;
+                return;
+            }
+            let raw = (elapsed.as_secs_f64() / (SNAP_ANIM_MS as f64 / 1000.0))
+                .clamp(0.0, 1.0);
+            // Cubic-out ease — same shape the spawn animation in
+            // `window_group.rs` uses for its slide-in. Punchy at the
+            // start, gentle settle at the end.
+            let eased = 1.0 - (1.0 - raw).powi(3);
+            self.scroll_x = anim.from + (anim.to - anim.from) * eased;
+        }
+    }
+
+    /// Test helper: directly seed `scroll_x` so tests can probe the
+    /// snap behaviour without driving a full wheel-event sequence.
+    #[cfg(test)]
+    pub(crate) fn set_scroll_x_for_test(&mut self, x: f64) {
+        self.scroll_x = x;
+    }
+
+    /// Test helper: directly seed `last_wheel_at` so tests can simulate
+    /// the user having stopped wheeling some duration ago without
+    /// having to actually sleep or run a real event loop.
+    #[cfg(test)]
+    pub(crate) fn set_last_wheel_at_for_test(&mut self, t: Instant) {
+        self.last_wheel_at = Some(t);
+    }
+
+    /// Test helper: directly seed `group_left_edges` so tests that
+    /// don't run a real taffy layout pass can still exercise the snap
+    /// math.
+    #[cfg(test)]
+    pub(crate) fn set_group_left_edges_for_test(&mut self, edges: Vec<f64>) {
+        self.group_left_edges = edges;
+    }
+
+    /// Test helper: directly seed `content_w` so `max_scroll_x` returns
+    /// a non-zero value in tests that don't run a real taffy layout.
+    #[cfg(test)]
+    pub(crate) fn set_content_w_for_test(&mut self, w: f64) {
+        self.content_w = w;
+    }
+
+    /// Test helper: directly seed the row's outer rect (for `max_scroll_x`).
+    #[cfg(test)]
+    pub(crate) fn set_rect_for_test(&mut self, r: Rect) {
+        self.rect = r;
     }
 
     /// Move a tab (by id) from `src` to `dst` so that the dropped-in tab
@@ -332,15 +550,24 @@ impl Widget for GroupRow {
         // after the last child). We read each child's *taffy-reported*
         // position so the inter-group gap (8 px declared on the row's
         // style) is included automatically.
+        //
+        // Same loop captures every child's local x position into
+        // `group_left_edges` — these are the snap targets the
+        // wheel-idle snap animation eases `scroll_x` toward. Re-built
+        // every layout pass so insertions / removals / reorderings
+        // produce the updated set of legal snap stops automatically.
         let mut content_w = 0.0_f64;
+        let mut edges: Vec<f64> = Vec::with_capacity(self.node_ids.len());
         for &cn in &self.node_ids {
             let cl = taffy.layout(cn).unwrap();
+            edges.push(cl.location.x as f64);
             let right = cl.location.x as f64 + cl.size.width as f64;
             if right > content_w {
                 content_w = right;
             }
         }
         self.content_w = content_w;
+        self.group_left_edges = edges;
         // Clamp scroll into bounds. A structural mutation that shrinks
         // the strip (group close, tab merge that prunes) can leave
         // `scroll_x` past the new max; clamping here keeps the next
@@ -353,6 +580,11 @@ impl Widget for GroupRow {
         if self.scroll_x < 0.0 {
             self.scroll_x = 0.0;
         }
+        // Per-frame snap tick: advance any in-flight snap animation,
+        // or kick a fresh one off if the user has been idle past the
+        // threshold. Done AFTER the clamp so a structural mutation
+        // that snapped scroll_x to max doesn't get re-eased.
+        self.tick_snap_at(Instant::now());
         // Children's origin is shifted left by `scroll_x` so a positive
         // scroll reveals groups originally laid out off the right edge.
         // Each child's stored `Rect` is in screen space (post-shift),
@@ -500,6 +732,15 @@ impl Widget for GroupRow {
             if dx != 0.0 {
                 let max = self.max_scroll_x();
                 self.scroll_x = (self.scroll_x + dx).clamp(0.0, max);
+                // Reset the idle gate and cancel any in-flight snap —
+                // a fresh wheel event means the user is actively
+                // panning, so we restart the 200 ms idle countdown
+                // from now and drop whatever snap target the previous
+                // gesture committed to. The next `tick_snap_at` after
+                // the user stops will compute a new target against
+                // the current `scroll_x`.
+                self.last_wheel_at = Some(Instant::now());
+                self.snap_anim = None;
                 *handled = true;
             }
         }
@@ -738,7 +979,13 @@ impl Widget for GroupRow {
         // WindowGroup's TabBar drop-zone expand curve would never reach
         // the shell's overlay host and the redraw pump would stall
         // mid-animation.
-        self.groups.iter().any(|g| g.needs_animation_frame())
+        //
+        // Also include our own snap-on-idle animation: while a snap is
+        // in flight (or a wheel is pending the idle gate), the App
+        // must keep pumping redraws so each frame re-runs
+        // `apply_layout` and the eased `scroll_x` propagates to every
+        // child's stored rect.
+        self.snap_in_flight() || self.groups.iter().any(|g| g.needs_animation_frame())
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -753,7 +1000,16 @@ impl Widget for GroupRow {
             .iter_mut()
             .map(|g| g.take_structure_dirty())
             .fold(false, |acc, d| acc || d);
-        own || children
+        // While a snap is in flight, force the App to rebuild taffy +
+        // re-run `apply_layout` next frame. Without this, `apply_layout`
+        // (which is where `tick_snap_at` lives) would only run on
+        // events, leaving the snap curve to evaluate against stale
+        // child rects between frames. Setting `structure_dirty` is
+        // heavier than strictly needed (full taffy rebuild instead of
+        // just a re-layout) but matches the existing pattern other
+        // animations in this file use to drive frame-by-frame updates.
+        let snap = self.snap_in_flight();
+        own || children || snap
     }
 }
 
@@ -1963,6 +2219,134 @@ mod tests {
             row.scroll_x(),
             0.0,
             "no overflow → scroll_x must remain at 0"
+        );
+    }
+
+    #[test]
+    fn scroll_snaps_to_nearest_group_after_wheel_idle() {
+        // After the user wheel-pans the strip past a group boundary
+        // and stops, the strip must ease `scroll_x` to the nearest
+        // group's left edge with a cubic-out curve over ~200 ms.
+        // Mirrors the concept's `snap-x snap-proximity` behaviour in
+        // `DesktopView.tsx:396`.
+        //
+        // Synthesise the geometry directly (three 600-px groups, 8 px
+        // gap → left edges at 0, 608, 1216) so we don't depend on
+        // taffy's flex math for the precise stop positions.
+        let mut row = make_row_with_groups(&[&[1], &[2], &[3]]);
+        row.set_group_left_edges_for_test(vec![0.0, 608.0, 1216.0]);
+        row.set_content_w_for_test(1816.0);
+        row.set_rect_for_test(Rect::new(0.0, 0.0, 1000.0, 600.0));
+        // Pretend we panned to mid-second-group (scroll_x = 250) and
+        // stopped wheeling 250 ms ago. Nearest left-edge to 250 is 0
+        // (distance 250) vs 608 (distance 358) — first group wins,
+        // BUT 250 is closer to 0 by simple |edge - scroll_x|. To
+        // exercise the "snap to the SECOND group's left edge" branch
+        // we start from 400 (closer to 608 than to 0).
+        row.set_scroll_x_for_test(400.0);
+        let base = Instant::now();
+        row.set_last_wheel_at_for_test(base - Duration::from_millis(250));
+
+        // First tick after idle: snap kicks off and advances ~25 % of
+        // the way (50 ms into a 200 ms cubic-out curve, so eased
+        // ≈ 1 - (1 - 0.25)^3 ≈ 0.578). scroll_x must have moved
+        // toward 608 but not yet arrived.
+        row.tick_snap_at(base + Duration::from_millis(50));
+        assert!(
+            row.scroll_x() > 400.0,
+            "snap must move scroll_x toward the target; got {}",
+            row.scroll_x()
+        );
+        assert!(
+            row.scroll_x() < 608.0,
+            "snap must NOT have arrived after only 50 ms; got {}",
+            row.scroll_x()
+        );
+
+        // After the full 200 ms, scroll_x must have settled at the
+        // target group's left edge.
+        row.tick_snap_at(base + Duration::from_millis(250));
+        assert!(
+            (row.scroll_x() - 608.0).abs() < 1.0,
+            "snap must settle at 608.0 after 200 ms; got {}",
+            row.scroll_x()
+        );
+    }
+
+    #[test]
+    fn snap_does_not_fire_during_wheel_idle_window() {
+        // Before the 200 ms idle threshold elapses, the snap must
+        // NOT fire — we don't want the strip pulling itself out from
+        // under the user mid-wheel.
+        let mut row = make_row_with_groups(&[&[1], &[2], &[3]]);
+        row.set_group_left_edges_for_test(vec![0.0, 608.0, 1216.0]);
+        row.set_content_w_for_test(1816.0);
+        row.set_rect_for_test(Rect::new(0.0, 0.0, 1000.0, 600.0));
+        row.set_scroll_x_for_test(400.0);
+        let base = Instant::now();
+        // Only 100 ms since the last wheel — well inside the idle
+        // window.
+        row.set_last_wheel_at_for_test(base - Duration::from_millis(100));
+
+        row.tick_snap_at(base);
+        assert_eq!(
+            row.scroll_x(),
+            400.0,
+            "snap must not fire while still inside the idle window",
+        );
+    }
+
+    #[test]
+    fn fresh_wheel_cancels_in_flight_snap() {
+        // If the user starts panning again mid-snap, the snap must
+        // cancel — the new wheel event resets `last_wheel_at`, the
+        // idle gate fails, and the existing snap is dropped on the
+        // next tick. Without this, the strip would fight the user's
+        // input mid-curve.
+        use winit::dpi::PhysicalPosition;
+
+        let (mut row, taffy, root) = make_overflow_row(4, 1200.0);
+        // Stage an in-flight snap directly so we don't have to wait
+        // out a real idle window.
+        row.set_scroll_x_for_test(300.0);
+        let base = Instant::now();
+        row.set_last_wheel_at_for_test(base - Duration::from_millis(250));
+        row.tick_snap_at(base);
+        assert!(
+            row.snap_anim.is_some(),
+            "precondition: snap must be in flight",
+        );
+
+        // Drive a fresh wheel event. The cursor must be inside the
+        // row's rect for the wheel handler to claim it.
+        let cy = (row.rect.y0 + row.rect.y1) / 2.0;
+        let cx = (row.rect.x0 + row.rect.x1) / 2.0;
+        let mut state = AutoCommit::new();
+        let root_obj = automerge::ROOT.clone();
+        let modifiers = Modifiers::default();
+        let mut handled = false;
+        let mut focus = None;
+        let dev = unsafe { std::mem::zeroed() };
+        row.handle_event(
+            &WindowEvent::CursorMoved {
+                device_id: dev,
+                position: PhysicalPosition::new(cx, cy),
+            },
+            1.0, &modifiers, &mut state, &root_obj,
+            &mut handled, &mut focus, root, &taffy,
+        );
+        row.handle_event(
+            &WindowEvent::MouseWheel {
+                device_id: dev,
+                delta: MouseScrollDelta::LineDelta(0.0, -1.0),
+                phase: winit::event::TouchPhase::Moved,
+            },
+            1.0, &modifiers, &mut state, &root_obj,
+            &mut handled, &mut focus, root, &taffy,
+        );
+        assert!(
+            row.snap_anim.is_none(),
+            "fresh wheel event must cancel the in-flight snap",
         );
     }
 }
