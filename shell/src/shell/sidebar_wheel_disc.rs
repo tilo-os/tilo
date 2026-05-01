@@ -52,9 +52,9 @@
 //! (`rotation_deg / spoke_gap_deg`) stays readable; trig converts to
 //! radians at the callsite.
 //!
-//! TODO(3-B): split `drag_from` (drag origin) from `hover_anchor`
-//! (idle-hover cursor cache used for press hit-testing). They're
-//! currently the same field which conflates two different roles.
+//! Drag origin (`drag_from`) and idle-hover cursor cache (`hover_anchor`)
+//! are stored in separate fields so pointer-capture is asserted only
+//! while a press is actually in flight.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -99,9 +99,14 @@ pub struct SidebarWheelDisc {
     /// `spoke_gap_deg()` on release; free-running during a drag.
     pub rotation_deg: f32,
     /// `Some(origin)` while a drag is in flight; `None` when idle.
-    /// TODO(3-B): also overloaded as the idle-hover cursor cache for
-    /// press hit-testing — those two roles should live in separate fields.
+    /// Set only on a Pressed-inside-arc transition; cleared on Release.
+    /// `wants_pointer_capture` keys off this field.
     pub drag_from: Option<Point>,
+    /// Most-recent in-arc cursor position cached during idle hover, used
+    /// as the press hit-test anchor when `last_cursor_pos` was last
+    /// updated outside the arc. Distinct from `drag_from` so a hover
+    /// over the disc never spuriously claims pointer capture.
+    pub hover_anchor: Option<Point>,
     /// Rotation at the moment the drag started — anchor for the
     /// per-frame `rotation = origin + dy * DRAG_FACTOR` mapping.
     pub drag_rotation_origin: f32,
@@ -199,6 +204,7 @@ impl SidebarWheelDisc {
             active_idx: 0,
             rotation_deg: 0.0,
             drag_from: None,
+            hover_anchor: None,
             drag_rotation_origin: 0.0,
             rect: Rect::ZERO,
             diameter_px: 1200.0,
@@ -806,8 +812,8 @@ impl Widget for SidebarWheelDisc {
                 if self.rect.area() <= 0.0 {
                     return;
                 }
-                let anchor = match (self.drag_from, self.last_cursor_pos) {
-                    (Some(d), _) => d,
+                let anchor = match (self.hover_anchor, self.last_cursor_pos) {
+                    (Some(h), _) => h,
                     (None, Some(p)) => p,
                     (None, None) => Point::new(
                         (self.rect.x0 + self.rect.x1) / 2.0,
@@ -830,9 +836,10 @@ impl Widget for SidebarWheelDisc {
                     self.rotation_deg = self.drag_rotation_origin + delta_deg;
                     *handled = true;
                 } else if self.hit_visible_arc(p) {
-                    // TODO(3-B): this overloads `drag_from` with hover-
-                    // cache semantics; split into a dedicated field.
-                    self.drag_from = Some(p);
+                    // Cache the in-arc cursor for the next press hit-test
+                    // without claiming pointer capture (which is reserved
+                    // for an actual press-in-flight via `drag_from`).
+                    self.hover_anchor = Some(p);
                 }
             }
             WindowEvent::MouseInput {
@@ -1144,6 +1151,60 @@ mod tests {
         assert_eq!(d.rotation_deg, 0.0);
         assert!(d.drag_from.is_none());
         assert!(!d.wants_pointer_capture());
+    }
+
+    /// Hover into the visible arc without pressing must NOT make the
+    /// disc claim pointer capture — capture is reserved for an
+    /// actually-in-flight drag (B-3 / 3-B). The hover anchor is cached
+    /// for the next press's hit-test in a separate field.
+    #[test]
+    fn hover_does_not_capture_pointer() {
+        let mut d = mk(&["Home", "Research", "Design"]);
+        let cy = d.diameter_px / 2.0;
+        let cx = drag_anchor_x(&d);
+        // Move the cursor into the visible arc without pressing.
+        pump(&mut d, cursor_event(cx, cy));
+        assert!(
+            d.drag_from.is_none(),
+            "hover must not seed `drag_from`; got {:?}",
+            d.drag_from
+        );
+        assert!(
+            !d.wants_pointer_capture(),
+            "disc must not claim pointer capture on hover-only"
+        );
+        // Sanity: the hover anchor IS cached for the next press's
+        // hit-test, just not via `drag_from`.
+        assert!(
+            d.hover_anchor.is_some(),
+            "hover into arc must populate `hover_anchor`"
+        );
+    }
+
+    /// Press inside the disc, then release: pointer capture must clear
+    /// so the next idle hover doesn't continue to swallow events
+    /// (B-3 / 3-B).
+    #[test]
+    fn press_then_release_clears_pointer_capture() {
+        let mut d = mk(&["Home", "Research", "Design"]);
+        let cy = d.diameter_px / 2.0;
+        let cx = drag_anchor_x(&d);
+        pump(&mut d, cursor_event(cx, cy));
+        assert!(pump(&mut d, press_event()));
+        assert!(
+            d.wants_pointer_capture(),
+            "press inside disc must capture pointer"
+        );
+        assert!(pump(&mut d, release_event()));
+        assert!(
+            d.drag_from.is_none(),
+            "release must clear `drag_from`; got {:?}",
+            d.drag_from
+        );
+        assert!(
+            !d.wants_pointer_capture(),
+            "release must clear pointer capture"
+        );
     }
 
     #[test]
