@@ -192,6 +192,51 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             circle_path(11.0, 11.0, 8.0),
             path_from_d("m21 21-4.3-4.3"),
         ],
+        // Pen-tool: nib body + handle + diagonal + ink dot. Transcribed
+        // from lucide's `pen-tool.js` (v0.546.0).
+        Icon::PenTool => vec![
+            path_from_d("M15.707 21.293a1 1 0 0 1-1.414 0l-1.586-1.586a1 1 0 0 1 0-1.414l5.586-5.586a1 1 0 0 1 1.414 0l1.586 1.586a1 1 0 0 1 0 1.414z"),
+            path_from_d("m18 13-1.375-6.874a1 1 0 0 0-.746-.776L3.235 2.028a1 1 0 0 0-1.207 1.207L5.35 15.879a1 1 0 0 0 .776.746L13 18"),
+            path_from_d("m2.3 2.3 7.286 7.286"),
+            circle_path(11.0, 11.0, 2.0),
+        ],
+        // Code: two angle-brackets pointing inward, transcribed from
+        // lucide's `code.js` (v0.546.0).
+        Icon::Code => vec![
+            path_from_d("m16 18 6-6-6-6"),
+            path_from_d("m8 6-6 6 6 6"),
+        ],
+        // File-text: page outline + folded corner + three text lines.
+        // Transcribed from lucide's `file-text.js` (v0.546.0).
+        Icon::FileText => vec![
+            path_from_d("M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"),
+            path_from_d("M14 2v4a2 2 0 0 0 2 2h4"),
+            path_from_d("M10 9H8"),
+            path_from_d("M16 13H8"),
+            path_from_d("M16 17H8"),
+        ],
+        // Bar-chart: lucide v0.546.0's `bar-chart` re-exports
+        // `chart-no-axes-column-increasing` — three vertical bars at
+        // x=5, 12, 19 with increasing height.
+        Icon::BarChart => vec![
+            path_from_d("M5 21v-6"),
+            path_from_d("M12 21V9"),
+            path_from_d("M19 21V3"),
+        ],
+        // Layers: three stacked diamond-ish quad outlines. Transcribed
+        // from lucide's `layers.js` (v0.546.0).
+        Icon::Layers => vec![
+            path_from_d("M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"),
+            path_from_d("M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"),
+            path_from_d("M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"),
+        ],
+        // Settings: 8-tooth gear ring + central r=3 dot. The gear ring
+        // is one (long) lucide path; transcribed verbatim from
+        // `settings.js` (v0.546.0).
+        Icon::Settings => vec![
+            path_from_d("M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"),
+            circle_path(12.0, 12.0, 3.0),
+        ],
     }
 }
 
@@ -350,11 +395,42 @@ mod tests {
             Icon::ChevronLeft,
             Icon::Plus,
             Icon::Search,
+            Icon::PenTool,
+            Icon::Code,
+            Icon::FileText,
+            Icon::BarChart,
+            Icon::Layers,
+            Icon::Settings,
         ] {
             let sub = icon_subpaths(icon);
             assert!(!sub.is_empty(), "{icon:?} produced no subpaths");
             for p in &sub {
                 assert!(element_count(p) > 0, "{icon:?} emitted empty subpath");
+            }
+        }
+    }
+
+    /// Per-spec subpath counts for the workspace-icon set added for the
+    /// wheel-disc concept-parity polish. If lucide upstream restructures
+    /// any of these glyphs, these asserts catch the regression.
+    #[test]
+    fn workspace_icon_subpath_counts() {
+        assert_eq!(icon_subpaths(Icon::PenTool).len(), 4, "pen-tool = 3 paths + 1 circle");
+        assert_eq!(icon_subpaths(Icon::Code).len(), 2, "code = 2 angle-bracket paths");
+        assert_eq!(icon_subpaths(Icon::FileText).len(), 5, "file-text = page + corner + 3 lines");
+        assert_eq!(icon_subpaths(Icon::BarChart).len(), 3, "bar-chart = 3 column paths");
+        assert_eq!(icon_subpaths(Icon::Layers).len(), 3, "layers = 3 stacked plate paths");
+        assert_eq!(icon_subpaths(Icon::Settings).len(), 2, "settings = gear path + dot");
+        for icon in [
+            Icon::PenTool,
+            Icon::Code,
+            Icon::FileText,
+            Icon::BarChart,
+            Icon::Layers,
+            Icon::Settings,
+        ] {
+            for p in icon_subpaths(icon) {
+                assert!(element_count(&p) > 0, "{icon:?} subpath empty");
             }
         }
     }
