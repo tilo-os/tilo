@@ -1224,7 +1224,10 @@ pub fn build_nirios_overlay_host_with_chrome(
     // topbar (alpha 204 via `surfaces.overlay`) can pick up the gradient
     // tint behind it — a Vello-friendly stand-in for backdrop-blur.
     let backdrop: Box<dyn Widget> = Box::new(desktop_backdrop::DesktopBackdrop::new());
-    let foreground_col = Column::new().push(topbar).push(Box::new(content_col));
+    let foreground_col = Column::new()
+        .with_no_padding()
+        .push(topbar)
+        .push(Box::new(content_col));
     let stack = Stack::new().push(backdrop).push(Box::new(foreground_col));
 
     // Wheel disc is the only sidebar — each workspace is a spoke. Dragging
@@ -1253,6 +1256,7 @@ pub fn build_nirios_overlay_host_with_chrome(
 
     let root: Box<dyn Widget> = Box::new(
         Container::new()
+            .with_no_padding()
             .with_child(Box::new(stack))
             .filling(),
     );
@@ -1261,13 +1265,10 @@ pub fn build_nirios_overlay_host_with_chrome(
     // `top: sidebar_top_y, bottom: 0` and relies on `align_self: Center`
     // on the disc's leaf to pin it mid-column). We still pin the slot's
     // top below the real topbar so the sidebar's click-guard rect doesn't
-    // overlap the overview-toggle grid icon (see
-    // `full_root_click_toggles_overview_via_topbar_button`). The real
-    // topbar sits at `y = padding_standard * 3` and spans
-    // `TOPBAR_HEIGHT_PX`, matching the outer `Container` + `Column`
-    // padding chain around the topbar.
-    let padding_standard = quick_ui::tokens::Spacing::default().s3;
-    let sidebar_top = padding_standard * 3.0 + topbar_chrome::TOPBAR_HEIGHT_PX;
+    // overlap the overview-toggle grid icon. With the outer Container +
+    // foreground Column now opting out of padding so the topbar lands
+    // at y=0, the topbar-bottom is exactly `TOPBAR_HEIGHT_PX`.
+    let sidebar_top = topbar_chrome::TOPBAR_HEIGHT_PX;
     let host = overlay_host::ShellOverlayHost::new(root)
         .with_chrome(chrome.clone())
         .with_sidebar(sidebar)
