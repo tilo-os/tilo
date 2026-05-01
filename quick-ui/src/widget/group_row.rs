@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use taffy::{Dimension, Display, FlexDirection, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -50,6 +50,22 @@ pub struct GroupRow {
     /// reports `drag_in_flight()` so stale indicators don't persist past
     /// the gesture that set them.
     hover_gap_idx: Option<usize>,
+    /// Horizontal scroll offset in logical pixels. The strip's natural
+    /// content width (sum of group widths + gaps) can exceed the row's
+    /// viewport-aligned `rect.width()`; `scroll_x` shifts every child's
+    /// rendered x by `-scroll_x` so the user can pan groups that would
+    /// otherwise sit off the right edge into view. Mirrors the concept's
+    /// `flex-1 overflow-x-auto` strip in `DesktopView.tsx:396`. Updated
+    /// by mouse-wheel events while the cursor is over the row's rect
+    /// (vertical wheel pans horizontally — Niri-style global tabbing).
+    /// Clamped to `[0, max(0, content_w - viewport_w)]` after every
+    /// layout pass so a structural mutation that shrinks the content
+    /// (e.g. closing a group) auto-snaps the view back into bounds.
+    scroll_x: f64,
+    /// Total content width including inter-group gaps, captured each
+    /// `apply_layout` so `handle_event`'s wheel handler can clamp
+    /// `scroll_x` without re-summing children.
+    content_w: f64,
 }
 
 impl GroupRow {
@@ -61,7 +77,29 @@ impl GroupRow {
             last_cursor: Point::ZERO,
             structure_dirty: false,
             hover_gap_idx: None,
+            scroll_x: 0.0,
+            content_w: 0.0,
         }
+    }
+
+    /// Current horizontal scroll offset in logical pixels. Exposed so
+    /// tests can assert `scroll_x` updates after a wheel event without
+    /// reaching through private fields.
+    pub fn scroll_x(&self) -> f64 {
+        self.scroll_x
+    }
+
+    /// Total natural content width (sum of group widths + inter-group
+    /// gaps), as captured by the most recent `apply_layout`. Returns
+    /// `0.0` before the first layout pass.
+    pub fn content_width(&self) -> f64 {
+        self.content_w
+    }
+
+    /// Maximum legal `scroll_x`: zero if the strip's content fits inside
+    /// the row's viewport rect, otherwise the overflow distance.
+    pub fn max_scroll_x(&self) -> f64 {
+        (self.content_w - self.rect.width()).max(0.0)
     }
 
     /// Move a tab (by id) from `src` to `dst` so that the dropped-in tab
@@ -227,12 +265,36 @@ impl Widget for GroupRow {
             .map(|g| g.build_layout(taffy, theme, node_map))
             .collect();
         self.node_ids = children.clone();
+        // Pin `flex_shrink: 0.0` on every child so the row is permitted
+        // to overflow horizontally when the sum of group widths exceeds
+        // the row's viewport-aligned width — without this override,
+        // Taffy's default `flex_shrink: 1.0` squishes every group below
+        // its declared `WindowWidth` and the user can't see overflowed
+        // groups at all. Non-maximized groups already declare a fixed
+        // width via `Dimension::length`, so refusing to shrink keeps
+        // them at that exact size; the maximized group keeps its
+        // `flex_grow: 1e6` and absorbs leftover space *within* the
+        // visible viewport, with siblings sitting at their natural
+        // width past the right edge until the user scrolls.
+        for &node in &children {
+            let mut style = taffy.style(node).unwrap().clone();
+            style.flex_shrink = 0.0;
+            taffy.set_style(node, style).unwrap();
+        }
         // The row must fill the remaining vertical space inside the
         // parent Column so each child `WindowGroup`'s `height: percent(1.0)`
         // resolves to the full available height — otherwise the row only
         // measures as tall as the tallest child's natural height (i.e. the
         // 40 px TabBar) and the `TileHost` collapses to zero height,
         // hiding the concept's white card entirely.
+        //
+        // `width: percent(1.0)` keeps the row's outer rect viewport-
+        // aligned (so it doesn't push parent Column wider when content
+        // overflows). Children laid out beyond `rect.x1` are still
+        // walked by `apply_layout` and shifted into screen-space by the
+        // `scroll_x` translation in our origin computation; they remain
+        // hit-testable because `gap_index_for` uses each group's stored
+        // post-shift `Rect`.
         let node = taffy
             .new_with_children(
                 Style {
@@ -264,7 +326,40 @@ impl Widget for GroupRow {
             origin.x + l.location.x as f64 + l.size.width as f64,
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
-        let child_origin = Point::new(self.rect.x0, self.rect.y0);
+        // Total natural content width = (rightmost child's x + width) -
+        // (leftmost child's x). With Taffy laying children out in order
+        // from local x=0, this is simply `last.x + last.width` (no gap
+        // after the last child). We read each child's *taffy-reported*
+        // position so the inter-group gap (8 px declared on the row's
+        // style) is included automatically.
+        let mut content_w = 0.0_f64;
+        for &cn in &self.node_ids {
+            let cl = taffy.layout(cn).unwrap();
+            let right = cl.location.x as f64 + cl.size.width as f64;
+            if right > content_w {
+                content_w = right;
+            }
+        }
+        self.content_w = content_w;
+        // Clamp scroll into bounds. A structural mutation that shrinks
+        // the strip (group close, tab merge that prunes) can leave
+        // `scroll_x` past the new max; clamping here keeps the next
+        // frame's draw inside the visible content without requiring the
+        // mutation site to know about scroll state.
+        let max_scroll = self.max_scroll_x();
+        if self.scroll_x > max_scroll {
+            self.scroll_x = max_scroll;
+        }
+        if self.scroll_x < 0.0 {
+            self.scroll_x = 0.0;
+        }
+        // Children's origin is shifted left by `scroll_x` so a positive
+        // scroll reveals groups originally laid out off the right edge.
+        // Each child's stored `Rect` is in screen space (post-shift),
+        // so hit-testing against `last_cursor` (also screen space)
+        // remains consistent for `gap_index_for` and the per-tab
+        // sibling-bar matching in the post-dispatch detach sweep.
+        let child_origin = Point::new(self.rect.x0 - self.scroll_x, self.rect.y0);
         for (g, child_id) in self.groups.iter_mut().zip(self.node_ids.iter()) {
             g.apply_layout(taffy, *child_id, child_origin);
         }
@@ -361,6 +456,52 @@ impl Widget for GroupRow {
         } = event
         {
             self.hover_gap_idx = None;
+        }
+
+        // Horizontal scroll for the strip. Niri-style: the user spins
+        // the vertical wheel while the cursor is over the row's rect
+        // and the strip pans horizontally so off-screen-right groups
+        // come into view. We claim the event (`*handled = true`) only
+        // when there's actually content to scroll — otherwise the
+        // sibling `StripView` retains the wheel for inter-strip
+        // pagination, preserving its existing behaviour.
+        //
+        // Wheel handling lives BEFORE the per-child dispatch below so a
+        // child's `TileHost` can't swallow the wheel for its own
+        // (non-existent) internal scroll. The dispatch loop still runs
+        // after, but with `handled = true` the loop early-exits on the
+        // first child it visits.
+        if let WindowEvent::MouseWheel { delta, .. } = event
+            && self.rect.contains(self.last_cursor)
+            && self.max_scroll_x() > 0.0
+        {
+            // 30 px per LineDelta unit lines up with the `scrollable.rs`
+            // module's per-line factor (it uses 20 px there; we go a
+            // touch wider so a single wheel detent reveals the next
+            // group's leading edge with a 600 px window). PixelDelta is
+            // honoured 1:1 — trackpad gestures already supply pixels.
+            //
+            // Sign convention matches GTK / browser `overflow-x-auto`:
+            // winit gives `delta.y > 0` for wheel-up; rotating the
+            // wheel UP scrolls content LEFT (reveals stuff to the
+            // left, equivalent to decreasing `scroll_x`). So the y
+            // contribution is `-y`. Trackpad horizontal: `delta.x > 0`
+            // means "two-finger swipe right", which reveals content to
+            // the right (increases `scroll_x`), so the x contribution
+            // is `+x`. PixelDelta carries the same axis convention
+            // 1:1.
+            let dx = match delta {
+                MouseScrollDelta::LineDelta(x, y) => {
+                    let raw = (*x - *y) as f64;
+                    raw * 30.0
+                }
+                MouseScrollDelta::PixelDelta(pp) => pp.x - pp.y,
+            };
+            if dx != 0.0 {
+                let max = self.max_scroll_x();
+                self.scroll_x = (self.scroll_x + dx).clamp(0.0, max);
+                *handled = true;
+            }
         }
 
         // Dispatch to every child; stop once one claims the event. We
@@ -1578,6 +1719,250 @@ mod tests {
              (node_ids.len() = {})",
             row.groups.len(),
             row.node_ids.len(),
+        );
+    }
+
+    /// Helper that lays out N groups inside a *narrow* viewport so the
+    /// strip's natural content width exceeds the row's rect — the
+    /// precondition for horizontal scroll. Each `WindowWidth::Normal`
+    /// group is 600 px so `count` × 600 + `count-1` × 8 (gap) is the
+    /// natural content width; we set the viewport width so it's
+    /// strictly less.
+    fn make_overflow_row(count: usize, viewport_w: f64) -> (GroupRow, TaffyTree<()>, NodeId) {
+        use std::collections::HashMap;
+        use taffy::{AvailableSpace, Size as TSize, TaffyTree};
+
+        let groups: Vec<WindowGroup> = (0..count)
+            .map(|i| make_group(100 + i as u64 * 100, &[i as u64 + 1]))
+            .collect();
+        let mut row = GroupRow::new(groups);
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
+        let root = row.build_layout(&mut taffy, &theme, &mut node_map);
+        let viewport = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(viewport_w as f32),
+                        height: Dimension::length(600.0),
+                    },
+                    ..Default::default()
+                },
+                &[root],
+            )
+            .unwrap();
+        taffy
+            .compute_layout_with_measure(
+                viewport,
+                TSize {
+                    width: AvailableSpace::Definite(viewport_w as f32),
+                    height: AvailableSpace::Definite(600.0),
+                },
+                |_, _, _, _, _| taffy::Size::ZERO,
+            )
+            .expect("taffy compute_layout");
+        row.apply_layout(&taffy, root, Point::ORIGIN);
+        (row, taffy, root)
+    }
+
+    #[test]
+    fn content_width_exceeds_viewport_when_groups_overflow() {
+        // Pre-fix invariant: with `flex_shrink: 1.0` (Taffy default),
+        // children would shrink to fit and `content_w == rect.width()`.
+        // After the override, content_w must equal the natural sum of
+        // group widths (+ gaps) regardless of viewport size, so
+        // `max_scroll_x()` is non-zero when content overflows. The
+        // scroll machinery hangs off this invariant — without it,
+        // wheel events are silently absorbed but pan nothing.
+        let (row, _t, _r) = make_overflow_row(4, 1200.0);
+        // Four 600-px Normal groups + three 8-px gaps = 2424 px.
+        let expected_min = 4.0 * 600.0 + 3.0 * 8.0 - 1.0; // 1 px wiggle for fp.
+        assert!(
+            row.content_width() >= expected_min,
+            "content_w must reflect the natural group widths; got {} expected ≥{}",
+            row.content_width(),
+            expected_min
+        );
+        assert!(
+            row.max_scroll_x() > 0.0,
+            "viewport 1200 < content {} → max_scroll must be positive",
+            row.content_width()
+        );
+    }
+
+    #[test]
+    fn drop_in_visible_trailing_area_creates_new_group_at_end() {
+        // After a horizontal scroll has shifted the strip, a release
+        // past the last visible group's right edge must still resolve
+        // to the trailing gap (gap_idx = N) so the dropped tab spawns
+        // a new group at the end. This is the Niri-style "infinite
+        // strip" trailing drop zone — and the user's reported flow
+        // ("drag a tab past the rightmost group → new group there").
+        //
+        // We don't need to actually scroll: with a narrow viewport,
+        // the last group already sits past `row.rect.x1` because
+        // `flex_shrink: 0.0` lets children overflow.
+        let (mut row, _t, _r) = make_overflow_row(3, 1000.0);
+        let last_rect = row.groups.last().unwrap().get_rect();
+        let release = Point::new(last_rect.x1 + 50.0, last_rect.y0 + 20.0);
+        assert_eq!(
+            row.gap_index_for(release),
+            Some(3),
+            "release past the last group's right edge must resolve to gap_idx=N"
+        );
+        // And the split actually fires for that gap.
+        let src_tab = row.groups[0].tabs()[0].id;
+        assert!(
+            row.split_tab_into_new_group(0, src_tab, 3),
+            "split_tab_into_new_group must succeed at the trailing gap"
+        );
+        // Source had only one tab, so it's pruned and the new group
+        // sits at the original tail position. Net group count is 3.
+        assert_eq!(row.groups.len(), 3);
+        // The dropped tab must be the last group's only tab.
+        let last_ids: Vec<u64> = row.groups.last().unwrap().tabs().iter().map(|t| t.id).collect();
+        assert_eq!(last_ids, vec![src_tab]);
+    }
+
+    #[test]
+    fn wheel_pans_strip_horizontally_when_content_overflows() {
+        // End-to-end: a vertical wheel event over the row's rect, while
+        // there's overflow, must (a) update `scroll_x` (b) shift each
+        // group's stored `Rect` left by that amount on the next layout
+        // pass, and (c) claim the event so a sibling `StripView`
+        // doesn't paginate strips out from under the user.
+        use winit::dpi::PhysicalPosition;
+
+        let (mut row, taffy, root) = make_overflow_row(4, 1200.0);
+        let pre_rect_0 = row.groups[0].get_rect();
+
+        // Move the cursor to the centre of the row so the wheel
+        // handler's containment check passes.
+        let cy = (row.rect.y0 + row.rect.y1) / 2.0;
+        let cx = (row.rect.x0 + row.rect.x1) / 2.0;
+        let mut state = AutoCommit::new();
+        let root_obj = automerge::ROOT.clone();
+        let modifiers = Modifiers::default();
+        let mut handled = false;
+        let mut focus = None;
+        // Synthesise CursorMoved + MouseWheel through handle_event.
+        // DeviceId is opaque in winit; we use the dummy variant.
+        let dev = unsafe { std::mem::zeroed() };
+        row.handle_event(
+            &WindowEvent::CursorMoved {
+                device_id: dev,
+                position: PhysicalPosition::new(cx, cy),
+            },
+            1.0,
+            &modifiers,
+            &mut state,
+            &root_obj,
+            &mut handled,
+            &mut focus,
+            root,
+            &taffy,
+        );
+        // Wheel down (y < 0) → scroll content right (scroll_x > 0).
+        row.handle_event(
+            &WindowEvent::MouseWheel {
+                device_id: dev,
+                delta: MouseScrollDelta::LineDelta(0.0, -3.0),
+                phase: winit::event::TouchPhase::Moved,
+            },
+            1.0,
+            &modifiers,
+            &mut state,
+            &root_obj,
+            &mut handled,
+            &mut focus,
+            root,
+            &taffy,
+        );
+        assert!(handled, "wheel over an overflowing row must claim the event");
+        assert!(
+            row.scroll_x() > 0.0,
+            "wheel-down must increase scroll_x; got {}",
+            row.scroll_x()
+        );
+        // Re-run the layout pass: with a non-zero scroll, every child's
+        // x must shift left by `scroll_x`.
+        row.apply_layout(&taffy, root, Point::ORIGIN);
+        let post_rect_0 = row.groups[0].get_rect();
+        let dx = pre_rect_0.x0 - post_rect_0.x0;
+        assert!(
+            (dx - row.scroll_x()).abs() < 0.5,
+            "group[0]'s x must shift left by exactly scroll_x; pre={} post={} dx={} scroll_x={}",
+            pre_rect_0.x0,
+            post_rect_0.x0,
+            dx,
+            row.scroll_x()
+        );
+    }
+
+    #[test]
+    fn wheel_does_not_claim_when_strip_fits_inside_viewport() {
+        // Inverse of the overflow case: when content fits, the wheel
+        // event is left for `StripView` to paginate strips. This
+        // preserves the existing inter-strip nav behaviour for
+        // single-strip-fits-viewport workspaces (the bootstrap default).
+        use winit::dpi::PhysicalPosition;
+
+        // Two Normal=600 groups in a wide 2000-px viewport: 1208 px
+        // content < 2000 px viewport, no overflow, max_scroll = 0.
+        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[10]]);
+        assert_eq!(
+            row.max_scroll_x(),
+            0.0,
+            "precondition: 2-group row in wide viewport must not overflow"
+        );
+
+        let cy = (row.rect.y0 + row.rect.y1) / 2.0;
+        let cx = (row.rect.x0 + row.rect.x1) / 2.0;
+        let mut state = AutoCommit::new();
+        let root_obj = automerge::ROOT.clone();
+        let modifiers = Modifiers::default();
+        let mut handled = false;
+        let mut focus = None;
+        let dev = unsafe { std::mem::zeroed() };
+        row.handle_event(
+            &WindowEvent::CursorMoved {
+                device_id: dev,
+                position: PhysicalPosition::new(cx, cy),
+            },
+            1.0,
+            &modifiers,
+            &mut state,
+            &root_obj,
+            &mut handled,
+            &mut focus,
+            root,
+            &taffy,
+        );
+        row.handle_event(
+            &WindowEvent::MouseWheel {
+                device_id: dev,
+                delta: MouseScrollDelta::LineDelta(0.0, -3.0),
+                phase: winit::event::TouchPhase::Moved,
+            },
+            1.0,
+            &modifiers,
+            &mut state,
+            &root_obj,
+            &mut handled,
+            &mut focus,
+            root,
+            &taffy,
+        );
+        assert!(
+            !handled,
+            "wheel over a fitting row must not claim the event so StripView \
+             retains its inter-strip pagination"
+        );
+        assert_eq!(
+            row.scroll_x(),
+            0.0,
+            "no overflow → scroll_x must remain at 0"
         );
     }
 }
