@@ -9,6 +9,11 @@ use crate::theme::Theme;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::permissions::PermissionScope;
 
+/// Horizontal padding between `rect` and the track on each side.
+/// Both `draw` and `handle_event` use this to translate between
+/// cursor x and a 0..1 value, so it has to live in one place.
+const TRACK_PADDING: f64 = 5.0;
+
 pub struct Slider {
     _id: String,
     rect: Rect,
@@ -19,6 +24,13 @@ pub struct Slider {
     on_change_path: String,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
+    /// Last observed cursor position in logical-pixel space. Updated on
+    /// every `CursorMoved`, used by `MouseInput::Pressed` so a press can
+    /// (a) decide whether it's inside the slider's rect without relying
+    /// on a prior hover edge transition and (b) jump the value to the
+    /// click point immediately — the standard "click on track to jump"
+    /// affordance.
+    last_cursor: Point,
 }
 
 impl Slider {
@@ -33,6 +45,7 @@ impl Slider {
             on_change_path: on_change_path.to_string(),
             presence_path: Vec::new(),
             permission_scope: None,
+            last_cursor: Point::ZERO,
         }
     }
 
@@ -46,6 +59,29 @@ impl Slider {
     pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
         self.permission_scope = Some(scope);
         self
+    }
+
+    /// Map a cursor x in widget-local logical pixels to the slider's
+    /// 0..1 value, clamped at both ends.
+    fn value_from_cursor_x(&self, cursor_x: f64) -> f64 {
+        let track_width = self.rect.width() - TRACK_PADDING * 2.0;
+        ((cursor_x - (self.rect.x0 + TRACK_PADDING)) / track_width).clamp(0.0, 1.0)
+    }
+
+    /// Commit a new value to the CRDT iff it differs from the cached
+    /// `value` by more than a frame-of-noise epsilon. Returns `true` if
+    /// the commit happened so callers can flag the event as handled.
+    fn commit_value(&mut self, new_value: f64, state: &mut AutoCommit, root: &ObjId) -> bool {
+        if (new_value - self.value).abs() <= 0.001 {
+            return false;
+        }
+        self.value = new_value;
+        let _ = state.put(
+            root,
+            self.on_change_path.as_str(),
+            automerge::ScalarValue::F64(self.value),
+        );
+        true
     }
 }
 
@@ -95,9 +131,9 @@ impl Widget for Slider {
         // Track
         let track_height = 6.0;
         let track_rect = Rect::new(
-            self.rect.x0 + 5.0,
+            self.rect.x0 + TRACK_PADDING,
             self.rect.y0 + (self.rect.height() - track_height) / 2.0,
-            self.rect.x1 - 5.0,
+            self.rect.x1 - TRACK_PADDING,
             self.rect.y0 + (self.rect.height() + track_height) / 2.0,
         );
         let track_shape = RoundedRect::from_rect(track_rect, 3.0);
@@ -137,29 +173,35 @@ impl Widget for Slider {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor = p;
                 let hover = self.rect.contains(p);
                 if hover != self.is_hovered {
                     self.is_hovered = hover;
                     *handled = true;
                 }
-                
+
                 if self.is_dragging {
-                    let track_padding = 5.0;
-                    let track_width = self.rect.width() - track_padding * 2.0;
-                    let mut new_value = (p.x - (self.rect.x0 + track_padding)) / track_width;
-                    new_value = new_value.clamp(0.0, 1.0);
-                    if (new_value - self.value).abs() > 0.001 {
-                        self.value = new_value;
-                        let _ = state.put(root, self.on_change_path.as_str(), automerge::ScalarValue::F64(self.value));
+                    let new_value = self.value_from_cursor_x(p.x);
+                    if self.commit_value(new_value, state, root) {
                         *handled = true;
                     }
                 }
             }
             WindowEvent::MouseInput { state: element_state, button: MouseButton::Left, .. } => {
-                if self.is_hovered && *element_state == ElementState::Pressed {
+                // Press uses `rect.contains(last_cursor)` rather than
+                // `is_hovered` so the press latches without depending on
+                // an earlier hover-edge transition (e.g. focus delivered
+                // a press without a preceding `CursorMoved`). On entry
+                // we also jump `value` to the click x — the standard
+                // "press on track to jump" affordance.
+                if *element_state == ElementState::Pressed
+                    && self.rect.contains(self.last_cursor)
+                {
                     self.is_dragging = true;
                     *focus_target = Some(node_id);
                     *handled = true;
+                    let new_value = self.value_from_cursor_x(self.last_cursor.x);
+                    self.commit_value(new_value, state, root);
                 } else if *element_state == ElementState::Released {
                     if self.is_dragging {
                         self.is_dragging = false;
@@ -169,6 +211,13 @@ impl Widget for Slider {
             }
             _ => {}
         }
+    }
+
+    /// While dragging, the slider must keep receiving pointer events even
+    /// when the cursor leaves its `rect` — otherwise releasing outside
+    /// would silently strand the drag in the engaged state.
+    fn wants_pointer_capture(&self) -> bool {
+        self.is_dragging
     }
 
     fn name(&self) -> &str { "Slider" }
@@ -220,3 +269,120 @@ impl Widget for Slider {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a slider with a known rect so we don't need a full taffy pass.
+    /// Rect spans [0..200, 0..30] — track-padding 5 px, so the track itself
+    /// is [5..195] (width 190).
+    fn slider_at(x0: f64, y0: f64, x1: f64, y1: f64) -> Slider {
+        let mut s = Slider::new("test", "value");
+        s.rect = Rect::new(x0, y0, x1, y1);
+        s
+    }
+
+    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(x, y),
+        }
+    }
+
+    fn mouse_press() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
+    }
+
+    fn mouse_release() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        }
+    }
+
+    /// Drive an event through the slider with default scaffolding.
+    fn dispatch(s: &mut Slider, event: &WindowEvent) {
+        let mut tree = TaffyTree::<()>::new();
+        let node = tree.new_leaf(Style::default()).unwrap();
+        let mut handled = false;
+        let mut focus_target = None;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        s.handle_event(
+            event,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &tree,
+        );
+    }
+
+    #[test]
+    fn drag_continues_after_cursor_leaves_rect() {
+        // Rect [0..200, 0..30]. Track usable width 190 (padding 5 each side).
+        let mut s = slider_at(0.0, 0.0, 200.0, 30.0);
+
+        // Move cursor inside, near the left edge of the track.
+        dispatch(&mut s, &cursor_moved(20.0, 15.0));
+        // Press inside the rect — drag begins.
+        dispatch(&mut s, &mouse_press());
+        assert!(s.is_dragging, "press inside rect must start drag");
+
+        // Cursor leaves the rect vertically (still within the track's
+        // horizontal range). The drag must continue updating `value`.
+        dispatch(&mut s, &cursor_moved(150.0, 200.0));
+        let expected = ((150.0 - 5.0) / 190.0_f64).clamp(0.0, 1.0);
+        assert!(
+            (s.value - expected).abs() < 1e-6,
+            "drag outside rect must keep tracking cursor x — got {}, expected {}",
+            s.value,
+            expected
+        );
+
+        // And another move further outside — value still tracks.
+        dispatch(&mut s, &cursor_moved(95.0, -50.0));
+        let expected2 = ((95.0 - 5.0) / 190.0_f64).clamp(0.0, 1.0);
+        assert!(
+            (s.value - expected2).abs() < 1e-6,
+            "drag continues to track even far outside rect — got {}, expected {}",
+            s.value,
+            expected2
+        );
+
+        // Release ends the drag.
+        dispatch(&mut s, &mouse_release());
+        assert!(!s.is_dragging, "release must end drag");
+    }
+
+    #[test]
+    fn press_on_track_jumps_value() {
+        // Rect [0..200, 0..30], track [5..195] (width 190).
+        // x at 0.8 of width → 5 + 0.8*190 = 157.0
+        let mut s = slider_at(0.0, 0.0, 200.0, 30.0);
+
+        // Move cursor to the press location *and* press without any
+        // prior hover state being toggled by the same code path —
+        // this is the "click on track to jump" affordance.
+        let press_x = 5.0 + 0.8 * 190.0;
+        dispatch(&mut s, &cursor_moved(press_x, 15.0));
+        dispatch(&mut s, &mouse_press());
+
+        assert!(s.is_dragging, "press inside rect must start drag");
+        assert!(
+            (s.value - 0.8).abs() < 1e-3,
+            "press on track at x=0.8 of width must jump value to ≈0.8 — got {}",
+            s.value
+        );
+    }
+}
+
