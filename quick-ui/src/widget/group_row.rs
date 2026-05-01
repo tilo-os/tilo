@@ -368,10 +368,22 @@ impl Widget for GroupRow {
         // child claimed — the claim is for pointer-capture / focus, while
         // the detach sweep is a separate "did anyone publish a detach?"
         // pass that runs regardless.
+        //
+        // `node_ids` is rebuilt every frame in `build_layout`, but
+        // `groups` can grow mid-frame when a tab is dropped into a fresh
+        // gap (the detach sweep below pushes a new `WindowGroup` and
+        // marks `structure_dirty`). The mid-frame transient is benign —
+        // the fresh group has no node_id this frame and gets one on the
+        // next layout pass — so we tolerate the imbalance with `.get`
+        // instead of indexing, and silently skip dispatch for the
+        // newly-spawned group until layout catches up.
         for (i, g) in self.groups.iter_mut().enumerate() {
+            let Some(&node_id) = self.node_ids.get(i) else {
+                break;
+            };
             g.handle_event(
                 event, scale_factor, modifiers, state, root, handled, focus_target,
-                self.node_ids[i], taffy,
+                node_id, taffy,
             );
             if *handled {
                 break;
