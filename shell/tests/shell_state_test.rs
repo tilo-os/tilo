@@ -4,11 +4,18 @@ use quick_desktop::shell::state::{
 };
 
 #[test]
-fn workspace_tree_default_has_one_workspace_and_one_strip() {
+fn workspace_tree_default_has_three_workspaces_each_with_one_strip() {
+    // `bootstrap_default` seeds a 3-workspace fixture (Home / Research /
+    // Design) so the overview overlay renders a populated 3-card grid on
+    // first run. Pin the shape here so accidental drift in the seed —
+    // adding a fourth demo workspace, dropping Research, doubling up
+    // strips — surfaces as a test failure rather than a silent UX shift.
     let t = WorkspaceTree::bootstrap_default();
-    assert_eq!(t.workspaces.len(), 1);
-    assert_eq!(t.workspaces[0].strips.len(), 1);
-    assert!(t.active_strip.get(&t.workspaces[0].id).is_some());
+    assert_eq!(t.workspaces.len(), 3);
+    for ws in &t.workspaces {
+        assert_eq!(ws.strips.len(), 1, "workspace {:?} should have 1 strip", ws.name);
+        assert!(t.active_strip.get(&ws.id).is_some(), "missing active_strip for {:?}", ws.name);
+    }
 }
 
 #[test]
@@ -59,7 +66,10 @@ fn load_missing_file_returns_default() {
     let missing = PathBuf::from("/tmp/definitely-missing-xyz.json");
     let _ = std::fs::remove_file(&missing);
     let t = load_or_default(&missing);
-    assert_eq!(t.workspaces.len(), 1);
+    // `load_or_default` falls back to `WorkspaceTree::bootstrap_default`
+    // when the persistence file is absent, so the workspace count must
+    // match the seed (currently 3: Home / Research / Design).
+    assert_eq!(t.workspaces.len(), 3);
 }
 
 #[test]
