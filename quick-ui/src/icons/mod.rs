@@ -59,6 +59,12 @@ pub enum Icon {
     ChevronLeft,
     Plus,
     Search,
+    PenTool,
+    Code,
+    FileText,
+    BarChart,
+    Layers,
+    Settings,
 }
 
 /// Lucide's fixed viewBox. Every stored path assumes this coordinate
