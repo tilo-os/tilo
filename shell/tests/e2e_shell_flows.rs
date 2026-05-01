@@ -439,13 +439,11 @@ fn probe_topbar(
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let node = bar.build_layout(&mut taffy, theme, &mut map);
-    // Shrink the probe viewport by the same horizontal padding the real
-    // tree's Container (padding = `padding_standard`) wrapping a Column
-    // (padding = `padding_standard * 2`) takes away. `apply_layout`
-    // origin is shifted by the same amount so the returned rects live
-    // in the full viewport's coordinate space.
-    let topbar_offset = theme.padding_standard as f64 * 3.0;
-    let probe_w = W - (theme.padding_standard * 6.0) as f32;
+    // The shell's outer Container + foreground Column are now both
+    // `with_no_padding` so the topbar lands flush at y=0 / x=0. The
+    // probe matches: full viewport width, zero offset.
+    let topbar_offset = 0.0_f64;
+    let probe_w = W;
     let vp = taffy
         .new_with_children(
             Style {
