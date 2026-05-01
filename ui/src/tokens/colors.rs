@@ -43,7 +43,27 @@ pub struct Surfaces {
 pub struct SemanticColors { pub success: Color, pub warning: Color, pub danger: Color, pub info: Color }
 
 #[derive(Clone, Debug)]
-pub struct Colors { pub neutral: ColorRamp, pub accent: ColorRamp, pub semantic: SemanticColors, pub surfaces: Surfaces, pub text_primary: Color, pub text_dim: Color, pub border_standard: Color, pub border_focus: Color }
+pub struct Colors {
+    pub neutral: ColorRamp,
+    pub accent: ColorRamp,
+    pub semantic: SemanticColors,
+    pub surfaces: Surfaces,
+    pub text_primary: Color,
+    pub text_dim: Color,
+    pub border_standard: Color,
+    pub border_focus: Color,
+    /// Translucent surface ≈ Tailwind `bg-white/5` (alpha 13 ≈ 0.05·255).
+    /// Use for "barely there" hover veneers and faint dividers.
+    pub surface_white_5: Color,
+    /// Translucent surface ≈ Tailwind `bg-white/10` (alpha 26 ≈ 0.10·255).
+    pub surface_white_10: Color,
+    /// Translucent surface ≈ Tailwind `bg-white/20` (alpha 51 ≈ 0.20·255).
+    pub surface_white_20: Color,
+    /// Translucent border ≈ Tailwind `border-white/10` (alpha 26).
+    pub border_white_10: Color,
+    /// Translucent border ≈ Tailwind `border-white/20` (alpha 51).
+    pub border_white_20: Color,
+}
 
 impl Colors {
     pub fn dark() -> Self {
@@ -104,6 +124,11 @@ impl Colors {
             text_dim: Color::rgb8(148, 163, 184), // slate-400
             border_standard: Color::rgb8(51, 65, 85), // slate-700
             border_focus: Color::rgb8(99, 102, 241),  // indigo-500
+            surface_white_5:  Color::rgba8(255, 255, 255, 13),
+            surface_white_10: Color::rgba8(255, 255, 255, 26),
+            surface_white_20: Color::rgba8(255, 255, 255, 51),
+            border_white_10:  Color::rgba8(255, 255, 255, 26),
+            border_white_20:  Color::rgba8(255, 255, 255, 51),
         }
     }
 
@@ -140,6 +165,15 @@ impl Colors {
             text_dim: Color::rgb8(100, 100, 105),
             border_standard: Color::rgb8(200, 200, 205),
             border_focus: Color::rgb8(0, 120, 215),
+            // Light theme keeps the same translucent-white tokens —
+            // they're meant to layer over arbitrary darker fills (e.g.
+            // window cards), not over the page background, so the
+            // alpha-on-white semantics are preserved across themes.
+            surface_white_5:  Color::rgba8(255, 255, 255, 13),
+            surface_white_10: Color::rgba8(255, 255, 255, 26),
+            surface_white_20: Color::rgba8(255, 255, 255, 51),
+            border_white_10:  Color::rgba8(255, 255, 255, 26),
+            border_white_20:  Color::rgba8(255, 255, 255, 51),
         }
     }
 }
@@ -231,6 +265,20 @@ mod tests {
         // window_card_border: white/20 — concept's `border-white/20`.
         // alpha 51 ≈ 0.20 × 255.
         assert_eq!(rgba(s.window_card_border), [255, 255, 255, 51], "white/20");
+    }
+
+    #[test]
+    fn dark_translucent_white_tokens_match_tailwind_alpha_bytes() {
+        // Tailwind's `/N` alpha utilities round to 0.N · 255:
+        //   /5  → 12.75 → 13
+        //   /10 → 25.5  → 26
+        //   /20 → 51.0  → 51
+        let c = Colors::dark();
+        assert_eq!(rgba(c.surface_white_5),  [255, 255, 255, 13], "white/5");
+        assert_eq!(rgba(c.surface_white_10), [255, 255, 255, 26], "white/10");
+        assert_eq!(rgba(c.surface_white_20), [255, 255, 255, 51], "white/20");
+        assert_eq!(rgba(c.border_white_10),  [255, 255, 255, 26], "border-white/10");
+        assert_eq!(rgba(c.border_white_20),  [255, 255, 255, 51], "border-white/20");
     }
 
     #[test]
