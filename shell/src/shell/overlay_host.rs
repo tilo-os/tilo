@@ -3263,7 +3263,7 @@ impl ShellOverlayHost {
             .unwrap_or_else(|| ("You".to_string(), true));
         let tiles: Vec<(String, bool)> = vec![me_tile];
         let tile_w = 160.0_f64;
-        let tile_h = 40.0_f64;
+        let _tile_h = 40.0_f64;
         let tile_gap = 12.0_f64;
         let row_y = collab_y + 20.0;
         for (i, (name, is_self)) in tiles.iter().take(3).enumerate() {
