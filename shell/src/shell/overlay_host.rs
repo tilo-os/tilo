@@ -217,10 +217,14 @@ pub const POPOVER_SURFACE_ALPHA: f32 = 0.80;
 pub const MODAL_SURFACE_ALPHA: f32 = 0.70;
 
 /// Alpha applied to the scrim painted beneath the WorkspaceSettings modal.
-/// Concept §4.1 uses `bg-black/30 backdrop-blur-[1px]`; without the 1-px
-/// blur we dim the scrim a step further to 0.20 so the desktop still
-/// reads as the focused surface and the modal lifts out of it.
-pub const MODAL_SCRIM_ALPHA: f32 = 0.20;
+/// Concept §4.1 uses `bg-black/30 backdrop-blur-[1px]`. The pinned Vello
+/// has no `push_blur_layer`, so a literal `0.30` scrim under-dims and the
+/// desktop bleeds through the [`MODAL_SURFACE_ALPHA`]-tinted surface,
+/// killing the "page-on-top-of-page" affordance. We compensate by
+/// lifting the scrim to `0.45` — empirically the alpha at which an
+/// un-blurred scrim reads roughly the same as the concept's blurred
+/// 0.30 fill. Pinned by `tests::palette_scrim_alpha_matches_concept`.
+pub const MODAL_SCRIM_ALPHA: f32 = 0.45;
 
 impl ShellOverlayHost {
     pub fn new(content: Box<dyn Widget>) -> Self {
@@ -1998,11 +2002,14 @@ fn draw_scrim(scene: &mut Scene, transform: Affine, rect: Rect) {
 }
 
 /// Scrim tuned for the settings modal. Concept §4.1 uses
-/// `bg-black/30 backdrop-blur-[1px]`; without the 1-px blur primitive we
-/// drop the alpha to 0.20 ([`MODAL_SCRIM_ALPHA`]) so the desktop keeps
-/// enough visual presence to read as "still there, just dimmed" instead
-/// of "flat gray wash". Kept in lock-step with the pub constant so the
-/// chrome-test suite can pin the exact value without sampling pixels.
+/// `bg-black/30 backdrop-blur-[1px]`; without the 1-px blur primitive a
+/// literal `0.30` scrim under-dims and the desktop bleeds through the
+/// translucent modal surface. We lift the alpha to `0.45`
+/// ([`MODAL_SCRIM_ALPHA`]) so the un-blurred scrim reads roughly the
+/// same as the concept's blurred 0.30 fill and the modal lifts off the
+/// desktop instead of compositing onto it. Kept in lock-step with the
+/// pub constant so the chrome-test suite can pin the exact value
+/// without sampling pixels.
 fn draw_modal_scrim(scene: &mut Scene, transform: Affine, rect: Rect) {
     let alpha = (MODAL_SCRIM_ALPHA * 255.0).round().clamp(0.0, 255.0) as u8;
     scene.fill(
@@ -5355,6 +5362,47 @@ mod tests {
             WsTab::Files,
             "click on the Files pill must flip chrome.ws_settings_tab to Files \
              (production path through handle_event, not a direct setter)"
+        );
+    }
+
+    /// Wave 3 / Unit 3-A pin (#5).
+    ///
+    /// Concept §4.1 specifies `bg-black/30 backdrop-blur-[1px]` for the
+    /// modal scrim. Without the 1-px blur the perceived dimming drops
+    /// below what the design intended, so the rendered alpha must be
+    /// lifted to compensate. Pin a floor of `0.45` — empirically the
+    /// alpha at which a non-blurred scrim reads roughly the same as
+    /// the concept's blurred 0.30 fill.
+    #[test]
+    fn palette_scrim_alpha_matches_concept() {
+        assert!(
+            MODAL_SCRIM_ALPHA >= 0.45,
+            "MODAL_SCRIM_ALPHA must be >= 0.45 to compensate for the \
+             missing 1-px backdrop blur from concept §4.1; the un-blurred \
+             0.20 scrim let the desktop bleed through the modal so the \
+             palette / WS-settings surfaces never read as the focused \
+             layer (got {})",
+            MODAL_SCRIM_ALPHA
+        );
+    }
+
+    /// Wave 3 / Unit 3-A pin (#5).
+    ///
+    /// The companion to `palette_scrim_alpha_matches_concept`: concept
+    /// §4.1 specifies `bg-slate-900/70` for the modal surface itself,
+    /// which means the surface alpha must stay at-or-below `0.85` so
+    /// the scrim (now lifted to `>= 0.45`) is what carries the
+    /// "lift off the desktop" effect rather than a fully opaque
+    /// surface flattening it.
+    #[test]
+    fn palette_surface_alpha_lifts_off_desktop() {
+        assert!(
+            MODAL_SURFACE_ALPHA <= 0.85,
+            "MODAL_SURFACE_ALPHA must stay <= 0.85 so the scrim (per \
+             concept §4.1) is what lifts the modal off the desktop; an \
+             opaque surface would defeat the page-on-page affordance \
+             (got {})",
+            MODAL_SURFACE_ALPHA
         );
     }
 }
