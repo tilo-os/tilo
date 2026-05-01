@@ -68,6 +68,7 @@ fn two_strip_two_group_tree() -> (
         }],
         active_tab: id ^ 0xff,
         width: WindowWidth::Normal,
+        maximized: false,
     };
 
     let strip0 = Strip {
