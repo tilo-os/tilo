@@ -69,6 +69,7 @@ use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
 use quick_ui::animation::Spring;
+use quick_ui::icons::{self, Icon, LUCIDE_DEFAULT_STROKE_PX};
 use quick_ui::presence::{PresenceCtx, PresenceKey};
 use quick_ui::text_render::TextRenderer;
 use quick_ui::theme::Theme;
@@ -282,6 +283,19 @@ impl SidebarWheelDisc {
         SPOKE_PALETTE[idx % SPOKE_PALETTE.len()]
     }
 
+    /// Pick a lucide icon for the spoke at `idx`, matching the
+    /// `radial-workspace-switcher/src/App.tsx:10-17` mapping by lower-
+    /// cased label. Unknown labels default to `Layers`. Public for the
+    /// snapshot tests that assert per-workspace glyph fidelity.
+    pub fn spoke_icon(&self, idx: usize) -> Icon {
+        let label = self
+            .spokes
+            .get(idx)
+            .map(|s| s.text.to_lowercase())
+            .unwrap_or_default();
+        spoke_icon_for_label(&label)
+    }
+
     /// Compute the current visual rotation, preferring the spring's
     /// in-flight value over the snapped `rotation_deg` so post-release
     /// easing reads correctly.
@@ -307,6 +321,98 @@ impl SidebarWheelDisc {
         let dy = p.y - c.y;
         dx * dx + dy * dy <= radius * radius
     }
+}
+
+/// Map a workspace label to its lucide glyph. Mirrors `WORKSPACES` in
+/// `radial-workspace-switcher/src/App.tsx`. `dev` and `development`
+/// both resolve to `Code` (the concept's id is `dev` but the visible
+/// label is "Development"). Anything unknown falls back to `Layers`,
+/// matching the concept's default tile glyph.
+fn spoke_icon_for_label(label: &str) -> Icon {
+    match label {
+        "design" => Icon::PenTool,
+        "dev" | "development" => Icon::Code,
+        "marketing" => Icon::FileText,
+        "analytics" => Icon::BarChart,
+        "concept" => Icon::Layers,
+        "settings" => Icon::Settings,
+        _ => Icon::Layers,
+    }
+}
+
+/// Project the cluster's left-tail screen x for a label of width `text_w`.
+///
+/// The cluster is anchored at `(anchor_x, anchor_y)` and rotated by
+/// `cluster_rot` radians. In the cluster's local frame the label's tail
+/// (its leftmost edge before rotation) sits at local x =
+/// `-tile_size - gap - text_w` (because the tile centres at
+/// `-tile_size/2` and the label centres at `-tile_size - gap - text_w/2`,
+/// so its leftmost point is one further `text_w/2` out). After the
+/// rotation that local point becomes a screen-space (x, y); we only
+/// need x for the column-edge fit test.
+fn cluster_label_tail_screen_x(
+    text_w: f64,
+    cluster_rot: f64,
+    anchor_x: f64,
+    tile_size: f64,
+    gap: f64,
+) -> f64 {
+    let local_x = -tile_size - gap - text_w;
+    let local_y = 0.0_f64;
+    // Affine::rotate followed by translate(anchor): screen_x =
+    // anchor_x + cos(θ)·local_x − sin(θ)·local_y.
+    anchor_x + cluster_rot.cos() * local_x - cluster_rot.sin() * local_y
+}
+
+/// Build the label string for an inactive spoke, truncating to 4-6
+/// chars if the full label would overrun the wheel column's left edge
+/// (`column_x0`). Active spokes return the full uppercase label.
+///
+/// Truncation strategy: try the full label first; if the rotated tail
+/// overshoots `column_x0` by more than 1 px, drop the tail char until
+/// it fits or 4 chars remain. This matches the spec ("first 4-6 chars")
+/// without abruptly cutting at 4 when 6 would still fit.
+#[allow(clippy::too_many_arguments)]
+fn build_label_text(
+    raw: &str,
+    is_active: bool,
+    label_size: f32,
+    letter_spacing_em: f32,
+    text_renderer: &mut TextRenderer,
+    cluster_rot: f64,
+    anchor_x: f64,
+    tile_size: f64,
+    gap: f64,
+    column_x0: f64,
+) -> String {
+    let upper = raw.to_uppercase();
+    if is_active {
+        return upper;
+    }
+    let chars: Vec<char> = upper.chars().collect();
+    // Try lengths from full → 4 (clamped at the actual length).
+    let mut best = upper.clone();
+    let max_len = chars.len();
+    let min_len = max_len.min(4);
+    for take in (min_len..=max_len).rev() {
+        let candidate: String = chars.iter().take(take).collect();
+        let (raw_w, _) = text_renderer.measure(&candidate, label_size, None);
+        let track =
+            candidate.chars().count() as f32 * label_size * letter_spacing_em;
+        let text_w = (raw_w + track) as f64;
+        let tail_x = cluster_label_tail_screen_x(
+            text_w,
+            cluster_rot,
+            anchor_x,
+            tile_size,
+            gap,
+        );
+        if tail_x >= column_x0 - 1.0 {
+            return candidate;
+        }
+        best = candidate;
+    }
+    best
 }
 
 impl Widget for SidebarWheelDisc {
@@ -514,16 +620,38 @@ impl Widget for SidebarWheelDisc {
                 let cluster_alpha = if is_active { 1.0_f32 } else { 0.30_f32 };
                 let letter_spacing_em = if is_active { 0.15_f32 } else { 0.10_f32 };
 
-                let label_text: String = spoke.text.to_uppercase();
-                let (text_w_raw, text_h) = text_renderer.measure(&label_text, label_size, None);
-                let extra_track =
-                    label_text.chars().count() as f32 * label_size * letter_spacing_em;
-                let text_w = (text_w_raw + extra_track) as f64;
-
                 // Readability flip on the left half (rare with the
                 // cull above, but safe under unbounded `rotation_deg`).
                 let upside_down = a > 90.0 && a < 270.0;
                 let extra_pi = if upside_down { std::f64::consts::PI } else { 0.0 };
+
+                // Label text. Inactive spokes get clipped to fit the
+                // wheel column: rotated -90°, the label's "left edge"
+                // (which after the cluster rotation is whichever screen-
+                // space x-coordinate maps to the local `-text_w/2`
+                // tail) can extend past `self.rect.x0`. We measure the
+                // would-be screen-space bounding box and truncate to a
+                // 4-6 char head if it overruns. The active spoke is
+                // exempt — its label is the user's primary readout, and
+                // pulling it inside the column would mask the workspace
+                // identity. Truncation order is character-by-character
+                // until the rotated bbox fits with a 1-px safety margin.
+                let label_text: String = build_label_text(
+                    &spoke.text,
+                    is_active,
+                    label_size,
+                    letter_spacing_em,
+                    text_renderer,
+                    angle_rad + extra_pi + std::f64::consts::FRAC_PI_2,
+                    anchor_x,
+                    tile_size,
+                    gap,
+                    self.rect.x0,
+                );
+                let (text_w_raw, text_h) = text_renderer.measure(&label_text, label_size, None);
+                let extra_track =
+                    label_text.chars().count() as f32 * label_size * letter_spacing_em;
+                let text_w = (text_w_raw + extra_track) as f64;
 
                 // Cluster local frame: tile centred at local x = -tile_size/2
                 // (so the rim-pulled-back anchor sits at the cluster's
@@ -557,12 +685,19 @@ impl Widget for SidebarWheelDisc {
                 if is_active {
                     // Soft white outer glow
                     // (concept: `drop-shadow-[0_0_15px_rgba(255,255,255,0.2)]`).
-                    for r in [4.0_f64, 2.5, 1.5] {
-                        let alpha = (0.10 / r * 255.0) as u8;
+                    // Outer wide halo first (radius 14 @ alpha 0.05) to
+                    // approximate the concept's 15-px-blur drop-shadow,
+                    // then nested inner halos for crisp falloff.
+                    for &(r, a) in &[
+                        (14.0_f64, 0.05_f32),
+                        (10.0_f64, 0.07_f32),
+                        (6.0_f64, 0.10_f32),
+                        (3.0_f64, 0.14_f32),
+                    ] {
                         scene.stroke(
                             &Stroke::new(r * 2.0),
                             cluster_xform,
-                            Color::rgba8(255, 255, 255, alpha),
+                            Color::rgba8(255, 255, 255, (a * 255.0) as u8),
                             None,
                             &tile_rr,
                         );
@@ -577,18 +712,32 @@ impl Widget for SidebarWheelDisc {
                     );
                 }
 
-                // -- Glyph (workspace icon stand-in) --------------------
-                // Without a Lucide-equivalent font, paint a small filled
-                // disc as the icon. Active = solid white, inactive =
-                // white/40.
-                let glyph_radius = if is_active { 6.0_f64 } else { 5.0_f64 };
-                let glyph_fill = if is_active {
+                // -- Glyph (per-workspace lucide icon) ------------------
+                // Active = solid white, inactive = white/40. Icon is
+                // resolved by the spoke's lower-cased label per the
+                // concept's `WORKSPACES` table; unknown labels fall back
+                // to `Layers`. Tile inset matches the concept's
+                // `w-5 h-5` glyph in a 40-px tile (~50 % of edge).
+                let glyph_color = if is_active {
                     Color::rgba8(255, 255, 255, (255.0 * cluster_alpha) as u8)
                 } else {
                     Color::rgba8(255, 255, 255, (255.0 * 0.40 * cluster_alpha) as u8)
                 };
-                let glyph_circle = Circle::new((tile_cx_local, 0.0), glyph_radius);
-                scene.fill(Fill::NonZero, cluster_xform, glyph_fill, None, &glyph_circle);
+                let glyph_inset = if is_active { 10.0_f64 } else { 9.0_f64 };
+                let glyph_rect = Rect::new(
+                    tile_cx_local - tile_size / 2.0 + glyph_inset,
+                    -tile_size / 2.0 + glyph_inset,
+                    tile_cx_local + tile_size / 2.0 - glyph_inset,
+                    tile_size / 2.0 - glyph_inset,
+                );
+                icons::draw_icon(
+                    scene,
+                    cluster_xform,
+                    glyph_rect,
+                    spoke_icon_for_label(&spoke.text.to_lowercase()),
+                    glyph_color,
+                    LUCIDE_DEFAULT_STROKE_PX,
+                );
 
                 // -- Label ----------------------------------------------
                 let label_color = if is_active {
