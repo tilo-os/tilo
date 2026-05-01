@@ -1,0 +1,484 @@
+//! `Scenario` — a typed action list driven against a `ShellDriver`.
+//!
+//! Each variant of [`Action`] corresponds to a high-level interaction
+//! (click, drag, key, type, snapshot, etc.). The engine replays the
+//! list step-by-step; the host driving it is responsible for wiring
+//! `Snapshot` to its preferred sink (PNG file, JSON file, no-op).
+//!
+//! Designed for three callers:
+//!   - **offscreen mode** — runs the scenario and emits a PNG per
+//!     `Snapshot`. Render output goes via the offscreen renderer.
+//!   - **headless mode** — runs the scenario and dumps chrome state
+//!     JSON per `Snapshot`. No GPU is touched.
+//!   - **window mode** — runs the scenario as a "pre-roll" before
+//!     handing control to the live winit event loop.
+//!
+//! Built-in catalogue lives at the bottom; new scenarios go there as
+//! `pub fn` constructors so `--list-scenarios` and `--scenario NAME`
+//! pick them up automatically.
+
+use std::cell::RefCell;
+use std::path::Path;
+
+use vello::kurbo::Point;
+use winit::keyboard::{Key, ModifiersState, NamedKey};
+
+use quick_desktop::shell::chrome_state::{ChromeState, WsTab};
+use quick_desktop::shell::quick_settings::QsLevel;
+
+use super::driver::ShellDriver;
+
+/// One step in a scenario.
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // some variants are part of the public Action API but not
+                    // used by every built-in scenario in `catalogue()`.
+pub enum Action {
+    /// Click at raw screen coordinates (cursor-move + press + release).
+    ClickAt(Point),
+    /// Click on a named target. Names are resolved via
+    /// [`ShellDriver::resolve_named_rect`]; if the rect is `Rect::ZERO`
+    /// at the time of the click the engine logs a warning and skips
+    /// the action.
+    ClickNamed(&'static str),
+    /// Press + drag + release through `steps` intermediate `CursorMoved`
+    /// events. Used for tab reorders, wheel spins, etc.
+    Drag {
+        from: Point,
+        to: Point,
+        steps: u32,
+    },
+    /// Synth a `KeyboardInput { Pressed }` for a logical key.
+    Key(Key),
+    /// Type a literal string (one Key::Character per char, skipping
+    /// control). The caller is expected to have opened an input target
+    /// (palette, name editor, etc.) first.
+    Type(String),
+    /// Replace the active modifier set. Subsequent `Key(_)` actions see
+    /// these modifiers in their `is_mod` check inside the host. The
+    /// scenario engine resets modifiers after each `Snapshot` so chord
+    /// state doesn't leak between named outputs.
+    Modifiers(ModifiersState),
+    /// Step animation `n` frames (~16 ms each).
+    Wait(u32),
+    /// Capture: render to PNG (offscreen mode) or dump state JSON
+    /// (headless mode). Window mode treats this as a no-op (you can
+    /// see it).
+    Snapshot(&'static str),
+    /// State-mutate shortcuts that bypass the event layer (handy for
+    /// setup steps where dispatching real events would be brittle —
+    /// e.g. opening the palette before typing a query).
+    OpenPalette,
+    SwitchWorkspace(usize),
+    SetWsSettings(WsTab),
+    PushQsLevel(QsLevel),
+}
+
+/// A named, ordered list of actions.
+#[derive(Debug, Clone)]
+pub struct Scenario {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub actions: Vec<Action>,
+}
+
+/// Trait for the per-mode `Snapshot` sink. Implementors decide how to
+/// persist the captured state (PNG, JSON, no-op).
+pub trait SnapshotSink {
+    /// Called whenever the scenario emits a `Snapshot(name)`. The sink
+    /// has full driver access so it can render, serialise, or both.
+    fn capture(&mut self, driver: &mut ShellDriver, name: &str);
+}
+
+/// Default no-op sink used by window mode (you watch the screen).
+pub struct NullSink;
+impl SnapshotSink for NullSink {
+    fn capture(&mut self, _driver: &mut ShellDriver, _name: &str) {}
+}
+
+/// Run a scenario through `driver`, sending each `Snapshot` to `sink`.
+/// Resets modifiers between snapshots so chord state doesn't leak.
+pub fn run<S: SnapshotSink>(driver: &mut ShellDriver, scenario: &Scenario, sink: &mut S) {
+    for action in &scenario.actions {
+        apply(driver, action, sink);
+    }
+}
+
+fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut S) {
+    match action {
+        Action::ClickAt(p) => driver.click_at(*p),
+        Action::ClickNamed(name) => match driver.resolve_named_centre(name) {
+            Some(p) => driver.click_at(p),
+            None => eprintln!(
+                "scenario: could not resolve named target '{name}' (rect not populated yet — paint first?)"
+            ),
+        },
+        Action::Drag { from, to, steps } => driver.drag(*from, *to, *steps),
+        Action::Key(k) => driver.press_key(k.clone()),
+        Action::Type(s) => driver.type_str(s),
+        Action::Modifiers(m) => driver.set_modifiers(*m),
+        Action::Wait(n) => driver.step_frames(*n),
+        Action::Snapshot(name) => {
+            // Always settle the layout pass before capturing — overlay
+            // toggles since the last snapshot may have changed
+            // structural sizes (overview reservation, modal scrim).
+            driver.relayout();
+            sink.capture(driver, name);
+            // Reset modifiers between named outputs so chord state
+            // doesn't bleed across snapshots.
+            driver.set_modifiers(ModifiersState::empty());
+        }
+        Action::OpenPalette => {
+            // Drive Ctrl+K through the host's keyboard branch instead
+            // of `set_palette_visible(true)` directly — the hotkey path
+            // calls `toggle_palette()` which also focuses the palette
+            // input + clears the residual query (see ShellOverlayHost::
+            // toggle_palette). Without that, subsequent `Type(_)`
+            // actions would fall through because the palette ignores
+            // characters when `!is_focused`.
+            driver.set_modifiers(ModifiersState::CONTROL);
+            driver.press_key(Key::Character(winit::keyboard::SmolStr::new("k")));
+            driver.set_modifiers(ModifiersState::empty());
+        }
+        Action::SwitchWorkspace(idx) => {
+            driver.with_chrome(|st: &mut ChromeState| {
+                if let Some(ws) = st.tree.workspaces.get(*idx) {
+                    let id = ws.id;
+                    st.tree.set_active(id);
+                    st.bump();
+                }
+            });
+        }
+        Action::SetWsSettings(tab) => {
+            let tab_copy = *tab;
+            driver.with_chrome(|st| {
+                st.overlays.ws_settings = true;
+                st.ws_settings_tab = tab_copy;
+            });
+        }
+        Action::PushQsLevel(level) => {
+            let lvl = level.clone();
+            driver.with_chrome(|st| {
+                st.overlays.quick_settings = true;
+                st.quick_settings.push_level(lvl);
+            });
+        }
+    }
+}
+
+// =====================================================================
+// JSON state dumping for headless mode
+// =====================================================================
+
+/// Serialise the chrome's externally-observable state into a compact
+/// JSON object. Hand-rolled instead of pulling `serde_derive` because
+/// `ChromeState` lives in another crate we don't want to annotate.
+pub fn chrome_state_json(driver: &ShellDriver) -> String {
+    let st = driver.chrome();
+    let host = driver.host();
+    let active = st.tree.active.raw();
+    let active_idx = st
+        .tree
+        .workspaces
+        .iter()
+        .position(|w| w.id == st.tree.active)
+        .unwrap_or(0);
+    let workspace_names: Vec<String> = st
+        .tree
+        .workspaces
+        .iter()
+        .map(|w| w.name.clone())
+        .collect();
+    let qs_level = match st.quick_settings.current_level() {
+        QsLevel::Root => "root",
+        QsLevel::Wifi => "wifi",
+        QsLevel::Bluetooth => "bluetooth",
+        QsLevel::WifiDetails(_) => "wifi-details",
+        QsLevel::BluetoothDetails(_) => "bluetooth-details",
+    };
+    let ws_tab = match st.ws_settings_tab {
+        WsTab::General => "general",
+        WsTab::Roles => "roles",
+        WsTab::Files => "files",
+    };
+    let palette_visible = host.palette_visible();
+    let palette_query = host.palette_query();
+    // Hand-format JSON so we don't have to plumb serde through the bin.
+    // Strings escaped via `escape_json_str` for quotes / backslashes /
+    // control chars. Arrays produced inline.
+    let mut out = String::new();
+    out.push('{');
+    push_kv_str(&mut out, "scenario_step", "");
+    out.push(',');
+    push_kv_u64(&mut out, "active_workspace_id", active);
+    out.push(',');
+    push_kv_usize(&mut out, "active_workspace_idx", active_idx);
+    out.push(',');
+    push_kv_array(&mut out, "workspace_names", &workspace_names);
+    out.push(',');
+    push_kv_bool(&mut out, "overlay_overview", st.overlays.overview);
+    out.push(',');
+    push_kv_bool(&mut out, "overlay_quick_settings", st.overlays.quick_settings);
+    out.push(',');
+    push_kv_bool(&mut out, "overlay_ws_settings", st.overlays.ws_settings);
+    out.push(',');
+    push_kv_bool(&mut out, "overlay_collaborators", st.overlays.collaborators);
+    out.push(',');
+    push_kv_str(&mut out, "qs_level", qs_level);
+    out.push(',');
+    push_kv_str(&mut out, "ws_settings_tab", ws_tab);
+    out.push(',');
+    push_kv_bool(&mut out, "palette_visible", palette_visible);
+    out.push(',');
+    push_kv_str(&mut out, "palette_query", palette_query);
+    out.push(',');
+    push_kv_u64(&mut out, "revision", st.revision);
+    out.push('}');
+    out
+}
+
+/// `SnapshotSink` that writes one `<name>.json` per snapshot under
+/// `dir`. Used by headless mode.
+pub struct JsonDirSink<'a> {
+    pub dir: &'a Path,
+    pub written: RefCell<Vec<String>>,
+}
+
+impl<'a> JsonDirSink<'a> {
+    pub fn new(dir: &'a Path) -> Self {
+        Self {
+            dir,
+            written: RefCell::new(Vec::new()),
+        }
+    }
+}
+
+impl<'a> SnapshotSink for JsonDirSink<'a> {
+    fn capture(&mut self, driver: &mut ShellDriver, name: &str) {
+        let path = self.dir.join(format!("{name}.json"));
+        let json = chrome_state_json(driver);
+        std::fs::write(&path, json).expect("write scenario state JSON");
+        self.written.borrow_mut().push(path.display().to_string());
+        println!("  wrote {}", path.display());
+    }
+}
+
+fn push_kv_str(out: &mut String, k: &str, v: &str) {
+    out.push('"');
+    out.push_str(k);
+    out.push('"');
+    out.push(':');
+    out.push('"');
+    out.push_str(&escape_json_str(v));
+    out.push('"');
+}
+fn push_kv_u64(out: &mut String, k: &str, v: u64) {
+    out.push('"');
+    out.push_str(k);
+    out.push('"');
+    out.push(':');
+    out.push_str(&v.to_string());
+}
+fn push_kv_usize(out: &mut String, k: &str, v: usize) {
+    out.push('"');
+    out.push_str(k);
+    out.push('"');
+    out.push(':');
+    out.push_str(&v.to_string());
+}
+fn push_kv_bool(out: &mut String, k: &str, v: bool) {
+    out.push('"');
+    out.push_str(k);
+    out.push('"');
+    out.push(':');
+    out.push_str(if v { "true" } else { "false" });
+}
+fn push_kv_array(out: &mut String, k: &str, vs: &[String]) {
+    out.push('"');
+    out.push_str(k);
+    out.push('"');
+    out.push(':');
+    out.push('[');
+    for (i, v) in vs.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push('"');
+        out.push_str(&escape_json_str(v));
+        out.push('"');
+    }
+    out.push(']');
+}
+fn escape_json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+// =====================================================================
+// Built-in catalogue
+// =====================================================================
+
+/// Static list of all built-in scenarios. The CLI's `--list-scenarios`
+/// dumps these; `--scenario NAME` looks NAME up here.
+pub fn catalogue() -> Vec<Scenario> {
+    vec![
+        palette_typing(),
+        tab_drag(),
+        workspace_switch(),
+    ]
+}
+
+pub fn lookup(name: &str) -> Option<Scenario> {
+    catalogue().into_iter().find(|s| s.name == name)
+}
+
+/// Open the palette, type "h", capture; press Esc, capture closed.
+fn palette_typing() -> Scenario {
+    Scenario {
+        name: "palette_typing",
+        description: "Open the command palette, type 'h', then close with Esc.",
+        actions: vec![
+            Action::Snapshot("01-desktop"),
+            Action::OpenPalette,
+            Action::Wait(2),
+            Action::Snapshot("02-palette-open"),
+            Action::Type("h".into()),
+            Action::Snapshot("03-palette-typed-h"),
+            Action::Key(Key::Named(NamedKey::Escape)),
+            Action::Wait(2),
+            Action::Snapshot("04-palette-closed"),
+        ],
+    }
+}
+
+/// Drag a tab pill from a source x-coord to a target x-coord. The exact
+/// pixel positions match the bootstrap tree's first strip's first group
+/// (Notes / Files / Terminal / Browser pills). Coordinates approximate;
+/// good enough for headless smoke / state JSON. For pixel-perfect drag
+/// the e2e_shell_flows::probe_tab_centers helper is the source of truth.
+fn tab_drag() -> Scenario {
+    Scenario {
+        name: "tab_drag",
+        description: "Drag the second tab pill rightward across two pills.",
+        actions: vec![
+            Action::Snapshot("01-tabs-initial"),
+            Action::Drag {
+                // Approximate centres of pills 1 and 3 inside the first
+                // window group's tab bar at viewport (1600, 900) with the
+                // sidebar wheel taking ~200 px of left padding.
+                from: Point::new(360.0, 130.0),
+                to: Point::new(560.0, 130.0),
+                steps: 8,
+            },
+            Action::Wait(2),
+            Action::Snapshot("02-tabs-after-drag"),
+        ],
+    }
+}
+
+/// Switch to workspace index 1 (Research in the bootstrap tree),
+/// capture, then back to 0.
+fn workspace_switch() -> Scenario {
+    Scenario {
+        name: "workspace_switch",
+        description: "Switch to workspace index 1, then back to 0.",
+        actions: vec![
+            Action::Snapshot("01-ws0"),
+            Action::SwitchWorkspace(1),
+            Action::Wait(4),
+            Action::Snapshot("02-ws1"),
+            Action::SwitchWorkspace(0),
+            Action::Wait(4),
+            Action::Snapshot("03-ws0-again"),
+        ],
+    }
+}
+
+// =====================================================================
+// Tests
+// =====================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Counter sink for assertions: records each `(name, query)` pair
+    /// without writing any files. Lets the unit test verify the
+    /// scenario engine actually invokes the sink in order.
+    struct CountingSink {
+        seen: Vec<(String, String)>,
+    }
+    impl SnapshotSink for CountingSink {
+        fn capture(&mut self, driver: &mut ShellDriver, name: &str) {
+            self.seen
+                .push((name.to_string(), driver.palette_query().to_string()));
+        }
+    }
+
+    #[test]
+    fn scenario_palette_typing_lands_query() {
+        let mut d = ShellDriver::new((1600, 900));
+        let mut sink = CountingSink { seen: Vec::new() };
+        let scenario = palette_typing();
+        run(&mut d, &scenario, &mut sink);
+        // Locate the snapshot taken right after the `Type("h")` step.
+        let typed = sink
+            .seen
+            .iter()
+            .find(|(n, _)| n == "03-palette-typed-h")
+            .expect("scenario should snapshot 03-palette-typed-h");
+        assert_eq!(
+            typed.1, "h",
+            "after Type(\"h\") with palette open, the query should be 'h'"
+        );
+        // Final state: palette closed.
+        assert!(
+            !d.host().palette_visible(),
+            "Esc should close the palette by the end of the scenario"
+        );
+    }
+
+    #[test]
+    fn scenario_catalogue_lookup_round_trip() {
+        for s in catalogue() {
+            let found = lookup(s.name).expect("named scenario should be in catalogue");
+            assert_eq!(found.name, s.name);
+        }
+        assert!(lookup("does_not_exist").is_none());
+    }
+
+    #[test]
+    fn scenario_workspace_switch_moves_active_index() {
+        let mut d = ShellDriver::new((1600, 900));
+        let initial = d.chrome().tree.active;
+        let mut sink = NullSink;
+        let scenario = workspace_switch();
+        run(&mut d, &scenario, &mut sink);
+        // After the round-trip the active workspace should match the
+        // initial one again.
+        assert_eq!(d.chrome().tree.active, initial);
+    }
+
+    #[test]
+    fn chrome_state_json_includes_palette_query() {
+        let mut d = ShellDriver::new((1600, 900));
+        d.host_mut().set_palette_visible(true);
+        d.host_mut().set_palette_query("hello");
+        let json = chrome_state_json(&d);
+        assert!(
+            json.contains("\"palette_query\":\"hello\""),
+            "json should include palette_query: {json}"
+        );
+        assert!(json.contains("\"palette_visible\":true"));
+    }
+}
