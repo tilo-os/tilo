@@ -164,22 +164,19 @@ impl SidebarWheelChrome {
 
     pub fn sync_from_tree(&mut self, tree: &WorkspaceTree) {
         self.active = Some(tree.active);
-        let tree_fallback = tree.collaborators.len();
+        // Active card flows through the shared helper so its peer count
+        // always agrees with the top-bar avatar stack (audit B-10);
+        // non-active cards keep their own per-ws filtered count (no
+        // fallback into the tree-level roster).
+        let active_count = crate::shell::state::active_workspace_peer_count(tree);
         self.cards = tree
             .workspaces
             .iter()
             .map(|w| {
-                // Per-workspace count takes precedence; we only fall back
-                // to the tree-level roster for the active workspace when
-                // the workspace itself has none (so single-workspace demo
-                // trees still light up the active card).
-                let per_ws = w.collaborators.len();
-                let count = if per_ws > 0 {
-                    per_ws
-                } else if tree.active == w.id {
-                    tree_fallback
+                let count = if tree.active == w.id {
+                    active_count
                 } else {
-                    0
+                    w.collaborators.iter().filter(|c| c.id != "me").count()
                 };
                 WorkspaceCard {
                     id: w.id,
