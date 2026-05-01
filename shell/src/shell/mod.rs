@@ -1208,6 +1208,7 @@ pub fn build_nirios_overlay_host_with_chrome(
                         })
                         .collect();
                     UiGroup::new(g.id, tabs_with_content, g.active_tab, to_ui_width(g.width))
+                        .with_maximized(g.maximized)
                 })
                 .collect();
             let mut strip_row: Box<GroupRow> = Box::new(GroupRow::new(groups));
