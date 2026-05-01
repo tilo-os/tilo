@@ -1,0 +1,559 @@
+//! `ShellDriver` — programmable, headless-friendly driver for the nirios
+//! shell tree. Owns a `ShellOverlayHost` plus everything the layout +
+//! draw + event passes need (taffy tree, text renderer, theme, viewport,
+//! Automerge doc), and exposes a small API the three modes (window,
+//! offscreen, headless) and the `Scenario` engine all share.
+//!
+//! Intentionally generous in surface so the same driver covers:
+//!   - "render this scene to PNG" (offscreen)
+//!   - "drive a scenario, dump state" (headless / AI-control / e2e)
+//!   - "pre-run a scenario then go interactive" (window mode)
+
+use std::collections::HashMap;
+use std::time::Duration;
+
+use automerge::{AutoCommit, ObjId};
+use taffy::prelude::*;
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
+use winit::dpi::PhysicalPosition;
+use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
+use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey};
+
+use quick_desktop::shell::chrome_state::{Chrome, ChromeState, WsTab};
+use quick_desktop::shell::overlay_host::ShellOverlayHost;
+use quick_desktop::shell::quick_settings::QsLevel;
+use quick_desktop::shell::state::WorkspaceTree;
+use quick_desktop::shell::build_nirios_overlay_host_with_chrome;
+
+use quick_ui::presence::PresenceCtx;
+use quick_ui::text_render::TextRenderer;
+use quick_ui::theme::Theme;
+use quick_ui::widget::Widget;
+
+/// Synthetic frame duration for `step_frames` — matches a 60 Hz monitor.
+/// Used only as the unit for the spin-wait loop; animations themselves
+/// read real wall time off `Instant::now()` inside the host so we still
+/// have to spend that time. Kept short enough that sleeping 60 frames
+/// (~1 s) doesn't blow scenario runtime.
+const FRAME_MS: u64 = 16;
+
+pub struct ShellDriver {
+    host: ShellOverlayHost,
+    chrome: Chrome,
+    taffy: TaffyTree<()>,
+    /// Pointer map captured during build_layout — kept alive so the
+    /// measure closures stay valid across re-layouts. We re-use a
+    /// single tree per driver so animation state on the host (close
+    /// fades, crossfades, palette open transition) survives.
+    node_map: HashMap<NodeId, *mut dyn Widget>,
+    /// Inner node — the host's own root child returned by build_layout.
+    /// Used as the target of `apply_layout` so the host's rect tree is
+    /// rooted at viewport origin.
+    host_node: Option<NodeId>,
+    /// Outer node — a viewport-sized wrapper that gives `compute_layout`
+    /// an explicit root size. Taffy needs a definite extent; the host
+    /// itself is `percent(1.0)` so we wrap it.
+    root_node: Option<NodeId>,
+    text_renderer: TextRenderer,
+    theme: Theme,
+    viewport: (f64, f64),
+    state: AutoCommit,
+    root_obj: ObjId,
+    modifiers: Modifiers,
+    focus: Option<NodeId>,
+    last_cursor: Point,
+}
+
+impl ShellDriver {
+    /// Build a driver around the canonical bootstrap workspace tree at
+    /// `viewport` size. Equivalent to what `bin/shots`'s headless path
+    /// did per-scene, but stateful across actions.
+    pub fn new(viewport: (u32, u32)) -> Self {
+        Self::with_tree(WorkspaceTree::bootstrap_default(), viewport)
+    }
+
+    pub fn with_tree(tree: WorkspaceTree, viewport: (u32, u32)) -> Self {
+        let (host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let theme = Theme::dark();
+        let mut driver = Self {
+            host,
+            chrome,
+            taffy: TaffyTree::new(),
+            node_map: HashMap::new(),
+            host_node: None,
+            root_node: None,
+            text_renderer: TextRenderer::new(),
+            theme,
+            viewport: (viewport.0 as f64, viewport.1 as f64),
+            state: AutoCommit::new(),
+            root_obj: automerge::ROOT.clone(),
+            modifiers: Modifiers::default(),
+            focus: None,
+            last_cursor: Point::ORIGIN,
+        };
+        driver.rebuild_layout_tree();
+        driver.relayout();
+        driver
+    }
+
+    fn rebuild_layout_tree(&mut self) {
+        self.taffy = TaffyTree::new();
+        self.node_map.clear();
+        let child = self
+            .host
+            .build_layout(&mut self.taffy, &self.theme, &mut self.node_map);
+        let (w, h) = self.viewport;
+        let root = self
+            .taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(w as f32),
+                        height: Dimension::length(h as f32),
+                    },
+                    ..Default::default()
+                },
+                &[child],
+            )
+            .expect("driver root node");
+        self.host_node = Some(child);
+        self.root_node = Some(root);
+    }
+
+    /// Run compute_layout + apply_layout against the current tree. The
+    /// host's animation state is preserved because we don't rebuild the
+    /// taffy tree — only the layout pass re-runs.
+    pub fn relayout(&mut self) {
+        let (w, h) = self.viewport;
+        let outer = self.root_node.expect("rebuild_layout_tree first");
+        let child = self.host_node.expect("rebuild_layout_tree first");
+        let measure_map = self.node_map.clone();
+        let tr = &mut self.text_renderer;
+        self.taffy
+            .compute_layout_with_measure(
+                outer,
+                Size {
+                    width: AvailableSpace::Definite(w as f32),
+                    height: AvailableSpace::Definite(h as f32),
+                },
+                |known, available, node_id, _, _| {
+                    if let Some(&ptr) = measure_map.get(&node_id) {
+                        unsafe { (*ptr).measure(known, available, tr) }
+                    } else {
+                        taffy::Size::ZERO
+                    }
+                },
+            )
+            .expect("driver compute_layout");
+        self.host.apply_layout(&self.taffy, child, Point::ORIGIN);
+    }
+
+    /// Mutate chrome state — opens overlays, switches tabs, tweaks
+    /// quick-settings, etc. Borrows the chrome internally so callers
+    /// don't have to juggle the `RefCell`.
+    pub fn with_chrome<F: FnOnce(&mut ChromeState)>(&mut self, f: F) {
+        let mut st = self.chrome.borrow_mut();
+        f(&mut st);
+    }
+
+    /// Read-only handle to the chrome cell. Use for assertions /
+    /// serialisation — the caller is responsible for keeping the
+    /// `Ref` short-lived.
+    pub fn chrome(&self) -> std::cell::Ref<'_, ChromeState> {
+        self.chrome.borrow()
+    }
+
+    #[allow(dead_code)]
+    pub fn chrome_handle(&self) -> Chrome {
+        self.chrome.clone()
+    }
+
+    pub fn host(&self) -> &ShellOverlayHost {
+        &self.host
+    }
+
+    #[allow(dead_code)]
+    pub fn host_mut(&mut self) -> &mut ShellOverlayHost {
+        &mut self.host
+    }
+
+    #[allow(dead_code)]
+    pub fn theme(&self) -> &Theme {
+        &self.theme
+    }
+
+    pub fn viewport(&self) -> (f64, f64) {
+        self.viewport
+    }
+
+    /// Replace the active modifier set. Scenarios call this when they
+    /// need a chord (e.g. Cmd+K, Cmd+Tab); a `dispatch` of the resulting
+    /// `Key(Tab)` then sees `is_mod = true` inside the host.
+    pub fn set_modifiers(&mut self, state: ModifiersState) {
+        self.modifiers = Modifiers::from(state);
+    }
+
+    /// Dispatch a single `WindowEvent` through the host's `handle_event`
+    /// pipeline. Returns whether the event was consumed.
+    pub fn dispatch(&mut self, event: WindowEvent) -> bool {
+        if let WindowEvent::CursorMoved { position, .. } = &event {
+            self.last_cursor = Point::new(position.x, position.y);
+        }
+        if let WindowEvent::ModifiersChanged(m) = &event {
+            self.modifiers = *m;
+        }
+        let mut handled = false;
+        let child = self.host_node.expect("rebuild_layout_tree first");
+        self.host.handle_event(
+            &event,
+            1.0,
+            &self.modifiers,
+            &mut self.state,
+            &self.root_obj,
+            &mut handled,
+            &mut self.focus,
+            child,
+            &self.taffy,
+        );
+        handled
+    }
+
+    /// Synthesise a click at `p` — a `CursorMoved` to position, then a
+    /// `Pressed`+`Released` left-button pair. Each step gets its own
+    /// `dispatch` so per-event hit-tests run in the same order they
+    /// would on real hardware.
+    pub fn click_at(&mut self, p: Point) {
+        self.dispatch(WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: PhysicalPosition::new(p.x, p.y),
+        });
+        self.dispatch(WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        });
+        self.dispatch(WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        });
+    }
+
+    /// Press at `from`, drag through `steps` intermediate `CursorMoved`
+    /// events, release at `to`. Used by scenarios that exercise the
+    /// tab-drag / wheel-spin flows.
+    pub fn drag(&mut self, from: Point, to: Point, steps: u32) {
+        self.dispatch(WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: PhysicalPosition::new(from.x, from.y),
+        });
+        self.dispatch(WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        });
+        let n = steps.max(1) as f64;
+        for s in 1..=steps.max(1) {
+            let t = s as f64 / n;
+            let p = Point::new(
+                from.x + (to.x - from.x) * t,
+                from.y + (to.y - from.y) * t,
+            );
+            self.dispatch(WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: PhysicalPosition::new(p.x, p.y),
+            });
+        }
+        self.dispatch(WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        });
+    }
+
+    /// Synthesise a `KeyboardInput { state: Pressed }` for `key`.
+    pub fn press_key(&mut self, key: Key) {
+        let event = key_press_event(key);
+        self.dispatch(event);
+    }
+
+    /// Type a literal string — one Key::Character event per non-control
+    /// character. Triggers the same handle_event path the live binary's
+    /// keyboard handler does. Caller is expected to have opened an
+    /// input target (palette, name editor, etc.) first.
+    pub fn type_str(&mut self, s: &str) {
+        for c in s.chars() {
+            if c.is_control() {
+                continue;
+            }
+            let event = key_press_event(Key::Character(
+                winit::keyboard::SmolStr::new(c.to_string()),
+            ));
+            self.dispatch(event);
+        }
+    }
+
+    /// Step animation timers by `frames` × ~16 ms. Drives close fades,
+    /// crossfades, palette/QS/WS-settings open animations, etc. Sleeps
+    /// real time because the host reads `Instant::now()` directly —
+    /// there's no virtual clock hook (yet).
+    pub fn step_frames(&mut self, frames: u32) {
+        for _ in 0..frames {
+            std::thread::sleep(Duration::from_millis(FRAME_MS));
+            // Drive the per-frame update + redraw so animation state
+            // advances. `update` runs the per-tick reconciler too.
+            self.host.update(&mut self.state, &self.root_obj);
+            // Re-draw into a throwaway scene so tick functions inside
+            // `draw` (overview crossfade tick, etc.) see elapsed time.
+            let mut scene = Scene::new();
+            let presence = PresenceCtx::default();
+            self.host.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut self.text_renderer,
+                &self.theme,
+                &presence,
+            );
+        }
+    }
+
+    /// Render the current frame into a fresh Vello scene. Caller is
+    /// responsible for passing it to a renderer (offscreen or live).
+    pub fn paint(&mut self) -> Scene {
+        let mut scene = Scene::new();
+        let presence = PresenceCtx::default();
+        self.host.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut self.text_renderer,
+            &self.theme,
+            &presence,
+        );
+        scene
+    }
+
+    /// Convenience: relayout + draw. Used by the offscreen scene-set
+    /// path (legacy `--scenes`) where state mutations between scenes
+    /// can affect the structural layout (overlay reservations).
+    pub fn paint_settled(&mut self) -> Scene {
+        self.relayout();
+        self.paint()
+    }
+
+    /// Apply the named "scene" mutation set (the legacy `--scenes`
+    /// catalogue). Each scene is a one-shot mutation — call on a fresh
+    /// driver per scene if a clean slate is required.
+    pub fn scene_setup(&mut self, name: &str) -> Result<(), String> {
+        match name {
+            "desktop" => {}
+            "overview" => {
+                self.with_chrome(|st| st.overlays.overview = true);
+                self.host.force_overview_settled(true);
+            }
+            "palette" => {
+                self.host.set_palette_visible(true);
+            }
+            "quick-settings" => {
+                self.with_chrome(|st| st.overlays.quick_settings = true);
+            }
+            "qs-wifi-drillin" => {
+                self.with_chrome(|st| {
+                    st.overlays.quick_settings = true;
+                    st.quick_settings.push_level(QsLevel::Wifi);
+                });
+            }
+            "qs-bt-drillin" => {
+                self.with_chrome(|st| {
+                    st.overlays.quick_settings = true;
+                    st.quick_settings.push_level(QsLevel::Bluetooth);
+                });
+            }
+            "ws-settings-general" => {
+                self.with_chrome(|st| {
+                    st.overlays.ws_settings = true;
+                    st.ws_settings_tab = WsTab::General;
+                });
+            }
+            "ws-settings-roles" => {
+                self.with_chrome(|st| {
+                    st.overlays.ws_settings = true;
+                    st.ws_settings_tab = WsTab::Roles;
+                });
+            }
+            "ws-settings-files" => {
+                self.with_chrome(|st| {
+                    st.overlays.ws_settings = true;
+                    st.ws_settings_tab = WsTab::Files;
+                });
+            }
+            other => return Err(format!("unknown scene '{other}'")),
+        }
+        Ok(())
+    }
+
+    /// Catalogue of scene names supported by `scene_setup`. Used by the
+    /// legacy `--scenes` flag for default expansion + validation.
+    pub const ALL_SCENES: &'static [&'static str] = &[
+        "desktop",
+        "overview",
+        "palette",
+        "quick-settings",
+        "qs-wifi-drillin",
+        "qs-bt-drillin",
+        "ws-settings-general",
+        "ws-settings-roles",
+        "ws-settings-files",
+    ];
+
+    /// Resolve a "named" UI target (button, pill, tab) to its on-screen
+    /// rect in viewport-local coordinates. Returns `None` if the rect
+    /// is `Rect::ZERO` (which generally means "this widget hasn't been
+    /// drawn yet" — call `paint` once first to populate it).
+    ///
+    /// Names supported:
+    ///   - `"add_workspace"` — the "+ Add workspace" tile in the overview
+    ///     (only valid while the overview is open).
+    ///   - `"ws_settings_tab[general|roles|files]"` — modal tab pills
+    ///     (only valid while ws-settings is open).
+    ///
+    /// The topbar's `overview_btn` and `tray_pill` rects live on a
+    /// separate widget (`TopBarChrome`) that's a descendant of `content`,
+    /// not directly accessible from the host — scenarios that need them
+    /// should use `ClickAt` with raw coordinates or drive Cmd+Tab /
+    /// Ctrl+K hotkeys via the `Modifiers` + `Key(_)` actions.
+    pub fn resolve_named_rect(&self, name: &str) -> Option<Rect> {
+        let r = match name {
+            "add_workspace" => self.host.add_workspace_rect_for_tests(),
+            "ws_settings_tab[general]" => self.host.ws_settings_tab_pill_rect(WsTab::General),
+            "ws_settings_tab[roles]" => self.host.ws_settings_tab_pill_rect(WsTab::Roles),
+            "ws_settings_tab[files]" => self.host.ws_settings_tab_pill_rect(WsTab::Files),
+            _ => return None,
+        };
+        if r.area() <= 0.0 { None } else { Some(r) }
+    }
+
+    /// Centre of a named rect — convenience for the scenario engine.
+    pub fn resolve_named_centre(&self, name: &str) -> Option<Point> {
+        self.resolve_named_rect(name).map(|r| r.center())
+    }
+
+    /// Public read-through to the host's palette query, so scenarios /
+    /// assertions don't have to drill through `host()`.
+    #[allow(dead_code)]
+    pub fn palette_query(&self) -> &str {
+        self.host.palette_query()
+    }
+}
+
+// ---------- helpers ----------
+
+/// Synthesise a `WindowEvent::KeyboardInput { state: Pressed }` for
+/// `key`. winit's `KeyEvent` has a `pub(crate)` field
+/// (`platform_specific`) so we zero-init the struct + overwrite the
+/// fields the shell actually reads. Same workaround the e2e harness
+/// uses (see `tests/e2e_shell_flows.rs::escape_event`).
+pub fn key_press_event(key: Key) -> WindowEvent {
+    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+    ev.logical_key = key.clone();
+    ev.physical_key =
+        PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+    ev.location = KeyLocation::Standard;
+    ev.state = ElementState::Pressed;
+    ev.repeat = false;
+    // `text` is `Option<SmolStr>` — for ASCII characters we mirror what
+    // winit normally fills so the palette's character-input branch
+    // sees the same glyph it would on real hardware.
+    ev.text = if let Key::Character(s) = &key {
+        Some(s.clone())
+    } else {
+        None
+    };
+    WindowEvent::KeyboardInput {
+        device_id: unsafe { std::mem::zeroed() },
+        event: ev,
+        is_synthetic: false,
+    }
+}
+
+/// Convenience: a Pressed key event for a [`NamedKey`]. Used by the
+/// scenario engine's `Key(NamedKey::Foo)` action variant.
+#[allow(dead_code)]
+pub fn named_key_event(key: NamedKey) -> WindowEvent {
+    key_press_event(Key::Named(key))
+}
+
+// =====================================================================
+// Tests
+// =====================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Drive Cmd+Tab through `dispatch` and verify the chrome's
+    /// `overlays.overview` flag flips. Mirrors the live binary's
+    /// hotkey path through real `handle_event` dispatch on the host
+    /// — exercises the full `dispatch → ShellOverlayHost::handle_event
+    /// → chrome.borrow_mut()` chain.
+    #[test]
+    fn driver_dispatch_routes_click_to_chrome() {
+        let mut d = ShellDriver::new((1600, 900));
+        let _ = d.paint();
+        assert!(!d.chrome().overlays.overview);
+        d.set_modifiers(ModifiersState::SUPER);
+        d.press_key(Key::Named(NamedKey::Tab));
+        assert!(
+            d.chrome().overlays.overview,
+            "Cmd+Tab should toggle the overview overlay on through driver dispatch"
+        );
+    }
+
+    /// Toggle the palette open via the public host API, step a few
+    /// frames so the palette open animation can register, then assert
+    /// the palette is still visible. Pinned smoke for `step_frames`
+    /// not panicking and not nuking visibility flags.
+    #[test]
+    fn driver_step_frames_advances_palette_fade() {
+        let mut d = ShellDriver::new((1600, 900));
+        assert!(!d.host().palette_visible());
+        d.host_mut().set_palette_visible(true);
+        d.step_frames(6);
+        assert!(
+            d.host().palette_visible(),
+            "step_frames should advance animation timers without flipping visibility"
+        );
+        let _ = d.paint();
+    }
+
+    /// Paint the overview, then verify the named-rect resolver can pick
+    /// out the "+ Add workspace" tile (which `draw_overview` populates
+    /// each visible frame).
+    #[test]
+    fn driver_resolve_named_rect_for_overview_add_workspace() {
+        let mut d = ShellDriver::new((1600, 900));
+        d.with_chrome(|st| st.overlays.overview = true);
+        d.host_mut().force_overview_settled(true);
+        let _ = d.paint_settled();
+        let rect = d.resolve_named_rect("add_workspace");
+        assert!(
+            rect.is_some(),
+            "overview should populate the add_workspace rect after a settled paint"
+        );
+    }
+
+    /// Smoke for `scene_setup` — drive every named scene and verify it
+    /// returns Ok, then verify a fresh driver returns Err for an
+    /// unknown name.
+    #[test]
+    fn driver_scene_setup_covers_catalogue() {
+        for &name in ShellDriver::ALL_SCENES {
+            let mut d = ShellDriver::new((1600, 900));
+            d.scene_setup(name)
+                .unwrap_or_else(|e| panic!("scene_setup({name}) failed: {e}"));
+            let _ = d.paint_settled();
+        }
+        let mut d = ShellDriver::new((1600, 900));
+        assert!(d.scene_setup("nope").is_err());
+    }
+}
