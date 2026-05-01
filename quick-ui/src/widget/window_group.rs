@@ -1053,12 +1053,33 @@ impl Widget for WindowGroup {
         // pill order matches the content order. Previously only `hosts`
         // got reordered while `self.bar.tabs` stayed in the original
         // order — the user saw drop zones but no visible reorder.
+        //
+        // Parallel-vec hardening (Wave 2 / 2-D): `bar.tabs` and `hosts`
+        // are the two halves of a strictly-aligned 1:1 mapping. A
+        // future refactor that mutates one without the other would
+        // silently desync the visible pill at index `i` from the
+        // content rendered at host index `i`. The `debug_assert_eq!`
+        // below trips loudly in debug builds the moment the lengths
+        // diverge — index-based bounds checks alone (the prior
+        // `if from < self.hosts.len() && to < self.hosts.len()` guard)
+        // would mask the asymmetry: the bar would be permuted while
+        // the hosts vec quietly stayed put. Now we permute
+        // unconditionally, with the assert documenting the invariant
+        // that's expected to hold every time we get here.
         if let Some((from, to)) = self.bar.take_reorder() {
+            debug_assert_eq!(
+                self.bar.tabs().len(),
+                self.hosts.len(),
+                "WindowGroup parallel-vec invariant violated: bar.tabs.len() \
+                 ({}) != hosts.len() ({}). The bar's pill list and the host \
+                 content list must stay 1:1 — every mutation of one must be \
+                 mirrored on the other.",
+                self.bar.tabs().len(),
+                self.hosts.len(),
+            );
             self.bar.reorder(from, to);
-            if from < self.hosts.len() && to < self.hosts.len() {
-                let item = self.hosts.remove(from);
-                self.hosts.insert(to, item);
-            }
+            let item = self.hosts.remove(from);
+            self.hosts.insert(to, item);
             *handled = true;
         }
 
@@ -1907,5 +1928,111 @@ mod tests {
         assert!(!g.should_show_maximized_chrome(Some(20.0)));
         assert!(!g.should_show_maximized_chrome(Some(80.0)));
         assert!(!g.should_show_maximized_chrome(None));
+    }
+
+    /// Parallel-vec invariant: after the bar publishes a `pending_reorder`
+    /// and the `WindowGroup::handle_event` drain block applies it, the
+    /// resulting `bar.tabs()` order MUST match the resulting `hosts`
+    /// order one-for-one (`bar.tabs()[i].id == hosts[i].0` for every i).
+    /// Two parallel vectors that drift out of sync would cause tab pill
+    /// `i` to render content from a different host on the next frame —
+    /// the exact bug the live `bar.reorder(from, to)` call was added to
+    /// fix in Wave 1. This test exercises several from/to combinations
+    /// (forward, backward, no-op, adjacent) so a future refactor that
+    /// permutes only one side trips loudly. The production code's
+    /// `debug_assert_eq!(self.bar.tabs().len(), self.hosts.len())`
+    /// inside the reorder branch would also panic here if any case
+    /// drifted, providing belt-and-braces coverage in debug builds.
+    #[test]
+    fn reorder_keeps_hosts_and_bar_tabs_aligned() {
+        use crate::widget::{AppKind, TabDescriptor, TileContent};
+        use std::collections::HashMap;
+        use taffy::Style;
+        use taffy::prelude::TaffyMaxContent;
+
+        // Helper: build a fresh 4-tab WindowGroup so we have enough
+        // pills to exercise non-trivial permutations.
+        fn make_group_4() -> WindowGroup {
+            let tabs: Vec<(TabDescriptor, TileContent)> = (1..=4u64)
+                .map(|i| {
+                    (
+                        TabDescriptor::new(i, format!("T{i}")),
+                        TileContent::Stub {
+                            kind: AppKind::Settings,
+                            label: format!("s{i}"),
+                        },
+                    )
+                })
+                .collect();
+            WindowGroup::new(10, tabs, 1, WindowWidth::Normal)
+        }
+
+        // (from, to) cases:
+        //  - forward small step (0 → 2)
+        //  - backward step (3 → 1)
+        //  - adjacent swap (1 → 2)
+        //  - no-op (2 → 2)
+        //  - extreme (0 → 3)
+        let cases: &[(usize, usize)] = &[(0, 2), (3, 1), (1, 2), (2, 2), (0, 3)];
+
+        for &(from, to) in cases {
+            let mut g = make_group_4();
+
+            // Build a layout pass — `handle_event` walks the cached
+            // taffy children, and an empty children slice would short-
+            // circuit before the drain block. Mirrors the maximize tests.
+            let theme = Theme::dark();
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
+            let root = taffy
+                .new_with_children(Style::default(), &[group_node])
+                .unwrap();
+            taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
+            g.apply_layout(&taffy, group_node, Point::ZERO);
+
+            // Precondition: bar.tabs and hosts are aligned 1:1 in id order.
+            for (i, t) in g.bar.tabs().iter().enumerate() {
+                assert_eq!(
+                    t.id, g.hosts[i].0,
+                    "precondition: tab[{i}] id must equal hosts[{i}].0",
+                );
+            }
+
+            // Publish the reorder request the same way `TabBar::handle_event`
+            // does on a drag release within its own bar.
+            g.bar.pending_reorder = Some((from, to));
+
+            // Drive the WindowGroup drain block via a no-op cursor move.
+            let moved = WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(9000.0, 9000.0),
+            };
+            let mut state = automerge::AutoCommit::new();
+            let root_id = automerge::ROOT;
+            let mut handled = false;
+            let mut focus_target = None;
+            g.handle_event(
+                &moved, 1.0, &winit::event::Modifiers::default(),
+                &mut state, &root_id, &mut handled, &mut focus_target,
+                group_node, &taffy,
+            );
+
+            // Postcondition: bar.tabs and hosts must still be aligned
+            // one-for-one after the permutation. Both vectors must
+            // have identical lengths and the i-th tab's id must equal
+            // the i-th host's id for every i.
+            assert_eq!(
+                g.bar.tabs().len(),
+                g.hosts.len(),
+                "case ({from}, {to}): bar.tabs().len() must equal hosts.len() after reorder",
+            );
+            for (i, t) in g.bar.tabs().iter().enumerate() {
+                assert_eq!(
+                    t.id, g.hosts[i].0,
+                    "case ({from}, {to}): bar.tabs()[{i}].id must equal hosts[{i}].0 after reorder",
+                );
+            }
+        }
     }
 }
