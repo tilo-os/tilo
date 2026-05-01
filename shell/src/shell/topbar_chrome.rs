@@ -218,7 +218,10 @@ impl TopBarChrome {
         };
         self.collaborator_initials.clear();
         self.collaborator_colors.clear();
-        let peer_count = roster.iter().filter(|c| c.id != "me").count();
+        // Peer count flows through the shared helper so the top-bar
+        // overflow chip and the wheel-disc active-card dot count always
+        // agree (audit B-10).
+        let peer_count = crate::shell::state::active_workspace_peer_count(tree);
         for c in roster.iter().filter(|c| c.id != "me").take(3) {
             let Some(ch) = c.name.chars().next() else { continue };
             self.collaborator_initials.push(ch.to_ascii_uppercase());
