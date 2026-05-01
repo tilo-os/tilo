@@ -510,7 +510,7 @@ impl ShellOverlayHost {
     /// `chrome.ws_settings_tab` directly. Pre-2-A the click branch in
     /// `handle_event` was missing, so users could only switch tabs via
     /// the keyboard focus trap.
-    pub(crate) fn ws_settings_tab_pill_rect(&self, tab: WsTab) -> Rect {
+    pub fn ws_settings_tab_pill_rect(&self, tab: WsTab) -> Rect {
         let idx = match tab {
             WsTab::General => 0,
             WsTab::Roles => 1,
@@ -549,6 +549,21 @@ impl ShellOverlayHost {
     /// staging a synthetic Ctrl+K key event through `handle_event`.
     pub fn set_palette_visible(&mut self, v: bool) {
         self.palette_visible = v;
+    }
+
+    /// Read-only accessor for the command-palette query buffer. Used by
+    /// the `shots` driver / scenario harness to assert that synthetic
+    /// `Type("…")` actions actually landed inside the palette input.
+    pub fn palette_query(&self) -> &str {
+        self.palette.query()
+    }
+
+    /// Force-set the command-palette query buffer. Lets the `shots`
+    /// driver seed a query without round-tripping through synthetic
+    /// keyboard events when the palette is closed (when it's open,
+    /// `dispatch` already routes characters to the palette).
+    pub fn set_palette_query(&mut self, q: &str) {
+        self.palette.set_query(q);
     }
 
     /// Fast-forward the overview crossfade to its settled state
