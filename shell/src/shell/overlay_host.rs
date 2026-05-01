@@ -497,6 +497,35 @@ impl ShellOverlayHost {
         self.add_workspace_rect
     }
 
+    /// Snapshot the post-layout groups-per-strip layout: for every captured
+    /// `GroupRow` pointer, walk its current `groups` vec and produce
+    /// `(strip_id, Vec<(group_id, Vec<tab_id>)>)`. Used by the headless
+    /// shots driver to verify drag-out scenarios that should produce
+    /// multiple groups in one strip — e.g. a 4-tab drag-out should leave
+    /// the strip with two groups (3 in source, 1 in new), not one.
+    ///
+    /// SAFETY mirrors the rest of the `group_row_ptrs` accessors: pointers
+    /// were captured from a `Box<GroupRow>` we own through the content
+    /// tree, the host outlives the content, and `&self` here keeps the
+    /// reconcile sweeps from racing the read.
+    pub fn groups_per_strip(&self) -> Vec<(StripId, Vec<(u64, Vec<u64>)>)> {
+        let mut out = Vec::with_capacity(self.group_row_ptrs.len());
+        for (&strip_id, &ptr) in &self.group_row_ptrs {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &GroupRow = unsafe { &*ptr };
+            let snapshot: Vec<(u64, Vec<u64>)> = row
+                .groups
+                .iter()
+                .map(|g| {
+                    let tab_ids: Vec<u64> = g.tabs().iter().map(|t| t.id).collect();
+                    (g.id, tab_ids)
+                })
+                .collect();
+            out.push((strip_id, snapshot));
+        }
+        out
+    }
+
     /// Read-only accessor for the cached WS-settings tab-pill rect for
     /// `tab`. Populated by [`Self::draw_ws_settings`] each frame the
     /// modal is visible and cleared back to `Rect::ZERO` once the modal
@@ -1888,6 +1917,32 @@ impl Widget for ShellOverlayHost {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    /// Bubble structural-dirty flags up from the content tree (and the
+    /// optional sidebar) so `App::handle_window_event`'s post-event
+    /// rebuild gate can rebuild the taffy tree and pick up any new
+    /// nodes — e.g. a `WindowGroup` spliced into a `GroupRow` after a
+    /// cross-group tab drop.
+    ///
+    /// Without this forward, the host would silently shadow every child
+    /// dirty signal because the default `Widget::take_structure_dirty`
+    /// returns `false`. The visible symptom: dragging a tab past a
+    /// group's edge spawned a new `WindowGroup` in the data layer but
+    /// the layout pass never gave it a `NodeId`, so it stayed at
+    /// `Rect::ZERO` and the user perceived the source group as having
+    /// been "replaced" instead of split. Use `|` (not `||`) so both
+    /// children clear their own flags this tick — short-circuiting
+    /// would leave a stale flag pending in whichever subtree we
+    /// skipped.
+    fn take_structure_dirty(&mut self) -> bool {
+        let content = self.content.take_structure_dirty();
+        let sidebar = self
+            .sidebar
+            .as_mut()
+            .map(|s| s.take_structure_dirty())
+            .unwrap_or(false);
+        content | sidebar
     }
 
     fn needs_animation_frame(&self) -> bool {
