@@ -339,6 +339,11 @@ impl WindowGroup {
     /// uses it to hit-test cross-group releases.
     pub fn bar_rect(&self) -> Rect { self.bar.bar_rect() }
 
+    /// Per-pill rects inside the bar, in tab order. Mirrors
+    /// `TabBar::tab_rects` so headless tests can read the live layout
+    /// instead of guessing pill x-coords from theme constants.
+    pub fn tab_rects(&self) -> &[Rect] { self.bar.tab_rects() }
+
     /// Delegate to the bar's per-pill drop-index resolver. Used by
     /// `GroupRow` on cross-group releases to figure out which index the
     /// dropped tab should be spliced at, based on where in the target
