@@ -16,6 +16,7 @@ pub struct Column {
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
     extra_left_padding: f32,
+    no_padding: bool,
 }
 
 impl Column {
@@ -26,7 +27,16 @@ impl Column {
             presence_path: Vec::new(),
             permission_scope: None,
             extra_left_padding: 0.0,
+            no_padding: false,
         }
+    }
+
+    /// Skip the default `padding_standard * 2` on all sides. Used by
+    /// the shell's foreground column so the topbar lands at y=0
+    /// instead of inset by the column's gutter.
+    pub fn with_no_padding(mut self) -> Self {
+        self.no_padding = true;
+        self
     }
 
     pub fn push(mut self, child: Box<dyn Widget>) -> Self {
@@ -79,11 +89,14 @@ impl Widget for Column {
                     width: length(0.0),
                     height: length(theme.gap_standard),
                 },
-                padding: taffy::Rect {
-                    left: length(theme.padding_standard * 2.0 + self.extra_left_padding),
-                    right: length(theme.padding_standard * 2.0),
-                    top: length(theme.padding_standard * 2.0),
-                    bottom: length(theme.padding_standard * 2.0),
+                padding: {
+                    let base = if self.no_padding { 0.0 } else { theme.padding_standard * 2.0 };
+                    taffy::Rect {
+                        left: length(base + self.extra_left_padding),
+                        right: length(base),
+                        top: length(base),
+                        bottom: length(base),
+                    }
                 },
                 size: taffy::Size {
                     width: percent(1.0),
