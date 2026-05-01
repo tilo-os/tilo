@@ -888,6 +888,33 @@ impl Widget for CommandPalette {
                     self.is_focused = false;
                     *handled = true;
                 }
+                Key::Named(NamedKey::Backspace) => {
+                    if self.query.pop().is_some() {
+                        self.rebuild();
+                    }
+                    *handled = true;
+                }
+                Key::Named(NamedKey::Space) => {
+                    self.query.push(' ');
+                    self.rebuild();
+                    *handled = true;
+                }
+                Key::Character(s) => {
+                    // Same shape as `overlay_host.rs:1383-1395` — push
+                    // every non-control char carried by the smol-str
+                    // payload, then rebuild + consume the event.
+                    let mut pushed = false;
+                    for c in s.chars() {
+                        if !c.is_control() {
+                            self.query.push(c);
+                            pushed = true;
+                        }
+                    }
+                    if pushed {
+                        self.rebuild();
+                        *handled = true;
+                    }
+                }
                 _ => {}
             }
         }
@@ -905,6 +932,32 @@ impl Widget for CommandPalette {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use taffy::TaffyTree;
+    use winit::event::Modifiers;
+    use winit::keyboard::{KeyLocation, PhysicalKey, SmolStr};
+
+    /// Synthesise a `WindowEvent::KeyboardInput` carrying `logical_key`
+    /// in the `Pressed` state. Mirrors the zero-init workaround in
+    /// `quick-shell/tests/e2e_shell_flows.rs:1287-1307` — winit 0.30
+    /// keeps `KeyEventExtra` `pub(crate)` so we can't construct a
+    /// `KeyEvent` through a struct literal.
+    fn key_press(logical_key: Key) -> WindowEvent {
+        // SAFETY: all pub fields of `KeyEvent` tolerate the all-zero bit
+        // pattern; `handle_event` only inspects `logical_key` + `state`.
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = logical_key;
+        ev.physical_key =
+            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
+    }
 
     #[test]
     fn fuzzy_score_empty_query_matches_everything() {
@@ -1064,6 +1117,53 @@ mod tests {
             "filter strip must be tall enough for chip pills (got {})",
             strip.height(),
         );
+    }
+
+    #[test]
+    fn typing_filters_visible_entries() {
+        // B-1: typing into a focused palette must filter the visible
+        // result list and update the query string. Drives the
+        // production `handle_event` code path with a real
+        // `WindowEvent::KeyboardInput { Key::Character("h") }`.
+        let mut p = CommandPalette::new();
+        p.push(CommandEntry::new("a", "Alpha"));
+        p.push(CommandEntry::new("h", "Hotel"));
+        p.push(CommandEntry::new("b", "Bravo"));
+        p.set_focus(true);
+
+        let total = p.entries.len();
+        // Sanity: with no query, all entries are visible.
+        assert_eq!(p.visible_entries().len(), total);
+
+        let event = key_press(Key::Character(SmolStr::new("h")));
+        let mut doc = AutoCommit::new();
+        let doc_root = automerge::ROOT.clone();
+        let modifiers = Modifiers::default();
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+
+        p.handle_event(
+            &event,
+            1.0,
+            &modifiers,
+            &mut doc,
+            &doc_root,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
+
+        assert_eq!(p.query(), "h", "typing must update the query string");
+        assert!(
+            p.visible_entries().len() < total,
+            "typing 'h' must filter out non-matching entries (visible={}, total={})",
+            p.visible_entries().len(),
+            total,
+        );
+        assert!(handled, "the palette must consume the keystroke");
     }
 
     #[test]
