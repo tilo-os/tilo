@@ -354,9 +354,15 @@ Order across waves is **wave 1 → 2 → 3** — wave 2 depends on the
 shared overlay-absorb helper introduced in 1-B, wave 3 depends on
 the WS-settings rect cache introduced in 2-A.
 
-### Wave 1 — P0 / data-loss bugs (parallel-safe)
+> **Status (2026-05-01):** all 12 units across waves 1, 2, 3 have
+> landed. Pointer commits in the superproject:
+> 1-A `cc3043c` · 1-B `ec92fa0` · 1-C `5da2fe3` · 1-D `62c6eb0` ·
+> 2-A `fdb2896` · 2-B `2ce5cbb` · 2-C `f78b039` · 2-D `2d4cf0f` ·
+> 3-A `5048672` · 3-B `be4e62f` · 3-C `54df24c` · 3-D `180fb60`.
 
-#### Unit 1-A — `quick-ui::tabs` press-time `tab_rects` guard (B-6)
+### Wave 1 — P0 / data-loss bugs (parallel-safe) — ✅ all landed
+
+#### Unit 1-A — `quick-ui::tabs` press-time `tab_rects` guard (B-6) — ✅
 
 File: `/var/home/quinten/Development/quickdesktop/quick-ui/src/widget/tabs.rs`
 
@@ -380,7 +386,7 @@ TDD steps:
    and apply the same `get` guard to the `pill = self.tab_rects[idx]`
    line below.
 
-#### Unit 1-B — `quick-shell::overlay_host` overlay event-absorb helper (#7, B-2)
+#### Unit 1-B — `quick-shell::overlay_host` overlay event-absorb helper (#7, B-2) — ✅
 
 File: `/var/home/quinten/Development/quickdesktop/quick-shell/src/shell/overlay_host.rs`
 
@@ -408,7 +414,7 @@ TDD steps:
    is true, set `*handled = true` and `return` for any pointer event
    that wasn't already handled by the existing branches.
 
-#### Unit 1-C — `quick-ui::group_row` cross-group-drop tab-loss guard (B-4)
+#### Unit 1-C — `quick-ui::group_row` cross-group-drop tab-loss guard (B-4) — ✅
 
 File: `/var/home/quinten/Development/quickdesktop/quick-ui/src/widget/group_row.rs`
 
@@ -423,7 +429,7 @@ TDD steps:
    group via `self.groups[src_idx].insert_detached_tab(0, desc, host)`
    (or stash and reinsert via a new helper).
 
-#### Unit 1-D — `quick-ui::window_group` `closing_hosts` cleanup on detach (B-8)
+#### Unit 1-D — `quick-ui::window_group` `closing_hosts` cleanup on detach (B-8) — ✅
 
 File: `/var/home/quinten/Development/quickdesktop/quick-ui/src/widget/window_group.rs`
 
@@ -437,9 +443,9 @@ TDD steps:
    `self.closing_hosts.remove(&tab_id);` and
    `self.bar.finalize_close(tab_id);`.
 
-### Wave 2 — P1 / unusable-feature bugs (parallel-safe)
+### Wave 2 — P1 / unusable-feature bugs (parallel-safe) — ✅ all landed
 
-#### Unit 2-A — `quick-shell::overlay_host` palette focus-on-open + WS-settings tab clicks (#6, B-7)
+#### Unit 2-A — `quick-shell::overlay_host` palette focus-on-open + WS-settings tab clicks (#6, B-7) — ✅
 
 File: `overlay_host.rs`
 
@@ -458,7 +464,7 @@ TDD steps:
      that hit-tests the four pills and writes to
      `chrome.ws_settings_tab`.
 
-#### Unit 2-B — `quick-ui::command_palette` typing handler (B-1)
+#### Unit 2-B — `quick-ui::command_palette` typing handler (B-1) — ✅
 
 File: `/var/home/quinten/Development/quickdesktop/quick-ui/src/widget/command_palette.rs`
 
@@ -475,7 +481,7 @@ TDD steps:
      rebuild
    Same shape as `overlay_host.rs:1264-1310`.
 
-#### Unit 2-C — `quick-ui::slider` drag-loop completeness (B-9)
+#### Unit 2-C — `quick-ui::slider` drag-loop completeness (B-9) — ✅
 
 File: `/var/home/quinten/Development/quickdesktop/quick-ui/src/widget/slider.rs`
 
@@ -492,7 +498,7 @@ TDD steps:
      entry compute the value from `last_cursor.x` immediately
      (track jump).
 
-#### Unit 2-D — `quick-ui::window_group` and `quick-ui::group_row` parallel-vec invariants (anchor #2 hardening + B-5)
+#### Unit 2-D — `quick-ui::window_group` and `quick-ui::group_row` parallel-vec invariants (anchor #2 hardening + B-5) — ✅
 
 File: `window_group.rs`, `group_row.rs`
 
@@ -513,9 +519,9 @@ TDD steps:
      `debug_assert_eq!(self.node_ids.len(), self.groups.len() + prune.len()_pre_loop)`
      OR remove the corresponding `node_ids` slots in lockstep.
 
-### Wave 3 — P1 / cosmetic + reconciliation (parallel-safe)
+### Wave 3 — P1 / cosmetic + reconciliation (parallel-safe) — ✅ all landed
 
-#### Unit 3-A — `quick-shell::overlay_host` palette + WS-settings alpha (#5)
+#### Unit 3-A — `quick-shell::overlay_host` palette + WS-settings alpha (#5) — ✅
 
 File: `overlay_host.rs`
 
@@ -531,7 +537,7 @@ TDD steps:
    - Leave `MODAL_SURFACE_ALPHA` at 0.70 (concept-correct) but
      ensure the scrim alpha bump above kills the bleed-through.
 
-#### Unit 3-B — `quick-shell::sidebar_wheel_disc` separate `drag_from` from hover-anchor (B-3)
+#### Unit 3-B — `quick-shell::sidebar_wheel_disc` separate `drag_from` from hover-anchor (B-3) — ✅
 
 File: `sidebar_wheel_disc.rs`
 
@@ -547,7 +553,7 @@ TDD steps:
    `drag_from` for "rotate-while-pressed" and `hover_anchor` for
    "remember last hover for next press".
 
-#### Unit 3-C — `quick-shell::state` shared peer-count helper (B-10)
+#### Unit 3-C — `quick-shell::state` shared peer-count helper (B-10) — ✅
 
 File: `state.rs` (new pub fn) + `topbar_chrome.rs` + `sidebar_wheel_chrome.rs`
 
@@ -572,7 +578,7 @@ TDD steps:
    count loop has to be reshaped slightly — non-active workspaces
    keep their own per-ws filtered count (no fallback).
 
-#### Unit 3-D — `quick-shell::topbar_chrome` right-cluster separation polish (#3)
+#### Unit 3-D — `quick-shell::topbar_chrome` right-cluster separation polish (#3) — ✅
 
 File: `topbar_chrome.rs`
 
