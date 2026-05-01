@@ -458,6 +458,72 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Per-tick wire-up that mirrors any per-frame `WindowGroup::maximized`
+    /// flips into the persisted [`crate::shell::state::WorkspaceTree`].
+    ///
+    /// Walks the captured [`GroupRow`] pointers, drains every group's
+    /// [`UiWindowGroup::take_pending_maximize_change`] one-shot, and writes
+    /// the new boolean into the matching `WindowGroup::maximized` slot of
+    /// the persisted tree. Without this hook the on-screen flip — driven
+    /// by the tab-bar Maximize2 glyph or the floating restore / close-while-
+    /// maximized chrome — would live only on the widget instance and reset
+    /// to the pre-toggle value on the next shell restart (audit task #105;
+    /// the widget already toggled in-memory before this commit, this is the
+    /// missing writeback).
+    ///
+    /// Idempotent and cheap: groups with no pending change are skipped, and
+    /// the chrome borrow is only taken when at least one flip needs writing.
+    /// Called from [`Widget::update`] alongside the active-group reconciler
+    /// so the persisted state catches up with the widget tree every frame.
+    fn harvest_pending_maximize_changes(&mut self) {
+        if self.group_row_ptrs.is_empty() {
+            return;
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        // Snapshot first so we drop the mutable widget borrow before
+        // taking the chrome borrow. Each entry is `(group_id, new_value)`;
+        // strip_id is unused here because group ids are tree-unique, but
+        // we keep it in the tuple for symmetry with the active-group
+        // reconciler and to make a future per-strip writeback trivial.
+        let mut changes: Vec<(StripId, GroupId, bool)> = Vec::new();
+        for (&strip_id, &ptr) in &self.group_row_ptrs {
+            // SAFETY: see field doc on `group_row_ptrs` — pointer was
+            // captured from a `Box<GroupRow>` owned through the content
+            // tree, the host outlives the content, and `&mut self` here
+            // ensures no other reconcile path is aliasing.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            for g in row.groups.iter_mut() {
+                if let Some(new_value) = g.take_pending_maximize_change() {
+                    changes.push((strip_id, g.id, new_value));
+                }
+            }
+        }
+        if changes.is_empty() {
+            return;
+        }
+        let mut st = chrome.borrow_mut();
+        for (_strip_id, group_id, new_value) in changes {
+            // Walk the tree to find the group by id — group ids are
+            // unique across the whole tree, so a flat scan is correct.
+            // The shell currently keeps trees small (single-digit groups
+            // per strip in practice), so this is an O(g) write that runs
+            // only on frames where a click actually flipped maximize.
+            for ws in st.tree.workspaces.iter_mut() {
+                for strip in ws.strips.iter_mut() {
+                    if let Some(g) = strip
+                        .window_groups
+                        .iter_mut()
+                        .find(|g| g.id == group_id)
+                    {
+                        g.maximized = new_value;
+                    }
+                }
+            }
+        }
+    }
+
     /// Test-only escape hatch: lend out a mutable reference to the
     /// [`UiWindowGroup`] at `(strip_id, group_idx)`. Lets integration
     /// tests drive the close fade through public widget APIs (e.g.
@@ -485,6 +551,15 @@ impl ShellOverlayHost {
     #[cfg(any(test, debug_assertions))]
     pub fn tick_active_group_reconcile_for_tests(&mut self) {
         self.reconcile_active_group_off_closing();
+    }
+
+    /// Test-only one-shot harvest: lets integration tests invoke the
+    /// per-frame maximize-change writeback from outside `update` without
+    /// spinning up a full `App` render loop. Mirrors what
+    /// [`Widget::update`] runs each frame.
+    #[cfg(any(test, debug_assertions))]
+    pub fn tick_pending_maximize_harvest_for_tests(&mut self) {
+        self.harvest_pending_maximize_changes();
     }
 
     /// Read-only accessor for the cached "+ Add workspace" tile rect.
@@ -909,6 +984,12 @@ impl Widget for ShellOverlayHost {
         // to run after `content.update` so any close fade started by the
         // current frame's events is observable in the harvest below.
         self.reconcile_active_group_off_closing();
+        // Mirror any in-frame `WindowGroup::maximized` flips into the
+        // persisted `WorkspaceTree`. Drains the per-group take-pattern
+        // accessor; runs after `content.update` for the same reason as
+        // the close-reconciler above (clicks observed this frame must
+        // be visible to the harvest). Audit task #105.
+        self.harvest_pending_maximize_changes();
         a || b || c
     }
 
@@ -5473,6 +5554,204 @@ mod tests {
              opaque surface would defeat the page-on-page affordance \
              (got {})",
             MODAL_SURFACE_ALPHA
+        );
+    }
+}
+
+#[cfg(test)]
+mod maximize_harvest_tests {
+    //! Unit coverage for the per-frame `WindowGroup::maximized` writeback
+    //! (audit task #105).
+    //!
+    //! The integration test in `tests/maximize_persist_wireup_test.rs`
+    //! drives the full click pipeline; this in-crate sibling exercises
+    //! the harvest in isolation by priming the widget's
+    //! `pending_maximize_change` slot through the public test escape
+    //! and asserting `tick_pending_maximize_harvest_for_tests` mirrors
+    //! the new value into the persisted `WorkspaceTree`. Two complementary
+    //! pins: a no-op tick must leave the persisted state alone (so the
+    //! harvest doesn't clobber a `with_maximized(true)` boot), and a
+    //! pending change must be written through.
+    use super::*;
+    use crate::shell::build_nirios_overlay_host_with_chrome;
+    use crate::shell::state::{
+        AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
+        WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree,
+    };
+    use std::collections::HashMap as StdHashMap;
+
+    fn one_group_tree(maximized: bool) -> (WorkspaceTree, StripId, GroupId) {
+        let ws_id = WorkspaceId::new();
+        let strip_id = StripId::new();
+        let group_id: GroupId = 7777;
+        let tab_id: u64 = 0xa1;
+        let strip = Strip {
+            id: strip_id,
+            name: "Solo".into(),
+            window_groups: vec![StateGroup {
+                id: group_id,
+                tabs: vec![Tab {
+                    id: tab_id,
+                    title: "Solo".into(),
+                    tile: TileContent::Stub {
+                        kind: AppKind::Other("Test".into()),
+                        label: "solo".into(),
+                    },
+                }],
+                active_tab: tab_id,
+                width: StateWidth::Normal,
+                maximized,
+            }],
+        };
+        let ws = Workspace {
+            id: ws_id,
+            name: "Test".into(),
+            strips: vec![strip],
+            roles: vec![],
+            workspace_files: vec![],
+            collaborators: vec![],
+        };
+        let mut active_strip = StdHashMap::new();
+        active_strip.insert(ws_id, strip_id);
+        let mut active_group = StdHashMap::new();
+        active_group.insert(strip_id, group_id);
+        let tree = WorkspaceTree {
+            workspaces: vec![ws],
+            active: ws_id,
+            active_strip,
+            active_group,
+            collaborators: vec![],
+        };
+        (tree, strip_id, group_id)
+    }
+
+    /// Priming `pending_maximize_change = Some(true)` on the live widget
+    /// and ticking the harvest must mirror the new value into the
+    /// persisted `WorkspaceTree`. Without the harvest hook the persisted
+    /// state stays at `false` regardless of how often the user clicks
+    /// the maximize glyph (the regression #105 closes).
+    #[test]
+    fn harvest_writes_pending_maximize_change_through_to_tree() {
+        let (tree, strip_id, group_id) = one_group_tree(false);
+        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+
+        // Drive the widget side: flip `maximized` directly + arm the
+        // pending-change slot the same way the production drain block
+        // does. Avoids a synthetic taffy pump for this in-crate unit
+        // test — the integration test has the full click coverage.
+        {
+            let g = host
+                .group_at_for_tests(strip_id, 0)
+                .expect("strip-0 group-0 widget");
+            assert_eq!(g.id, group_id);
+            assert!(!g.maximized, "seed mirrors persisted state");
+            g.maximized = true;
+            // `publish_maximize_intent_for_tests` would re-toggle via
+            // the production drain — here we want the explicit value
+            // mirrored into the harvest slot directly.
+            // Same as the production click flow's writeback line.
+            // We can't poke `pending_maximize_change` from outside the
+            // crate, so go through the publish + drain path instead.
+            g.publish_maximize_intent_for_tests();
+            // The drain runs inside `handle_event`. Skip the layout
+            // setup by setting `maximized` back to false and letting
+            // the publish flip it back to true through `take_max`.
+            g.maximized = false;
+        }
+
+        // Drive a no-op cursor-move so the drain block runs and arms
+        // `pending_maximize_change`. We use the public Widget API.
+        use std::collections::HashMap;
+        use taffy::{NodeId, Style, TaffyTree, AvailableSpace, Size};
+        use vello::kurbo::Point;
+        use winit::dpi::PhysicalPosition;
+        use winit::event::{Modifiers, WindowEvent};
+        let g = host
+            .group_at_for_tests(strip_id, 0)
+            .expect("strip-0 group-0 widget");
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(Style::default(), &[group_node])
+            .unwrap();
+        let map_for_measure = node_map.clone();
+        let mut tr = quick_ui::text_render::TextRenderer::new();
+        let _ = taffy.compute_layout_with_measure(
+            root,
+            Size {
+                width: AvailableSpace::Definite(800.0),
+                height: AvailableSpace::Definite(600.0),
+            },
+            |known, available, node_id, _, _| {
+                if let Some(&ptr) = map_for_measure.get(&node_id) {
+                    unsafe { (*ptr).measure(known, available, &mut tr) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        );
+        g.apply_layout(&taffy, group_node, Point::ZERO);
+        let mut state = automerge::AutoCommit::new();
+        let root_id = automerge::ROOT;
+        let mut handled = false;
+        let mut focus_target: Option<NodeId> = None;
+        let moved = WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: PhysicalPosition::new(9000.0, 9000.0),
+        };
+        g.handle_event(
+            &moved,
+            1.0,
+            &Modifiers::default(),
+            &mut state,
+            &root_id,
+            &mut handled,
+            &mut focus_target,
+            group_node,
+            &taffy,
+        );
+        assert!(g.maximized, "drain must flip maximized true");
+
+        // Pre-harvest: persisted state still un-maximized.
+        {
+            let st = chrome.borrow();
+            assert!(
+                !st.tree.workspaces[0].strips[0].window_groups[0].maximized,
+                "persisted state lags widget until harvest runs",
+            );
+        }
+
+        host.tick_pending_maximize_harvest_for_tests();
+
+        // Post-harvest: persisted state matches widget.
+        {
+            let st = chrome.borrow();
+            assert!(
+                st.tree.workspaces[0].strips[0].window_groups[0].maximized,
+                "harvest writes pending change through to persisted state",
+            );
+        }
+    }
+
+    /// A tick with no pending change must not overwrite a persisted
+    /// `maximized = true` with the widget's default. Pins that the
+    /// harvest is gated on `take_pending_maximize_change` returning
+    /// `Some(_)`, not on the widget's current `.maximized` value
+    /// (which would be wrong: a freshly-built widget with
+    /// `with_maximized(true)` and no click has nothing to report).
+    #[test]
+    fn harvest_no_op_tick_leaves_persisted_state_alone() {
+        let (tree, _strip_id, _group_id) = one_group_tree(true);
+        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+
+        host.tick_pending_maximize_harvest_for_tests();
+
+        let st = chrome.borrow();
+        assert!(
+            st.tree.workspaces[0].strips[0].window_groups[0].maximized,
+            "no-op harvest must not overwrite persisted true with widget default",
         );
     }
 }
