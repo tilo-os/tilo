@@ -906,7 +906,7 @@ impl Widget for TopBarChrome {
                 quick_ui::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
         }
-        rx -= tray_w + tokens.spacing.s3 as f64;
+        rx -= tray_w + tokens.spacing.s4 as f64; // s4 = 16, ≥ 8 px after avatar radius
 
         // Snapshot the rightmost x of the stack before drawing so we can
         // populate `avatar_stack_rect` once we know how many circles we
@@ -1220,5 +1220,73 @@ mod tests {
         // `concept_parity_spec::topbar_system_monitor_sparkline_is_\
         // emerald_500_not_indigo`.
         assert_eq!(fill, Color::rgba8(0x10, 0xb9, 0x81, 0x4d));
+    }
+
+    /// Audit #3 / Wave 3 unit 3-D: the rightmost avatar must sit ≥ 8 px
+    /// to the left of the tray pill so the two clusters read as separate
+    /// affordances. Pre-fix the spacer was `s3 = 12 px` measured from
+    /// avatar centre, leaving roughly 3 px to the pill edge after the
+    /// 9 px avatar disc radius. Bumping to `s4 = 16 px` recovers the
+    /// breathing room.
+    #[test]
+    fn avatar_stack_has_breathing_room_to_tray_pill() {
+        // Workspace seeded with one explicit collaborator (other than the
+        // local user) so `collaborator_initials` is non-empty and the
+        // avatar disc is actually painted.
+        let mut tree = WorkspaceTree {
+            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+            active: WorkspaceId::from(0),
+            active_strip: Default::default(),
+            active_group: Default::default(),
+            collaborators: vec![crate::shell::state::Collaborator::new("alice", "Alice")],
+        };
+        tree.active = tree.workspaces[0].id;
+
+        let mut bar = TopBarChrome::from_tree(&tree);
+        let theme = Theme::default();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = bar.build_layout(&mut taffy, &theme, &mut node_map);
+        let vp = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(1600.0),
+                        height: Dimension::length(40.0),
+                    },
+                    ..Default::default()
+                },
+                &[node],
+            )
+            .unwrap();
+        taffy
+            .compute_layout_with_measure(
+                vp,
+                Size {
+                    width: taffy::AvailableSpace::Definite(1600.0),
+                    height: taffy::AvailableSpace::Definite(40.0),
+                },
+                |_, _, _, _, _| taffy::Size::ZERO,
+            )
+            .unwrap();
+        bar.apply_layout(&taffy, node, Point::ORIGIN);
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+
+        let avatar = bar.avatar_stack_rect;
+        let tray = bar.tray_pill_rect();
+        assert!(
+            avatar.width() > 0.0,
+            "test seeded one collaborator but avatar_stack_rect is empty",
+        );
+        let gap = tray.x0 - avatar.x1;
+        assert!(
+            gap >= 8.0,
+            "avatar→tray gap must be ≥ 8 px (got {gap:.2}); avatar.x1={}, tray.x0={}",
+            avatar.x1,
+            tray.x0,
+        );
     }
 }
