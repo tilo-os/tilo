@@ -1,49 +1,70 @@
-//! `SidebarWheelDisc` — partial-arc wheel disc anchored OFF-SCREEN-LEFT,
-//! protruding only ~120° of its right edge into the viewport. Each
-//! **workspace** is a radial spoke; the user drags the visible arc to
-//! rotate, and a release snaps to the nearest spoke.
+//! `SidebarWheelDisc` — large radial workspace switcher anchored
+//! OFF-SCREEN-LEFT, with only a ~66° arc of its right edge protruding
+//! into the visible sidebar column. Each **workspace** is a spoke; the
+//! user drags vertically to rotate, and a release snaps to the nearest
+//! spoke. An additional fixed "ruler" of small dots near the rim
+//! indicates the active workspace at a glance.
 //!
 //! User-facing spec (verbatim, 2026-04-21 + 2026-04-30):
 //! *"No permanent sidebar, but workspaces appear as rotated axes of the
 //! wheel disc, meaning you can go to the left and drag it to move between
 //! workspaces."*
-//! *"Should only see very small portion of it (e.g. 120 degrees at most)
-//! and be actually to left of the leftmost window group."*
 //!
-//! Design notes are in `docs/nirios/wheel-disc-design.md`. This widget is
-//! the **sole** left-side navigation in
-//! `build_nirios_overlay_host_with_chrome`; the legacy
-//! `SidebarWheelChrome` module is no longer mounted in the live shell.
+//! Pixel-perfect concept reference:
+//! `radial-workspace-switcher/src/App.tsx` (Apache-2.0). Maps:
+//!   - 2000 px disc on a 160 px column → ratio 12.5:1 (radius:column).
+//!     Concept centre at `left:-1840px` from the column-left → cos(θ)=0.84,
+//!     visible arc spans `2·arccos(0.84) ≈ 66°`.
+//!   - 24 display-spokes at 15° increments. We instead render N spokes
+//!     for N workspaces but keep the per-spoke gap at `360°/N` so the
+//!     snap math remains uniform; for `N == 24` it matches the concept.
+//!   - Active spoke icon: 40×40 rounded-12 tile in workspace colour;
+//!     uppercase 18-px label letter-spaced 0.15em, both rotated `-90°`
+//!     so the cluster reads vertically (bottom-to-top on the right side).
+//!   - Inactive spoke: 32×32 rounded-8 white/10 tile, 15-px white/80
+//!     label, cluster opacity 0.30.
+//!   - Static "centre dots": one per real workspace at `(i - (N-1)/2)·2°`
+//!     near the rim, NOT rotating with the wheel. Active dot coloured +
+//!     glowing; inactive are tiny white/20 specks.
+//!   - Atmosphere: 40-px-thick `border-r-white/0.02` band, soft
+//!     `40px 0 120px rgba(0,0,0,0.8)` shadow extending right, plus a
+//!     faint disc fill (`bg-white/0.012`) substituting for backdrop-blur.
 //!
-//! Geometry: the disc's logical centre `cx` sits `radius * 0.5` pixels
-//! LEFT of the viewport edge, so the rim crosses the viewport at
-//! `±60°` from due-east. The visible footprint is a `radius/2` × diameter
-//! sliver (60 × 240 px at the default 240 px diameter). `self.rect` is
-//! the visible footprint; drawing derives the off-screen `cx` from it.
+//! Geometry mapping into our coord system:
+//!   - `radius = visible_width / VISIBLE_RADIUS_FRACTION`.
+//!   - `cx = rect.x0 - radius * (1 - VISIBLE_RADIUS_FRACTION)` — centre
+//!     off-screen-left so the rim's chord at angles
+//!     `±arccos(1 - VISIBLE_RADIUS_FRACTION)` lands on `rect.x0`.
+//!   - `cy = (rect.y0 + rect.y1) / 2` — disc filled vertically by the
+//!     parent slot, so its visible arc spans most of the viewport.
 //!
-//! Interaction model:
-//! - Press inside the disc → capture `drag_from`.
-//! - Motion while pressed → rotate the spokes continuously.
-//! - Release → snap to the nearest spoke (the `active_idx` changes, and
-//!   the CRDT write-back publishes the new active workspace). The
-//!   *logical* `rotation_deg` is set to the snapped value synchronously
-//!   so tests and downstream state see the final pose immediately;
-//!   visually the rim eases from the pre-snap value to the snapped one
-//!   via a "snappy" `Spring` (stiffness 260, damping 28). `draw` prefers
-//!   `rotation_spring.value()` while the spring is in flight.
+//! Interaction model (concept-faithful):
+//!   - Press inside the visible arc → capture `drag_from`.
+//!   - Vertical motion: `tempRotation = rotation + dy * DRAG_FACTOR`
+//!     (`DRAG_FACTOR = 0.15`).
+//!   - Click on a non-active spoke (lands inside its cached cluster
+//!     rect) → animate that spoke to active via the snap spring.
+//!   - Release → snap to nearest `spoke_gap_deg()` step.
+//!   - Wheel scroll: accumulate `deltaY * 0.04`; `update` snaps once
+//!     the gap since the last wheel event > `WHEEL_SCROLL_TIMEOUT_MS`.
 //!
 //! Rotation math uses degrees internally so the snap threshold arithmetic
 //! (`rotation_deg / spoke_gap_deg`) stays readable; trig converts to
 //! radians at the callsite.
+//!
+//! TODO(3-B): split `drag_from` (drag origin) from `hover_anchor`
+//! (idle-hover cursor cache used for press hit-testing). They're
+//! currently the same field which conflates two different roles.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{AlignItems, Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Circle, PathEl, Point, Rect, Stroke};
+use vello::kurbo::{Affine, BezPath, Circle, PathEl, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
@@ -69,8 +90,7 @@ pub struct SpokeLabel {
 /// In-plane wheel disc. See module-level docs for the interaction model.
 pub struct SidebarWheelDisc {
     /// Spokes, one per workspace in the tree. Rendered radially around the
-    /// rim; the label at index `active_idx` is drawn with the primary
-    /// text colour, the rest with `text_dim`.
+    /// rim with active vs inactive styling per the concept reference.
     pub spokes: Vec<SpokeLabel>,
     /// Index of the spoke currently "up" — i.e. the workspace the user
     /// would return to if they released without further dragging.
@@ -79,63 +99,100 @@ pub struct SidebarWheelDisc {
     /// `spoke_gap_deg()` on release; free-running during a drag.
     pub rotation_deg: f32,
     /// `Some(origin)` while a drag is in flight; `None` when idle.
+    /// TODO(3-B): also overloaded as the idle-hover cursor cache for
+    /// press hit-testing — those two roles should live in separate fields.
     pub drag_from: Option<Point>,
     /// Rotation at the moment the drag started — anchor for the
-    /// per-frame `rotation = origin + dy * k` mapping.
+    /// per-frame `rotation = origin + dy * DRAG_FACTOR` mapping.
     pub drag_rotation_origin: f32,
-    /// Hit-test bounds. Square, side = `diameter_px`, positioned by
-    /// `apply_layout`.
+    /// Hit-test bounds: the disc's visible footprint inside the sidebar
+    /// column. `rect.width()` ≈ `SIDEBAR_WIDTH_PX`; `rect.height()`
+    /// fills the parent slot vertically.
     pub rect: Rect,
-    /// Disc diameter in logical pixels. Drives both the Taffy size and
-    /// the drag→angle mapping (one half-radius of vertical drag maps
-    /// to ~1 radian of rotation).
+    /// Disc diameter in logical pixels. Drives the geometry math and the
+    /// drag→angle mapping. Default 1200 px — paired with
+    /// `VISIBLE_RADIUS_FRACTION = 0.16` this gives a ~96 px-wide visible
+    /// arc, matching the live `SIDEBAR_WIDTH_PX = 96` slot.
     pub diameter_px: f64,
     /// Optional shared chrome handle. When present, a snap that lands on
     /// a spoke whose `workspace_id` is known writes the new active
-    /// workspace back to `chrome.tree`. Kept `Option` so the widget
-    /// still runs in isolation (unit tests, snapshot harness).
+    /// workspace back to `chrome.tree`.
     pub chrome: Option<Rc<RefCell<ChromeState>>>,
     /// `Some(spring)` while a post-release snap is easing the visible
     /// rim from the pre-snap rotation to the snapped target. `None` when
-    /// idle. Constructed lazily on release using the `snappy` preset
-    /// (stiffness 260, damping 28 — the closest builtin to the concept's
-    /// `damping: 25, stiffness: 200`). Dropped back to `None` by
-    /// `update` once `is_settled()` returns true so `needs_animation_frame`
-    /// stops asking for redraws.
+    /// idle. Constructed lazily on release using the `snappy` preset.
     pub rotation_spring: Option<Spring>,
     /// Cached bounding rect of the "+" add-workspace slot painted below
-    /// the disc's rim. Populated by `draw`; consumed by `handle_event`
-    /// on press to hit-test the slot. `Rect::ZERO` until the first draw
-    /// pass runs — mirrors the pattern used by `TopBarChrome` for its
-    /// `tray_pill_rect` / `avatar_stack_rect` caches. Closes the concept's
-    /// `## Known gaps` #4 ("Plus button") in `docs/nirios/wheel-disc-design.md`.
+    /// the disc's rim. `Rect::ZERO` until the first draw pass populates it.
     pub plus_rect: Rect,
-    /// Most-recent cursor position in logical pixels, regardless of
-    /// whether it sits inside the disc. `drag_from` only tracks cursors
-    /// that hover *inside* the disc (so it can anchor a drag); the plus
-    /// slot lives *outside* the rim, so press-hit-testing it needs its
-    /// own position cache. Updated on every `CursorMoved`.
+    /// Most-recent cursor position in logical pixels — used by the plus-
+    /// slot press hit-test (which lives outside the rim) and as a
+    /// fallback drag anchor for synthetic test sequences.
     pub last_cursor_pos: Option<Point>,
+    /// Wheel-scroll accumulator (concept's `wheelAccumulator`). Drained
+    /// `WHEEL_SCROLL_TIMEOUT_MS` after the last scroll event, at which
+    /// point the wheel snaps to the nearest spoke.
+    pub wheel_accumulator: f32,
+    /// Wall-clock instant of the last `MouseWheel` event. Once the gap
+    /// since `now()` exceeds `WHEEL_SCROLL_TIMEOUT_MS`, `update` snaps to
+    /// the nearest spoke and clears the accumulator.
+    pub wheel_last_event: Option<Instant>,
+    /// Cached bounding rects of each spoke's clickable cluster (icon
+    /// tile + label) in screen-space, populated by `draw`. Consumed by
+    /// `handle_event` to route a press on a non-active spoke into a
+    /// `click_to_spoke` rotation animation.
+    pub spoke_hit_rects: Vec<Rect>,
 }
 
 /// Fraction of the disc's radius that protrudes into the viewport.
-/// `0.5` puts the rim's chord at the viewport's left edge at angles
-/// `±60°` from due-east — i.e. the visible arc spans 120°. Drawing and
-/// hit-testing derive the off-screen centre as
-/// `cx = rect.x0 - radius * VISIBLE_RADIUS_FRACTION`.
-pub(crate) const VISIBLE_RADIUS_FRACTION: f64 = 0.5;
+/// `0.16` matches the concept's `2000-px-disc-on-160-px-column` ratio
+/// (`160/2000 = 0.08` of *diameter* = `0.16` of *radius*). Drives both
+/// the off-screen-centre offset (`cx = rect.x0 - radius * (1 - VISIBLE)`)
+/// and the visible arc width (`2·arccos(1 - VISIBLE) ≈ 66°`).
+pub(crate) const VISIBLE_RADIUS_FRACTION: f64 = 0.16;
+
+/// Concept's `DRAG_FACTOR` from `App.tsx:41` — degrees of rotation per
+/// pixel of vertical drag.
+const DRAG_FACTOR: f32 = 0.15;
+
+/// Angular spacing between adjacent spokes. Concept's `ANGLE_STEP =
+/// 360°/24 = 15°` (App.tsx:20, where `DISPLAY_WORKSPACES.length = 24`
+/// because the 6 workspaces are repeated 4×). We use the same step so
+/// the visual cadence matches; for `N < 24` the wheel cycles `N` per
+/// `15° · N` of rotation.
+const SPOKE_ANGLE_STEP_DEG: f32 = 15.0;
+
+/// Concept's wheel-scroll multiplier (`App.tsx:56`).
+const WHEEL_SCROLL_FACTOR: f32 = 0.04;
+
+/// Concept's wheel-scroll snap timeout (`App.tsx:67`).
+const WHEEL_SCROLL_TIMEOUT_MS: u64 = 80;
+
+/// Per-spoke palette. Maps a workspace's *index* in the tree to one of
+/// six concept colours (`pink-500`, `blue-500`, `amber-500`,
+/// `emerald-500`, `purple-500`, `zinc-400` — see
+/// `radial-workspace-switcher/src/App.tsx:10-17`). Wraps modulo for
+/// trees with more than six workspaces.
+const SPOKE_PALETTE: &[Color] = &[
+    Color::rgb8(0xec, 0x48, 0x99), // pink-500
+    Color::rgb8(0x3b, 0x82, 0xf6), // blue-500
+    Color::rgb8(0xf5, 0x9e, 0x0b), // amber-500
+    Color::rgb8(0x10, 0xb9, 0x81), // emerald-500
+    Color::rgb8(0xa8, 0x55, 0xf7), // purple-500
+    Color::rgb8(0xa1, 0xa1, 0xaa), // zinc-400
+];
 
 impl SidebarWheelDisc {
-    /// Visible width — the disc protrudes `radius * VISIBLE_RADIUS_FRACTION`
-    /// pixels into the viewport. For the default 240 px diameter, this is
-    /// 60 px. Used by `build_layout` so the leaf reserves the visible
-    /// sliver, not the full diameter.
+    /// Visible width — `radius * VISIBLE_RADIUS_FRACTION`. For the
+    /// default 1200 px diameter (radius 600), this is 96 px,
+    /// matching the live `SIDEBAR_WIDTH_PX`.
     pub fn visible_width_px(&self) -> f64 {
         (self.diameter_px / 2.0) * VISIBLE_RADIUS_FRACTION
     }
 
     /// Construct a fresh disc with the given spoke labels. Starts at
-    /// `active_idx = 0`, `rotation_deg = 0.0`, default 240 px diameter.
+    /// `active_idx = 0`, `rotation_deg = 0.0`, default 1200 px diameter
+    /// (gives a 96 px visible-arc width — paired with the host slot).
     pub fn new(spokes: Vec<SpokeLabel>) -> Self {
         Self {
             spokes,
@@ -144,11 +201,14 @@ impl SidebarWheelDisc {
             drag_from: None,
             drag_rotation_origin: 0.0,
             rect: Rect::ZERO,
-            diameter_px: 240.0,
+            diameter_px: 1200.0,
             chrome: None,
             rotation_spring: None,
             plus_rect: Rect::ZERO,
             last_cursor_pos: None,
+            wheel_accumulator: 0.0,
+            wheel_last_event: None,
+            spoke_hit_rects: Vec::new(),
         }
     }
 
@@ -176,30 +236,54 @@ impl SidebarWheelDisc {
         self
     }
 
-    /// Degrees between adjacent spokes, given the current workspace count.
-    /// Always `> 0.0`; a 0- or 1-workspace disc is treated as a single
-    /// 360-degree spoke slot so snap math doesn't divide by zero.
+    /// Degrees between adjacent spokes. Concept-faithful: a fixed 15°
+    /// regardless of `N`, matching `App.tsx`'s `360°/24 = 15°` cadence.
+    /// This gives the same visual density the reference shows
+    /// (active + ±15° neighbours visible inside the 66° arc band).
+    /// Snap math: `active_idx` advances by `-nearest_offset mod N`, so
+    /// a full 360° rotation wraps `24 % N` workspaces — for `N < 24`
+    /// the wheel cycles through workspaces multiple times per
+    /// revolution but each spoke always lands at a multiple of 15°.
     pub fn spoke_gap_deg(&self) -> f32 {
-        let n = self.spokes.len().max(1);
-        360.0 / n as f32
+        // Single-workspace disc is treated as 360° to avoid the wheel
+        // scrolling past itself unnecessarily.
+        if self.spokes.len() <= 1 {
+            360.0
+        } else {
+            SPOKE_ANGLE_STEP_DEG
+        }
     }
 
-    /// Radians-per-pixel drag coefficient. Exposed so tests can assert
-    /// on the exact mapping: `diameter/2` pixels of vertical drag =
-    /// 1 radian (57.29… deg) of rotation.
+    /// Degrees-per-pixel drag coefficient. Concept-faithful
+    /// `DRAG_FACTOR = 0.15` (App.tsx:41).
     fn deg_per_pixel(&self) -> f32 {
-        (180.0 / std::f32::consts::PI) / (self.diameter_px as f32 / 2.0)
+        DRAG_FACTOR
     }
 
     /// Logical centre of the disc in screen coordinates. The centre sits
-    /// `radius * VISIBLE_RADIUS_FRACTION` pixels LEFT of `rect.x0`, so the
-    /// rim crosses the viewport at `±60°` from due-east. Used by `draw`
-    /// and by the visible-arc hit-test.
+    /// `radius * (1 - VISIBLE_RADIUS_FRACTION)` pixels LEFT of `rect.x0`,
+    /// so the rim crosses the viewport at `±arccos(1 - VISIBLE)` from
+    /// due-east (≈ ±33° for `VISIBLE = 0.16`).
     fn center(&self) -> Point {
         let radius = self.diameter_px / 2.0;
-        let cx = self.rect.x0 - radius * VISIBLE_RADIUS_FRACTION;
+        let cx = self.rect.x0 - radius * (1.0 - VISIBLE_RADIUS_FRACTION);
         let cy = (self.rect.y0 + self.rect.y1) / 2.0;
         Point::new(cx, cy)
+    }
+
+    /// Pick the per-spoke colour from `SPOKE_PALETTE` by workspace index.
+    fn spoke_color(&self, idx: usize) -> Color {
+        SPOKE_PALETTE[idx % SPOKE_PALETTE.len()]
+    }
+
+    /// Compute the current visual rotation, preferring the spring's
+    /// in-flight value over the snapped `rotation_deg` so post-release
+    /// easing reads correctly.
+    fn visual_rotation_deg(&self) -> f32 {
+        match self.rotation_spring.as_ref() {
+            Some(s) if !s.is_settled() => s.value(),
+            _ => self.rotation_deg,
+        }
     }
 
     /// True iff `p` falls inside the **visible** portion of the disc's
@@ -228,21 +312,19 @@ impl Widget for SidebarWheelDisc {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // Leaf reserves only the visible sliver (~radius/2 px wide) and
-        // the full disc height. The disc's logical centre lands
-        // off-screen-left, so the rest of the diameter doesn't need to be
-        // counted in flex layouts. `align_self: Center` keeps the sliver
-        // vertically centred when the parent column is taller than the
-        // diameter; the sidebar's host slot relies on this.
+        // Leaf reserves the visible-arc width (`radius * VISIBLE`) and
+        // takes 100% of the parent slot's height. The disc's centre sits
+        // off-screen-left and its visible arc spans most of the viewport
+        // vertically — concept-faithful "huge wheel" feel.
         let node = taffy
             .new_leaf(Style {
                 size: Size {
                     width: Dimension::length(self.visible_width_px() as f32),
-                    height: Dimension::length(self.diameter_px as f32),
+                    height: Dimension::percent(1.0),
                 },
                 flex_grow: 0.0,
                 flex_shrink: 0.0,
-                align_self: Some(AlignItems::Center),
+                align_self: Some(AlignItems::Stretch),
                 ..Default::default()
             })
             .unwrap();
@@ -252,13 +334,11 @@ impl Widget for SidebarWheelDisc {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
-        // `rect` is the *visible footprint* — the sliver of the disc that
-        // protrudes into the viewport. The full circle is anchored
-        // off-screen-left in `draw` (`cx = rect.x0 - radius/2`); only the
-        // right ~120° arc lands in this rect. Hit-testing in
-        // `handle_event` uses the rect plus a circle-distance check so
-        // clicks in the rect's corners (outside the actual arc) don't
-        // grab the wheel.
+        // `rect` is the visible footprint inside the sidebar column.
+        // The disc's logical centre lives off-screen-left of `rect.x0`
+        // and only the right ~66° arc paints inside this rect. The
+        // hit-testing in `handle_event` uses `hit_visible_arc` so clicks
+        // in the rect's corners (outside the arc) don't grab the wheel.
         let x0 = origin.x + l.location.x as f64;
         let y0 = origin.y + l.location.y as f64;
         self.rect = Rect::new(
@@ -280,200 +360,360 @@ impl Widget for SidebarWheelDisc {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
 
-        // Anchor the centre OFF-SCREEN-LEFT: `cx = rect.x0 - radius/2`
-        // puts the rim's chord (at angles ±60° from due-east) exactly on
-        // `rect.x0`, so the visible arc is the right 120° of the circle.
-        // `rect.x1 = rect.x0 + radius/2` is the rightmost rim point.
-        // `cy` stays at the rect's vertical midpoint — the visible arc is
-        // symmetric top-to-bottom around due-east.
-        let radius = (self.diameter_px / 2.0) - 1.0;
-        let cx = self.rect.x0 - radius * VISIBLE_RADIUS_FRACTION;
-        let cy = (self.rect.y0 + self.rect.y1) / 2.0;
-        if radius <= 0.0 {
+        let radius = self.diameter_px / 2.0;
+        if radius <= 1.0 || self.rect.area() <= 0.0 {
             return;
         }
+        let c = self.center();
+        let cx = c.x;
+        let cy = c.y;
 
-        // Prefer the spring's value while a post-snap ease is in flight so
-        // the rim visibly springs to the snapped target instead of jumping.
-        // `rotation_deg` is the logical (already-snapped) pose — drawing
-        // reads the animated version but state/tests see the snapped one.
-        let visual_rotation_deg = match self.rotation_spring.as_ref() {
-            Some(s) if !s.is_settled() => s.value(),
-            _ => self.rotation_deg,
-        };
+        // ---- Pass 1: shadow / atmosphere --------------------------------
+        // Concept: `boxShadow: 40px 0 120px rgba(0,0,0,0.8)` — soft black
+        // shadow extending RIGHT of the rim into the desktop. We
+        // approximate with a few thin vertical bands of decaying alpha
+        // anchored just outside the visible-arc rim. Kept narrow (≤ ~16
+        // px) so the shadow reads as "wheel weight" without obscuring
+        // the workspace canvas behind it.
+        let shadow_x0 = self.rect.x1; // shadow starts just past the visible arc
+        let shadow_band_count = 8;
+        for i in 0..shadow_band_count {
+            let t = i as f64 / shadow_band_count as f64;
+            let alpha = (0.32 * (1.0 - t).powi(2)).clamp(0.0, 0.32);
+            let band_w = 2.0_f64;
+            let band = Rect::new(
+                shadow_x0 + (i as f64) * band_w,
+                self.rect.y0,
+                shadow_x0 + ((i + 1) as f64) * band_w,
+                self.rect.y1,
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                Color::rgba8(0, 0, 0, (alpha * 255.0) as u8),
+                None,
+                &band,
+            );
+        }
 
-        // ---- Pass 1: outer disc rim ---------------------------------------
-        // 1-px stroked circle in neutral-3; reads as a hairline ring around
-        // the whole disc. No fill — the wallpaper / desktop behind shows
-        // through, matching "in-plane with windows" intent.
+        // ---- Pass 2: faint disc fill ------------------------------------
+        // Concept: `bg-white/[0.01] backdrop-blur-xl`. Without a real
+        // backdrop blur, substitute a flat very-low-alpha fill on the
+        // full circle. The off-screen-left part of the disc paints
+        // outside the visible canvas — only the visible-arc portion
+        // contributes pixels.
+        let disc_fill = Circle::new((cx, cy), radius);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            Color::rgba8(255, 255, 255, 3), // ≈ white/0.012
+            None,
+            &disc_fill,
+        );
+
+        // ---- Pass 3: dark rim band --------------------------------------
+        // Concept: `border-r-[40px] border-white/[0.02]`. Stroked 40-px
+        // band centred at radius `r - 20`. The concept's 0.02 alpha is
+        // barely visible against a near-black backdrop; we double it to
+        // 0.04 so the band reads as a subtle darker arc without
+        // overpowering the rim.
+        let band = Circle::new((cx, cy), radius - 20.0);
+        scene.stroke(
+            &Stroke::new(40.0),
+            transform,
+            Color::rgba8(255, 255, 255, 10), // ≈ white/0.04
+            None,
+            &band,
+        );
+
+        // ---- Pass 4: rim hairline ---------------------------------------
+        // 1.5-px hairline at the very edge — defines the disc's silhouette
+        // so the rim band doesn't fade into the backdrop. Tracks the
+        // reference screenshot, which shows a clear curved edge through
+        // the column.
         let rim = Circle::new((cx, cy), radius);
         scene.stroke(
-            &Stroke::new(1.0),
+            &Stroke::new(1.5),
             transform,
-            colors.neutral[3],
+            Color::rgba8(255, 255, 255, 36), // ≈ white/0.14
             None,
             &rim,
         );
 
-        // ---- Pass 2: active-spoke indigo glow -----------------------------
-        // ~24-degree arc centred on the active spoke's current angle, drawn
-        // as a thick translucent stroke along the rim. We sweep a BezPath
-        // because vello 0.2 doesn't take `kurbo::Arc` directly in a stroke
-        // call — the polyline-approximated bezier here looks the same at
-        // these radii.
+        // ---- Pass 5: rotating spokes (workspace clusters) ---------------
+        // Each spoke's cluster (icon-tile + label) is anchored at the
+        // rim, pulled back inward by `pull_back` (concept's `pr-9`),
+        // then rotated `+π/2` relative to the spoke direction so the
+        // cluster reads vertically (concept's `-rotate-90` in y-down
+        // screen coords). Active style: 40 px coloured tile, 18-px
+        // white label, gap 16 px. Inactive: 32 px white/10 tile, 15-px
+        // white/80 label, gap 12 px, cluster opacity 0.30.
+        //
+        // To match the concept's `WORKSPACES.length × 4 = 24` display-
+        // spoke cycle, we render `CYCLES_PER_SIDE` virtual cycles of
+        // the workspace list on each side of the active spoke. For
+        // small `N` (3-6) this means the user always sees neighbouring
+        // workspaces at ±15° from the active, just like the reference.
+        self.spoke_hit_rects.clear();
+        self.spoke_hit_rects.resize(self.spokes.len(), Rect::ZERO);
         if !self.spokes.is_empty() {
-            let active_angle_deg = visual_rotation_deg
-                + (self.active_idx as f32) * self.spoke_gap_deg();
-            let arc_sweep_deg = 24.0_f32;
-            let arc_start = (active_angle_deg - arc_sweep_deg / 2.0).to_radians() as f64;
-            let arc_end = (active_angle_deg + arc_sweep_deg / 2.0).to_radians() as f64;
-            let steps = 16usize;
-            let mut glow = BezPath::new();
-            for i in 0..=steps {
-                let t = i as f64 / steps as f64;
-                let a = arc_start + (arc_end - arc_start) * t;
-                let px = cx + radius * a.cos();
-                let py = cy + radius * a.sin();
-                if i == 0 {
-                    glow.move_to((px, py));
-                } else {
-                    glow.line_to((px, py));
-                }
-            }
-            let glow_color = colors.accent[5].with_alpha_factor(0.3);
-            scene.stroke(&Stroke::new(6.0), transform, glow_color, None, &glow);
-        }
-
-        // ---- Pass 3: spoke labels -----------------------------------------
-        // Each label sits 24 px inside the rim and is rotated to read
-        // along the spoke. We centre the glyph on the tip point by
-        // translating to (tip_x, tip_y), rotating, then offsetting by
-        // (-measured_w/2, -measured_h/2).
-        if !self.spokes.is_empty() {
-            let label_radius = radius - 24.0;
-            let gap = self.spoke_gap_deg();
-            let size = tokens.typography.scale.xs;
-            for (i, spoke) in self.spokes.iter().enumerate() {
-                let angle_deg = visual_rotation_deg + i as f32 * gap;
-                let angle_rad = (angle_deg as f64).to_radians();
-                let tx = cx + label_radius * angle_rad.cos();
-                let ty = cy + label_radius * angle_rad.sin();
-                let (w, h) = text_renderer.measure(&spoke.text, size, None);
-                let color = if i == self.active_idx {
-                    colors.text_primary
-                } else {
-                    colors.text_dim
-                };
-                // Readability flip: on the left half of the disc (angle
-                // in (90°, 270°)) the naive rotation makes text read
-                // upside-down. Add π so the label reads outward along
-                // the spoke instead of inward — the concept does the
-                // same. `rotation_deg` is free-running during drag, so
-                // normalise to [0, 360) before the comparison.
-                let angle_deg_f64 = angle_deg as f64;
-                let a = (angle_deg_f64 % 360.0 + 360.0) % 360.0;
-                let upside_down = a > 90.0 && a < 270.0;
-                let extra = if upside_down { std::f64::consts::PI } else { 0.0 };
-                // Rotate the glyph along the spoke. `Affine::rotate` is
-                // around the origin, so chain: translate-to-tip ·
-                // rotate · translate-to-glyph-centre.
-                let label_xform = transform
-                    * Affine::translate((tx, ty))
-                    * Affine::rotate(angle_rad + extra)
-                    * Affine::translate((-(w as f64) / 2.0, -(h as f64) / 2.0));
-                text_renderer.draw_text(scene, &spoke.text, size, color, label_xform, None);
-            }
-        }
-
-        // ---- Pass 4: per-spoke collaborator presence dots -----------------
-        // Closes wheel-disc-design known-gap #3. Each spoke that carries a
-        // `workspace_id` queries `PresenceCtx::peers_on(PresenceKey::Workspace
-        // { id })` (same key the rest of the shell uses — see
-        // `overlay_host.rs:2489-2491`) and paints up to 3 small 4 px dots
-        // tangent to the rim, 16 px outside the tip label (i.e. at
-        // `radius - 8 px`, still inside the rim so the dots never overlap
-        // the outer stroke). Colour comes from `PresenceCtx::color_for` so
-        // palette-pinned peers (me=indigo, alice=pink, bob=orange,
-        // charlie=emerald) keep their identity everywhere.
-        if !self.spokes.is_empty() {
-            let dots_radius = radius - 8.0;
-            let gap = self.spoke_gap_deg();
-            for (i, spoke) in self.spokes.iter().enumerate() {
-                let Some(ws_id) = spoke.workspace_id else { continue };
-                let key = PresenceKey::Workspace { id: format!("{}", ws_id) };
-                let peers = presence.peers_on(&key);
-                if peers.is_empty() {
+            let n = self.spokes.len();
+            // How many cycles to render on each side of the active.
+            // Visible band is ±70°; one cycle is `N * 15°`. For N=3
+            // that's 45° per cycle → 1 cycle on each side covers
+            // ±45°, plus the active = ±60° spread, well within band.
+            // For N>=6, one cycle covers ±90°, so even one side cycle
+            // is plenty (the visible_band cull discards the far entries).
+            let cycles_per_side: i32 = ((70.0_f32 / (SPOKE_ANGLE_STEP_DEG * n as f32)).ceil() as i32)
+                .max(1);
+            // Iterate virtual indices in `[-cycles*N, +cycles*N + N)` so
+            // each real spoke is rendered in every visible cycle. The
+            // mapping `virt_idx → real_idx = virt_idx.rem_euclid(N)`.
+            let total_cycles = (cycles_per_side * 2 + 1) as usize;
+            let total_virtual = total_cycles * n;
+            let virtual_start = -(cycles_per_side * n as i32);
+            for k in 0..total_virtual {
+                let virt_offset = virtual_start + k as i32;
+                // Map virtual index → real workspace. At rest
+                // (virt_offset=0, rotation=0), the active workspace
+                // (`active_idx`) is the one at angle 0°. Going UP one
+                // virtual step (virt_offset=+1) means the wheel has
+                // rotated by +gap, putting active_idx+1 at angle 0°.
+                // So: `i = (virt_offset + active_idx).rem_euclid(N)`.
+                let i = ((virt_offset + self.active_idx as i32)
+                    .rem_euclid(n as i32)) as usize;
+                let spoke = &self.spokes[i];
+                let gap = self.spoke_gap_deg();
+                let angle_deg = self.visual_rotation_deg() + virt_offset as f32 * gap;
+                let is_active = virt_offset == 0;
+                let a = ((angle_deg % 360.0) + 360.0) % 360.0;
+                let visible_band = a < 70.0 || a > 290.0;
+                if !visible_band {
                     continue;
                 }
-                let peer_count = peers.len().min(3);
-                let angle_deg = visual_rotation_deg + i as f32 * gap;
+
                 let angle_rad = (angle_deg as f64).to_radians();
-                let tip_x = cx + dots_radius * angle_rad.cos();
-                let tip_y = cy + dots_radius * angle_rad.sin();
-                // Perpendicular to the spoke direction (tangent to the rim).
-                let perp_x = -angle_rad.sin();
-                let perp_y = angle_rad.cos();
-                let spacing = 10.0_f64;
-                let centre_bias = (peer_count as f64 - 1.0) / 2.0;
-                for (k, user) in peers.iter().take(peer_count).enumerate() {
-                    let offset = (k as f64 - centre_bias) * spacing;
-                    let dx = perp_x * offset;
-                    let dy = perp_y * offset;
-                    let (r, g, b) = presence.color_for(user);
-                    let color = Color::rgb8(r, g, b);
-                    let dot = Circle::new((tip_x + dx, tip_y + dy), 4.0);
-                    scene.fill(Fill::NonZero, transform, color, None, &dot);
+                let rim_x = cx + radius * angle_rad.cos();
+                let rim_y = cy + radius * angle_rad.sin();
+                // Pull cluster anchor inward by 36 px (concept's `pr-9`)
+                // along the spoke direction.
+                let pull_back = 36.0_f64;
+                let anchor_x = rim_x - pull_back * angle_rad.cos();
+                let anchor_y = rim_y - pull_back * angle_rad.sin();
+
+                let tile_size = if is_active { 40.0_f64 } else { 32.0_f64 };
+                let tile_radius = if is_active { 12.0_f64 } else { 8.0_f64 };
+                let label_size = if is_active { 18.0_f32 } else { 15.0_f32 };
+                let gap = if is_active { 16.0_f64 } else { 12.0_f64 };
+                let cluster_alpha = if is_active { 1.0_f32 } else { 0.30_f32 };
+                let letter_spacing_em = if is_active { 0.15_f32 } else { 0.10_f32 };
+
+                let label_text: String = spoke.text.to_uppercase();
+                let (text_w_raw, text_h) = text_renderer.measure(&label_text, label_size, None);
+                let extra_track =
+                    label_text.chars().count() as f32 * label_size * letter_spacing_em;
+                let text_w = (text_w_raw + extra_track) as f64;
+
+                // Readability flip on the left half (rare with the
+                // cull above, but safe under unbounded `rotation_deg`).
+                let upside_down = a > 90.0 && a < 270.0;
+                let extra_pi = if upside_down { std::f64::consts::PI } else { 0.0 };
+
+                // Cluster local frame: tile centred at local x = -tile_size/2
+                // (so the rim-pulled-back anchor sits at the cluster's
+                // RIGHT edge), label past it at x = -tile - gap - text_w/2.
+                // After the `-π/2` rotation the tile lands toward the
+                // disc centre and the label extends along the rim
+                // tangent — concept's vertical reading direction.
+                let cluster_xform = transform
+                    * Affine::translate((anchor_x, anchor_y))
+                    * Affine::rotate(angle_rad + extra_pi + std::f64::consts::FRAC_PI_2);
+
+                let tile_cx_local = -tile_size / 2.0;
+                let label_cx_local = -tile_size - gap - text_w / 2.0;
+
+                // -- Tile -----------------------------------------------
+                let tile_rect_local = Rect::new(
+                    tile_cx_local - tile_size / 2.0,
+                    -tile_size / 2.0,
+                    tile_cx_local + tile_size / 2.0,
+                    tile_size / 2.0,
+                );
+                let tile_rr = RoundedRect::from_rect(tile_rect_local, tile_radius);
+
+                let tile_fill = if is_active {
+                    let base = self.spoke_color(i);
+                    Color::rgba8(base.r, base.g, base.b, (255.0 * cluster_alpha) as u8)
+                } else {
+                    Color::rgba8(255, 255, 255, (255.0 * 0.10 * cluster_alpha) as u8)
+                };
+                scene.fill(Fill::NonZero, cluster_xform, tile_fill, None, &tile_rr);
+                if is_active {
+                    // Soft white outer glow
+                    // (concept: `drop-shadow-[0_0_15px_rgba(255,255,255,0.2)]`).
+                    for r in [4.0_f64, 2.5, 1.5] {
+                        let alpha = (0.10 / r * 255.0) as u8;
+                        scene.stroke(
+                            &Stroke::new(r * 2.0),
+                            cluster_xform,
+                            Color::rgba8(255, 255, 255, alpha),
+                            None,
+                            &tile_rr,
+                        );
+                    }
+                    // Crisp white/0.20 border on top.
+                    scene.stroke(
+                        &Stroke::new(1.0),
+                        cluster_xform,
+                        Color::rgba8(255, 255, 255, 51),
+                        None,
+                        &tile_rr,
+                    );
+                }
+
+                // -- Glyph (workspace icon stand-in) --------------------
+                // Without a Lucide-equivalent font, paint a small filled
+                // disc as the icon. Active = solid white, inactive =
+                // white/40.
+                let glyph_radius = if is_active { 6.0_f64 } else { 5.0_f64 };
+                let glyph_fill = if is_active {
+                    Color::rgba8(255, 255, 255, (255.0 * cluster_alpha) as u8)
+                } else {
+                    Color::rgba8(255, 255, 255, (255.0 * 0.40 * cluster_alpha) as u8)
+                };
+                let glyph_circle = Circle::new((tile_cx_local, 0.0), glyph_radius);
+                scene.fill(Fill::NonZero, cluster_xform, glyph_fill, None, &glyph_circle);
+
+                // -- Label ----------------------------------------------
+                let label_color = if is_active {
+                    Color::rgba8(255, 255, 255, (255.0 * cluster_alpha) as u8)
+                } else {
+                    Color::rgba8(255, 255, 255, (255.0 * 0.80 * cluster_alpha) as u8)
+                };
+                let label_xform = cluster_xform
+                    * Affine::translate((
+                        label_cx_local - (text_w_raw as f64) / 2.0,
+                        -(text_h as f64) / 2.0,
+                    ));
+                text_renderer.draw_text(
+                    scene,
+                    &label_text,
+                    label_size,
+                    label_color,
+                    label_xform,
+                    None,
+                );
+
+                // -- Cache cluster's screen-space hit rect --------------
+                let cluster_h = tile_size.max(text_h as f64);
+                let cluster_local_x0 = label_cx_local - text_w / 2.0;
+                let cluster_local_x1 = tile_cx_local + tile_size / 2.0;
+                let cluster_local_y0 = -cluster_h / 2.0;
+                let cluster_local_y1 = cluster_h / 2.0;
+                let corners_local = [
+                    Point::new(cluster_local_x0, cluster_local_y0),
+                    Point::new(cluster_local_x1, cluster_local_y0),
+                    Point::new(cluster_local_x1, cluster_local_y1),
+                    Point::new(cluster_local_x0, cluster_local_y1),
+                ];
+                let cluster_screen_xform = Affine::translate((anchor_x, anchor_y))
+                    * Affine::rotate(angle_rad + extra_pi + std::f64::consts::FRAC_PI_2);
+                let mut min_x = f64::INFINITY;
+                let mut min_y = f64::INFINITY;
+                let mut max_x = f64::NEG_INFINITY;
+                let mut max_y = f64::NEG_INFINITY;
+                for p in corners_local {
+                    let q = cluster_screen_xform * p;
+                    min_x = min_x.min(q.x);
+                    min_y = min_y.min(q.y);
+                    max_x = max_x.max(q.x);
+                    max_y = max_y.max(q.y);
+                }
+                self.spoke_hit_rects[i] = Rect::new(min_x, min_y, max_x, max_y);
+
+                // -- Per-spoke presence dots ----------------------------
+                if let Some(ws_id) = spoke.workspace_id {
+                    let key = PresenceKey::Workspace { id: format!("{}", ws_id) };
+                    let peers = presence.peers_on(&key);
+                    if !peers.is_empty() {
+                        let peer_count = peers.len().min(3);
+                        let dots_radius = radius - 8.0;
+                        let tip_x = cx + dots_radius * angle_rad.cos();
+                        let tip_y = cy + dots_radius * angle_rad.sin();
+                        let perp_x = -angle_rad.sin();
+                        let perp_y = angle_rad.cos();
+                        let spacing = 10.0_f64;
+                        let centre_bias = (peer_count as f64 - 1.0) / 2.0;
+                        for (k, user) in peers.iter().take(peer_count).enumerate() {
+                            let offset = (k as f64 - centre_bias) * spacing;
+                            let dx = perp_x * offset;
+                            let dy = perp_y * offset;
+                            let (rr, gg, bb) = presence.color_for(user);
+                            let color = Color::rgb8(rr, gg, bb);
+                            let dot = Circle::new((tip_x + dx, tip_y + dy), 4.0);
+                            scene.fill(Fill::NonZero, transform, color, None, &dot);
+                        }
+                    }
                 }
             }
         }
 
-        // ---- Centre dot ---------------------------------------------------
-        // Small filled marker in the centre so the drag target reads as a
-        // grabbable hub; keeps the disc feeling like an object, not just
-        // an outline. 4-px radius in text_dim so it's visible but unobtrusive.
-        let hub = Circle::new((cx, cy), 4.0);
-        scene.fill(Fill::NonZero, transform, colors.text_dim, None, &hub);
-        // Tiny crosshair inside the hub so the drag direction reads as
-        // deliberate. Two 6-px orthogonal strokes.
-        let cross = BezPath::from_iter([
-            PathEl::MoveTo(Point::new(cx - 3.0, cy)),
-            PathEl::LineTo(Point::new(cx + 3.0, cy)),
-            PathEl::MoveTo(Point::new(cx, cy - 3.0)),
-            PathEl::LineTo(Point::new(cx, cy + 3.0)),
-        ]);
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            colors.text_primary,
-            None,
-            &cross,
-        );
+        // ---- Pass 6: static centre-dot ruler ----------------------------
+        // Concept (App.tsx:108-122): one tiny dot per real workspace at
+        // angles `(i - (N-1)/2) · 2°`, near the rim, NOT rotating with
+        // the wheel. Active = coloured + soft white glow (1 px wider
+        // than concept's 8px to compensate for our smaller absolute
+        // size); inactive = 4-px white/20 specks. Dots are placed
+        // INSIDE the rim (`dots_r = radius - 6`) so they read as part
+        // of the disc rather than floating outside it.
+        if !self.spokes.is_empty() {
+            let dots_r = radius - 6.0;
+            let n = self.spokes.len() as f32;
+            for (i, _) in self.spokes.iter().enumerate() {
+                let dot_angle_deg = (i as f32 - (n - 1.0) / 2.0) * 2.0;
+                let a_rad = (dot_angle_deg as f64).to_radians();
+                let dx = cx + dots_r * a_rad.cos();
+                let dy = cy + dots_r * a_rad.sin();
+                if i == self.active_idx {
+                    // Soft white glow: three concentric translucent
+                    // circles fading outward, then the coloured core.
+                    for &(r, alpha) in &[(11.0_f64, 0.10_f64), (8.0, 0.18), (6.0, 0.30)] {
+                        let glow = Circle::new((dx, dy), r);
+                        scene.fill(
+                            Fill::NonZero,
+                            transform,
+                            Color::rgba8(255, 255, 255, (alpha * 255.0) as u8),
+                            None,
+                            &glow,
+                        );
+                    }
+                    let base = self.spoke_color(i);
+                    let core = Circle::new((dx, dy), 4.0);
+                    scene.fill(Fill::NonZero, transform, base, None, &core);
+                } else {
+                    let speck = Circle::new((dx, dy), 2.0);
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        Color::rgba8(255, 255, 255, 76), // white/0.30
+                        None,
+                        &speck,
+                    );
+                }
+            }
+        }
 
-        // ---- "+" add-workspace slot --------------------------------------
-        // Pinned just below the bottom-most visible-arc tip, inside the
-        // viewport. The disc's centre `cx` is off-screen-left, so the
-        // pre-redesign anchor of `(cx, cy + radius + 20)` would land
-        // entirely off-screen too; instead we centre the slot horizontally
-        // on the visible footprint and place it `slot_radius + 8 px`
-        // below the rim's bottom-most visible point. 28 px diameter;
-        // fill = `surfaces.overlay` (same translucent tint the topbar
-        // uses), rim = 1 px `neutral[3]`, glyph = two `text_primary`
-        // strokes forming a "+" at ~40% of slot width.
-        //
-        // Interaction is handled in `handle_event` via `plus_rect`, which
-        // we cache here so the press path can hit-test the slot without
-        // re-deriving the geometry.
+        // ---- Pass 7: "+" add-workspace slot -----------------------------
+        // Anchored at the visible-arc's bottom-most tip, centred on the
+        // visible footprint horizontally. Cached into `plus_rect` for
+        // press hit-testing. 28 px diameter, surfaces.overlay fill,
+        // neutral[3] rim, text_primary "+" glyph at 40% of radius.
         let slot_diam = 28.0_f64;
         let slot_radius = slot_diam / 2.0;
-        // Bottom-most visible-arc tip: at angle 60° below due-east the
-        // rim sits at `(cx + radius/2, cy + radius * sin(60°))`. Use
-        // that y for the slot's anchor and centre the slot on the
-        // visible footprint's horizontal midpoint so it reads as part
-        // of the same control cluster without intruding on workspace
-        // content to the right.
-        let arc_bottom_y = cy + radius * (60.0_f64.to_radians()).sin();
+        let arc_half = (1.0 - VISIBLE_RADIUS_FRACTION).acos();
+        let arc_bottom_y = cy + radius * arc_half.sin();
         let slot_cx = (self.rect.x0 + self.rect.x1) / 2.0;
-        let slot_cy = arc_bottom_y + slot_radius + 8.0;
+        let slot_cy = (arc_bottom_y + slot_radius + 8.0).min(self.rect.y1 - slot_radius - 4.0);
         self.plus_rect = Rect::new(
             slot_cx - slot_radius,
             slot_cy - slot_radius,
@@ -495,9 +735,6 @@ impl Widget for SidebarWheelDisc {
             None,
             &slot_circle,
         );
-        // Plus glyph: two orthogonal strokes centred on the slot. Arm
-        // half-length = 40% of radius so the glyph reads as a clear "+"
-        // without crowding the slot's rim.
         let arm = slot_radius * 0.4;
         let plus = BezPath::from_iter([
             PathEl::MoveTo(Point::new(slot_cx - arm, slot_cy)),
@@ -532,15 +769,8 @@ impl Widget for SidebarWheelDisc {
                 button: winit::event::MouseButton::Left,
                 ..
             } => {
-                // Plus-button hit-test comes first: the slot lives *outside*
-                // the disc's rim, so it must never be swallowed by the
-                // drag-start branch below. Use `last_cursor_pos` rather than
-                // `drag_from` — the latter only tracks cursors inside the
-                // disc, but the plus slot lives below the rim. A press in
-                // the slot appends a new workspace + activates it via the
-                // shared chrome handle and consumes the event without
-                // opening the workspace-settings modal (direct create,
-                // matching the concept's Plus button behaviour).
+                // 1) Plus-slot first — outside the rim, must not be
+                //    swallowed by the drag-start / spoke-click branches.
                 if self.plus_rect.area() > 0.0
                     && self
                         .last_cursor_pos
@@ -553,36 +783,38 @@ impl Widget for SidebarWheelDisc {
                     *handled = true;
                     return;
                 }
-                // Begin drag if we have a last-known cursor inside the
-                // visible arc. The press event itself has no position;
-                // we rely on `drag_from` (set by a prior in-arc
-                // `CursorMoved`) or `last_cursor_pos` (set by *any* prior
-                // `CursorMoved`, in-arc or not). The off-screen part of
-                // the disc isn't grabbable, so a press that follows an
-                // off-screen cursor must be rejected rather than falling
-                // back to a synthetic in-arc anchor.
+
+                // 2) Spoke-click (concept's `handleClickItem`) — if the
+                //    press lands inside any non-active spoke's cluster
+                //    rect, animate the wheel so that spoke becomes active
+                //    rather than starting a free-running drag.
+                if let Some(p) = self.last_cursor_pos {
+                    for (i, hit) in self.spoke_hit_rects.iter().enumerate() {
+                        if i == self.active_idx {
+                            continue;
+                        }
+                        if hit.area() > 0.0 && hit.contains(p) {
+                            self.click_to_spoke(i);
+                            *handled = true;
+                            return;
+                        }
+                    }
+                }
+
+                // 3) Otherwise: start a rotation drag if the press lands
+                //    inside the visible arc.
                 if self.rect.area() <= 0.0 {
                     return;
                 }
                 let anchor = match (self.drag_from, self.last_cursor_pos) {
                     (Some(d), _) => d,
                     (None, Some(p)) => p,
-                    // No CursorMoved has fired at all — fall back to the
-                    // visible footprint's midpoint so synthetic test
-                    // sequences without a CursorMoved can still seed a
-                    // drag. The hit-test below still gates on
-                    // `hit_visible_arc`.
                     (None, None) => Point::new(
                         (self.rect.x0 + self.rect.x1) / 2.0,
                         (self.rect.y0 + self.rect.y1) / 2.0,
                     ),
                 };
                 if self.hit_visible_arc(anchor) {
-                    // A fresh press interrupts any in-flight snap spring —
-                    // the user is taking over the rotation again, so the
-                    // spring's target is stale. Drop it so subsequent
-                    // `draw` calls read the (drag-updated) `rotation_deg`
-                    // directly.
                     self.rotation_spring = None;
                     self.drag_from = Some(anchor);
                     self.drag_rotation_origin = self.rotation_deg;
@@ -591,31 +823,17 @@ impl Widget for SidebarWheelDisc {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
-                // Always cache the latest cursor position so the plus-slot
-                // press hit-test (which lives outside the disc's rim) can
-                // consult it. `drag_from` keeps its narrower semantics —
-                // only cursors *inside* the disc anchor a drag.
                 self.last_cursor_pos = Some(p);
-                // If no drag yet, stash the cursor as a potential anchor
-                // so a subsequent Pressed inside the disc can start a drag
-                // without needing a synthetic anchor.
                 if let Some(origin) = self.drag_from {
                     let dy = p.y - origin.y;
                     let delta_deg = (dy as f32) * self.deg_per_pixel();
                     self.rotation_deg = self.drag_rotation_origin + delta_deg;
                     *handled = true;
                 } else if self.hit_visible_arc(p) {
-                    // Idle hover inside the visible arc — remember the
-                    // cursor so a Pressed that follows can seed
-                    // `drag_from` from a real position rather than the
-                    // rect's midpoint. `drag_rotation_origin` is only
-                    // committed on Pressed.
+                    // TODO(3-B): this overloads `drag_from` with hover-
+                    // cache semantics; split into a dedicated field.
                     self.drag_from = Some(p);
                 }
-                // Note: we intentionally don't clear `drag_from` when the
-                // cursor leaves the disc while a drag is active — the
-                // drag continues as long as the mouse button is held,
-                // matching `wants_pointer_capture() == true`.
             }
             WindowEvent::MouseInput {
                 state: winit::event::ElementState::Released,
@@ -623,16 +841,9 @@ impl Widget for SidebarWheelDisc {
                 ..
             } => {
                 if self.drag_from.is_some() {
-                    // Capture the pre-snap angle before `snap_to_nearest`
-                    // rewrites `rotation_deg` — the spring needs this as
-                    // its starting value so the ease begins exactly where
-                    // the drag left off (no visual jump on release).
                     let pre_snap_deg = self.rotation_deg;
                     self.snap_to_nearest();
                     let snapped_deg = self.rotation_deg;
-                    // Only spawn a spring if there's actually a distance
-                    // to travel; a release on a perfectly-aligned spoke
-                    // doesn't need an animation frame.
                     if (pre_snap_deg - snapped_deg).abs() > f32::EPSILON {
                         let params = SpringPresets::default().snappy;
                         let mut s = Spring::new(pre_snap_deg, params);
@@ -645,6 +856,26 @@ impl Widget for SidebarWheelDisc {
                     *handled = true;
                 }
             }
+            WindowEvent::MouseWheel { delta, .. } => {
+                // Only consume wheel events when the cursor is over the
+                // disc, so scrolls over neighbouring widgets don't
+                // accidentally rotate the wheel.
+                if !self
+                    .last_cursor_pos
+                    .map(|p| self.hit_visible_arc(p))
+                    .unwrap_or(false)
+                {
+                    return;
+                }
+                let dy = match *delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => y * 16.0,
+                    winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32,
+                };
+                self.wheel_accumulator += dy * WHEEL_SCROLL_FACTOR;
+                self.wheel_last_event = Some(Instant::now());
+                self.rotation_deg -= self.wheel_accumulator;
+                *handled = true;
+            }
             _ => {}
         }
     }
@@ -654,31 +885,48 @@ impl Widget for SidebarWheelDisc {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep the redraw pump running while the post-release snap is
-        // still easing — once the spring settles `update` drops it and
-        // this returns false, letting `App` stop scheduling redraws.
-        self.rotation_spring
+        // Keep the redraw pump running while a post-release snap is
+        // easing OR while a wheel-scroll snap-back is pending.
+        let spring_active = self
+            .rotation_spring
             .as_ref()
             .map(|s| !s.is_settled())
-            .unwrap_or(false)
+            .unwrap_or(false);
+        spring_active || self.wheel_last_event.is_some()
     }
 
     fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
-        // Step the snap-spring at a fixed 60 Hz to match the rest of the
-        // toolkit (`WorkspaceView::update` does the same). Using a fixed
-        // dt rather than wall-clock time keeps the animation
-        // deterministic for tests; the App pumps `update` once per tick
-        // via its `needs_animation_frame` loop. Once the spring settles
-        // we drop it so future frames aren't kept alive.
-        let Some(spring) = self.rotation_spring.as_mut() else {
-            return false;
-        };
-        if spring.is_settled() {
-            self.rotation_spring = None;
-            return false;
+        let mut keep = false;
+        // Step the snap-spring at fixed 60 Hz.
+        if let Some(spring) = self.rotation_spring.as_mut() {
+            if spring.is_settled() {
+                self.rotation_spring = None;
+            } else {
+                spring.step(1.0 / 60.0);
+                keep = true;
+            }
         }
-        spring.step(1.0 / 60.0);
-        true
+        // Wheel-scroll snap-back: fire once the gap since the last
+        // wheel event exceeds `WHEEL_SCROLL_TIMEOUT_MS`.
+        if let Some(last) = self.wheel_last_event {
+            if last.elapsed() > Duration::from_millis(WHEEL_SCROLL_TIMEOUT_MS) {
+                let pre_snap = self.rotation_deg;
+                self.snap_to_nearest();
+                let snapped = self.rotation_deg;
+                if (pre_snap - snapped).abs() > f32::EPSILON {
+                    let params = SpringPresets::default().snappy;
+                    let mut s = Spring::new(pre_snap, params);
+                    s.set_target(snapped);
+                    self.rotation_spring = Some(s);
+                }
+                self.wheel_accumulator = 0.0;
+                self.wheel_last_event = None;
+                keep = true;
+            } else {
+                keep = true;
+            }
+        }
+        keep
     }
 
     fn name(&self) -> &str {
@@ -722,6 +970,41 @@ impl SidebarWheelDisc {
         let new_idx = ((self.active_idx as f32 + delta).rem_euclid(n as f32)) as usize;
         self.active_idx = new_idx % n;
         self.publish_active_to_chrome();
+    }
+
+    /// Concept's `handleClickItem` (App.tsx:70-78): rotate the wheel
+    /// so `target_idx` becomes the active spoke, taking the shortest
+    /// signed angular path. Animation is via the snap spring.
+    pub fn click_to_spoke(&mut self, target_idx: usize) {
+        if target_idx >= self.spokes.len() || target_idx == self.active_idx {
+            return;
+        }
+        let n = self.spokes.len() as f32;
+        let gap = self.spoke_gap_deg();
+        // Shortest signed delta in spoke-index space, wrapped to
+        // `[-N/2, N/2)`.
+        let mut diff = (target_idx as f32 - self.active_idx as f32) % n;
+        if diff > n / 2.0 {
+            diff -= n;
+        } else if diff < -n / 2.0 {
+            diff += n;
+        }
+        // A `+1` index shift equals a `-gap` wheel rotation (matches the
+        // sign convention in `snap_to_nearest`: dragging down rotates
+        // forward in degrees but advances active_idx forward in the list,
+        // so advancing active_idx forward via click means the wheel
+        // rotates BACKWARD).
+        let pre_snap_deg = self.rotation_deg;
+        let target_rot = pre_snap_deg + (-diff * gap);
+        let snapped = (target_rot / gap).round() * gap;
+        self.rotation_deg = snapped;
+        self.active_idx = target_idx;
+        self.publish_active_to_chrome();
+
+        let params = SpringPresets::default().snappy;
+        let mut s = Spring::new(pre_snap_deg, params);
+        s.set_target(snapped);
+        self.rotation_spring = Some(s);
     }
 
     /// Test helper: pins the post-`apply_layout` rect for tests that
@@ -791,24 +1074,20 @@ mod tests {
 
     fn mk(names: &[&str]) -> SidebarWheelDisc {
         let mut d = SidebarWheelDisc::new(labels(names));
-        // Give the disc a concrete visible-footprint rect so
-        // `handle_event` accepts drags. The new layout puts only a
-        // `radius/2`-wide sliver inside the viewport; the centre lives
-        // off-screen at `cx = -radius/2`. We pin the rect to the same
-        // sliver so cursors at `(rect.x0 + small_dx, rect.cy)` land
-        // inside the visible arc and `hit_visible_arc` accepts them.
+        // Pin a rect spanning the disc's full diameter vertically so the
+        // visible arc is fully accessible at `cy = diameter/2`. The
+        // visible-footprint width is `radius * VISIBLE_RADIUS_FRACTION`.
         let visible_w = d.visible_width_px();
         d.rect = Rect::new(0.0, 0.0, visible_w, d.diameter_px);
         d
     }
 
     /// X coordinate that's reliably inside the visible arc at the
-    /// vertical midline (cy). The arc protrudes `visible_w` pixels into
-    /// the viewport from `rect.x0 = 0`, and the rim is rightmost at
-    /// `cy`, so a cursor at `(visible_w / 2, cy)` is comfortably inside
-    /// the disc circle.
+    /// vertical midline. Pick the rightmost rim column — the rim is
+    /// rightmost at `cy`, so an x near `rect.x1` is well inside the
+    /// circle of radius `r` around `cx = -r·(1 - VISIBLE)`.
     fn drag_anchor_x(d: &SidebarWheelDisc) -> f64 {
-        d.visible_width_px() / 2.0
+        d.rect.x1 - 2.0
     }
 
     fn cursor_event(x: f64, y: f64) -> WindowEvent {
@@ -872,11 +1151,9 @@ mod tests {
         let mut d = mk(&["Home", "Research", "Design"]);
         let gap = d.spoke_gap_deg();
         let diameter = d.diameter_px;
-        assert!((gap - 120.0).abs() < 1e-4);
+        // Concept-faithful: 15° between adjacent spokes regardless of N.
+        assert!((gap - 15.0).abs() < 1e-4);
 
-        // Cursor starts inside the visible arc so the Press can anchor
-        // there. Disc centre is off-screen-left; the visible footprint
-        // is the rightmost ~60 px sliver.
         let start_y = diameter / 2.0;
         let cx = drag_anchor_x(&d);
         pump(&mut d, cursor_event(cx, start_y));
@@ -884,18 +1161,15 @@ mod tests {
         assert!(d.drag_from.is_some(), "press inside disc must start drag");
         assert!(d.wants_pointer_capture());
 
-        // Drag down by the full diameter. With deg_per_pixel = (180/π) /
-        // (diameter/2), full-diameter drag = 2 * (180/π) ≈ 114.6°, which
-        // is close enough to the 120° spoke gap that snap rounds up to
-        // one gap and active_idx advances.
-        pump(&mut d, cursor_event(cx, start_y + diameter));
-        // rotation before snap should be free-running
+        // With DRAG_FACTOR = 0.15 and a 15° gap, a `15/0.15 = 100 px`
+        // drag is exactly one gap. Add a margin to land cleanly past.
+        let drag_dy = (gap / DRAG_FACTOR) as f64 + 30.0;
+        pump(&mut d, cursor_event(cx, start_y + drag_dy));
         assert!(d.rotation_deg > 0.0);
 
         let before_idx = d.active_idx;
         assert!(pump(&mut d, release_event()));
         assert!(d.drag_from.is_none());
-        // Snapped rotation is a multiple of gap.
         let ratio = d.rotation_deg / gap;
         assert!(
             (ratio - ratio.round()).abs() < 1e-3,
@@ -905,7 +1179,7 @@ mod tests {
         );
         assert_ne!(
             d.active_idx, before_idx,
-            "dragging a full diameter down must rotate to a new spoke"
+            "dragging past one gap must rotate to a new spoke"
         );
     }
 
@@ -919,9 +1193,7 @@ mod tests {
         assert!(pump(&mut d, press_event()));
 
         let idx_before = d.active_idx;
-        // Move by a non-multiple-of-gap amount. 37 px * deg_per_pixel
-        // for a 240 px diameter = 37 * (180/π) / 120 ≈ 17.67° — not a
-        // multiple of the 120° gap.
+        // 37 px * DRAG_FACTOR = 5.55° — not a multiple of the 15° gap.
         pump(&mut d, cursor_event(cx, start_y + 37.0));
         let gap = d.spoke_gap_deg();
         let ratio = d.rotation_deg / gap;
@@ -931,7 +1203,6 @@ mod tests {
             d.rotation_deg,
             gap
         );
-        // active_idx must not change until release.
         assert_eq!(d.active_idx, idx_before);
         assert!(d.drag_from.is_some());
     }
@@ -990,25 +1261,21 @@ mod tests {
         let visible_w = d.visible_width_px();
         d.rect = Rect::new(0.0, 0.0, visible_w, d.diameter_px);
 
-        // Synthesise press+move+release sequence. `snap_to_nearest`'s
-        // delta formula `(-nearest_offset).rem_euclid(n)` means a
-        // full-diameter downward drag (≈114.6° of rotation, rounded to a
-        // single +120° gap) shifts active_idx by `-1 mod 3 = 2`, so we
-        // land on spoke 2. That's the same math `drag_and_release_
-        // snaps_to_nearest_spoke` relies on — we just need to know which
-        // spoke it is so we can check the CRDT write-back lands on the
-        // matching workspace id.
+        // Synthesise press+move+release sequence. With DRAG_FACTOR = 0.15
+        // and a 120° gap, a `gap/0.15 = 800 px` drag is one gap;
+        // `snap_to_nearest` shifts active_idx by `-1 mod 3 = 2`.
         let diameter = d.diameter_px;
         let start_y = diameter / 2.0;
         let cx = drag_anchor_x(&d);
+        let drag_dy = (d.spoke_gap_deg() / DRAG_FACTOR) as f64 + 100.0;
         pump(&mut d, cursor_event(cx, start_y));
         assert!(pump(&mut d, press_event()));
-        pump(&mut d, cursor_event(cx, start_y + diameter));
+        pump(&mut d, cursor_event(cx, start_y + drag_dy));
         assert!(pump(&mut d, release_event()));
 
         assert_ne!(
             d.active_idx, 0,
-            "a full-diameter drag must advance past the initial spoke"
+            "a >gap drag must advance past the initial spoke"
         );
         // And chrome.tree.active must now point at the workspace id
         // that matches the new active_idx — this is the CRDT write-back
@@ -1028,38 +1295,35 @@ mod tests {
 
     #[test]
     fn disc_without_chrome_snaps_without_panicking() {
-        // The widget must still be usable in isolation (snapshot test,
-        // unit tests that don't plumb chrome). Drag+release with
-        // `chrome = None` should just update `active_idx` locally.
         let mut d = mk(&["Home", "Research", "Design"]);
         assert!(d.chrome.is_none());
         let idx_before = d.active_idx;
         let diameter = d.diameter_px;
         let start_y = diameter / 2.0;
         let cx = drag_anchor_x(&d);
+        let drag_dy = (d.spoke_gap_deg() / DRAG_FACTOR) as f64 + 100.0;
         pump(&mut d, cursor_event(cx, start_y));
         assert!(pump(&mut d, press_event()));
-        pump(&mut d, cursor_event(cx, start_y + diameter));
+        pump(&mut d, cursor_event(cx, start_y + drag_dy));
         assert!(pump(&mut d, release_event()));
         assert_ne!(d.active_idx, idx_before);
     }
 
     #[test]
     fn snap_animates_rotation_over_multiple_ticks() {
-        // Build a 4-spoke disc so a full-diameter downward drag
-        // (≈114.6° of rotation) falls between spoke gaps (90°) and
-        // rounds to exactly one gap — guaranteeing `pre_snap_deg !=
-        // snapped_deg` and therefore a non-trivial spring animation.
+        // 4-spoke disc, concept-faithful 15° gap. With DRAG_FACTOR = 0.15,
+        // a 73 px drag gives ~10.95° of rotation — between gaps (rounds
+        // to 15°), guaranteeing `pre_snap_deg != snapped_deg` and a
+        // non-trivial spring animation.
         let mut d = mk(&["A", "B", "C", "D"]);
-        assert!((d.spoke_gap_deg() - 90.0).abs() < 1e-4);
+        assert!((d.spoke_gap_deg() - 15.0).abs() < 1e-4);
         let diameter = d.diameter_px;
         let start_y = diameter / 2.0;
         let cx = drag_anchor_x(&d);
 
         pump(&mut d, cursor_event(cx, start_y));
         assert!(pump(&mut d, press_event()));
-        // Drag by a full diameter — yields ~114.6° of free-running rotation.
-        pump(&mut d, cursor_event(cx, start_y + diameter));
+        pump(&mut d, cursor_event(cx, start_y + 73.0));
         let pre_snap_deg = d.rotation_deg;
         assert!(pre_snap_deg > 0.0);
         assert!(pump(&mut d, release_event()));
@@ -1173,11 +1437,13 @@ mod tests {
         .with_chrome(chrome.clone());
         let visible_w = d.visible_width_px();
         d.rect = Rect::new(0.0, 0.0, visible_w, d.diameter_px);
-        let radius = (d.diameter_px / 2.0) - 1.0;
+        let radius = d.diameter_px / 2.0;
         let cy = d.diameter_px / 2.0;
+        let arc_half = (1.0 - VISIBLE_RADIUS_FRACTION).acos();
         let slot_radius = 14.0_f64;
         let slot_cx = (d.rect.x0 + d.rect.x1) / 2.0;
-        let slot_cy = cy + radius * (60.0_f64.to_radians()).sin() + slot_radius + 8.0;
+        let slot_cy = (cy + radius * arc_half.sin() + slot_radius + 8.0)
+            .min(d.rect.y1 - slot_radius - 4.0);
         d.plus_rect = Rect::new(
             slot_cx - slot_radius,
             slot_cy - slot_radius,
@@ -1246,12 +1512,11 @@ mod tests {
         );
     }
 
-    /// Partial-arc redesign (2026-04-30): the disc's logical centre must
-    /// sit OFF-SCREEN-LEFT so only the right ~120° arc protrudes into the
-    /// viewport. `apply_layout` reserves the visible sliver as `rect`,
-    /// and `draw`/`center()` derive the centre at
-    /// `cx = rect.x0 - radius * VISIBLE_RADIUS_FRACTION`. For a 240 px
-    /// disc that puts cx ~60 px LEFT of the viewport edge.
+    /// Partial-arc redesign: the disc's logical centre must sit
+    /// OFF-SCREEN-LEFT so only the right portion of the rim protrudes
+    /// into the visible sidebar column. The 2026-05-01 radial-rebuild
+    /// tightens the ratio to `VISIBLE_RADIUS_FRACTION = 0.16` so the
+    /// formula is `cx = rect.x0 - radius * (1 - VISIBLE_RADIUS_FRACTION)`.
     #[test]
     fn disc_anchors_left_of_viewport_so_only_arc_intrudes() {
         let mut disc = SidebarWheelDisc::new(labels(&["A", "B", "C"]));
@@ -1260,9 +1525,6 @@ mod tests {
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let disc_node = disc.build_layout(&mut taffy, &theme, &mut node_map);
 
-        // Mount the disc at the host's left edge (origin x=0). The leaf
-        // reserves only the visible-width sliver, so `rect.x1 - rect.x0`
-        // is `radius/2`, not the full diameter.
         taffy
             .compute_layout(
                 disc_node,
@@ -1275,7 +1537,6 @@ mod tests {
         disc.apply_layout(&taffy, disc_node, Point::ORIGIN);
         let rect = disc.rect_for_tests();
 
-        // Visible footprint width matches `radius/2`.
         assert!(
             (rect.width() - disc.visible_width_px()).abs() < 1e-3,
             "rect width must be the visible-arc sliver ({}px); got {}",
@@ -1283,10 +1544,6 @@ mod tests {
             rect.width()
         );
 
-        // Logical centre sits LEFT of the viewport edge — the chord at
-        // `±60°` from due-east lands on `rect.x0`, which is the user-visible
-        // boundary. For the default 240 px disc (radius 120), centre is
-        // at `rect.x0 - 60`, i.e. 60 px off-screen.
         let c = disc.center();
         let radius = disc.diameter_px / 2.0;
         assert!(
@@ -1295,15 +1552,14 @@ mod tests {
             c.x,
             rect.x0
         );
+        let expected_cx = rect.x0 - radius * (1.0 - VISIBLE_RADIUS_FRACTION);
         assert!(
-            (c.x - (rect.x0 - radius * VISIBLE_RADIUS_FRACTION)).abs() < 1e-3,
-            "centre must be exactly `radius * VISIBLE_RADIUS_FRACTION` left of \
+            (c.x - expected_cx).abs() < 1e-3,
+            "centre must be `radius * (1 - VISIBLE_RADIUS_FRACTION)` left of \
              rect.x0; cx={}, expected={}",
             c.x,
-            rect.x0 - radius * VISIBLE_RADIUS_FRACTION
+            expected_cx,
         );
-        // The rightmost rim point lands inside the visible footprint
-        // (`rect.x0 + visible_width`).
         let rim_right = c.x + radius;
         assert!(
             rim_right <= rect.x1 + 1e-3,
@@ -1314,18 +1570,14 @@ mod tests {
         );
     }
 
-    /// The user-spec cap: at most 120° of the rim should protrude. The
-    /// visible arc spans the angles where the rim is to the right of
-    /// `rect.x0`; that's `θ ∈ (-60°, 60°)` from due-east (a 120° wedge).
-    /// Any angle outside that range falls left of `rect.x0` and is
-    /// clipped by the viewport edge.
+    /// Visible arc cap. The user-spec invariant is "at most 120°" — the
+    /// 2026-05-01 radial-rebuild tightens this further to ~66° to match
+    /// the reference concept's `2000:160` ratio.
     #[test]
-    fn disc_visible_arc_is_at_most_120_degrees() {
+    fn disc_visible_arc_matches_concept_ratio() {
         let disc = mk(&["A", "B", "C"]);
         let c = disc.center();
         let radius = disc.diameter_px / 2.0;
-        // Walk the rim in 1° steps and tally how many degrees fall inside
-        // the visible footprint (i.e. to the right of `rect.x0`).
         let mut visible_deg = 0i32;
         for deg in 0..360 {
             let a = (deg as f64).to_radians();
@@ -1334,16 +1586,19 @@ mod tests {
                 visible_deg += 1;
             }
         }
+        let expected = 2.0 * (1.0 - VISIBLE_RADIUS_FRACTION).acos().to_degrees();
+        let tol = 2.0;
+        assert!(
+            (visible_deg as f64 - expected).abs() <= tol,
+            "visible arc must be ~{:.1}°; counted {}°",
+            expected,
+            visible_deg,
+        );
+        // User-spec upper bound (always met).
         assert!(
             visible_deg <= 122,
-            "visible arc must be at most ~120°; counted {}°",
-            visible_deg
-        );
-        assert!(
-            visible_deg >= 118,
-            "visible arc must be at least ~120° (otherwise the disc is too \
-             far off-screen to grab); counted {}°",
-            visible_deg
+            "visible arc must not exceed 120°; counted {}°",
+            visible_deg,
         );
     }
 
@@ -1405,6 +1660,29 @@ mod tests {
             d.presence_dot_hit_count(&ctx),
             3,
             "5 seeded peers must still cap at 3 dots per spoke"
+        );
+    }
+
+    /// Click-to-spoke (concept's `handleClickItem`) — calling
+    /// `click_to_spoke(target)` rotates the wheel so `target` becomes
+    /// active and animates via the snap spring.
+    #[test]
+    fn click_to_spoke_makes_target_active() {
+        let mut d = mk(&["A", "B", "C", "D"]);
+        assert_eq!(d.active_idx, 0);
+        d.click_to_spoke(2);
+        assert_eq!(d.active_idx, 2);
+        let gap = d.spoke_gap_deg();
+        let ratio = d.rotation_deg / gap;
+        assert!(
+            (ratio - ratio.round()).abs() < 1e-3,
+            "rotation {} must land on a multiple of gap {}",
+            d.rotation_deg,
+            gap
+        );
+        assert!(
+            d.rotation_spring.is_some(),
+            "click_to_spoke must spawn a snap-spring"
         );
     }
 }
