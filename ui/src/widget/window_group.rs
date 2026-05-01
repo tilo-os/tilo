@@ -19,17 +19,23 @@ pub const RESIZE_HANDLE_PX: f64 = 6.0;
 
 /// Duration of the per-group fade-in played when a `WindowGroup` is
 /// newly spawned — e.g. via split-into-new-group from a cross-group
-/// drag release. Matches the concept's
-/// `initial={{ opacity: 0, scale: 0.95, y: 20 }}` →
-/// `animate={{ opacity: 1, scale: 1, y: 0 }}` on each `<motion.div>`
-/// window frame (`WindowFrame.tsx:201-205`). 320 ms is long enough for
-/// the motion to read as an "arrival" without delaying the user's next
-/// interaction on the new group.
-const SPAWN_ANIM_MS: u64 = 320;
-/// Vertical start offset for the spawn fade, in CSS-like px. Positive
-/// values mean the group starts below its target and settles up —
-/// mirrors the concept's `y: 20` initial.
-const SPAWN_ANIM_Y_OFFSET: f64 = 20.0;
+/// drag release. Mirrors the radial-workspace concept's
+/// `transition={{ delay: 0.2, duration: 0.5, ease: [0.22, 1, 0.36, 1] }}`
+/// (`radial-workspace-switcher/src/App.tsx:407`). 420 ms is long enough
+/// for the eased slide-in to read clearly to the user without delaying
+/// the next interaction on the new group — earlier 320 ms tunings made
+/// the spawn read as "instant" in shots-driver captures.
+const SPAWN_ANIM_MS: u64 = 420;
+/// Horizontal start offset for the spawn fade, in CSS-like px. Negative
+/// values mean the group starts to the left of its target and settles
+/// rightward — mirrors the concept's `x: -20` initial. Tuned to -16 so
+/// the slide reads as "arriving" without escaping the row's visible
+/// margin in shots-driver captures.
+const SPAWN_ANIM_X_OFFSET: f64 = -16.0;
+/// Initial scale for the spawn fade. The group ramps from this to 1.0
+/// over `SPAWN_ANIM_MS`. 0.92 is punchy enough for the user to register
+/// the arrival without making the new group feel like it's leaping in.
+const SPAWN_ANIM_INITIAL_SCALE: f64 = 0.92;
 /// Duration of the group-level close fade-out played when the last
 /// tab is closed out of a `WindowGroup`. Matches the tab-pill
 /// `CLOSE_FADE_MS` in `tabs.rs` so the group's own shrink chains
@@ -156,16 +162,35 @@ impl WindowGroup {
     }
     pub fn width(&self) -> WindowWidth { self.width }
 
-    /// Latch the concept-faithful spawn fade-in (opacity 0→1 with a
-    /// 20 px → 0 vertical settle over `SPAWN_ANIM_MS`). Callers that
-    /// create a brand-new `WindowGroup` — e.g. the split-into-new-group
-    /// path in `GroupRow` — invoke this immediately after construction
-    /// so the group reads as "arriving" rather than popping in opaque.
-    /// A subsequent call within the animation window restarts it, which
-    /// is acceptable (the group re-acquired focus; replay is the least
-    /// surprising behaviour).
+    /// Latch the concept-faithful spawn fade-in: opacity 0→1, scale
+    /// 0.92→1, and a -16 px → 0 horizontal settle over `SPAWN_ANIM_MS`,
+    /// eased with a cubic-out curve. Callers that create a brand-new
+    /// `WindowGroup` — e.g. the split-into-new-group path in `GroupRow`
+    /// — invoke this immediately after construction so the group reads
+    /// as "arriving" rather than popping in opaque. A subsequent call
+    /// within the animation window restarts it, which is acceptable
+    /// (the group re-acquired focus; replay is the least surprising
+    /// behaviour).
     pub fn start_spawn_animation(&mut self) {
         self.spawned_at = Some(Instant::now());
+    }
+
+    /// Eased 0..=1 progress through the spawn fade-in, or 1.0 when no
+    /// spawn animation is in flight. Exposed so headless tests can
+    /// assert on the curve's shape (initial near zero, midway near
+    /// half, terminal at one) without poking the draw path. The value
+    /// is the same `eased` factor `draw` uses to compute alpha, scale
+    /// and the x-offset, so it's the single source of truth for "how
+    /// far through the spawn are we".
+    pub fn spawn_anim_t(&self) -> f32 {
+        let Some(started) = self.spawned_at else { return 1.0 };
+        let elapsed = started.elapsed();
+        if elapsed >= Duration::from_millis(SPAWN_ANIM_MS) {
+            return 1.0;
+        }
+        let raw = (elapsed.as_secs_f64() / (SPAWN_ANIM_MS as f64 / 1000.0))
+            .clamp(0.0, 1.0);
+        (1.0 - (1.0 - raw).powi(3)) as f32
     }
 
     /// Latch the group-level close fade. Called from `handle_event`
@@ -522,10 +547,10 @@ impl Widget for WindowGroup {
         // clobbers the shutdown curve the user is watching.
         //
         // Spawn (`start_spawn_animation` on a freshly-created group,
-        // typically via split-into-new-group) runs the concept's
-        // `initial={{ opacity: 0, scale: 0.95, y: 20 }}` →
-        // `animate={{ opacity: 1, scale: 1, y: 0 }}` curve over
-        // `SPAWN_ANIM_MS`.
+        // typically via split-into-new-group) runs the radial-workspace
+        // concept's `initial={{ opacity: 0, scale: 0.92, x: -16 }}` →
+        // `animate={{ opacity: 1, scale: 1, x: 0 }}` curve over
+        // `SPAWN_ANIM_MS` with a cubic-out ease.
         //
         // Close (`start_closing` latched after the last tab's host
         // fade sweeps through) runs the mirror curve over
@@ -535,33 +560,35 @@ impl Widget for WindowGroup {
         // rings) composes under a single alpha layer + translate +
         // scale so pill hover targets and resize-handle hit-tests
         // stay aligned with what the user sees on screen mid-fade.
-        let (fade_alpha, fade_y, fade_scale): (f32, f64, f64) = if let Some(started) =
+        let (fade_alpha, fade_x, fade_y, fade_scale): (f32, f64, f64, f64) = if let Some(started) =
             self.closing_at
         {
-            // Close curve: α 1 → 0, scale 1 → 0.95, y stays put (the
-            // per-host curve already carries the -20 y-drift; the
-            // group shell just fades + shrinks about its centre).
+            // Close curve: α 1 → 0, scale 1 → 0.95, no offset (the
+            // per-host curve already carries the y-drift; the group
+            // shell just fades + shrinks about its centre).
             let raw = (started.elapsed().as_millis() as f32
                 / GROUP_CLOSE_FADE_MS as f32)
                 .clamp(0.0, 1.0);
             let eased = 1.0 - (1.0 - raw).powi(3);
             let alpha = (1.0 - eased).max(0.0);
             let scale = (1.0 - 0.05 * eased) as f64;
-            (alpha, 0.0, scale)
+            (alpha, 0.0, 0.0, scale)
         } else if let Some(started) = self.spawned_at {
             let elapsed = started.elapsed();
             if elapsed >= Duration::from_millis(SPAWN_ANIM_MS) {
-                (1.0, 0.0, 1.0)
+                (1.0, 0.0, 0.0, 1.0)
             } else {
                 let raw = (elapsed.as_secs_f64()
                     / (SPAWN_ANIM_MS as f64 / 1000.0))
                     .clamp(0.0, 1.0);
                 let eased = 1.0 - (1.0 - raw).powi(3);
-                let scale = 0.95 + 0.05 * eased;
-                (eased as f32, SPAWN_ANIM_Y_OFFSET * (1.0 - eased), scale)
+                let scale = SPAWN_ANIM_INITIAL_SCALE
+                    + (1.0 - SPAWN_ANIM_INITIAL_SCALE) * eased;
+                let x_off = SPAWN_ANIM_X_OFFSET * (1.0 - eased);
+                (eased as f32, x_off, 0.0, scale)
             }
         } else {
-            (1.0, 0.0, 1.0)
+            (1.0, 0.0, 0.0, 1.0)
         };
         let spawn_active = fade_alpha < 1.0;
         if spawn_active {
@@ -582,13 +609,16 @@ impl Widget for WindowGroup {
             );
         }
         // All subsequent paint uses `transform` shifted by the fade's
-        // y-offset and scaled about the group's center point so the
-        // group reads as "settling down" into place.
-        let transform = if fade_y != 0.0 || fade_scale != 1.0 {
+        // x/y-offset and scaled about the group's center point so the
+        // group reads as "sliding into place". `fade_x` carries the
+        // spawn slide-in (-16 px → 0); `fade_y` is reserved for the
+        // close curve's centre-shrink (currently 0 — kept in the
+        // tuple so a future tweak can re-introduce a subtle settle).
+        let transform = if fade_x != 0.0 || fade_y != 0.0 || fade_scale != 1.0 {
             let cx = self.rect.center().x;
             let cy = self.rect.center().y;
             transform
-                * Affine::translate((cx, cy + fade_y))
+                * Affine::translate((cx + fade_x, cy + fade_y))
                 * Affine::scale(fade_scale)
                 * Affine::translate((-cx, -cy))
         } else {
@@ -1344,6 +1374,60 @@ mod tests {
         assert!(
             !g.needs_animation_frame(),
             "after the spawn window elapses, the fade no longer demands frames",
+        );
+    }
+
+    /// The spawn animation must be visibly progressive — at the very
+    /// first frame the eased progress is near zero (group reads as
+    /// "just arriving"), around the midpoint it's clearly past half
+    /// (cubic-out ramps fast early), and once the duration elapses it
+    /// pins to 1.0. Without this guard a regression that shortened the
+    /// duration to <50 ms or skipped the easing would re-introduce the
+    /// "spawn invisible / instant" report from the wheel-rebuild
+    /// worker.
+    #[test]
+    fn spawn_animation_advances_eased_progress_over_time() {
+        let mut g = make_group();
+        // No spawn in flight — accessor pins to 1.0.
+        assert_eq!(g.spawn_anim_t(), 1.0, "idle group reports finished progress");
+
+        // First frame: started "now", elapsed ~0. Eased progress is
+        // near zero — the group should be barely visible.
+        g.start_spawn_animation();
+        let t_start = g.spawn_anim_t();
+        assert!(
+            t_start < 0.05,
+            "first-frame spawn progress must be near zero, got {t_start}",
+        );
+
+        // Roughly midway: cubic-out at raw=0.5 yields 1 - 0.5^3 = 0.875,
+        // so we expect well past 0.5. Backdate the timestamp instead of
+        // sleeping so the test doesn't waste real time.
+        g.spawned_at = Some(Instant::now() - Duration::from_millis(SPAWN_ANIM_MS / 2));
+        let t_mid = g.spawn_anim_t();
+        assert!(
+            t_mid > 0.5 && t_mid < 1.0,
+            "mid-spawn progress must be past half but not yet complete, got {t_mid}",
+        );
+
+        // Past the duration: pins to 1.0.
+        g.spawned_at = Some(Instant::now() - Duration::from_millis(SPAWN_ANIM_MS + 16));
+        assert_eq!(
+            g.spawn_anim_t(),
+            1.0,
+            "after the spawn window elapses, progress pins to 1.0",
+        );
+    }
+
+    /// The spawn duration must stay long enough that the user can see
+    /// the slide-in. Lock it to the "punchy but readable" 350-450 ms
+    /// band so a future pass can't silently shorten it back to the
+    /// 320 ms tuning that read as "instant" in shots-driver captures.
+    #[test]
+    fn spawn_animation_duration_in_visible_band() {
+        assert!(
+            (350..=450).contains(&SPAWN_ANIM_MS),
+            "spawn duration must stay in the 350-450 ms readability band, got {SPAWN_ANIM_MS}",
         );
     }
 
