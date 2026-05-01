@@ -17,6 +17,7 @@ pub struct Container {
     fill_height: bool,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
+    no_padding: bool,
 }
 
 impl Container {
@@ -28,7 +29,16 @@ impl Container {
             fill_height: false,
             presence_path: Vec::new(),
             permission_scope: None,
+            no_padding: false,
         }
+    }
+
+    /// Skip the default `padding_standard` on all sides. Used by the
+    /// shell root so its child Stack reaches y=0 / x=0 without an
+    /// uneditable inner gutter.
+    pub fn with_no_padding(mut self) -> Self {
+        self.no_padding = true;
+        self
     }
 
     pub fn with_child(mut self, child: Box<dyn Widget>) -> Self {
@@ -71,15 +81,16 @@ impl Widget for Container {
 
     fn build_layout(&mut self, taffy: &mut TaffyTree<()>, theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
         let child_node = self.child.as_mut().map(|c| c.build_layout(taffy, theme, node_map));
-        
+
+        let pad = if self.no_padding { 0.0 } else { theme.padding_standard };
         let style = Style {
             display: taffy::Display::Flex,
             flex_shrink: 0.0, // Prevent vertical squashing
             padding: taffy::Rect {
-                left: length(theme.padding_standard),
-                right: length(theme.padding_standard),
-                top: length(theme.padding_standard),
-                bottom: length(theme.padding_standard),
+                left: length(pad),
+                right: length(pad),
+                top: length(pad),
+                bottom: length(pad),
             },
             size: taffy::Size {
                 width: percent(1.0),
