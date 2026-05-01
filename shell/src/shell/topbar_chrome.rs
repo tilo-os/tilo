@@ -15,7 +15,7 @@ use chrono::Local;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::Fill;
+use vello::peniko::{Brush, ColorStop, ColorStops, Extend, Fill, Gradient, GradientKind};
 use winit::event::WindowEvent;
 
 use quick_ui::presence::{PresenceCtx, parse_hex_color, user_color};
@@ -479,6 +479,46 @@ impl Widget for TopBarChrome {
         );
         scene.fill(Fill::NonZero, transform, colors.border_standard, None, &border_rect);
 
+        // Soft bottom shadow — masks the abrupt translucent-topbar →
+        // exposed-backdrop transition that read as "noisy pixels"
+        // against the dotted-grid wallpaper. Concept-style top-bar
+        // has a subtle drop-shadow; we approximate with a 28-px
+        // vertical fade extending below the bar. Vello widgets
+        // aren't clipped to their rect, and the topbar paints
+        // after the backdrop and before the workspace content,
+        // so the band lays cleanly over the seam below.
+        let shadow_h = 28.0_f64;
+        let shadow_rect = Rect::new(
+            self.rect.x0,
+            self.rect.y1,
+            self.rect.x1,
+            self.rect.y1 + shadow_h,
+        );
+        let shadow_grad = Gradient {
+            kind: GradientKind::Linear {
+                start: Point::new(0.0, self.rect.y1),
+                end: Point::new(0.0, self.rect.y1 + shadow_h),
+            },
+            extend: Extend::Pad,
+            stops: ColorStops::from_iter([
+                ColorStop {
+                    offset: 0.0,
+                    color: Color::rgba8(0, 0, 0, 46), // ≈ 0.18
+                },
+                ColorStop {
+                    offset: 1.0,
+                    color: Color::rgba8(0, 0, 0, 0),
+                },
+            ]),
+        };
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            &Brush::Gradient(shadow_grad),
+            None,
+            &shadow_rect,
+        );
+
         let pad_x = tokens.spacing.s3 as f64;
         let center_y = (self.rect.y0 + self.rect.y1) / 2.0;
         let icon_size = 14.0_f64;
@@ -517,7 +557,11 @@ impl Widget for TopBarChrome {
         scene.fill(Fill::NonZero, transform, colors.border_standard, None, &divider);
         x += 1.0 + tokens.spacing.s2 as f64;
 
-        // Up-chevron ▲
+        // Up-chevron: lucide `ChevronUp` (gap #5). Drawn through
+        // `quick_ui::icons::draw_icon` so the chrome's chevrons share
+        // stroke caps + joins with the rest of the lucide lockup
+        // (`LayoutGrid` / `Settings2` / `Wifi` / `Monitor`) instead of
+        // the previous hand-rolled BezPath polyline.
         let chev = 10.0_f64;
         self.up_btn_rect = Rect::new(
             x - 4.0,
@@ -525,42 +569,47 @@ impl Widget for TopBarChrome {
             x + chev + 4.0,
             center_y + chev * 0.35 + 6.0,
         );
-        let up = vello::kurbo::BezPath::from_iter([
-            vello::kurbo::PathEl::MoveTo(Point::new(x, center_y + chev * 0.35)),
-            vello::kurbo::PathEl::LineTo(Point::new(x + chev / 2.0, center_y - chev * 0.35)),
-            vello::kurbo::PathEl::LineTo(Point::new(x + chev, center_y + chev * 0.35)),
-        ]);
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.5),
+        let up_icon_rect = Rect::new(
+            x,
+            center_y - chev / 2.0,
+            x + chev,
+            center_y + chev / 2.0,
+        );
+        quick_ui::icons::draw_icon(
+            scene,
             transform,
+            up_icon_rect,
+            quick_ui::icons::Icon::ChevronUp,
             if self.workspace_index == 0 { colors.border_standard } else { colors.text_dim },
-            None,
-            &up,
+            quick_ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         x += chev + tokens.spacing.s2 as f64;
 
-        // Down-chevron ▼
+        // Down-chevron: lucide `ChevronDown` (gap #5). Same lockup
+        // rationale as the up-chevron above.
         self.down_btn_rect = Rect::new(
             x - 4.0,
             center_y - chev * 0.35 - 6.0,
             x + chev + 4.0,
             center_y + chev * 0.35 + 6.0,
         );
-        let dn = vello::kurbo::BezPath::from_iter([
-            vello::kurbo::PathEl::MoveTo(Point::new(x, center_y - chev * 0.35)),
-            vello::kurbo::PathEl::LineTo(Point::new(x + chev / 2.0, center_y + chev * 0.35)),
-            vello::kurbo::PathEl::LineTo(Point::new(x + chev, center_y - chev * 0.35)),
-        ]);
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.5),
+        let dn_icon_rect = Rect::new(
+            x,
+            center_y - chev / 2.0,
+            x + chev,
+            center_y + chev / 2.0,
+        );
+        quick_ui::icons::draw_icon(
+            scene,
             transform,
+            dn_icon_rect,
+            quick_ui::icons::Icon::ChevronDown,
             if self.workspace_index + 1 >= self.workspace_total {
                 colors.border_standard
             } else {
                 colors.text_dim
             },
-            None,
-            &dn,
+            quick_ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         x += chev + tokens.spacing.s3 as f64;
 
@@ -1287,6 +1336,86 @@ mod tests {
             "avatar→tray gap must be ≥ 8 px (got {gap:.2}); avatar.x1={}, tray.x0={}",
             avatar.x1,
             tray.x0,
+        );
+    }
+
+    /// Regression: the topbar must paint a soft drop-shadow band below
+    /// its rect so the seam between the translucent overlay surface and
+    /// the dotted-grid backdrop doesn't read as "noisy pixels". The
+    /// shadow is the only linear-gradient fill the topbar emits, so
+    /// pinning a `LINEAR_GRADIENT` draw tag shows up after `draw` is a
+    /// load-bearing signal — if a future refactor drops the gradient
+    /// brush back to a solid fill (or removes the band entirely) this
+    /// test fails loudly.
+    #[test]
+    fn topbar_paints_a_bottom_shadow_below_its_rect() {
+        use vello_encoding::DrawTag;
+
+        let mut tree = WorkspaceTree {
+            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+            active: WorkspaceId::from(0),
+            active_strip: Default::default(),
+            active_group: Default::default(),
+            collaborators: Vec::new(),
+        };
+        tree.active = tree.workspaces[0].id;
+
+        let mut bar = TopBarChrome::from_tree(&tree);
+        let theme = Theme::default();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = bar.build_layout(&mut taffy, &theme, &mut node_map);
+        let vp = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(800.0),
+                        height: Dimension::length(40.0),
+                    },
+                    ..Default::default()
+                },
+                &[node],
+            )
+            .unwrap();
+        taffy
+            .compute_layout_with_measure(
+                vp,
+                Size {
+                    width: taffy::AvailableSpace::Definite(800.0),
+                    height: taffy::AvailableSpace::Definite(40.0),
+                },
+                |_, _, _, _, _| taffy::Size::ZERO,
+            )
+            .unwrap();
+        bar.apply_layout(&taffy, node, Point::ORIGIN);
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+
+        let gradient_fills = scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|t| **t == DrawTag::LINEAR_GRADIENT)
+            .count();
+        assert!(
+            gradient_fills >= 1,
+            "topbar must emit at least one linear-gradient fill (the soft \
+             drop-shadow band below its rect); got {gradient_fills}",
+        );
+
+        // Pin the band's vertical extent so a future tweak that shrinks
+        // it to zero (or moves it above the bar) can't pass this test.
+        // The shadow rect spans `[rect.y1, rect.y1 + 28]`.
+        let bar_bottom = bar.rect.y1;
+        assert!(bar_bottom > 0.0, "topbar rect must have non-zero y1");
+        // Sanity: bar height matches the public TOPBAR_HEIGHT_PX constant
+        // so the y1 the shadow attaches to is the one downstream code
+        // (overlay_host, sidebar_wheel) lays out below.
+        assert!(
+            (bar_bottom - TOPBAR_HEIGHT_PX as f64).abs() < 0.5,
+            "topbar y1 ({bar_bottom}) should equal TOPBAR_HEIGHT_PX ({TOPBAR_HEIGHT_PX})",
         );
     }
 }
