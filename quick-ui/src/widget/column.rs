@@ -15,6 +15,7 @@ pub struct Column {
     rect: vello::kurbo::Rect,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
+    extra_left_padding: f32,
 }
 
 impl Column {
@@ -24,11 +25,21 @@ impl Column {
             rect: vello::kurbo::Rect::ZERO,
             presence_path: Vec::new(),
             permission_scope: None,
+            extra_left_padding: 0.0,
         }
     }
 
     pub fn push(mut self, child: Box<dyn Widget>) -> Self {
         self.children.push(child);
+        self
+    }
+
+    /// Add extra padding on the left edge on top of the column's
+    /// default `padding_standard * 2`. Used to displace a workspace
+    /// area to the right of an absolutely-positioned sidebar without
+    /// shifting the surrounding chrome.
+    pub fn with_extra_left_padding(mut self, px: f32) -> Self {
+        self.extra_left_padding = px;
         self
     }
 
@@ -69,7 +80,7 @@ impl Widget for Column {
                     height: length(theme.gap_standard),
                 },
                 padding: taffy::Rect {
-                    left: length(theme.padding_standard * 2.0),
+                    left: length(theme.padding_standard * 2.0 + self.extra_left_padding),
                     right: length(theme.padding_standard * 2.0),
                     top: length(theme.padding_standard * 2.0),
                     bottom: length(theme.padding_standard * 2.0),
