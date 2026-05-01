@@ -122,6 +122,16 @@ pub struct WindowGroup {
     /// `build_layout` rebuild and the new flex_grow / width style takes
     /// effect on the cached taffy node.
     style_dirty: bool,
+    /// One-shot pending maximize value awaiting harvest by the shell.
+    /// Set whenever `self.maximized` is mutated by user input (the tab-
+    /// bar Maximize2 toggle or the floating restore / close-while-
+    /// maximized chrome) so the shell can mirror the new value into
+    /// the persisted [`WorkspaceTree`] each frame. Drained via
+    /// [`Self::take_pending_maximize_change`] following the same
+    /// take-pattern as `take_tab_detach` / `take_reorder`. Audit task
+    /// #105 — without this writeback the on-screen flip is in-memory
+    /// only and resets to the pre-toggle value across a shell restart.
+    pending_maximize_change: Option<bool>,
     /// Group-level close-fade timestamp. `None` while the group is
     /// alive; `Some(started)` once the user's last tab-close drains
     /// through `handle_event` and the group has no remaining tabs or
@@ -158,6 +168,7 @@ impl WindowGroup {
             closing_hosts: HashMap::new(),
             closing_at: None,
             style_dirty: false,
+            pending_maximize_change: None,
         }
     }
     pub fn width(&self) -> WindowWidth { self.width }
@@ -283,6 +294,33 @@ impl WindowGroup {
     /// tests the release point against sibling bars to find a target.
     pub fn take_tab_detach(&mut self) -> Option<(u64, Point)> { self.bar.take_detach() }
 
+    /// Drain a pending maximize-toggle that the user produced via the
+    /// tab-bar Maximize2 glyph or the floating restore / close-while-
+    /// maximized chrome. Returns `Some(new_value)` once per click that
+    /// flipped `self.maximized`, then `None` until the next flip — same
+    /// take-pattern as [`Self::take_tab_detach`] / `TabBar::take_reorder`.
+    /// The shell harvests this each frame and mirrors the value into the
+    /// persisted [`WorkspaceTree`] so the maximize state survives a shell
+    /// restart and replicates across collaborators (audit task #105).
+    pub fn take_pending_maximize_change(&mut self) -> Option<bool> {
+        self.pending_maximize_change.take()
+    }
+
+    /// Test-only: publish a maximize-toggle request into the underlying
+    /// `TabBar` so the next call to `WindowGroup::handle_event` drains
+    /// it through the production `take_max` path — same effect as a
+    /// user click on the tab-bar Maximize2 glyph, but without the
+    /// layout / hit-test setup an integration test would otherwise
+    /// need. Pairs with [`Self::take_pending_maximize_change`] to give
+    /// shell-side wire-up tests a public entry point into the click
+    /// pipeline. Targets the active tab so the drain matches the live
+    /// click's id.
+    #[cfg(any(test, debug_assertions))]
+    pub fn publish_maximize_intent_for_tests(&mut self) {
+        let active = self.bar.active_id();
+        self.bar.pending_max = Some(active);
+    }
+
     /// Remove a tab + its hosted `TileHost` from this group and return
     /// them so a sibling group can insert them. Returns `None` if no tab
     /// with that id is present. Preserves caller-side ordering by
@@ -359,6 +397,7 @@ impl WindowGroup {
             closing_hosts: HashMap::new(),
             closing_at: None,
             style_dirty: false,
+            pending_maximize_change: None,
         }
     }
 
@@ -993,6 +1032,10 @@ impl Widget for WindowGroup {
                     .entry(active_id)
                     .or_insert_with(Instant::now);
                 self.maximized = false;
+                // Stash the new value for the shell to harvest into
+                // persisted state — without this writeback the click
+                // is in-memory only and resets across a restart (#105).
+                self.pending_maximize_change = Some(false);
                 *handled = true;
                 return;
             }
@@ -1003,6 +1046,7 @@ impl Widget for WindowGroup {
                 // bar.pending_max) so the click never races with a tab
                 // selection under the pill's geometry.
                 self.maximized = false;
+                self.pending_maximize_change = Some(false);
                 *handled = true;
                 return;
             }
@@ -1080,6 +1124,14 @@ impl Widget for WindowGroup {
         if let Some(_id) = self.bar.take_max() {
             self.maximized = !self.maximized;
             self.style_dirty = true;
+            // Mirror the new value into the harvest slot so the shell
+            // can write it through to the persisted `WorkspaceTree`
+            // each frame. Same one-shot semantics as `take_max`
+            // itself — a second flip before the harvest tick simply
+            // overwrites the slot with the new value, which is what
+            // we want (the user toggles twice in quick succession,
+            // the persisted state lands on the final value).
+            self.pending_maximize_change = Some(self.maximized);
             *handled = true;
         }
 
@@ -1341,6 +1393,79 @@ mod tests {
         );
         // Drained — second poll within the same frame is clean.
         assert!(!g.take_structure_dirty(), "structure_dirty drains on poll");
+    }
+
+    /// `take_pending_maximize_change` reports the new maximize value once
+    /// per click — the take-pattern accessor the shell harvests each
+    /// frame to mirror the flip into the persisted `WorkspaceTree`.
+    /// Without it the on-screen toggle is in-memory only and resets to
+    /// the pre-toggle value across a shell restart (audit task #105).
+    #[test]
+    fn take_pending_maximize_change_drains_on_tab_bar_toggle() {
+        use std::collections::HashMap;
+        use taffy::Style;
+        use taffy::prelude::TaffyMaxContent;
+
+        let mut g = make_group();
+        assert_eq!(
+            g.take_pending_maximize_change(),
+            None,
+            "no pending change before any click",
+        );
+
+        // Drive the same drain block the live binary hits when the user
+        // clicks the bar's Maximize2 glyph: prime `pending_max`, run a
+        // no-op cursor-move through `handle_event`, observe the flag
+        // flipped + a pending change waiting for the shell harvest.
+        g.bar.pending_max = Some(1);
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let group_node = g.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        let root = taffy
+            .new_with_children(Style::default(), &[group_node])
+            .unwrap();
+        taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
+        let moved = WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(9000.0, 9000.0),
+        };
+        let mut state = automerge::AutoCommit::new();
+        let root_id = automerge::ROOT;
+        let mut handled = false;
+        let mut focus_target = None;
+        g.handle_event(
+            &moved, 1.0, &winit::event::Modifiers::default(),
+            &mut state, &root_id, &mut handled, &mut focus_target,
+            group_node, &taffy,
+        );
+
+        assert!(g.maximized, "drain must flip maximized true");
+        assert_eq!(
+            g.take_pending_maximize_change(),
+            Some(true),
+            "first poll after the click reports the new value",
+        );
+        assert_eq!(
+            g.take_pending_maximize_change(),
+            None,
+            "take-pattern: drained on first poll, second poll is None",
+        );
+
+        // A second toggle reports the flipped value — the take-pattern
+        // is one-shot but re-armable, so the shell sees every flip.
+        g.bar.pending_max = Some(1);
+        let mut handled = false;
+        g.handle_event(
+            &moved, 1.0, &winit::event::Modifiers::default(),
+            &mut state, &root_id, &mut handled, &mut focus_target,
+            group_node, &taffy,
+        );
+        assert!(!g.maximized, "second drain must flip back to false");
+        assert_eq!(
+            g.take_pending_maximize_change(),
+            Some(false),
+            "the second click reports the new (false) value once",
+        );
     }
 
     #[test]
