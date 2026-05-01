@@ -1157,7 +1157,10 @@ pub fn build_nirios_overlay_host_with_chrome(
         topbar_chrome::TopBarChrome::from_tree(tree).with_chrome(chrome.clone()),
     );
 
-    let mut content_col = Column::new().push(workspace_view).push(strip_view);
+    let mut content_col = Column::new()
+        .with_extra_left_padding(sidebar_wheel_chrome::SIDEBAR_WIDTH_PX)
+        .push(workspace_view)
+        .push(strip_view);
 
     // Per-strip raw pointers to the live `GroupRow` widgets we're about to
     // box into `content_col`. Captured at construction so the host's
