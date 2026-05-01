@@ -846,13 +846,10 @@ fn full_root_click_toggles_overview_via_topbar_button() {
             |_, _, _, _, _| taffy::Size::ZERO,
         )
         .expect("probe compute_layout");
-    // Match the real tree's layout: the topbar sits inside a Column
-    // (padding = `padding_standard * 2`) inside a Container (padding =
-    // `padding_standard`), so the topbar origin in the real tree is
-    // `padding_standard * 3` down and in from the viewport. Mirror that
-    // offset on the probe so the button rect's coordinates line up with
-    // what the real tree will hit-test against.
-    let topbar_offset = theme.padding_standard as f64 * 3.0;
+    // The real tree's outer Container + foreground Column are both
+    // `with_no_padding` so the topbar lands flush at y=0 / x=0. The
+    // probe matches: zero offset.
+    let topbar_offset = 0.0_f64;
     probe.apply_layout(&probe_taffy, pnode, Point::new(topbar_offset, topbar_offset));
     let mut probe_scene = Scene::new();
     let mut probe_tr = TextRenderer::new();
