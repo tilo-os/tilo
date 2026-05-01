@@ -644,6 +644,29 @@ impl WorkspaceTree {
     }
 }
 
+/// Shared peer-count helper for the active workspace.
+///
+/// Counts collaborators on the active workspace excluding the local user
+/// (`id == "me"`); falls back to the tree-level roster (also `me`-filtered)
+/// when the active workspace has no peers of its own. This matches the
+/// precedence already applied by `TopBarChrome::sync_from_tree` and lets
+/// `SidebarWheelChrome::sync_from_tree` reuse the same arithmetic for the
+/// active card so the two chromes never disagree (audit `B-10`).
+///
+/// Note: callers that need per-workspace counts for *non-active* workspaces
+/// must keep their own filtered count — the fallback only fires for the
+/// active workspace.
+pub fn active_workspace_peer_count(tree: &WorkspaceTree) -> usize {
+    let active = tree.active_workspace();
+    let per_ws = active
+        .map(|w| w.collaborators.iter().filter(|c| c.id != "me").count())
+        .unwrap_or(0);
+    if per_ws > 0 {
+        return per_ws;
+    }
+    tree.collaborators.iter().filter(|c| c.id != "me").count()
+}
+
 #[cfg(test)]
 mod bootstrap_default_tests {
     //! Coverage for [`WorkspaceTree::bootstrap_default`]'s seeded fixture.
@@ -992,5 +1015,75 @@ mod active_group_tests {
         }"#;
         let tree: WorkspaceTree = serde_json::from_str(legacy).unwrap();
         assert!(tree.active_group.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod active_workspace_peer_count_tests {
+    //! Coverage for [`active_workspace_peer_count`] — the shared helper
+    //! that keeps the top-bar avatar stack and the wheel-disc active-card
+    //! collaborator-dot count in lock-step (audit `B-10`).
+
+    use super::*;
+    use crate::shell::sidebar_wheel_chrome::SidebarWheelChrome;
+    use crate::shell::topbar_chrome::TopBarChrome;
+    use std::collections::HashMap;
+
+    /// Build a single-workspace tree with the given collaborators on the
+    /// active workspace. The tree-level roster is left empty so this
+    /// isolates the per-workspace path from the fallback path.
+    fn tree_with_active_collaborators(collabs: Vec<Collaborator>) -> WorkspaceTree {
+        let ws_id = WorkspaceId::new();
+        let strip_id = StripId::new();
+        let ws = Workspace {
+            id: ws_id,
+            name: "Active".into(),
+            strips: vec![Strip {
+                id: strip_id,
+                name: "Main".into(),
+                window_groups: vec![],
+            }],
+            roles: vec![],
+            workspace_files: vec![],
+            collaborators: collabs,
+        };
+        let mut active_strip = HashMap::new();
+        active_strip.insert(ws_id, strip_id);
+        WorkspaceTree {
+            workspaces: vec![ws],
+            active: ws_id,
+            active_strip,
+            active_group: HashMap::new(),
+            collaborators: vec![],
+        }
+    }
+
+    #[test]
+    fn topbar_and_wheel_disc_agree_on_active_collab_count() {
+        // Two explicit collaborators on the active workspace — one is the
+        // local user ("me"). Both chromes must agree that the *peer* count
+        // (excluding "me") is 1.
+        let tree = tree_with_active_collaborators(vec![
+            Collaborator::new("me", "Me"),
+            Collaborator::new("alice", "Alice"),
+        ]);
+
+        let topbar = TopBarChrome::from_tree(&tree);
+        let wheel = SidebarWheelChrome::from_tree(&tree);
+        let active_idx = tree
+            .workspaces
+            .iter()
+            .position(|w| w.id == tree.active)
+            .expect("active workspace present");
+
+        assert_eq!(
+            topbar.collaborator_initials().len(),
+            wheel.card_collab_count(active_idx),
+            "top-bar avatar stack and wheel-disc active card must agree on \
+             the peer count (audit B-10); helper is the single source of truth"
+        );
+        // And both should equal the helper's value.
+        assert_eq!(active_workspace_peer_count(&tree), 1);
+        assert_eq!(topbar.collaborator_initials().len(), 1);
     }
 }
