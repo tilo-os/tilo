@@ -137,6 +137,17 @@ pub struct WindowGroup {
     pub tabs: Vec<Tab>,
     pub active_tab: TabId,
     pub width: WindowWidth,
+    /// Whether the user has toggled this group into the concept's
+    /// "maximized" mode. Mirrors `WindowGroup::maximized` on the widget
+    /// (see `quick-ui/src/widget/window_group.rs`) — stored here so the
+    /// state survives a shell restart and replicates across collaborators.
+    /// Audit task #105.
+    ///
+    /// `#[serde(default)]` (defaults to `false`) so persisted JSON written
+    /// before this field existed still loads — old workspaces simply boot
+    /// un-maximized, matching prior runtime behaviour.
+    #[serde(default)]
+    pub maximized: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -390,6 +401,7 @@ impl WorkspaceTree {
                     ],
                     active_tab: tab_notes,
                     width: WindowWidth::Wide,
+                    maximized: false,
                 }],
             }],
             roles: vec![],
@@ -858,6 +870,7 @@ mod active_group_tests {
                     tabs: vec![],
                     active_tab: 0,
                     width: WindowWidth::Normal,
+                    maximized: false,
                 })
                 .collect(),
         };
@@ -1015,6 +1028,39 @@ mod active_group_tests {
         }"#;
         let tree: WorkspaceTree = serde_json::from_str(legacy).unwrap();
         assert!(tree.active_group.is_empty());
+    }
+
+    #[test]
+    fn window_group_maximized_round_trips_through_json() {
+        // Audit task #105: window state must survive restart. A
+        // bootstrap_default tree starts un-maximized; flipping
+        // `maximized = true` on one group must serialize and
+        // deserialize cleanly.
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let ws = tree.workspaces.first_mut().expect("seed has workspaces");
+        let strip = ws.strips.first_mut().expect("seed has strips");
+        let group = strip.window_groups.first_mut().expect("seed has groups");
+        assert!(!group.maximized);
+        group.maximized = true;
+
+        let json = serde_json::to_string(&tree).unwrap();
+        let round: WorkspaceTree = serde_json::from_str(&json).unwrap();
+        assert!(round.workspaces[0].strips[0].window_groups[0].maximized);
+    }
+
+    #[test]
+    fn legacy_json_without_maximized_field_defaults_to_false() {
+        // `#[serde(default)]` covers persisted trees written before the
+        // `maximized` field existed (audit task #105). Stripped-down
+        // window-group payload omitting the field must load.
+        let legacy = r#"{
+            "id": 1,
+            "tabs": [],
+            "active_tab": 0,
+            "width": "Normal"
+        }"#;
+        let g: WindowGroup = serde_json::from_str(legacy).unwrap();
+        assert!(!g.maximized);
     }
 }
 
