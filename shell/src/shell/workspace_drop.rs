@@ -126,6 +126,7 @@ pub fn apply_workspace_drop(tree: &mut WorkspaceTree, item: DraggedItem) -> Opti
             tabs: vec![tab],
             active_tab: tab_id,
             width: WindowWidth::Normal,
+            maximized: false,
         });
     }
     Some(tab_id)
