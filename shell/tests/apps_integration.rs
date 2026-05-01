@@ -67,7 +67,13 @@ fn default_workspace_hosts_terminal_and_files_and_browser_stub() {
 // on the shell side so they only exist in test / debug builds.
 
 #[test]
-fn terminal_tab_emits_a_prompt_within_3_seconds() {
+fn terminal_tab_emits_a_prompt_within_10_seconds() {
+    // PTY init time is environment-dependent (shell rc files, distro
+    // defaults, container start-up cost) and a 3-second budget proved
+    // flaky on slower distrobox / CI runners. 10 seconds gives even a
+    // cold bash with a heavy `.bashrc` time to print its first prompt
+    // line without losing the smoke-test signal — if the terminal still
+    // hasn't emitted anything by then, something is genuinely wrong.
     let mut shell = Shell::new_with_default_demo_workspace();
 
     // If the PTY failed to spawn (e.g. sandboxed CI without /dev/ptmx) the
@@ -80,7 +86,7 @@ fn terminal_tab_emits_a_prompt_within_3_seconds() {
         return;
     }
 
-    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while std::time::Instant::now() < deadline {
         shell.tick_for_test();
         if let Some(line0) = shell.first_terminal_line() {
@@ -90,7 +96,7 @@ fn terminal_tab_emits_a_prompt_within_3_seconds() {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    panic!("terminal never produced a non-empty first line within 3s");
+    panic!("terminal never produced a non-empty first line within 10s");
 }
 
 #[test]
