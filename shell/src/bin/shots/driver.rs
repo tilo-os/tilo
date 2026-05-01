@@ -124,7 +124,15 @@ impl ShellDriver {
     /// Run compute_layout + apply_layout against the current tree. The
     /// host's animation state is preserved because we don't rebuild the
     /// taffy tree — only the layout pass re-runs.
+    ///
+    /// If the host reports `take_structure_dirty()` (e.g. a tab drop
+    /// spawned a new `WindowGroup`, or a closed group's fade elapsed),
+    /// the taffy tree is rebuilt first so the new structure participates
+    /// in layout. Mirrors `App::handle_window_event`'s post-event sweep.
     pub fn relayout(&mut self) {
+        if self.host.take_structure_dirty() {
+            self.rebuild_layout_tree();
+        }
         let (w, h) = self.viewport;
         let outer = self.root_node.expect("rebuild_layout_tree first");
         let child = self.host_node.expect("rebuild_layout_tree first");
@@ -540,6 +548,110 @@ mod tests {
             rect.is_some(),
             "overview should populate the add_workspace rect after a settled paint"
         );
+    }
+
+    /// End-to-end pin for the user's "drag-tab-out replaces instead of
+    /// creating a sibling" report: with the bootstrap default's 4-tab
+    /// Wide group, dragging the second tab pill (Files) past the source
+    /// group's right edge and releasing in the empty strip area must
+    /// produce TWO groups — the 3-tab source and a 1-tab new group —
+    /// not one.
+    ///
+    /// The earlier `tab_drag_out_to_new_group` headless scenario used
+    /// guessed coords (420, 80) → (1100, 80) which missed the actual
+    /// pill rect (the leading icon column shifts pill 1 well past
+    /// x=420 inside a Wide=800 group laid out from x≈224). This test
+    /// reads the live `tab_rects()` off the bar so the press lands
+    /// exactly on a pill regardless of layout drift.
+    #[test]
+    fn driver_drag_tab_out_creates_sibling_group() {
+        let mut d = ShellDriver::new((1600, 900));
+        let _ = d.paint(); // seed any draw-only caches the layout missed
+        d.relayout();
+
+        // Snapshot pre-drag layout: bootstrap default seeds one strip
+        // with one Wide group carrying Notes/Files/Terminal/Browser.
+        let strip_id = {
+            let st = d.chrome();
+            let ws_id = st.tree.active;
+            *st.tree.active_strip.get(&ws_id).expect("active strip")
+        };
+        let pre = d.host().groups_per_strip();
+        let pre_strip = pre
+            .iter()
+            .find(|(s, _)| *s == strip_id)
+            .expect("strip in groups_per_strip");
+        assert_eq!(
+            pre_strip.1.len(),
+            1,
+            "precondition: bootstrap default has exactly one group"
+        );
+        assert_eq!(
+            pre_strip.1[0].1.len(),
+            4,
+            "precondition: that group has four tabs"
+        );
+
+        // Read the second pill's rect off the live bar so the press
+        // hit-tests against the pill the layout actually painted.
+        let (from, to) = {
+            let group = d
+                .host_mut()
+                .group_at_for_tests(strip_id, 0)
+                .expect("group at idx 0");
+            let group_rect = group.get_rect();
+            let rects = group.tab_rects().to_vec();
+            assert_eq!(rects.len(), 4, "bar must have 4 pill rects after layout");
+            // Pill 1 (Files) — non-active source.
+            let pill = rects[1];
+            let from = pill.center();
+            // Release point: 100 px right of the source group's right
+            // edge, same y as the bar — squarely in the trailing gap.
+            let to = Point::new(group_rect.x1 + 100.0, from.y);
+            (from, to)
+        };
+
+        d.drag(from, to, 16);
+        d.relayout();
+
+        let post = d.host().groups_per_strip();
+        let post_strip = post
+            .iter()
+            .find(|(s, _)| *s == strip_id)
+            .expect("strip still present after drag");
+        assert_eq!(
+            post_strip.1.len(),
+            2,
+            "drag-out from a 4-tab group must produce exactly two groups \
+             (3-tab source + 1-tab sibling), not one (the 'replace' bug). \
+             post = {:?}",
+            post_strip.1,
+        );
+        // Source kept 3 tabs, new group has 1.
+        let counts: Vec<usize> = post_strip.1.iter().map(|(_, t)| t.len()).collect();
+        assert!(
+            counts.contains(&3) && counts.contains(&1),
+            "expected one group with 3 tabs and one with 1 tab; got {:?}",
+            counts,
+        );
+
+        // Both groups must be laid out — the user's visible "replace"
+        // perception was the new group living at `Rect::ZERO` because
+        // `GroupRow::structure_dirty` never bubbled up to `App` /
+        // driver-level `relayout`. Pin both rects > 0 so a regression
+        // would surface as a failure here, not as a silent invisible
+        // sibling group at runtime.
+        for i in 0..2 {
+            let g = d
+                .host_mut()
+                .group_at_for_tests(strip_id, i)
+                .expect("group laid out");
+            let r = g.get_rect();
+            assert!(
+                r.area() > 0.0,
+                "group[{i}] must have a non-zero rect after relayout; got {r:?}",
+            );
+        }
     }
 
     /// Smoke for `scene_setup` — drive every named scene and verify it

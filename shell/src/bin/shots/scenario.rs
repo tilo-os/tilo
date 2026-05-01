@@ -232,6 +232,44 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
     push_kv_str(&mut out, "palette_query", palette_query);
     out.push(',');
     push_kv_u64(&mut out, "revision", st.revision);
+    out.push(',');
+    // Groups-per-strip snapshot (drag-out tests): "[[[g_id,[t1,t2,...]],...],...]"
+    // Outer array indexed by strip; each element is the strip's group list,
+    // each group is `[group_id, [tab_ids...]]`. Order of strips matches
+    // `host.groups_per_strip()` (HashMap iter order — not guaranteed
+    // stable across runs, but each scenario's assertions look up the
+    // count not a specific strip slot).
+    let gps = host.groups_per_strip();
+    out.push('"');
+    out.push_str("groups_per_strip");
+    out.push('"');
+    out.push(':');
+    out.push('[');
+    for (si, (_strip_id, groups)) in gps.iter().enumerate() {
+        if si > 0 {
+            out.push(',');
+        }
+        out.push('[');
+        for (gi, (gid, tabs)) in groups.iter().enumerate() {
+            if gi > 0 {
+                out.push(',');
+            }
+            out.push('[');
+            out.push_str(&gid.to_string());
+            out.push(',');
+            out.push('[');
+            for (ti, tid) in tabs.iter().enumerate() {
+                if ti > 0 {
+                    out.push(',');
+                }
+                out.push_str(&tid.to_string());
+            }
+            out.push(']');
+            out.push(']');
+        }
+        out.push(']');
+    }
+    out.push(']');
     out.push('}');
     out
 }
@@ -334,6 +372,7 @@ pub fn catalogue() -> Vec<Scenario> {
     vec![
         palette_typing(),
         tab_drag(),
+        tab_drag_out_to_new_group(),
         workspace_switch(),
     ]
 }
@@ -382,6 +421,51 @@ fn tab_drag() -> Scenario {
             },
             Action::Wait(2),
             Action::Snapshot("02-tabs-after-drag"),
+        ],
+    }
+}
+
+/// Drag a tab pill from inside the bootstrap workspace's only group OUT
+/// past its right edge so the inter-group gap resolves. Captures the
+/// post-drag state so a JSON sink can verify `groups_per_strip` shows
+/// exactly two groups (3-tab source + 1-tab new) — not one (the
+/// "replace" perception the user reported).
+///
+/// Coordinates use the bootstrap default's first strip:
+///   - viewport 1600×900 (default driver size)
+///   - sidebar wheel takes ~200 px of left padding via
+///     `Column::with_extra_left_padding(SIDEBAR_WIDTH_PX)`
+///   - the lone Wide group (800 px) sits roughly at x ∈ [224, 1024]
+///   - tab pills live in the bar inside that group, around y≈80
+///   - releasing at (1100, 80) is right of the source group → gap_idx=1
+///
+/// `from` targets the second tab pill (Files) — a non-active source so
+/// the source group's active-tab promotion path doesn't muddy the
+/// post-drag state.
+fn tab_drag_out_to_new_group() -> Scenario {
+    Scenario {
+        name: "tab_drag_out_to_new_group",
+        description: "Drag a tab from a 4-tab group out past the group's right edge \
+                      and assert two groups exist post-drop.",
+        actions: vec![
+            Action::Snapshot("01-before-drag"),
+            Action::Drag {
+                // Pill centres inside the lone bootstrap Wide=800 group
+                // bar live around y=120 (topbar=40 + Column padding=24
+                // + workspace_view + strip_view chrome ≈ 56 → bar
+                // mid-y ≈ 120). Pill 1 (Files) sits at x≈424 with the
+                // Wide group laid out from x≈224 + 24 padding + 14 px
+                // leading icon + ~6 px gap. The integration test
+                // `driver_drag_tab_out_creates_sibling_group` reads
+                // these via `WindowGroup::tab_rects()` for pixel-
+                // accurate hit; this scenario just needs coords close
+                // enough that the press lands inside the pill.
+                from: Point::new(424.0, 120.0),
+                to: Point::new(1124.0, 120.0),
+                steps: 16,
+            },
+            Action::Wait(4),
+            Action::Snapshot("02-after-drag"),
         ],
     }
 }
