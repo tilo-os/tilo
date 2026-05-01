@@ -136,6 +136,18 @@ pub struct ShellOverlayHost {
     /// when the overview is hidden so stale clicks during the crossfade
     /// can't activate it.
     add_workspace_rect: Rect,
+    /// Hit rects for the four WS-settings tab pills painted by
+    /// `draw_ws_settings` — index order is
+    /// `[General, Roles, Files, Collaborators]` (matching the on-screen
+    /// `["General", "Roles", "Files", "Collaborators"]` strip). The
+    /// Collaborators slot has no `WsTab` variant yet so its click branch
+    /// is a no-op consumer, but its rect is still cached so the click is
+    /// swallowed instead of falling through to the name-input commit
+    /// path (#6, B-7). All four entries are `Rect::ZERO` until the first
+    /// `draw_ws_settings` populates them; cleared back to `Rect::ZERO`
+    /// when the modal closes so a stale click during a crossfade can't
+    /// flip tabs after the modal is gone.
+    ws_settings_tab_pill_rects: [Rect; 4],
     /// Vertical inset at which the floating sidebar wheel starts. Defaults
     /// to [`SIDEBAR_TOP_OFFSET_PX`] (matches `TOPBAR_HEIGHT_PX`) but the
     /// real shell wraps its topbar in a padded `Column`/`Container`, so
@@ -248,6 +260,7 @@ impl ShellOverlayHost {
             palette_was_visible: false,
             group_row_ptrs: HashMap::new(),
             add_workspace_rect: Rect::ZERO,
+            ws_settings_tab_pill_rects: [Rect::ZERO; 4],
             sidebar_top_y: SIDEBAR_TOP_OFFSET_PX,
         }
     }
@@ -480,8 +493,43 @@ impl ShellOverlayHost {
         self.add_workspace_rect
     }
 
+    /// Read-only accessor for the cached WS-settings tab-pill rect for
+    /// `tab`. Populated by [`Self::draw_ws_settings`] each frame the
+    /// modal is visible and cleared back to `Rect::ZERO` once the modal
+    /// is hidden. The four pills painted in the modal map to
+    /// `[General, Roles, Files, Collaborators]`; only the first three
+    /// have matching `WsTab` variants — Collaborators is visual-only,
+    /// so this accessor only exposes the typed three.
+    ///
+    /// Concept ref: `WorkspaceSettingsModal.tsx:50-95` — the tab strip
+    /// is the modal's only visible nav, and clicking a pill must mutate
+    /// `chrome.ws_settings_tab` directly. Pre-2-A the click branch in
+    /// `handle_event` was missing, so users could only switch tabs via
+    /// the keyboard focus trap.
+    pub(crate) fn ws_settings_tab_pill_rect(&self, tab: WsTab) -> Rect {
+        let idx = match tab {
+            WsTab::General => 0,
+            WsTab::Roles => 1,
+            WsTab::Files => 2,
+        };
+        self.ws_settings_tab_pill_rects[idx]
+    }
+
     fn toggle_palette(&mut self) {
+        let was_visible = self.palette_visible;
         self.palette_visible = !self.palette_visible;
+        // On the false → true transition focus the input + clear the
+        // residual query so the user can start typing immediately
+        // without having to click the input first (#6 in the audit
+        // plan, Wave 2 / Unit 2-A). The `is_focused` bit drives the
+        // caret blink + keystroke routing inside `CommandPalette`;
+        // without this nudge the palette opens but every keystroke
+        // falls through to whichever widget the focus pointer last
+        // landed on.
+        if !was_visible && self.palette_visible {
+            self.palette.set_focus(true);
+            self.palette.set_query("");
+        }
     }
 
     /// Read-only accessor for the command-palette ("global search")
@@ -1050,6 +1098,12 @@ impl Widget for ShellOverlayHost {
         }
         if !flags.ws_settings {
             self.ws_settings_opened_at = None;
+            // Clear cached pill rects so a stray click during the
+            // crossfade close (where the modal is fully invisible but
+            // not yet flipped to false in the chrome) can't flip tabs.
+            // Mirrors the `add_workspace_rect = Rect::ZERO` pattern
+            // above (#6, B-7).
+            self.ws_settings_tab_pill_rects = [Rect::ZERO; 4];
         }
         self.ws_settings_was_open = flags.ws_settings;
         if flags.ws_settings {
@@ -1580,6 +1634,45 @@ impl Widget for ShellOverlayHost {
                         }
                         *handled = true;
                         return;
+                    }
+                    // Tab-pill click (#6, B-7): hit-test the four pills
+                    // cached by `draw_ws_settings` *before* the name-input
+                    // branch so a click on a pill never falls through to
+                    // "commit pending edit". Indices 0..3 map to
+                    // [General, Roles, Files, Collaborators]; the first
+                    // three flip `chrome.ws_settings_tab` directly. The
+                    // Collaborators slot has no `WsTab` variant yet — its
+                    // click is consumed (so the name-edit isn't committed
+                    // and the modal isn't dismissed) but otherwise a
+                    // no-op until a `WsTab::Collaborators` arm exists.
+                    let pill_rects = self.ws_settings_tab_pill_rects;
+                    for (idx, prect) in pill_rects.iter().enumerate() {
+                        if prect.area() > 0.0 && prect.contains(p) {
+                            if let Some(chrome) = self.chrome.clone() {
+                                let mut st = chrome.borrow_mut();
+                                // Commit any in-flight name edit before
+                                // switching tabs so a half-typed name
+                                // isn't silently dropped on tab flip.
+                                st.commit_workspace_name();
+                                match idx {
+                                    0 => {
+                                        st.ws_settings_tab = WsTab::General;
+                                        st.bump();
+                                    }
+                                    1 => {
+                                        st.ws_settings_tab = WsTab::Roles;
+                                        st.bump();
+                                    }
+                                    2 => {
+                                        st.ws_settings_tab = WsTab::Files;
+                                        st.bump();
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            *handled = true;
+                            return;
+                        }
                     }
                     // Click inside the modal: routes to the Name input rect
                     // (begins an edit) or — on any other click inside the
@@ -2824,6 +2917,12 @@ impl ShellOverlayHost {
         let tabs = ["General", "Roles", "Files", "Collaborators"];
         let mut tx = rect.x0 + 24.0;
         let ty = rect.y0 + 112.0;
+        // Local pill-rect buffer; written into `self.ws_settings_tab_
+        // pill_rects` after the loop so a single source of geometry
+        // feeds both the draw and the click-routing path. Mirrors the
+        // `add_workspace_rect` cache pattern already in this file (#6,
+        // B-7).
+        let mut pill_rects = [Rect::ZERO; 4];
         for (i, tab) in tabs.iter().enumerate() {
             let active = matches!(
                 (i, active_tab),
@@ -2831,6 +2930,7 @@ impl ShellOverlayHost {
             );
             let (w, h) = text_renderer.measure(tab, lsize, None);
             let pill_rect = Rect::new(tx - 8.0, ty - 4.0, tx + w as f64 + 8.0, ty + h as f64 + 4.0);
+            pill_rects[i] = pill_rect;
             let pill = RoundedRect::from_rect(pill_rect, tokens.radii.md as f64);
             if active {
                 scene.fill(Fill::NonZero, transform, colors.surfaces.overlay, None, &pill);
@@ -2846,6 +2946,7 @@ impl ShellOverlayHost {
             );
             tx += w as f64 + 32.0;
         }
+        self.ws_settings_tab_pill_rects = pill_rects;
 
         // Per-tab body dispatch. Roles owns its own body; Files falls
         // through to the General body until T3's dedicated Files pane
@@ -4922,3 +5023,339 @@ mod overlay_event_absorb_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Wave 2 / Unit 2-A pins (#6, B-7).
+    //!
+    //! 1. `toggle_palette_focuses_input` — opening the global-search
+    //!    palette via the live Ctrl+K production path must focus the
+    //!    palette's input *and* clear any residual query, so the user
+    //!    can start typing immediately. Pre-2-A the palette opened with
+    //!    `is_focused = false` and a stale query, swallowing every
+    //!    keystroke until the user clicked the input first.
+    //! 2. `ws_settings_pill_click_switches_tab` — clicking the Files
+    //!    pill in the WS-settings tab strip must mutate
+    //!    `chrome.ws_settings_tab` to `WsTab::Files`. Pre-2-A the click
+    //!    fell through to the name-input commit branch and the only
+    //!    way to switch tabs was via the keyboard focus trap.
+    //!
+    //! Both tests drive `host.handle_event(...)` with real winit
+    //! `WindowEvent`s — they observe chrome state mutations through
+    //! the same code path the live binary takes, never reaching into
+    //! private toggles.
+    use super::*;
+    use crate::shell::chrome_state::{ChromeState, WsTab};
+    use crate::shell::state::WorkspaceTree;
+    use std::collections::HashMap as StdHashMap;
+    use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+    use vello::Scene;
+    use vello::kurbo::Affine;
+    use winit::dpi::PhysicalPosition;
+    use winit::event::{
+        ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent,
+    };
+    use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey};
+
+    /// Recording mock content widget — the host's `content` slot is a
+    /// `Box<dyn Widget>` and the existing `Container::new()` stub is
+    /// fine for the palette test (the input-focus assertion never
+    /// reaches `content.handle_event`), but the WS-settings click test
+    /// needs a non-trivial layout target so taffy can place the modal
+    /// rect inside the viewport. Reusing the absorb-suite's recording
+    /// stub keeps the two test modules aligned.
+    struct StubContent {
+        rect: Rect,
+    }
+
+    impl StubContent {
+        fn new() -> Self {
+            Self { rect: Rect::ZERO }
+        }
+    }
+
+    impl Widget for StubContent {
+        fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
+
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut StdHashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let style = Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
+                ..Default::default()
+            };
+            let node = taffy.new_leaf(style).unwrap();
+            node_map.insert(node, self as *mut dyn Widget);
+            node
+        }
+
+        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+            let l = taffy.layout(node).unwrap();
+            self.rect = Rect::new(
+                origin.x + l.location.x as f64,
+                origin.y + l.location.y as f64,
+                origin.x + l.location.x as f64 + l.size.width as f64,
+                origin.y + l.location.y as f64 + l.size.height as f64,
+            );
+        }
+
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _text_renderer: &mut TextRenderer,
+            _theme: &Theme,
+            _presence: &PresenceCtx,
+        ) {}
+
+        fn handle_event(
+            &mut self,
+            _event: &WindowEvent,
+            _scale_factor: f64,
+            _modifiers: &winit::event::Modifiers,
+            _state: &mut AutoCommit,
+            _path: &ObjId,
+            _handled: &mut bool,
+            _focus_target: &mut Option<NodeId>,
+            _node_id: NodeId,
+            _taffy: &TaffyTree<()>,
+        ) {
+        }
+
+        fn name(&self) -> &str {
+            "StubContent"
+        }
+
+        fn get_rect(&self) -> Rect {
+            self.rect
+        }
+    }
+
+    /// Bundle of host + chrome + the taffy state needed to dispatch
+    /// real `WindowEvent`s through `host.handle_event(...)`.
+    struct Harness {
+        host: ShellOverlayHost,
+        chrome: crate::shell::chrome_state::Chrome,
+        taffy: TaffyTree<()>,
+        root_node: NodeId,
+    }
+
+    fn build_harness() -> Harness {
+        let tree = WorkspaceTree::bootstrap_default();
+        let chrome = ChromeState::new(tree);
+        let content = Box::new(StubContent::new());
+        let mut host = ShellOverlayHost::new(content).with_chrome(chrome.clone());
+
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: StdHashMap<NodeId, *mut dyn Widget> = StdHashMap::new();
+        let child = host.build_layout(&mut taffy, &theme, &mut node_map);
+        let viewport = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(1600.0),
+                        height: Dimension::length(900.0),
+                    },
+                    ..Default::default()
+                },
+                &[child],
+            )
+            .unwrap();
+        let mut tr = TextRenderer::new();
+        let measure_map = node_map.clone();
+        taffy
+            .compute_layout_with_measure(
+                viewport,
+                Size {
+                    width: AvailableSpace::Definite(1600.0),
+                    height: AvailableSpace::Definite(900.0),
+                },
+                |known, avail, node_id, _, _| {
+                    if let Some(&ptr) = measure_map.get(&node_id) {
+                        unsafe { (*ptr).measure(known, avail, &mut tr) }
+                    } else {
+                        taffy::Size::ZERO
+                    }
+                },
+            )
+            .expect("compute_layout");
+        host.apply_layout(&taffy, child, Point::ORIGIN);
+
+        Harness {
+            host,
+            chrome,
+            taffy,
+            root_node: child,
+        }
+    }
+
+    fn pump(
+        h: &mut Harness,
+        event: &WindowEvent,
+        modifiers: &Modifiers,
+    ) -> bool {
+        let mut doc = AutoCommit::new();
+        let doc_root = automerge::ROOT.clone();
+        let mut focus: Option<NodeId> = None;
+        let mut handled = false;
+        h.host.handle_event(
+            event,
+            1.0,
+            modifiers,
+            &mut doc,
+            &doc_root,
+            &mut handled,
+            &mut focus,
+            h.root_node,
+            &h.taffy,
+        );
+        handled
+    }
+
+    /// Build a `KeyEvent` via the same zero-init workaround used by
+    /// `tests/e2e_shell_flows.rs::key_press` — winit 0.30's
+    /// `KeyEventExtra` is `pub(crate)`, so we can't go through a
+    /// struct literal. Hand-write one over a zeroed buffer and only
+    /// overwrite the pub fields the host actually reads (`logical_key`
+    /// + `state`).
+    fn key_press(logical_key: Key) -> WindowEvent {
+        // SAFETY: all pub fields of `KeyEvent` tolerate the all-zero
+        // bit pattern (`logical_key` is overwritten below, `text` is
+        // `Option<…>` whose niche-optimised `None` is the all-zero
+        // bit pattern, and `KeyEventExtra` is `pub(crate)` and only
+        // inspected by winit-internal code that the host never reaches).
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = logical_key;
+        ev.physical_key =
+            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+
+    fn cursor_moved_at(p: Point) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: PhysicalPosition::new(p.x, p.y),
+        }
+    }
+
+    fn left_button_pressed() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
+    }
+
+    /// Stuff a non-empty query into the palette before opening it,
+    /// then assert that the open transition both focuses the input
+    /// AND clears the query. Drives the production Ctrl+K path
+    /// through `handle_event` so the test fails if either the focus
+    /// nudge or the query reset is dropped.
+    #[test]
+    fn toggle_palette_focuses_input() {
+        let mut h = build_harness();
+        // Seed a stale query so the "clear on open" half of the spec
+        // is observable too.
+        h.host.palette.set_query("stale residual");
+        assert!(
+            !h.host.palette.is_focused(),
+            "palette must start unfocused"
+        );
+        assert!(!h.host.palette_visible(), "palette must start hidden");
+
+        let mods = Modifiers::from(ModifiersState::CONTROL);
+        let handled = pump(&mut h, &key_press(Key::Character("k".into())), &mods);
+
+        assert!(handled, "Ctrl+K must be consumed by the overlay host");
+        assert!(
+            h.host.palette_visible(),
+            "Ctrl+K must open the global-search palette"
+        );
+        assert!(
+            h.host.palette.is_focused(),
+            "opening the palette via Ctrl+K must focus its input \
+             (so the very first keystroke after open lands in the search box)"
+        );
+        assert_eq!(
+            h.host.palette.query(),
+            "",
+            "opening the palette must clear any residual query — \
+             {:?} should have been wiped",
+            h.host.palette.query()
+        );
+    }
+
+    /// Click the Files pill in the WS-settings tab strip and assert
+    /// `chrome.ws_settings_tab` flips to `WsTab::Files`. The test:
+    ///   1. opens the modal,
+    ///   2. paints one frame so `draw_ws_settings` populates the
+    ///      cached pill rects,
+    ///   3. reads the Files pill rect through the `ws_settings_tab_
+    ///      pill_rect` accessor,
+    ///   4. dispatches a real `MouseInput::Pressed` via `handle_event`
+    ///      at that rect's centre.
+    /// Pre-2-A the click branch was missing — the click would fall
+    /// through to the name-input commit path and `ws_settings_tab`
+    /// would stay `WsTab::General`.
+    #[test]
+    fn ws_settings_pill_click_switches_tab() {
+        let mut h = build_harness();
+        h.chrome.borrow_mut().overlays.ws_settings = true;
+        assert_eq!(
+            h.chrome.borrow().ws_settings_tab,
+            WsTab::General,
+            "modal must default to the General tab"
+        );
+
+        // The pill rects are populated inside `draw_ws_settings`, so
+        // we have to paint one frame before they're queryable. Drive
+        // the public `Widget::draw` path with the same theme + dummy
+        // presence the live binary uses.
+        let theme = Theme::dark();
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::empty();
+        h.host.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+
+        let files_pill = h.host.ws_settings_tab_pill_rect(WsTab::Files);
+        assert!(
+            files_pill.area() > 0.0,
+            "Files pill rect must be populated by draw_ws_settings; got {:?}",
+            files_pill
+        );
+        let p = files_pill.center();
+
+        // MouseInput doesn't carry position data; seed `last_cursor`
+        // through a CursorMoved at the same point first.
+        let mods = Modifiers::default();
+        let _ = pump(&mut h, &cursor_moved_at(p), &mods);
+        let handled = pump(&mut h, &left_button_pressed(), &mods);
+
+        assert!(
+            handled,
+            "click on the Files pill must be consumed by the overlay host"
+        );
+        assert_eq!(
+            h.chrome.borrow().ws_settings_tab,
+            WsTab::Files,
+            "click on the Files pill must flip chrome.ws_settings_tab to Files \
+             (production path through handle_event, not a direct setter)"
+        );
+    }
+}
+
