@@ -162,6 +162,14 @@ impl WindowGroup {
     }
     pub fn width(&self) -> WindowWidth { self.width }
 
+    /// Builder: start the group already maximized. Used when constructing
+    /// groups from persisted state where the user had toggled maximize
+    /// before restart (audit task #105).
+    pub fn with_maximized(mut self, maximized: bool) -> Self {
+        self.maximized = maximized;
+        self
+    }
+
     /// Latch the concept-faithful spawn fade-in: opacity 0→1, scale
     /// 0.92→1, and a -16 px → 0 horizontal settle over `SPAWN_ANIM_MS`,
     /// eased with a cubic-out curve. Callers that create a brand-new
