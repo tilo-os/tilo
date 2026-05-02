@@ -2219,6 +2219,13 @@ fn modal_open_curve(opened_at: Option<Instant>, start_scale: f64) -> (f32, f64, 
     (eased as f32, 20.0 * (1.0 - eased), scale)
 }
 
+/// Format the workspace-card footer counter, pluralising "window" so
+/// the overview reads "1 window" / "0 windows" / "2 windows" rather
+/// than the always-plural "1 windows" placeholder.
+fn windows_label(n: usize) -> String {
+    if n == 1 { "1 window".to_string() } else { format!("{n} windows") }
+}
+
 /// Paint a single concept-parity MiniWindow inside `rect`.
 ///
 /// Concept `OverviewView.tsx:6-32`:
@@ -2826,7 +2833,7 @@ impl ShellOverlayHost {
 
             // Footer: N windows counter.
             let win_count: usize = ws.strips.iter().map(|s| s.window_groups.len()).sum();
-            let footer = format!("{} windows", win_count);
+            let footer = windows_label(win_count);
             let footer_y = rect.y1 - OVERVIEW_CARD_PADDING_PX - 14.0;
             text_renderer.draw_text(
                 scene,
@@ -3862,37 +3869,27 @@ impl ShellOverlayHost {
             };
             scene.fill(Fill::NonZero, transform, bg, None, &card_rr);
 
-            // Wifi glyph for slot 0 (lucide path exists); slot 1 falls
-            // back to a placeholder until the icon set grows the
-            // `Bluetooth` glyph.
+            // Wifi glyph for slot 0, Bluetooth for slot 1 — both lucide
+            // paths now live in `quick_ui::icons`.
             let glyph_box = Rect::new(
                 card.x0 + 12.0,
                 card.y0 + 12.0,
                 card.x0 + 12.0 + 20.0,
                 card.y0 + 12.0 + 20.0,
             );
-            if i == 0 {
-                quick_ui::icons::draw_icon(
-                    scene,
-                    transform,
-                    glyph_box,
-                    quick_ui::icons::Icon::Wifi,
-                    colors.text_primary,
-                    quick_ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-                );
+            let icon = if i == 0 {
+                quick_ui::icons::Icon::Wifi
             } else {
-                let cx = glyph_box.x0 + 10.0;
-                let cy = glyph_box.y0 + 10.0;
-                let ring =
-                    vello::kurbo::Circle::new(Point::new(cx, cy), 7.0);
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.5),
-                    transform,
-                    colors.text_primary,
-                    None,
-                    &ring,
-                );
-            }
+                quick_ui::icons::Icon::Bluetooth
+            };
+            quick_ui::icons::draw_icon(
+                scene,
+                transform,
+                glyph_box,
+                icon,
+                colors.text_primary,
+                quick_ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
 
             // Trailing chevron — placeholder caret for now.
             let chev_cx = card.x1 - 16.0;
@@ -4424,6 +4421,13 @@ mod overview_transition_tests {
         // Dummy content widget — `Container::new()` produces an empty
         // layout node which is enough for the transition state tests.
         ShellOverlayHost::new(Box::new(Container::new()))
+    }
+
+    #[test]
+    fn windows_label_pluralizes_correctly() {
+        assert_eq!(windows_label(0), "0 windows");
+        assert_eq!(windows_label(1), "1 window");
+        assert_eq!(windows_label(2), "2 windows");
     }
 
     #[test]
