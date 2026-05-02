@@ -23,6 +23,9 @@ pub use widget::{AppCommand, AppKind, AppWidget, IconDescriptor};
 pub use widget::command_palette::{CommandEntry, CommandPalette};
 pub use text_render::{TextRenderer, TextWeight};
 
+// Unified animation primitives (foundation #17).
+pub use animation::{Animated, Curve, Lerp};
+
 // Collaboration contract types (Phase C).
 pub use presence::{PresenceCtx, PresenceKey, PathSegment, SelectionRange};
 pub use permissions::{
