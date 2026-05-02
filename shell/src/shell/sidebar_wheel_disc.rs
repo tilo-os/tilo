@@ -324,10 +324,16 @@ impl SidebarWheelDisc {
 }
 
 /// Map a workspace label to its lucide glyph. Mirrors `WORKSPACES` in
-/// `radial-workspace-switcher/src/App.tsx`. `dev` and `development`
-/// both resolve to `Code` (the concept's id is `dev` but the visible
-/// label is "Development"). Anything unknown falls back to `Layers`,
-/// matching the concept's default tile glyph.
+/// `radial-workspace-switcher/src/App.tsx` for the concept's six ids,
+/// then extends the table with the labels seeded by
+/// `WorkspaceTree::bootstrap_default` (`Home` / `Research`) so the live
+/// shell's first-boot spokes paint a recognisable glyph instead of
+/// falling through to the generic `Layers` default. Inputs are expected
+/// to already be lower-cased by the caller; matches are exact ASCII so
+/// upstream label-rename ripples here as a missed default. `dev` and
+/// `development` both resolve to `Code` (the concept's id is `dev` but
+/// the visible label is "Development"). Anything unknown falls back to
+/// `Layers`, matching the concept's default tile glyph.
 fn spoke_icon_for_label(label: &str) -> Icon {
     match label {
         "design" => Icon::PenTool,
@@ -336,6 +342,12 @@ fn spoke_icon_for_label(label: &str) -> Icon {
         "analytics" => Icon::BarChart,
         "concept" => Icon::Layers,
         "settings" => Icon::Settings,
+        // Default-tree labels seeded by `WorkspaceTree::bootstrap_default`.
+        // `Home` paints lucide's house glyph; `Research` borrows the
+        // magnifier (Lucide's `search`) since it's the closest semantic
+        // match in the existing icon set.
+        "home" => Icon::Home,
+        "research" => Icon::Search,
         _ => Icon::Layers,
     }
 }
@@ -1300,6 +1312,27 @@ mod tests {
         assert_eq!(d.rotation_deg, 0.0);
         assert!(d.drag_from.is_none());
         assert!(!d.wants_pointer_capture());
+    }
+
+    /// Default workspace labels (`Home` / `Research` / `Design`) seeded
+    /// by `WorkspaceTree::bootstrap_default` must each map to a
+    /// distinctive lucide glyph rather than falling through to the
+    /// generic `Layers` default. Without this guard `Home` and
+    /// `Research` both painted the layered-stripes glyph in
+    /// `target/inspect/desktop.png`, making the active spoke unreadable.
+    /// Also pins the public `spoke_icon` API to confirm it lower-cases
+    /// the label before resolving.
+    #[test]
+    fn default_workspace_labels_resolve_to_distinct_glyphs() {
+        assert_eq!(spoke_icon_for_label("home"), Icon::Home);
+        assert_eq!(spoke_icon_for_label("research"), Icon::Search);
+        assert_eq!(spoke_icon_for_label("design"), Icon::PenTool);
+        // Public API path goes through the same table; we verify the
+        // case-insensitive lower-casing happens at the call site.
+        let d = mk(&["Home", "Research", "Design"]);
+        assert_eq!(d.spoke_icon(0), Icon::Home);
+        assert_eq!(d.spoke_icon(1), Icon::Search);
+        assert_eq!(d.spoke_icon(2), Icon::PenTool);
     }
 
     /// Hover into the visible arc without pressing must NOT make the
