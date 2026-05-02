@@ -48,6 +48,7 @@ pub enum Icon {
     LayoutGrid,
     Settings2,
     Wifi,
+    Bluetooth,
     Monitor,
     Battery,
     Shield,
@@ -146,6 +147,10 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("M5 12.859a10 10 0 0 1 14 0"),
             path_from_d("M8.5 16.429a5 5 0 0 1 7 0"),
         ],
+        // Bluetooth: single zigzag path from lucide v0.546.0's
+        // `bluetooth.js`. Two diagonal up/down strokes meeting in the
+        // middle to form the classic Bluetooth runic glyph.
+        Icon::Bluetooth => vec![path_from_d("m7 7 10 10-5 5V2l5 5L7 17")],
         // Screen rect + stand.
         Icon::Monitor => vec![
             rect_path(2.0, 3.0, 20.0, 14.0, 2.0),
@@ -384,6 +389,7 @@ mod tests {
             Icon::LayoutGrid,
             Icon::Settings2,
             Icon::Wifi,
+            Icon::Bluetooth,
             Icon::Monitor,
             Icon::Battery,
             Icon::Shield,
