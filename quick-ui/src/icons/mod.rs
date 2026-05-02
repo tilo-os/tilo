@@ -66,6 +66,7 @@ pub enum Icon {
     BarChart,
     Layers,
     Settings,
+    Home,
 }
 
 /// Lucide's fixed viewBox. Every stored path assumes this coordinate
@@ -242,6 +243,13 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"),
             circle_path(12.0, 12.0, 3.0),
         ],
+        // Home: pitched-roof house outline + central doorway rect.
+        // Transcribed from lucide's `house.js` (v0.546.0) — the icon
+        // is exported under the `home` alias as well.
+        Icon::Home => vec![
+            path_from_d("M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"),
+            path_from_d("M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"),
+        ],
     }
 }
 
@@ -407,6 +415,7 @@ mod tests {
             Icon::BarChart,
             Icon::Layers,
             Icon::Settings,
+            Icon::Home,
         ] {
             let sub = icon_subpaths(icon);
             assert!(!sub.is_empty(), "{icon:?} produced no subpaths");
@@ -427,6 +436,7 @@ mod tests {
         assert_eq!(icon_subpaths(Icon::BarChart).len(), 3, "bar-chart = 3 column paths");
         assert_eq!(icon_subpaths(Icon::Layers).len(), 3, "layers = 3 stacked plate paths");
         assert_eq!(icon_subpaths(Icon::Settings).len(), 2, "settings = gear path + dot");
+        assert_eq!(icon_subpaths(Icon::Home).len(), 2, "home = roof + doorway paths");
         for icon in [
             Icon::PenTool,
             Icon::Code,
@@ -434,6 +444,7 @@ mod tests {
             Icon::BarChart,
             Icon::Layers,
             Icon::Settings,
+            Icon::Home,
         ] {
             for p in icon_subpaths(icon) {
                 assert!(element_count(&p) > 0, "{icon:?} subpath empty");
