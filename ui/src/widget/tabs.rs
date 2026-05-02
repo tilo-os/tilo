@@ -65,6 +65,75 @@ const CLOSE_SCALE_END: f64 = 0.95;
 /// `y: -20` exit keyframe.
 const CLOSE_Y_OFFSET_END: f64 = -20.0;
 
+/// Uniform scale applied to a pill while the user is pressing on it.
+/// Mirrors the concept's `active:scale-95` (Tailwind shorthand for 0.95);
+/// we use 0.97 so the compression reads as a tactile "click feedback"
+/// without making the title appear to jump.
+const PRESS_SCALE: f64 = 0.97;
+
+/// Resolved per-pill appearance for a single draw frame. Computed once
+/// in `pill_appearance` and consumed by `draw_pill_inner` so the
+/// active / hover / pressed visual contract lives in one place — and is
+/// directly testable without scraping a Vello scene.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PillAppearance {
+    /// Rounded-rect body fill. `Color::TRANSPARENT` (alpha 0) for idle
+    /// inactive pills; `surface_white_5` on hover; `surface_white_10`
+    /// when active. Callers must skip the fill call when alpha is 0 so
+    /// we don't emit a no-op draw command per pill per frame.
+    pub fill: vello::peniko::Color,
+    /// Optional 1-px outer border. `None` for idle / hover (concept's
+    /// `border border-transparent`); `border_white_10` when active.
+    pub border: Option<vello::peniko::Color>,
+    /// Optional 1-px-inset stroke that gives the active pill a subtle
+    /// inner glow. `None` unless active. Painted at `border_white_20`.
+    pub inner_glow: Option<vello::peniko::Color>,
+    /// Uniform scale applied around the pill centre. `1.0` for normal;
+    /// `PRESS_SCALE` while pressed (composes with drag-source-dim so a
+    /// drag-in-flight still visibly compresses).
+    pub scale: f64,
+}
+
+/// Decide a pill's body appearance for one frame given the three input
+/// states (active / hover / pressed). Encodes the contrast contract from
+/// `nirios-concept/src/components/WindowFrame.tsx`:
+///
+/// | State                        | Fill              | Border         | Inner glow      |
+/// |------------------------------|-------------------|----------------|-----------------|
+/// | idle (inactive, !hover)      | transparent       | none           | none            |
+/// | hover (inactive, hover)      | `surface_white_5` | none           | none            |
+/// | active                       | `surface_white_10`| `border_white_10` | `border_white_20` |
+/// | active + hover               | same as active    | same           | same            |
+/// | pressed                      | same as active    | same           | same, scale 0.97|
+///
+/// The active-tier fill / border / glow stay the same when hovered so
+/// an active pill never gets *more* prominent on hover — the contrast
+/// gain is solely on inactive pills brightening into the active tier.
+pub(crate) fn pill_appearance(
+    theme: &Theme,
+    is_active: bool,
+    is_hover: bool,
+    is_pressed: bool,
+) -> PillAppearance {
+    let colors = &theme.tokens.colors;
+    // Pressed implies active-tier visuals (the user only ever presses
+    // the tab they intend to focus next), even if the pill isn't the
+    // currently-active one yet — gives instant click feedback before
+    // the activation propagates through the parent.
+    let raised = is_active || is_pressed;
+    let fill = if raised {
+        colors.surface_white_10
+    } else if is_hover {
+        colors.surface_white_5
+    } else {
+        vello::peniko::Color::TRANSPARENT
+    };
+    let border = if raised { Some(colors.border_white_10) } else { None };
+    let inner_glow = if raised { Some(colors.border_white_20) } else { None };
+    let scale = if is_pressed { PRESS_SCALE } else { 1.0 };
+    PillAppearance { fill, border, inner_glow, scale }
+}
+
 /// A tab whose close button was clicked and is now fading out. Kept
 /// in `TabBar::closing_tabs` alongside the still-live `tabs` vec so the
 /// pill keeps rendering at a declining alpha + shrinking scale for
@@ -311,6 +380,30 @@ impl TabBar {
 
         let is_active = t.id == self.active_id;
         let is_hover = !suppress_hover && Some(i) == self.hover_idx;
+        // Pressed tracks the press-source pill across the entire press →
+        // (optional drag) → release lifecycle. `press_origin` only clears
+        // on Released, so the press-scale composes with the source-dim
+        // during a drag-in-flight, satisfying the spec's "drag-in-flight
+        // still respects this".
+        let is_pressed = !suppress_hover
+            && self
+                .press_origin
+                .is_some_and(|(j, _)| j == i);
+        let look = pill_appearance(theme, is_active, is_hover, is_pressed);
+        // Apply the press scale-down around the pill's centre. Affects
+        // every paint call below (shadow, body, border, glow, icon, text)
+        // so the whole chrome compresses uniformly. `1.0` short-circuits
+        // to the identity transform so non-pressed pills don't pay for
+        // matrix math.
+        let pill_transform = if (look.scale - 1.0).abs() > f64::EPSILON {
+            let centre = r.center();
+            transform
+                * Affine::translate((centre.x, centre.y))
+                * Affine::scale(look.scale)
+                * Affine::translate((-centre.x, -centre.y))
+        } else {
+            transform
+        };
         // Per-pill drop shadow, approximating the concept's
         // `shadow-[0_8px_32px_rgba(0,0,0,0.2)]`.
         let shadow_y_offset = 6.0_f64;
@@ -330,49 +423,48 @@ impl TabBar {
             let shadow_shape = RoundedRect::from_rect(shadow_rect, radius + spread);
             scene.fill(
                 vello::peniko::Fill::NonZero,
-                transform,
+                pill_transform,
                 vello::peniko::Color::rgba8(0, 0, 0, alpha),
                 None,
                 &shadow_shape,
             );
         }
-        // Pill body. Active / hover / idle mirror the concept's Tailwind
-        // tiers — see `draw` for the derivation.
+        // Pill body. Concept's Tailwind tiers (WindowFrame.tsx):
+        //   idle   → transparent (no fill, no border)
+        //   hover  → bg-white/5 + text brighten
+        //   active → bg-white/10 + border-white/10 + inner glow at /20
+        // Mapped to the `surface_white_*` / `border_white_*` tokens added
+        // in commit f7d5a70 so the contrast is consistent across widgets.
         let shape = RoundedRect::from_rect(r, radius);
-        let (fill_alpha, border_alpha): (u8, u8) = if is_active {
-            (52, 64)
-        } else if is_hover {
-            (26, 40)
-        } else {
-            (8, 18)
-        };
-        let fill = vello::peniko::Color::rgba8(255, 255, 255, fill_alpha);
-        scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            vello::peniko::Color::rgba8(255, 255, 255, border_alpha),
-            None,
-            &shape,
-        );
-        // Active-only inner rim light.
-        if is_active {
-            scene.push_layer(
-                vello::peniko::BlendMode::default(),
-                1.0,
-                transform,
+        if look.fill.a > 0 {
+            scene.fill(vello::peniko::Fill::NonZero, pill_transform, look.fill, None, &shape);
+        }
+        if let Some(border) = look.border {
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                pill_transform,
+                border,
+                None,
                 &shape,
             );
-            let rim = Rect::new(r.x0 + 2.0, r.y0 + 1.0, r.x1 - 2.0, r.y0 + 2.0);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                vello::peniko::Color::rgba8(255, 255, 255, 20),
-                None,
-                &rim,
-            );
-            scene.pop_layer();
         }
+        // Active-only inner glow: a 1-px-inset stroke at border_white_20
+        // sits just inside the outer border, giving the active pill a
+        // subtle "lit edge" that pops against the dotted-grid backdrop.
+        if let Some(glow_color) = look.inner_glow {
+            let inset = Rect::new(r.x0 + 1.0, r.y0 + 1.0, r.x1 - 1.0, r.y1 - 1.0);
+            let inset_shape = RoundedRect::from_rect(inset, (radius - 1.0).max(0.0));
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                pill_transform,
+                glow_color,
+                None,
+                &inset_shape,
+            );
+        }
+        // From here on the rest of the pill chrome paints under
+        // `pill_transform` so it compresses with the body when pressed.
+        let transform = pill_transform;
         let text_color = if is_active || is_hover {
             text_primary
         } else {
@@ -578,18 +670,15 @@ impl TabBar {
                 &shadow_shape,
             );
         }
-        // Pill body: use the "inactive" tier — the closing pill is
-        // no longer the active tab (active-id shifted at close-start).
+        // Pill body: use the "inactive" tier — the closing pill is no
+        // longer the active tab (active-id shifted at close-start). With
+        // the new contrast pass an inactive pill is fully transparent;
+        // the closing pill keeps a faint surface_white_5 fill so the
+        // user can still read the title + close glyph clearly during
+        // the fade-out.
         let shape = RoundedRect::from_rect(r, radius);
-        let fill = vello::peniko::Color::rgba8(255, 255, 255, 8);
+        let fill = theme.tokens.colors.surface_white_5;
         scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            vello::peniko::Color::rgba8(255, 255, 255, 18),
-            None,
-            &shape,
-        );
         let text_size = theme.tokens.typography.scale.sm;
         let title_weight = TextWeight::Semibold;
         let (_tw, th) = tr.measure_weighted(&c.desc.title, text_size, None, title_weight);
@@ -2243,32 +2332,157 @@ mod tests {
     /// Guards visual gap #2 from `docs/nirios/visual-gaps.md`: the active
     /// pill fill must be meaningfully stronger than an inactive pill's
     /// fill, otherwise the tab bar reads as uniform and the user can't
-    /// tell which tab is active at a glance. We keep the invariant
-    /// loose (>= 4x) so future tone-tuning can shift individual values
-    /// without tripping the test, but it will catch any regression that
-    /// collapses the two alphas back to similar magnitudes.
+    /// tell which tab is active at a glance.
+    ///
+    /// Re-derived from `pill_appearance` so the test moves with the
+    /// implementation. Inactive idle is now fully transparent (concept
+    /// parity with `border border-transparent` + no fill); hover lifts
+    /// to surface_white_5 and active to surface_white_10 + border + glow.
     #[test]
     fn active_pill_fill_has_stronger_alpha_than_inactive() {
-        // Mirror the literals in `TabBar::draw` — if those move, this
-        // test moves with them. Kept deliberately in-crate so the
-        // contract is re-verified on every `cargo test -p quick-ui`.
-        const ACTIVE_FILL_ALPHA: u8 = 52;
-        const INACTIVE_FILL_ALPHA: u8 = 8;
-        const HOVER_FILL_ALPHA: u8 = 26;
-        const ACTIVE_BORDER_ALPHA: u8 = 64;
-        const INACTIVE_BORDER_ALPHA: u8 = 18;
+        let theme = Theme::dark();
+        let idle = pill_appearance(&theme, false, false, false);
+        let hover = pill_appearance(&theme, false, true, false);
+        let active = pill_appearance(&theme, true, false, false);
+        let active_hover = pill_appearance(&theme, true, true, false);
+
+        assert_eq!(
+            idle.fill.a, 0,
+            "idle inactive pill must paint zero fill so the bar reads as transparent",
+        );
+        assert!(
+            idle.border.is_none() && idle.inner_glow.is_none(),
+            "idle inactive pill must paint no border or glow",
+        );
+
+        let hover_alpha = hover.fill.a;
+        let active_alpha = active.fill.a;
+        assert!(
+            hover_alpha > 0 && hover_alpha < active_alpha,
+            "hover fill sits between idle and active (idle 0 < hover {hover_alpha} \
+             < active {active_alpha}) so hover feels like a lift toward the \
+             active tier without matching it",
+        );
+        assert!(
+            active.border.is_some() && active.inner_glow.is_some(),
+            "active pill must paint a border + inner glow so it reads as raised",
+        );
+        // Active-on-hover is identical to active — concept parity with
+        // `WindowFrame.tsx` where the active tab doesn't escalate further
+        // on hover.
+        assert_eq!(
+            active.fill.a, active_hover.fill.a,
+            "active pill should not change on hover",
+        );
+    }
+
+    /// Pressed (mouse down on a pill) must visibly compress the pill
+    /// chrome with a subtle scale-down so the click reads as tactile
+    /// feedback. The press also raises the pill into the active visual
+    /// tier (fill + border + glow) so the user sees instant
+    /// "you clicked here" feedback before the activation propagates.
+    #[test]
+    fn pressed_pill_uses_active_visuals_and_scales_down() {
+        let theme = Theme::dark();
+        let pressed_inactive = pill_appearance(&theme, false, false, true);
+        let active = pill_appearance(&theme, true, false, false);
+
+        // Same fill / border / glow as active.
+        assert_eq!(
+            pressed_inactive.fill.a, active.fill.a,
+            "pressed pill must adopt the active fill alpha for instant feedback",
+        );
+        assert!(pressed_inactive.border.is_some(), "pressed pill paints a border");
+        assert!(pressed_inactive.inner_glow.is_some(), "pressed pill paints a glow");
+        // Distinct scale.
+        assert!(
+            pressed_inactive.scale < 1.0 && pressed_inactive.scale > 0.9,
+            "pressed scale must compress (0.9 < scale < 1.0); got {}",
+            pressed_inactive.scale,
+        );
+        assert!(
+            (active.scale - 1.0).abs() < f64::EPSILON,
+            "non-pressed active pill must not scale",
+        );
+    }
+
+    /// End-to-end scene check: a bar with one active + two inactive
+    /// pills must emit strictly more solid-colour fills than the same
+    /// three pills all rendered inactive (forced by pointing
+    /// `active_id` at a non-existent id). The delta comes from the
+    /// active pill's body fill + outer border + inner glow stroke,
+    /// each of which lands as a `COLOR` draw tag in the Vello encoding.
+    /// Drop-shadow rings, text, and per-pill icons are equal across
+    /// the two scenes, so a non-zero delta proves the active pill
+    /// paints chrome that inactive pills don't.
+    ///
+    /// Pinning this against the encoding means a future refactor that
+    /// silently drops the active body fill (or collapses it back to a
+    /// near-inactive alpha) fails loudly — the in-crate
+    /// `active_pill_fill_has_stronger_alpha_than_inactive` only checks
+    /// the helper in isolation.
+    #[test]
+    fn active_pill_emits_more_color_fills_than_inactive_siblings() {
+        use vello_encoding::DrawTag;
+
+        fn render_three(active_id: u64) -> usize {
+            let mut b = TabBar::new(
+                "g1",
+                vec![
+                    TabDescriptor::new(1, "A"),
+                    TabDescriptor::new(2, "B"),
+                    TabDescriptor::new(3, "C"),
+                ],
+                active_id,
+            );
+            b.rect = Rect::new(0.0, 0.0, 240.0, 40.0);
+            b.tab_rects = vec![
+                Rect::new(0.0, 6.0, 80.0, 34.0),
+                Rect::new(80.0, 6.0, 160.0, 34.0),
+                Rect::new(160.0, 6.0, 240.0, 34.0),
+            ];
+            b.close_rects = vec![
+                Rect::new(60.0, 10.0, 78.0, 30.0),
+                Rect::new(140.0, 10.0, 158.0, 30.0),
+                Rect::new(220.0, 10.0, 238.0, 30.0),
+            ];
+            b.max_rects = vec![
+                Rect::new(40.0, 10.0, 56.0, 30.0),
+                Rect::new(120.0, 10.0, 136.0, 30.0),
+                Rect::new(200.0, 10.0, 216.0, 30.0),
+            ];
+            b.search_rects = vec![
+                Rect::new(20.0, 10.0, 36.0, 30.0),
+                Rect::new(100.0, 10.0, 116.0, 30.0),
+                Rect::new(180.0, 10.0, 196.0, 30.0),
+            ];
+            // `set_active` guards membership; assigning the field
+            // directly bypasses that so we can stage the "all inactive"
+            // baseline by pointing at id 0 (none of the tabs match).
+            b.active_id = active_id;
+
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let presence = PresenceCtx::default();
+            let mut scene = Scene::new();
+            b.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            scene
+                .encoding()
+                .draw_tags
+                .iter()
+                .filter(|t| **t == DrawTag::COLOR)
+                .count()
+        }
+
+        let with_active = render_three(1);
+        let all_inactive = render_three(0);
 
         assert!(
-            ACTIVE_FILL_ALPHA as f64 > INACTIVE_FILL_ALPHA as f64 * 4.0,
-            "active pill fill must be >= 4x the inactive fill",
-        );
-        assert!(
-            HOVER_FILL_ALPHA > INACTIVE_FILL_ALPHA && HOVER_FILL_ALPHA < ACTIVE_FILL_ALPHA,
-            "hover fill sits between inactive and active so hover feels like a lift",
-        );
-        assert!(
-            ACTIVE_BORDER_ALPHA > INACTIVE_BORDER_ALPHA,
-            "active border is stronger than inactive border",
+            with_active > all_inactive,
+            "active pill must emit more colour fills than the same three pills \
+             all rendered inactive (active+2 inactive: {with_active}, \
+             all-inactive: {all_inactive}); the active body fill + border + \
+             glow stroke account for the delta",
         );
     }
 
