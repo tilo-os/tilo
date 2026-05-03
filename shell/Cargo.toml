@@ -31,6 +31,15 @@ sysinfo = "0.32"
 automerge = "0.7.4"
 taffy = "0.9.2"
 vello = "0.2.1"
+# Phase 2 of `docs/superpowers/plans/2026-05-02-per-workspace-sandbox-permissions.md`:
+# host-side compiler for the per-workspace seccomp-bpf deny-list. Pinned to the
+# latest 0.5.x to track upstream sock_filter / TargetArch shape (x86_64,
+# aarch64, riscv64). Linux-only crate — sandbox callers gate at runtime.
+seccompiler = "0.5"
+# Direct libc dep so we can name the SYS_* and AF_PACKET constants required by
+# the deny-list filter without going through seccompiler's re-export. quick-ui
+# already pulls libc transitively, so Cargo collapses to one copy in the lock.
+libc = "0.2"
 
 [dev-dependencies]
 wayland-client = "0.31"
