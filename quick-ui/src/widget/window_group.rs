@@ -1,7 +1,8 @@
 use automerge::{AutoCommit, ObjId};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{WindowEvent, MouseButton, ElementState};
+use winit::event::{WindowEvent, MouseButton, ElementState, KeyEvent};
+use winit::keyboard::Key;
 use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use taffy::style_helpers::length;
 use std::collections::HashMap;
@@ -1089,6 +1090,27 @@ impl Widget for WindowGroup {
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } if self.resize_origin.is_some() => {
                 self.end_resize(); *handled = true; return;
+            }
+            WindowEvent::KeyboardInput {
+                event: KeyEvent { logical_key, state: ElementState::Pressed, repeat: false, .. },
+                ..
+            } if m.state().control_key()
+                && m.state().shift_key()
+                && matches!(logical_key, Key::Character(s) if s.eq_ignore_ascii_case("p")) =>
+            {
+                // Ctrl+Shift+P: toggle pin on the active tab. Routed
+                // through the WindowGroup (rather than the bar's own
+                // keyboard handler) because keyboard events arrive at
+                // the focused widget and the bar isn't focusable —
+                // `WindowGroup::handle_event` is the first stop that
+                // sees the chord while the group has focus. The chord
+                // is intentionally not gated on `bar.tabs().is_empty()`:
+                // an empty bar's `active_id` is `0`, which `toggle_pin`
+                // accepts and the no-op write is harmless.
+                let active = self.bar.active_id();
+                self.bar.toggle_pin(active);
+                *handled = true;
+                return;
             }
             _ => {}
         }
@@ -2353,5 +2375,101 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Ctrl+Shift+P toggles pin state on the active tab. Routed
+    /// through `WindowGroup::handle_event` because the bar isn't
+    /// focusable and keyboard events arrive at the focused widget —
+    /// the WindowGroup is the first layer that owns the bar and can
+    /// see the chord.
+    #[test]
+    fn ctrl_shift_p_toggles_pin_on_active_tab() {
+        use std::collections::HashMap;
+        use taffy::Style;
+        use taffy::prelude::TaffyMaxContent;
+        use crate::theme::Theme;
+        use winit::event::{KeyEvent, Modifiers};
+        use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey, SmolStr};
+
+        let mut g = make_group();
+        let active = g.bar.active_id();
+        assert!(!g.bar.is_pinned(active), "fresh group: active tab is unpinned");
+
+        // Synthesise a Pressed `KeyboardInput` carrying logical key
+        // `Character("p")`. Mirrors the zero-init workaround used in
+        // `command_palette.rs:944-960` — winit 0.30 keeps
+        // `KeyEventExtra` `pub(crate)` so we can't construct
+        // `KeyEvent` through a struct literal.
+        fn key_press(logical_key: Key) -> WindowEvent {
+            let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+            ev.logical_key = logical_key;
+            ev.physical_key =
+                PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+            ev.location = KeyLocation::Standard;
+            ev.state = ElementState::Pressed;
+            ev.repeat = false;
+            ev.text = None;
+            WindowEvent::KeyboardInput {
+                device_id: unsafe { std::mem::zeroed() },
+                event: ev,
+                is_synthetic: false,
+            }
+        }
+
+        let mods = Modifiers::from(ModifiersState::CONTROL | ModifiersState::SHIFT);
+        let event = key_press(Key::Character(SmolStr::new_inline("p")));
+
+        // Drive a layout pass so `handle_event` has a `taffy` tree to
+        // walk — matches the maximize tests above.
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(Style::default(), &[group_node])
+            .unwrap();
+        taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
+        g.apply_layout(&taffy, group_node, Point::ZERO);
+
+        let mut state = automerge::AutoCommit::new();
+        let root_id = automerge::ROOT;
+        let mut handled = false;
+        let mut focus_target = None;
+        g.handle_event(
+            &event, 1.0, &mods,
+            &mut state, &root_id, &mut handled, &mut focus_target,
+            group_node, &taffy,
+        );
+        assert!(handled, "Ctrl+Shift+P press must be claimed");
+        assert!(
+            g.bar.is_pinned(active),
+            "first Ctrl+Shift+P must pin the active tab",
+        );
+
+        // Second press toggles back off.
+        let mut handled = false;
+        g.handle_event(
+            &event, 1.0, &mods,
+            &mut state, &root_id, &mut handled, &mut focus_target,
+            group_node, &taffy,
+        );
+        assert!(handled, "second Ctrl+Shift+P press is also claimed");
+        assert!(
+            !g.bar.is_pinned(active),
+            "second Ctrl+Shift+P must unpin the active tab",
+        );
+
+        // Sanity: the same key without modifiers does NOT toggle.
+        let plain_mods = Modifiers::default();
+        let mut handled = false;
+        g.handle_event(
+            &event, 1.0, &plain_mods,
+            &mut state, &root_id, &mut handled, &mut focus_target,
+            group_node, &taffy,
+        );
+        assert!(
+            !g.bar.is_pinned(active),
+            "plain `P` (no Ctrl+Shift) must not toggle pin state",
+        );
     }
 }
