@@ -54,3 +54,6 @@ png = "0.17"
 # tags without round-tripping pixels through wgpu. Same minor version as
 # the `vello = "0.2.1"` runtime dep; Cargo collapses to a single copy.
 vello_encoding = "0.2.1"
+# Tempdir helper for `network::behaviour::load_or_create_keypair` tests so we
+# never write a real key to `/var/lib/quick-fs/peer-key` from the test suite.
+tempfile = "3"
