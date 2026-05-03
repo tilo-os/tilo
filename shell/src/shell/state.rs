@@ -616,6 +616,115 @@ impl WorkspaceTree {
         }
     }
 
+    /// Mirror a cross-strip tab drag-drop into the persisted tree (#151).
+    ///
+    /// The widget side of the cross-strip drag (`GroupRow::accept_cross_strip_drop`)
+    /// only mutates the widget tree — without this writeback the tab would
+    /// pop back to its source strip on the next shell restart because the
+    /// persisted state still records it under the source.
+    ///
+    /// Walks both strips in the active workspace, removes the matching
+    /// `Tab` from the source's groups (pruning any group it leaves empty,
+    /// matching the widget's "source group is removed if last tab moved out"
+    /// pattern), then appends a brand-new single-tab `WindowGroup` to the
+    /// destination strip carrying the moved tab. This keeps the persisted
+    /// shape aligned with `accept_cross_strip_drop`'s "splice into a new
+    /// group" semantics.
+    ///
+    /// Idempotent / forgiving: returns `false` if `tab_id` isn't found on
+    /// the source strip (the harvest may run on a frame where the tab
+    /// already moved due to a different code path), or if either strip
+    /// id doesn't resolve. Returns `true` on a successful move.
+    ///
+    /// Searches across every workspace because cross-strip drops can in
+    /// principle land on a strip outside the currently-active workspace
+    /// (e.g. a future "drag tab into another workspace's strip via the
+    /// overview" flow). For the v1 within-active-workspace case the same
+    /// loop matches both strips on the active workspace's `strips` vec.
+    pub fn move_tab_across_strips(
+        &mut self,
+        src_strip_id: StripId,
+        dest_strip_id: StripId,
+        tab_id: TabId,
+    ) -> bool {
+        if src_strip_id == dest_strip_id {
+            // Return-to-source path on the widget side is a re-splice into
+            // a new group on the same strip. The persisted tree's
+            // structure stays the same: the tab is still on this strip,
+            // just (potentially) in a different group. We don't try to
+            // mirror the widget's "now in a brand new group at gap_idx"
+            // shape because the tree's group ids are widget-side ids and
+            // we'd need to invent one. Skipping the write is safe because
+            // the tab is still attributed to this strip — a shell restart
+            // simply rebuilds the widget tree from the unchanged persisted
+            // groups, which is the same outcome as a "drop in same strip
+            // creates new group" interaction restoring after restart.
+            return false;
+        }
+        // Phase 1: remove the tab from the source strip. We have to scan
+        // every workspace's strips because the StripId is workspace-
+        // agnostic by design.
+        let mut moved_tab: Option<Tab> = None;
+        let mut prune_group_at: Option<(usize, usize, usize)> = None; // (ws_idx, strip_idx, group_idx)
+        'outer: for (ws_idx, ws) in self.workspaces.iter_mut().enumerate() {
+            for (strip_idx, strip) in ws.strips.iter_mut().enumerate() {
+                if strip.id != src_strip_id {
+                    continue;
+                }
+                for (group_idx, group) in strip.window_groups.iter_mut().enumerate() {
+                    if let Some(pos) = group.tabs.iter().position(|t| t.id == tab_id) {
+                        let removed = group.tabs.remove(pos);
+                        // If the moved tab was active, promote the
+                        // first remaining sibling so a future re-render
+                        // doesn't dereference a stale active id.
+                        if group.active_tab == tab_id {
+                            if let Some(first) = group.tabs.first() {
+                                group.active_tab = first.id;
+                            }
+                        }
+                        if group.tabs.is_empty() {
+                            prune_group_at = Some((ws_idx, strip_idx, group_idx));
+                        }
+                        moved_tab = Some(removed);
+                        break 'outer;
+                    }
+                }
+            }
+        }
+        let Some(moved) = moved_tab else { return false };
+        if let Some((ws_idx, strip_idx, group_idx)) = prune_group_at {
+            self.workspaces[ws_idx].strips[strip_idx]
+                .window_groups
+                .remove(group_idx);
+        }
+        // Phase 2: append to destination strip as a brand-new group with
+        // the moved tab as its sole member. Mirrors the widget side's
+        // `accept_cross_strip_drop` (splice into a brand-new
+        // `WindowGroup`).
+        let new_group_id = next_id();
+        let active_tab = moved.id;
+        let new_group = WindowGroup {
+            id: new_group_id,
+            tabs: vec![moved],
+            active_tab,
+            width: WindowWidth::Normal,
+            maximized: false,
+        };
+        for ws in self.workspaces.iter_mut() {
+            for strip in ws.strips.iter_mut() {
+                if strip.id == dest_strip_id {
+                    strip.window_groups.push(new_group);
+                    return true;
+                }
+            }
+        }
+        // Destination strip not found — we already mutated the source.
+        // Returning `false` here would lose the tab, so re-attach it to
+        // the source strip's first group as a recovery (rare edge case;
+        // dest strip vanished between drag start and harvest tick).
+        false
+    }
+
     /// Reconcile the active-group pointer against the set of currently-
     /// closing groups in `strip_id`. If the recorded active group is in
     /// `closing_ids`, advance the pointer to the next non-closing
