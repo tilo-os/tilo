@@ -3,7 +3,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::{WindowEvent, MouseButton, ElementState};
 use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 use crate::icons;
 use crate::widget::Widget;
@@ -276,6 +276,14 @@ pub struct TabBar {
     /// `take_close()` at close-start so the parent can begin its own
     /// host-level fade-out.
     closing_tabs: Vec<ClosingTab>,
+    /// Sibling-set of pinned tab ids. Sidecar (not a `TabDescriptor`
+    /// field) so adding pin state never ripples into every tab
+    /// constructor. Pinned tabs render as compact icon-only pills to
+    /// the left of unpinned tabs and suppress the close glyph — see
+    /// the visual-layer follow-up plan for the ordering / draw
+    /// indirection. v1 stores ephemerally; CRDT persistence will
+    /// arrive when the rest of `WorkspaceTree` learns about pinning.
+    pub(crate) pinned_ids: HashSet<u64>,
 }
 
 impl TabBar {
@@ -308,6 +316,7 @@ impl TabBar {
             hover_close_idx: None,
             hover_max_idx: None,
             hover_search_idx: None,
+            pinned_ids: HashSet::new(),
             press_origin: None,
             drag_offset: None,
             last_cursor: Point::ZERO,
@@ -769,6 +778,24 @@ impl TabBar {
     pub fn tabs_mut(&mut self) -> &mut Vec<TabDescriptor> { &mut self.tabs }
     pub fn active_id(&self) -> u64 { self.active_id }
     pub fn set_active(&mut self, id: u64) { if self.tabs.iter().any(|t| t.id == id) { self.active_id = id; } }
+    /// True if `id` is currently pinned. Pinned tabs render compact +
+    /// icon-only to the left of unpinned tabs and have their close
+    /// glyph suppressed (visual layer landing in a follow-up).
+    pub fn is_pinned(&self, id: u64) -> bool { self.pinned_ids.contains(&id) }
+    /// Pin `id`. Idempotent: pinning an already-pinned tab is a no-op.
+    /// Caller is responsible for ensuring the tab exists in `self.tabs`;
+    /// stale pin entries are tolerated (filtered at render time) but
+    /// should be cleaned up via `unpin` when the tab is removed.
+    pub fn pin(&mut self, id: u64) { self.pinned_ids.insert(id); }
+    /// Unpin `id`. Idempotent: unpinning an unpinned tab is a no-op.
+    pub fn unpin(&mut self, id: u64) { self.pinned_ids.remove(&id); }
+    /// Flip the pin state of `id`. Convenience for the keyboard shortcut
+    /// `WindowGroup` will route to here.
+    pub fn toggle_pin(&mut self, id: u64) {
+        if !self.pinned_ids.insert(id) {
+            self.pinned_ids.remove(&id);
+        }
+    }
     pub fn remove_tab(&mut self, id: u64) -> Option<usize> {
         let idx = self.tabs.iter().position(|t| t.id == id)?;
         // Snapshot current pill geometry *before* mutating so the spring
@@ -776,6 +803,9 @@ impl TabBar {
         // new rect; the removed tab has no target and simply disappears.
         self.snapshot_layout_for_spring();
         self.tabs.remove(idx);
+        // Pin sidecar follows live tabs: drop any stale entry so a future
+        // pin of a recycled id starts unpinned.
+        self.pinned_ids.remove(&id);
         if self.active_id == id {
             self.active_id = self.tabs.get(idx).or_else(|| self.tabs.last()).map(|t| t.id).unwrap_or(0);
         }
@@ -1791,6 +1821,39 @@ mod tests {
         b.reorder(0, 2);
         let ids: Vec<u64> = b.tabs().iter().map(|t| t.id).collect();
         assert_eq!(ids, vec![2, 3, 1]);
+    }
+
+    /// Pin sidecar foundation: `pin`/`unpin`/`is_pinned`/`toggle_pin`
+    /// behave as a HashSet, idempotent on repeat, and `remove_tab`
+    /// drops stale entries. Visual ordering + close-glyph suppression
+    /// + Ctrl+Shift+P keybind land in a follow-up; this test pins the
+    /// data model that those layers will read from.
+    #[test]
+    fn pin_sidecar_tracks_ids_and_remove_tab_cleans_up() {
+        let mut b = bar();
+        // bar() seeds tabs [1, 2, 3]
+        assert!(!b.is_pinned(2), "fresh bar has no pinned tabs");
+        b.pin(2);
+        assert!(b.is_pinned(2));
+        b.pin(2); // idempotent
+        assert!(b.is_pinned(2));
+
+        b.toggle_pin(2);
+        assert!(!b.is_pinned(2), "toggle off");
+        b.toggle_pin(2);
+        assert!(b.is_pinned(2), "toggle on again");
+
+        b.unpin(99); // unpinning a never-pinned id is a no-op
+        b.unpin(2);
+        assert!(!b.is_pinned(2));
+
+        // Stale-pin cleanup: pin a tab, remove it, ensure the sidecar
+        // doesn't hold a dangling reference. Otherwise a future pin
+        // of a recycled id would inherit the stale state.
+        b.pin(3);
+        assert!(b.is_pinned(3));
+        b.remove_tab(3);
+        assert!(!b.is_pinned(3), "remove_tab must drop the sidecar entry");
     }
 
     #[test]
