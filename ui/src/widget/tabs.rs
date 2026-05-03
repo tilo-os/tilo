@@ -379,6 +379,7 @@ impl TabBar {
         suppress_hover: bool,
     ) {
         let t = &self.tabs[i];
+        let is_pinned = self.pinned_ids.contains(&t.id);
         let pill_height = (self.rect.height() - 2.0 * TAB_PILL_INSET_Y).max(0.0);
         let radius = pill_height / 2.0;
         let text_primary = theme.tokens.colors.text_primary;
@@ -482,37 +483,54 @@ impl TabBar {
         let text_size = theme.tokens.typography.scale.sm;
         let title_weight = TextWeight::Semibold;
         let (_tw, th) = tr.measure_weighted(&t.title, text_size, None, title_weight);
-        let leading_shift = if let Some(kind) = t.app_kind {
-            let icon_x0 = r.x0 + 10.0;
-            let icon_rect = Rect::new(
-                icon_x0,
-                r.center().y - 7.0,
-                icon_x0 + 14.0,
-                r.center().y + 7.0,
-            );
-            draw_app_icon(scene, transform, icon_rect, kind, text_color);
-            14.0 + 6.0
+        if is_pinned {
+            // Pinned pill: icon-centred, no title, no close / max /
+            // search glyphs. The leading app icon (if any) renders
+            // centred so the compact 28-px slot reads as a recognisable
+            // shortcut. Pills with no `app_kind` paint as an empty
+            // bubble — still distinct from unpinned via width.
+            if let Some(kind) = t.app_kind {
+                let icon_rect = Rect::new(
+                    r.center().x - 7.0,
+                    r.center().y - 7.0,
+                    r.center().x + 7.0,
+                    r.center().y + 7.0,
+                );
+                draw_app_icon(scene, transform, icon_rect, kind, text_color);
+            }
         } else {
-            0.0
-        };
-        let title_x = r.x0 + 12.0 + leading_shift;
-        let title_y = r.center().y - th as f64 / 2.0;
-        // Clip the title relative to the close glyph's x-position on the
-        // *visual* rect (target + offset), so titles truncate at the
-        // same relative distance no matter where the pill is painted.
-        let close_x_visual = self.close_rects[i].x0 + dx;
-        let clip_r = Rect::new(r.x0, r.y0, close_x_visual - 2.0, r.y1);
-        scene.push_layer(vello::peniko::BlendMode::default(), 1.0, transform, &clip_r);
-        tr.draw_text_weighted(
-            scene,
-            &t.title,
-            text_size,
-            text_color,
-            transform * Affine::translate((title_x, title_y)),
-            None,
-            title_weight,
-        );
-        scene.pop_layer();
+            let leading_shift = if let Some(kind) = t.app_kind {
+                let icon_x0 = r.x0 + 10.0;
+                let icon_rect = Rect::new(
+                    icon_x0,
+                    r.center().y - 7.0,
+                    icon_x0 + 14.0,
+                    r.center().y + 7.0,
+                );
+                draw_app_icon(scene, transform, icon_rect, kind, text_color);
+                14.0 + 6.0
+            } else {
+                0.0
+            };
+            let title_x = r.x0 + 12.0 + leading_shift;
+            let title_y = r.center().y - th as f64 / 2.0;
+            // Clip the title relative to the close glyph's x-position on the
+            // *visual* rect (target + offset), so titles truncate at the
+            // same relative distance no matter where the pill is painted.
+            let close_x_visual = self.close_rects[i].x0 + dx;
+            let clip_r = Rect::new(r.x0, r.y0, close_x_visual - 2.0, r.y1);
+            scene.push_layer(vello::peniko::BlendMode::default(), 1.0, transform, &clip_r);
+            tr.draw_text_weighted(
+                scene,
+                &t.title,
+                text_size,
+                text_color,
+                transform * Affine::translate((title_x, title_y)),
+                None,
+                title_weight,
+            );
+            scene.pop_layer();
+        }
 
         // Per-tab collaborator presence indicators.
         let tab_key = PresenceKey::Tab { id: format!("{:x}", t.id) };
@@ -544,44 +562,51 @@ impl TabBar {
         // the action before they commit. When the tab is only hovered
         // (but the cursor hasn't zeroed in on the ×), we keep a subtle
         // white tint as a "you can close me" hint.
-        let close_r = self.close_rects[i] + vello::kurbo::Vec2::new(dx, dy);
-        let close_hover = !suppress_hover && Some(i) == self.hover_close_idx;
-        let (close_chip_color, close_chip_visible) = if close_hover {
-            // red-500/80 — `semantic.danger` is rgb(239, 68, 68); at 0.8
-            // alpha this matches Tailwind's `bg-red-500/80` (≈ 204/255).
-            (
-                theme.tokens.colors.semantic.danger.with_alpha_factor(0.8),
-                true,
-            )
-        } else if is_hover {
-            (vello::peniko::Color::rgba8(255, 255, 255, 28), true)
-        } else {
-            (vello::peniko::Color::rgba8(0, 0, 0, 0), false)
-        };
-        if close_chip_visible {
-            let chip = RoundedRect::from_rect(close_r, close_r.height() / 2.0);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                close_chip_color,
-                None,
-                &chip,
-            );
+        //
+        // Suppressed on pinned tabs — those render icon-only and don't
+        // expose a × at all (close-press hit-test in `handle_event`
+        // also filters them out).
+        if !is_pinned {
+            let close_r = self.close_rects[i] + vello::kurbo::Vec2::new(dx, dy);
+            let close_hover = !suppress_hover && Some(i) == self.hover_close_idx;
+            let (close_chip_color, close_chip_visible) = if close_hover {
+                // red-500/80 — `semantic.danger` is rgb(239, 68, 68); at 0.8
+                // alpha this matches Tailwind's `bg-red-500/80` (≈ 204/255).
+                (
+                    theme.tokens.colors.semantic.danger.with_alpha_factor(0.8),
+                    true,
+                )
+            } else if is_hover {
+                (vello::peniko::Color::rgba8(255, 255, 255, 28), true)
+            } else {
+                (vello::peniko::Color::rgba8(0, 0, 0, 0), false)
+            };
+            if close_chip_visible {
+                let chip = RoundedRect::from_rect(close_r, close_r.height() / 2.0);
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    close_chip_color,
+                    None,
+                    &chip,
+                );
+            }
+            let glyph_color = if close_hover {
+                // Concept's `hover:text-white` — full white on close-hover
+                // so the × reads crisp against the red-500/80 fill.
+                vello::peniko::Color::rgba8(255, 255, 255, 255)
+            } else if is_active {
+                text_primary
+            } else {
+                text_dim
+            };
+            icons::draw_icon(scene, transform, close_r, icons::Icon::X, glyph_color, 1.5);
         }
-        let glyph_color = if close_hover {
-            // Concept's `hover:text-white` — full white on close-hover
-            // so the × reads crisp against the red-500/80 fill.
-            vello::peniko::Color::rgba8(255, 255, 255, 255)
-        } else if is_active {
-            text_primary
-        } else {
-            text_dim
-        };
-        icons::draw_icon(scene, transform, close_r, icons::Icon::X, glyph_color, 1.5);
 
         // Hover-reveal action cluster (maximize + search). Suppressed on
-        // the drag-ghost so the ghost stays visually simple.
-        if is_hover {
+        // the drag-ghost so the ghost stays visually simple, and on
+        // pinned tabs (icon-only — no room for the cluster).
+        if is_hover && !is_pinned {
             let chip_tint = vello::peniko::Color::rgba8(255, 255, 255, 64);
             let icon_idle = text_dim;
             let icon_active = text_primary;
@@ -1091,6 +1116,15 @@ impl Widget for TabBar {
         self.close_rects.clear();
         self.max_rects.clear();
         self.search_rects.clear();
+        // Pre-size to len so the visual-order pass can write into
+        // `tab_rects[data_idx]` directly — the data index (position in
+        // `self.tabs`) stays the canonical key for every cache that pairs
+        // with it (`prev_tab_rects_by_id`, hover/press indices, drag
+        // source). Only the assigned x-position is reordered.
+        self.tab_rects.resize(self.tabs.len(), Rect::ZERO);
+        self.close_rects.resize(self.tabs.len(), Rect::ZERO);
+        self.max_rects.resize(self.tabs.len(), Rect::ZERO);
+        self.search_rects.resize(self.tabs.len(), Rect::ZERO);
         let gap = 6.0_f64;
         let pad_x = 12.0_f64;
         let close_w = 18.0_f64;
@@ -1102,31 +1136,69 @@ impl Widget for TabBar {
         // h-4" />` glyph at the start of each tab.
         let icon_w = 14.0_f64;
         let icon_gap = 6.0_f64;
+        // Compact width for pinned pills. Icon-only, ~28 px so the row
+        // can fit several pinned tabs without crowding the unpinned ones.
+        let pinned_w = 28.0_f64;
         let pill_y0 = self.rect.y0 + TAB_PILL_INSET_Y;
         let pill_y1 = self.rect.y1 - TAB_PILL_INSET_Y;
+        // Visual-slot → data-index mapping: pinned data-indices first
+        // (preserving insertion order), then unpinned. `self.tabs` stays
+        // untouched so caches keyed by data index keep their meaning.
+        let mut visual_order: Vec<usize> = Vec::with_capacity(self.tabs.len());
+        for (i, t) in self.tabs.iter().enumerate() {
+            if self.pinned_ids.contains(&t.id) {
+                visual_order.push(i);
+            }
+        }
+        for (i, t) in self.tabs.iter().enumerate() {
+            if !self.pinned_ids.contains(&t.id) {
+                visual_order.push(i);
+            }
+        }
         let mut x = self.rect.x0;
-        for t in &self.tabs {
-            let approx_char_w = 7.0_f64;
-            let title_w = t.title.chars().count() as f64 * approx_char_w;
-            // Reserve room for the close glyph + both hover-reveal icons
-            // (search, maximize) so pills don't resize when you hover them.
-            // Tabs with a typed `app_kind` also reserve `icon_w + icon_gap`
-            // on the leading edge for the per-app glyph.
-            let lead_icon_reserve =
-                if t.app_kind.is_some() { icon_w + icon_gap } else { 0.0 };
-            let w = (title_w + pad_x * 2.0 + close_w + max_w + search_w + lead_icon_reserve)
-                .max(96.0);
+        for &i in &visual_order {
+            let t = &self.tabs[i];
+            let is_pinned = self.pinned_ids.contains(&t.id);
+            let w = if is_pinned {
+                // Compact icon-only pill — close / max / search glyphs
+                // are suppressed for pinned tabs (see `draw_pill_inner`
+                // and the press hit-tests in `handle_event`).
+                pinned_w
+            } else {
+                let approx_char_w = 7.0_f64;
+                let title_w = t.title.chars().count() as f64 * approx_char_w;
+                // Reserve room for the close glyph + both hover-reveal
+                // icons (search, maximize) so pills don't resize when
+                // you hover them. Tabs with a typed `app_kind` also
+                // reserve `icon_w + icon_gap` on the leading edge for
+                // the per-app glyph.
+                let lead_icon_reserve =
+                    if t.app_kind.is_some() { icon_w + icon_gap } else { 0.0 };
+                (title_w + pad_x * 2.0 + close_w + max_w + search_w + lead_icon_reserve)
+                    .max(96.0)
+            };
             let r = Rect::new(x, pill_y0, x + w, pill_y1);
-            let close_x0 = r.x1 - close_w - close_inset;
-            let close = Rect::new(close_x0, r.y0 + 4.0, close_x0 + close_w, r.y1 - 4.0);
-            let max_x0 = close_x0 - max_w - 2.0;
-            let max_rect = Rect::new(max_x0, r.y0 + 4.0, max_x0 + max_w, r.y1 - 4.0);
-            let search_x0 = max_x0 - search_w - 2.0;
-            let search_rect = Rect::new(search_x0, r.y0 + 4.0, search_x0 + search_w, r.y1 - 4.0);
-            self.tab_rects.push(r);
-            self.close_rects.push(close);
-            self.max_rects.push(max_rect);
-            self.search_rects.push(search_rect);
+            // Pinned pills suppress the close / max / search action
+            // rects entirely — the press handler skips them, and `draw`
+            // checks `is_pinned` before painting the close chip + glyph.
+            // `Rect::ZERO` is the no-rect convention used elsewhere
+            // (e.g. `start_closing` falls back to it when there's no
+            // layout to snapshot from).
+            let (close, max_rect, search_rect) = if is_pinned {
+                (Rect::ZERO, Rect::ZERO, Rect::ZERO)
+            } else {
+                let close_x0 = r.x1 - close_w - close_inset;
+                let close = Rect::new(close_x0, r.y0 + 4.0, close_x0 + close_w, r.y1 - 4.0);
+                let max_x0 = close_x0 - max_w - 2.0;
+                let max_rect = Rect::new(max_x0, r.y0 + 4.0, max_x0 + max_w, r.y1 - 4.0);
+                let search_x0 = max_x0 - search_w - 2.0;
+                let search_rect = Rect::new(search_x0, r.y0 + 4.0, search_x0 + search_w, r.y1 - 4.0);
+                (close, max_rect, search_rect)
+            };
+            self.tab_rects[i] = r;
+            self.close_rects[i] = close;
+            self.max_rects[i] = max_rect;
+            self.search_rects[i] = search_rect;
             x += w + gap;
         }
     }
@@ -1470,9 +1542,32 @@ impl Widget for TabBar {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_cursor = p;
-                self.hover_close_idx = self.close_rects.iter().position(|r| r.contains(p));
-                self.hover_max_idx = self.max_rects.iter().position(|r| r.contains(p));
-                self.hover_search_idx = self.search_rects.iter().position(|r| r.contains(p));
+                // Pinned pills suppress the close / max / search glyphs
+                // (rects are `Rect::ZERO` from `apply_layout`); skip
+                // them in the hover scan so a cursor that briefly
+                // crosses (0,0) doesn't latch a hover state on a
+                // glyph that isn't painted.
+                let is_pinned_at = |i: usize| {
+                    self.tabs
+                        .get(i)
+                        .map(|t| self.pinned_ids.contains(&t.id))
+                        .unwrap_or(false)
+                };
+                self.hover_close_idx = self
+                    .close_rects
+                    .iter()
+                    .position(|r| r.contains(p))
+                    .filter(|&i| !is_pinned_at(i));
+                self.hover_max_idx = self
+                    .max_rects
+                    .iter()
+                    .position(|r| r.contains(p))
+                    .filter(|&i| !is_pinned_at(i));
+                self.hover_search_idx = self
+                    .search_rects
+                    .iter()
+                    .position(|r| r.contains(p))
+                    .filter(|&i| !is_pinned_at(i));
                 // Only count a tab as "hovered for highlight" if we're inside
                 // the pill AND not inside its close chip — keeps the close
                 // button's own hover state dominant.
@@ -1517,9 +1612,33 @@ impl Widget for TabBar {
                 // on first click regardless of tab-active state — this
                 // matches that behaviour.
                 let cursor_pos = self.last_cursor;
-                let close_idx = self.close_rects.iter().position(|r| r.contains(cursor_pos));
-                let max_idx = self.max_rects.iter().position(|r| r.contains(cursor_pos));
-                let search_idx = self.search_rects.iter().position(|r| r.contains(cursor_pos));
+                // Pinned tabs zero out their close / max / search rects
+                // in `apply_layout` so a `contains(cursor_pos)` check
+                // would only fire when the cursor is at literal `(0,0)`.
+                // Filter explicitly here as belt-and-braces — keeps the
+                // intent legible and survives any future change that
+                // moves a non-zero rect onto a pinned tab.
+                let is_pinned_at = |i: usize| {
+                    self.tabs
+                        .get(i)
+                        .map(|t| self.pinned_ids.contains(&t.id))
+                        .unwrap_or(false)
+                };
+                let close_idx = self
+                    .close_rects
+                    .iter()
+                    .position(|r| r.contains(cursor_pos))
+                    .filter(|&i| !is_pinned_at(i));
+                let max_idx = self
+                    .max_rects
+                    .iter()
+                    .position(|r| r.contains(cursor_pos))
+                    .filter(|&i| !is_pinned_at(i));
+                let search_idx = self
+                    .search_rects
+                    .iter()
+                    .position(|r| r.contains(cursor_pos))
+                    .filter(|&i| !is_pinned_at(i));
 
                 // Close button takes priority over selection/drag.
                 // `start_closing` seeds `pending_close` for the
@@ -1854,6 +1973,198 @@ mod tests {
         assert!(b.is_pinned(3));
         b.remove_tab(3);
         assert!(!b.is_pinned(3), "remove_tab must drop the sidecar entry");
+    }
+
+    /// Pinned tabs render compact + icon-only in a left-side group, with
+    /// every unpinned pill pushed to the right. We pin tabs 2 + 4 of a
+    /// 4-tab bar and assert the visual x-positions reflect the
+    /// pinned-first / unpinned-after grouping while `self.tabs` keeps
+    /// its insertion order.
+    #[test]
+    fn pinned_tabs_render_to_the_left_of_unpinned() {
+        use crate::theme::Theme;
+        use std::collections::HashMap;
+        use taffy::Style;
+        use taffy::prelude::TaffyMaxContent;
+
+        let mut b = TabBar::new(
+            "g1",
+            vec![
+                TabDescriptor::new(1, "A"),
+                TabDescriptor::new(2, "B"),
+                TabDescriptor::new(3, "C"),
+                TabDescriptor::new(4, "D"),
+            ],
+            1,
+        );
+        b.pin(2);
+        b.pin(4);
+
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = b.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy.new_with_children(Style::default(), &[node]).unwrap();
+        taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
+        b.apply_layout(&taffy, node, Point::ZERO);
+
+        // `self.tabs` insertion order is unchanged — only x-positions
+        // reorder.
+        let ids: Vec<u64> = b.tabs().iter().map(|t| t.id).collect();
+        assert_eq!(ids, vec![1, 2, 3, 4]);
+
+        // Data-index → pill x0. Pinned ids (2 + 4) must precede unpinned
+        // ids (1 + 3) on the x axis. Within each group, original tab
+        // order is preserved (so 2 is left of 4, 1 is left of 3).
+        let x_of = |id: u64| {
+            let i = b.tabs().iter().position(|t| t.id == id).unwrap();
+            b.tab_rects()[i].x0
+        };
+        assert!(
+            x_of(2) < x_of(4),
+            "pinned-2 must precede pinned-4 (insertion order within \
+             pinned group)",
+        );
+        assert!(
+            x_of(4) < x_of(1),
+            "every pinned pill must precede every unpinned pill on x \
+             (pinned-4 vs unpinned-1)",
+        );
+        assert!(
+            x_of(4) < x_of(3),
+            "pinned-4 must precede unpinned-3",
+        );
+        assert!(
+            x_of(1) < x_of(3),
+            "unpinned-1 must precede unpinned-3 (insertion order within \
+             unpinned group)",
+        );
+
+        // Pinned pills are compact (~28 px); unpinned pills hit the
+        // 96 px floor or larger.
+        let pinned_w = b.tab_rects()[b.tabs().iter().position(|t| t.id == 2).unwrap()].width();
+        let unpinned_w = b.tab_rects()[b.tabs().iter().position(|t| t.id == 1).unwrap()].width();
+        assert!(
+            pinned_w < unpinned_w,
+            "pinned pill ({pinned_w}) must be narrower than unpinned ({unpinned_w})",
+        );
+        assert!(pinned_w <= 32.0, "pinned pill must be compact, got {pinned_w}");
+    }
+
+    /// Pinned tabs hide the close glyph: `apply_layout` writes
+    /// `Rect::ZERO` into `close_rects` for any pinned data index so
+    /// hit-tests can't fire there. Same for max + search.
+    #[test]
+    fn pinned_tabs_have_no_close_rect() {
+        use crate::theme::Theme;
+        use std::collections::HashMap;
+        use taffy::Style;
+        use taffy::prelude::TaffyMaxContent;
+
+        let mut b = TabBar::new(
+            "g1",
+            (1..=8u64)
+                .map(|i| TabDescriptor::new(i, format!("T{i}")))
+                .collect(),
+            1,
+        );
+        b.pin(7);
+
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = b.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy.new_with_children(Style::default(), &[node]).unwrap();
+        taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
+        b.apply_layout(&taffy, node, Point::ZERO);
+
+        let pinned_idx = b.tabs().iter().position(|t| t.id == 7).unwrap();
+        assert_eq!(
+            b.close_rects[pinned_idx],
+            Rect::ZERO,
+            "pinned tab close_rect must be Rect::ZERO so hit-tests don't fire",
+        );
+        assert_eq!(
+            b.max_rects[pinned_idx],
+            Rect::ZERO,
+            "pinned tab max_rect must be Rect::ZERO too — hover-reveal \
+             cluster is suppressed alongside the close glyph",
+        );
+        assert_eq!(b.search_rects[pinned_idx], Rect::ZERO);
+
+        // Sanity: an unpinned neighbour still has a non-zero close rect.
+        let unpinned_idx = b.tabs().iter().position(|t| t.id == 1).unwrap();
+        assert_ne!(
+            b.close_rects[unpinned_idx],
+            Rect::ZERO,
+            "unpinned tabs keep their close rect",
+        );
+    }
+
+    /// A press at the would-be close-glyph centre on a pinned tab must
+    /// not seed `pending_close`. Belt-and-braces over the rect-zeroing
+    /// — even if a future change regresses the rect computation, the
+    /// press handler's pin filter stops the close from firing.
+    #[test]
+    fn pinned_tab_press_at_close_position_does_not_close() {
+        let mut b = bar();
+        // Hand-build rects so we don't have to drive taffy. Three pills
+        // [0..80], [86..166], [172..252] with their canonical close
+        // chips. Pin tab 2 (data index 1) and force a non-zero close
+        // rect on its slot — exercises the press filter directly.
+        b.rect = Rect::new(0.0, 0.0, 252.0, 40.0);
+        b.tab_rects = vec![
+            Rect::new(0.0, 6.0, 80.0, 34.0),
+            Rect::new(86.0, 6.0, 166.0, 34.0),
+            Rect::new(172.0, 6.0, 252.0, 34.0),
+        ];
+        b.close_rects = vec![
+            Rect::new(60.0, 10.0, 78.0, 30.0),
+            Rect::new(146.0, 10.0, 164.0, 30.0),
+            Rect::new(232.0, 10.0, 250.0, 30.0),
+        ];
+        b.max_rects = vec![Rect::ZERO; 3];
+        b.search_rects = vec![Rect::ZERO; 3];
+        b.pin(2);
+
+        // Aim the cursor at tab 2's close-rect centre.
+        let close_centre = b.close_rects[1].center();
+        b.last_cursor = close_centre;
+
+        let press = WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        };
+        let mut tree = TaffyTree::<()>::new();
+        let node = tree.new_leaf(Style::default()).unwrap();
+        let mut handled = false;
+        let mut focus_target = None;
+        let mut state = automerge::AutoCommit::new();
+        let root_id = automerge::ROOT;
+        b.handle_event(
+            &press,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut state,
+            &root_id,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &tree,
+        );
+
+        assert!(
+            b.pending_close.is_none(),
+            "press on a pinned tab's close-rect must not seed pending_close",
+        );
+        // And the bar must not have moved the closing pill into
+        // `closing_tabs` either — the suppression is total, not
+        // half-deferred.
+        assert!(
+            b.closing_tab_ids().is_empty(),
+            "pinned tab must not enter the closing-fade flow",
+        );
     }
 
     #[test]
