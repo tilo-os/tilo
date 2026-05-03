@@ -226,6 +226,15 @@ pub const MODAL_SURFACE_ALPHA: f32 = 0.70;
 /// 0.30 fill. Pinned by `tests::palette_scrim_alpha_matches_concept`.
 pub const MODAL_SCRIM_ALPHA: f32 = 0.45;
 
+/// Alpha applied to the scrim painted beneath the GlobalSearch palette and
+/// the Overview view. Concept §5.1 uses literal `bg-black/30` here — both
+/// surfaces sit on a stronger glass tint than the WorkspaceSettings modal,
+/// so the un-blurred scrim doesn't need the `MODAL_SCRIM_ALPHA` lift to
+/// compensate. Source-of-truth for the magic byte that
+/// [`draw_scrim`] writes; the chrome-test suite pins it via
+/// `tests::overview_scrim_alpha_matches_concept`.
+pub const PALETTE_SCRIM_ALPHA: f32 = 0.30;
+
 impl ShellOverlayHost {
     pub fn new(content: Box<dyn Widget>) -> Self {
         let mut palette = CommandPalette::new();
@@ -2350,11 +2359,14 @@ fn compose_overlay_transition(t: f32, target: f32) -> (f32, f64, f32, f64) {
 fn draw_scrim(scene: &mut Scene, transform: Affine, rect: Rect) {
     // Concept uses `bg-black/30` (≈ alpha 77) on overlay scrims — we were
     // painting black/60 (alpha 154) which reads too heavy and muddies the
-    // content behind the palette / ws-settings.
+    // content behind the palette / ws-settings. Centralised on
+    // [`PALETTE_SCRIM_ALPHA`] so a future tweak only edits one constant
+    // and the chrome-test suite has a single source-of-truth to pin.
+    let alpha = (PALETTE_SCRIM_ALPHA * 255.0).round().clamp(0.0, 255.0) as u8;
     scene.fill(
         Fill::NonZero,
         transform,
-        Color::rgba8(0, 0, 0, 77),
+        Color::rgba8(0, 0, 0, alpha),
         None,
         &rect,
     );
@@ -3306,7 +3318,14 @@ impl ShellOverlayHost {
             pill_rects[i] = pill_rect;
             let pill = RoundedRect::from_rect(pill_rect, tokens.radii.md as f64);
             if active {
-                scene.fill(Fill::NonZero, transform, colors.surfaces.overlay, None, &pill);
+                // Concept ref `WorkspaceSettingsModal.tsx:62-79` —
+                // `bg-white/10 text-white` for the active row in the nav.
+                // We were painting `surfaces.overlay` (black/80) here,
+                // which read as a heavy black tab over the slate-900/70
+                // modal surface. `surface_white_10` matches the concept's
+                // subtle white-on-glass treatment. Pinned by
+                // `tests::ws_settings_active_tab_pill_uses_white_overlay`.
+                scene.fill(Fill::NonZero, transform, colors.surface_white_10, None, &pill);
             }
             let color = if active { colors.text_primary } else { colors.text_dim };
             text_renderer.draw_text(
@@ -5746,6 +5765,55 @@ mod tests {
              palette / WS-settings surfaces never read as the focused \
              layer (got {})",
             MODAL_SCRIM_ALPHA
+        );
+    }
+
+    /// Issue #127 / polish-sweep pin.
+    ///
+    /// Concept ref `WorkspaceSettingsModal.tsx:62-79` — the active nav
+    /// row is tinted `bg-white/10 text-white`. The earlier draw painted
+    /// `surfaces.overlay` (`black/80`), which read as a heavy black tab
+    /// over the slate-900/70 modal surface. The fix swaps the fill to
+    /// `surface_white_10`; this pin keeps the token byte aligned with
+    /// the Tailwind `white/10` literal so a future refactor that
+    /// renames or retypes the token surfaces here loudly.
+    #[test]
+    fn ws_settings_active_tab_pill_uses_white_overlay() {
+        let tokens = quick_ui::tokens::Tokens::dark();
+        let c = tokens.colors.surface_white_10;
+        let expected = vello::peniko::Color::rgba8(255, 255, 255, 26);
+        assert_eq!(
+            c, expected,
+            "surface_white_10 must paint at the concept's `bg-white/10` \
+             (rgba8(255, 255, 255, 26)) so the active WS-settings tab \
+             pill reads as a soft glass-on-glass treatment, not a \
+             heavy black overlay (got {:?})",
+            c
+        );
+    }
+
+    /// Issue #127 / polish-sweep pin.
+    ///
+    /// The lighter scrim painted under the GlobalSearch palette and the
+    /// overview is `bg-black/30` per concept §5.1. The byte the magic
+    /// `Color::rgba8(0, 0, 0, …)` literal must round to is `77` (because
+    /// `0.30 × 255 ≈ 76.5`). Pinning the constant *and* the rounded byte
+    /// ensures a future tweak to one without the other surfaces here
+    /// rather than as a silent shift in the rendered shadowing.
+    #[test]
+    fn overview_scrim_alpha_matches_concept() {
+        assert!(
+            (PALETTE_SCRIM_ALPHA - 0.30).abs() < f32::EPSILON,
+            "PALETTE_SCRIM_ALPHA must equal concept §5.1's 0.30 (got {})",
+            PALETTE_SCRIM_ALPHA
+        );
+        let byte =
+            (PALETTE_SCRIM_ALPHA * 255.0).round().clamp(0.0, 255.0) as u8;
+        assert_eq!(
+            byte, 77,
+            "0.30 × 255 must round to 77 — the byte literal in `draw_scrim` \
+             tracks this constant exactly so a tweak to one without the other \
+             must surface here"
         );
     }
 
