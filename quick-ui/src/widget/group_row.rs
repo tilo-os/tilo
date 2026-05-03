@@ -22,7 +22,7 @@ use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, Windo
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::{Widget, WindowGroup, WindowWidth};
+use crate::widget::{TabDescriptor, TileHost, Widget, WindowGroup, WindowWidth};
 
 /// Idle threshold after the last wheel event before we kick off a
 /// snap-to-nearest-group animation. Mirrors the concept's
@@ -46,6 +46,25 @@ struct SnapAnim {
     from: f64,
     to: f64,
     started: Instant,
+}
+
+/// Payload published by [`GroupRow::take_pending_cross_strip_detach`] when
+/// a tab drag ends outside the row's own vertical band — the shell-side
+/// harvester consumes it, hit-tests the release point against other strips'
+/// bounds, and either delivers the payload via
+/// [`GroupRow::accept_cross_strip_drop`] on the destination row or returns
+/// it to the source row on a miss.
+///
+/// The `(TabDescriptor, TileHost)` pair is the same shape
+/// [`WindowGroup::detach_tab`] returns, so the source group has *already*
+/// been mutated by the time this is published — the shell either splices
+/// the payload into a destination row or returns it to the source via
+/// [`GroupRow::accept_cross_strip_drop`].
+pub struct CrossStripDetach {
+    pub tab_id: u64,
+    pub desc: TabDescriptor,
+    pub host: TileHost,
+    pub release_point: Point,
 }
 
 pub struct GroupRow {
@@ -109,6 +128,21 @@ pub struct GroupRow {
     /// rest or actively being wheeled. `Some` after the idle gate has
     /// fired and we've committed to a target group's left edge.
     snap_anim: Option<SnapAnim>,
+    /// Tab payload waiting to be routed across strips by the shell-side
+    /// harvester. Set by the post-dispatch detach sweep when a release
+    /// landed outside the row's own vertical band — too far for the
+    /// in-row gap-drop / sibling-bar resolution to be the right answer,
+    /// because the user is plausibly aiming at a different strip's
+    /// `GroupRow`. The shell drains this each frame via
+    /// [`Self::take_pending_cross_strip_detach`], hit-tests the release
+    /// point against every other strip's row rect, and either delivers
+    /// the payload to a destination row via
+    /// [`Self::accept_cross_strip_drop`] or returns it to the source row.
+    ///
+    /// `None` whenever the most recent drag either resolved within this
+    /// row or hasn't fired yet. The take-pattern accessor leaves the slot
+    /// empty so a subsequent harvester call doesn't double-deliver.
+    pending_cross_strip_detach: Option<CrossStripDetach>,
 }
 
 impl GroupRow {
@@ -125,6 +159,7 @@ impl GroupRow {
             group_left_edges: Vec::new(),
             last_wheel_at: None,
             snap_anim: None,
+            pending_cross_strip_detach: None,
         }
     }
 
@@ -450,6 +485,76 @@ impl GroupRow {
             }
         }
         true
+    }
+
+    /// Drain a cross-strip detach payload published by the post-dispatch
+    /// detach sweep. Returns `Some` when the most recent drag ended
+    /// outside the row's own vertical band — i.e. too far away for any
+    /// in-row resolution (sibling bar / inter-group gap) to plausibly be
+    /// the user's intent. The shell-side harvester (see
+    /// `quick-shell::shell::overlay_host::ShellOverlayHost::dispatch_cross_strip_detaches`)
+    /// drains this each frame, hit-tests the release point against every
+    /// other strip's `GroupRow` rect, and either delivers the payload to
+    /// the destination row via [`Self::accept_cross_strip_drop`] or
+    /// returns it to the source row when no other strip matches.
+    ///
+    /// Take-pattern symmetry: leaves `None` behind so a subsequent harvester
+    /// call doesn't double-deliver. Mirrors
+    /// [`WindowGroup::take_tab_detach`] / `TabBar::take_reorder` /
+    /// [`WindowGroup::take_pending_maximize_change`].
+    pub fn take_pending_cross_strip_detach(&mut self) -> Option<CrossStripDetach> {
+        self.pending_cross_strip_detach.take()
+    }
+
+    /// Accept a tab payload that the shell-side harvester routed to this
+    /// row from another strip. Splices the tab into a brand-new
+    /// [`WindowGroup`] in the gap nearest `drop_pos`, mirroring the
+    /// in-row `split_tab_into_new_group` flow but with a pre-detached
+    /// payload (the source row already removed its tab when it published
+    /// the cross-strip detach). Flags `structure_dirty` so the App's
+    /// next layout pass rebuilds the taffy tree to include the new group.
+    ///
+    /// `drop_pos` is the same release point the source row published in
+    /// [`CrossStripDetach::release_point`]; it's resolved against this
+    /// row's gaps via the existing [`Self::gap_index_for`] machinery so
+    /// "drop near the right edge of strip B" lands as a new group
+    /// appended to strip B's row, "drop between groups 1 and 2" splices
+    /// between them, and so on.
+    ///
+    /// Used both for the cross-strip success path AND the source-row
+    /// "no other strip matched, return to sender" recovery path: in the
+    /// recovery case the shell calls this method on the source row with
+    /// the original release point, producing the same in-row "create new
+    /// group near the release point" behaviour the local detach sweep
+    /// would have produced if we hadn't intercepted it.
+    pub fn accept_cross_strip_drop(
+        &mut self,
+        desc: TabDescriptor,
+        host: TileHost,
+        drop_pos: Point,
+    ) {
+        let new_id = self
+            .groups
+            .iter()
+            .map(|g| g.id)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        let mut new_group = WindowGroup::from_detached(new_id, desc, host, WindowWidth::Normal);
+        new_group.start_spawn_animation();
+        // Resolve drop_pos to a gap index. `gap_index_for` ignores the
+        // y-band so a drop above/below this row's vertical extent still
+        // produces a sensible gap (closest-by-x). When `drop_pos` falls
+        // inside one of our existing groups' rects (rare for cross-strip
+        // — the shell only routes here when the release point is in
+        // OUR row's bounds, but a release on the bar of an existing
+        // group would still land inside a group rect), `gap_index_for`
+        // returns `None` and we default to "append at end" so the tab
+        // can't be silently lost.
+        let gap_idx = self.gap_index_for(drop_pos).unwrap_or(self.groups.len());
+        let clamped = gap_idx.min(self.groups.len());
+        self.groups.insert(clamped, new_group);
+        self.structure_dirty = true;
     }
 }
 
@@ -839,6 +944,74 @@ impl Widget for GroupRow {
             if let Some((tab_id, release_point)) = g.take_tab_detach() {
                 detaches.push((i, tab_id, release_point));
             }
+        }
+
+        // Cross-strip divert: if the release landed *outside* our own
+        // vertical band, the user's drop target is plausibly a sibling
+        // strip's `GroupRow`. We can't resolve that from here — the
+        // shell holds the WorkspaceTree and knows every strip's rect —
+        // so detach the tab now and stash the payload for the shell-
+        // side harvester to route. The harvester either delivers the
+        // payload to the destination row's `accept_cross_strip_drop`
+        // (when the release point hits another strip's rect) or returns
+        // it to the source row's `accept_cross_strip_drop` (when no
+        // strip matched — equivalent to the in-row "no target → create
+        // new group near the release point" path the local resolver
+        // below would have produced).
+        //
+        // We only divert ONE detach per frame — the first one whose
+        // release is out-of-band. Multiple simultaneous detaches in a
+        // single frame would imply the user dragged two tabs at once,
+        // which the gesture pipeline doesn't model. The remaining
+        // detaches (none, in practice) fall through to the in-row
+        // resolver below so a future multi-touch path doesn't silently
+        // drop them.
+        let mut diverted: Option<usize> = None;
+        for (idx, &(src_idx, tab_id, release_point)) in detaches.iter().enumerate() {
+            // y-band check: release outside our row's vertical extent
+            // means the user crossed a strip boundary, so route through
+            // the shell. Inside the band, fall through to the in-row
+            // resolver — that's the existing single-strip behaviour
+            // (drop on a sibling bar, drop in an inter-group gap, drop
+            // into empty strip space below the row's own content).
+            let out_of_band =
+                release_point.y < self.rect.y0 || release_point.y > self.rect.y1;
+            if !out_of_band {
+                continue;
+            }
+            // Detach the payload now so the source group reflects the
+            // mutation immediately. The shell harvester re-inserts the
+            // tab on the *next* frame via `accept_cross_strip_drop`, so
+            // for one frame the row has one fewer tab — this matches
+            // the in-row split flow's behaviour (the new group exists
+            // for one frame before layout catches up).
+            if let Some((desc, host)) = self.groups[src_idx].detach_tab(tab_id) {
+                self.pending_cross_strip_detach = Some(CrossStripDetach {
+                    tab_id,
+                    desc,
+                    host,
+                    release_point,
+                });
+                // Source might now be empty — flag a structural mutation
+                // so the App rebuilds the taffy tree if a future frame
+                // reaps the empty group. We don't prune here because the
+                // source stays "alive" until the shell either delivers
+                // the cross-strip drop or returns it to source. Pruning
+                // an empty source would force the shell to recreate the
+                // group on the recovery path; cheaper to let the empty
+                // group ride out one frame and let the existing close-
+                // fade prune machinery handle it.
+                self.structure_dirty = true;
+                diverted = Some(idx);
+                *handled = true;
+                break;
+            }
+        }
+
+        // Strip out the diverted detach so the in-row resolver below
+        // doesn't see it (the tab is already gone from the source group).
+        if let Some(skip_idx) = diverted {
+            detaches.remove(skip_idx);
         }
 
         for (src_idx, tab_id, release_point) in detaches {
