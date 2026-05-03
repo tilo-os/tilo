@@ -5,3 +5,5 @@ pub mod sandbox;
 pub mod security;
 pub mod network;
 pub mod workspace;
+// Phase 1 of the real-Wayland-compositor plan: --mode hosted | native dispatch.
+pub mod compositor;
