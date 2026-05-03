@@ -20,6 +20,7 @@
 
 pub mod hosted;
 pub mod native;
+pub mod state;
 
 /// Which run mode the compositor should boot into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
