@@ -466,6 +466,18 @@ impl WindowGroup {
     #[cfg(test)]
     pub(crate) fn bar_mut(&mut self) -> &mut crate::widget::TabBar { &mut self.bar }
 
+    /// Public test-only twin of [`Self::bar_mut`]. The crate-private
+    /// version above stays gated to `#[cfg(test)]` so it can't leak into
+    /// non-test downstream callers, but cross-strip drag integration
+    /// tests in `quick-shell/tests/` need to publish a synthetic
+    /// `pending_detach` from outside this crate too — that's what this
+    /// accessor exists for. Gated by `cfg(any(test, debug_assertions))`
+    /// so it disappears from release builds, mirroring the pattern used
+    /// by [`crate::widget::GroupRow`]'s test helpers and
+    /// [`Self::publish_maximize_intent_for_tests`].
+    #[cfg(any(test, debug_assertions))]
+    pub fn bar_mut_for_tests(&mut self) -> &mut crate::widget::TabBar { &mut self.bar }
+
     /// Test-only accessor pinning the lucide glyph drawn over the
     /// maximized floating close chip. Paired with
     /// `window_group_close_glyph_is_lucide_x` so a revert to the text
