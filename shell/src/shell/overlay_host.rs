@@ -524,6 +524,57 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Per-tick wire-up that mirrors any per-frame resize-handle gesture
+    /// into the persisted [`crate::shell::state::WorkspaceTree`]. Walks
+    /// the captured [`GroupRow`] pointers, drains every group's
+    /// [`UiWindowGroup::take_pending_width_change`] one-shot, and writes
+    /// the new pixel value into the matching `WindowGroup::width` slot of
+    /// the persisted tree as `WindowWidth::Custom(p)`. The persisted
+    /// model already supports `Custom(u32)` (clamped 300..=1200) so no
+    /// schema change is needed — only the live binding from the widget
+    /// gesture to the data layer.
+    ///
+    /// Without this hook a resize-drag is in-memory only and resets to
+    /// the pre-drag width on the next shell restart. Mirrors
+    /// [`Self::harvest_pending_maximize_changes`] in shape; both run
+    /// inside [`Widget::update`] every frame, but each is gated on a
+    /// non-empty pending pile so quiescent frames cost a single map walk.
+    fn harvest_pending_width_changes(&mut self) {
+        if self.group_row_ptrs.is_empty() {
+            return;
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let mut changes: Vec<(StripId, GroupId, u32)> = Vec::new();
+        for (&strip_id, &ptr) in &self.group_row_ptrs {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            for g in row.groups.iter_mut() {
+                if let Some(new_value) = g.take_pending_width_change() {
+                    changes.push((strip_id, g.id, new_value));
+                }
+            }
+        }
+        if changes.is_empty() {
+            return;
+        }
+        let mut st = chrome.borrow_mut();
+        for (_strip_id, group_id, new_value) in changes {
+            for ws in st.tree.workspaces.iter_mut() {
+                for strip in ws.strips.iter_mut() {
+                    if let Some(g) = strip
+                        .window_groups
+                        .iter_mut()
+                        .find(|g| g.id == group_id)
+                    {
+                        g.width = crate::shell::state::WindowWidth::Custom(new_value);
+                    }
+                }
+            }
+        }
+    }
+
     /// Test-only escape hatch: lend out a mutable reference to the
     /// [`UiWindowGroup`] at `(strip_id, group_idx)`. Lets integration
     /// tests drive the close fade through public widget APIs (e.g.
@@ -560,6 +611,13 @@ impl ShellOverlayHost {
     #[cfg(any(test, debug_assertions))]
     pub fn tick_pending_maximize_harvest_for_tests(&mut self) {
         self.harvest_pending_maximize_changes();
+    }
+
+    /// Test-only one-shot harvest: lets integration tests invoke the
+    /// per-frame width-change writeback from outside `update`.
+    #[cfg(any(test, debug_assertions))]
+    pub fn tick_pending_width_harvest_for_tests(&mut self) {
+        self.harvest_pending_width_changes();
     }
 
     /// Read-only accessor for the cached "+ Add workspace" tile rect.
@@ -990,6 +1048,11 @@ impl Widget for ShellOverlayHost {
         // the close-reconciler above (clicks observed this frame must
         // be visible to the harvest). Audit task #105.
         self.harvest_pending_maximize_changes();
+        // Mirror any in-frame resize-handle gestures (press-drag-release on
+        // the right edge of a `WindowGroup`) into the persisted
+        // `WorkspaceTree`. Same take-pattern as the maximize writeback;
+        // runs once per gesture, not once per pixel.
+        self.harvest_pending_width_changes();
         a || b || c
     }
 
