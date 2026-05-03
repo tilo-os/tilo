@@ -402,10 +402,14 @@ impl Widget for TextInput {
         }
 
         // Read-only gating: dim the control if the permission scope is denied.
+        // Alpha kept aligned with every other widget's denied overlay
+        // (button / container / column / row / spacer / stack / text /
+        // toggle / slider / checkbox all paint `Color::rgba8(0, 0, 0, 77)`).
+        // Pinned by `permission_denied_overlay_alpha_matches_other_widgets`.
         if let Some(scope) = self.permission_scope() {
             if !permissions.check(&scope) {
                 let r = self.rect;
-                let overlay = vello::peniko::Color::rgba8(0, 0, 0, 80);
+                let overlay = Self::PERMISSION_DENIED_OVERLAY;
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     Affine::IDENTITY,
@@ -415,5 +419,40 @@ impl Widget for TextInput {
                 );
             }
         }
+    }
+}
+
+impl TextInput {
+    /// Overlay color used to dim the control when the permission scope
+    /// resolves to denied. Held as an associated const so the unit test
+    /// below can pin the alpha without poking inside `draw`. Concept's
+    /// every-widget convention is `bg-black/30` ≈ 0.30 × 255 ≈ 77.
+    pub(crate) const PERMISSION_DENIED_OVERLAY: vello::peniko::Color =
+        vello::peniko::Color::rgba8(0, 0, 0, 77);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Polish-sweep #127 pin: the permission-denied dim must paint at the
+    /// same alpha across every widget. The shared alpha lives on each
+    /// widget's `PERMISSION_DENIED_OVERLAY` const (or as the literal
+    /// `Color::rgba8(0, 0, 0, 77)` baked into older draws); a drift here
+    /// shows up as a visibly stronger dim on text inputs vs. the
+    /// surrounding panel.
+    #[test]
+    fn permission_denied_overlay_alpha_matches_other_widgets() {
+        // The full constant must equal `Color::rgba8(0, 0, 0, 77)` —
+        // matching both the byte components AND the call-site every other
+        // widget already paints (Button / Container / Column / Row /
+        // Spacer / Stack / Text / Toggle / Slider / Checkbox).
+        let expected = vello::peniko::Color::rgba8(0, 0, 0, 77);
+        assert_eq!(
+            TextInput::PERMISSION_DENIED_OVERLAY, expected,
+            "TextInput's permission-denied overlay must equal \
+             Color::rgba8(0, 0, 0, 77) (≈ bg-black/30) to match every \
+             other widget's denied dim"
+        );
     }
 }
