@@ -132,6 +132,11 @@ pub struct WindowGroup {
     /// #105 — without this writeback the on-screen flip is in-memory
     /// only and resets to the pre-toggle value across a shell restart.
     pending_maximize_change: Option<bool>,
+    /// One-shot pending width value awaiting harvest by the shell. Set
+    /// once per resize gesture in [`Self::end_resize`] so the persisted
+    /// width survives a shell restart and replicates across collaborators.
+    /// Same take-pattern as [`Self::take_pending_maximize_change`].
+    pending_width_change: Option<u32>,
     /// Group-level close-fade timestamp. `None` while the group is
     /// alive; `Some(started)` once the user's last tab-close drains
     /// through `handle_event` and the group has no remaining tabs or
@@ -169,6 +174,7 @@ impl WindowGroup {
             closing_at: None,
             style_dirty: false,
             pending_maximize_change: None,
+            pending_width_change: None,
         }
     }
     pub fn width(&self) -> WindowWidth { self.width }
@@ -278,7 +284,20 @@ impl WindowGroup {
             self.width = WindowWidth::Custom(clamped);
         }
     }
-    pub fn end_resize(&mut self) { self.resize_origin = None; }
+    pub fn end_resize(&mut self) {
+        self.resize_origin = None;
+        self.pending_width_change = Some(self.width.pixels());
+    }
+    /// Drain a one-shot pending width change produced by a completed
+    /// resize gesture (press → drag → release on the right-edge handle).
+    /// Returns `Some(pixels)` once per gesture, then `None` until the
+    /// next [`Self::end_resize`]. Mirrors
+    /// [`Self::take_pending_maximize_change`]; the shell harvests this
+    /// each frame and writes the value into the persisted
+    /// [`WorkspaceTree`] so resizes survive a restart.
+    pub fn take_pending_width_change(&mut self) -> Option<u32> {
+        self.pending_width_change.take()
+    }
     pub fn active_host_mut(&mut self) -> Option<&mut TileHost> {
         let id = self.bar.active_id();
         self.hosts.iter_mut().find(|(i, _)| *i == id).map(|(_, h)| h)
@@ -398,6 +417,7 @@ impl WindowGroup {
             closing_at: None,
             style_dirty: false,
             pending_maximize_change: None,
+            pending_width_change: None,
         }
     }
 
@@ -1465,6 +1485,71 @@ mod tests {
             g.take_pending_maximize_change(),
             Some(false),
             "the second click reports the new (false) value once",
+        );
+    }
+
+    /// `take_pending_width_change` reports the new pixel width once per
+    /// completed resize gesture — the take-pattern accessor the shell
+    /// harvests each frame to mirror the value into the persisted
+    /// `WorkspaceTree`. Without it the on-screen drag is in-memory only
+    /// and resets to the pre-drag width across a shell restart.
+    #[test]
+    fn take_pending_width_change_drains_after_resize_gesture() {
+        let mut g = make_group();
+        // Anchor the rect so begin_resize knows its origin width via
+        // self.width.pixels(). make_group() seeds `WindowWidth::Normal`
+        // = 600 px; we'll confirm both the in-memory width flip and the
+        // one-shot pending value.
+        assert_eq!(g.width().pixels(), 600);
+        assert_eq!(
+            g.take_pending_width_change(),
+            None,
+            "no pending width change before any drag",
+        );
+
+        // Press at the right edge (pointer x = 600 = current right edge).
+        g.begin_resize(600.0);
+        // Drag +200 px — within MIN..=MAX, so the new width is exactly 800.
+        g.update_resize(800.0);
+        assert_eq!(g.width().pixels(), 800, "drag updates width in-memory");
+        // Mid-drag must not publish a pending change — only end_resize does,
+        // so the shell harvests once per gesture, not once per pixel.
+        assert_eq!(
+            g.take_pending_width_change(),
+            None,
+            "mid-drag must not publish a pending change",
+        );
+
+        g.end_resize();
+        assert_eq!(
+            g.take_pending_width_change(),
+            Some(800),
+            "first poll after release reports the new width",
+        );
+        assert_eq!(
+            g.take_pending_width_change(),
+            None,
+            "take-pattern: drained on first poll, second poll is None",
+        );
+
+        // Clamping: drag past WIDTH_MAX_PX (1200) must clamp.
+        g.begin_resize(800.0);
+        g.update_resize(50_000.0);
+        assert_eq!(
+            g.width().pixels(),
+            WIDTH_MAX_PX,
+            "drag past WIDTH_MAX_PX clamps to the upper bound",
+        );
+        g.end_resize();
+        assert_eq!(g.take_pending_width_change(), Some(WIDTH_MAX_PX));
+
+        // Clamping the other way: drag past WIDTH_MIN_PX (300) must clamp.
+        g.begin_resize(0.0);
+        g.update_resize(-50_000.0);
+        assert_eq!(
+            g.width().pixels(),
+            WIDTH_MIN_PX,
+            "drag past WIDTH_MIN_PX clamps to the lower bound",
         );
     }
 
