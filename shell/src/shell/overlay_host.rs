@@ -32,7 +32,7 @@ use winit::keyboard::{Key, NamedKey};
 use quick_ui::presence::{PresenceCtx, PresenceKey};
 use quick_ui::text_render::{TextRenderer, TextWeight};
 use quick_ui::theme::Theme;
-use quick_ui::widget::{GroupRow, Widget, WindowGroup as UiWindowGroup};
+use quick_ui::widget::{CrossStripDetach, GroupRow, Widget, WindowGroup as UiWindowGroup};
 use quick_ui::{CommandEntry, CommandPalette};
 
 use crate::shell::chrome_state::{Chrome, WsTab};
@@ -575,6 +575,121 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Per-tick wire-up for cross-strip tab drag-drop (#151).
+    ///
+    /// Walks the captured [`GroupRow`] pointers, drains each row's
+    /// [`GroupRow::take_pending_cross_strip_detach`] one-shot, and routes
+    /// the payload to whichever strip's row contains the release point.
+    /// Within-strip drops never reach this hook — they're already resolved
+    /// by `GroupRow`'s own post-dispatch sweep before the tab is detached.
+    /// Cross-strip drops show up here because the source row deferred
+    /// resolution (release point fell outside its own vertical band) and
+    /// stashed `(TabDescriptor, TileHost, release_point)` for the shell
+    /// to route.
+    ///
+    /// Resolution rules:
+    ///
+    /// - Release point's `y` lands inside another strip's row rect →
+    ///   deliver via that row's [`GroupRow::accept_cross_strip_drop`],
+    ///   which splices the tab into a brand-new `WindowGroup` at the
+    ///   nearest gap.
+    /// - Release point doesn't match any other strip's row rect → return
+    ///   to the source row via the same `accept_cross_strip_drop` entry
+    ///   point (the source row uses its own gap math against the
+    ///   release point, so a "drop just below my own row" lands as a
+    ///   new group at the closest source-row gap, mirroring the in-row
+    ///   "drop in empty strip space" path the source's local resolver
+    ///   would have produced if we hadn't intercepted it).
+    ///
+    /// "Return to source" is the v1 fallback rather than "create a new
+    /// strip at drop_pos.y" because creating new strips touches the
+    /// persisted [`crate::shell::state::WorkspaceTree`] (it's not a
+    /// widget-local mutation), and the strip-creation flow already lives
+    /// behind explicit user affordances (settings modal, command palette).
+    /// Letting a stray drag accidentally produce a new strip would be
+    /// surprising; keeping the tab in its source strip preserves the
+    /// "no valid target → cancel" contract the in-row recovery path
+    /// (see `quick-ui/src/widget/group_row.rs:937` block) already pins.
+    ///
+    /// SAFETY mirrors the rest of the `group_row_ptrs` accessors: each
+    /// pointer addresses a `GroupRow` owned by the content tree, the host
+    /// outlives the content, and the `&mut self` borrow keeps the other
+    /// reconcile sweeps from racing this one.
+    fn dispatch_cross_strip_detaches(&mut self) {
+        if self.group_row_ptrs.is_empty() {
+            return;
+        }
+        // Phase 1 — drain every source row, snapshot every other row's
+        // rect. We have to drain first because subsequent
+        // `accept_cross_strip_drop` calls borrow the destination row
+        // mutably, which would conflict with holding any reference to
+        // a source row's `take_pending_cross_strip_detach` payload.
+        let mut detaches: Vec<(StripId, CrossStripDetach)> = Vec::new();
+        let mut strip_rects: Vec<(StripId, Rect)> = Vec::with_capacity(self.group_row_ptrs.len());
+        for (&strip_id, &ptr) in &self.group_row_ptrs {
+            // SAFETY: see field doc on `group_row_ptrs` — pointer was
+            // captured from a `Box<GroupRow>` owned through the content
+            // tree, the host outlives the content, and `&mut self` here
+            // ensures no other reconcile path is aliasing.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            strip_rects.push((strip_id, row.get_rect()));
+            if let Some(payload) = row.take_pending_cross_strip_detach() {
+                detaches.push((strip_id, payload));
+            }
+        }
+        if detaches.is_empty() {
+            return;
+        }
+        // Phase 2 — for each detach, hit-test the release point's `y`
+        // against every other strip's rect and pick the first match.
+        // We bias on `y` only: strips span the full content width, so a
+        // release at any `x` inside a strip's vertical band is "in that
+        // strip" by definition. Inside the matched strip's band the
+        // destination row resolves the gap by `x` via its own
+        // `gap_index_for` machinery.
+        for (src_strip_id, payload) in detaches {
+            let release = payload.release_point;
+            let dest_strip_id = strip_rects
+                .iter()
+                .find(|(sid, rect)| {
+                    *sid != src_strip_id
+                        && release.y >= rect.y0
+                        && release.y <= rect.y1
+                })
+                .map(|(sid, _)| *sid)
+                // No other strip matched — return to source.
+                .unwrap_or(src_strip_id);
+            // SAFETY: same contract as Phase 1's drain. We're mutating a
+            // single row at a time and never aliasing across rows.
+            let &dest_ptr = match self.group_row_ptrs.get(&dest_strip_id) {
+                Some(p) => p,
+                None => continue,
+            };
+            let dest_row: &mut GroupRow = unsafe { &mut *dest_ptr };
+            dest_row.accept_cross_strip_drop(
+                payload.desc,
+                payload.host,
+                release,
+            );
+            // Mirror the splice into the persisted `WorkspaceTree` so a
+            // shell restart sees the tab in its new strip rather than
+            // its old one. The tree-side mutation walks the source strip
+            // for the moved tab and re-homes it on the destination strip
+            // at the corresponding gap; if the source/destination are
+            // the same (return-to-source path), it's a no-op write.
+            if dest_strip_id != src_strip_id {
+                if let Some(chrome) = self.chrome.clone() {
+                    let mut st = chrome.borrow_mut();
+                    st.tree.move_tab_across_strips(
+                        src_strip_id,
+                        dest_strip_id,
+                        payload.tab_id,
+                    );
+                }
+            }
+        }
+    }
+
     /// Test-only escape hatch: lend out a mutable reference to the
     /// [`UiWindowGroup`] at `(strip_id, group_idx)`. Lets integration
     /// tests drive the close fade through public widget APIs (e.g.
@@ -620,6 +735,15 @@ impl ShellOverlayHost {
         self.harvest_pending_width_changes();
     }
 
+    /// Test-only one-shot dispatch: lets integration tests invoke the
+    /// per-frame cross-strip drag-drop router from outside `update`
+    /// without spinning up a full `App` render loop. Mirrors what
+    /// [`Widget::update`] runs each frame for #151.
+    #[cfg(any(test, debug_assertions))]
+    pub fn tick_cross_strip_dispatch_for_tests(&mut self) {
+        self.dispatch_cross_strip_detaches();
+    }
+
     /// Read-only accessor for the cached "+ Add workspace" tile rect.
     /// Populated by `draw_overview` each frame the overview is visible
     /// and reset to `Rect::ZERO` once the overview is fully hidden.
@@ -641,6 +765,22 @@ impl ShellOverlayHost {
     /// were captured from a `Box<GroupRow>` we own through the content
     /// tree, the host outlives the content, and `&self` here keeps the
     /// reconcile sweeps from racing the read.
+    /// Test-only accessor for a strip's `GroupRow` rect, in screen-space
+    /// coords. Returns `None` if no `GroupRow` was registered for the
+    /// given strip, or `Rect::ZERO` if the row hasn't seen a layout pass
+    /// yet. Used by cross-strip drag tests to pick a release point
+    /// inside another strip's vertical band without re-walking the
+    /// taffy tree.
+    ///
+    /// Mirrors the SAFETY contract on [`Self::groups_per_strip`].
+    #[cfg(any(test, debug_assertions))]
+    pub fn group_row_rect_for_tests(&self, strip_id: StripId) -> Option<Rect> {
+        let &ptr = self.group_row_ptrs.get(&strip_id)?;
+        // SAFETY: see field doc on `group_row_ptrs`.
+        let row: &GroupRow = unsafe { &*ptr };
+        Some(row.get_rect())
+    }
+
     pub fn groups_per_strip(&self) -> Vec<(StripId, Vec<(u64, Vec<u64>)>)> {
         let mut out = Vec::with_capacity(self.group_row_ptrs.len());
         for (&strip_id, &ptr) in &self.group_row_ptrs {
@@ -1053,6 +1193,11 @@ impl Widget for ShellOverlayHost {
         // `WorkspaceTree`. Same take-pattern as the maximize writeback;
         // runs once per gesture, not once per pixel.
         self.harvest_pending_width_changes();
+        // Cross-strip tab drag-drop (#151): drain any `GroupRow` that
+        // published a cross-strip detach during this frame's events and
+        // splice the dragged tab into whichever strip's row contains the
+        // release point (or back into source if no strip matched).
+        self.dispatch_cross_strip_detaches();
         a || b || c
     }
 
