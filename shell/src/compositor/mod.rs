@@ -47,6 +47,24 @@ pub fn parse_mode_from_args() -> Mode {
     parse_mode(&borrowed)
 }
 
+/// Process-global wrapper around [`parse_peer_sync`]. v1 default OFF —
+/// callers must opt in via `--enable-peer-sync` to spin up the libp2p
+/// stack. Used by `main` to decide whether to construct a
+/// [`crate::shell::network::ShellNetwork`].
+pub fn parse_peer_sync_from_args() -> bool {
+    let owned: Vec<String> = std::env::args().skip(1).collect();
+    let borrowed: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+    parse_peer_sync(&borrowed)
+}
+
+/// Pure, testable `--enable-peer-sync` flag parser. Returns `true` iff
+/// the flag is present anywhere in `args`. Mirrors [`parse_mode`]'s
+/// "parse from a borrowed slice" shape so tests can drive it with a
+/// fixture without touching `std::env`.
+pub fn parse_peer_sync(args: &[&str]) -> bool {
+    args.iter().any(|a| *a == "--enable-peer-sync")
+}
+
 /// Pure, testable mode parser. Accepts both `--mode <value>` and
 /// `--mode=<value>` forms. Unknown values (and a missing flag) default to
 /// [`Mode::Hosted`] so the compositor never refuses to start over a typo.
@@ -95,5 +113,18 @@ mod tests {
     #[test]
     fn unrecognized_value_defaults_hosted() {
         assert!(matches!(parse_mode(&["--mode", "junk"]), Mode::Hosted));
+    }
+
+    #[test]
+    fn peer_sync_flag_default_off() {
+        assert!(!parse_peer_sync(&[]));
+        assert!(!parse_peer_sync(&["--mode", "hosted"]));
+    }
+
+    #[test]
+    fn peer_sync_flag_present_anywhere() {
+        assert!(parse_peer_sync(&["--enable-peer-sync"]));
+        assert!(parse_peer_sync(&["--mode", "hosted", "--enable-peer-sync"]));
+        assert!(parse_peer_sync(&["--enable-peer-sync", "--mode=native"]));
     }
 }
