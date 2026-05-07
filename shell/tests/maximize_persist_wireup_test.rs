@@ -142,6 +142,7 @@ fn single_group_tree() -> (WorkspaceTree, StripId, GroupId) {
         roles: vec![],
         workspace_files: vec![],
         collaborators: vec![],
+        grants: HashMap::new(),
     };
 
     let mut active_strip = HashMap::new();
