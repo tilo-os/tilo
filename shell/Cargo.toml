@@ -18,7 +18,7 @@ smithay-client-toolkit = "0.19"
 wayland-client = "0.31"
 wayland-protocols = "0.32"
 libp2p = { version = "0.56", features = ["tcp", "dns", "websocket", "noise", "yamux", "mdns", "gossipsub", "tokio", "macros"] }
-smithay = { version = "0.7", default-features = false, features = ["wayland_frontend", "backend_winit", "desktop"] }
+smithay = { version = "0.7", default-features = false, features = ["wayland_frontend", "backend_winit", "renderer_glow", "desktop"] }
 calloop-wayland-source = "0.4"
 rand = "0.10.0"
 quick-ui = { path = "../quick-ui" }
