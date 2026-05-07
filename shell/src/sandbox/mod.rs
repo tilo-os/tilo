@@ -11,4 +11,4 @@ pub mod spawn;
 
 pub use profile::SandboxProfile;
 pub use seccomp::{cache_blob, cache_blob_at, compile_workspace_seccomp};
-pub use spawn::spawn_in_workspace;
+pub use spawn::{spawn_in_workspace, spawn_in_workspace_with_grants};
