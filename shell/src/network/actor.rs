@@ -498,11 +498,22 @@ mod tests {
             .await
             .unwrap();
 
-        // 7. B should observe the message.
+        // 7. B should observe the message. Phase 6's reconnect-sync
+        // path also broadcasts an empty `SyncReq { since: vec![] }` on
+        // PeerJoined, so the loop keeps draining until it sees the
+        // payload this test actually published (`since: [1, 2, 3]`).
         let received = timeout(Duration::from_secs(10), async {
             loop {
                 match ev_rx_b.recv().await {
-                    Some(NetEvent::Msg { ws, msg, .. }) => return Some((ws, msg)),
+                    Some(NetEvent::Msg { ws, msg, .. }) => {
+                        if msg == payload {
+                            return Some((ws, msg));
+                        }
+                        // Skip transport-layer SyncReqs from the
+                        // reconnect-sync path; keep waiting for the
+                        // test's payload.
+                        continue;
+                    }
                     Some(_) => continue,
                     None => return None,
                 }
