@@ -25,9 +25,10 @@ use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
 use smithay::wayland::socket::ListeningSocketSource;
 
-use crate::compositor::backend::{Backend, BackendEvent, OutputId, WinitBackend};
+use crate::compositor::backend::{Backend, BackendEvent, DrmBackend, OutputId, WinitBackend};
 use crate::compositor::frame::FrameBuilder;
 use crate::compositor::state::{ClientState, State};
+use crate::compositor::{parse_backend_from_args, BackendKind};
 
 /// Entry point for the smithay-on-Wayland compositor.
 ///
@@ -58,8 +59,23 @@ pub fn run() -> ! {
     // `backend.submit_frame`. We `expect` here for the same reason the
     // socket bind below does — a top-level `-> !` entry point treats any
     // backend init failure as fatal (same posture as smithay's `anvil`).
-    let mut backend: WinitBackend =
-        WinitBackend::new().expect("init winit backend");
+    //
+    // Phase 5 Task 5.1: `--backend drm|winit` selects which `Backend`
+    // impl runs. `Drm` is currently a skeleton — it errors at
+    // construction with a "not yet implemented" message — but the
+    // dispatch is wired so the follow-up TTY work plugs in without
+    // touching this entry point.
+    let backend_kind = parse_backend_from_args();
+    let mut backend: Box<dyn Backend> = match backend_kind {
+        BackendKind::Winit => Box::new(WinitBackend::new().expect("init winit backend")),
+        BackendKind::Drm => match DrmBackend::new() {
+            Ok(b) => Box::new(b),
+            Err(e) => {
+                eprintln!("nirios compositor: --backend drm failed: {e}");
+                std::process::exit(1);
+            }
+        },
+    };
 
     // Phase 4: per-frame scene production lifted out of `bin/shots`.
     // The compositor and the offscreen tooling share `FrameBuilder`,
