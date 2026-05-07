@@ -7,8 +7,10 @@
 
 use vello::Scene;
 
+pub mod drm;
 pub mod winit;
 
+pub use drm::DrmBackend;
 pub use winit::WinitBackend;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
