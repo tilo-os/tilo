@@ -32,11 +32,11 @@ use winit::keyboard::{Key, NamedKey};
 use quick_ui::presence::{PresenceCtx, PresenceKey};
 use quick_ui::text_render::{TextRenderer, TextWeight};
 use quick_ui::theme::Theme;
-use quick_ui::widget::{CrossStripDetach, GroupRow, Widget, WindowGroup as UiWindowGroup};
+use quick_ui::widget::{CrossStripDetach, GroupRow, PermissionPrompt, PromptChoice, Widget, WindowGroup as UiWindowGroup, PROMPT_HEIGHT};
 use quick_ui::{CommandEntry, CommandPalette};
 
 use crate::shell::chrome_state::{Chrome, WsTab};
-use crate::shell::state::{GroupId, StripId};
+use crate::shell::state::{Capability, GrantScope, GroupId, StripId};
 use crate::shell::workspace_settings::{draw_files_pane, draw_roles_pane};
 
 pub struct ShellOverlayHost {
@@ -156,6 +156,13 @@ pub struct ShellOverlayHost {
     /// sidebar's rect doesn't overlap the topbar and swallow the overview-
     /// toggle click.
     sidebar_top_y: f32,
+    /// Live permission-prompt widget rendered at the top of the active
+    /// strip when `chrome.pending_grants.front().is_some()`. Constructed
+    /// lazily — populated by `pump_permission_prompt` each frame from
+    /// the front of the queue. `None` when the queue is empty so we
+    /// don't paint a stale prompt during the moment between two
+    /// requests.
+    permission_prompt: Option<PermissionPrompt>,
 }
 
 /// Total duration of the desktop ↔ overview crossfade. The concept wraps
@@ -283,6 +290,7 @@ impl ShellOverlayHost {
             add_workspace_rect: Rect::ZERO,
             ws_settings_tab_pill_rects: [Rect::ZERO; 4],
             sidebar_top_y: SIDEBAR_TOP_OFFSET_PX,
+            permission_prompt: None,
         }
     }
 
@@ -714,6 +722,123 @@ impl ShellOverlayHost {
                 }
             }
         }
+    }
+
+    /// Per-tick wire-up that owns the `pending_grants` queue's lifecycle.
+    ///
+    /// Phase 4 Task 4.2 wires the prompt at the *widget* level — the
+    /// portal D-Bus backend (Phase 4 Task 4.3) pushes grant requests
+    /// onto `chrome.pending_grants`; this method:
+    ///
+    ///  1. Latches a fresh [`PermissionPrompt`] when one is needed
+    ///     and no widget is currently held (`front()` is `Some` and
+    ///     `self.permission_prompt` is `None`).
+    ///  2. Drains the front entry and applies the user's choice
+    ///     when the held widget reports a `pending_choice`. The
+    ///     `Allow` path is a no-op on the workspace's grants map
+    ///     (Once doesn't persist); `Session` and `Always` push a
+    ///     scope-tagged copy of the requested capability into the
+    ///     active workspace's `grants` map. `Deny` is a no-op.
+    ///  3. Clears the held widget so the next frame either re-latches
+    ///     for the next queue entry or paints nothing.
+    ///
+    /// Owner-only escalation: when the active user isn't the
+    /// workspace owner, the widget's `Always` button is rendered
+    /// disabled and click-through-the-rect is dropped — so by the
+    /// time we observe a `Some(PromptChoice::Always)` here, the
+    /// widget has already vetted the click against `is_owner`. The
+    /// pump's only safety check is that the queue's `front()` still
+    /// matches the prompt's `app_id` before draining (defends
+    /// against an out-of-band push that swapped the head of the
+    /// queue between frames).
+    pub(crate) fn pump_permission_prompt(&mut self) {
+        let Some(chrome_handle) = self.chrome.clone() else {
+            return;
+        };
+
+        // Step 1 — drain choice + maybe persist grant.
+        let drain_payload = self
+            .permission_prompt
+            .as_mut()
+            .and_then(|p| p.pending_choice.map(|c| (p.app_id.clone(), c)));
+        if let Some((widget_app_id, choice)) = drain_payload {
+            let mut st = chrome_handle.borrow_mut();
+            // Pop only if the head still belongs to the prompt the
+            // user just clicked — if a portal push changed the head
+            // mid-frame we'd otherwise apply the user's grant to
+            // the wrong app.
+            let head_matches = st
+                .pending_grants
+                .front()
+                .map(|(app_id, _)| app_id == &widget_app_id)
+                .unwrap_or(false);
+            if head_matches {
+                if let Some((app_id, capability)) = st.pending_grants.pop_front() {
+                    match choice {
+                        PromptChoice::Allow => {
+                            // Once: don't persist on the workspace.
+                            // The portal request is treated as
+                            // satisfied for this single call.
+                        }
+                        PromptChoice::Session => {
+                            if let Some(ws) = st.tree.active_workspace_mut() {
+                                let cap = with_grant_scope(capability, GrantScope::Session);
+                                ws.grants
+                                    .entry(app_id)
+                                    .or_default()
+                                    .push(cap);
+                            }
+                        }
+                        PromptChoice::Always => {
+                            if let Some(ws) = st.tree.active_workspace_mut() {
+                                let cap = with_grant_scope(capability, GrantScope::Always);
+                                ws.grants
+                                    .entry(app_id)
+                                    .or_default()
+                                    .push(cap);
+                            }
+                        }
+                        PromptChoice::Deny => {
+                            // No-op — the caller treats absence of a
+                            // matching grant as "deny".
+                        }
+                    }
+                    st.bump();
+                }
+            }
+            // Whether or not the head matched, the widget has
+            // discharged its pending choice — drop it so the next
+            // frame either latches a fresh prompt or paints nothing.
+            self.permission_prompt = None;
+        }
+
+        // Step 2 — latch a new prompt when the queue's front needs
+        // surfacing and we don't already hold a widget.
+        if self.permission_prompt.is_none() {
+            let st = chrome_handle.borrow();
+            if let Some((app_id, capability)) = st.pending_grants.front() {
+                let label = capability_label(capability);
+                let is_owner = is_active_workspace_owner(&st);
+                self.permission_prompt =
+                    Some(PermissionPrompt::new(app_id.clone(), label, is_owner));
+            }
+        }
+    }
+
+    /// Test-only one-shot drive: lets integration tests run the
+    /// per-frame permission-prompt pump without spinning up a full
+    /// render loop. Mirrors `Widget::update`'s in-frame call.
+    #[cfg(any(test, debug_assertions))]
+    pub fn tick_permission_prompt_for_tests(&mut self) {
+        self.pump_permission_prompt();
+    }
+
+    /// Test-only accessor for the currently-held [`PermissionPrompt`].
+    /// Lets integration tests synthesise a click on the widget
+    /// without exposing the internal field via `pub`.
+    #[cfg(any(test, debug_assertions))]
+    pub fn permission_prompt_mut_for_tests(&mut self) -> Option<&mut PermissionPrompt> {
+        self.permission_prompt.as_mut()
     }
 
     /// Test-only escape hatch: lend out a mutable reference to the
@@ -1224,6 +1349,11 @@ impl Widget for ShellOverlayHost {
         // splice the dragged tab into whichever strip's row contains the
         // release point (or back into source if no strip matched).
         self.dispatch_cross_strip_detaches();
+        // Sandbox Phase 4 Task 4.2: drive the permission-prompt pump.
+        // Latches a fresh widget for the front of `chrome.pending_grants`,
+        // and drains entries when the user clicks an action button.
+        // Idempotent — runs every frame regardless of queue state.
+        self.pump_permission_prompt();
         a || b || c
     }
 
@@ -1397,6 +1527,23 @@ impl Widget for ShellOverlayHost {
             self.draw_demo_peer(scene, peer_xform, text_renderer, theme);
             self.draw_real_peers(scene, peer_xform, text_renderer, theme, presence);
             scene.pop_layer();
+        }
+
+        // Sandbox Phase 4 Task 4.2: inline permission prompt. Painted
+        // as a thin bar at the top of the content viewport (just below
+        // the topbar) when `chrome.pending_grants.front().is_some()`.
+        // Sits above the desktop content but below the overlay layer
+        // so an open palette / overview / quick-settings still occludes
+        // it — the user wants to act on the modal first, then come
+        // back to the prompt. The host owns the widget; the pump in
+        // `update` (and its `tick_permission_prompt_for_tests` shim)
+        // is what observes pending grants and drains them.
+        if let Some(prompt) = self.permission_prompt.as_mut() {
+            let bar_y0 = self.rect.y0 + self.sidebar_top_y as f64;
+            let bar_x0 = self.rect.x0 + self.sidebar_top_y as f64;
+            let bar_x1 = self.rect.x1 - self.sidebar_top_y as f64;
+            prompt.set_rect(Rect::new(bar_x0, bar_y0, bar_x1, bar_y0 + PROMPT_HEIGHT));
+            prompt.draw(scene, transform, text_renderer, theme, presence);
         }
 
         // Overview grid (Cmd+Tab) scales+fades into place on the second
@@ -1656,6 +1803,43 @@ impl Widget for ShellOverlayHost {
             if let Some(p) = self.last_cursor {
                 if self.cursor_over_open_overlay(p) {
                     *handled = true;
+                    return;
+                }
+            }
+        }
+
+        // Sandbox Phase 4 Task 4.2: forward pointer events to the
+        // permission prompt before anything else. The widget's own
+        // `handle_event` updates `pending_choice`; the per-frame
+        // pump (`pump_permission_prompt`) drains the choice + applies
+        // the grant on the next tick. Gate on the prompt's rect for
+        // pointer events so the bar's hit zone doesn't swallow
+        // clicks on content underneath outside the bar.
+        if let Some(prompt) = self.permission_prompt.as_mut() {
+            let prompt_rect = prompt.get_rect();
+            let forward = match event {
+                WindowEvent::CursorMoved { .. } => true,
+                WindowEvent::MouseInput { .. } => self
+                    .last_cursor
+                    .map(|p| prompt_rect.contains(p))
+                    .unwrap_or(false),
+                _ => false,
+            };
+            if forward {
+                let mut tmp_taffy = TaffyTree::<()>::new();
+                let tmp_node = tmp_taffy.new_leaf(Default::default()).unwrap();
+                prompt.handle_event(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    tmp_node,
+                    &tmp_taffy,
+                );
+                if *handled {
                     return;
                 }
             }
@@ -2371,6 +2555,60 @@ fn compose_overlay_transition(t: f32, target: f32) -> (f32, f64, f32, f64) {
             (alpha, scale, 0.0, SHRINK_SCALE)
         }
     }
+}
+
+/// Build a human-readable label for the inline permission prompt
+/// from a [`Capability`] payload. Phase 4 Task 4.2 only needs a
+/// single-line description per variant — i18n keys land alongside
+/// the portal layer in Task 4.3 when the strings start surfacing
+/// to end-users.
+fn capability_label(cap: &Capability) -> String {
+    match cap {
+        Capability::Filesystem { path, mode, .. } => {
+            let mode_str = match mode {
+                crate::shell::state::FsMode::Read => "read",
+                crate::shell::state::FsMode::ReadWrite => "read/write",
+            };
+            format!("{} access to {}", mode_str, path.display())
+        }
+        Capability::Camera { .. } => "Camera access".to_string(),
+        Capability::Microphone { .. } => "Microphone access".to_string(),
+        Capability::Screencast { .. } => "Screen capture".to_string(),
+        Capability::Network { hosts, .. } => match hosts {
+            Some(h) if !h.is_empty() => format!("Network access to {}", h.join(", ")),
+            _ => "Network access".to_string(),
+        },
+    }
+}
+
+/// Return a copy of `cap` with its `scope` field replaced. The portal
+/// layer pushes onto `pending_grants` with a placeholder scope (typically
+/// [`GrantScope::Once`]); the prompt's button choice is what determines
+/// what gets persisted.
+fn with_grant_scope(cap: Capability, scope: GrantScope) -> Capability {
+    match cap {
+        Capability::Filesystem { path, mode, .. } => Capability::Filesystem { path, mode, scope },
+        Capability::Camera { .. } => Capability::Camera { scope },
+        Capability::Microphone { .. } => Capability::Microphone { scope },
+        Capability::Screencast { .. } => Capability::Screencast { scope },
+        Capability::Network { hosts, .. } => Capability::Network { hosts, scope },
+    }
+}
+
+/// Stub for the "is the active user the workspace owner?" predicate
+/// the prompt's `Always` button gates on. v1 returns `true`
+/// unconditionally — the shell currently has no concept of a logged-
+/// in user identity, so every local user is treated as the owner of
+/// the workspaces they hold. Real ownership tracking lands alongside
+/// the collaboration / invite flow (`docs/superpowers/plans/peer-
+/// sync.md`); when it does, this helper reads from the chrome's
+/// `local_user_id` and compares it to the active workspace's
+/// `owner_id` (currently absent — schema change tracked in the same
+/// follow-up). Tests that need the disabled-Always path can poke
+/// the prompt's `is_owner` field through
+/// [`crate::shell::overlay_host::ShellOverlayHost::permission_prompt_mut_for_tests`].
+fn is_active_workspace_owner(_state: &crate::shell::chrome_state::ChromeState) -> bool {
+    true
 }
 
 fn draw_scrim(scene: &mut Scene, transform: Affine, rect: Rect) {
