@@ -10,7 +10,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::shell::network::{DEFAULT_KEYPAIR_PATH, ShellNetwork};
 use crate::shell::{
-    build_nirios_root, persist, seed_demo_editor_presence, sync_tab_presence_from_tree,
+    build_nirios_root_with_options, persist, seed_demo_editor_presence,
+    sync_tab_presence_from_tree,
 };
 use quick_ui::presence::PresenceKey;
 use quick_ui::{App, State};
@@ -68,7 +69,11 @@ pub fn run_with_options(enable_peer_sync: bool) {
     };
 
     let state = State::new();
-    let root = build_nirios_root(&tree);
+    // Pass the peer-sync flag through to the overlay host so the
+    // command palette picks up `/invite` + `/connect` when the user
+    // booted with `--enable-peer-sync`. v1 default OFF — the rows
+    // stay hidden when the flag isn't set.
+    let root = build_nirios_root_with_options(&tree, enable_peer_sync);
     let mut app = App::new(state, root);
     // Seed per-tab presence from the tree's collaborator roster so
     // tab-pill presence dots render on first draw. Network-driven
