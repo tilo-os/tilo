@@ -10,9 +10,9 @@ use std::sync::{Arc, Mutex};
 
 use crate::shell::network::{DEFAULT_KEYPAIR_PATH, ShellNetwork};
 use crate::shell::{
-    build_nirios_root_with_options, persist, seed_demo_editor_presence,
-    sync_tab_presence_from_tree,
+    build_nirios_root, persist, seed_demo_editor_presence, sync_tab_presence_from_tree,
 };
+use quick_ui::collaboration::PresencePayload;
 use quick_ui::presence::PresenceKey;
 use quick_ui::{App, State};
 
@@ -48,7 +48,7 @@ pub fn run_with_options(enable_peer_sync: bool) {
     // doesn't drop out from under us mid-session. Failure is logged
     // and treated as "peer-sync stays off" — the shell must keep
     // working even if the keypair store is unreadable.
-    let _peer_sync: Option<ShellNetwork> = if enable_peer_sync {
+    let peer_sync: Option<Arc<ShellNetwork>> = if enable_peer_sync {
         let shared_tree = Arc::new(Mutex::new(tree.clone()));
         match ShellNetwork::spawn(shared_tree, std::path::Path::new(DEFAULT_KEYPAIR_PATH)) {
             Ok(handle) => {
@@ -57,7 +57,7 @@ pub fn run_with_options(enable_peer_sync: bool) {
                 // `NeighbourMsg::SyncReq`s as soon as a peer dials in.
                 let _ = handle.join_default_workspace();
                 tracing::info!("peer-sync: actor spawned, default workspace joined");
-                Some(handle)
+                Some(Arc::new(handle))
             }
             Err(e) => {
                 tracing::warn!("peer-sync: spawn failed ({e}); continuing without sync");
@@ -69,11 +69,7 @@ pub fn run_with_options(enable_peer_sync: bool) {
     };
 
     let state = State::new();
-    // Pass the peer-sync flag through to the overlay host so the
-    // command palette picks up `/invite` + `/connect` when the user
-    // booted with `--enable-peer-sync`. v1 default OFF — the rows
-    // stay hidden when the flag isn't set.
-    let root = build_nirios_root_with_options(&tree, enable_peer_sync);
+    let root = build_nirios_root(&tree);
     let mut app = App::new(state, root);
     // Seed per-tab presence from the tree's collaborator roster so
     // tab-pill presence dots render on first draw. Network-driven
@@ -92,5 +88,55 @@ pub fn run_with_options(enable_peer_sync: bool) {
     app.set_presence_broadcast_scope(Some(PresenceKey::Workspace {
         id: format!("{}", tree.active.0),
     }));
+
+    // Phase 3.2 cursor-presence pump: when peer-sync is enabled,
+    // pipe every local `broadcast_presence` Pointer event into a
+    // `NetCmd::Publish { msg: PresenceMoved }` and drain received
+    // presence updates into the chrome's remote-cursors overlay.
+    // Sink + frame-tick are only installed under `enable_peer_sync`
+    // so the legacy headless path stays fully bit-compatible.
+    if let Some(net) = peer_sync.as_ref() {
+        let send_net = Arc::clone(net);
+        app.set_presence_broadcast_sink(move |key, payload| {
+            // Only Pointer payloads carry an (x, y) coordinate; the
+            // other variants (Caret, Selection, Arrived, Left) are
+            // out of scope for cursor presence and ride the existing
+            // unix-socket path the toolkit already invokes alongside.
+            let PresencePayload::Pointer { x, y } = payload else {
+                return;
+            };
+            // Encode the structured `PresenceKey` to JSON so the wire
+            // format stays opaque to the shell-side bridge. Receivers
+            // either round-trip back into PresenceKey (when they care
+            // about scope) or use the string as an attribution-only
+            // identifier.
+            let key_str = serde_json::to_string(key).unwrap_or_default();
+            send_net.publish_presence(key_str, (*x as f64, *y as f64));
+        });
+        let recv_net = Arc::clone(net);
+        let inbound = recv_net.inbound_presence_handle();
+        app.set_frame_tick(move |presence_ctx| {
+            // Pump the actor→replica event channel first so any
+            // `PresenceMoved` events that arrived since the last
+            // wakeup land in the inbound buffer this frame.
+            recv_net.tick();
+            // Drain the buffer atomically so a slow frame doesn't
+            // double-apply the same delta. Anything we drop here is
+            // a stale move that's about to be replaced anyway, since
+            // peers republish at ~30 Hz.
+            let drained: Vec<_> = {
+                let mut buf = inbound.lock().unwrap();
+                std::mem::take(&mut *buf)
+            };
+            for entry in drained {
+                presence_ctx.upsert_remote_cursor(
+                    format!("p{:016x}", entry.peer),
+                    [entry.point.0 as f32, entry.point.1 as f32],
+                    None,
+                );
+            }
+        });
+    }
+    let _peer_sync = peer_sync; // keep alive for lifetime of `app.run()`
     app.run();
 }
