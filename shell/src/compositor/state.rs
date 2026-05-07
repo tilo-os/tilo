@@ -28,6 +28,7 @@ use std::sync::Arc;
 
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::reexports::calloop::LoopHandle;
+use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
@@ -35,14 +36,18 @@ use smithay::reexports::wayland_server::{Client, DisplayHandle};
 use smithay::utils::Serial;
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
-    CompositorClientState, CompositorHandler, CompositorState,
+    self as wl_compositor, CompositorClientState, CompositorHandler, CompositorState,
 };
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
+    XdgToplevelSurfaceData,
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::{delegate_compositor, delegate_output, delegate_seat, delegate_shm, delegate_xdg_shell};
+
+use crate::compositor::tab_binding;
+use crate::shell::state::WorkspaceTree;
 
 /// The compositor's process-wide state.
 ///
@@ -73,6 +78,11 @@ pub struct State {
     /// global so xdg-output-aware clients (e.g. Mutter's wl-roots tools) can
     /// bind without erroring; concrete outputs are added in phase 4.
     pub output_manager_state: OutputManagerState,
+    /// Persisted workspace tree. Phase 6 of the compositor plan adopts
+    /// foreign-client toplevels into this tree as
+    /// [`crate::shell::state::TileContent::Foreign`] tabs (see
+    /// [`crate::compositor::tab_binding::adopt_toplevel`]).
+    pub workspace_tree: WorkspaceTree,
 }
 
 impl State {
@@ -98,6 +108,7 @@ impl State {
             shm_state,
             seat_state,
             output_manager_state,
+            workspace_tree: WorkspaceTree::bootstrap_default(),
         }
     }
 }
@@ -174,10 +185,34 @@ impl XdgShellHandler for State {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
+        // Phase 6 Task 6.1 — adopt the freshly-committed toplevel into
+        // the active workspace's tab tree. The `app_id` may be unset at
+        // this point; `adopt_toplevel` falls back to a synthetic
+        // `anon-<id>` placeholder, and a future Task 6.2 step (re-adopt
+        // on `set_app_id`) rewrites it once the client provides one.
+        let surface_id = surface.wl_surface().id().protocol_id() as u64;
+        let app_id = wl_compositor::with_states(surface.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|data| data.lock().ok().and_then(|d| d.app_id.clone()))
+        });
+        tab_binding::adopt_toplevel(&mut self.workspace_tree, surface_id, app_id);
+
         // Send a default configure so the client can map. Phase 4 will pick a
         // real size/position from the cluster layout; Phase 2 just needs the
         // handshake to complete.
         surface.send_configure();
+    }
+
+    fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        // Phase 6 Task 6.2 — remove the matching `Foreign` tab so the
+        // chrome stops advertising a destroyed surface.
+        let surface_id = surface.wl_surface().id().protocol_id() as u64;
+        let _ = tab_binding::close_tab_for_destroyed_surface(
+            &mut self.workspace_tree,
+            surface_id,
+        );
     }
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
