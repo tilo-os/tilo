@@ -5939,6 +5939,7 @@ mod maximize_harvest_tests {
             roles: vec![],
             workspace_files: vec![],
             collaborators: vec![],
+            grants: StdHashMap::new(),
         };
         let mut active_strip = StdHashMap::new();
         active_strip.insert(ws_id, strip_id);
