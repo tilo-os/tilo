@@ -102,6 +102,7 @@ fn two_strip_two_group_tree() -> (
         active_strip,
         active_group,
         collaborators: vec![],
+        ..Default::default()
     };
 
     (tree, (s0_id, [a0, a1]), (s1_id, [b0, b1]))
