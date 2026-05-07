@@ -39,6 +39,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
@@ -279,11 +280,31 @@ fn escape_event() -> WindowEvent {
 }
 
 // ---------------------------------------------------------------------------
+// Test serialisation
+// ---------------------------------------------------------------------------
+//
+// Tests in this binary share a wgpu adapter / vello / cosmic-text static
+// caches via `try_new_renderer`. Cargo runs `#[test]` fns in this binary
+// in parallel by default, which has been observed to SIGSEGV on the
+// shared GPU/text resources (audit
+// `docs/superpowers/audits/2026-05-04-critical-ui-inspection.md`). Hold
+// `TEST_LOCK` for the entirety of every test to serialise them within
+// this binary. Cargo still runs distinct test *binaries* in parallel,
+// but each integration test is its own process so the OS-level resource
+// contention is bounded by the per-process state.
+//
+// Use `unwrap_or_else(|e| e.into_inner())` so a panicking test does not
+// poison the mutex and mark the rest of the suite as failed — every
+// `#[test]` records its own pass/fail independently.
+static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+// ---------------------------------------------------------------------------
 // Test 1: open + close overview
 // ---------------------------------------------------------------------------
 
 #[test]
 fn e2e_open_close_overview() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Seed: `bootstrap_default` already provides Home + Research + Design,
     // so the Overview grid has 3 cards to paint without further appends.
     let tree = WorkspaceTree::bootstrap_default();
@@ -482,6 +503,7 @@ fn probe_topbar(
 
 #[test]
 fn e2e_tab_drag_reorder() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Standalone WindowGroup with four Stub tabs — matches the tab set
     // in the bootstrap workspace but avoids the full-root plumbing. Tab
     // 1 (Files) is the drag source; tab 3 (Browser) is the drop target.
@@ -881,6 +903,7 @@ fn expected_post_drop_descriptor_order() -> Vec<&'static str> {
 
 #[test]
 fn e2e_open_quick_settings() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tree = WorkspaceTree::bootstrap_default();
     let theme = Theme::dark();
 
@@ -978,6 +1001,7 @@ fn e2e_open_quick_settings() {
 // smaller viewport than the full shell.
 #[test]
 fn e2e_maximized_tile_floating_controls() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tabs: Vec<(TabDescriptor, TileContent)> = vec![
         tab_stub(1, "Notes", AppKind::Editor, "notes"),
         tab_stub(2, "Files", AppKind::Files, "files"),
@@ -1337,6 +1361,7 @@ fn pump_host(
 
 #[test]
 fn e2e_ctrl_k_opens_search_palette_in_live_binary_path() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Same fixture path as `e2e_open_close_overview`: build the full
     // shell chrome via `build_nirios_overlay_host_with_chrome` (the
     // concrete-type sibling of `build_nirios_root_with_chrome` used by
@@ -1358,6 +1383,7 @@ fn e2e_ctrl_k_opens_search_palette_in_live_binary_path() {
 
 #[test]
 fn e2e_escape_closes_search_palette() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tree = WorkspaceTree::bootstrap_default();
     let (mut host, _chrome) =
         quick_desktop::shell::build_nirios_overlay_host_with_chrome(&tree);
@@ -1386,6 +1412,7 @@ fn e2e_escape_closes_search_palette() {
 
 #[test]
 fn e2e_ctrl_tab_toggles_overview_in_live_binary_path() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tree = WorkspaceTree::bootstrap_default();
     let (mut host, chrome) =
         quick_desktop::shell::build_nirios_overlay_host_with_chrome(&tree);
@@ -1608,6 +1635,7 @@ impl UndoHarness {
 /// widget gesture that actually pushes to the undo stack.
 #[test]
 fn e2e_undo_redo_round_trip_restores_golden() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut h = UndoHarness::new();
 
     let mut renderer_opt = try_new_renderer(960, 540);
@@ -1771,6 +1799,7 @@ fn e2e_undo_redo_round_trip_restores_golden() {
 /// which we don't instantiate).
 #[test]
 fn e2e_redo_after_undo_rehydrates_golden() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut h = UndoHarness::new();
     let mut renderer_opt = try_new_renderer(960, 540);
     let out_dir = screenshots_dir();
