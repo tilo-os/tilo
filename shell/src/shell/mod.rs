@@ -1075,6 +1075,15 @@ fn to_ui_tile(t: &ShellTile) -> UiTile {
             kind: to_ui_kind(kind),
             label: label.clone(),
         },
+        // Foreign-client tiles (Phase 6 of the compositor plan) fall
+        // through to a Stub for the chrome-side render — the compositor's
+        // frame loop is responsible for blitting the actual buffer over
+        // this stub. `UiKind::Settings` is the catch-all glyph; same
+        // fallback `to_ui_kind` uses for `ShellKind::Other(_)`.
+        ShellTile::Foreign { app_id, .. } => UiTile::Stub {
+            kind: UiKind::Settings,
+            label: app_id.clone(),
+        },
         ShellTile::AppPlaceholder { kind, label } => match kind {
             // Terminal — spawn a real PTY; on failure fall back to a Stub per
             // spec §9a, mirroring the same pattern `default_demo_tabs` uses
@@ -1200,6 +1209,11 @@ pub fn build_nirios_overlay_host_with_chrome(
                             let kind = match &t.tile {
                                 ShellTile::Stub { kind, .. } => to_ui_kind(kind),
                                 ShellTile::AppPlaceholder { kind, .. } => to_ui_kind(kind),
+                                // Phase 6: foreign clients don't carry a
+                                // shell-known kind — fall back to
+                                // `UiKind::Settings` glyph until icon-theme
+                                // resolution is wired up.
+                                ShellTile::Foreign { .. } => UiKind::Settings,
                             };
                             (
                                 TabDescriptor {

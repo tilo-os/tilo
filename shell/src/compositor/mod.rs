@@ -24,6 +24,7 @@ pub mod frame;
 pub mod hosted;
 pub mod native;
 pub mod state;
+pub mod tab_binding;
 
 /// Which run mode the compositor should boot into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
