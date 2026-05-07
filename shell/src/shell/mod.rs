@@ -23,6 +23,7 @@ pub mod browser_stub;
 pub mod chrome_state;
 pub mod desktop_backdrop;
 pub mod editor_app;
+pub mod network;
 pub mod nirios_tokens;
 pub mod notes_app;
 pub mod overlay_host;
