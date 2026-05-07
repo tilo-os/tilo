@@ -48,6 +48,32 @@ pub fn spawn_in_workspace(
     profile: &SandboxProfile,
     command: &[String],
 ) -> std::io::Result<Child> {
+    // Delegate to the grants-aware path with an empty grants slice so
+    // the legacy zero-grant behaviour is preserved exactly.
+    spawn_in_workspace_with_grants(profile, &[], command)
+}
+
+/// Spawn `command` inside the sandbox described by `profile`, after
+/// applying each capability in `grants` to a clone of the profile.
+///
+/// This is the grants-aware sibling of [`spawn_in_workspace`]: callers
+/// that have a `&Workspace` handle can pass `workspace.grants.get(app_id)`
+/// (or an empty slice) here, and the sandbox profile picks up the matching
+/// `--bind` triples for hardware capabilities (Phase 5 Task 5.3 — camera
+/// and microphone). Filesystem / Network / Screencast variants in
+/// `grants` are silently ignored at this layer; their enforcement lives
+/// in sibling Phase 5 units.
+///
+/// The legacy [`spawn_in_workspace`] entry point is preserved so older
+/// call-sites that don't yet thread grants through keep compiling
+/// without changes — they simply behave as if no grants were issued
+/// (i.e. no extra binds), which matches the plan's "without a grant
+/// the device simply isn't reachable" policy.
+pub fn spawn_in_workspace_with_grants(
+    profile: &SandboxProfile,
+    grants: &[crate::shell::state::Capability],
+    command: &[String],
+) -> std::io::Result<Child> {
     // Clone the profile so we can keep the borrow shape the plan asks
     // for (`&SandboxProfile`) while still feeding the consuming
     // `into_argv`. Profile is cheap-to-clone (a few `Vec`s and a small
@@ -55,6 +81,12 @@ pub fn spawn_in_workspace(
     // ownership puzzles when the caller wants to inspect the profile
     // after spawning (e.g. for logging).
     let mut profile = clone_profile(profile);
+
+    // Apply granted capabilities BEFORE bridge-socket wiring so the
+    // rendered argv lists capability binds alongside the workspace
+    // binds. Order doesn't matter for `bwrap` semantics but keeps the
+    // diagnostic logging readable.
+    profile.apply_grants(grants);
 
     // Wire the bridge socket. Failures here surface as IO errors so the
     // caller can decide whether to fall back to no-sandbox or fail the

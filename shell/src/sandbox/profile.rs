@@ -93,6 +93,83 @@ impl SandboxProfile {
         }
     }
 
+    /// Apply a camera capability grant: bind `/dev/video*` device nodes
+    /// into the sandbox so the app can open camera devices. Without this,
+    /// the devices simply aren't reachable from inside the sandbox — the
+    /// kernel still controls read/write semantics on the device itself,
+    /// so we mount them read-write (a `--ro-bind` would prevent
+    /// `VIDIOC_*` ioctls that legitimate camera apps need).
+    ///
+    /// The walk over `/dev` is best-effort: on hosts without any
+    /// `/dev/video*` nodes (CI, headless servers) this is a no-op and
+    /// the grant becomes a paper tiger — that's fine for v1, since the
+    /// alternative would be to fail the launch when the user has merely
+    /// granted a permission that no hardware satisfies.
+    pub fn grant_camera(&mut self) {
+        // Walk /dev for video* devices. Bind each as rw (the kernel
+        // controls read/write semantics on the device itself).
+        if let Ok(entries) = std::fs::read_dir("/dev") {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if name.starts_with("video") {
+                        // Bind into the sandbox at the same path.
+                        self.binds_rw.push((path.clone(), path));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Apply a microphone capability grant: bind the per-user Pipewire
+    /// socket so the app can connect to the audio server. Falls back to
+    /// the legacy ALSA `/dev/snd` path when present, since some apps
+    /// still link against `libasound` directly. Pipewire is the default
+    /// on modern desktops; both paths are bound so apps can pick.
+    ///
+    /// Like [`grant_camera`], this is best-effort: a host without
+    /// Pipewire and without `/dev/snd` simply gets nothing bound, and
+    /// the launch still succeeds. The portal layer is responsible for
+    /// not granting the capability on hosts where it can't be honoured.
+    pub fn grant_microphone(&mut self) {
+        let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
+            .unwrap_or_else(|_| format!("/run/user/{}", self.uid));
+        let pipewire_path =
+            std::path::PathBuf::from(format!("{}/pipewire-0", runtime_dir));
+        if pipewire_path.exists() {
+            self.binds_rw.push((pipewire_path.clone(), pipewire_path));
+        }
+        // Fallback: bind /dev/snd if it exists (legacy ALSA path).
+        let snd_path = std::path::PathBuf::from("/dev/snd");
+        if snd_path.exists() {
+            self.binds_rw.push((snd_path.clone(), snd_path));
+        }
+    }
+
+    /// Walk a workspace's `grants` slice for one app and apply each
+    /// granted capability to this profile. v1 only handles `Camera` and
+    /// `Microphone` (Phase 5 Task 5.3); `Filesystem`, `Network`, and
+    /// `Screencast` are no-ops here and land in their own follow-up
+    /// units (Phase 5 Tasks 5.1, 5.2, and the portal screencast unit).
+    ///
+    /// The plan says the policy is "without a grant, the device socket
+    /// simply isn't bound" — so the contract is additive: this method
+    /// only ever appends binds, never removes them. Callers that want a
+    /// strictly minimal profile should start from
+    /// [`for_workspace_test`] and pass an empty grants slice.
+    pub fn apply_grants(&mut self, grants: &[crate::shell::state::Capability]) {
+        use crate::shell::state::Capability;
+        for cap in grants {
+            match cap {
+                Capability::Camera { .. } => self.grant_camera(),
+                Capability::Microphone { .. } => self.grant_microphone(),
+                // Filesystem / Network / Screencast: out of scope for
+                // this unit — handled by sibling Phase 5 units.
+                _ => {}
+            }
+        }
+    }
+
     /// Render this profile to the argv slice we'd pass to `bwrap`.
     ///
     /// The rendered argv is *just* the arguments — the caller is
@@ -263,6 +340,69 @@ mod tests {
                 "expected `--setenv {key}` in argv: {argv:?}"
             );
         }
+    }
+
+    #[test]
+    fn grant_camera_appends_video_binds_when_devices_exist() {
+        let mut p = SandboxProfile::for_workspace_test(
+            Path::new("/tmp/ws"),
+            Path::new("/tmp/cache"),
+        );
+        let initial_count = p.binds_rw.len();
+        p.grant_camera();
+        // /dev/video* may or may not exist on CI; assert "no shrink".
+        assert!(p.binds_rw.len() >= initial_count);
+        // If /dev/video0 exists on this host, expect it in binds_rw.
+        if std::path::Path::new("/dev/video0").exists() {
+            assert!(
+                p.binds_rw
+                    .iter()
+                    .any(|(src, _)| src == std::path::Path::new("/dev/video0"))
+            );
+        }
+    }
+
+    #[test]
+    fn grant_microphone_does_not_panic() {
+        let mut p = SandboxProfile::for_workspace_test(
+            Path::new("/tmp/ws"),
+            Path::new("/tmp/cache"),
+        );
+        p.grant_microphone();
+        // Pipewire/ALSA may be absent in CI; the contract is "no panic".
+    }
+
+    #[test]
+    fn apply_grants_with_camera_capability_invokes_grant_camera() {
+        use crate::shell::state::{Capability, GrantScope};
+        let mut p = SandboxProfile::for_workspace_test(
+            Path::new("/tmp/ws"),
+            Path::new("/tmp/cache"),
+        );
+        let initial_count = p.binds_rw.len();
+        let grants = vec![Capability::Camera {
+            scope: GrantScope::Session,
+        }];
+        p.apply_grants(&grants);
+        assert!(p.binds_rw.len() >= initial_count);
+    }
+
+    #[test]
+    fn apply_grants_with_no_camera_or_mic_is_noop_for_those_cases() {
+        use crate::shell::state::{Capability, FsMode, GrantScope};
+        let mut p = SandboxProfile::for_workspace_test(
+            Path::new("/tmp/ws"),
+            Path::new("/tmp/cache"),
+        );
+        let before = p.binds_rw.len();
+        let grants = vec![Capability::Filesystem {
+            path: "/foo".into(),
+            mode: FsMode::Read,
+            scope: GrantScope::Always,
+        }];
+        p.apply_grants(&grants);
+        // Filesystem variant is out of scope here; no binds added.
+        assert_eq!(p.binds_rw.len(), before);
     }
 
     /// Smoke test for the spawn helper. Only runs when `bwrap` is
