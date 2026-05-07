@@ -127,6 +127,7 @@ fn two_strip_two_tab_tree() -> (WorkspaceTree, StripId, StripId, [u64; 2], [u64;
         active_strip,
         active_group,
         collaborators: vec![],
+        ..Default::default()
     };
 
     (tree, s_a, s_b, a_tabs, b_tabs)

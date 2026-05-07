@@ -58,6 +58,7 @@ fn tree_with_single_placeholder(kind: AppKind, title: &str) -> WorkspaceTree {
         active_strip,
         active_group: HashMap::new(),
         collaborators: vec![],
+        ..Default::default()
     }
 }
 

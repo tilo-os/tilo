@@ -5901,6 +5901,7 @@ mod maximize_harvest_tests {
             active_strip,
             active_group,
             collaborators: vec![],
+            ..Default::default()
         };
         (tree, strip_id, group_id)
     }
