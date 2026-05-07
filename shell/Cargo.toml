@@ -40,6 +40,13 @@ seccompiler = "0.5"
 # the deny-list filter without going through seccompiler's re-export. quick-ui
 # already pulls libc transitively, so Cargo collapses to one copy in the lock.
 libc = "0.2"
+# Phase 3 Task 3.3 of `docs/superpowers/plans/2026-05-02-peer-sync-end-to-end.md`:
+# `network::invite` encodes / decodes signed peer-invite tokens as base64-url
+# wrapped JSON, with the owner's libp2p PeerId rendered as base58. Both crates
+# are already pulled in transitively by libp2p; pinning them here is a one-line
+# Cargo edit and avoids relying on transitive re-exports of unrelated deps.
+base64 = "0.22"
+bs58 = "0.5"
 
 [dev-dependencies]
 wayland-client = "0.31"

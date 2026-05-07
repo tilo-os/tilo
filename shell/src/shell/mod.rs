@@ -1132,6 +1132,23 @@ pub fn build_nirios_root(tree: &WorkspaceTree) -> Box<dyn Widget> {
     root
 }
 
+/// Variant of [`build_nirios_root`] that lets the caller flip the
+/// peer-sync palette commands on, surfacing `/invite` and `/connect`
+/// in the command palette. Mirrors `--enable-peer-sync` plumbed
+/// through `compositor::hosted::run_with_options` for Phase 3 Task
+/// 3.3 of `docs/superpowers/plans/2026-05-02-peer-sync-end-to-end.md`.
+///
+/// `build_nirios_root` keeps the existing zero-arg shape so unrelated
+/// call-sites (the `shots` headless harness, integration tests) don't
+/// have to thread a flag they don't care about.
+pub fn build_nirios_root_with_options(
+    tree: &WorkspaceTree,
+    enable_peer_sync: bool,
+) -> Box<dyn Widget> {
+    let (host, _chrome) = build_nirios_overlay_host_with_options(tree, enable_peer_sync);
+    Box::new(host) as Box<dyn Widget>
+}
+
 /// Same as [`build_nirios_root`] but also returns the shared chrome handle
 /// owned by the returned root. Integration tests use it to observe overlay
 /// toggles without having to drill through the widget tree.
@@ -1150,6 +1167,18 @@ pub fn build_nirios_root_with_chrome(
 /// production code paths.
 pub fn build_nirios_overlay_host_with_chrome(
     tree: &WorkspaceTree,
+) -> (overlay_host::ShellOverlayHost, chrome_state::Chrome) {
+    build_nirios_overlay_host_with_options(tree, false)
+}
+
+/// Variant of [`build_nirios_overlay_host_with_chrome`] that lets the
+/// caller flip the peer-sync palette commands on. The host is otherwise
+/// constructed identically — same chrome, same sidebar wheel, same
+/// strips. Routed through by [`build_nirios_root_with_options`] for the
+/// `--enable-peer-sync` boot path.
+pub fn build_nirios_overlay_host_with_options(
+    tree: &WorkspaceTree,
+    enable_peer_sync: bool,
 ) -> (overlay_host::ShellOverlayHost, chrome_state::Chrome) {
     let chrome = chrome_state::ChromeState::new(tree.clone());
 
@@ -1292,7 +1321,8 @@ pub fn build_nirios_overlay_host_with_chrome(
         .with_chrome(chrome.clone())
         .with_sidebar(sidebar)
         .with_sidebar_top(sidebar_top)
-        .with_group_row_ptrs(group_row_ptrs);
+        .with_group_row_ptrs(group_row_ptrs)
+        .with_peer_sync_enabled(enable_peer_sync);
     (host, chrome)
 }
 

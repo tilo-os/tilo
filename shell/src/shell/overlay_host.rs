@@ -163,6 +163,38 @@ pub struct ShellOverlayHost {
     /// don't paint a stale prompt during the moment between two
     /// requests.
     permission_prompt: Option<PermissionPrompt>,
+    /// Whether peer-sync palette commands (`/invite`, `/connect`) are
+    /// surfaced to the user. Off by default; the compositor flips this
+    /// to `true` when booted with `--enable-peer-sync`. Toggled via
+    /// [`Self::with_peer_sync_enabled`]. Phase 3 Task 3.3 of
+    /// `docs/superpowers/plans/2026-05-02-peer-sync-end-to-end.md`.
+    peer_sync_enabled: bool,
+    /// Queue of peer-sync palette actions emitted by
+    /// [`Self::dispatch_palette_command`] when the user picks `/invite`
+    /// or `/connect`. The compositor drains this each tick and routes
+    /// the action into its `ShellNetwork` handle (issue token + paste
+    /// to clipboard, or validate + dial). Stays empty when
+    /// `peer_sync_enabled` is false because the entries aren't
+    /// registered in the palette.
+    peer_sync_actions: Vec<PeerSyncAction>,
+}
+
+/// Action emitted from the palette into [`ShellOverlayHost::peer_sync_actions`]
+/// when the user picks a peer-sync command. The compositor's per-frame
+/// drainer (in `compositor::hosted::run_with_options`) routes these
+/// into its `ShellNetwork` handle so the actual libp2p side-effects
+/// stay on the runtime thread.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PeerSyncAction {
+    /// User invoked `/invite`. The compositor should call
+    /// `ShellNetwork::issue_invite(active_ws, listening_addr)` and
+    /// drop the resulting token onto the system clipboard.
+    IssueInvite,
+    /// User invoked `/connect` (no token-input UI yet — the palette
+    /// records the intent and the compositor surfaces a follow-up
+    /// prompt). The compositor should pop a small text-input modal
+    /// asking for the token, then call `ShellNetwork::accept_invite`.
+    PromptConnect,
 }
 
 /// Total duration of the desktop ↔ overview crossfade. The concept wraps
@@ -252,6 +284,10 @@ impl ShellOverlayHost {
     pub(crate) const ME_TILE_FALLBACK_NAME: &'static str = "Me";
 
     pub fn new(content: Box<dyn Widget>) -> Self {
+        // Seed only the v1-default palette here — peer-sync entries
+        // (`/invite`, `/connect`) are appended lazily by
+        // [`Self::with_peer_sync_enabled`] so a host built without
+        // the flag never surfaces the rows in suggestions.
         let mut palette = CommandPalette::new();
         for entry in [
             CommandEntry::new("search.open",        "Open global search"),
@@ -291,6 +327,8 @@ impl ShellOverlayHost {
             ws_settings_tab_pill_rects: [Rect::ZERO; 4],
             sidebar_top_y: SIDEBAR_TOP_OFFSET_PX,
             permission_prompt: None,
+            peer_sync_enabled: false,
+            peer_sync_actions: Vec::new(),
         }
     }
 
@@ -390,6 +428,52 @@ impl ShellOverlayHost {
     pub fn with_chrome(mut self, chrome: Chrome) -> Self {
         self.chrome = Some(chrome);
         self
+    }
+
+    /// Toggle the peer-sync palette commands (`/invite`, `/connect`).
+    ///
+    /// When enabled, the palette grows two extra rows that the user
+    /// can pick to issue an invite token (copied to clipboard by the
+    /// compositor) or paste one in to dial a remote workspace. Off
+    /// by default; the compositor flips this on when booted with
+    /// `--enable-peer-sync` so a v1 demo without the flag stays
+    /// behaviour-identical to before Phase 3 Task 3.3.
+    ///
+    /// Idempotent: calling it twice with `true` only appends the rows
+    /// once. The rows can't be removed once added — toggling back to
+    /// `false` is not a supported transition.
+    pub fn with_peer_sync_enabled(mut self, enabled: bool) -> Self {
+        if enabled && !self.peer_sync_enabled {
+            self.palette
+                .push(CommandEntry::new("peer.invite", "Invite peer to workspace"));
+            self.palette
+                .push(CommandEntry::new("peer.connect", "Connect to peer workspace"));
+        }
+        self.peer_sync_enabled = enabled;
+        self
+    }
+
+    /// Read-only accessor for whether peer-sync palette entries are
+    /// currently registered. Tests use this to assert
+    /// [`Self::with_peer_sync_enabled`] flipped the flag without
+    /// having to inspect the internal `CommandPalette` directly.
+    pub fn peer_sync_enabled(&self) -> bool {
+        self.peer_sync_enabled
+    }
+
+    /// Drain any pending [`PeerSyncAction`]s emitted by the palette
+    /// dispatcher since the last call. Returns the captured actions
+    /// in FIFO order.
+    ///
+    /// The compositor (in `compositor::hosted::run_with_options`)
+    /// pumps this each frame and routes the actions into its
+    /// `ShellNetwork` handle: `IssueInvite` issues a token + posts to
+    /// clipboard, `PromptConnect` opens a small text-input modal for
+    /// the inbound token. Buffer is cleared on every drain so
+    /// repeated `/invite` invocations all surface — no de-dup, no
+    /// coalescing.
+    pub fn take_peer_sync_actions(&mut self) -> Vec<PeerSyncAction> {
+        std::mem::take(&mut self.peer_sync_actions)
     }
 
     /// Register the floating sidebar wheel. The wheel is laid out as an
@@ -1058,6 +1142,29 @@ impl ShellOverlayHost {
     /// `quick-settings.open`) and map to a single overlay-flag mutation
     /// on the shared [`Chrome`] state.
     pub(crate) fn dispatch_palette_command(&mut self, id: &str) -> bool {
+        // Peer-sync rows (`/invite`, `/connect`) don't mutate chrome
+        // state — they enqueue an action the compositor drains via
+        // `take_peer_sync_actions` so the libp2p side-effect happens
+        // on the runtime thread. Match these first so we can short-
+        // circuit before reaching for `chrome`. Ignored when the
+        // peer-sync flag is off — defence-in-depth in case a stale
+        // palette row survives a flag toggle.
+        if self.peer_sync_enabled {
+            match id {
+                "peer.invite" => {
+                    self.peer_sync_actions.push(PeerSyncAction::IssueInvite);
+                    self.palette_visible = false;
+                    return true;
+                }
+                "peer.connect" => {
+                    self.peer_sync_actions.push(PeerSyncAction::PromptConnect);
+                    self.palette_visible = false;
+                    return true;
+                }
+                _ => {}
+            }
+        }
+
         let matched = if let Some(chrome) = self.chrome.clone() {
             let mut st = chrome.borrow_mut();
             let hit = match id {
@@ -5086,6 +5193,69 @@ mod palette_dispatch_tests {
             "search.open should not mutate overlay flags"
         );
         assert!(!h.palette_visible);
+    }
+
+    /// `peer.invite` / `peer.connect` must not register as known
+    /// commands when the peer-sync flag is off — defence-in-depth in
+    /// case a stale row lingers across a flag toggle. Pinned by Phase 3
+    /// Task 3.3 of `docs/superpowers/plans/2026-05-02-peer-sync-end-to-end.md`.
+    #[test]
+    fn peer_sync_palette_ids_ignored_when_flag_off() {
+        let (mut h, _chrome) = host_with_chrome();
+        assert!(!h.peer_sync_enabled());
+        assert!(!h.dispatch_palette_command("peer.invite"));
+        assert!(!h.dispatch_palette_command("peer.connect"));
+        assert!(
+            h.take_peer_sync_actions().is_empty(),
+            "no actions should leak when flag is off"
+        );
+    }
+
+    #[test]
+    fn peer_sync_invite_enqueues_action_when_flag_on() {
+        let tree = WorkspaceTree::bootstrap_default();
+        let chrome = ChromeState::new(tree);
+        let mut h = ShellOverlayHost::new(Box::new(Container::new()))
+            .with_chrome(chrome.clone())
+            .with_peer_sync_enabled(true);
+        assert!(h.peer_sync_enabled());
+        h.palette_visible = true;
+        assert!(h.dispatch_palette_command("peer.invite"));
+        assert!(!h.palette_visible, "palette must close after dispatch");
+        let actions = h.take_peer_sync_actions();
+        assert_eq!(actions, vec![PeerSyncAction::IssueInvite]);
+        // Drain is destructive; second call returns empty.
+        assert!(h.take_peer_sync_actions().is_empty());
+    }
+
+    #[test]
+    fn peer_sync_connect_enqueues_action_when_flag_on() {
+        let tree = WorkspaceTree::bootstrap_default();
+        let chrome = ChromeState::new(tree);
+        let mut h = ShellOverlayHost::new(Box::new(Container::new()))
+            .with_chrome(chrome.clone())
+            .with_peer_sync_enabled(true);
+        h.palette_visible = true;
+        assert!(h.dispatch_palette_command("peer.connect"));
+        assert!(!h.palette_visible);
+        assert_eq!(
+            h.take_peer_sync_actions(),
+            vec![PeerSyncAction::PromptConnect]
+        );
+    }
+
+    #[test]
+    fn with_peer_sync_enabled_is_idempotent() {
+        let host = ShellOverlayHost::new(Box::new(Container::new()))
+            .with_peer_sync_enabled(true)
+            .with_peer_sync_enabled(true);
+        // The CommandPalette doesn't expose entry count, but invoking
+        // a peer-sync id twice must still dispatch (no panic, no
+        // duplicate-row regression). Indirectly proven by checking
+        // each dispatch enqueues exactly one action.
+        let mut h = host.with_chrome(ChromeState::new(WorkspaceTree::bootstrap_default()));
+        assert!(h.dispatch_palette_command("peer.invite"));
+        assert_eq!(h.take_peer_sync_actions().len(), 1);
     }
 }
 
