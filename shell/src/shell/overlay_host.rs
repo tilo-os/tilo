@@ -538,6 +538,11 @@ impl ShellOverlayHost {
                     }
                 }
             }
+            // Unit C of #157: mirror the maximize flip into the
+            // automerge doc so peer-sync observes the change. Tolerant
+            // of the doc not yet carrying this group — see
+            // `WorkspaceTree::doc_set_maximized` doc-comment.
+            st.tree.doc_set_maximized(group_id, new_value);
         }
     }
 
@@ -589,6 +594,10 @@ impl ShellOverlayHost {
                     }
                 }
             }
+            // Unit C of #157: mirror the width gesture into the
+            // automerge doc as a raw pixel scalar so peer-sync
+            // observes the resize.
+            st.tree.doc_set_width(group_id, new_value);
         }
     }
 
