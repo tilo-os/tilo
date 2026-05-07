@@ -155,6 +155,7 @@ fn single_group_tree() -> (WorkspaceTree, StripId, GroupId) {
         active_strip,
         active_group,
         collaborators: vec![],
+        ..Default::default()
     };
 
     (tree, strip_id, group_id)
