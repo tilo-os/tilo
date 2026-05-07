@@ -295,6 +295,59 @@ impl Collaborator {
     }
 }
 
+/// Identifier for an installed app — opaque to the state layer; the
+/// portal layer fills it in with the caller's wayland app-id.
+pub type AppId = String;
+
+/// Filesystem-grant access mode. Mirrors the read / read-write split
+/// the portal D-Bus backend (Phase 4 Task 4.3) will surface to apps.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FsMode {
+    Read,
+    ReadWrite,
+}
+
+/// How long a capability grant lives. The variants match the prompt
+/// widget's three buttons (Phase 4 Task 4.2): "Just once", "Until I
+/// log out", "Always".
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GrantScope {
+    /// One-shot — the grant evaporates after the request finishes.
+    Once,
+    /// Held for this shell session; cleared on shell restart.
+    Session,
+    /// Persists across restarts. Owner-only at v1; invited peers
+    /// can't escalate to `Always` without the owner's confirmation.
+    Always,
+}
+
+/// Per-app capability grant stored on a [`Workspace`]. Phase 5 wires
+/// each variant to its enforcement layer (Bubblewrap allowlist for
+/// filesystem, Pipewire ACL for camera/mic, nftables for network);
+/// at this phase we only model the data so the prompt widget and
+/// portal backend can read/write into the CRDT.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Capability {
+    /// Read or read-write access to a specific filesystem path.
+    Filesystem {
+        path: std::path::PathBuf,
+        mode: FsMode,
+        scope: GrantScope,
+    },
+    /// Camera (`/dev/video*`) access.
+    Camera { scope: GrantScope },
+    /// Microphone (Pipewire socket) access.
+    Microphone { scope: GrantScope },
+    /// Screen capture via portal `ScreenCast`.
+    Screencast { scope: GrantScope },
+    /// Outbound network access. `hosts: None` = "any host"; `hosts:
+    /// Some(allowlist)` = "only these (nftables-enforced in Phase 5)".
+    Network {
+        hosts: Option<Vec<String>>,
+        scope: GrantScope,
+    },
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Workspace {
     pub id: WorkspaceId,
@@ -304,12 +357,23 @@ pub struct Workspace {
     pub workspace_files: Vec<WorkspaceFile>,
     #[serde(default)]
     pub collaborators: Vec<Collaborator>,
+    /// Capability grants per app installed in this workspace. Keyed by
+    /// [`AppId`] (the wayland app-id of the requesting client). Each app
+    /// can hold multiple capabilities (e.g., a code editor with
+    /// filesystem + network grants).
+    ///
+    /// `#[serde(default)]` so persisted state files written before this
+    /// field existed still load — a missing `grants` map deserialises
+    /// to empty. Phase 4 Task 4.1 lays down the schema; Tasks 4.2/4.3
+    /// (UI prompt + portal backend) populate it.
+    #[serde(default)]
+    pub grants: HashMap<AppId, Vec<Capability>>,
 }
 
 impl Workspace {
     /// Build an empty workspace with the given id and name. The workspace
-    /// starts with no strips, roles, files, or collaborators — those are
-    /// populated by the compositor or the persistence layer.
+    /// starts with no strips, roles, files, collaborators, or grants —
+    /// those are populated by the compositor or the persistence layer.
     pub fn new(id: WorkspaceId, name: impl Into<String>) -> Self {
         Self {
             id,
@@ -318,6 +382,25 @@ impl Workspace {
             roles: Vec::new(),
             workspace_files: Vec::new(),
             collaborators: Vec::new(),
+            grants: HashMap::new(),
+        }
+    }
+}
+
+impl Default for Workspace {
+    /// Empty workspace with a zero id and empty name. Useful for
+    /// `..Default::default()` in struct-update syntax (mirrors what
+    /// [`WorkspaceTree`] does for itself) so adding new fields like
+    /// `grants` doesn't force a codebase-wide literal sweep.
+    fn default() -> Self {
+        Self {
+            id: WorkspaceId::default(),
+            name: String::new(),
+            strips: Vec::new(),
+            roles: Vec::new(),
+            workspace_files: Vec::new(),
+            collaborators: Vec::new(),
+            grants: HashMap::new(),
         }
     }
 }
@@ -1373,6 +1456,7 @@ impl WorkspaceTree {
                     .with_cursor_color("#ec4899")
                     .with_role("editor"),
             ],
+            grants: HashMap::new(),
         };
 
         let mut active_strip = HashMap::new();
@@ -1438,6 +1522,7 @@ impl WorkspaceTree {
             roles: vec![],
             workspace_files: vec![],
             collaborators: vec![],
+            grants: HashMap::new(),
         };
         self.active_strip.insert(ws_id, strip_id);
         self.workspaces.push(ws);
@@ -2256,6 +2341,7 @@ mod active_group_tests {
             roles: vec![],
             workspace_files: vec![],
             collaborators: vec![],
+            grants: HashMap::new(),
         };
         let mut active_strip = HashMap::new();
         active_strip.insert(ws_id, strip_id);
@@ -2468,6 +2554,7 @@ mod active_workspace_peer_count_tests {
             roles: vec![],
             workspace_files: vec![],
             collaborators: collabs,
+            grants: HashMap::new(),
         };
         let mut active_strip = HashMap::new();
         active_strip.insert(ws_id, strip_id);
@@ -2508,5 +2595,120 @@ mod active_workspace_peer_count_tests {
         // And both should equal the helper's value.
         assert_eq!(active_workspace_peer_count(&tree), 1);
         assert_eq!(topbar.collaborator_initials().len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod capability_tests {
+    //! Coverage for the Phase 4 Task 4.1 data-model addition:
+    //! [`Capability`] / [`GrantScope`] / [`FsMode`] and the
+    //! [`Workspace::grants`] field. Pure schema tests — no portal
+    //! plumbing is exercised here (that lands in Phase 4 Task 4.3).
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn empty_workspace_has_empty_grants_map() {
+        // Both `Workspace::default()` (used by `..Default::default()`
+        // sweeps) and `Workspace::new(...)` must seed an empty grants
+        // map so reads don't have to special-case `None`.
+        let ws = Workspace::default();
+        assert!(ws.grants.is_empty());
+        let ws_new = Workspace::new(WorkspaceId::from(1), "Demo");
+        assert!(ws_new.grants.is_empty());
+    }
+
+    #[test]
+    fn grants_round_trip_via_serde_json() {
+        // Build a workspace with two grants for one app and round-trip
+        // through serde_json. Re-serialising the deserialised value
+        // must yield the same JSON shape — pinning the on-disk schema
+        // for portal-side consumers.
+        let mut ws = Workspace::new(WorkspaceId::from(1), "Demo");
+        ws.grants.insert(
+            "org.gnome.gedit".into(),
+            vec![
+                Capability::Filesystem {
+                    path: PathBuf::from("/home/u/work"),
+                    mode: FsMode::ReadWrite,
+                    scope: GrantScope::Always,
+                },
+                Capability::Network {
+                    hosts: Some(vec!["github.com".into()]),
+                    scope: GrantScope::Session,
+                },
+            ],
+        );
+
+        let json = serde_json::to_string(&ws).expect("serialize");
+        let round: Workspace = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(round.grants.len(), 1);
+        let caps = round.grants.get("org.gnome.gedit").expect("app present");
+        assert_eq!(caps.len(), 2);
+        assert_eq!(
+            caps[0],
+            Capability::Filesystem {
+                path: PathBuf::from("/home/u/work"),
+                mode: FsMode::ReadWrite,
+                scope: GrantScope::Always,
+            }
+        );
+        assert_eq!(
+            caps[1],
+            Capability::Network {
+                hosts: Some(vec!["github.com".into()]),
+                scope: GrantScope::Session,
+            }
+        );
+    }
+
+    #[test]
+    fn legacy_workspace_without_grants_field_deserialises() {
+        // Persisted workspaces written before the `grants` field
+        // existed must continue to load — `#[serde(default)]` keeps
+        // the upgrade path lossless. Mirrors the parallel test for
+        // `WindowGroup::maximized` (audit task #105).
+        let legacy = r#"{
+            "id": 1,
+            "name": "Old",
+            "strips": [],
+            "roles": [],
+            "workspace_files": []
+        }"#;
+        let ws: Workspace = serde_json::from_str(legacy).expect("legacy compat");
+        assert!(ws.grants.is_empty());
+        assert_eq!(ws.id, WorkspaceId::from(1));
+        assert_eq!(ws.name, "Old");
+    }
+
+    #[test]
+    fn all_capability_variants_round_trip_through_serde() {
+        // Pin the wire shape of every variant so a downstream change
+        // (e.g. renaming a field on `Camera` or flipping `hosts` from
+        // `Option<Vec<_>>` to a sentinel) breaks loudly here rather
+        // than silently in Phase 4 Task 4.3's portal backend.
+        let caps = vec![
+            Capability::Filesystem {
+                path: PathBuf::from("/tmp/ws"),
+                mode: FsMode::Read,
+                scope: GrantScope::Once,
+            },
+            Capability::Camera {
+                scope: GrantScope::Session,
+            },
+            Capability::Microphone {
+                scope: GrantScope::Always,
+            },
+            Capability::Screencast {
+                scope: GrantScope::Once,
+            },
+            Capability::Network {
+                hosts: None,
+                scope: GrantScope::Always,
+            },
+        ];
+        let json = serde_json::to_string(&caps).expect("serialize caps");
+        let round: Vec<Capability> = serde_json::from_str(&json).expect("deserialize caps");
+        assert_eq!(round, caps);
     }
 }
