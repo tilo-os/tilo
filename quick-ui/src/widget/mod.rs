@@ -113,3 +113,5 @@ mod workspace_view;
 pub use workspace_view::{WorkspaceView, WorkspaceSwitchDirection};
 pub mod tooltip;
 pub mod toast;
+pub mod permission_prompt;
+pub use permission_prompt::{PermissionPrompt, PromptChoice, PROMPT_HEIGHT};
