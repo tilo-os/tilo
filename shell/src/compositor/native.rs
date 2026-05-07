@@ -24,6 +24,7 @@ use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
 use smithay::wayland::socket::ListeningSocketSource;
 
+use crate::compositor::backend::{Backend, WinitBackend};
 use crate::compositor::state::{ClientState, State};
 
 /// Entry point for the smithay-on-Wayland compositor.
@@ -49,6 +50,18 @@ pub fn run() -> ! {
     let display_handle = display.handle();
 
     let mut state = State::new(event_loop.handle(), display_handle.clone());
+
+    // Phase 3: construct the winit backend so the compositor has a host
+    // window to render into. Phase 4 will route per-frame scenes through
+    // `backend.submit_frame`. We `expect` here for the same reason the
+    // socket bind below does — a top-level `-> !` entry point treats any
+    // backend init failure as fatal (same posture as smithay's `anvil`).
+    let mut _backend: WinitBackend =
+        WinitBackend::new().expect("init winit backend");
+    // TODO(Phase 4): wire `_backend.poll_events` + `_backend.submit_frame`
+    // into the calloop tick. For now we just hold the backend alive so
+    // the host window stays open during the smoke test.
+    let _ = (&mut _backend) as &mut dyn Backend;
 
     // `new_auto` walks `wayland-1..wayland-32` and binds the first free name.
     // The smoke test in the plan asserts on the line below ("nirios compositor
