@@ -36,6 +36,23 @@ pub enum Mode {
     Native,
 }
 
+/// Which backend `Mode::Native` should drive. Mirrors `--mode` in shape:
+/// a single `--backend <winit|drm>` (or `--backend=<...>`) flag, with any
+/// unknown value (or absence) falling back to [`BackendKind::Winit`].
+///
+/// `Drm` is a Phase 5 skeleton — the flag is wired through so the
+/// follow-up TTY implementation plugs in without touching the shell
+/// entry point. See [`backend::DrmBackend`] for the deferred work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendKind {
+    /// Default. Host on an existing Wayland/X11 session via `winit`.
+    Winit,
+    /// Phase 5 stub: drive a TTY directly via DRM/KMS + libinput.
+    /// Currently errors at construction with a "not yet implemented"
+    /// message — see [`backend::DrmBackend`].
+    Drm,
+}
+
 /// Parse the run mode from the process's command-line arguments.
 ///
 /// Thin wrapper around [`parse_mode`] so callers don't need to materialise a
@@ -92,6 +109,42 @@ fn value_to_mode(value: &str) -> Mode {
     }
 }
 
+/// Process-global wrapper around [`parse_backend`]. Used by
+/// [`native::run`] to decide which [`backend::Backend`] impl to
+/// instantiate inside `--mode native`.
+pub fn parse_backend_from_args() -> BackendKind {
+    let owned: Vec<String> = std::env::args().skip(1).collect();
+    let borrowed: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+    parse_backend(&borrowed)
+}
+
+/// Pure, testable backend parser. Mirrors [`parse_mode`] — accepts both
+/// `--backend <value>` and `--backend=<value>` forms, defaults to
+/// [`BackendKind::Winit`] for unknown / missing values so a typo never
+/// refuses to start the compositor.
+pub fn parse_backend(args: &[&str]) -> BackendKind {
+    let mut iter = args.iter().copied();
+    while let Some(arg) = iter.next() {
+        if let Some(value) = arg.strip_prefix("--backend=") {
+            return value_to_backend(value);
+        }
+        if arg == "--backend" {
+            if let Some(value) = iter.next() {
+                return value_to_backend(value);
+            }
+            // Trailing `--backend` with no value: fall through to default.
+        }
+    }
+    BackendKind::Winit
+}
+
+fn value_to_backend(value: &str) -> BackendKind {
+    match value {
+        "drm" => BackendKind::Drm,
+        _ => BackendKind::Winit,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,5 +180,35 @@ mod tests {
         assert!(parse_peer_sync(&["--enable-peer-sync"]));
         assert!(parse_peer_sync(&["--mode", "hosted", "--enable-peer-sync"]));
         assert!(parse_peer_sync(&["--enable-peer-sync", "--mode=native"]));
+    }
+
+    #[test]
+    fn default_backend_is_winit() {
+        assert!(matches!(parse_backend(&[]), BackendKind::Winit));
+    }
+
+    #[test]
+    fn dash_dash_backend_drm_returns_drm() {
+        assert!(matches!(
+            parse_backend(&["--backend", "drm"]),
+            BackendKind::Drm
+        ));
+    }
+
+    #[test]
+    fn dash_dash_backend_eq_drm_returns_drm() {
+        assert!(matches!(parse_backend(&["--backend=drm"]), BackendKind::Drm));
+    }
+
+    #[test]
+    fn unrecognized_backend_value_defaults_winit() {
+        assert!(matches!(
+            parse_backend(&["--backend", "junk"]),
+            BackendKind::Winit
+        ));
+        assert!(matches!(
+            parse_backend(&["--backend=nonsense"]),
+            BackendKind::Winit
+        ));
     }
 }
