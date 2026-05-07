@@ -158,13 +158,27 @@ impl SandboxProfile {
     /// strictly minimal profile should start from
     /// [`for_workspace_test`] and pass an empty grants slice.
     pub fn apply_grants(&mut self, grants: &[crate::shell::state::Capability]) {
-        use crate::shell::state::Capability;
+        use crate::shell::state::{Capability, GrantScope};
         for cap in grants {
             match cap {
                 Capability::Camera { .. } => self.grant_camera(),
                 Capability::Microphone { .. } => self.grant_microphone(),
-                // Filesystem / Network / Screencast: out of scope for
-                // this unit — handled by sibling Phase 5 units.
+                Capability::Network { hosts: _, scope } => {
+                    // Any `Always`-scope network grant disables the
+                    // default network namespace isolation (Phase 1's
+                    // `--unshare-net` flag). For v1 we treat
+                    // `hosts: Some(allowlist)` and `hosts: None` the
+                    // same: both lift isolation. Per-host nftables
+                    // filtering is recorded by the data model
+                    // (`Capability::Network::hosts`) but enforcement
+                    // requires per-namespace nftables rule generation,
+                    // which is deferred to a Phase 5.2 follow-up unit.
+                    if matches!(scope, GrantScope::Always) {
+                        self.net_isolated = false;
+                    }
+                }
+                // Filesystem / Screencast: out of scope for this unit —
+                // handled by sibling Phase 5 units.
                 _ => {}
             }
         }
@@ -403,6 +417,65 @@ mod tests {
         p.apply_grants(&grants);
         // Filesystem variant is out of scope here; no binds added.
         assert_eq!(p.binds_rw.len(), before);
+    }
+
+    #[test]
+    fn apply_grants_with_network_always_scope_disables_isolation() {
+        use crate::shell::state::{Capability, GrantScope};
+        let mut p = SandboxProfile::for_workspace_test(
+            Path::new("/tmp/ws"),
+            Path::new("/tmp/cache"),
+        );
+        p.net_isolated = true;
+        let grants = vec![Capability::Network {
+            hosts: None,
+            scope: GrantScope::Always,
+        }];
+        p.apply_grants(&grants);
+        assert!(
+            !p.net_isolated,
+            "Always-network grant disables namespace isolation in v1"
+        );
+    }
+
+    #[test]
+    fn apply_grants_with_network_session_scope_does_not_change_isolation() {
+        use crate::shell::state::{Capability, GrantScope};
+        let mut p = SandboxProfile::for_workspace_test(
+            Path::new("/tmp/ws"),
+            Path::new("/tmp/cache"),
+        );
+        p.net_isolated = true;
+        let grants = vec![Capability::Network {
+            hosts: None,
+            scope: GrantScope::Session,
+        }];
+        p.apply_grants(&grants);
+        assert!(
+            p.net_isolated,
+            "Session-scope grants don't change permanent isolation"
+        );
+    }
+
+    #[test]
+    fn apply_grants_with_network_always_and_specific_hosts_still_disables_isolation_for_v1() {
+        use crate::shell::state::{Capability, GrantScope};
+        let mut p = SandboxProfile::for_workspace_test(
+            Path::new("/tmp/ws"),
+            Path::new("/tmp/cache"),
+        );
+        p.net_isolated = true;
+        // v1 treats `Some([...])` and `None` the same — both disable
+        // isolation. Per-host nftables filtering is a follow-up.
+        let grants = vec![Capability::Network {
+            hosts: Some(vec!["github.com".to_string()]),
+            scope: GrantScope::Always,
+        }];
+        p.apply_grants(&grants);
+        assert!(
+            !p.net_isolated,
+            "v1: any Always-network grant disables isolation"
+        );
     }
 
     /// Smoke test for the spawn helper. Only runs when `bwrap` is
