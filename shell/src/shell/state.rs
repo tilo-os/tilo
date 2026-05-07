@@ -434,12 +434,16 @@ impl WorkspaceTree {
     /// that build literal trees should also call this if they need
     /// doc-side changes flowing out via [`Self::export_changes_since`].
     ///
-    /// Unit B mirrors the top-level shape only:
-    /// - `active: ScalarValue::Uint` at `ROOT`,
-    /// - `workspaces: List<Map>` at `ROOT`, each entry `{ id: Uint, name: String }`.
+    /// Units B + C mirror these shapes:
+    /// - `active: ScalarValue::Uint` at `ROOT` (unit B),
+    /// - `workspaces: List<Map>` at `ROOT`, each entry
+    ///   `{ id: Uint, name: String, strips: List<Map> }` (unit B + C),
+    /// - each strip entry: `{ id: Uint, window_groups: List<Map> }` (unit C),
+    /// - each window-group entry:
+    ///   `{ id: Uint, maximized: Bool, width_pixels: Uint }` (unit C).
     ///
-    /// Strips, window-groups, tabs, `active_strip`, `active_group`, and
-    /// collaborators stay cache-only — units C/D wire those.
+    /// Tabs, `active_strip`, `active_group`, and collaborators stay
+    /// cache-only — unit D wires those.
     fn seed_doc_from_cache(&mut self) {
         use automerge::{
             ObjType, ReadDoc, ROOT, ScalarValue, transaction::Transactable,
@@ -471,6 +475,45 @@ impl WorkspaceTree {
                 .doc
                 .put(&entry, "id", ScalarValue::Uint(ws.id.raw()));
             let _ = self.doc.put(&entry, "name", ws.name.clone());
+            // Unit C: nested strips + window_groups so per-group
+            // maximized + width_pixels writes have a doc-side path
+            // to land in.
+            let strips_id = self
+                .doc
+                .put_object(&entry, "strips", ObjType::List)
+                .expect("create strips list");
+            for (j, strip) in ws.strips.iter().enumerate() {
+                let strip_entry = self
+                    .doc
+                    .insert_object(&strips_id, j, ObjType::Map)
+                    .expect("insert strip map");
+                let _ = self
+                    .doc
+                    .put(&strip_entry, "id", ScalarValue::Uint(strip.id.raw()));
+                let groups_id = self
+                    .doc
+                    .put_object(&strip_entry, "window_groups", ObjType::List)
+                    .expect("create window_groups list");
+                for (k, group) in strip.window_groups.iter().enumerate() {
+                    let group_entry = self
+                        .doc
+                        .insert_object(&groups_id, k, ObjType::Map)
+                        .expect("insert window_group map");
+                    let _ = self
+                        .doc
+                        .put(&group_entry, "id", ScalarValue::Uint(group.id));
+                    let _ = self.doc.put(
+                        &group_entry,
+                        "maximized",
+                        ScalarValue::Boolean(group.maximized),
+                    );
+                    let _ = self.doc.put(
+                        &group_entry,
+                        "width_pixels",
+                        ScalarValue::Uint(group.width.pixels() as u64),
+                    );
+                }
+            }
         }
     }
 
@@ -541,6 +584,272 @@ impl WorkspaceTree {
                 }
             }
             self.workspaces = new_workspaces;
+        }
+
+        // Unit C: reconstruct nested per-window-group `maximized` +
+        // `width_pixels` from the doc. Walks each workspace's
+        // `strips` list, then each strip's `window_groups` list, and
+        // for every group entry tries to find the cached counterpart
+        // by id. If the cache has the group, the doc values overwrite
+        // the cache. If the cache lacks the strip or group entirely
+        // (e.g. peer B started from `default()` and is hydrating from
+        // a peer A snapshot), a fresh `Strip` / `WindowGroup` is
+        // synthesized so the receiver's tree gains the structure.
+        //
+        // The synthesized groups carry no tabs — unit C only mirrors
+        // maximized/width. Tab content propagation is unit D.
+        if let Some((_, workspaces_id)) =
+            self.doc.get(&ROOT, "workspaces").ok().flatten()
+        {
+            let ws_len = self.doc.length(&workspaces_id);
+            for ws_idx in 0..ws_len {
+                let ws_entry =
+                    match self.doc.get(&workspaces_id, ws_idx).ok().flatten() {
+                        Some((_, id)) => id,
+                        None => continue,
+                    };
+                let ws_id_raw =
+                    match self.doc.get(&ws_entry, "id").ok().flatten() {
+                        Some((Value::Scalar(s), _)) => match s.as_ref() {
+                            ScalarValue::Uint(v) => *v,
+                            _ => continue,
+                        },
+                        _ => continue,
+                    };
+                let ws_id = WorkspaceId::from(ws_id_raw);
+                let strips_id =
+                    match self.doc.get(&ws_entry, "strips").ok().flatten() {
+                        Some((_, id)) => id,
+                        None => continue,
+                    };
+                let strips_len = self.doc.length(&strips_id);
+                for strip_idx in 0..strips_len {
+                    let strip_entry =
+                        match self.doc.get(&strips_id, strip_idx).ok().flatten() {
+                            Some((_, id)) => id,
+                            None => continue,
+                        };
+                    let strip_id_raw = match self
+                        .doc
+                        .get(&strip_entry, "id")
+                        .ok()
+                        .flatten()
+                    {
+                        Some((Value::Scalar(s), _)) => match s.as_ref() {
+                            ScalarValue::Uint(v) => *v,
+                            _ => continue,
+                        },
+                        _ => continue,
+                    };
+                    let strip_id = StripId::from(strip_id_raw);
+                    let groups_id = match self
+                        .doc
+                        .get(&strip_entry, "window_groups")
+                        .ok()
+                        .flatten()
+                    {
+                        Some((_, id)) => id,
+                        None => continue,
+                    };
+                    let groups_len = self.doc.length(&groups_id);
+                    for group_idx in 0..groups_len {
+                        let group_entry = match self
+                            .doc
+                            .get(&groups_id, group_idx)
+                            .ok()
+                            .flatten()
+                        {
+                            Some((_, id)) => id,
+                            None => continue,
+                        };
+                        let group_id = match self
+                            .doc
+                            .get(&group_entry, "id")
+                            .ok()
+                            .flatten()
+                        {
+                            Some((Value::Scalar(s), _)) => match s.as_ref() {
+                                ScalarValue::Uint(v) => *v,
+                                _ => continue,
+                            },
+                            _ => continue,
+                        };
+                        let maximized = match self
+                            .doc
+                            .get(&group_entry, "maximized")
+                            .ok()
+                            .flatten()
+                        {
+                            Some((Value::Scalar(s), _)) => match s.as_ref() {
+                                ScalarValue::Boolean(v) => *v,
+                                _ => false,
+                            },
+                            _ => false,
+                        };
+                        let width_pixels = match self
+                            .doc
+                            .get(&group_entry, "width_pixels")
+                            .ok()
+                            .flatten()
+                        {
+                            Some((Value::Scalar(s), _)) => match s.as_ref() {
+                                ScalarValue::Uint(v) => *v as u32,
+                                _ => 0,
+                            },
+                            _ => 0,
+                        };
+
+                        // Patch into the cached tree, synthesizing
+                        // missing structure as needed.
+                        let ws = match self
+                            .workspaces
+                            .iter_mut()
+                            .find(|w| w.id == ws_id)
+                        {
+                            Some(w) => w,
+                            None => continue,
+                        };
+                        let strip = if let Some(s) =
+                            ws.strips.iter_mut().find(|s| s.id == strip_id)
+                        {
+                            s
+                        } else {
+                            ws.strips.push(Strip::new(strip_id, "Main"));
+                            ws.strips
+                                .last_mut()
+                                .expect("strip just pushed")
+                        };
+                        if let Some(g) = strip
+                            .window_groups
+                            .iter_mut()
+                            .find(|g| g.id == group_id)
+                        {
+                            g.maximized = maximized;
+                            // Round-tripping `WindowWidth::Pixels` is
+                            // lossy — Narrow/Normal/Wide map to fixed
+                            // pixel values, but the inverse mapping
+                            // would silently coerce a user's custom
+                            // resize back to one of the presets. Pick
+                            // `Custom` always; it clamps 300..=1200
+                            // internally.
+                            if width_pixels > 0 {
+                                g.width = WindowWidth::Custom(width_pixels);
+                            }
+                        } else {
+                            // Synthesize a placeholder group — it
+                            // carries no tabs, but its presence lets
+                            // subsequent unit-D wireup land tab data.
+                            strip.window_groups.push(WindowGroup {
+                                id: group_id,
+                                tabs: Vec::new(),
+                                active_tab: 0,
+                                width: if width_pixels > 0 {
+                                    WindowWidth::Custom(width_pixels)
+                                } else {
+                                    WindowWidth::Normal
+                                },
+                                maximized,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Walk the doc to the [`WindowGroup`] map for `group_id`. Returns
+    /// the `ObjId` of the group entry alongside the indices
+    /// `(ws_idx, strip_idx, group_idx)` so callers can mutate by id
+    /// once they have a handle. Returns `None` if the group isn't yet
+    /// in the doc — usually because [`Self::seed_doc_from_cache`]
+    /// hasn't run for this group (e.g. a literal-construction test or
+    /// a brand-new group that the harvester saw before the seed pass).
+    /// Callers tolerate the doc being behind by skipping the doc-side
+    /// write — the cache write already happened.
+    fn locate_group(
+        &self,
+        group_id: u64,
+    ) -> Option<(automerge::ObjId, usize, usize, usize)> {
+        use automerge::{ReadDoc, ROOT, ScalarValue, Value};
+        let (_, workspaces_id) =
+            self.doc.get(&ROOT, "workspaces").ok().flatten()?;
+        let ws_len = self.doc.length(&workspaces_id);
+        for ws_idx in 0..ws_len {
+            let (_, ws_entry) =
+                self.doc.get(&workspaces_id, ws_idx).ok().flatten()?;
+            let strips_id = match self.doc.get(&ws_entry, "strips").ok().flatten()
+            {
+                Some((_, id)) => id,
+                None => continue,
+            };
+            let strips_len = self.doc.length(&strips_id);
+            for strip_idx in 0..strips_len {
+                let (_, strip_entry) =
+                    self.doc.get(&strips_id, strip_idx).ok().flatten()?;
+                let groups_id = match self
+                    .doc
+                    .get(&strip_entry, "window_groups")
+                    .ok()
+                    .flatten()
+                {
+                    Some((_, id)) => id,
+                    None => continue,
+                };
+                let groups_len = self.doc.length(&groups_id);
+                for group_idx in 0..groups_len {
+                    let (_, group_entry) =
+                        self.doc.get(&groups_id, group_idx).ok().flatten()?;
+                    if let Some((Value::Scalar(s), _)) =
+                        self.doc.get(&group_entry, "id").ok().flatten()
+                    {
+                        if let ScalarValue::Uint(id) = s.as_ref() {
+                            if *id == group_id {
+                                return Some((
+                                    group_entry,
+                                    ws_idx,
+                                    strip_idx,
+                                    group_idx,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Mirror a `WindowGroup.maximized` flip into the doc. Called by
+    /// the overlay-host harvester after the cache write so peer-sync
+    /// observes the change. No-op if the group isn't yet seeded into
+    /// the doc — see [`Self::locate_group`] for the tolerance
+    /// rationale.
+    pub fn doc_set_maximized(&mut self, group_id: u64, new_value: bool) {
+        use automerge::{ScalarValue, transaction::Transactable};
+        if let Some((entry, _, _, _)) = self.locate_group(group_id) {
+            let _ = self.doc.put(
+                &entry,
+                "maximized",
+                ScalarValue::Boolean(new_value),
+            );
+        }
+    }
+
+    /// Mirror a `WindowGroup.width` resize into the doc as a raw pixel
+    /// scalar. Stored as `width_pixels: Uint` because the cache uses
+    /// the `WindowWidth::Custom(p)` variant after a manual resize and
+    /// peers don't need to round-trip the preset (`Narrow`/`Normal`/
+    /// `Wide`) — they receive the resolved pixel value and clamp it
+    /// on the cache side. Same null-tolerance as
+    /// [`Self::doc_set_maximized`].
+    pub fn doc_set_width(&mut self, group_id: u64, new_pixels: u32) {
+        use automerge::{ScalarValue, transaction::Transactable};
+        if let Some((entry, _, _, _)) = self.locate_group(group_id) {
+            let _ = self.doc.put(
+                &entry,
+                "width_pixels",
+                ScalarValue::Uint(new_pixels as u64),
+            );
         }
     }
 
@@ -1212,6 +1521,93 @@ mod automerge_foundation_tests {
         assert_eq!(
             tree_b.active, target,
             "tree B's active should match peer A's after sync"
+        );
+    }
+
+    #[test]
+    fn maximize_toggle_propagates_via_apply_changes() {
+        // Unit-C convergence: peer A flips a window-group's
+        // `maximized` flag through the doc, ships the resulting
+        // change-blobs to a fresh peer B, and B's cache reflects the
+        // flip after `apply_changes` (driven by
+        // `rebuild_cache_from_doc`'s nested-state pass).
+        //
+        // Tree B starts from `default()` for the same reason as the
+        // unit-B tests: two `bootstrap_default` calls would race on
+        // the doc-side workspaces list. Default-receiver pattern keeps
+        // the convergence assertion clean.
+        let mut tree_a = WorkspaceTree::bootstrap_default();
+        let target_group =
+            tree_a.workspaces[0].strips[0].window_groups[0].id;
+        assert!(
+            !tree_a.workspaces[0].strips[0].window_groups[0].maximized,
+            "bootstrap_default seeds the first group un-maximized"
+        );
+
+        // Mirror to both sides — production calls
+        // `harvest_pending_maximize_changes`, which writes cache then
+        // doc; in the test we replicate that pattern directly.
+        tree_a.workspaces[0].strips[0].window_groups[0].maximized = true;
+        tree_a.doc_set_maximized(target_group, true);
+
+        let changes = tree_a.export_changes_since(&[]);
+        let mut tree_b = WorkspaceTree::default();
+        tree_b.apply_changes(&changes).expect("apply changes");
+
+        let target = tree_b
+            .workspaces
+            .iter()
+            .flat_map(|w| w.strips.iter())
+            .flat_map(|s| s.window_groups.iter())
+            .find(|g| g.id == target_group);
+        assert!(
+            target.is_some(),
+            "tree B should observe the window group after sync"
+        );
+        assert!(
+            target.unwrap().maximized,
+            "maximize flip should propagate; got {:?}",
+            target
+        );
+    }
+
+    #[test]
+    fn width_change_propagates_via_apply_changes() {
+        // Unit-C convergence: peer A drags a resize handle, the
+        // harvester writes `WindowWidth::Custom(p)` to the cache and
+        // mirrors `width_pixels: Uint(p)` to the doc; peer B observes
+        // the new pixel value after `apply_changes`.
+        //
+        // The `Custom` branch clamps to 300..=1200 inside `pixels()`,
+        // so we pick a value already inside that range to avoid the
+        // clamp masking a propagation bug.
+        let mut tree_a = WorkspaceTree::bootstrap_default();
+        let target_group =
+            tree_a.workspaces[0].strips[0].window_groups[0].id;
+        let new_pixels: u32 = 720;
+
+        tree_a.workspaces[0].strips[0].window_groups[0].width =
+            WindowWidth::Custom(new_pixels);
+        tree_a.doc_set_width(target_group, new_pixels);
+
+        let changes = tree_a.export_changes_since(&[]);
+        let mut tree_b = WorkspaceTree::default();
+        tree_b.apply_changes(&changes).expect("apply changes");
+
+        let target = tree_b
+            .workspaces
+            .iter()
+            .flat_map(|w| w.strips.iter())
+            .flat_map(|s| s.window_groups.iter())
+            .find(|g| g.id == target_group);
+        assert!(
+            target.is_some(),
+            "tree B should observe the window group after sync"
+        );
+        assert_eq!(
+            target.unwrap().width.pixels(),
+            new_pixels,
+            "width pixels should round-trip via doc"
         );
     }
 }
