@@ -52,6 +52,11 @@ pub enum NeighbourMsg {
     PermissionRequest { peer: PeerId, capability: String },
     /// `peer` was granted permission `capability`.
     PermissionGrant { peer: PeerId, capability: String },
+    /// Periodic liveness beacon — Actor publishes one per joined workspace
+    /// every 5 s; receivers track arrival time and evict peers silent for
+    /// 15 s. Per-message `peer` is the publisher's libp2p PeerId hashed to
+    /// u64; `ts` is unix-millis.
+    Heartbeat { peer: PeerId, ts: u64 },
 }
 
 #[cfg(test)]
@@ -127,6 +132,14 @@ mod tests {
         round_trip(NeighbourMsg::PermissionGrant {
             peer: 5,
             capability: "share-screen".to_string(),
+        });
+    }
+
+    #[test]
+    fn heartbeat_round_trips() {
+        round_trip(NeighbourMsg::Heartbeat {
+            peer: 0xDEADBEEF,
+            ts: 1_700_000_002,
         });
     }
 }
