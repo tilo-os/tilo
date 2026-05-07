@@ -236,6 +236,14 @@ pub const MODAL_SCRIM_ALPHA: f32 = 0.45;
 pub const PALETTE_SCRIM_ALPHA: f32 = 0.30;
 
 impl ShellOverlayHost {
+    /// Display name painted in the General tab's collaborator tile when
+    /// no `me` collaborator is seeded in the active workspace. Pinned
+    /// to `"Me"` so the adjacent indigo "You" badge doesn't duplicate
+    /// the row label (the "You [You]" artefact spotted in the
+    /// 2026-05-04 critical-UI-inspection sweep). When the local user
+    /// signs in for real, `c.name` from the seeded collaborator wins.
+    pub(crate) const ME_TILE_FALLBACK_NAME: &'static str = "Me";
+
     pub fn new(content: Box<dyn Widget>) -> Self {
         let mut palette = CommandPalette::new();
         for entry in [
@@ -3566,6 +3574,12 @@ impl ShellOverlayHost {
         // extra glyph-brush fills into the General scene and tip the
         // `workspace_settings_renders_roles_tab_with_per_role_app_grid`
         // parity-diff below its >=20-fill threshold.
+        // Fallback name when no `me` collaborator is seeded in the
+        // active workspace. We use "Me" (not "You") because the
+        // adjacent badge already says "You"; using literal "You" as
+        // the display name produces a visually awkward "You [You]"
+        // duplication in the General tab, while "Me [You]" reads
+        // cleanly as "the local user, badged as You for the viewer".
         let me_tile = state
             .tree
             .active_workspace()
@@ -3575,7 +3589,7 @@ impl ShellOverlayHost {
                     .find(|c| c.id == "me")
                     .map(|c| (c.name.clone(), true))
             })
-            .unwrap_or_else(|| ("You".to_string(), true));
+            .unwrap_or_else(|| (Self::ME_TILE_FALLBACK_NAME.to_string(), true));
         let tiles: Vec<(String, bool)> = vec![me_tile];
         let tile_w = 160.0_f64;
         let _tile_h = 40.0_f64;
@@ -4976,6 +4990,32 @@ mod workspace_slide_tests {
             "switch_up should slide in from above (-y), got dir={}",
             h.ws_slide_dir
         );
+    }
+}
+
+#[cfg(test)]
+mod me_tile_fallback_tests {
+    //! Pin the General-tab "me" collaborator fallback to a label that
+    //! doesn't duplicate the adjacent "You" badge. The 2026-05-04
+    //! inspection caught the General tab painting `You [You]` when no
+    //! local-user collaborator was seeded — the fallback is the only
+    //! contributor to that text, so a single string-equality assertion
+    //! is enough.
+    use super::*;
+
+    #[test]
+    fn fallback_does_not_duplicate_you_badge() {
+        // The adjacent indigo badge always says "You"; the row label
+        // must therefore not also say "You" or the user sees the same
+        // word twice in a 160 px tile.
+        assert_ne!(
+            ShellOverlayHost::ME_TILE_FALLBACK_NAME, "You",
+            "ME_TILE_FALLBACK_NAME duplicates the adjacent You-badge — \
+             see 2026-05-04 critical-UI-inspection sweep"
+        );
+        // Spec the chosen value so a casing change ("ME" / "me" / "self")
+        // still has to update this test deliberately.
+        assert_eq!(ShellOverlayHost::ME_TILE_FALLBACK_NAME, "Me");
     }
 }
 
