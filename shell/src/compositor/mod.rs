@@ -19,6 +19,7 @@
 //! (Phase 1) for the full design intent.
 
 pub mod backend;
+pub mod frame;
 pub mod hosted;
 pub mod native;
 pub mod state;
