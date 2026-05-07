@@ -1203,6 +1203,7 @@ mod tests {
             active_strip: Default::default(),
             active_group: Default::default(),
             collaborators: Vec::new(),
+            ..Default::default()
         };
         tree.active = tree.workspaces[0].id;
         TopBarChrome::from_tree(&tree)
@@ -1288,6 +1289,7 @@ mod tests {
             active_strip: Default::default(),
             active_group: Default::default(),
             collaborators: vec![crate::shell::state::Collaborator::new("alice", "Alice")],
+            ..Default::default()
         };
         tree.active = tree.workspaces[0].id;
 
@@ -1357,6 +1359,7 @@ mod tests {
             active_strip: Default::default(),
             active_group: Default::default(),
             collaborators: Vec::new(),
+            ..Default::default()
         };
         tree.active = tree.workspaces[0].id;
 

@@ -680,6 +680,7 @@ impl Shell {
             active_strip: Default::default(),
             active_group: Default::default(),
             collaborators: vec![],
+            ..Default::default()
         };
         // Seed the active-strip entry for the active workspace.
         if let Some(ws) = self
@@ -742,6 +743,7 @@ impl Shell {
             active_strip: Default::default(),
             active_group: Default::default(),
             collaborators: vec![],
+            ..Default::default()
         };
         scratch.active = scratch.workspaces[0].id;
         self.sidebar.begin_overscroll(1);
@@ -786,6 +788,7 @@ impl Shell {
             active_strip: Default::default(),
             active_group: Default::default(),
             collaborators: vec![],
+            ..Default::default()
         };
         scratch.active = scratch.workspaces[0].id;
         let _ = self.sidebar.click_management_new_workspace(&mut scratch);
