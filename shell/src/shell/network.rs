@@ -19,6 +19,7 @@ use tokio::sync::mpsc;
 use crate::network::actor::{Actor, NetCmd, NetEvent};
 use crate::network::behaviour::{NiriosBehaviour, load_or_create_keypair};
 use crate::network::hub::TopicSubscriber;
+use crate::network::invite::{PeerInviteToken, make_invite_token, validate_invite_token};
 use crate::network::replica::WorkspaceTreeReplica;
 use crate::shell::state::WorkspaceTree;
 
@@ -57,7 +58,19 @@ pub struct ShellNetwork {
     /// it on drop and shut the runtime down cleanly without blocking
     /// the test thread.
     runtime: Option<tokio::runtime::Runtime>,
+    /// Persistent ed25519 keypair this shell signs with. Cached on
+    /// the handle so [`Self::issue_invite`] can sign tokens without
+    /// re-reading `keypair_path` from disk; matches the `PeerId` the
+    /// actor's libp2p `Swarm` is using internally.
+    keypair: libp2p::identity::Keypair,
 }
+
+/// Default lifetime for invite tokens issued via [`ShellNetwork::issue_invite`].
+/// One hour matches the v1 demo flow: the inviter pastes the token into
+/// chat, the invitee dials within minutes. Cap-doc: longer expiries
+/// widen the replay window if the inviter's machine leaks the token
+/// over an unencrypted side-channel.
+pub const DEFAULT_INVITE_TTL_SECONDS: u64 = 3600;
 
 impl ShellNetwork {
     /// Build a tokio runtime, spawn the libp2p [`Actor`], wrap the
@@ -116,7 +129,63 @@ impl ShellNetwork {
             event_tx,
             event_rx,
             runtime: Some(runtime),
+            keypair,
         })
+    }
+
+    /// Issue a signed peer-invite token for `workspace_id`, advertising
+    /// the inviter at `owner_addr` and expiring in
+    /// [`DEFAULT_INVITE_TTL_SECONDS`].
+    ///
+    /// Wraps [`make_invite_token`] using the cached `keypair`. The
+    /// caller is responsible for picking the right multiaddr to
+    /// advertise — typically one of `swarm.listeners()`. v1 routes
+    /// through the palette's `/invite` command which copies the
+    /// returned string to the system clipboard.
+    pub fn issue_invite(
+        &self,
+        workspace_id: u64,
+        owner_addr: &str,
+    ) -> std::io::Result<String> {
+        make_invite_token(
+            &self.keypair,
+            workspace_id,
+            owner_addr,
+            DEFAULT_INVITE_TTL_SECONDS,
+        )
+    }
+
+    /// Validate an inbound invite token and dial the inviter's
+    /// multiaddr. Returns the parsed token on success so the caller
+    /// can issue a follow-up [`Self::join_workspace`] for the embedded
+    /// `workspace_id`.
+    ///
+    /// Two-step (validate, then dial) so the palette can render an
+    /// inline error message ("token expired", "signature mismatch",
+    /// …) without first triggering a network side-effect.
+    pub fn accept_invite(&self, token_str: &str) -> Result<PeerInviteToken, String> {
+        let token = validate_invite_token(token_str)?;
+        let addr: libp2p::Multiaddr = token
+            .owner_addr
+            .parse()
+            .map_err(|e| format!("multiaddr parse: {e}"))?;
+        self.cmd_tx
+            .try_send(NetCmd::Connect { addr })
+            .map_err(|e| format!("dial queue full: {e}"))?;
+        Ok(token)
+    }
+
+    /// Subscribe the actor to a workspace's gossipsub topic, registering
+    /// our `event_tx` as the per-workspace event sink. Used by
+    /// [`Self::accept_invite`] to bind the dialer to the inviter's
+    /// workspace once dialing is queued.
+    pub fn join_workspace(&self, ws: u64) -> bool {
+        self.cmd_tx
+            .try_send(NetCmd::JoinWorkspace {
+                ws,
+                on_event: self.event_tx.clone(),
+            })
+            .is_ok()
     }
 
     /// Subscribe the actor to the default workspace topic, registering
@@ -213,5 +282,56 @@ mod tests {
         let mut net = ShellNetwork::spawn(tree, &key_path).expect("spawn");
         // Should not panic on empty channel; should not block.
         net.tick();
+    }
+
+    /// Smoke test that the cached keypair can sign a valid invite token
+    /// that round-trips through `validate_invite_token`. Catches the
+    /// "we forgot to stash `keypair` on the handle" regression that
+    /// would silently break `/invite` in the palette.
+    #[test]
+    fn issue_invite_round_trips_through_validate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let key_path = tmp.path().join("peer-key");
+        let tree = Arc::new(Mutex::new(WorkspaceTree::bootstrap_default()));
+        let net = ShellNetwork::spawn(tree, &key_path).expect("spawn");
+        let token = net
+            .issue_invite(7, "/ip4/127.0.0.1/tcp/1234")
+            .expect("issue");
+        let parsed = validate_invite_token(&token).expect("validate");
+        assert_eq!(parsed.workspace_id, 7);
+        assert_eq!(parsed.owner_addr, "/ip4/127.0.0.1/tcp/1234");
+    }
+
+    /// `accept_invite` should reject a malformed token without queuing a
+    /// dial. Cheaper than asserting the no-dial side-effect explicitly
+    /// (the actor's `swarm.dial` never bubbles back) — we just check
+    /// the early-return error variant.
+    #[test]
+    fn accept_invite_rejects_malformed_token() {
+        let tmp = tempfile::tempdir().unwrap();
+        let key_path = tmp.path().join("peer-key");
+        let tree = Arc::new(Mutex::new(WorkspaceTree::bootstrap_default()));
+        let net = ShellNetwork::spawn(tree, &key_path).expect("spawn");
+        let err = net.accept_invite("garbage").expect_err("must fail");
+        assert!(err.contains("base64") || err.contains("json"));
+    }
+
+    /// `accept_invite` on a valid token returns the parsed token so the
+    /// palette can issue a follow-up `join_workspace`.
+    #[test]
+    fn accept_invite_returns_token_on_success() {
+        let tmp = tempfile::tempdir().unwrap();
+        let key_path = tmp.path().join("peer-key");
+        let tree = Arc::new(Mutex::new(WorkspaceTree::bootstrap_default()));
+        let net = ShellNetwork::spawn(tree, &key_path).expect("spawn");
+        // Re-use the issuer's own keypair to mint a self-addressed
+        // invite — round-tripping through `accept_invite` exercises
+        // both the validation and the dial-queue branches without
+        // needing two ShellNetwork instances.
+        let token_str = net
+            .issue_invite(42, "/ip4/127.0.0.1/tcp/9999")
+            .expect("issue");
+        let parsed = net.accept_invite(&token_str).expect("accept");
+        assert_eq!(parsed.workspace_id, 42);
     }
 }
