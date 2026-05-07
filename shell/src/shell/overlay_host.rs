@@ -4220,12 +4220,10 @@ impl ShellOverlayHost {
             };
             scene.fill(Fill::NonZero, transform, bg, None, &tile_rr);
 
-            // Glyph: lucide Settings / Camera / Power placeholders. We
-            // ship Settings2 for slot 0; the other glyphs land when
-            // `quick_ui::icons::Icon` grows the canonical lucide
-            // `Camera` / `Power` paths. Until then a centred dot reads
-            // as "tile is interactive" without misrepresenting the
-            // glyph identity.
+            // Glyph: lucide Settings / Camera / Power. Slot 0 ships
+            // Settings2; slots 1 and 2 now resolve to the canonical
+            // lucide `Camera` and `Power` paths (added 2026-05-07 to
+            // close the audit-doc placeholder-ring follow-up).
             let glyph_color = if i == 2 {
                 colors.semantic.danger
             } else {
@@ -4237,30 +4235,19 @@ impl ShellOverlayHost {
                 tile.x0 + (tile.width() + 20.0) / 2.0,
                 tile.y0 + (tile.height() + 20.0) / 2.0,
             );
-            if i == 0 {
-                quick_ui::icons::draw_icon(
-                    scene,
-                    transform,
-                    glyph_rect,
-                    quick_ui::icons::Icon::Settings2,
-                    glyph_color,
-                    quick_ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-                );
-            } else {
-                // Placeholder ring for Camera / Power until the icon set
-                // grows lucide `Camera` / `Power` paths. The ring keeps
-                // the tile from looking blank in screenshots.
-                let cx = (tile.x0 + tile.x1) / 2.0;
-                let cy = (tile.y0 + tile.y1) / 2.0;
-                let ring = vello::kurbo::Circle::new(Point::new(cx, cy), 8.0);
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.5),
-                    transform,
-                    glyph_color,
-                    None,
-                    &ring,
-                );
-            }
+            let glyph = match i {
+                0 => quick_ui::icons::Icon::Settings2,
+                1 => quick_ui::icons::Icon::Camera,
+                _ => quick_ui::icons::Icon::Power,
+            };
+            quick_ui::icons::draw_icon(
+                scene,
+                transform,
+                glyph_rect,
+                glyph,
+                glyph_color,
+                quick_ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
         }
 
         // -------- Section 2: Slider card (Brightness / Volume) --------
