@@ -114,6 +114,9 @@ pub fn apply_workspace_drop(tree: &mut WorkspaceTree, item: DraggedItem) -> Opti
         },
     };
     let tab_id = tab.id;
+    // Capture for the doc mirror before the cache `push` consumes the tab.
+    let doc_title = tab.title.clone();
+    let doc_tile_blob = serde_json::to_vec(&tab.tile).unwrap_or_default();
 
     let ws = tree.active_workspace_mut()?;
     let strip = ws.strips.first_mut()?;
@@ -129,6 +132,14 @@ pub fn apply_workspace_drop(tree: &mut WorkspaceTree, item: DraggedItem) -> Opti
             maximized: false,
         });
     }
+    // Unit D: mirror the cache append into the automerge doc so peers
+    // observe the new tab on the next sync round. No-op if the active
+    // workspace isn't seeded into the doc.
+    tree.doc_append_tab_to_first_group_of_active_workspace(
+        tab_id,
+        doc_title,
+        doc_tile_blob,
+    );
     Some(tab_id)
 }
 
