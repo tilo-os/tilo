@@ -1,3 +1,4 @@
+use automerge::{AutoCommit, ChangeHash};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -324,6 +325,7 @@ impl Workspace {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkspaceTree {
     pub workspaces: Vec<Workspace>,
+    #[serde(default)]
     pub active: WorkspaceId,
     pub active_strip: HashMap<WorkspaceId, StripId>,
     /// Per-strip "active group" pointer — the [`GroupId`] inside each strip
@@ -342,9 +344,101 @@ pub struct WorkspaceTree {
     #[serde(default)]
     pub active_group: HashMap<StripId, GroupId>,
     pub collaborators: Vec<Collaborator>,
+    /// Automerge backing doc for peer-sync. Lazily seeded — empty until
+    /// a peer feeds changes via [`Self::apply_changes`] or a test
+    /// directly mutates this field. The cache (other fields) is the
+    /// source of truth for reads; the doc is the source of truth for
+    /// peer change export. Mutators that should mirror to both sides
+    /// land in subsequent units (B–D) of the migration.
+    ///
+    /// `#[serde(skip)]` so existing JSON persistence ignores it; the
+    /// doc rebuilds empty on load and gets populated as peer-sync runs.
+    ///
+    /// Public for two reasons: (1) struct-literal sites scattered across
+    /// integration tests need `..Default::default()` to compile against
+    /// a non-exhaustive struct, and Rust's update-syntax requires every
+    /// unspecified field to be visible at the use-site; (2) the
+    /// foundation tests for unit A poke values directly into the doc to
+    /// synthesise change-blobs since no mutator wires through yet.
+    /// Real consumers must use [`Self::current_heads`],
+    /// [`Self::export_changes_since`], and [`Self::apply_changes`] —
+    /// touching `doc` directly bypasses the cache rebuild and is only
+    /// safe for peer-sync internals or tests.
+    #[serde(skip, default = "AutoCommit::new")]
+    pub doc: AutoCommit,
 }
 
+impl Default for WorkspaceTree {
+    fn default() -> Self {
+        Self {
+            workspaces: Vec::new(),
+            active: WorkspaceId::default(),
+            active_strip: HashMap::new(),
+            active_group: HashMap::new(),
+            collaborators: Vec::new(),
+            doc: AutoCommit::new(),
+        }
+    }
+}
+
+
 impl WorkspaceTree {
+    /// Snapshot of the current automerge change-graph heads. Peer-sync
+    /// uses this as the baseline when computing what to send to a
+    /// remote replica.
+    ///
+    /// Takes `&mut self` because automerge `0.7`'s `AutoCommit` flushes
+    /// any pending transaction before returning heads — that's an
+    /// internal mutation. Callers in peer-sync hold a `&mut` handle on
+    /// the tree anyway.
+    pub fn current_heads(&mut self) -> Vec<ChangeHash> {
+        self.doc.get_heads()
+    }
+
+    /// Export every change applied since `since` as opaque change-blobs
+    /// suitable for shipping to a peer. Returns an empty vec when the
+    /// caller is already up-to-date with the current heads.
+    ///
+    /// Takes `&mut self` for the same reason as
+    /// [`Self::current_heads`] — the underlying `AutoCommit::get_changes`
+    /// commits any pending transaction first.
+    pub fn export_changes_since(&mut self, since: &[ChangeHash]) -> Vec<Vec<u8>> {
+        self.doc
+            .get_changes(since)
+            .into_iter()
+            .map(|c| c.raw_bytes().to_vec())
+            .collect()
+    }
+
+    /// Apply a batch of opaque change-blobs received from a peer. After
+    /// applying, the cache fields are rebuilt via
+    /// [`Self::rebuild_cache_from_doc`] so subsequent reads observe the
+    /// merged state.
+    pub fn apply_changes(
+        &mut self,
+        changes: &[Vec<u8>],
+    ) -> Result<(), automerge::AutomergeError> {
+        let parsed: Result<Vec<automerge::Change>, _> = changes
+            .iter()
+            .map(|b| automerge::Change::try_from(b.as_slice()))
+            .collect();
+        self.doc.apply_changes(parsed?)?;
+        self.rebuild_cache_from_doc();
+        Ok(())
+    }
+
+    /// Walk the automerge doc and refresh the public cache fields.
+    /// In unit A this is mostly a no-op because no mutator writes to
+    /// the doc yet — but the method exists so units B–D have a single
+    /// place to wire reverse-materialisation as each subsystem moves
+    /// over.
+    fn rebuild_cache_from_doc(&mut self) {
+        // Unit A: no fields are doc-mirrored yet. Subsequent units add
+        // walks that read `workspaces` / `active` / `active_strip` /
+        // `active_group` / `collaborators` back out of `self.doc`.
+        let _ = &self.doc;
+    }
+
     pub fn bootstrap_default() -> Self {
         let ws_id = WorkspaceId::new();
         let strip_id = StripId::new();
@@ -434,6 +528,7 @@ impl WorkspaceTree {
             active_strip,
             active_group,
             collaborators: vec![],
+            ..Default::default()
         };
 
         // Research and Design seed empty strips so the overview overlay
@@ -854,6 +949,63 @@ mod bootstrap_default_tests {
 }
 
 #[cfg(test)]
+mod automerge_foundation_tests {
+    //! Foundation tests for unit A of the WorkspaceTree → automerge
+    //! migration. These exercise the new `current_heads`,
+    //! `export_changes_since`, `apply_changes` API surface against a
+    //! manually-poked doc — no mutator wires through to the doc yet, so
+    //! the tests synthesise changes by writing directly into
+    //! `tree.doc`. Subsequent units (B–D) replace the manual writes
+    //! with real mutator calls (`set_active`, `append_empty_workspace`,
+    //! `harvest_pending_*`, etc.).
+
+    use super::*;
+    use automerge::{ReadDoc, ROOT, ScalarValue, transaction::Transactable};
+
+    #[test]
+    fn empty_tree_has_no_heads_and_no_changes() {
+        let mut t = WorkspaceTree::default();
+        assert!(t.current_heads().is_empty());
+        assert!(t.export_changes_since(&[]).is_empty());
+    }
+
+    #[test]
+    fn apply_changes_round_trips_a_manual_doc_mutation() {
+        let mut tree_a = WorkspaceTree::default();
+        // Directly poke a value into the doc — unit A doesn't have any
+        // mutators wired through, so we synthesise a change manually.
+        tree_a
+            .doc
+            .put(&ROOT, "demo", ScalarValue::Uint(42))
+            .unwrap();
+
+        let heads_after = tree_a.current_heads();
+        assert!(!heads_after.is_empty());
+        let changes = tree_a.export_changes_since(&[]);
+        assert!(!changes.is_empty());
+
+        let mut tree_b = WorkspaceTree::default();
+        tree_b.apply_changes(&changes).unwrap();
+
+        // Tree B now sees the same demo value.
+        let val = tree_b.doc.get(&ROOT, "demo").unwrap();
+        assert!(val.is_some());
+    }
+
+    #[test]
+    fn export_changes_since_current_heads_yields_empty() {
+        let mut t = WorkspaceTree::default();
+        t.doc.put(&ROOT, "k", ScalarValue::Uint(1)).unwrap();
+        let heads = t.current_heads();
+        let changes = t.export_changes_since(&heads);
+        assert!(
+            changes.is_empty(),
+            "exporting since current heads must yield no changes"
+        );
+    }
+}
+
+#[cfg(test)]
 mod collaborator_tests {
     use super::*;
 
@@ -999,6 +1151,7 @@ mod active_group_tests {
             active_strip,
             active_group: HashMap::new(),
             collaborators: vec![],
+            ..Default::default()
         };
         (tree, strip_id, group_ids)
     }
@@ -1210,6 +1363,7 @@ mod active_workspace_peer_count_tests {
             active_strip,
             active_group: HashMap::new(),
             collaborators: vec![],
+            ..Default::default()
         }
     }
 
