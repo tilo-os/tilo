@@ -67,6 +67,8 @@ pub enum Icon {
     Layers,
     Settings,
     Home,
+    Camera,
+    Power,
 }
 
 /// Lucide's fixed viewBox. Every stored path assumes this coordinate
@@ -250,6 +252,24 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"),
             path_from_d("M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"),
         ],
+        // Camera: body outline (with the lens-mount notch on top) plus
+        // the central r=3 lens circle. Transcribed from lucide's
+        // `camera.svg` (v0.469); the body path is one continuous loop
+        // and the lens is a separate `<circle>` primitive that we route
+        // through `circle_path` to match the existing convention.
+        Icon::Camera => vec![
+            path_from_d(
+                "M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z",
+            ),
+            circle_path(12.0, 13.0, 3.0),
+        ],
+        // Power: vertical stem from (12,2) to (12,12) and the broken
+        // arc that wraps the body. Transcribed from lucide's
+        // `power.svg` (v0.469).
+        Icon::Power => vec![
+            path_from_d("M12 2v10"),
+            path_from_d("M18.4 6.6a9 9 0 1 1-12.77.04"),
+        ],
     }
 }
 
@@ -416,12 +436,40 @@ mod tests {
             Icon::Layers,
             Icon::Settings,
             Icon::Home,
+            Icon::Camera,
+            Icon::Power,
         ] {
             let sub = icon_subpaths(icon);
             assert!(!sub.is_empty(), "{icon:?} produced no subpaths");
             for p in &sub {
                 assert!(element_count(p) > 0, "{icon:?} emitted empty subpath");
             }
+        }
+    }
+
+    #[test]
+    fn icon_camera_parses_to_non_empty_bezpath() {
+        // Lucide's `camera` glyph = body path with lens-mount notch +
+        // r=3 lens circle. Both subpaths must be non-empty so the
+        // QuickSettings action row's middle tile renders the camera
+        // glyph instead of the placeholder ring.
+        let sub = icon_subpaths(Icon::Camera);
+        assert_eq!(sub.len(), 2, "camera = body path + lens circle");
+        for p in &sub {
+            assert!(element_count(p) > 0, "camera subpath must emit elements");
+        }
+    }
+
+    #[test]
+    fn icon_power_parses_to_non_empty_bezpath() {
+        // Lucide's `power` glyph = vertical stem + broken arc. Two
+        // strokable subpaths so the QuickSettings action row's right
+        // tile renders the power glyph in red instead of a placeholder
+        // ring.
+        let sub = icon_subpaths(Icon::Power);
+        assert_eq!(sub.len(), 2, "power = stem + arc");
+        for p in &sub {
+            assert!(element_count(p) > 0, "power subpath must emit elements");
         }
     }
 
