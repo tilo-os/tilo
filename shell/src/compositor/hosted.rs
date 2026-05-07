@@ -6,11 +6,23 @@
 //!
 //! Behaviour is unchanged from before the split.
 
+use std::sync::{Arc, Mutex};
+
+use crate::shell::network::{DEFAULT_KEYPAIR_PATH, ShellNetwork};
 use crate::shell::{
     build_nirios_root, persist, seed_demo_editor_presence, sync_tab_presence_from_tree,
 };
 use quick_ui::presence::PresenceKey;
 use quick_ui::{App, State};
+
+/// Boot the shell on top of the host's existing display server with
+/// the legacy v1 behaviour — peer-sync OFF. Kept as a thin alias of
+/// [`run_with_options`] for callers that still hard-code the no-arg
+/// entry point (notably integration tests that don't care about the
+/// libp2p side of the world).
+pub fn run() {
+    run_with_options(false)
+}
 
 /// Boot the shell on top of the host's existing display server.
 ///
@@ -18,9 +30,43 @@ use quick_ui::{App, State};
 /// persisted workspace tree, seed presence so collaboration chrome paints on
 /// the first frame, and hand control to `App::run`, which drives the winit
 /// event loop until the user quits.
-pub fn run() {
+///
+/// When `enable_peer_sync` is true, also constructs a
+/// [`ShellNetwork`] handle on top of the same `WorkspaceTree`. Phase 3
+/// Task 3.1 only owns the construction — wiring `tick()` into the
+/// per-frame update loop and routing palette commands lives behind
+/// Tasks 3.2 + 3.3. v1 default OFF — passing `false` (or omitting
+/// `--enable-peer-sync` on the CLI) preserves the existing behaviour
+/// bit-for-bit.
+pub fn run_with_options(enable_peer_sync: bool) {
     let path = persist::state_json_path();
     let tree = persist::load_or_default(&path);
+
+    // Optional peer-sync handle — construction only, per Task 3.1.
+    // Held alive for the life of `run` so the actor's tokio runtime
+    // doesn't drop out from under us mid-session. Failure is logged
+    // and treated as "peer-sync stays off" — the shell must keep
+    // working even if the keypair store is unreadable.
+    let _peer_sync: Option<ShellNetwork> = if enable_peer_sync {
+        let shared_tree = Arc::new(Mutex::new(tree.clone()));
+        match ShellNetwork::spawn(shared_tree, std::path::Path::new(DEFAULT_KEYPAIR_PATH)) {
+            Ok(handle) => {
+                // Subscribe to the default workspace topic so the
+                // actor's gossipsub mesh has somewhere to deliver
+                // `NeighbourMsg::SyncReq`s as soon as a peer dials in.
+                let _ = handle.join_default_workspace();
+                tracing::info!("peer-sync: actor spawned, default workspace joined");
+                Some(handle)
+            }
+            Err(e) => {
+                tracing::warn!("peer-sync: spawn failed ({e}); continuing without sync");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let state = State::new();
     let root = build_nirios_root(&tree);
     let mut app = App::new(state, root);
