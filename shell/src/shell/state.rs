@@ -351,7 +351,15 @@ pub enum Capability {
     /// Screen capture via portal `ScreenCast`.
     Screencast { scope: GrantScope },
     /// Outbound network access. `hosts: None` = "any host"; `hosts:
-    /// Some(allowlist)` = "only these (nftables-enforced in Phase 5)".
+    /// Some(allowlist)` = "only these hosts".
+    ///
+    /// **Enforcement (Phase 5 Task 5.2):** v1 toggles the per-workspace
+    /// network namespace isolation (`unshare(CLONE_NEWNET)` /
+    /// bwrap's `--unshare-net`) — any `Always`-scoped grant lifts the
+    /// default-deny. The `hosts` allowlist is recorded by the data
+    /// model but **not yet enforced**: per-namespace nftables rule
+    /// generation is deferred to a Phase 5.2 follow-up unit. v1
+    /// therefore treats `Some([...])` and `None` identically.
     Network {
         hosts: Option<Vec<String>>,
         scope: GrantScope,
