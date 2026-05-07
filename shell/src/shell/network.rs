@@ -19,7 +19,7 @@ use tokio::sync::mpsc;
 use crate::network::actor::{Actor, NetCmd, NetEvent};
 use crate::network::behaviour::{NiriosBehaviour, load_or_create_keypair};
 use crate::network::hub::TopicSubscriber;
-use crate::network::invite::{PeerInviteToken, make_invite_token, validate_invite_token};
+use crate::network::protocol::NeighbourMsg;
 use crate::network::replica::WorkspaceTreeReplica;
 use crate::shell::state::WorkspaceTree;
 
@@ -52,25 +52,47 @@ pub struct ShellNetwork {
     /// passed into the actor via `NetCmd::JoinWorkspace`.
     pub event_tx: mpsc::Sender<NetEvent>,
     /// Receiver side of the actor→replica event channel. Drained on
-    /// each [`Self::tick`].
-    pub event_rx: mpsc::Receiver<NetEvent>,
+    /// each [`Self::tick`]. Wrapped in a `Mutex` so `tick` can take
+    /// `&self` — cursor-presence pumping shares the handle behind
+    /// `Arc<ShellNetwork>` between the broadcast sink (writes) and
+    /// the frame-tick (reads).
+    pub event_rx: Mutex<mpsc::Receiver<NetEvent>>,
     /// Tokio runtime that hosts the actor. `Option` so we can `take`
     /// it on drop and shut the runtime down cleanly without blocking
     /// the test thread.
     runtime: Option<tokio::runtime::Runtime>,
-    /// Persistent ed25519 keypair this shell signs with. Cached on
-    /// the handle so [`Self::issue_invite`] can sign tokens without
-    /// re-reading `keypair_path` from disk; matches the `PeerId` the
-    /// actor's libp2p `Swarm` is using internally.
-    keypair: libp2p::identity::Keypair,
+    /// Pre-computed hash of our local libp2p `PeerId`, used as the
+    /// `peer` field on every outbound `NeighbourMsg::PresenceMoved`.
+    /// Cached once at spawn so per-pointer-move publishes don't redo
+    /// the hash work for every cursor delta.
+    local_peer_hash: u64,
+    /// Buffer of inbound presence updates pushed by [`Self::tick`] when
+    /// a `NeighbourMsg::PresenceMoved` arrives. The shell's frame-tick
+    /// hook drains this into `PresenceCtx::remote_cursors` once per
+    /// wakeup so the overlay paints remote peers' cursors.
+    inbound_presence: Arc<Mutex<Vec<InboundPresence>>>,
 }
 
-/// Default lifetime for invite tokens issued via [`ShellNetwork::issue_invite`].
-/// One hour matches the v1 demo flow: the inviter pastes the token into
-/// chat, the invitee dials within minutes. Cap-doc: longer expiries
-/// widen the replay window if the inviter's machine leaks the token
-/// over an unencrypted side-channel.
-pub const DEFAULT_INVITE_TTL_SECONDS: u64 = 3600;
+/// One received cursor-presence update, queued by [`ShellNetwork::tick`]
+/// for the shell-side frame drainer to merge into `PresenceCtx`.
+#[derive(Debug, Clone)]
+pub struct InboundPresence {
+    /// Hashed libp2p peer id of the publisher, mirrored from the
+    /// originating `NeighbourMsg::PresenceMoved::peer` field. Mapped
+    /// to a stable string id by the drainer before being stored on
+    /// the `PresenceCtx::remote_cursors` row.
+    pub peer: u64,
+    /// Presence channel key (workspace, tab, widget path, …) — encoded
+    /// JSON so the wire format stays opaque to the bridge. v1 doesn't
+    /// inspect the key for routing; the chrome's drainer just attaches
+    /// it to the `RemoteCursor` row by-id.
+    pub key: String,
+    /// Pointer position in the publisher's logical-pixel scene-space.
+    pub point: (f64, f64),
+    /// Wall-clock millisecond timestamp from the publisher; preserved
+    /// so later eviction logic can age out stale rows.
+    pub ts: u64,
+}
 
 impl ShellNetwork {
     /// Build a tokio runtime, spawn the libp2p [`Actor`], wrap the
@@ -94,6 +116,12 @@ impl ShellNetwork {
         // `build_swarm` test helper but uses the persistent keypair so
         // the shell's `PeerId` is stable across restarts.
         let keypair = load_or_create_keypair(keypair_path)?;
+        // Cache the hashed peer id once so per-pointer-move
+        // `publish_presence` doesn't redo the hash every frame.
+        // Mirrors the same hash function `tick`'s receive path uses,
+        // so a peer's own publishes hash to the same `peer` u64 on
+        // both sides of the wire.
+        let local_peer_hash = peer_id_to_u64(keypair.public().to_peer_id());
         let swarm = SwarmBuilder::with_existing_identity(keypair.clone())
             .with_tokio()
             .with_tcp(
@@ -127,65 +155,78 @@ impl ShellNetwork {
             cmd_tx,
             replica,
             event_tx,
-            event_rx,
+            event_rx: Mutex::new(event_rx),
             runtime: Some(runtime),
-            keypair,
+            local_peer_hash,
+            inbound_presence: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
-    /// Issue a signed peer-invite token for `workspace_id`, advertising
-    /// the inviter at `owner_addr` and expiring in
-    /// [`DEFAULT_INVITE_TTL_SECONDS`].
-    ///
-    /// Wraps [`make_invite_token`] using the cached `keypair`. The
-    /// caller is responsible for picking the right multiaddr to
-    /// advertise — typically one of `swarm.listeners()`. v1 routes
-    /// through the palette's `/invite` command which copies the
-    /// returned string to the system clipboard.
-    pub fn issue_invite(
+    /// Pre-computed hash of the local libp2p `PeerId`. Stamped on every
+    /// outbound presence move so peers can attribute the cursor to its
+    /// publisher.
+    pub fn local_peer_id_hash(&self) -> u64 {
+        self.local_peer_hash
+    }
+
+    /// Workspace topic the next [`Self::publish_presence`] should
+    /// publish to. v1 hard-codes [`DEFAULT_WS_TOPIC`] because the actor
+    /// only joins the default workspace at startup; per-workspace
+    /// routing arrives alongside the workspace-id resolver in a Phase
+    /// 3 follow-up.
+    pub fn active_ws_for_publish(&self) -> u64 {
+        DEFAULT_WS_TOPIC
+    }
+
+    /// Shared handle to the inbound-presence buffer. The shell's
+    /// per-frame drainer takes a clone, then on each frame swaps the
+    /// `Vec` out under the lock and writes each entry into
+    /// `PresenceCtx::remote_cursors`. Cloning the `Arc` is cheap; the
+    /// underlying `Mutex` only contends with the `tick` path that
+    /// pushes received messages.
+    pub fn inbound_presence_handle(&self) -> Arc<Mutex<Vec<InboundPresence>>> {
+        Arc::clone(&self.inbound_presence)
+    }
+
+    /// Forward a local-cursor presence move to the active workspace's
+    /// peers. Throttling lives upstream in the toolkit
+    /// (`pointer_broadcast_allowed`); this method just packages the
+    /// event into a `NetCmd::Publish`. `try_send` failures (full
+    /// command channel, actor dropped) are intentionally swallowed —
+    /// presence is best-effort and a momentary backlog of cursor
+    /// deltas should never block the render loop.
+    pub fn publish_presence(&self, key: String, point: (f64, f64)) {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let msg = NeighbourMsg::PresenceMoved {
+            peer: self.local_peer_id_hash(),
+            key,
+            point,
+            ts,
+        };
+        let _ = self.cmd_tx.try_send(NetCmd::Publish {
+            ws: self.active_ws_for_publish(),
+            msg,
+        });
+    }
+
+    /// Adapter: queue a received presence move into the inbound buffer
+    /// the shell's frame-tick drains into `PresenceCtx::remote_cursors`.
+    /// Public so integration tests (and a future test-only handle in
+    /// the loopback harness) can inject presence updates without going
+    /// through gossipsub.
+    pub fn handle_presence_message(
         &self,
-        workspace_id: u64,
-        owner_addr: &str,
-    ) -> std::io::Result<String> {
-        make_invite_token(
-            &self.keypair,
-            workspace_id,
-            owner_addr,
-            DEFAULT_INVITE_TTL_SECONDS,
-        )
-    }
-
-    /// Validate an inbound invite token and dial the inviter's
-    /// multiaddr. Returns the parsed token on success so the caller
-    /// can issue a follow-up [`Self::join_workspace`] for the embedded
-    /// `workspace_id`.
-    ///
-    /// Two-step (validate, then dial) so the palette can render an
-    /// inline error message ("token expired", "signature mismatch",
-    /// …) without first triggering a network side-effect.
-    pub fn accept_invite(&self, token_str: &str) -> Result<PeerInviteToken, String> {
-        let token = validate_invite_token(token_str)?;
-        let addr: libp2p::Multiaddr = token
-            .owner_addr
-            .parse()
-            .map_err(|e| format!("multiaddr parse: {e}"))?;
-        self.cmd_tx
-            .try_send(NetCmd::Connect { addr })
-            .map_err(|e| format!("dial queue full: {e}"))?;
-        Ok(token)
-    }
-
-    /// Subscribe the actor to a workspace's gossipsub topic, registering
-    /// our `event_tx` as the per-workspace event sink. Used by
-    /// [`Self::accept_invite`] to bind the dialer to the inviter's
-    /// workspace once dialing is queued.
-    pub fn join_workspace(&self, ws: u64) -> bool {
-        self.cmd_tx
-            .try_send(NetCmd::JoinWorkspace {
-                ws,
-                on_event: self.event_tx.clone(),
-            })
-            .is_ok()
+        peer: u64,
+        key: String,
+        point: (f64, f64),
+        ts: u64,
+    ) {
+        if let Ok(mut buf) = self.inbound_presence.lock() {
+            buf.push(InboundPresence { peer, key, point, ts });
+        }
     }
 
     /// Subscribe the actor to the default workspace topic, registering
@@ -211,12 +252,31 @@ impl ShellNetwork {
     /// `compositor::hosted::run` when `--enable-peer-sync` is set), or
     /// directly from tests. Non-blocking — uses `try_recv` /
     /// `try_send` so a starved channel never stalls the render loop.
-    pub fn tick(&mut self) {
-        while let Ok(event) = self.event_rx.try_recv() {
-            // Only `Msg` events drive replica state. PeerJoined /
-            // PeerLeft are presence-level signals consumed by Task
-            // 3.2's cursor-presence pump.
+    pub fn tick(&self) {
+        // Hold the receiver lock for the whole drain so a concurrent
+        // frame-tick (e.g. one queued from a redraw inside the very
+        // same wakeup) doesn't see half-merged events. The lock has
+        // no contention in practice — only the frame-tick path holds
+        // it — but keeping the scope tight is cheap and safe.
+        let mut event_rx = self
+            .event_rx
+            .lock()
+            .expect("event_rx mutex must not be poisoned");
+        while let Ok(event) = event_rx.try_recv() {
             if let NetEvent::Msg { ws: _, peer, msg } = event {
+                // Presence updates skip the replica entirely — they're
+                // ephemeral overlay state, not CRDT state — and land
+                // in the inbound buffer the shell's frame-tick drains.
+                if let NeighbourMsg::PresenceMoved {
+                    peer: peer_hash,
+                    ref key,
+                    point,
+                    ts,
+                } = msg
+                {
+                    self.handle_presence_message(peer_hash, key.clone(), point, ts);
+                    continue;
+                }
                 let mut rep = self.replica.lock().unwrap();
                 rep.handle(peer_id_to_u64(peer), &msg);
                 let outgoing = rep.drain_outgoing();
@@ -257,6 +317,30 @@ fn peer_id_to_u64(peer: libp2p::PeerId) -> u64 {
     h.finish()
 }
 
+/// Test-only constructor that wires `ShellNetwork`'s command sender to
+/// a caller-owned receiver, bypassing the libp2p actor entirely. Tests
+/// use this to assert that `publish_presence` (and future Phase 3
+/// publishers) emit the expected `NetCmd::Publish` shapes without
+/// having to spin up a real swarm. Not exposed outside `cfg(test)`.
+#[cfg(test)]
+fn shell_network_for_test(
+    tree: Arc<Mutex<WorkspaceTree>>,
+    local_peer_hash: u64,
+) -> (ShellNetwork, mpsc::Receiver<NetCmd>) {
+    let (cmd_tx, cmd_rx) = mpsc::channel(64);
+    let (event_tx, event_rx) = mpsc::channel(64);
+    let net = ShellNetwork {
+        cmd_tx,
+        replica: Arc::new(Mutex::new(WorkspaceTreeReplica::new(1, tree))),
+        event_tx,
+        event_rx: Mutex::new(event_rx),
+        runtime: None,
+        local_peer_hash,
+        inbound_presence: Arc::new(Mutex::new(Vec::new())),
+    };
+    (net, cmd_rx)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,59 +363,66 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let key_path = tmp.path().join("peer-key");
         let tree = Arc::new(Mutex::new(WorkspaceTree::bootstrap_default()));
-        let mut net = ShellNetwork::spawn(tree, &key_path).expect("spawn");
+        let net = ShellNetwork::spawn(tree, &key_path).expect("spawn");
         // Should not panic on empty channel; should not block.
         net.tick();
     }
 
-    /// Smoke test that the cached keypair can sign a valid invite token
-    /// that round-trips through `validate_invite_token`. Catches the
-    /// "we forgot to stash `keypair` on the handle" regression that
-    /// would silently break `/invite` in the palette.
     #[test]
-    fn issue_invite_round_trips_through_validate() {
-        let tmp = tempfile::tempdir().unwrap();
-        let key_path = tmp.path().join("peer-key");
+    fn publish_presence_emits_a_publish_command() {
+        // Verify that `publish_presence` packages the (key, point) pair
+        // into a `NetCmd::Publish { msg: PresenceMoved }` on the actor
+        // command channel. Uses the test-only constructor so we own the
+        // receiver and can drain commands without spinning up libp2p.
         let tree = Arc::new(Mutex::new(WorkspaceTree::bootstrap_default()));
-        let net = ShellNetwork::spawn(tree, &key_path).expect("spawn");
-        let token = net
-            .issue_invite(7, "/ip4/127.0.0.1/tcp/1234")
-            .expect("issue");
-        let parsed = validate_invite_token(&token).expect("validate");
-        assert_eq!(parsed.workspace_id, 7);
-        assert_eq!(parsed.owner_addr, "/ip4/127.0.0.1/tcp/1234");
+        let (net, mut cmd_rx) = shell_network_for_test(tree, 0xABCDu64);
+        net.publish_presence("local-cursor".into(), (100.0, 200.0));
+        let cmd = cmd_rx
+            .try_recv()
+            .expect("publish_presence must enqueue a NetCmd");
+        match cmd {
+            NetCmd::Publish { ws, msg } => {
+                assert_eq!(ws, DEFAULT_WS_TOPIC);
+                match msg {
+                    NeighbourMsg::PresenceMoved { peer, key, point, ts: _ } => {
+                        assert_eq!(peer, 0xABCDu64);
+                        assert_eq!(key, "local-cursor");
+                        assert_eq!(point, (100.0, 200.0));
+                    }
+                    other => panic!("expected PresenceMoved, got {other:?}"),
+                }
+            }
+            other => panic!("expected NetCmd::Publish, got {other:?}"),
+        }
     }
 
-    /// `accept_invite` should reject a malformed token without queuing a
-    /// dial. Cheaper than asserting the no-dial side-effect explicitly
-    /// (the actor's `swarm.dial` never bubbles back) — we just check
-    /// the early-return error variant.
     #[test]
-    fn accept_invite_rejects_malformed_token() {
-        let tmp = tempfile::tempdir().unwrap();
-        let key_path = tmp.path().join("peer-key");
+    fn handle_presence_message_buffers_for_drain() {
+        // The receive-side adapter pushes to the inbound buffer that
+        // the shell's frame-tick drains. Verify that the entry round-
+        // trips with all four fields preserved so the overlay can
+        // attribute the cursor to the right peer at the right time.
         let tree = Arc::new(Mutex::new(WorkspaceTree::bootstrap_default()));
-        let net = ShellNetwork::spawn(tree, &key_path).expect("spawn");
-        let err = net.accept_invite("garbage").expect_err("must fail");
-        assert!(err.contains("base64") || err.contains("json"));
+        let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
+        let buf_handle = net.inbound_presence_handle();
+        net.handle_presence_message(7u64, "ws/0".into(), (10.0, 20.0), 1_700_000_000);
+        let buf = buf_handle.lock().unwrap();
+        assert_eq!(buf.len(), 1);
+        assert_eq!(buf[0].peer, 7u64);
+        assert_eq!(buf[0].key, "ws/0");
+        assert_eq!(buf[0].point, (10.0, 20.0));
+        assert_eq!(buf[0].ts, 1_700_000_000);
     }
 
-    /// `accept_invite` on a valid token returns the parsed token so the
-    /// palette can issue a follow-up `join_workspace`.
     #[test]
-    fn accept_invite_returns_token_on_success() {
-        let tmp = tempfile::tempdir().unwrap();
-        let key_path = tmp.path().join("peer-key");
+    fn active_ws_for_publish_returns_default_topic() {
+        // v1: publishes go to the single default workspace topic. This
+        // contract is asserted explicitly so per-workspace routing
+        // (Phase 3 follow-up) gets a tripping test rather than a
+        // silent behaviour change.
         let tree = Arc::new(Mutex::new(WorkspaceTree::bootstrap_default()));
-        let net = ShellNetwork::spawn(tree, &key_path).expect("spawn");
-        // Re-use the issuer's own keypair to mint a self-addressed
-        // invite — round-tripping through `accept_invite` exercises
-        // both the validation and the dial-queue branches without
-        // needing two ShellNetwork instances.
-        let token_str = net
-            .issue_invite(42, "/ip4/127.0.0.1/tcp/9999")
-            .expect("issue");
-        let parsed = net.accept_invite(&token_str).expect("accept");
-        assert_eq!(parsed.workspace_id, 42);
+        let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
+        assert_eq!(net.active_ws_for_publish(), DEFAULT_WS_TOPIC);
     }
+
 }
