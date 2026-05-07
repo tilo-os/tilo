@@ -83,6 +83,20 @@ pub struct App {
     /// [`pointer_broadcast_allowed`] to throttle the wire rate to
     /// ~30 Hz regardless of how fast winit delivers `CursorMoved`.
     last_pointer_broadcast: Option<Instant>,
+    /// Optional out-of-band sink invoked alongside the Unix-socket
+    /// `broadcast_presence` send. The shell registers a closure here
+    /// when peer-sync is enabled so local cursor moves get fanned out
+    /// to libp2p peers in addition to (or instead of) the legacy
+    /// `QUICK_COLLAB_SOCK` server. The toolkit invokes the sink after
+    /// the throttle gate, so callers receive the same ~30 Hz cadence.
+    presence_broadcast_sink: Option<Box<dyn Fn(&PresenceKey, &PresencePayload) + Send + Sync>>,
+    /// Optional per-frame callback invoked from `AboutToWait`. The
+    /// shell registers a drain closure here when peer-sync is enabled
+    /// so received `NeighbourMsg::PresenceMoved` events can be pushed
+    /// into [`PresenceCtx::remote_cursors`] without App needing to
+    /// know about libp2p. The closure receives `&mut PresenceCtx` so
+    /// it can write directly to the overlay surface.
+    frame_tick: Option<Box<dyn FnMut(&mut PresenceCtx) + Send + Sync>>,
 }
 
 impl App {
@@ -109,7 +123,45 @@ impl App {
             permission_ctx: PermissionContext::permissive(),
             presence_broadcast_scope: None,
             last_pointer_broadcast: None,
+            presence_broadcast_sink: None,
+            frame_tick: None,
         }
+    }
+
+    /// Register a per-frame callback invoked from `AboutToWait`. The
+    /// shell uses this to drain received `PresenceMoved` events from
+    /// libp2p and write them into `PresenceCtx::remote_cursors`. The
+    /// callback runs once per event-loop wakeup; it must therefore be
+    /// cheap and non-blocking.
+    pub fn set_frame_tick<F>(&mut self, tick: F)
+    where
+        F: FnMut(&mut PresenceCtx) + Send + Sync + 'static,
+    {
+        self.frame_tick = Some(Box::new(tick));
+    }
+
+    /// Register a sink invoked alongside [`Self::broadcast_presence`].
+    ///
+    /// When set, every call to `broadcast_presence` (including the
+    /// throttled `CursorMoved` path inside `App::run`) also dispatches
+    /// the `(key, payload)` pair to `sink`. The shell uses this hook to
+    /// republish presence updates over libp2p — see
+    /// `quick_shell::shell::network::ShellNetwork::publish_presence`.
+    /// Passing a fresh sink replaces any previous registration; pass
+    /// `None`-equivalent (an empty sink) is not supported, use
+    /// [`Self::clear_presence_broadcast_sink`] instead.
+    pub fn set_presence_broadcast_sink<F>(&mut self, sink: F)
+    where
+        F: Fn(&PresenceKey, &PresencePayload) + Send + Sync + 'static,
+    {
+        self.presence_broadcast_sink = Some(Box::new(sink));
+    }
+
+    /// Drop any previously-registered presence broadcast sink. Calls to
+    /// `broadcast_presence` after this fall back to the Unix-socket-only
+    /// path.
+    pub fn clear_presence_broadcast_sink(&mut self) {
+        self.presence_broadcast_sink = None;
     }
 
     /// Set (or clear) the presence key under which local pointer moves
@@ -152,6 +204,13 @@ impl App {
         key: crate::presence::PresenceKey,
         payload: crate::collaboration::PresencePayload,
     ) {
+        // Fan out to the optional out-of-band sink first — this is how
+        // the shell's libp2p bridge republishes presence to LAN peers.
+        // The sink fires before the Unix-socket send so a slow socket
+        // never delays the network path.
+        if let Some(sink) = self.presence_broadcast_sink.as_ref() {
+            sink(&key, &payload);
+        }
         self.collab_manager
             .send(CollabRequest::Presence { key, payload });
     }
@@ -707,6 +766,18 @@ impl App {
                     if self.root_widget.needs_animation_frame() {
                         window.request_redraw();
                     }
+
+                    // Pump the optional shell-registered frame tick so
+                    // out-of-band sources (libp2p presence, palette
+                    // command queue) can drain into the overlay state
+                    // once per wakeup. We always request a redraw when
+                    // the tick fires because the shell typically writes
+                    // visible state (remote cursor positions) — without
+                    // the redraw a remote cursor would not animate.
+                    if let Some(tick) = self.frame_tick.as_mut() {
+                        tick(&mut self.presence_ctx);
+                        window.request_redraw();
+                    }
                 }
                 _ => {}
             }
@@ -795,6 +866,62 @@ mod pointer_broadcast_tests {
         let root = Box::new(crate::widget::Text::new("t"));
         let app = App::new(state, root);
         assert!(app.presence_broadcast_scope().is_none());
+    }
+
+    #[test]
+    fn presence_broadcast_sink_receives_both_key_and_payload() {
+        // The shell-side libp2p bridge subscribes via
+        // `set_presence_broadcast_sink`. Verify that a registered sink
+        // observes every (key, payload) pair passed through
+        // `broadcast_presence`, with both halves of the tuple intact.
+        use std::sync::{Arc, Mutex};
+        let state = State::new();
+        let root = Box::new(crate::widget::Text::new("t"));
+        let mut app = App::new(state, root);
+        let captured: Arc<Mutex<Vec<(PresenceKey, PresencePayload)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let sink_captured = Arc::clone(&captured);
+        app.set_presence_broadcast_sink(move |k, p| {
+            sink_captured.lock().unwrap().push((k.clone(), p.clone()));
+        });
+        let key = PresenceKey::Workspace { id: "home".into() };
+        app.broadcast_presence(key.clone(), PresencePayload::Pointer { x: 5.0, y: 7.0 });
+        let observed = captured.lock().unwrap();
+        assert_eq!(observed.len(), 1);
+        assert_eq!(observed[0].0, key);
+        match observed[0].1 {
+            PresencePayload::Pointer { x, y } => {
+                assert_eq!(x, 5.0);
+                assert_eq!(y, 7.0);
+            }
+            ref other => panic!("expected Pointer payload, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn clear_presence_broadcast_sink_drops_callback() {
+        // After clearing, the sink must not receive subsequent broadcasts.
+        // Guards against the bridge accidentally double-publishing once
+        // peer-sync is torn down.
+        use std::sync::{Arc, Mutex};
+        let state = State::new();
+        let root = Box::new(crate::widget::Text::new("t"));
+        let mut app = App::new(state, root);
+        let count: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+        let sink_count = Arc::clone(&count);
+        app.set_presence_broadcast_sink(move |_, _| {
+            *sink_count.lock().unwrap() += 1;
+        });
+        app.broadcast_presence(
+            PresenceKey::Workspace { id: "x".into() },
+            PresencePayload::Arrived,
+        );
+        app.clear_presence_broadcast_sink();
+        app.broadcast_presence(
+            PresenceKey::Workspace { id: "x".into() },
+            PresencePayload::Arrived,
+        );
+        assert_eq!(*count.lock().unwrap(), 1, "sink fires before clear, never after");
     }
 }
 
