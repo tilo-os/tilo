@@ -512,6 +512,31 @@ impl WorkspaceTree {
                         "width_pixels",
                         ScalarValue::Uint(group.width.pixels() as u64),
                     );
+                    // Unit D: tabs as a List of Maps with the tab's
+                    // identifying scalars + a `tile_json` blob carrying
+                    // the `TileContent` enum. JSON-blob shim is the
+                    // pragmatic v1 (per spec § "Encoding shape") — full
+                    // per-variant CRDT structure is a follow-up.
+                    let tabs_id = self
+                        .doc
+                        .put_object(&group_entry, "tabs", ObjType::List)
+                        .expect("create tabs list");
+                    for (l, tab) in group.tabs.iter().enumerate() {
+                        let tab_entry = self
+                            .doc
+                            .insert_object(&tabs_id, l, ObjType::Map)
+                            .expect("insert tab map");
+                        let _ = self
+                            .doc
+                            .put(&tab_entry, "id", ScalarValue::Uint(tab.id));
+                        let _ =
+                            self.doc.put(&tab_entry, "title", tab.title.clone());
+                        if let Ok(blob) = serde_json::to_vec(&tab.tile) {
+                            let _ = self
+                                .doc
+                                .put(&tab_entry, "tile_json", ScalarValue::Bytes(blob));
+                        }
+                    }
                 }
             }
         }
@@ -719,6 +744,68 @@ impl WorkspaceTree {
                                 .last_mut()
                                 .expect("strip just pushed")
                         };
+                        // Unit D: read the tabs list (if present) so we
+                        // can rebuild the group's `tabs` vec. Tabs missing
+                        // from the doc fall back to whatever the cache
+                        // already had; new ids get freshly synthesized
+                        // entries with the doc-side title + tile blob.
+                        let mut doc_tabs: Vec<(u64, String, Vec<u8>)> = Vec::new();
+                        if let Some((_, tabs_id)) =
+                            self.doc.get(&group_entry, "tabs").ok().flatten()
+                        {
+                            let tabs_len = self.doc.length(&tabs_id);
+                            for t_idx in 0..tabs_len {
+                                let Some((_, tab_entry)) =
+                                    self.doc.get(&tabs_id, t_idx).ok().flatten()
+                                else {
+                                    continue;
+                                };
+                                let id = match self
+                                    .doc
+                                    .get(&tab_entry, "id")
+                                    .ok()
+                                    .flatten()
+                                {
+                                    Some((Value::Scalar(s), _)) => match s
+                                        .as_ref()
+                                    {
+                                        ScalarValue::Uint(v) => *v,
+                                        _ => continue,
+                                    },
+                                    _ => continue,
+                                };
+                                let title = match self
+                                    .doc
+                                    .get(&tab_entry, "title")
+                                    .ok()
+                                    .flatten()
+                                {
+                                    Some((Value::Scalar(s), _)) => match s
+                                        .as_ref()
+                                    {
+                                        ScalarValue::Str(v) => v.to_string(),
+                                        _ => String::new(),
+                                    },
+                                    _ => String::new(),
+                                };
+                                let tile_blob: Vec<u8> = match self
+                                    .doc
+                                    .get(&tab_entry, "tile_json")
+                                    .ok()
+                                    .flatten()
+                                {
+                                    Some((Value::Scalar(s), _)) => match s
+                                        .as_ref()
+                                    {
+                                        ScalarValue::Bytes(b) => b.clone(),
+                                        _ => Vec::new(),
+                                    },
+                                    _ => Vec::new(),
+                                };
+                                doc_tabs.push((id, title, tile_blob));
+                            }
+                        }
+
                         if let Some(g) = strip
                             .window_groups
                             .iter_mut()
@@ -735,14 +822,78 @@ impl WorkspaceTree {
                             if width_pixels > 0 {
                                 g.width = WindowWidth::Custom(width_pixels);
                             }
+                            if !doc_tabs.is_empty() {
+                                let mut new_tabs: Vec<Tab> = Vec::with_capacity(doc_tabs.len());
+                                for (tid, title, blob) in &doc_tabs {
+                                    if let Some(existing) =
+                                        g.tabs.iter().find(|t| t.id == *tid)
+                                    {
+                                        new_tabs.push(existing.clone());
+                                    } else {
+                                        let tile = if !blob.is_empty() {
+                                            serde_json::from_slice::<TileContent>(blob)
+                                                .unwrap_or(TileContent::Stub {
+                                                    kind: AppKind::Other(String::new()),
+                                                    label: title.clone(),
+                                                })
+                                        } else {
+                                            TileContent::Stub {
+                                                kind: AppKind::Other(String::new()),
+                                                label: title.clone(),
+                                            }
+                                        };
+                                        new_tabs.push(Tab {
+                                            id: *tid,
+                                            title: title.clone(),
+                                            tile,
+                                        });
+                                    }
+                                }
+                                if g.tabs
+                                    .iter()
+                                    .all(|t| !doc_tabs.iter().any(|(id, _, _)| *id == t.id))
+                                    || g.tabs.is_empty()
+                                {
+                                    g.active_tab = new_tabs
+                                        .first()
+                                        .map(|t| t.id)
+                                        .unwrap_or(0);
+                                }
+                                g.tabs = new_tabs;
+                            }
                         } else {
                             // Synthesize a placeholder group — it
-                            // carries no tabs, but its presence lets
-                            // subsequent unit-D wireup land tab data.
+                            // carries tabs from the doc when present.
+                            let synthesized_tabs: Vec<Tab> = doc_tabs
+                                .iter()
+                                .map(|(tid, title, blob)| {
+                                    let tile = if !blob.is_empty() {
+                                        serde_json::from_slice::<TileContent>(blob)
+                                            .unwrap_or(TileContent::Stub {
+                                                kind: AppKind::Other(String::new()),
+                                                label: title.clone(),
+                                            })
+                                    } else {
+                                        TileContent::Stub {
+                                            kind: AppKind::Other(String::new()),
+                                            label: title.clone(),
+                                        }
+                                    };
+                                    Tab {
+                                        id: *tid,
+                                        title: title.clone(),
+                                        tile,
+                                    }
+                                })
+                                .collect();
+                            let active_tab = synthesized_tabs
+                                .first()
+                                .map(|t| t.id)
+                                .unwrap_or(0);
                             strip.window_groups.push(WindowGroup {
                                 id: group_id,
-                                tabs: Vec::new(),
-                                active_tab: 0,
+                                tabs: synthesized_tabs,
+                                active_tab,
                                 width: if width_pixels > 0 {
                                     WindowWidth::Custom(width_pixels)
                                 } else {
@@ -851,6 +1002,298 @@ impl WorkspaceTree {
                 ScalarValue::Uint(new_pixels as u64),
             );
         }
+    }
+
+    /// Walk the doc to the `Tab` map for `(strip_id, tab_id)`. Returns
+    /// the parent group entry, the tabs list, the tab entry, and the
+    /// tab's index in the list. Strip id disambiguates if a tab id ever
+    /// collided across strips. None on miss for the same reasons as
+    /// [`Self::locate_group`].
+    fn locate_tab(
+        &self,
+        strip_id: StripId,
+        tab_id: u64,
+    ) -> Option<(automerge::ObjId, automerge::ObjId, automerge::ObjId, usize)> {
+        use automerge::{ReadDoc, ROOT, ScalarValue, Value};
+        let (_, workspaces_id) =
+            self.doc.get(&ROOT, "workspaces").ok().flatten()?;
+        let ws_len = self.doc.length(&workspaces_id);
+        for ws_idx in 0..ws_len {
+            let (_, ws_entry) =
+                self.doc.get(&workspaces_id, ws_idx).ok().flatten()?;
+            let strips_id = match self.doc.get(&ws_entry, "strips").ok().flatten()
+            {
+                Some((_, id)) => id,
+                None => continue,
+            };
+            let strips_len = self.doc.length(&strips_id);
+            for s_idx in 0..strips_len {
+                let (_, strip_entry) =
+                    self.doc.get(&strips_id, s_idx).ok().flatten()?;
+                let strip_id_matches =
+                    match self.doc.get(&strip_entry, "id").ok().flatten() {
+                        Some((Value::Scalar(s), _)) => match s.as_ref() {
+                            ScalarValue::Uint(id) => *id == strip_id.raw(),
+                            _ => false,
+                        },
+                        _ => false,
+                    };
+                if !strip_id_matches {
+                    continue;
+                }
+                let groups_id = match self
+                    .doc
+                    .get(&strip_entry, "window_groups")
+                    .ok()
+                    .flatten()
+                {
+                    Some((_, id)) => id,
+                    None => continue,
+                };
+                let groups_len = self.doc.length(&groups_id);
+                for g_idx in 0..groups_len {
+                    let (_, group_entry) =
+                        self.doc.get(&groups_id, g_idx).ok().flatten()?;
+                    let tabs_id =
+                        match self.doc.get(&group_entry, "tabs").ok().flatten() {
+                            Some((_, id)) => id,
+                            None => continue,
+                        };
+                    let tabs_len = self.doc.length(&tabs_id);
+                    for t_idx in 0..tabs_len {
+                        let (_, tab_entry) =
+                            self.doc.get(&tabs_id, t_idx).ok().flatten()?;
+                        if let Some((Value::Scalar(s), _)) =
+                            self.doc.get(&tab_entry, "id").ok().flatten()
+                        {
+                            if let ScalarValue::Uint(id) = s.as_ref() {
+                                if *id == tab_id {
+                                    return Some((
+                                        group_entry,
+                                        tabs_id,
+                                        tab_entry,
+                                        t_idx,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Mirror a `move_tab_across_strips` mutation into the doc. v1
+    /// captures the tab's identifying scalars from the source, deletes
+    /// it from the source list, and appends a fresh map (with the same
+    /// scalars) to the destination strip's first window-group's `tabs`
+    /// list. Returns `false` and is a no-op if the source tab or
+    /// destination strip aren't seeded into the doc.
+    pub fn doc_move_tab_across_strips(
+        &mut self,
+        src_strip: StripId,
+        dst_strip: StripId,
+        tab_id: u64,
+    ) -> bool {
+        use automerge::{ObjType, ReadDoc, ROOT, ScalarValue, Value, transaction::Transactable};
+        // Capture source.
+        let Some((_, src_tabs, src_tab_entry, src_idx)) =
+            self.locate_tab(src_strip, tab_id)
+        else {
+            return false;
+        };
+        let title = match self
+            .doc
+            .get(&src_tab_entry, "title")
+            .ok()
+            .flatten()
+        {
+            Some((Value::Scalar(s), _)) => match s.as_ref() {
+                ScalarValue::Str(v) => v.to_string(),
+                _ => String::new(),
+            },
+            _ => String::new(),
+        };
+        let tile_blob: Vec<u8> = match self
+            .doc
+            .get(&src_tab_entry, "tile_json")
+            .ok()
+            .flatten()
+        {
+            Some((Value::Scalar(s), _)) => match s.as_ref() {
+                ScalarValue::Bytes(b) => b.clone(),
+                _ => Vec::new(),
+            },
+            _ => Vec::new(),
+        };
+
+        // Delete from source.
+        let _ = self.doc.delete(&src_tabs, src_idx);
+
+        // Locate destination strip and its first window-group's tabs list.
+        let Some((_, workspaces_id)) =
+            self.doc.get(&ROOT, "workspaces").ok().flatten()
+        else {
+            return false;
+        };
+        let ws_len = self.doc.length(&workspaces_id);
+        for ws_idx in 0..ws_len {
+            let Some((_, ws_entry)) =
+                self.doc.get(&workspaces_id, ws_idx).ok().flatten()
+            else {
+                continue;
+            };
+            let Some((_, strips_id)) =
+                self.doc.get(&ws_entry, "strips").ok().flatten()
+            else {
+                continue;
+            };
+            let strips_len = self.doc.length(&strips_id);
+            for s_idx in 0..strips_len {
+                let Some((_, strip_entry)) =
+                    self.doc.get(&strips_id, s_idx).ok().flatten()
+                else {
+                    continue;
+                };
+                let dst_matches =
+                    matches!(self.doc.get(&strip_entry, "id").ok().flatten(),
+                        Some((Value::Scalar(s), _)) if matches!(s.as_ref(), ScalarValue::Uint(id) if *id == dst_strip.raw()));
+                if !dst_matches {
+                    continue;
+                }
+                let Some((_, groups_id)) =
+                    self.doc.get(&strip_entry, "window_groups").ok().flatten()
+                else {
+                    return false;
+                };
+                if self.doc.length(&groups_id) == 0 {
+                    return false;
+                }
+                let Some((_, first_group)) =
+                    self.doc.get(&groups_id, 0_usize).ok().flatten()
+                else {
+                    return false;
+                };
+                let tabs_id =
+                    match self.doc.get(&first_group, "tabs").ok().flatten() {
+                        Some((_, id)) => id,
+                        None => match self
+                            .doc
+                            .put_object(&first_group, "tabs", ObjType::List)
+                        {
+                            Ok(id) => id,
+                            Err(_) => return false,
+                        },
+                    };
+                let new_idx = self.doc.length(&tabs_id);
+                let Ok(tab_entry) =
+                    self.doc.insert_object(&tabs_id, new_idx, ObjType::Map)
+                else {
+                    return false;
+                };
+                let _ =
+                    self.doc.put(&tab_entry, "id", ScalarValue::Uint(tab_id));
+                let _ = self.doc.put(&tab_entry, "title", title);
+                if !tile_blob.is_empty() {
+                    let _ = self.doc.put(
+                        &tab_entry,
+                        "tile_json",
+                        ScalarValue::Bytes(tile_blob),
+                    );
+                }
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Mirror an `apply_drop`-style insert: append a tab map to the
+    /// active workspace's first strip's first window-group's `tabs`
+    /// list. v1 hardcodes "first/first" because that's what
+    /// `apply_drop` itself targets when no specific group is named.
+    /// No-op if the doc isn't seeded for the active workspace.
+    pub fn doc_append_tab_to_first_group_of_active_workspace(
+        &mut self,
+        tab_id: u64,
+        title: String,
+        tile_blob: Vec<u8>,
+    ) -> bool {
+        use automerge::{ObjType, ReadDoc, ROOT, ScalarValue, Value, transaction::Transactable};
+        let Some((_, workspaces_id)) =
+            self.doc.get(&ROOT, "workspaces").ok().flatten()
+        else {
+            return false;
+        };
+        let ws_len = self.doc.length(&workspaces_id);
+        let active_raw = self.active.raw();
+        for ws_idx in 0..ws_len {
+            let Some((_, ws_entry)) =
+                self.doc.get(&workspaces_id, ws_idx).ok().flatten()
+            else {
+                continue;
+            };
+            let active_matches =
+                matches!(self.doc.get(&ws_entry, "id").ok().flatten(),
+                    Some((Value::Scalar(s), _)) if matches!(s.as_ref(), ScalarValue::Uint(id) if *id == active_raw));
+            if !active_matches {
+                continue;
+            }
+            let Some((_, strips_id)) =
+                self.doc.get(&ws_entry, "strips").ok().flatten()
+            else {
+                return false;
+            };
+            if self.doc.length(&strips_id) == 0 {
+                return false;
+            }
+            let Some((_, strip_entry)) =
+                self.doc.get(&strips_id, 0_usize).ok().flatten()
+            else {
+                return false;
+            };
+            let Some((_, groups_id)) =
+                self.doc.get(&strip_entry, "window_groups").ok().flatten()
+            else {
+                return false;
+            };
+            if self.doc.length(&groups_id) == 0 {
+                return false;
+            }
+            let Some((_, group_entry)) =
+                self.doc.get(&groups_id, 0_usize).ok().flatten()
+            else {
+                return false;
+            };
+            let tabs_id =
+                match self.doc.get(&group_entry, "tabs").ok().flatten() {
+                    Some((_, id)) => id,
+                    None => match self
+                        .doc
+                        .put_object(&group_entry, "tabs", ObjType::List)
+                    {
+                        Ok(id) => id,
+                        Err(_) => return false,
+                    },
+                };
+            let new_idx = self.doc.length(&tabs_id);
+            let Ok(tab_entry) =
+                self.doc.insert_object(&tabs_id, new_idx, ObjType::Map)
+            else {
+                return false;
+            };
+            let _ = self.doc.put(&tab_entry, "id", ScalarValue::Uint(tab_id));
+            let _ = self.doc.put(&tab_entry, "title", title);
+            if !tile_blob.is_empty() {
+                let _ = self.doc.put(
+                    &tab_entry,
+                    "tile_json",
+                    ScalarValue::Bytes(tile_blob),
+                );
+            }
+            return true;
+        }
+        false
     }
 
     pub fn bootstrap_default() -> Self {
@@ -1267,6 +1710,14 @@ impl WorkspaceTree {
             for strip in ws.strips.iter_mut() {
                 if strip.id == dest_strip_id {
                     strip.window_groups.push(new_group);
+                    // Unit D: mirror the cache mutation into the doc.
+                    // The widget side has already accepted the drop;
+                    // the doc-side write keeps peer-sync coherent.
+                    self.doc_move_tab_across_strips(
+                        src_strip_id,
+                        dest_strip_id,
+                        tab_id,
+                    );
                     return true;
                 }
             }
@@ -1608,6 +2059,62 @@ mod automerge_foundation_tests {
             target.unwrap().width.pixels(),
             new_pixels,
             "width pixels should round-trip via doc"
+        );
+    }
+
+    #[test]
+    fn moving_a_tab_across_strips_propagates_via_apply_changes() {
+        // Unit-D convergence: peer A moves a tab from one strip to
+        // another. After `move_tab_across_strips` mirrors the move
+        // into the doc, peer B sees the tab in the destination strip
+        // after `apply_changes`.
+        let mut tree_a = WorkspaceTree::bootstrap_default();
+        // bootstrap_default has one strip in the Home workspace. Add a
+        // second strip with one empty group so the move has somewhere
+        // to land. Mirror through the seed so the doc carries the new
+        // strip too.
+        let dst_strip_id = StripId::new();
+        let dst_group_id = next_id();
+        tree_a.workspaces[0].strips.push(Strip {
+            id: dst_strip_id,
+            name: "Dest".into(),
+            window_groups: vec![WindowGroup {
+                id: dst_group_id,
+                tabs: Vec::new(),
+                active_tab: 0,
+                width: WindowWidth::Normal,
+                maximized: false,
+            }],
+        });
+        tree_a.seed_doc_from_cache();
+
+        let src_strip_id = tree_a.workspaces[0].strips[0].id;
+        let target_tab = tree_a.workspaces[0].strips[0].window_groups[0].tabs[0].id;
+
+        assert!(tree_a.move_tab_across_strips(src_strip_id, dst_strip_id, target_tab));
+
+        let changes = tree_a.export_changes_since(&[]);
+        let mut tree_b = WorkspaceTree::default();
+        tree_b.apply_changes(&changes).expect("apply changes");
+
+        let dst_strip_in_b = tree_b
+            .workspaces
+            .iter()
+            .flat_map(|w| w.strips.iter())
+            .find(|s| s.id == dst_strip_id);
+        assert!(
+            dst_strip_in_b.is_some(),
+            "destination strip must be observable in tree B"
+        );
+        let landed_in_dst = dst_strip_in_b
+            .unwrap()
+            .window_groups
+            .iter()
+            .flat_map(|g| g.tabs.iter())
+            .any(|t| t.id == target_tab);
+        assert!(
+            landed_in_dst,
+            "moved tab must appear in destination strip after sync"
         );
     }
 }
