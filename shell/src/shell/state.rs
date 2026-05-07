@@ -427,16 +427,121 @@ impl WorkspaceTree {
         Ok(())
     }
 
+    /// Seed the automerge doc from the cache. Idempotent: a second call
+    /// with the same cache state ends up writing the same values back
+    /// (truncates the `workspaces` list and re-fills it). Called from
+    /// [`Self::bootstrap_default`] after the cache is populated; tests
+    /// that build literal trees should also call this if they need
+    /// doc-side changes flowing out via [`Self::export_changes_since`].
+    ///
+    /// Unit B mirrors the top-level shape only:
+    /// - `active: ScalarValue::Uint` at `ROOT`,
+    /// - `workspaces: List<Map>` at `ROOT`, each entry `{ id: Uint, name: String }`.
+    ///
+    /// Strips, window-groups, tabs, `active_strip`, `active_group`, and
+    /// collaborators stay cache-only — units C/D wire those.
+    fn seed_doc_from_cache(&mut self) {
+        use automerge::{
+            ObjType, ReadDoc, ROOT, ScalarValue, transaction::Transactable,
+        };
+        // active
+        let _ = self
+            .doc
+            .put(&ROOT, "active", ScalarValue::Uint(self.active.raw()));
+        // workspaces — create the list if missing, then truncate +
+        // re-fill from the cache. Simplest unit-B approach; future
+        // units get diff-aware so concurrent appends don't clobber.
+        let workspaces_id = match self.doc.get(&ROOT, "workspaces").ok().flatten() {
+            Some((_, id)) => id,
+            None => self
+                .doc
+                .put_object(&ROOT, "workspaces", ObjType::List)
+                .expect("create workspaces list"),
+        };
+        let current_len = self.doc.length(&workspaces_id);
+        for i in (0..current_len).rev() {
+            let _ = self.doc.delete(&workspaces_id, i);
+        }
+        for (i, ws) in self.workspaces.iter().enumerate() {
+            let entry = self
+                .doc
+                .insert_object(&workspaces_id, i, ObjType::Map)
+                .expect("insert workspace map");
+            let _ = self
+                .doc
+                .put(&entry, "id", ScalarValue::Uint(ws.id.raw()));
+            let _ = self.doc.put(&entry, "name", ws.name.clone());
+        }
+    }
+
     /// Walk the automerge doc and refresh the public cache fields.
-    /// In unit A this is mostly a no-op because no mutator writes to
-    /// the doc yet — but the method exists so units B–D have a single
-    /// place to wire reverse-materialisation as each subsystem moves
-    /// over.
+    ///
+    /// Unit B mirrors `active` + the top-level `workspaces` list shape
+    /// (id + name). Strips, window-groups, tabs, `active_strip`,
+    /// `active_group`, and collaborators stay whatever the cache had —
+    /// a peer that never observes structural ops just sees the
+    /// workspace-list shape change. Units C/D extend this to nested
+    /// state.
+    ///
+    /// To preserve strips that the cache built locally (e.g. tests that
+    /// construct a literal tree, then receive a doc update from a
+    /// peer), each rebuilt workspace tries to inherit `strips`,
+    /// `roles`, `workspace_files`, and `collaborators` from the
+    /// existing cache entry that shares its id. A workspace that
+    /// arrived purely from the doc starts with empty nested vecs.
     fn rebuild_cache_from_doc(&mut self) {
-        // Unit A: no fields are doc-mirrored yet. Subsequent units add
-        // walks that read `workspaces` / `active` / `active_strip` /
-        // `active_group` / `collaborators` back out of `self.doc`.
-        let _ = &self.doc;
+        use automerge::{ReadDoc, ROOT, ScalarValue, Value};
+        // active
+        if let Some((Value::Scalar(s), _)) =
+            self.doc.get(&ROOT, "active").ok().flatten()
+        {
+            if let ScalarValue::Uint(raw) = s.as_ref() {
+                self.active = WorkspaceId::from(*raw);
+            }
+        }
+        // workspaces — rebuild while preserving any existing nested
+        // state by id-match.
+        if let Some((_, workspaces_id)) =
+            self.doc.get(&ROOT, "workspaces").ok().flatten()
+        {
+            let len = self.doc.length(&workspaces_id);
+            let mut new_workspaces: Vec<Workspace> = Vec::with_capacity(len);
+            for i in 0..len {
+                // Each entry is a Map; pull id + name out of it.
+                let entry_id = match self.doc.get(&workspaces_id, i).ok().flatten() {
+                    Some((_, id)) => id,
+                    None => continue,
+                };
+                let id_raw = match self.doc.get(&entry_id, "id").ok().flatten() {
+                    Some((Value::Scalar(s), _)) => match s.as_ref() {
+                        ScalarValue::Uint(v) => *v,
+                        _ => continue,
+                    },
+                    _ => continue,
+                };
+                let name = match self.doc.get(&entry_id, "name").ok().flatten() {
+                    Some((Value::Scalar(s), _)) => match s.as_ref() {
+                        ScalarValue::Str(v) => v.to_string(),
+                        _ => String::new(),
+                    },
+                    _ => String::new(),
+                };
+                let ws_id = WorkspaceId::from(id_raw);
+                if let Some(existing_idx) =
+                    self.workspaces.iter().position(|w| w.id == ws_id)
+                {
+                    // Take the existing cached workspace by swap-remove
+                    // semantics — but keep ordering intact by drain
+                    // -> reinsert. Simplest: remove and rename.
+                    let mut existing = self.workspaces.remove(existing_idx);
+                    existing.name = name;
+                    new_workspaces.push(existing);
+                } else {
+                    new_workspaces.push(Workspace::new(ws_id, name));
+                }
+            }
+            self.workspaces = new_workspaces;
+        }
     }
 
     pub fn bootstrap_default() -> Self {
@@ -555,10 +660,19 @@ impl WorkspaceTree {
         // Home stays active — `append_empty_workspace` doesn't change
         // `tree.active`, so the user lands on the populated workspace
         // rather than an empty one on first boot.
+        //
+        // Seed the automerge backing doc from the now-populated cache
+        // so peer-sync exports (`current_heads`, `export_changes_since`)
+        // reflect the bootstrap state. `append_empty_workspace` already
+        // mirrors each appended workspace into the doc; this call
+        // additionally writes the initial Home workspace + the active
+        // pointer that the cache literal seeded directly.
+        tree.seed_doc_from_cache();
         tree
     }
 
     pub fn append_empty_workspace(&mut self, name: &str) -> WorkspaceId {
+        use automerge::{ObjType, ReadDoc, ROOT, ScalarValue, transaction::Transactable};
         let ws_id = WorkspaceId::new();
         let strip_id = StripId::new();
         let ws = Workspace {
@@ -575,12 +689,39 @@ impl WorkspaceTree {
         };
         self.active_strip.insert(ws_id, strip_id);
         self.workspaces.push(ws);
+
+        // Mirror the append into the doc-side `workspaces: List<Map>`
+        // so peer-sync sees the new workspace as a discrete change.
+        // Creates the list lazily — `bootstrap_default` calls
+        // `seed_doc_from_cache` after construction, but tests / future
+        // call sites may invoke this on a tree that hasn't been seeded
+        // yet.
+        let workspaces_id = match self.doc.get(&ROOT, "workspaces").ok().flatten() {
+            Some((_, id)) => id,
+            None => self
+                .doc
+                .put_object(&ROOT, "workspaces", ObjType::List)
+                .expect("create workspaces list"),
+        };
+        let idx = self.doc.length(&workspaces_id);
+        let entry = self
+            .doc
+            .insert_object(&workspaces_id, idx, ObjType::Map)
+            .expect("insert workspace map");
+        let _ = self
+            .doc
+            .put(&entry, "id", ScalarValue::Uint(ws_id.raw()));
+        let _ = self.doc.put(&entry, "name", name.to_string());
         ws_id
     }
 
     pub fn set_active(&mut self, id: WorkspaceId) {
+        use automerge::{ROOT, ScalarValue, transaction::Transactable};
         if self.workspaces.iter().any(|w| w.id == id) {
             self.active = id;
+            let _ = self
+                .doc
+                .put(&ROOT, "active", ScalarValue::Uint(self.active.raw()));
         }
     }
 
@@ -593,6 +734,7 @@ impl WorkspaceTree {
     }
 
     pub fn switch_up(&mut self) -> bool {
+        use automerge::{ROOT, ScalarValue, transaction::Transactable};
         let idx = self
             .workspaces
             .iter()
@@ -602,10 +744,14 @@ impl WorkspaceTree {
             return false;
         }
         self.active = self.workspaces[idx - 1].id;
+        let _ = self
+            .doc
+            .put(&ROOT, "active", ScalarValue::Uint(self.active.raw()));
         true
     }
 
     pub fn switch_down(&mut self) -> bool {
+        use automerge::{ROOT, ScalarValue, transaction::Transactable};
         let idx = self
             .workspaces
             .iter()
@@ -615,6 +761,9 @@ impl WorkspaceTree {
             return false;
         }
         self.active = self.workspaces[idx + 1].id;
+        let _ = self
+            .doc
+            .put(&ROOT, "active", ScalarValue::Uint(self.active.raw()));
         true
     }
 
@@ -1001,6 +1150,68 @@ mod automerge_foundation_tests {
         assert!(
             changes.is_empty(),
             "exporting since current heads must yield no changes"
+        );
+    }
+
+    #[test]
+    fn appending_a_workspace_propagates_via_apply_changes() {
+        // Unit-B convergence: peer A appends a workspace, ships the
+        // resulting change-blobs to a fresh peer B, and B's cache
+        // reflects the append after apply_changes.
+        //
+        // Tree B starts from `default()` rather than `bootstrap_default`
+        // so its empty doc cleanly absorbs A's full change-graph without
+        // both peers concurrently creating the `workspaces` list at
+        // ROOT. Two peers running `bootstrap_default` independently is
+        // explicitly out of scope for unit B — that's the
+        // concurrent-appends test in unit-C/D where structural ops
+        // need diff-aware seeding.
+        let mut tree_a = WorkspaceTree::bootstrap_default();
+        let initial_count = tree_a.workspaces.len();
+
+        tree_a.append_empty_workspace("Project X");
+        assert_eq!(tree_a.workspaces.len(), initial_count + 1);
+
+        let changes = tree_a.export_changes_since(&[]);
+        assert!(
+            !changes.is_empty(),
+            "append_empty_workspace must produce doc-side changes"
+        );
+
+        let mut tree_b = WorkspaceTree::default();
+        tree_b.apply_changes(&changes).expect("apply changes");
+
+        assert!(
+            tree_b.workspaces.iter().any(|w| w.name == "Project X"),
+            "tree B should observe the appended workspace after sync; \
+             got names: {:?}",
+            tree_b.workspaces.iter().map(|w| &w.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn set_active_propagates_via_apply_changes() {
+        // Unit-B convergence: peer A flips the active pointer; a fresh
+        // peer B observes the new active id after apply_changes. Tree
+        // B uses `default()` for the same reason as the append test:
+        // two `bootstrap_default` calls would race on the doc-side
+        // workspaces list.
+        let mut tree_a = WorkspaceTree::bootstrap_default();
+        let target = tree_a
+            .workspaces
+            .iter()
+            .find(|w| w.id != tree_a.active)
+            .map(|w| w.id)
+            .expect("bootstrap seeds >=2 workspaces");
+        tree_a.set_active(target);
+        assert_eq!(tree_a.active, target);
+
+        let changes = tree_a.export_changes_since(&[]);
+        let mut tree_b = WorkspaceTree::default();
+        tree_b.apply_changes(&changes).expect("apply changes");
+        assert_eq!(
+            tree_b.active, target,
+            "tree B's active should match peer A's after sync"
         );
     }
 }
