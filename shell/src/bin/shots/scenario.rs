@@ -419,7 +419,12 @@ fn tab_drag() -> Scenario {
                 to: Point::new(560.0, 130.0),
                 steps: 8,
             },
-            Action::Wait(2),
+            // Wait long enough for the post-reorder layout spring
+            // (`LAYOUT_ANIM_MS = 180 ms` in `quick-ui::widget::tabs`)
+            // to settle. 12 frames × 16 ms = 192 ms covers it; anything
+            // shorter snapshots pills mid-spring and renders adjacent
+            // pills painting on top of each other.
+            Action::Wait(12),
             Action::Snapshot("02-tabs-after-drag"),
         ],
     }
@@ -479,10 +484,18 @@ fn workspace_switch() -> Scenario {
         actions: vec![
             Action::Snapshot("01-ws0"),
             Action::SwitchWorkspace(1),
-            Action::Wait(4),
+            // Wait long enough for the workspace-slide animation
+            // (`WS_SLIDE_MS = 260 ms` in
+            // `quick-shell::shell::overlay_host`) to settle. 20 frames
+            // × 16 ms = 320 ms covers it with margin; anything shorter
+            // snapshots the content widget mid-translate, leaving the
+            // viewport with stale offsets and painting voids where the
+            // slide hasn't yet finished bringing the new workspace
+            // back to the origin.
+            Action::Wait(20),
             Action::Snapshot("02-ws1"),
             Action::SwitchWorkspace(0),
-            Action::Wait(4),
+            Action::Wait(20),
             Action::Snapshot("03-ws0-again"),
         ],
     }
@@ -551,6 +564,57 @@ mod tests {
         // After the round-trip the active workspace should match the
         // initial one again.
         assert_eq!(d.chrome().tree.active, initial);
+    }
+
+    /// Regression: post-action waits in built-in scenarios must outlast
+    /// the longest in-flight animation, otherwise offscreen snapshots
+    /// capture mid-animation pixels (slide voids, layout-spring pill
+    /// overlap) instead of the settled state the scenario name implies.
+    ///
+    /// We only enforce the obvious cases here — the catalogue grows,
+    /// and not every wait gates a known animation — but the two we did
+    /// fix during the 2026-05-04 inspection sweep are pinned so a future
+    /// edit that shortens them re-introduces the visual artefacts.
+    #[test]
+    fn scenario_post_animation_waits_outlast_their_animation() {
+        // workspace_switch slides the content widget over WS_SLIDE_MS = 260 ms
+        // (see quick_desktop::shell::overlay_host). Waits must cover that.
+        let ws = workspace_switch();
+        let ws_waits: Vec<u32> = ws
+            .actions
+            .iter()
+            .filter_map(|a| match a {
+                Action::Wait(n) => Some(*n),
+                _ => None,
+            })
+            .collect();
+        assert!(!ws_waits.is_empty(), "workspace_switch must contain Wait actions");
+        // 16 ms per frame × frames must cover 260 ms slide.
+        for n in &ws_waits {
+            assert!(
+                u64::from(*n) * 16 >= 260,
+                "workspace_switch Wait({n}) is shorter than WS_SLIDE_MS=260; snapshot will be mid-slide"
+            );
+        }
+
+        // tab_drag releases a drag whose post-drop layout spring runs
+        // for LAYOUT_ANIM_MS = 180 ms (see quick_ui::widget::tabs).
+        let td = tab_drag();
+        let td_waits: Vec<u32> = td
+            .actions
+            .iter()
+            .filter_map(|a| match a {
+                Action::Wait(n) => Some(*n),
+                _ => None,
+            })
+            .collect();
+        assert!(!td_waits.is_empty(), "tab_drag must contain Wait actions");
+        for n in &td_waits {
+            assert!(
+                u64::from(*n) * 16 >= 180,
+                "tab_drag Wait({n}) is shorter than LAYOUT_ANIM_MS=180; snapshot will paint adjacent pills overlapping"
+            );
+        }
     }
 
     #[test]
