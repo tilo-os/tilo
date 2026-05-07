@@ -18,6 +18,7 @@
 //! See `docs/superpowers/plans/2026-05-02-real-wayland-compositor.md`
 //! (Phase 1) for the full design intent.
 
+pub mod backend;
 pub mod hosted;
 pub mod native;
 pub mod state;
