@@ -11,8 +11,9 @@ use quick_desktop::compositor::{self, Mode};
 
 fn main() {
     tracing_subscriber::fmt::init();
+    let peer_sync = compositor::parse_peer_sync_from_args();
     match compositor::parse_mode_from_args() {
-        Mode::Hosted => compositor::hosted::run(),
+        Mode::Hosted => compositor::hosted::run_with_options(peer_sync),
         Mode::Native => compositor::native::run(),
     }
 }
