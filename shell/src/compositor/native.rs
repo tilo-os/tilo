@@ -19,12 +19,14 @@
 //! until killed".
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
 use smithay::wayland::socket::ListeningSocketSource;
 
-use crate::compositor::backend::{Backend, WinitBackend};
+use crate::compositor::backend::{Backend, BackendEvent, OutputId, WinitBackend};
+use crate::compositor::frame::FrameBuilder;
 use crate::compositor::state::{ClientState, State};
 
 /// Entry point for the smithay-on-Wayland compositor.
@@ -52,16 +54,23 @@ pub fn run() -> ! {
     let mut state = State::new(event_loop.handle(), display_handle.clone());
 
     // Phase 3: construct the winit backend so the compositor has a host
-    // window to render into. Phase 4 will route per-frame scenes through
+    // window to render into. Phase 4 routes per-frame scenes through
     // `backend.submit_frame`. We `expect` here for the same reason the
     // socket bind below does — a top-level `-> !` entry point treats any
     // backend init failure as fatal (same posture as smithay's `anvil`).
-    let mut _backend: WinitBackend =
+    let mut backend: WinitBackend =
         WinitBackend::new().expect("init winit backend");
-    // TODO(Phase 4): wire `_backend.poll_events` + `_backend.submit_frame`
-    // into the calloop tick. For now we just hold the backend alive so
-    // the host window stays open during the smoke test.
-    let _ = (&mut _backend) as &mut dyn Backend;
+
+    // Phase 4: per-frame scene production lifted out of `bin/shots`.
+    // The compositor and the offscreen tooling share `FrameBuilder`,
+    // so the chrome rendered into the host window is byte-identical
+    // to the screenshots `cargo run --bin shots` produces.
+    let initial_size = backend
+        .outputs()
+        .first()
+        .map(|o| o.size)
+        .unwrap_or((1600, 900));
+    let mut frame_builder = FrameBuilder::new(initial_size);
 
     // `new_auto` walks `wayland-1..wayland-32` and binds the first free name.
     // The smoke test in the plan asserts on the line below ("nirios compositor
@@ -86,22 +95,52 @@ pub fn run() -> ! {
         })
         .expect("insert listening socket source into event loop");
 
-    // Phase 4 will replace the empty tick body with `display.dispatch_clients`
-    // + frame-pacing + render submission. For Phase 2 we just want the loop to
-    // *exist* so SIGTERM during the smoke test reaches us cleanly.
-    event_loop
-        .run(None, &mut state, |state| {
-            // `flush_clients` is cheap when there are no pending events but
-            // makes sure any protocol-state mutations made by handler callbacks
-            // are pushed back to the wire before we block again.
-            //
-            // We deliberately ignore the `Display` value's
-            // `dispatch_clients` — without input/render plumbing the only
-            // protocol traffic during the smoke window is initial handshakes,
-            // and those flow through the listening-socket callback.
-            let _ = &state.display_handle;
-        })
-        .expect("event loop");
+    // Phase 4 tick body. Each iteration:
+    //
+    //   1. Drain backend events (resize, close, redraw, focus). A
+    //      `CloseRequested` flips a flag we read after the closure to
+    //      tell the calloop loop to stop.
+    //   2. Run a layout pass on the frame builder.
+    //   3. Paint the scene.
+    //   4. Submit the scene to the backend's primary output.
+    //
+    // `submit_frame` is currently a no-op (vello + smithay glow interop
+    // is the next follow-up); the host window therefore stays blank.
+    // The scene is still produced every frame so smoke tests can
+    // confirm the layout pipeline runs without a GPU surface.
+    let mut close_requested = false;
+    let frame_period = Duration::from_millis(16);
+    while !close_requested {
+        backend.poll_events(&mut |event| match event {
+            BackendEvent::CloseRequested => {
+                close_requested = true;
+            }
+            BackendEvent::OutputResized { id: _, size, scale: _ } => {
+                if size.0 > 0 && size.1 > 0 {
+                    frame_builder.set_viewport(size);
+                }
+            }
+            BackendEvent::Input | BackendEvent::Redraw | BackendEvent::Focus(_) => {
+                // Phase 4 doesn't route input through the seat layer
+                // yet (Phase 6) and `Redraw` is implicit because we
+                // re-paint every tick.
+            }
+        });
+
+        frame_builder.relayout();
+        let scene = frame_builder.paint();
+        backend.submit_frame(&scene, OutputId(0));
+
+        // Pump any pending wayland traffic + sleep up to one frame.
+        // `flush_clients` keeps protocol-state changes flowing back to
+        // clients between dispatches; the calloop loop itself dispatches
+        // sources (the listening socket included) on each iteration.
+        if let Err(err) = event_loop.dispatch(frame_period, &mut state) {
+            eprintln!("nirios compositor: event loop dispatch error: {err}");
+            break;
+        }
+        let _ = &state.display_handle;
+    }
 
     // `event_loop.run` only returns when the loop is asked to stop; we never
     // do that today, but keep an explicit exit so the function's `!` return

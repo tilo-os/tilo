@@ -9,27 +9,23 @@
 //!   - "drive a scenario, dump state" (headless / AI-control / e2e)
 //!   - "pre-run a scenario then go interactive" (window mode)
 
-use std::collections::HashMap;
 use std::time::Duration;
 
 use automerge::{AutoCommit, ObjId};
-use taffy::prelude::*;
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey};
 
+use quick_desktop::compositor::frame::FrameBuilder;
 use quick_desktop::shell::chrome_state::{Chrome, ChromeState, WsTab};
 use quick_desktop::shell::overlay_host::ShellOverlayHost;
 use quick_desktop::shell::quick_settings::QsLevel;
 use quick_desktop::shell::state::WorkspaceTree;
-use quick_desktop::shell::build_nirios_overlay_host_with_chrome;
 
-use quick_ui::presence::PresenceCtx;
-use quick_ui::text_render::TextRenderer;
 use quick_ui::theme::Theme;
-use quick_ui::widget::Widget;
+use taffy::prelude::NodeId;
 
 /// Synthetic frame duration for `step_frames` — matches a 60 Hz monitor.
 /// Used only as the unit for the spin-wait loop; animations themselves
@@ -39,25 +35,10 @@ use quick_ui::widget::Widget;
 const FRAME_MS: u64 = 16;
 
 pub struct ShellDriver {
-    host: ShellOverlayHost,
-    chrome: Chrome,
-    taffy: TaffyTree<()>,
-    /// Pointer map captured during build_layout — kept alive so the
-    /// measure closures stay valid across re-layouts. We re-use a
-    /// single tree per driver so animation state on the host (close
-    /// fades, crossfades, palette open transition) survives.
-    node_map: HashMap<NodeId, *mut dyn Widget>,
-    /// Inner node — the host's own root child returned by build_layout.
-    /// Used as the target of `apply_layout` so the host's rect tree is
-    /// rooted at viewport origin.
-    host_node: Option<NodeId>,
-    /// Outer node — a viewport-sized wrapper that gives `compute_layout`
-    /// an explicit root size. Taffy needs a definite extent; the host
-    /// itself is `percent(1.0)` so we wrap it.
-    root_node: Option<NodeId>,
-    text_renderer: TextRenderer,
-    theme: Theme,
-    viewport: (f64, f64),
+    /// Layout + paint core, shared with the native compositor mode.
+    /// The driver wraps it and adds input dispatch, focus tracking,
+    /// and modifier state on top.
+    fb: FrameBuilder,
     state: AutoCommit,
     root_obj: ObjId,
     modifiers: Modifiers,
@@ -74,51 +55,14 @@ impl ShellDriver {
     }
 
     pub fn with_tree(tree: WorkspaceTree, viewport: (u32, u32)) -> Self {
-        let (host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
-        let theme = Theme::dark();
-        let mut driver = Self {
-            host,
-            chrome,
-            taffy: TaffyTree::new(),
-            node_map: HashMap::new(),
-            host_node: None,
-            root_node: None,
-            text_renderer: TextRenderer::new(),
-            theme,
-            viewport: (viewport.0 as f64, viewport.1 as f64),
+        Self {
+            fb: FrameBuilder::with_tree(tree, viewport),
             state: AutoCommit::new(),
             root_obj: automerge::ROOT.clone(),
             modifiers: Modifiers::default(),
             focus: None,
             last_cursor: Point::ORIGIN,
-        };
-        driver.rebuild_layout_tree();
-        driver.relayout();
-        driver
-    }
-
-    fn rebuild_layout_tree(&mut self) {
-        self.taffy = TaffyTree::new();
-        self.node_map.clear();
-        let child = self
-            .host
-            .build_layout(&mut self.taffy, &self.theme, &mut self.node_map);
-        let (w, h) = self.viewport;
-        let root = self
-            .taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(w as f32),
-                        height: Dimension::length(h as f32),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .expect("driver root node");
-        self.host_node = Some(child);
-        self.root_node = Some(root);
+        }
     }
 
     /// Run compute_layout + apply_layout against the current tree. The
@@ -130,69 +74,44 @@ impl ShellDriver {
     /// the taffy tree is rebuilt first so the new structure participates
     /// in layout. Mirrors `App::handle_window_event`'s post-event sweep.
     pub fn relayout(&mut self) {
-        if self.host.take_structure_dirty() {
-            self.rebuild_layout_tree();
-        }
-        let (w, h) = self.viewport;
-        let outer = self.root_node.expect("rebuild_layout_tree first");
-        let child = self.host_node.expect("rebuild_layout_tree first");
-        let measure_map = self.node_map.clone();
-        let tr = &mut self.text_renderer;
-        self.taffy
-            .compute_layout_with_measure(
-                outer,
-                Size {
-                    width: AvailableSpace::Definite(w as f32),
-                    height: AvailableSpace::Definite(h as f32),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .expect("driver compute_layout");
-        self.host.apply_layout(&self.taffy, child, Point::ORIGIN);
+        self.fb.relayout();
     }
 
     /// Mutate chrome state — opens overlays, switches tabs, tweaks
     /// quick-settings, etc. Borrows the chrome internally so callers
     /// don't have to juggle the `RefCell`.
     pub fn with_chrome<F: FnOnce(&mut ChromeState)>(&mut self, f: F) {
-        let mut st = self.chrome.borrow_mut();
-        f(&mut st);
+        self.fb.with_chrome(f);
     }
 
     /// Read-only handle to the chrome cell. Use for assertions /
     /// serialisation — the caller is responsible for keeping the
     /// `Ref` short-lived.
     pub fn chrome(&self) -> std::cell::Ref<'_, ChromeState> {
-        self.chrome.borrow()
+        self.fb.chrome()
     }
 
     #[allow(dead_code)]
     pub fn chrome_handle(&self) -> Chrome {
-        self.chrome.clone()
+        self.fb.chrome_handle()
     }
 
     pub fn host(&self) -> &ShellOverlayHost {
-        &self.host
+        self.fb.host()
     }
 
     #[allow(dead_code)]
     pub fn host_mut(&mut self) -> &mut ShellOverlayHost {
-        &mut self.host
+        self.fb.host_mut()
     }
 
     #[allow(dead_code)]
     pub fn theme(&self) -> &Theme {
-        &self.theme
+        self.fb.theme()
     }
 
     pub fn viewport(&self) -> (f64, f64) {
-        self.viewport
+        self.fb.viewport()
     }
 
     /// Replace the active modifier set. Scenarios call this when they
@@ -212,8 +131,9 @@ impl ShellDriver {
             self.modifiers = *m;
         }
         let mut handled = false;
-        let child = self.host_node.expect("rebuild_layout_tree first");
-        self.host.handle_event(
+        let child = self.fb.host_node();
+        let (host, taffy) = self.fb.host_and_taffy_mut();
+        host.handle_event(
             &event,
             1.0,
             &self.modifiers,
@@ -222,7 +142,7 @@ impl ShellDriver {
             &mut handled,
             &mut self.focus,
             child,
-            &self.taffy,
+            taffy,
         );
         handled
     }
@@ -311,42 +231,26 @@ impl ShellDriver {
             std::thread::sleep(Duration::from_millis(FRAME_MS));
             // Drive the per-frame update + redraw so animation state
             // advances. `update` runs the per-tick reconciler too.
-            self.host.update(&mut self.state, &self.root_obj);
+            self.fb
+                .host_mut()
+                .update(&mut self.state, &self.root_obj);
             // Re-draw into a throwaway scene so tick functions inside
             // `draw` (overview crossfade tick, etc.) see elapsed time.
-            let mut scene = Scene::new();
-            let presence = PresenceCtx::default();
-            self.host.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut self.text_renderer,
-                &self.theme,
-                &presence,
-            );
+            let _ = self.fb.paint();
         }
     }
 
     /// Render the current frame into a fresh Vello scene. Caller is
     /// responsible for passing it to a renderer (offscreen or live).
     pub fn paint(&mut self) -> Scene {
-        let mut scene = Scene::new();
-        let presence = PresenceCtx::default();
-        self.host.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut self.text_renderer,
-            &self.theme,
-            &presence,
-        );
-        scene
+        self.fb.paint()
     }
 
     /// Convenience: relayout + draw. Used by the offscreen scene-set
     /// path (legacy `--scenes`) where state mutations between scenes
     /// can affect the structural layout (overlay reservations).
     pub fn paint_settled(&mut self) -> Scene {
-        self.relayout();
-        self.paint()
+        self.fb.paint_settled()
     }
 
     /// Apply the named "scene" mutation set (the legacy `--scenes`
@@ -357,10 +261,10 @@ impl ShellDriver {
             "desktop" => {}
             "overview" => {
                 self.with_chrome(|st| st.overlays.overview = true);
-                self.host.force_overview_settled(true);
+                self.fb.host_mut().force_overview_settled(true);
             }
             "palette" => {
-                self.host.set_palette_visible(true);
+                self.fb.host_mut().set_palette_visible(true);
             }
             "quick-settings" => {
                 self.with_chrome(|st| st.overlays.quick_settings = true);
@@ -431,11 +335,12 @@ impl ShellDriver {
     /// should use `ClickAt` with raw coordinates or drive Cmd+Tab /
     /// Ctrl+K hotkeys via the `Modifiers` + `Key(_)` actions.
     pub fn resolve_named_rect(&self, name: &str) -> Option<Rect> {
+        let host = self.fb.host();
         let r = match name {
-            "add_workspace" => self.host.add_workspace_rect_for_tests(),
-            "ws_settings_tab[general]" => self.host.ws_settings_tab_pill_rect(WsTab::General),
-            "ws_settings_tab[roles]" => self.host.ws_settings_tab_pill_rect(WsTab::Roles),
-            "ws_settings_tab[files]" => self.host.ws_settings_tab_pill_rect(WsTab::Files),
+            "add_workspace" => host.add_workspace_rect_for_tests(),
+            "ws_settings_tab[general]" => host.ws_settings_tab_pill_rect(WsTab::General),
+            "ws_settings_tab[roles]" => host.ws_settings_tab_pill_rect(WsTab::Roles),
+            "ws_settings_tab[files]" => host.ws_settings_tab_pill_rect(WsTab::Files),
             _ => return None,
         };
         if r.area() <= 0.0 { None } else { Some(r) }
@@ -450,7 +355,7 @@ impl ShellDriver {
     /// assertions don't have to drill through `host()`.
     #[allow(dead_code)]
     pub fn palette_query(&self) -> &str {
-        self.host.palette_query()
+        self.fb.host().palette_query()
     }
 }
 
