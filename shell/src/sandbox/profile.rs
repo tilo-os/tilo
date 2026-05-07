@@ -147,10 +147,13 @@ impl SandboxProfile {
     }
 
     /// Walk a workspace's `grants` slice for one app and apply each
-    /// granted capability to this profile. v1 only handles `Camera` and
-    /// `Microphone` (Phase 5 Task 5.3); `Filesystem`, `Network`, and
-    /// `Screencast` are no-ops here and land in their own follow-up
-    /// units (Phase 5 Tasks 5.1, 5.2, and the portal screencast unit).
+    /// granted capability to this profile. Handles `Camera` /
+    /// `Microphone` (Phase 5 Task 5.3), `Always`-scoped `Filesystem`
+    /// grants (Phase 5 Task 5.1), and `Always`-scoped `Network` grants
+    /// (Phase 5 Task 5.2). `Once` / `Session` filesystem grants are
+    /// routed through the portal at runtime (it returns an open fd via
+    /// cap-std, no bind-mount needed). `Screencast` is a no-op here and
+    /// lands in the portal screencast follow-up.
     ///
     /// The plan says the policy is "without a grant, the device socket
     /// simply isn't bound" — so the contract is additive: this method
@@ -163,6 +166,15 @@ impl SandboxProfile {
             match cap {
                 Capability::Camera { .. } => self.grant_camera(),
                 Capability::Microphone { .. } => self.grant_microphone(),
+                Capability::Filesystem { path, mode, scope } => {
+                    // Only `Always`-scoped grants persist as bind-mounts;
+                    // `Once` and `Session` are handled by the runtime
+                    // portal (it returns an open fd via cap-std, no
+                    // bind-mount needed).
+                    if matches!(scope, GrantScope::Always) {
+                        self.grant_filesystem_path(path, mode.clone());
+                    }
+                }
                 Capability::Network { hosts: _, scope } => {
                     // Any `Always`-scope network grant disables the
                     // default network namespace isolation (Phase 1's
@@ -177,10 +189,29 @@ impl SandboxProfile {
                         self.net_isolated = false;
                     }
                 }
-                // Filesystem / Screencast: out of scope for this unit —
-                // handled by sibling Phase 5 units.
+                // Screencast: out of scope for this unit — handled by
+                // the portal screencast follow-up.
                 _ => {}
             }
+        }
+    }
+
+    /// Bind a host path into the sandbox at the same path. `Read`
+    /// grants land in `binds_ro`, `ReadWrite` in `binds_rw`. Idempotent:
+    /// re-granting the same path is a no-op so callers can replay the
+    /// CRDT's grant list on every spawn without bookkeeping.
+    pub fn grant_filesystem_path(
+        &mut self,
+        path: &std::path::Path,
+        mode: crate::shell::state::FsMode,
+    ) {
+        use crate::shell::state::FsMode;
+        let target = match mode {
+            FsMode::Read => &mut self.binds_ro,
+            FsMode::ReadWrite => &mut self.binds_rw,
+        };
+        if !target.iter().any(|(src, _)| src == path) {
+            target.push((path.to_path_buf(), path.to_path_buf()));
         }
     }
 
@@ -403,20 +434,108 @@ mod tests {
 
     #[test]
     fn apply_grants_with_no_camera_or_mic_is_noop_for_those_cases() {
+        use crate::shell::state::{Capability, GrantScope};
+        let mut p = SandboxProfile::for_workspace_test(
+            Path::new("/tmp/ws"),
+            Path::new("/tmp/cache"),
+        );
+        let before_rw = p.binds_rw.len();
+        let before_ro = p.binds_ro.len();
+        // Screencast remains the only out-of-scope variant for this
+        // module — its enforcement lives behind a portal follow-up.
+        let grants = vec![Capability::Screencast {
+            scope: GrantScope::Always,
+        }];
+        p.apply_grants(&grants);
+        assert_eq!(p.binds_rw.len(), before_rw);
+        assert_eq!(p.binds_ro.len(), before_ro);
+    }
+
+    #[test]
+    fn grant_filesystem_path_read_appends_to_binds_ro() {
+        use crate::shell::state::FsMode;
+        let mut p = SandboxProfile::for_workspace_test(
+            Path::new("/tmp/ws"),
+            Path::new("/tmp/cache"),
+        );
+        let before_ro = p.binds_ro.len();
+        let before_rw = p.binds_rw.len();
+        p.grant_filesystem_path(Path::new("/home/u/notes"), FsMode::Read);
+        assert_eq!(p.binds_ro.len(), before_ro + 1);
+        assert_eq!(p.binds_rw.len(), before_rw);
+    }
+
+    #[test]
+    fn grant_filesystem_path_readwrite_appends_to_binds_rw() {
+        use crate::shell::state::FsMode;
+        let mut p = SandboxProfile::for_workspace_test(
+            Path::new("/tmp/ws"),
+            Path::new("/tmp/cache"),
+        );
+        p.grant_filesystem_path(Path::new("/home/u/work"), FsMode::ReadWrite);
+        assert!(
+            p.binds_rw
+                .iter()
+                .any(|(src, _)| src == Path::new("/home/u/work"))
+        );
+    }
+
+    #[test]
+    fn grant_filesystem_path_is_idempotent() {
+        use crate::shell::state::FsMode;
+        let mut p = SandboxProfile::for_workspace_test(
+            Path::new("/tmp/ws"),
+            Path::new("/tmp/cache"),
+        );
+        p.grant_filesystem_path(Path::new("/home/u/notes"), FsMode::Read);
+        let count_after_first = p.binds_ro.len();
+        p.grant_filesystem_path(Path::new("/home/u/notes"), FsMode::Read);
+        assert_eq!(
+            p.binds_ro.len(),
+            count_after_first,
+            "second grant of same path is a no-op"
+        );
+    }
+
+    #[test]
+    fn apply_grants_with_filesystem_always_scope_invokes_grant_filesystem() {
         use crate::shell::state::{Capability, FsMode, GrantScope};
         let mut p = SandboxProfile::for_workspace_test(
             Path::new("/tmp/ws"),
             Path::new("/tmp/cache"),
         );
-        let before = p.binds_rw.len();
         let grants = vec![Capability::Filesystem {
-            path: "/foo".into(),
-            mode: FsMode::Read,
+            path: "/home/u/work".into(),
+            mode: FsMode::ReadWrite,
             scope: GrantScope::Always,
         }];
         p.apply_grants(&grants);
-        // Filesystem variant is out of scope here; no binds added.
-        assert_eq!(p.binds_rw.len(), before);
+        assert!(
+            p.binds_rw
+                .iter()
+                .any(|(src, _)| src == Path::new("/home/u/work"))
+        );
+    }
+
+    #[test]
+    fn apply_grants_with_filesystem_session_scope_does_not_bind() {
+        use crate::shell::state::{Capability, FsMode, GrantScope};
+        let mut p = SandboxProfile::for_workspace_test(
+            Path::new("/tmp/ws"),
+            Path::new("/tmp/cache"),
+        );
+        let before_rw = p.binds_rw.len();
+        let grants = vec![Capability::Filesystem {
+            path: "/home/u/secret".into(),
+            mode: FsMode::ReadWrite,
+            scope: GrantScope::Session,
+        }];
+        p.apply_grants(&grants);
+        assert_eq!(
+            p.binds_rw.len(),
+            before_rw,
+            "Session-scoped grants don't bind-mount; runtime portal handles them"
+        );
     }
 
     #[test]
