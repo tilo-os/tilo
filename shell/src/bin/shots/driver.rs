@@ -23,6 +23,7 @@ use quick_desktop::shell::chrome_state::{Chrome, ChromeState, WsTab};
 use quick_desktop::shell::overlay_host::ShellOverlayHost;
 use quick_desktop::shell::quick_settings::QsLevel;
 use quick_desktop::shell::state::WorkspaceTree;
+use quick_ui::Widget;
 
 use quick_ui::theme::Theme;
 use taffy::prelude::NodeId;
