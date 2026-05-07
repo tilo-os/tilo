@@ -13,10 +13,11 @@
 //! and the WorkspaceTree already has its own JSON persistence layer.
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::rc::Rc;
 
 use crate::shell::quick_settings::{BtDevice, QsLevel, WifiNetwork};
-use crate::shell::state::WorkspaceTree;
+use crate::shell::state::{AppId, Capability, WorkspaceTree};
 // Re-export WsTab so chrome users can refer to the tab routing enum
 // without reaching into `workspace_settings`. The enum itself lives
 // next to the modal widget; the chrome holds a copy of the active tab
@@ -185,6 +186,17 @@ pub struct ChromeState {
     /// poll this in `update` to re-sync their caches; cheaper than running
     /// diff logic and easier than an event bus.
     pub revision: u64,
+    /// Queue of pending capability grants the user must respond to.
+    /// Phase 4 Task 4.3 (the portal D-Bus backend) pushes onto the back
+    /// of this queue when a sandboxed app calls one of the portal's
+    /// request methods; the overlay host renders a [`PermissionPrompt`]
+    /// for `front()` and drains the entry once the user clicks an
+    /// action button. v1 stores pairs of `(app_id, capability)` —
+    /// the capability's `scope` is set by the portal layer before
+    /// pushing (typically `GrantScope::Once`, since the prompt
+    /// itself escalates to `Session`/`Always` based on the user's
+    /// click). Empty by default.
+    pub pending_grants: VecDeque<(AppId, Capability)>,
 }
 
 impl ChromeState {
@@ -197,6 +209,7 @@ impl ChromeState {
             search_scope: SearchScope::default(),
             ws_settings_tab: WsTab::default(),
             revision: 0,
+            pending_grants: VecDeque::new(),
         }))
     }
 
