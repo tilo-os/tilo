@@ -119,10 +119,20 @@ impl WindowWidth {
 /// Interim tile content for v1. Plan 3 replaces `App` with a live `Box<dyn AppWidget>`
 /// handle; v1 JSON persistence only carries Stub and a symbolic `AppPlaceholder` for
 /// native apps whose concrete widgets are constructed at shell boot.
+///
+/// Phase 6 of `plans/2026-05-02-real-wayland-compositor.md` adds
+/// [`TileContent::Foreign`] for adopted xdg_toplevel clients.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum TileContent {
     AppPlaceholder { kind: AppKind, label: String },
     Stub { kind: AppKind, label: String },
+    /// Foreign Wayland client adopted by the compositor. `surface_id` is
+    /// the wayland-server `wl_surface` numeric protocol id; the
+    /// compositor's state.rs maps it back to a smithay `WlSurface` for
+    /// rendering. The chrome-side render falls through to a Stub
+    /// placeholder until the frame loop blits the real buffer (Phase 4
+    /// follow-up).
+    Foreign { app_id: String, surface_id: u64 },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
