@@ -300,6 +300,12 @@ impl ShellDriver {
                     st.ws_settings_tab = WsTab::Files;
                 });
             }
+            "ws-settings-permissions" => {
+                self.with_chrome(|st| {
+                    st.overlays.ws_settings = true;
+                    st.ws_settings_tab = WsTab::Permissions;
+                });
+            }
             other => return Err(format!("unknown scene '{other}'")),
         }
         Ok(())
@@ -317,6 +323,7 @@ impl ShellDriver {
         "ws-settings-general",
         "ws-settings-roles",
         "ws-settings-files",
+        "ws-settings-permissions",
     ];
 
     /// Resolve a "named" UI target (button, pill, tab) to its on-screen
@@ -342,6 +349,9 @@ impl ShellDriver {
             "ws_settings_tab[general]" => host.ws_settings_tab_pill_rect(WsTab::General),
             "ws_settings_tab[roles]" => host.ws_settings_tab_pill_rect(WsTab::Roles),
             "ws_settings_tab[files]" => host.ws_settings_tab_pill_rect(WsTab::Files),
+            "ws_settings_tab[permissions]" => {
+                host.ws_settings_tab_pill_rect(WsTab::Permissions)
+            }
             _ => return None,
         };
         if r.area() <= 0.0 { None } else { Some(r) }
