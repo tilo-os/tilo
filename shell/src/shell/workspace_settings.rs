@@ -32,7 +32,7 @@ use quick_ui::text_render::TextRenderer;
 use quick_ui::theme::Theme;
 use quick_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 
-use crate::shell::state::{AppPerm, FilePerm, Role, Workspace, WorkspaceId};
+use crate::shell::state::{AppId, AppPerm, Capability, FilePerm, Role, Workspace, WorkspaceId};
 
 /// Width of the modal's left sidebar in CSS px. Mirrors
 /// `WorkspaceSettingsModal.tsx:50` (`w-64` = 16 rem = 256 px).
@@ -66,6 +66,13 @@ pub enum WsTab {
     Roles,
     /// File grid w/ assigned-role avatar piles (T4).
     Files,
+    /// Per-app capability grants list with Revoke affordances
+    /// (Sandbox Phase 6). Hidden by default — only surfaces in the
+    /// sidebar nav + tab strip when the active workspace has at
+    /// least one entry in [`Workspace::grants`]. Empty workspaces
+    /// keep the four-tab parity baseline so concept-fidelity pill
+    /// positions don't shift.
+    Permissions,
 }
 
 impl WsTab {
@@ -76,12 +83,36 @@ impl WsTab {
             WsTab::General => "General",
             WsTab::Roles => "Roles & Permissions",
             WsTab::Files => "Files",
+            WsTab::Permissions => "Permissions",
         }
     }
 
-    /// Iteration order for the sidebar nav (top-to-bottom).
-    pub fn all() -> [WsTab; 3] {
-        [WsTab::General, WsTab::Roles, WsTab::Files]
+    /// Iteration order for the sidebar nav (top-to-bottom). Includes
+    /// every variant; callers that only want the visible-in-this-
+    /// workspace subset should use [`WsTab::visible`] instead. The
+    /// stable iteration order (General → Roles → Files → Permissions)
+    /// is what the sidebar nav and the tab strip render against.
+    pub fn all() -> [WsTab; 4] {
+        [WsTab::General, WsTab::Roles, WsTab::Files, WsTab::Permissions]
+    }
+
+    /// Tabs visible for the supplied workspace. The Permissions tab is
+    /// hidden by default and only surfaces once the workspace has at
+    /// least one capability grant — concept-parity pill positions are
+    /// pinned for the 4-pill strip (`General/Roles/Files/Collaborators`),
+    /// so adding a 5th pill unconditionally would shift them. Empty
+    /// `grants` ⇒ Permissions is filtered out so the parity tests keep
+    /// observing the original strip; non-empty ⇒ Permissions joins the
+    /// strip at the tail.
+    pub fn visible(ws: &Workspace) -> Vec<WsTab> {
+        let base = vec![WsTab::General, WsTab::Roles, WsTab::Files];
+        if ws.grants.is_empty() {
+            base
+        } else {
+            let mut v = base;
+            v.push(WsTab::Permissions);
+            v
+        }
     }
 }
 
@@ -148,6 +179,7 @@ impl WorkspaceSettings {
             tab_focus_id(WsTab::General),
             tab_focus_id(WsTab::Roles),
             tab_focus_id(WsTab::Files),
+            tab_focus_id(WsTab::Permissions),
         ];
         Self {
             ws_id,
@@ -324,7 +356,7 @@ impl WorkspaceSettings {
     /// `WsTab::all()` order. Geometry mirrors the concept's `space-y-1`
     /// stack (40 px row + 4 px gap) starting `NAV_ROWS_TOP` below the
     /// sidebar's top edge.
-    pub fn nav_rows(&self, modal_rect: Rect) -> [(WsTab, Rect); 3] {
+    pub fn nav_rows(&self, modal_rect: Rect) -> [(WsTab, Rect); 4] {
         let sidebar = self.sidebar_rect(modal_rect);
         let inset_x0 = sidebar.x0 + 16.0;
         let inset_x1 = sidebar.x1 - 16.0;
@@ -1079,6 +1111,296 @@ pub fn draw_files_pane(
     }
 }
 
+// =====================================================================
+// Sandbox Phase 6 — Permissions tab
+// =====================================================================
+
+/// One row in the Permissions pane: a `(app_id, capability)` pairing
+/// from [`Workspace::grants`] plus the geometry the renderer painted
+/// for the row body and its Revoke button. Returned by
+/// [`permissions_pane_rows`] so click-routing can match a click point
+/// back to a (app_id, capability) tuple without re-deriving any
+/// layout. The row is keyed by `(app_id, cap_index)` because the
+/// `grants` map stores capabilities in a `Vec` and removing by value
+/// would be ambiguous when an app holds two `Filesystem` grants for
+/// different paths — index is the unambiguous identifier.
+#[derive(Clone, Debug)]
+pub struct PermissionRow {
+    pub app_id: AppId,
+    pub cap_index: usize,
+    pub capability: Capability,
+    pub row_rect: Rect,
+    pub revoke_rect: Rect,
+}
+
+/// Vertical inset between the top of the pane and the first row.
+const PERMISSIONS_PANE_PAD_TOP: f64 = 16.0;
+/// Horizontal inset on each side of the pane.
+const PERMISSIONS_PANE_PAD_X: f64 = 16.0;
+/// Height of one row (icon + label + revoke button).
+const PERMISSIONS_ROW_HEIGHT: f64 = 48.0;
+/// Vertical gap between consecutive rows.
+const PERMISSIONS_ROW_GAP: f64 = 8.0;
+/// Width of the Revoke button (right-aligned within the row).
+const PERMISSIONS_REVOKE_WIDTH: f64 = 84.0;
+/// Height of the Revoke button.
+const PERMISSIONS_REVOKE_HEIGHT: f64 = 28.0;
+
+/// Compute the `(row_rect, revoke_rect)` per-row geometry for the
+/// Permissions pane in `pane_rect`. Pure layout — no painting; the
+/// returned [`PermissionRow`]s feed both the renderer and the
+/// click-routing path so a click on a Revoke button always lands on
+/// the same rect that was painted.
+///
+/// Rows are emitted in the iteration order of `workspace.grants`
+/// (HashMap, so ordering is undefined but deterministic per run).
+/// Tests sort by app_id when they need stable assertions; the click
+/// path is index-based and doesn't care about ordering.
+pub fn permissions_pane_rows(workspace: &Workspace, pane_rect: Rect) -> Vec<PermissionRow> {
+    let mut rows = Vec::new();
+    if pane_rect.width() <= 0.0 || pane_rect.height() <= 0.0 {
+        return rows;
+    }
+    let mut cursor_y = pane_rect.y0 + PERMISSIONS_PANE_PAD_TOP;
+    // Iterate sorted by app_id so the on-screen order is stable across
+    // runs — HashMap iteration is unspecified, but the renderer wants
+    // a deterministic visual order so visual snapshots don't churn.
+    let mut entries: Vec<(&AppId, &Vec<Capability>)> = workspace.grants.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+    for (app_id, caps) in entries {
+        for (cap_index, capability) in caps.iter().enumerate() {
+            let row_rect = Rect::new(
+                pane_rect.x0 + PERMISSIONS_PANE_PAD_X,
+                cursor_y,
+                pane_rect.x1 - PERMISSIONS_PANE_PAD_X,
+                cursor_y + PERMISSIONS_ROW_HEIGHT,
+            );
+            let revoke_rect = Rect::new(
+                row_rect.x1 - 12.0 - PERMISSIONS_REVOKE_WIDTH,
+                row_rect.y0 + (PERMISSIONS_ROW_HEIGHT - PERMISSIONS_REVOKE_HEIGHT) / 2.0,
+                row_rect.x1 - 12.0,
+                row_rect.y0 + (PERMISSIONS_ROW_HEIGHT + PERMISSIONS_REVOKE_HEIGHT) / 2.0,
+            );
+            rows.push(PermissionRow {
+                app_id: app_id.clone(),
+                cap_index,
+                capability: capability.clone(),
+                row_rect,
+                revoke_rect,
+            });
+            cursor_y += PERMISSIONS_ROW_HEIGHT + PERMISSIONS_ROW_GAP;
+        }
+    }
+    rows
+}
+
+/// Build a human-readable label for `cap`. Mirrors the helper in
+/// `overlay_host.rs::capability_label` — duplicated here so the
+/// permissions pane can render labels without reaching across modules.
+/// Phase 4.2's prompt widget and this Phase 6 list view share the
+/// same label vocabulary so a user revoking a grant sees the exact
+/// same wording the prompt offered when they granted it.
+pub fn capability_label(cap: &Capability) -> String {
+    match cap {
+        Capability::Filesystem { path, mode, .. } => {
+            let mode_str = match mode {
+                crate::shell::state::FsMode::Read => "read",
+                crate::shell::state::FsMode::ReadWrite => "read/write",
+            };
+            format!("{} access to {}", mode_str, path.display())
+        }
+        Capability::Camera { .. } => "Camera access".to_string(),
+        Capability::Microphone { .. } => "Microphone access".to_string(),
+        Capability::Screencast { .. } => "Screen capture".to_string(),
+        Capability::Network { hosts, .. } => match hosts {
+            Some(h) if !h.is_empty() => format!("Network access to {}", h.join(", ")),
+            _ => "Network access".to_string(),
+        },
+    }
+}
+
+/// Short scope badge label (Once / Session / Always) — read off the
+/// capability's `scope` field. Mirrors the GrantScope enum's three
+/// variants from `state.rs:323-332`.
+pub fn capability_scope_label(cap: &Capability) -> &'static str {
+    use crate::shell::state::GrantScope;
+    let scope = match cap {
+        Capability::Filesystem { scope, .. } => scope,
+        Capability::Camera { scope } => scope,
+        Capability::Microphone { scope } => scope,
+        Capability::Screencast { scope } => scope,
+        Capability::Network { scope, .. } => scope,
+    };
+    match scope {
+        GrantScope::Once => "Once",
+        GrantScope::Session => "Session",
+        GrantScope::Always => "Always",
+    }
+}
+
+/// Remove `(app_id, cap_index)` from `workspace.grants`. No-op when
+/// `app_id` is missing or `cap_index` is out of bounds. Cleans up an
+/// empty `Vec` entry so the workspace's `grants.is_empty()` predicate
+/// (used by [`WsTab::visible`] to hide the tab) flips back to true
+/// once the last grant for the workspace is revoked.
+///
+/// Returns `true` if a capability was removed, `false` otherwise —
+/// callers (the click router) can use this to decide whether to bump
+/// the chrome's revision counter.
+pub fn revoke_grant(workspace: &mut Workspace, app_id: &AppId, cap_index: usize) -> bool {
+    let Some(caps) = workspace.grants.get_mut(app_id) else {
+        return false;
+    };
+    if cap_index >= caps.len() {
+        return false;
+    }
+    caps.remove(cap_index);
+    if caps.is_empty() {
+        workspace.grants.remove(app_id);
+    }
+    true
+}
+
+/// Paint the Permissions tab body into `pane_rect`. Renders one row
+/// per `(app_id, capability)` pair across the workspace's grants map;
+/// each row paints the app id (left), capability label (middle), grant
+/// scope badge, and a Revoke button (right). The Revoke button paints
+/// at full alpha for owners and at 40% alpha for non-owners — mirrors
+/// the PermissionPrompt's `Always` button gating from Phase 4.2.
+///
+/// Empty grants ⇒ paints a "No permissions granted" placeholder row.
+pub fn draw_permissions_pane(
+    scene: &mut Scene,
+    transform: Affine,
+    pane_rect: Rect,
+    workspace: &Workspace,
+    is_owner: bool,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
+    if pane_rect.width() <= 0.0 || pane_rect.height() <= 0.0 {
+        return;
+    }
+    let tokens = &theme.tokens;
+    let colors = &tokens.colors;
+
+    let rows = permissions_pane_rows(workspace, pane_rect);
+
+    if rows.is_empty() {
+        // Empty-state placeholder so the section reads as "intentionally
+        // empty" instead of "broken". Concept ref: Roles tab uses the
+        // same idiom for an empty workspace_files vector.
+        let row = Rect::new(
+            pane_rect.x0 + PERMISSIONS_PANE_PAD_X,
+            pane_rect.y0 + PERMISSIONS_PANE_PAD_TOP,
+            pane_rect.x1 - PERMISSIONS_PANE_PAD_X,
+            pane_rect.y0 + PERMISSIONS_PANE_PAD_TOP + PERMISSIONS_ROW_HEIGHT,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.neutral[3].with_alpha_factor(0.10),
+            None,
+            &RoundedRect::from_rect(row, 12.0),
+        );
+        text_renderer.draw_text(
+            scene,
+            "No permissions granted yet",
+            tokens.typography.scale.sm,
+            colors.text_dim,
+            transform * Affine::translate((row.x0 + 16.0, row.y0 + 16.0)),
+            None,
+        );
+        return;
+    }
+
+    for row in &rows {
+        // Row card.
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.neutral[3].with_alpha_factor(0.15),
+            None,
+            &RoundedRect::from_rect(row.row_rect, 12.0),
+        );
+
+        // App id (left) — concept's grant rows lead with the app's
+        // wayland app-id so the user can correlate the entry with
+        // the originating app.
+        text_renderer.draw_text(
+            scene,
+            &row.app_id,
+            tokens.typography.scale.sm,
+            colors.text_primary,
+            transform * Affine::translate((row.row_rect.x0 + 16.0, row.row_rect.y0 + 8.0)),
+            None,
+        );
+
+        // Capability label (left, second line) — describes what the
+        // grant allows. Reuses Phase 4.2's vocabulary via
+        // [`capability_label`] so revoke wording matches the prompt.
+        let cap_text = capability_label(&row.capability);
+        text_renderer.draw_text(
+            scene,
+            &cap_text,
+            tokens.typography.scale.xs,
+            colors.text_dim,
+            transform * Affine::translate((row.row_rect.x0 + 16.0, row.row_rect.y0 + 28.0)),
+            None,
+        );
+
+        // Scope badge (middle-right, before the Revoke button).
+        let scope_label = capability_scope_label(&row.capability);
+        let (sw, sh) = text_renderer.measure(scope_label, tokens.typography.scale.xs, None);
+        let badge = Rect::new(
+            row.revoke_rect.x0 - 16.0 - (sw as f64 + 16.0),
+            row.row_rect.y0 + (PERMISSIONS_ROW_HEIGHT - (sh as f64 + 8.0)) / 2.0,
+            row.revoke_rect.x0 - 16.0,
+            row.row_rect.y0 + (PERMISSIONS_ROW_HEIGHT + (sh as f64 + 8.0)) / 2.0,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.accent[5].with_alpha_factor(0.20),
+            None,
+            &RoundedRect::from_rect(badge, 8.0),
+        );
+        text_renderer.draw_text(
+            scene,
+            scope_label,
+            tokens.typography.scale.xs,
+            colors.accent[5],
+            transform * Affine::translate((badge.x0 + 8.0, badge.y0 + 4.0)),
+            None,
+        );
+
+        // Revoke button. Owners see it at full alpha; non-owners see
+        // it dimmed to 40 % so it visually reads as disabled — mirrors
+        // PermissionPrompt's `Always` button gating from Phase 4.2.
+        let revoke_alpha: f32 = if is_owner { 1.0 } else { 0.40 };
+        let revoke_bg = colors
+            .semantic
+            .danger
+            .with_alpha_factor(0.20 * revoke_alpha);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            revoke_bg,
+            None,
+            &RoundedRect::from_rect(row.revoke_rect, 8.0),
+        );
+        text_renderer.draw_text(
+            scene,
+            "Revoke",
+            tokens.typography.scale.sm,
+            colors.semantic.danger.with_alpha_factor(revoke_alpha),
+            transform
+                * Affine::translate((row.revoke_rect.x0 + 16.0, row.revoke_rect.y0 + 6.0)),
+            None,
+        );
+    }
+}
+
 /// Pick a swatch colour for the role with id `role_id`. Deterministic
 /// and palette-pinned: hashes the id's first byte against the theme's
 /// accent ramp + a small set of fallbacks so two roles with different
@@ -1122,6 +1444,7 @@ fn tab_focus_id(tab: WsTab) -> u64 {
         WsTab::General => BASE,
         WsTab::Roles => BASE + 1,
         WsTab::Files => BASE + 2,
+        WsTab::Permissions => BASE + 3,
     }
 }
 
@@ -1175,7 +1498,48 @@ mod tab_tests {
     fn ws_tab_all_iterates_in_concept_order() {
         // Concept renders the rows top-to-bottom: General, Roles &
         // Permissions, Files (`WorkspaceSettingsModal.tsx:75-89`).
-        assert_eq!(WsTab::all(), [WsTab::General, WsTab::Roles, WsTab::Files]);
+        // Sandbox Phase 6 appends `Permissions` at the tail; the head of
+        // the iteration order stays pinned to the concept fidelity strip.
+        assert_eq!(
+            WsTab::all(),
+            [WsTab::General, WsTab::Roles, WsTab::Files, WsTab::Permissions]
+        );
+    }
+
+    #[test]
+    fn ws_tab_appears_in_all_iter() {
+        // Sandbox Phase 6 — `WsTab::all()` must include `Permissions` so
+        // the focus trap and sidebar nav can reach it via the standard
+        // iteration helper.
+        assert!(WsTab::all().contains(&WsTab::Permissions));
+    }
+
+    #[test]
+    fn ws_tab_visible_hides_permissions_when_no_grants() {
+        // Concept-fidelity invariant: the 4-pill strip
+        // (General/Roles/Files/Collaborators) must keep its pinned
+        // positions when the workspace has no grants. Permissions is
+        // suppressed in that case so the parity tests keep pinning the
+        // same x-coordinates for General/Roles/Files.
+        let ws = Workspace::new(WorkspaceId::default(), "no-grants");
+        assert_eq!(WsTab::visible(&ws), vec![WsTab::General, WsTab::Roles, WsTab::Files]);
+    }
+
+    #[test]
+    fn ws_tab_visible_shows_permissions_when_workspace_has_grants() {
+        // Sandbox Phase 6 — once a grant exists the Permissions tab
+        // joins the strip at the tail. Owner-only revoke enforcement
+        // happens at click-time (not visibility-time).
+        let mut ws = Workspace::new(WorkspaceId::default(), "with-grants");
+        ws.grants.insert(
+            "firefox".into(),
+            vec![Capability::Camera {
+                scope: crate::shell::state::GrantScope::Always,
+            }],
+        );
+        let visible = WsTab::visible(&ws);
+        assert_eq!(visible.last(), Some(&WsTab::Permissions));
+        assert_eq!(visible.len(), 4);
     }
 
     #[test]
@@ -1205,10 +1569,11 @@ mod tab_tests {
         let ws = ws_settings_default();
         let modal = Rect::new(0.0, 0.0, 896.0, 600.0);
         let rows = ws.nav_rows(modal);
-        assert_eq!(rows.len(), 3);
+        assert_eq!(rows.len(), 4);
         assert_eq!(rows[0].0, WsTab::General);
         assert_eq!(rows[1].0, WsTab::Roles);
         assert_eq!(rows[2].0, WsTab::Files);
+        assert_eq!(rows[3].0, WsTab::Permissions);
         // Stacked top-to-bottom, each 40 px tall with a 4 px gap.
         for (_, r) in &rows {
             assert!((r.height() - NAV_ROW_HEIGHT).abs() < f64::EPSILON);
@@ -1217,6 +1582,7 @@ mod tab_tests {
         let stride = NAV_ROW_HEIGHT + NAV_ROW_GAP;
         assert!((rows[1].1.y0 - rows[0].1.y0 - stride).abs() < f64::EPSILON);
         assert!((rows[2].1.y0 - rows[1].1.y0 - stride).abs() < f64::EPSILON);
+        assert!((rows[3].1.y0 - rows[2].1.y0 - stride).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -1410,6 +1776,241 @@ mod roles_pane_tests {
             pane,
             &workspace,
             None,
+            &mut tr,
+            &theme,
+        );
+        assert!(
+            scene.encoding().draw_tags.is_empty(),
+            "zero-area pane must short-circuit — observed draw tags emitted"
+        );
+    }
+}
+
+#[cfg(test)]
+mod permissions_pane_tests {
+    //! Sandbox Phase 6 — Permissions tab body.
+    //!
+    //! These tests pin the public [`permissions_pane_rows`] +
+    //! [`draw_permissions_pane`] + [`revoke_grant`] surface that the
+    //! overlay host calls from its `WsTab::Permissions` arm. The
+    //! revoke flow mutates `Workspace::grants` directly (cache-only
+    //! per Sandbox 4.1's commit message — full doc-mirror is a
+    //! follow-up); the click router writes through and bumps the
+    //! revision counter so widgets resync on the next frame.
+    use super::*;
+    use crate::shell::state::{Capability, GrantScope, Workspace, WorkspaceId};
+
+    fn ws_with_grants() -> Workspace {
+        let mut ws = Workspace::new(WorkspaceId::default(), "perm-test");
+        ws.grants.insert(
+            "firefox".into(),
+            vec![
+                Capability::Camera {
+                    scope: GrantScope::Always,
+                },
+                Capability::Network {
+                    hosts: None,
+                    scope: GrantScope::Session,
+                },
+            ],
+        );
+        ws
+    }
+
+    #[test]
+    fn permissions_tab_renders_zero_rows_when_no_grants() {
+        // Empty grants ⇒ no row rects; the renderer paints a single
+        // empty-state placeholder but `permissions_pane_rows` (the
+        // hit-test source of truth) returns nothing.
+        let ws = Workspace::new(WorkspaceId::default(), "empty");
+        let pane = Rect::new(0.0, 0.0, 480.0, 360.0);
+        let rows = permissions_pane_rows(&ws, pane);
+        assert_eq!(rows.len(), 0, "no grants ⇒ no rows; got {}", rows.len());
+    }
+
+    #[test]
+    fn permissions_tab_renders_one_row_per_capability_per_app() {
+        // `firefox` holds two capabilities ⇒ two rows. Each row owns a
+        // distinct row_rect (stacked vertically) and revoke_rect
+        // (right-aligned within row_rect).
+        let ws = ws_with_grants();
+        let pane = Rect::new(0.0, 0.0, 480.0, 360.0);
+        let rows = permissions_pane_rows(&ws, pane);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].app_id, "firefox");
+        assert_eq!(rows[1].app_id, "firefox");
+        // Distinct cap_index values keep revoke routing unambiguous.
+        assert_ne!(rows[0].cap_index, rows[1].cap_index);
+        // Stacked top-to-bottom: row[1] starts below row[0].
+        assert!(rows[1].row_rect.y0 > rows[0].row_rect.y0);
+        // Revoke button is right-aligned inside row_rect.
+        for row in &rows {
+            assert!(row.revoke_rect.x1 <= row.row_rect.x1);
+            assert!(row.revoke_rect.x0 > row.row_rect.x0);
+        }
+    }
+
+    #[test]
+    fn revoke_grant_removes_capability_from_grants_at_index() {
+        // Sandbox Phase 6 — `revoke_grant` is the cache-mutator the
+        // click router calls. It removes by (app_id, cap_index) so a
+        // workspace with two `Camera`+`Network` grants on the same
+        // app can be revoked one at a time without ambiguity.
+        let mut ws = ws_with_grants();
+        let removed = revoke_grant(&mut ws, &"firefox".to_string(), 0);
+        assert!(removed);
+        // After removing the Camera grant the Network grant remains.
+        let firefox = ws.grants.get("firefox").expect("entry");
+        assert_eq!(firefox.len(), 1);
+        assert!(matches!(firefox[0], Capability::Network { .. }));
+    }
+
+    #[test]
+    fn revoke_grant_cleans_up_empty_app_entry() {
+        // After revoking the last capability for an app the
+        // map entry must be removed entirely so
+        // `Workspace::grants.is_empty()` flips to true once the last
+        // grant is revoked. Without this cleanup the Permissions tab
+        // would stay visible (`WsTab::visible` checks `is_empty()`).
+        let mut ws = Workspace::new(WorkspaceId::default(), "single-grant");
+        ws.grants.insert(
+            "vscode".into(),
+            vec![Capability::Camera {
+                scope: GrantScope::Once,
+            }],
+        );
+        let removed = revoke_grant(&mut ws, &"vscode".to_string(), 0);
+        assert!(removed);
+        assert!(ws.grants.is_empty(), "empty cap vec must be cleaned up");
+    }
+
+    #[test]
+    fn revoke_grant_no_op_for_missing_app_or_index() {
+        // Out-of-bounds index and missing app id are both no-ops —
+        // hit-test misalignment / racy clicks must not panic.
+        let mut ws = ws_with_grants();
+        let before = ws.grants.get("firefox").map(|v| v.len());
+        let r1 = revoke_grant(&mut ws, &"unknown".to_string(), 0);
+        let r2 = revoke_grant(&mut ws, &"firefox".to_string(), 99);
+        assert!(!r1);
+        assert!(!r2);
+        assert_eq!(ws.grants.get("firefox").map(|v| v.len()), before);
+    }
+
+    #[test]
+    fn capability_label_matches_phase_4_2_vocabulary() {
+        // Phase 6's revoke list and Phase 4.2's grant prompt share the
+        // same wording so users see the same string when granting and
+        // revoking. This pins the helper's outputs against the
+        // canonical labels.
+        let cam = Capability::Camera {
+            scope: GrantScope::Always,
+        };
+        assert_eq!(capability_label(&cam), "Camera access");
+        let mic = Capability::Microphone {
+            scope: GrantScope::Once,
+        };
+        assert_eq!(capability_label(&mic), "Microphone access");
+        let net = Capability::Network {
+            hosts: None,
+            scope: GrantScope::Session,
+        };
+        assert_eq!(capability_label(&net), "Network access");
+    }
+
+    #[test]
+    fn capability_scope_label_returns_short_badge_text() {
+        // Three-variant short label used by the row-side scope badge.
+        let always = Capability::Camera {
+            scope: GrantScope::Always,
+        };
+        let session = Capability::Camera {
+            scope: GrantScope::Session,
+        };
+        let once = Capability::Camera {
+            scope: GrantScope::Once,
+        };
+        assert_eq!(capability_scope_label(&always), "Always");
+        assert_eq!(capability_scope_label(&session), "Session");
+        assert_eq!(capability_scope_label(&once), "Once");
+    }
+
+    #[test]
+    fn draw_permissions_pane_paints_empty_state_when_no_grants() {
+        // Empty grants ⇒ one placeholder row fill so the section
+        // reads as "intentionally empty" rather than "broken".
+        let ws = Workspace::new(WorkspaceId::default(), "empty");
+        let mut scene = Scene::new();
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let pane = Rect::new(0.0, 0.0, 480.0, 360.0);
+        draw_permissions_pane(
+            &mut scene,
+            Affine::IDENTITY,
+            pane,
+            &ws,
+            true,
+            &mut tr,
+            &theme,
+        );
+        assert!(
+            !scene.encoding().draw_tags.is_empty(),
+            "empty Permissions pane must paint at least the placeholder"
+        );
+    }
+
+    #[test]
+    fn draw_permissions_pane_paints_more_with_grants_than_without() {
+        // Adding two grants for an app surfaces two row cards + scope
+        // badges + revoke buttons ⇒ strictly more solid fills than the
+        // empty-state placeholder.
+        let theme = Theme::dark();
+        let pane = Rect::new(0.0, 0.0, 480.0, 360.0);
+        let mut tr = TextRenderer::new();
+
+        let mut empty_scene = Scene::new();
+        draw_permissions_pane(
+            &mut empty_scene,
+            Affine::IDENTITY,
+            pane,
+            &Workspace::new(WorkspaceId::default(), "empty"),
+            true,
+            &mut tr,
+            &theme,
+        );
+
+        let mut full_scene = Scene::new();
+        draw_permissions_pane(
+            &mut full_scene,
+            Affine::IDENTITY,
+            pane,
+            &ws_with_grants(),
+            true,
+            &mut tr,
+            &theme,
+        );
+
+        let empty = empty_scene.encoding().draw_tags.len();
+        let full = full_scene.encoding().draw_tags.len();
+        assert!(
+            full > empty,
+            "Permissions pane with grants must paint more than empty (full={full}, empty={empty})"
+        );
+    }
+
+    #[test]
+    fn draw_permissions_pane_no_op_on_zero_area_pane() {
+        let ws = ws_with_grants();
+        let mut scene = Scene::new();
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let pane = Rect::new(100.0, 100.0, 100.0, 100.0);
+        draw_permissions_pane(
+            &mut scene,
+            Affine::IDENTITY,
+            pane,
+            &ws,
+            true,
             &mut tr,
             &theme,
         );
