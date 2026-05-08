@@ -197,6 +197,16 @@ pub struct ChromeState {
     /// itself escalates to `Session`/`Always` based on the user's
     /// click). Empty by default.
     pub pending_grants: VecDeque<(AppId, Capability)>,
+    /// Test-only override for the `is_active_workspace_owner` helper
+    /// in `overlay_host.rs`. `None` (the default) keeps production
+    /// behaviour: the helper returns `true` unconditionally because
+    /// the shell has no logged-in-user identity yet (Sandbox 4.2's
+    /// stub). `Some(false)` flips the helper to non-owner so the
+    /// Sandbox Phase 6 Permissions tab tests can exercise the
+    /// disabled-Revoke code path. Real ownership tracking will
+    /// replace this field once the peer-sync work lands a
+    /// `local_user_id` + `Workspace::owner_id` pair.
+    pub test_only_owner_override: Option<bool>,
 }
 
 impl ChromeState {
@@ -210,6 +220,7 @@ impl ChromeState {
             ws_settings_tab: WsTab::default(),
             revision: 0,
             pending_grants: VecDeque::new(),
+            test_only_owner_override: None,
         }))
     }
 
