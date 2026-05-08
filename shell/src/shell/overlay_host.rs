@@ -136,18 +136,27 @@ pub struct ShellOverlayHost {
     /// when the overview is hidden so stale clicks during the crossfade
     /// can't activate it.
     add_workspace_rect: Rect,
-    /// Hit rects for the four WS-settings tab pills painted by
+    /// Hit rects for the WS-settings tab pills painted by
     /// `draw_ws_settings` — index order is
-    /// `[General, Roles, Files, Collaborators]` (matching the on-screen
-    /// `["General", "Roles", "Files", "Collaborators"]` strip). The
-    /// Collaborators slot has no `WsTab` variant yet so its click branch
-    /// is a no-op consumer, but its rect is still cached so the click is
-    /// swallowed instead of falling through to the name-input commit
-    /// path (#6, B-7). All four entries are `Rect::ZERO` until the first
-    /// `draw_ws_settings` populates them; cleared back to `Rect::ZERO`
-    /// when the modal closes so a stale click during a crossfade can't
-    /// flip tabs after the modal is gone.
-    ws_settings_tab_pill_rects: [Rect; 4],
+    /// `[General, Roles, Files, Collaborators, Permissions]` (matching
+    /// the on-screen pill strip). The Collaborators slot has no
+    /// `WsTab` variant yet so its click branch is a no-op consumer,
+    /// but its rect is still cached so the click is swallowed instead
+    /// of falling through to the name-input commit path (#6, B-7).
+    /// The Permissions slot (Sandbox Phase 6) is conditional — it only
+    /// holds a non-zero rect when the active workspace has at least
+    /// one entry in [`Workspace::grants`]. All entries are
+    /// `Rect::ZERO` until the first `draw_ws_settings` populates them;
+    /// cleared back to `Rect::ZERO` when the modal closes so a stale
+    /// click during a crossfade can't flip tabs after the modal is
+    /// gone.
+    ws_settings_tab_pill_rects: [Rect; 5],
+    /// Hit rects for Revoke buttons in the Permissions tab body. One
+    /// entry per `(app_id, cap_index)` pair currently rendered.
+    /// Populated by `draw_ws_settings` each frame the Permissions
+    /// tab is active; cleared back to empty whenever any other tab
+    /// is active (or the modal is hidden). Sandbox Phase 6.
+    permissions_revoke_rects: Vec<(crate::shell::state::AppId, usize, Rect)>,
     /// Vertical inset at which the floating sidebar wheel starts. Defaults
     /// to [`SIDEBAR_TOP_OFFSET_PX`] (matches `TOPBAR_HEIGHT_PX`) but the
     /// real shell wraps its topbar in a padded `Column`/`Container`, so
@@ -324,7 +333,8 @@ impl ShellOverlayHost {
             palette_was_visible: false,
             group_row_ptrs: HashMap::new(),
             add_workspace_rect: Rect::ZERO,
-            ws_settings_tab_pill_rects: [Rect::ZERO; 4],
+            ws_settings_tab_pill_rects: [Rect::ZERO; 5],
+            permissions_revoke_rects: Vec::new(),
             sidebar_top_y: SIDEBAR_TOP_OFFSET_PX,
             permission_prompt: None,
             peer_sync_enabled: false,
@@ -1052,8 +1062,21 @@ impl ShellOverlayHost {
             WsTab::General => 0,
             WsTab::Roles => 1,
             WsTab::Files => 2,
+            WsTab::Permissions => 4,
         };
         self.ws_settings_tab_pill_rects[idx]
+    }
+
+    /// Read-only accessor for the Permissions-pane Revoke button rects
+    /// painted by [`Self::draw_ws_settings`] when the Permissions tab
+    /// is active. Each entry is `(app_id, cap_index, rect)`. Test-only
+    /// — used by `permissions_tab_test.rs` to synthesize Revoke
+    /// clicks. Returns an empty slice whenever the modal is closed or
+    /// a non-Permissions tab is active.
+    pub fn permissions_revoke_rects(
+        &self,
+    ) -> &[(crate::shell::state::AppId, usize, Rect)] {
+        &self.permissions_revoke_rects
     }
 
     fn toggle_palette(&mut self) {
@@ -1242,7 +1265,7 @@ impl ShellOverlayHost {
     fn ws_settings_rect(&self) -> Rect {
         let modal_w = 520.0_f64;
         let modal_h = match self.chrome.as_ref().map(|c| c.borrow().ws_settings_tab) {
-            Some(WsTab::Roles) | Some(WsTab::Files) => 520.0_f64,
+            Some(WsTab::Roles) | Some(WsTab::Files) | Some(WsTab::Permissions) => 520.0_f64,
             _ => 360.0_f64,
         };
         let cx = (self.rect.x0 + self.rect.x1) / 2.0;
@@ -1720,7 +1743,8 @@ impl Widget for ShellOverlayHost {
             // not yet flipped to false in the chrome) can't flip tabs.
             // Mirrors the `add_workspace_rect = Rect::ZERO` pattern
             // above (#6, B-7).
-            self.ws_settings_tab_pill_rects = [Rect::ZERO; 4];
+            self.ws_settings_tab_pill_rects = [Rect::ZERO; 5];
+            self.permissions_revoke_rects.clear();
         }
         self.ws_settings_was_open = flags.ws_settings;
         if flags.ws_settings {
@@ -2289,12 +2313,49 @@ impl Widget for ShellOverlayHost {
                         *handled = true;
                         return;
                     }
-                    // Tab-pill click (#6, B-7): hit-test the four pills
+                    // Sandbox Phase 6 — Permissions tab Revoke button
+                    // hit-test. Run this *before* the pill hit-test so
+                    // a click on a Revoke button never accidentally
+                    // routes to a tab pill above it. Owner-only: when
+                    // `is_active_workspace_owner` returns false the
+                    // click is consumed (so it doesn't fall through to
+                    // a name-edit commit) but the grant stays in the
+                    // map — mirrors the PermissionPrompt's `Always`
+                    // button gating from Phase 4.2.
+                    let revoke_rects = self.permissions_revoke_rects.clone();
+                    if !revoke_rects.is_empty() {
+                        for (app_id, cap_index, rrect) in &revoke_rects {
+                            if rrect.area() > 0.0 && rrect.contains(p) {
+                                if let Some(chrome) = self.chrome.clone() {
+                                    let st_ro = chrome.borrow();
+                                    let is_owner = is_active_workspace_owner(&st_ro);
+                                    drop(st_ro);
+                                    if is_owner {
+                                        let mut st = chrome.borrow_mut();
+                                        if let Some(ws) =
+                                            st.tree.active_workspace_mut()
+                                        {
+                                            if crate::shell::workspace_settings::revoke_grant(
+                                                ws, app_id, *cap_index,
+                                            ) {
+                                                st.bump();
+                                            }
+                                        }
+                                    }
+                                }
+                                *handled = true;
+                                return;
+                            }
+                        }
+                    }
+
+                    // Tab-pill click (#6, B-7): hit-test the pills
                     // cached by `draw_ws_settings` *before* the name-input
                     // branch so a click on a pill never falls through to
-                    // "commit pending edit". Indices 0..3 map to
-                    // [General, Roles, Files, Collaborators]; the first
-                    // three flip `chrome.ws_settings_tab` directly. The
+                    // "commit pending edit". Indices map to
+                    // [General, Roles, Files, Collaborators, Permissions];
+                    // the variants `General`/`Roles`/`Files`/`Permissions`
+                    // flip `chrome.ws_settings_tab` directly. The
                     // Collaborators slot has no `WsTab` variant yet — its
                     // click is consumed (so the name-edit isn't committed
                     // and the modal isn't dismissed) but otherwise a
@@ -2319,6 +2380,10 @@ impl Widget for ShellOverlayHost {
                                     }
                                     2 => {
                                         st.ws_settings_tab = WsTab::Files;
+                                        st.bump();
+                                    }
+                                    4 => {
+                                        st.ws_settings_tab = WsTab::Permissions;
                                         st.bump();
                                     }
                                     _ => {}
@@ -2714,7 +2779,17 @@ fn with_grant_scope(cap: Capability, scope: GrantScope) -> Capability {
 /// follow-up). Tests that need the disabled-Always path can poke
 /// the prompt's `is_owner` field through
 /// [`crate::shell::overlay_host::ShellOverlayHost::permission_prompt_mut_for_tests`].
-fn is_active_workspace_owner(_state: &crate::shell::chrome_state::ChromeState) -> bool {
+///
+/// Sandbox Phase 6 — also gates the WS-Settings Permissions tab's
+/// Revoke buttons. Tests that need the non-owner code path can flip
+/// `ChromeState::test_only_owner_override` to `Some(false)`; the
+/// override is surfaced exclusively for tests, never for production
+/// code (the field's setter is `cfg(test)`-gated only insofar as
+/// callers in `src/` never read it).
+fn is_active_workspace_owner(state: &crate::shell::chrome_state::ChromeState) -> bool {
+    if let Some(forced) = state.test_only_owner_override {
+        return forced;
+    }
     true
 }
 
@@ -3588,7 +3663,7 @@ impl ShellOverlayHost {
         // sidebar fit without bleeding past the modal frame into the
         // workspace area below.
         let modal_h = match state.ws_settings_tab {
-            WsTab::Roles | WsTab::Files => 520.0_f64,
+            WsTab::Roles | WsTab::Files | WsTab::Permissions => 520.0_f64,
             _ => 360.0_f64,
         };
         let cx = (self.rect.x0 + self.rect.x1) / 2.0;
@@ -3661,19 +3736,39 @@ impl ShellOverlayHost {
         // Tabs header (General / Roles / Files / Collaborators).
         // The Collaborators pill is visual-only for now — `WsTab` has no
         // `Collaborators` variant, so it never lights up.
-        let tabs = ["General", "Roles", "Files", "Collaborators"];
+        //
+        // Sandbox Phase 6 — the Permissions pill is appended at the
+        // tail conditionally, only when the active workspace has at
+        // least one entry in [`Workspace::grants`]. Concept-fidelity
+        // pill positions for the General/Roles/Files/Collaborators
+        // strip stay pinned for empty-grants workspaces (the parity
+        // baseline) so the existing `concept_parity_spec` x-coords
+        // don't shift.
+        let permissions_visible = state
+            .tree
+            .active_workspace()
+            .map(|ws| !ws.grants.is_empty())
+            .unwrap_or(false);
+        let mut tab_labels: Vec<&str> = vec!["General", "Roles", "Files", "Collaborators"];
+        if permissions_visible {
+            tab_labels.push("Permissions");
+        }
         let mut tx = rect.x0 + 24.0;
         let ty = rect.y0 + 112.0;
         // Local pill-rect buffer; written into `self.ws_settings_tab_
         // pill_rects` after the loop so a single source of geometry
         // feeds both the draw and the click-routing path. Mirrors the
         // `add_workspace_rect` cache pattern already in this file (#6,
-        // B-7).
-        let mut pill_rects = [Rect::ZERO; 4];
-        for (i, tab) in tabs.iter().enumerate() {
+        // B-7). Slot 4 (Permissions) stays `Rect::ZERO` when the
+        // Permissions tab is hidden.
+        let mut pill_rects = [Rect::ZERO; 5];
+        for (i, tab) in tab_labels.iter().enumerate() {
             let active = matches!(
                 (i, active_tab),
-                (0, WsTab::General) | (1, WsTab::Roles) | (2, WsTab::Files)
+                (0, WsTab::General)
+                    | (1, WsTab::Roles)
+                    | (2, WsTab::Files)
+                    | (4, WsTab::Permissions)
             );
             let (w, h) = text_renderer.measure(tab, lsize, None);
             let pill_rect = Rect::new(tx - 8.0, ty - 4.0, tx + w as f64 + 8.0, ty + h as f64 + 4.0);
@@ -3707,6 +3802,7 @@ impl ShellOverlayHost {
         // lands. General is the unconditional fall-through.
         match active_tab {
             WsTab::Roles => {
+                self.permissions_revoke_rects.clear();
                 // Roles tab body sits below the tabs strip and uses the
                 // active workspace's roles/files for the permission grids.
                 let body_top = rect.y0 + 144.0;
@@ -3738,6 +3834,7 @@ impl ShellOverlayHost {
                 return;
             }
             WsTab::Files => {
+                self.permissions_revoke_rects.clear();
                 // Files tab body — minimal placeholder pane that lists
                 // `workspace_files`. Standalone of the General body so
                 // it never reads `editing_workspace_name`; the typed
@@ -3765,8 +3862,53 @@ impl ShellOverlayHost {
                 );
                 return;
             }
+            WsTab::Permissions => {
+                // Sandbox Phase 6 — Permissions tab body. One row per
+                // (app_id, capability) pair across the workspace's
+                // grants map; each row owns a Revoke button whose hit
+                // rect is cached in `self.permissions_revoke_rects`
+                // for the click-router to consume.
+                let body_top = rect.y0 + 144.0;
+                let body_rect =
+                    Rect::new(rect.x0 + 16.0, body_top, rect.x1 - 16.0, rect.y1 - 16.0);
+                let is_owner = is_active_workspace_owner(&state);
+                self.permissions_revoke_rects.clear();
+                if let Some(ws) = state.tree.active_workspace() {
+                    for row in crate::shell::workspace_settings::permissions_pane_rows(
+                        ws, body_rect,
+                    ) {
+                        self.permissions_revoke_rects.push((
+                            row.app_id.clone(),
+                            row.cap_index,
+                            row.revoke_rect,
+                        ));
+                    }
+                    crate::shell::workspace_settings::draw_permissions_pane(
+                        scene,
+                        transform,
+                        body_rect,
+                        ws,
+                        is_owner,
+                        text_renderer,
+                        theme,
+                    );
+                }
+                let hint = "Press Esc to close";
+                let hsize = tokens.typography.scale.xs;
+                let (hw, _hh) = text_renderer.measure(hint, hsize, None);
+                text_renderer.draw_text(
+                    scene,
+                    hint,
+                    hsize,
+                    colors.text_dim,
+                    transform * Affine::translate((rect.x1 - hw as f64 - 24.0, rect.y1 - 24.0)),
+                    None,
+                );
+                return;
+            }
             WsTab::General => {
                 // Fall through to the General body below.
+                self.permissions_revoke_rects.clear();
             }
         }
 
