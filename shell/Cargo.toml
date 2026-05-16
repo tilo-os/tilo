@@ -74,6 +74,12 @@ libc = "0.2"
 # Cargo edit and avoids relying on transitive re-exports of unrelated deps.
 base64 = "0.22"
 bs58 = "0.5"
+# Phase 4 of `docs/superpowers/plans/2026-05-02-peer-sync-end-to-end.md`:
+# software H.264 encode/decode for foreign-surface streaming between peers.
+# `source` feature builds Cisco's OpenH264 in-tree (vs. dlopen'ing the system
+# copy), which keeps the test image self-contained — bootc is immutable so we
+# can't rely on a runtime-installed `libopenh264.so`.
+openh264 = { version = "0.9", features = ["source"] }
 
 [dev-dependencies]
 wayland-client = "0.31"
