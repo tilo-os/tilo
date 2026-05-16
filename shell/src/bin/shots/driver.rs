@@ -9,6 +9,7 @@
 //!   - "drive a scenario, dump state" (headless / AI-control / e2e)
 //!   - "pre-run a scenario then go interactive" (window mode)
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use automerge::{AutoCommit, ObjId};
@@ -331,30 +332,67 @@ impl ShellDriver {
     /// is `Rect::ZERO` (which generally means "this widget hasn't been
     /// drawn yet" — call `paint` once first to populate it).
     ///
-    /// Names supported:
+    /// Resolution order (first non-zero match wins):
+    /// 1. Hand-curated table — the five legacy keys that depend on
+    ///    chrome-internal accessors that aren't reachable by tree walk.
+    /// 2. Widget-tree registry — every widget with a `test_id` or
+    ///    discoverable name/path key (see `widget_registry`).
+    ///
+    /// Names supported by the hand-curated table:
     ///   - `"add_workspace"` — the "+ Add workspace" tile in the overview
     ///     (only valid while the overview is open).
-    ///   - `"ws_settings_tab[general|roles|files]"` — modal tab pills
-    ///     (only valid while ws-settings is open).
+    ///   - `"ws_settings_tab[general|roles|files|permissions]"` — modal
+    ///     tab pills (only valid while ws-settings is open).
     ///
-    /// The topbar's `overview_btn` and `tray_pill` rects live on a
-    /// separate widget (`TopBarChrome`) that's a descendant of `content`,
-    /// not directly accessible from the host — scenarios that need them
-    /// should use `ClickAt` with raw coordinates or drive Cmd+Tab /
-    /// Ctrl+K hotkeys via the `Modifiers` + `Key(_)` actions.
+    /// Beyond those, scenarios can address any widget by its `test_id`
+    /// (e.g. `command_palette_input`, `wheel_disc`) or by its path key
+    /// (e.g. `ShellOverlayHost/TopBarChrome` if the widget didn't opt in
+    /// to a `test_id`).
     pub fn resolve_named_rect(&self, name: &str) -> Option<Rect> {
         let host = self.fb.host();
-        let r = match name {
-            "add_workspace" => host.add_workspace_rect_for_tests(),
-            "ws_settings_tab[general]" => host.ws_settings_tab_pill_rect(WsTab::General),
-            "ws_settings_tab[roles]" => host.ws_settings_tab_pill_rect(WsTab::Roles),
-            "ws_settings_tab[files]" => host.ws_settings_tab_pill_rect(WsTab::Files),
+        let curated = match name {
+            "add_workspace" => Some(host.add_workspace_rect_for_tests()),
+            "ws_settings_tab[general]" => Some(host.ws_settings_tab_pill_rect(WsTab::General)),
+            "ws_settings_tab[roles]" => Some(host.ws_settings_tab_pill_rect(WsTab::Roles)),
+            "ws_settings_tab[files]" => Some(host.ws_settings_tab_pill_rect(WsTab::Files)),
             "ws_settings_tab[permissions]" => {
-                host.ws_settings_tab_pill_rect(WsTab::Permissions)
+                Some(host.ws_settings_tab_pill_rect(WsTab::Permissions))
             }
-            _ => return None,
+            _ => None,
         };
-        if r.area() <= 0.0 { None } else { Some(r) }
+        if let Some(r) = curated {
+            if r.area() > 0.0 {
+                return Some(r);
+            }
+            // Fall through to the registry — the curated key may have
+            // missed because its prerequisite chrome state isn't set
+            // (overview closed, ws-settings closed). Registry can still
+            // succeed for an opt-in `test_id` regardless.
+        }
+        let registry = self.widget_registry();
+        registry.get(name).copied().filter(|r| r.area() > 0.0)
+    }
+
+    /// Walk the widget tree from the overlay host and return a snapshot
+    /// of every addressable widget's rect, keyed by:
+    ///   - its `test_id()` if it opted in, OR
+    ///   - a path key `Parent/Child[index]` reflecting the position in
+    ///     the tree (index disambiguates siblings of the same name).
+    ///
+    /// The registry is **rebuilt on every call** — there's no hidden
+    /// cache. Callers that need the registry across multiple actions
+    /// in a scenario should re-fetch it after each `paint` because
+    /// layout (and therefore rects) can shift between frames.
+    ///
+    /// Widgets at `Rect::ZERO` are still registered (a missing rect is
+    /// information too — the caller can detect a widget that exists
+    /// but isn't laid out yet). `resolve_named_rect` filters those out.
+    pub fn widget_registry(&self) -> HashMap<String, Rect> {
+        let host: &dyn Widget = self.fb.host();
+        let mut out = HashMap::new();
+        let mut sibling_counts: HashMap<String, usize> = HashMap::new();
+        walk_widget(host, "", &mut sibling_counts, &mut out);
+        out
     }
 
     /// Centre of a named rect — convenience for the scenario engine.
@@ -371,6 +409,64 @@ impl ShellDriver {
 }
 
 // ---------- helpers ----------
+
+/// Depth-first walk of the widget tree. For each visited node:
+///   - if `test_id()` returns `Some(id)`, registers `id -> rect`
+///     (highest priority — overrides any path-based key).
+///   - regardless, registers the path-based key
+///     `Parent/.../Self[sibling_index]` so an un-tagged widget is still
+///     addressable.
+///
+/// `sibling_counts` is a parent-scoped counter map keyed by `parent_path/name`
+/// so multiple children of the same `name` get deterministic [0], [1],
+/// [2], ... suffixes. The map is reset implicitly by walking under a fresh
+/// `parent_path` segment.
+fn walk_widget(
+    w: &dyn Widget,
+    parent_path: &str,
+    sibling_counts: &mut HashMap<String, usize>,
+    out: &mut HashMap<String, Rect>,
+) {
+    let name = w.name().to_string();
+    // Build a per-parent sibling key so [N] indices are scoped to
+    // siblings, not globally unique. Reset for each level via a local
+    // map below (we use the parent_path as part of the key here).
+    let sibling_key = format!("{parent_path}::{name}");
+    let idx = sibling_counts.entry(sibling_key).or_insert(0);
+    let my_index = *idx;
+    *idx += 1;
+    let path = if parent_path.is_empty() {
+        format!("{name}[{my_index}]")
+    } else {
+        format!("{parent_path}/{name}[{my_index}]")
+    };
+    out.insert(path.clone(), w.get_rect());
+    // Also register a path without the trailing index for convenience
+    // when there's exactly one sibling of that name. We can't know
+    // "exactly one" at recursion time so we always insert the bare-name
+    // form too; if a second sibling of the same name comes along it'll
+    // overwrite — that's the documented behaviour ("first match wins is
+    // not guaranteed across duplicates; use the indexed form").
+    if my_index == 0 {
+        let bare = if parent_path.is_empty() {
+            name.clone()
+        } else {
+            format!("{parent_path}/{name}")
+        };
+        out.entry(bare).or_insert_with(|| w.get_rect());
+    }
+    if let Some(id) = w.test_id() {
+        // test_id wins over path-derived keys — direct insert / overwrite.
+        out.insert(id.to_string(), w.get_rect());
+    }
+    // Recurse into children with a fresh sibling counter scoped under
+    // this node's path.
+    let mut child_counts: HashMap<String, usize> = HashMap::new();
+    for child in w.children() {
+        walk_widget(child, &path, &mut child_counts, out);
+    }
+}
+
 
 /// Synthesise a `WindowEvent::KeyboardInput { state: Pressed }` for
 /// `key`. winit's `KeyEvent` has a `pub(crate)` field
@@ -583,5 +679,75 @@ mod tests {
         }
         let mut d = ShellDriver::new((1600, 900));
         assert!(d.scene_setup("nope").is_err());
+    }
+
+    /// `widget_registry` must enumerate the live widget tree after a
+    /// paint. The bootstrap default seeds a topbar inside the content
+    /// chrome, so a registry walk should surface a `TopBarChrome` entry
+    /// (either as a bare name or with a `[0]` suffix).
+    ///
+    /// Pinned so a future regression that breaks `ShellOverlayHost::
+    /// children()` — the recursion entry-point — fails this test instead
+    /// of silently returning an empty registry.
+    #[test]
+    fn widget_registry_finds_topbar_buttons() {
+        let mut d = ShellDriver::new((1600, 900));
+        let _ = d.paint();
+        d.relayout();
+        let _ = d.paint();
+        let registry = d.widget_registry();
+        assert!(
+            !registry.is_empty(),
+            "registry must not be empty after paint"
+        );
+        // The host (root) should be there.
+        assert!(
+            registry.keys().any(|k| k.contains("ShellOverlayHost")),
+            "registry should contain ShellOverlayHost; keys={:?}",
+            registry.keys().collect::<Vec<_>>()
+        );
+        // And the topbar chrome should be reachable through the content
+        // subtree (added in Addition B once host.children() forwards
+        // content + sidebar + palette).
+        assert!(
+            registry.keys().any(|k| k.contains("TopBarChrome")),
+            "registry should contain TopBarChrome; keys={:?}",
+            registry.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// `resolve_named_rect` must fall through to the widget tree when
+    /// the hand-curated table misses. The CommandPalette widget opts in
+    /// to `test_id() == "command_palette_input"` (a high-value target);
+    /// after opening the palette, the resolver should return its rect
+    /// even though `command_palette_input` is not in the hand-curated
+    /// match arm.
+    #[test]
+    fn resolve_named_rect_falls_back_to_registry() {
+        let mut d = ShellDriver::new((1600, 900));
+        // Open the palette — drives the same code path scenarios use,
+        // so the palette's rect gets populated on the subsequent paint.
+        d.host_mut().set_palette_visible(true);
+        let _ = d.paint();
+        d.relayout();
+        let _ = d.paint();
+
+        // Sanity: hand-curated table doesn't know this key.
+        // (No direct assertion — we can't call the private inner match —
+        // but the registry-fallback path is what makes the next assertion
+        // pass; if a future edit accidentally adds this key to the
+        // curated table, the test still passes.)
+        let rect = d.resolve_named_rect("command_palette_input");
+        assert!(
+            rect.is_some(),
+            "command_palette_input must resolve through the registry once \
+             the palette is visible; registry keys: {:?}",
+            d.widget_registry().keys().collect::<Vec<_>>()
+        );
+        let r = rect.unwrap();
+        assert!(
+            r.area() > 0.0,
+            "resolved command_palette_input rect must be non-zero; got {r:?}"
+        );
     }
 }
