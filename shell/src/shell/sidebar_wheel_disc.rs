@@ -1101,6 +1101,13 @@ impl Widget for SidebarWheelDisc {
         "SidebarWheelDisc"
     }
 
+    /// Stable e2e test identifier — `wheel_disc`. Scenarios that need to
+    /// click on the disc itself (vs. an individual spoke) address it
+    /// by this name through the driver's registry.
+    fn test_id(&self) -> Option<&str> {
+        Some("wheel_disc")
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
