@@ -282,6 +282,30 @@ impl XdgShellHandler for State {
         );
     }
 
+    fn app_id_changed(&mut self, surface: ToplevelSurface) {
+        // Phase 7 Task 7.2 — clients call `xdg_toplevel::set_app_id`
+        // *after* `xdg_surface::get_toplevel` fires `new_toplevel`, so
+        // the tab was initially adopted with a synthetic
+        // `anon-<surface_id>` placeholder. Re-read the now-populated
+        // app-id from the surface data and rewrite the tab in-place so
+        // the chrome (and the Phase 7 integration test) see the real
+        // app-id.
+        let surface_id = surface.wl_surface().id().protocol_id() as u64;
+        let new_app_id = wl_compositor::with_states(surface.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|data| data.lock().ok().and_then(|d| d.app_id.clone()))
+        });
+        if let Some(app_id) = new_app_id {
+            let _ = tab_binding::rename_tab_for_app_id(
+                &mut self.workspace_tree,
+                surface_id,
+                app_id,
+            );
+        }
+    }
+
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
         surface.send_configure().ok();
     }
