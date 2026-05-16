@@ -110,6 +110,11 @@ impl OffscreenRenderer {
 
     /// Render `scene` with the given background colour and return the
     /// raw RGBA pixels, tight-packed at `4 * width` bytes per row.
+    ///
+    /// The underlying texture format is `Rgba8Unorm`, so the returned
+    /// bytes are in **R, G, B, A** order (not BGRA). Callers that hand
+    /// the buffer to an H.264 encoder (which also expects RGBA) can pass
+    /// it through unmodified.
     pub fn render(&mut self, scene: &Scene, bg: Color) -> Vec<u8> {
         let device = &self.context.devices[self.dev_id].device;
         let queue = &self.context.devices[self.dev_id].queue;
@@ -177,6 +182,18 @@ impl OffscreenRenderer {
         drop(mapped);
         self.readback_buf.unmap();
         tight
+    }
+
+    /// Explicit alias for [`render`](Self::render) with a transparent
+    /// background — the canonical entry-point for code paths that need
+    /// raw RGBA frames (e.g. the `shots` binary's recording mode feeding
+    /// the H.264 encoder).
+    ///
+    /// Kept as a thin wrapper rather than a rename so callers in the
+    /// e2e suite that depend on `render` (composing custom backgrounds)
+    /// continue to work unchanged.
+    pub fn render_rgba(&mut self, scene: &Scene) -> Vec<u8> {
+        self.render(scene, Color::TRANSPARENT)
     }
 
     /// Convenience: render `scene` and write the result to `path` as a
