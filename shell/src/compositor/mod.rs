@@ -2,21 +2,23 @@
 //!
 //! The shell binary supports two run modes:
 //!
-//! - [`Mode::Hosted`] — the default. Runs the existing `winit`-on-host event
-//!   loop (i.e. the shell renders inside an existing X11/Wayland session).
-//!   This is what `cargo run -p quick-desktop` has always done and is the
-//!   path used by every developer running on a normal Linux desktop.
-//! - [`Mode::Native`] — placeholder for the future smithay-on-TTY compositor
-//!   path. Phase 1 only wires the dispatch; the actual implementation lands
-//!   in Phase 2+.
+//! - [`Mode::Native`] — the default as of Phase 7. Spins up a real
+//!   smithay-driven Wayland server (auto-binds `wayland-N`), advertises the
+//!   compositor / xdg-shell / shm / seat / output globals, and paints chrome
+//!   through the vello+wgpu backend wired up in Phase 4. This is what
+//!   `cargo run -p quick-desktop` does with no flags.
+//! - [`Mode::Hosted`] — the legacy `winit`-on-host iced loop, kept as an
+//!   explicit dev opt-in via `--mode hosted`. Useful when no DRM/KMS or
+//!   spare Wayland session is available (e.g. running inside another
+//!   compositor that you don't want to nest into).
 //!
 //! Mode selection is driven by a single `--mode <hosted|native>` (or
 //! `--mode=<...>`) command-line flag. Anything unrecognised — including the
-//! flag being absent — falls back to [`Mode::Hosted`] so existing invocations
-//! keep working.
+//! flag being absent — falls back to [`Mode::Native`] (the Phase 7 default
+//! flip). `--mode hosted` is the explicit opt-in for the legacy path.
 //!
 //! See `docs/superpowers/plans/2026-05-02-real-wayland-compositor.md`
-//! (Phase 1) for the full design intent.
+//! (Phases 1 and 7) for the full design intent.
 
 pub mod backend;
 pub mod bridge;
@@ -85,7 +87,9 @@ pub fn parse_peer_sync(args: &[&str]) -> bool {
 
 /// Pure, testable mode parser. Accepts both `--mode <value>` and
 /// `--mode=<value>` forms. Unknown values (and a missing flag) default to
-/// [`Mode::Hosted`] so the compositor never refuses to start over a typo.
+/// [`Mode::Native`] (the Phase 7 flip) so the compositor never refuses to
+/// start over a typo. `--mode hosted` is the explicit dev opt-in for the
+/// legacy iced-on-winit path.
 pub fn parse_mode(args: &[&str]) -> Mode {
     let mut iter = args.iter().copied();
     while let Some(arg) = iter.next() {
@@ -99,13 +103,13 @@ pub fn parse_mode(args: &[&str]) -> Mode {
             // Trailing `--mode` with no value: fall through to default.
         }
     }
-    Mode::Hosted
+    Mode::Native
 }
 
 fn value_to_mode(value: &str) -> Mode {
     match value {
-        "native" => Mode::Native,
-        _ => Mode::Hosted,
+        "hosted" => Mode::Hosted,
+        _ => Mode::Native,
     }
 }
 
@@ -150,8 +154,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn no_flag_defaults_hosted() {
-        assert!(matches!(parse_mode(&[]), Mode::Hosted));
+    fn no_flag_defaults_native() {
+        // Phase 7 flip: the default is `Native` so `cargo run -p
+        // quick-desktop` (no flags) boots the real smithay server.
+        assert!(matches!(parse_mode(&[]), Mode::Native));
     }
 
     #[test]
@@ -165,8 +171,20 @@ mod tests {
     }
 
     #[test]
-    fn unrecognized_value_defaults_hosted() {
-        assert!(matches!(parse_mode(&["--mode", "junk"]), Mode::Hosted));
+    fn dash_dash_mode_hosted_returns_hosted() {
+        // `--mode hosted` is the Phase 7 explicit dev opt-in for the
+        // legacy iced-on-winit path; this guards that the hosted
+        // fallback path stays reachable from the CLI.
+        assert!(matches!(parse_mode(&["--mode", "hosted"]), Mode::Hosted));
+        assert!(matches!(parse_mode(&["--mode=hosted"]), Mode::Hosted));
+    }
+
+    #[test]
+    fn unrecognized_value_defaults_native() {
+        // Phase 7 flip: a typo no longer silently demotes to the
+        // hosted iced path; it falls through to the real Wayland
+        // server. The hosted path is opt-in (`--mode hosted`).
+        assert!(matches!(parse_mode(&["--mode", "junk"]), Mode::Native));
     }
 
     #[test]
