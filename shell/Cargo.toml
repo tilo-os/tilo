@@ -18,7 +18,27 @@ smithay-client-toolkit = "0.19"
 wayland-client = "0.31"
 wayland-protocols = "0.32"
 libp2p = { version = "0.56", features = ["tcp", "dns", "websocket", "noise", "yamux", "mdns", "gossipsub", "tokio", "macros"] }
-smithay = { version = "0.7", default-features = false, features = ["wayland_frontend", "backend_winit", "renderer_glow", "desktop"] }
+smithay = { version = "0.7", default-features = false, features = [
+    "wayland_frontend",
+    "backend_winit",
+    "renderer_glow",
+    "desktop",
+    # Phase 5 Task 5.1: real DRM/KMS + libseat + udev + libinput
+    # backend for running on a bare TTY. See
+    # `quick-shell/src/compositor/backend/drm/` for the implementation
+    # and `docs/superpowers/plans/2026-05-02-real-wayland-compositor.md`
+    # (Phase 5) for design intent.
+    "backend_drm",
+    "backend_libinput",
+    "backend_udev",
+    "backend_session_libseat",
+    "renderer_gl",
+] }
+# Phase 5 Task 5.1: structured error type for DRM backend construction.
+# Bubbles up clean error messages to the binary entry point instead of
+# panicking — the host machine (Gnome already holds the seat) needs the
+# `--backend drm` path to fail cleanly with a useful diagnostic.
+thiserror = "2"
 calloop-wayland-source = "0.4"
 rand = "0.10.0"
 quick-ui = { path = "../quick-ui" }
