@@ -80,6 +80,14 @@ bs58 = "0.5"
 # copy), which keeps the test image self-contained — bootc is immutable so we
 # can't rely on a runtime-installed `libopenh264.so`.
 openh264 = { version = "0.9", features = ["source"] }
+# Sandbox Phase 4.3 (`docs/superpowers/plans/2026-05-02-per-workspace-sandbox-permissions.md`):
+# `portal::serve` registers the `org.freedesktop.impl.portal.{FileChooser,
+# ScreenCast,Access}` backend interfaces over D-Bus so xdg-desktop-portal can
+# route sandboxed-app requests into our per-workspace grant model. We pin to
+# `4` because `dark-light` (a transitive of `iced`) already locks zbus to
+# 4.4.x — staying on the same major avoids a duplicate compile + runtime
+# copy of the entire async-task stack zbus drags in.
+zbus = { version = "4", default-features = false, features = ["tokio", "p2p"] }
 
 [dev-dependencies]
 wayland-client = "0.31"
@@ -97,3 +105,8 @@ vello_encoding = "0.2.1"
 # Tempdir helper for `network::behaviour::load_or_create_keypair` tests so we
 # never write a real key to `/var/lib/quick-fs/peer-key` from the test suite.
 tempfile = "3"
+# `tests/portal_test.rs` joins the server- and client-side handshake of an
+# in-process p2p zbus pair via `futures_util::try_join!`. Already pulled in
+# transitively (libp2p, zbus, tokio) — pinning it here is just for the
+# `try_join!` macro at the test-fixture call site.
+futures-util = "0.3"
