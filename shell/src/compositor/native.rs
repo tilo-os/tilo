@@ -30,6 +30,16 @@ use crate::compositor::frame::FrameBuilder;
 use crate::compositor::state::{ClientState, State};
 use crate::compositor::{parse_backend_from_args, BackendKind};
 
+/// Env-var name for the Phase 7 CI test introspection hook. When set to a
+/// writable path, [`run`] serializes the shell `WorkspaceTree` to that path
+/// on each frame tick as compact JSON. The test
+/// (`tests/compositor_test.rs`) polls that file to assert foreign-tab
+/// adoption + teardown without needing a public shell-state API.
+///
+/// The hook is gated on the env var being set; without it the
+/// compositor never touches the filesystem from the frame loop.
+const TEST_STATE_DUMP_ENV: &str = "NIRIOS_TEST_STATE_DUMP";
+
 /// Entry point for the smithay-on-Wayland compositor.
 ///
 /// Diverges (`-> !`) so the caller in `main` can use it next to
@@ -49,7 +59,14 @@ pub fn run() -> ! {
     //
     // For Phase 2 the loop only fires when the listening socket has a new
     // connection, so the `Display` exists primarily to mint `DisplayHandle`s.
-    let display: Display<State> = Display::new().expect("create wayland display");
+    //
+    // Phase 7: the loop body must also call `display.dispatch_clients` +
+    // `display.flush_clients` each tick — without that, the per-iteration
+    // calloop dispatch never pulls bytes off accepted client sockets and
+    // the client side of `wl_display.get_registry` blocks forever.
+    // Mirrors smithay 0.7's `examples/minimal.rs` and `examples/seat.rs`
+    // loop bodies.
+    let mut display: Display<State> = Display::new().expect("create wayland display");
     let display_handle = display.handle();
 
     let mut state = State::new(event_loop.handle(), display_handle.clone());
@@ -120,6 +137,13 @@ pub fn run() -> ! {
         })
         .expect("insert listening socket source into event loop");
 
+    // Phase 7 test introspection: when `NIRIOS_TEST_STATE_DUMP` is set, the
+    // compositor serializes its `WorkspaceTree` to that path on every frame
+    // tick. The integration test in `tests/compositor_test.rs` reads this
+    // file to assert foreign-tab adoption + reaping. Production runs never
+    // set the env var, so the dump is a true zero-cost noop there.
+    let test_dump_path = std::env::var_os(TEST_STATE_DUMP_ENV);
+
     // Phase 4 tick body. Each iteration:
     //
     //   1. Drain backend events (resize, close, redraw, focus). A
@@ -128,6 +152,7 @@ pub fn run() -> ! {
     //   2. Run a layout pass on the frame builder.
     //   3. Paint the scene.
     //   4. Submit the scene to the backend's primary output.
+    //   5. (Test-only) dump shell state if `NIRIOS_TEST_STATE_DUMP` is set.
     //
     // `submit_frame` is currently a no-op (vello + smithay glow interop
     // is the next follow-up); the host window therefore stays blank.
@@ -156,20 +181,53 @@ pub fn run() -> ! {
         let scene = frame_builder.paint();
         backend.submit_frame(&scene, OutputId(0));
 
-        // Pump any pending wayland traffic + sleep up to one frame.
-        // `flush_clients` keeps protocol-state changes flowing back to
-        // clients between dispatches; the calloop loop itself dispatches
-        // sources (the listening socket included) on each iteration.
+        // Phase 7 fix: drain wayland client traffic + push pending
+        // protocol updates back out. `dispatch_clients` advances each
+        // client's request queue (registry, get_compositor, get_xdg_surface,
+        // commit, …) and routes them through the `*Handler` impls.
+        // `flush_clients` pumps server-originated events (configure, …)
+        // back out to clients. Mirrors smithay 0.7's `examples/minimal.rs`.
+        if let Err(err) = display.dispatch_clients(&mut state) {
+            eprintln!("nirios compositor: dispatch_clients error: {err}");
+            break;
+        }
+        if let Err(err) = display.flush_clients() {
+            eprintln!("nirios compositor: flush_clients error: {err}");
+            break;
+        }
+
+        // Pump any pending calloop sources (the listening socket
+        // included) and sleep up to one frame. The calloop loop itself
+        // dispatches sources on each iteration; this is what lets
+        // newly-accepted connections fan out into `insert_client` calls.
         if let Err(err) = event_loop.dispatch(frame_period, &mut state) {
             eprintln!("nirios compositor: event loop dispatch error: {err}");
             break;
         }
         let _ = &state.display_handle;
+
+        // Phase 7 test introspection: serialize the live `WorkspaceTree`
+        // to the requested path. We write to a tempfile-in-the-same-dir
+        // and rename to make readers see a consistent snapshot (the test
+        // polls the file concurrently with the frame loop writing it).
+        if let Some(path) = test_dump_path.as_ref() {
+            if let Ok(json) = serde_json::to_vec(&state.workspace_tree) {
+                let final_path = std::path::Path::new(path);
+                let tmp_path = {
+                    let mut p = final_path.as_os_str().to_os_string();
+                    p.push(".tmp");
+                    std::path::PathBuf::from(p)
+                };
+                if std::fs::write(&tmp_path, &json).is_ok() {
+                    let _ = std::fs::rename(&tmp_path, final_path);
+                }
+            }
+        }
     }
 
     // `event_loop.run` only returns when the loop is asked to stop; we never
     // do that today, but keep an explicit exit so the function's `!` return
-    // type is honoured.
-    let _ = display;
+    // type is honoured. `display` is dropped here, severing its clients.
+    drop(display);
     std::process::exit(0)
 }

@@ -83,6 +83,47 @@ pub fn adopt_toplevel(
     tab_id
 }
 
+/// Rewrite the `app_id` (and the tab `title`) of a previously-adopted
+/// `TileContent::Foreign` tab to match a freshly-received
+/// `xdg_toplevel::set_app_id` request.
+///
+/// The client may call `set_app_id` *after* `xdg_surface::get_toplevel`
+/// fires [`adopt_toplevel`], in which case the original adoption recorded a
+/// synthetic `anon-<surface_id>` placeholder. This helper walks the
+/// workspace tree, finds the foreign tab whose `surface_id` matches, and
+/// rewrites both the recorded `app_id` and the tab's display title.
+///
+/// Returns `true` when a matching tab was found and rewritten; `false`
+/// otherwise (e.g. the toplevel was never adopted into the active
+/// workspace, or it has since been destroyed).
+pub fn rename_tab_for_app_id(
+    tree: &mut WorkspaceTree,
+    surface_id: u64,
+    new_app_id: String,
+) -> bool {
+    let new_title = tab_label_for_foreign(&new_app_id);
+    for ws in tree.workspaces.iter_mut() {
+        for strip in ws.strips.iter_mut() {
+            for group in strip.window_groups.iter_mut() {
+                for tab in group.tabs.iter_mut() {
+                    if let TileContent::Foreign {
+                        surface_id: s,
+                        app_id,
+                    } = &mut tab.tile
+                    {
+                        if *s == surface_id {
+                            *app_id = new_app_id;
+                            tab.title = new_title;
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Walk the persisted tree looking for a `TileContent::Foreign` tab whose
 /// `surface_id` matches `destroyed_surface_id`; remove it from its group
 /// when found and return `true`. Phase 6 (Task 6.2) of the compositor
@@ -185,6 +226,36 @@ mod tests {
                 matches!(&t.tile, TileContent::Foreign { surface_id: 42, .. })
             });
         assert!(!still_there, "the foreign tab with surface_id=42 must be gone");
+    }
+
+    #[test]
+    fn rename_tab_for_app_id_rewrites_anon_placeholder() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        // First adopt without an app-id so the tab gets the
+        // `anon-<surface_id>` placeholder.
+        let _ = adopt_toplevel(&mut tree, 99, None);
+        let renamed = rename_tab_for_app_id(&mut tree, 99, "org.example.late".into());
+        assert!(renamed, "rename should report it updated a tab");
+        let group = &tree.workspaces[0].strips[0].window_groups[0];
+        let tab = group.tabs.last().unwrap();
+        match &tab.tile {
+            TileContent::Foreign { app_id, surface_id } => {
+                assert_eq!(*surface_id, 99);
+                assert_eq!(app_id, "org.example.late");
+            }
+            other => panic!("expected Foreign tile, got {:?}", other),
+        }
+        assert_eq!(tab.title, "late", "title is the trailing app-id component");
+    }
+
+    #[test]
+    fn rename_tab_for_app_id_returns_false_for_unknown_surface() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let renamed = rename_tab_for_app_id(&mut tree, 12345, "x".into());
+        assert!(
+            !renamed,
+            "rename must report `false` when the surface isn't adopted"
+        );
     }
 
     #[test]
