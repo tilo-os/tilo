@@ -67,7 +67,16 @@ pub fn run() -> ! {
     // touching this entry point.
     let backend_kind = parse_backend_from_args();
     let mut backend: Box<dyn Backend> = match backend_kind {
-        BackendKind::Winit => Box::new(WinitBackend::new().expect("init winit backend")),
+        BackendKind::Winit => {
+            let mut b = WinitBackend::new().expect("init winit backend");
+            // Match the FrameBuilder's internal theme so the host
+            // window clears to chrome bg before the first frame
+            // paints. Runtime theme changes would re-call this; for
+            // now `Theme::dark()` is the only one in play and the
+            // FrameBuilder picks the same constant.
+            b.set_base_color(quick_ui::theme::Theme::dark().bg_app);
+            Box::new(b)
+        }
         BackendKind::Drm => match DrmBackend::new() {
             Ok(b) => Box::new(b),
             Err(e) => {

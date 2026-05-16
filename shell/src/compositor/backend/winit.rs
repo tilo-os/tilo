@@ -1,61 +1,330 @@
-//! Smithay's winit backend hosts the compositor on top of an existing
-//! Wayland/X11 session — the dev/test path. Headless TTY is `DrmBackend`
-//! (Phase 5).
+//! Phase 4 follow-up: drive the host window via vello+wgpu directly
+//! rather than smithay's `WinitGraphicsBackend<GlowRenderer>`.
 //!
-//! Phase 3 only constructs the backend and converts smithay's
-//! [`WinitEvent`]s into [`BackendEvent`]s. Frame submission is wired
-//! in Phase 4 once the per-frame scene production pipeline lifts out
-//! of `bin/shots`.
+//! Vello renders via wgpu while smithay's winit backend hands out an
+//! OpenGL/Glow surface — the two cannot trivially share a surface. The
+//! shortest unblock for "the host window actually paints chrome" is to
+//! own the winit window ourselves and run the same vello pipeline that
+//! `quick-ui::App::run` and `bin/shots` use. Smithay still owns the
+//! wayland-server protocol state; this backend only owns the rendered
+//! window. When Phase 6+ adds smithay-client surface presentation
+//! (foreign tabs) we can layer a glow path or texture-import back in
+//! on top — but until then this backend is the only consumer.
+//!
+//! The event integration uses winit 0.30's
+//! [`pump_app_events`][pump] so the calloop event loop in
+//! [`crate::compositor::native::run`] stays the driver: each
+//! iteration calls [`Backend::poll_events`] (which pumps winit
+//! non-blocking), then `frame_builder.paint`, then
+//! [`Backend::submit_frame`].
+//!
+//! [pump]: winit::platform::pump_events::EventLoopExtPumpEvents::pump_app_events
 
-use smithay::backend::renderer::glow::GlowRenderer;
-use smithay::backend::winit::{self, WinitEvent, WinitEventLoop, WinitGraphicsBackend};
-use vello::Scene;
+use std::sync::Arc;
+use std::time::Duration;
+
+use vello::peniko::Color;
+use vello::util::{RenderContext, RenderSurface};
+use vello::{wgpu, AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene};
+use winit::application::ApplicationHandler;
+use winit::event::WindowEvent;
+use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::platform::pump_events::{EventLoopExtPumpEvents, PumpStatus};
+use winit::window::{Window, WindowAttributes, WindowId};
 
 use super::{Backend, BackendEvent, Output, OutputId};
 
+/// Initial host-window size — matches the `shots` default so a fresh
+/// `--mode native` launch is comparable to a `cargo run --bin shots`
+/// screenshot.
+const INITIAL_WIDTH: u32 = 1600;
+const INITIAL_HEIGHT: u32 = 900;
+
+/// Default base color used for the first few frames before any
+/// `BackendEvent::OutputResized` has carried a theme through. Matches
+/// `quick_ui::theme::Theme::dark().bg_app` so the host window doesn't
+/// flash white on boot. The compositor overrides this each frame via
+/// [`WinitBackend::set_base_color`].
+const FALLBACK_BG: Color = Color::rgb8(0x1A, 0x1B, 0x26);
+
 pub struct WinitBackend {
-    graphics: WinitGraphicsBackend<GlowRenderer>,
-    winit_loop: WinitEventLoop,
+    event_loop: EventLoop<()>,
+    inner: Inner,
+}
+
+/// The lifecycle-aware half: everything `ApplicationHandler` needs to
+/// touch lives here so `pump_app_events` can take `&mut self`. The
+/// `EventLoop` itself stays in [`WinitBackend`] because winit's API
+/// surfaces `pump_app_events` as a method on `&mut EventLoop`.
+struct Inner {
+    /// `None` until winit fires the first `resumed`. We can't create
+    /// a `Window` before the event loop has run an iteration on
+    /// platforms that enforce ActiveEventLoop semantics; deferring
+    /// here keeps the same code path working on every supported
+    /// platform.
+    window: Option<Arc<Window>>,
+    /// Constructed alongside the window in `resumed`. Wraps the wgpu
+    /// instance/device that vello drives.
+    render: Option<RenderState>,
     outputs: Vec<Output>,
+    event_buffer: Vec<BackendEvent>,
+    /// Background color used by `submit_frame`. Updated by callers
+    /// through [`WinitBackend::set_base_color`] so the theme's
+    /// `bg_app` doesn't leak into every render call.
+    base_color: Color,
+    /// Set when `pump_app_events` returns `PumpStatus::Exit` so we
+    /// emit a single `CloseRequested` and stop pumping further.
+    closed: bool,
+}
+
+struct RenderState {
+    render_cx: RenderContext,
+    surface: RenderSurface<'static>,
+    renderer: Renderer,
 }
 
 impl WinitBackend {
+    /// Build the event loop + initial state. The window itself is
+    /// created lazily on the first `resumed` callback. Returning here
+    /// only fails if winit can't construct the event loop at all.
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let (graphics, winit_loop) =
-            winit::init::<GlowRenderer>().map_err(|e| format!("winit init: {e:?}"))?;
-        let size = graphics.window_size();
+        let event_loop = EventLoop::new()?;
         let outputs = vec![Output {
             id: OutputId(0),
-            size: (size.w.max(0) as u32, size.h.max(0) as u32),
+            size: (INITIAL_WIDTH, INITIAL_HEIGHT),
             scale: 1.0,
         }];
-        Ok(Self { graphics, winit_loop, outputs })
+        Ok(Self {
+            event_loop,
+            inner: Inner {
+                window: None,
+                render: None,
+                outputs,
+                event_buffer: Vec::new(),
+                base_color: FALLBACK_BG,
+                closed: false,
+            },
+        })
+    }
+
+    /// Override the per-frame clear color. The compositor calls this
+    /// each tick with `theme.bg_app` so changing themes at runtime is
+    /// reflected immediately without touching the backend trait.
+    pub fn set_base_color(&mut self, color: Color) {
+        self.inner.base_color = color;
     }
 }
 
 impl Backend for WinitBackend {
-    fn submit_frame(&mut self, _scene: &Scene, _output: OutputId) {
-        // Phase 4: bind the EGL surface, encode the scene via vello,
-        // swap buffers. For now we keep a borrow of `graphics` to
-        // ensure it isn't dropped between ticks.
-        let _ = &self.graphics;
+    fn submit_frame(&mut self, scene: &Scene, _output: OutputId) {
+        let inner = &mut self.inner;
+        let Some(render) = inner.render.as_mut() else {
+            return;
+        };
+        let width = render.surface.config.width;
+        let height = render.surface.config.height;
+        let surface_texture = match render.surface.surface.get_current_texture() {
+            Ok(tex) => tex,
+            Err(e) => {
+                eprintln!("nirios compositor: get_current_texture: {e:?}");
+                return;
+            }
+        };
+        let device_handle = &render.render_cx.devices[render.surface.dev_id];
+        let result = render.renderer.render_to_surface(
+            &device_handle.device,
+            &device_handle.queue,
+            scene,
+            &surface_texture,
+            &RenderParams {
+                base_color: inner.base_color,
+                width,
+                height,
+                antialiasing_method: AaConfig::Area,
+            },
+        );
+        if let Err(e) = result {
+            eprintln!("nirios compositor: render_to_surface: {e:?}");
+            return;
+        }
+        surface_texture.present();
+        device_handle.device.poll(wgpu::Maintain::Poll);
     }
 
     fn poll_events(&mut self, callback: &mut dyn FnMut(BackendEvent)) {
-        let _ = self.winit_loop.dispatch_new_events(|event| match event {
-            WinitEvent::CloseRequested => callback(BackendEvent::CloseRequested),
-            WinitEvent::Resized { size, scale_factor } => {
-                callback(BackendEvent::OutputResized {
-                    id: OutputId(0),
-                    size: (size.w.max(0) as u32, size.h.max(0) as u32),
-                    scale: scale_factor as f32,
-                });
+        if !self.inner.closed {
+            let status = self
+                .event_loop
+                .pump_app_events(Some(Duration::ZERO), &mut self.inner);
+            if let PumpStatus::Exit(_) = status {
+                self.inner.closed = true;
+                self.inner
+                    .event_buffer
+                    .push(BackendEvent::CloseRequested);
             }
-            WinitEvent::Input(_) => callback(BackendEvent::Input),
-            WinitEvent::Focus(focused) => callback(BackendEvent::Focus(focused)),
-            WinitEvent::Redraw => callback(BackendEvent::Redraw),
+        }
+        for event in self.inner.event_buffer.drain(..) {
+            callback(event);
+        }
+    }
+
+    fn outputs(&self) -> &[Output] {
+        &self.inner.outputs
+    }
+}
+
+impl ApplicationHandler for Inner {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        // `resumed` can fire more than once (suspend/resume cycles on
+        // mobile); we treat the first as "init" and subsequent ones
+        // as no-ops because our render state is independent of the
+        // application lifecycle.
+        if self.window.is_some() {
+            return;
+        }
+        let attrs = WindowAttributes::default()
+            .with_title("nirios")
+            .with_inner_size(winit::dpi::PhysicalSize::new(
+                INITIAL_WIDTH,
+                INITIAL_HEIGHT,
+            ));
+        let window = match event_loop.create_window(attrs) {
+            Ok(w) => Arc::new(w),
+            Err(e) => {
+                eprintln!("nirios compositor: create_window: {e:?}");
+                event_loop.exit();
+                return;
+            }
+        };
+        let size = window.inner_size();
+        let scale = window.scale_factor() as f32;
+
+        let mut render_cx = RenderContext::new();
+        let surface = match pollster::block_on(render_cx.create_surface(
+            window.clone(),
+            size.width,
+            size.height,
+            wgpu::PresentMode::AutoVsync,
+        )) {
+            Ok(mut s) => {
+                s.config.format = s.config.format.add_srgb_suffix();
+                let dh = &render_cx.devices[s.dev_id];
+                s.surface.configure(&dh.device, &s.config);
+                s
+            }
+            Err(e) => {
+                eprintln!("nirios compositor: create_surface: {e:?}");
+                event_loop.exit();
+                return;
+            }
+        };
+        let device_handle = &render_cx.devices[surface.dev_id];
+        let renderer = match Renderer::new(
+            &device_handle.device,
+            RendererOptions {
+                surface_format: Some(surface.config.format),
+                use_cpu: false,
+                antialiasing_support: AaSupport::all(),
+                num_init_threads: None,
+            },
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("nirios compositor: Renderer::new: {e:?}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        if let Some(out) = self.outputs.first_mut() {
+            out.size = (size.width, size.height);
+            out.scale = scale;
+        }
+        // Mirror the initial size onto the layout pipeline so the very
+        // first frame is at the correct viewport.
+        self.event_buffer.push(BackendEvent::OutputResized {
+            id: OutputId(0),
+            size: (size.width, size.height),
+            scale,
+        });
+        window.request_redraw();
+        self.window = Some(window);
+        self.render = Some(RenderState {
+            render_cx,
+            surface,
+            renderer,
         });
     }
 
-    fn outputs(&self) -> &[Output] { &self.outputs }
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _id: WindowId,
+        event: WindowEvent,
+    ) {
+        match event {
+            WindowEvent::CloseRequested => {
+                self.event_buffer.push(BackendEvent::CloseRequested);
+                event_loop.exit();
+            }
+            WindowEvent::Resized(size) => {
+                if size.width == 0 || size.height == 0 {
+                    return;
+                }
+                if let Some(render) = self.render.as_mut() {
+                    render
+                        .render_cx
+                        .resize_surface(&mut render.surface, size.width, size.height);
+                }
+                let scale = self
+                    .window
+                    .as_ref()
+                    .map(|w| w.scale_factor() as f32)
+                    .unwrap_or(1.0);
+                if let Some(out) = self.outputs.first_mut() {
+                    out.size = (size.width, size.height);
+                    out.scale = scale;
+                }
+                self.event_buffer.push(BackendEvent::OutputResized {
+                    id: OutputId(0),
+                    size: (size.width, size.height),
+                    scale,
+                });
+            }
+            WindowEvent::Focused(focused) => {
+                self.event_buffer.push(BackendEvent::Focus(focused));
+            }
+            WindowEvent::RedrawRequested => {
+                // The compositor repaints every tick regardless of
+                // `RedrawRequested`, so we forward the signal but
+                // don't rely on it.
+                self.event_buffer.push(BackendEvent::Redraw);
+            }
+            WindowEvent::CursorMoved { .. }
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::KeyboardInput { .. }
+            | WindowEvent::MouseWheel { .. } => {
+                // Phase 6 routes these through the smithay seat layer;
+                // for now the compositor only needs to know that
+                // *some* input happened so it can keep the frame loop
+                // hot.
+                self.event_buffer.push(BackendEvent::Input);
+            }
+            _ => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        // Our outer loop already paints every frame via
+        // `frame_builder.paint`, so we don't need to request a
+        // redraw here. Leaving this empty is intentional.
+    }
 }
+
+// Note: no unit tests for `WinitBackend` itself — winit panics on
+// non-main-thread `EventLoop::new`, which makes parallel `cargo test`
+// runs unreliable. Phase 4's verification is the runtime smoke ("boot
+// `--mode native`, host window paints chrome") and the wider ledger
+// tests that exercise `FrameBuilder` directly. When Phase 6 splits
+// `Inner` into a state-only struct independent of the event loop, we
+// can add focused unit tests on it.
