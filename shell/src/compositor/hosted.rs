@@ -17,12 +17,27 @@ use quick_ui::presence::PresenceKey;
 use quick_ui::{App, State};
 
 /// Boot the shell on top of the host's existing display server with
-/// the legacy v1 behaviour — peer-sync OFF. Kept as a thin alias of
-/// [`run_with_options`] for callers that still hard-code the no-arg
-/// entry point (notably integration tests that don't care about the
-/// libp2p side of the world).
+/// the legacy v1 behaviour — peer-sync OFF, portals OFF. Kept as a
+/// thin alias of [`run_with_options`] for callers that still hard-code
+/// the no-arg entry point (notably integration tests that don't care
+/// about the libp2p / portal side of the world).
 pub fn run() {
-    run_with_options(false)
+    run_with_options(false);
+}
+
+/// Aggregated boot-time toggles for the hosted entry point. Held by
+/// value so a future flag (e.g. `--enable-foo`) is one struct-field
+/// edit + one branch, not a fan-out across `main.rs` and every test
+/// fixture. v1 stays at two fields; the empty default is OFF for both.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct HostedOptions {
+    pub enable_peer_sync: bool,
+    /// Sandbox Phase 4.3: spin up the `xdg-desktop-portal` D-Bus
+    /// backend (FileChooser / ScreenCast / Access). Off by default —
+    /// the portal lifetime is tied to the shell's tokio runtime, and
+    /// callers without the flag get the exact pre-4.3 hosted-mode
+    /// behaviour.
+    pub enable_portals: bool,
 }
 
 /// Boot the shell on top of the host's existing display server.
@@ -40,6 +55,21 @@ pub fn run() {
 /// `--enable-peer-sync` on the CLI) preserves the existing behaviour
 /// bit-for-bit.
 pub fn run_with_options(enable_peer_sync: bool) {
+    run_with_full_options(HostedOptions {
+        enable_peer_sync,
+        enable_portals: false,
+    });
+}
+
+/// Full options-struct form. New flags (Sandbox 4.3's portal toggle)
+/// land here without changing the legacy `run_with_options(bool)`
+/// caller — `main.rs` switches over when it's wiring multiple flags.
+pub fn run_with_full_options(opts: HostedOptions) {
+    let HostedOptions {
+        enable_peer_sync,
+        enable_portals,
+    } = opts;
+
     let path = persist::state_json_path();
     let tree = persist::load_or_default(&path);
 
@@ -137,6 +167,80 @@ pub fn run_with_options(enable_peer_sync: bool) {
             }
         });
     }
+    // Sandbox Phase 4.3 — bring up the xdg-desktop-portal D-Bus
+    // backend if `--enable-portals` was passed. The portal needs a
+    // tokio runtime to drive zbus's async dispatch; reuse the
+    // peer-sync runtime when present, otherwise mint a dedicated one
+    // (kept alive next to `peer_sync` for the lifetime of `app.run`).
+    //
+    // The portal must NOT bypass the existing sandbox / grant
+    // enforcement — `flow::resolve` is the only entry point that
+    // mutates the workspace's `grants` map, and it consults the same
+    // store the chrome's permission-prompt pump already uses (Phase
+    // 4.2). Failures are downgraded to a warning so a broken session
+    // bus never wedges the shell.
+    let _portal_runtime: Option<tokio::runtime::Runtime>;
+    let _portal_handle: Option<crate::portal::ServerHandle>;
+    if enable_portals {
+        let (rt_handle, runtime_owned) = match tokio::runtime::Handle::try_current() {
+            Ok(h) => (h, None),
+            Err(_) => {
+                let rt = tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .thread_name("nirios-portal")
+                    .build()
+                    .ok();
+                match rt {
+                    Some(rt) => (rt.handle().clone(), Some(rt)),
+                    None => {
+                        tracing::warn!("portal: tokio runtime build failed; portal stays off");
+                        _portal_runtime = None;
+                        _portal_handle = None;
+                        app.run();
+                        return;
+                    }
+                }
+            }
+        };
+        // Construct the portal context on a shared `WorkspaceTree`
+        // clone. v1 mirrors what peer-sync does — the in-memory
+        // `Arc<Mutex<WorkspaceTree>>` is enough for the round-trip
+        // tests + lets the prompt pump later read the same grants
+        // map. Full integration with the live shell tree (the
+        // `Rc<RefCell<ChromeState>>` chain) is a follow-up unit.
+        let shared_tree = std::sync::Arc::new(std::sync::Mutex::new(tree.clone()));
+        let grants = crate::portal::GrantStoreHandle::new(shared_tree);
+        let prompts =
+            crate::portal::PromptQueueHandle::new(crate::portal::PromptResolver::Channel);
+        let ctx = crate::portal::PortalContext {
+            grants,
+            prompts,
+            caller_map: crate::portal::CallerMap::new(),
+        };
+        let serve_result: Result<crate::portal::ServerHandle, zbus::Error> =
+            rt_handle.block_on(async move {
+                let conn = zbus::ConnectionBuilder::session()?.build().await?;
+                crate::portal::serve(conn, ctx).await
+            });
+        match serve_result {
+            Ok(h) => {
+                tracing::info!(
+                    "portal: serving FileChooser+ScreenCast+Access on {}",
+                    crate::portal::BUS_NAME
+                );
+                _portal_handle = Some(h);
+            }
+            Err(e) => {
+                tracing::warn!("portal: serve failed ({e}); continuing without portal");
+                _portal_handle = None;
+            }
+        }
+        _portal_runtime = runtime_owned;
+    } else {
+        _portal_runtime = None;
+        _portal_handle = None;
+    }
+
     let _peer_sync = peer_sync; // keep alive for lifetime of `app.run()`
     app.run();
 }
