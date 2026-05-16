@@ -1,15 +1,21 @@
 pub mod actor;
 pub mod behaviour;
+pub mod decoder;
+pub mod encoder;
 pub mod hub;
 pub mod invite;
 pub mod p2p;
 pub mod protocol;
 pub mod replica;
+pub mod streaming;
 pub mod wayland;
 
 pub use actor::{Actor, NetCmd, NetEvent};
 pub use behaviour::{NiriosBehaviour, load_or_create_keypair};
+pub use decoder::{DecodedFrame, H264Decoder};
+pub use encoder::{EncodeError, H264Encoder};
 pub use hub::{Hub, TopicSubscriber};
 pub use invite::{PeerInviteToken, make_invite_token, validate_invite_token};
 pub use protocol::{NeighbourMsg, PeerId as MsgPeerId, PresenceKey, SurfaceId};
 pub use replica::WorkspaceTreeReplica;
+pub use streaming::{InputEvent, RemoteInputSink, ShareRegistry, StreamingShare, StreamingThrottle};
