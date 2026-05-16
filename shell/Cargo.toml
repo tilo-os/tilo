@@ -25,6 +25,13 @@ quick-ui = { path = "../quick-ui" }
 quick-terminal = { path = "../apps/terminal" }
 file-explorer = { path = "../apps/file-explorer" }
 winit = "0.30.13"
+# Compositor Phase 4 follow-up: the native winit backend bypasses smithay's
+# glow renderer in favor of vello-on-wgpu directly (`backend/winit.rs`).
+# Vello's `RenderContext::create_surface` is async, so we need a blocking
+# executor inside the synchronous `WinitBackend::new`. `pollster` is already
+# pulled in as a dev-dep at the same version, so Cargo collapses to a single
+# copy in the lock.
+pollster = "0.4.0"
 sysinfo = "0.32"
 # Direct deps needed by in-shell widgets (browser_stub, etc.) that implement
 # `quick_ui::widget::Widget`. Versions are pinned to match quick-ui's Cargo.toml.
