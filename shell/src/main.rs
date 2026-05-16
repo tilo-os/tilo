@@ -1,11 +1,14 @@
 //! Compositor binary entry point.
 //!
 //! Phase 1 of `docs/superpowers/plans/2026-05-02-real-wayland-compositor.md`
-//! splits the launch surface in two: pick a [`Mode`] from `--mode`, then
-//! delegate to the matching `compositor::*::run` function. Today only
-//! [`Mode::Hosted`] does anything useful; [`Mode::Native`] is a stub that
-//! exits non-zero so we can wire smithay-on-TTY in later phases without
-//! touching `main.rs` again.
+//! split the launch surface in two: pick a [`Mode`] from `--mode`, then
+//! delegate to the matching `compositor::*::run` function.
+//!
+//! As of Phase 7, [`Mode::Native`] is the default — no flag at all spins up
+//! the real smithay server (auto-binding `wayland-N`) with the vello+wgpu
+//! winit backend from Phase 4. [`Mode::Hosted`] remains as an explicit dev
+//! opt-in (`--mode hosted`) for the legacy iced-on-winit path when DRM or a
+//! spare Wayland session is unavailable.
 
 use quick_desktop::compositor::{self, Mode};
 
