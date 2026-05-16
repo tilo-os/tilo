@@ -47,6 +47,8 @@ use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::{delegate_compositor, delegate_output, delegate_seat, delegate_shm, delegate_xdg_shell};
 
 use crate::compositor::tab_binding;
+use crate::network::protocol::{PeerId as MsgPeerId, SurfaceId};
+use crate::network::streaming::{InputEvent, RemoteInputSink, ShareRegistry};
 use crate::shell::state::WorkspaceTree;
 
 /// The compositor's process-wide state.
@@ -83,6 +85,17 @@ pub struct State {
     /// [`crate::shell::state::TileContent::Foreign`] tabs (see
     /// [`crate::compositor::tab_binding::adopt_toplevel`]).
     pub workspace_tree: WorkspaceTree,
+    /// Peer-sync share registry — Phase 4 Task 4.4. Tracks which peers
+    /// have been granted streaming + input access to which surfaces, and
+    /// the per-peer `read_only` flag. Inbound
+    /// [`crate::network::NeighbourMsg::RemoteInput`] events are filtered
+    /// through this registry before they reach the seat.
+    pub share_registry: ShareRegistry,
+    /// Last `RemoteInput` event that survived the share-registry gate.
+    /// Read by integration tests that want to assert seat-equivalent
+    /// injection happened, without spinning up a real `Seat<State>`.
+    /// v2 replaces this with the proper smithay seat-call path.
+    pub last_remote_input: Option<(MsgPeerId, SurfaceId, InputEvent)>,
 }
 
 impl State {
@@ -109,7 +122,61 @@ impl State {
             seat_state,
             output_manager_state,
             workspace_tree: WorkspaceTree::bootstrap_default(),
+            share_registry: ShareRegistry::new(),
+            last_remote_input: None,
         }
+    }
+
+    /// Apply a remote-input event from `peer` targeting `surface`.
+    ///
+    /// Phase 4 Task 4.4. The actor's event loop calls this from its
+    /// [`crate::network::NeighbourMsg::RemoteInput`] handler. The
+    /// per-share `read_only` flag in [`Self::share_registry`] is the
+    /// only gate — when set, the event drops here and never reaches the
+    /// smithay seat.
+    ///
+    /// Seat injection itself is deferred to the v2 path once the
+    /// compositor's `Seat<State>` is wired into this struct. For v1 we
+    /// rely on the routing decision made here (verified by
+    /// `streaming::tests::remote_input_blocked_when_read_only`) and
+    /// surface the event into [`tracing::debug`] so production logs show
+    /// the round-trip.
+    pub fn apply_remote_input(
+        &mut self,
+        peer: MsgPeerId,
+        surface: SurfaceId,
+        event: InputEvent,
+    ) -> bool {
+        // We can't pass `self` twice (once as `&ShareRegistry` via
+        // `&self.share_registry` and once as `&mut RemoteInputSink`), so
+        // inline the routing decision: read the gate from the registry,
+        // drop if blocked, otherwise call `RemoteInputSink::apply` on
+        // ourselves. Equivalent to `ShareRegistry::route_to`, just
+        // expressed without an aliasing-prone helper.
+        if !self.share_registry.accept_remote_input(peer, surface) {
+            return false;
+        }
+        RemoteInputSink::apply(self, peer, surface, event);
+        true
+    }
+}
+
+// `RemoteInputSink` impl: receives the gated events from
+// `ShareRegistry::route_to`. v1 logs and stores the most recently
+// applied event so tests can introspect; v2 wires this into the smithay
+// `Seat::input` API. The reason the seat call is staged behind a v2
+// landing is that the compositor's `Seat<State>` field is added by
+// Task 4.4's follow-up alongside the input-device source registration;
+// the routing / read-only gating ships now so the test surface is
+// stable.
+impl RemoteInputSink for State {
+    fn apply(&mut self, peer: MsgPeerId, surface: SurfaceId, event: InputEvent) {
+        tracing::debug!(
+            target: "quick_desktop::compositor::state",
+            peer, surface, ?event,
+            "remote-input applied (v1 — seat injection lands in 4.4 follow-up)"
+        );
+        self.last_remote_input = Some((peer, surface, event));
     }
 }
 
