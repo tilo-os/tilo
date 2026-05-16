@@ -2586,6 +2586,31 @@ impl Widget for ShellOverlayHost {
         "ShellOverlayHost"
     }
 
+    /// Expose content + palette + sidebar as direct children so trait
+    /// walkers (e.g. the e2e harness's `widget_registry`) can recurse
+    /// into the live tree. The traversal order matches `build_layout`'s
+    /// child-node ordering: content, palette, then sidebar (last so it
+    /// paints over the desktop chrome).
+    fn children(&self) -> Vec<&dyn Widget> {
+        let mut out: Vec<&dyn Widget> = Vec::with_capacity(3);
+        out.push(self.content.as_ref());
+        out.push(&self.palette);
+        if let Some(s) = self.sidebar.as_ref() {
+            out.push(s.as_ref());
+        }
+        out
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        let mut out: Vec<&mut (dyn Widget + '_)> = Vec::with_capacity(3);
+        out.push(self.content.as_mut());
+        out.push(&mut self.palette);
+        if let Some(s) = self.sidebar.as_mut() {
+            out.push(s.as_mut());
+        }
+        out
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
