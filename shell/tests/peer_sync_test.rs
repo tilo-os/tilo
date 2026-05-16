@@ -229,3 +229,143 @@ fn invite_token_round_trips() {
     assert_eq!(parsed.workspace_id, 99);
     assert_eq!(parsed.owner_addr, "/ip4/127.0.0.1/tcp/8888");
 }
+
+/// Phase 4 end-to-end smoke test — A encodes an RGBA gradient, publishes
+/// the NALU bytes as a [`NeighbourMsg::SurfaceFrame`], and B decodes the
+/// payload back into an image-shaped frame whose dimensions match the
+/// source. This is the cross-actor analogue of
+/// `network::encoder::tests::gradient_round_trip_psnr_at_least_35_db`
+/// — the unit test proves the codec, this test proves the bytes survive
+/// the gossipsub round-trip.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn surface_frame_round_trips_through_gossipsub() {
+    use quick_desktop::network::{H264Decoder, H264Encoder};
+
+    let (cmd_a, _ev_rx_a, addr_a) = spawn_actor().await;
+    let (cmd_b, mut ev_rx_b, _addr_b) = spawn_actor().await;
+    cmd_b
+        .send(NetCmd::Connect { addr: addr_a })
+        .await
+        .expect("dial");
+    wait_peer_joined(&mut ev_rx_b).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // 64×48 gradient — large enough for openh264's 16-px macroblock
+    // alignment, small enough that the test runs in <2 s.
+    const W: u32 = 64;
+    const H: u32 = 48;
+    let mut rgba = Vec::with_capacity((W * H * 4) as usize);
+    for y in 0..H {
+        for x in 0..W {
+            rgba.push(((x * 255) / W) as u8);
+            rgba.push(((y * 255) / H) as u8);
+            rgba.push(128);
+            rgba.push(255);
+        }
+    }
+    let mut enc = H264Encoder::new(W, H, 30).expect("encoder");
+    let nalus = enc.encode(&rgba).expect("encode");
+    assert!(!nalus.is_empty());
+
+    cmd_a
+        .send(NetCmd::Publish {
+            ws: WS,
+            msg: NeighbourMsg::SurfaceFrame {
+                surface: 42,
+                encoded_h264: nalus.clone(),
+                ts: 1_700_000_000,
+            },
+        })
+        .await
+        .expect("publish surface frame");
+
+    let received_bytes = timeout(Duration::from_secs(10), async {
+        loop {
+            match ev_rx_b.recv().await {
+                Some(NetEvent::Msg {
+                    msg:
+                        NeighbourMsg::SurfaceFrame {
+                            surface,
+                            encoded_h264,
+                            ..
+                        },
+                    ..
+                }) if surface == 42 => return Some(encoded_h264),
+                Some(_) => continue,
+                None => return None,
+            }
+        }
+    })
+    .await
+    .expect("SurfaceFrame within 10 s")
+    .expect("event channel still open");
+
+    assert_eq!(received_bytes, nalus, "gossipsub-relayed bytes must match");
+
+    // Decode confirms the bitstream still represents the original size —
+    // i.e. the gossipsub layer didn't corrupt the payload.
+    let mut dec = H264Decoder::new();
+    let frame = dec.decode(&received_bytes).expect("decode");
+    assert_eq!(frame.width, W);
+    assert_eq!(frame.height, H);
+}
+
+/// Phase 4 remote-input smoke test — A publishes a `RemoteInput` with a
+/// serialised `InputEvent::PointerMotion` payload; B receives it and
+/// recovers the same event after deserialisation. End-to-end proof that
+/// the wire-level vocabulary survives the gossipsub round-trip.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_input_round_trips_through_gossipsub() {
+    use quick_desktop::network::InputEvent;
+
+    let (cmd_a, _ev_rx_a, addr_a) = spawn_actor().await;
+    let (cmd_b, mut ev_rx_b, _addr_b) = spawn_actor().await;
+    cmd_b
+        .send(NetCmd::Connect { addr: addr_a })
+        .await
+        .expect("dial");
+    wait_peer_joined(&mut ev_rx_b).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let original = InputEvent::PointerMotion {
+        x: 123.5,
+        y: 67.25,
+    };
+    let event_bytes = serde_json::to_vec(&original).expect("serialize event");
+    cmd_a
+        .send(NetCmd::Publish {
+            ws: WS,
+            msg: NeighbourMsg::RemoteInput {
+                peer: 3,
+                surface: 9,
+                event: event_bytes.clone(),
+            },
+        })
+        .await
+        .expect("publish remote input");
+
+    let received = timeout(Duration::from_secs(10), async {
+        loop {
+            match ev_rx_b.recv().await {
+                Some(NetEvent::Msg {
+                    msg:
+                        NeighbourMsg::RemoteInput {
+                            peer: 3,
+                            surface: 9,
+                            event,
+                        },
+                    ..
+                }) => return Some(event),
+                Some(_) => continue,
+                None => return None,
+            }
+        }
+    })
+    .await
+    .expect("RemoteInput within 10 s")
+    .expect("event channel still open");
+    assert_eq!(received, event_bytes);
+
+    let parsed: InputEvent = serde_json::from_slice(&received).expect("deserialize");
+    assert_eq!(parsed, original);
+}

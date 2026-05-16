@@ -1,0 +1,409 @@
+//! Peer-side foreign-surface view — Phase 4 Task 4.3.
+//!
+//! `PeerView` is the receive-side counterpart to the owner's encode loop in
+//! [`crate::network::streaming`]. It owns one
+//! [`crate::network::H264Decoder`] and paints the most recently decoded
+//! RGBA frame as a vello image draw, blitted into the widget's content
+//! rect.
+//!
+//! When the peer subscribes to a foreign tab and a
+//! [`crate::network::NeighbourMsg::SurfaceFrame`] arrives over the
+//! workspace's gossipsub topic, the actor's event loop calls
+//! [`PeerView::push_encoded`] which decodes synchronously and stashes the
+//! latest frame as a `peniko::Image`. The next `draw` pass blits it. Older
+//! frames are dropped — there's no queue, mirroring the encode side's
+//! "encode or drop" memory contract.
+//!
+//! ## Input replay
+//!
+//! Phase 4 Task 4.4 — pointer and keyboard events on a `PeerView` get
+//! recorded into an internal queue via [`PeerView::record_pointer_motion`]
+//! / [`PeerView::record_pointer_button`] / [`PeerView::record_key`]. The
+//! shell's per-frame tick drains [`PeerView::take_pending_inputs`] and
+//! ships each `InputEvent` over gossipsub as a
+//! [`crate::network::NeighbourMsg::RemoteInput`]. The owner's compositor
+//! then routes them through the [`crate::network::streaming::ShareRegistry`]
+//! before applying.
+
+use std::collections::HashMap;
+
+use automerge::{AutoCommit, ObjId};
+use taffy::{NodeId, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
+use winit::event::{Modifiers, WindowEvent};
+
+use quick_ui::Theme;
+use quick_ui::presence::PresenceCtx;
+use quick_ui::text_render::TextRenderer;
+use quick_ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
+
+use crate::network::decoder::{DecodedFrame, H264Decoder};
+use crate::network::protocol::{PeerId, SurfaceId};
+use crate::network::streaming::InputEvent;
+
+/// Peer-side widget rendering one shared surface.
+///
+/// Holds the decoder, the latest decoded frame as a peniko image (ready
+/// to blit), and the pending-input queue. Constructed by the chrome when
+/// a foreign tab is bound to a peer-shared surface; lives for the
+/// lifetime of the tab.
+pub struct PeerView {
+    /// Cached title string returned by `AppWidget::app_title` — the trait
+    /// signature requires a `&str`, so we materialise the format string
+    /// once at construction rather than per-frame.
+    title: String,
+    /// Surface id the owner uses to address this share. Echoed back in
+    /// `RemoteInput` so the owner can route input to the right surface.
+    surface_id: SurfaceId,
+    /// Local peer id (the *viewer*) — the value the owner sees as the
+    /// `peer` field on `RemoteInput`. Wired through from the shell at
+    /// construction.
+    local_peer: PeerId,
+    /// Active decoder. Constructed lazily on first `push_encoded` so the
+    /// PSNR-style construction failure path stays out of widget init.
+    decoder: H264Decoder,
+    /// Most recent decoded frame, ready to paint. `None` until the first
+    /// successful decode.
+    latest: Option<DecodedFrame>,
+    /// Cached `peniko::Image` derived from `latest`. Rebuilt only when
+    /// `latest` changes so the steady-state draw path doesn't reallocate.
+    cached_image: Option<vello::peniko::Image>,
+    /// Pending input events to ship back to the owner. Drained per frame
+    /// by the shell's tick hook.
+    pending_inputs: Vec<InputEvent>,
+    /// Layout rect computed by taffy.
+    rect: Rect,
+}
+
+impl PeerView {
+    /// Construct a new peer view for `surface_id` owned by the remote
+    /// peer; the viewer's own peer id is `local_peer`.
+    pub fn new(surface_id: SurfaceId, local_peer: PeerId) -> Self {
+        Self {
+            title: format!("Peer surface #{surface_id}"),
+            surface_id,
+            local_peer,
+            decoder: H264Decoder::new(),
+            latest: None,
+            cached_image: None,
+            pending_inputs: Vec::new(),
+            rect: Rect::ZERO,
+        }
+    }
+
+    /// Surface id this view renders.
+    pub fn surface_id(&self) -> SurfaceId {
+        self.surface_id
+    }
+
+    /// Local peer id (the viewer's).
+    pub fn local_peer(&self) -> PeerId {
+        self.local_peer
+    }
+
+    /// Push a NALU byte payload through the decoder. Drops failed
+    /// decodes silently (the next frame typically recovers). On success,
+    /// stashes the frame and invalidates the cached `peniko::Image` so
+    /// the next `draw` rebuilds it.
+    ///
+    /// Returns `true` if a new frame was decoded.
+    pub fn push_encoded(&mut self, nalus: &[u8]) -> bool {
+        match self.decoder.decode(nalus) {
+            Some(frame) => {
+                self.latest = Some(frame);
+                self.cached_image = None;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Borrow the most recent decoded frame, if any.
+    pub fn latest_frame(&self) -> Option<&DecodedFrame> {
+        self.latest.as_ref()
+    }
+
+    /// Record a pointer motion event the shell should ship to the owner
+    /// on the next tick. Coordinates are surface-local logical pixels.
+    pub fn record_pointer_motion(&mut self, x: f64, y: f64) {
+        self.pending_inputs
+            .push(InputEvent::PointerMotion { x, y });
+    }
+
+    /// Record a pointer button transition.
+    pub fn record_pointer_button(&mut self, button: u32, pressed: bool) {
+        self.pending_inputs
+            .push(InputEvent::PointerButton { button, pressed });
+    }
+
+    /// Record a key press / release.
+    pub fn record_key(&mut self, keysym: u32, pressed: bool) {
+        self.pending_inputs
+            .push(InputEvent::Key { keysym, pressed });
+    }
+
+    /// Drain the pending-input queue. The shell's per-frame tick calls
+    /// this and ships each event over gossipsub.
+    pub fn take_pending_inputs(&mut self) -> Vec<InputEvent> {
+        std::mem::take(&mut self.pending_inputs)
+    }
+
+    /// Rebuild the cached `peniko::Image` from `latest` if needed.
+    /// Cheap when `cached_image` is already populated; otherwise clones
+    /// the RGBA bytes once into a `Blob<u8>` and re-uses it across
+    /// subsequent paints.
+    fn ensure_image(&mut self) -> Option<&vello::peniko::Image> {
+        if self.cached_image.is_none() {
+            if let Some(frame) = &self.latest {
+                let blob =
+                    vello::peniko::Blob::new(std::sync::Arc::new(frame.rgba.clone()));
+                self.cached_image = Some(vello::peniko::Image::new(
+                    blob,
+                    vello::peniko::Format::Rgba8,
+                    frame.width,
+                    frame.height,
+                ));
+            }
+        }
+        self.cached_image.as_ref()
+    }
+}
+
+impl Widget for PeerView {
+    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy
+            .new_leaf(taffy::Style {
+                size: taffy::Size {
+                    width: taffy::Dimension::percent(1.0),
+                    height: taffy::Dimension::percent(1.0),
+                },
+                ..Default::default()
+            })
+            .expect("peer-view leaf");
+        node_map.insert(node, self as *mut dyn Widget);
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let l = taffy.layout(node).expect("layout");
+        self.rect = Rect::new(
+            origin.x + l.location.x as f64,
+            origin.y + l.location.y as f64,
+            origin.x + l.location.x as f64 + l.size.width as f64,
+            origin.y + l.location.y as f64 + l.size.height as f64,
+        );
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        let tokens = &theme.tokens;
+        // Background — fall through to the raised surface so an empty /
+        // pre-first-frame view still looks intentional rather than a
+        // hole in the chrome.
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            tokens.colors.surfaces.raised,
+            None,
+            &self.rect,
+        );
+
+        // We need the rect first; do the actual blit after.
+        let rect = self.rect;
+
+        if let Some(image) = self.ensure_image() {
+            // Scale + translate so the natural-size image fills `rect`.
+            let img_w = image.width as f64;
+            let img_h = image.height as f64;
+            if img_w > 0.0 && img_h > 0.0 {
+                let sx = rect.width() / img_w;
+                let sy = rect.height() / img_h;
+                let placement = Affine::translate((rect.x0, rect.y0))
+                    * Affine::scale_non_uniform(sx, sy);
+                scene.draw_image(image, transform * placement);
+            }
+        } else {
+            // Placeholder text — "waiting for first frame" so the test
+            // harness and the user both see this is an intentional empty
+            // state.
+            let label = "Awaiting peer surface…";
+            let size = tokens.typography.scale.base;
+            let (lw, lh) = text_renderer.measure(label, size, None);
+            let cx = rect.center().x - lw as f64 / 2.0;
+            let cy = rect.center().y - lh as f64 / 2.0;
+            text_renderer.draw_text(
+                scene,
+                label,
+                size,
+                tokens.colors.text_dim,
+                transform * Affine::translate((cx, cy)),
+                None,
+            );
+        }
+    }
+
+    fn handle_event(
+        &mut self,
+        _event: &WindowEvent,
+        _scale_factor: f64,
+        _modifiers: &Modifiers,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+        _handled: &mut bool,
+        _focus_target: &mut Option<NodeId>,
+        _node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
+        // Real winit→`InputEvent` translation lives at the shell level so
+        // we can resolve surface-local coordinates from `self.rect` and
+        // the cursor position. The shell calls `record_*` directly.
+    }
+
+    fn name(&self) -> &str {
+        "PeerView"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+}
+
+impl AppWidget for PeerView {
+    fn app_kind(&self) -> AppKind {
+        // No dedicated `Peer` variant yet; `Settings` is the catch-all
+        // glyph the shell already uses for foreign tabs in
+        // `shell::to_ui_kind`. The icon is mostly cosmetic on a peer view.
+        AppKind::Settings
+    }
+
+    fn app_title(&self) -> &str {
+        &self.title
+    }
+
+    fn app_icon(&self) -> IconDescriptor {
+        // Globe glyph stands in for "remote / peer surface" until a
+        // dedicated icon ships.
+        IconDescriptor::Glyph("\u{f0ac}")
+    }
+
+    fn permission_hint(&self) -> Option<AppKind> {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::network::encoder::H264Encoder;
+
+    /// Synthesise a deterministic RGBA gradient — mirrors the helper
+    /// inside the encoder tests so we don't have to commit a binary
+    /// fixture for the round-trip.
+    fn gradient_frame(width: u32, height: u32) -> Vec<u8> {
+        let mut out = Vec::with_capacity((width * height * 4) as usize);
+        for y in 0..height {
+            for x in 0..width {
+                let r = ((x * 255) / width.max(1)) as u8;
+                let g = ((y * 255) / height.max(1)) as u8;
+                out.push(r);
+                out.push(g);
+                out.push(128);
+                out.push(255);
+            }
+        }
+        out
+    }
+
+    /// Phase 4 Task 4.3 — required test. Encode a frame via the encoder,
+    /// push the NALU bytes through `PeerView::push_encoded`, then draw
+    /// and confirm a `DrawTag::IMAGE` lands in the scene's encoding.
+    #[test]
+    fn decoded_frame_paints_image_into_scene() {
+        use vello_encoding::DrawTag;
+        const W: u32 = 64;
+        const H: u32 = 64;
+        let rgba = gradient_frame(W, H);
+        let mut enc = H264Encoder::new(W, H, 30).expect("encoder");
+        let nalus = enc.encode(&rgba).expect("encode");
+
+        let mut view = PeerView::new(42, 7);
+        let progressed = view.push_encoded(&nalus);
+        assert!(progressed, "decoder produced no frame from encoder output");
+        // Sanity — the latest frame matches the source dimensions.
+        let latest = view.latest_frame().expect("frame stashed");
+        assert_eq!(latest.width, W);
+        assert_eq!(latest.height, H);
+
+        // Layout a 100×100 rect at origin so the image has somewhere to
+        // blit.
+        view.rect = Rect::new(0.0, 0.0, 100.0, 100.0);
+
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        let theme = Theme::default();
+        let presence = PresenceCtx::default();
+        view.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+
+        // Walk the encoded draw tags for an IMAGE tag.
+        let enc_ref = scene.encoding();
+        let has_image = enc_ref.draw_tags.iter().any(|t| *t == DrawTag::IMAGE);
+        assert!(
+            has_image,
+            "PeerView::draw emitted no image into the scene's draw stream"
+        );
+    }
+
+    #[test]
+    fn empty_view_paints_placeholder_text_not_image() {
+        use vello_encoding::DrawTag;
+        let mut view = PeerView::new(1, 1);
+        view.rect = Rect::new(0.0, 0.0, 100.0, 100.0);
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        let theme = Theme::default();
+        let presence = PresenceCtx::default();
+        view.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        let enc_ref = scene.encoding();
+        let has_image = enc_ref.draw_tags.iter().any(|t| *t == DrawTag::IMAGE);
+        assert!(
+            !has_image,
+            "fresh PeerView with no decoded frame leaked an image draw"
+        );
+    }
+
+    #[test]
+    fn pending_inputs_recorded_and_drained() {
+        let mut view = PeerView::new(1, 9);
+        view.record_pointer_motion(10.0, 20.0);
+        view.record_pointer_button(272, true);
+        view.record_key(0xFF0D, true);
+        let drained = view.take_pending_inputs();
+        assert_eq!(drained.len(), 3);
+        assert!(matches!(drained[0], InputEvent::PointerMotion { .. }));
+        assert!(matches!(drained[1], InputEvent::PointerButton { .. }));
+        assert!(matches!(drained[2], InputEvent::Key { .. }));
+        // Next drain is empty.
+        assert!(view.take_pending_inputs().is_empty());
+    }
+
+    #[test]
+    fn push_encoded_returns_false_for_empty_payload() {
+        let mut view = PeerView::new(0, 0);
+        assert!(!view.push_encoded(&[]));
+        assert!(view.latest_frame().is_none());
+    }
+}

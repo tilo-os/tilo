@@ -28,6 +28,7 @@ pub mod nirios_tokens;
 pub mod notes_app;
 pub mod overlay_host;
 pub mod overview;
+pub mod peer_view;
 pub mod persist;
 pub mod quick_settings;
 pub mod remote_cursors;
