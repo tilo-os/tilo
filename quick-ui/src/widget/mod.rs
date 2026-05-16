@@ -22,6 +22,19 @@ pub trait Widget {
     fn children(&self) -> Vec<&dyn Widget> { vec![] }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> { vec![] }
     fn name(&self) -> &str;
+    /// Optional stable identifier used by the e2e test harness to address
+    /// this widget by name. Returns `Some(id)` only for hand-picked, high-
+    /// value targets (palette input, wheel disc, key buttons, command
+    /// palette items). The driver's `widget_registry()` falls back to a
+    /// path-based key (`Parent/Child[index]`) when this is `None`, so
+    /// most widgets need not override it.
+    ///
+    /// `test_id` values must be unique across the live tree at any given
+    /// frame — the registry resolves on first match and a duplicate ID
+    /// would shadow the second occurrence. Convention: snake_case names
+    /// describing the role, not the widget type (e.g. `command_palette_input`,
+    /// not `TextInput`).
+    fn test_id(&self) -> Option<&str> { None }
     fn get_rect(&self) -> vello::kurbo::Rect;
     fn is_focusable(&self) -> bool { false }
     fn set_focus(&mut self, _focused: bool) {}
@@ -115,3 +128,29 @@ pub mod tooltip;
 pub mod toast;
 pub mod permission_prompt;
 pub use permission_prompt::{PermissionPrompt, PromptChoice, PROMPT_HEIGHT};
+
+// =====================================================================
+// Tests
+// =====================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `Widget::test_id` defaults to `None`. New widgets that don't opt
+    /// in to a stable test identifier inherit this — guarantees a path-
+    /// based fallback in `ShellDriver::widget_registry` rather than a
+    /// hard-coded panic. Pinned so a future edit that removes the default
+    /// blanket-breaks every widget impl that hasn't been touched yet.
+    #[test]
+    fn widget_test_id_default_is_none() {
+        // `Spacer` is the simplest widget that lives in the crate and
+        // doesn't override `test_id` — fits the "inherits the default"
+        // assertion exactly.
+        let s = Spacer::new();
+        assert!(
+            Widget::test_id(&s).is_none(),
+            "default Widget::test_id should be None"
+        );
+    }
+}
