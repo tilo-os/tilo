@@ -922,6 +922,14 @@ impl Widget for CommandPalette {
 
     fn name(&self) -> &str { "CommandPalette" }
 
+    /// Stable e2e test identifier. The driver-side `widget_registry`
+    /// resolves this to the palette's rect so scenarios can address
+    /// "the palette input" without going through hard-coded pixel
+    /// coordinates. Centre-of-rect lands inside the input row in all
+    /// supported viewports (the rect is the palette card; the input
+    /// row sits inside it).
+    fn test_id(&self) -> Option<&str> { Some("command_palette_input") }
+
     fn get_rect(&self) -> Rect { self.rect }
 
     fn is_focusable(&self) -> bool { true }
