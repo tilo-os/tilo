@@ -85,6 +85,26 @@ pub fn parse_peer_sync(args: &[&str]) -> bool {
     args.iter().any(|a| *a == "--enable-peer-sync")
 }
 
+/// Process-global wrapper around [`parse_portals`]. Sandbox Phase 4.3:
+/// callers opt in via `--enable-portals` to spin up the
+/// `xdg-desktop-portal` D-Bus backend (FileChooser / ScreenCast /
+/// Access). v1 default OFF — the same opt-in shape `parse_peer_sync`
+/// uses, so the hosted entry point keeps working bit-for-bit without
+/// the flag.
+pub fn parse_portals_from_args() -> bool {
+    let owned: Vec<String> = std::env::args().skip(1).collect();
+    let borrowed: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+    parse_portals(&borrowed)
+}
+
+/// Pure, testable `--enable-portals` flag parser. Mirrors
+/// [`parse_peer_sync`]'s shape so the hosted boot path treats both
+/// flags identically (`main.rs` parses each from `std::env::args` and
+/// hands the boolean to `hosted::run_with_options`).
+pub fn parse_portals(args: &[&str]) -> bool {
+    args.iter().any(|a| *a == "--enable-portals")
+}
+
 /// Pure, testable mode parser. Accepts both `--mode <value>` and
 /// `--mode=<value>` forms. Unknown values (and a missing flag) default to
 /// [`Mode::Native`] (the Phase 7 flip) so the compositor never refuses to
@@ -198,6 +218,24 @@ mod tests {
         assert!(parse_peer_sync(&["--enable-peer-sync"]));
         assert!(parse_peer_sync(&["--mode", "hosted", "--enable-peer-sync"]));
         assert!(parse_peer_sync(&["--enable-peer-sync", "--mode=native"]));
+    }
+
+    #[test]
+    fn portals_flag_default_off() {
+        assert!(!parse_portals(&[]));
+        assert!(!parse_portals(&["--mode", "hosted"]));
+        assert!(!parse_portals(&["--enable-peer-sync"]));
+    }
+
+    #[test]
+    fn portals_flag_present_anywhere() {
+        assert!(parse_portals(&["--enable-portals"]));
+        assert!(parse_portals(&["--mode", "native", "--enable-portals"]));
+        assert!(parse_portals(&[
+            "--enable-portals",
+            "--enable-peer-sync",
+            "--mode=native"
+        ]));
     }
 
     #[test]
