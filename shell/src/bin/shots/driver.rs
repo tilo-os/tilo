@@ -125,6 +125,10 @@ impl ShellDriver {
 
     /// Dispatch a single `WindowEvent` through the host's `handle_event`
     /// pipeline. Returns whether the event was consumed.
+    ///
+    /// The shared wire to the host lives on [`FrameBuilder::dispatch_event`];
+    /// this method only adds driver-local bookkeeping (cursor cache,
+    /// modifier snapshot) before delegating.
     pub fn dispatch(&mut self, event: WindowEvent) -> bool {
         if let WindowEvent::CursorMoved { position, .. } = &event {
             self.last_cursor = Point::new(position.x, position.y);
@@ -132,21 +136,13 @@ impl ShellDriver {
         if let WindowEvent::ModifiersChanged(m) = &event {
             self.modifiers = *m;
         }
-        let mut handled = false;
-        let child = self.fb.host_node();
-        let (host, taffy) = self.fb.host_and_taffy_mut();
-        host.handle_event(
+        self.fb.dispatch_event(
             &event,
-            1.0,
             &self.modifiers,
             &mut self.state,
             &self.root_obj,
-            &mut handled,
             &mut self.focus,
-            child,
-            taffy,
-        );
-        handled
+        )
     }
 
     /// Synthesise a click at `p` — a `CursorMoved` to position, then a

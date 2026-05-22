@@ -27,9 +27,11 @@
 
 use std::collections::HashMap;
 
+use automerge::{AutoCommit, ObjId};
 use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
+use winit::event::{Modifiers, WindowEvent};
 
 use crate::shell::build_nirios_overlay_host_with_chrome;
 use crate::shell::chrome_state::{Chrome, ChromeState};
@@ -253,6 +255,44 @@ impl FrameBuilder {
     /// borrow checker without this helper.
     pub fn host_and_taffy_mut(&mut self) -> (&mut ShellOverlayHost, &TaffyTree<()>) {
         (&mut self.host, &self.taffy)
+    }
+
+    /// Dispatch a single `WindowEvent` through the host's `handle_event`
+    /// pipeline. Returns whether the event was consumed.
+    ///
+    /// The compositor's `Modifiers`, `AutoCommit` doc, `ObjId`, and
+    /// focus cursor live outside the FrameBuilder (each consumer
+    /// owns its own — `ShellDriver` for in-process scenarios,
+    /// `native::run` for the live compositor) — they're passed in
+    /// rather than stored here so the FrameBuilder stays a pure
+    /// layout/paint core shared by both.
+    ///
+    /// Both `ShellDriver::dispatch` and the compositor's
+    /// `pump_test_control_conn` route through this one method so
+    /// the wire to the host is shared in one place.
+    pub fn dispatch_event(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: &Modifiers,
+        state: &mut AutoCommit,
+        root_obj: &ObjId,
+        focus: &mut Option<NodeId>,
+    ) -> bool {
+        let mut handled = false;
+        let child = self.host_node();
+        let (host, taffy) = self.host_and_taffy_mut();
+        host.handle_event(
+            event,
+            1.0,
+            modifiers,
+            state,
+            root_obj,
+            &mut handled,
+            focus,
+            child,
+            taffy,
+        );
+        handled
     }
 
     /// Snapshot of every addressable widget in the live tree, keyed by
