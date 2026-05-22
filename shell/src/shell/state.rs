@@ -397,22 +397,25 @@ pub struct Workspace {
     /// (UI prompt + portal backend) populate it.
     #[serde(default)]
     pub grants: HashMap<AppId, Vec<Capability>>,
-    /// Surfaces from this workspace that are being streamed to a
-    /// specific peer — peer-sync Phase 4 v2. Keys are the wayland
+    /// Surfaces from this workspace that are being streamed to one or
+    /// more peers — peer-sync Phase 4 v2. Keys are the wayland
     /// `wl_surface` protocol ids the compositor passes through
-    /// `TileContent::Foreign`; values are the libp2p [`PeerId`] (hashed
-    /// to `u64`, see [`crate::network::protocol::PeerId`]) the share
-    /// targets.
+    /// `TileContent::Foreign`; values are the set of libp2p
+    /// [`PeerId`]s (hashed to `u64`, see
+    /// [`crate::network::protocol::PeerId`]) the share targets.
     ///
-    /// One entry per (surface, peer) pair; a surface streamed to two
-    /// peers shows up once per peer (Phase 4 v2 keeps the map keyed by
-    /// surface_id; multi-peer per surface is a v3 follow-up — we add a
-    /// `Vec<PeerId>` value then).
+    /// D-7 fix: the prior shape was `HashMap<u64, u64>` — a single
+    /// peer per surface. The second `share_surface(s, peer_b)` call
+    /// silently overwrote the first `share_surface(s, peer_a)`, so a
+    /// surface shared with two peers dropped one of them without
+    /// surfacing an error. The value is now a `HashSet<u64>` so
+    /// multi-recipient streaming works as expected; `share_surface`
+    /// inserts into the set, `unshare_surface` clears it.
     ///
     /// `#[serde(default)]` so persisted state files written before this
     /// field existed still load. Mirrors the `grants` rollout pattern.
     #[serde(default)]
-    pub shared_surfaces: HashMap<u64, u64>,
+    pub shared_surfaces: HashMap<u64, std::collections::HashSet<u64>>,
 }
 
 impl Workspace {
@@ -437,25 +440,64 @@ impl Workspace {
     /// (indirectly, via [`Workspace::is_surface_shared`]) to decide
     /// whether to stage the buffer for the streaming task.
     ///
-    /// Overwrites any prior entry for the same surface — useful when a
-    /// share is reassigned from one peer to another without an explicit
-    /// `unshare`.
+    /// D-7 fix: this call is now additive. Two
+    /// `share_surface(s, peer_a)` / `share_surface(s, peer_b)` calls
+    /// in sequence record BOTH peers in the per-surface set. The
+    /// previous shape (single-peer-per-surface) overwrote, dropping
+    /// peer A silently — callers that wired up multi-recipient
+    /// streaming lost subscribers without any error signal.
     pub fn share_surface(&mut self, surface_id: u64, peer_id: u64) {
-        self.shared_surfaces.insert(surface_id, peer_id);
+        self.shared_surfaces
+            .entry(surface_id)
+            .or_default()
+            .insert(peer_id);
     }
 
     /// Drop the share entry for `surface_id`. No-op if the surface is
-    /// not shared. Returns the peer the surface was shared with so
-    /// callers can fire a `StopShare` event without a second lookup.
-    pub fn unshare_surface(&mut self, surface_id: u64) -> Option<u64> {
+    /// not shared. Returns the set of peers the surface was shared
+    /// with so callers can fire `StopShare` events for each without a
+    /// second lookup.
+    pub fn unshare_surface(
+        &mut self,
+        surface_id: u64,
+    ) -> Option<std::collections::HashSet<u64>> {
         self.shared_surfaces.remove(&surface_id)
+    }
+
+    /// Stop streaming `surface_id` to one specific peer, leaving any
+    /// other peers' shares intact. Returns `true` if a share was
+    /// removed; `false` if the (surface, peer) pair wasn't shared.
+    /// When the last peer is removed the surface key itself is also
+    /// dropped so [`Self::is_surface_shared`] reports `false` again.
+    pub fn unshare_surface_from_peer(
+        &mut self,
+        surface_id: u64,
+        peer_id: u64,
+    ) -> bool {
+        let removed = match self.shared_surfaces.get_mut(&surface_id) {
+            Some(peers) => peers.remove(&peer_id),
+            None => false,
+        };
+        if removed
+            && self
+                .shared_surfaces
+                .get(&surface_id)
+                .map(|p| p.is_empty())
+                .unwrap_or(false)
+        {
+            self.shared_surfaces.remove(&surface_id);
+        }
+        removed
     }
 
     /// Whether `surface_id` is currently streamed somewhere. Used by
     /// the compositor's commit hook to short-circuit the readback for
     /// unshared surfaces (~all of them in steady state).
     pub fn is_surface_shared(&self, surface_id: u64) -> bool {
-        self.shared_surfaces.contains_key(&surface_id)
+        self.shared_surfaces
+            .get(&surface_id)
+            .map(|peers| !peers.is_empty())
+            .unwrap_or(false)
     }
 }
 
@@ -2839,40 +2881,70 @@ mod capability_tests {
     fn share_surface_records_peer_target() {
         // `share_surface` is the entry point the compositor's share-UI
         // (Phase 4 v3, not yet wired) will call once the user picks a
-        // peer for a foreign tab. The map is keyed by `surface_id` —
-        // there's one share per surface at v2; multi-peer per surface
-        // is a v3 follow-up where the value flips to `Vec<PeerId>`.
+        // peer for a foreign tab. D-7 fix: the map values are
+        // `HashSet<u64>` so a surface can be shared with multiple peers.
         let mut ws = Workspace::new(WorkspaceId::from(1), "Demo");
         assert!(!ws.is_surface_shared(7));
         ws.share_surface(7, 42);
         assert!(ws.is_surface_shared(7));
-        assert_eq!(ws.shared_surfaces.get(&7), Some(&42));
+        let peers = ws.shared_surfaces.get(&7).expect("peer set present");
+        assert_eq!(peers.len(), 1);
+        assert!(peers.contains(&42));
     }
 
+    /// D-7 regression: `share_surface(s, peer_a)` followed by
+    /// `share_surface(s, peer_b)` must record BOTH peers. The
+    /// previous code's `HashMap<u64, u64>` shape silently overwrote
+    /// peer A, dropping it from the share set with no error signal.
     #[test]
-    fn share_surface_overwrites_existing_peer() {
-        // A share reassignment without an explicit unshare should
-        // replace the peer rather than silently keep the old one —
-        // matches the `HashMap::insert` semantics so the compositor's
-        // UI doesn't have to remember to `unshare` first.
+    fn shared_surfaces_supports_multiple_peers() {
         let mut ws = Workspace::new(WorkspaceId::from(1), "Demo");
         ws.share_surface(7, 42);
         ws.share_surface(7, 99);
-        assert_eq!(ws.shared_surfaces.get(&7), Some(&99));
-        assert_eq!(ws.shared_surfaces.len(), 1);
+
+        // BOTH peers must persist; neither has been silently dropped.
+        let peers = ws.shared_surfaces.get(&7).expect("peer set present");
+        assert_eq!(
+            peers.len(),
+            2,
+            "D-7 regression: two share_surface() calls on the same \
+             surface must record BOTH peers, got {peers:?}"
+        );
+        assert!(peers.contains(&42), "peer 42 (first share) missing");
+        assert!(peers.contains(&99), "peer 99 (second share) missing");
+        assert!(ws.is_surface_shared(7));
+
+        // Idempotent re-share is also handled.
+        ws.share_surface(7, 42);
+        assert_eq!(
+            ws.shared_surfaces.get(&7).map(|p| p.len()).unwrap_or(0),
+            2,
+            "re-sharing with an already-recorded peer must be idempotent"
+        );
+
+        // Per-peer unshare narrows the set without nuking the entry.
+        assert!(ws.unshare_surface_from_peer(7, 42));
+        let peers_after = ws.shared_surfaces.get(&7).expect("entry remains");
+        assert_eq!(peers_after.len(), 1);
+        assert!(peers_after.contains(&99));
+        assert!(ws.is_surface_shared(7), "still shared with peer 99");
     }
 
     #[test]
-    fn unshare_surface_returns_prior_peer_and_clears_entry() {
-        // Returning the prior peer matters because the actor needs to
-        // fire a `StopShare` event scoped to *that* peer — looking it
-        // up again after the removal would be racy.
+    fn unshare_surface_returns_prior_peers_and_clears_entry() {
+        // Returning the prior peer set matters because the actor needs
+        // to fire one `StopShare` event scoped to each peer — looking
+        // them up again after the removal would be racy.
         let mut ws = Workspace::new(WorkspaceId::from(1), "Demo");
         ws.share_surface(7, 42);
-        assert_eq!(ws.unshare_surface(7), Some(42));
+        ws.share_surface(7, 99);
+        let removed = ws.unshare_surface(7).expect("share was present");
+        assert_eq!(removed.len(), 2);
+        assert!(removed.contains(&42));
+        assert!(removed.contains(&99));
         assert!(!ws.is_surface_shared(7));
         // Idempotent: second call returns `None` cleanly.
-        assert_eq!(ws.unshare_surface(7), None);
+        assert!(ws.unshare_surface(7).is_none());
     }
 
     #[test]
@@ -2880,12 +2952,18 @@ mod capability_tests {
         let mut ws = Workspace::new(WorkspaceId::from(1), "Demo");
         ws.share_surface(11, 100);
         ws.share_surface(22, 200);
+        ws.share_surface(22, 201);
 
         let json = serde_json::to_string(&ws).expect("serialize");
         let round: Workspace = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(round.shared_surfaces.len(), 2);
-        assert_eq!(round.shared_surfaces.get(&11), Some(&100));
-        assert_eq!(round.shared_surfaces.get(&22), Some(&200));
+        let peers_11 = round.shared_surfaces.get(&11).expect("11 present");
+        assert_eq!(peers_11.len(), 1);
+        assert!(peers_11.contains(&100));
+        let peers_22 = round.shared_surfaces.get(&22).expect("22 present");
+        assert_eq!(peers_22.len(), 2);
+        assert!(peers_22.contains(&200));
+        assert!(peers_22.contains(&201));
     }
 
     #[test]
