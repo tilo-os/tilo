@@ -1,11 +1,12 @@
 use winit::{
-    event::{Event, WindowEvent},
-    event_loop::EventLoop,
-    window::Window,
+    application::ApplicationHandler,
+    event::WindowEvent,
+    event_loop::{ActiveEventLoop, EventLoop},
+    window::{Window, WindowId},
 };
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use vello::{Scene, Renderer, RendererOptions, util::RenderContext, peniko::Color, kurbo::Affine, kurbo::Rect as KurboRect, kurbo::Point};
+use vello::{Scene, Renderer, RendererOptions, util::{RenderContext, RenderSurface}, peniko::Color, kurbo::Affine, kurbo::Rect as KurboRect, kurbo::Point};
 use taffy::{TaffyTree, AvailableSpace, NodeId};
 use crate::state::State;
 use crate::widget::Widget;
@@ -427,361 +428,697 @@ impl App {
 
     pub fn run(mut self) {
         let event_loop = EventLoop::new().unwrap();
+
+        // Build the taffy tree up-front so widgets that don't depend on a
+        // live window (focus order, undo bookkeeping) are wired before the
+        // first `resumed` callback. The same calls used to live at the top
+        // of the old `event_loop.run` closure; pulling them here keeps the
+        // behaviour identical while letting the window be created lazily
+        // inside `ApplicationHandler::resumed` (winit 0.30's non-deprecated
+        // path).
+        self.node_map.clear();
+        self.root_node = Some(self.root_widget.build_layout(
+            &mut self.taffy,
+            &self.theme,
+            &mut self.node_map,
+        ));
+        self.update_focusable_order();
+        self.last_stable_focus_idx = self
+            .focused_node
+            .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
+        self.last_stable_metadata = self.focused_node.and_then(|id| {
+            self.node_map
+                .get(&id)
+                .and_then(|&w_ptr| unsafe { (*w_ptr).get_state() })
+        });
+
+        let mut handler = AppHandler {
+            app: self,
+            window: None,
+            render: None,
+            scene: Scene::new(),
+        };
+        event_loop.run_app(&mut handler).unwrap();
+    }
+}
+
+/// Per-window render plumbing constructed inside
+/// [`ApplicationHandler::resumed`]. Owning these together (rather than as
+/// independent `Option<…>` fields) means we can always reason about "the
+/// window is up" via a single `Option<RenderState>` check.
+struct RenderState {
+    render_cx: RenderContext,
+    surface: RenderSurface<'static>,
+    renderer: Renderer,
+}
+
+/// Winit 0.30 `ApplicationHandler` driver for [`App`]. The previous
+/// closure-based event loop captured `self`, the window, the surface and
+/// the renderer; the new pattern hoists that state into a struct so winit
+/// can call back into us with `&mut self`.
+struct AppHandler {
+    app: App,
+    /// `None` until winit fires the first `resumed` event. On platforms
+    /// that gate window creation behind an `ActiveEventLoop` (every modern
+    /// platform), creating the window any earlier would panic.
+    window: Option<Arc<Window>>,
+    render: Option<RenderState>,
+    /// Re-used per frame so we don't allocate a fresh `Scene` on every
+    /// `RedrawRequested`. Matches the closure-captured `scene` from the
+    /// pre-migration code.
+    scene: Scene,
+}
+
+impl ApplicationHandler for AppHandler {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        // `resumed` can fire more than once (suspend/resume on mobile);
+        // after the first init the window/render state stays valid, so
+        // subsequent calls are no-ops.
+        if self.window.is_some() {
+            return;
+        }
         let window_attributes = Window::default_attributes()
             .with_title("QuickUI App")
             .with_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0));
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
+
         let mut render_cx = RenderContext::new();
-        let mut surface = pollster::block_on(render_cx.create_surface(window.clone(), window.inner_size().width, window.inner_size().height, vello::wgpu::PresentMode::AutoVsync)).unwrap();
+        let mut surface = pollster::block_on(render_cx.create_surface(
+            window.clone(),
+            window.inner_size().width,
+            window.inner_size().height,
+            vello::wgpu::PresentMode::AutoVsync,
+        ))
+        .unwrap();
         let device_handle = &render_cx.devices[surface.dev_id];
         surface.config.format = surface.config.format.add_srgb_suffix();
         surface.surface.configure(&device_handle.device, &surface.config);
-        let mut renderer = Renderer::new(&device_handle.device, RendererOptions { surface_format: Some(surface.config.format), use_cpu: false, antialiasing_support: vello::AaSupport::all(), num_init_threads: None }).unwrap();
-        let mut scene = Scene::new();
+        let renderer = Renderer::new(
+            &device_handle.device,
+            RendererOptions {
+                surface_format: Some(surface.config.format),
+                use_cpu: false,
+                antialiasing_support: vello::AaSupport::all(),
+                num_init_threads: None,
+            },
+        )
+        .unwrap();
 
-        self.node_map.clear();
-        self.root_node = Some(self.root_widget.build_layout(&mut self.taffy, &self.theme, &mut self.node_map));
-        self.update_focusable_order();
-        
-        self.last_stable_focus_idx = self.focused_node.and_then(|id| self.focusable_order.iter().position(|&x| x == id));
-        self.last_stable_metadata = self.focused_node.and_then(|id| {
-            self.node_map.get(&id).and_then(|&w_ptr| unsafe { (*w_ptr).get_state() })
+        // Mark the freshly-built taffy tree dirty so the very first
+        // `RedrawRequested` re-runs layout against the actual window
+        // size and scale factor.
+        self.app.layout_dirty = true;
+        window.request_redraw();
+
+        self.window = Some(window);
+        self.render = Some(RenderState {
+            render_cx,
+            surface,
+            renderer,
         });
+    }
 
-        event_loop.run(move |event, elwt| {
-            match event {
-                Event::WindowEvent { event, window_id } if window_id == window.id() => {
-                    match event {
-                        WindowEvent::CloseRequested => elwt.exit(),
-                        WindowEvent::Resized(size) => { render_cx.resize_surface(&mut surface, size.width, size.height); self.layout_dirty = true; window.request_redraw(); }
-                        WindowEvent::RedrawRequested => {
-                            let width = surface.config.width;
-                            let height = surface.config.height;
-                            scene.reset();
-                            let scale_factor = window.scale_factor() as f32;
-
-                            if self.needs_sync { self.root_widget.sync(&mut self.state.doc, &self.state.root); self.needs_sync = false; }
-
-                            // Poll the tree for structural mutations that
-                            // happened since the last frame (e.g. a tab
-                            // split that inserted a brand-new WindowGroup
-                            // into a GroupRow). If any subtree reports
-                            // dirty, rebuild the taffy tree from scratch so
-                            // the new widgets get node ids and the layout
-                            // pass below sees them.
-                            self.structure_dirty |= self.root_widget.take_structure_dirty();
-                            if self.structure_dirty {
-                                self.taffy = TaffyTree::new();
-                                self.node_map.clear();
-                                self.root_node = Some(self.root_widget.build_layout(
-                                    &mut self.taffy,
-                                    &self.theme,
-                                    &mut self.node_map,
-                                ));
-                                self.structure_dirty = false;
-                                self.layout_dirty = true;
-                                self.update_focusable_order();
-                            }
-
-                            let root_node = self.root_node.unwrap();
-                            if self.layout_dirty {
-                                let node_map = &self.node_map;
-                                let text_renderer = &mut self.text_renderer;
-                                self.taffy.compute_layout_with_measure(root_node, taffy::Size { width: AvailableSpace::Definite((width as f32) / scale_factor), height: AvailableSpace::Definite((height as f32) / scale_factor) },
-                                    |known, available, node_id, _, _| {
-                                        if let Some(&widget_ptr) = node_map.get(&node_id) { unsafe { (*widget_ptr).measure(known, available, text_renderer) } }
-                                        else { taffy::Size::ZERO }
-                                    }).unwrap();
-                                self.root_widget.apply_layout(&self.taffy, root_node, vello::kurbo::Point::new(0.0, 0.0));
-                                self.layout_dirty = false;
-                                self.update_focusable_order();
-                            }
-                            
-                            let transform = Affine::scale(scale_factor as f64);
-                            self.root_widget.draw_with_presence(
-                                &mut scene,
-                                transform,
-                                &mut self.text_renderer,
-                                &self.theme,
-                                &self.presence_ctx,
-                                &self.permission_ctx,
-                            );
-                            
-                            // Draw Remote Cursors
-                            for (_, cursor) in &self.state.collab.cursors {
-                                let mut path = vello::kurbo::BezPath::new();
-                                path.move_to(Point::new(0.0, 0.0));
-                                path.line_to(Point::new(14.0, 14.0));
-                                path.line_to(Point::new(6.0, 16.0));
-                                path.line_to(Point::new(0.0, 22.0));
-                                path.close_path();
-
-                                let cursor_transform = transform * Affine::translate((cursor.x as f64, cursor.y as f64));
-                                scene.fill(vello::peniko::Fill::NonZero, cursor_transform, cursor.color.clone(), None, &path);
-                                scene.stroke(&vello::kurbo::Stroke::new(1.5), cursor_transform, Color::WHITE, None, &path);
-                                
-                                self.text_renderer.draw_text(&mut scene, &cursor.name, 10.0, Color::WHITE, cursor_transform * Affine::translate((10.0, 20.0)), None);
-                            }
-
-                            if self.debug_mode {
-                                let debug_outline_cycle = [
-                                    self.theme.tokens.colors.semantic.warning,
-                                    self.theme.tokens.colors.semantic.info,
-                                    self.theme.tokens.colors.semantic.success,
-                                ];
-                                fn draw_debug_recursive(widget: &dyn Widget, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, depth: usize, cycle: &[Color; 3]) {
-                                    let rect = widget.get_rect();
-                                    let color = cycle[depth % 3];
-                                    scene.stroke(&vello::kurbo::Stroke::new(1.5), transform, color, None, &rect);
-                                    let label = format!("{}: {}", widget.name(), depth);
-                                    let text_y = (rect.y0 + 12.0).min(rect.y1);
-                                    let bg_rect = KurboRect::new(rect.x0, rect.y0, rect.x0 + 100.0, rect.y0 + 14.0);
-                                    scene.fill(vello::peniko::Fill::NonZero, transform, Color::rgba8(0,0,0,180), None, &bg_rect);
-                                    text_renderer.draw_text(scene, &label, 10.0, color, transform * Affine::translate((rect.x0 + 2.0, text_y)), None);
-                                    for child in widget.children() { draw_debug_recursive(child, scene, transform, text_renderer, depth + 1, cycle); }
-                                }
-                                draw_debug_recursive(self.root_widget.as_ref(), &mut scene, transform, &mut self.text_renderer, 0, &debug_outline_cycle);
-                            }
-
-                            let surface_texture = surface.surface.get_current_texture().expect("failed to get surface texture");
-                            let device_handle = &render_cx.devices[surface.dev_id];
-                            renderer.render_to_surface(&device_handle.device, &device_handle.queue, &scene, &surface_texture, &vello::RenderParams { base_color: self.theme.bg_app, width, height, antialiasing_method: vello::AaConfig::Area }).unwrap();
-                            surface_texture.present();
-                            device_handle.device.poll(vello::wgpu::Maintain::Poll);
-                        }
-                        WindowEvent::ModifiersChanged(modifiers) => { self.modifiers = modifiers; }
-                        _ => {
-                            // Outbound pointer-presence broadcast: if the
-                            // shell has declared a presence scope, relay
-                            // every pointer move (throttled to ~30 Hz) so
-                            // peers can render this user's cursor on the
-                            // same scope. CursorLeft clears the peer-side
-                            // pointer via the `Left` payload so their
-                            // cursor stops rendering when we wander out
-                            // of the window.
-                            if let Some(scope) = self.presence_broadcast_scope.clone() {
-                                match &event {
-                                    WindowEvent::CursorMoved { position, .. } => {
-                                        let now = Instant::now();
-                                        if pointer_broadcast_allowed(
-                                            self.last_pointer_broadcast,
-                                            now,
-                                            Duration::from_millis(POINTER_BROADCAST_MIN_GAP_MS),
-                                        ) {
-                                            self.last_pointer_broadcast = Some(now);
-                                            self.broadcast_presence(
-                                                scope.clone(),
-                                                PresencePayload::Pointer {
-                                                    x: position.x as f32,
-                                                    y: position.y as f32,
-                                                },
-                                            );
-                                        }
-                                    }
-                                    WindowEvent::CursorLeft { .. } => {
-                                        self.broadcast_presence(scope.clone(), PresencePayload::Left);
-                                        self.last_pointer_broadcast = None;
-                                    }
-                                    _ => {}
-                                }
-                            }
-
-                            let mut handled = false;
-                            let mut focus_target = None;
-                            let mut is_undo_redo = false;
-
-                            if let WindowEvent::KeyboardInput { event: winit::event::KeyEvent { logical_key: winit::keyboard::Key::Named(winit::keyboard::NamedKey::F12), state: winit::event::ElementState::Pressed, .. }, .. } = event {
-                                self.debug_mode = !self.debug_mode; handled = true;
-                            }
-
-                            if !handled && self.modifiers.state().control_key() {
-                                if let WindowEvent::KeyboardInput { event: winit::event::KeyEvent { logical_key: winit::keyboard::Key::Character(ref c), state: winit::event::ElementState::Pressed, .. }, .. } = event {
-                                    let shift = self.modifiers.state().shift_key();
-                                    // Capture the *current* focus + widget metadata so the
-                                    // opposite-stack entry carries where the caret is right
-                                    // now — otherwise round-tripping undo/redo loses caret
-                                    // position. `get_state()` is the non-mutating read half
-                                    // of the get/set pair (default returns None, so widgets
-                                    // that don't opt in are safe).
-                                    let current_meta = self.root_widget.get_state();
-                                    let current_focus_idx = self.focused_node.and_then(|id|
-                                        self.focusable_order.iter().position(|x| *x == id)
-                                    );
-                                    match c.as_str() {
-                                        // Ctrl+Shift+Z is the Linux/Mac-native redo binding
-                                        // and winit delivers it as character "Z" while shift is
-                                        // held, so check the modifier directly rather than
-                                        // relying on the capital-letter cue.
-                                        "z" | "Z" if shift => { if let Some(e) = self.state.redo(current_focus_idx, current_meta.clone()) { self.apply_undo_entry(e); } is_undo_redo = true; handled = true; }
-                                        "z" | "Z" => { if let Some(e) = self.state.undo(current_focus_idx, current_meta.clone()) { self.apply_undo_entry(e); } is_undo_redo = true; handled = true; }
-                                        "y" | "Y" => { if let Some(e) = self.state.redo(current_focus_idx, current_meta.clone()) { self.apply_undo_entry(e); } is_undo_redo = true; handled = true; }
-                                        _ => {}
-                                    }
-                                }
-                            }
-
-                            if !handled {
-                                if let WindowEvent::KeyboardInput { event: winit::event::KeyEvent { logical_key: winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab), state: winit::event::ElementState::Pressed, .. }, .. } = event {
-                                    let shift = self.modifiers.state().shift_key();
-                                    if !self.focusable_order.is_empty() {
-                                        let current_idx = self.focused_node.and_then(|id| self.focusable_order.iter().position(|&x| x == id));
-                                        let next_idx = match current_idx {
-                                            Some(idx) => if shift { if idx == 0 { self.focusable_order.len() - 1 } else { idx - 1 } } else { (idx + 1) % self.focusable_order.len() },
-                                            None => 0,
-                                        };
-                                        self.set_focused_node(Some(self.focusable_order[next_idx])); handled = true;
-                                    }
-                                }
-                            }
-
-                            if !handled {
-                                if let WindowEvent::KeyboardInput { event: winit::event::KeyEvent { logical_key: winit::keyboard::Key::Named(logical_key), state: winit::event::ElementState::Pressed, .. }, .. } = event {
-                                    let dir = match logical_key {
-                                        winit::keyboard::NamedKey::ArrowUp => Some(Direction::Up),
-                                        winit::keyboard::NamedKey::ArrowDown => Some(Direction::Down),
-                                        winit::keyboard::NamedKey::ArrowLeft => Some(Direction::Left),
-                                        winit::keyboard::NamedKey::ArrowRight => Some(Direction::Right),
-                                        _ => None,
-                                    };
-                                    if let (Some(d), true) = (dir, self.modifiers.state().alt_key()) { self.navigate_focus(d); handled = true; }
-                                }
-                            }
-
-                            if !handled {
-                                let scale_factor = window.scale_factor();
-                                let root_node = self.root_node.unwrap();
-                                self.root_widget.handle_event(&event, scale_factor, &self.modifiers, &mut self.state.doc, &self.state.root, &mut handled, &mut focus_target, root_node, &self.taffy);
-                            }
-
-                            if !handled {
-                                if let WindowEvent::KeyboardInput { event: winit::event::KeyEvent { logical_key: winit::keyboard::Key::Named(logical_key), state: winit::event::ElementState::Pressed, .. }, .. } = event {
-                                    let dir = match logical_key {
-                                        winit::keyboard::NamedKey::ArrowUp => Some(Direction::Up),
-                                        winit::keyboard::NamedKey::ArrowDown => Some(Direction::Down),
-                                        winit::keyboard::NamedKey::ArrowLeft => Some(Direction::Left),
-                                        winit::keyboard::NamedKey::ArrowRight => Some(Direction::Right),
-                                        _ => None,
-                                    };
-                                    if let Some(d) = dir { self.navigate_focus(d); handled = true; }
-                                }
-                            }
-
-                            if let Some(id) = focus_target { self.set_focused_node(Some(id)); handled = true; }
-
-                            if handled {
-                                let mut should_commit = !is_undo_redo;
-                                if let WindowEvent::KeyboardInput { event: winit::event::KeyEvent { logical_key: winit::keyboard::Key::Character(_), .. }, .. } = event { should_commit = false; }
-                                if should_commit { self.commit_action(); }
-                                self.needs_sync = true; self.layout_dirty = true; window.request_redraw();
-                            }
-                        }
-                    }
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        let Some(window) = self.window.as_ref().cloned() else {
+            return;
+        };
+        if window.id() != window_id {
+            return;
+        }
+        match event {
+            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::Resized(size) => {
+                if let Some(render) = self.render.as_mut() {
+                    render
+                        .render_cx
+                        .resize_surface(&mut render.surface, size.width, size.height);
                 }
-                Event::AboutToWait => {
-                    // Poll collaboration events
-                    for event in self.collab_manager.poll() {
-                        match event {
-                            CollabEvent::Context { collaborators, .. } => {
-                                // Update collaborators
-                                // We'll need a better way to map this, but for now:
-                                for c in collaborators {
-                                    self.state.collab.cursors.entry(c.id.clone()).or_insert(crate::state::RemoteCursor {
-                                        x: 0.0, y: 0.0,
-                                        color: Color::rgb(c.color[0] as f64, c.color[1] as f64, c.color[2] as f64),
-                                        name: c.name.clone(),
-                                    });
-                                    // Seed the overlay-side presence so peer
-                                    // labels come through with the server-
-                                    // announced friendly name (later cursor
-                                    // moves will preserve that label because
-                                    // they pass display_name=None).
-                                    self.presence_ctx.upsert_remote_cursor(
-                                        c.id.clone(),
-                                        [0.0, 0.0],
-                                        Some(&c.name),
-                                    );
-                                }
-                            }
-                            CollabEvent::RemoteCursorMoved { user_id, x, y } => {
-                                if let Some(cursor) = self.state.collab.cursors.get_mut(&user_id) {
-                                    cursor.x = x;
-                                    cursor.y = y;
-                                    window.request_redraw();
-                                }
-                                // Always mirror into PresenceCtx — a peer
-                                // can send cursor moves before we've seen
-                                // their Context entry, and the overlay still
-                                // needs to paint them.
-                                self.presence_ctx.upsert_remote_cursor(user_id, [x, y], None);
-                            }
-                            CollabEvent::CRDTUpdate { data } => {
-                                if let Ok(new_state) = State::load(&data) {
-                                    self.state.doc = new_state.doc;
-                                    self.needs_sync = true;
-                                    window.request_redraw();
-                                }
-                            }
-                            CollabEvent::CRDTIncremental { data } => {
-                                // Merge the incremental patch into the local
-                                // CRDT. If the bytes are malformed we keep the
-                                // local doc unchanged (best-effort) — a noisy
-                                // peer can't brick our state.
-                                let _ = self.state.load_incremental(&data);
-                                self.needs_sync = true;
-                                window.request_redraw();
-                            }
-                            CollabEvent::RemotePresenceUpdate { user_id, key, payload } => {
-                                self.apply_remote_presence(user_id, key, payload);
-                                window.request_redraw();
-                            }
-                        }
-                    }
-
-                    if self.root_widget.needs_commit() {
-                        self.commit_action();
-                        self.root_widget.on_commit();
-                        self.needs_sync = true;
-                        window.request_redraw();
-                    }
-
-                    // If a widget mutated its child composition between
-                    // frames (e.g. GroupRow split a tab into a new group
-                    // during the last event dispatch), flag the app so the
-                    // next RedrawRequested rebuilds the taffy tree before
-                    // laying out. We don't drain the flag here — the draw
-                    // handler needs to see it — just pump a redraw so the
-                    // rebuild happens promptly.
-                    if self.root_widget.take_structure_dirty() {
-                        self.structure_dirty = true;
-                        window.request_redraw();
-                    }
-
-                    // Pump the animation loop: while any widget reports an
-                    // in-flight frame-driven transition (e.g. the shell's
-                    // overview crossfade), keep scheduling redraws so the
-                    // animation progresses until it settles. Without this,
-                    // a single post-click redraw renders the first eased
-                    // frame at t≈0 and then stalls — the overview would
-                    // appear to "not work" because the fade never plays.
-                    if self.root_widget.needs_animation_frame() {
-                        window.request_redraw();
-                    }
-
-                    // Pump the optional shell-registered frame tick so
-                    // out-of-band sources (libp2p presence, palette
-                    // command queue) can drain into the overlay state
-                    // once per wakeup. We always request a redraw when
-                    // the tick fires because the shell typically writes
-                    // visible state (remote cursor positions) — without
-                    // the redraw a remote cursor would not animate.
-                    if let Some(tick) = self.frame_tick.as_mut() {
-                        tick(&mut self.presence_ctx);
-                        window.request_redraw();
-                    }
-                }
-                _ => {}
+                self.app.layout_dirty = true;
+                window.request_redraw();
             }
-        }).unwrap();
+            WindowEvent::RedrawRequested => {
+                let Some(render) = self.render.as_mut() else {
+                    return;
+                };
+                let app = &mut self.app;
+                let scene = &mut self.scene;
+                let width = render.surface.config.width;
+                let height = render.surface.config.height;
+                scene.reset();
+                let scale_factor = window.scale_factor() as f32;
+
+                if app.needs_sync {
+                    app.root_widget.sync(&mut app.state.doc, &app.state.root);
+                    app.needs_sync = false;
+                }
+
+                // Poll the tree for structural mutations that
+                // happened since the last frame (e.g. a tab
+                // split that inserted a brand-new WindowGroup
+                // into a GroupRow). If any subtree reports
+                // dirty, rebuild the taffy tree from scratch so
+                // the new widgets get node ids and the layout
+                // pass below sees them.
+                app.structure_dirty |= app.root_widget.take_structure_dirty();
+                if app.structure_dirty {
+                    app.taffy = TaffyTree::new();
+                    app.node_map.clear();
+                    app.root_node = Some(app.root_widget.build_layout(
+                        &mut app.taffy,
+                        &app.theme,
+                        &mut app.node_map,
+                    ));
+                    app.structure_dirty = false;
+                    app.layout_dirty = true;
+                    app.update_focusable_order();
+                }
+
+                let root_node = app.root_node.unwrap();
+                if app.layout_dirty {
+                    let node_map = &app.node_map;
+                    let text_renderer = &mut app.text_renderer;
+                    app.taffy
+                        .compute_layout_with_measure(
+                            root_node,
+                            taffy::Size {
+                                width: AvailableSpace::Definite((width as f32) / scale_factor),
+                                height: AvailableSpace::Definite((height as f32) / scale_factor),
+                            },
+                            |known, available, node_id, _, _| {
+                                if let Some(&widget_ptr) = node_map.get(&node_id) {
+                                    unsafe { (*widget_ptr).measure(known, available, text_renderer) }
+                                } else {
+                                    taffy::Size::ZERO
+                                }
+                            },
+                        )
+                        .unwrap();
+                    app.root_widget.apply_layout(
+                        &app.taffy,
+                        root_node,
+                        vello::kurbo::Point::new(0.0, 0.0),
+                    );
+                    app.layout_dirty = false;
+                    app.update_focusable_order();
+                }
+
+                let transform = Affine::scale(scale_factor as f64);
+                app.root_widget.draw_with_presence(
+                    scene,
+                    transform,
+                    &mut app.text_renderer,
+                    &app.theme,
+                    &app.presence_ctx,
+                    &app.permission_ctx,
+                );
+
+                // Draw Remote Cursors
+                for (_, cursor) in &app.state.collab.cursors {
+                    let mut path = vello::kurbo::BezPath::new();
+                    path.move_to(Point::new(0.0, 0.0));
+                    path.line_to(Point::new(14.0, 14.0));
+                    path.line_to(Point::new(6.0, 16.0));
+                    path.line_to(Point::new(0.0, 22.0));
+                    path.close_path();
+
+                    let cursor_transform =
+                        transform * Affine::translate((cursor.x as f64, cursor.y as f64));
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        cursor_transform,
+                        cursor.color.clone(),
+                        None,
+                        &path,
+                    );
+                    scene.stroke(
+                        &vello::kurbo::Stroke::new(1.5),
+                        cursor_transform,
+                        Color::WHITE,
+                        None,
+                        &path,
+                    );
+
+                    app.text_renderer.draw_text(
+                        scene,
+                        &cursor.name,
+                        10.0,
+                        Color::WHITE,
+                        cursor_transform * Affine::translate((10.0, 20.0)),
+                        None,
+                    );
+                }
+
+                if app.debug_mode {
+                    let debug_outline_cycle = [
+                        app.theme.tokens.colors.semantic.warning,
+                        app.theme.tokens.colors.semantic.info,
+                        app.theme.tokens.colors.semantic.success,
+                    ];
+                    fn draw_debug_recursive(
+                        widget: &dyn Widget,
+                        scene: &mut Scene,
+                        transform: Affine,
+                        text_renderer: &mut TextRenderer,
+                        depth: usize,
+                        cycle: &[Color; 3],
+                    ) {
+                        let rect = widget.get_rect();
+                        let color = cycle[depth % 3];
+                        scene.stroke(&vello::kurbo::Stroke::new(1.5), transform, color, None, &rect);
+                        let label = format!("{}: {}", widget.name(), depth);
+                        let text_y = (rect.y0 + 12.0).min(rect.y1);
+                        let bg_rect =
+                            KurboRect::new(rect.x0, rect.y0, rect.x0 + 100.0, rect.y0 + 14.0);
+                        scene.fill(
+                            vello::peniko::Fill::NonZero,
+                            transform,
+                            Color::rgba8(0, 0, 0, 180),
+                            None,
+                            &bg_rect,
+                        );
+                        text_renderer.draw_text(
+                            scene,
+                            &label,
+                            10.0,
+                            color,
+                            transform * Affine::translate((rect.x0 + 2.0, text_y)),
+                            None,
+                        );
+                        for child in widget.children() {
+                            draw_debug_recursive(
+                                child,
+                                scene,
+                                transform,
+                                text_renderer,
+                                depth + 1,
+                                cycle,
+                            );
+                        }
+                    }
+                    draw_debug_recursive(
+                        app.root_widget.as_ref(),
+                        scene,
+                        transform,
+                        &mut app.text_renderer,
+                        0,
+                        &debug_outline_cycle,
+                    );
+                }
+
+                let surface_texture = render
+                    .surface
+                    .surface
+                    .get_current_texture()
+                    .expect("failed to get surface texture");
+                let device_handle = &render.render_cx.devices[render.surface.dev_id];
+                render
+                    .renderer
+                    .render_to_surface(
+                        &device_handle.device,
+                        &device_handle.queue,
+                        scene,
+                        &surface_texture,
+                        &vello::RenderParams {
+                            base_color: app.theme.bg_app,
+                            width,
+                            height,
+                            antialiasing_method: vello::AaConfig::Area,
+                        },
+                    )
+                    .unwrap();
+                surface_texture.present();
+                device_handle.device.poll(vello::wgpu::Maintain::Poll);
+            }
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.app.modifiers = modifiers;
+            }
+            other => {
+                let event = other;
+                let app = &mut self.app;
+                // Outbound pointer-presence broadcast: if the
+                // shell has declared a presence scope, relay
+                // every pointer move (throttled to ~30 Hz) so
+                // peers can render this user's cursor on the
+                // same scope. CursorLeft clears the peer-side
+                // pointer via the `Left` payload so their
+                // cursor stops rendering when we wander out
+                // of the window.
+                if let Some(scope) = app.presence_broadcast_scope.clone() {
+                    match &event {
+                        WindowEvent::CursorMoved { position, .. } => {
+                            let now = Instant::now();
+                            if pointer_broadcast_allowed(
+                                app.last_pointer_broadcast,
+                                now,
+                                Duration::from_millis(POINTER_BROADCAST_MIN_GAP_MS),
+                            ) {
+                                app.last_pointer_broadcast = Some(now);
+                                app.broadcast_presence(
+                                    scope.clone(),
+                                    PresencePayload::Pointer {
+                                        x: position.x as f32,
+                                        y: position.y as f32,
+                                    },
+                                );
+                            }
+                        }
+                        WindowEvent::CursorLeft { .. } => {
+                            app.broadcast_presence(scope.clone(), PresencePayload::Left);
+                            app.last_pointer_broadcast = None;
+                        }
+                        _ => {}
+                    }
+                }
+
+                let mut handled = false;
+                let mut focus_target = None;
+                let mut is_undo_redo = false;
+
+                if let WindowEvent::KeyboardInput {
+                    event:
+                        winit::event::KeyEvent {
+                            logical_key: winit::keyboard::Key::Named(winit::keyboard::NamedKey::F12),
+                            state: winit::event::ElementState::Pressed,
+                            ..
+                        },
+                    ..
+                } = event
+                {
+                    app.debug_mode = !app.debug_mode;
+                    handled = true;
+                }
+
+                if !handled && app.modifiers.state().control_key() {
+                    if let WindowEvent::KeyboardInput {
+                        event:
+                            winit::event::KeyEvent {
+                                logical_key: winit::keyboard::Key::Character(ref c),
+                                state: winit::event::ElementState::Pressed,
+                                ..
+                            },
+                        ..
+                    } = event
+                    {
+                        let shift = app.modifiers.state().shift_key();
+                        // Capture the *current* focus + widget metadata so the
+                        // opposite-stack entry carries where the caret is right
+                        // now — otherwise round-tripping undo/redo loses caret
+                        // position. `get_state()` is the non-mutating read half
+                        // of the get/set pair (default returns None, so widgets
+                        // that don't opt in are safe).
+                        let current_meta = app.root_widget.get_state();
+                        let current_focus_idx = app
+                            .focused_node
+                            .and_then(|id| app.focusable_order.iter().position(|x| *x == id));
+                        match c.as_str() {
+                            // Ctrl+Shift+Z is the Linux/Mac-native redo binding
+                            // and winit delivers it as character "Z" while shift is
+                            // held, so check the modifier directly rather than
+                            // relying on the capital-letter cue.
+                            "z" | "Z" if shift => {
+                                if let Some(e) =
+                                    app.state.redo(current_focus_idx, current_meta.clone())
+                                {
+                                    app.apply_undo_entry(e);
+                                }
+                                is_undo_redo = true;
+                                handled = true;
+                            }
+                            "z" | "Z" => {
+                                if let Some(e) =
+                                    app.state.undo(current_focus_idx, current_meta.clone())
+                                {
+                                    app.apply_undo_entry(e);
+                                }
+                                is_undo_redo = true;
+                                handled = true;
+                            }
+                            "y" | "Y" => {
+                                if let Some(e) =
+                                    app.state.redo(current_focus_idx, current_meta.clone())
+                                {
+                                    app.apply_undo_entry(e);
+                                }
+                                is_undo_redo = true;
+                                handled = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                if !handled {
+                    if let WindowEvent::KeyboardInput {
+                        event:
+                            winit::event::KeyEvent {
+                                logical_key: winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
+                                state: winit::event::ElementState::Pressed,
+                                ..
+                            },
+                        ..
+                    } = event
+                    {
+                        let shift = app.modifiers.state().shift_key();
+                        if !app.focusable_order.is_empty() {
+                            let current_idx = app.focused_node.and_then(|id| {
+                                app.focusable_order.iter().position(|&x| x == id)
+                            });
+                            let next_idx = match current_idx {
+                                Some(idx) => {
+                                    if shift {
+                                        if idx == 0 {
+                                            app.focusable_order.len() - 1
+                                        } else {
+                                            idx - 1
+                                        }
+                                    } else {
+                                        (idx + 1) % app.focusable_order.len()
+                                    }
+                                }
+                                None => 0,
+                            };
+                            app.set_focused_node(Some(app.focusable_order[next_idx]));
+                            handled = true;
+                        }
+                    }
+                }
+
+                if !handled {
+                    if let WindowEvent::KeyboardInput {
+                        event:
+                            winit::event::KeyEvent {
+                                logical_key: winit::keyboard::Key::Named(logical_key),
+                                state: winit::event::ElementState::Pressed,
+                                ..
+                            },
+                        ..
+                    } = event
+                    {
+                        let dir = match logical_key {
+                            winit::keyboard::NamedKey::ArrowUp => Some(Direction::Up),
+                            winit::keyboard::NamedKey::ArrowDown => Some(Direction::Down),
+                            winit::keyboard::NamedKey::ArrowLeft => Some(Direction::Left),
+                            winit::keyboard::NamedKey::ArrowRight => Some(Direction::Right),
+                            _ => None,
+                        };
+                        if let (Some(d), true) = (dir, app.modifiers.state().alt_key()) {
+                            app.navigate_focus(d);
+                            handled = true;
+                        }
+                    }
+                }
+
+                if !handled {
+                    let scale_factor = window.scale_factor();
+                    let root_node = app.root_node.unwrap();
+                    app.root_widget.handle_event(
+                        &event,
+                        scale_factor,
+                        &app.modifiers,
+                        &mut app.state.doc,
+                        &app.state.root,
+                        &mut handled,
+                        &mut focus_target,
+                        root_node,
+                        &app.taffy,
+                    );
+                }
+
+                if !handled {
+                    if let WindowEvent::KeyboardInput {
+                        event:
+                            winit::event::KeyEvent {
+                                logical_key: winit::keyboard::Key::Named(logical_key),
+                                state: winit::event::ElementState::Pressed,
+                                ..
+                            },
+                        ..
+                    } = event
+                    {
+                        let dir = match logical_key {
+                            winit::keyboard::NamedKey::ArrowUp => Some(Direction::Up),
+                            winit::keyboard::NamedKey::ArrowDown => Some(Direction::Down),
+                            winit::keyboard::NamedKey::ArrowLeft => Some(Direction::Left),
+                            winit::keyboard::NamedKey::ArrowRight => Some(Direction::Right),
+                            _ => None,
+                        };
+                        if let Some(d) = dir {
+                            app.navigate_focus(d);
+                            handled = true;
+                        }
+                    }
+                }
+
+                if let Some(id) = focus_target {
+                    app.set_focused_node(Some(id));
+                    handled = true;
+                }
+
+                if handled {
+                    let mut should_commit = !is_undo_redo;
+                    if let WindowEvent::KeyboardInput {
+                        event:
+                            winit::event::KeyEvent {
+                                logical_key: winit::keyboard::Key::Character(_),
+                                ..
+                            },
+                        ..
+                    } = event
+                    {
+                        should_commit = false;
+                    }
+                    if should_commit {
+                        app.commit_action();
+                    }
+                    app.needs_sync = true;
+                    app.layout_dirty = true;
+                    window.request_redraw();
+                }
+            }
+        }
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        let Some(window) = self.window.as_ref().cloned() else {
+            return;
+        };
+        let app = &mut self.app;
+        // Poll collaboration events
+        for event in app.collab_manager.poll() {
+            match event {
+                CollabEvent::Context { collaborators, .. } => {
+                    // Update collaborators
+                    // We'll need a better way to map this, but for now:
+                    for c in collaborators {
+                        app.state.collab.cursors.entry(c.id.clone()).or_insert(
+                            crate::state::RemoteCursor {
+                                x: 0.0,
+                                y: 0.0,
+                                color: Color::rgb(
+                                    c.color[0] as f64,
+                                    c.color[1] as f64,
+                                    c.color[2] as f64,
+                                ),
+                                name: c.name.clone(),
+                            },
+                        );
+                        // Seed the overlay-side presence so peer
+                        // labels come through with the server-
+                        // announced friendly name (later cursor
+                        // moves will preserve that label because
+                        // they pass display_name=None).
+                        app.presence_ctx.upsert_remote_cursor(
+                            c.id.clone(),
+                            [0.0, 0.0],
+                            Some(&c.name),
+                        );
+                    }
+                }
+                CollabEvent::RemoteCursorMoved { user_id, x, y } => {
+                    if let Some(cursor) = app.state.collab.cursors.get_mut(&user_id) {
+                        cursor.x = x;
+                        cursor.y = y;
+                        window.request_redraw();
+                    }
+                    // Always mirror into PresenceCtx — a peer
+                    // can send cursor moves before we've seen
+                    // their Context entry, and the overlay still
+                    // needs to paint them.
+                    app.presence_ctx.upsert_remote_cursor(user_id, [x, y], None);
+                }
+                CollabEvent::CRDTUpdate { data } => {
+                    if let Ok(new_state) = State::load(&data) {
+                        app.state.doc = new_state.doc;
+                        app.needs_sync = true;
+                        window.request_redraw();
+                    }
+                }
+                CollabEvent::CRDTIncremental { data } => {
+                    // Merge the incremental patch into the local
+                    // CRDT. If the bytes are malformed we keep the
+                    // local doc unchanged (best-effort) — a noisy
+                    // peer can't brick our state.
+                    let _ = app.state.load_incremental(&data);
+                    app.needs_sync = true;
+                    window.request_redraw();
+                }
+                CollabEvent::RemotePresenceUpdate {
+                    user_id,
+                    key,
+                    payload,
+                } => {
+                    app.apply_remote_presence(user_id, key, payload);
+                    window.request_redraw();
+                }
+            }
+        }
+
+        if app.root_widget.needs_commit() {
+            app.commit_action();
+            app.root_widget.on_commit();
+            app.needs_sync = true;
+            window.request_redraw();
+        }
+
+        // If a widget mutated its child composition between
+        // frames (e.g. GroupRow split a tab into a new group
+        // during the last event dispatch), flag the app so the
+        // next RedrawRequested rebuilds the taffy tree before
+        // laying out. We don't drain the flag here — the draw
+        // handler needs to see it — just pump a redraw so the
+        // rebuild happens promptly.
+        if app.root_widget.take_structure_dirty() {
+            app.structure_dirty = true;
+            window.request_redraw();
+        }
+
+        // Pump the animation loop: while any widget reports an
+        // in-flight frame-driven transition (e.g. the shell's
+        // overview crossfade), keep scheduling redraws so the
+        // animation progresses until it settles. Without this,
+        // a single post-click redraw renders the first eased
+        // frame at t≈0 and then stalls — the overview would
+        // appear to "not work" because the fade never plays.
+        if app.root_widget.needs_animation_frame() {
+            window.request_redraw();
+        }
+
+        // Pump the optional shell-registered frame tick so
+        // out-of-band sources (libp2p presence, palette
+        // command queue) can drain into the overlay state
+        // once per wakeup. We always request a redraw when
+        // the tick fires because the shell typically writes
+        // visible state (remote cursor positions) — without
+        // the redraw a remote cursor would not animate.
+        if let Some(tick) = app.frame_tick.as_mut() {
+            tick(&mut app.presence_ctx);
+            window.request_redraw();
+        }
     }
 }
 
