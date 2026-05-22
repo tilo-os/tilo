@@ -8,6 +8,79 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
+
+/// D-6 fix: per-directory memo of the entries we care about during
+/// capability-grant application (`/dev/video*` for camera, the
+/// pipewire socket + `/dev/snd` for microphone). `apply_grants` is
+/// called once per process spawn into a workspace; without memoization
+/// every cluster launch re-walks the same `/dev` tree (and re-stats
+/// `pipewire-0` / `/dev/snd`). The TTL is conservative: 5s is short
+/// enough that hotplugged hardware shows up within a couple of
+/// subsequent launches, long enough to coalesce the rapid-fire
+/// spawns that happen when a user clicks a launcher 3-4 times.
+///
+/// Cache shape: `directory path -> (filtered entries, captured-at)`.
+/// The filtering function is opaque to the cache; consumers pass a
+/// closure-free key so different filters of the same directory each
+/// get their own cache slot.
+static SCAN_MEMO: LazyLock<Mutex<HashMap<(PathBuf, &'static str), (Vec<PathBuf>, Instant)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// D-6: TTL for cached `/dev` and `XDG_RUNTIME_DIR` scans.
+const SCAN_MEMO_TTL: Duration = Duration::from_secs(5);
+
+/// D-6 test hook: counts the number of times the underlying directory
+/// walk runs through the slow path (filesystem hit). The cached
+/// happy-path increments nothing. Tests assert `take_count_since` to
+/// confirm memoization. Production never reads this.
+#[cfg(test)]
+static SCAN_WALK_COUNT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+pub(crate) fn take_scan_walk_count() -> usize {
+    SCAN_WALK_COUNT.swap(0, std::sync::atomic::Ordering::SeqCst)
+}
+
+#[cfg(test)]
+pub(crate) fn clear_scan_memo() {
+    SCAN_MEMO.lock().unwrap().clear();
+}
+
+/// D-6: memoised directory walk. `filter_tag` is a stable string id for
+/// the filter being applied (e.g. `"video"` for `/dev/video*`) — it
+/// keys the cache so two different filters of the same directory get
+/// independent cache slots.
+fn scan_dir_memoised(dir: &Path, filter_tag: &'static str, filter: fn(&str) -> bool) -> Vec<PathBuf> {
+    let key = (dir.to_path_buf(), filter_tag);
+    {
+        let cache = SCAN_MEMO.lock().expect("SCAN_MEMO poisoned");
+        if let Some((entries, captured)) = cache.get(&key) {
+            if captured.elapsed() < SCAN_MEMO_TTL {
+                return entries.clone();
+            }
+        }
+    }
+    // Slow path: actually walk the directory.
+    #[cfg(test)]
+    SCAN_WALK_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if filter(name) {
+                    out.push(path);
+                }
+            }
+        }
+    }
+    let mut cache = SCAN_MEMO.lock().expect("SCAN_MEMO poisoned");
+    cache.insert(key, (out.clone(), Instant::now()));
+    out
+}
 
 /// Description of a single Bubblewrap sandbox tied to one workspace.
 ///
@@ -125,18 +198,20 @@ impl SandboxProfile {
     /// alternative would be to fail the launch when the user has merely
     /// granted a permission that no hardware satisfies.
     pub fn grant_camera(&mut self) {
-        // Walk /dev for video* devices. Bind each as rw (the kernel
-        // controls read/write semantics on the device itself).
-        if let Ok(entries) = std::fs::read_dir("/dev") {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    if name.starts_with("video") {
-                        // Bind into the sandbox at the same path.
-                        self.binds_rw.push((path.clone(), path));
-                    }
-                }
-            }
+        // D-6: memoise the `/dev` walk so back-to-back cluster spawns
+        // don't re-stat every entry. TTL = 5s; hotplug latency is
+        // bounded by the next post-TTL launch.
+        let video_devices = scan_dir_memoised(
+            Path::new("/dev"),
+            "video",
+            |name| name.starts_with("video"),
+        );
+        for path in video_devices {
+            // Bind into the sandbox at the same path. Kernel controls
+            // read/write semantics on the device itself, so we bind
+            // rw rather than ro (a ro-bind blocks the VIDIOC_* ioctls
+            // legitimate camera apps need).
+            self.binds_rw.push((path.clone(), path));
         }
     }
 
@@ -736,6 +811,52 @@ mod tests {
             !argv.iter().any(|a| a == "--seccomp"),
             "argv must not carry --seccomp without matching fd \
              plumbing (C-5 regression): {argv:?}"
+        );
+    }
+
+    /// D-6 contract: `apply_grants` with a camera capability memoises
+    /// the `/dev` scan. The first call hits the filesystem; the second
+    /// call within the 5s TTL reuses the cached entry list and does
+    /// NOT re-walk `/dev`.
+    ///
+    /// We count walks via the test-only `SCAN_WALK_COUNT` counter
+    /// that the slow path increments. Before D-6's fix the counter
+    /// would tick on every `apply_grants` call; the assertion guards
+    /// against the cache being silently bypassed (e.g. a future
+    /// refactor reaches into `std::fs::read_dir` directly).
+    #[test]
+    fn apply_grants_dev_scan_is_memoised() {
+        use crate::shell::state::{Capability, GrantScope};
+        // Reset both the cache and the counter so other tests can't
+        // contaminate our measurement.
+        super::clear_scan_memo();
+        let _ = super::take_scan_walk_count();
+
+        let grants = vec![Capability::Camera {
+            scope: GrantScope::Session,
+        }];
+
+        let mut p1 = SandboxProfile::for_workspace_test(
+            Path::new("/tmp/ws"),
+            Path::new("/tmp/cache"),
+        );
+        p1.apply_grants(&grants);
+        let walks_after_first = super::take_scan_walk_count();
+        assert_eq!(
+            walks_after_first, 1,
+            "first apply_grants should hit the filesystem once for /dev; got {walks_after_first}"
+        );
+
+        let mut p2 = SandboxProfile::for_workspace_test(
+            Path::new("/tmp/ws"),
+            Path::new("/tmp/cache"),
+        );
+        p2.apply_grants(&grants);
+        let walks_after_second = super::take_scan_walk_count();
+        assert_eq!(
+            walks_after_second, 0,
+            "second apply_grants within the 5s TTL should reuse the \
+             memoised scan; got {walks_after_second} additional walks"
         );
     }
 
