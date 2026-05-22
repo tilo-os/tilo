@@ -17,6 +17,13 @@ pub struct Column {
     permission_scope: Option<PermissionScope>,
     extra_left_padding: f32,
     no_padding: bool,
+    /// When true, the column's height resolves to its content's
+    /// intrinsic sum (`Dimension::auto`) instead of filling the parent
+    /// (`Dimension::percent(1.0)`). Required when the column is the
+    /// child of a vertical `Scrollable` — without it, the column's
+    /// height is clamped to the viewport, `content_h == viewport_h`,
+    /// and the scrollable has nothing to scroll.
+    intrinsic_height: bool,
 }
 
 impl Column {
@@ -28,7 +35,17 @@ impl Column {
             permission_scope: None,
             extra_left_padding: 0.0,
             no_padding: false,
+            intrinsic_height: false,
         }
+    }
+
+    /// Resolve the column's height from its content (`auto`) instead of
+    /// filling the parent (`percent(1.0)`). Required when wrapping the
+    /// column in a `Scrollable` — see the field doc on
+    /// [`Column::intrinsic_height`] for the gory details.
+    pub fn with_intrinsic_height(mut self) -> Self {
+        self.intrinsic_height = true;
+        self
     }
 
     /// Skip the default `padding_standard * 2` on all sides. Used by
@@ -81,7 +98,19 @@ impl Widget for Column {
             
         let node = taffy.new_with_children(
             Style {
-                display: taffy::Display::Flex,
+                // Intrinsic-height columns run as a Block stack — flex
+                // layout in taffy 0.9 silently truncates children when
+                // the container's main-axis budget runs out, even with
+                // flex_shrink: 0.0 on the parent. The result is an
+                // outer Scrollable that thinks its content stops where
+                // taffy stopped laying out. Block stacks children
+                // without any axis budget, so the column's content
+                // grows to its true sum.
+                display: if self.intrinsic_height {
+                    taffy::Display::Block
+                } else {
+                    taffy::Display::Flex
+                },
                 flex_direction: taffy::FlexDirection::Column,
                 align_items: Some(taffy::AlignItems::FlexStart),
                 flex_shrink: 0.0, // Prevent vertical squashing
@@ -100,7 +129,11 @@ impl Widget for Column {
                 },
                 size: taffy::Size {
                     width: percent(1.0),
-                    height: percent(1.0),
+                    height: if self.intrinsic_height {
+                        taffy::Dimension::auto()
+                    } else {
+                        percent(1.0)
+                    },
                 },
                 ..Default::default()
             },
@@ -134,12 +167,34 @@ impl Widget for Column {
 
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, modifiers: &winit::event::Modifiers, state: &mut AutoCommit, path: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, taffy: &TaffyTree<()>) {
         let child_nodes = taffy.children(node_id).unwrap();
+        // Pointer-capture short-circuit: when any child has latched a
+        // drag (e.g. the slider's knob is being dragged) it returns true
+        // from `wants_pointer_capture`. Route ALL events to that child
+        // exclusively for the frame so a drag survives the cursor
+        // crossing a peer widget's rect — without this the peer's
+        // CursorMoved handler can set `handled` and break the loop
+        // before the dragging child gets its event.
+        if let Some(idx) = self.children.iter().position(|c| c.wants_pointer_capture()) {
+            let cnode = child_nodes[idx];
+            self.children[idx].handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, cnode, taffy);
+            return;
+        }
         for (child_widget, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
             child_widget.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, child_node, taffy);
             if *handled {
                 break;
             }
         }
+    }
+
+    /// Propagate pointer-capture intent from any descendant. Without
+    /// this override, an outer Column wrapping a Row containing a
+    /// dragging slider wouldn't see the capture intent (the default
+    /// trait impl returns `false` for leaf widgets, and Column would
+    /// inherit it). The Column's `handle_event` short-circuit then
+    /// wouldn't fire, defeating the purpose.
+    fn wants_pointer_capture(&self) -> bool {
+        self.children.iter().any(|c| c.wants_pointer_capture())
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
