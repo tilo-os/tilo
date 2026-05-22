@@ -55,6 +55,13 @@ pub enum BackendKind {
     /// Currently errors at construction with a "not yet implemented"
     /// message — see [`backend::DrmBackend`].
     Drm,
+    /// Display-free wgpu-offscreen backend. No window, no event loop,
+    /// no GPU surface — paints into an offscreen texture via
+    /// [`backend::HeadlessBackend`]. Lets the live binary boot in CI,
+    /// distrobox without a display, or remote SSH sessions without
+    /// X-forwarding. Drivable end-to-end through the
+    /// `NIRIOS_TEST_CONTROL` socket protocol.
+    Headless,
 }
 
 /// Parse the run mode from the process's command-line arguments.
@@ -291,6 +298,7 @@ pub fn parse_backend(args: &[&str]) -> BackendKind {
 fn value_to_backend(value: &str) -> BackendKind {
     match value {
         "drm" => BackendKind::Drm,
+        "headless" => BackendKind::Headless,
         _ => BackendKind::Winit,
     }
 }
@@ -391,6 +399,23 @@ mod tests {
         assert!(matches!(
             parse_backend(&["--backend=nonsense"]),
             BackendKind::Winit
+        ));
+    }
+
+    #[test]
+    fn parse_backend_headless_returns_headless() {
+        // Both `--backend headless` and `--backend=headless` must
+        // resolve to `BackendKind::Headless`. The headless backend is
+        // the third path alongside winit (default) and drm; it lets
+        // the live binary boot without a display server so e2e
+        // harnesses can drive it via `NIRIOS_TEST_CONTROL`.
+        assert!(matches!(
+            parse_backend(&["--backend", "headless"]),
+            BackendKind::Headless
+        ));
+        assert!(matches!(
+            parse_backend(&["--backend=headless"]),
+            BackendKind::Headless
         ));
     }
 
