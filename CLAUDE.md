@@ -82,11 +82,17 @@ distrobox enter my-distrobox -- bash -c 'cd /home/quinten/Development/quickdeskt
 distrobox enter my-distrobox -- bash -c 'cd /home/quinten/Development/quickdesktop && cargo test -p quick-ui'
 ```
 
-**`quick-desktop --lib` requires `--test-threads 1`.** Default parallel runs SIGSEGV — a wgpu/openh264/FFI resource collision somewhere across the ~400 tests that hasn't been bisected yet. Single-threaded passes every time, so worker prompts + the integration recipe both pass `--test-threads 1` explicitly. Don't silently `cargo test -p quick-desktop --lib` without the flag.
+**`quick-desktop --lib` needs bounded test parallelism.** Default parallel (16+ threads on a typical host) SIGSEGVs — wgpu Vulkan instance contention from the OffscreenRenderer-using tests (DRM/headless backends, snapshot, recording, surface_readback). Empirical threshold from bisect: **4 threads passes, 8 threads crashes**. Worker prompts + the integration recipe both use `--test-threads 1` for maximum safety. If you want faster runs locally, `--test-threads 4` works.
 
 ```bash
+# Safe (recommended for CI / workers):
 distrobox enter my-distrobox -- bash -c 'cd /home/quinten/Development/quickdesktop && cargo test -p quick-desktop --lib -- --test-threads 1'
+
+# Faster local (verified clean on this hardware):
+distrobox enter my-distrobox -- bash -c 'cd /home/quinten/Development/quickdesktop && cargo test -p quick-desktop --lib -- --test-threads 4'
 ```
+
+There's also a separate parallel-only flake: `sandbox::profile::tests::apply_grants_dev_scan_is_memoised` shares the D-6 memo's static state with other `apply_grants`-calling tests, so concurrent runs corrupt its counter. Same workaround.
 
 The compositor has a headless integration test harness that exercises the Wayland state without a GPU:
 
