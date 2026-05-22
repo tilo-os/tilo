@@ -19,7 +19,8 @@
 //! `compositor::state::State::new_toplevel`).
 
 use crate::shell::state::{
-    Tab, TabId, TileContent, WindowGroup, WindowWidth, WorkspaceTree, next_id,
+    Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth, WorkspaceTree,
+    next_id,
 };
 
 /// Adopt a freshly-committed wayland toplevel into the active workspace's
@@ -31,12 +32,19 @@ use crate::shell::state::{
 /// form `anon-<surface_id>` is recorded; a future Task 6.2 step rewrites it
 /// when the client eventually sets one.
 ///
-/// Returns the freshly-minted tab id. If the active workspace exists but
-/// has no strips, the tab can't be parked anywhere and the function
-/// returns the synthesized id without mutating the tree (the compositor
-/// can drop the surface). If the strip exists but has no window-group,
-/// one is synthesized — mirrors `apply_workspace_drop`'s empty-strip
-/// path.
+/// Returns the freshly-minted tab id.
+///
+/// C-6 fix: when the active workspace has no strips, a default strip
+/// (with one window group) is synthesized so the new tab always lands
+/// somewhere visible. The previous behaviour returned a synthetic id
+/// without mutating the tree — the foreign surface was then alive at
+/// the protocol layer but invisible to the chrome, leaking buffer +
+/// shm-pool memory until the client tore the toplevel down on its own.
+/// Synthesizing the strip mirrors the empty-strip → empty-group path
+/// already taken when only the window-group is missing.
+///
+/// If the strip exists but has no window-group, one is synthesized —
+/// mirrors `apply_workspace_drop`'s empty-strip path.
 ///
 /// Phase 6 doesn't yet wire the `surface_id → WlSurface` reverse map; the
 /// compositor state holds that map alongside the tree (Phase 4
@@ -58,7 +66,26 @@ pub fn adopt_toplevel(
     };
     let tab_id = new_tab.id;
     if let Some(ws) = tree.active_workspace_mut() {
-        if let Some(strip) = ws.strips.first_mut() {
+        // C-6 fix: if the workspace has no strips, synthesize a default
+        // strip with a single window-group around the new tab. The
+        // previous code returned without mutating the tree, leaving
+        // the surface orphaned (visible at the wayland-protocol layer
+        // but never blitted into any tile rect).
+        if ws.strips.is_empty() {
+            let group = WindowGroup {
+                id: next_id(),
+                tabs: vec![new_tab],
+                active_tab: tab_id,
+                width: WindowWidth::Normal,
+                maximized: false,
+            };
+            let strip = Strip {
+                id: StripId::from(next_id()),
+                name: String::new(),
+                window_groups: vec![group],
+            };
+            ws.strips.push(strip);
+        } else if let Some(strip) = ws.strips.first_mut() {
             if let Some(group) = strip.window_groups.first_mut() {
                 group.tabs.push(new_tab);
                 group.active_tab = tab_id;
@@ -75,10 +102,6 @@ pub fn adopt_toplevel(
                 });
             }
         }
-        // No strips at all: the tab is dropped on the floor (the active
-        // workspace can't host it). The synthesized tab_id still flows
-        // back so the caller can correlate the surface with a no-op
-        // adoption result.
     }
     tab_id
 }
@@ -256,6 +279,58 @@ mod tests {
             !renamed,
             "rename must report `false` when the surface isn't adopted"
         );
+    }
+
+    /// C-6 regression: when the active workspace has no strips, a
+    /// foreign-toplevel adoption used to be silently dropped — the
+    /// function returned a synthetic tab id without touching the tree,
+    /// orphaning the surface (alive at the protocol layer but never
+    /// painted). Post-fix, the adoption synthesizes a default strip +
+    /// group so the new tab is always reachable.
+    #[test]
+    fn adopt_toplevel_creates_strip_when_workspace_empty() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        // Start from a known-good tree and erase the active workspace's
+        // strips so we exercise the new branch. Other workspaces (if
+        // any) are untouched.
+        let active_id = tree.active;
+        {
+            let ws = tree
+                .workspaces
+                .iter_mut()
+                .find(|w| w.id == active_id)
+                .expect("active workspace exists");
+            ws.strips.clear();
+            assert!(ws.strips.is_empty(), "test fixture: strips emptied");
+        }
+
+        let tab_id = adopt_toplevel(&mut tree, 7777, Some("io.example.late".into()));
+        assert_ne!(tab_id, 0, "adoption must mint a real tab id");
+
+        let ws = tree
+            .workspaces
+            .iter()
+            .find(|w| w.id == active_id)
+            .expect("active workspace still present");
+        assert_eq!(
+            ws.strips.len(),
+            1,
+            "C-6 regression: adoption into an empty-strip workspace must \
+             synthesize a default strip rather than dropping the tab"
+        );
+        let strip = &ws.strips[0];
+        assert_eq!(strip.window_groups.len(), 1);
+        let group = &strip.window_groups[0];
+        assert_eq!(group.tabs.len(), 1);
+        assert_eq!(group.tabs[0].id, tab_id);
+        assert_eq!(group.active_tab, tab_id);
+        match &group.tabs[0].tile {
+            TileContent::Foreign { app_id, surface_id } => {
+                assert_eq!(*surface_id, 7777);
+                assert_eq!(app_id, "io.example.late");
+            }
+            other => panic!("expected Foreign tile, got {other:?}"),
+        }
     }
 
     #[test]

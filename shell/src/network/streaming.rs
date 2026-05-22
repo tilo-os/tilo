@@ -535,6 +535,102 @@ mod tests {
         eprintln!("shared-surface PSNR = {psnr:.3} dB");
     }
 
+    /// D-1 regression: `apply_remote_input` used to log the event and
+    /// stamp `last_remote_input`, but never touched the smithay seat
+    /// — Peer-sync Phase 4's input replay was a no-op. The boolean
+    /// `true` return gave callers / earlier tests false confidence
+    /// that the event had been "applied".
+    ///
+    /// Post-fix, `RemoteInputSink::apply` for `State` calls
+    /// `PointerHandle::motion(...)` for `PointerMotion` events (and
+    /// `PointerHandle::button` for buttons). This test asserts the
+    /// pointer's logical location actually reflects the injected
+    /// coordinates — observable through `seat.get_pointer().current_location()`.
+    ///
+    /// Keyboard injection is intentionally deferred (see the module
+    /// comment in `compositor::state`); the audit explicitly allows
+    /// scoping D-1 to pointer events + filing a follow-up.
+    #[test]
+    fn apply_remote_input_pointer_motion_reaches_seat() {
+        use crate::compositor::state::State;
+        use crate::network::streaming::{InputEvent, StreamingShare};
+        use smithay::reexports::calloop::EventLoop;
+        use smithay::reexports::wayland_server::Display;
+
+        // Build a minimal `State` standalone — no listening socket,
+        // no clients. This is the same plumbing `native::run` does at
+        // startup, minus the winit/drm backend.
+        let event_loop: EventLoop<'static, State> =
+            EventLoop::try_new().expect("calloop event loop");
+        let display: Display<State> =
+            Display::new().expect("wayland display");
+        let display_handle = display.handle();
+        let mut state = State::new(event_loop.handle(), display_handle);
+
+        // Stage the (peer, surface) share so the read-only gate lets
+        // the event through. Without this `apply_remote_input` would
+        // drop on the unknown-share path.
+        let peer: PeerId = 42;
+        let surface: SurfaceId = 7;
+        state
+            .share_registry
+            .insert(peer, surface, StreamingShare::new());
+
+        // Before injection: pointer is at the seat's default origin
+        // (0, 0). `current_location` returns the last-known location;
+        // a fresh seat starts at the origin.
+        let initial = state
+            .seat
+            .get_pointer()
+            .expect("seat has pointer device")
+            .current_location();
+        assert_eq!(
+            initial.x, 0.0,
+            "seat fresh start; pointer x should be 0, got {}",
+            initial.x
+        );
+        assert_eq!(initial.y, 0.0);
+
+        // Now drive a PointerMotion event through the real
+        // production path.
+        let routed = state.apply_remote_input(
+            peer,
+            surface,
+            InputEvent::PointerMotion {
+                x: 123.0,
+                y: 456.0,
+            },
+        );
+        assert!(routed, "share is read/write, motion must route");
+
+        // The seat's pointer location must now reflect the injected
+        // coordinates — proves the call actually reached the
+        // production `motion()` path, not just stamped
+        // `last_remote_input`.
+        let after = state
+            .seat
+            .get_pointer()
+            .expect("seat still has pointer")
+            .current_location();
+        assert_eq!(
+            (after.x, after.y),
+            (123.0, 456.0),
+            "D-1 regression: pointer location did not reach the seat \
+             after `apply_remote_input(PointerMotion)`; observed {:?}",
+            (after.x, after.y)
+        );
+
+        // A second motion shifts the pointer again — the seat is
+        // mutating, not pinned at the first value.
+        let _ = state.apply_remote_input(
+            peer,
+            surface,
+            InputEvent::PointerMotion { x: 5.0, y: 6.0 },
+        );
+        let after2 = state.seat.get_pointer().unwrap().current_location();
+        assert_eq!((after2.x, after2.y), (5.0, 6.0));
+    }
+
     #[test]
     fn encode_tick_throttled_when_within_interval() {
         use crate::compositor::surface_readback::SurfaceTracker;
