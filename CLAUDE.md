@@ -48,13 +48,38 @@ cargo build -p file-explorer
 cargo build -p quick-browser
 ```
 
+### Build environment — distrobox
+
+**The host does NOT have all build deps.** Every `cargo` invocation must go through `distrobox enter my-distrobox`:
+
+```bash
+distrobox enter my-distrobox -- bash -c 'cd /home/quinten/Development/quickdesktop && cargo <cmd>'
+```
+
+System deps the `my-distrobox` container needs (install via `sudo dnf install` inside the container if it's been rebuilt):
+
+```
+xkbcommon-devel          # smithay-client-toolkit (every build)
+libseat-devel            # compositor DRM backend
+libinput-devel           # compositor DRM input
+libudev-devel            # compositor DRM device enum
+libdrm-devel             # compositor DRM
+mesa-libgbm-devel        # compositor DRM buffer alloc
+mesa-libGL-devel         # compositor DRM paint (Phase 5.2)
+mesa-libEGL-devel        # compositor DRM paint (Phase 5.2)
+pipewire-devel           # portal ScreenCast streams
+nasm                     # openh264-sys2 fallback (optional; the `source` feature compiles pure-C without)
+```
+
+Missing one of these surfaces as a `pkg-config exited with status code 1` error at the top of the cargo output. Don't `sudo dnf install` on the host — install inside `distrobox enter my-distrobox`.
+
 ### Running tests
 
 **Prefer targeted tests over workspace-wide runs.** Workspace-wide `cargo test` can take a long time and blocks the shared build lock across worktrees. Run tests for the crate you're changing:
 
 ```bash
-cargo test -p quick-fs-fuse
-cargo test -p quick-ui
+distrobox enter my-distrobox -- bash -c 'cd /home/quinten/Development/quickdesktop && cargo test -p quick-fs-fuse'
+distrobox enter my-distrobox -- bash -c 'cd /home/quinten/Development/quickdesktop && cargo test -p quick-ui'
 ```
 
 The compositor has a headless integration test harness that exercises the Wayland state without a GPU:
@@ -139,12 +164,76 @@ Don't run `git add -A` from the root — it catches submodule pointer changes yo
 
 Pull all submodules with `git submodule update --remote --merge`.
 
+### Worker-driven cherry-pick (when a subagent works in a worktree)
+
+When a subagent commits inside `.claude/worktrees/<name>/quick-shell/` (the worktree's submodule has its own gitdir under `.git/worktrees/<name>/modules/quick-shell`), the main submodule cannot see those commits until you explicitly fetch them. Recipe:
+
+```bash
+# 1. Inside the worktree's submodule, make the new commit's SHA reachable via a branch ref.
+WORKTREE_SHA=$(git -C .claude/worktrees/<name>/quick-shell rev-parse HEAD)
+git -C .claude/worktrees/<name>/quick-shell branch -f <name>-shell $WORKTREE_SHA
+
+# 2. From the main submodule, fetch via path + cherry-pick.
+git -C quick-shell fetch /var/home/quinten/Development/quickdesktop/.claude/worktrees/<name>/quick-shell <name>-shell
+git -C quick-shell cherry-pick FETCH_HEAD
+
+# 3. Cherry-pick will create a NEW SHA in the main submodule (different from $WORKTREE_SHA because committer date refreshes). Re-bump the superproject pointer:
+git add quick-shell && git commit -m "chore(quick-shell): bump for <name>"
+```
+
+For the `os/` submodule the same recipe applies with `os` substituted.
+
+### NEVER `git worktree remove --force` before committing untracked files
+
+`--force` deletes the entire worktree directory — including untracked files (`??`). If a worker created `new_module.rs` but never `git add`ed it, that file is **gone**. Recovery via reflog / lost-found does NOT help because untracked files were never in the object DB.
+
+**Safe pattern before removing a worktree:**
+
+```bash
+# 1. Always commit (or at least `git add`) every file you want to keep.
+cd .claude/worktrees/<name>
+git -C quick-shell status --short            # Check for `??` files; commit them or note them
+git -C os status --short
+git status --short                            # And the main worktree
+# 2. Then it's safe to remove.
+git worktree remove --force .claude/worktrees/<name>
+```
+
+If a worker fails partway, **inspect `git status` in every relevant gitdir before removing the worktree**, even if you're impatient.
+
+## Where state lives across nirios
+
+Adding a field to `Workspace`, `WorkspaceTree`, `Strip`, or any other struct in `quick-shell/src/shell/state.rs` ripples to **every test fixture** that constructs that struct by-field. Symptoms: cargo errors like `E0063: missing field <new_field> in initializer of <Struct>`. Files that historically need updating:
+
+```
+quick-shell/src/portal/*.rs              # test fixtures
+quick-shell/tests/active_group_wireup_test.rs
+quick-shell/tests/cross_strip_drag.rs
+quick-shell/tests/maximize_persist_wireup_test.rs
+quick-shell/tests/concept_parity_spec.rs (1000+ lines — be careful)
+```
+
+Mitigation: prefer a `Workspace::test_default()` builder helper over hand-constructed `Workspace { ... }` blocks. The migration to that helper hasn't happened yet; until it does, expect ripples.
+
+## Verification covenant (`tests/concept_parity_spec.rs`)
+
+The header of `quick-shell/tests/concept_parity_spec.rs` declares an explicit covenant:
+
+- **Never** add `#[ignore]` to weaken a failing test
+- **Never** weaken an assertion (replace `==` with `>=`, comment out a checked invariant, etc.)
+- **Always** assert on the production code path, not a tautological helper
+
+This applies to **all** test files, not just `concept_parity_spec`. The "verification mantra" surfaces in the `docs/superpowers/plans/2026-04-30-nirios-logical-bugs.md` audit too — assert on the real path, prove the fix.
+
 ## Conventions
 
 - **Rust edition:** `quick-ui`, `quick-shell`, `quick-fs-fuse` are on edition **2024**; the apps (`terminal`, `file-explorer`, `browser`) are on **2021**. Don't "normalize" these in passing.
 - **Container tooling:** use rootless `podman` (no `sudo`) for image builds where possible. `os/build.sh` only needs `sudo` for the disk-image step.
 - **Don't run workspace-wide `cargo test`** unless you genuinely need it — it blocks the shared target lock and is slow. Scope to `-p <crate>`.
 - Debug overlays in `quick-ui` are gated by `QUICK_UI_DEBUG` **and** `debug_assertions`; they're unavailable in release builds.
+- **Never** run `scripts/screenshot-app.py` to "see" the UI. Use `cargo run --bin shots -- --mode offscreen --out target/<dir>` (still images per scenario) or `cargo run --bin shots -- --mode recording --scenario <name> --out target/<file>.h264` (H.264 video). Both produce output **identical** to the live binary.
+- **E2E click targeting**: `ShellDriver::resolve_named_rect(name)` walks the live widget tree via `Widget::test_id` to find click coordinates. Add `fn test_id(&self) -> Option<&str>` to a widget impl to make it addressable by name from scenarios. Path-fallback (`Parent/Child[index]`) works without opt-in.
+- **End goal**: nirios is a daily-driver collaborative spatial Linux OS. The current state is "research environment" — feature-complete for single-monitor single-user with full collaboration + sandbox semantics. The road to "daily-driver" needs multi-monitor, accessibility (AT-SPI tree), audio routing, notifications, session-lock + power-management hooks. The CRDT-native UI toolkit (`quick-ui`) is the highest-leverage layer — every system app uses it.
 
 ## Where to read first
 
