@@ -24,16 +24,20 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::Arc;
 use std::time::Duration;
 
+use automerge::{AutoCommit, ObjId};
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
 use smithay::wayland::socket::ListeningSocketSource;
+use taffy::NodeId;
 use vello::kurbo::Rect;
+use winit::dpi::PhysicalPosition;
+use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
 use crate::compositor::backend::{Backend, BackendEvent, DrmBackend, OutputId, WinitBackend};
 use crate::compositor::frame::FrameBuilder;
 use crate::compositor::state::{ClientState, State};
 use crate::compositor::test_control::{
-    self, ControlState, parse_command, serialise_response,
+    self, ControlState, PlannedAction, parse_command, serialise_response,
 };
 use crate::compositor::{parse_backend_from_args, BackendKind};
 
@@ -115,23 +119,98 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
     }
 }
 
+/// Stash of per-process state the test-control wire needs in order to
+/// execute [`PlannedAction`]s. Mirrors the equivalent fields on
+/// `ShellDriver` (`bin/shots/driver.rs`): modifier snapshot, the
+/// auxiliary `AutoCommit` doc widgets mutate, the root `ObjId`, and
+/// the focus cursor. The compositor doesn't drive any of these from
+/// real input today (input wiring is Phase 6), so this is a clean
+/// scratch context used only by the test-control surface.
+struct TestControlCtx {
+    modifiers: Modifiers,
+    doc: AutoCommit,
+    root_obj: ObjId,
+    focus: Option<NodeId>,
+    cursor: PhysicalPosition<f64>,
+}
+
+impl TestControlCtx {
+    fn new() -> Self {
+        Self {
+            modifiers: Modifiers::default(),
+            doc: AutoCommit::new(),
+            root_obj: automerge::ROOT,
+            focus: None,
+            cursor: PhysicalPosition::new(0.0, 0.0),
+        }
+    }
+}
+
+/// Synthesise the [`WindowEvent`] that corresponds to a single
+/// [`PlannedAction`] and dispatch it through the FrameBuilder's
+/// shared `dispatch_event` wire — the same wire `ShellDriver::dispatch`
+/// uses for in-process scenarios. `device_id` is zeroed because
+/// winit's `DeviceId` is opaque and the host's input path doesn't
+/// inspect it.
+fn execute_planned_action(
+    action: &PlannedAction,
+    fb: &mut FrameBuilder,
+    ctx: &mut TestControlCtx,
+) {
+    match *action {
+        PlannedAction::CursorMoved { x, y } => {
+            ctx.cursor = PhysicalPosition::new(x, y);
+            let event = WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: ctx.cursor,
+            };
+            fb.dispatch_event(
+                &event,
+                &ctx.modifiers,
+                &mut ctx.doc,
+                &ctx.root_obj,
+                &mut ctx.focus,
+            );
+        }
+        PlannedAction::MouseLeftButton { pressed } => {
+            let event = WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: if pressed {
+                    ElementState::Pressed
+                } else {
+                    ElementState::Released
+                },
+                button: MouseButton::Left,
+            };
+            fb.dispatch_event(
+                &event,
+                &ctx.modifiers,
+                &mut ctx.doc,
+                &ctx.root_obj,
+                &mut ctx.focus,
+            );
+        }
+    }
+}
+
 /// Drain any pending bytes from `conn`'s buffer. For each complete
 /// line (terminated by `\n`), parse it as a [`test_control::Command`],
-/// dispatch against `frame_builder`, and write the JSON response back
-/// to the connection. Partial lines stay buffered for the next tick.
+/// dispatch against `frame_builder`, execute any `PlannedAction`s the
+/// dispatcher returned, and write the JSON response back to the
+/// connection. Partial lines stay buffered for the next tick.
 ///
 /// On EOF / connection error / write failure, marks the connection
 /// closed so the outer loop can drop it.
 ///
-/// Phase 1b — only read-only commands (`list_targets`) are fully
-/// implemented end-to-end. Phase 2a's `click_at` / `click_named`
-/// commands still parse + dispatch through the pure-logic layer (see
-/// `test_control::PlannedAction`), but their planned actions are
-/// **not yet executed** — that wireup is Phase 2b (needs ShellOverlayHost
-/// `handle_event` plumbing with AutoCommit / ObjId / focus / NodeId
-/// pieces that currently live in `ShellDriver` and aren't available
-/// here yet).
-fn pump_test_control_conn(conn: &mut TestControlConn, frame_builder: &FrameBuilder) {
+/// Phase 2b — `click_at` and `click_named` execute their planned
+/// actions through `FrameBuilder::dispatch_event` (same wire as
+/// `ShellDriver::dispatch`). Chrome-mutating widgets (overview
+/// button, wheel-disc plus slot, …) react identically to real input.
+fn pump_test_control_conn(
+    conn: &mut TestControlConn,
+    frame_builder: &mut FrameBuilder,
+    ctx: &mut TestControlCtx,
+) {
     loop {
         let mut line = String::new();
         match conn.reader.read_line(&mut line) {
@@ -140,17 +219,24 @@ fn pump_test_control_conn(conn: &mut TestControlConn, frame_builder: &FrameBuild
                 return;
             }
             Ok(_) => {
-                let state = FrameBuilderControlState { fb: frame_builder };
                 let (resp, actions) = match parse_command(&line) {
-                    Ok(cmd) => test_control::dispatch_command(&cmd, &state),
+                    Ok(cmd) => {
+                        let state = FrameBuilderControlState { fb: frame_builder };
+                        test_control::dispatch_command(&cmd, &state)
+                    }
                     Err(err_resp) => (err_resp, Vec::new()),
                 };
+                for action in &actions {
+                    execute_planned_action(action, frame_builder, ctx);
+                }
+                // Re-run layout so the next `list_targets` (or paint
+                // tick) sees rects post-mutation. Chrome state
+                // changes (overlay open, workspace add, …) can change
+                // structural layout; without a relayout here the
+                // next command sees stale rects from the previous
+                // frame.
                 if !actions.is_empty() {
-                    eprintln!(
-                        "nirios compositor: test_control received {} planned \
-                         action(s); execution is Phase 2b (not yet wired)",
-                        actions.len()
-                    );
+                    frame_builder.relayout();
                 }
                 let mut out = serialise_response(&resp);
                 out.push('\n');
@@ -284,6 +370,13 @@ pub fn run() -> ! {
     // pending bytes from existing ones.
     let test_control_listener = bind_test_control_socket();
     let mut test_control_conns: Vec<TestControlConn> = Vec::new();
+    // Phase 2b: per-process scratch context for executing PlannedActions
+    // off the test-control socket. The compositor doesn't (yet) route
+    // real winit input to the host, so this is the only place a
+    // `Modifiers` snapshot / `AutoCommit` doc / focus cursor lives in
+    // the live binary. Production runs never set the env var that
+    // enables the socket, so this is zero-cost in shipped builds.
+    let mut test_control_ctx = TestControlCtx::new();
 
     // Phase 4 tick body. Each iteration:
     //
@@ -346,7 +439,7 @@ pub fn run() -> ! {
                 }
             }
             for conn in test_control_conns.iter_mut() {
-                pump_test_control_conn(conn, &frame_builder);
+                pump_test_control_conn(conn, &mut frame_builder, &mut test_control_ctx);
             }
             test_control_conns.retain(|c| !c.closed);
         }
@@ -401,3 +494,128 @@ pub fn run() -> ! {
     drop(display);
     std::process::exit(0)
 }
+
+#[cfg(test)]
+mod tests {
+    //! Phase 2b unit coverage for the test-control execution path.
+    //!
+    //! The integration test (`tests/control_socket_test.rs`) needs a
+    //! Wayland display and is `#[ignore]` by default; these unit tests
+    //! exercise the same `execute_planned_action` → `FrameBuilder::dispatch_event`
+    //! wire without spinning up a process, so a CI run that can't open
+    //! winit still gates against regressions here.
+    use super::*;
+
+    /// Sanity: `CursorMoved` planned action updates the context's cached
+    /// cursor and dispatches through the FrameBuilder without panicking.
+    /// The cursor cache matters because subsequent `MouseInput` events
+    /// (which don't carry positions on winit) get hit-tested against
+    /// `last_cursor` inside the host.
+    #[test]
+    fn cursor_moved_action_updates_ctx_cursor() {
+        let mut fb = FrameBuilder::new((1600, 900));
+        let mut ctx = TestControlCtx::new();
+        execute_planned_action(
+            &PlannedAction::CursorMoved { x: 250.0, y: 75.0 },
+            &mut fb,
+            &mut ctx,
+        );
+        assert_eq!(ctx.cursor.x, 250.0);
+        assert_eq!(ctx.cursor.y, 75.0);
+    }
+
+    /// The full click sequence (`CursorMoved` + button-down + button-up)
+    /// dispatches all three events without panicking. This is the
+    /// minimum bar: Phase 2a returns these three actions for a
+    /// `click_at` command; Phase 2b's contract is that all three reach
+    /// `ShellOverlayHost::handle_event` and the host doesn't crash on
+    /// any of them.
+    #[test]
+    fn full_click_sequence_dispatches_without_panic() {
+        let mut fb = FrameBuilder::new((1600, 900));
+        let mut ctx = TestControlCtx::new();
+        let actions = vec![
+            PlannedAction::CursorMoved { x: 800.0, y: 450.0 },
+            PlannedAction::MouseLeftButton { pressed: true },
+            PlannedAction::MouseLeftButton { pressed: false },
+        ];
+        for action in &actions {
+            execute_planned_action(action, &mut fb, &mut ctx);
+        }
+        // No panic + relayout still works = wire intact.
+        fb.relayout();
+        let scene = fb.paint();
+        assert!(!scene.encoding().is_empty());
+    }
+
+    /// Click sequence aimed at the wheel-disc's plus slot mutates the
+    /// chrome state — proves the planned actions reach the host's
+    /// click handlers, not just dispatch into a void.
+    ///
+    /// The bootstrap workspace tree seeds three demo workspaces; pressing
+    /// the wheel-disc plus slot calls `chrome.add_workspace("Untitled")`,
+    /// which grows that count to four. Asserting on the count is more
+    /// robust than asserting on internal widget state because the chrome
+    /// is the contract every consumer sees.
+    #[test]
+    fn click_on_wheel_plus_slot_grows_workspace_count() {
+        let mut fb = FrameBuilder::new((1600, 900));
+        // Paint once so the wheel-disc populates its plus_rect — the
+        // press handler hit-tests against it, and it's `Rect::ZERO`
+        // until the first draw pass runs.
+        let _ = fb.paint();
+        // Find the wheel disc rect by its opt-in `test_id`. We then
+        // approximate the plus slot's position: it's a 28 px disc
+        // centred on the visible footprint, 8 px below the visible
+        // arc's bottom tip (see `sidebar_wheel_disc::draw`). Rather
+        // than re-derive that arithmetic, click slightly below the
+        // wheel's centre — close enough to land inside the plus rect
+        // on the bootstrap layout.
+        let registry = fb.widget_registry();
+        let wheel_rect = registry
+            .get("wheel_disc")
+            .copied()
+            .expect("wheel_disc test_id resolves on bootstrap tree");
+
+        let initial_count = fb.chrome().tree.workspaces.len();
+
+        // Walk down the wheel rect's vertical axis in 4 px increments
+        // until a click lands on the plus slot (adds a workspace).
+        // The plus slot is near the bottom of the wheel disc; this
+        // sweep avoids hard-coding the exact y the wheel's `draw`
+        // pass uses internally.
+        let mut ctx = TestControlCtx::new();
+        let cx = (wheel_rect.x0 + wheel_rect.x1) / 2.0;
+        let mut found = false;
+        let mut y = wheel_rect.y0 + 8.0;
+        while y < wheel_rect.y1 {
+            execute_planned_action(
+                &PlannedAction::CursorMoved { x: cx, y },
+                &mut fb,
+                &mut ctx,
+            );
+            execute_planned_action(
+                &PlannedAction::MouseLeftButton { pressed: true },
+                &mut fb,
+                &mut ctx,
+            );
+            execute_planned_action(
+                &PlannedAction::MouseLeftButton { pressed: false },
+                &mut fb,
+                &mut ctx,
+            );
+            if fb.chrome().tree.workspaces.len() > initial_count {
+                found = true;
+                break;
+            }
+            y += 4.0;
+        }
+        assert!(
+            found,
+            "sweep of clicks down the wheel disc's vertical axis \
+             should hit the plus slot and grow the workspace count \
+             from {initial_count}"
+        );
+    }
+}
+
