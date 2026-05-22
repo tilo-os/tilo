@@ -388,11 +388,10 @@ impl ShellDriver {
     /// information too — the caller can detect a widget that exists
     /// but isn't laid out yet). `resolve_named_rect` filters those out.
     pub fn widget_registry(&self) -> HashMap<String, Rect> {
-        let host: &dyn Widget = self.fb.host();
-        let mut out = HashMap::new();
-        let mut sibling_counts: HashMap<String, usize> = HashMap::new();
-        walk_widget(host, "", &mut sibling_counts, &mut out);
-        out
+        // Delegate to the shared walk in `compositor::frame` so the
+        // out-of-process `compositor::test_control` and the in-process
+        // ShellDriver see exactly the same target set.
+        self.fb.widget_registry()
     }
 
     /// Centre of a named rect — convenience for the scenario engine.
@@ -410,63 +409,9 @@ impl ShellDriver {
 
 // ---------- helpers ----------
 
-/// Depth-first walk of the widget tree. For each visited node:
-///   - if `test_id()` returns `Some(id)`, registers `id -> rect`
-///     (highest priority — overrides any path-based key).
-///   - regardless, registers the path-based key
-///     `Parent/.../Self[sibling_index]` so an un-tagged widget is still
-///     addressable.
-///
-/// `sibling_counts` is a parent-scoped counter map keyed by `parent_path/name`
-/// so multiple children of the same `name` get deterministic [0], [1],
-/// [2], ... suffixes. The map is reset implicitly by walking under a fresh
-/// `parent_path` segment.
-fn walk_widget(
-    w: &dyn Widget,
-    parent_path: &str,
-    sibling_counts: &mut HashMap<String, usize>,
-    out: &mut HashMap<String, Rect>,
-) {
-    let name = w.name().to_string();
-    // Build a per-parent sibling key so [N] indices are scoped to
-    // siblings, not globally unique. Reset for each level via a local
-    // map below (we use the parent_path as part of the key here).
-    let sibling_key = format!("{parent_path}::{name}");
-    let idx = sibling_counts.entry(sibling_key).or_insert(0);
-    let my_index = *idx;
-    *idx += 1;
-    let path = if parent_path.is_empty() {
-        format!("{name}[{my_index}]")
-    } else {
-        format!("{parent_path}/{name}[{my_index}]")
-    };
-    out.insert(path.clone(), w.get_rect());
-    // Also register a path without the trailing index for convenience
-    // when there's exactly one sibling of that name. We can't know
-    // "exactly one" at recursion time so we always insert the bare-name
-    // form too; if a second sibling of the same name comes along it'll
-    // overwrite — that's the documented behaviour ("first match wins is
-    // not guaranteed across duplicates; use the indexed form").
-    if my_index == 0 {
-        let bare = if parent_path.is_empty() {
-            name.clone()
-        } else {
-            format!("{parent_path}/{name}")
-        };
-        out.entry(bare).or_insert_with(|| w.get_rect());
-    }
-    if let Some(id) = w.test_id() {
-        // test_id wins over path-derived keys — direct insert / overwrite.
-        out.insert(id.to_string(), w.get_rect());
-    }
-    // Recurse into children with a fresh sibling counter scoped under
-    // this node's path.
-    let mut child_counts: HashMap<String, usize> = HashMap::new();
-    for child in w.children() {
-        walk_widget(child, &path, &mut child_counts, out);
-    }
-}
-
+// `walk_widget` lives in `compositor::frame` so the out-of-process
+// `compositor::test_control` and the in-process ShellDriver share one
+// implementation. See `quick-shell/src/compositor/frame.rs`.
 
 /// Synthesise a `WindowEvent::KeyboardInput { state: Pressed }` for
 /// `key`. winit's `KeyEvent` has a `pub(crate)` field

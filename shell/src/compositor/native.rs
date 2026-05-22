@@ -18,16 +18,23 @@
 //! Phase 2 is just "the binary prints a listening-socket line and stays up
 //! until killed".
 
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::Arc;
 use std::time::Duration;
 
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
 use smithay::wayland::socket::ListeningSocketSource;
+use vello::kurbo::Rect;
 
 use crate::compositor::backend::{Backend, BackendEvent, DrmBackend, OutputId, WinitBackend};
 use crate::compositor::frame::FrameBuilder;
 use crate::compositor::state::{ClientState, State};
+use crate::compositor::test_control::{
+    self, ControlState, parse_command, serialise_response,
+};
 use crate::compositor::{parse_backend_from_args, BackendKind};
 
 /// Env-var name for the Phase 7 CI test introspection hook. When set to a
@@ -39,6 +46,119 @@ use crate::compositor::{parse_backend_from_args, BackendKind};
 /// The hook is gated on the env var being set; without it the
 /// compositor never touches the filesystem from the frame loop.
 const TEST_STATE_DUMP_ENV: &str = "NIRIOS_TEST_STATE_DUMP";
+
+/// Env-var name for the real-input e2e control protocol. When set to a
+/// writable path, [`run`] binds a unix socket at that path that accepts
+/// newline-delimited JSON commands (see
+/// `compositor::test_control::Command` for the schema). Production
+/// runs never set the env var; the socket is opt-in for test harnesses.
+///
+/// Spec: `docs/superpowers/specs/2026-05-16-real-input-e2e-design.md`.
+const TEST_CONTROL_ENV: &str = "NIRIOS_TEST_CONTROL";
+
+/// Bind the test-control unix socket. Returns `None` if the env var is
+/// unset or the bind fails — bind failures are reported via
+/// `eprintln!` but don't abort the compositor (the production path
+/// must never depend on the test surface).
+fn bind_test_control_socket() -> Option<UnixListener> {
+    let path = std::env::var_os(TEST_CONTROL_ENV)?;
+    // Best-effort cleanup of a stale socket file from a previous run —
+    // `bind` would otherwise fail with EADDRINUSE.
+    let _ = std::fs::remove_file(&path);
+    match UnixListener::bind(&path) {
+        Ok(listener) => {
+            if let Err(e) = listener.set_nonblocking(true) {
+                eprintln!("nirios compositor: test_control set_nonblocking: {e}");
+                return None;
+            }
+            eprintln!("nirios compositor test_control listening on {path:?}");
+            Some(listener)
+        }
+        Err(e) => {
+            eprintln!("nirios compositor: test_control bind {path:?}: {e}");
+            None
+        }
+    }
+}
+
+/// Per-connection state for the test-control protocol. Holds a buffered
+/// reader over a non-blocking `UnixStream` so partial lines accumulate
+/// across iterations of the main loop.
+struct TestControlConn {
+    reader: BufReader<UnixStream>,
+    closed: bool,
+}
+
+impl TestControlConn {
+    fn new(stream: UnixStream) -> Option<Self> {
+        if let Err(e) = stream.set_nonblocking(true) {
+            eprintln!("nirios compositor: test_control conn set_nonblocking: {e}");
+            return None;
+        }
+        Some(Self {
+            reader: BufReader::new(stream),
+            closed: false,
+        })
+    }
+}
+
+/// Walk-the-frame-builder `ControlState` impl. Captures a fresh
+/// snapshot per `widget_registry()` call so the dispatch path sees
+/// the live tree (no caching).
+struct FrameBuilderControlState<'a> {
+    fb: &'a FrameBuilder,
+}
+
+impl<'a> ControlState for FrameBuilderControlState<'a> {
+    fn widget_registry(&self) -> HashMap<String, Rect> {
+        self.fb.widget_registry()
+    }
+}
+
+/// Drain any pending bytes from `conn`'s buffer. For each complete
+/// line (terminated by `\n`), parse it as a [`test_control::Command`],
+/// dispatch against `frame_builder`, and write the JSON response back
+/// to the connection. Partial lines stay buffered for the next tick.
+///
+/// On EOF / connection error / write failure, marks the connection
+/// closed so the outer loop can drop it.
+fn pump_test_control_conn(conn: &mut TestControlConn, frame_builder: &FrameBuilder) {
+    loop {
+        let mut line = String::new();
+        match conn.reader.read_line(&mut line) {
+            Ok(0) => {
+                // EOF.
+                conn.closed = true;
+                return;
+            }
+            Ok(_) => {
+                // We have one full line — dispatch + reply.
+                let state = FrameBuilderControlState { fb: frame_builder };
+                let resp = match parse_command(&line) {
+                    Ok(cmd) => test_control::dispatch_command(&cmd, &state),
+                    Err(err_resp) => err_resp,
+                };
+                let mut out = serialise_response(&resp);
+                out.push('\n');
+                if let Err(e) = conn.reader.get_mut().write_all(out.as_bytes()) {
+                    eprintln!("nirios compositor: test_control write: {e}");
+                    conn.closed = true;
+                    return;
+                }
+                // Continue draining — there may be another line buffered.
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                // No complete line yet; partial bytes stay in the BufReader.
+                return;
+            }
+            Err(e) => {
+                eprintln!("nirios compositor: test_control read: {e}");
+                conn.closed = true;
+                return;
+            }
+        }
+    }
+}
 
 /// Entry point for the smithay-on-Wayland compositor.
 ///
@@ -144,6 +264,15 @@ pub fn run() -> ! {
     // set the env var, so the dump is a true zero-cost noop there.
     let test_dump_path = std::env::var_os(TEST_STATE_DUMP_ENV);
 
+    // Real-input e2e Phase 1b: opt-in unix socket that accepts
+    // newline-delimited JSON commands (see `compositor::test_control`).
+    // Bound to whatever path `NIRIOS_TEST_CONTROL` points at; unset
+    // means the socket is never created (zero-cost in production).
+    // Each loop tick polls the listener for new connections and drains
+    // pending bytes from existing ones.
+    let test_control_listener = bind_test_control_socket();
+    let mut test_control_conns: Vec<TestControlConn> = Vec::new();
+
     // Phase 4 tick body. Each iteration:
     //
     //   1. Drain backend events (resize, close, redraw, focus). A
@@ -180,6 +309,35 @@ pub fn run() -> ! {
         frame_builder.relayout();
         let scene = frame_builder.paint();
         backend.submit_frame(&scene, OutputId(0));
+
+        // Real-input e2e Phase 1b: accept any new test-control
+        // connections, then drain pending bytes from each open one
+        // (each call may complete zero or more commands, parses
+        // them via `test_control::parse_command`, and writes JSON
+        // responses back). Closed connections (EOF or error) get
+        // collected at the bottom of the loop. The listener stays
+        // non-blocking so the frame-pacing loop never stalls on
+        // test traffic.
+        if let Some(listener) = &test_control_listener {
+            loop {
+                match listener.accept() {
+                    Ok((stream, _addr)) => {
+                        if let Some(conn) = TestControlConn::new(stream) {
+                            test_control_conns.push(conn);
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(e) => {
+                        eprintln!("nirios compositor: test_control accept: {e}");
+                        break;
+                    }
+                }
+            }
+            for conn in test_control_conns.iter_mut() {
+                pump_test_control_conn(conn, &frame_builder);
+            }
+            test_control_conns.retain(|c| !c.closed);
+        }
 
         // Phase 7 fix: drain wayland client traffic + push pending
         // protocol updates back out. `dispatch_clients` advances each
