@@ -492,7 +492,7 @@ impl Widget for FilePicker {
                 let glyph = if entry.is_dir { "[DIR] " } else { "      " };
                 let label = format!("{}{}", glyph, entry.name);
                 let label_color = if is_selected {
-                    Color::rgb8(255, 255, 255)
+                    Color::WHITE
                 } else {
                     theme.tokens.colors.text_primary
                 };
@@ -648,7 +648,7 @@ fn draw_button(
     let text_x = rect.center().x - (text_w as f64 / 2.0);
     let text_y = rect.y0 + (rect.height() - text_size as f64) / 2.0;
     let text_color = if is_primary {
-        Color::rgb8(255, 255, 255)
+        Color::WHITE
     } else {
         theme.tokens.colors.text_primary
     };
