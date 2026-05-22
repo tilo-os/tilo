@@ -43,8 +43,12 @@
 //!   `invalid_path`; everything else is left to the OS (the executor
 //!   logs file-create / encode errors but doesn't crash the
 //!   compositor — the response was already `Ok` from the dispatcher).
-//!
-//! Future commands (Phase 5+, separate units): `state_dump`.
+//! - `{"op":"state_dump"}` — read-only snapshot of the live
+//!   [`shell::state::WorkspaceTree`] + a structured view of the
+//!   [`ChromeState`] (overlays, search scope, ws-settings tab,
+//!   revision, …). The response shape is `Response::State {
+//!   workspace_tree, chrome }`, both `serde_json::Value` so future
+//!   ChromeState fields surface without bumping the wire schema.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -114,6 +118,14 @@ pub enum Command {
     /// response from the dispatcher remains `Ok` — proper error
     /// responses are a Phase 5 follow-up.
     Snapshot { path: String },
+    /// Snapshot the live shell state — the persisted [`WorkspaceTree`]
+    /// plus a structured view of [`ChromeState`] (overlays, search
+    /// scope, ws-settings tab, revision counter, …). Read-only — no
+    /// [`PlannedAction`]s, no mutation. Returns a [`Response::State`]
+    /// carrying both blobs as `serde_json::Value` so callers can
+    /// `serde_json::from_value` to a typed mirror without the
+    /// dispatcher locking the wire schema to a per-field snapshot.
+    StateDump,
 }
 
 /// Top-level response envelope. Either an `ok` payload (per-command
@@ -134,6 +146,19 @@ pub enum Response {
     /// Structured error. `code` is a stable machine-readable string;
     /// `message` is human prose for log output.
     Err { code: String, message: String },
+    /// `state_dump` response — the persisted [`WorkspaceTree`] +
+    /// structured [`ChromeState`] view, both as opaque
+    /// [`serde_json::Value`]s. Callers either inspect specific keys
+    /// (`response["workspace_tree"]["workspaces"]`) or
+    /// `serde_json::from_value` into a typed mirror.
+    ///
+    /// `serde_json::Value` is `PartialEq` so the variant participates
+    /// in the `PartialEq` derive — same as the rest of the response
+    /// envelope.
+    State {
+        workspace_tree: serde_json::Value,
+        chrome: serde_json::Value,
+    },
 }
 
 /// One entry in a `list_targets` response. `rect` is `(x, y, w, h)` in
@@ -162,6 +187,29 @@ impl TargetEntry {
 pub trait ControlState {
     /// Snapshot of every addressable widget in the live widget tree.
     fn widget_registry(&self) -> HashMap<String, Rect>;
+    /// JSON view of the persisted [`WorkspaceTree`] — same shape
+    /// `NIRIOS_TEST_STATE_DUMP` writes to disk on every frame tick.
+    ///
+    /// Default impl returns [`serde_json::Value::Null`] so existing
+    /// mock `ControlState`s (the unit-test fixtures that only care
+    /// about `widget_registry`) don't have to spell out a workspace
+    /// tree they never inspect. The compositor's real impl overrides
+    /// this with `serde_json::to_value(chrome.tree)`.
+    fn workspace_tree_json(&self) -> serde_json::Value {
+        serde_json::Value::Null
+    }
+    /// JSON view of [`ChromeState`]. The compositor's real impl
+    /// constructs an object literal carrying `overlays`,
+    /// `search_scope`, `ws_settings_tab`, `revision`, and
+    /// `editing_workspace_name`; this surface stays additive across
+    /// versions because `Response::State::chrome` is opaque
+    /// `serde_json::Value`.
+    ///
+    /// Default impl returns [`serde_json::Value::Null`] so test
+    /// fixtures that don't exercise `state_dump` stay terse.
+    fn chrome_state_json(&self) -> serde_json::Value {
+        serde_json::Value::Null
+    }
 }
 
 /// Side-effect actions the transport layer must execute after a
@@ -442,6 +490,20 @@ pub fn dispatch_command<S: ControlState>(
                     }],
                 )
             }
+        }
+        Command::StateDump => {
+            // `state_dump` is read-only: pull both JSON views from the
+            // `ControlState` impl and return them verbatim. No
+            // `PlannedAction`s — the live binary already sees the
+            // post-mutation state via its `FrameBuilderControlState`,
+            // and tests inject a fixed `ControlState` snapshot.
+            (
+                Response::State {
+                    workspace_tree: state.workspace_tree_json(),
+                    chrome: state.chrome_state_json(),
+                },
+                Vec::new(),
+            )
         }
     }
 }
@@ -995,5 +1057,110 @@ mod tests {
                 path: "/tmp/round.png".to_string()
             }
         );
+    }
+
+    // ===================================================================
+    // Phase 5 — state_dump
+    // ===================================================================
+
+    /// `ControlState` impl that returns hand-built JSON for both the
+    /// workspace tree and the chrome — used to drive the dispatcher
+    /// without spinning up a real `FrameBuilder`. Keeps the dispatch
+    /// tests pure.
+    struct StateDumpMockState {
+        workspace_tree: serde_json::Value,
+        chrome: serde_json::Value,
+    }
+
+    impl ControlState for StateDumpMockState {
+        fn widget_registry(&self) -> HashMap<String, Rect> {
+            HashMap::new()
+        }
+        fn workspace_tree_json(&self) -> serde_json::Value {
+            self.workspace_tree.clone()
+        }
+        fn chrome_state_json(&self) -> serde_json::Value {
+            self.chrome.clone()
+        }
+    }
+
+    /// `Command::StateDump` round-trips through the wire — the parser
+    /// must recognise the `state_dump` tag and emit the unit variant.
+    #[test]
+    fn parse_state_dump_command_round_trips() {
+        let cmd = parse_command(r#"{"op":"state_dump"}"#).unwrap();
+        assert_eq!(cmd, Command::StateDump);
+    }
+
+    /// Dispatching `Command::StateDump` against a state mock returns a
+    /// [`Response::State`] carrying the mock's `workspace_tree` and
+    /// `chrome` JSON verbatim, and produces no [`PlannedAction`]s. The
+    /// dispatcher is read-only for this command — no side effects, no
+    /// re-layout pressure.
+    #[test]
+    fn state_dump_returns_state_response() {
+        let state = StateDumpMockState {
+            workspace_tree: serde_json::json!({
+                "workspaces": [{ "id": "w-1", "name": "demo" }],
+                "active": "w-1",
+            }),
+            chrome: serde_json::json!({
+                "overlays": { "overview": false, "quick_settings": false },
+                "revision": 7_u64,
+            }),
+        };
+        let (resp, actions) = dispatch_command(&Command::StateDump, &state);
+        assert!(actions.is_empty(), "state_dump must have no side effects");
+        let Response::State { workspace_tree, chrome } = resp else {
+            panic!("expected Response::State, got something else");
+        };
+        // The workspace tree round-trips exactly as the mock returned
+        // it — the dispatcher is a pure pipe between `ControlState`
+        // and the wire.
+        assert!(
+            workspace_tree.get("workspaces").is_some(),
+            "workspace_tree should carry `workspaces` key; got {workspace_tree:?}"
+        );
+        let workspaces = workspace_tree["workspaces"].as_array().unwrap();
+        assert_eq!(workspaces.len(), 1);
+        // Chrome stays an opaque object — only assert the field is
+        // present so growing it stays additive on the wire.
+        assert!(
+            chrome.get("overlays").is_some(),
+            "chrome should carry `overlays` key; got {chrome:?}"
+        );
+    }
+
+    /// Default `ControlState` impl returns `Value::Null` for both
+    /// json methods — `state_dump` still dispatches successfully but
+    /// carries nulls. This is the path the unit-test fixtures
+    /// (`StaticState`) take so they don't have to invent a fake
+    /// workspace tree just to compile.
+    #[test]
+    fn state_dump_default_impl_returns_nulls() {
+        let state = StaticState::new(&[]);
+        let (resp, actions) = dispatch_command(&Command::StateDump, &state);
+        assert!(actions.is_empty());
+        let Response::State { workspace_tree, chrome } = resp else {
+            panic!("expected Response::State");
+        };
+        assert!(workspace_tree.is_null());
+        assert!(chrome.is_null());
+    }
+
+    /// Wire format for `Response::State` — the serialiser tags the
+    /// variant `state` (snake_case) and the payload is the two JSON
+    /// blobs. Guards against accidental rename of `workspace_tree` /
+    /// `chrome` in the response envelope.
+    #[test]
+    fn serialise_state_response_emits_workspace_tree_and_chrome() {
+        let resp = Response::State {
+            workspace_tree: serde_json::json!({ "workspaces": [] }),
+            chrome: serde_json::json!({ "overlays": {} }),
+        };
+        let out = serialise_response(&resp);
+        assert!(out.contains("\"state\""), "tag should be `state`; got {out}");
+        assert!(out.contains("\"workspace_tree\""), "got {out}");
+        assert!(out.contains("\"chrome\""), "got {out}");
     }
 }
