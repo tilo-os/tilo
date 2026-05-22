@@ -33,6 +33,24 @@ Each script takes the socket path as its first argument (default `/tmp/nirios.so
 
 Each script is < 50 lines of Python, no external deps (stdlib `socket` + `json` only).
 
+## Easier than this: the `nirios-control` CLI
+
+If you don't need the Python scripts, the `nirios-control` binary wraps the JSON protocol:
+
+```bash
+cargo build -p quick-desktop --bin nirios-control
+
+nirios-control list-targets                  # one row per addressable widget
+nirios-control click add_workspace           # click named
+nirios-control snapshot /tmp/out.png         # write PNG
+nirios-control state-dump --pretty           # WorkspaceTree + Chrome as JSON
+nirios-control type "hello world"            # type text
+nirios-control key Enter                     # named key OR single char
+nirios-control modifiers ctrl,shift          # set modifier mask (empty arg clears)
+```
+
+Default socket: `$NIRIOS_TEST_CONTROL` else `/tmp/nirios.sock`. Errors exit non-zero with the structured `code: message` on stderr. Reach for the Python scripts only when you need to compose multiple calls or scrape responses.
+
 ## Wire protocol cheat-sheet
 
 The socket accepts newline-delimited JSON. Every command produces exactly one JSON response line.
