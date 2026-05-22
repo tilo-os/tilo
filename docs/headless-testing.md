@@ -57,9 +57,30 @@ ls -la $NIRIOS_TEST_CONTROL
 
 The compositor prints `nirios compositor test_control listening on "<path>"` to stderr once the socket is ready to accept.
 
-### Send commands
+### Easiest path: the `nirios-control` CLI
 
-The wire protocol is newline-delimited JSON. Every command returns one JSON response line.
+A wrapper binary ships in the same workspace. Subcommands take human-friendly arguments instead of raw JSON:
+
+```bash
+cargo build -p quick-desktop --bin nirios-control      # builds alongside quick-desktop
+
+nirios-control list-targets                             # PNAME (X, Y, W, H) per line
+nirios-control click add_workspace                      # click_named
+nirios-control click-at 400 300                         # click_at
+nirios-control drag 100 100 300 200 12                  # drag with 12 motion steps
+nirios-control key Enter                                # named key OR single char
+nirios-control type "hello"                             # one press+release per character
+nirios-control modifiers ctrl,shift                     # comma-separated set; empty clears all
+nirios-control snapshot /tmp/state.png                  # PNG to disk
+nirios-control state-dump --pretty                      # live WorkspaceTree + Chrome as JSON
+nirios-control raw '{"op":"list_targets"}'              # escape hatch for unwrapped commands
+```
+
+Default socket: `$NIRIOS_TEST_CONTROL` env var, else `/tmp/nirios.sock`. Override with `--socket /path`. Errors from the compositor surface as non-zero exit + structured `code: message` on stderr.
+
+### Wire protocol (when you can't use the CLI)
+
+The socket accepts newline-delimited JSON. Every command returns one JSON response line.
 
 ```bash
 # List every clickable widget by name + rect:
@@ -82,8 +103,11 @@ echo '{"op":"modifiers","ctrl":false,"shift":false,"alt":false,"logo":false}' | 
 # Type a string (one press+release per character):
 echo '{"op":"type","text":"hello"}' | nc -U $NIRIOS_TEST_CONTROL
 
-# Capture a PNG of the current state (Phase 4 — in flight as of 2026-05-22):
+# Capture a PNG of the current state:
 echo '{"op":"snapshot","path":"/tmp/state.png"}' | nc -U $NIRIOS_TEST_CONTROL
+
+# Get the live workspace tree + chrome state as JSON:
+echo '{"op":"state_dump"}' | nc -U $NIRIOS_TEST_CONTROL
 ```
 
 Full command reference: `quick-shell/src/compositor/test_control.rs` (the `Command` enum is the source of truth; comments document each variant).
