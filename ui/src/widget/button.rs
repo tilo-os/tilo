@@ -185,6 +185,10 @@ impl Widget for Button {
 
     fn name(&self) -> &str { "Button" }
 
+    fn test_id(&self) -> Option<&str> {
+        Some(self.label.as_str())
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -230,5 +234,17 @@ impl Widget for Button {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widget::Widget;
+
+    #[test]
+    fn button_test_id_returns_label() {
+        let b = Button::new("id", "Save", None);
+        assert_eq!(Widget::test_id(&b), Some("Save"));
     }
 }
