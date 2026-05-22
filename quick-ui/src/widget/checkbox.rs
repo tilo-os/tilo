@@ -19,6 +19,8 @@ pub struct Checkbox {
     on_toggle_path: String,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
+    /// Optional override for `Widget::test_id()`. Defaults to `"checkbox"`.
+    id_override: Option<String>,
 }
 
 impl Checkbox {
@@ -32,6 +34,7 @@ impl Checkbox {
             on_toggle_path: on_toggle_path.to_string(),
             presence_path: Vec::new(),
             permission_scope: None,
+            id_override: None,
         }
     }
 
@@ -44,6 +47,15 @@ impl Checkbox {
     /// Gate this widget behind a permission scope.
     pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
         self.permission_scope = Some(scope);
+        self
+    }
+
+    /// Override the value returned from `Widget::test_id()`. Without a
+    /// custom id the checkbox reports `"checkbox"`; callers with multiple
+    /// checkboxes in the same surface can disambiguate them, e.g.
+    /// `with_id("remember_me")`.
+    pub fn with_id(mut self, id: &str) -> Self {
+        self.id_override = Some(id.to_string());
         self
     }
 }
@@ -148,6 +160,10 @@ impl Widget for Checkbox {
 
     fn name(&self) -> &str { "Checkbox" }
 
+    fn test_id(&self) -> Option<&str> {
+        Some(self.id_override.as_deref().unwrap_or("checkbox"))
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -193,5 +209,23 @@ impl Widget for Checkbox {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widget::Widget;
+
+    #[test]
+    fn checkbox_test_id_default_is_checkbox() {
+        let c = Checkbox::new("any", "path");
+        assert_eq!(Widget::test_id(&c), Some("checkbox"));
+    }
+
+    #[test]
+    fn checkbox_test_id_can_be_overridden() {
+        let c = Checkbox::new("any", "path").with_id("remember_me");
+        assert_eq!(Widget::test_id(&c), Some("remember_me"));
     }
 }
