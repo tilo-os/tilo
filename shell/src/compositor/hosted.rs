@@ -212,11 +212,11 @@ pub fn run_with_full_options(opts: HostedOptions) {
         let grants = crate::portal::GrantStoreHandle::new(shared_tree);
         let prompts =
             crate::portal::PromptQueueHandle::new(crate::portal::PromptResolver::Channel);
-        let ctx = crate::portal::PortalContext {
+        let ctx = crate::portal::PortalContext::new_with_null_spawners(
             grants,
             prompts,
-            caller_map: crate::portal::CallerMap::new(),
-        };
+            crate::portal::CallerMap::new(),
+        );
         let serve_result: Result<crate::portal::ServerHandle, zbus::Error> =
             rt_handle.block_on(async move {
                 let conn = zbus::ConnectionBuilder::session()?.build().await?;
