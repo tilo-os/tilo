@@ -455,6 +455,47 @@ fn snapshot_writes_png_at_requested_path() {
     let _ = std::fs::remove_file(&socket_path);
 }
 
+/// Phase 5: `state_dump` should round-trip the live workspace tree +
+/// chrome view. We don't assert on every field (those drift as the
+/// shell evolves) — the contract is "workspace_tree has a non-empty
+/// `workspaces` array, chrome has an `overlays` sub-object".
+#[test]
+#[ignore = "requires a Wayland/X11 display server; opt in with --ignored"]
+fn state_dump_returns_workspace_id_and_chrome() {
+    let (mut child, socket_path) = spawn_with_control();
+
+    let mut stream = UnixStream::connect(&socket_path)
+        .expect("connect to test_control socket");
+
+    let response = round_trip(&mut stream, r#"{"op":"state_dump"}"#);
+
+    // Response shape: { "state": { "workspace_tree": {...}, "chrome": {...} } }
+    let state = response
+        .get("state")
+        .expect("response has `state` envelope");
+    let workspace_tree = state
+        .get("workspace_tree")
+        .expect("state has `workspace_tree`");
+    let workspaces = workspace_tree
+        .get("workspaces")
+        .and_then(|v| v.as_array())
+        .expect("workspace_tree has `workspaces` array");
+    assert!(
+        !workspaces.is_empty(),
+        "bootstrap workspace tree should expose at least one workspace; got {workspaces:?}"
+    );
+
+    let chrome = state.get("chrome").expect("state has `chrome`");
+    assert!(
+        chrome.get("overlays").is_some(),
+        "chrome should carry `overlays` sub-object; got {chrome:?}"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_file(&socket_path);
+}
+
 /// Phase 3: a `modifiers` command on its own (no follow-up key) is a
 /// valid no-op — the modifier mask is state, not an event. Must
 /// still respond with `ok`.
