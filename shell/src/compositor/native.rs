@@ -21,6 +21,7 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -63,12 +64,41 @@ const TEST_STATE_DUMP_ENV: &str = "NIRIOS_TEST_STATE_DUMP";
 /// Spec: `docs/superpowers/specs/2026-05-16-real-input-e2e-design.md`.
 const TEST_CONTROL_ENV: &str = "NIRIOS_TEST_CONTROL";
 
+/// D-3 fix: RAII guard that unlinks a unix-socket file when dropped.
+///
+/// The compositor previously left its `NIRIOS_TEST_CONTROL` socket file
+/// behind on clean exit (and on panic). Subsequent runs depended on the
+/// next-boot `remove_file` inside `bind_test_control_socket` to scrub
+/// the stale entry; that worked for `bind`, but the orphan file lingered
+/// in `XDG_RUNTIME_DIR` between sessions for any other consumer to see.
+///
+/// Wrapping the path in this struct ensures the file is removed both on
+/// normal teardown and on the panic-unwind path (without the explicit
+/// `std::process::exit(0)` at the end of `run` skipping over our
+/// cleanup, since `exit` does NOT run destructors). The compositor
+/// `run` function holds the guard for the entire socket lifetime and
+/// explicitly `drop`s it before the final `process::exit`.
+pub(crate) struct UnlinkOnDrop(pub(crate) PathBuf);
+
+impl Drop for UnlinkOnDrop {
+    fn drop(&mut self) {
+        // Errors here are not actionable — the file might already be
+        // gone (someone else cleaned up) or we might lack the right
+        // to remove it. Either way the production path doesn't care.
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// Bind the test-control unix socket. Returns `None` if the env var is
 /// unset or the bind fails — bind failures are reported via
 /// `eprintln!` but don't abort the compositor (the production path
 /// must never depend on the test surface).
-fn bind_test_control_socket() -> Option<UnixListener> {
+///
+/// On success, returns the listener plus an `UnlinkOnDrop` guard that
+/// removes the socket file on teardown (D-3).
+fn bind_test_control_socket() -> Option<(UnixListener, UnlinkOnDrop)> {
     let path = std::env::var_os(TEST_CONTROL_ENV)?;
+    let path = PathBuf::from(path);
     // Best-effort cleanup of a stale socket file from a previous run —
     // `bind` would otherwise fail with EADDRINUSE.
     let _ = std::fs::remove_file(&path);
@@ -79,7 +109,8 @@ fn bind_test_control_socket() -> Option<UnixListener> {
                 return None;
             }
             eprintln!("nirios compositor test_control listening on {path:?}");
-            Some(listener)
+            let guard = UnlinkOnDrop(path);
+            Some((listener, guard))
         }
         Err(e) => {
             eprintln!("nirios compositor: test_control bind {path:?}: {e}");
@@ -434,6 +465,95 @@ fn write_snapshot_png(fb: &mut FrameBuilder, path: &std::path::Path) {
 /// actions through `FrameBuilder::dispatch_event` (same wire as
 /// `ShellDriver::dispatch`). Chrome-mutating widgets (overview
 /// button, wheel-disc plus slot, …) react identically to real input.
+/// D-10 fix: cap on the per-line size for the test-control protocol.
+/// `BufRead::read_line` will buffer the entire line into the `String`
+/// regardless of size; a malicious or buggy client could feed an
+/// unbounded byte stream with no newline and drive the compositor
+/// to OOM. 64 KiB is comfortably above any legitimate command
+/// (`click_named` carries a widget id + a couple of floats — well
+/// under a kilobyte) and below any meaningful memory pressure.
+pub(crate) const TEST_CONTROL_MAX_LINE_BYTES: usize = 64 * 1024;
+
+/// D-10: read up to one `\n`-terminated line from `reader`, capping at
+/// `TEST_CONTROL_MAX_LINE_BYTES`. Returns:
+///
+/// * `Ok(Some(line))` — a complete `\n`-terminated line was read; the
+///   trailing newline is included so the caller can keep using
+///   `parse_command` unchanged.
+/// * `Ok(None)` — EOF reached without seeing a newline (peer closed
+///   cleanly mid-line).
+/// * `Err(ReadLineError::TooLarge)` — the cap fired before a newline
+///   was seen. Caller must close the connection.
+/// * `Err(ReadLineError::Io(e))` — underlying I/O failure (incl.
+///   `WouldBlock`, which the caller handles specially).
+pub(crate) enum ReadLineError {
+    TooLarge,
+    Io(std::io::Error),
+}
+
+pub(crate) fn read_bounded_line<R: BufRead>(
+    reader: &mut R,
+    out: &mut String,
+    max_bytes: usize,
+) -> Result<Option<()>, ReadLineError> {
+    let mut buf = Vec::with_capacity(256);
+    loop {
+        let available = match reader.fill_buf() {
+            Ok(b) => b,
+            Err(e) => return Err(ReadLineError::Io(e)),
+        };
+        if available.is_empty() {
+            // EOF. If we accumulated some bytes without a newline,
+            // return them as a best-effort line (caller can decide
+            // what to do); otherwise signal EOF via None.
+            if buf.is_empty() {
+                return Ok(None);
+            }
+            match String::from_utf8(buf) {
+                Ok(s) => {
+                    out.push_str(&s);
+                    return Ok(Some(()));
+                }
+                Err(e) => {
+                    return Err(ReadLineError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        e,
+                    )));
+                }
+            }
+        }
+        // Find the newline (if any) in the available slice.
+        let (consumed, found_nl) = match available.iter().position(|&b| b == b'\n') {
+            Some(idx) => (idx + 1, true),
+            None => (available.len(), false),
+        };
+        if buf.len() + consumed > max_bytes {
+            // Cap reached. Consume up to the cap so we don't leave
+            // garbage in the reader, then bail.
+            let remaining = max_bytes.saturating_sub(buf.len());
+            buf.extend_from_slice(&available[..remaining]);
+            reader.consume(remaining);
+            return Err(ReadLineError::TooLarge);
+        }
+        buf.extend_from_slice(&available[..consumed]);
+        reader.consume(consumed);
+        if found_nl {
+            match String::from_utf8(buf) {
+                Ok(s) => {
+                    out.push_str(&s);
+                    return Ok(Some(()));
+                }
+                Err(e) => {
+                    return Err(ReadLineError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        e,
+                    )));
+                }
+            }
+        }
+    }
+}
+
 fn pump_test_control_conn(
     conn: &mut TestControlConn,
     frame_builder: &mut FrameBuilder,
@@ -441,12 +561,12 @@ fn pump_test_control_conn(
 ) {
     loop {
         let mut line = String::new();
-        match conn.reader.read_line(&mut line) {
-            Ok(0) => {
+        match read_bounded_line(&mut conn.reader, &mut line, TEST_CONTROL_MAX_LINE_BYTES) {
+            Ok(None) => {
                 conn.closed = true;
                 return;
             }
-            Ok(_) => {
+            Ok(Some(())) => {
                 let (resp, actions) = match parse_command(&line) {
                     Ok(cmd) => {
                         let state = FrameBuilderControlState { fb: frame_builder };
@@ -474,10 +594,17 @@ fn pump_test_control_conn(
                     return;
                 }
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            Err(ReadLineError::TooLarge) => {
+                tracing::warn!(
+                    "test_control: client sent oversized line; dropping connection"
+                );
+                conn.closed = true;
                 return;
             }
-            Err(e) => {
+            Err(ReadLineError::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                return;
+            }
+            Err(ReadLineError::Io(e)) => {
                 eprintln!("nirios compositor: test_control read: {e}");
                 conn.closed = true;
                 return;
@@ -613,7 +740,10 @@ pub fn run() -> ! {
     // means the socket is never created (zero-cost in production).
     // Each loop tick polls the listener for new connections and drains
     // pending bytes from existing ones.
-    let test_control_listener = bind_test_control_socket();
+    let (test_control_listener, _test_control_unlink) = match bind_test_control_socket() {
+        Some((l, g)) => (Some(l), Some(g)),
+        None => (None, None),
+    };
     let mut test_control_conns: Vec<TestControlConn> = Vec::new();
     // Phase 2b: per-process scratch context for executing PlannedActions
     // off the test-control socket. The compositor doesn't (yet) route
@@ -737,6 +867,11 @@ pub fn run() -> ! {
     // do that today, but keep an explicit exit so the function's `!` return
     // type is honoured. `display` is dropped here, severing its clients.
     drop(display);
+    // D-3: explicitly drop the test-control socket guard so its
+    // `Drop` impl unlinks the socket file before we hand control to
+    // `process::exit` (which skips destructors). On the panic path
+    // the unwind already runs `Drop` so we get cleanup either way.
+    drop(_test_control_unlink);
     std::process::exit(0)
 }
 
@@ -1105,5 +1240,70 @@ mod tests {
             "Super+Tab via test_control should toggle overview on"
         );
     }
+
+    /// D-3 contract: dropping an `UnlinkOnDrop` removes the file at
+    /// its path. The compositor's `run` holds a guard around the
+    /// test-control socket file so it gets unlinked on clean exit
+    /// + panic-unwind. Previously the socket lingered until the next
+    /// boot's `bind_test_control_socket` scrubbed it.
+    #[test]
+    fn unlink_on_drop_removes_socket_file_on_drop() {
+        let tmpdir = tempfile::tempdir().expect("tempdir");
+        let path = tmpdir.path().join("nirios-test-control.sock");
+        // Use an arbitrary regular-file stand-in; the guard removes
+        // anything `remove_file` accepts, so we don't need a real
+        // unix socket to exercise the contract.
+        std::fs::write(&path, b"").expect("create stand-in file");
+        assert!(path.exists(), "test setup: file should exist after write");
+        let guard = UnlinkOnDrop(path.clone());
+        drop(guard);
+        assert!(
+            !path.exists(),
+            "UnlinkOnDrop must remove the file at its path on drop \
+             (D-3); got lingering file at {path:?}"
+        );
+    }
+
+    /// D-10 contract: `read_bounded_line` caps a malicious / buggy
+    /// client's input at `TEST_CONTROL_MAX_LINE_BYTES`. The previous
+    /// implementation called `BufRead::read_line` with no limit, so a
+    /// 100k-byte newline-less stream would buffer in full and could
+    /// drive the compositor toward OOM.
+    ///
+    /// We construct an in-memory reader of 100k bytes with no
+    /// newline and assert the bounded reader returns `TooLarge`
+    /// rather than allocating unbounded. The caller (`pump_…`) closes
+    /// the connection on this error; that contract is exercised
+    /// transitively by the existing test_control integration tests
+    /// — here we focus on the new helper's bound.
+    #[test]
+    fn pump_drops_oversized_lines() {
+        use std::io::BufReader;
+        let stream: Vec<u8> = vec![b'A'; 100_000];
+        let mut reader = BufReader::new(&stream[..]);
+        let mut out = String::new();
+        let res = read_bounded_line(&mut reader, &mut out, TEST_CONTROL_MAX_LINE_BYTES);
+        match res {
+            Err(ReadLineError::TooLarge) => {
+                // Expected. `out` is intentionally still empty here
+                // (we don't surface the truncated bytes to the parser
+                // because they'd parse as garbage anyway).
+                assert!(
+                    out.is_empty(),
+                    "read_bounded_line must not hand a truncated line \
+                     to the parser; got {} bytes",
+                    out.len()
+                );
+            }
+            Err(ReadLineError::Io(e)) => panic!(
+                "expected TooLarge on a 100k newline-less stream; got io: {e}"
+            ),
+            Ok(opt) => panic!(
+                "expected TooLarge on a 100k newline-less stream; got Ok({:?})",
+                opt.is_some()
+            ),
+        }
+    }
+
 }
 
