@@ -142,7 +142,25 @@ NIRIOS_HEADLESS_SIZE=1920x1080 cargo run --bin quick-desktop -- --backend headle
 
 ## End-to-end recipe — "click, snapshot, look"
 
-The shortest path from "I want to test something" to "PNG on disk":
+**The fastest path: run the example script.**
+
+```bash
+./scripts/headless-examples/full-loop.py
+# spawns compositor, opens palette, types "Files", snapshots two PNGs,
+# tears down. ~5 seconds. Output: /tmp/full-loop-palette.png + /tmp/full-loop-final.png
+```
+
+The script is ~100 lines of Python with stdlib only (`socket` + `json`). Read it as the canonical template for "spawn → drive → snapshot → exit." Copy-paste into your own automation; nothing in it is repo-specific except the binary path.
+
+For exploratory / partial flows, see `scripts/headless-examples/` (full walkthrough in `scripts/headless-examples/README.md`):
+- `list-targets.py` — enumerate clickable widgets
+- `click-and-snapshot.py` — click named widget + PNG
+- `keyboard-flow.py` — modifier+key+type combos
+- `drag-demo.py` — press-motions-release
+- `full-loop.py` — the end-to-end above
+- `spawn-headless.sh` — shell helper to start the compositor + wait for socket
+
+If you want to do it by hand without Python, use `socat` (Ncat doesn't have `-q`):
 
 ```bash
 # 1. Start the compositor (no display required):
@@ -154,12 +172,12 @@ COMP_PID=$!
 # 2. Wait for the socket to be ready:
 until [ -S $NIRIOS_TEST_CONTROL ]; do sleep 0.1; done
 
-# 3. Drive the UI:
-echo '{"op":"modifiers","ctrl":true,"shift":false,"alt":false,"logo":false}' | nc -U $NIRIOS_TEST_CONTROL
-echo '{"op":"key","key":"k"}' | nc -U $NIRIOS_TEST_CONTROL                              # Ctrl+K opens palette
-echo '{"op":"modifiers","ctrl":false,"shift":false,"alt":false,"logo":false}' | nc -U $NIRIOS_TEST_CONTROL
-echo '{"op":"type","text":"terminal"}' | nc -U $NIRIOS_TEST_CONTROL                     # Type into palette
-echo '{"op":"snapshot","path":"/tmp/palette-with-query.png"}' | nc -U $NIRIOS_TEST_CONTROL
+# 3. Drive the UI (socat closes the connection cleanly after EOF, unlike Ncat):
+echo '{"op":"modifiers","ctrl":true,"shift":false,"alt":false,"logo":false}' | socat - UNIX-CONNECT:$NIRIOS_TEST_CONTROL
+echo '{"op":"key","key":"k"}'                                                          | socat - UNIX-CONNECT:$NIRIOS_TEST_CONTROL
+echo '{"op":"modifiers","ctrl":false,"shift":false,"alt":false,"logo":false}'          | socat - UNIX-CONNECT:$NIRIOS_TEST_CONTROL
+echo '{"op":"type","text":"terminal"}'                                                 | socat - UNIX-CONNECT:$NIRIOS_TEST_CONTROL
+echo '{"op":"snapshot","path":"/tmp/palette-with-query.png"}'                          | socat - UNIX-CONNECT:$NIRIOS_TEST_CONTROL
 
 # 4. Inspect the PNG:
 xdg-open /tmp/palette-with-query.png
