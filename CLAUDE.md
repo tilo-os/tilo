@@ -164,6 +164,16 @@ Don't run `git add -A` from the root — it catches submodule pointer changes yo
 
 Pull all submodules with `git submodule update --remote --merge`.
 
+### Cargo.lock + worktrees
+
+`Cargo.lock` is gitignored at the workspace root. `git worktree add` does NOT copy ignored files — so a fresh worktree has no `Cargo.lock` and `cargo build` will either error (offline) or churn through a fresh resolve. Worker prompts should copy it explicitly:
+
+```bash
+cp /var/home/user/Development/quickdesktop/Cargo.lock .claude/worktrees/<name>/Cargo.lock
+```
+
+(Or the worker can run `cargo generate-lockfile` once. The copy is faster on a hot cache.)
+
 ### Worker-driven cherry-pick (when a subagent works in a worktree)
 
 When a subagent commits inside `.claude/worktrees/<name>/quick-shell/` (the worktree's submodule has its own gitdir under `.git/worktrees/<name>/modules/quick-shell`), the main submodule cannot see those commits until you explicitly fetch them. Recipe:
