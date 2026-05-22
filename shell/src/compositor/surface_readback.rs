@@ -140,7 +140,31 @@ pub fn swizzle_row_to_rgba(
     width: usize,
     out: &mut Vec<u8>,
 ) -> Result<(), ReadbackError> {
-    debug_assert_eq!(src.len(), width * 4);
+    // D-5: the previous guard was a bare `debug_assert_eq!` which
+    // compiles out in release. `chunks_exact(4)` then silently
+    // swallows trailing bytes, so a hostile / buggy client could
+    // sneak padding bytes into the wire — surface that as a
+    // structured `InvalidDimensions` error in both debug and release.
+    let expected = width.saturating_mul(4);
+    if src.len() != expected {
+        tracing::error!(
+            src_len = src.len(),
+            expected,
+            "swizzle_row_to_rgba called with mismatched src length; \
+             refusing to process the row"
+        );
+        return Err(ReadbackError::InvalidDimensions {
+            width: width as i32,
+            // height/stride aren't known at this level — surface the
+            // mismatched row length via `stride` so logs are useful.
+            height: 1,
+            stride: src.len() as i32,
+        });
+    }
+    // Keep the debug-loud-failure mode for callers who pass through
+    // the precondition correctly: an internal bug that violates the
+    // contract should still panic in development builds.
+    debug_assert_eq!(src.len(), expected);
     match format {
         wl_shm::Format::Argb8888 => {
             // [B, G, R, A] -> [R, G, B, A]
@@ -475,6 +499,38 @@ mod tests {
             ReadbackError::UnsupportedFormat(wl_shm::Format::Rgb565) => {}
             other => panic!("expected UnsupportedFormat(Rgb565), got {other:?}"),
         }
+    }
+
+    /// D-5 regression: the length-mismatch guard was `debug_assert_eq!`
+    /// which compiles out in release builds. `chunks_exact(4)` then
+    /// silently swallows trailing bytes — a hostile / buggy client
+    /// could ship a row whose stride includes padding and have those
+    /// bytes disappear into the swizzle. Replace with an explicit
+    /// early-return that runs in both debug and release.
+    #[test]
+    fn swizzle_to_rgba_returns_early_on_mismatched_lengths() {
+        // src.len() == 10, but width * 4 == 8. The old code would
+        // happily process the first two pixels and drop the trailing
+        // 2 bytes; the fix bails out before writing to `out`.
+        let src = [0u8; 10];
+        let mut out: Vec<u8> = Vec::new();
+        let result = swizzle_row_to_rgba(
+            wl_shm::Format::Argb8888,
+            &src,
+            2,
+            &mut out,
+        );
+        assert!(
+            result.is_err(),
+            "mismatched src.len() vs width*4 must produce a structured \
+             error (D-5 regression), not a silent partial swizzle"
+        );
+        assert!(
+            out.is_empty(),
+            "early-return on length mismatch must not touch `out`; \
+             saw {} bytes",
+            out.len()
+        );
     }
 
     #[test]
