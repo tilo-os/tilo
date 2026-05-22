@@ -13,10 +13,14 @@
 //! is hermetic.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use quick_desktop::portal::{
-    self, CallerMap, CapabilityKind, GrantStoreHandle, PortalCaller, PortalContext,
-    PromptQueueHandle, PromptResolver, BUS_NAME, OBJECT_PATH,
+    self, CallerMap, CapabilityKind, FilePickerSpawnerHandle, GrantStoreHandle,
+    MockFilePickerSpawner, MockScreenCastProvisioner, NullFilePickerSpawner,
+    PortalCaller, PortalContext, PromptQueueHandle, PromptResolver,
+    ScreenCastStreamProvisionerHandle, BUS_NAME, OBJECT_PATH,
 };
 use quick_desktop::shell::state::{
     Capability, FsMode, GrantScope, Workspace, WorkspaceId,
@@ -25,7 +29,7 @@ use std::time::Duration;
 use tokio::net::UnixStream;
 use tokio::time::timeout;
 use zbus::connection::Builder;
-use zbus::zvariant::{ObjectPath, OwnedValue};
+use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 use zbus::{Connection, Proxy};
 
 const TEST_GUID: &str = "0123456789abcdef0123456789abcdef";
@@ -54,12 +58,33 @@ async fn bring_up_pair(
     prompts: PromptQueueHandle,
     caller_map: CallerMap,
 ) -> (Connection, Connection, PortalContext) {
+    bring_up_pair_with_spawners(
+        grants,
+        prompts,
+        caller_map,
+        FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel())),
+        ScreenCastStreamProvisionerHandle::new(Arc::new(
+            MockScreenCastProvisioner::new_with_node(1, "test"),
+        )),
+    )
+    .await
+}
+
+async fn bring_up_pair_with_spawners(
+    grants: GrantStoreHandle,
+    prompts: PromptQueueHandle,
+    caller_map: CallerMap,
+    file_picker: FilePickerSpawnerHandle,
+    screencast_provisioner: ScreenCastStreamProvisionerHandle,
+) -> (Connection, Connection, PortalContext) {
     let (server_sock, client_sock) = UnixStream::pair().expect("socket pair");
 
     let ctx = PortalContext {
         grants,
         prompts,
         caller_map,
+        file_picker,
+        screencast_provisioner,
     };
     let ctx_clone = ctx.clone();
 
@@ -116,10 +141,29 @@ async fn portal_proxy<'a>(
 
 #[tokio::test]
 async fn file_chooser_open_file_round_trips_auto_allow() {
+    // Replaces the prior placeholder-URI assertion (4.3 v1 returned a
+    // fixed `file:///work/.portal-tmp/...`). The follow-up wires a
+    // real `FilePickerSpawner`; this test injects a `MockFilePickerSpawner`
+    // returning `/tmp/picked.txt` and asserts the response carries
+    // `file:///tmp/picked.txt`.
     let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_workspace(101, "ws"));
     let queue = PromptQueueHandle::new(PromptResolver::AutoAllow);
     let caller_map = CallerMap::new();
-    let (_server, client, _ctx) = bring_up_pair(store, queue, caller_map).await;
+    let mock = Arc::new(MockFilePickerSpawner::returning(vec![PathBuf::from(
+        "/tmp/picked.txt",
+    )]));
+    let fp_handle = FilePickerSpawnerHandle::new(mock.clone());
+    let sc_handle = ScreenCastStreamProvisionerHandle::new(Arc::new(
+        MockScreenCastProvisioner::new_with_node(1, "test"),
+    ));
+    let (_server, client, _ctx) = bring_up_pair_with_spawners(
+        store,
+        queue,
+        caller_map,
+        fp_handle,
+        sc_handle,
+    )
+    .await;
 
     let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.FileChooser").await;
 
@@ -144,18 +188,18 @@ async fn file_chooser_open_file_round_trips_auto_allow() {
 
     assert_eq!(response, 0, "auto-allow must yield response=0");
     assert!(results.contains_key("uris"), "results must include uris");
-    // Just sanity-check the URI format.
     if let Some(v) = results.get("uris") {
-        // a{sv} → v is `as`. Take an owned copy, then `try_into`
-        // dispatches to `TryFrom<OwnedValue> for Vec<T>` in zvariant.
         let owned: OwnedValue = v.try_clone().expect("clone OwnedValue");
         let parsed: Vec<String> =
             Vec::<String>::try_from(owned).expect("as -> Vec<String>");
-        assert!(parsed.iter().any(|s| s.starts_with("file://")));
+        // The mock spawner returned `/tmp/picked.txt`; the URI we
+        // emit is `file:///tmp/picked.txt`.
+        assert_eq!(parsed, vec!["file:///tmp/picked.txt".to_string()]);
     }
-    // The workspace id wasn't wired through (no caller-map entry), so
-    // no grant was persisted. AutoAllow is `Once`, which doesn't
-    // persist regardless.
+    // The mock spawner recorded the title forwarded by the backend.
+    let seen = mock.requests();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].1, "Open File (test)");
     let _ = ws_id;
 }
 
@@ -367,6 +411,85 @@ async fn session_outcome_persists_into_grant_store() {
 fn bus_name_matches_freedesktop_portal_convention() {
     assert_eq!(BUS_NAME, "org.freedesktop.impl.portal.desktop.nirios");
     assert_eq!(OBJECT_PATH, "/org/freedesktop/portal/desktop");
+}
+
+/// Required test from the Sandbox 4.3 follow-up brief —
+/// `screencast_start_provisions_pipewire_stream`. Uses a
+/// `MockScreenCastProvisioner` (real Pipewire is a system dep we
+/// can't assume on every build host) and asserts the
+/// `ScreenCast.Start` response carries a non-empty `streams` array
+/// whose first entry is the mock's pre-baked node id.
+#[tokio::test]
+async fn screencast_start_provisions_pipewire_stream() {
+    let mut ws = empty_workspace(108, "ws");
+    // Pre-seed an Always-scoped Screencast grant so `Start` takes the
+    // fast path (skips the prompt). The portal calls into the
+    // provisioner regardless of whether the consent came via fast or
+    // slow path; this just avoids needing to fulfil a queued prompt
+    // from the test harness.
+    ws.grants.insert(
+        "org.example.cast".into(),
+        vec![Capability::Screencast {
+            scope: GrantScope::Always,
+        }],
+    );
+    let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
+    let queue = PromptQueueHandle::new(PromptResolver::Channel);
+
+    let caller_map = CallerMap::new();
+    caller_map
+        .force_caller_for_tests(PortalCaller::new(ws_id, "org.example.cast"));
+
+    let provisioner = Arc::new(MockScreenCastProvisioner::new_with_node(77, "test"));
+    let fp_handle = FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel()));
+    let sc_handle = ScreenCastStreamProvisionerHandle::new(provisioner.clone());
+
+    let (_server, client, _ctx) = bring_up_pair_with_spawners(
+        store,
+        queue,
+        caller_map,
+        fp_handle,
+        sc_handle,
+    )
+    .await;
+
+    let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.ScreenCast").await;
+    let handle: ObjectPath<'_> = "/h/6".try_into().unwrap();
+    let session: ObjectPath<'_> = "/s/6".try_into().unwrap();
+    // Forward a custom size so we can assert the provisioner saw it.
+    let mut opts: HashMap<&str, OwnedValue> = HashMap::new();
+    let size: (u32, u32) = (1280, 720);
+    opts.insert(
+        "size",
+        OwnedValue::try_from(Value::new(size)).unwrap(),
+    );
+
+    let (response, results): (u32, HashMap<String, OwnedValue>) = proxy
+        .call_method(
+            "Start",
+            &(&handle, &session, "org.example.cast", "", &opts),
+        )
+        .await
+        .expect("call Start")
+        .body()
+        .deserialize()
+        .expect("deserialize reply");
+
+    assert_eq!(response, 0, "fast-path Allow yields response=0");
+    let streams_v = results
+        .get("streams")
+        .expect("results must include streams");
+    let cloned: OwnedValue = streams_v.try_clone().expect("clone OwnedValue");
+    let streams: Vec<(u32, HashMap<String, OwnedValue>)> =
+        Vec::<(u32, HashMap<String, OwnedValue>)>::try_from(cloned)
+            .expect("Vec<(u32, dict)>");
+    assert_eq!(streams.len(), 1, "exactly one stream provisioned");
+    assert_eq!(streams[0].0, 77, "mock's node id round-trips");
+    // The mock recorded the request — size came through the options.
+    let seen = provisioner.requests();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].width, 1280);
+    assert_eq!(seen[0].height, 720);
 }
 
 #[test]
