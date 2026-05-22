@@ -115,3 +115,14 @@ tempfile = "3"
 # transitively (libp2p, zbus, tokio) — pinning it here is just for the
 # `try_join!` macro at the test-fixture call site.
 futures-util = "0.3"
+
+# Real-input e2e Phase 5: the `nirios-control` CLI is a thin wrapper over the
+# `NIRIOS_TEST_CONTROL` JSON socket — humans and shell scripts use it instead
+# of writing `socat | jq` pipelines. Cargo would auto-discover the binary
+# from `src/bin/nirios-control.rs` anyway, but the explicit entry pins the
+# name + path so a future `src/bin/` reshuffle doesn't silently rename it.
+# Spec: `docs/superpowers/specs/2026-05-16-real-input-e2e-design.md`,
+# "Component 3".
+[[bin]]
+name = "nirios-control"
+path = "src/bin/nirios-control.rs"

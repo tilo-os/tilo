@@ -120,6 +120,48 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
     fn widget_registry(&self) -> HashMap<String, Rect> {
         self.fb.widget_registry()
     }
+
+    /// Serialise the live persisted [`WorkspaceTree`] — same blob
+    /// the `NIRIOS_TEST_STATE_DUMP` env-var path writes on every
+    /// frame tick. The chrome's `tree` field is the authoritative
+    /// copy (the compositor's `State.workspace_tree` is the same
+    /// type and stays in sync via the shared `Chrome` cell).
+    fn workspace_tree_json(&self) -> serde_json::Value {
+        let chrome = self.fb.chrome();
+        // `unwrap_or(Null)` — `WorkspaceTree`'s `Serialize` impl is
+        // derived and infallible in practice, but the trait method
+        // can't `expect` because that would crash the live compositor
+        // on a hypothetical bad write. Nulls are still
+        // schema-compliant from the wire's perspective.
+        serde_json::to_value(&chrome.tree).unwrap_or(serde_json::Value::Null)
+    }
+
+    /// Build a structured view of [`ChromeState`] for the
+    /// `state_dump` response. We construct the object manually rather
+    /// than `derive(Serialize)` on `ChromeState` because the chrome
+    /// owns `Rc<RefCell<…>>` handles (`Chrome`) into widgets that
+    /// can't sensibly serialise; hand-rolling the object also lets us
+    /// pick a wire-friendly representation (enum-as-string) for
+    /// fields like `search_scope` and `ws_settings_tab` without
+    /// shoving `#[serde(rename_all)]` attributes deep into the
+    /// chrome's dependency graph.
+    fn chrome_state_json(&self) -> serde_json::Value {
+        let chrome = self.fb.chrome();
+        let overlays = &chrome.overlays;
+        serde_json::json!({
+            "overlays": {
+                "overview": overlays.overview,
+                "quick_settings": overlays.quick_settings,
+                "ws_settings": overlays.ws_settings,
+                "collaborators": overlays.collaborators,
+            },
+            "search_scope": format!("{:?}", chrome.search_scope),
+            "ws_settings_tab": format!("{:?}", chrome.ws_settings_tab),
+            "revision": chrome.revision,
+            "editing_workspace_name": chrome.editing_workspace_name,
+            "pending_grants_count": chrome.pending_grants.len(),
+        })
+    }
 }
 
 /// Stash of per-process state the test-control wire needs in order to
@@ -946,6 +988,76 @@ mod tests {
         // half-painted state).
         fb.relayout();
         let _ = fb.paint();
+    }
+
+    // ===================================================================
+    // Phase 5 — state_dump
+    // ===================================================================
+
+    /// `FrameBuilderControlState::chrome_state_json` returns an object
+    /// with an `overlays` key carrying the four flags. The shape
+    /// matches what `nirios-control state-dump` clients query, so a
+    /// regression here would silently break the CLI.
+    #[test]
+    fn state_dump_chrome_includes_overlays_field() {
+        let fb = FrameBuilder::new((1600, 900));
+        let state = FrameBuilderControlState { fb: &fb };
+        let chrome = state.chrome_state_json();
+        let overlays = chrome
+            .get("overlays")
+            .expect("chrome_state_json should carry `overlays` key");
+        // The four bool flags should all be reachable through the
+        // `overlays` sub-object — addressing them by string mirrors
+        // how the CLI / shell-test harness will read them.
+        for key in ["overview", "quick_settings", "ws_settings", "collaborators"] {
+            assert!(
+                overlays.get(key).and_then(|v| v.as_bool()).is_some(),
+                "overlays should carry boolean `{key}`; got {overlays:?}"
+            );
+        }
+    }
+
+    /// `FrameBuilderControlState::workspace_tree_json` exposes a
+    /// `workspaces` array on the bootstrap layout. The CLI's
+    /// `state-dump` smoke depends on this — without it the JSON would
+    /// still be valid but the consumer would have no entrypoint to
+    /// the workspace list.
+    #[test]
+    fn state_dump_workspace_tree_includes_workspaces_array() {
+        let fb = FrameBuilder::new((1600, 900));
+        let state = FrameBuilderControlState { fb: &fb };
+        let tree = state.workspace_tree_json();
+        let workspaces = tree
+            .get("workspaces")
+            .and_then(|v| v.as_array())
+            .expect("workspace_tree_json should carry `workspaces` array");
+        // The bootstrap tree seeds at least one demo workspace —
+        // matches the assertions in `bootstrap_default` tests in
+        // `shell/state.rs`.
+        assert!(
+            !workspaces.is_empty(),
+            "bootstrap workspace tree should not be empty"
+        );
+    }
+
+    /// Dispatching `Command::StateDump` against a `FrameBuilderControlState`
+    /// returns `Response::State` and produces no actions. The
+    /// integration round-trip lives in `tests/control_socket_test.rs`;
+    /// this unit-level smoke catches regressions that don't need a
+    /// spawned compositor.
+    #[test]
+    fn dispatch_state_dump_against_frame_builder_returns_state() {
+        let fb = FrameBuilder::new((1600, 900));
+        let state = FrameBuilderControlState { fb: &fb };
+        let (resp, actions) =
+            test_control::dispatch_command(&test_control::Command::StateDump, &state);
+        assert!(actions.is_empty());
+        let test_control::Response::State { workspace_tree, chrome } = resp else {
+            panic!("expected Response::State; got something else");
+        };
+        // Sanity: both blobs are non-null and shaped like objects.
+        assert!(workspace_tree.is_object(), "workspace_tree should be an object");
+        assert!(chrome.is_object(), "chrome should be an object");
     }
 
     /// Cmd+Tab via the test_control wire opens the overview overlay —
