@@ -291,6 +291,91 @@ fn execute_planned_action(
             // so no event needs to flow through `dispatch_event`.
             apply_modifier_mask(ctx, *ctrl, *shift, *alt, *logo);
         }
+        PlannedAction::Snapshot { path } => {
+            // Re-paint the live scene into a fresh OffscreenRenderer
+            // sized to the FrameBuilder's current viewport. We use
+            // option 2 from the spec (re-render via OffscreenRenderer)
+            // rather than tap a backend-cached `last_frame` so the
+            // command works for every backend (winit / drm / future
+            // headless), not just the headless one.
+            //
+            // Errors during creation, encoding, or write are logged
+            // via `eprintln!` and swallowed — the dispatcher already
+            // returned `Ok` from the wire's perspective, and crashing
+            // the compositor on a stray bad path would defeat the
+            // point of having a test surface. Phase 5 will route
+            // these into structured wire responses.
+            write_snapshot_png(fb, path);
+        }
+    }
+}
+
+/// Re-paint the current scene into a fresh `OffscreenRenderer` and
+/// encode the resulting RGBA buffer as a PNG at `path`. Best-effort:
+/// every failure path logs to stderr and returns, so an executor
+/// invocation never panics or unwinds back into the calloop pump.
+///
+/// Split out of `execute_planned_action` so unit tests can exercise
+/// the snapshot path against a hand-built `FrameBuilder` without going
+/// through `PlannedAction` dispatch.
+fn write_snapshot_png(fb: &mut FrameBuilder, path: &std::path::Path) {
+    use std::io::Write;
+    // The renderer panics if no wgpu adapter is available (e.g. CI
+    // without llvmpipe); catch_unwind keeps the compositor alive in
+    // that environment too.
+    let (w, h) = fb.viewport();
+    let (w, h) = (w as u32, h as u32);
+    let scene = fb.paint();
+    let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut renderer = quick_ui::offscreen::OffscreenRenderer::new(w, h);
+        renderer.render_rgba(&scene)
+    }));
+    let rgba = match render_result {
+        Ok(rgba) => rgba,
+        Err(_) => {
+            eprintln!(
+                "nirios compositor: test_control snapshot: \
+                 OffscreenRenderer panicked (no wgpu adapter?)"
+            );
+            return;
+        }
+    };
+    let file = match std::fs::File::create(path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!(
+                "nirios compositor: test_control snapshot: create {path:?}: {e}"
+            );
+            return;
+        }
+    };
+    let mut writer = std::io::BufWriter::new(file);
+    let mut encoder = png::Encoder::new(&mut writer, w, h);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut png_writer = match encoder.write_header() {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!(
+                "nirios compositor: test_control snapshot: png header {path:?}: {e}"
+            );
+            return;
+        }
+    };
+    if let Err(e) = png_writer.write_image_data(&rgba) {
+        eprintln!(
+            "nirios compositor: test_control snapshot: png write {path:?}: {e}"
+        );
+        return;
+    }
+    // Drop the PNG writer first so the underlying BufWriter holds the
+    // last bytes; then flush explicitly. Without this, a swiftly-following
+    // assertion on file size could race against a still-buffered tail.
+    drop(png_writer);
+    if let Err(e) = writer.flush() {
+        eprintln!(
+            "nirios compositor: test_control snapshot: flush {path:?}: {e}"
+        );
     }
 }
 
@@ -781,6 +866,84 @@ mod tests {
                 &mut ctx,
             );
         }
+        fb.relayout();
+        let _ = fb.paint();
+    }
+
+    // ===================================================================
+    // Phase 4 — snapshot executor coverage
+    // ===================================================================
+
+    /// Sanity: `Snapshot` action against a fresh FrameBuilder writes a
+    /// real PNG to disk. Asserts both the magic byte signature and a
+    /// non-trivial byte count — a corrupted/early-terminated PNG would
+    /// pass the magic check but be tiny, so the >1KB floor catches the
+    /// "wrote only a header" failure mode.
+    ///
+    /// Skipped on environments without a wgpu adapter (CI without
+    /// llvmpipe) because `OffscreenRenderer::new` panics; the executor
+    /// itself catches that panic so the assertion would silently pass
+    /// without producing a file — we explicitly check for the file's
+    /// existence and skip the rest gracefully if the renderer was
+    /// unavailable.
+    #[test]
+    fn execute_snapshot_writes_a_png_at_path() {
+        let tmpdir =
+            tempfile::tempdir().expect("create tempdir for snapshot test");
+        let path = tmpdir.path().join("test.png");
+        let mut fb = FrameBuilder::new((640, 360));
+        let mut ctx = TestControlCtx::new();
+        execute_planned_action(
+            &PlannedAction::Snapshot { path: path.clone() },
+            &mut fb,
+            &mut ctx,
+        );
+        // If the renderer wasn't available the executor would have
+        // logged + returned without creating the file. Treat that as
+        // a soft skip — mirrors `tests/sidebar_wheel_disc_snapshot.rs::
+        // try_new_renderer`.
+        if !path.exists() {
+            eprintln!(
+                "execute_snapshot_writes_a_png_at_path: no wgpu adapter, \
+                 skipping pixel assertions"
+            );
+            return;
+        }
+        let bytes = std::fs::read(&path).expect("read snapshot PNG");
+        // PNG magic: \x89PNG\r\n\x1a\n.
+        assert_eq!(
+            &bytes[..8],
+            &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A],
+            "expected PNG magic at start of {path:?}"
+        );
+        assert!(
+            bytes.len() > 1024,
+            "expected non-trivial PNG output (>1KB); got {} bytes",
+            bytes.len()
+        );
+    }
+
+    /// Hostile path inputs — the executor must log the error and
+    /// return without panicking. The dispatcher's `Ok` response was
+    /// already on the wire; the compositor must not die because a
+    /// client typo asked for `/nonexistent/dir/x.png`. Phase 5 will
+    /// upgrade these logs into structured wire errors.
+    #[test]
+    fn execute_snapshot_with_bogus_dir_does_not_crash() {
+        let mut fb = FrameBuilder::new((640, 360));
+        let mut ctx = TestControlCtx::new();
+        // Path under a nonexistent parent — File::create will fail with
+        // ENOENT; the executor must log and return.
+        execute_planned_action(
+            &PlannedAction::Snapshot {
+                path: std::path::PathBuf::from("/nonexistent/dir/x.png"),
+            },
+            &mut fb,
+            &mut ctx,
+        );
+        // No panic == pass. Sanity-check the FrameBuilder is still
+        // usable after the failed snapshot (we didn't leave it in a
+        // half-painted state).
         fb.relayout();
         let _ = fb.paint();
     }
