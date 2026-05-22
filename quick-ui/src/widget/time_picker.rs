@@ -1,0 +1,508 @@
+//! TimePicker — three side-by-side vertical spinners for `HH : MM : SS`.
+//!
+//! Each spinner is a small column of three regions: an up-arrow button, the
+//! two-digit value cell (background `surfaces.raised`, radius `radii.sm`), and
+//! a down-arrow button. Clicking an arrow steps the value by 1 with wrap-
+//! around (hours 0..=23, minutes/seconds 0..=59); scrolling the wheel while
+//! the cursor is inside a value cell does the same.
+//!
+//! The seconds spinner is hidden when the picker is constructed without
+//! `with_seconds`; its `second_rect` stays `Rect::ZERO` and the colon between
+//! minutes and seconds is suppressed.
+//!
+//! State lives entirely on the widget (this is a "leaf control" — there is no
+//! Automerge path bound to the value yet; the `on_change` callback is the
+//! escape hatch for plumbing changes back into the document if a host needs
+//! to). The five-pass model is honoured so the widget composes cleanly inside
+//! a `Row` / `Column`.
+
+use automerge::{AutoCommit, ObjId};
+use vello::Scene;
+use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
+
+use crate::widget::Widget;
+use crate::text_render::TextRenderer;
+use crate::theme::Theme;
+
+/// Maximum hour value (inclusive). 24-hour clock — wraps 23 → 0.
+const HOUR_MAX: u8 = 23;
+/// Maximum minute/second value (inclusive). Wraps 59 → 0.
+const MINSEC_MAX: u8 = 59;
+
+/// Fixed width of one spinner cell. Picked so the two-digit value reads
+/// comfortably at the `lg` type-scale (16 px) without crowding the arrows.
+const SPINNER_WIDTH: f32 = 36.0;
+/// Fixed height of the picker. Three vertical regions of equal height
+/// (arrow, value, arrow) of 24 px each — the value cell ends up matching the
+/// `lg` text height with some breathing room.
+const PICKER_HEIGHT: f32 = 72.0;
+/// Width of the colon separator between spinners.
+const COLON_WIDTH: f32 = 8.0;
+
+/// Three-spinner time picker. See module docs.
+pub struct TimePicker {
+    hours: u8,           // 0..=23
+    minutes: u8,         // 0..=59
+    seconds: Option<u8>, // Some(0..=59) only when explicitly enabled
+    on_change: Option<Box<dyn FnMut(u8, u8, Option<u8>)>>,
+    rect: Rect,
+    hour_rect: Rect,     // populated in apply_layout
+    minute_rect: Rect,
+    second_rect: Rect,   // ZERO when seconds == None
+    last_cursor: Point,
+}
+
+impl TimePicker {
+    /// Construct a new picker with the given hour/minute values. Both
+    /// arguments are clamped to their valid ranges (hours 0..=23, minutes
+    /// 0..=59) so callers can't smuggle out-of-band values past the
+    /// constructor.
+    pub fn new(hours: u8, minutes: u8) -> Self {
+        Self {
+            hours: hours.min(HOUR_MAX),
+            minutes: minutes.min(MINSEC_MAX),
+            seconds: None,
+            on_change: None,
+            rect: Rect::ZERO,
+            hour_rect: Rect::ZERO,
+            minute_rect: Rect::ZERO,
+            second_rect: Rect::ZERO,
+            last_cursor: Point::ZERO,
+        }
+    }
+
+    /// Enable the seconds spinner with the given initial value (clamped to
+    /// 0..=59). Without this builder call the seconds field stays `None` and
+    /// the third spinner is hidden.
+    pub fn with_seconds(mut self, seconds: u8) -> Self {
+        self.seconds = Some(seconds.min(MINSEC_MAX));
+        self
+    }
+
+    pub fn hours(&self) -> u8 { self.hours }
+    pub fn minutes(&self) -> u8 { self.minutes }
+    pub fn seconds(&self) -> Option<u8> { self.seconds }
+
+    /// Install a callback invoked with `(hours, minutes, seconds)` every
+    /// time a user-driven change commits a new value.
+    pub fn on_change<F: FnMut(u8, u8, Option<u8>) + 'static>(mut self, f: F) -> Self {
+        self.on_change = Some(Box::new(f));
+        self
+    }
+
+    /// Set the hour value, clamping into 0..=23.
+    pub fn set_hours(&mut self, h: u8) {
+        self.hours = h.min(HOUR_MAX);
+    }
+
+    /// Set the minute value, clamping into 0..=59.
+    pub fn set_minutes(&mut self, m: u8) {
+        self.minutes = m.min(MINSEC_MAX);
+    }
+
+    /// Compute the three sub-rects (up arrow / value cell / down arrow) for
+    /// a spinner cell. Returned in `(up, value, down)` order.
+    fn spinner_subrects(cell: Rect) -> (Rect, Rect, Rect) {
+        let third = cell.height() / 3.0;
+        let up = Rect::new(cell.x0, cell.y0, cell.x1, cell.y0 + third);
+        let value = Rect::new(cell.x0, cell.y0 + third, cell.x1, cell.y1 - third);
+        let down = Rect::new(cell.x0, cell.y1 - third, cell.x1, cell.y1);
+        (up, value, down)
+    }
+
+    /// Wrap `v + 1` within `0..=max`.
+    fn wrap_inc(v: u8, max: u8) -> u8 {
+        if v >= max { 0 } else { v + 1 }
+    }
+
+    /// Wrap `v - 1` within `0..=max`.
+    fn wrap_dec(v: u8, max: u8) -> u8 {
+        if v == 0 { max } else { v - 1 }
+    }
+
+    /// Fire the `on_change` callback with the current values.
+    fn fire_on_change(&mut self) {
+        if let Some(cb) = self.on_change.as_mut() {
+            cb(self.hours, self.minutes, self.seconds);
+        }
+    }
+
+    /// Bump the hour spinner by `delta` (±1).
+    fn step_hours(&mut self, delta: i8) {
+        if delta > 0 {
+            self.hours = Self::wrap_inc(self.hours, HOUR_MAX);
+        } else if delta < 0 {
+            self.hours = Self::wrap_dec(self.hours, HOUR_MAX);
+        }
+        self.fire_on_change();
+    }
+
+    /// Bump the minute spinner by `delta` (±1).
+    fn step_minutes(&mut self, delta: i8) {
+        if delta > 0 {
+            self.minutes = Self::wrap_inc(self.minutes, MINSEC_MAX);
+        } else if delta < 0 {
+            self.minutes = Self::wrap_dec(self.minutes, MINSEC_MAX);
+        }
+        self.fire_on_change();
+    }
+
+    /// Bump the seconds spinner by `delta` (±1). No-op if seconds disabled.
+    fn step_seconds(&mut self, delta: i8) {
+        let Some(cur) = self.seconds else { return };
+        let new = if delta > 0 {
+            Self::wrap_inc(cur, MINSEC_MAX)
+        } else if delta < 0 {
+            Self::wrap_dec(cur, MINSEC_MAX)
+        } else {
+            cur
+        };
+        self.seconds = Some(new);
+        self.fire_on_change();
+    }
+
+    /// Draw a single chevron (up or down) centred in `cell`.
+    fn draw_chevron(scene: &mut Scene, transform: Affine, cell: Rect, color: vello::peniko::Color, up: bool) {
+        // Triangle inscribed in the central ~50% of the cell — keeps the
+        // hit area larger than the visible arrow.
+        let cx = cell.center().x;
+        let cy = cell.center().y;
+        let w = cell.width() * 0.35;
+        let h = cell.height() * 0.30;
+        let mut path = BezPath::new();
+        if up {
+            path.move_to((cx - w, cy + h / 2.0));
+            path.line_to((cx + w, cy + h / 2.0));
+            path.line_to((cx, cy - h / 2.0));
+        } else {
+            path.move_to((cx - w, cy - h / 2.0));
+            path.line_to((cx + w, cy - h / 2.0));
+            path.line_to((cx, cy + h / 2.0));
+        }
+        path.close_path();
+        scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &path);
+    }
+}
+
+impl Widget for TimePicker {
+    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        // Total width = spinner + colon + spinner [+ colon + spinner]
+        let n_spinners: f32 = if self.seconds.is_some() { 3.0 } else { 2.0 };
+        let total_w = n_spinners * SPINNER_WIDTH + (n_spinners - 1.0) * COLON_WIDTH;
+        let node = taffy
+            .new_leaf(Style {
+                size: Size {
+                    width: Dimension::length(total_w),
+                    height: Dimension::length(PICKER_HEIGHT),
+                },
+                ..Default::default()
+            })
+            .unwrap();
+        node_map.insert(node, self as *mut dyn Widget);
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let layout = taffy.layout(node).unwrap();
+        self.rect = Rect::new(
+            origin.x + layout.location.x as f64,
+            origin.y + layout.location.y as f64,
+            origin.x + layout.location.x as f64 + layout.size.width as f64,
+            origin.y + layout.location.y as f64 + layout.size.height as f64,
+        );
+
+        let cell_w = SPINNER_WIDTH as f64;
+        let colon_w = COLON_WIDTH as f64;
+        let y0 = self.rect.y0;
+        let y1 = self.rect.y1;
+
+        let mut x = self.rect.x0;
+        self.hour_rect = Rect::new(x, y0, x + cell_w, y1);
+        x += cell_w + colon_w;
+        self.minute_rect = Rect::new(x, y0, x + cell_w, y1);
+        if self.seconds.is_some() {
+            x += cell_w + colon_w;
+            self.second_rect = Rect::new(x, y0, x + cell_w, y1);
+        } else {
+            self.second_rect = Rect::ZERO;
+        }
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &crate::presence::PresenceCtx,
+    ) {
+        let colors = &theme.tokens.colors;
+        let radius = theme.tokens.radii.sm as f64;
+        let text_size = theme.tokens.typography.scale.lg;
+
+        // Collect the visible spinner cells along with their current value.
+        let mut cells: Vec<(Rect, u8)> = vec![
+            (self.hour_rect, self.hours),
+            (self.minute_rect, self.minutes),
+        ];
+        if let Some(s) = self.seconds {
+            cells.push((self.second_rect, s));
+        }
+
+        for (cell, value) in &cells {
+            let (up_rect, value_rect, down_rect) = Self::spinner_subrects(*cell);
+
+            // Value cell background.
+            let bg = RoundedRect::from_rect(value_rect, radius);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                colors.surfaces.raised,
+                None,
+                &bg,
+            );
+
+            // Two-digit value label centred in the value cell.
+            let label = format!("{:02}", value);
+            let (w, h) = text_renderer.measure(&label, text_size, None);
+            let tx = value_rect.x0 + (value_rect.width() - w as f64) / 2.0;
+            let ty = value_rect.y0 + (value_rect.height() - h as f64) / 2.0;
+            text_renderer.draw_text(
+                scene,
+                &label,
+                text_size,
+                colors.text_primary,
+                transform * Affine::translate((tx, ty)),
+                None,
+            );
+
+            // Up and down chevrons.
+            Self::draw_chevron(scene, transform, up_rect, colors.text_dim, true);
+            Self::draw_chevron(scene, transform, down_rect, colors.text_dim, false);
+        }
+
+        // Colons between visible spinners. Drawn at the same point size as
+        // the value text so the baselines line up.
+        let between_h_m_x = (self.hour_rect.x1 + self.minute_rect.x0) / 2.0;
+        let centre_y = self.rect.center().y;
+        let colon = ":";
+        let (cw, ch) = text_renderer.measure(colon, text_size, None);
+        text_renderer.draw_text(
+            scene,
+            colon,
+            text_size,
+            colors.text_dim,
+            transform * Affine::translate((between_h_m_x - cw as f64 / 2.0, centre_y - ch as f64 / 2.0)),
+            None,
+        );
+        if self.seconds.is_some() {
+            let between_m_s_x = (self.minute_rect.x1 + self.second_rect.x0) / 2.0;
+            text_renderer.draw_text(
+                scene,
+                colon,
+                text_size,
+                colors.text_dim,
+                transform * Affine::translate((between_m_s_x - cw as f64 / 2.0, centre_y - ch as f64 / 2.0)),
+                None,
+            );
+        }
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        _modifiers: &winit::event::Modifiers,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+        handled: &mut bool,
+        _focus_target: &mut Option<NodeId>,
+        _node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let p = self.last_cursor;
+                // Determine which spinner cell the cursor sits in (if any)
+                // and which third of that cell — top = up, bottom = down.
+                let mut cells: Vec<(Rect, u8)> = vec![
+                    (self.hour_rect, 0),
+                    (self.minute_rect, 1),
+                ];
+                if self.seconds.is_some() {
+                    cells.push((self.second_rect, 2));
+                }
+                for (cell, which) in &cells {
+                    if !cell.contains(p) {
+                        continue;
+                    }
+                    let (up_rect, _value_rect, down_rect) = Self::spinner_subrects(*cell);
+                    let delta: i8 = if up_rect.contains(p) {
+                        1
+                    } else if down_rect.contains(p) {
+                        -1
+                    } else {
+                        0
+                    };
+                    if delta != 0 {
+                        match which {
+                            0 => self.step_hours(delta),
+                            1 => self.step_minutes(delta),
+                            2 => self.step_seconds(delta),
+                            _ => {}
+                        }
+                        *handled = true;
+                    }
+                    break;
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let p = self.last_cursor;
+                // Wheel up → positive y delta → increment; wheel down →
+                // negative → decrement. Match the convention from native
+                // OS time pickers and the spec.
+                let dy = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => *y as f64,
+                    MouseScrollDelta::PixelDelta(pp) => pp.y,
+                };
+                let step: i8 = if dy > 0.0 { 1 } else if dy < 0.0 { -1 } else { 0 };
+                if step == 0 {
+                    return;
+                }
+
+                let mut cells: Vec<(Rect, u8)> = vec![
+                    (self.hour_rect, 0),
+                    (self.minute_rect, 1),
+                ];
+                if self.seconds.is_some() {
+                    cells.push((self.second_rect, 2));
+                }
+                for (cell, which) in &cells {
+                    let (_up_rect, value_rect, _down_rect) = Self::spinner_subrects(*cell);
+                    if value_rect.contains(p) {
+                        match which {
+                            0 => self.step_hours(step),
+                            1 => self.step_minutes(step),
+                            2 => self.step_seconds(step),
+                            _ => {}
+                        }
+                        *handled = true;
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn name(&self) -> &str { "TimePicker" }
+
+    fn get_rect(&self) -> Rect { self.rect }
+}
+
+// =====================================================================
+// Tests
+// =====================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(x, y),
+        }
+    }
+
+    fn wheel(dy: f32) -> WindowEvent {
+        WindowEvent::MouseWheel {
+            device_id: unsafe { std::mem::zeroed() },
+            delta: MouseScrollDelta::LineDelta(0.0, dy),
+            phase: winit::event::TouchPhase::Moved,
+        }
+    }
+
+    /// Drive an event through the picker with default scaffolding.
+    fn dispatch(tp: &mut TimePicker, event: &WindowEvent) {
+        let mut tree = TaffyTree::<()>::new();
+        let node = tree.new_leaf(Style::default()).unwrap();
+        let mut handled = false;
+        let mut focus_target = None;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        tp.handle_event(
+            event,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &tree,
+        );
+    }
+
+    /// Stage `hour_rect`, `minute_rect`, and (optionally) `second_rect` by
+    /// running `build_layout` + `apply_layout` through a real taffy tree.
+    /// Returns the picker with all sub-rects populated.
+    fn picker_with_layout(tp: &mut TimePicker) {
+        use taffy::prelude::TaffyMaxContent;
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
+            std::collections::HashMap::new();
+        let node = tp.build_layout(&mut taffy, &crate::theme::Theme::dark(), &mut node_map);
+        let root = taffy.new_with_children(Style::default(), &[node]).unwrap();
+        taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
+        tp.apply_layout(&taffy, node, Point::ZERO);
+    }
+
+    #[test]
+    fn time_picker_clamps_hours_to_23() {
+        let tp = TimePicker::new(25, 30);
+        assert_eq!(tp.hours(), 23);
+        let mut tp = tp;
+        tp.set_hours(99);
+        assert_eq!(tp.hours(), 23);
+    }
+
+    #[test]
+    fn time_picker_clamps_minutes_to_59() {
+        let tp = TimePicker::new(12, 99);
+        assert_eq!(tp.minutes(), 59);
+    }
+
+    #[test]
+    fn time_picker_scroll_up_increments_minutes() {
+        let mut tp = TimePicker::new(10, 30);
+        picker_with_layout(&mut tp);
+        assert!(tp.minute_rect.width() > 0.0, "minute_rect must be populated by apply_layout");
+
+        // Move cursor into the centre of the minute spinner's value cell.
+        // The value cell is the middle third of `minute_rect`.
+        let centre = tp.minute_rect.center();
+        dispatch(&mut tp, &cursor_moved(centre.x, centre.y));
+
+        // Positive wheel delta → increment.
+        dispatch(&mut tp, &wheel(1.0));
+
+        assert_eq!(tp.minutes(), 31, "wheel up over minute cell must increment minutes");
+    }
+}
