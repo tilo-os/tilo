@@ -133,6 +133,29 @@ pub use file_picker::{
     FilePicker, FilePickerEntry, FilePickerMode, FilePickerOutcome,
 };
 
+// === Widget expansion plan (2026-05-22) =============================
+// These 16 modules are filled in by the per-unit dispatch agents.
+// Until each agent commits, the modules expose stub types (`pub struct Foo;`)
+// so the crate compiles. Public re-exports here let downstream code and
+// tests reach the widgets through the canonical `quick_ui::widget::*` path
+// regardless of which agent has completed.
+pub mod progress_bar;     pub use progress_bar::ProgressBar;
+pub mod spinner;          pub use spinner::Spinner;
+pub mod date_picker;      pub use date_picker::DatePicker;
+pub mod time_picker;      pub use time_picker::TimePicker;
+pub mod color_picker;     pub use color_picker::ColorPicker;
+pub mod popover_widget;   pub use popover_widget::PopoverWidget;
+pub mod modal_dialog;     pub use modal_dialog::ModalDialog;
+pub mod toolbar;          pub use toolbar::Toolbar;
+pub mod breadcrumb;       pub use breadcrumb::Breadcrumb;
+pub mod avatar;           pub use avatar::Avatar;
+pub mod badge;            pub use badge::Badge;
+pub mod resizable_split;  pub use resizable_split::ResizableSplit;
+pub mod video_player;     pub use video_player::VideoPlayer;
+pub mod image_viewer;     pub use image_viewer::ImageViewer;
+pub mod tree_view;        pub use tree_view::TreeView;
+pub mod toggle_group;     pub use toggle_group::ToggleGroup;
+
 // =====================================================================
 // Tests
 // =====================================================================
