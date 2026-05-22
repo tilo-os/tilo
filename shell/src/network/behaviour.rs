@@ -71,6 +71,19 @@ pub fn load_or_create_keypair(
         .to_protobuf_encoding()
         .map_err(std::io::Error::other)?;
     std::fs::write(path, bytes)?;
+    // C-8 (security): the ed25519 private key impersonates this peer
+    // in the libp2p mesh. Default `std::fs::write` honours the
+    // process umask which is typically `0644` — that lets any local
+    // user copy the key. Tighten to `0600` immediately after the
+    // write. A separate process that beat us between the write and
+    // the chmod can only see the bytes for that brief window; we
+    // can't atomically create-with-mode without an `openat2` dance,
+    // which is more complexity than this single-host secret needs.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o600);
+        std::fs::set_permissions(path, perms)?;
+    }
     Ok(kp)
 }
 
@@ -107,5 +120,30 @@ mod tests {
 
         let _kp = load_or_create_keypair(&nested).expect("creates dirs + file");
         assert!(nested.exists(), "key file must exist after first call");
+    }
+
+    /// C-8 (security): the freshly-generated peer keypair must land on
+    /// disk with mode `0600`. Default `std::fs::write` uses the process
+    /// umask which is typically `0644` — that lets any local user copy
+    /// the ed25519 private key and impersonate this peer in the libp2p
+    /// mesh. Regression-guard the mode bits explicitly.
+    #[test]
+    fn load_or_create_keypair_sets_0600_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("peer-key");
+        let _kp = load_or_create_keypair(&path).expect("creates key");
+
+        let meta = std::fs::metadata(&path).expect("stat key file");
+        let mode = meta.permissions().mode();
+        // Compare the low 12 bits (file-type bits live above 0o7777).
+        assert_eq!(
+            mode & 0o7777,
+            0o600,
+            "peer keypair must be mode 0600, got {:o} (full mode: {:o})",
+            mode & 0o7777,
+            mode
+        );
     }
 }
