@@ -39,6 +39,7 @@ fn empty_workspace(id: u64, name: &str) -> Workspace {
         workspace_files: vec![],
         collaborators: vec![],
         grants: HashMap::new(),
+        shared_surfaces: HashMap::new(),
     }
 }
 

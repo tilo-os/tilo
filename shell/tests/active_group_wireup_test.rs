@@ -89,6 +89,7 @@ fn two_strip_two_group_tree() -> (
         workspace_files: vec![],
         collaborators: vec![],
         grants: HashMap::new(),
+        shared_surfaces: HashMap::new(),
     };
 
     let mut active_strip = HashMap::new();

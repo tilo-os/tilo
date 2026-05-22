@@ -114,6 +114,7 @@ fn two_strip_two_tab_tree() -> (WorkspaceTree, StripId, StripId, [u64; 2], [u64;
         workspace_files: vec![],
         collaborators: vec![],
         grants: HashMap::new(),
+        shared_surfaces: HashMap::new(),
     };
 
     let mut active_strip = HashMap::new();
