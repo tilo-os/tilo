@@ -1754,6 +1754,7 @@ impl Widget for TabBar {
         }
     }
     fn name(&self) -> &str { "TabBar" }
+    fn test_id(&self) -> Option<&str> { Some("tabs") }
     fn get_rect(&self) -> Rect { self.rect }
     fn wants_pointer_capture(&self) -> bool { self.press_origin.is_some() || self.pending_drag.is_some() }
     fn accepts_drop(&self, payload: &DragPayload) -> bool { matches!(payload, DragPayload::Tab { .. }) }
@@ -3555,5 +3556,11 @@ mod tests {
         // line below the `origin` line.
         assert!(b.press_origin.is_none());
         assert!(b.drag_offset.is_none());
+    }
+
+    #[test]
+    fn tab_bar_test_id_returns_tabs() {
+        let bar = TabBar::new("grp", vec![TabDescriptor::new(1, "a")], 1);
+        assert_eq!(Widget::test_id(&bar), Some("tabs"));
     }
 }
