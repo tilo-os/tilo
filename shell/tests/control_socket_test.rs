@@ -84,6 +84,26 @@ fn spawn_with_control() -> (Child, PathBuf) {
         }
     });
 
+    // Also drain stdout. `tracing_subscriber` (and wgpu's vulkan layer
+    // when validation is requested) writes to stdout — Phase 4's
+    // `snapshot` doubles the log spam by spinning up a second wgpu
+    // instance for the OffscreenRenderer. Once the pipe fills (Linux
+    // default 64 KiB) the child blocks on write, which freezes the
+    // calloop tick that's mid-`write_snapshot_png` — observed as a
+    // 30 s `WouldBlock` on the client read. Draining unblocks it.
+    let stdout = child.stdout.take().expect("stdout piped");
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => return,
+                Ok(_) => {}
+                Err(_) => return,
+            }
+        }
+    });
+
     match rx.recv_timeout(Duration::from_secs(15)) {
         Ok(()) => (child, socket_path),
         Err(_) => {
@@ -97,16 +117,28 @@ fn spawn_with_control() -> (Child, PathBuf) {
 }
 
 /// Helper: send `cmd_json` over `stream`, read one response line, return
-/// the parsed JSON value.
+/// the parsed JSON value. Uses a 5s read timeout — adequate for every
+/// dispatcher command that doesn't talk to the GPU.
 fn round_trip(stream: &mut UnixStream, cmd_json: &str) -> serde_json::Value {
+    round_trip_with_timeout(stream, cmd_json, Duration::from_secs(5))
+}
+
+/// Same as `round_trip` but lets the caller bump the read timeout. The
+/// `snapshot` command is the lone slow case: spinning up an
+/// `OffscreenRenderer` (wgpu adapter + vello Renderer) takes well
+/// over the default 5s on cold caches.
+fn round_trip_with_timeout(
+    stream: &mut UnixStream,
+    cmd_json: &str,
+    read_timeout: Duration,
+) -> serde_json::Value {
     let mut line = cmd_json.to_string();
     line.push('\n');
     stream.write_all(line.as_bytes()).expect("write command");
     stream.flush().expect("flush command");
 
-    // Set a sane read timeout so a buggy server doesn't hang us forever.
     stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(read_timeout))
         .expect("set_read_timeout");
 
     let mut reader = BufReader::new(stream.try_clone().unwrap());
@@ -353,6 +385,71 @@ fn type_text_into_palette_when_open() {
         "list_targets should still respond after Ctrl+K + type sequence; got {listed:?}"
     );
 
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_file(&socket_path);
+}
+
+/// Phase 4: a `snapshot` command should write a PNG to the requested
+/// path and reply `Ok`. We don't assert pixel content (the
+/// compositor's bootstrap layout drifts over time as widgets evolve);
+/// the contract is "the file exists, starts with the PNG magic, and
+/// is non-trivial in size".
+#[test]
+#[ignore = "requires a Wayland/X11 display server; opt in with --ignored"]
+fn snapshot_writes_png_at_requested_path() {
+    let (mut child, socket_path) = spawn_with_control();
+
+    // Pid-scoped path so a flaky run from a parallel test doesn't
+    // collide with this one. Cleaned up at the end.
+    let png_path = PathBuf::from(format!(
+        "/tmp/nirios-test-snapshot-{}.png",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&png_path);
+
+    let mut stream = UnixStream::connect(&socket_path)
+        .expect("connect to test_control socket");
+
+    let cmd = format!(
+        r#"{{"op":"snapshot","path":"{}"}}"#,
+        png_path.display()
+    );
+    // `snapshot` is much slower than every other test_control command —
+    // it spins up a wgpu adapter, allocates a render-target texture,
+    // and copies pixels back from the GPU. On cold caches this can
+    // take 10+ seconds. Bump the read timeout well above the default
+    // 5s so we don't false-positive a WouldBlock.
+    let response = round_trip_with_timeout(&mut stream, &cmd, Duration::from_secs(30));
+    assert!(
+        response.get("ok").is_some(),
+        "snapshot should respond with `ok`; got {response:?}"
+    );
+
+    // The executor writes the file synchronously inside the calloop
+    // tick, but the response is enqueued in the same tick — by the
+    // time `round_trip` returns the file should already be on disk.
+    // A small sleep gives the pump one more iteration in case the
+    // write was deferred behind a relayout.
+    std::thread::sleep(Duration::from_millis(200));
+
+    assert!(
+        png_path.exists(),
+        "snapshot command should have written a PNG at {png_path:?}"
+    );
+    let bytes = std::fs::read(&png_path).expect("read snapshot PNG");
+    assert_eq!(
+        &bytes[..8],
+        &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A],
+        "expected PNG magic at start of {png_path:?}"
+    );
+    assert!(
+        bytes.len() > 1024,
+        "expected non-trivial PNG output (>1KB); got {} bytes",
+        bytes.len()
+    );
+
+    let _ = std::fs::remove_file(&png_path);
     let _ = child.kill();
     let _ = child.wait();
     let _ = std::fs::remove_file(&socket_path);
