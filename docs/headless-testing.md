@@ -200,10 +200,20 @@ rm -f $NIRIOS_TEST_CONTROL
 | Headless backend impl | `quick-shell/src/compositor/backend/headless.rs` |
 | Spec | `docs/superpowers/specs/2026-05-16-real-input-e2e-design.md` |
 
+## Per-app screenshots
+
+`apps/terminal` and `apps/file-explorer` accept `--shots PATH` and write a 1200×720 RGBA PNG of the cold-start UI to `PATH` without opening a window:
+
+```bash
+./target/debug/quick-terminal --shots /tmp/terminal.png
+./target/debug/file-explorer  --shots /tmp/files.png
+```
+
+Both flow through `quick_ui::offscreen::OffscreenRenderer` and run a single `sync → build_layout → compute_layout → apply_layout → draw` cycle — no event loop. Smoke tests live in each app's `tests/shots_smoke.rs` and assert the output starts with the PNG magic header.
+
 ## What's still missing
 
-- **Single-app screenshots.** `apps/terminal`, `apps/file-explorer`, `apps/browser` have no `shots`-style harness. To screenshot just the terminal widget, you must hand-instantiate `OffscreenRenderer` + a `TerminalWidget` tree today. A shared `app-shots` binary (or a `--shots` flag per app) is a follow-up.
-- **AI-friendly automation library.** A small Python / shell wrapper that hides the `nc -U` pattern and parses responses would make ad-hoc scripting friendlier.
+- **`quick-browser --shots`.** The browser uses `iced` 0.13 directly plus a Servo engine; iced 0.13 has no straightforward headless rendering path (the runtime owns the winit event loop). A future shot harness would need to drive `iced_wgpu::Renderer` against an offscreen wgpu texture with a hand-rolled layout pass, or wait for upstream iced to expose a headless surface. The same gap applies if any future system app picks iced.
 
 ## CI integration
 
