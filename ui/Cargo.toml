@@ -27,3 +27,7 @@ regex = "1"
 # end-to-end paint contracts (e.g. `tabs::active_pill_emits_more_color_\
 # fills_than_inactive_siblings`) without rendering pixels.
 vello_encoding = "0.2.1"
+# `widget::file_picker::tests` build a real on-disk tree to exercise the
+# `std::fs::read_dir` path. Already pulled in by quick-shell as a regular
+# dev-dep; pinning here for the leaf-test build.
+tempfile = "3"
