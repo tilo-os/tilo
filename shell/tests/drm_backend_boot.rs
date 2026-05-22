@@ -20,6 +20,7 @@
 //! blit).
 
 use quick_desktop::compositor::backend::drm::DrmBackend;
+use quick_desktop::compositor::backend::Backend;
 
 #[test]
 fn drm_backend_boot_smoke() {
@@ -32,10 +33,23 @@ fn drm_backend_boot_smoke() {
     }
     let backend = DrmBackend::new();
     match backend {
-        Ok(_) => {
-            // Construction succeeded — that's the whole assertion. The
-            // calloop loop is alive and libseat/udev/libinput are
-            // attached. Dropping `_` tears everything down cleanly.
+        Ok(b) => {
+            // Phase 5.2: connector enumeration must produce at least
+            // one output on real hardware. If a TTY system reports
+            // zero connected outputs, that's a regression in the
+            // enumeration path (or a truly headless server, in which
+            // case the operator can disable this assert with
+            // `NIRIOS_DRM_NO_OUTPUTS_OK=1`).
+            let outputs = b.outputs();
+            if std::env::var("NIRIOS_DRM_NO_OUTPUTS_OK").is_err() {
+                assert!(
+                    !outputs.is_empty(),
+                    "DrmBackend::outputs() returned an empty list on a hardware run. \
+                     Phase 5.2's connector enumeration should produce at least one output \
+                     when a monitor is attached. Set NIRIOS_DRM_NO_OUTPUTS_OK=1 to bypass \
+                     on a truly headless server."
+                );
+            }
         }
         Err(e) => {
             panic!(
