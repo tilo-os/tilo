@@ -22,19 +22,21 @@
 //! Phase 5.2.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
+use smithay::backend::drm::{DrmDevice, DrmDeviceFd};
 use smithay::backend::input::InputEvent;
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 use smithay::backend::session::libseat::LibSeatSession;
 use smithay::backend::session::Session;
 use smithay::backend::udev::{all_gpus, UdevBackend};
 use smithay::reexports::calloop::{EventLoop, LoopHandle};
+use smithay::reexports::drm as drm_re;
 use smithay::reexports::input::Libinput;
 
-use super::devices::filter_kms_nodes;
-use super::outputs::OutputRegistry;
+use super::devices::{filter_kms_nodes, ModeInfo};
+use super::outputs::{ConnectorInfo, OutputRegistry};
 use super::session::SessionState;
 use crate::compositor::backend::{BackendEvent, Output, OutputId};
 
@@ -132,6 +134,22 @@ impl DrmRuntime {
             "DRM backend: enumerated KMS card nodes"
         );
 
+        // 2.5. Connector enumeration. Open each KMS node via the
+        //      session, read the resource handles + per-connector
+        //      info, and project into the registry. Failures here are
+        //      logged and skipped rather than aborting the boot — a
+        //      single bad GPU shouldn't down the compositor.
+        //
+        //      `LibSeatSession` is cheap to clone (internal `Arc`), so
+        //      we hand a borrow to the enumeration helper that lives
+        //      independently of the session we plumb into libinput.
+        let mut session_for_enum = session.clone();
+        let connectors = enumerate_connectors(&mut session_for_enum, &kms_gpus);
+        tracing::info!(
+            count = connectors.len(),
+            "DRM backend: enumerated DRM connectors"
+        );
+
         // 3. libinput. The session-interface adapter routes
         //    `open`/`close` calls through libseat so libinput inherits
         //    the privileged FDs without root.
@@ -209,11 +227,15 @@ impl DrmRuntime {
             })
             .map_err(|e| DrmBackendError::Calloop(format!("{e}")))?;
 
+        let mut outputs = OutputRegistry::new();
+        let populated = outputs.populate(&connectors);
+        let output_meta: HashMap<OutputId, Output> = populated.into_iter().collect();
+
         let dispatch = DrmDispatchState {
             session: Some(session_state),
-            outputs: OutputRegistry::new(),
+            outputs,
             events: Vec::new(),
-            output_meta: HashMap::new(),
+            output_meta,
         };
 
         Ok(Self {
@@ -233,14 +255,203 @@ impl DrmRuntime {
             .event_loop
             .dispatch(Duration::ZERO, &mut self.dispatch);
     }
+
+    /// Test-only seam: construct a `DrmRuntime`-shaped dispatch state
+    /// with the given output set already populated. Used by tests in
+    /// `super::mod` to verify `DrmBackend::outputs()` without touching
+    /// real hardware. Not exposed outside `cfg(test)`.
+    #[cfg(test)]
+    pub fn synthesize_for_tests(outputs: Vec<(OutputId, Output)>) -> DrmDispatchState {
+        let mut registry = OutputRegistry::new();
+        // Re-intern so the registry's `next_id` is consistent with the
+        // synthesised ids. The keys we feed are arbitrary; the test
+        // only cares about `output_meta`.
+        for (id, _) in &outputs {
+            registry.intern(super::outputs::DrmOutputKey {
+                device: 0,
+                connector: id.0,
+            });
+        }
+        DrmDispatchState {
+            session: None,
+            outputs: registry,
+            events: Vec::new(),
+            output_meta: outputs.into_iter().collect(),
+        }
+    }
+}
+
+/// Enumerate every connected connector on every `cardN` node in
+/// `kms_gpus`. Each device is opened through the supplied session
+/// (`session.open` returns an `OwnedFd` privileged via libseat); a
+/// `DrmDevice` is built around the fd, its resource handles are read,
+/// and each connector is queried (`force_probe = true` so EDID/modes
+/// are fresh at boot). Failures on individual devices/connectors are
+/// **logged and skipped** rather than aborted — a single misbehaving
+/// GPU shouldn't down the whole compositor.
+///
+/// Returns the full flattened connector list ready to feed into
+/// [`OutputRegistry::populate`].
+///
+/// **Side-effect**: temporarily holds DRM master on each opened
+/// device. The fds are dropped at the end of this function, so master
+/// is released before we hand control back to the caller for the
+/// page-flip wiring. Phase 5.3 will keep the fds alive and reuse them.
+pub fn enumerate_connectors<S>(session: &mut S, kms_gpus: &[PathBuf]) -> Vec<ConnectorInfo>
+where
+    S: smithay::backend::session::Session,
+{
+    let mut all = Vec::new();
+    for path in kms_gpus {
+        match enumerate_connectors_on_device(session, path) {
+            Ok(mut conns) => all.append(&mut conns),
+            Err(e) => {
+                tracing::warn!(?path, "DRM connector enumeration failed on device: {e}");
+            }
+        }
+    }
+    all
+}
+
+/// Open a single `cardN` node through the session, build a
+/// `DrmDevice`, and project each connector into [`ConnectorInfo`].
+fn enumerate_connectors_on_device<S>(
+    session: &mut S,
+    path: &Path,
+) -> Result<Vec<ConnectorInfo>, String>
+where
+    S: smithay::backend::session::Session,
+{
+    use drm_re::control::Device as ControlDevice;
+    use smithay::reexports::rustix::fs::OFlags;
+    use smithay::utils::DeviceFd;
+    use smithay::backend::session::AsErrno;
+
+    // O_RDWR|O_CLOEXEC|O_NONBLOCK matches what smithay's anvil example
+    // uses for the DRM device fd.
+    let fd = session
+        .open(
+            path,
+            OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK,
+        )
+        .map_err(|e| format!("session.open({path:?}): errno={:?}", e.as_errno()))?;
+    let device_fd = DrmDeviceFd::new(DeviceFd::from(fd));
+    let dev_id_raw: u64 = device_fd
+        .dev_id()
+        .map_err(|e| format!("dev_id: {e}"))?
+        as u64;
+
+    let (drm_device, _notifier) =
+        DrmDevice::new(device_fd, /* disable_connectors */ false)
+            .map_err(|e| format!("DrmDevice::new: {e}"))?;
+
+    let resources = drm_device
+        .resource_handles()
+        .map_err(|e| format!("resource_handles: {e}"))?;
+
+    let mut connectors = Vec::with_capacity(resources.connectors().len());
+    for &handle in resources.connectors() {
+        match drm_device.get_connector(handle, /* force_probe */ true) {
+            Ok(info) => {
+                let connected = matches!(
+                    info.state(),
+                    drm_re::control::connector::State::Connected
+                );
+                let modes: Vec<ModeInfo> = info
+                    .modes()
+                    .iter()
+                    .map(|m| {
+                        let (w, h) = m.size();
+                        let preferred = m
+                            .mode_type()
+                            .contains(drm_re::control::ModeTypeFlags::PREFERRED);
+                        ModeInfo {
+                            width: w,
+                            height: h,
+                            // `vrefresh()` returns plain Hz; multiply
+                            // by 1000 to get milli-Hz (mode_info's
+                            // canonical unit so 59.94 vs 60.00 stay
+                            // distinguishable when fractional rates
+                            // become available upstream).
+                            refresh_mhz: m.vrefresh().saturating_mul(1000),
+                            preferred,
+                        }
+                    })
+                    .collect();
+                connectors.push(ConnectorInfo {
+                    device_id: dev_id_raw,
+                    connector_id: u32::from(handle),
+                    connected,
+                    modes,
+                });
+            }
+            Err(e) => {
+                tracing::warn!(?handle, "DRM get_connector failed: {e}");
+            }
+        }
+    }
+    Ok(connectors)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compositor::backend::drm::devices::ModeInfo;
 
     // These tests build a `DrmDispatchState` directly; they avoid
     // calling `DrmRuntime::new` which would try to open a real seat.
+
+    /// Pure-data stub `Session` for unit tests. Always fails to open
+    /// any path (the real seat handling is owned by libseat at runtime
+    /// and can't be exercised without a TTY), but the failure path is
+    /// itself something we want to verify — `enumerate_connectors`
+    /// must log + skip, not crash.
+    struct StubSession {
+        seat_name: String,
+    }
+
+    #[derive(Debug)]
+    struct StubError;
+
+    impl std::fmt::Display for StubError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "stub")
+        }
+    }
+
+    impl smithay::backend::session::AsErrno for StubError {
+        fn as_errno(&self) -> Option<i32> {
+            Some(libc::ENODEV)
+        }
+    }
+
+    impl smithay::backend::session::Session for StubSession {
+        type Error = StubError;
+
+        fn open(
+            &mut self,
+            _path: &std::path::Path,
+            _flags: smithay::reexports::rustix::fs::OFlags,
+        ) -> Result<std::os::fd::OwnedFd, Self::Error> {
+            Err(StubError)
+        }
+
+        fn close(&mut self, _fd: std::os::fd::OwnedFd) -> Result<(), Self::Error> {
+            Err(StubError)
+        }
+
+        fn change_vt(&mut self, _vt: i32) -> Result<(), Self::Error> {
+            Err(StubError)
+        }
+
+        fn is_active(&self) -> bool {
+            true
+        }
+
+        fn seat(&self) -> String {
+            self.seat_name.clone()
+        }
+    }
 
     #[test]
     fn dispatch_state_starts_empty() {
@@ -258,5 +469,109 @@ mod tests {
         assert_eq!(s.events.len(), 2);
         assert!(matches!(s.events[0], BackendEvent::Input));
         assert!(matches!(s.events[1], BackendEvent::Redraw));
+    }
+
+    #[test]
+    fn enumerate_connectors_returns_empty_when_no_devices() {
+        let mut session = StubSession {
+            seat_name: "seat0".into(),
+        };
+        let conns = enumerate_connectors(&mut session, &[]);
+        assert!(
+            conns.is_empty(),
+            "no card nodes → no connectors (got {} entries)",
+            conns.len()
+        );
+    }
+
+    #[test]
+    fn enumerate_connectors_skips_devices_that_fail_to_open() {
+        // The stub session refuses every open(), so even when paths
+        // are supplied, we must end up with zero connectors and a
+        // warn-log rather than a panic.
+        let mut session = StubSession {
+            seat_name: "seat0".into(),
+        };
+        let conns = enumerate_connectors(
+            &mut session,
+            &[PathBuf::from("/dev/dri/card0"), PathBuf::from("/dev/dri/card1")],
+        );
+        assert!(
+            conns.is_empty(),
+            "failed-to-open devices must be skipped, not crash"
+        );
+    }
+
+    /// Pure-logic mirror of the policy `enumerate_connectors_on_device`
+    /// implements when projecting DRM modes into `ModeInfo`s, the
+    /// `preferred` flag is honored. The full flow needs a real DRM
+    /// device, so we verify the *policy* end-to-end via
+    /// `super::devices::preferred_mode` instead — that's what the
+    /// runtime calls (via `OutputRegistry::populate`). This test
+    /// pins the contract: given a list of modes containing a
+    /// preferred one, the picked mode is the preferred one.
+    #[test]
+    fn preferred_mode_selection_picks_first_preferred() {
+        use super::super::devices::preferred_mode;
+        let modes = [
+            ModeInfo {
+                width: 3840,
+                height: 2160,
+                refresh_mhz: 60_000,
+                preferred: false,
+            },
+            ModeInfo {
+                width: 1920,
+                height: 1080,
+                refresh_mhz: 60_000,
+                preferred: true,
+            },
+            ModeInfo {
+                width: 2560,
+                height: 1440,
+                refresh_mhz: 144_000,
+                preferred: false,
+            },
+        ];
+        let picked = preferred_mode(&modes).expect("non-empty modes");
+        assert!(picked.preferred, "preferred flag must win over higher resolution");
+        assert_eq!(picked.width, 1920);
+        assert_eq!(picked.height, 1080);
+    }
+
+    /// And when none of the modes are flagged preferred, the policy
+    /// falls back to the highest resolution × refresh, matching what
+    /// `enumerate_connectors_on_device` will deliver to the registry.
+    #[test]
+    fn preferred_mode_selection_falls_back_to_highest_when_no_preferred() {
+        use super::super::devices::preferred_mode;
+        let modes = [
+            ModeInfo {
+                width: 1920,
+                height: 1080,
+                refresh_mhz: 60_000,
+                preferred: false,
+            },
+            ModeInfo {
+                width: 2560,
+                height: 1440,
+                refresh_mhz: 60_000,
+                preferred: false,
+            },
+        ];
+        let picked = preferred_mode(&modes).expect("non-empty");
+        assert_eq!(picked.width, 2560);
+    }
+
+    #[test]
+    fn synthesize_for_tests_populates_output_meta() {
+        let outs = vec![
+            (OutputId(0), Output { id: OutputId(0), size: (1920, 1080), scale: 1.0 }),
+            (OutputId(1), Output { id: OutputId(1), size: (1280, 720), scale: 1.0 }),
+        ];
+        let state = DrmRuntime::synthesize_for_tests(outs);
+        assert_eq!(state.output_meta.len(), 2);
+        assert!(state.output_meta.contains_key(&OutputId(0)));
+        assert!(state.output_meta.contains_key(&OutputId(1)));
     }
 }
