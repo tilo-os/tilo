@@ -128,6 +128,10 @@ pub mod tooltip;
 pub mod toast;
 pub mod permission_prompt;
 pub use permission_prompt::{PermissionPrompt, PromptChoice, PROMPT_HEIGHT};
+pub mod file_picker;
+pub use file_picker::{
+    FilePicker, FilePickerEntry, FilePickerMode, FilePickerOutcome,
+};
 
 // =====================================================================
 // Tests
