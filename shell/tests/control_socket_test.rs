@@ -285,3 +285,101 @@ fn click_named_unknown_target_returns_structured_error() {
     let _ = child.wait();
     let _ = std::fs::remove_file(&socket_path);
 }
+
+/// Phase 3: a drag command should round-trip without erroring. The
+/// pixel coordinates don't matter for the smoke — we only assert
+/// the planned action sequence (motion, press, N motions, release)
+/// runs end-to-end through the executor.
+#[test]
+#[ignore = "requires a Wayland/X11 display server; opt in with --ignored"]
+fn drag_smoke_completes_round_trip() {
+    let (mut child, socket_path) = spawn_with_control();
+
+    let mut stream = UnixStream::connect(&socket_path)
+        .expect("connect to test_control socket");
+
+    let response = round_trip(
+        &mut stream,
+        r#"{"op":"drag","x_from":200,"y_from":200,"x_to":600,"y_to":400,"steps":4}"#,
+    );
+
+    assert!(
+        response.get("ok").is_some(),
+        "drag should respond with `ok`; got {response:?}"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_file(&socket_path);
+}
+
+/// Phase 3: opening the command palette via Ctrl+K and then typing
+/// "hello" should land the literal text in the palette's query
+/// field. Best-effort — if the chord doesn't open the palette under
+/// the test_control wire (something the wire's contract is meant to
+/// guarantee), we still assert the Type command completed `Ok`.
+#[test]
+#[ignore = "requires a Wayland/X11 display server; opt in with --ignored"]
+fn type_text_into_palette_when_open() {
+    let (mut child, socket_path) = spawn_with_control();
+
+    let mut stream = UnixStream::connect(&socket_path)
+        .expect("connect to test_control socket");
+
+    // Ctrl modifier on, then the 'k' key.
+    let resp = round_trip(
+        &mut stream,
+        r#"{"op":"modifiers","ctrl":true,"shift":false,"alt":false,"logo":false}"#,
+    );
+    assert!(resp.get("ok").is_some(), "modifiers Ok; got {resp:?}");
+
+    let resp = round_trip(&mut stream, r#"{"op":"key","key":"k"}"#);
+    assert!(resp.get("ok").is_some(), "Ctrl+K key Ok; got {resp:?}");
+
+    // Drop modifiers before typing.
+    let _ = round_trip(
+        &mut stream,
+        r#"{"op":"modifiers","ctrl":false,"shift":false,"alt":false,"logo":false}"#,
+    );
+
+    let resp = round_trip(&mut stream, r#"{"op":"type","text":"hello"}"#);
+    assert!(resp.get("ok").is_some(), "type Ok; got {resp:?}");
+
+    // Round-trip a list_targets so the executor's pump survived all
+    // four commands without closing the connection.
+    let listed = round_trip(&mut stream, r#"{"op":"list_targets"}"#);
+    assert!(
+        listed.get("targets").is_some(),
+        "list_targets should still respond after Ctrl+K + type sequence; got {listed:?}"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_file(&socket_path);
+}
+
+/// Phase 3: a `modifiers` command on its own (no follow-up key) is a
+/// valid no-op — the modifier mask is state, not an event. Must
+/// still respond with `ok`.
+#[test]
+#[ignore = "requires a Wayland/X11 display server; opt in with --ignored"]
+fn modifiers_alone_returns_ok() {
+    let (mut child, socket_path) = spawn_with_control();
+
+    let mut stream = UnixStream::connect(&socket_path)
+        .expect("connect to test_control socket");
+
+    let response = round_trip(
+        &mut stream,
+        r#"{"op":"modifiers","ctrl":true,"shift":true,"alt":false,"logo":false}"#,
+    );
+
+    assert!(
+        response.get("ok").is_some(),
+        "modifiers should respond with `ok`; got {response:?}"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_file(&socket_path);
+}

@@ -31,13 +31,14 @@ use smithay::wayland::socket::ListeningSocketSource;
 use taffy::NodeId;
 use vello::kurbo::Rect;
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
+use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey, SmolStr};
 
 use crate::compositor::backend::{Backend, BackendEvent, DrmBackend, OutputId, WinitBackend};
 use crate::compositor::frame::FrameBuilder;
 use crate::compositor::state::{ClientState, State};
 use crate::compositor::test_control::{
-    self, ControlState, PlannedAction, parse_command, serialise_response,
+    self, ControlState, KeyTag, NamedKeyTag, PlannedAction, parse_command, serialise_response,
 };
 use crate::compositor::{parse_backend_from_args, BackendKind};
 
@@ -146,6 +147,82 @@ impl TestControlCtx {
     }
 }
 
+/// Translate a [`KeyTag`] from the wire to a `winit::keyboard::Key`
+/// the host event handlers actually match on. Named keys map 1:1 to
+/// `NamedKey` variants; chars wrap in `Key::Character`.
+fn keytag_into_winit_key(tag: KeyTag) -> Key {
+    match tag {
+        KeyTag::Named(n) => Key::Named(match n {
+            NamedKeyTag::Enter => NamedKey::Enter,
+            NamedKeyTag::Escape => NamedKey::Escape,
+            NamedKeyTag::Tab => NamedKey::Tab,
+            NamedKeyTag::ArrowLeft => NamedKey::ArrowLeft,
+            NamedKeyTag::ArrowRight => NamedKey::ArrowRight,
+            NamedKeyTag::ArrowUp => NamedKey::ArrowUp,
+            NamedKeyTag::ArrowDown => NamedKey::ArrowDown,
+            NamedKeyTag::Backspace => NamedKey::Backspace,
+            NamedKeyTag::Delete => NamedKey::Delete,
+            NamedKeyTag::Home => NamedKey::Home,
+            NamedKeyTag::End => NamedKey::End,
+            NamedKeyTag::PageUp => NamedKey::PageUp,
+            NamedKeyTag::PageDown => NamedKey::PageDown,
+            NamedKeyTag::Space => NamedKey::Space,
+        }),
+        KeyTag::Char(c) => Key::Character(SmolStr::new(c.to_string())),
+    }
+}
+
+/// Build a `WindowEvent::KeyboardInput` for `key` with the given
+/// element state. Mirrors `shots/driver.rs::key_press_event`: winit's
+/// `KeyEvent` has a `pub(crate)` `platform_specific` field, so we
+/// zero-init the struct and overwrite the fields the host actually
+/// reads. The `text` field is populated for `Character` keys so the
+/// palette + rename text-input branches see the same glyph they would
+/// on real hardware.
+fn keyboard_input_event(key: Key, pressed: bool) -> WindowEvent {
+    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+    ev.logical_key = key.clone();
+    ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+    ev.location = KeyLocation::Standard;
+    ev.state = if pressed {
+        ElementState::Pressed
+    } else {
+        ElementState::Released
+    };
+    ev.repeat = false;
+    ev.text = if let Key::Character(s) = &key {
+        Some(s.clone())
+    } else {
+        None
+    };
+    WindowEvent::KeyboardInput {
+        device_id: unsafe { std::mem::zeroed() },
+        event: ev,
+        is_synthetic: false,
+    }
+}
+
+/// Apply a [`SetModifiers`] action by overwriting `ctx.modifiers`. The
+/// host reads the snapshot inline on the next chord event, so we
+/// don't need to dispatch a `WindowEvent::ModifiersChanged` to refresh
+/// any per-event state. Mirrors `ShellDriver::set_modifiers`.
+fn apply_modifier_mask(ctx: &mut TestControlCtx, ctrl: bool, shift: bool, alt: bool, logo: bool) {
+    let mut mask = ModifiersState::empty();
+    if ctrl {
+        mask |= ModifiersState::CONTROL;
+    }
+    if shift {
+        mask |= ModifiersState::SHIFT;
+    }
+    if alt {
+        mask |= ModifiersState::ALT;
+    }
+    if logo {
+        mask |= ModifiersState::SUPER;
+    }
+    ctx.modifiers = Modifiers::from(mask);
+}
+
 /// Synthesise the [`WindowEvent`] that corresponds to a single
 /// [`PlannedAction`] and dispatch it through the FrameBuilder's
 /// shared `dispatch_event` wire — the same wire `ShellDriver::dispatch`
@@ -157,9 +234,9 @@ fn execute_planned_action(
     fb: &mut FrameBuilder,
     ctx: &mut TestControlCtx,
 ) {
-    match *action {
+    match action {
         PlannedAction::CursorMoved { x, y } => {
-            ctx.cursor = PhysicalPosition::new(x, y);
+            ctx.cursor = PhysicalPosition::new(*x, *y);
             let event = WindowEvent::CursorMoved {
                 device_id: unsafe { std::mem::zeroed() },
                 position: ctx.cursor,
@@ -175,7 +252,7 @@ fn execute_planned_action(
         PlannedAction::MouseLeftButton { pressed } => {
             let event = WindowEvent::MouseInput {
                 device_id: unsafe { std::mem::zeroed() },
-                state: if pressed {
+                state: if *pressed {
                     ElementState::Pressed
                 } else {
                     ElementState::Released
@@ -189,6 +266,28 @@ fn execute_planned_action(
                 &ctx.root_obj,
                 &mut ctx.focus,
             );
+        }
+        PlannedAction::KeyboardKey { key, pressed } => {
+            let winit_key = keytag_into_winit_key(*key);
+            let event = keyboard_input_event(winit_key, *pressed);
+            fb.dispatch_event(
+                &event,
+                &ctx.modifiers,
+                &mut ctx.doc,
+                &ctx.root_obj,
+                &mut ctx.focus,
+            );
+        }
+        PlannedAction::SetModifiers {
+            ctrl,
+            shift,
+            alt,
+            logo,
+        } => {
+            // Mutate the executor's modifier snapshot directly. The
+            // host reads `ctx.modifiers` on the next chord dispatch,
+            // so no event needs to flow through `dispatch_event`.
+            apply_modifier_mask(ctx, *ctrl, *shift, *alt, *logo);
         }
     }
 }
@@ -615,6 +714,101 @@ mod tests {
             "sweep of clicks down the wheel disc's vertical axis \
              should hit the plus slot and grow the workspace count \
              from {initial_count}"
+        );
+    }
+
+    // ===================================================================
+    // Phase 3 — drag / key / type / modifiers executor coverage
+    // ===================================================================
+
+    /// `SetModifiers` action mutates `ctx.modifiers` directly. The
+    /// host reads the snapshot on the next chord, so this is the
+    /// state the harness depends on for chord injection (Ctrl+K, …).
+    #[test]
+    fn set_modifiers_action_updates_ctx_mask() {
+        let mut fb = FrameBuilder::new((1600, 900));
+        let mut ctx = TestControlCtx::new();
+        execute_planned_action(
+            &PlannedAction::SetModifiers {
+                ctrl: true,
+                shift: false,
+                alt: false,
+                logo: true,
+            },
+            &mut fb,
+            &mut ctx,
+        );
+        assert!(ctx.modifiers.state().control_key());
+        assert!(ctx.modifiers.state().super_key());
+        assert!(!ctx.modifiers.state().shift_key());
+        assert!(!ctx.modifiers.state().alt_key());
+    }
+
+    /// A keyboard press+release pair dispatches through the host
+    /// without panicking. The minimum bar is the same as
+    /// `full_click_sequence_dispatches_without_panic` — the wire
+    /// stays intact for both press and release.
+    #[test]
+    fn keyboard_key_press_release_dispatches_without_panic() {
+        let mut fb = FrameBuilder::new((1600, 900));
+        let mut ctx = TestControlCtx::new();
+        for pressed in [true, false] {
+            execute_planned_action(
+                &PlannedAction::KeyboardKey {
+                    key: KeyTag::Named(NamedKeyTag::Escape),
+                    pressed,
+                },
+                &mut fb,
+                &mut ctx,
+            );
+        }
+        fb.relayout();
+        let _ = fb.paint();
+    }
+
+    /// Cmd+Tab via the test_control wire opens the overview overlay —
+    /// proves modifiers + named-key chords reach the host's chord
+    /// handler exactly like `ShellDriver::press_key` does for
+    /// in-process scenarios.
+    #[test]
+    fn cmd_tab_chord_via_test_control_opens_overview() {
+        let mut fb = FrameBuilder::new((1600, 900));
+        let _ = fb.paint();
+        assert!(
+            !fb.chrome().overlays.overview,
+            "bootstrap layout starts with overview closed"
+        );
+        let mut ctx = TestControlCtx::new();
+        // Plant the Super modifier, then dispatch Tab press+release.
+        execute_planned_action(
+            &PlannedAction::SetModifiers {
+                ctrl: false,
+                shift: false,
+                alt: false,
+                logo: true,
+            },
+            &mut fb,
+            &mut ctx,
+        );
+        execute_planned_action(
+            &PlannedAction::KeyboardKey {
+                key: KeyTag::Named(NamedKeyTag::Tab),
+                pressed: true,
+            },
+            &mut fb,
+            &mut ctx,
+        );
+        execute_planned_action(
+            &PlannedAction::KeyboardKey {
+                key: KeyTag::Named(NamedKeyTag::Tab),
+                pressed: false,
+            },
+            &mut fb,
+            &mut ctx,
+        );
+        assert!(
+            fb.chrome().overlays.overview,
+            "Super+Tab via test_control should toggle overview on"
         );
     }
 }
