@@ -8,9 +8,11 @@
 use vello::Scene;
 
 pub mod drm;
+pub mod headless;
 pub mod winit;
 
 pub use drm::DrmBackend;
+pub use headless::HeadlessBackend;
 pub use winit::WinitBackend;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
