@@ -26,6 +26,7 @@
 
 use std::sync::Arc;
 
+use smithay::input::pointer::{ButtonEvent, MotionEvent};
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::reexports::calloop::LoopHandle;
 use smithay::reexports::wayland_server::Resource;
@@ -105,6 +106,29 @@ pub struct State {
     /// streaming task drains via [`SurfaceTracker::take_latest`] per
     /// encode tick.
     pub surface_tracker: SurfaceTracker,
+    /// The compositor's `wl_seat` handle with a pointer device
+    /// already registered. Constructed in [`State::new`] alongside
+    /// the rest of the protocol globals. Peer-sync's
+    /// [`Self::apply_remote_input`] injects pointer motion / button
+    /// events into this seat (D-1 fix) so remote-input traffic
+    /// actually drives the local seat instead of being logged and
+    /// discarded.
+    ///
+    /// Keyboard injection is staged behind a follow-up: smithay's
+    /// keyboard handle needs a configured keymap, and the v1 path
+    /// can ship without it. Pointer motion/button covers the
+    /// foreign-tab remote-control use case the Phase 4 spec calls
+    /// out.
+    pub seat: Seat<Self>,
+    /// Monotonic counter for input serials. Smithay's input handles
+    /// require fresh `Serial`s per event; we maintain one per state
+    /// instance so the seat injection in `apply_remote_input` doesn't
+    /// reuse old serials (which would make wayland clients ignore the
+    /// motion / button).
+    pub serial_counter: u32,
+    /// Wall-clock anchor for input timestamps. Pointer events ship
+    /// with a `time: u32` in milliseconds since this instant.
+    pub start_time: std::time::Instant,
 }
 
 impl State {
@@ -118,9 +142,19 @@ impl State {
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
         let shm_state = ShmState::new::<Self>(&display_handle, vec![]);
-        let seat_state = SeatState::new();
+        let mut seat_state = SeatState::new();
         let output_manager_state =
             OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
+
+        // D-1 fix: register a real seat with a pointer device so
+        // `apply_remote_input` has something to inject into. The seat
+        // name matches the wayland.rs sibling so multi-binary apps see
+        // a consistent identifier. Keyboard injection ships in the
+        // follow-up — registering the device here would force a keymap
+        // load (`add_keyboard(Default::default(), 200, 25)`) we
+        // intentionally defer.
+        let mut seat = seat_state.new_wl_seat(&display_handle, "quick-desktop");
+        seat.add_pointer();
 
         Self {
             loop_handle,
@@ -134,7 +168,18 @@ impl State {
             share_registry: ShareRegistry::new(),
             last_remote_input: None,
             surface_tracker: SurfaceTracker::new(),
+            seat,
+            serial_counter: 0,
+            start_time: std::time::Instant::now(),
         }
+    }
+
+    /// Mint a fresh `Serial` for input events. Wayland clients expect
+    /// monotonically increasing serials; this counter never wraps in
+    /// practice (a 32-bit space at 1 kHz is 49 days of input traffic).
+    fn next_serial(&mut self) -> Serial {
+        self.serial_counter = self.serial_counter.wrapping_add(1);
+        Serial::from(self.serial_counter)
     }
 
     /// Apply a remote-input event from `peer` targeting `surface`.
@@ -172,21 +217,88 @@ impl State {
 }
 
 // `RemoteInputSink` impl: receives the gated events from
-// `ShareRegistry::route_to`. v1 logs and stores the most recently
-// applied event so tests can introspect; v2 wires this into the smithay
-// `Seat::input` API. The reason the seat call is staged behind a v2
-// landing is that the compositor's `Seat<State>` field is added by
-// Task 4.4's follow-up alongside the input-device source registration;
-// the routing / read-only gating ships now so the test surface is
-// stable.
+// `ShareRegistry::route_to`.
+//
+// D-1 fix: this previously only logged + recorded the event in
+// `last_remote_input`, leaving the boolean return of
+// `apply_remote_input` as the only signal that anything had happened.
+// The seat path was a no-op. Post-fix, pointer motion / button events
+// drive the real smithay `Seat<Self>` (constructed in `State::new`)
+// via `PointerHandle::motion` / `button`, matching the production
+// shape used by `network::wayland::WaylandServer::handle_input`.
+//
+// Keyboard injection is intentionally deferred to a follow-up — the
+// keymap load + key-code translation is non-trivial and the
+// foreign-tab remote-control use case the Phase 4 spec calls out is
+// pointer-driven. The `Key` variant still records into
+// `last_remote_input` so a future wire-up can flip it on without
+// shifting the public API.
 impl RemoteInputSink for State {
     fn apply(&mut self, peer: MsgPeerId, surface: SurfaceId, event: InputEvent) {
         tracing::debug!(
             target: "quick_desktop::compositor::state",
             peer, surface, ?event,
-            "remote-input applied (v1 — seat injection lands in 4.4 follow-up)"
+            "remote-input applied (D-1: pointer events injected into seat; \
+             keyboard injection deferred)"
         );
-        self.last_remote_input = Some((peer, surface, event));
+        // Mirror the event into `last_remote_input` so legacy callers
+        // / integration tests that introspect the field still see the
+        // routing decision. Pre-fix this was the *only* side effect;
+        // post-fix it's a redundant trace.
+        self.last_remote_input = Some((peer, surface, event.clone()));
+
+        let time = self.start_time.elapsed().as_millis() as u32;
+        let serial = self.next_serial();
+        match event {
+            InputEvent::PointerMotion { x, y } => {
+                if let Some(pointer) = self.seat.get_pointer() {
+                    // No surface focus here — the remote driver
+                    // doesn't know which local wl_surface corresponds
+                    // to its `surface` id. The pointer's logical
+                    // position still updates, which is what the
+                    // compositor's hover / cluster routing layer
+                    // consumes.
+                    pointer.motion(
+                        self,
+                        None,
+                        &MotionEvent {
+                            location: (x, y).into(),
+                            serial,
+                            time,
+                        },
+                    );
+                    if let Some(pointer) = self.seat.get_pointer() {
+                        pointer.frame(self);
+                    }
+                }
+            }
+            InputEvent::PointerButton { button, pressed } => {
+                if let Some(pointer) = self.seat.get_pointer() {
+                    let state = if pressed {
+                        smithay::backend::input::ButtonState::Pressed
+                    } else {
+                        smithay::backend::input::ButtonState::Released
+                    };
+                    pointer.button(
+                        self,
+                        &ButtonEvent {
+                            button,
+                            state,
+                            serial,
+                            time,
+                        },
+                    );
+                    if let Some(pointer) = self.seat.get_pointer() {
+                        pointer.frame(self);
+                    }
+                }
+            }
+            InputEvent::Key { .. } => {
+                // Keyboard injection deferred — see module comment.
+                // We've already stamped `last_remote_input`, which is
+                // the read-only-gate-passed signal callers rely on.
+            }
+        }
     }
 }
 
@@ -334,6 +446,15 @@ impl XdgShellHandler for State {
             &mut self.workspace_tree,
             surface_id,
         );
+        // C-7 fix: drop the tracker's per-surface buffer slot. The
+        // commit path's `BufferAssignment::Removed` branch already
+        // forgets the slot when a client `attach(NULL)`s before
+        // destroying its toplevel, but a destroy without that prior
+        // detach left the `Vec<u8>` (sized at the buffer's last frame)
+        // allocated forever. Per-surface memory leak; small per
+        // surface, accumulates across long sessions with many
+        // short-lived toplevels.
+        self.surface_tracker.drop_surface(surface_id as SurfaceId);
     }
 
     fn app_id_changed(&mut self, surface: ToplevelSurface) {

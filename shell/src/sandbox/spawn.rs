@@ -13,6 +13,8 @@
 
 use std::collections::HashMap;
 use std::io;
+use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::sync::{Mutex, OnceLock};
@@ -96,8 +98,64 @@ pub fn spawn_in_workspace_with_grants(
     let bridge_path = ensure_bridge_for(profile.workspace_id, &runtime_dir, &upstream)?;
     rewrite_wayland_socket(&mut profile, &bridge_path);
 
+    // C-5 fix: when the profile declares a seccomp bpf path, open it
+    // *before* fork, pick a fixed child-side descriptor (16; well above
+    // typical 3-fd stdio inheritance and the bridge sockets above), and
+    // arrange a `dup2(host_fd, child_fd)` via `pre_exec` so bwrap can
+    // `read(<fd>)` the compiled filter. The argv then carries the
+    // matching `--seccomp <fd>` triple via the new `seccomp_fd` field
+    // on [`SandboxProfile`]. The previous code emitted a hardcoded
+    // `--seccomp 10` without any plumbing — bwrap then read whatever
+    // happened to be at fd 10 (typically nothing, so the deny-list
+    // filter was silently dropped).
+    let seccomp_owned: Option<OwnedFd> = if let Some(path) = profile.seccomp.clone() {
+        let file = std::fs::File::open(&path)?;
+        // `File::into()` consumes the file and gives us an OwnedFd; the
+        // fd stays open for the lifetime of `seccomp_owned`. We choose
+        // a fixed child-side number (16) for the dup2 target — any
+        // value above stdio is fine, picking a stable one keeps argv
+        // diffs across launches deterministic.
+        const SECCOMP_CHILD_FD: i32 = 16;
+        profile.seccomp_fd = Some(SECCOMP_CHILD_FD);
+        Some(OwnedFd::from(file))
+    } else {
+        None
+    };
+
     let argv = profile.into_argv(command);
-    Command::new("bwrap").args(&argv).spawn()
+    let mut cmd = Command::new("bwrap");
+    cmd.args(&argv);
+    if let Some(fd) = seccomp_owned {
+        // Move the `OwnedFd` into the closure so the host-side fd is
+        // dropped (and closed) automatically when the parent goes
+        // away. `dup2` returns the new fd number; we don't need the
+        // result here because we already picked it.
+        let host_fd = fd.as_raw_fd();
+        // SAFETY: pre_exec runs in the child after fork and before
+        // exec. `dup2` is async-signal-safe; we only call it and
+        // then return. No heap allocation, no locks. The `host_fd`
+        // remains valid because `fd` is captured by-move.
+        unsafe {
+            cmd.pre_exec(move || {
+                // `libc::dup2` returns -1 on failure with errno set.
+                let target = 16i32;
+                let result = libc::dup2(host_fd, target);
+                if result == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // Drop the FD_CLOEXEC flag if it was set on the
+                // duplicated fd — bwrap needs to keep the descriptor
+                // across its own argv-driven re-exec semantics.
+                let flags = libc::fcntl(target, libc::F_GETFD);
+                if flags != -1 {
+                    let _ = libc::fcntl(target, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
+                }
+                let _ = &fd; // keep the OwnedFd alive until after dup2
+                Ok(())
+            });
+        }
+    }
+    cmd.spawn()
 }
 
 /// Resolve `$XDG_RUNTIME_DIR`, falling back to `/run/user/<uid>`.
@@ -183,6 +241,7 @@ fn clone_profile(p: &SandboxProfile) -> SandboxProfile {
         uid: p.uid,
         gid: p.gid,
         seccomp: p.seccomp.clone(),
+        seccomp_fd: p.seccomp_fd,
         wayland_socket: p.wayland_socket.clone(),
         dbus_socket: p.dbus_socket.clone(),
         net_isolated: p.net_isolated,
