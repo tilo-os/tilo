@@ -38,6 +38,11 @@ pub struct Slider {
     /// click point immediately — the standard "click on track to jump"
     /// affordance.
     last_cursor: Point,
+    /// Optional override for the `Widget::test_id()` value. When `None`
+    /// the slider returns the role-style default (`"slider"`); when set
+    /// callers can disambiguate multiple sliders in the same surface
+    /// (e.g. `"volume"`, `"brightness"`).
+    id_override: Option<String>,
 }
 
 impl Slider {
@@ -53,12 +58,22 @@ impl Slider {
             presence_path: Vec::new(),
             permission_scope: None,
             last_cursor: Point::ZERO,
+            id_override: None,
         }
     }
 
     /// Opt this widget into presence tracking by binding it to a CRDT-style path.
     pub fn with_presence(mut self, path: Vec<PathSegment>) -> Self {
         self.presence_path = path;
+        self
+    }
+
+    /// Override the value returned from `Widget::test_id()`. Without a
+    /// custom id the slider reports `"slider"` (the role-style default);
+    /// callers with more than one slider in the same frame can disambiguate
+    /// them with `with_id("volume")` etc.
+    pub fn with_id(mut self, id: &str) -> Self {
+        self.id_override = Some(id.to_string());
         self
     }
 
@@ -151,12 +166,10 @@ impl Widget for Slider {
     }
 
     fn draw(&mut self, scene: &mut Scene, transform: Affine, _text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
-        // Full Area Focus Border
-        if self.is_focused {
-            let shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.sm as f64);
-            scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, theme.border_focus, None, &shape);
-        }
-
+        // Focus indicator (deferred until after the knob is positioned so
+        // we can draw a tight ring around the knob, not the whole widget
+        // rect — the full-rect ring looked like a stray border around
+        // siblings in a Row layout).
         // Track
         let track_height = 6.0;
         let track_rect = Rect::new(
@@ -213,6 +226,20 @@ impl Widget for Slider {
 
         scene.fill(vello::peniko::Fill::NonZero, transform, fill_color, None, &knob_shape);
         scene.stroke(&vello::kurbo::Stroke::new(border_width), transform, border_color, None, &knob_shape);
+
+        // Tight focus ring around the knob (2 px outset) — replaces the
+        // earlier full-rect border that looked like a misdrawn outer
+        // chrome when the slider lived inside a Row.
+        if self.is_focused {
+            let focus_ring = Circle::new(knob_center, knob_radius + 2.0);
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.5),
+                transform,
+                theme.border_focus,
+                None,
+                &focus_ring,
+            );
+        }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, _modifiers: &winit::event::Modifiers, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, _taffy: &TaffyTree<()>) {
@@ -267,6 +294,10 @@ impl Widget for Slider {
     }
 
     fn name(&self) -> &str { "Slider" }
+
+    fn test_id(&self) -> Option<&str> {
+        Some(self.id_override.as_deref().unwrap_or("slider"))
+    }
 
     fn get_rect(&self) -> Rect {
         self.rect
@@ -447,6 +478,18 @@ mod tests {
             "press on track at x=0.8 of width must jump value to ≈0.8 — got {}",
             s.value
         );
+    }
+
+    #[test]
+    fn slider_test_id_default_is_slider() {
+        let s = Slider::new("any", "value");
+        assert_eq!(Widget::test_id(&s), Some("slider"));
+    }
+
+    #[test]
+    fn slider_test_id_can_be_overridden() {
+        let s = Slider::new("any", "value").with_id("volume");
+        assert_eq!(Widget::test_id(&s), Some("volume"));
     }
 }
 

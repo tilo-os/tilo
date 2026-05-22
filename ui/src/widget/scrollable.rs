@@ -96,6 +96,19 @@ impl Scrollable {
     }
 }
 
+/// Recursively walk a widget subtree and return the maximum `rect.y1`
+/// across every descendant. Used by `Scrollable::apply_layout` to find
+/// the true visual bottom edge when taffy's `content_size` under-reports
+/// (typically a flex container truncating its last child to fit the
+/// available main-axis budget).
+fn max_bottom_edge(w: &dyn Widget) -> f64 {
+    let mut deepest = w.get_rect().y1;
+    for c in w.children() {
+        deepest = deepest.max(max_bottom_edge(c));
+    }
+    deepest
+}
+
 impl Widget for Scrollable {
     fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
         if let Some(c) = &mut self.child { c.sync(s, p); }
@@ -141,8 +154,27 @@ impl Widget for Scrollable {
                 Point::new(self.rect.x0 - self.offset_x as f64, self.rect.y0 - self.offset_y as f64),
             );
             let cl = taffy.layout(child_node).unwrap();
-            self.content_w = cl.size.width;
-            self.content_h = cl.size.height;
+            // Start from taffy's reported sizes — `content_size` is
+            // the intrinsic extent including overflow past the rendered
+            // box (gated by the `content_size` taffy feature; quick-ui
+            // enables it for exactly this reason).
+            self.content_w = cl.content_size.width.max(cl.size.width);
+            self.content_h = cl.content_size.height.max(cl.size.height);
+
+            // taffy's `content_size` for a flex container reports the
+            // children's *unclamped layout*, but in practice we've seen
+            // it cap at the available block when the inner column is
+            // shorter than the literal sum of children (e.g. a flex
+            // column whose children include a tall TreeView/ColorPicker
+            // after a tight viewport pass). Walk the subtree ourselves
+            // and pick the deeper of (taffy report, observed max y) so
+            // the user can always scroll to the actual last pixel.
+            let scroll_origin_y = self.rect.y0 - self.offset_y as f64;
+            let max_y = max_bottom_edge(self.child.as_deref().unwrap());
+            let walked_h = (max_y - scroll_origin_y).max(0.0) as f32;
+            if walked_h > self.content_h {
+                self.content_h = walked_h;
+            }
             self.clamp();
         }
     }
@@ -155,8 +187,20 @@ impl Widget for Scrollable {
 
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, m: &winit::event::Modifiers, s: &mut AutoCommit, p: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, taffy: &TaffyTree<()>) {
         if let WindowEvent::MouseWheel { delta, .. } = event {
+            // Wheel-to-px conversion. winit's `LineDelta` reports
+            // notches (1.0 per detent on a typical mouse, ~0.1 per step
+            // on a hi-res touchpad); the previous `× 20` came out to
+            // 20 px / notch which felt sluggish — most desktops use
+            // ~3 lines × 40 px ≈ 120 px / notch. `PixelDelta` arrives
+            // already in physical pixels (touchpad) and stays at 1×.
+            //
+            // Sign: winit y-positive = "scroll up"; our model is
+            // `content drawn at (… − offset)`, so positive offset_y
+            // scrolls content UP (reveals what's below). To match
+            // user intent, wheel-up must reduce offset_y → negate.
+            const LINE_PX: f32 = 60.0;
             let (dx, dy) = match delta {
-                MouseScrollDelta::LineDelta(x, y) => (*x * -20.0, *y * -20.0),
+                MouseScrollDelta::LineDelta(x, y) => (*x * -LINE_PX, *y * -LINE_PX),
                 MouseScrollDelta::PixelDelta(pp) => (-pp.x as f32, -pp.y as f32),
             };
             self.scroll_by(dx, dy);
@@ -181,6 +225,13 @@ impl Widget for Scrollable {
     }
 
     fn name(&self) -> &str { "Scrollable" }
+
+    /// Propagate pointer-capture intent from the contained child so an
+    /// outer container's event-routing short-circuit honours an active
+    /// drag deeper in the tree.
+    fn wants_pointer_capture(&self) -> bool {
+        self.child.as_ref().is_some_and(|c| c.wants_pointer_capture())
+    }
 
     fn get_rect(&self) -> Rect { self.rect }
 
