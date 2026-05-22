@@ -44,7 +44,9 @@
 
 pub mod camera;
 pub mod file_chooser;
+pub mod file_picker_spawner;
 pub mod screencast;
+pub mod screencast_pipewire;
 
 // Re-export the backend types so integration tests can construct them
 // directly and register them on a custom `ConnectionBuilder`. The
@@ -53,7 +55,15 @@ pub mod screencast;
 // handshake can join concurrently (see `tests/portal_test.rs`).
 pub use camera::AccessBackend;
 pub use file_chooser::FileChooserBackend;
+pub use file_picker_spawner::{
+    FilePickerRequest, FilePickerSpawner, FilePickerSpawnerHandle, MockFilePickerSpawner,
+    NullFilePickerSpawner,
+};
 pub use screencast::ScreenCastBackend;
+pub use screencast_pipewire::{
+    ScreenCastStreamProvisioner, ScreenCastStreamProvisionerHandle,
+    MockScreenCastProvisioner, PipewireStreamInfo, ProvisioningError,
+};
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -361,6 +371,48 @@ pub struct PortalContext {
     /// the connection's UniqueName — production fills it in when the
     /// per-workspace bridge spawns an app; tests poke entries directly.
     pub caller_map: CallerMap,
+    /// File-picker spawn handle. The FileChooser backend calls
+    /// [`FilePickerSpawner::spawn`] on `Allow` to surface a real dialog;
+    /// tests pass a [`MockFilePickerSpawner`] that returns canned paths
+    /// without rendering anything. Defaults to a
+    /// [`NullFilePickerSpawner`] in [`PortalContext::null_spawners`] so
+    /// existing tests that don't care about the dialog keep their
+    /// fast-path behaviour (the null spawner cancels every request,
+    /// which surfaces as `response=1`).
+    pub file_picker: FilePickerSpawnerHandle,
+    /// ScreenCast Pipewire stream provisioner. The ScreenCast backend
+    /// calls [`ScreenCastStreamProvisioner::provision_stream`] on
+    /// `Start` Allow to create a Pipewire node and return its id +
+    /// props. Production wires the real Pipewire connection; tests use
+    /// [`MockScreenCastProvisioner`] which returns a synthetic node id
+    /// without touching the system Pipewire daemon.
+    pub screencast_provisioner: ScreenCastStreamProvisionerHandle,
+}
+
+impl PortalContext {
+    /// Build a context wired with null spawners — the FileChooser
+    /// dialog cancels every request, the ScreenCast provisioner
+    /// returns a synthetic node-id with empty props. Used by tests
+    /// that pre-date the dialog/provisioner abstractions and only
+    /// care about the response-code path. Production callers always
+    /// inject real spawners via [`PortalContext`] field initialisers.
+    pub fn new_with_null_spawners(
+        grants: GrantStoreHandle,
+        prompts: PromptQueueHandle,
+        caller_map: CallerMap,
+    ) -> Self {
+        Self {
+            grants,
+            prompts,
+            caller_map,
+            file_picker: FilePickerSpawnerHandle::new(Arc::new(
+                NullFilePickerSpawner::cancel(),
+            )),
+            screencast_provisioner: ScreenCastStreamProvisionerHandle::new(Arc::new(
+                MockScreenCastProvisioner::new_with_node(1, "default"),
+            )),
+        }
+    }
 }
 
 /// In-memory lookup from a D-Bus unique-name → `PortalCaller`. Wrapped
@@ -674,11 +726,11 @@ mod tests {
         let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
         let queue = PromptQueueHandle::new(PromptResolver::Channel);
         let caller = PortalCaller::new(ws_id, "app");
-        let ctx = PortalContext {
-            grants: store,
-            prompts: queue.clone(),
-            caller_map: CallerMap::new(),
-        };
+        let ctx = PortalContext::new_with_null_spawners(
+            store,
+            queue.clone(),
+            CallerMap::new(),
+        );
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -704,11 +756,11 @@ mod tests {
             PromptOutcome::AllowSession,
         ));
         let caller = PortalCaller::new(ws_id, "app");
-        let ctx = PortalContext {
-            grants: store.clone(),
-            prompts: queue,
-            caller_map: CallerMap::new(),
-        };
+        let ctx = PortalContext::new_with_null_spawners(
+            store.clone(),
+            queue,
+            CallerMap::new(),
+        );
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -735,11 +787,11 @@ mod tests {
         let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
         let queue = PromptQueueHandle::new(PromptResolver::AutoAllow);
         let caller = PortalCaller::new(ws_id, "app");
-        let ctx = PortalContext {
-            grants: store.clone(),
-            prompts: queue,
-            caller_map: CallerMap::new(),
-        };
+        let ctx = PortalContext::new_with_null_spawners(
+            store.clone(),
+            queue,
+            CallerMap::new(),
+        );
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -767,11 +819,11 @@ mod tests {
         let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
         let queue = PromptQueueHandle::new(PromptResolver::AutoDeny);
         let caller = PortalCaller::new(ws_id, "app");
-        let ctx = PortalContext {
-            grants: store.clone(),
-            prompts: queue,
-            caller_map: CallerMap::new(),
-        };
+        let ctx = PortalContext::new_with_null_spawners(
+            store.clone(),
+            queue,
+            CallerMap::new(),
+        );
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
