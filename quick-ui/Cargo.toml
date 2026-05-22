@@ -8,7 +8,7 @@ automerge = "0.7.4"
 cosmic-text = { version = "0.18.2", default-features = false, features = ["swash", "std"] }
 pollster = "0.4.0"
 rand = "0.10.0"
-taffy = "0.9.2"
+taffy = { version = "0.9.2", features = ["content_size"] }
 tokio = { version = "1.50.0", features = ["full"] }
 vello = "0.2.1"
 wgpu = "0.20"
@@ -20,6 +20,16 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 uuid = { version = "1.15", features = ["v4", "serde"] }
 png = "0.17"
+# Date / time picker widgets (`widget::date_picker`, `widget::time_picker`) use
+# `chrono` for NaiveDate arithmetic. quick-shell already pulls chrono
+# transitively but this is a direct dep so the picker widgets compile in
+# isolation.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# VideoPlayer widget (`widget::video_player`) decodes H.264 NAL units in-process.
+# `source` feature compiles the pure-C reference implementation so we don't
+# rely on a runtime-installed `libopenh264.so` — same pin as `quick-shell`'s
+# screencast pipeline.
+openh264 = { version = "0.9", features = ["source"] }
 
 [dev-dependencies]
 regex = "1"
