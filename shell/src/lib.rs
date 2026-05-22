@@ -10,3 +10,6 @@ pub mod compositor;
 // Sandbox Phase 4.3: xdg-desktop-portal backend (FileChooser, ScreenCast,
 // Access/Camera) over zbus. Opt-in via `--enable-portals` on the CLI.
 pub mod portal;
+// First-boot setup invoked by `quick-desktop-firstboot.service` via
+// `quick-desktop --firstboot`. See `src/firstboot.rs`.
+pub mod firstboot;
