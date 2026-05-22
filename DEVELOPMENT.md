@@ -76,7 +76,33 @@ For automated verification:
 ./os/test-vm.sh os/output-test/qcow2/disk.qcow2
 ```
 
-## 5. Prerequisites
+## 5. Headless testing — screenshots + remote control without a window
+
+For automated tests, AI agents, and exploratory probes you can drive the live compositor without opening a window:
+
+```bash
+# Spawn → drive → snapshot → tear down (the full end-to-end recipe):
+./scripts/headless-examples/full-loop.py
+# Writes /tmp/full-loop-{palette,final}.png in ~5 seconds.
+
+# OR: use the nirios-control CLI directly against a manually-spawned compositor:
+cargo build -p quick-desktop --bin quick-desktop --bin nirios-control
+env -u DISPLAY -u WAYLAND_DISPLAY \
+    NIRIOS_TEST_CONTROL=/tmp/nirios.sock \
+    cargo run --bin quick-desktop -- --backend headless &
+nirios-control list-targets
+nirios-control click wheel_disc
+nirios-control snapshot /tmp/state.png
+```
+
+Three layers, each useful on its own:
+- **`shots --mode offscreen|recording`** for pre-written scenarios → PNG / H.264
+- **`NIRIOS_TEST_CONTROL` socket + `nirios-control` CLI** for ad-hoc remote control
+- **`--backend headless`** for running the live compositor in CI / SSH / distrobox without forwarding a display
+
+Full guide: [`docs/headless-testing.md`](docs/headless-testing.md). Example scripts: [`scripts/headless-examples/`](scripts/headless-examples/).
+
+## 6. Prerequisites
 
 -   **Rust**: Latest stable version.
 -   **Podman**: For building the OS container image.
