@@ -34,7 +34,9 @@ use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey, SmolStr};
 
-use crate::compositor::backend::{Backend, BackendEvent, DrmBackend, OutputId, WinitBackend};
+use crate::compositor::backend::{
+    headless, Backend, BackendEvent, DrmBackend, HeadlessBackend, OutputId, WinitBackend,
+};
 use crate::compositor::frame::FrameBuilder;
 use crate::compositor::state::{ClientState, State};
 use crate::compositor::test_control::{
@@ -418,6 +420,23 @@ pub fn run() -> ! {
                 std::process::exit(1);
             }
         },
+        BackendKind::Headless => {
+            // Initial size comes from `NIRIOS_HEADLESS_SIZE` (with a
+            // shots-default fallback) — keeps the headless backend
+            // env-var-driven like `NIRIOS_TEST_CONTROL` /
+            // `NIRIOS_TEST_STATE_DUMP` instead of adding a third CLI
+            // flag for size. Skip `set_base_color` because headless
+            // has no window — `HeadlessBackend::submit_frame` clears
+            // to the same constant the winit backend uses.
+            let (w, h) = headless::resolve_initial_size();
+            match HeadlessBackend::new(w, h) {
+                Ok(b) => Box::new(b),
+                Err(e) => {
+                    eprintln!("nirios compositor: --backend headless failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
     };
 
     // Phase 4: per-frame scene production lifted out of `bin/shots`.
