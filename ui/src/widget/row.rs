@@ -105,12 +105,26 @@ impl Widget for Row {
 
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, modifiers: &winit::event::Modifiers, state: &mut AutoCommit, path: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, taffy: &TaffyTree<()>) {
         let child_nodes = taffy.children(node_id).unwrap();
+        // Same pointer-capture short-circuit as `Column::handle_event` —
+        // a dragging child gets exclusive event routing so the drag
+        // survives the cursor wandering through peer widgets.
+        if let Some(idx) = self.children.iter().position(|c| c.wants_pointer_capture()) {
+            let cnode = child_nodes[idx];
+            self.children[idx].handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, cnode, taffy);
+            return;
+        }
         for (child_widget, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
             child_widget.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, child_node, taffy);
             if *handled {
                 break;
             }
         }
+    }
+
+    /// Propagate pointer-capture intent from any descendant — mirrors
+    /// `Column::wants_pointer_capture`. See that comment for why.
+    fn wants_pointer_capture(&self) -> bool {
+        self.children.iter().any(|c| c.wants_pointer_capture())
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
