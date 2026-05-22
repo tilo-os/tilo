@@ -30,6 +30,8 @@ Each script takes the socket path as its first argument (default `/tmp/nirios.so
 | `keyboard-flow.py` | Ctrl+K opens the palette, type text, snapshot. |
 | `drag-demo.py` | Press-then-drag a tab handle between two coordinates. |
 | `full-loop.py` | Spawn → list → click → key → drag → snapshot → tear down (single file; the most copy-pastable). |
+| `nirios_client.py` | Library with `NiriosClient` class; `from nirios_client import NiriosClient`. Higher-level than the raw socket calls below. |
+| `library-demo.py` | Same flow as `full-loop.py` but via `NiriosClient` — shows the library's API. |
 
 Each script is < 50 lines of Python, no external deps (stdlib `socket` + `json` only).
 
