@@ -539,6 +539,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
     fn wants_pointer_capture(&self) -> bool { self.resize.is_some() }
 
     fn name(&self) -> &str { "DataTable" }
+    fn test_id(&self) -> Option<&str> { Some("data_table") }
     fn get_rect(&self) -> Rect { self.rect }
     fn is_focusable(&self) -> bool { true }
     fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
@@ -641,5 +642,11 @@ mod tests {
         assert_eq!(v[0].name, "a");
         assert_eq!(v[1].name, "b");
         assert_eq!(v[2].name, "c");
+    }
+
+    #[test]
+    fn data_table_test_id_returns_data_table() {
+        let t = DataTable::<R>::new(sample_cols());
+        assert_eq!(Widget::test_id(&t), Some("data_table"));
     }
 }
