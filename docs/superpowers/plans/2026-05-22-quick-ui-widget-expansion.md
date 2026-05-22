@@ -4,7 +4,9 @@
 
 ## Context
 
-`quick-ui` ships 28 widgets today (`quick-ui/src/widget/`). The toolkit is solid (192 lib tests + the recently added test_id resolver + recording-mode video output). What's missing is breadth — there are no date/time pickers, no popover/modal primitives, no media widgets, no breadcrumbs, no progress indicators.
+`quick-ui` ships **27 widgets** today (`quick-ui/src/widget/`): `app_widget`, `button`, `checkbox`, `column`, `command_palette`, `container`, `context_menu`, `data_table`, `file_picker`, `group_row`, `image`, `permission_prompt`, `row`, `scrollable`, `slider`, `spacer`, `stack`, `strip_view`, `tabs`, `text`, `text_input`, `tile_host`, `toast`, `toggle`, `tooltip`, `window_group`, `workspace_view`. The toolkit is solid (204 lib tests + the recently added `test_id` resolver + recording-mode video output). What's missing is breadth — there are no date/time pickers, no popover/modal primitives, no media widgets, no breadcrumbs, no progress indicators.
+
+Note: there's an existing `quick-ui/src/overlay/popover.rs` with a `Popover` **struct** — that's a 10-line positioning/scrim hint, **not a Widget**. The "Popover widget" Unit 6 below is the user-facing Widget version that wraps arbitrary content; name it `PopoverWidget` (or move `overlay::Popover` aside) to avoid the collision.
 
 Every unit below adds **one widget** plus its tests. No cross-widget refactoring. No trait-wide changes. New widgets implement the `Widget` trait (see `quick-ui/src/widget/mod.rs`) and follow the five-pass frame (sync → build_layout → apply_layout → draw → handle_event).
 
@@ -82,7 +84,7 @@ impl Spinner {
 
 ### Unit 3: DatePicker widget
 
-**Files:** `quick-ui/src/widget/date_picker.rs` (new), `mod.rs` (add). Add `chrono = "0.4"` to `quick-ui/Cargo.toml` if not already present (it IS already a transitive dep of `quick-shell` — check).
+**Files:** `quick-ui/src/widget/date_picker.rs` (new), `mod.rs` (add). Add `chrono = "0.4"` to `quick-ui/Cargo.toml` — it is NOT currently a direct dep of `quick-ui` (`quick-shell` pulls it transitively but `quick-ui` doesn't yet). One-line Cargo addition.
 
 **API:**
 ```rust
@@ -163,13 +165,13 @@ impl ColorPicker {
 
 ---
 
-### Unit 6: Popover widget
+### Unit 6: PopoverWidget
 
-**Files:** `quick-ui/src/widget/popover.rs` (new), `mod.rs` (add)
+**Files:** `quick-ui/src/widget/popover_widget.rs` (new), `mod.rs` (add). **Do NOT name the struct `Popover`** — the name is taken by `quick-ui/src/overlay/popover.rs::Popover` (a 10-line positioning hint, not a Widget). Use `PopoverWidget`. See the Context section above.
 
 **API:**
 ```rust
-pub struct Popover<C: Widget> {
+pub struct PopoverWidget<C: Widget> {
     anchor_rect: Rect,
     content: C,
     side: PopoverSide,  // Above / Below / Left / Right (auto-flip if no room)
