@@ -88,7 +88,7 @@ impl TopicSubscriber for WorkspaceTreeReplica {
         self.id
     }
 
-    fn handle(&mut self, _sender: u64, msg: &NeighbourMsg) {
+    fn handle(&mut self, sender: u64, msg: &NeighbourMsg) {
         match msg {
             NeighbourMsg::SyncReq { since } => {
                 let since_heads: Vec<automerge::ChangeHash> =
@@ -102,7 +102,30 @@ impl TopicSubscriber for WorkspaceTreeReplica {
                     .push(NeighbourMsg::SyncResp { changes });
             }
             NeighbourMsg::SyncResp { changes } => {
-                let _ = self.tree.lock().unwrap().apply_changes(changes);
+                // C-9 fix: surface `apply_changes` failures via
+                // `tracing::error!` so peer-sync regressions show up in
+                // production logs. The previous code dropped the
+                // `Result` on the floor, leaving the local replica to
+                // silently believe a sync round had succeeded while
+                // the doc remained un-updated. We keep the function's
+                // semantics ("don't propagate; peer connection stays
+                // alive") — the log line is the only visible side
+                // effect of the failure path.
+                if let Err(err) = self
+                    .tree
+                    .lock()
+                    .unwrap()
+                    .apply_changes(changes)
+                {
+                    tracing::error!(
+                        target: "quick_desktop::network::replica",
+                        sender,
+                        change_count = changes.len(),
+                        ?err,
+                        "WorkspaceTreeReplica::apply_changes failed; \
+                         peer-sync round produced no doc mutation (C-9)",
+                    );
+                }
             }
             _ => {}
         }
@@ -275,6 +298,51 @@ mod tests {
             }
             other => panic!("expected SyncReq, got {:?}", other),
         }
+    }
+
+    /// C-9 regression: when `apply_changes` returns an error (a
+    /// malformed `SyncResp` from a peer, e.g.), the previous code
+    /// dropped the `Result` on the floor. The replica believed the
+    /// sync round succeeded while the doc actually remained
+    /// un-mutated. Verifies that `handle()` still returns cleanly
+    /// (doesn't panic, doesn't propagate) on bogus change-bytes —
+    /// the production code now logs at `tracing::error!`, but the
+    /// observable side effect at this test layer is "the function
+    /// returns instead of corrupting the doc".
+    #[test]
+    fn apply_changes_failure_is_logged() {
+        let tree = Arc::new(Mutex::new(WorkspaceTree::default()));
+        let mut rep = WorkspaceTreeReplica::new(11, tree.clone());
+
+        // Snapshot pre-state so we can prove the doc was *not*
+        // mutated by the failed apply.
+        let heads_before = tree.lock().unwrap().current_heads();
+
+        // Bogus byte vec — not a valid automerge change blob.
+        // `Change::try_from(&[..])` will fail before any mutation
+        // lands, causing `apply_changes` to return `Err`.
+        let garbage = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        rep.handle(
+            7,
+            &NeighbourMsg::SyncResp {
+                changes: vec![garbage],
+            },
+        );
+
+        // The function must NOT have panicked (we got here).
+        // The doc must NOT have been mutated by the failed apply
+        // — heads stay identical.
+        let heads_after = tree.lock().unwrap().current_heads();
+        assert_eq!(
+            heads_before, heads_after,
+            "apply_changes failed but the doc heads changed — fix \
+             allowed partial application?"
+        );
+        // No outbound traffic queued either: SyncResp doesn't reply.
+        assert!(
+            rep.pending_outgoing.lock().unwrap().is_empty(),
+            "failed SyncResp must not enqueue outbound traffic"
+        );
     }
 
     #[test]

@@ -33,10 +33,28 @@ pub struct SandboxProfile {
     pub uid: u32,
     /// Group namespace mapping target. Rendered as `--gid`.
     pub gid: u32,
-    /// Optional path to a compiled seccomp-bpf blob. Phase 1 emits a
-    /// placeholder fd (`--seccomp 10`) so the argv shape stays stable;
-    /// Phase 2 will swap in real fd-passing.
+    /// Optional path to a compiled seccomp-bpf blob.
+    ///
+    /// C-5 fix: the spawn helper in [`crate::sandbox::spawn`] now
+    /// pre-opens this file before forking, ensures the resulting fd
+    /// stays open across `execve` (via `pre_exec`'s `dup2` into a
+    /// reserved slot), and renders the matching `--seccomp <fd>` triple
+    /// into argv with the *actual* fd number — not the previous
+    /// hardcoded `10` which left bwrap reading whatever stale fd
+    /// happened to be at slot 10. See [`SandboxProfile::into_argv`]
+    /// and [`crate::sandbox::spawn::spawn_in_workspace_with_grants`].
     pub seccomp: Option<PathBuf>,
+    /// Fd number to render in the `--seccomp <fd>` argv triple. The
+    /// spawn helper plumbs the open seccomp.bpf file to this descriptor
+    /// in the child via `dup2`. `None` when [`Self::seccomp`] is also
+    /// `None`; when both are set the argv carries the matching number.
+    ///
+    /// This field is set by [`crate::sandbox::spawn`] just before
+    /// rendering argv. Callers that build a profile by hand and skip
+    /// the spawn helper (only the unit tests) should leave it `None`
+    /// — the argv rendering then suppresses the `--seccomp` flag
+    /// rather than emitting a stale magic number.
+    pub seccomp_fd: Option<i32>,
     /// Per-workspace Wayland bridge socket on the host. Bound into the
     /// sandbox at `/run/user/<uid>/wayland-0` by [`for_workspace_test`].
     pub wayland_socket: PathBuf,
@@ -87,6 +105,7 @@ impl SandboxProfile {
             uid: 1000,
             gid: 1000,
             seccomp: None,
+            seccomp_fd: None,
             wayland_socket,
             dbus_socket: None,
             net_isolated: true,
@@ -269,14 +288,21 @@ impl SandboxProfile {
             argv.push("--unshare-net".to_string());
         }
 
-        if self.seccomp.is_some() {
-            // Phase 1 placeholder: real fd-passing arrives in Phase 2
-            // (`docs/superpowers/plans/2026-05-02-per-workspace-sandbox-permissions.md`,
-            // Phase 2 — seccomp-bpf blocklist). Emitting the flag now
-            // keeps the argv shape stable across phases so callers can
-            // start logging / diffing against the rendered command.
+        // C-5 fix: only emit `--seccomp <fd>` when the spawn helper has
+        // actually plumbed the file to a known descriptor (`seccomp_fd`
+        // is `Some`). The previous code hardcoded fd `10` whenever
+        // `self.seccomp` was set, which left bwrap reading whatever
+        // happened to be at fd 10 — typically nothing, so the
+        // deny-list filter was silently bypassed.
+        //
+        // Profiles built outside the spawn helper (e.g. unit tests
+        // that render argv for inspection) leave `seccomp_fd` `None`,
+        // which now correctly drops the flag entirely. The matching
+        // `pre_exec` plumbing lives in
+        // [`crate::sandbox::spawn::spawn_in_workspace_with_grants`].
+        if let Some(fd) = self.seccomp_fd {
             argv.push("--seccomp".to_string());
-            argv.push("10".to_string());
+            argv.push(fd.to_string());
         }
 
         argv.extend_from_slice(command);
@@ -658,6 +684,7 @@ mod tests {
             uid: p.uid,
             gid: p.gid,
             seccomp: p.seccomp.clone(),
+            seccomp_fd: p.seccomp_fd,
             wayland_socket: p.wayland_socket.clone(),
             dbus_socket: p.dbus_socket.clone(),
             net_isolated: p.net_isolated,
@@ -682,5 +709,74 @@ mod tests {
         ));
         std::fs::create_dir_all(&base).expect("create tempdir");
         base
+    }
+
+    /// C-5 regression: when a caller sets `profile.seccomp = Some(...)`
+    /// but does NOT also set `profile.seccomp_fd`, the rendered argv
+    /// must omit `--seccomp` entirely rather than emitting a stale
+    /// hardcoded `--seccomp 10` that points at no real fd.
+    ///
+    /// The spawn helper is responsible for opening the bpf file,
+    /// duping it to a known descriptor in the child, and stamping
+    /// `seccomp_fd` with that number. A profile without `seccomp_fd`
+    /// indicates the caller skipped that plumbing — in which case
+    /// rendering the flag would tell bwrap to read from a fd that
+    /// doesn't exist (the previous bug). Suppress instead.
+    #[test]
+    fn seccomp_some_does_not_emit_argv_without_fd_plumbing() {
+        let mut p = SandboxProfile::for_workspace_test(
+            Path::new("/tmp/ws"),
+            Path::new("/tmp/cache"),
+        );
+        p.seccomp = Some(PathBuf::from("/some/cached/blob.bpf"));
+        // Note: seccomp_fd left as None — simulates a caller that
+        // didn't go through the spawn helper.
+        let argv = p.into_argv(&["true".into()]);
+        assert!(
+            !argv.iter().any(|a| a == "--seccomp"),
+            "argv must not carry --seccomp without matching fd \
+             plumbing (C-5 regression): {argv:?}"
+        );
+    }
+
+    /// C-5 regression: when both `seccomp` AND `seccomp_fd` are set —
+    /// the post-fix code path the spawn helper drives — the argv
+    /// MUST carry the matching `--seccomp <fd>` triple using the
+    /// actually-plumbed descriptor number, NOT a hardcoded `10`.
+    #[test]
+    fn seccomp_argv_uses_actually_loaded_fd() {
+        let mut p = SandboxProfile::for_workspace_test(
+            Path::new("/tmp/ws"),
+            Path::new("/tmp/cache"),
+        );
+        p.seccomp = Some(PathBuf::from("/some/cached/blob.bpf"));
+        // Simulate the spawn helper having opened the bpf file and
+        // dup'd it to fd 16 in the child.
+        p.seccomp_fd = Some(16);
+        let argv = p.into_argv(&["true".into()]);
+        // The flag must appear and reference fd 16, not the legacy
+        // hardcoded `10`.
+        let pos = argv
+            .iter()
+            .position(|a| a == "--seccomp")
+            .expect("expected --seccomp triple in argv");
+        assert_eq!(
+            argv.get(pos + 1).map(|s| s.as_str()),
+            Some("16"),
+            "argv carries --seccomp at index {pos} but the fd value is \
+             {:?} (must match seccomp_fd=Some(16), not the legacy 10): \
+             {argv:?}",
+            argv.get(pos + 1)
+        );
+        // And critically — there must be NO literal `10` immediately
+        // after a `--seccomp`. If a refactor accidentally re-introduces
+        // the hardcoded constant, this catches it.
+        assert!(
+            !argv
+                .windows(2)
+                .any(|w| w[0] == "--seccomp" && w[1] == "10"),
+            "argv accidentally re-introduced hardcoded `--seccomp 10` \
+             (C-5 regression): {argv:?}"
+        );
     }
 }

@@ -376,6 +376,22 @@ impl SurfaceTracker {
         self.latest.remove(&surface_id);
     }
 
+    /// Identical to [`Self::forget`]; named separately so the wire-up
+    /// from [`crate::compositor::state::State::toplevel_destroyed`]
+    /// reads as "drop this surface's tracker buffer entirely" rather
+    /// than the ambiguous "forget", which a casual reader could mistake
+    /// for a no-op variant of `take_latest`.
+    ///
+    /// C-7 fix: before this method (and the matching call in
+    /// `toplevel_destroyed`), a client that destroyed its toplevel
+    /// without a prior `attach NULL` left its `width*height*4`-byte
+    /// `Vec<u8>` slot allocated in the tracker forever — a per-surface
+    /// memory leak that compounded across long sessions with many
+    /// short-lived toplevels.
+    pub fn drop_surface(&mut self, surface_id: SurfaceId) {
+        self.latest.remove(&surface_id);
+    }
+
     /// Whether the tracker currently holds **any** staged frame. Used by
     /// the streaming-tick test to assert that draining empties the
     /// tracker.
@@ -584,6 +600,35 @@ mod tests {
         tracker.deposit_for_test(9, vec![0xFF; 4], 1, 1);
         tracker.forget(9);
         assert!(tracker.take_latest(9).is_none());
+    }
+
+    /// C-7 regression: `drop_surface` is the explicit
+    /// "client tore down its toplevel; reclaim the per-surface buffer"
+    /// entry point called from
+    /// `compositor::state::State::toplevel_destroyed`. Pre-fix, that
+    /// destroy hook only removed the foreign tab from the workspace
+    /// tree — the `SurfaceTracker`'s `Vec<u8>` slot survived, leaking
+    /// `width*height*4` bytes per destroyed surface. Verifies the
+    /// new path actually empties the slot.
+    #[test]
+    fn drop_surface_removes_buffer() {
+        let mut tracker = SurfaceTracker::new();
+        // Deposit a non-trivial buffer so the slot really exists.
+        tracker.deposit_for_test(42, vec![0x55; 64], 4, 4);
+        assert!(!tracker.is_empty_for(42), "test fixture: slot is populated");
+
+        tracker.drop_surface(42);
+
+        // Slot is gone entirely: take_latest returns None and the
+        // internal map no longer carries the entry.
+        assert!(
+            tracker.take_latest(42).is_none(),
+            "drop_surface must remove the slot, not leave it empty-but-present"
+        );
+        assert!(
+            tracker.is_empty_for(42),
+            "is_empty_for must report `true` after drop_surface (slot deleted)"
+        );
     }
 
     #[test]
