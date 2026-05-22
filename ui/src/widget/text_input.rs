@@ -317,6 +317,14 @@ impl Widget for TextInput {
 
     fn name(&self) -> &str { "TextInput" }
 
+    fn test_id(&self) -> Option<&str> {
+        if self._id.is_empty() {
+            Some("text_input")
+        } else {
+            Some(self._id.as_str())
+        }
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -454,5 +462,17 @@ mod tests {
              Color::rgba8(0, 0, 0, 77) (≈ bg-black/30) to match every \
              other widget's denied dim"
         );
+    }
+
+    #[test]
+    fn text_input_test_id_default_is_text_input() {
+        let ti = TextInput::new(Vec::new());
+        assert_eq!(Widget::test_id(&ti), Some("text_input"));
+    }
+
+    #[test]
+    fn text_input_test_id_can_be_overridden() {
+        let ti = TextInput::new(Vec::new()).with_id("search_box");
+        assert_eq!(Widget::test_id(&ti), Some("search_box"));
     }
 }
