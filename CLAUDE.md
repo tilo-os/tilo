@@ -21,9 +21,9 @@ This is a **Cargo workspace with git submodules**. The workspace members in `Car
 - `quick-shell/` (submodule, binary `quick-desktop`) — Wayland compositor. Built on `smithay` + `iced` + `libp2p` (gossipsub, mdns). Contains the 2D cluster/sandbox/collaboration logic.
 - `quick-fs-fuse/` (submodule) — FUSE3 driver, Iroh-based P2P, mounted at `/var/workspace` with cache at `/var/cache/quick-fs`. 10s metadata TTL, 1MB readahead.
 - `quick-ui/` (in-tree) — The UI toolkit. Retained-mode, CRDT-native. Stack: `wgpu` + `vello` (render), `taffy` (layout), `cosmic-text` (text), `automerge` (state), `winit` (windowing), `fluent` (i18n).
-- `apps/terminal/` (submodule, binary `quick-terminal`) — GPU-accelerated terminal. Uses `quick-ui`.
-- `apps/file-explorer/` (submodule) — Uses `iced` directly (not `quick-ui`).
-- `apps/browser/` (submodule, binary `quick-browser`) — Servo-based, uses `iced` (not `quick-ui`).
+- `apps/terminal/` (submodule, binary `quick-terminal`) — GPU-accelerated terminal. Uses `quick-ui`. `--shots PATH` for headless screenshot.
+- `apps/file-explorer/` (submodule) — Spatial file manager. Uses `quick-ui` (was iced; migrated). `--shots PATH` for headless screenshot.
+- `apps/browser/` (submodule, binary `quick-browser`) — Servo-based, uses `iced` directly. No `--shots` mode yet — iced 0.13 has no headless surface; deferred until upstream exposes one or the browser migrates to `quick-ui`.
 - `os/` (submodule) — `Containerfile`, `Containerfile.test`, systemd units, build and VM scripts.
 - `plan/`, `docs/` — Architecture, collaboration, compositor, security design notes. Read these before non-trivial changes in those areas.
 
