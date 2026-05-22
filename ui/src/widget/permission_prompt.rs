@@ -234,7 +234,7 @@ fn draw_button(
         // Accent buttons get the white-on-accent treatment from the
         // concept (concept ref: every `bg-indigo-500` button uses
         // `text-white`).
-        Color::rgb8(255, 255, 255)
+        Color::WHITE
     } else {
         theme.tokens.colors.text_primary
     };

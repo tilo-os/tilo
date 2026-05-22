@@ -200,9 +200,12 @@ fn headless_renderer_captures_a_widget_tree() {
 /// deliberate change (bar height 56 → 40 px, pills inset 6 px top/bot).
 ///
 /// The bar is drawn against a magenta base colour so every pixel inside
-/// the pill shows up as non-magenta (pill fill + border stroke), while
-/// pixels in the 6 px insets above/below stay exactly magenta (no bar
-/// fill is drawn — pills sit directly on the shell background).
+/// the pill shows up as non-magenta (pill fill + border stroke). Pixels
+/// in the 6 px insets above/below stay *colourless-over-magenta*: the
+/// pill body never extends into the inset (green channel = 0, r == b),
+/// but the concept's per-pill drop shadow (`shadow-[0_8px_32px_rgba(0,0,
+/// 0,0.2)]`, see `tabs::draw_pill_inner`) intentionally bleeds soft
+/// black rings into the inset and may darken the magenta base.
 #[test]
 fn tab_bar_renders_pills_inside_six_px_insets() {
     use quick_ui::presence::PresenceCtx;
@@ -280,21 +283,20 @@ fn tab_bar_renders_pills_inside_six_px_insets() {
         eprintln!("wrote tab-bar screenshot to {}", path.display());
     }
 
-    // Top inset strip (y < 6): pure magenta — no widget draws up here.
+    // Top inset strip (y < 6): pill body does not extend here. The
+    // concept's drop shadow (pure black at low alpha) may darken the
+    // magenta base, but it cannot introduce green or break r==b — those
+    // would only come from a translucent-white pill fill bleeding up.
     let (r, g, b, _a) = OffscreenRenderer::sample(&rgba, w, 20, 2);
-    assert_eq!(
-        (r, g, b),
-        (0xff, 0x00, 0xff),
-        "top 6 px inset should leave the magenta base untouched"
-    );
+    assert_eq!(g, 0x00, "no pill body fill in top inset (got r={r}, g={g}, b={b})");
+    assert_eq!(r, b, "drop shadow preserves magenta r==b ratio in top inset");
 
-    // Bottom inset strip (y > 34): pure magenta — same rationale.
+    // Bottom inset strip (y > 34): same rationale. Shadow has a +6 px
+    // y-offset so this inset receives more bleed than the top, but the
+    // r==b / g==0 invariant still holds.
     let (r, g, b, _a) = OffscreenRenderer::sample(&rgba, w, 20, 37);
-    assert_eq!(
-        (r, g, b),
-        (0xff, 0x00, 0xff),
-        "bottom 6 px inset should leave the magenta base untouched"
-    );
+    assert_eq!(g, 0x00, "no pill body fill in bottom inset (got r={r}, g={g}, b={b})");
+    assert_eq!(r, b, "drop shadow preserves magenta r==b ratio in bottom inset");
 
     // Pill interior (first pill center ≈ (48, 20)): the pill fills with
     // a translucent white (`white/10` or `white/15`), so compositing over
