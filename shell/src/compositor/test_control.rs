@@ -37,10 +37,17 @@
 //! - `{"op":"modifiers","ctrl":<bool>,"shift":<bool>,"alt":<bool>,
 //!   "logo":<bool>}` — update the modifier mask carried into the
 //!   next keyboard event.
+//! - `{"op":"snapshot","path":"/tmp/X.png"}` — re-paint the current
+//!   scene into a fresh `OffscreenRenderer` and write the resulting
+//!   RGBA buffer as a PNG to `path`. Empty paths are rejected with
+//!   `invalid_path`; everything else is left to the OS (the executor
+//!   logs file-create / encode errors but doesn't crash the
+//!   compositor — the response was already `Ok` from the dispatcher).
 //!
-//! Future commands (Phase 4+, separate units): `snapshot`, `state_dump`.
+//! Future commands (Phase 5+, separate units): `state_dump`.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use vello::kurbo::Rect;
@@ -99,6 +106,14 @@ pub enum Command {
         alt: bool,
         logo: bool,
     },
+    /// Re-paint the current scene into a fresh `OffscreenRenderer` and
+    /// write the resulting PNG to `path`. The dispatcher only
+    /// pre-validates that `path` is non-empty (a clear client bug);
+    /// any other I/O error (missing parent dir, permission denied,
+    /// disk full, …) is reported via the executor's stderr and the
+    /// response from the dispatcher remains `Ok` — proper error
+    /// responses are a Phase 5 follow-up.
+    Snapshot { path: String },
 }
 
 /// Top-level response envelope. Either an `ok` payload (per-command
@@ -177,6 +192,12 @@ pub enum PlannedAction {
         alt: bool,
         logo: bool,
     },
+    /// Re-paint the current scene off-screen and write the RGBA buffer
+    /// to `path` as a PNG. Carried as a `PathBuf` rather than a
+    /// `String` so the executor doesn't have to re-convert at every
+    /// invocation. Failures are logged via `eprintln!` — they don't
+    /// propagate to the wire response (Phase 5 will).
+    Snapshot { path: PathBuf },
 }
 
 /// Wire-friendly key identifier. Mirrors the subset of
@@ -398,6 +419,30 @@ pub fn dispatch_command<S: ControlState>(
                 logo: *logo,
             }],
         ),
+        Command::Snapshot { path } => {
+            // Pre-validate empty paths — `File::create("")` would
+            // fail with a confusing `ENOENT` message, and the harness
+            // wants a stable `invalid_path` code it can branch on.
+            // Other path issues (missing parent dir, permission, …)
+            // surface from the executor as `eprintln!` logs — Phase 5
+            // upgrades those to wire responses.
+            if path.is_empty() {
+                (
+                    Response::Err {
+                        code: "invalid_path".to_string(),
+                        message: "snapshot path must not be empty".to_string(),
+                    },
+                    Vec::new(),
+                )
+            } else {
+                (
+                    Response::Ok { frame: 0 },
+                    vec![PlannedAction::Snapshot {
+                        path: PathBuf::from(path),
+                    }],
+                )
+            }
+        }
     }
 }
 
@@ -888,5 +933,67 @@ mod tests {
     #[test]
     fn parse_key_tag_rejects_empty_string() {
         assert!(parse_key_tag("").is_none());
+    }
+
+    // ===================================================================
+    // Phase 4 — snapshot
+    // ===================================================================
+
+    /// `Snapshot { path: "/tmp/x.png" }` returns `Ok` and a single
+    /// `PlannedAction::Snapshot` carrying the same path as a
+    /// `PathBuf`. The executor will turn that into an
+    /// `OffscreenRenderer` render + PNG write.
+    #[test]
+    fn snapshot_returns_ok_and_planned_action() {
+        let state = StaticState::new(&[]);
+        let (resp, actions) = dispatch_command(
+            &Command::Snapshot {
+                path: "/tmp/x.png".to_string(),
+            },
+            &state,
+        );
+        assert!(matches!(resp, Response::Ok { .. }));
+        assert_eq!(
+            actions,
+            vec![PlannedAction::Snapshot {
+                path: PathBuf::from("/tmp/x.png"),
+            }]
+        );
+    }
+
+    /// An empty `path` is a client bug — the dispatcher returns the
+    /// stable `invalid_path` error code so the harness can branch on
+    /// it. No actions are produced; the OS never sees the malformed
+    /// request.
+    #[test]
+    fn snapshot_with_empty_path_returns_error() {
+        let state = StaticState::new(&[]);
+        let (resp, actions) = dispatch_command(
+            &Command::Snapshot {
+                path: String::new(),
+            },
+            &state,
+        );
+        assert!(actions.is_empty());
+        let Response::Err { code, .. } = resp else {
+            panic!("expected Response::Err for empty snapshot path");
+        };
+        assert_eq!(code, "invalid_path");
+    }
+
+    /// Round-trip the wire format — `{"op":"snapshot","path":"..."}`
+    /// must deserialise to the `Snapshot` variant. Guards against
+    /// `serde(rename_all = "snake_case")` accidentally changing the
+    /// field name visible to clients.
+    #[test]
+    fn parse_snapshot_command_round_trips() {
+        let cmd =
+            parse_command(r#"{"op":"snapshot","path":"/tmp/round.png"}"#).unwrap();
+        assert_eq!(
+            cmd,
+            Command::Snapshot {
+                path: "/tmp/round.png".to_string()
+            }
+        );
     }
 }

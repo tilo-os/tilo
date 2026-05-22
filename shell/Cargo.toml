@@ -88,6 +88,12 @@ openh264 = { version = "0.9", features = ["source"] }
 # 4.4.x — staying on the same major avoids a duplicate compile + runtime
 # copy of the entire async-task stack zbus drags in.
 zbus = { version = "4", default-features = false, features = ["tokio", "p2p"] }
+# Real-input e2e Phase 4: `test_control::Command::Snapshot` encodes the
+# `OffscreenRenderer::render_rgba` result as a PNG on disk. Previously a
+# dev-dep used by `tests/e2e_shell_flows.rs`; the snapshot executor is in
+# the runtime path so we promote it. Cargo collapses to a single copy
+# either way — moving the entry is zero compile-time cost.
+png = "0.17"
 
 [dev-dependencies]
 wayland-client = "0.31"
@@ -96,7 +102,6 @@ tokio-test = "0.4"
 # mirror quick-ui so Cargo collapses to a single copy in the workspace lock.
 pollster = "0.4.0"
 wgpu = "0.20"
-png = "0.17"
 # Scene-encoding inspection used by `tests/concept_parity_spec.rs` to walk
 # `Scene::encoding().draw_data` for solid-colour brushes and image-paint
 # tags without round-tripping pixels through wgpu. Same minor version as
