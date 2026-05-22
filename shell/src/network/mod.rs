@@ -11,7 +11,7 @@ pub mod streaming;
 pub mod wayland;
 
 pub use actor::{Actor, NetCmd, NetEvent};
-pub use behaviour::{NiriosBehaviour, load_or_create_keypair};
+pub use behaviour::{NiriosBehaviour, load_or_create_keypair, peer_salt_from_keypair};
 pub use decoder::{DecodedFrame, H264Decoder};
 pub use encoder::{EncodeError, H264Encoder};
 pub use hub::{Hub, TopicSubscriber};
