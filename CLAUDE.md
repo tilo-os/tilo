@@ -82,6 +82,12 @@ distrobox enter my-distrobox -- bash -c 'cd /home/user/Development/quickdesktop 
 distrobox enter my-distrobox -- bash -c 'cd /home/user/Development/quickdesktop && cargo test -p quick-ui'
 ```
 
+**`quick-desktop --lib` requires `--test-threads 1`.** Default parallel runs SIGSEGV — a wgpu/openh264/FFI resource collision somewhere across the ~400 tests that hasn't been bisected yet. Single-threaded passes every time, so worker prompts + the integration recipe both pass `--test-threads 1` explicitly. Don't silently `cargo test -p quick-desktop --lib` without the flag.
+
+```bash
+distrobox enter my-distrobox -- bash -c 'cd /home/user/Development/quickdesktop && cargo test -p quick-desktop --lib -- --test-threads 1'
+```
+
 The compositor has a headless integration test harness that exercises the Wayland state without a GPU:
 
 ```bash
