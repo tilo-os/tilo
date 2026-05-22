@@ -53,7 +53,23 @@ impl WorkspaceTreeReplica {
     /// Tests call this to kick off a sync round.
     pub fn request_sync(&self) {
         let heads = self.tree.lock().unwrap().current_heads();
-        let since = serde_json::to_vec(&heads).unwrap_or_default();
+        // D-8: `serde_json::to_vec(&Vec<ChangeHash>)` is structurally
+        // infallible — there's no enum variant or non-finite float in
+        // `ChangeHash`. We keep `unwrap_or_default()` for defence in
+        // depth and log loudly if it ever trips; the fallback
+        // `vec![]` is interpreted by the recipient as "send me every
+        // change", which is wasteful but not corrupting. This is the
+        // intentional silent-error path: the failure mode is
+        // bandwidth, not data loss.
+        let since = serde_json::to_vec(&heads).unwrap_or_else(|err| {
+            tracing::error!(
+                ?err,
+                "serde_json::to_vec(&heads) failed; falling back to a \
+                 full-sync request (D-8). This should be unreachable; \
+                 if you see this in production, file an issue."
+            );
+            Vec::new()
+        });
         self.pending_outgoing
             .lock()
             .unwrap()
@@ -226,6 +242,39 @@ mod tests {
             other => panic!("expected SyncReq, got {:?}", other),
         }
         assert!(rep.drain_outgoing().is_empty(), "drain must clear the queue");
+    }
+
+    /// D-8 regression: `request_sync` serialises the local heads via
+    /// `serde_json::to_vec`. The current code uses
+    /// `unwrap_or_default()` which silently turns a serialise failure
+    /// into a "since: []" full-sync request — wasteful but not
+    /// catastrophic. This test pins the success path so a refactor
+    /// that swaps the error handling can't accidentally regress to a
+    /// panic on finite payloads.
+    ///
+    /// We do not test the failure mode because `Vec<ChangeHash>` has
+    /// no realistic way to fail `serde_json::to_vec`; the silent-error
+    /// path is documented in the production code instead.
+    #[test]
+    fn request_sync_unwrap_is_safe_for_finite_payloads() {
+        let tree = Arc::new(Mutex::new(WorkspaceTree::default()));
+        let rep = WorkspaceTreeReplica::new(99, tree);
+
+        // The success path must not panic on a fresh, empty-heads tree.
+        rep.request_sync();
+
+        let queued = rep.drain_outgoing();
+        assert_eq!(queued.len(), 1, "request_sync must enqueue one SyncReq");
+        match &queued[0] {
+            NeighbourMsg::SyncReq { since } => {
+                // Empty heads serialises to "[]" (2 bytes), not an empty vec.
+                assert!(
+                    !since.is_empty(),
+                    "encoded `since` must be a valid JSON array, got empty vec"
+                );
+            }
+            other => panic!("expected SyncReq, got {:?}", other),
+        }
     }
 
     #[test]
