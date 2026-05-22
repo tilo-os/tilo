@@ -70,10 +70,21 @@ pub type GroupId = u64;
 pub type TabId = u64;
 pub type FileId = u64;
 
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+
+/// Process-wide monotonic counter shared by [`WorkspaceId::new`],
+/// [`StripId::new`], and ad-hoc `next_id()` consumers (group / tab /
+/// file ids).
+///
+/// Hoisted out of `next_id()` so [`WorkspaceTree::seed_next_id_from_self`]
+/// can advance it past the highest persisted id at load time — without
+/// that seeding, a fresh process restarts the counter at `1` and the
+/// next allocation collides with the lowest-id entry already in the
+/// loaded cache (D-9).
+pub(crate) static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
 pub(crate) fn next_id() -> u64 {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static N: AtomicU64 = AtomicU64::new(1);
-    N.fetch_add(1, Ordering::Relaxed)
+    NEXT_ID.fetch_add(1, AtomicOrdering::Relaxed)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -528,6 +539,40 @@ impl Default for WorkspaceTree {
 
 
 impl WorkspaceTree {
+    /// Walk every id in the tree (workspace, strip, group, tab) and
+    /// advance the process-wide [`NEXT_ID`] counter past the maximum.
+    /// Idempotent: a second call with an unchanged tree is a no-op
+    /// against the already-advanced counter.
+    ///
+    /// D-9 regression: the counter starts at `1` on every fresh
+    /// process. On a restart where the persisted state already uses
+    /// ids `[1, 50]`, the next [`WorkspaceId::new`] allocation
+    /// collides with the existing id `1` — the cache rebuild then
+    /// folds two distinct entries into one.
+    ///
+    /// Call this from [`persist::load_or_default`] (and any other
+    /// load path) after deserialising so subsequent allocations are
+    /// guaranteed to be fresh.
+    pub fn seed_next_id_from_self(&self) {
+        let mut max_id: u64 = 0;
+        for ws in &self.workspaces {
+            max_id = max_id.max(ws.id.raw());
+            for strip in &ws.strips {
+                max_id = max_id.max(strip.id.raw());
+                for group in &strip.window_groups {
+                    max_id = max_id.max(group.id);
+                    for tab in &group.tabs {
+                        max_id = max_id.max(tab.id);
+                    }
+                }
+            }
+        }
+        // Advance the counter past max_id. `fetch_max` keeps the
+        // higher of the two so a parallel allocator that already
+        // pushed past max_id isn't reset backwards.
+        NEXT_ID.fetch_max(max_id.saturating_add(1), AtomicOrdering::Relaxed);
+    }
+
     /// Snapshot of the current automerge change-graph heads. Peer-sync
     /// uses this as the baseline when computing what to send to a
     /// remote replica.
@@ -589,7 +634,7 @@ impl WorkspaceTree {
     ///
     /// Tabs, `active_strip`, `active_group`, and collaborators stay
     /// cache-only — unit D wires those.
-    fn seed_doc_from_cache(&mut self) {
+    pub(crate) fn seed_doc_from_cache(&mut self) {
         use automerge::{
             ObjType, ReadDoc, ROOT, ScalarValue, transaction::Transactable,
         };
@@ -2860,5 +2905,47 @@ mod capability_tests {
         let ws: Workspace = serde_json::from_str(legacy).expect("legacy compat");
         assert!(ws.shared_surfaces.is_empty());
         assert_eq!(ws.id, WorkspaceId::from(1));
+    }
+}
+
+#[cfg(test)]
+mod next_id_seed_tests {
+    //! D-9 regression: after loading a persisted tree whose ids climb
+    //! past the static counter, [`WorkspaceTree::seed_next_id_from_self`]
+    //! must advance the counter so subsequent [`WorkspaceId::new`]
+    //! allocations don't collide with persisted entries.
+    //!
+    //! The counter is process-wide so this test must observe a value
+    //! `>= max+1` rather than asserting an exact `max+1` (other tests
+    //! in the same binary may have already pushed it further).
+    use super::*;
+
+    #[test]
+    fn next_id_seeds_above_max_used_id_on_load() {
+        // Build a tree whose ids include a deliberately-high value
+        // (50). A fresh process counter starts at 1; without seeding,
+        // the next allocation would be `2` and collide with id 1.
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(Workspace::new(
+            WorkspaceId::from(1),
+            "First",
+        ));
+        tree.workspaces.push(Workspace::new(
+            WorkspaceId::from(50),
+            "Fiftieth",
+        ));
+
+        tree.seed_next_id_from_self();
+
+        // Mint a fresh id — it must be strictly greater than every
+        // persisted id, including the gap-jumping `50`.
+        let allocated = next_id();
+        assert!(
+            allocated > 50,
+            "after seeding, next_id() must skip past every persisted \
+             id (max was 50); got {} which would collide with the \
+             existing tree (D-9 regression)",
+            allocated
+        );
     }
 }
