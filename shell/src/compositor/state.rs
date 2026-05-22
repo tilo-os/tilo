@@ -46,6 +46,7 @@ use smithay::wayland::shell::xdg::{
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::{delegate_compositor, delegate_output, delegate_seat, delegate_shm, delegate_xdg_shell};
 
+use crate::compositor::surface_readback::SurfaceTracker;
 use crate::compositor::tab_binding;
 use crate::network::protocol::{PeerId as MsgPeerId, SurfaceId};
 use crate::network::streaming::{InputEvent, RemoteInputSink, ShareRegistry};
@@ -96,6 +97,14 @@ pub struct State {
     /// injection happened, without spinning up a real `Seat<State>`.
     /// v2 replaces this with the proper smithay seat-call path.
     pub last_remote_input: Option<(MsgPeerId, SurfaceId, InputEvent)>,
+    /// Per-foreign-surface RGBA staging — Peer-sync Phase 4 v2. The
+    /// compositor's [`CompositorHandler::commit`] hook calls
+    /// [`SurfaceTracker::on_commit`] for every committed surface whose
+    /// id is listed in
+    /// [`crate::shell::state::Workspace::shared_surfaces`]; the
+    /// streaming task drains via [`SurfaceTracker::take_latest`] per
+    /// encode tick.
+    pub surface_tracker: SurfaceTracker,
 }
 
 impl State {
@@ -124,6 +133,7 @@ impl State {
             workspace_tree: WorkspaceTree::bootstrap_default(),
             share_registry: ShareRegistry::new(),
             last_remote_input: None,
+            surface_tracker: SurfaceTracker::new(),
         }
     }
 
@@ -227,8 +237,52 @@ impl CompositorHandler for State {
             .compositor_state
     }
 
-    fn commit(&mut self, _surface: &WlSurface) {
-        // Phase 4 hooks the renderer here.
+    fn commit(&mut self, surface: &WlSurface) {
+        // Phase 4 v2 — pull the surface's most-recent buffer into the
+        // [`SurfaceTracker`] iff the surface is registered as shared on
+        // any workspace in [`WorkspaceTree`]. Most surfaces aren't
+        // shared, so the lookup short-circuits at the
+        // `is_surface_shared` check before we ever touch the buffer
+        // state. Heavy renderer hooks land in a Phase 4 follow-up.
+        let surface_id = surface.id().protocol_id() as SurfaceId;
+        let is_shared = self
+            .workspace_tree
+            .workspaces
+            .iter()
+            .any(|ws| ws.is_surface_shared(surface_id));
+        if !is_shared {
+            return;
+        }
+        // Pull the most recent buffer assignment off the surface's
+        // cached state. `BufferAssignment::NewBuffer(b)` is the
+        // freshly-attached `wl_buffer`; `Removed` means the client
+        // detached and we should drop the tracker slot.
+        wl_compositor::with_states(surface, |states| {
+            let mut attrs = states.cached_state.get::<wl_compositor::SurfaceAttributes>();
+            match &attrs.current().buffer {
+                Some(wl_compositor::BufferAssignment::NewBuffer(buffer)) => {
+                    match self.surface_tracker.on_commit(surface_id, buffer) {
+                        Ok(_) => {}
+                        Err(err) => {
+                            tracing::warn!(
+                                target: "quick_desktop::compositor::state",
+                                surface_id, ?err,
+                                "surface readback failed; tracker slot left empty",
+                            );
+                        }
+                    }
+                }
+                Some(wl_compositor::BufferAssignment::Removed) => {
+                    self.surface_tracker.forget(surface_id);
+                }
+                None => {
+                    // Nothing attached this commit — preserve the
+                    // previously-staged frame so a re-commit without a
+                    // new buffer (e.g. just a damage update) doesn't
+                    // wipe the tracker.
+                }
+            }
+        });
     }
 }
 
