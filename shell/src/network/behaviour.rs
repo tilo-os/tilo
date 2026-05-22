@@ -44,6 +44,51 @@ impl NiriosBehaviour {
     }
 }
 
+/// Derive a deterministic 16-bit peer salt from the local libp2p
+/// keypair (C-1). The salt occupies the high 16 bits of every id
+/// minted by [`crate::shell::state::next_id`] so two peers minting
+/// ids in parallel can never collide.
+///
+/// Properties we require:
+/// - **Deterministic**: a given keypair always maps to the same salt
+///   so the salt survives compositor restarts (the keypair on disk
+///   does too). Stable hashers in `std` are explicitly NOT promised
+///   across Rust versions, so we hand-roll an FNV-1a-64 fold over the
+///   protobuf-encoded public key.
+/// - **Cheap**: called once at boot; the fold runs in a few hundred
+///   nanoseconds against the ~50-byte ed25519 public key.
+/// - **No collision-resistance promises**: 16 bits gives 65 536 distinct
+///   salts, which is enough to make accidental collisions vanishingly
+///   unlikely for the small peer counts nirios targets (single-digit
+///   to low-double-digit collaborators). A cryptographic guarantee is
+///   not required because the id format only protects against
+///   accidental cross-peer collision under CRDT sync, not against an
+///   adversary actively forging an id with a chosen salt.
+pub fn peer_salt_from_keypair(kp: &libp2p::identity::Keypair) -> u16 {
+    let bytes = kp.public().encode_protobuf();
+    let h = fnv1a_64(&bytes);
+    // Fold the 64-bit hash down to 16 bits by XOR'ing the four
+    // 16-bit slices. Keeps every output bit a function of every input
+    // bit; collisions are roughly uniform.
+    let h16 = (h as u16) ^ ((h >> 16) as u16) ^ ((h >> 32) as u16) ^ ((h >> 48) as u16);
+    h16
+}
+
+/// FNV-1a-64 hash. Hand-rolled rather than pulled from a crate because
+/// the algorithm is a 5-line constant-time fold and we don't need any
+/// additional surface area. Standard primes from
+/// <http://www.isthe.com/chongo/tech/comp/fnv/>.
+fn fnv1a_64(bytes: &[u8]) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut h = FNV_OFFSET;
+    for b in bytes {
+        h ^= *b as u64;
+        h = h.wrapping_mul(FNV_PRIME);
+    }
+    h
+}
+
 /// Load (or create) the persistent ed25519 keypair at `path`.
 ///
 /// On first call (or if the file is unreadable / unparseable) a fresh
@@ -120,6 +165,41 @@ mod tests {
 
         let _kp = load_or_create_keypair(&nested).expect("creates dirs + file");
         assert!(nested.exists(), "key file must exist after first call");
+    }
+
+    /// C-1: the peer salt derived from a keypair must be deterministic
+    /// — the same keypair always maps to the same 16-bit salt. The salt
+    /// gets persisted indirectly via the keypair on disk, so a
+    /// non-deterministic derivation would change the salt on every
+    /// restart and partition the workspace tree against itself.
+    #[test]
+    fn peer_salt_is_deterministic_from_keypair() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("peer-key");
+
+        // Load the same keypair twice and derive the salt from each.
+        // `load_or_create_keypair` is the production entry point so we
+        // exercise the full round-trip (generate → disk → reload → hash).
+        let kp1 = load_or_create_keypair(&path).expect("first load creates");
+        let kp2 = load_or_create_keypair(&path).expect("second load reads");
+
+        let salt1 = peer_salt_from_keypair(&kp1);
+        let salt2 = peer_salt_from_keypair(&kp2);
+
+        assert_eq!(
+            salt1, salt2,
+            "peer_salt_from_keypair must be deterministic for a given \
+             keypair; got salt1=0x{:04x} salt2=0x{:04x} (C-1 regression)",
+            salt1, salt2
+        );
+
+        // Sanity: two distinct keypairs almost certainly yield distinct
+        // salts (collision space is 1/65536; the test would be flaky
+        // only at astronomical odds). Skip an exact != assert to avoid
+        // a 1/65536 flake; just exercise the derivation on a second
+        // independent keypair so a panic in FNV-1a etc. surfaces.
+        let other = Keypair::generate_ed25519();
+        let _salt_other = peer_salt_from_keypair(&other);
     }
 
     /// C-8 (security): the freshly-generated peer keypair must land on
