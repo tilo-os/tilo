@@ -386,6 +386,22 @@ pub struct Workspace {
     /// (UI prompt + portal backend) populate it.
     #[serde(default)]
     pub grants: HashMap<AppId, Vec<Capability>>,
+    /// Surfaces from this workspace that are being streamed to a
+    /// specific peer — peer-sync Phase 4 v2. Keys are the wayland
+    /// `wl_surface` protocol ids the compositor passes through
+    /// `TileContent::Foreign`; values are the libp2p [`PeerId`] (hashed
+    /// to `u64`, see [`crate::network::protocol::PeerId`]) the share
+    /// targets.
+    ///
+    /// One entry per (surface, peer) pair; a surface streamed to two
+    /// peers shows up once per peer (Phase 4 v2 keeps the map keyed by
+    /// surface_id; multi-peer per surface is a v3 follow-up — we add a
+    /// `Vec<PeerId>` value then).
+    ///
+    /// `#[serde(default)]` so persisted state files written before this
+    /// field existed still load. Mirrors the `grants` rollout pattern.
+    #[serde(default)]
+    pub shared_surfaces: HashMap<u64, u64>,
 }
 
 impl Workspace {
@@ -401,7 +417,34 @@ impl Workspace {
             workspace_files: Vec::new(),
             collaborators: Vec::new(),
             grants: HashMap::new(),
+            shared_surfaces: HashMap::new(),
         }
+    }
+
+    /// Mark `surface_id` as being streamed to `peer_id` — peer-sync
+    /// Phase 4 v2. The compositor's commit handler consults this map
+    /// (indirectly, via [`Workspace::is_surface_shared`]) to decide
+    /// whether to stage the buffer for the streaming task.
+    ///
+    /// Overwrites any prior entry for the same surface — useful when a
+    /// share is reassigned from one peer to another without an explicit
+    /// `unshare`.
+    pub fn share_surface(&mut self, surface_id: u64, peer_id: u64) {
+        self.shared_surfaces.insert(surface_id, peer_id);
+    }
+
+    /// Drop the share entry for `surface_id`. No-op if the surface is
+    /// not shared. Returns the peer the surface was shared with so
+    /// callers can fire a `StopShare` event without a second lookup.
+    pub fn unshare_surface(&mut self, surface_id: u64) -> Option<u64> {
+        self.shared_surfaces.remove(&surface_id)
+    }
+
+    /// Whether `surface_id` is currently streamed somewhere. Used by
+    /// the compositor's commit hook to short-circuit the readback for
+    /// unshared surfaces (~all of them in steady state).
+    pub fn is_surface_shared(&self, surface_id: u64) -> bool {
+        self.shared_surfaces.contains_key(&surface_id)
     }
 }
 
@@ -419,6 +462,7 @@ impl Default for Workspace {
             workspace_files: Vec::new(),
             collaborators: Vec::new(),
             grants: HashMap::new(),
+            shared_surfaces: HashMap::new(),
         }
     }
 }
@@ -1475,6 +1519,7 @@ impl WorkspaceTree {
                     .with_role("editor"),
             ],
             grants: HashMap::new(),
+            shared_surfaces: HashMap::new(),
         };
 
         let mut active_strip = HashMap::new();
@@ -1541,6 +1586,7 @@ impl WorkspaceTree {
             workspace_files: vec![],
             collaborators: vec![],
             grants: HashMap::new(),
+            shared_surfaces: HashMap::new(),
         };
         self.active_strip.insert(ws_id, strip_id);
         self.workspaces.push(ws);
@@ -2360,6 +2406,7 @@ mod active_group_tests {
             workspace_files: vec![],
             collaborators: vec![],
             grants: HashMap::new(),
+            shared_surfaces: HashMap::new(),
         };
         let mut active_strip = HashMap::new();
         active_strip.insert(ws_id, strip_id);
@@ -2573,6 +2620,7 @@ mod active_workspace_peer_count_tests {
             workspace_files: vec![],
             collaborators: collabs,
             grants: HashMap::new(),
+            shared_surfaces: HashMap::new(),
         };
         let mut active_strip = HashMap::new();
         active_strip.insert(ws_id, strip_id);
@@ -2728,5 +2776,89 @@ mod capability_tests {
         let json = serde_json::to_string(&caps).expect("serialize caps");
         let round: Vec<Capability> = serde_json::from_str(&json).expect("deserialize caps");
         assert_eq!(round, caps);
+    }
+
+    #[test]
+    fn empty_workspace_has_empty_shared_surfaces_map() {
+        // Phase 4 v2: parallel guarantee to `grants` — both
+        // `Workspace::default()` and `Workspace::new(...)` seed an
+        // empty `shared_surfaces` map so reads don't have to special-
+        // case `None`.
+        let ws = Workspace::default();
+        assert!(ws.shared_surfaces.is_empty());
+        let ws_new = Workspace::new(WorkspaceId::from(1), "Demo");
+        assert!(ws_new.shared_surfaces.is_empty());
+    }
+
+    #[test]
+    fn share_surface_records_peer_target() {
+        // `share_surface` is the entry point the compositor's share-UI
+        // (Phase 4 v3, not yet wired) will call once the user picks a
+        // peer for a foreign tab. The map is keyed by `surface_id` —
+        // there's one share per surface at v2; multi-peer per surface
+        // is a v3 follow-up where the value flips to `Vec<PeerId>`.
+        let mut ws = Workspace::new(WorkspaceId::from(1), "Demo");
+        assert!(!ws.is_surface_shared(7));
+        ws.share_surface(7, 42);
+        assert!(ws.is_surface_shared(7));
+        assert_eq!(ws.shared_surfaces.get(&7), Some(&42));
+    }
+
+    #[test]
+    fn share_surface_overwrites_existing_peer() {
+        // A share reassignment without an explicit unshare should
+        // replace the peer rather than silently keep the old one —
+        // matches the `HashMap::insert` semantics so the compositor's
+        // UI doesn't have to remember to `unshare` first.
+        let mut ws = Workspace::new(WorkspaceId::from(1), "Demo");
+        ws.share_surface(7, 42);
+        ws.share_surface(7, 99);
+        assert_eq!(ws.shared_surfaces.get(&7), Some(&99));
+        assert_eq!(ws.shared_surfaces.len(), 1);
+    }
+
+    #[test]
+    fn unshare_surface_returns_prior_peer_and_clears_entry() {
+        // Returning the prior peer matters because the actor needs to
+        // fire a `StopShare` event scoped to *that* peer — looking it
+        // up again after the removal would be racy.
+        let mut ws = Workspace::new(WorkspaceId::from(1), "Demo");
+        ws.share_surface(7, 42);
+        assert_eq!(ws.unshare_surface(7), Some(42));
+        assert!(!ws.is_surface_shared(7));
+        // Idempotent: second call returns `None` cleanly.
+        assert_eq!(ws.unshare_surface(7), None);
+    }
+
+    #[test]
+    fn shared_surfaces_round_trip_via_serde_json() {
+        let mut ws = Workspace::new(WorkspaceId::from(1), "Demo");
+        ws.share_surface(11, 100);
+        ws.share_surface(22, 200);
+
+        let json = serde_json::to_string(&ws).expect("serialize");
+        let round: Workspace = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(round.shared_surfaces.len(), 2);
+        assert_eq!(round.shared_surfaces.get(&11), Some(&100));
+        assert_eq!(round.shared_surfaces.get(&22), Some(&200));
+    }
+
+    #[test]
+    fn legacy_workspace_without_shared_surfaces_field_deserialises() {
+        // Persisted workspaces written before Phase 4 v2 lack the
+        // `shared_surfaces` field; `#[serde(default)]` keeps the
+        // upgrade path lossless. Mirrors the parallel guarantee for
+        // `grants` (Phase 4 Task 4.1).
+        let legacy = r#"{
+            "id": 1,
+            "name": "Old",
+            "strips": [],
+            "roles": [],
+            "workspace_files": [],
+            "grants": {}
+        }"#;
+        let ws: Workspace = serde_json::from_str(legacy).expect("legacy compat");
+        assert!(ws.shared_surfaces.is_empty());
+        assert_eq!(ws.id, WorkspaceId::from(1));
     }
 }

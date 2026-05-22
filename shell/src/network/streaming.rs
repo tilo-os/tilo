@@ -21,6 +21,7 @@
 //! (`read_only = true`) or hands it to a [`RemoteInputSink`] which is
 //! the seat-injection trait the compositor's `State` implements.
 
+use crate::network::encoder::{EncodeError, H264Encoder};
 use crate::network::protocol::{PeerId, SurfaceId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -217,6 +218,75 @@ impl ShareRegistry {
     }
 }
 
+/// Outcome of a single `encode_tick` call — what the damage-aware loop
+/// did (or didn't do) this iteration.
+///
+/// `Encoded` carries the freshly-encoded Annex-B NALU bytes; the
+/// streaming task hands them straight to
+/// [`crate::network::NeighbourMsg::SurfaceFrame`] for publication. The
+/// other variants are reasons the tick produced no bytes, surfaced as
+/// distinct enum variants so the task can report metrics (encode-skipped
+/// vs. throttled) without poking at the throttle internals.
+#[derive(Debug)]
+pub enum EncodeTickOutcome {
+    /// A frame was encoded; carries the NALU payload.
+    Encoded(Vec<u8>),
+    /// The throttle rejected this tick (last encode was less than the
+    /// configured interval ago). No frame fetched.
+    Throttled,
+    /// The throttle was open but no new frame is staged — either the
+    /// foreign surface hasn't committed since the previous take, or
+    /// the readback failed and the tracker slot was emptied.
+    NoFrame,
+    /// The encoder rejected the frame (typically buffer-size mismatch
+    /// after a dimension change before the encoder is reconfigured).
+    EncodeFailed(EncodeError),
+}
+
+/// Drive one iteration of the owner-side damage-aware encode loop —
+/// Peer-sync Phase 4 v2.
+///
+/// `fetch_frame` is the closure the streaming task supplies; in
+/// production it bottoms out at
+/// [`crate::compositor::surface_readback::SurfaceTracker::take_latest`],
+/// in tests it can return a synthesised RGBA frame. The split lets the
+/// encode loop stay decoupled from the compositor's `State` while
+/// keeping the production wiring single-trait — no
+/// `FrameSource`-style indirection.
+///
+/// The throttle is *not* mutated until an encode actually succeeds, so
+/// callers that swallow [`EncodeTickOutcome::EncodeFailed`] don't
+/// accidentally poison the timestamp.
+///
+/// Returns the [`EncodeTickOutcome`] for the caller to ship / drop /
+/// retry. The function does not allocate beyond what
+/// [`H264Encoder::encode`] does internally; the staged RGBA `Vec` from
+/// `fetch_frame` is consumed by `encode`.
+pub fn encode_tick<F>(
+    encoder: &mut H264Encoder,
+    throttle: &mut StreamingThrottle,
+    now: Instant,
+    fetch_frame: F,
+) -> EncodeTickOutcome
+where
+    F: FnOnce() -> Option<Vec<u8>>,
+{
+    if !throttle.should_encode(now) {
+        return EncodeTickOutcome::Throttled;
+    }
+    let rgba = match fetch_frame() {
+        Some(bytes) => bytes,
+        None => return EncodeTickOutcome::NoFrame,
+    };
+    match encoder.encode(&rgba) {
+        Ok(nalus) => {
+            throttle.mark_encoded(now);
+            EncodeTickOutcome::Encoded(nalus)
+        }
+        Err(err) => EncodeTickOutcome::EncodeFailed(err),
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
@@ -354,5 +424,152 @@ mod tests {
             let round: InputEvent = serde_json::from_slice(&bytes).expect("deserialize");
             assert_eq!(round, ev);
         }
+    }
+
+    /// Peer-sync Phase 4 v2 — required test. The synthetic-gradient
+    /// round-trip in `encoder::tests::gradient_round_trip_psnr_at_least_35_db`
+    /// proved the encoder works on a fabricated buffer. This test
+    /// wires the real production egress path through a
+    /// [`crate::compositor::surface_readback::SurfaceTracker`]: a
+    /// foreign-surface RGBA frame is deposited into the tracker, the
+    /// `encode_tick` loop drains it via `take_latest` (the same call
+    /// the production streaming task uses), the resulting NALU bytes
+    /// go through the H.264 decoder, and the decoded frame is
+    /// PSNR-compared against the input. Floor is the same 35 dB the
+    /// Phase 4 v1 gradient test asserts.
+    ///
+    /// The deposit-side helper
+    /// (`SurfaceTracker::deposit_for_test`) is gated to `#[cfg(test)]`
+    /// because in production the bytes arrive via
+    /// `with_buffer_contents` on a real shm `wl_buffer`. Building a
+    /// real shm buffer requires a live `wayland-server::Display` +
+    /// `wl_shm` pool, which a unit test can't spin up without an
+    /// external client process. The mock keeps the *egress* path
+    /// (`take_latest`) on the same code as production, which is what
+    /// the v2 spec calls out.
+    #[test]
+    fn shared_foreign_surface_round_trips_rgba() {
+        use crate::compositor::surface_readback::SurfaceTracker;
+        use crate::network::decoder::H264Decoder;
+
+        const W: u32 = 64;
+        const H: u32 = 64;
+        const SURFACE: SurfaceId = 314;
+
+        // Deterministic input — soft gradient so H.264 has a fair
+        // shot at the 35 dB floor.
+        let mut input = Vec::with_capacity((W * H * 4) as usize);
+        for y in 0..H {
+            for x in 0..W {
+                input.push(((x * 255) / W) as u8);
+                input.push(((y * 255) / H) as u8);
+                input.push(0x80);
+                input.push(0xFF);
+            }
+        }
+
+        // Inject into the tracker the same way the compositor's
+        // `commit` handler would — but without the wayland plumbing
+        // (see the doc comment above).
+        let mut tracker = SurfaceTracker::new();
+        tracker.deposit_for_test(SURFACE, input.clone(), W, H);
+
+        // Production egress path: a single `encode_tick` driven from
+        // a closure that calls `tracker.take_latest(surface)`. The
+        // streaming task in production wires exactly this shape — the
+        // closure is the only knob it needs.
+        let mut encoder = H264Encoder::new(W, H, 30).expect("encoder");
+        let mut throttle = StreamingThrottle::new();
+        let outcome = encode_tick(&mut encoder, &mut throttle, Instant::now(), || {
+            tracker.take_latest(SURFACE).map(|frame| frame.rgba)
+        });
+        let nalus = match outcome {
+            EncodeTickOutcome::Encoded(b) => b,
+            other => panic!("expected Encoded, got {other:?}"),
+        };
+        assert!(!nalus.is_empty(), "encoder produced empty bitstream");
+
+        // Tracker slot was drained — a second tick must report NoFrame
+        // (no new commit since the take).
+        let outcome2 = encode_tick(
+            &mut encoder,
+            &mut throttle,
+            Instant::now() + Duration::from_millis(50),
+            || tracker.take_latest(SURFACE).map(|frame| frame.rgba),
+        );
+        assert!(
+            matches!(outcome2, EncodeTickOutcome::NoFrame),
+            "expected NoFrame, got {outcome2:?}"
+        );
+
+        // Decode + PSNR check, mirroring the v1 gradient test floor.
+        let mut decoder = H264Decoder::new();
+        let frame = decoder.decode(&nalus).expect("decoder yields a frame");
+        assert_eq!(frame.width, W);
+        assert_eq!(frame.height, H);
+
+        let strip_alpha = |buf: &[u8]| -> Vec<u8> {
+            buf.chunks_exact(4)
+                .flat_map(|c| [c[0], c[1], c[2]])
+                .collect()
+        };
+        let orig_rgb = strip_alpha(&input);
+        let decoded_rgb = strip_alpha(&frame.rgba);
+        // PSNR — inline so this test stays self-contained without
+        // re-exporting `encoder::tests::psnr`.
+        let mse: f64 = orig_rgb
+            .iter()
+            .zip(&decoded_rgb)
+            .map(|(a, b)| (*a as f64 - *b as f64).powi(2))
+            .sum::<f64>()
+            / orig_rgb.len() as f64;
+        let psnr = if mse == 0.0 {
+            f64::INFINITY
+        } else {
+            20.0 * 255.0_f64.log10() - 10.0 * mse.log10()
+        };
+        assert!(
+            psnr >= 35.0,
+            "shared-surface PSNR {psnr:.2} dB below 35 dB floor (v2 readback regression)"
+        );
+        eprintln!("shared-surface PSNR = {psnr:.3} dB");
+    }
+
+    #[test]
+    fn encode_tick_throttled_when_within_interval() {
+        use crate::compositor::surface_readback::SurfaceTracker;
+
+        const W: u32 = 32;
+        const H: u32 = 32;
+        const SURFACE: SurfaceId = 1;
+        let frame = vec![0u8; (W * H * 4) as usize];
+
+        let mut tracker = SurfaceTracker::new();
+        tracker.deposit_for_test(SURFACE, frame.clone(), W, H);
+
+        let mut encoder = H264Encoder::new(W, H, 30).expect("encoder");
+        let mut throttle = StreamingThrottle::new();
+        let t0 = Instant::now();
+
+        // First tick encodes.
+        let r1 = encode_tick(&mut encoder, &mut throttle, t0, || {
+            tracker.take_latest(SURFACE).map(|f| f.rgba)
+        });
+        assert!(matches!(r1, EncodeTickOutcome::Encoded(_)));
+
+        // Re-deposit immediately. A second tick at t0+1ms must
+        // *not* drain the tracker — the throttle short-circuits
+        // before `fetch_frame` runs.
+        tracker.deposit_for_test(SURFACE, frame, W, H);
+        let r2 = encode_tick(
+            &mut encoder,
+            &mut throttle,
+            t0 + Duration::from_millis(1),
+            || tracker.take_latest(SURFACE).map(|f| f.rgba),
+        );
+        assert!(matches!(r2, EncodeTickOutcome::Throttled));
+        // Crucially: the tracker slot is still full because the
+        // throttle blocked `take_latest` from running.
+        assert!(!tracker.is_empty_for(SURFACE));
     }
 }
