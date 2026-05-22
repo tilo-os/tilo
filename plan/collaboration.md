@@ -1,56 +1,141 @@
-# Architectural Plan: The "Layer Above" (Collaboration & Permissions)
+# Collaboration & Peer Sync
 
-This document outlines the design for the Desktop Environment (DE) layer that manages collaboration, network synchronization, and app permissions for the QuickDesktop ecosystem.
+This document describes the design intent of the collaboration layer: how two `quick-desktop` instances on different hosts share a workspace's CRDT state, presence, and foreign-client surfaces. The implementation is tracked in `docs/superpowers/plans/2026-05-02-peer-sync-end-to-end.md` (phases 1-6 landed).
 
-## 1. Core Philosophy
-- **Compositor as Orchestrator:** The DE (`quick-shell`) is the sole owner of the network stack and security policy.
-- **Apps as Reactive Clients:** Apps (`quick-ui` based or legacy) receive "Collaboration Context" from the DE but do not manage P2P connections or permission enforcement themselves.
-- **Cluster-Centricity:** Collaboration is scoped to a `Cluster`. All apps within a cluster share the same collaborator list and base permissions.
+## 1. Core philosophy
 
-## 2. The Collaboration Protocol (`zquick_collaboration_v1`)
-We will implement a custom Wayland protocol extension to bridge the DE and apps.
+- **Compositor as orchestrator.** The shell (`quick-desktop`) owns the network stack, identity, and security policy. Apps never speak directly to peers.
+- **Apps as reactive clients.** `quick-ui` apps receive remote cursors and CRDT changes from the shell via a Unix-socket protocol (`CollabRequest`/`CollabEvent`, see `quick-ui/src/collaboration.rs`). They do not manage P2P connections or permission enforcement themselves.
+- **Workspace-centric.** Collaboration is scoped to a workspace. All apps in a workspace share the same collaborator list, base permissions, and CRDT topic.
 
-### Interface: `zquick_collaboration_manager`
-- `get_collaboration_context`: Returns a `collaboration_context` object.
-- `subscribe_events`: App registers to receive remote cursor and collaborator updates.
+## 2. Transport: libp2p
 
-### Interface: `zquick_collaboration_context`
-- **Events:**
-    - `collaborator_joined(id, name, color)`
-    - `collaborator_left(id)`
-    - `remote_cursor_moved(id, x, y)`: Relative to the app's surface.
-    - `permissions_changed(manifest_json)`: Updates to sandboxing/capabilities.
-- **Requests:**
-    - `sync_crdt(data)`: App pushes local CRDT changes (Automerge chunks) to the DE for broadcast.
-    - `get_manifest`: Request full permission/sandbox details.
+The shell runs a single `Swarm<NiriosBehaviour>` per process (`quick-shell/src/network/p2p.rs`, `behaviour.rs`, `actor.rs`):
 
-## 3. Adapters
+- **gossipsub** — one topic per workspace, named `/nirios/ws/<workspace_id>/v1`. Strict validation, signed messages, 1 s heartbeat, mesh size ~8.
+- **mdns** — LAN auto-discovery. Peers dial discovered addresses; mesh formation is automatic.
+- **noise** — transport encryption. **tcp + yamux** for the transport.
+- **kad** is feature-gated for future relay/NAT-traversal work; off by default.
 
-### A. QuickUI Native Adapter (`quick-ui` integration)
-The `quick-ui::App` loop will be extended to:
-1.  **Auto-Discovery:** At startup, detect and bind to the `zquick_collaboration_v1` extension.
-2.  **State Integration:** 
-    - Automatically populate `state.collab.cursors` from protocol events.
-    - Hook into `automerge` to pipe local changes through `sync_crdt`.
-    - Provide a `permissions()` helper for widgets to check if they can access certain paths.
-3.  **Visuals:** Render remote cursors natively within the Vello scene for zero-latency feedback.
+Identity is an ed25519 keypair stored at `/var/lib/quick-fs/peer-key`, auto-created if missing. The libp2p `PeerId` is the multihash of the protobuf-encoded public key.
 
-### B. Legacy App Adapter (`quick-legacy-multiplexer`)
-For apps that are not collaboration-aware (e.g., standard Wayland/Iced apps):
-1.  **Compositor-Side Cursors:** The DE draws remote cursors *over* the app window.
-2.  **Input Multiplexing:** The DE manages which user's input is currently being sent to the app's single pointer/keyboard focus (e.g., "Last Mover Wins" or "Explicit Floor Control").
-3.  **Environment Emulation:** The adapter provides a fake "Home" or "Project" directory based on the Cluster's `permitted_paths` (handled via `bwrap` in `quick-shell`).
+The network actor (`quick-shell/src/network/actor.rs`) owns the swarm on a dedicated tokio task. It exchanges `NetCmd` (commands in) and `NetEvent` (events out) with the shell over `mpsc` channels.
 
-## 4. DE Implementation (`quick-shell`)
-1.  **Network Integration:** 
-    - `P2PClient` (libp2p) will be updated to handle `CRDTUpdate` messages in addition to `CursorUpdate`.
-    - It will route these messages between machines based on the `Cluster ID`.
-2.  **Security Enforcer:**
-    - `Container` (bwrap) will be initialized with the `Cluster`'s permissions.
-    - The DE will monitor app behavior and potentially revoking access if a cluster's security policy changes.
+## 3. Protocol: `NeighbourMsg`
 
-## 5. Next Steps
-1.  **Define Protocol:** Create the XML definition for `zquick_collaboration_v1`.
-2.  **Implement DE Server:** Add the protocol handler to `quick-shell/src/network/wayland.rs`.
-3.  **Update quick-ui App:** Add the client-side binding logic.
-4.  **Verification:** Run two `responsive_gallery` instances via the shell and verify that typing/cursors sync via the DE's P2P layer rather than direct app-to-app communication.
+The wire format is a serde-encoded enum (`quick-shell/src/network/protocol.rs`):
+
+```rust
+pub enum NeighbourMsg {
+    SyncReq           { since: Vec<u8> },                 // automerge change-hashes
+    SyncResp          { changes: Vec<Vec<u8>> },          // raw automerge change bytes
+    PresenceMoved     { peer, key, point: (f64, f64), ts },
+    PresenceCleared   { peer, key },
+    SurfaceFrame      { surface, encoded_h264: Vec<u8>, ts },
+    RemoteInput       { peer, surface, event },
+    PermissionRequest { peer, capability },
+    PermissionGrant   { peer, capability },
+}
+```
+
+Round-trip tests exist for every variant. Bincode is the on-wire encoding.
+
+## 4. CRDT sync (automerge incremental)
+
+`WorkspaceTree` is backed by an `automerge::AutoCommit` (see `docs/superpowers/specs/2026-05-04-workspace-tree-automerge-design.md`). Three operations drive replication:
+
+```rust
+fn current_heads(&self) -> Vec<automerge::ChangeHash>;
+fn export_changes_since(&self, since: &[ChangeHash]) -> Vec<Vec<u8>>;
+fn apply_changes(&mut self, changes: &[Vec<u8>]) -> Result<(), AutomergeError>;
+```
+
+A `WorkspaceTreeReplica` wraps the tree and a `Hub` subscriber (the in-process testing scaffold) or the live libp2p actor:
+
+- On `NeighbourMsg::SyncReq { since }` → reply `SyncResp { changes: tree.export_changes_since(since) }`.
+- On `NeighbourMsg::SyncResp { changes }` → `tree.apply_changes(&changes)`.
+- The shell publishes a `SyncReq { since: tree.current_heads() }` heartbeat every 2 s per joined workspace so reconnects converge.
+
+The replica path goes through `quick-shell/src/network/replica.rs` and `hub.rs`. The cached-materialisation design means writes go through both the public cache and the backing doc, with `assert_cache_matches_doc()` running under `debug_assertions` to catch drift.
+
+## 5. Presence
+
+Cursor moves and focus updates are throttled to ~30 Hz inside `quick-ui::App`, then forwarded to the shell, which publishes `PresenceMoved`/`PresenceCleared` on the workspace topic. Peers' incoming presence becomes remote cursors rendered on top of the local scene (`quick-shell/src/shell/remote_cursors.rs` + `quick-ui/src/collaboration.rs`).
+
+Heartbeat + presence cleanup: a peer that hasn't published anything in 15 s is ejected from `PresenceCtx` and replaced with a "disconnected" placeholder. On `NetEvent::PeerJoined` (re-join), the shell publishes a fresh `SyncReq { since: current_heads() }` to that peer.
+
+## 6. Foreign-surface streaming
+
+When an owner shares a foreign Wayland client surface with peers (peer-sync Phase 4):
+
+- The compositor's per-surface task encodes committed buffers to H.264 via openh264 (`quick-shell/src/network/encoder.rs`), at a 33 ms minimum interval (30 fps cap).
+- Encoded NALUs ride `NeighbourMsg::SurfaceFrame` on the workspace topic.
+- Peers decode in a `peer_view` widget (`quick-shell/src/shell/peer_view.rs`) with an `H264Decoder`. Decoded frames blit into the tab's content rect.
+- Peer pointer/keyboard events on a `peer_view` get serialised as `RemoteInput { peer, surface, event }`. The owner's compositor replays them via `smithay::input::Seat::input`, going through real focus rules.
+- The owner can flip a per-peer `read_only` flag (default false) to drop incoming input events.
+
+Note: openh264 is the software path for v1; hardware encoding (VAAPI via ffmpeg-next) is a follow-up.
+
+## 7. Invite tokens
+
+Invites are minted by `make_invite_token` and validated by `validate_invite_token` in `quick-shell/src/network/invite.rs`. Wire format (base64-url, no padding, no JSON pretty-printing):
+
+```json
+{ "workspace_id":         u64,
+  "owner_peer_id":        "12D3KooW…",                 // libp2p PeerId, base58
+  "owner_public_key":     "<base64-url protobuf PublicKey>",
+  "owner_addr":           "/ip4/192.168.1.5/tcp/4001", // libp2p multiaddr
+  "expiry_unix_seconds":  u64,
+  "signature":            <bytes>                       // ed25519 over canonical payload
+}
+```
+
+The canonical signing payload joins fields with `|` in a fixed order: `workspace_id | owner_peer_id | owner_public_key | owner_addr | expiry_unix_seconds`. The order is pinned by `canonical_payload_is_stable` so future field additions can't silently break verification of already-issued tokens.
+
+Validation steps (in order):
+
+1. base64-url decode → JSON parse.
+2. Reject if `expiry_unix_seconds` is in the past (before signature check, so expired-but-valid signatures can't leak validity oracles).
+3. base64-url decode `owner_public_key`; parse as libp2p `PublicKey`.
+4. Cross-check `owner_peer_id == PeerId::from(public_key)`.
+5. Verify the signature over the canonical payload.
+
+`owner_public_key` is embedded because libp2p's `PeerId` is a multihash with no stable accessor for reversing back into a `PublicKey`. Tests pin rejection of tampered tokens.
+
+UI surfaces: `/invite` palette command mints a token and copies it to the clipboard; `/connect <token>` validates and dials.
+
+## 8. Apps: how they collaborate
+
+### Native `quick-ui` apps
+
+The toolkit's collaboration plumbing (`quick-ui/src/collaboration.rs`) connects to the shell over a Unix-socket protocol. `CollabRequest::Sync { changes }` flows from app to shell; `CollabEvent::{RemoteCursorMoved, SyncIncremental, …}` flows back. The shell forwards `SyncIncremental` to the network actor, which publishes it.
+
+Inside the app:
+
+- `state.collab.cursors` is populated from `RemoteCursorMoved`.
+- Local automerge changes auto-flush via the existing hook in `quick-ui::App`.
+- A `permissions()` helper lets widgets check capability grants for the current workspace.
+- Remote cursors render natively inside the vello scene for zero-latency feedback.
+
+### Legacy / foreign Wayland clients
+
+For non-collaboration-aware Wayland clients (anything bound through the per-workspace bridge socket):
+
+- **Compositor-side cursors.** The shell draws remote cursors over the foreign-client window — the client itself sees only its single local pointer.
+- **Input multiplexing.** The compositor decides whose input reaches the foreign client; default policy is "host always wins" with a per-peer `read_only` toggle for guests.
+- **Environment emulation.** The bwrap profile presents the workspace's `/work` and `/cache` directories; `/home` is empty tmpfs. The app sees no path outside the sandbox.
+
+## 9. Disconnect / reconnect
+
+- Owner publishes a heartbeat per joined workspace every 5 s.
+- Peer that hasn't seen a heartbeat in 15 s → ejected from `PresenceCtx`.
+- On reconnect: `NetEvent::PeerJoined` triggers a fresh `SyncReq { since: current_heads() }`; missing automerge changes flow in via `SyncResp`.
+
+Tests in `quick-shell/tests/peer_sync_test.rs` exercise the convergence path.
+
+## Where to read first
+
+- `quick-shell/src/network/{actor.rs, behaviour.rs, hub.rs, replica.rs, protocol.rs, invite.rs}` — the live wiring.
+- `docs/superpowers/plans/2026-05-02-peer-sync-end-to-end.md` — phase-by-phase implementation log.
+- `docs/superpowers/specs/2026-05-04-workspace-tree-automerge-design.md` — why the cache + backing doc.
+- `quick-ui/src/collaboration.rs` — the in-process channel between toolkit and shell.
