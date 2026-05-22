@@ -18,6 +18,8 @@ pub struct Toggle {
     on_toggle_path: String, // Path in CRDT to mutate
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
+    /// Optional override for `Widget::test_id()`. Defaults to `"toggle"`.
+    id_override: Option<String>,
 }
 
 impl Toggle {
@@ -31,6 +33,7 @@ impl Toggle {
             on_toggle_path: on_toggle_path.to_string(),
             presence_path: Vec::new(),
             permission_scope: None,
+            id_override: None,
         }
     }
 
@@ -43,6 +46,15 @@ impl Toggle {
     /// Gate this widget behind a permission scope.
     pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
         self.permission_scope = Some(scope);
+        self
+    }
+
+    /// Override the value returned from `Widget::test_id()`. Without a
+    /// custom id the toggle reports `"toggle"`; callers with multiple
+    /// toggles in the same surface can disambiguate them with e.g.
+    /// `with_id("airplane_mode")`.
+    pub fn with_id(mut self, id: &str) -> Self {
+        self.id_override = Some(id.to_string());
         self
     }
 }
@@ -144,6 +156,10 @@ impl Widget for Toggle {
 
     fn name(&self) -> &str { "Toggle" }
 
+    fn test_id(&self) -> Option<&str> {
+        Some(self.id_override.as_deref().unwrap_or("toggle"))
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -189,5 +205,23 @@ impl Widget for Toggle {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widget::Widget;
+
+    #[test]
+    fn toggle_test_id_default_is_toggle() {
+        let t = Toggle::new("any", "path");
+        assert_eq!(Widget::test_id(&t), Some("toggle"));
+    }
+
+    #[test]
+    fn toggle_test_id_can_be_overridden() {
+        let t = Toggle::new("any", "path").with_id("airplane_mode");
+        assert_eq!(Widget::test_id(&t), Some("airplane_mode"));
     }
 }
