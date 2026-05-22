@@ -140,7 +140,14 @@ impl FrameBuilder {
         let (w, h) = self.viewport;
         let outer = self.root_node.expect("rebuild_layout_tree first");
         let child = self.host_node.expect("rebuild_layout_tree first");
-        let measure_map = self.node_map.clone();
+        // D-2 fix: previously this closure captured `let measure_map =
+        // self.node_map.clone();`, which copied the entire widget-ptr
+        // map on every relayout (50-100 entries on a typical frame —
+        // visible cost on a continuous resize). The closure only needs
+        // read access, so we borrow `&self.node_map` directly. The
+        // borrow is disjoint from `self.taffy` and `self.text_renderer`
+        // (separate fields) so the borrow checker is happy.
+        let measure_map: &HashMap<NodeId, *mut dyn Widget> = &self.node_map;
         let tr = &mut self.text_renderer;
         self.taffy
             .compute_layout_with_measure(
@@ -398,5 +405,36 @@ mod tests {
         fb.relayout();
         let scene = fb.paint();
         assert!(!scene.encoding().is_empty());
+    }
+
+    /// D-2 perf-fix contract: `widget_registry` is idempotent — two
+    /// consecutive calls (no layout / chrome mutation between them)
+    /// return the same set of keys mapped to the same rects. This
+    /// mirrors the contract before the relayout-clone perf fix: the
+    /// walker may not mutate anything, so subsequent reads must see
+    /// the same data.
+    #[test]
+    fn widget_registry_is_idempotent_between_calls() {
+        let mut fb = FrameBuilder::new((1600, 900));
+        // Settle the layout once so rects are populated.
+        let _ = fb.paint();
+        let snap_a = fb.widget_registry();
+        let snap_b = fb.widget_registry();
+        assert_eq!(
+            snap_a.len(),
+            snap_b.len(),
+            "widget_registry should return the same number of entries \
+             across repeated calls"
+        );
+        for (key, rect) in &snap_a {
+            assert_eq!(
+                snap_b.get(key),
+                Some(rect),
+                "widget_registry key `{key}` mismatched between calls: \
+                 {:?} vs {:?}",
+                rect,
+                snap_b.get(key)
+            );
+        }
     }
 }
