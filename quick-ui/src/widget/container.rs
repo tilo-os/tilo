@@ -142,6 +142,13 @@ impl Widget for Container {
         }
     }
 
+    /// Propagate pointer-capture intent from the contained child so an
+    /// outer container's event-routing short-circuit honours an active
+    /// drag deeper in the tree.
+    fn wants_pointer_capture(&self) -> bool {
+        self.child.as_ref().is_some_and(|c| c.wants_pointer_capture())
+    }
+
     fn children(&self) -> Vec<&dyn Widget> {
         self.child.as_ref().map(|c| c.as_ref() as &dyn Widget).into_iter().collect()
     }
