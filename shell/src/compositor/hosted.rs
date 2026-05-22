@@ -8,6 +8,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::network::behaviour::{load_or_create_keypair, peer_salt_from_keypair};
 use crate::shell::network::{DEFAULT_KEYPAIR_PATH, ShellNetwork};
 use crate::shell::{
     build_nirios_root, persist, seed_demo_editor_presence, sync_tab_presence_from_tree,
@@ -71,7 +72,43 @@ pub fn run_with_full_options(opts: HostedOptions) {
     } = opts;
 
     let path = persist::state_json_path();
-    let tree = persist::load_or_default(&path);
+    let mut tree = persist::load_or_default(&path);
+
+    // C-1: under `--enable-peer-sync`, derive a deterministic 16-bit
+    // peer salt from the libp2p keypair and stamp it into every id
+    // minted by `next_id` for the rest of the process lifetime. Two
+    // peers running in parallel mint ids with disjoint high bits, so
+    // CRDT sync no longer folds two distinct workspaces into a single
+    // row when their counters happen to overlap.
+    //
+    // The salt has to be set BEFORE `load_or_default`'s
+    // `seed_next_id_from_self` runs — otherwise the counter is seeded
+    // off ids from the *previous* (salt-0) run and the very next
+    // `WorkspaceId::new()` call mints a salted id whose counter
+    // overlaps an unsalted one already in the tree. The fix is to
+    // re-seed after setting the salt; `seed_next_id_from_self` is
+    // idempotent.
+    //
+    // No salt is set under the legacy (peer-sync-off) path so existing
+    // tests + restart cases keep producing the familiar `0x0001,
+    // 0x0002, …` id sequence. The salt-0 default is the explicit
+    // back-compat contract.
+    if enable_peer_sync {
+        match load_or_create_keypair(std::path::Path::new(DEFAULT_KEYPAIR_PATH)) {
+            Ok(kp) => {
+                let salt = peer_salt_from_keypair(&kp);
+                tree.set_peer_salt(salt);
+                tree.seed_next_id_from_self();
+                tracing::info!("peer-sync: id salt set to 0x{:04x}", salt);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "peer-sync: keypair load failed ({e}); ids remain unsalted \
+                     (cross-peer collisions possible)"
+                );
+            }
+        }
+    }
 
     // Optional peer-sync handle — construction only, per Task 3.1.
     // Held alive for the life of `run` so the actor's tokio runtime

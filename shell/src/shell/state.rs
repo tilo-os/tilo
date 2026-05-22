@@ -70,7 +70,7 @@ pub type GroupId = u64;
 pub type TabId = u64;
 pub type FileId = u64;
 
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicU16, AtomicU64, Ordering as AtomicOrdering};
 
 /// Process-wide monotonic counter shared by [`WorkspaceId::new`],
 /// [`StripId::new`], and ad-hoc `next_id()` consumers (group / tab /
@@ -81,10 +81,49 @@ use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 /// that seeding, a fresh process restarts the counter at `1` and the
 /// next allocation collides with the lowest-id entry already in the
 /// loaded cache (D-9).
+///
+/// C-1: only the **low 48 bits** of each minted id come from this
+/// counter; the high 16 bits are stamped with [`NEXT_ID_PEER_SALT`] so
+/// two peers running in parallel can never mint the same id. Without
+/// the salt, both peers' counters tick `1, 2, 3, …` from `1`, then
+/// `apply_changes` folds the two distinct workspaces with id `2` into a
+/// single row (strips collide, names overwrite, grants merge).
 pub(crate) static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
+/// Process-wide peer salt occupying the **high 16 bits** of every id
+/// minted by [`next_id`]. Default `0` keeps tests and pre-peer-sync
+/// boots producing the familiar `0x0001, 0x0002, …` sequence; the
+/// hosted entry point overwrites this at startup with a deterministic
+/// hash of the local libp2p public key (see
+/// [`crate::network::behaviour::peer_salt_from_keypair`]).
+///
+/// `AtomicU16` because the salt is a single 16-bit field and writes
+/// happen exactly once at boot. Reads happen on every id allocation —
+/// `Relaxed` is enough (no other state piggy-backs on the salt's
+/// visibility).
+pub(crate) static NEXT_ID_PEER_SALT: AtomicU16 = AtomicU16::new(0);
+
+/// Mask that selects the low-48-bit counter portion of a salted id.
+pub(crate) const PEER_ID_COUNTER_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
+
+/// Shift amount that lifts the 16-bit peer salt into the high bits.
+pub(crate) const PEER_ID_SALT_SHIFT: u32 = 48;
+
 pub(crate) fn next_id() -> u64 {
-    NEXT_ID.fetch_add(1, AtomicOrdering::Relaxed)
+    let counter = NEXT_ID.fetch_add(1, AtomicOrdering::Relaxed);
+    let counter = counter & PEER_ID_COUNTER_MASK;
+    let salt = NEXT_ID_PEER_SALT.load(AtomicOrdering::Relaxed) as u64;
+    (salt << PEER_ID_SALT_SHIFT) | counter
+}
+
+/// Extract the 16-bit peer salt encoded in the high bits of a salted id.
+pub(crate) fn peer_salt_of(id: u64) -> u16 {
+    (id >> PEER_ID_SALT_SHIFT) as u16
+}
+
+/// Extract the low-48-bit counter component of a salted id.
+pub(crate) fn counter_of(id: u64) -> u64 {
+    id & PEER_ID_COUNTER_MASK
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -581,10 +620,36 @@ impl Default for WorkspaceTree {
 
 
 impl WorkspaceTree {
+    /// Set the process-wide peer salt that [`next_id`] stamps into the
+    /// high 16 bits of every freshly-allocated id (C-1). Called once
+    /// from the hosted entry point after the libp2p keypair is loaded —
+    /// see [`crate::network::behaviour::peer_salt_from_keypair`].
+    ///
+    /// Default salt is `0`, which keeps every test that asserts on
+    /// `WorkspaceId(1)` / `StripId(2)` style literals working without
+    /// touching anything. Two peers minting ids under distinct salts
+    /// can never collide.
+    ///
+    /// Takes `&mut self` even though the salt is process-global so the
+    /// API surface invites the caller to set it on a tree they own — a
+    /// future per-tree-salt refactor (e.g. for in-process e2e tests that
+    /// simulate two peers) is a one-line change without breaking
+    /// callers.
+    pub fn set_peer_salt(&mut self, salt: u16) {
+        NEXT_ID_PEER_SALT.store(salt, AtomicOrdering::Relaxed);
+    }
+
+    /// Read the current process-wide peer salt. Mostly used by tests to
+    /// assert on the salt without poking the static directly.
+    pub fn peer_salt(&self) -> u16 {
+        NEXT_ID_PEER_SALT.load(AtomicOrdering::Relaxed)
+    }
+
     /// Walk every id in the tree (workspace, strip, group, tab) and
-    /// advance the process-wide [`NEXT_ID`] counter past the maximum.
-    /// Idempotent: a second call with an unchanged tree is a no-op
-    /// against the already-advanced counter.
+    /// advance the process-wide [`NEXT_ID`] counter past the maximum
+    /// **counter** stamped by the local peer salt. Idempotent: a second
+    /// call with an unchanged tree is a no-op against the already-
+    /// advanced counter.
     ///
     /// D-9 regression: the counter starts at `1` on every fresh
     /// process. On a restart where the persisted state already uses
@@ -592,27 +657,40 @@ impl WorkspaceTree {
     /// collides with the existing id `1` — the cache rebuild then
     /// folds two distinct entries into one.
     ///
+    /// C-1 follow-up: only ids whose high 16 bits match the local salt
+    /// count toward the seed. Ids minted by a remote peer (different
+    /// salt) live in a disjoint range and must NOT advance our counter,
+    /// or we'd skip over our own legitimate `next_id` slots for no
+    /// reason. The 0-salt case (tests, pre-peer-sync) walks every id
+    /// the way it did before C-1.
+    ///
     /// Call this from [`persist::load_or_default`] (and any other
     /// load path) after deserialising so subsequent allocations are
     /// guaranteed to be fresh.
     pub fn seed_next_id_from_self(&self) {
-        let mut max_id: u64 = 0;
+        let local_salt = NEXT_ID_PEER_SALT.load(AtomicOrdering::Relaxed);
+        let mut max_counter: u64 = 0;
+        let mut consider = |id: u64| {
+            if peer_salt_of(id) == local_salt {
+                max_counter = max_counter.max(counter_of(id));
+            }
+        };
         for ws in &self.workspaces {
-            max_id = max_id.max(ws.id.raw());
+            consider(ws.id.raw());
             for strip in &ws.strips {
-                max_id = max_id.max(strip.id.raw());
+                consider(strip.id.raw());
                 for group in &strip.window_groups {
-                    max_id = max_id.max(group.id);
+                    consider(group.id);
                     for tab in &group.tabs {
-                        max_id = max_id.max(tab.id);
+                        consider(tab.id);
                     }
                 }
             }
         }
-        // Advance the counter past max_id. `fetch_max` keeps the
+        // Advance the counter past `max_counter`. `fetch_max` keeps the
         // higher of the two so a parallel allocator that already
-        // pushed past max_id isn't reset backwards.
-        NEXT_ID.fetch_max(max_id.saturating_add(1), AtomicOrdering::Relaxed);
+        // pushed past max_counter isn't reset backwards.
+        NEXT_ID.fetch_max(max_counter.saturating_add(1), AtomicOrdering::Relaxed);
     }
 
     /// Snapshot of the current automerge change-graph heads. Peer-sync
@@ -2998,8 +3076,29 @@ mod next_id_seed_tests {
     //! in the same binary may have already pushed it further).
     use super::*;
 
+    /// Restore the process-wide peer salt to `0` at scope-exit so a
+    /// test that flips the salt doesn't leak the new value into other
+    /// tests sharing the same binary (`cargo test` runs them in the
+    /// same process). RAII: storing the previous salt in a struct + a
+    /// `Drop` impl makes the restore unconditional even on panic.
+    struct SaltGuard(u16);
+    impl SaltGuard {
+        fn new() -> Self {
+            Self(NEXT_ID_PEER_SALT.load(AtomicOrdering::Relaxed))
+        }
+    }
+    impl Drop for SaltGuard {
+        fn drop(&mut self) {
+            NEXT_ID_PEER_SALT.store(self.0, AtomicOrdering::Relaxed);
+        }
+    }
+
     #[test]
     fn next_id_seeds_above_max_used_id_on_load() {
+        let _guard = SaltGuard::new();
+        // The default tree path runs with salt=0 (back-compat); the
+        // existing assertion still holds in that range.
+        NEXT_ID_PEER_SALT.store(0, AtomicOrdering::Relaxed);
         // Build a tree whose ids include a deliberately-high value
         // (50). A fresh process counter starts at 1; without seeding,
         // the next allocation would be `2` and collide with id 1.
@@ -3024,6 +3123,172 @@ mod next_id_seed_tests {
              id (max was 50); got {} which would collide with the \
              existing tree (D-9 regression)",
             allocated
+        );
+    }
+
+    /// C-1: a salt of `0` (the default) reproduces the exact id shape
+    /// every existing test asserts on. Without this, the C-1 patch
+    /// would silently break every fixture that expects `WorkspaceId(1)`
+    /// to round-trip through serde.
+    #[test]
+    fn peer_salt_zero_default_keeps_old_ids() {
+        let _guard = SaltGuard::new();
+        // Reset both the salt and the counter so a parallel test that
+        // bumped them doesn't leak.
+        NEXT_ID_PEER_SALT.store(0, AtomicOrdering::Relaxed);
+        NEXT_ID.store(1, AtomicOrdering::Relaxed);
+
+        let id = next_id();
+        assert_eq!(
+            id, 1,
+            "salt-0 default must mint the bare counter; got 0x{:016x}",
+            id
+        );
+        assert_eq!(peer_salt_of(id), 0);
+        assert_eq!(counter_of(id), 1);
+    }
+
+    /// C-1: after `set_peer_salt(0xABCD)` the top 16 bits of every
+    /// freshly-minted id must equal `0xABCD`. Sanity check on the
+    /// bit-packing.
+    #[test]
+    fn peer_salt_high_bits_are_the_salt() {
+        let _guard = SaltGuard::new();
+        let mut tree = WorkspaceTree::default();
+        tree.set_peer_salt(0xABCD);
+
+        // Reset the counter so the assertion below sees a small value
+        // it can compare cleanly.
+        NEXT_ID.store(1, AtomicOrdering::Relaxed);
+        let id = next_id();
+
+        assert_eq!(
+            peer_salt_of(id),
+            0xABCD,
+            "set_peer_salt(0xABCD) must stamp 0xABCD into the high 16 \
+             bits of next_id(); got id=0x{:016x} (salt=0x{:04x})",
+            id,
+            peer_salt_of(id)
+        );
+        // Counter portion must remain monotonic and small.
+        assert_eq!(counter_of(id), 1);
+    }
+
+    /// C-1 (the headline scenario from
+    /// `docs/superpowers/audits/2026-05-22-nirios-fresh-bugs.md`):
+    /// two peers run independent `next_id` counters in parallel. With
+    /// distinct peer salts, their ids live in disjoint high-bit ranges
+    /// so CRDT sync surfaces both workspaces side-by-side instead of
+    /// folding them into a single row.
+    ///
+    /// To isolate the salt's contribution from an unrelated bug (two
+    /// peers concurrently `put_object`'ing the `workspaces` list at
+    /// ROOT — separately tracked, not in C-1's scope), we share a
+    /// common base doc between the two peers before each appends. Then
+    /// the only thing left to differ between the two `append` calls is
+    /// the id their respective `next_id` counter mints.
+    #[test]
+    fn two_peers_with_independent_next_id_collide_under_sync() {
+        let _guard = SaltGuard::new();
+
+        // Establish a shared base doc: peer A creates the workspaces
+        // list, peer B applies that change. After this, both peers
+        // share the same `workspaces` list object id at ROOT —
+        // subsequent appends become concurrent edits to the *same*
+        // list, not concurrent creates of separate lists.
+        NEXT_ID_PEER_SALT.store(0x1111, AtomicOrdering::Relaxed);
+        NEXT_ID.store(1, AtomicOrdering::Relaxed);
+        let mut tree_a = WorkspaceTree::default();
+        tree_a.seed_doc_from_cache();
+        let base_changes = tree_a.export_changes_since(&[]);
+        let mut tree_b = WorkspaceTree::default();
+        tree_b.apply_changes(&base_changes).expect("seed B from A");
+        // Snapshot the heads after the base sync so the post-fork
+        // export only ships the *incremental* appends.
+        let base_heads = tree_a.current_heads();
+
+        // Peer B switches to its own salt and appends a workspace.
+        NEXT_ID_PEER_SALT.store(0x2222, AtomicOrdering::Relaxed);
+        NEXT_ID.store(1, AtomicOrdering::Relaxed);
+        let id_b = tree_b.append_empty_workspace("PeerB");
+
+        // Peer A appends concurrently under its own salt. Without the
+        // salt, both peers would mint id `1` here and collide.
+        NEXT_ID_PEER_SALT.store(0x1111, AtomicOrdering::Relaxed);
+        NEXT_ID.store(1, AtomicOrdering::Relaxed);
+        let id_a = tree_a.append_empty_workspace("PeerA");
+
+        assert_ne!(
+            id_a, id_b,
+            "two peers with distinct salts must mint distinct ids; \
+             got A=0x{:016x} B=0x{:016x} (C-1 regression — pre-patch \
+             both peers would have minted id 1)",
+            id_a.raw(),
+            id_b.raw()
+        );
+        assert_eq!(peer_salt_of(id_a.raw()), 0x1111);
+        assert_eq!(peer_salt_of(id_b.raw()), 0x2222);
+
+        // Sync the incremental appends in both directions and rebuild
+        // each peer's cache from the merged doc.
+        let changes_a = tree_a.export_changes_since(&base_heads);
+        let changes_b = tree_b.export_changes_since(&base_heads);
+        tree_b.apply_changes(&changes_a).expect("apply A→B");
+        tree_a.apply_changes(&changes_b).expect("apply B→A");
+
+        // Both peers must observe BOTH workspaces — no collision-fold.
+        // Pre-patch, the shared id `1` would cause `rebuild_cache_from_doc`
+        // to merge the two distinct rows into one (strips collide,
+        // names overwrite, grants merge per the audit).
+        for (label, tree) in [("A", &tree_a), ("B", &tree_b)] {
+            let has_a = tree.workspaces.iter().any(|w| w.id == id_a);
+            let has_b = tree.workspaces.iter().any(|w| w.id == id_b);
+            assert!(
+                has_a && has_b,
+                "peer {label} must see both workspaces after sync; \
+                 has_a={has_a} has_b={has_b}, workspaces={:?}",
+                tree.workspaces.iter().map(|w| (w.id.raw(), &w.name)).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// C-1 follow-up on `seed_next_id_from_self`: the counter advances
+    /// based ONLY on ids minted under the local salt. Ids minted by a
+    /// remote peer (different salt) live in a disjoint range and must
+    /// not drag the local counter forward — that would burn legitimate
+    /// local slots for no reason.
+    #[test]
+    fn seed_next_id_from_self_respects_peer_salt() {
+        let _guard = SaltGuard::new();
+        NEXT_ID_PEER_SALT.store(0x1111, AtomicOrdering::Relaxed);
+        NEXT_ID.store(1, AtomicOrdering::Relaxed);
+
+        // A tree containing one id under the local salt (counter=5)
+        // and a much larger id under a remote salt (counter=1000).
+        let local_id_raw = ((0x1111u64) << PEER_ID_SALT_SHIFT) | 5;
+        let remote_id_raw = ((0x2222u64) << PEER_ID_SALT_SHIFT) | 1000;
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(Workspace::new(
+            WorkspaceId::from(local_id_raw),
+            "Local",
+        ));
+        tree.workspaces.push(Workspace::new(
+            WorkspaceId::from(remote_id_raw),
+            "Remote",
+        ));
+
+        tree.seed_next_id_from_self();
+
+        // The counter must have advanced to 6 (= local max + 1), NOT
+        // to 1001 — remote ids do not consume our counter space.
+        let next = NEXT_ID.load(AtomicOrdering::Relaxed);
+        assert_eq!(
+            next, 6,
+            "seed_next_id_from_self must only consider ids under the \
+             local salt; got counter={} but the only local-salt id had \
+             counter=5 (remote-salt id counter=1000 is in a disjoint \
+             range and must be ignored)",
+            next
         );
     }
 }
