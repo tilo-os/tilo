@@ -122,22 +122,36 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
 ///
 /// On EOF / connection error / write failure, marks the connection
 /// closed so the outer loop can drop it.
+///
+/// Phase 1b — only read-only commands (`list_targets`) are fully
+/// implemented end-to-end. Phase 2a's `click_at` / `click_named`
+/// commands still parse + dispatch through the pure-logic layer (see
+/// `test_control::PlannedAction`), but their planned actions are
+/// **not yet executed** — that wireup is Phase 2b (needs ShellOverlayHost
+/// `handle_event` plumbing with AutoCommit / ObjId / focus / NodeId
+/// pieces that currently live in `ShellDriver` and aren't available
+/// here yet).
 fn pump_test_control_conn(conn: &mut TestControlConn, frame_builder: &FrameBuilder) {
     loop {
         let mut line = String::new();
         match conn.reader.read_line(&mut line) {
             Ok(0) => {
-                // EOF.
                 conn.closed = true;
                 return;
             }
             Ok(_) => {
-                // We have one full line — dispatch + reply.
                 let state = FrameBuilderControlState { fb: frame_builder };
-                let resp = match parse_command(&line) {
+                let (resp, actions) = match parse_command(&line) {
                     Ok(cmd) => test_control::dispatch_command(&cmd, &state),
-                    Err(err_resp) => err_resp,
+                    Err(err_resp) => (err_resp, Vec::new()),
                 };
+                if !actions.is_empty() {
+                    eprintln!(
+                        "nirios compositor: test_control received {} planned \
+                         action(s); execution is Phase 2b (not yet wired)",
+                        actions.len()
+                    );
+                }
                 let mut out = serialise_response(&resp);
                 out.push('\n');
                 if let Err(e) = conn.reader.get_mut().write_all(out.as_bytes()) {
@@ -145,10 +159,8 @@ fn pump_test_control_conn(conn: &mut TestControlConn, frame_builder: &FrameBuild
                     conn.closed = true;
                     return;
                 }
-                // Continue draining — there may be another line buffered.
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                // No complete line yet; partial bytes stay in the BufReader.
                 return;
             }
             Err(e) => {
