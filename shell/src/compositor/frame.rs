@@ -254,6 +254,71 @@ impl FrameBuilder {
     pub fn host_and_taffy_mut(&mut self) -> (&mut ShellOverlayHost, &TaffyTree<()>) {
         (&mut self.host, &self.taffy)
     }
+
+    /// Snapshot of every addressable widget in the live tree, keyed by
+    /// either its opt-in `test_id` or a stable path
+    /// (`Parent/Child[index]`). Same shape `ShellDriver::widget_registry`
+    /// uses for in-process scenarios; lifted into `FrameBuilder` so the
+    /// out-of-process control protocol (`compositor::test_control`) can
+    /// reach the same data without going through the shots binary.
+    ///
+    /// Walked fresh on every call — there's no hidden cache. Callers
+    /// that need the registry across multiple actions should re-fetch
+    /// after each frame's `paint`/`relayout` (layout can shift rects
+    /// between frames).
+    pub fn widget_registry(&self) -> HashMap<String, vello::kurbo::Rect> {
+        let mut out = HashMap::new();
+        let mut sibling_counts: HashMap<String, usize> = HashMap::new();
+        walk_widget(&self.host, "", &mut sibling_counts, &mut out);
+        out
+    }
+}
+
+/// Depth-first walk of the widget tree. Registers each visited node:
+///   - if `test_id()` returns `Some(id)`, `id -> rect` (highest priority
+///     — overrides any path-based key).
+///   - the path-based key `Parent/.../Self[sibling_index]`, so
+///     un-tagged widgets stay addressable.
+///   - a bare-name form (`Parent/Self`) for the first sibling of a
+///     given name.
+///
+/// `sibling_counts` is a parent-scoped counter map keyed by
+/// `parent_path::name`. Children of the same parent that share a name
+/// get deterministic `[0]`, `[1]`, ... suffixes. The shots `ShellDriver`
+/// uses this exact walk too — exposed `pub` here so both consumers
+/// share one implementation.
+pub fn walk_widget(
+    w: &dyn quick_ui::widget::Widget,
+    parent_path: &str,
+    sibling_counts: &mut HashMap<String, usize>,
+    out: &mut HashMap<String, vello::kurbo::Rect>,
+) {
+    let name = w.name().to_string();
+    let sibling_key = format!("{parent_path}::{name}");
+    let idx = sibling_counts.entry(sibling_key).or_insert(0);
+    let my_index = *idx;
+    *idx += 1;
+    let path = if parent_path.is_empty() {
+        format!("{name}[{my_index}]")
+    } else {
+        format!("{parent_path}/{name}[{my_index}]")
+    };
+    out.insert(path.clone(), w.get_rect());
+    if my_index == 0 {
+        let bare = if parent_path.is_empty() {
+            name.clone()
+        } else {
+            format!("{parent_path}/{name}")
+        };
+        out.entry(bare).or_insert_with(|| w.get_rect());
+    }
+    if let Some(id) = w.test_id() {
+        out.insert(id.to_string(), w.get_rect());
+    }
+    let mut child_counts: HashMap<String, usize> = HashMap::new();
+    for child in w.children() {
+        walk_widget(child, &path, &mut child_counts, out);
+    }
 }
 
 #[cfg(test)]
