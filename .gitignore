@@ -15,3 +15,4 @@ Cargo.lock
 .devcontainer/.gitconfig.env
 .branchbox.env
 .env.local
+scripts/headless-examples/__pycache__/
