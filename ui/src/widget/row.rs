@@ -133,13 +133,10 @@ impl Widget for Row {
         self.children.iter().any(|c| c.wants_pointer_capture())
     }
 
-    /// Direct-field override — the default `Widget::needs_redraw`
-    /// allocates a `Vec<&dyn Widget>` via `children()` to recurse,
-    /// which is a per-frame heap allocation we'd rather skip.
-    /// Same shape for `is_layout_dirty`.
+    /// Direct-field recurse — the default impl allocates a
+    /// `Vec` via `children()`, which the subtree-cache check
+    /// hits per frame.
     fn needs_redraw(&self) -> bool {
-        // Container itself is dirty only when its cache is stale;
-        // the children handle their own dirty state.
         self.cache_rect == vello::kurbo::Rect::ZERO
             || self.children.iter().any(|c| c.needs_redraw())
     }
@@ -195,8 +192,8 @@ impl Widget for Row {
         permissions: &crate::permissions::PermissionContext,
     ) {
         if presence.should_cull(self.get_rect()) { return; }
-        // Subtree cache — same pattern as `Column`; see that
-        // widget's `draw_with_presence` for the rationale.
+        // Subtree cache — see `Column::draw_with_presence` for the
+        // `Affine::IDENTITY` rebuild requirement.
         let size_changed = self.rect.width() != self.cache_rect.width()
             || self.rect.height() != self.cache_rect.height();
         let any_child_dirty = self.children.iter().any(|c| c.needs_redraw());
@@ -211,9 +208,9 @@ impl Widget for Row {
             let mut local = std::mem::take(&mut self.subtree_cache);
             local.reset();
             for child in &mut self.children {
-                child.draw_with_presence(&mut local, transform, text_renderer, theme, presence, permissions);
+                child.draw_with_presence(&mut local, Affine::IDENTITY, text_renderer, theme, presence, permissions);
             }
-            scene.append(&local, None);
+            scene.append(&local, Some(transform));
             self.subtree_cache = local;
             self.cache_rect = self.rect;
         }
