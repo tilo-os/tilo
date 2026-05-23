@@ -147,7 +147,7 @@ impl TerminalWidget {
 
         let grid_id = self.grid_id.as_ref().unwrap();
         let current_len = state.length(grid_id);
-        
+
         if current_len < self.height {
             for y in current_len..self.height {
                 let line_id = state.insert_object(grid_id, y, ObjType::Map).unwrap();
@@ -303,6 +303,18 @@ impl Widget for TerminalWidget {
         let new_width = (layout.size.width as f64 / self.char_w.max(1.0)).floor() as usize;
         let new_height = (layout.size.height as f64 / self.char_h.max(1.0)).floor() as usize;
         
+        // Cap the CRDT-backed grid at a sensible terminal size. The
+        // init pass splices `self.height * self.width` characters into
+        // a fresh automerge doc; each char is its own column op, and
+        // automerge's column-data insert is O(doc_size), so a
+        // full-screen-embed (186 × 219 ≈ 40 700 chars) freezes the
+        // process for tens of seconds while the doc compacts. The
+        // user-visible region can be larger than the CRDT grid —
+        // overflow rows simply render empty until a deeper rework
+        // makes the grid sparse / lazy. Defaults match a generous
+        // terminal: 200 cols × 80 rows.
+        let new_width = new_width.min(200);
+        let new_height = new_height.min(80);
         if new_width > 0 && new_height > 0 && (new_width != self.width || new_height != self.height) {
             let history_offset = self.line_ids.len().saturating_sub(self.height);
             let absolute_y = history_offset + self.cursor_y;
