@@ -225,7 +225,12 @@ const SIDEBAR_TOP_OFFSET_PX: f32 = 40.0;
 /// Width of the floating sidebar overlay. Mirrors
 /// `sidebar_wheel_chrome::SIDEBAR_WIDTH_PX` so the two stay in sync
 /// without a cross-module constant dependency.
-const SIDEBAR_WIDTH_PX: f32 = 200.0;
+///
+/// 2026-05-23: 200 → 360 px alongside the wheel-disc redesign (ring +
+/// upright horizontal label + workspace-color dot markers). The two
+/// constants are required to match — if they diverge the overlay's
+/// taffy reservation and the wheel's intrinsic-width math disagree.
+const SIDEBAR_WIDTH_PX: f32 = 360.0;
 
 /// Duration of the vertical workspace-swap slide. Matches the concept's
 /// wheel-spin feel — long enough to register as motion, short enough to
