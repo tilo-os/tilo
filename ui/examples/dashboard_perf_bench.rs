@@ -30,14 +30,14 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use automerge::AutoCommit;
-use quick_ui::i18n::I18nManager;
-use quick_ui::offscreen::OffscreenRenderer;
-use quick_ui::permissions::PermissionContext;
-use quick_ui::presence::PresenceCtx;
-use quick_ui::text_render::TextRenderer;
-use quick_ui::theme::Theme;
-use quick_ui::widget::toggle_group::Segment;
-use quick_ui::widget::{
+use ui::i18n::I18nManager;
+use ui::offscreen::OffscreenRenderer;
+use ui::permissions::PermissionContext;
+use ui::presence::PresenceCtx;
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::widget::toggle_group::Segment;
+use ui::widget::{
     Avatar, Badge, Button, Column, ProgressBar, Row, ScrollAxis, Scrollable, Spinner, Text,
     ToggleGroup, Widget,
 };
@@ -200,7 +200,14 @@ fn full_draw(
 
     let t_draw = Instant::now();
     scene.reset();
+    // Wire the spatial-culling viewport just like the live App
+    // does. Without this the bench's `draw_with_presence` walks
+    // see `viewport == None` and skip the culling short-circuit,
+    // masking the Item 1 win in the benchmark output.
+    let vp = vello::kurbo::Rect::new(0.0, 0.0, canvas_w as f64, canvas_h as f64);
+    let prev_vp = presence.push_viewport(vp);
     root.draw_with_presence(scene, Affine::IDENTITY, text_renderer, theme, presence, perms);
+    presence.pop_viewport(prev_vp);
     phase.draw_us = t_draw.elapsed().as_micros();
 
     let t_render = Instant::now();

@@ -189,6 +189,7 @@ impl Widget for Toggle {
         presence: &crate::presence::PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
+        if presence.should_cull(self.get_rect()) { return; }
         self.draw(scene, transform, text_renderer, theme, presence);
 
         if let Some(scope) = self.permission_scope() {

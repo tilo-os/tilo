@@ -27,16 +27,16 @@ use std::time::Instant;
 
 use automerge::AutoCommit;
 use chrono::NaiveDate;
-use quick_ui::i18n::I18nManager;
-use quick_ui::offscreen::OffscreenRenderer;
-use quick_ui::permissions::PermissionContext;
-use quick_ui::presence::PresenceCtx;
-use quick_ui::text_render::TextRenderer;
-use quick_ui::theme::Theme;
-use quick_ui::widget::toggle_group::Segment;
-use quick_ui::widget::toolbar::Orientation as ToolbarOrientation;
-use quick_ui::widget::tree_view::TreeNode;
-use quick_ui::widget::{
+use ui::i18n::I18nManager;
+use ui::offscreen::OffscreenRenderer;
+use ui::permissions::PermissionContext;
+use ui::presence::PresenceCtx;
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::widget::toggle_group::Segment;
+use ui::widget::toolbar::Orientation as ToolbarOrientation;
+use ui::widget::tree_view::TreeNode;
+use ui::widget::{
     Avatar, Badge, Breadcrumb, Column, ColorPicker, DatePicker, ProgressBar, Row,
     ScrollAxis, Scrollable, Spinner, Text, TimePicker, ToggleGroup, Toolbar, TreeView,
     Widget,
@@ -86,12 +86,12 @@ fn build_tree() -> Box<dyn Widget> {
             .push(caption("row_basics"))
             .push(Box::new(
                 Row::new()
-                    .push(Box::new(quick_ui::widget::Button::new("btn", "btn_save", None)))
-                    .push(Box::new(quick_ui::widget::Toggle::new("tog", "toggle_1")))
-                    .push(Box::new(quick_ui::widget::Checkbox::new("chk", "check_1")))
-                    .push(Box::new(quick_ui::widget::Slider::new("sld", "slider_1")))
+                    .push(Box::new(ui::widget::Button::new("btn", "btn_save", None)))
+                    .push(Box::new(ui::widget::Toggle::new("tog", "toggle_1")))
+                    .push(Box::new(ui::widget::Checkbox::new("chk", "check_1")))
+                    .push(Box::new(ui::widget::Slider::new("sld", "slider_1")))
                     .push(Box::new(
-                        quick_ui::widget::TextInput::new(vec![])
+                        ui::widget::TextInput::new(vec![])
                             .with_id("txt")
                             .with_on_change_path("text_1"),
                     )),

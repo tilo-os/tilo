@@ -173,6 +173,7 @@ impl Widget for Row {
         presence: &crate::presence::PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
+        if presence.should_cull(self.get_rect()) { return; }
         // Propagate presence/permission context down to each child so nested
         // opt-in widgets still render their chrome.
         for child in &mut self.children {
