@@ -298,8 +298,9 @@ impl Widget for ToggleGroup {
     fn mark_drawn(&mut self) { self.cache_dirty = false; }
 
     /// Segmented control has fixed intrinsic size set in
-    /// `build_layout`. Clicking only changes `selected`, not size.
-    fn is_layout_dirty(&self) -> bool { false }
+    /// `build_layout`. `Rect::ZERO` sentinel covers the
+    /// pre-apply_layout state.
+    fn is_layout_dirty(&self) -> bool { self.rect == Rect::ZERO }
 
     fn handle_event(
         &mut self,
