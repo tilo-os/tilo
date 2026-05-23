@@ -52,7 +52,7 @@ impl Default for DesktopConfig {
 
 pub fn load_config() -> DesktopConfig {
     let paths = [
-        dirs_next::config_dir()
+        dirs::config_dir()
             .map(|d| d.join("quick-desktop").join("desktop.toml"))
             .unwrap_or_default(),
         std::path::PathBuf::from("/etc/quick-desktop/desktop.toml"),
