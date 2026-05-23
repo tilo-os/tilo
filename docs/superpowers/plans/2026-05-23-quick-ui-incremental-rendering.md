@@ -331,51 +331,39 @@ explicitly.
 
 ---
 
-## Unit 5: dirty-rect GPU submit (stretch)
+## Unit 5: dirty-rect GPU submit (stretch) — ❌ removed 2026-05-23
 
-**File scope:** `quick-ui/src/app.rs` + a tiny helper inside
-`quick-ui/src/renderer.rs` (or wherever the surface-render call
-lives now — `app.rs`'s `RedrawRequested` block).
+The original idea (clip the composed scene to a dirty-bounds rect
+via `Scene::push_layer` so vello's tile binner skips outside-tiles)
+was implemented, then removed when it shipped the bug recorded in
+`ui/tests/incremental_render_regressions.rs::static_widgets_stay_visible_on_animation_only_frames`.
 
-Even after Units 1-4 land, the GPU submit (`render_to_surface` +
-`surface_texture.present()`) re-uploads + composes the full
-window every frame. For a single ToggleGroup click that's wasted
-bandwidth.
+Why it doesn't work in this setup: vello allocates a fresh
+`target_texture` every frame (`vello::util::create_targets`). The
+clip layer doesn't *preserve* last frame's pixels in the
+clipped-out region — those tiles just paint as the clear colour.
+Result: on idle animation frames, dirty bounds shrink to just the
+spinners/progress bars in the header, and every other widget
+vanishes until a scroll or resize inflates the dirty union back
+past the threshold.
 
-**Approach:** track a "dirty bounding box" as widgets mark
-themselves dirty:
+A correct partial-frame path needs one of:
 
-```rust
-fn dirty_bounds(w: &dyn Widget) -> Option<Rect> {
-    if !w.needs_redraw() { return None; }
-    let mut bounds = w.get_rect();
-    for c in w.children() {
-        if let Some(child_bounds) = dirty_bounds(c) {
-            bounds = bounds.union(child_bounds);
-        }
-    }
-    Some(bounds)
-}
-```
+1. Retain the previous frame's target texture, blit it into the
+   new target before rendering, then push the damage clip so vello
+   only overwrites tiles inside the dirty bounds.
+2. Use a surface configuration that hands back the previous
+   frame's image (e.g. `wgpu::CompositeAlphaMode::PreMultiplied`
+   on a transparent surface that's blended on top of the prior
+   backbuffer — platform-dependent and not portable).
 
-When all widgets are clean, skip `render_to_surface` entirely — the
-swapchain still holds the last frame.
+Either is bigger than a one-line `push_layer`; deferred until the
+bench actually shows the per-frame cost matters (Units 1–3 already
+get the full dashboard to ~6 ms / 145 Hz on the reporter's
+machine).
 
-When some widgets are dirty:
-- Vello 0.2.1 doesn't have a clipped/partial render path; the
-  whole scene encoding is rasterised.
-- We *can* clip the composed scene to the dirty bounds via
-  `Scene::push_layer(BlendMode::default(), 1.0, transform, dirty_rect)`
-  before appending the per-widget scenes, then pop. This prevents
-  the *content* outside dirty bounds from being re-rasterised
-  (Vello's tile binning skips empty tiles).
-
-This is the *least* well-understood unit — Vello's actual cost
-profile under partial-clip is mostly empirical. Land Units 1–4
-first, measure, then decide whether Unit 5 is worth the engineering.
-
-**Tests:** N/A this round — would need a frame-time bench against
-the showcase to even know if the win is real.
+**Tests:** the regression test linked above guards against a
+naive re-introduction.
 
 ---
 
