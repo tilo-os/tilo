@@ -1,5 +1,5 @@
-use quick_ui::tokens::{Tokens, Spacing, Radii};
-use quick_ui::Theme;
+use ui::tokens::{Tokens, Spacing, Radii};
+use ui::Theme;
 
 #[test]
 fn tokens_dark_has_11_neutral_stops() {
@@ -40,9 +40,9 @@ fn theme_exposes_tokens() {
     assert_eq!(t.tokens.radii.md as f64, t.radius_standard);
 }
 
-use quick_ui::presence::{PresenceCtx, PresenceKey};
-use quick_ui::permissions::{PermissionScope, ResourceId, Op, WorkspaceId};
-use quick_ui::dnd::{DragPayload};
+use ui::presence::{PresenceCtx, PresenceKey};
+use ui::permissions::{PermissionScope, ResourceId, Op, WorkspaceId};
+use ui::dnd::{DragPayload};
 
 #[test]
 fn presence_ctx_empty_is_constructible() {

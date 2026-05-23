@@ -1,4 +1,4 @@
-use quick_ui::widget::tooltip::Tooltip;
+use ui::widget::tooltip::Tooltip;
 use std::time::Duration;
 
 #[test]

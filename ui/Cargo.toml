@@ -1,5 +1,5 @@
 [package]
-name = "quick-ui"
+name = "ui"
 version = "0.1.0"
 edition = "2024"
 
@@ -21,13 +21,13 @@ serde_json = "1.0"
 uuid = { version = "1.15", features = ["v4", "serde"] }
 png = "0.17"
 # Date / time picker widgets (`widget::date_picker`, `widget::time_picker`) use
-# `chrono` for NaiveDate arithmetic. quick-shell already pulls chrono
+# `chrono` for NaiveDate arithmetic. shell already pulls chrono
 # transitively but this is a direct dep so the picker widgets compile in
 # isolation.
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # VideoPlayer widget (`widget::video_player`) decodes H.264 NAL units in-process.
 # `source` feature compiles the pure-C reference implementation so we don't
-# rely on a runtime-installed `libopenh264.so` — same pin as `quick-shell`'s
+# rely on a runtime-installed `libopenh264.so` — same pin as `shell`'s
 # screencast pipeline.
 openh264 = { version = "0.9", features = ["source"] }
 
@@ -38,6 +38,6 @@ regex = "1"
 # fills_than_inactive_siblings`) without rendering pixels.
 vello_encoding = "0.2.1"
 # `widget::file_picker::tests` build a real on-disk tree to exercise the
-# `std::fs::read_dir` path. Already pulled in by quick-shell as a regular
+# `std::fs::read_dir` path. Already pulled in by shell as a regular
 # dev-dep; pinning here for the leaf-test build.
 tempfile = "3"

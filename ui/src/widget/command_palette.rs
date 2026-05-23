@@ -946,7 +946,7 @@ mod tests {
 
     /// Synthesise a `WindowEvent::KeyboardInput` carrying `logical_key`
     /// in the `Pressed` state. Mirrors the zero-init workaround in
-    /// `quick-shell/tests/e2e_shell_flows.rs:1287-1307` — winit 0.30
+    /// `shell/tests/e2e_shell_flows.rs:1287-1307` — winit 0.30
     /// keeps `KeyEventExtra` `pub(crate)` so we can't construct a
     /// `KeyEvent` through a struct literal.
     fn key_press(logical_key: Key) -> WindowEvent {

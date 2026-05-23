@@ -2,7 +2,7 @@
 //!
 //! Closes outstanding-work.md §3 #4: all prior collab tests went
 //! through the in-process `MemoryRelay`, leaving the actual wire
-//! protocol in `quick_ui::collaboration` (4-byte LE length prefix
+//! protocol in `ui::collaboration` (4-byte LE length prefix
 //! + JSON body over a `UnixStream`) unexercised.
 //!
 //! This test stands up a small test-only broker that:
@@ -26,10 +26,10 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use quick_ui::collaboration::{
+use ui::collaboration::{
     CollabEvent, CollabRequest, CollaborationManager, PresencePayload,
 };
-use quick_ui::presence::PresenceKey;
+use ui::presence::PresenceKey;
 
 /// Read one length-prefixed frame from `s`. Returns `None` on EOF /
 /// broken pipe — the broker treats that as the peer closing.

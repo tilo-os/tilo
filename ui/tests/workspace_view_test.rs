@@ -1,4 +1,4 @@
-use quick_ui::widget::{WorkspaceView, WorkspaceSwitchDirection};
+use ui::widget::{WorkspaceView, WorkspaceSwitchDirection};
 
 #[test]
 fn workspace_view_switch_up_down_sets_slide_target() {
