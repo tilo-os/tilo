@@ -26,7 +26,10 @@ pub struct Button {
     /// canonical pattern.
     cached: vello::Scene,
     dirty: bool,
-    last_rect: Rect,
+    /// Rect the cache was emitted at — compared *by size* to the
+    /// current rect; pure translation gets absorbed by the per-
+    /// frame append transform without invalidating the cache.
+    cache_rect: Rect,
     /// Visual-state snapshot the cache was emitted from. If any
     /// changes we invalidate the cache so the next draw rebuilds.
     last_state: (bool, bool, bool), // (hovered, pressed, focused)
@@ -46,7 +49,7 @@ impl Button {
             permission_scope: None,
             cached: vello::Scene::new(),
             dirty: true,
-            last_rect: Rect::ZERO,
+            cache_rect: Rect::ZERO,
             last_state: (false, false, false),
         }
     }
@@ -91,9 +94,10 @@ impl Widget for Button {
             origin.x as f64 + layout.location.x as f64 + layout.size.width as f64,
             origin.y as f64 + layout.location.y as f64 + layout.size.height as f64,
         );
-        if self.rect != self.last_rect {
+        let size_changed = self.rect.width() != self.cache_rect.width()
+            || self.rect.height() != self.cache_rect.height();
+        if size_changed {
             self.dirty = true;
-            self.last_rect = self.rect;
         }
     }
 
@@ -103,12 +107,16 @@ impl Widget for Button {
             self.dirty = true;
             self.last_state = current_state;
         }
-        if !self.dirty {
-            out_scene.append(&self.cached, Some(out_transform));
+        let needs_emit = self.dirty || self.cache_rect == Rect::ZERO;
+        if !needs_emit {
+            let dx = self.rect.x0 - self.cache_rect.x0;
+            let dy = self.rect.y0 - self.cache_rect.y0;
+            out_scene.append(&self.cached, Some(out_transform * Affine::translate((dx, dy))));
             return;
         }
-        // Build into the local cache, not the passed `scene` —
-        // append re-applies the host transform at composite time.
+        // Re-emit at current absolute coords. cache_rect tracks
+        // *where* the cache was emitted so subsequent frames can
+        // translate without re-encoding.
         self.cached.reset();
         let scene = &mut self.cached;
         let transform = Affine::IDENTITY;
@@ -159,6 +167,8 @@ impl Widget for Button {
         );
         // End of cache build — splice the freshly-emitted local
         // scene into the outer App scene with the host transform.
+        // delta = 0 here since cache_rect was just set to self.rect.
+        self.cache_rect = self.rect;
         out_scene.append(&self.cached, Some(out_transform));
     }
 
@@ -173,8 +183,9 @@ impl Widget for Button {
     /// between frames — its layout only needs to be computed once.
     /// The `Rect::ZERO` sentinel keeps the first frame's
     /// `compute_layout` running so `apply_layout` can populate the
-    /// rect; after that it stays clean.
-    fn is_layout_dirty(&self) -> bool { self.rect == Rect::ZERO }
+    /// rect; after that it stays clean (pure translation handled
+    /// via the cache's append transform, no taffy involvement).
+    fn is_layout_dirty(&self) -> bool { self.cache_rect == Rect::ZERO }
 
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, _modifiers: &winit::event::Modifiers, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, _taffy: &TaffyTree<()>) {
         match event {

@@ -67,7 +67,7 @@ pub struct ToggleGroup {
     /// cache invalidates when either changes — both happen on user
     /// input, and apply_layout also re-runs when the parent reshapes.
     cache_dirty: bool,
-    last_rect: Rect,
+    cache_rect: Rect,
     last_selected: usize,
 }
 
@@ -88,7 +88,7 @@ impl ToggleGroup {
             last_cursor: Cell::new(Point::ZERO),
             cached: Scene::new(),
             cache_dirty: true,
-            last_rect: Rect::ZERO,
+            cache_rect: Rect::ZERO,
             last_selected: usize::MAX,
         }
     }
@@ -170,9 +170,10 @@ impl Widget for ToggleGroup {
             };
             self.segment_rects.push(Rect::new(sx0, self.rect.y0, sx1, self.rect.y1));
         }
-        if self.rect != self.last_rect {
+        let size_changed = self.rect.width() != self.cache_rect.width()
+            || self.rect.height() != self.cache_rect.height();
+        if size_changed {
             self.cache_dirty = true;
-            self.last_rect = self.rect;
         }
     }
 
@@ -192,8 +193,11 @@ impl Widget for ToggleGroup {
             self.cache_dirty = true;
             self.last_selected = self.selected;
         }
-        if !self.cache_dirty {
-            out_scene.append(&self.cached, Some(out_transform));
+        let needs_emit = self.cache_dirty || self.cache_rect == Rect::ZERO;
+        if !needs_emit {
+            let dx = self.rect.x0 - self.cache_rect.x0;
+            let dy = self.rect.y0 - self.cache_rect.y0;
+            out_scene.append(&self.cached, Some(out_transform * Affine::translate((dx, dy))));
             return;
         }
         self.cached.reset();
@@ -288,6 +292,7 @@ impl Widget for ToggleGroup {
                 None,
             );
         }
+        self.cache_rect = self.rect;
         out_scene.append(&self.cached, Some(out_transform));
     }
 
@@ -300,7 +305,7 @@ impl Widget for ToggleGroup {
     /// Segmented control has fixed intrinsic size set in
     /// `build_layout`. `Rect::ZERO` sentinel covers the
     /// pre-apply_layout state.
-    fn is_layout_dirty(&self) -> bool { self.rect == Rect::ZERO }
+    fn is_layout_dirty(&self) -> bool { self.cache_rect == Rect::ZERO }
 
     fn handle_event(
         &mut self,

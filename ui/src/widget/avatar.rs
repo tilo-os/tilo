@@ -52,7 +52,9 @@ pub struct Avatar {
     /// glyph emission.
     cached: vello::Scene,
     dirty: bool,
-    last_rect: Rect,
+    /// Rect the cache was emitted at — compared by size; pure
+    /// translation handled by the append transform in `draw`.
+    cache_rect: Rect,
 }
 
 impl Avatar {
@@ -67,7 +69,7 @@ impl Avatar {
             rect: Rect::ZERO,
             cached: vello::Scene::new(),
             dirty: true,
-            last_rect: Rect::ZERO,
+            cache_rect: Rect::ZERO,
         }
     }
 
@@ -85,7 +87,7 @@ impl Avatar {
             rect: Rect::ZERO,
             cached: vello::Scene::new(),
             dirty: true,
-            last_rect: Rect::ZERO,
+            cache_rect: Rect::ZERO,
         }
     }
 
@@ -218,9 +220,10 @@ impl Widget for Avatar {
             origin.x + layout.location.x as f64 + layout.size.width as f64,
             origin.y + layout.location.y as f64 + layout.size.height as f64,
         );
-        if self.rect != self.last_rect {
+        let size_changed = self.rect.width() != self.cache_rect.width()
+            || self.rect.height() != self.cache_rect.height();
+        if size_changed {
             self.dirty = true;
-            self.last_rect = self.rect;
         }
     }
 
@@ -235,17 +238,22 @@ impl Widget for Avatar {
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;
         }
-        if !self.dirty {
-            out_scene.append(&self.cached, Some(out_transform));
+        let needs_emit = self.dirty || self.cache_rect == Rect::ZERO;
+        if !needs_emit {
+            // Pure translation since the cache was emitted.
+            let dx = self.rect.x0 - self.cache_rect.x0;
+            let dy = self.rect.y0 - self.cache_rect.y0;
+            out_scene.append(&self.cached, Some(out_transform * Affine::translate((dx, dy))));
             return;
         }
-        // Borrow-checker dance: paint_* take `&self`, but we'd be
-        // holding `&mut self.cached` at the same time. Move the
-        // cache out, mutate via the existing paint methods, then
-        // move it back. `Scene` is cheap to move (Vec of encoded
-        // bytes); no per-frame allocation.
+        // mem::take dance — paint_* helpers borrow `&self`, so
+        // we move the cache out, mutate via them, move it back.
+        // `Scene` is a `Vec<…>` underneath; the move is cheap.
         let mut cached = std::mem::take(&mut self.cached);
         cached.reset();
+        // Emit at current absolute coords — paint_image /
+        // paint_initials anchor themselves on `self.rect`, so the
+        // cache holds primitives at the current position.
         if let Some(img) = self.image.clone() {
             self.paint_image(&mut cached, Affine::IDENTITY, &img);
         } else {
@@ -253,13 +261,14 @@ impl Widget for Avatar {
         }
         out_scene.append(&cached, Some(out_transform));
         self.cached = cached;
+        self.cache_rect = self.rect;
     }
 
     fn needs_redraw(&self) -> bool { self.dirty }
     fn mark_drawn(&mut self) { self.dirty = false; }
     /// `Rect::ZERO` sentinel until the first `apply_layout`; stable
     /// after that since avatars are fixed-size leaves.
-    fn is_layout_dirty(&self) -> bool { self.rect == Rect::ZERO }
+    fn is_layout_dirty(&self) -> bool { self.cache_rect == Rect::ZERO }
 
     fn handle_event(
         &mut self,
