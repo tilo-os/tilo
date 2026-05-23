@@ -45,7 +45,7 @@ use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use winit::dpi::PhysicalPosition;
-use winit::event::{DeviceId, ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::event::{DeviceId, ElementState, Modifiers, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 
 /// One panel of the dashboard: header + a column of mixed widgets.
 fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
@@ -241,6 +241,15 @@ fn make_click_release() -> WindowEvent {
     WindowEvent::MouseInput { device_id, state: ElementState::Released, button: MouseButton::Left }
 }
 
+fn make_wheel(dy: f32) -> WindowEvent {
+    let device_id: DeviceId = unsafe { std::mem::zeroed() };
+    WindowEvent::MouseWheel {
+        device_id,
+        delta: MouseScrollDelta::LineDelta(0.0, dy),
+        phase: TouchPhase::Moved,
+    }
+}
+
 fn main() {
     I18nManager::init("en-US");
     // Register every label key so `Text::new(key)` resolves
@@ -344,15 +353,15 @@ fn main() {
     let mut total_skipped = 0usize;
     let mut histo: Vec<Phase> = Vec::with_capacity(iters);
 
-    // FROZEN mode: every event is the *same* CursorMoved at a
-    // position that's guaranteed to not cross any widget's hover
-    // rect (well past the rightmost panel). This drives the gate
-    // to fire — `Button::needs_redraw` only flips when hover
-    // state mutates, so re-sending identical positions is a true
-    // no-op for the migrated widgets. Used to demonstrate that
-    // the Unit 1+2 redraw gate can take the per-event cost to
-    // (essentially) `handle_event` time alone.
+    // FROZEN — identical no-op CursorMoved every event. Proves
+    // the Unit 1+2 gate skips when nothing in the tree mutates.
+    // SCROLL — fire a wheel event every iteration; exercises the
+    // translation-invariant cache + Scrollable's scroll-dirty
+    // signal. The 2026-05-23 user report ("scrolling does
+    // something after a few seconds but isn't smooth") was the
+    // motivation for this mode.
     let frozen = std::env::var("QUICK_UI_DASH_FROZEN").is_ok();
+    let scroll_mode = std::env::var("QUICK_UI_DASH_SCROLL").is_ok();
     if frozen {
         // Prime the cursor at the frozen position so the first
         // event doesn't trigger a hover-state change.
@@ -372,7 +381,13 @@ fn main() {
         let mut phase = Phase::default();
 
         let t_handle = Instant::now();
-        if frozen {
+        if scroll_mode {
+            // Alternate scroll direction every ~50 events so we
+            // exercise both clamp-eats-it (at the edges) and
+            // dirty-signal-fires paths.
+            let dy = if (i / 50) % 2 == 0 { -3.0 } else { 3.0 };
+            dispatch(&mut root, &taffy, root_node, &mut doc, &make_wheel(dy));
+        } else if frozen {
             // Identical no-op event — see comment above.
             let p = (canvas_w as f64 - 5.0, canvas_h as f64 - 5.0);
             dispatch(&mut root, &taffy, root_node, &mut doc, &make_cursor(p.0, p.1));
