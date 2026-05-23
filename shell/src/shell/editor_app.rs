@@ -413,6 +413,7 @@ impl Widget for EditorApp {
         // window card's rounded corner.
         let clip_rect = Rect::new(self.rect.x0, body_top, self.rect.x1, self.rect.y1);
         scene.push_layer(
+            vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
             1.0,
             transform,
@@ -518,7 +519,7 @@ impl Widget for EditorApp {
         scene.fill(
             Fill::NonZero,
             transform,
-            Color::rgba8(0, 0, 0, 24),
+            Color::from_rgba8(0, 0, 0, 24),
             None,
             &divider,
         );

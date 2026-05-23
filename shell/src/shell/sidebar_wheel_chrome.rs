@@ -29,6 +29,7 @@ use vello::kurbo::{Affine, BezPath, Circle, PathEl, Point, Rect, RoundedRect, St
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::WindowEvent;
 
+use ui::ColorCompat;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -395,14 +396,14 @@ impl Widget for SidebarWheelChrome {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                Color::rgba8(255, 255, 255, fill_a),
+                Color::from_rgba8(255, 255, 255, fill_a),
                 None,
                 &pill,
             );
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                Color::rgba8(255, 255, 255, stroke_a),
+                Color::from_rgba8(255, 255, 255, stroke_a),
                 None,
                 &pill,
             );
@@ -418,11 +419,11 @@ impl Widget for SidebarWheelChrome {
             let rim = Circle::new((cx, cy), 600.0);
             // Clip the rim to the sidebar bounds so the large circle doesn't
             // bleed out into the desktop behind/beside the wheel.
-            scene.push_layer(BlendMode::default(), eased, transform, &self.rect);
+            scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), eased, transform, &self.rect);
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                Color::rgba8(255, 255, 255, 13), // white/5
+                Color::from_rgba8(255, 255, 255, 13), // white/5
                 None,
                 &rim,
             );
@@ -474,7 +475,7 @@ impl Widget for SidebarWheelChrome {
                 scene.fill(
                     Fill::NonZero,
                     card_xform,
-                    Color::rgba8(99, 102, 241, 20),
+                    Color::from_rgba8(99, 102, 241, 20),
                     None,
                     &outer_glow,
                 );
@@ -490,14 +491,14 @@ impl Widget for SidebarWheelChrome {
                 scene.fill(
                     Fill::NonZero,
                     card_xform,
-                    Color::rgba8(99, 102, 241, 40),
+                    Color::from_rgba8(99, 102, 241, 40),
                     None,
                     &inner_glow,
                 );
                 scene.fill(
                     Fill::NonZero,
                     card_xform,
-                    Color::rgba8(99, 102, 241, 38),
+                    Color::from_rgba8(99, 102, 241, 38),
                     None,
                     &pill,
                 );

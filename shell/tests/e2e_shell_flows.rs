@@ -205,7 +205,7 @@ impl Harness {
         if let Some(r) = renderer {
             // Opaque slate-950 background so the shell chrome composites
             // over a consistent base across every snapshot.
-            let bg = Color::rgb8(0x02, 0x06, 0x14);
+            let bg = Color::from_rgb8(0x02, 0x06, 0x14);
             r.render_png(&scene, bg, path);
         }
     }
@@ -572,7 +572,7 @@ fn e2e_tab_drag_reorder() {
         group.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
         r.render_png(
             &s,
-            Color::rgb8(0x02, 0x06, 0x14),
+            Color::from_rgb8(0x02, 0x06, 0x14),
             out_dir.join("e2e-04-tabs-initial.png"),
         );
     }
@@ -624,7 +624,7 @@ fn e2e_tab_drag_reorder() {
         group.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
         r.render_png(
             &s,
-            Color::rgb8(0x02, 0x06, 0x14),
+            Color::from_rgb8(0x02, 0x06, 0x14),
             out_dir.join("e2e-05-tab-drag-midway.png"),
         );
     }
@@ -685,7 +685,7 @@ fn e2e_tab_drag_reorder() {
         group.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
         r.render_png(
             &s,
-            Color::rgb8(0x02, 0x06, 0x14),
+            Color::from_rgb8(0x02, 0x06, 0x14),
             out_dir.join("e2e-06-tabs-reordered.png"),
         );
     }
@@ -1154,7 +1154,7 @@ fn e2e_maximized_tile_floating_controls() {
         group.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
         r.render_png(
             &s,
-            Color::rgb8(0x02, 0x06, 0x14),
+            Color::from_rgb8(0x02, 0x06, 0x14),
             out_dir.join("e2e-maximized-tile-controls.png"),
         );
         let rendered = out_dir.join("e2e-maximized-tile-controls.png");
@@ -1610,7 +1610,7 @@ impl UndoHarness {
         self.group
             .draw(&mut scene, Affine::IDENTITY, &mut self.tr, &theme, &presence);
         if let Some(r) = renderer {
-            r.render_png(&scene, Color::rgb8(0x02, 0x06, 0x14), path);
+            r.render_png(&scene, Color::from_rgb8(0x02, 0x06, 0x14), path);
         }
     }
 }

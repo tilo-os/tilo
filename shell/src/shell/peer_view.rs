@@ -10,7 +10,7 @@
 //! [`crate::network::NeighbourMsg::SurfaceFrame`] arrives over the
 //! workspace's gossipsub topic, the actor's event loop calls
 //! [`PeerView::push_encoded`] which decodes synchronously and stashes the
-//! latest frame as a `peniko::Image`. The next `draw` pass blits it. Older
+//! latest frame as a `peniko::ImageData`. The next `draw` pass blits it. Older
 //! frames are dropped — there's no queue, mirroring the encode side's
 //! "encode or drop" memory contract.
 //!
@@ -66,9 +66,9 @@ pub struct PeerView {
     /// Most recent decoded frame, ready to paint. `None` until the first
     /// successful decode.
     latest: Option<DecodedFrame>,
-    /// Cached `peniko::Image` derived from `latest`. Rebuilt only when
+    /// Cached `peniko::ImageData` derived from `latest`. Rebuilt only when
     /// `latest` changes so the steady-state draw path doesn't reallocate.
-    cached_image: Option<vello::peniko::Image>,
+    cached_image: Option<vello::peniko::ImageData>,
     /// Pending input events to ship back to the owner. Drained per frame
     /// by the shell's tick hook.
     pending_inputs: Vec<InputEvent>,
@@ -104,7 +104,7 @@ impl PeerView {
 
     /// Push a NALU byte payload through the decoder. Drops failed
     /// decodes silently (the next frame typically recovers). On success,
-    /// stashes the frame and invalidates the cached `peniko::Image` so
+    /// stashes the frame and invalidates the cached `peniko::ImageData` so
     /// the next `draw` rebuilds it.
     ///
     /// Returns `true` if a new frame was decoded.
@@ -149,21 +149,22 @@ impl PeerView {
         std::mem::take(&mut self.pending_inputs)
     }
 
-    /// Rebuild the cached `peniko::Image` from `latest` if needed.
+    /// Rebuild the cached `peniko::ImageData` from `latest` if needed.
     /// Cheap when `cached_image` is already populated; otherwise clones
     /// the RGBA bytes once into a `Blob<u8>` and re-uses it across
     /// subsequent paints.
-    fn ensure_image(&mut self) -> Option<&vello::peniko::Image> {
+    fn ensure_image(&mut self) -> Option<&vello::peniko::ImageData> {
         if self.cached_image.is_none() {
             if let Some(frame) = &self.latest {
                 let blob =
                     vello::peniko::Blob::new(std::sync::Arc::new(frame.rgba.clone()));
-                self.cached_image = Some(vello::peniko::Image::new(
-                    blob,
-                    vello::peniko::Format::Rgba8,
-                    frame.width,
-                    frame.height,
-                ));
+                self.cached_image = Some(vello::peniko::ImageData {
+                    data: blob,
+                    format: vello::peniko::ImageFormat::Rgba8,
+                    alpha_type: vello::peniko::ImageAlphaType::Alpha,
+                    width: frame.width,
+                    height: frame.height,
+                });
             }
         }
         self.cached_image.as_ref()

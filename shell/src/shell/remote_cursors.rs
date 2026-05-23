@@ -91,7 +91,7 @@ const CHIP_PADDING_Y: f64 = 2.0;
 /// Convert a peer's `[f32; 4]` RGBA color into a `vello::peniko::Color`.
 fn peer_color_to_peniko(c: [f32; 4]) -> vello::peniko::Color {
     let to_u8 = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-    vello::peniko::Color::rgba8(to_u8(c[0]), to_u8(c[1]), to_u8(c[2]), to_u8(c[3]))
+    vello::peniko::Color::from_rgba8(to_u8(c[0]), to_u8(c[1]), to_u8(c[2]), to_u8(c[3]))
 }
 
 impl ui::widget::Widget for RemoteCursorOverlay {
@@ -163,6 +163,7 @@ impl ui::widget::Widget for RemoteCursorOverlay {
         // Clip to the active-tile rect so out-of-bounds cursors (e.g. mid-
         // frame drift between filter and draw) never paint over chrome.
         scene.push_layer(
+            vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
             1.0,
             transform,
