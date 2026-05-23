@@ -301,5 +301,20 @@ pub fn run_with_full_options(opts: HostedOptions) {
     }
 
     let _peer_sync = peer_sync; // keep alive for lifetime of `app.run()`
+
+    // Hosted-mode test-control socket: when QOS_TEST_CONTROL is set,
+    // bind it the same way the headless backend does and run the App
+    // with a proxy that injects clicks/hovers into the event loop.
+    // Same code path as hardware events; same gate; same redraw.
+    #[cfg(feature = "hosted-test-control")]
+    {
+        if let Some(path) = std::env::var_os("QOS_TEST_CONTROL") {
+            let socket_path = std::path::PathBuf::from(path);
+            app.run_with_setup(move |proxy| {
+                crate::compositor::hosted_test_control::spawn(socket_path, proxy);
+            });
+            return;
+        }
+    }
     app.run();
 }

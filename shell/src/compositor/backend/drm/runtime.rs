@@ -221,7 +221,16 @@ impl DrmRuntime {
                 | InputEvent::PointerMotionAbsolute { .. }
                 | InputEvent::PointerButton { .. }
                 | InputEvent::PointerAxis { .. } => {
-                    state.push(BackendEvent::Input);
+                    // TODO(drm-input): translate libinput's
+                    // InputEvent::{Keyboard,Pointer*} into the
+                    // `winit::WindowEvent` shape that
+                    // `BackendEvent::Input(WindowEvent)` carries so
+                    // `FrameBuilder::dispatch_event` can route real
+                    // input on a bare TTY too. For now the DRM path
+                    // silently drops input (same as before the
+                    // hosted-mode fix); winit-backed dev binaries
+                    // are the only path that delivers clicks.
+                    let _ = state;
                 }
                 _ => {}
             })
