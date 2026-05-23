@@ -29,11 +29,11 @@ use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use quick_ui::presence::{PresenceCtx, PresenceKey};
-use quick_ui::text_render::{TextRenderer, TextWeight};
-use quick_ui::theme::Theme;
-use quick_ui::widget::{CrossStripDetach, GroupRow, PermissionPrompt, PromptChoice, Widget, WindowGroup as UiWindowGroup, PROMPT_HEIGHT};
-use quick_ui::{CommandEntry, CommandPalette};
+use ui::presence::{PresenceCtx, PresenceKey};
+use ui::text_render::{TextRenderer, TextWeight};
+use ui::theme::Theme;
+use ui::widget::{CrossStripDetach, GroupRow, PermissionPrompt, PromptChoice, Widget, WindowGroup as UiWindowGroup, PROMPT_HEIGHT};
+use ui::{CommandEntry, CommandPalette};
 
 use crate::shell::chrome_state::{Chrome, WsTab};
 use crate::shell::state::{Capability, GrantScope, GroupId, StripId};
@@ -737,7 +737,7 @@ impl ShellOverlayHost {
     /// Letting a stray drag accidentally produce a new strip would be
     /// surprising; keeping the tab in its source strip preserves the
     /// "no valid target → cancel" contract the in-row recovery path
-    /// (see `quick-ui/src/widget/group_row.rs:937` block) already pins.
+    /// (see `ui/src/widget/group_row.rs:937` block) already pins.
     ///
     /// SAFETY mirrors the rest of the `group_row_ptrs` accessors: each
     /// pointer addresses a `GroupRow` owned by the content tree, the host
@@ -1149,7 +1149,7 @@ impl ShellOverlayHost {
         Self::overview_header_font_size_for(&theme.tokens)
     }
 
-    fn overview_header_font_size_for(tokens: &quick_ui::tokens::Tokens) -> f32 {
+    fn overview_header_font_size_for(tokens: &ui::tokens::Tokens) -> f32 {
         // Largest step in the type scale — currently 40 px, well above the
         // 32 px floor the concept's `text-4xl` implies.
         tokens.typography.scale.x4l
@@ -2859,7 +2859,7 @@ fn draw_modal_scrim(scene: &mut Scene, transform: Affine, rect: Rect) {
 /// `slate-900` / `#0f172a`) and the numeric alpha is the only knob.
 fn slate_900_tint(theme: &Theme, alpha: f32) -> Color {
     // `neutral[1]` is slate-900 in the dark ramp (see
-    // `quick_ui::tokens::colors::ColorRamp`). Using the theme token rather
+    // `ui::tokens::colors::ColorRamp`). Using the theme token rather
     // than hard-coding #0f172a keeps the light-theme variant falling back
     // to its own near-darkest slot automatically.
     theme.tokens.colors.neutral[1].with_alpha_factor(alpha)
@@ -3309,7 +3309,7 @@ impl ShellOverlayHost {
                 None,
                 &perm_rr,
             );
-            // Shield glyph: lucide `Shield` via `quick_ui::icons`
+            // Shield glyph: lucide `Shield` via `ui::icons`
             // (gap #5). The previous hand-traced BezPath was a
             // close-enough imitation; routing through the shared icon
             // table gets us the authoritative lucide path plus the
@@ -3323,13 +3323,13 @@ impl ShellOverlayHost {
                 perm_rect.x0 + 24.0,
                 perm_rect.y0 + 22.0,
             );
-            quick_ui::icons::draw_icon(
+            ui::icons::draw_icon(
                 scene,
                 card_xform,
                 shield_rect,
-                quick_ui::icons::Icon::Shield,
+                ui::icons::Icon::Shield,
                 colors.semantic.success,
-                quick_ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
             text_renderer.draw_text(
                 scene,
@@ -3646,13 +3646,13 @@ impl ShellOverlayHost {
             unit_x0 + icon_size,
             unit_cy + icon_size / 2.0,
         );
-        quick_ui::icons::draw_icon(
+        ui::icons::draw_icon(
             scene,
             transform,
             icon_rect,
-            quick_ui::icons::Icon::Plus,
+            ui::icons::Icon::Plus,
             accent_color,
-            quick_ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         text_renderer.draw_text(
             scene,
@@ -4510,17 +4510,17 @@ impl ShellOverlayHost {
                 tile.y0 + (tile.height() + 20.0) / 2.0,
             );
             let glyph = match i {
-                0 => quick_ui::icons::Icon::Settings2,
-                1 => quick_ui::icons::Icon::Camera,
-                _ => quick_ui::icons::Icon::Power,
+                0 => ui::icons::Icon::Settings2,
+                1 => ui::icons::Icon::Camera,
+                _ => ui::icons::Icon::Power,
             };
-            quick_ui::icons::draw_icon(
+            ui::icons::draw_icon(
                 scene,
                 transform,
                 glyph_rect,
                 glyph,
                 glyph_color,
-                quick_ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
         }
 
@@ -4547,7 +4547,7 @@ impl ShellOverlayHost {
             let (bar, row_y) = self.quick_settings_slider_geometry(i);
             // Leading icon (Sun for brightness, Volume2 for volume) —
             // placeholder ring until the lucide paths land in
-            // `quick_ui::icons::Icon`.
+            // `ui::icons::Icon`.
             let icon_x = rect.x0 + 16.0 + 12.0 + 8.0;
             let icon_cy = row_y + 12.0;
             let icon_ring =
@@ -4619,7 +4619,7 @@ impl ShellOverlayHost {
             scene.fill(Fill::NonZero, transform, bg, None, &card_rr);
 
             // Wifi glyph for slot 0, Bluetooth for slot 1 — both lucide
-            // paths now live in `quick_ui::icons`.
+            // paths now live in `ui::icons`.
             let glyph_box = Rect::new(
                 card.x0 + 12.0,
                 card.y0 + 12.0,
@@ -4627,17 +4627,17 @@ impl ShellOverlayHost {
                 card.y0 + 12.0 + 20.0,
             );
             let icon = if i == 0 {
-                quick_ui::icons::Icon::Wifi
+                ui::icons::Icon::Wifi
             } else {
-                quick_ui::icons::Icon::Bluetooth
+                ui::icons::Icon::Bluetooth
             };
-            quick_ui::icons::draw_icon(
+            ui::icons::draw_icon(
                 scene,
                 transform,
                 glyph_box,
                 icon,
                 colors.text_primary,
-                quick_ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
 
             // Trailing chevron — placeholder caret for now.
@@ -4688,13 +4688,13 @@ impl ShellOverlayHost {
         );
         let battery_rect =
             Rect::new(pp.x0 + 12.0, pp.y0 + 14.0, pp.x0 + 12.0 + 20.0, pp.y0 + 34.0);
-        quick_ui::icons::draw_icon(
+        ui::icons::draw_icon(
             scene,
             transform,
             battery_rect,
-            quick_ui::icons::Icon::Battery,
+            ui::icons::Icon::Battery,
             colors.semantic.success,
-            quick_ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         // Power profile label. The active profile lives on the
         // `QuickSettings` widget owned by the shell root (`mod.rs`); the
@@ -4749,13 +4749,13 @@ impl ShellOverlayHost {
         let rect = self.quick_settings_rect();
         let header_h = 48.0_f64;
         let chev_rect = self.qs_back_chevron_rect();
-        quick_ui::icons::draw_icon(
+        ui::icons::draw_icon(
             scene,
             transform,
             chev_rect,
-            quick_ui::icons::Icon::ChevronLeft,
+            ui::icons::Icon::ChevronLeft,
             colors.text_primary,
-            quick_ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
 
         // Centred title (14 px Semibold white, per concept).
@@ -4839,13 +4839,13 @@ impl ShellOverlayHost {
                 row_rect.x0 + 12.0 + 20.0,
                 row_rect.y0 + (row_rect.height() + 20.0) / 2.0,
             );
-            quick_ui::icons::draw_icon(
+            ui::icons::draw_icon(
                 scene,
                 transform,
                 glyph_box,
-                quick_ui::icons::Icon::Wifi,
+                ui::icons::Icon::Wifi,
                 colors.text_primary,
-                quick_ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
 
             // SSID label.
@@ -4979,13 +4979,13 @@ impl ShellOverlayHost {
             } else {
                 colors.semantic.danger
             };
-            quick_ui::icons::draw_icon(
+            ui::icons::draw_icon(
                 scene,
                 transform,
                 bat_box,
-                quick_ui::icons::Icon::Battery,
+                ui::icons::Icon::Battery,
                 bat_color,
-                quick_ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
 
             // Trailing-most: active-radio dot for the connected device.
@@ -5164,7 +5164,7 @@ impl ShellOverlayHost {
 #[cfg(test)]
 mod overview_transition_tests {
     use super::*;
-    use quick_ui::widget::Container;
+    use ui::widget::Container;
 
     fn host() -> ShellOverlayHost {
         // Dummy content widget — `Container::new()` produces an empty
@@ -5298,7 +5298,7 @@ mod palette_dispatch_tests {
     use super::*;
     use crate::shell::chrome_state::ChromeState;
     use crate::shell::state::WorkspaceTree;
-    use quick_ui::widget::Container;
+    use ui::widget::Container;
 
     fn host_with_chrome() -> (ShellOverlayHost, crate::shell::chrome_state::Chrome) {
         let tree = WorkspaceTree::bootstrap_default();
@@ -5431,7 +5431,7 @@ mod workspace_slide_tests {
     use super::*;
     use crate::shell::chrome_state::ChromeState;
     use crate::shell::state::WorkspaceTree;
-    use quick_ui::widget::Container;
+    use ui::widget::Container;
 
     fn host_with_two_workspaces() -> (ShellOverlayHost, crate::shell::chrome_state::Chrome) {
         let mut tree = WorkspaceTree::bootstrap_default();
@@ -5500,7 +5500,7 @@ mod workspace_slide_tests {
 
     #[test]
     fn real_peers_filter_picks_up_pointers_on_active_workspace_only() {
-        use quick_ui::permissions::UserId;
+        use ui::permissions::UserId;
         let (h, chrome) = host_with_two_workspaces();
         let active = chrome.borrow().tree.active.raw();
         let active_key = PresenceKey::Workspace {
@@ -5638,7 +5638,7 @@ mod modal_curve_tests {
 
     #[test]
     fn palette_rising_edge_stamps_opened_at_and_pumps_frames() {
-        use quick_ui::widget::Container;
+        use ui::widget::Container;
         let mut h = ShellOverlayHost::new(Box::new(Container::new()));
         assert!(h.palette_opened_at.is_none());
         h.palette_visible = true;
@@ -5657,7 +5657,7 @@ mod modal_curve_tests {
 
     #[test]
     fn ws_settings_close_clears_opened_at() {
-        use quick_ui::widget::Container;
+        use ui::widget::Container;
         let mut h = ShellOverlayHost::new(Box::new(Container::new()));
         h.ws_settings_opened_at = Some(Instant::now());
         h.ws_settings_was_open = true;
@@ -5682,7 +5682,7 @@ mod modal_curve_tests {
     fn overview_hit_test_returns_card_index_when_cursor_is_over_card() {
         use crate::shell::chrome_state::ChromeState;
         use crate::shell::state::WorkspaceTree;
-        use quick_ui::widget::Container;
+        use ui::widget::Container;
 
         let mut tree = WorkspaceTree::bootstrap_default();
         tree.append_empty_workspace("Second");
@@ -6390,7 +6390,7 @@ mod tests {
     /// renames or retypes the token surfaces here loudly.
     #[test]
     fn ws_settings_active_tab_pill_uses_white_overlay() {
-        let tokens = quick_ui::tokens::Tokens::dark();
+        let tokens = ui::tokens::Tokens::dark();
         let c = tokens.colors.surface_white_10;
         let expected = vello::peniko::Color::rgba8(255, 255, 255, 26);
         assert_eq!(
@@ -6571,7 +6571,7 @@ mod maximize_harvest_tests {
             .new_with_children(Style::default(), &[group_node])
             .unwrap();
         let map_for_measure = node_map.clone();
-        let mut tr = quick_ui::text_render::TextRenderer::new();
+        let mut tr = ui::text_render::TextRenderer::new();
         let _ = taffy.compute_layout_with_measure(
             root,
             Size {

@@ -1,5 +1,5 @@
 [package]
-name = "quick-desktop"
+name = "shell"
 version = "0.1.0"
 edition = "2024"
 
@@ -25,7 +25,7 @@ smithay = { version = "0.7", default-features = false, features = [
     "desktop",
     # Phase 5 Task 5.1: real DRM/KMS + libseat + udev + libinput
     # backend for running on a bare TTY. See
-    # `quick-shell/src/compositor/backend/drm/` for the implementation
+    # `shell/src/compositor/backend/drm/` for the implementation
     # and `docs/superpowers/plans/2026-05-02-real-wayland-compositor.md`
     # (Phase 5) for design intent.
     "backend_drm",
@@ -41,8 +41,8 @@ smithay = { version = "0.7", default-features = false, features = [
 thiserror = "2"
 calloop-wayland-source = "0.4"
 rand = "0.10.0"
-quick-ui = { path = "../quick-ui" }
-quick-terminal = { path = "../apps/terminal" }
+ui = { path = "../ui" }
+terminal = { path = "../apps/terminal" }
 file-explorer = { path = "../apps/file-explorer" }
 winit = "0.30.13"
 # Compositor Phase 4 follow-up: the native winit backend bypasses smithay's
@@ -54,7 +54,7 @@ winit = "0.30.13"
 pollster = "0.4.0"
 sysinfo = "0.32"
 # Direct deps needed by in-shell widgets (browser_stub, etc.) that implement
-# `quick_ui::widget::Widget`. Versions are pinned to match quick-ui's Cargo.toml.
+# `ui::widget::Widget`. Versions are pinned to match ui's Cargo.toml.
 automerge = "0.7.4"
 taffy = "0.9.2"
 vello = "0.2.1"
@@ -64,7 +64,7 @@ vello = "0.2.1"
 # aarch64, riscv64). Linux-only crate — sandbox callers gate at runtime.
 seccompiler = "0.5"
 # Direct libc dep so we can name the SYS_* and AF_PACKET constants required by
-# the deny-list filter without going through seccompiler's re-export. quick-ui
+# the deny-list filter without going through seccompiler's re-export. ui
 # already pulls libc transitively, so Cargo collapses to one copy in the lock.
 libc = "0.2"
 # Phase 3 Task 3.3 of `docs/superpowers/plans/2026-05-02-peer-sync-end-to-end.md`:
@@ -99,7 +99,7 @@ png = "0.17"
 wayland-client = "0.31"
 tokio-test = "0.4"
 # Offscreen headless renderer used by `tests/e2e_shell_flows.rs`. Versions
-# mirror quick-ui so Cargo collapses to a single copy in the workspace lock.
+# mirror ui so Cargo collapses to a single copy in the workspace lock.
 pollster = "0.4.0"
 wgpu = "0.20"
 # Scene-encoding inspection used by `tests/concept_parity_spec.rs` to walk
@@ -108,7 +108,7 @@ wgpu = "0.20"
 # the `vello = "0.2.1"` runtime dep; Cargo collapses to a single copy.
 vello_encoding = "0.2.1"
 # Tempdir helper for `network::behaviour::load_or_create_keypair` tests so we
-# never write a real key to `/var/lib/quick-fs/peer-key` from the test suite.
+# never write a real key to `/var/lib/qos-fs/peer-key` from the test suite.
 tempfile = "3"
 # `tests/portal_test.rs` joins the server- and client-side handshake of an
 # in-process p2p zbus pair via `futures_util::try_join!`. Already pulled in
@@ -121,13 +121,13 @@ futures-util = "0.3"
 # flaky `apply_grants_dev_scan_is_memoised` failure.
 serial_test = "3"
 
-# Real-input e2e Phase 5: the `nirios-control` CLI is a thin wrapper over the
-# `NIRIOS_TEST_CONTROL` JSON socket — humans and shell scripts use it instead
+# Real-input e2e Phase 5: the `qos-control` CLI is a thin wrapper over the
+# `QOS_TEST_CONTROL` JSON socket — humans and shell scripts use it instead
 # of writing `socat | jq` pipelines. Cargo would auto-discover the binary
-# from `src/bin/nirios-control.rs` anyway, but the explicit entry pins the
+# from `src/bin/qos-control.rs` anyway, but the explicit entry pins the
 # name + path so a future `src/bin/` reshuffle doesn't silently rename it.
 # Spec: `docs/superpowers/specs/2026-05-16-real-input-e2e-design.md`,
 # "Component 3".
 [[bin]]
-name = "nirios-control"
-path = "src/bin/nirios-control.rs"
+name = "qos-control"
+path = "src/bin/qos-control.rs"

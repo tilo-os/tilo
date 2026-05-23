@@ -8,18 +8,18 @@
 //!
 //! Complements the per-widget unit tests in:
 //!   - `tests/shell_chrome_test.rs` (OverviewView, GlobalSearch, QuickSettings, …)
-//!   - `quick-ui/src/widget/tabs.rs` (TabBar close + reorder)
+//!   - `ui/src/widget/tabs.rs` (TabBar close + reorder)
 //!   - `src/shell/notes_app.rs` (NotesApp sync/insert/delete).
 
-use quick_desktop::shell::chrome_state::{ChromeState, QuickSettingsState, SearchScope};
-use quick_desktop::shell::notes_app::{BODY_KEY, NotesApp};
-use quick_desktop::shell::sidebar_wheel::SidebarWheel;
-use quick_desktop::shell::sidebar_wheel_chrome::SidebarWheelChrome;
-use quick_desktop::shell::state::{Collaborator, WorkspaceTree};
-use quick_desktop::shell::topbar_chrome::{CenterWidget, TopBarChrome};
-use quick_desktop::shell::{build_nirios_root, build_nirios_root_with_chrome, state::TileContent};
+use shell::shell::chrome_state::{ChromeState, QuickSettingsState, SearchScope};
+use shell::shell::notes_app::{BODY_KEY, NotesApp};
+use shell::shell::sidebar_wheel::SidebarWheel;
+use shell::shell::sidebar_wheel_chrome::SidebarWheelChrome;
+use shell::shell::state::{Collaborator, WorkspaceTree};
+use shell::shell::topbar_chrome::{CenterWidget, TopBarChrome};
+use shell::shell::{build_nirios_root, build_nirios_root_with_chrome, state::TileContent};
 
-use quick_ui::widget::Widget;
+use ui::widget::Widget;
 
 #[test]
 fn root_builds_without_panic_for_bootstrap_tree() {
@@ -385,8 +385,8 @@ fn editor_app_is_bootstrapped_as_fifth_demo_tab() {
     // terminal / file browser" line item requires Editor to be present and
     // hosted as a live AppWidget (not a Stub), so this test locks the tab
     // set down against regressions that drop it.
-    use quick_desktop::shell::Shell;
-    use quick_desktop::shell::tile::TileContent as RuntimeTile;
+    use shell::shell::Shell;
+    use shell::shell::tile::TileContent as RuntimeTile;
 
     let shell = Shell::new_with_default_demo_workspace();
     let tree = shell.workspace_tree();
@@ -421,8 +421,8 @@ fn editor_app_is_bootstrapped_as_fifth_demo_tab() {
 #[test]
 fn editor_app_persists_edits_through_crdt() {
     use automerge::{AutoCommit, ObjType, ReadDoc, Value, transaction::Transactable};
-    use quick_desktop::shell::editor_app::{BODY_KEY as EDITOR_BODY_KEY, EditorApp};
-    use quick_ui::widget::Widget;
+    use shell::shell::editor_app::{BODY_KEY as EDITOR_BODY_KEY, EditorApp};
+    use ui::widget::Widget;
 
     let mut doc = AutoCommit::new();
     let root = automerge::ROOT;
@@ -453,9 +453,9 @@ fn sync_tab_presence_seeds_per_tab_peer_registrations() {
     // shell's sync helper. This is what turns the tab-pill presence dots
     // on in practice — without it `TabBar` reads an empty peers list and
     // draws no dots, regardless of how many peers the top-bar shows.
-    use quick_desktop::shell::sync_tab_presence_from_tree;
-    use quick_ui::permissions::UserId;
-    use quick_ui::presence::{PresenceCtx, PresenceKey};
+    use shell::shell::sync_tab_presence_from_tree;
+    use ui::permissions::UserId;
+    use ui::presence::{PresenceCtx, PresenceKey};
 
     let mut tree = WorkspaceTree::bootstrap_default();
     // Pick a real tab id from the bootstrap tree so we're exercising the
@@ -512,9 +512,9 @@ fn sync_tab_presence_seeds_per_user_color_overrides_from_collaborators() {
     // reads the authoritative colour from one place. Concept peers that
     // don't carry a per-peer `cursorColor` still fall through to the
     // palette-pinned `user_color`, so the map must stay empty for them.
-    use quick_desktop::shell::sync_tab_presence_from_tree;
-    use quick_ui::permissions::UserId;
-    use quick_ui::presence::PresenceCtx;
+    use shell::shell::sync_tab_presence_from_tree;
+    use ui::permissions::UserId;
+    use ui::presence::PresenceCtx;
 
     let mut tree = WorkspaceTree::bootstrap_default();
     let ws_mut = tree
@@ -546,7 +546,7 @@ fn sync_tab_presence_seeds_per_user_color_overrides_from_collaborators() {
     // Ben has no override → falls through to the palette-pinned colour.
     assert_eq!(
         ctx.color_for(&UserId("b".into())),
-        quick_ui::presence::user_color("b"),
+        ui::presence::user_color("b"),
         "no-override peer must still use palette fallback",
     );
 }
@@ -558,9 +558,9 @@ fn seed_demo_editor_presence_registers_alice_caret_and_selection() {
     // development. Guard against accidental breakage: the key must match
     // what `EditorApp` reads, and the registered caret + selection must be
     // retrievable by user.
-    use quick_desktop::shell::seed_demo_editor_presence;
-    use quick_ui::permissions::UserId;
-    use quick_ui::presence::{PathSegment, PresenceCtx, PresenceKey};
+    use shell::shell::seed_demo_editor_presence;
+    use ui::permissions::UserId;
+    use ui::presence::{PathSegment, PresenceCtx, PresenceKey};
 
     let mut ctx = PresenceCtx::empty();
     seed_demo_editor_presence(&mut ctx);
@@ -592,7 +592,7 @@ fn shell_file_drop_appends_tab_to_active_workspace() {
     // append a new tab to the active workspace's first group via
     // `Shell::handle_file_drop`, matching the concept's `DesktopView.tsx`
     // `handleDrop` path.
-    use quick_desktop::shell::Shell;
+    use shell::shell::Shell;
 
     let mut shell = Shell::new_for_test();
     let before_titles: Vec<String> = shell.workspace_tree().workspaces[0].strips[0]
@@ -630,7 +630,7 @@ fn shell_file_drop_appends_tab_to_active_workspace() {
 
 #[test]
 fn shell_folder_drop_labels_the_tab_with_files_prefix() {
-    use quick_desktop::shell::Shell;
+    use shell::shell::Shell;
 
     let mut shell = Shell::new_for_test();
     // `is_dir()` returns false on /no/such/path, so this exercises the
@@ -694,9 +694,9 @@ fn chrome_file_drop_appends_tab_and_bumps_revision() {
 #[test]
 fn overview_button_click_toggles_overview_overlay() {
     use automerge::AutoCommit;
-    use quick_ui::presence::PresenceCtx;
-    use quick_ui::text_render::TextRenderer;
-    use quick_ui::theme::Theme;
+    use ui::presence::PresenceCtx;
+    use ui::text_render::TextRenderer;
+    use ui::theme::Theme;
     use std::collections::HashMap;
     use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
     use vello::Scene;
@@ -800,9 +800,9 @@ fn overview_button_click_toggles_overview_overlay() {
 #[test]
 fn full_root_click_toggles_overview_via_topbar_button() {
     use automerge::AutoCommit;
-    use quick_ui::presence::PresenceCtx;
-    use quick_ui::text_render::TextRenderer;
-    use quick_ui::theme::Theme;
+    use ui::presence::PresenceCtx;
+    use ui::text_render::TextRenderer;
+    use ui::theme::Theme;
     use std::collections::HashMap;
     use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
     use vello::Scene;
@@ -998,9 +998,9 @@ fn full_root_click_toggles_overview_via_topbar_button() {
 #[test]
 fn overview_toggle_signals_animation_frames_until_settled() {
     use automerge::AutoCommit;
-    use quick_ui::presence::PresenceCtx;
-    use quick_ui::text_render::TextRenderer;
-    use quick_ui::theme::Theme;
+    use ui::presence::PresenceCtx;
+    use ui::text_render::TextRenderer;
+    use ui::theme::Theme;
     use std::collections::HashMap;
     use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
     use vello::Scene;

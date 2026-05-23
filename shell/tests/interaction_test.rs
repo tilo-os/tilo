@@ -1,5 +1,5 @@
-use quick_desktop::network::wayland::{WaylandServer, WaylandEvent, ClientState, WaylandInput};
-use quick_desktop::security::container::Container;
+use shell::network::wayland::{WaylandServer, WaylandEvent, ClientState, WaylandInput};
+use shell::security::container::Container;
 use smithay::reexports::wayland_server::{Display, ListeningSocket};
 use smithay::reexports::calloop::{EventLoop, Interest, Mode as CalloopMode};
 use smithay::reexports::calloop::generic::Generic;

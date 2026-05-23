@@ -200,7 +200,7 @@ pub struct WindowGroup {
     pub width: WindowWidth,
     /// Whether the user has toggled this group into the concept's
     /// "maximized" mode. Mirrors `WindowGroup::maximized` on the widget
-    /// (see `quick-ui/src/widget/window_group.rs`) — stored here so the
+    /// (see `ui/src/widget/window_group.rs`) — stored here so the
     /// state survives a shell restart and replicates across collaborators.
     /// Audit task #105.
     ///
@@ -285,7 +285,7 @@ pub struct Collaborator {
     #[serde(default)]
     pub active_tab: Option<u64>,
     /// Optional hex string (`#rrggbb` or `#rrggbbaa`) overriding the
-    /// palette that [`quick_ui::presence::user_color`] would pick for
+    /// palette that [`ui::presence::user_color`] would pick for
     /// this peer. Mirrors `nirios-concept/src/data.ts`'s per-peer
     /// `cursorColor`. `None` falls through to the palette — the common
     /// case for the four canonical ids (`me`/`alice`/`bob`/`charlie`).

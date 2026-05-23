@@ -2,7 +2,7 @@
 //!
 //! The cross-group case (drag a tab between two `WindowGroup`s inside
 //! the same strip's `GroupRow`) is fully covered by the unit tests in
-//! `quick-ui/src/widget/group_row.rs`. The cross-*strip* case lives one
+//! `ui/src/widget/group_row.rs`. The cross-*strip* case lives one
 //! level up — it can't resolve from inside a single `GroupRow` because
 //! that widget only sees its own siblings — so the broker has to live
 //! shell-side, where the [`ShellOverlayHost`] holds per-strip
@@ -44,14 +44,14 @@
 
 use std::collections::HashMap;
 
-use quick_desktop::shell::build_nirios_overlay_host_with_chrome;
-use quick_desktop::shell::overlay_host::ShellOverlayHost;
-use quick_desktop::shell::state::{
+use shell::shell::build_nirios_overlay_host_with_chrome;
+use shell::shell::overlay_host::ShellOverlayHost;
+use shell::shell::state::{
     AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceId, WorkspaceTree,
 };
-use quick_ui::theme::Theme;
-use quick_ui::widget::Widget;
+use ui::theme::Theme;
+use ui::widget::Widget;
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use vello::kurbo::Point;
 use winit::dpi::PhysicalPosition;
@@ -163,7 +163,7 @@ fn lay_out_host(host: &mut ShellOverlayHost) -> Layout {
         )
         .unwrap();
 
-    let mut tr = quick_ui::text_render::TextRenderer::new();
+    let mut tr = ui::text_render::TextRenderer::new();
     let measure_map = node_map.clone();
     taffy
         .compute_layout_with_measure(
@@ -261,7 +261,7 @@ fn dragged_tab_crosses_into_destination_strip_via_shell_dispatch() {
     // Publish a synthetic `pending_detach` on strip-A's group's TabBar.
     // This is the same shape `TabBar::handle_event` writes when the
     // user releases a left-click drag outside the bar's own rect; the
-    // wireup pinned by `quick-ui/src/widget/tabs.rs` tests guarantees
+    // wireup pinned by `ui/src/widget/tabs.rs` tests guarantees
     // this is the only field the post-dispatch sweep reads to discover
     // a detach. We pick tab `a_tabs[0]` (id 11) as the target so the
     // assertion below has a stable id to check.

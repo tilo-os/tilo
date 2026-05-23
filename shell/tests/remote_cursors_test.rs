@@ -5,8 +5,8 @@
 //! stable API. T25 adds the `SimulatedFeed` that drives cursors for the demo
 //! without a real peer; subsequent tasks append their own cases.
 
-use quick_desktop::shell::remote_cursors::{cursor_in_bounds, RemoteCursorOverlay, SimulatedFeed};
-use quick_ui::presence::{PresenceCtx, RemoteCursor};
+use shell::shell::remote_cursors::{cursor_in_bounds, RemoteCursorOverlay, SimulatedFeed};
+use ui::presence::{PresenceCtx, RemoteCursor};
 use std::time::Duration;
 
 #[test]
@@ -56,8 +56,8 @@ fn simulated_feed_moves_cursor_deterministically() {
 
 #[test]
 fn remote_cursor_overlay_filters_to_active_tile() {
-    use quick_desktop::shell::remote_cursors::RemoteCursorOverlay;
-    use quick_ui::presence::{PresenceCtx, RemoteCursor};
+    use shell::shell::remote_cursors::RemoteCursorOverlay;
+    use ui::presence::{PresenceCtx, RemoteCursor};
     let mut ctx = PresenceCtx::default();
     ctx.remote_cursors = vec![
         RemoteCursor {

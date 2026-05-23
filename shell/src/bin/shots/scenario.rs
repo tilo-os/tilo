@@ -23,8 +23,8 @@ use std::path::Path;
 use vello::kurbo::Point;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
-use quick_desktop::shell::chrome_state::{ChromeState, WsTab};
-use quick_desktop::shell::quick_settings::QsLevel;
+use shell::shell::chrome_state::{ChromeState, WsTab};
+use shell::shell::quick_settings::QsLevel;
 
 use super::driver::ShellDriver;
 
@@ -579,7 +579,7 @@ mod tests {
     #[test]
     fn scenario_post_animation_waits_outlast_their_animation() {
         // workspace_switch slides the content widget over WS_SLIDE_MS = 260 ms
-        // (see quick_desktop::shell::overlay_host). Waits must cover that.
+        // (see shell::shell::overlay_host). Waits must cover that.
         let ws = workspace_switch();
         let ws_waits: Vec<u32> = ws
             .actions
@@ -599,7 +599,7 @@ mod tests {
         }
 
         // tab_drag releases a drag whose post-drop layout spring runs
-        // for LAYOUT_ANIM_MS = 180 ms (see quick_ui::widget::tabs).
+        // for LAYOUT_ANIM_MS = 180 ms (see ui::widget::tabs).
         let td = tab_drag();
         let td_waits: Vec<u32> = td
             .actions

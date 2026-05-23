@@ -42,7 +42,7 @@ const INITIAL_HEIGHT: u32 = 900;
 
 /// Default base color used for the first few frames before any
 /// `BackendEvent::OutputResized` has carried a theme through. Matches
-/// `quick_ui::theme::Theme::dark().bg_app` so the host window doesn't
+/// `ui::theme::Theme::dark().bg_app` so the host window doesn't
 /// flash white on boot. The compositor overrides this each frame via
 /// [`WinitBackend::set_base_color`].
 const FALLBACK_BG: Color = Color::rgb8(0x1A, 0x1B, 0x26);

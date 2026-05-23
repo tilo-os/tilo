@@ -13,18 +13,18 @@
 //!
 //! Structurally, this widget is a thin `Container`-style wrapper around an
 //! optional single child: it forwards sync/layout/events/presence/commit
-//! exactly like [`quick_ui::widget::Container`], but with no padding and
+//! exactly like [`ui::widget::Container`], but with no padding and
 //! no rounded-rect chrome — just the flat gradient + grid beneath the
 //! child.
 
 use std::sync::Arc;
 
 use automerge::{AutoCommit, ObjId};
-use quick_ui::presence::{PresenceCtx, PresenceKey};
-use quick_ui::permissions::{PermissionContext, PermissionScope};
-use quick_ui::text_render::TextRenderer;
-use quick_ui::theme::Theme;
-use quick_ui::widget::Widget;
+use ui::presence::{PresenceCtx, PresenceKey};
+use ui::permissions::{PermissionContext, PermissionScope};
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::widget::Widget;
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;

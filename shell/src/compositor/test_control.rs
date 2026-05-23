@@ -3,7 +3,7 @@
 //! Spec: `docs/superpowers/specs/2026-05-16-real-input-e2e-design.md`.
 //!
 //! The compositor exposes an opt-in JSON control protocol when launched
-//! with `NIRIOS_TEST_CONTROL=/run/user/N/nirios-test-N.sock`. This module
+//! with `QOS_TEST_CONTROL=/run/user/N/nirios-test-N.sock`. This module
 //! holds the pure-logic command/response types + dispatcher; the
 //! actual unix-socket binding + calloop integration is Phase 1b (a
 //! follow-up unit that wires `dispatch_command` into a calloop event

@@ -3,7 +3,7 @@
 //! Combines gossipsub (for [`crate::network::protocol::NeighbourMsg`] fan-out
 //! across the workspace topic) and mDNS (for LAN peer discovery) into a single
 //! derived behaviour. The peer identity is an ed25519 keypair persisted at
-//! `/var/lib/quick-fs/peer-key` so the same `PeerId` survives compositor
+//! `/var/lib/qos-fs/peer-key` so the same `PeerId` survives compositor
 //! restarts.
 
 use libp2p::{gossipsub, mdns, swarm::NetworkBehaviour};

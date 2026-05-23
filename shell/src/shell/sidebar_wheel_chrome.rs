@@ -29,10 +29,10 @@ use vello::kurbo::{Affine, BezPath, Circle, PathEl, Point, Rect, RoundedRect, St
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::WindowEvent;
 
-use quick_ui::presence::PresenceCtx;
-use quick_ui::text_render::TextRenderer;
-use quick_ui::theme::Theme;
-use quick_ui::widget::Widget;
+use ui::presence::PresenceCtx;
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::widget::Widget;
 
 use crate::shell::chrome_state::Chrome;
 use crate::shell::sidebar_wheel::SidebarWheel;

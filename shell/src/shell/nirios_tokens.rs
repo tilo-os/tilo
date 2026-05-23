@@ -1,4 +1,4 @@
-use quick_ui::tokens::Tokens;
+use ui::tokens::Tokens;
 
 /// Apply nirios-specific overrides on top of the base token set (more dramatic motion,
 /// heavier elevation for shell chrome). v1 overrides spring stiffness for the sidebar

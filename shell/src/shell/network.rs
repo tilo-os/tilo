@@ -32,7 +32,7 @@ pub const DEFAULT_WS_TOPIC: u64 = 0;
 /// Default on-disk path the shell uses for its persistent libp2p
 /// keypair. Lives alongside the FUSE driver's state so a single bind-
 /// mount covers both.
-pub const DEFAULT_KEYPAIR_PATH: &str = "/var/lib/quick-fs/peer-key";
+pub const DEFAULT_KEYPAIR_PATH: &str = "/var/lib/qos-fs/peer-key";
 
 /// Shell-side handle for the peer-sync subsystem.
 ///
