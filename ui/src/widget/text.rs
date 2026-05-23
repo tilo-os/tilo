@@ -19,17 +19,18 @@ pub struct Text {
     /// across frames via `Scene::append` so an unchanged Text
     /// widget contributes ~zero shape / emit work per frame.
     cached: Scene,
-    /// Whether the cached scene needs to be re-emitted. Flipped on
-    /// when `self.rect` changes (apply_layout), when the label or
-    /// size changes (no public setters yet, so this only happens
-    /// at construction), and on theme changes (apply_layout
-    /// invalidates as a side-effect of rect-write).
+    /// Whether the cache content needs to be re-emitted. Flipped
+    /// on when the *size* of `self.rect` changes — pure
+    /// translation (e.g. `Scrollable` offsetting all child rects
+    /// during a scroll) keeps the cache, with the new position
+    /// absorbed by the `Scene::append` transform below.
     dirty: bool,
-    /// Last rect the cache was emitted at. apply_layout flips
-    /// `dirty` when the rect actually changed — Column / Row
-    /// re-layouts often produce identical rects, no need to
-    /// invalidate then.
-    last_rect: vello::kurbo::Rect,
+    /// Rect the cache was emitted at. We compare *size* against
+    /// the current rect to decide whether to re-emit, and use the
+    /// origin to compute the per-frame translate that lets the
+    /// cached scene follow its widget across the screen without
+    /// re-encoding.
+    cache_rect: vello::kurbo::Rect,
 }
 
 impl Text {
@@ -42,7 +43,7 @@ impl Text {
             permission_scope: None,
             cached: Scene::new(),
             dirty: true,
-            last_rect: vello::kurbo::Rect::ZERO,
+            cache_rect: vello::kurbo::Rect::ZERO,
         }
     }
 
@@ -114,26 +115,24 @@ impl Widget for Text {
             origin.x + layout.location.x as f64 + layout.size.width as f64,
             origin.y + layout.location.y as f64 + layout.size.height as f64,
         );
-        // Mark the cache stale only when the rect actually moved —
-        // Column / Row re-runs often produce identical rects (e.g.
-        // sibling widgets toggle their state but our position
-        // doesn't change). Without this guard the cache would
-        // invalidate every frame and the whole incremental story
-        // collapses.
-        if self.rect != self.last_rect {
+        // `dirty` here only tracks **size** changes — pure
+        // translation is absorbed by the per-frame `Scene::append`
+        // transform computed in `draw`. Without this, scrolling a
+        // 1000-widget tree would invalidate every cache every
+        // frame (every widget's rect shifts by the scroll offset)
+        // and the per-widget cache becomes net-negative.
+        let size_changed = self.rect.width() != self.cache_rect.width()
+            || self.rect.height() != self.cache_rect.height();
+        if size_changed {
             self.dirty = true;
-            self.last_rect = self.rect;
         }
     }
 
     fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
-        if self.dirty {
+        if self.dirty || self.cache_rect == vello::kurbo::Rect::ZERO {
             self.cached.reset();
             let label = crate::i18n!(&self.label);
             let max_width = self.rect.width() as f32;
-            // Cache holds the scene in *logical* (transform-free)
-            // coords — the App's `transform` is reapplied on append
-            // below. This makes the cache survive DPI changes.
             text_renderer.draw_text(
                 &mut self.cached,
                 &label,
@@ -142,8 +141,15 @@ impl Widget for Text {
                 Affine::translate((self.rect.x0, self.rect.y0)),
                 Some(max_width + 1.0),
             );
+            self.cache_rect = self.rect;
         }
-        scene.append(&self.cached, Some(transform));
+        // Per-frame translation between cache emit-time origin
+        // and current origin — applied via the append transform
+        // so the cached primitives don't get re-encoded just for
+        // a scroll.
+        let dx = self.rect.x0 - self.cache_rect.x0;
+        let dy = self.rect.y0 - self.cache_rect.y0;
+        scene.append(&self.cached, Some(transform * Affine::translate((dx, dy))));
     }
 
     fn handle_event(&mut self, _event: &WindowEvent, _scale_factor: f64, _modifiers: &winit::event::Modifiers, _state: &mut AutoCommit, _path: &ObjId, _handled: &mut bool, _focus_target: &mut Option<NodeId>, _node_id: NodeId, _taffy: &TaffyTree<()>) {}
