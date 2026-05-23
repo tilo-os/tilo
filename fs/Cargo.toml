@@ -1,5 +1,5 @@
 [package]
-name = "quick-fs-fuse"
+name = "fs"
 version = "0.1.0"
 edition = "2024"
 
