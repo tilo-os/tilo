@@ -250,6 +250,12 @@ impl Widget for ProgressBar {
         self.indeterminate
     }
 
+    /// Determinate bars never change size; indeterminate ones
+    /// change their segment fill every frame but keep the same
+    /// outer rect. Either way, layout stays clean after the
+    /// initial `apply_layout` writes a non-zero rect.
+    fn is_layout_dirty(&self) -> bool { self.rect == Rect::ZERO }
+
     fn presence_key(&self) -> Option<PresenceKey> {
         if self.presence_path.is_empty() {
             None

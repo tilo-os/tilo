@@ -170,9 +170,11 @@ impl Widget for Button {
     fn mark_drawn(&mut self) { self.dirty = false; }
 
     /// Button has a fixed 120×40 intrinsic size that doesn't change
-    /// between frames — its layout never goes dirty after the first
-    /// pass.
-    fn is_layout_dirty(&self) -> bool { false }
+    /// between frames — its layout only needs to be computed once.
+    /// The `Rect::ZERO` sentinel keeps the first frame's
+    /// `compute_layout` running so `apply_layout` can populate the
+    /// rect; after that it stays clean.
+    fn is_layout_dirty(&self) -> bool { self.rect == Rect::ZERO }
 
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, _modifiers: &winit::event::Modifiers, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, _taffy: &TaffyTree<()>) {
         match event {

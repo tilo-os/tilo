@@ -197,6 +197,11 @@ impl Widget for Spinner {
     /// (which the spinner has none of) and return `false`, freezing
     /// the orbit at the first frame after instantiation.
     fn needs_animation_frame(&self) -> bool { true }
+
+    /// Spinner has fixed `self.size` square layout — only the
+    /// dot positions inside it change per frame. Sentinel
+    /// `Rect::ZERO` so the first frame still computes layout.
+    fn is_layout_dirty(&self) -> bool { self.rect == Rect::ZERO }
 }
 
 // =====================================================================

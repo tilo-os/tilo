@@ -257,7 +257,9 @@ impl Widget for Avatar {
 
     fn needs_redraw(&self) -> bool { self.dirty }
     fn mark_drawn(&mut self) { self.dirty = false; }
-    fn is_layout_dirty(&self) -> bool { false }
+    /// `Rect::ZERO` sentinel until the first `apply_layout`; stable
+    /// after that since avatars are fixed-size leaves.
+    fn is_layout_dirty(&self) -> bool { self.rect == Rect::ZERO }
 
     fn handle_event(
         &mut self,

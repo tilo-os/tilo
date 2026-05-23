@@ -162,10 +162,13 @@ impl Widget for Text {
     fn mark_drawn(&mut self) { self.dirty = false; }
 
     /// Text never changes its own intrinsic size between frames
-    /// (the label is fixed at construction, the size too). When
-    /// other widgets in the same row mutate, we don't want their
-    /// re-flow to drag a Text re-shape along with it.
-    fn is_layout_dirty(&self) -> bool { false }
+    /// (the label is fixed at construction, the size too) — once
+    /// `apply_layout` has set `self.rect` to its non-zero
+    /// resolved value, we report `false` so an unrelated sibling
+    /// reflow doesn't drag a Text re-shape along with it. The
+    /// `Rect::ZERO` sentinel covers "haven't been laid out yet"
+    /// so the first frame still runs `compute_layout`.
+    fn is_layout_dirty(&self) -> bool { self.rect == vello::kurbo::Rect::ZERO }
 
     fn get_rect(&self) -> vello::kurbo::Rect {
         self.rect
