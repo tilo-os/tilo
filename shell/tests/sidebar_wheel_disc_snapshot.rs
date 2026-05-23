@@ -1,9 +1,15 @@
 //! Screenshot harness for the `SidebarWheelDisc` widget.
 //!
-//! Renders a 3-spoke disc (one spoke per workspace) onto a 280×280 canvas
+//! Renders a 3-spoke disc (one spoke per workspace) onto a 400×700 canvas
 //! and writes it to `target/nirios-screenshots/wheel-disc-01-baseline.png`
 //! for eyeball verification. No pixel asserts — the goal is to catch
 //! visual regressions by hand during review.
+//!
+//! Canvas size matches the 2026-05-23 redesigned wheel: `SIDEBAR_WIDTH_PX
+//! = 360`, vertical slot ~688 px on a 900-px window. We use 400 wide to
+//! give the upright "HOME" label some headroom on the left, and 700 tall
+//! to capture the disc plus the "+" add-workspace slot below the disc's
+//! visible arc.
 //!
 //! Soft-skips when no wgpu adapter is available (same pattern as
 //! `e2e_shell_flows.rs`).
@@ -35,7 +41,8 @@ fn goldens_dir() -> PathBuf {
         .join("wheel_disc")
 }
 
-const CANVAS: u32 = 280;
+const CANVAS_W: u32 = 400;
+const CANVAS_H: u32 = 700;
 
 fn screenshots_dir() -> PathBuf {
     let root = std::env::var_os("CARGO_TARGET_DIR")
@@ -58,7 +65,7 @@ fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
 
 #[test]
 fn sidebar_wheel_disc_renders_a_spoke_per_workspace() {
-    let Some(mut renderer) = try_new_renderer(CANVAS, CANVAS) else {
+    let Some(mut renderer) = try_new_renderer(CANVAS_W, CANVAS_H) else {
         eprintln!("skip: no wgpu adapter available for offscreen render");
         return;
     };
@@ -69,11 +76,11 @@ fn sidebar_wheel_disc_renders_a_spoke_per_workspace() {
         SpokeLabel { text: "Design".into(), workspace_id: Some(3) },
     ];
     let mut disc = SidebarWheelDisc::new(spokes);
-    // Keep the default 240 px diameter. The disc mounts at the canvas's
-    // LEFT edge so the partial-arc redesign reads correctly: only the
-    // right ~120° of the rim protrudes into the visible canvas, the rest
-    // sits off-screen-left (cx ≈ -60). `align_items: Center` keeps the
-    // sliver vertically centred.
+    // Keep the default 4500 px diameter (post 2026-05-23 redesign). The
+    // disc mounts at the canvas's LEFT edge so the partial-arc design
+    // reads correctly: only the right ~66° of the rim protrudes into the
+    // visible canvas, the rest sits off-screen-left. `align_items:
+    // Center` keeps the sliver vertically centred.
 
     let theme = Theme::dark();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -84,8 +91,8 @@ fn sidebar_wheel_disc_renders_a_spoke_per_workspace() {
         .new_with_children(
             Style {
                 size: Size {
-                    width: Dimension::length(CANVAS as f32),
-                    height: Dimension::length(CANVAS as f32),
+                    width: Dimension::length(CANVAS_W as f32),
+                    height: Dimension::length(CANVAS_H as f32),
                 },
                 // Pin the disc to the left edge — the live shell mounts
                 // it at `left: 0` of the absolute-positioned sidebar
@@ -106,8 +113,8 @@ fn sidebar_wheel_disc_renders_a_spoke_per_workspace() {
         .compute_layout_with_measure(
             root,
             Size {
-                width: AvailableSpace::Definite(CANVAS as f32),
-                height: AvailableSpace::Definite(CANVAS as f32),
+                width: AvailableSpace::Definite(CANVAS_W as f32),
+                height: AvailableSpace::Definite(CANVAS_H as f32),
             },
             |known, avail, node_id, _, _| {
                 if let Some(&ptr) = measure_map.get(&node_id) {
