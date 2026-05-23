@@ -88,6 +88,19 @@ impl ColorPicker {
         self.color
     }
 
+    /// Six-digit `#RRGGBB` hex string for the current colour. Alpha
+    /// is intentionally not encoded — the picker doesn't expose an
+    /// alpha channel yet, and showing `#RRGGBBAA` would just confuse.
+    pub fn hex_string(&self) -> String {
+        format!("#{:02X}{:02X}{:02X}", self.color.r, self.color.g, self.color.b)
+    }
+
+    /// Decimal `rgb(r, g, b)` triple. Mirrors what every CSS panel
+    /// shows under a hex picker.
+    pub fn rgb_string(&self) -> String {
+        format!("rgb({}, {}, {})", self.color.r, self.color.g, self.color.b)
+    }
+
     /// Register a callback that fires whenever `color` mutates. The
     /// callback runs *after* the new value is stored so observers can
     /// just call `picker.color()` to read it back.
@@ -374,7 +387,7 @@ impl Widget for ColorPicker {
         }
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, _text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
+    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
         let colors = &theme.tokens.colors;
         let radius_sm = theme.tokens.radii.sm as f64;
 
@@ -474,6 +487,38 @@ impl Widget for ColorPicker {
             scene.fill(vello::peniko::Fill::NonZero, transform, colors.text_primary, None, &knob);
             scene.stroke(&Stroke::new(1.0), transform, colors.border_standard, None, &knob);
         }
+
+        // --- Hex + RGB readouts (right column, below preview) ---
+        // Hex sits directly under the preview swatch; the RGB triple
+        // sits one line below. Both stay inside the same column as the
+        // preview so they don't fight the SV square for horizontal
+        // space. Text size matches the toolbar / breadcrumb body
+        // labels (`typography.scale.sm`).
+        let text_size = theme.tokens.typography.scale.sm;
+        let hex_label = self.hex_string();
+        let rgb_label = self.rgb_string();
+        let label_x = self.preview_rect.x0;
+        // Stack the two lines tightly under the preview, leaving
+        // ~`spacing.s2` between rows so they breathe.
+        let row_gap = theme.tokens.spacing.s2 as f64;
+        let hex_y = self.preview_rect.y1 + row_gap;
+        let rgb_y = hex_y + text_size as f64 + row_gap;
+        text_renderer.draw_text(
+            scene,
+            &hex_label,
+            text_size,
+            colors.text_primary,
+            transform * Affine::translate((label_x, hex_y)),
+            None,
+        );
+        text_renderer.draw_text(
+            scene,
+            &rgb_label,
+            text_size,
+            colors.text_dim,
+            transform * Affine::translate((label_x, rgb_y)),
+            None,
+        );
     }
 
     fn handle_event(
@@ -737,5 +782,22 @@ mod tests {
             c.b <= 5,
             "expected b ≈ 0, got {}", c.b,
         );
+    }
+
+    /// `hex_string` must always produce `#RRGGBB` in upper-case with
+    /// zero-padded bytes. Tested across two colors that exercise
+    /// both single-digit (< 16) and two-digit channels.
+    #[test]
+    fn hex_string_formats_six_uppercase_digits() {
+        let p = ColorPicker::new(Color::rgba8(0x12, 0x34, 0x56, 0xff));
+        assert_eq!(p.hex_string(), "#123456");
+        let p = ColorPicker::new(Color::rgba8(0x0a, 0x00, 0xff, 0xff));
+        assert_eq!(p.hex_string(), "#0A00FF");
+    }
+
+    #[test]
+    fn rgb_string_formats_decimal_triple() {
+        let p = ColorPicker::new(Color::rgba8(99, 102, 241, 255));
+        assert_eq!(p.rgb_string(), "rgb(99, 102, 241)");
     }
 }
