@@ -2523,4 +2523,104 @@ mod tests {
             "fresh wheel event must cancel the in-flight snap",
         );
     }
+
+    /// User-reported freeze: drag a tab out → group 2 created, fine.
+    /// Drag a second tab into the gap between groups 1 and 2 → freeze.
+    /// This test runs the EXACT detach+drop sequence twice in a row to
+    /// catch the regression at the GroupRow level. If it hangs or
+    /// panics, the bug is here. If it passes, the freeze is one layer
+    /// up (App tick, taffy rebuild, etc.).
+    #[test]
+    fn two_sequential_splits_do_not_hang() {
+        use taffy::AvailableSpace;
+        // Start with one 4-tab group, matching the live shell's
+        // bootstrap_default Home workspace.
+        let (mut row, mut taffy, root) =
+            make_row_with_groups_with_taffy(&[&[1, 2, 3, 4]]);
+
+        // DROP #1: tab id 4 dropped to the right of the only group's
+        // bar → should create a 2nd group.
+        let g0_rect = row.groups[0].get_rect();
+        let release_1 = Point::new(g0_rect.x1 + 30.0, g0_rect.y0 + 6.0);
+        row.groups[0].bar_mut_for_tests().pending_detach = Some((4, release_1));
+
+        let theme = Theme::dark();
+        let modifiers = winit::event::Modifiers::default();
+        let mut state = automerge::AutoCommit::new();
+        let root_obj = automerge::ROOT;
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        row.handle_event(
+            &winit::event::WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: winit::event::ElementState::Released,
+                button: winit::event::MouseButton::Left,
+            },
+            1.0, &modifiers, &mut state, &root_obj,
+            &mut handled, &mut focus, root, &taffy,
+        );
+        // Mimic the App's RedrawRequested path: if any widget reports
+        // structure_dirty, rebuild taffy + node_map so the new group
+        // gets a node and a rect on the next layout pass.
+        assert_eq!(row.groups.len(), 2, "drop 1 must produce 2 groups");
+        assert!(row.take_structure_dirty(), "split must flag structure_dirty");
+        let mut new_taffy: TaffyTree<()> = TaffyTree::new();
+        let mut new_node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let new_root_child = row.build_layout(&mut new_taffy, &theme, &mut new_node_map);
+        let new_root = new_taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(2000.0),
+                        height: Dimension::length(600.0),
+                    },
+                    ..Default::default()
+                },
+                &[new_root_child],
+            )
+            .unwrap();
+        new_taffy
+            .compute_layout_with_measure(
+                new_root,
+                taffy::Size {
+                    width: AvailableSpace::Definite(2000.0),
+                    height: AvailableSpace::Definite(600.0),
+                },
+                |_, _, _, _, _| taffy::Size::ZERO,
+            )
+            .unwrap();
+        row.apply_layout(&new_taffy, new_root_child, Point::ORIGIN);
+        let taffy = new_taffy;
+        let root = new_root_child;
+
+        // DROP #2: tab id 3 dropped INTO THE GAP between group 0 and
+        // group 1 → should create a 3rd group between them. This is
+        // the case the user reported freezes.
+        let g0_rect = row.groups[0].get_rect();
+        let g1_rect = row.groups[1].get_rect();
+        eprintln!("after drop 1: g0={g0_rect:?} g1={g1_rect:?}");
+        eprintln!("  g0 bar_rect={:?}", row.groups[0].bar_rect());
+        eprintln!("  g1 bar_rect={:?}", row.groups[1].bar_rect());
+        eprintln!("  row.rect={:?}", row.rect);
+        let gap_mid = (g0_rect.x1 + g1_rect.x0) / 2.0;
+        let release_2 = Point::new(gap_mid, g0_rect.y0 + 6.0);
+        eprintln!("  release_2={release_2:?}");
+        eprintln!("  gap_index_for(release_2)={:?}", row.gap_index_for(release_2));
+        row.groups[0].bar_mut_for_tests().pending_detach = Some((3, release_2));
+
+        let mut handled2 = false;
+        row.handle_event(
+            &winit::event::WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: winit::event::ElementState::Released,
+                button: winit::event::MouseButton::Left,
+            },
+            1.0, &modifiers, &mut state, &root_obj,
+            &mut handled2, &mut focus, root, &taffy,
+        );
+        assert_eq!(
+            row.groups.len(), 3,
+            "drop 2 must produce 3 groups (was {})", row.groups.len()
+        );
+    }
 }
