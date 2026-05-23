@@ -41,8 +41,12 @@ pub const TOP_BAR_SURFACE_ALPHA: f32 = 0.80;
 /// Which center-widget variant is active in the top-bar carousel.
 /// Scroll-wheel over the center band cycles between these; a three-dot
 /// indicator on the left of the band shows the current position.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum CenterWidget {
+    /// Default matches the constructor's seed value (the bar boots
+    /// into Clock mode). Letting `CacheFingerprint::default()` derive
+    /// `Default` for free keeps the cache machinery clean.
+    #[default]
     Clock,
     SystemMonitor,
     Calendar,
@@ -97,6 +101,41 @@ impl CenterWidget {
 /// Snapshot of the data the top bar renders. Cached at construction and
 /// refreshed when the shell calls [`TopBarChrome::sync_from_tree`] (e.g. in
 /// response to a workspace switch). Keeping the render widget off
+/// Snapshot of every input that affects the top-bar's painted pixels.
+/// Compared field-for-field against the previous frame's snapshot to
+/// decide whether [`TopBarChrome::cached`] can be reused or has to
+/// rebuild. Stored on the widget so the comparison is O(1) per frame.
+///
+/// The time fields are split by mode because each variant consumes a
+/// different slice of `chrono::Local::now()`: Clock paints `HH:MM`
+/// so the minute is the finest grain; SystemMonitor's bars + values
+/// are derived from `seconds % N`, so seconds drive invalidation;
+/// Calendar is fully static (`time_bucket = 0`).
+#[derive(Default, Clone, PartialEq, Eq)]
+struct CacheFingerprint {
+    /// Position + size of the bar's rect (`x0, y0, w, h` in integer
+    /// pixels). Every shape inside the bar is anchored to
+    /// `self.rect`'s corners *and* the per-frame draw repopulates
+    /// member-field hit rects (e.g. `self.overview_btn_rect`) from
+    /// those corners. Keying the cache on the full rect (not just
+    /// size) means cache hits also imply hit-rects are still valid.
+    /// The bar moves only on viewport resize / sidebar-width change,
+    /// so the rebuild cost is paid rarely.
+    rect_px: (i64, i64, u64, u64),
+    workspace_name: String,
+    workspace_index: usize,
+    workspace_total: usize,
+    /// Three avatar initials + overflow count. The actual colour
+    /// palette is stable for a given roster (derived from peer ids),
+    /// so the initials carry the colour signal too.
+    collaborator_initials: Vec<char>,
+    collaborator_overflow: usize,
+    center_widget: CenterWidget,
+    /// Time bucket — see struct doc. `0` means "no time dependency"
+    /// (static center widget like Calendar).
+    time_bucket: u64,
+}
+
 /// `WorkspaceTree` lets `build_nirios_root` stay a pure function of the
 /// tree and avoids a circular borrow against the shell's owned logical
 /// `TopBar`.
@@ -105,6 +144,20 @@ pub struct TopBarChrome {
     workspace_name: String,
     workspace_index: usize,
     workspace_total: usize,
+    /// Scene cache — covers the entire top-bar paint. The bar is large
+    /// (full viewport width × 40 px) and most of its content is stable
+    /// across frames; the only per-frame mutators are the clock (per
+    /// minute), the SystemMonitor sparkline + values (per second when
+    /// in that variant), workspace nav state, and collaborator roster.
+    /// Caching the encoded scene cuts the draw budget at rest by an
+    /// order of magnitude (~12 fills + dozens of text glyphs avoided).
+    cached: Scene,
+    /// Cache-validity fingerprint. The cache is reused iff every field
+    /// here matches its corresponding `self.*` field at draw time —
+    /// see [`TopBarChrome::current_fingerprint`] for what goes in. A
+    /// fresh widget (`Rect::ZERO` rect) yields a fingerprint whose
+    /// rect-width-zero immediately misses, forcing a first-frame paint.
+    cache_fp: CacheFingerprint,
     collaborator_initials: Vec<char>,
     /// Per-peer fill colour for the avatar circles (one per entry in
     /// `collaborator_initials`, same index). Resolved from the
@@ -158,6 +211,8 @@ impl TopBarChrome {
             workspace_name: String::new(),
             workspace_index: 0,
             workspace_total: 1,
+            cached: Scene::new(),
+            cache_fp: CacheFingerprint::default(),
             collaborator_initials: Vec::new(),
             collaborator_colors: Vec::new(),
             collaborator_overflow: 0,
@@ -177,6 +232,48 @@ impl TopBarChrome {
         };
         this.sync_from_tree(tree);
         this
+    }
+
+    /// Snapshot of the current frame's cache-affecting inputs. Compared
+    /// against `self.cache_fp` to decide whether `self.cached` can be
+    /// reused. See [`CacheFingerprint`] for what each field signals.
+    fn current_fingerprint(&self) -> CacheFingerprint {
+        // Floating-point Rect coords → integer keys. The rect is
+        // taffy-derived from logical pixel coords; even at fractional-
+        // DPI the values that land here are integer-valued f64s.
+        // Casting via `as` after `.round()` keeps the fingerprint
+        // stable against benign floating-point noise.
+        let x0 = self.rect.x0.round() as i64;
+        let y0 = self.rect.y0.round() as i64;
+        let w = self.rect.width().round() as u64;
+        let h = self.rect.height().round() as u64;
+        let time_bucket = match self.center_widget {
+            CenterWidget::Clock => {
+                // Minute granularity — the Clock variant paints
+                // `HH:MM`, so we only need to invalidate once per
+                // minute. (Hour and date roll-over imply a minute
+                // change too, so a single timestamp slice covers all.)
+                let t = chrono::Local::now();
+                t.timestamp() as u64 / 60
+            }
+            CenterWidget::SystemMonitor => {
+                // Second granularity — the sparkline bars + CPU/RAM/TMP
+                // values are derived from `seconds % N`, so the strip
+                // visibly mutates once per second.
+                chrono::Local::now().timestamp() as u64
+            }
+            CenterWidget::Calendar => 0, // Static placeholder.
+        };
+        CacheFingerprint {
+            rect_px: (x0, y0, w, h),
+            workspace_name: self.workspace_name.clone(),
+            workspace_index: self.workspace_index,
+            workspace_total: self.workspace_total,
+            collaborator_initials: self.collaborator_initials.clone(),
+            collaborator_overflow: self.collaborator_overflow,
+            center_widget: self.center_widget,
+            time_bucket,
+        }
     }
 
     /// Attach a shared chrome-state handle. The top bar uses it to toggle
@@ -460,12 +557,45 @@ impl Widget for TopBarChrome {
 
     fn draw(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
+        out_scene: &mut Scene,
+        out_transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        // Cache fast-path. The top bar is the largest piece of *mostly-
+        // static* chrome in the shell — workspace nav, clock band,
+        // collaborator avatars — and re-encoding it every frame is
+        // expensive (~12 fills + several text measurements + lucide
+        // icon strokes). We fingerprint the inputs once per frame and
+        // replay the cached scene with the caller's transform if the
+        // fingerprint matches.
+        //
+        // The fingerprint covers rect, workspace identity/index/total,
+        // collaborator initials + overflow, center-widget variant, and
+        // a time bucket (minute for Clock, second for SystemMonitor,
+        // zero for static Calendar). Anything that affects the painted
+        // pixels lives in there; anything that doesn't (e.g. cursor
+        // position used for hit-testing) deliberately doesn't.
+        let fp = self.current_fingerprint();
+        if fp == self.cache_fp && fp.rect_px.2 > 0 {
+            // Cache hit — `*_btn_rect` / `center_rect` / `avatar_stack_rect`
+            // / `center_dot_rects` were populated by the most recent
+            // cache-miss draw and remain valid because the rect, workspace
+            // state, and collaborator roster are unchanged.
+            out_scene.append(&self.cached, Some(out_transform));
+            return;
+        }
+
+        // Cache miss — encode the topbar at `Affine::IDENTITY` into
+        // `self.cached`, then splice with `out_transform`. Same
+        // `std::mem::take` dance as `desktop_backdrop` so the encode
+        // body has an exclusive `&mut Scene` without aliasing `self`.
+        let mut local = std::mem::take(&mut self.cached);
+        local.reset();
+        let scene = &mut local;
+        let transform = Affine::IDENTITY;
+
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
 
@@ -1062,6 +1192,14 @@ impl Widget for TopBarChrome {
         } else {
             self.avatar_stack_rect = Rect::ZERO;
         }
+
+        // End of cache build — splice the freshly-encoded local scene
+        // into the caller's `out_scene` with the host transform, then
+        // restore `self.cached` and record the fingerprint so the next
+        // matching frame takes the fast path above.
+        out_scene.append(&local, Some(out_transform));
+        self.cached = local;
+        self.cache_fp = fp;
     }
 
     fn handle_event(
@@ -1188,6 +1326,38 @@ impl Widget for TopBarChrome {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    /// The top bar reports clean-after-first-frame. Subsequent
+    /// invalidations flow through:
+    ///   - [`Widget::update`] when the shared `Chrome` revision bumps
+    ///     (workspace switch / overlay toggle); `update` returning
+    ///     `true` is the standing contract for "redraw me".
+    ///   - The cache fingerprint check inside `draw` itself, which
+    ///     detects clock/SystemMonitor time-bucket transitions on the
+    ///     next frame the App pumps (typically driven by some other
+    ///     event — same as the pre-cache behaviour where the clock
+    ///     lagged at idle).
+    ///
+    /// We must keep returning `true` until the first successful draw
+    /// fills the cache (`rect_px.2 == 0` for the default fingerprint),
+    /// otherwise the very first frame after layout never paints.
+    fn needs_redraw(&self) -> bool {
+        // `Default` for CacheFingerprint has rect_px = (0,0,0,0) → w=0.
+        self.cache_fp.rect_px.2 == 0
+    }
+
+    fn mark_drawn(&mut self) {
+        // Leaf widget — `cache_fp` is updated inside `draw` itself, so
+        // there is nothing to clear here. Mirrors `Button::mark_drawn`.
+    }
+
+    /// The bar's intrinsic size is fixed at `(100%, TOPBAR_HEIGHT_PX)`
+    /// in `build_layout`, so its taffy node never needs recomputing
+    /// after the first pass. Returning `false` after that pass spares
+    /// the App a `compute_layout_with_measure` on every CursorMoved.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
     }
 }
 
