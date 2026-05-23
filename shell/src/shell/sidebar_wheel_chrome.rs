@@ -39,13 +39,17 @@ use crate::shell::chrome_state::Chrome;
 use crate::shell::sidebar_wheel::SidebarWheel;
 use crate::shell::state::{WorkspaceId, WorkspaceTree};
 
-/// Reserved horizontal slot for the radial workspace switcher. The
-/// concept screenshot at `radial-workspace-switcher/` uses ~200 px so
-/// the vertical workspace labels (CONCEPT, ANALYTICS, …) read
-/// without clipping against the column's left edge. Window groups
-/// are displaced to the right of this column so the wheel never
-/// overlaps app surfaces.
-pub const SIDEBAR_WIDTH_PX: f32 = 200.0;
+/// Reserved horizontal slot for the radial workspace switcher.
+///
+/// 2026-05-23 redesign: bumped from 200 → 360 px. The previous
+/// concept-faithful 96/200 px column read as "crowded" because the
+/// per-spoke pill cards stacked too densely in a narrow strip. The new
+/// quiet-panel design (ring + workspace-color dot markers + upright
+/// horizontal active label) needs ~360 px so the active workspace's
+/// label has room to read horizontally without truncation, while still
+/// being only ~1.8× the prior width so the desktop content area is not
+/// meaningfully eaten into.
+pub const SIDEBAR_WIDTH_PX: f32 = 360.0;
 
 /// Intents the sidebar wheel can emit. Held internally so the shell can
 /// poll for them after dispatching events, mirroring the topbar's
