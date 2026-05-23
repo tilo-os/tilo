@@ -12,15 +12,15 @@ A spatial, collaborative Linux desktop built as a vertically-integrated stack:
 
 This is a Cargo workspace with git submodules. The members are:
 
-| Path | Kind | Binary |
-|---|---|---|
-| `shell/` | submodule | `shell` (compositor), `qos-control` (test CLI), `shots` (screenshot tool) |
-| `fs/` | submodule | `fs` (FUSE driver) |
-| `ui/` | in-tree | library only |
-| `apps/terminal/` | submodule | `terminal` |
-| `apps/file-explorer/` | submodule | `file-explorer` |
-| `apps/browser/` | submodule | `browser` |
-| `os/` | submodule | Containerfile + systemd units + scripts |
+| Path | Kind | Repo | Binary |
+|---|---|---|---|
+| `shell/` | submodule | `qos/shell.git` | `shell` (compositor), `qos-control` (test CLI), `shots` (screenshot tool) |
+| `fs/` | submodule | `qos/fs.git` | `fs` (FUSE driver) |
+| `ui/` | submodule | `qos/ui.git` | library only |
+| `apps/` | submodule | `qos/apps.git` | `terminal`, `file-explorer`, `browser` (each its own crate) |
+| `os/` | in-tree | (this repo) | Containerfile + systemd units + image build scripts |
+
+This repo (`qos/qos.git`) owns the workspace Cargo.toml, the docs, and the OS image build. Source components are peer submodules.
 
 After cloning, run `git submodule update --init --recursive` once.
 

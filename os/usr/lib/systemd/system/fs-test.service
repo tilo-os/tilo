@@ -1,0 +1,13 @@
+[Unit]
+Description=QuickFS FUSE Automated Test
+After=fs.service multi-user.target
+Requires=fs.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash /usr/bin/fs-test.sh
+RemainAfterExit=yes
+StandardOutput=journal+console
+
+[Install]
+WantedBy=multi-user.target
