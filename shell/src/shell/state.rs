@@ -618,6 +618,59 @@ impl Default for WorkspaceTree {
     }
 }
 
+/// Shared handle to a single [`WorkspaceTree`] instance.
+///
+/// Closes C-3 (`docs/superpowers/specs/2026-05-22-workspace-tree-arc-mutex-design.md`):
+/// the compositor (`ChromeState`), the portal (`GrantStoreHandle`), and
+/// peer-sync (`WorkspaceTreeReplica`) all hold a clone of this handle so
+/// every mutation lands on the same underlying tree. Previously each
+/// subsystem owned an independent `WorkspaceTree` clone — three trees,
+/// three identities, diverging on the first write.
+///
+/// `parking_lot::RwLock` is chosen over `std::sync::Mutex` because the
+/// shell repaints at ~60 Hz reading the tree on every layout pass; many
+/// readers (paint + grant lookup + peer-sync export) outnumber the
+/// occasional writer (chrome mutations + portal `Allow` / peer-sync
+/// `apply_changes`). Uncontended `parking_lot` read locks are ~10 ns —
+/// imperceptible at frame-rate.
+///
+/// Use [`WorkspaceTree::shared`] to wrap an owned tree, or
+/// [`WorkspaceTreeHandleExt::test_default`] for a fresh handle with a
+/// default tree.
+pub type WorkspaceTreeHandle = std::sync::Arc<parking_lot::RwLock<WorkspaceTree>>;
+
+/// Extension trait providing constructors on the [`WorkspaceTreeHandle`]
+/// type alias. Rust doesn't let us add inherent methods to a type alias,
+/// so the constructors live as associated functions on this trait.
+///
+/// Imported as `use WorkspaceTreeHandleExt as _;` at use-sites; the
+/// trait is in the same module as `WorkspaceTreeHandle` so the natural
+/// import (`use crate::shell::state::WorkspaceTreeHandle;`) already
+/// brings the trait into scope when its name is.
+pub trait WorkspaceTreeHandleExt: Sized {
+    /// Build a handle pre-wrapped around a default (empty) tree. Used by
+    /// tests that don't care about the initial workspace set — and by
+    /// the C-3 integration tests in particular, which build a handle,
+    /// hand a clone to each subsystem, then mutate one and assert
+    /// the others observe it.
+    fn test_default() -> Self;
+}
+
+impl WorkspaceTreeHandleExt for WorkspaceTreeHandle {
+    fn test_default() -> Self {
+        std::sync::Arc::new(parking_lot::RwLock::new(WorkspaceTree::default()))
+    }
+}
+
+impl WorkspaceTree {
+    /// Wrap this tree in a [`WorkspaceTreeHandle`]. Consumes the tree
+    /// (there should only ever be one instance) and returns the shared
+    /// handle every subsystem clones from. Mirrors the C-3 RFC's
+    /// "Threading the handle" section.
+    pub fn shared(self) -> WorkspaceTreeHandle {
+        std::sync::Arc::new(parking_lot::RwLock::new(self))
+    }
+}
 
 impl WorkspaceTree {
     /// Set the process-wide peer salt that [`next_id`] stamps into the
