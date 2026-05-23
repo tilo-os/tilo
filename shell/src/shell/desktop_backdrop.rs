@@ -108,6 +108,20 @@ pub struct DesktopBackdrop {
     /// Pre-baked tileable noise texture. Uploaded once on construction and
     /// reused on every draw via `Extend::Repeat`.
     noise: Image,
+    /// Cached backdrop scene — gradient + grid + noise overlay encoded
+    /// at *logical* coordinates relative to the cache's emit rect. The
+    /// backdrop is the lowest-frequency surface in the shell (rebuilds
+    /// only on viewport resize), so we re-encode on size change and
+    /// translate-only thereafter via the outer transform.
+    ///
+    /// Mirrors the leaf-widget pattern in `ui::widget::Button` and
+    /// `ui::widget::column::Column::subtree_cache` — see those for the
+    /// canonical reasoning.
+    cached: Scene,
+    /// Rect (at cache-emit time) the backdrop was composed against. A
+    /// `Rect::ZERO` sentinel means "no cache yet"; any width/height
+    /// mismatch against `self.rect` triggers a rebuild.
+    cache_rect: Rect,
 }
 
 impl DesktopBackdrop {
@@ -116,6 +130,8 @@ impl DesktopBackdrop {
             child: None,
             rect: Rect::ZERO,
             noise: build_noise_image(),
+            cached: Scene::new(),
+            cache_rect: Rect::ZERO,
         }
     }
 
@@ -131,7 +147,59 @@ impl DesktopBackdrop {
         self.noise.image.data.len()
     }
 
-    fn paint_backdrop(&self, scene: &mut Scene, transform: Affine) {
+    /// Compose the backdrop into `out_scene` with the caller's transform.
+    ///
+    /// The backdrop is *purely* a function of `self.rect`'s size — every
+    /// shape position is anchored to `self.rect.x0/y0`, and the gradient
+    /// stops are constant. Re-encoding the gradient + ~80 grid strokes +
+    /// the tiled noise overlay each frame is the single biggest static
+    /// surface in the shell; with a `Scene::reset()` + 80-stroke rebuild
+    /// it dominated the at-rest `draw=` budget seen in `QUICK_UI_PERF=1`.
+    ///
+    /// Strategy mirrors `ui::widget::button::Button`'s scene cache:
+    ///
+    ///   1. Bake the full backdrop into `self.cached` exactly once at
+    ///      the current rect coordinates.
+    ///   2. On subsequent frames where the size hasn't changed, append
+    ///      the cached scene with a `translate(rect.x0 - cache_rect.x0,
+    ///      rect.y0 - cache_rect.y0)` so pure window-position changes
+    ///      (rare for the root backdrop, but cheap to support) reuse
+    ///      the encoding.
+    ///   3. If the viewport resizes, `apply_layout` updates `self.rect`;
+    ///      `paint_backdrop` detects the width/height mismatch against
+    ///      `self.cache_rect` and rebuilds.
+    fn paint_backdrop(&mut self, out_scene: &mut Scene, out_transform: Affine) {
+        let size_changed = self.rect.width() != self.cache_rect.width()
+            || self.rect.height() != self.cache_rect.height();
+        let needs_rebuild = self.cache_rect == Rect::ZERO || size_changed;
+
+        if !needs_rebuild {
+            // Pure-translation reuse — same as `Button::draw`.
+            let dx = self.rect.x0 - self.cache_rect.x0;
+            let dy = self.rect.y0 - self.cache_rect.y0;
+            out_scene.append(
+                &self.cached,
+                Some(out_transform * Affine::translate((dx, dy))),
+            );
+            return;
+        }
+
+        // Cache miss — rebuild into `self.cached` at IDENTITY then
+        // splice with `out_transform`. Same `std::mem::take` dance as
+        // `ui::widget::column::Column::draw_with_presence` — lets us
+        // pass `&mut Scene` to the encoder without an aliasing borrow
+        // on `&self`.
+        let mut local = std::mem::take(&mut self.cached);
+        local.reset();
+        self.encode_backdrop(&mut local, Affine::IDENTITY);
+        out_scene.append(&local, Some(out_transform));
+        self.cached = local;
+        self.cache_rect = self.rect;
+    }
+
+    /// Pure encoder — writes the backdrop into `scene` with `transform`
+    /// applied. Used by the cache-miss branch of `paint_backdrop`.
+    fn encode_backdrop(&self, scene: &mut Scene, transform: Affine) {
         // 1. Diagonal gradient: top-left slate-900 → bottom-right slate-950.
         let gradient = Gradient::new_linear(
             Point::new(self.rect.x0, self.rect.y0),
@@ -378,6 +446,39 @@ impl Widget for DesktopBackdrop {
             .as_mut()
             .map(|c| c.take_structure_dirty())
             .unwrap_or(false)
+    }
+
+    /// The backdrop's own painted pixels are a pure function of
+    /// `self.rect`'s size — gradient endpoints, grid stride, and noise
+    /// tiling are all anchored to its corners and there is no hover /
+    /// focus / animation state to invalidate. The first frame paints,
+    /// the cache fills, and subsequent frames are pure-translation
+    /// replays via `paint_backdrop`'s `Scene::append`.
+    ///
+    /// Therefore the backdrop itself never reports dirty after first
+    /// draw; the child subtree (the rest of the shell chrome) is asked
+    /// independently. The `cache_rect == ZERO` sentinel covers the
+    /// pre-first-draw boot path so the very first frame paints.
+    fn needs_redraw(&self) -> bool {
+        self.cache_rect == Rect::ZERO
+            || self.child.as_ref().map(|c| c.needs_redraw()).unwrap_or(false)
+    }
+
+    /// Forward layout-dirty queries to the child — the backdrop has no
+    /// intrinsic size of its own, just `percent(1.0)` of the parent.
+    /// Without this override the default would return `true` every
+    /// frame (leaves default to true) and re-trigger taffy.
+    fn is_layout_dirty(&self) -> bool {
+        self.child.as_ref().map(|c| c.is_layout_dirty()).unwrap_or(false)
+    }
+
+    fn mark_drawn(&mut self) {
+        // Container forward — clearing happens implicitly via cache_rect
+        // being non-zero after `paint_backdrop` rebuilds. Children clear
+        // their own per-widget dirty flags.
+        if let Some(child) = &mut self.child {
+            child.mark_drawn();
+        }
     }
 
     fn presence_key(&self) -> Option<PresenceKey> {
