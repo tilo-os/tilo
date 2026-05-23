@@ -61,6 +61,14 @@ pub struct ToggleGroup {
     /// update without forcing a separate borrow path on the rest of
     /// the struct.
     last_cursor: Cell<Point>,
+    /// Scene cache (Unit 3 of the 2026-05-23 perf plan).
+    cached: Scene,
+    /// `(rect, selected)` snapshot the cache was emitted from. The
+    /// cache invalidates when either changes — both happen on user
+    /// input, and apply_layout also re-runs when the parent reshapes.
+    cache_dirty: bool,
+    last_rect: Rect,
+    last_selected: usize,
 }
 
 impl ToggleGroup {
@@ -78,6 +86,10 @@ impl ToggleGroup {
             segment_rects: Vec::new(),
             rect: Rect::ZERO,
             last_cursor: Cell::new(Point::ZERO),
+            cached: Scene::new(),
+            cache_dirty: true,
+            last_rect: Rect::ZERO,
+            last_selected: usize::MAX,
         }
     }
 
@@ -158,12 +170,16 @@ impl Widget for ToggleGroup {
             };
             self.segment_rects.push(Rect::new(sx0, self.rect.y0, sx1, self.rect.y1));
         }
+        if self.rect != self.last_rect {
+            self.cache_dirty = true;
+            self.last_rect = self.rect;
+        }
     }
 
     fn draw(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
+        out_scene: &mut Scene,
+        out_transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         _presence: &crate::presence::PresenceCtx,
@@ -171,6 +187,18 @@ impl Widget for ToggleGroup {
         if self.segments.is_empty() || self.segment_rects.len() != self.segments.len() {
             return;
         }
+
+        if self.selected != self.last_selected {
+            self.cache_dirty = true;
+            self.last_selected = self.selected;
+        }
+        if !self.cache_dirty {
+            out_scene.append(&self.cached, Some(out_transform));
+            return;
+        }
+        self.cached.reset();
+        let scene = &mut self.cached;
+        let transform = Affine::IDENTITY;
 
         let colors = &theme.tokens.colors;
         let radius = theme.tokens.radii.md as f64;
@@ -260,7 +288,18 @@ impl Widget for ToggleGroup {
                 None,
             );
         }
+        out_scene.append(&self.cached, Some(out_transform));
     }
+
+    fn needs_redraw(&self) -> bool {
+        self.cache_dirty || self.selected != self.last_selected
+    }
+
+    fn mark_drawn(&mut self) { self.cache_dirty = false; }
+
+    /// Segmented control has fixed intrinsic size set in
+    /// `build_layout`. Clicking only changes `selected`, not size.
+    fn is_layout_dirty(&self) -> bool { false }
 
     fn handle_event(
         &mut self,

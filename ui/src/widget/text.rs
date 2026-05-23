@@ -15,6 +15,21 @@ pub struct Text {
     rect: vello::kurbo::Rect,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
+    /// Cached `Scene` for this widget's last `draw` output. Reused
+    /// across frames via `Scene::append` so an unchanged Text
+    /// widget contributes ~zero shape / emit work per frame.
+    cached: Scene,
+    /// Whether the cached scene needs to be re-emitted. Flipped on
+    /// when `self.rect` changes (apply_layout), when the label or
+    /// size changes (no public setters yet, so this only happens
+    /// at construction), and on theme changes (apply_layout
+    /// invalidates as a side-effect of rect-write).
+    dirty: bool,
+    /// Last rect the cache was emitted at. apply_layout flips
+    /// `dirty` when the rect actually changed — Column / Row
+    /// re-layouts often produce identical rects, no need to
+    /// invalidate then.
+    last_rect: vello::kurbo::Rect,
 }
 
 impl Text {
@@ -25,6 +40,9 @@ impl Text {
             rect: vello::kurbo::Rect::ZERO,
             presence_path: Vec::new(),
             permission_scope: None,
+            cached: Scene::new(),
+            dirty: true,
+            last_rect: vello::kurbo::Rect::ZERO,
         }
     }
 
@@ -96,28 +114,58 @@ impl Widget for Text {
             origin.x + layout.location.x as f64 + layout.size.width as f64,
             origin.y + layout.location.y as f64 + layout.size.height as f64,
         );
+        // Mark the cache stale only when the rect actually moved —
+        // Column / Row re-runs often produce identical rects (e.g.
+        // sibling widgets toggle their state but our position
+        // doesn't change). Without this guard the cache would
+        // invalidate every frame and the whole incremental story
+        // collapses.
+        if self.rect != self.last_rect {
+            self.dirty = true;
+            self.last_rect = self.rect;
+        }
     }
 
     fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
-        let label = crate::i18n!(&self.label);
-        // Use the actual width from layout. 
-        // We add 1.0px of "slop" to the draw call to ensure cosmic-text doesn't 
-        // wrap a word that technically fits but is off by a sub-pixel.
-        let max_width = self.rect.width() as f32;
-        
-        text_renderer.draw_text(
-            scene,
-            &label,
-            self.size,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((self.rect.x0, self.rect.y0)),
-            Some(max_width + 1.0),
-        );
+        if self.dirty {
+            self.cached.reset();
+            let label = crate::i18n!(&self.label);
+            let max_width = self.rect.width() as f32;
+            // Cache holds the scene in *logical* (transform-free)
+            // coords — the App's `transform` is reapplied on append
+            // below. This makes the cache survive DPI changes.
+            text_renderer.draw_text(
+                &mut self.cached,
+                &label,
+                self.size,
+                theme.tokens.colors.text_primary,
+                Affine::translate((self.rect.x0, self.rect.y0)),
+                Some(max_width + 1.0),
+            );
+        }
+        scene.append(&self.cached, Some(transform));
     }
 
     fn handle_event(&mut self, _event: &WindowEvent, _scale_factor: f64, _modifiers: &winit::event::Modifiers, _state: &mut AutoCommit, _path: &ObjId, _handled: &mut bool, _focus_target: &mut Option<NodeId>, _node_id: NodeId, _taffy: &TaffyTree<()>) {}
 
     fn name(&self) -> &str { "Text" }
+
+    /// Opt into incremental redraw. Returns true while the cache
+    /// has not been written yet (or has been invalidated by a rect
+    /// change). The App's redraw gate uses this to skip frames
+    /// where no Text widget changed.
+    fn needs_redraw(&self) -> bool { self.dirty }
+
+    /// Clears the cache-stale flag after the App has consumed the
+    /// scene. Subsequent frames will re-use `self.cached` until
+    /// the rect changes again.
+    fn mark_drawn(&mut self) { self.dirty = false; }
+
+    /// Text never changes its own intrinsic size between frames
+    /// (the label is fixed at construction, the size too). When
+    /// other widgets in the same row mutate, we don't want their
+    /// re-flow to drag a Text re-shape along with it.
+    fn is_layout_dirty(&self) -> bool { false }
 
     fn get_rect(&self) -> vello::kurbo::Rect {
         self.rect

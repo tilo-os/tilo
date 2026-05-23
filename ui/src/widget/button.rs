@@ -20,6 +20,16 @@ pub struct Button {
     on_click_path: Option<String>, // Path in CRDT to mutate
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
+    /// Scene cache. Holds the last emitted body / border / label
+    /// primitives at *logical* coordinates; the App's transform
+    /// is reapplied on `Scene::append`. See `widget::text` for the
+    /// canonical pattern.
+    cached: vello::Scene,
+    dirty: bool,
+    last_rect: Rect,
+    /// Visual-state snapshot the cache was emitted from. If any
+    /// changes we invalidate the cache so the next draw rebuilds.
+    last_state: (bool, bool, bool), // (hovered, pressed, focused)
 }
 
 impl Button {
@@ -34,6 +44,10 @@ impl Button {
             on_click_path: on_click_path.map(|s| s.to_string()),
             presence_path: Vec::new(),
             permission_scope: None,
+            cached: vello::Scene::new(),
+            dirty: true,
+            last_rect: Rect::ZERO,
+            last_state: (false, false, false),
         }
     }
 
@@ -77,9 +91,27 @@ impl Widget for Button {
             origin.x as f64 + layout.location.x as f64 + layout.size.width as f64,
             origin.y as f64 + layout.location.y as f64 + layout.size.height as f64,
         );
+        if self.rect != self.last_rect {
+            self.dirty = true;
+            self.last_rect = self.rect;
+        }
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
+    fn draw(&mut self, out_scene: &mut Scene, out_transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
+        let current_state = (self.is_hovered, self.is_pressed, self.is_focused);
+        if current_state != self.last_state {
+            self.dirty = true;
+            self.last_state = current_state;
+        }
+        if !self.dirty {
+            out_scene.append(&self.cached, Some(out_transform));
+            return;
+        }
+        // Build into the local cache, not the passed `scene` —
+        // append re-applies the host transform at composite time.
+        self.cached.reset();
+        let scene = &mut self.cached;
+        let transform = Affine::IDENTITY;
         let (bg_color, border_color) = if self.is_pressed {
             (theme.bg_active, theme.tokens.colors.border_standard)
         } else if self.is_hovered {
@@ -125,7 +157,22 @@ impl Widget for Button {
             transform * Affine::translate((text_x, text_y)),
             None,
         );
+        // End of cache build — splice the freshly-emitted local
+        // scene into the outer App scene with the host transform.
+        out_scene.append(&self.cached, Some(out_transform));
     }
+
+    fn needs_redraw(&self) -> bool {
+        self.dirty
+            || (self.is_hovered, self.is_pressed, self.is_focused) != self.last_state
+    }
+
+    fn mark_drawn(&mut self) { self.dirty = false; }
+
+    /// Button has a fixed 120×40 intrinsic size that doesn't change
+    /// between frames — its layout never goes dirty after the first
+    /// pass.
+    fn is_layout_dirty(&self) -> bool { false }
 
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, _modifiers: &winit::event::Modifiers, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, _taffy: &TaffyTree<()>) {
         match event {
