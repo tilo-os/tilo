@@ -125,21 +125,18 @@ pub fn run_with_full_options(opts: HostedOptions) {
     // startup. Held briefly under a read lock.
     let tree_snapshot: WorkspaceTree = tree_handle.read().clone();
 
-    // Optional peer-sync handle — construction only, per Task 3.1.
+    // C-3: peer-sync shares the same `WorkspaceTreeHandle` as chrome +
+    // portal. `WorkspaceTreeReplica::apply_changes` writes into the
+    // shared tree → the next paint reads the merged state without any
+    // copy-back step.
+    //
     // Held alive for the life of `run` so the actor's tokio runtime
     // doesn't drop out from under us mid-session. Failure is logged
     // and treated as "peer-sync stays off" — the shell must keep
     // working even if the keypair store is unreadable.
-    //
-    // C-3 Phase D unifies this handle with `tree_handle` above; Phase
-    // C keeps the dedicated `Arc<Mutex<_>>` so the portal swap can land
-    // independently. Peer-sync still sees a clone-once snapshot until
-    // Phase D wires it through.
     let peer_sync: Option<Arc<ShellNetwork>> = if enable_peer_sync {
-        let shared_tree =
-            std::sync::Arc::new(std::sync::Mutex::new(tree_handle.read().clone()));
         match ShellNetwork::spawn(
-            shared_tree,
+            tree_handle.clone(),
             std::path::Path::new(DEFAULT_KEYPAIR_PATH),
         ) {
             Ok(handle) => {
