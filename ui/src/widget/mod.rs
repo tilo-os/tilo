@@ -79,6 +79,57 @@ pub trait Widget {
     /// them, e.g. `GroupRow::groups`).
     fn take_structure_dirty(&mut self) -> bool { false }
 
+    /// Whether this widget's *visual* state has changed since the
+    /// last successful `draw` call. The default returns `true` for
+    /// back-compat — every widget that hasn't opted in is treated
+    /// as dirty every frame, matching the pre-incremental-rendering
+    /// behaviour. Widgets opt into incremental redraw by:
+    ///   1. Tracking an internal `dirty: bool` flag.
+    ///   2. Setting `dirty = true` inside `handle_event` / `sync`
+    ///      whenever they mutate any field that affects `draw`.
+    ///   3. Clearing the flag inside `mark_drawn()` (called by the
+    ///      App after a successful `draw_with_presence`).
+    ///
+    /// Containers MUST override this to forward the query to their
+    /// children: a container is dirty iff any descendant is.
+    fn needs_redraw(&self) -> bool {
+        // Recurse through children so even default-true leaves
+        // composed inside a container correctly trigger a frame.
+        if self.children().is_empty() {
+            true
+        } else {
+            self.children().iter().any(|c| c.needs_redraw())
+        }
+    }
+
+    /// Called by the App after this widget's scene has been written
+    /// into the composed frame. Widgets clear their `dirty` flag
+    /// here. Default forwards to children.
+    fn mark_drawn(&mut self) {
+        for c in self.children_mut() {
+            c.mark_drawn();
+        }
+    }
+
+    /// Whether this widget's *layout* has changed since the last
+    /// successful `apply_layout`. Default true (back-compat) —
+    /// matches the pre-incremental behaviour where the App ran
+    /// `compute_layout` on every handled event. Widgets whose
+    /// intrinsic size never changes (Button, Toggle, ToggleGroup
+    /// selected-segment swap, …) should override this to return
+    /// false unless an actually-size-affecting state mutation
+    /// landed (e.g. TextInput's text grew).
+    ///
+    /// Containers MUST override to forward: a container is layout-
+    /// dirty iff any descendant is.
+    fn is_layout_dirty(&self) -> bool {
+        if self.children().is_empty() {
+            true
+        } else {
+            self.children().iter().any(|c| c.is_layout_dirty())
+        }
+    }
+
     /// Called by `App` during draw. Widgets that consume presence/permission
     /// context can override this; the default forwards to `draw`, passing
     /// through `presence` and ignoring `_permissions`.
