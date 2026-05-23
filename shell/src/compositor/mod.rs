@@ -28,6 +28,8 @@ pub mod native;
 pub mod state;
 pub mod surface_readback;
 pub mod test_control;
+#[cfg(feature = "hosted-test-control")]
+pub mod hosted_test_control;
 pub mod tab_binding;
 
 /// Which run mode the compositor should boot into.

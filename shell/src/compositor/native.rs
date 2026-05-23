@@ -779,10 +779,33 @@ pub fn run() -> ! {
                     frame_builder.set_viewport(size);
                 }
             }
-            BackendEvent::Input | BackendEvent::Redraw | BackendEvent::Focus(_) => {
-                // Phase 4 doesn't route input through the seat layer
-                // yet (Phase 6) and `Redraw` is implicit because we
-                // re-paint every tick.
+            BackendEvent::Input(wev) => {
+                // Dispatch real winit input through the same wire the
+                // headless `execute_planned_action` path uses. Without
+                // this, every hardware click on the live window was
+                // silently dropped (the previous marker-variant arm
+                // did nothing) — that was the root cause of "no
+                // interaction works in the hosted window" since
+                // wgpu/vello 29 / 0.9 landed, where the bug surfaced
+                // visibly because the perf-profile redraw gate had
+                // already hidden the (still-broken-prior) drop.
+                frame_builder.dispatch_event(
+                    &wev,
+                    &test_control_ctx.modifiers,
+                    &mut test_control_ctx.doc,
+                    &test_control_ctx.root_obj,
+                    &mut test_control_ctx.focus,
+                );
+            }
+            BackendEvent::ModifiersChanged(modifiers) => {
+                // Carry the modifier mask forward so the next event
+                // dispatched into `FrameBuilder::dispatch_event` sees
+                // the right Ctrl/Shift/Alt state.
+                test_control_ctx.modifiers = modifiers;
+            }
+            BackendEvent::Redraw | BackendEvent::Focus(_) => {
+                // Redraw is implicit because we re-paint every tick;
+                // Focus changes don't gate input dispatch here.
             }
         });
 
