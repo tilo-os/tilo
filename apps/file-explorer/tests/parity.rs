@@ -229,7 +229,7 @@ fn footer_shows_item_count_and_formatted_path() {
     // format_path substitutes home prefix.
     assert_eq!(
         path_str,
-        file_explorer::model::format_path(&w.current_path(), dirs_next::home_dir().as_deref())
+        file_explorer::model::format_path(&w.current_path(), dirs::home_dir().as_deref())
     );
 }
 
@@ -267,7 +267,7 @@ fn initial_path_prefers_workspace_then_home_then_cwd_then_root() {
     use file_explorer::model::initial_path;
     let p = initial_path();
     let workspace = std::path::PathBuf::from("/workspace");
-    let home = dirs_next::home_dir();
+    let home = dirs::home_dir();
     let cwd = std::env::current_dir().ok();
 
     if workspace.exists() {

@@ -39,7 +39,7 @@ impl Default for FileExplorerWidget {
 
 impl FileExplorerWidget {
     pub fn new() -> Self {
-        let home = dirs_next::home_dir();
+        let home = dirs::home_dir();
         let cwd = initial_path();
         let mut entries = read_dir_sync(&cwd).unwrap_or_default();
         sort_entries(SortBy::Name, SortOrder::Ascending, &mut entries);
