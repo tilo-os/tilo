@@ -26,6 +26,15 @@ pub struct Scrollable {
     sticky_header_height: f32,
     child: Option<Element>,
     rect: Rect,
+    /// Flipped to true whenever `scroll_by` (or the momentum
+    /// `tick`) actually moves `offset_*`. The App reads this via
+    /// `needs_redraw` + `is_layout_dirty` to gate the next frame.
+    /// Without this, a wheel event that *only* mutates Scrollable
+    /// state would never trigger a redraw — the descendants
+    /// haven't changed, but their resolved screen positions have,
+    /// and `apply_layout` is the only path that pushes the new
+    /// offset down to the children. Cleared by `mark_drawn`.
+    scroll_dirty: bool,
 }
 
 impl Scrollable {
@@ -44,6 +53,7 @@ impl Scrollable {
             sticky_header_height: 0.0,
             child: None,
             rect: Rect::ZERO,
+            scroll_dirty: false,
         }
     }
     pub fn new_vertical() -> Self { Self::new(ScrollAxis::Vertical) }
@@ -58,12 +68,19 @@ impl Scrollable {
     pub fn momentum_speed(&self) -> f32 { (self.vx * self.vx + self.vy * self.vy).sqrt() }
 
     pub fn scroll_by(&mut self, dx: f32, dy: f32) {
+        let (ox, oy) = (self.offset_x, self.offset_y);
         match self.axis {
             ScrollAxis::Vertical => { self.offset_y += dy; }
             ScrollAxis::Horizontal => { self.offset_x += dx; }
             ScrollAxis::Both => { self.offset_x += dx; self.offset_y += dy; }
         }
         self.clamp();
+        // Only signal dirty if the clamp didn't eat the entire
+        // delta — at the edges of the content, `offset_y` doesn't
+        // actually change, and we'd waste a redraw otherwise.
+        if self.offset_x != ox || self.offset_y != oy {
+            self.scroll_dirty = true;
+        }
     }
     pub fn fling(&mut self, vx: f32, vy: f32) { self.vx = vx; self.vy = vy; }
     pub fn tick(&mut self, dt: f32) {
@@ -231,6 +248,30 @@ impl Widget for Scrollable {
     /// drag deeper in the tree.
     fn wants_pointer_capture(&self) -> bool {
         self.child.as_ref().is_some_and(|c| c.wants_pointer_capture())
+    }
+
+    /// Returns true after a `scroll_by` actually moved the
+    /// offset, OR while any descendant signals dirty — without
+    /// the first clause, a wheel-only event (no child mutation)
+    /// would silently fail to schedule the next frame and the
+    /// scroll would visually freeze.
+    fn needs_redraw(&self) -> bool {
+        self.scroll_dirty || self.child.as_ref().is_some_and(|c| c.needs_redraw())
+    }
+
+    /// Forwarded version of the above for the layout gate. The
+    /// child's resolved screen rects depend on `self.offset_*`,
+    /// so a scroll demands `apply_layout` even though no widget
+    /// changed *size*.
+    fn is_layout_dirty(&self) -> bool {
+        self.scroll_dirty || self.child.as_ref().is_some_and(|c| c.is_layout_dirty())
+    }
+
+    fn mark_drawn(&mut self) {
+        self.scroll_dirty = false;
+        if let Some(c) = &mut self.child {
+            c.mark_drawn();
+        }
     }
 
     fn get_rect(&self) -> Rect { self.rect }

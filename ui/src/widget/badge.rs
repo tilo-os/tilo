@@ -45,7 +45,7 @@ pub struct Badge {
     rect: Rect,
     cached: vello::Scene,
     dirty: bool,
-    last_rect: Rect,
+    cache_rect: Rect,
 }
 
 impl Badge {
@@ -56,7 +56,7 @@ impl Badge {
             rect: Rect::ZERO,
             cached: vello::Scene::new(),
             dirty: true,
-            last_rect: Rect::ZERO,
+            cache_rect: Rect::ZERO,
         }
     }
 
@@ -67,7 +67,7 @@ impl Badge {
             rect: Rect::ZERO,
             cached: vello::Scene::new(),
             dirty: true,
-            last_rect: Rect::ZERO,
+            cache_rect: Rect::ZERO,
         }
     }
 
@@ -78,7 +78,7 @@ impl Badge {
             rect: Rect::ZERO,
             cached: vello::Scene::new(),
             dirty: true,
-            last_rect: Rect::ZERO,
+            cache_rect: Rect::ZERO,
         }
     }
 
@@ -150,9 +150,10 @@ impl Widget for Badge {
             origin.x + layout.location.x as f64 + layout.size.width as f64,
             origin.y + layout.location.y as f64 + layout.size.height as f64,
         );
-        if self.rect != self.last_rect {
+        let size_changed = self.rect.width() != self.cache_rect.width()
+            || self.rect.height() != self.cache_rect.height();
+        if size_changed {
             self.dirty = true;
-            self.last_rect = self.rect;
         }
     }
 
@@ -167,8 +168,11 @@ impl Widget for Badge {
         if matches!(self.content, BadgeContent::Count(0)) {
             return;
         }
-        if !self.dirty {
-            out_scene.append(&self.cached, Some(out_transform));
+        let needs_emit = self.dirty || self.cache_rect == Rect::ZERO;
+        if !needs_emit {
+            let dx = self.rect.x0 - self.cache_rect.x0;
+            let dy = self.rect.y0 - self.cache_rect.y0;
+            out_scene.append(&self.cached, Some(out_transform * Affine::translate((dx, dy))));
             return;
         }
         // mem::take dance — `display_text` borrows &self while
@@ -207,11 +211,12 @@ impl Widget for Badge {
         }
         out_scene.append(&cached, Some(out_transform));
         self.cached = cached;
+        self.cache_rect = self.rect;
     }
 
     fn needs_redraw(&self) -> bool { self.dirty }
     fn mark_drawn(&mut self) { self.dirty = false; }
-    fn is_layout_dirty(&self) -> bool { self.rect == Rect::ZERO }
+    fn is_layout_dirty(&self) -> bool { self.cache_rect == Rect::ZERO }
 
     fn handle_event(
         &mut self,
