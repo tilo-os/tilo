@@ -1,4 +1,4 @@
-use quick_ui::widget::{WindowGroup, WindowWidth, TileContent, AppKind, TabDescriptor};
+use ui::widget::{WindowGroup, WindowWidth, TileContent, AppKind, TabDescriptor};
 
 #[test]
 fn window_width_presets_are_clamped() {

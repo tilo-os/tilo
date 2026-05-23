@@ -1,4 +1,4 @@
-use quick_ui::widget::toast::{ToastStack, ToastKind};
+use ui::widget::toast::{ToastStack, ToastKind};
 use std::time::Duration;
 
 #[test]

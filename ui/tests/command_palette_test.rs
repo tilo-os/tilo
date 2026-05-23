@@ -1,4 +1,4 @@
-use quick_ui::widget::command_palette::{CommandPalette, CommandEntry};
+use ui::widget::command_palette::{CommandPalette, CommandEntry};
 use std::sync::{Arc, Mutex};
 
 #[test]

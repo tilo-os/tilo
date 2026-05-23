@@ -1,5 +1,5 @@
-use quick_ui::{AppWidget, AppKind, IconDescriptor, Widget, Theme};
-use quick_ui::presence::PresenceCtx;
+use ui::{AppWidget, AppKind, IconDescriptor, Widget, Theme};
+use ui::presence::PresenceCtx;
 use automerge::{AutoCommit, ObjId};
 
 struct DummyApp;
@@ -21,7 +21,7 @@ impl Widget for DummyApp {
         &mut self,
         _scene: &mut vello::Scene,
         _transform: vello::kurbo::Affine,
-        _text_renderer: &mut quick_ui::text_render::TextRenderer,
+        _text_renderer: &mut ui::text_render::TextRenderer,
         _theme: &Theme,
         _presence: &PresenceCtx,
     ) {}

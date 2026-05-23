@@ -5,11 +5,11 @@
 //! "Presence over real socket" gap where the overlay was wired to a
 //! vec nothing was writing to.
 
-use quick_ui::app::App;
-use quick_ui::collaboration::CollabEvent;
-use quick_ui::presence::user_color;
-use quick_ui::state::State;
-use quick_ui::widget::Container;
+use ui::app::App;
+use ui::collaboration::CollabEvent;
+use ui::presence::user_color;
+use ui::state::State;
+use ui::widget::Container;
 
 fn new_headless_app() -> App {
     // A trivial leaf is enough — this test never runs a frame, it just

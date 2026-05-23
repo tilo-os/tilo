@@ -1,4 +1,4 @@
-use quick_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
+use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 
 #[derive(Clone)]
 struct Row {
