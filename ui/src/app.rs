@@ -32,7 +32,7 @@ pub enum UserEvent {
 }
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use vello::{Scene, Renderer, RendererOptions, util::{RenderContext, RenderSurface}, peniko::Color, kurbo::Affine, kurbo::Rect as KurboRect, kurbo::Point};
+use vello::{Scene, Renderer, RendererOptions, util::RenderContext, peniko::Color, kurbo::Affine, kurbo::Rect as KurboRect, kurbo::Point};
 use taffy::{TaffyTree, AvailableSpace, NodeId};
 use crate::state::State;
 use crate::widget::Widget;
@@ -41,6 +41,7 @@ use crate::theme::Theme;
 use crate::collaboration::{CollaborationManager, CollabEvent, CollabRequest, PresencePayload};
 use crate::presence::{PresenceCtx, PresenceKey};
 use crate::permissions::PermissionContext;
+use crate::render_thread::{spawn_render_thread, FrameOutcome, RenderRequest, RenderThreadHandle};
 
 /// Cached `QUICK_UI_PERF=1` env-var check. Returns `true` once the env
 /// var is non-empty; the lookup happens once and the boolean is cached
@@ -510,37 +511,33 @@ impl App {
             app: self,
             window: None,
             render: None,
-            scene: Scene::new(),
         };
         event_loop.run_app(&mut handler).unwrap();
     }
-}
-
-/// Per-window render plumbing constructed inside
-/// [`ApplicationHandler::resumed`]. Owning these together (rather than as
-/// independent `Option<…>` fields) means we can always reason about "the
-/// window is up" via a single `Option<RenderState>` check.
-struct RenderState {
-    render_cx: RenderContext,
-    surface: RenderSurface<'static>,
-    renderer: Renderer,
 }
 
 /// Winit 0.30 `ApplicationHandler` driver for [`App`]. The previous
 /// closure-based event loop captured `self`, the window, the surface and
 /// the renderer; the new pattern hoists that state into a struct so winit
 /// can call back into us with `&mut self`.
+///
+/// As of the Item-4 render-thread refactor (2026-05-23 perf plan), the
+/// wgpu `RenderContext`, `RenderSurface`, and `vello::Renderer` all live
+/// on a dedicated worker thread — see [`crate::render_thread`]. The
+/// `AppHandler` keeps only the channel ends needed to ship frames to the
+/// worker and recycle scene buffers; the `Scene` buffer itself moves
+/// between main and worker per frame via a bounded pool channel.
 struct AppHandler {
     app: App,
     /// `None` until winit fires the first `resumed` event. On platforms
     /// that gate window creation behind an `ActiveEventLoop` (every modern
     /// platform), creating the window any earlier would panic.
     window: Option<Arc<Window>>,
-    render: Option<RenderState>,
-    /// Re-used per frame so we don't allocate a fresh `Scene` on every
-    /// `RedrawRequested`. Matches the closure-captured `scene` from the
-    /// pre-migration code.
-    scene: Scene,
+    /// The render-thread plumbing (channels + join handle). `None` until
+    /// the first `resumed` fires; set to `None` again in `exiting` after
+    /// the worker is joined so its surface is dropped BEFORE the
+    /// `Window` arc goes away.
+    render: Option<RenderThreadHandle>,
 }
 
 impl ApplicationHandler<UserEvent> for AppHandler {
@@ -599,7 +596,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 
         let mut render_cx = RenderContext::new();
-        let mut surface = pollster::block_on(render_cx.create_surface(
+        let surface = pollster::block_on(render_cx.create_surface(
             window.clone(),
             window.inner_size().width,
             window.inner_size().height,
@@ -629,11 +626,24 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         window.request_redraw();
 
         self.window = Some(window);
-        self.render = Some(RenderState {
-            render_cx,
-            surface,
-            renderer,
-        });
+        // Hand the wgpu state off to the render worker. After this
+        // point, the main thread doesn't touch the surface, renderer,
+        // or render_cx — every GPU call happens on the `ui-render`
+        // thread.
+        self.render = Some(spawn_render_thread(render_cx, surface, renderer));
+    }
+
+    /// Winit calls this once on event-loop teardown. We use it to
+    /// shut the render thread down BEFORE the `Window` arc is
+    /// dropped — the worker's `RenderSurface<'static>` references the
+    /// window, and wgpu may panic if the surface outlives the window.
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(mut render) = self.render.take() {
+            render.shutdown_and_join();
+            // `render` (and the worker-owned surface inside it) is
+            // now dropped. Only after this is it safe to let
+            // `self.window` go.
+        }
     }
 
     fn window_event(
@@ -650,12 +660,14 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Resized(size) => {
-                if let Some(render) = self.render.as_mut() {
-                    render
-                        .render_cx
-                        .resize_surface(&mut render.surface, size.width, size.height);
-                }
+            WindowEvent::Resized(_size) => {
+                // Resize is handled lazily on the worker: the
+                // `RenderRequest` carries the latest dimensions and
+                // the worker calls `resize_surface` when they
+                // differ from the live surface config. Main only
+                // needs to drive a redraw — the next frame the
+                // worker pulls will see the new size on `window
+                // .inner_size()`.
                 self.app.layout_dirty = true;
                 window.request_redraw();
             }
@@ -664,10 +676,46 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     return;
                 };
                 let app = &mut self.app;
-                let scene = &mut self.scene;
-                let width = render.surface.config.width;
-                let height = render.surface.config.height;
+                // Drain any pending FrameOutcomes from the worker
+                // BEFORE building this frame. If the previous
+                // frame was `Reconfigured` or `Skipped`, we'll
+                // re-request a redraw after this one so the user
+                // doesn't see a stale image.
+                let mut needs_followup_redraw = false;
+                while let Ok(outcome) = render.frame_complete.try_recv() {
+                    match outcome {
+                        FrameOutcome::Presented => {}
+                        FrameOutcome::Reconfigured | FrameOutcome::Skipped => {
+                            needs_followup_redraw = true;
+                        }
+                    }
+                }
+
+                // Pull a recycled Scene buffer from the worker's
+                // pool. The pool is seeded with two Scenes at
+                // spawn time so the first frame doesn't block;
+                // afterwards this `recv()` is the backpressure
+                // boundary — if the worker is still draining the
+                // previous frame, main blocks here until it
+                // catches up. Capacity-2 pool means at most one
+                // frame of overlap (main building N+1 while
+                // worker presents N).
+                let mut scene = match render.scene_pool.recv() {
+                    Ok(s) => s,
+                    Err(_) => {
+                        tracing::error!("ui-render thread died; closing window");
+                        event_loop.exit();
+                        return;
+                    }
+                };
                 scene.reset();
+
+                // Pull the current window dimensions directly
+                // from the window — the worker only learns about
+                // resizes via the dims carried in this request.
+                let inner = window.inner_size();
+                let width = inner.width;
+                let height = inner.height;
                 let scale_factor = window.scale_factor() as f32;
 
                 if app.needs_sync {
@@ -764,7 +812,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // preserving last frame. A correct damage path would need to
                 // retain + re-blit the previous target texture — deferred.
                 app.root_widget.draw_with_presence(
-                    scene,
+                    &mut scene,
                     transform,
                     &mut app.text_renderer,
                     &app.theme,
@@ -807,7 +855,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     );
 
                     app.text_renderer.draw_text(
-                        scene,
+                        &mut scene,
                         &cursor.name,
                         10.0,
                         Color::WHITE,
@@ -865,7 +913,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     }
                     draw_debug_recursive(
                         app.root_widget.as_ref(),
-                        scene,
+                        &mut scene,
                         transform,
                         &mut app.text_renderer,
                         0,
@@ -873,77 +921,44 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     );
                 }
 
-                let t_gpu_start = if perf { Some(std::time::Instant::now()) } else { None };
-                let device_handle = &render.render_cx.devices[render.surface.dev_id];
-                // vello 0.5 removed `render_to_surface`. Canonical flow:
-                // render the scene into the surface's intermediate
-                // `target_view` texture, then blit that into the
-                // surface's swap-chain texture via the built-in blitter,
-                // then present.
-                render
-                    .renderer
-                    .render_to_texture(
-                        &device_handle.device,
-                        &device_handle.queue,
-                        scene,
-                        &render.surface.target_view,
-                        &vello::RenderParams {
-                            base_color: app.theme.bg_app,
-                            width,
-                            height,
-                            antialiasing_method: vello::AaConfig::Area,
-                        },
-                    )
-                    .unwrap();
-                let surface_texture = match render.surface.surface.get_current_texture() {
-                    vello::wgpu::CurrentSurfaceTexture::Success(t) => t,
-                    vello::wgpu::CurrentSurfaceTexture::Outdated
-                    | vello::wgpu::CurrentSurfaceTexture::Suboptimal(_) => {
-                        render.render_cx.configure_surface(&render.surface);
-                        window.request_redraw();
-                        return;
-                    }
-                    vello::wgpu::CurrentSurfaceTexture::Occluded
-                    | vello::wgpu::CurrentSurfaceTexture::Timeout => {
-                        window.request_redraw();
-                        return;
-                    }
-                    vello::wgpu::CurrentSurfaceTexture::Lost => {
-                        panic!("wgpu surface lost — backend-level failure");
-                    }
-                    vello::wgpu::CurrentSurfaceTexture::Validation => {
-                        panic!("wgpu surface validation error");
-                    }
+                // Hand the encoded Scene to the render worker. The
+                // seven GPU steps that used to live here (encode →
+                // get_current_texture → encoder → blit → submit →
+                // present → poll) now run on the `ui-render` thread;
+                // main returns from RedrawRequested as soon as the
+                // channel send completes.
+                //
+                // The worker pushes the consumed `Scene` straight
+                // back into `scene_pool` for the next frame, so
+                // there is no per-frame `done` channel and no
+                // extra forwarder thread.
+                let req = RenderRequest::Frame {
+                    scene,
+                    width,
+                    height,
+                    base_color: app.theme.bg_app,
                 };
-                let mut encoder = device_handle.device.create_command_encoder(
-                    &vello::wgpu::CommandEncoderDescriptor {
-                        label: Some("ui-app blit-to-surface"),
-                    },
-                );
-                render.surface.blitter.copy(
-                    &device_handle.device,
-                    &mut encoder,
-                    &render.surface.target_view,
-                    &surface_texture
-                        .texture
-                        .create_view(&vello::wgpu::TextureViewDescriptor::default()),
-                );
-                device_handle.queue.submit([encoder.finish()]);
-                let t_render_us = t_gpu_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
-                let t_present_start = if perf { Some(std::time::Instant::now()) } else { None };
-                surface_texture.present();
-                let _ = device_handle.device.poll(vello::wgpu::PollType::Poll);
-                if let Some(start) = t_frame_start {
-                    let total = start.elapsed().as_micros();
-                    let t_present_us = t_present_start
-                        .map(|t| t.elapsed().as_micros())
-                        .unwrap_or(0);
+                if render.render_tx.send(req).is_err() {
+                    tracing::error!("ui-render thread receiver closed; exiting");
+                    event_loop.exit();
+                    return;
+                }
+
+                let t_send_us = t_frame_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
+                if let Some(_start) = t_frame_start {
                     eprintln!(
-                        "perf frame: total={:>5}us layout={}({}+{}us) draw={:>5}us render={:>5}us present={:>5}us",
-                        total,
+                        "perf frame: main_total={:>5}us layout={}({}+{}us) draw={:>5}us send_to_worker={:>5}us",
+                        t_send_us,
                         if t_relayout_branch { "Y" } else { "n" },
-                        t_compute_us, t_apply_us, t_draw_us, t_render_us, t_present_us
+                        t_compute_us,
+                        t_apply_us,
+                        t_draw_us,
+                        t_send_us,
                     );
+                }
+
+                if needs_followup_redraw {
+                    window.request_redraw();
                 }
             }
             WindowEvent::ModifiersChanged(modifiers) => {
