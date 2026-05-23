@@ -1,0 +1,22 @@
+[Unit]
+Description=QuickDesktop xdg-desktop-portal backend
+# Make sure the user's D-Bus session is up before we activate; the
+# `--portal-server-only` mode owns `org.freedesktop.impl.portal.desktop.qos`
+# on the session bus and does nothing else (no compositor, no
+# rendering).
+PartOf=graphical-session.target
+After=graphical-session-pre.target
+
+[Service]
+# dbus-activated: D-Bus starts us via the matching .service entry in
+# /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.qos.service.
+Type=dbus
+BusName=org.freedesktop.impl.portal.desktop.qos
+ExecStart=/usr/bin/shell --portal-server-only
+# The portal backend is intentionally lightweight — don't let runaway
+# resource use take down the rest of the session.
+TimeoutStopSec=10s
+Restart=on-failure
+
+[Install]
+WantedBy=graphical-session.target

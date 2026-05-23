@@ -1,0 +1,4 @@
+[[customizations.user]]
+name = "quickuser"
+password = "quickdesktop"
+groups = ["wheel"]

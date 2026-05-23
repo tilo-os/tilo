@@ -1,0 +1,19 @@
+# greetd display manager — drops the user into nirios's Wayland session.
+#
+# As of compositor Phase 7, `shell` defaults to `--mode native`,
+# which means the binary itself **is** the Wayland server (auto-binding
+# `wayland-N`). The previous `cage -- /usr/bin/shell` wrapping
+# only made sense in `--mode hosted`, where the compositor was just a
+# client of a host Wayland session; under native mode it actively breaks
+# (cage spins up its own Wayland server and tries to host a client).
+#
+# tuigreet renders the login prompt on vt1; on successful auth it execs
+# the selected session from /usr/share/wayland-sessions. Our
+# shell.desktop entry there points at /usr/bin/shell
+# directly, so the chain is greetd → tuigreet → shell (native).
+[terminal]
+vt = 1
+
+[default_session]
+command = "tuigreet --remember --time --sessions /usr/share/wayland-sessions"
+user = "greetd"

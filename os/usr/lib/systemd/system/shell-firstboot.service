@@ -1,0 +1,14 @@
+[Unit]
+Description=QuickDesktop First Boot Setup
+ConditionPathExists=!/etc/qos/.firstboot-done
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/shell --firstboot
+ExecStartPost=/usr/bin/touch /etc/qos/.firstboot-done
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
