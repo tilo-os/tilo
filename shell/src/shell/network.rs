@@ -21,6 +21,8 @@ use crate::network::behaviour::{NiriosBehaviour, load_or_create_keypair};
 use crate::network::hub::TopicSubscriber;
 use crate::network::protocol::NeighbourMsg;
 use crate::network::replica::WorkspaceTreeReplica;
+use crate::shell::state::WorkspaceTreeHandle;
+#[cfg(test)]
 use crate::shell::state::WorkspaceTree;
 
 /// Default workspace topic id that v1 publishes/subscribes on. Per-
@@ -104,7 +106,7 @@ impl ShellNetwork {
     /// otherwise a fresh ed25519 key is generated and persisted —
     /// matching [`load_or_create_keypair`]'s contract.
     pub fn spawn(
-        tree: Arc<Mutex<WorkspaceTree>>,
+        tree: WorkspaceTreeHandle,
         keypair_path: &std::path::Path,
     ) -> std::io::Result<Self> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -324,7 +326,7 @@ fn peer_id_to_u64(peer: libp2p::PeerId) -> u64 {
 /// having to spin up a real swarm. Not exposed outside `cfg(test)`.
 #[cfg(test)]
 fn shell_network_for_test(
-    tree: Arc<Mutex<WorkspaceTree>>,
+    tree: WorkspaceTreeHandle,
     local_peer_hash: u64,
 ) -> (ShellNetwork, mpsc::Receiver<NetCmd>) {
     let (cmd_tx, cmd_rx) = mpsc::channel(64);
@@ -349,7 +351,7 @@ mod tests {
     fn shell_network_spawns_with_default_keypair() {
         let tmp = tempfile::tempdir().unwrap();
         let key_path = tmp.path().join("peer-key");
-        let tree = Arc::new(Mutex::new(WorkspaceTree::bootstrap_default()));
+        let tree = WorkspaceTree::bootstrap_default().shared();
         let net = ShellNetwork::spawn(tree, &key_path).expect("spawn");
         // `cmd_tx` capacity is the actor's bounded-channel size; just
         // assert it's nonzero so we know the channel was constructed.
@@ -362,7 +364,7 @@ mod tests {
     fn tick_with_no_events_is_noop() {
         let tmp = tempfile::tempdir().unwrap();
         let key_path = tmp.path().join("peer-key");
-        let tree = Arc::new(Mutex::new(WorkspaceTree::bootstrap_default()));
+        let tree = WorkspaceTree::bootstrap_default().shared();
         let net = ShellNetwork::spawn(tree, &key_path).expect("spawn");
         // Should not panic on empty channel; should not block.
         net.tick();
@@ -374,7 +376,7 @@ mod tests {
         // into a `NetCmd::Publish { msg: PresenceMoved }` on the actor
         // command channel. Uses the test-only constructor so we own the
         // receiver and can drain commands without spinning up libp2p.
-        let tree = Arc::new(Mutex::new(WorkspaceTree::bootstrap_default()));
+        let tree = WorkspaceTree::bootstrap_default().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xABCDu64);
         net.publish_presence("local-cursor".into(), (100.0, 200.0));
         let cmd = cmd_rx
@@ -402,7 +404,7 @@ mod tests {
         // the shell's frame-tick drains. Verify that the entry round-
         // trips with all four fields preserved so the overlay can
         // attribute the cursor to the right peer at the right time.
-        let tree = Arc::new(Mutex::new(WorkspaceTree::bootstrap_default()));
+        let tree = WorkspaceTree::bootstrap_default().shared();
         let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
         let buf_handle = net.inbound_presence_handle();
         net.handle_presence_message(7u64, "ws/0".into(), (10.0, 20.0), 1_700_000_000);
@@ -420,7 +422,7 @@ mod tests {
         // contract is asserted explicitly so per-workspace routing
         // (Phase 3 follow-up) gets a tripping test rather than a
         // silent behaviour change.
-        let tree = Arc::new(Mutex::new(WorkspaceTree::bootstrap_default()));
+        let tree = WorkspaceTree::bootstrap_default().shared();
         let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
         assert_eq!(net.active_ws_for_publish(), DEFAULT_WS_TOPIC);
     }
