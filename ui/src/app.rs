@@ -607,7 +607,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         ))
         .unwrap();
         let device_handle = &render_cx.devices[surface.dev_id];
-        surface.config.format = surface.config.format.add_srgb_suffix();
+        // vello 0.9's `create_surface` builds the blitter pipeline against
+        // the format it chose; flipping to the sRGB suffix here would
+        // panic on the format mismatch in the first blit.
         surface.surface.configure(&device_handle.device, &surface.config);
         let renderer = Renderer::new(
             &device_handle.device,
@@ -756,44 +758,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     (height as f64) / (scale_factor as f64),
                 );
                 let prev_vp = app.presence_ctx.push_viewport(window_rect);
-                // Damage-region clip (Item 3 of the 2026-05-23 perf
-                // plan). Walk only the *leaf* widgets and union the
-                // bounds of those that signalled dirty. Containers
-                // are skipped — they're dirty for cache-bookkeeping
-                // reasons (a child changed) but their own pixels
-                // didn't move; the leaves below them already capture
-                // the real damage. If the union covers a small
-                // enough portion of the window, we push a clip
-                // layer so Vello's tile binner can skip tiles
-                // outside the damage rect. Falls back to the full
-                // window when damage is large.
-                fn accumulate_damage(w: &dyn Widget, acc: &mut Option<vello::kurbo::Rect>) {
-                    let children = w.children();
-                    if children.is_empty() {
-                        if w.needs_redraw() {
-                            let r = w.get_rect();
-                            *acc = Some(acc.map_or(r, |p| p.union(r)));
-                        }
-                    } else {
-                        for c in children { accumulate_damage(c, acc); }
-                    }
-                }
-                let mut damage: Option<vello::kurbo::Rect> = None;
-                accumulate_damage(app.root_widget.as_ref(), &mut damage);
-                let pushed_damage_clip = match damage {
-                    Some(d) if d.area() < window_rect.area() * 0.8 => {
-                        scene.push_layer(
-                            vello::peniko::Fill::NonZero,
-                            vello::peniko::BlendMode::default(),
-                            1.0,
-                            transform,
-                            &d,
-                        );
-                        true
-                    }
-                    _ => false,
-                };
-
+                // No GPU damage clip: vello allocates a fresh `target_texture`
+                // per frame, so any `scene.push_layer` clipping out the static
+                // region simply paints those tiles as background instead of
+                // preserving last frame. A correct damage path would need to
+                // retain + re-blit the previous target texture — deferred.
                 app.root_widget.draw_with_presence(
                     scene,
                     transform,
@@ -802,7 +771,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     &app.presence_ctx,
                     &app.permission_ctx,
                 );
-                if pushed_damage_clip { scene.pop_layer(); }
                 app.presence_ctx.pop_viewport(prev_vp);
                 // Mark every visited widget as drawn — clears their
                 // per-widget `dirty` flag so `needs_redraw` returns

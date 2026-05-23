@@ -203,12 +203,9 @@ impl Widget for Column {
         self.children.iter().any(|c| c.wants_pointer_capture())
     }
 
-    /// Direct-field override of `needs_redraw` / `is_layout_dirty`
-    /// — the default `Widget` impls allocate a fresh
-    /// `Vec<&dyn Widget>` via `children()` for the recurse, which
-    /// is a heap allocation per check. Subtree caching above
-    /// queries these on every frame, so the allocation cost is on
-    /// the per-frame hot path.
+    /// Direct-field recurse — the default impl allocates a
+    /// `Vec` via `children()`, which the subtree-cache check
+    /// hits per frame.
     fn needs_redraw(&self) -> bool {
         self.cache_rect == vello::kurbo::Rect::ZERO
             || self.children.iter().any(|c| c.needs_redraw())
@@ -268,15 +265,6 @@ impl Widget for Column {
     ) {
         if presence.should_cull(self.get_rect()) { return; }
 
-        // Subtree cache (Item 2 of 2026-05-23 perf plan):
-        //   - If our size is unchanged AND no descendant signals
-        //     dirty, paste the cached composition with just a
-        //     translate(delta) — saves hundreds of per-child
-        //     Scene::append calls during scroll / hover where
-        //     most of the tree didn't actually change.
-        //   - On miss, we recompose into a fresh local scene and
-        //     swap it in. Each child still gets its own cache
-        //     hit (they participate in the recurse).
         let size_changed = self.rect.width() != self.cache_rect.width()
             || self.rect.height() != self.cache_rect.height();
         let any_child_dirty = self.children.iter().any(|c| c.needs_redraw());
@@ -289,17 +277,17 @@ impl Widget for Column {
             let dy = self.rect.y0 - self.cache_rect.y0;
             scene.append(&self.subtree_cache, Some(transform * Affine::translate((dx, dy))));
         } else {
-            // Rebuild — recurse into children's draw_with_presence,
-            // writing into our local subtree cache. mem::take so
-            // the children can still call self.* helpers if any
-            // do (defensive — Column's children don't, but
-            // future containers might).
+            // Children must rebuild at `Affine::IDENTITY`: vello's
+            // `Scene::append` composes its transform with each stored
+            // primitive transform, so passing `transform` here would
+            // double-apply it on the outer `append` below — at any DPI
+            // scale ≠ 1, cached widgets land off-screen.
             let mut local = std::mem::take(&mut self.subtree_cache);
             local.reset();
             for child in &mut self.children {
-                child.draw_with_presence(&mut local, transform, text_renderer, theme, presence, permissions);
+                child.draw_with_presence(&mut local, Affine::IDENTITY, text_renderer, theme, presence, permissions);
             }
-            scene.append(&local, None);
+            scene.append(&local, Some(transform));
             self.subtree_cache = local;
             self.cache_rect = self.rect;
         }
