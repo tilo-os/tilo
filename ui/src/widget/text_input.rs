@@ -26,6 +26,7 @@ use vello::peniko::BlendMode;
 use winit::event::{WindowEvent, MouseButton, ElementState, KeyEvent, Modifiers};
 use winit::keyboard::{Key, NamedKey};
 use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
+use crate::color_compat::ColorCompat;
 use crate::widget::Widget;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -414,7 +415,7 @@ impl Widget for TextInput {
             self.scroll_x = cursor_x_offset - visible_width;
         }
 
-        scene.push_layer(BlendMode::default(), 1.0, transform, &shape);
+        scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), 1.0, transform, &shape);
 
         // Vertical centering: position the *line_height* band in the
         // middle of the rect so glyph descenders + caret share the
@@ -801,7 +802,7 @@ impl TextInput {
     /// resolves to denied. Concept's every-widget convention is
     /// `bg-black/30` ≈ 0.30 × 255 ≈ 77.
     pub(crate) const PERMISSION_DENIED_OVERLAY: vello::peniko::Color =
-        vello::peniko::Color::rgba8(0, 0, 0, 77);
+        vello::peniko::Color::from_rgba8(0, 0, 0, 77);
 }
 
 #[cfg(test)]
@@ -812,7 +813,7 @@ mod tests {
     /// the same alpha across every widget.
     #[test]
     fn permission_denied_overlay_alpha_matches_other_widgets() {
-        let expected = vello::peniko::Color::rgba8(0, 0, 0, 77);
+        let expected = vello::peniko::Color::from_rgba8(0, 0, 0, 77);
         assert_eq!(TextInput::PERMISSION_DENIED_OVERLAY, expected);
     }
 

@@ -4,7 +4,7 @@
 //!
 //! Two construction paths:
 //!
-//! - [`Avatar::new`] — image variant. The supplied `peniko::Image` is
+//! - [`Avatar::new`] — image variant. The supplied `peniko::ImageData` is
 //!   painted inside a circular clip (`push_layer` with a circle path,
 //!   then `fill` the image, then `pop_layer`). This is the "real photo"
 //!   path used when the user has an avatar uploaded.
@@ -37,7 +37,7 @@ use crate::widget::Widget;
 
 /// Circular profile chip — see module docs.
 pub struct Avatar {
-    image: Option<peniko::Image>,
+    image: Option<peniko::ImageData>,
     /// Uppercased, ≤ 2-char initials. Always pre-normalised by the
     /// constructor so [`Avatar::display_initials`] is a cheap getter
     /// the tests can pin without re-running the truncation logic.
@@ -61,7 +61,7 @@ impl Avatar {
     /// Construct an avatar that paints a circle-clipped image. The
     /// `image` is sized to fit the avatar's `size × size` square; the
     /// circular clip happens in [`Self::paint_image`].
-    pub fn new(image: peniko::Image, size: f32) -> Self {
+    pub fn new(image: peniko::ImageData, size: f32) -> Self {
         Self {
             image: Some(image),
             initials: String::new(),
@@ -126,12 +126,12 @@ impl Avatar {
     /// lands on the avatar's top-left and the image scales to exactly
     /// fill the avatar square (so the circular crop catches the centre
     /// of the image regardless of its source aspect).
-    fn paint_image(&self, scene: &mut Scene, transform: Affine, img: &peniko::Image) {
+    fn paint_image(&self, scene: &mut Scene, transform: Affine, img: &peniko::ImageData) {
         let centre = self.rect.center();
         let radius = self.rect.width().min(self.rect.height()) * 0.5;
         let clip = Circle::new(centre, radius);
 
-        scene.push_layer(BlendMode::default(), 1.0, transform, &clip);
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &clip);
 
         let iw = img.width.max(1) as f64;
         let ih = img.height.max(1) as f64;
@@ -140,10 +140,11 @@ impl Avatar {
         let brush_transform =
             Affine::translate((self.rect.x0, self.rect.y0)) * Affine::scale_non_uniform(sx, sy);
 
+        let image_brush = peniko::ImageBrush::new(img.clone());
         scene.fill(
             Fill::NonZero,
             transform,
-            img,
+            &image_brush,
             Some(brush_transform),
             &self.rect,
         );
@@ -301,7 +302,7 @@ impl Widget for Avatar {
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use vello::peniko::{Blob, Format, Image as PenikoImage};
+    use vello::peniko::{Blob, ImageAlphaType, ImageData as PenikoImage, ImageFormat as Format};
     use vello_encoding::DrawTag;
 
     /// Helper: paint `avatar` into a fresh scene at a known rect and
@@ -419,7 +420,13 @@ mod tests {
         // image references those bytes without copying.
         let bytes: Vec<u8> = vec![0u8; 4];
         let blob = Blob::new(Arc::new(bytes));
-        let img = PenikoImage::new(blob, Format::Rgba8, 1, 1);
+        let img = PenikoImage {
+            data: blob,
+            format: Format::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width: 1,
+            height: 1,
+        };
 
         let mut a = Avatar::new(img, 40.0);
         let scene = paint(&mut a);

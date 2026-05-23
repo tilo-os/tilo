@@ -298,7 +298,7 @@ fn main() {
     y += row_label_h + 244.0 + row_gap;
 
     // --- Row 6: ColorPicker / TreeView / ResizableSplit --------------------
-    let mut cp = ColorPicker::new(Color::rgba8(99, 102, 241, 255));
+    let mut cp = ColorPicker::new(Color::from_rgba8(99, 102, 241, 255));
     let tree_root = TreeNode::branch(
         1u64,
         "project",

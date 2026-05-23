@@ -22,6 +22,7 @@ use vello::kurbo::{Affine, Circle, Point, Rect};
 use winit::event::WindowEvent;
 use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 
+use crate::color_compat::ColorCompat;
 use crate::widget::Widget;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;

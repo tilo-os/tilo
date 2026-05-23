@@ -2,7 +2,7 @@
 //!
 //! The widget owns a lazily-constructed [`openh264::decoder::Decoder`]. Call
 //! sites push NALU bytes via [`VideoPlayer::feed_frame`]; the decoder emits a
-//! [`peniko::Image`] (RGBA) which is then painted scaled-to-fit on every draw.
+//! [`peniko::ImageData`] (RGBA) which is then painted scaled-to-fit on every draw.
 //!
 //! Controls (play/pause button + scrub track) overlay the bottom of the rect.
 //! They auto-hide three seconds after the last `CursorMoved` event so the
@@ -29,7 +29,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Blob, Color, Fill, Format, Image as PenikoImage};
+use vello::peniko::{Blob, Color, Fill, ImageAlphaType, ImageData as PenikoImage, ImageFormat as Format};
 use winit::event::WindowEvent;
 
 use crate::presence::PresenceCtx;
@@ -70,7 +70,7 @@ pub struct VideoPlayer {
     /// in `Option` so widget construction never touches the openh264
     /// runtime — tests / examples that never feed frames pay nothing.
     decoder: Option<openh264::decoder::Decoder>,
-    /// Most recently decoded picture, RGBA. `peniko::Image` is `Arc`-backed
+    /// Most recently decoded picture, RGBA. `peniko::ImageData` is `Arc`-backed
     /// so handing the same image to the scene every frame is cheap.
     latest_frame: Option<PenikoImage>,
     /// Current playback state. The widget never advances this on its own;
@@ -159,7 +159,13 @@ impl VideoPlayer {
         yuv.write_rgba8(&mut rgba);
 
         let blob = Blob::new(Arc::new(rgba));
-        let img = PenikoImage::new(blob, Format::Rgba8, width as u32, height as u32);
+        let img = PenikoImage {
+            data: blob,
+            format: Format::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width: width as u32,
+            height: height as u32,
+        };
         self.latest_frame = Some(img);
         true
     }
@@ -241,10 +247,11 @@ impl VideoPlayer {
                 let brush_transform =
                     Affine::translate((dx, dy)) * Affine::scale_non_uniform(scale, scale);
                 let dest = Rect::new(dx, dy, dx + dw, dy + dh);
+                let image_brush = vello::peniko::ImageBrush::new(img);
                 scene.fill(
                     Fill::NonZero,
                     transform,
-                    &img,
+                    &image_brush,
                     Some(brush_transform),
                     &dest,
                 );
@@ -268,7 +275,7 @@ impl VideoPlayer {
 
         // Semi-transparent backdrop so the controls are readable over
         // bright video frames.
-        let bar_bg = Color::rgba8(0, 0, 0, 160);
+        let bar_bg = Color::from_rgba8(0, 0, 0, 160);
         scene.fill(Fill::NonZero, transform, bar_bg, None, &bar);
 
         // Inset the controls horizontally by the standard padding token
@@ -554,7 +561,13 @@ mod tests {
         // pattern used by `widget::image::tests` for the same kind of
         // encoding-level assertion.
         let blob = Blob::new(Arc::new(vec![255u8; 4 * 16 * 16]));
-        vp.latest_frame = Some(PenikoImage::new(blob, Format::Rgba8, 16, 16));
+        vp.latest_frame = Some(PenikoImage {
+            data: blob,
+            format: Format::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width: 16,
+            height: 16,
+        });
 
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();

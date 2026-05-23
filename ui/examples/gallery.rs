@@ -27,7 +27,7 @@ fn main() {
     state.collab.cursors.insert("user_2".into(), RemoteCursor {
         x: 100.0,
         y: 100.0,
-        color: Color::rgb8(255, 100, 100),
+        color: Color::from_rgb8(255, 100, 100),
         name: "Alice".into()
     });
 

@@ -3,7 +3,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::{Blob, Format, Image};
+use vello::peniko::{Blob, ImageAlphaType, ImageBrush, ImageData as Image, ImageFormat as Format};
 use winit::event::WindowEvent;
 use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use crate::widget::Widget;
@@ -85,7 +85,13 @@ fn build_shadow_sprite(r: u8, g: u8, b: u8) -> Image {
         }
     }
     let blob = Blob::new(Arc::new(data));
-    Image::new(blob, Format::Rgba8, size, size)
+    Image {
+        data: blob,
+        format: Format::Rgba8,
+        alpha_type: ImageAlphaType::Alpha,
+        width: size,
+        height: size,
+    }
 }
 
 /// Cached ambient (black) drop-shadow sprite used for `shadow-2xl`.
@@ -124,15 +130,17 @@ fn draw_shadow_sprite(
         * Affine::translate((target.x0, target.y0))
         * Affine::scale_non_uniform(sx, sy);
     scene.push_layer(
+        vello::peniko::Fill::NonZero,
         vello::peniko::BlendMode::default(),
         alpha,
         transform,
         &target,
     );
+    let sprite_brush = ImageBrush::new(sprite.clone());
     scene.fill(
         vello::peniko::Fill::NonZero,
         brush_transform,
-        sprite,
+        &sprite_brush,
         None,
         &Rect::new(0.0, 0.0, sprite.width as f64, sprite.height as f64),
     );
@@ -302,6 +310,7 @@ impl Widget for TileHost {
                 self.rect.y1 + 160.0,
             );
             scene.push_layer(
+                vello::peniko::Fill::NonZero,
                 vello::peniko::BlendMode::default(),
                 alpha,
                 transform,

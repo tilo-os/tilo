@@ -1,4 +1,5 @@
 pub mod app;
+pub mod color_compat;
 pub mod state;
 pub mod widget;
 pub mod text_render;
@@ -15,6 +16,7 @@ pub mod icons;
 pub mod offscreen;
 
 pub use app::App;
+pub use color_compat::ColorCompat;
 pub use state::{State, UndoEntry};
 pub use theme::Theme;
 

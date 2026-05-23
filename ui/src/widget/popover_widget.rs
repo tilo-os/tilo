@@ -29,6 +29,7 @@ use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Color;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -399,7 +400,7 @@ impl<C: Widget + 'static> Widget for PopoverWidget<C> {
         // Drop shadow: 4 concentric outset rings at low alpha, same
         // 4-ring pattern used by `TabBar::draw_pill_inner`. Alphas are
         // expressed as `Color::BLACK.with_alpha_factor(..)` so the
-        // shadow stays themed (no literal `Color::rgba8(0,0,0,..)`).
+        // shadow stays themed (no literal `Color::from_rgba8(0,0,0,..)`).
         let shadow_y_offset = 6.0_f64;
         let shadow_rings: [(f64, f32); 4] = [
             (2.0, 0.20),
