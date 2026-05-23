@@ -111,6 +111,44 @@ pub struct PresenceCtx {
     /// [`PresenceCtx::color_for`] which falls through to [`user_color`]
     /// when a user has no override.
     pub color_overrides: HashMap<UserId, (u8, u8, u8)>,
+    /// Current draw-time visibility window in scene-space pixels.
+    /// Threaded through the draw recursion so widgets can early-out
+    /// when their `get_rect()` doesn't intersect the active viewport
+    /// — spatial culling. `Cell` so containers (Scrollable in
+    /// particular) can scope-push a tighter inner viewport without
+    /// needing `&mut PresenceCtx` everywhere; `Rect` is `Copy` so
+    /// the Cell access is cheap.
+    pub viewport: std::cell::Cell<Option<vello::kurbo::Rect>>,
+}
+
+impl PresenceCtx {
+    /// True when the draw recursion has an active viewport and the
+    /// supplied rect doesn't intersect it — i.e., the widget's
+    /// pixels would land entirely outside the visible window.
+    /// Widgets short-circuit on this at the top of
+    /// `draw_with_presence` to skip their `Scene::append` /
+    /// glyph-emit work entirely. Off-viewport widgets MUST NOT
+    /// clear their `dirty` flag (so they redraw when they scroll
+    /// back in); the App's `mark_drawn` walks the live tree and
+    /// only visits widgets whose draw actually ran.
+    pub fn should_cull(&self, rect: vello::kurbo::Rect) -> bool {
+        match self.viewport.get() {
+            Some(vp) => rect.intersect(vp).is_zero_area(),
+            None => false,
+        }
+    }
+
+    /// Replace the active viewport, returning the previous value
+    /// so the caller can restore it (e.g. a Scrollable pushes its
+    /// inner rect for its child recursion, then pops it back).
+    pub fn push_viewport(&self, vp: vello::kurbo::Rect) -> Option<vello::kurbo::Rect> {
+        self.viewport.replace(Some(vp))
+    }
+
+    /// Restore the previous viewport. Pair with `push_viewport`.
+    pub fn pop_viewport(&self, prev: Option<vello::kurbo::Rect>) {
+        self.viewport.set(prev);
+    }
 }
 
 impl PresenceCtx {
