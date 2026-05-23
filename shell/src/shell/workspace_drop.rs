@@ -26,7 +26,7 @@ use crate::shell::tile::{
     Strip as RuntimeStrip, Tab as RuntimeTab, TileContent as RuntimeTile,
     WindowGroup as RuntimeGroup, WorkspaceTree as RuntimeTree,
 };
-use quick_ui::widget::AppKind as UiAppKind;
+use ui::widget::AppKind as UiAppKind;
 
 /// Payload carried by a workspace drop. The concept's drag data payload
 /// has two fields (`name`, `type`); `is_folder` collapses the discrete

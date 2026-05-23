@@ -67,8 +67,8 @@ impl RemoteCursorOverlay {
     /// preserves the input order so peer-ordering is stable across frames.
     pub fn cursors_to_draw<'a>(
         &self,
-        presence: &'a quick_ui::presence::PresenceCtx,
-    ) -> Vec<&'a quick_ui::presence::RemoteCursor> {
+        presence: &'a ui::presence::PresenceCtx,
+    ) -> Vec<&'a ui::presence::RemoteCursor> {
         presence
             .remote_cursors
             .iter()
@@ -94,14 +94,14 @@ fn peer_color_to_peniko(c: [f32; 4]) -> vello::peniko::Color {
     vello::peniko::Color::rgba8(to_u8(c[0]), to_u8(c[1]), to_u8(c[2]), to_u8(c[3]))
 }
 
-impl quick_ui::widget::Widget for RemoteCursorOverlay {
+impl ui::widget::Widget for RemoteCursorOverlay {
     fn sync(&mut self, _state: &mut automerge::AutoCommit, _path: &automerge::ObjId) {}
 
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
-        _theme: &quick_ui::Theme,
-        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn quick_ui::widget::Widget>,
+        _theme: &ui::Theme,
+        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn ui::widget::Widget>,
     ) -> taffy::NodeId {
         // The overlay sits on top of the active tile; in the shell tree it's
         // stacked by a parent `Stack`, so it fills the available box and
@@ -115,7 +115,7 @@ impl quick_ui::widget::Widget for RemoteCursorOverlay {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn quick_ui::widget::Widget);
+        node_map.insert(node, self as *mut dyn ui::widget::Widget);
         node
     }
 
@@ -138,9 +138,9 @@ impl quick_ui::widget::Widget for RemoteCursorOverlay {
         &mut self,
         scene: &mut vello::Scene,
         transform: vello::kurbo::Affine,
-        text_renderer: &mut quick_ui::text_render::TextRenderer,
-        theme: &quick_ui::Theme,
-        presence: &quick_ui::presence::PresenceCtx,
+        text_renderer: &mut ui::text_render::TextRenderer,
+        theme: &ui::Theme,
+        presence: &ui::presence::PresenceCtx,
     ) {
         let cursors = self.cursors_to_draw(presence);
         if cursors.is_empty() {
@@ -308,13 +308,13 @@ impl SimulatedFeed {
     }
 
     /// Creates a feed pinned to a concept-known user id. The id runs through
-    /// [`quick_ui::presence::user_color`], so canonical ids (`me`, `alice`,
+    /// [`ui::presence::user_color`], so canonical ids (`me`, `alice`,
     /// `bob`, `charlie`) pick up the reference-mockup palette verbatim. The
     /// `display_name` is what renders in the name chip above the caret — it
     /// is decoupled from the id so a peer can show up as "Alice" while
     /// staying attributed to the `alice` pinned colour.
     pub fn new_with_user_id(user_id: &str, display_name: &str) -> Self {
-        let (r, g, b) = quick_ui::presence::user_color(user_id);
+        let (r, g, b) = ui::presence::user_color(user_id);
         let color = [
             r as f32 / 255.0,
             g as f32 / 255.0,
@@ -335,7 +335,7 @@ impl SimulatedFeed {
     /// Advances the feed by `dt` and rewrites `ctx.remote_cursors` with the
     /// single simulated peer's current position. Subsequent calls replace the
     /// vec contents so a single feed never leaks multiple phantom cursors.
-    pub fn tick(&mut self, dt: std::time::Duration, ctx: &mut quick_ui::presence::PresenceCtx) {
+    pub fn tick(&mut self, dt: std::time::Duration, ctx: &mut ui::presence::PresenceCtx) {
         self.t += dt;
         let t_secs = self.t.as_secs_f32();
         let position = [
@@ -343,7 +343,7 @@ impl SimulatedFeed {
             150.0 + 60.0 * (t_secs * 0.7).cos(),
         ];
         ctx.remote_cursors.clear();
-        ctx.remote_cursors.push(quick_ui::presence::RemoteCursor {
+        ctx.remote_cursors.push(ui::presence::RemoteCursor {
             user_id: format!("sim-{}", self.seed),
             color: self.color,
             position,

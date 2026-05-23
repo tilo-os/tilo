@@ -1,6 +1,6 @@
 //! `GlobalSearch` — the Cmd+K palette overlay.
 //!
-//! Thin wrapper around [`quick_ui::widget::command_palette::CommandPalette`]
+//! Thin wrapper around [`ui::widget::command_palette::CommandPalette`]
 //! that seeds a default set of system commands and lets the shell install a
 //! context-aware prefix filter (files, workspace, app). Commands are tagged by
 //! id (`ws.*`, `file.*`, `app.*`, `settings.*`) so context switching just
@@ -10,7 +10,7 @@
 //! Spec: `docs/superpowers/specs/2026-04-18-nirios-shell-design.md` — line 210
 //! (GlobalSearch: command palette + context-aware filters).
 
-use quick_ui::widget::command_palette::{CommandEntry, CommandPalette};
+use ui::widget::command_palette::{CommandEntry, CommandPalette};
 
 /// Alpha the shell overlay host tints the GlobalSearch palette surface
 /// with. Concept §5.1 specifies `bg-slate-900/70 backdrop-blur-md`; until

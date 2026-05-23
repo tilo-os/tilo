@@ -3,8 +3,8 @@ use smithay::{
     reexports::calloop::{EventLoop, Interest, Mode as CalloopMode},
     reexports::calloop::generic::Generic,
 };
-use quick_desktop::network::wayland::{WaylandServer, ClientState};
-use quick_desktop::security::container::Container;
+use shell::network::wayland::{WaylandServer, ClientState};
+use shell::security::container::Container;
 use std::thread;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;

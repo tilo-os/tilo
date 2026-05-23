@@ -30,8 +30,8 @@
 
 use std::collections::HashMap;
 
-use quick_desktop::shell::build_nirios_overlay_host_with_chrome;
-use quick_desktop::shell::state::{
+use shell::shell::build_nirios_overlay_host_with_chrome;
+use shell::shell::state::{
     AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceId, WorkspaceTree,
 };

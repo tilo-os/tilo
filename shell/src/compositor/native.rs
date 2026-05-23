@@ -62,11 +62,11 @@ const TEST_STATE_DUMP_ENV: &str = "NIRIOS_TEST_STATE_DUMP";
 /// runs never set the env var; the socket is opt-in for test harnesses.
 ///
 /// Spec: `docs/superpowers/specs/2026-05-16-real-input-e2e-design.md`.
-const TEST_CONTROL_ENV: &str = "NIRIOS_TEST_CONTROL";
+const TEST_CONTROL_ENV: &str = "QOS_TEST_CONTROL";
 
 /// D-3 fix: RAII guard that unlinks a unix-socket file when dropped.
 ///
-/// The compositor previously left its `NIRIOS_TEST_CONTROL` socket file
+/// The compositor previously left its `QOS_TEST_CONTROL` socket file
 /// behind on clean exit (and on panic). Subsequent runs depended on the
 /// next-boot `remove_file` inside `bind_test_control_socket` to scrub
 /// the stale entry; that worked for `bind`, but the orphan file lingered
@@ -400,7 +400,7 @@ fn write_snapshot_png(fb: &mut FrameBuilder, path: &std::path::Path) {
     let (w, h) = (w as u32, h as u32);
     let scene = fb.paint();
     let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut renderer = quick_ui::offscreen::OffscreenRenderer::new(w, h);
+        let mut renderer = ui::offscreen::OffscreenRenderer::new(w, h);
         renderer.render_rgba(&scene)
     }));
     let rgba = match render_result {
@@ -664,7 +664,7 @@ pub fn run() -> ! {
             // paints. Runtime theme changes would re-call this; for
             // now `Theme::dark()` is the only one in play and the
             // FrameBuilder picks the same constant.
-            b.set_base_color(quick_ui::theme::Theme::dark().bg_app);
+            b.set_base_color(ui::theme::Theme::dark().bg_app);
             Box::new(b)
         }
         BackendKind::Drm => match DrmBackend::new() {
@@ -677,7 +677,7 @@ pub fn run() -> ! {
         BackendKind::Headless => {
             // Initial size comes from `NIRIOS_HEADLESS_SIZE` (with a
             // shots-default fallback) — keeps the headless backend
-            // env-var-driven like `NIRIOS_TEST_CONTROL` /
+            // env-var-driven like `QOS_TEST_CONTROL` /
             // `NIRIOS_TEST_STATE_DUMP` instead of adding a third CLI
             // flag for size. Skip `set_base_color` because headless
             // has no window — `HeadlessBackend::submit_frame` clears
@@ -736,7 +736,7 @@ pub fn run() -> ! {
 
     // Real-input e2e Phase 1b: opt-in unix socket that accepts
     // newline-delimited JSON commands (see `compositor::test_control`).
-    // Bound to whatever path `NIRIOS_TEST_CONTROL` points at; unset
+    // Bound to whatever path `QOS_TEST_CONTROL` points at; unset
     // means the socket is never created (zero-cost in production).
     // Each loop tick polls the listener for new connections and drains
     // pending bytes from existing ones.
@@ -1131,7 +1131,7 @@ mod tests {
 
     /// `FrameBuilderControlState::chrome_state_json` returns an object
     /// with an `overlays` key carrying the four flags. The shape
-    /// matches what `nirios-control state-dump` clients query, so a
+    /// matches what `qos-control state-dump` clients query, so a
     /// regression here would silently break the CLI.
     #[test]
     fn state_dump_chrome_includes_overlays_field() {

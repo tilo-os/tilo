@@ -8,8 +8,8 @@
 //! the PTY reader delivers bytes, and the file-explorer's initial listing
 //! contains at least one entry with a non-empty name.
 
-use quick_desktop::shell::{Shell, tile::TileContent};
-use quick_ui::AppKind;
+use shell::shell::{Shell, tile::TileContent};
+use ui::AppKind;
 use std::time::Duration;
 
 #[test]

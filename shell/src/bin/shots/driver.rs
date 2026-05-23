@@ -19,14 +19,14 @@ use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey};
 
-use quick_desktop::compositor::frame::FrameBuilder;
-use quick_desktop::shell::chrome_state::{Chrome, ChromeState, WsTab};
-use quick_desktop::shell::overlay_host::ShellOverlayHost;
-use quick_desktop::shell::quick_settings::QsLevel;
-use quick_desktop::shell::state::WorkspaceTree;
-use quick_ui::Widget;
+use shell::compositor::frame::FrameBuilder;
+use shell::shell::chrome_state::{Chrome, ChromeState, WsTab};
+use shell::shell::overlay_host::ShellOverlayHost;
+use shell::shell::quick_settings::QsLevel;
+use shell::shell::state::WorkspaceTree;
+use ui::Widget;
 
-use quick_ui::theme::Theme;
+use ui::theme::Theme;
 use taffy::prelude::NodeId;
 
 /// Synthetic frame duration for `step_frames` — matches a 60 Hz monitor.
@@ -407,7 +407,7 @@ impl ShellDriver {
 
 // `walk_widget` lives in `compositor::frame` so the out-of-process
 // `compositor::test_control` and the in-process ShellDriver share one
-// implementation. See `quick-shell/src/compositor/frame.rs`.
+// implementation. See `shell/src/compositor/frame.rs`.
 
 /// Synthesise a `WindowEvent::KeyboardInput { state: Pressed }` for
 /// `key`. winit's `KeyEvent` has a `pub(crate)` field

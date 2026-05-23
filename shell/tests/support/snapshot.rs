@@ -43,7 +43,7 @@ pub struct SnapshotAssertion {
 impl SnapshotAssertion {
     /// `rendered` is the PNG the test just wrote (e.g. under
     /// `target/nirios-screenshots/...`). `golden` is the repo-checked-in
-    /// expected image (e.g. `quick-shell/tests/snapshots/e2e/foo.png`).
+    /// expected image (e.g. `shell/tests/snapshots/e2e/foo.png`).
     pub fn new(rendered: impl Into<PathBuf>, golden: impl Into<PathBuf>) -> Self {
         Self {
             rendered_png: rendered.into(),

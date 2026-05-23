@@ -8,7 +8,7 @@
 //! workspace chrome.
 //!
 //! Two production implementors are imagined:
-//!   - The hosted-mode chrome — pushes a [`quick_ui::widget::FilePicker`]
+//!   - The hosted-mode chrome — pushes a [`ui::widget::FilePicker`]
 //!     into the workspace overlay layer.
 //!   - The native compositor — opens a transient surface owned by the
 //!     compositor's xdg-shell context.

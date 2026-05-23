@@ -38,10 +38,10 @@ use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::overlay_host::ShellOverlayHost;
 use crate::shell::state::WorkspaceTree;
 
-use quick_ui::presence::PresenceCtx;
-use quick_ui::text_render::TextRenderer;
-use quick_ui::theme::Theme;
-use quick_ui::widget::Widget;
+use ui::presence::PresenceCtx;
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::widget::Widget;
 
 /// Layout + paint core shared between `bin/shots`'s `ShellDriver` and
 /// the native compositor's per-frame tick.
@@ -335,7 +335,7 @@ impl FrameBuilder {
 /// uses this exact walk too — exposed `pub` here so both consumers
 /// share one implementation.
 pub fn walk_widget(
-    w: &dyn quick_ui::widget::Widget,
+    w: &dyn ui::widget::Widget,
     parent_path: &str,
     sibling_counts: &mut HashMap<String, usize>,
     out: &mut HashMap<String, vello::kurbo::Rect>,

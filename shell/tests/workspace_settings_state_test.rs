@@ -1,4 +1,4 @@
-use quick_desktop::shell::state::{Role, RolePermissions, WorkspaceFile, Workspace, WorkspaceId};
+use shell::shell::state::{Role, RolePermissions, WorkspaceFile, Workspace, WorkspaceId};
 
 #[test]
 fn role_permissions_round_trip() {

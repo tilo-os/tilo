@@ -11,10 +11,10 @@
 //! test in Task 16; the unit tests in `tests/browser_stub.rs` cover the
 //! metadata and runner wiring.
 
-use quick_ui::presence::PresenceCtx;
-use quick_ui::text_render::TextRenderer;
-use quick_ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
-use quick_ui::Theme;
+use ui::presence::PresenceCtx;
+use ui::text_render::TextRenderer;
+use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
+use ui::Theme;
 
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
