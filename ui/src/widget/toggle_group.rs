@@ -214,6 +214,7 @@ impl Widget for ToggleGroup {
         // per-segment fills cheap we clip each fill against the outer
         // rounded rect — the segment rects themselves stay axis-aligned.
         scene.push_layer(
+            vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
             1.0,
             transform,

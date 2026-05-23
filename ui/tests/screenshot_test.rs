@@ -46,13 +46,13 @@ fn headless_renderer_paints_a_solid_background_and_a_filled_rect() {
     scene.fill(
         Fill::NonZero,
         Affine::IDENTITY,
-        Color::rgb8(99, 102, 241),
+        Color::from_rgb8(99, 102, 241),
         None,
         &Rect::new(44.0, 22.0, 84.0, 42.0),
     );
 
     // Slate-900 background: #0f172a in hex.
-    let bg = Color::rgb8(0x0f, 0x17, 0x2a);
+    let bg = Color::from_rgb8(0x0f, 0x17, 0x2a);
     let rgba = renderer.render(&scene, bg);
 
     // Corner pixel should be the background (outside the filled rect).
@@ -96,7 +96,7 @@ fn headless_renderer_writes_a_png_file() {
     scene.fill(
         Fill::NonZero,
         Affine::IDENTITY,
-        Color::rgb8(255, 255, 255),
+        Color::from_rgb8(255, 255, 255),
         None,
         &Rect::new(8.0, 8.0, 24.0, 24.0),
     );
@@ -104,7 +104,7 @@ fn headless_renderer_writes_a_png_file() {
     let out = std::env::temp_dir().join("quick-ui-screenshot-test.png");
     // Clear any stale file so the size assertion can't alias a leftover.
     let _ = std::fs::remove_file(&out);
-    renderer.render_png(&scene, Color::rgb8(0, 0, 0), &out);
+    renderer.render_png(&scene, Color::from_rgb8(0, 0, 0), &out);
 
     let meta = std::fs::metadata(&out).expect("PNG should be written");
     assert!(meta.len() > 0, "PNG file must be non-empty");
@@ -181,7 +181,7 @@ fn headless_renderer_captures_a_widget_tree() {
     // that the container actually painted *something* — otherwise the
     // whole buffer would still read red. Any pixel where the red
     // channel dropped is proof the widget rendered over the base.
-    let bg = Color::rgb8(0xff, 0x00, 0x00);
+    let bg = Color::from_rgb8(0xff, 0x00, 0x00);
     let rgba = renderer.render(&scene, bg);
 
     // Widget should have painted a background over at least the top-left
@@ -263,7 +263,7 @@ fn tab_bar_renders_pills_inside_six_px_insets() {
 
     // Magenta base — not in any theme colour, so it's unambiguously "no
     // widget pixels here" when sampled.
-    let bg = Color::rgb8(0xff, 0x00, 0xff);
+    let bg = Color::from_rgb8(0xff, 0x00, 0xff);
     let rgba = renderer.render(&scene, bg);
 
     // If QUICK_UI_SCREENSHOT_DIR is set (e.g. the developer is inspecting

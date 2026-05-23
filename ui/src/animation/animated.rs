@@ -5,6 +5,7 @@
 //! own `spawned_at`/`closing_at`/`wheel_anim_state`/`snap_anim` fields) are
 //! migrated in a follow-up — this module just ships the primitives + tests.
 
+use crate::color_compat::ColorCompat;
 use std::time::{Duration, Instant};
 
 /// Linear interpolation between two values.
@@ -31,12 +32,12 @@ impl Lerp for vello::peniko::Color {
             let b = b as f32;
             (a + (b - a) * t).round().clamp(0.0, 255.0) as u8
         };
-        vello::peniko::Color {
-            r: lerp_u8(self.r, other.r, t),
-            g: lerp_u8(self.g, other.g, t),
-            b: lerp_u8(self.b, other.b, t),
-            a: lerp_u8(self.a, other.a, t),
-        }
+        vello::peniko::Color::from_rgba8(
+            lerp_u8(self.r(), other.r(), t),
+            lerp_u8(self.g(), other.g(), t),
+            lerp_u8(self.b(), other.b(), t),
+            lerp_u8(self.a(), other.a(), t),
+        )
     }
 }
 
@@ -344,17 +345,21 @@ mod tests {
     #[test]
     fn color_lerp_interpolates_per_channel() {
         use vello::peniko::Color;
-        let red = Color::rgba8(255, 0, 0, 255);
-        let blue = Color::rgba8(0, 0, 255, 255);
-        let mid = red.lerp(blue, 0.5);
+        // UFCS: peniko::Color (AlphaColor<Srgb>) inherits its own
+        // 3-arg `lerp(other, t, HueDirection)` from the color crate.
+        // Disambiguate to our 2-arg `Lerp::lerp` so the test exercises
+        // the per-channel u8 interpolation, not the color-space lerp.
+        let red = Color::from_rgba8(255, 0, 0, 255);
+        let blue = Color::from_rgba8(0, 0, 255, 255);
+        let mid = <Color as Lerp>::lerp(red, blue, 0.5);
         // Round-to-nearest of 127.5 -> 128.
-        assert_eq!(mid.r, 128);
-        assert_eq!(mid.g, 0);
-        assert_eq!(mid.b, 128);
-        assert_eq!(mid.a, 255);
+        assert_eq!(mid.r(), 128);
+        assert_eq!(mid.g(), 0);
+        assert_eq!(mid.b(), 128);
+        assert_eq!(mid.a(), 255);
 
-        assert_eq!(red.lerp(blue, 0.0).r, 255);
-        assert_eq!(red.lerp(blue, 1.0).b, 255);
+        assert_eq!(<Color as Lerp>::lerp(red, blue, 0.0).r(), 255);
+        assert_eq!(<Color as Lerp>::lerp(red, blue, 1.0).b(), 255);
     }
 
     #[test]
@@ -362,16 +367,16 @@ mod tests {
         use vello::peniko::Color;
         let now = Instant::now();
         let a = Animated::starting_at(
-            Color::rgba8(0, 0, 0, 255),
-            Color::rgba8(200, 100, 50, 255),
+            Color::from_rgba8(0, 0, 0, 255),
+            Color::from_rgba8(200, 100, 50, 255),
             now,
             Duration::from_millis(100),
             Curve::Linear,
         );
         let mid = a.current(now + Duration::from_millis(50));
-        assert!(mid.r > 90 && mid.r < 110, "mid R should be ~100: {}", mid.r);
-        assert!(mid.g > 40 && mid.g < 60);
-        assert!(mid.b > 20 && mid.b < 30);
+        assert!(mid.r() > 90 && mid.r() < 110, "mid R should be ~100: {}", mid.r());
+        assert!(mid.g() > 40 && mid.g() < 60);
+        assert!(mid.b() > 20 && mid.b() < 30);
     }
 
     #[test]

@@ -4,7 +4,7 @@ use cosmic_text::{FontSystem, SwashCache, Buffer, Metrics, Shaping, Wrap};
 use cosmic_text::fontdb::Weight;
 use vello::Scene;
 use vello::kurbo::Affine;
-use vello::peniko::{Color, Font, StyleRef};
+use vello::peniko::{Color, FontData as Font, StyleRef};
 
 /// Concept-aligned named weight tiers for shell chrome.
 ///
@@ -291,8 +291,8 @@ impl TextRenderer {
             }
         });
 
-        let vello_glyphs: Vec<vello::glyph::Glyph> = glyphs.iter().map(|g| {
-            vello::glyph::Glyph {
+        let vello_glyphs: Vec<vello::Glyph> = glyphs.iter().map(|g| {
+            vello::Glyph {
                 id: g.glyph_id as u32,
                 x: g.x,
                 y: line_y + g.y,

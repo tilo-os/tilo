@@ -18,6 +18,7 @@ use vello::kurbo::{Affine, Rect, Point, RoundedRect, Stroke};
 use vello::peniko::Color;
 use winit::event::{WindowEvent, MouseButton, ElementState};
 use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
+use crate::color_compat::ColorCompat;
 use crate::widget::Widget;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -92,13 +93,13 @@ impl ColorPicker {
     /// is intentionally not encoded — the picker doesn't expose an
     /// alpha channel yet, and showing `#RRGGBBAA` would just confuse.
     pub fn hex_string(&self) -> String {
-        format!("#{:02X}{:02X}{:02X}", self.color.r, self.color.g, self.color.b)
+        format!("#{:02X}{:02X}{:02X}", self.color.r(), self.color.g(), self.color.b())
     }
 
     /// Decimal `rgb(r, g, b)` triple. Mirrors what every CSS panel
     /// shows under a hex picker.
     pub fn rgb_string(&self) -> String {
-        format!("rgb({}, {}, {})", self.color.r, self.color.g, self.color.b)
+        format!("rgb({}, {}, {})", self.color.r(), self.color.g(), self.color.b())
     }
 
     /// Register a callback that fires whenever `color` mutates. The
@@ -163,7 +164,7 @@ impl ColorPicker {
 
     /// Convenience: HSV view of `self.color`.
     fn current_hsv(&self) -> (f32, f32, f32) {
-        Self::rgb_to_hsv(self.color.r, self.color.g, self.color.b)
+        Self::rgb_to_hsv(self.color.r(), self.color.g(), self.color.b())
     }
 
     /// Rebuild `self.color` from a new hue, preserving the current
@@ -207,10 +208,10 @@ impl ColorPicker {
     /// `on_change` callback (when one is registered) and refreshes the
     /// colour atomically.
     fn set_rgb(&mut self, r: u8, g: u8, b: u8) {
-        let new_color = Color::rgba8(r, g, b, self.color.a);
-        if new_color.r == self.color.r
-            && new_color.g == self.color.g
-            && new_color.b == self.color.b
+        let new_color = Color::from_rgba8(r, g, b, self.color.a());
+        if new_color.r() == self.color.r()
+            && new_color.g() == self.color.g()
+            && new_color.b() == self.color.b()
         {
             return;
         }
@@ -272,17 +273,17 @@ impl ColorPicker {
             Some(DragTarget::R) => {
                 let f = Self::channel_from_point(self.r_slider_rect, p);
                 let new_r = (f * 255.0).round() as u8;
-                self.set_rgb(new_r, self.color.g, self.color.b);
+                self.set_rgb(new_r, self.color.g(), self.color.b());
             }
             Some(DragTarget::G) => {
                 let f = Self::channel_from_point(self.g_slider_rect, p);
                 let new_g = (f * 255.0).round() as u8;
-                self.set_rgb(self.color.r, new_g, self.color.b);
+                self.set_rgb(self.color.r(), new_g, self.color.b());
             }
             Some(DragTarget::B) => {
                 let f = Self::channel_from_point(self.b_slider_rect, p);
                 let new_b = (f * 255.0).round() as u8;
-                self.set_rgb(self.color.r, self.color.g, new_b);
+                self.set_rgb(self.color.r(), self.color.g(), new_b);
             }
             None => {}
         }
@@ -406,7 +407,7 @@ impl Widget for ColorPicker {
         scene.fill(vello::peniko::Fill::NonZero, transform, colors.surfaces.raised, None, &sv_shape);
         // Overlay the current colour at the user's chosen sat/value —
         // gives a faint hint that the square responds to clicks.
-        let sv_fill = Color::rgba8(self.color.r, self.color.g, self.color.b, 96);
+        let sv_fill = Color::from_rgba8(self.color.r(), self.color.g(), self.color.b(), 96);
         scene.fill(vello::peniko::Fill::NonZero, transform, sv_fill, None, &sv_shape);
         scene.stroke(&Stroke::new(1.0), transform, colors.border_standard, None, &sv_shape);
 
@@ -456,13 +457,13 @@ impl Widget for ColorPicker {
         // current value. We compute the knob position from the live RGB
         // channels rather than caching it — the slider has no separate
         // 0..1 state, it *is* the channel.
-        let r_fill = Color::rgba8(self.color.r, 0, 0, 255);
-        let g_fill = Color::rgba8(0, self.color.g, 0, 255);
-        let b_fill = Color::rgba8(0, 0, self.color.b, 255);
+        let r_fill = Color::from_rgba8(self.color.r(), 0, 0, 255);
+        let g_fill = Color::from_rgba8(0, self.color.g(), 0, 255);
+        let b_fill = Color::from_rgba8(0, 0, self.color.b(), 255);
         for (slider, fill, frac) in [
-            (self.r_slider_rect, r_fill, self.color.r as f64 / 255.0),
-            (self.g_slider_rect, g_fill, self.color.g as f64 / 255.0),
-            (self.b_slider_rect, b_fill, self.color.b as f64 / 255.0),
+            (self.r_slider_rect, r_fill, self.color.r() as f64 / 255.0),
+            (self.g_slider_rect, g_fill, self.color.g() as f64 / 255.0),
+            (self.b_slider_rect, b_fill, self.color.b() as f64 / 255.0),
         ] {
             let track_y0 = slider.y0 + (slider.height() - TRACK_HEIGHT) / 2.0;
             let track_y1 = track_y0 + TRACK_HEIGHT;
@@ -663,11 +664,11 @@ mod tests {
     /// where it was (the hue strip changes hue, not brightness).
     #[test]
     fn color_picker_dragging_hue_strip_changes_hue_only() {
-        let initial = Color::rgba8(180, 50, 50, 255);
+        let initial = Color::from_rgba8(180, 50, 50, 255);
         let _ = Theme::dark();
         let mut p = picker_at(initial, Point::ZERO);
 
-        let (_, _, v_before) = ColorPicker::rgb_to_hsv(initial.r, initial.g, initial.b);
+        let (_, _, v_before) = ColorPicker::rgb_to_hsv(initial.r(), initial.g(), initial.b());
 
         // Click well down the hue strip — that should land somewhere in
         // the blue band, not the red band the cursor started conceptually at.
@@ -679,12 +680,12 @@ mod tests {
 
         let after = p.color();
         assert!(
-            after.r != initial.r || after.g != initial.g || after.b != initial.b,
+            after.r() != initial.r() || after.g() != initial.g() || after.b() != initial.b(),
             "hue click must change RGB — got same colour {:?}",
-            (after.r, after.g, after.b)
+            (after.r(), after.g(), after.b())
         );
 
-        let (_, _, v_after) = ColorPicker::rgb_to_hsv(after.r, after.g, after.b);
+        let (_, _, v_after) = ColorPicker::rgb_to_hsv(after.r(), after.g(), after.b());
         assert!(
             (v_after - v_before).abs() < 0.1 + 0.001,
             "hue strip must preserve V within ±0.1 — before={}, after={}",
@@ -697,7 +698,7 @@ mod tests {
     /// and high value; clicking the bottom-left should drop one of them.
     #[test]
     fn color_picker_clicking_sv_square_changes_saturation_and_value() {
-        let mut p = picker_at(Color::rgba8(120, 60, 200, 255), Point::ZERO);
+        let mut p = picker_at(Color::from_rgba8(120, 60, 200, 255), Point::ZERO);
 
         // Top-right of SV square — sat ≈ 1, val ≈ 1.
         let tr_x = p.sv_rect.x1 - 1.0;
@@ -708,7 +709,7 @@ mod tests {
 
         let after_tr = p.color();
         let (_, s_tr, v_tr) =
-            ColorPicker::rgb_to_hsv(after_tr.r, after_tr.g, after_tr.b);
+            ColorPicker::rgb_to_hsv(after_tr.r(), after_tr.g(), after_tr.b());
         assert!(
             s_tr > 0.8,
             "top-right SV click must yield high saturation — got s={}",
@@ -730,7 +731,7 @@ mod tests {
 
         let after_bl = p.color();
         let (_, s_bl, v_bl) =
-            ColorPicker::rgb_to_hsv(after_bl.r, after_bl.g, after_bl.b);
+            ColorPicker::rgb_to_hsv(after_bl.r(), after_bl.g(), after_bl.b());
         assert!(
             s_bl < s_tr || v_bl < v_tr,
             "bottom-left SV click must lower saturation or value — \
@@ -746,7 +747,7 @@ mod tests {
     /// produce pure red within rounding tolerance.
     #[test]
     fn color_picker_rgb_slider_to_red_yields_pure_red() {
-        let mut p = picker_at(Color::rgba8(80, 80, 80, 255), Point::ZERO);
+        let mut p = picker_at(Color::from_rgba8(80, 80, 80, 255), Point::ZERO);
 
         // R slider to its right edge.
         let r_x = p.r_slider_rect.x1 - 1.0;
@@ -771,16 +772,16 @@ mod tests {
 
         let c = p.color();
         assert!(
-            (c.r as i32 - 255).abs() <= 5,
-            "expected r ≈ 255, got {}", c.r,
+            (c.r() as i32 - 255).abs() <= 5,
+            "expected r ≈ 255, got {}", c.r(),
         );
         assert!(
-            c.g <= 5,
-            "expected g ≈ 0, got {}", c.g,
+            c.g() <= 5,
+            "expected g ≈ 0, got {}", c.g(),
         );
         assert!(
-            c.b <= 5,
-            "expected b ≈ 0, got {}", c.b,
+            c.b() <= 5,
+            "expected b ≈ 0, got {}", c.b(),
         );
     }
 
@@ -789,15 +790,15 @@ mod tests {
     /// both single-digit (< 16) and two-digit channels.
     #[test]
     fn hex_string_formats_six_uppercase_digits() {
-        let p = ColorPicker::new(Color::rgba8(0x12, 0x34, 0x56, 0xff));
+        let p = ColorPicker::new(Color::from_rgba8(0x12, 0x34, 0x56, 0xff));
         assert_eq!(p.hex_string(), "#123456");
-        let p = ColorPicker::new(Color::rgba8(0x0a, 0x00, 0xff, 0xff));
+        let p = ColorPicker::new(Color::from_rgba8(0x0a, 0x00, 0xff, 0xff));
         assert_eq!(p.hex_string(), "#0A00FF");
     }
 
     #[test]
     fn rgb_string_formats_decimal_triple() {
-        let p = ColorPicker::new(Color::rgba8(99, 102, 241, 255));
+        let p = ColorPicker::new(Color::from_rgba8(99, 102, 241, 255));
         assert_eq!(p.rgb_string(), "rgb(99, 102, 241)");
     }
 }

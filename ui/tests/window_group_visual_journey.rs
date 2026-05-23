@@ -110,7 +110,7 @@ fn render_group(renderer: &mut OffscreenRenderer, group: &mut WindowGroup) -> Ve
 
     // Dark slate base so overpainted accents / chrome read as distinct
     // from the desktop background.
-    let bg = Color::rgb8(0x0f, 0x17, 0x2a);
+    let bg = Color::from_rgb8(0x0f, 0x17, 0x2a);
     renderer.render(&scene, bg)
 }
 

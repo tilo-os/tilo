@@ -1,13 +1,13 @@
 //! General-purpose [`Image`] widget for displaying PNG/JPEG content.
 //!
-//! Decoded RGBA pixels are wrapped in a [`peniko::Image`] and painted via
+//! Decoded RGBA pixels are wrapped in a [`peniko::ImageData`] and painted via
 //! `scene.fill(..)` — the same call shape `quick-shell`'s desktop backdrop
 //! uses for its tiled noise overlay. Three fit modes mirror CSS
 //! `object-fit`: [`ImageFit::Fill`] stretches, [`ImageFit::Contain`]
 //! letterboxes, [`ImageFit::Cover`] crops.
 //!
-//! The peniko::Image is built lazily on first draw and cached; subsequent
-//! draws reuse the cached handle (cloning a [`peniko::Image`] only bumps
+//! The peniko::ImageData is built lazily on first draw and cached; subsequent
+//! draws reuse the cached handle (cloning a [`peniko::ImageData`] only bumps
 //! the internal `Arc`). Path-loaded variants that fail to decode render
 //! a red border + "Image failed" text so the failure surfaces during
 //! development rather than silently painting nothing.
@@ -24,7 +24,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke};
-use vello::peniko::{Blob, Color, Fill, Format, Image as PenikoImage};
+use vello::peniko::{Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData as PenikoImage, ImageFormat as Format};
 use winit::event::WindowEvent;
 
 use crate::presence::PresenceCtx;
@@ -176,7 +176,13 @@ impl Image {
                     return;
                 }
                 let blob = Blob::new(Arc::new(rgba.to_vec()));
-                let img = PenikoImage::new(blob, Format::Rgba8, *width, *height);
+                let img = PenikoImage {
+                    data: blob,
+                    format: Format::Rgba8,
+                    alpha_type: ImageAlphaType::Alpha,
+                    width: *width,
+                    height: *height,
+                };
                 self.intrinsic_size = (*width, *height);
                 self.cached_image = Some(img);
             }
@@ -196,7 +202,13 @@ impl Image {
                     }
                 };
                 let blob = Blob::new(Arc::new(rgba));
-                let img = PenikoImage::new(blob, Format::Rgba8, width, height);
+                let img = PenikoImage {
+                    data: blob,
+                    format: Format::Rgba8,
+                    alpha_type: ImageAlphaType::Alpha,
+                    width,
+                    height,
+                };
                 self.intrinsic_size = (width, height);
                 self.cached_image = Some(img);
             }
@@ -226,7 +238,7 @@ impl Image {
 
         // Brush-transform shape: we apply the brush to the rect itself
         // (`scene.fill(.., &rect)`), so the brush_transform must map
-        // the rect's origin into image-space. peniko::Image samples its
+        // the rect's origin into image-space. peniko::ImageData samples its
         // bytes in pixel coordinates with (0, 0) at the top-left; a
         // brush_transform of `T * S` placed in fill means "scale +
         // translate the image before sampling".
@@ -268,6 +280,7 @@ impl Image {
         let needs_clip = matches!(self.fit, ImageFit::Cover);
         if needs_clip {
             scene.push_layer(
+                vello::peniko::Fill::NonZero,
                 vello::peniko::BlendMode::default(),
                 1.0,
                 transform,
@@ -275,10 +288,11 @@ impl Image {
             );
         }
 
+        let image_brush = ImageBrush::new(img);
         scene.fill(
             Fill::NonZero,
             transform,
-            &img,
+            &image_brush,
             Some(brush_transform),
             &fill_rect,
         );
@@ -292,7 +306,7 @@ impl Image {
     /// label. Drawn whenever `cached_image` is `None` after
     /// `ensure_cached`.
     fn paint_error(&mut self, scene: &mut Scene, transform: Affine) {
-        let red = Color::rgba8(220, 38, 38, 255);
+        let red = Color::from_rgba8(220, 38, 38, 255);
         let stroke = Stroke::new(2.0);
         scene.stroke(&stroke, transform, red, None, &self.rect);
 
