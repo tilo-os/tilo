@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.freedesktop.impl.portal.desktop.qos
+Exec=/usr/bin/shell --portal-server-only
+SystemdService=shell-portal.service

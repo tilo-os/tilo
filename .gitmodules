@@ -4,15 +4,9 @@
 [submodule "shell"]
 	path = shell
 	url = ssh://git@git.tu-po.com/qos/shell.git
-[submodule "os"]
-	path = os
-	url = ssh://git@git.tu-po.com/qos/os.git
-[submodule "apps/browser"]
-	path = apps/browser
-	url = ssh://git@git.tu-po.com/qos/browser.git
-[submodule "apps/file-explorer"]
-	path = apps/file-explorer
-	url = ssh://git@git.tu-po.com/qos/file-explorer.git
-[submodule "apps/terminal"]
-	path = apps/terminal
-	url = ssh://git@git.tu-po.com/qos/terminal.git
+[submodule "ui"]
+	path = ui
+	url = ssh://git@git.tu-po.com/qos/ui.git
+[submodule "apps"]
+	path = apps
+	url = ssh://git@git.tu-po.com/qos/apps.git

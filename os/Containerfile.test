@@ -1,0 +1,27 @@
+FROM localhost/qos:latest
+
+# Validation image layered on top of the production image. Adds
+# `fs-test.service` (the runtime smoke test) plus a build-time
+# assertion that the portal config files are still in the expected
+# shape — so if a refactor breaks the .portal/.service/.unit triplet,
+# the test image fails to build instead of silently shipping a broken
+# portal backend.
+
+# Build-time portal config contract — fails the image build if any of
+# the three xdg-desktop-portal config files drifted from what the Rust
+# `portal::serve` impl expects (interfaces, bus name, ExecStart shape).
+# The test script is bundled into the image too so a VM operator can
+# re-run it later via `bash /usr/libexec/qos/portal-config-test.sh`.
+COPY tests/portal_config_validity.sh /usr/libexec/qos/portal-config-test.sh
+RUN chmod 755 /usr/libexec/qos/portal-config-test.sh && \
+    OS_ROOT=/ bash /usr/libexec/qos/portal-config-test.sh
+
+# FUSE + portal + binary runtime smoke test (boots the VM into
+# multi-user.target, the service oneshot runs at boot, results land in
+# `journalctl -u fs-test`).
+COPY usr/bin/fs-test.sh /usr/bin/fs-test.sh
+RUN chmod 755 /usr/bin/fs-test.sh
+COPY usr/lib/systemd/system/fs-test.service /usr/lib/systemd/system/fs-test.service
+
+# Enable the test service so it runs on first boot of the VM.
+RUN systemctl enable fs-test.service

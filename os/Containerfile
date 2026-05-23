@@ -1,0 +1,146 @@
+FROM quay.io/fedora/fedora-bootc:42
+
+# Graphics stack
+RUN dnf install -y \
+    mesa-dri-drivers \
+    mesa-vulkan-drivers \
+    libglvnd-egl \
+    && dnf clean all
+
+# Audio/Video
+RUN dnf install -y \
+    pipewire \
+    pipewire-pulseaudio \
+    wireplumber \
+    && dnf clean all
+
+# GStreamer (for future streaming)
+RUN dnf install -y \
+    gstreamer1 \
+    gstreamer1-plugins-base \
+    gstreamer1-plugins-good \
+    && dnf clean all
+
+# Display manager
+RUN dnf install -y \
+    greetd \
+    greetd-tuigreet \
+    && dnf clean all
+
+# System utilities
+RUN dnf install -y \
+    bubblewrap \
+    flatpak \
+    distrobox \
+    podman \
+    foot \
+    wl-clipboard \
+    NetworkManager \
+    fuse3 \
+    cage \
+    && dnf clean all
+
+# xdg-desktop-portal — the frontend that proxies sandboxed-app
+# capability requests (FileChooser, ScreenCast, Camera) to our
+# qOS backend (Sandbox Phase 4.3).
+RUN dnf install -y \
+    xdg-desktop-portal \
+    && dnf clean all
+
+# Ensure system groups exist in /etc/group and add greetd to them
+RUN (getent group video || echo "video:x:39:greetd" >> /etc/group) && \
+    (getent group input || echo "input:x:104:greetd" >> /etc/group) && \
+    sed -i 's/^video:x:39:$/video:x:39:greetd/' /etc/group && \
+    sed -i 's/^input:x:104:$/input:x:104:greetd/' /etc/group
+
+# Fonts
+RUN dnf install -y \
+    google-noto-sans-fonts \
+    google-noto-sans-mono-fonts \
+    && dnf clean all
+
+# Wayland runtime libraries (needed by compositor)
+RUN dnf install -y \
+    wayland-devel \
+    libxkbcommon-devel \
+    libinput-devel \
+    && dnf clean all
+
+# Copy the compiled compositor binary
+COPY shell /usr/bin/shell
+RUN chmod 755 /usr/bin/shell
+
+# Copy the compiled FUSE binary
+COPY fs /usr/bin/fs
+RUN chmod 755 /usr/bin/fs
+
+# Copy the compiled application binaries
+COPY terminal /usr/bin/terminal
+RUN chmod 755 /usr/bin/terminal
+COPY file-explorer /usr/bin/file-explorer
+RUN chmod 755 /usr/bin/file-explorer
+COPY browser /usr/bin/browser
+RUN chmod 755 /usr/bin/browser
+
+# FUSE mount service
+COPY usr/lib/systemd/system/fs.service /usr/lib/systemd/system/fs.service
+
+# Wayland session desktop entries. Two files land here:
+#   - shell.desktop          — default session (no peer-sync)
+#   - shell-peer-sync.desktop — opt-in session (libp2p enabled)
+# tuigreet lists both at the login prompt; see docs/peer-sync.md.
+COPY usr/share/wayland-sessions/shell.desktop /usr/share/wayland-sessions/shell.desktop
+COPY usr/share/wayland-sessions/shell-peer-sync.desktop /usr/share/wayland-sessions/shell-peer-sync.desktop
+
+# Default compositor config
+COPY etc/qos/desktop.toml /etc/qos/desktop.toml
+
+# greetd display manager config
+COPY etc/greetd/config.toml /etc/greetd/config.toml
+
+# First-boot setup service
+COPY usr/lib/systemd/system/shell-firstboot.service /usr/lib/systemd/system/shell-firstboot.service
+
+# systemd-tmpfiles snippets — pre-create /var/workspace and
+# /var/cache/quick-fs at boot. bootc images mount the root r/o, so
+# this is the only sanctioned way to materialise persistent dirs.
+COPY usr/lib/tmpfiles.d/qos.conf /usr/lib/tmpfiles.d/qos.conf
+
+# xdg-desktop-portal backend registration (Sandbox Phase 4.3 follow-up).
+# Three files cooperate:
+#   1. qos.portal — tells xdg-desktop-portal which interfaces we
+#      provide and what `UseIn` desktop string activates us.
+#   2. The .service file — D-Bus auto-activation pointing at the
+#      systemd user unit below.
+#   3. shell-portal.service — runs `shell
+#      --portal-server-only`, owning the backend bus name without
+#      starting a compositor (the compositor session runs separately).
+COPY usr/share/xdg-desktop-portal/portals/qos.portal /usr/share/xdg-desktop-portal/portals/qos.portal
+COPY usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.qos.service /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.qos.service
+COPY usr/lib/systemd/user/shell-portal.service /usr/lib/systemd/user/shell-portal.service
+
+# Opt-in peer-sync user service. NOT enabled by default — users opt
+# in via `systemctl --user enable shell-peer-sync` or by
+# picking the "qOS (peer-sync)" session entry at the greetd
+# prompt. See /usr/share/doc/qos/peer-sync.md for the
+# privacy / discovery trade-off.
+COPY usr/lib/systemd/user/shell-peer-sync.service /usr/lib/systemd/user/shell-peer-sync.service
+
+# Bundled documentation (the README in the OS submodule, plus the
+# peer-sync trade-off doc users are pointed at from the .desktop
+# Comment field and the systemd unit Documentation= line).
+COPY docs/peer-sync.md /usr/share/doc/qos/peer-sync.md
+
+# Enable services
+#
+# `shell-portal.service` is `--global` enabled so it lights
+# up for every user account; `shell-peer-sync.service` is
+# pointedly **NOT** enabled — that's the user-opt-in part.
+RUN systemctl enable greetd.service && \
+    systemctl set-default graphical.target && \
+    systemctl enable shell-firstboot.service && \
+    systemctl enable fs.service && \
+    systemctl --global enable shell-portal.service
+
+# Validate
+RUN bootc container lint
