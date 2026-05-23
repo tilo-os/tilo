@@ -1798,7 +1798,7 @@ impl WorkspaceTree {
                         Tab {
                             id: tab_files,
                             title: "Files".into(),
-                            tile: TileContent::Stub {
+                            tile: TileContent::AppPlaceholder {
                                 kind: AppKind::FileExplorer,
                                 label: "Files".into(),
                             },
@@ -1806,7 +1806,7 @@ impl WorkspaceTree {
                         Tab {
                             id: tab_terminal,
                             title: "Terminal".into(),
-                            tile: TileContent::Stub {
+                            tile: TileContent::AppPlaceholder {
                                 kind: AppKind::Terminal,
                                 label: "Terminal".into(),
                             },
