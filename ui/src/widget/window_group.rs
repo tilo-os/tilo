@@ -7,6 +7,7 @@ use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use taffy::style_helpers::length;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use crate::color_compat::ColorCompat;
 use crate::icons;
 use crate::widget::{Widget, TabBar, TabDescriptor, TileContent, TileHost};
 use crate::widget::tabs::CLOSE_FADE_MS;
@@ -556,7 +557,7 @@ impl WindowGroup {
         if self.close_hover {
             theme.tokens.colors.semantic.danger.with_alpha_factor(0.8)
         } else {
-            vello::peniko::Color::rgba8(255, 255, 255, 38)
+            vello::peniko::Color::from_rgba8(255, 255, 255, 38)
         }
     }
 
@@ -569,7 +570,7 @@ impl WindowGroup {
         theme: &Theme,
     ) -> vello::peniko::Color {
         if self.close_hover {
-            vello::peniko::Color::rgba8(255, 255, 255, 255)
+            vello::peniko::Color::from_rgba8(255, 255, 255, 255)
         } else {
             theme.tokens.colors.text_primary
         }
@@ -682,6 +683,7 @@ impl Widget for WindowGroup {
                 self.rect.y1 + 16.0,
             );
             scene.push_layer(
+                vello::peniko::Fill::NonZero,
                 vello::peniko::BlendMode::default(),
                 fade_alpha,
                 transform,
@@ -746,6 +748,7 @@ impl Widget for WindowGroup {
                     rect.y1 + 160.0,
                 );
                 scene.push_layer(
+                    vello::peniko::Fill::NonZero,
                     vello::peniko::BlendMode::default(),
                     alpha.max(0.0),
                     transform,
@@ -880,7 +883,7 @@ impl Widget for WindowGroup {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                vello::peniko::Color::rgba8(255, 255, 255, 38),
+                vello::peniko::Color::from_rgba8(255, 255, 255, 38),
                 None,
                 &title_rr,
             );
@@ -920,7 +923,7 @@ impl Widget for WindowGroup {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                vello::peniko::Color::rgba8(255, 255, 255, fill_alpha),
+                vello::peniko::Color::from_rgba8(255, 255, 255, fill_alpha),
                 None,
                 &pill,
             );
@@ -980,7 +983,7 @@ impl Widget for WindowGroup {
             let close_fill = if self.close_hover {
                 theme.tokens.colors.semantic.danger.with_alpha_factor(0.8)
             } else {
-                vello::peniko::Color::rgba8(255, 255, 255, 38)
+                vello::peniko::Color::from_rgba8(255, 255, 255, 38)
             };
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -999,7 +1002,7 @@ impl Widget for WindowGroup {
             // the glyph to full white (`hover:text-white`) so the × reads
             // crisp against the red fill.
             let glyph_color = if self.close_hover {
-                vello::peniko::Color::rgba8(255, 255, 255, 255)
+                vello::peniko::Color::from_rgba8(255, 255, 255, 255)
             } else {
                 theme.tokens.colors.text_primary
             };
@@ -2209,15 +2212,15 @@ mod tests {
         g.set_close_hover_for_tests(false);
         let idle_chip = g.maximized_close_chip_color_for_tests(&theme);
         assert_eq!(
-            (idle_chip.r, idle_chip.g, idle_chip.b, idle_chip.a),
+            (idle_chip.r(), idle_chip.g(), idle_chip.b(), idle_chip.a()),
             (255, 255, 255, 38),
             "idle maximized close chip stays as the chrome white tint",
         );
         let idle_glyph = g.maximized_close_glyph_color_for_tests(&theme);
         let expected = theme.tokens.colors.text_primary;
         assert_eq!(
-            (idle_glyph.r, idle_glyph.g, idle_glyph.b, idle_glyph.a),
-            (expected.r, expected.g, expected.b, expected.a),
+            (idle_glyph.r(), idle_glyph.g(), idle_glyph.b(), idle_glyph.a()),
+            (expected.r(), expected.g(), expected.b(), expected.a()),
             "idle glyph uses theme text_primary",
         );
 
@@ -2225,13 +2228,13 @@ mod tests {
         g.set_close_hover_for_tests(true);
         let hover_chip = g.maximized_close_chip_color_for_tests(&theme);
         assert_eq!(
-            (hover_chip.r, hover_chip.g, hover_chip.b, hover_chip.a),
+            (hover_chip.r(), hover_chip.g(), hover_chip.b(), hover_chip.a()),
             (239, 68, 68, 204),
             "hover maximized close chip paints red-500 at 80% alpha",
         );
         let hover_glyph = g.maximized_close_glyph_color_for_tests(&theme);
         assert_eq!(
-            (hover_glyph.r, hover_glyph.g, hover_glyph.b, hover_glyph.a),
+            (hover_glyph.r(), hover_glyph.g(), hover_glyph.b(), hover_glyph.a()),
             (255, 255, 255, 255),
             "hover glyph promotes to opaque white (concept: hover:text-white)",
         );

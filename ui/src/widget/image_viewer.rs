@@ -48,10 +48,10 @@ const ZOOM_MAX: f32 = 10.0;
 /// over detail — `1.1` per notch matches Krita/Inkscape defaults.
 const ZOOM_STEP: f32 = 1.1;
 
-/// Interactive viewer for a pre-decoded [`peniko::Image`]. See module
+/// Interactive viewer for a pre-decoded [`peniko::ImageData`]. See module
 /// docs for the contract.
 pub struct ImageViewer {
-    image: peniko::Image,
+    image: peniko::ImageData,
     zoom: f32,
     pan: Vec2,
     drag_origin: Option<Vec2>,
@@ -65,9 +65,9 @@ pub struct ImageViewer {
 impl ImageViewer {
     /// Construct a viewer at the "fit to viewport" baseline. The image
     /// is borrowed by `Arc` underneath, so cloning the inner
-    /// `peniko::Image` is cheap — the caller may share the same source
+    /// `peniko::ImageData` is cheap — the caller may share the same source
     /// with other widgets.
-    pub fn new(image: peniko::Image) -> Self {
+    pub fn new(image: peniko::ImageData) -> Self {
         Self {
             image,
             zoom: 1.0,
@@ -231,7 +231,7 @@ impl Widget for ImageViewer {
 
         // Clip to the rect so pan/zoom doesn't bleed over adjacent
         // chrome when the image is bigger than its viewport.
-        scene.push_layer(BlendMode::default(), 1.0, transform, &self.rect);
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &self.rect);
 
         // `scene.draw_image` accepts an `Affine` that maps the image's
         // unit pixel space directly into world space — so a scale-then-
@@ -359,7 +359,7 @@ impl Widget for ImageViewer {
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use vello::peniko::{Blob, Format, Image};
+    use vello::peniko::{Blob, ImageAlphaType, ImageData as Image, ImageFormat as Format};
     use winit::dpi::PhysicalPosition;
     use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 
@@ -368,7 +368,13 @@ mod tests {
     fn make_image() -> Image {
         let pixels = vec![255u8; 4 * 16 * 16];
         let blob = Blob::new(Arc::new(pixels));
-        Image::new(blob, Format::Rgba8, 16, 16)
+        Image {
+            data: blob,
+            format: Format::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width: 16,
+            height: 16,
+        }
     }
 
     /// Synthesise the unsafe-but-conventional dummy `DeviceId` winit

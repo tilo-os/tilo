@@ -1,4 +1,5 @@
 use vello::{Scene, kurbo::{Rect, Affine, Stroke}, peniko::{Color, Fill}};
+use crate::color_compat::ColorCompat;
 use crate::theme::Theme;
 use crate::permissions::UserId;
 use super::{PresenceCtx, SelectionRange};
@@ -18,7 +19,7 @@ pub(crate) fn color_for(ctx: &PresenceCtx, user: &UserId, theme: &Theme) -> Colo
     if r == 0 && g == 0 && b == 0 {
         return theme.accent_primary;
     }
-    Color::rgb8(r, g, b)
+    Color::from_rgb8(r, g, b)
 }
 
 impl PresenceCtx {

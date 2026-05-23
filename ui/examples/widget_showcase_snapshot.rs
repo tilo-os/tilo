@@ -264,7 +264,7 @@ fn main() {
                     .push(Box::new(TimePicker::new(9, 15).with_seconds(45))),
             ))
             .push(caption("row_picker"))
-            .push(Box::new(ColorPicker::new(Color::rgba8(99, 102, 241, 255))))
+            .push(Box::new(ColorPicker::new(Color::from_rgba8(99, 102, 241, 255))))
             .push(caption("row_struct"))
             .push(Box::new(tree))
             // ImageViewer/VideoPlayer/ResizableSplit/Popover/Modal omitted

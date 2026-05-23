@@ -1,3 +1,4 @@
+use crate::color_compat::ColorCompat;
 use vello::peniko::Color;
 
 /// Index into the accent ramp that maps to the concept's dominant
@@ -70,110 +71,110 @@ impl Colors {
         // Slate-950 → slate-50, one Tailwind step per ramp slot.
         Self {
             neutral: ColorRamp { stops: [
-                Color::rgb8(  2,   6,  23), // slate-950
-                Color::rgb8( 15,  23,  42), // slate-900
-                Color::rgb8( 30,  41,  59), // slate-800
-                Color::rgb8( 51,  65,  85), // slate-700
-                Color::rgb8( 71,  85, 105), // slate-600
-                Color::rgb8(100, 116, 139), // slate-500
-                Color::rgb8(148, 163, 184), // slate-400
-                Color::rgb8(203, 213, 225), // slate-300
-                Color::rgb8(226, 232, 240), // slate-200
-                Color::rgb8(241, 245, 249), // slate-100
-                Color::rgb8(248, 250, 252), // slate-50
+                Color::from_rgb8(  2,   6,  23), // slate-950
+                Color::from_rgb8( 15,  23,  42), // slate-900
+                Color::from_rgb8( 30,  41,  59), // slate-800
+                Color::from_rgb8( 51,  65,  85), // slate-700
+                Color::from_rgb8( 71,  85, 105), // slate-600
+                Color::from_rgb8(100, 116, 139), // slate-500
+                Color::from_rgb8(148, 163, 184), // slate-400
+                Color::from_rgb8(203, 213, 225), // slate-300
+                Color::from_rgb8(226, 232, 240), // slate-200
+                Color::from_rgb8(241, 245, 249), // slate-100
+                Color::from_rgb8(248, 250, 252), // slate-50
             ]},
             // Indigo-950 → indigo-50; index 5 is the concept's `indigo-500`
             // accent primary (#6366f1).
             accent: ColorRamp { stops: [
-                Color::rgb8( 30,  27,  75), // indigo-950
-                Color::rgb8( 49,  46, 129), // indigo-900
-                Color::rgb8( 55,  48, 163), // indigo-800
-                Color::rgb8( 67,  56, 202), // indigo-700
-                Color::rgb8( 79,  70, 229), // indigo-600
-                Color::rgb8( 99, 102, 241), // indigo-500 ← accent primary
-                Color::rgb8(129, 140, 248), // indigo-400
-                Color::rgb8(165, 180, 252), // indigo-300
-                Color::rgb8(199, 210, 254), // indigo-200
-                Color::rgb8(224, 231, 255), // indigo-100
-                Color::rgb8(238, 242, 255), // indigo-50
+                Color::from_rgb8( 30,  27,  75), // indigo-950
+                Color::from_rgb8( 49,  46, 129), // indigo-900
+                Color::from_rgb8( 55,  48, 163), // indigo-800
+                Color::from_rgb8( 67,  56, 202), // indigo-700
+                Color::from_rgb8( 79,  70, 229), // indigo-600
+                Color::from_rgb8( 99, 102, 241), // indigo-500 ← accent primary
+                Color::from_rgb8(129, 140, 248), // indigo-400
+                Color::from_rgb8(165, 180, 252), // indigo-300
+                Color::from_rgb8(199, 210, 254), // indigo-200
+                Color::from_rgb8(224, 231, 255), // indigo-100
+                Color::from_rgb8(238, 242, 255), // indigo-50
             ]},
             semantic: SemanticColors {
-                success: Color::rgb8( 16, 185, 129), // emerald-500
-                warning: Color::rgb8(245, 158,  11), // amber-500
-                danger:  Color::rgb8(239,  68,  68), // red-500
-                info:    Color::rgb8( 96, 165, 250), // blue-400
+                success: Color::from_rgb8( 16, 185, 129), // emerald-500
+                warning: Color::from_rgb8(245, 158,  11), // amber-500
+                danger:  Color::from_rgb8(239,  68,  68), // red-500
+                info:    Color::from_rgb8( 96, 165, 250), // blue-400
             },
             surfaces: Surfaces {
-                base:   Color::rgb8(15, 23, 42),       // slate-900
-                raised: Color::rgb8(30, 41, 59),       // slate-800
+                base:   Color::from_rgb8(15, 23, 42),       // slate-900
+                raised: Color::from_rgb8(30, 41, 59),       // slate-800
                 // Top-bar backdrop — concept uses near-opaque black under the
                 // bar chrome. `bg-black/80` = alpha 204 (0.8 · 255 ≈ 204);
                 // previous 205 was a one-bit rounding artefact.
-                overlay: Color::rgba8(0, 0, 0, 204),   // black/80
+                overlay: Color::from_rgba8(0, 0, 0, 204),   // black/80
                 // Overlay-panel "glass" — concept's QuickSettings and
                 // Collaborators popover use `bg-slate-900/80` = alpha 204.
                 // (GlobalSearch + WorkspaceSettings use /70; we pick the
                 // higher-visibility /80 here because it's the more prominent
                 // panel treatment in the mockup.)
-                glass:   Color::rgba8(15, 23, 42, 204),// slate-900/80
+                glass:   Color::from_rgba8(15, 23, 42, 204),// slate-900/80
                 glass_blur_px: 24.0,
                 window_card: Color::WHITE,
-                window_card_border: Color::rgba8(255, 255, 255, 51), // white/20
+                window_card_border: Color::from_rgba8(255, 255, 255, 51), // white/20
             },
             text_primary: Color::WHITE,
-            text_dim: Color::rgb8(148, 163, 184), // slate-400
-            border_standard: Color::rgb8(51, 65, 85), // slate-700
-            border_focus: Color::rgb8(99, 102, 241),  // indigo-500
-            surface_white_5:  Color::rgba8(255, 255, 255, 13),
-            surface_white_10: Color::rgba8(255, 255, 255, 26),
-            surface_white_20: Color::rgba8(255, 255, 255, 51),
-            border_white_10:  Color::rgba8(255, 255, 255, 26),
-            border_white_20:  Color::rgba8(255, 255, 255, 51),
+            text_dim: Color::from_rgb8(148, 163, 184), // slate-400
+            border_standard: Color::from_rgb8(51, 65, 85), // slate-700
+            border_focus: Color::from_rgb8(99, 102, 241),  // indigo-500
+            surface_white_5:  Color::from_rgba8(255, 255, 255, 13),
+            surface_white_10: Color::from_rgba8(255, 255, 255, 26),
+            surface_white_20: Color::from_rgba8(255, 255, 255, 51),
+            border_white_10:  Color::from_rgba8(255, 255, 255, 26),
+            border_white_20:  Color::from_rgba8(255, 255, 255, 51),
         }
     }
 
     pub fn light() -> Self {
         Self {
             neutral: ColorRamp { stops: [
-                Color::rgb8(255, 255, 255), Color::rgb8(245, 245, 248), Color::rgb8(235, 235, 240),
-                Color::rgb8(220, 220, 225), Color::rgb8(200, 200, 205), Color::rgb8(160, 160, 165),
-                Color::rgb8(120, 120, 125), Color::rgb8(90, 90, 95), Color::rgb8(60, 60, 65),
-                Color::rgb8(30, 30, 35), Color::rgb8(10, 10, 12),
+                Color::from_rgb8(255, 255, 255), Color::from_rgb8(245, 245, 248), Color::from_rgb8(235, 235, 240),
+                Color::from_rgb8(220, 220, 225), Color::from_rgb8(200, 200, 205), Color::from_rgb8(160, 160, 165),
+                Color::from_rgb8(120, 120, 125), Color::from_rgb8(90, 90, 95), Color::from_rgb8(60, 60, 65),
+                Color::from_rgb8(30, 30, 35), Color::from_rgb8(10, 10, 12),
             ]},
             accent: ColorRamp { stops: [
-                Color::rgb8(240, 250, 255), Color::rgb8(220, 240, 255), Color::rgb8(180, 220, 250),
-                Color::rgb8(130, 200, 250), Color::rgb8(80, 170, 240), Color::rgb8(40, 150, 230),
-                Color::rgb8(0, 120, 215), Color::rgb8(0, 100, 200), Color::rgb8(0, 75, 170),
-                Color::rgb8(0, 50, 120), Color::rgb8(0, 25, 60),
+                Color::from_rgb8(240, 250, 255), Color::from_rgb8(220, 240, 255), Color::from_rgb8(180, 220, 250),
+                Color::from_rgb8(130, 200, 250), Color::from_rgb8(80, 170, 240), Color::from_rgb8(40, 150, 230),
+                Color::from_rgb8(0, 120, 215), Color::from_rgb8(0, 100, 200), Color::from_rgb8(0, 75, 170),
+                Color::from_rgb8(0, 50, 120), Color::from_rgb8(0, 25, 60),
             ]},
             semantic: SemanticColors {
-                success: Color::rgb8(0, 150, 70),
-                warning: Color::rgb8(200, 130, 0),
-                danger: Color::rgb8(200, 50, 50),
-                info: Color::rgb8(0, 120, 200),
+                success: Color::from_rgb8(0, 150, 70),
+                warning: Color::from_rgb8(200, 130, 0),
+                danger: Color::from_rgb8(200, 50, 50),
+                info: Color::from_rgb8(0, 120, 200),
             },
             surfaces: Surfaces {
-                base: Color::rgb8(240, 240, 245),
+                base: Color::from_rgb8(240, 240, 245),
                 raised: Color::WHITE,
-                overlay: Color::rgba8(255, 255, 255, 230),
-                glass: Color::rgba8(245, 245, 250, 180),
+                overlay: Color::from_rgba8(255, 255, 255, 230),
+                glass: Color::from_rgba8(245, 245, 250, 180),
                 glass_blur_px: 24.0,
                 window_card: Color::WHITE,
-                window_card_border: Color::rgba8(0, 0, 0, 30),
+                window_card_border: Color::from_rgba8(0, 0, 0, 30),
             },
             text_primary: Color::BLACK,
-            text_dim: Color::rgb8(100, 100, 105),
-            border_standard: Color::rgb8(200, 200, 205),
-            border_focus: Color::rgb8(0, 120, 215),
+            text_dim: Color::from_rgb8(100, 100, 105),
+            border_standard: Color::from_rgb8(200, 200, 205),
+            border_focus: Color::from_rgb8(0, 120, 215),
             // Light theme keeps the same translucent-white tokens —
             // they're meant to layer over arbitrary darker fills (e.g.
             // window cards), not over the page background, so the
             // alpha-on-white semantics are preserved across themes.
-            surface_white_5:  Color::rgba8(255, 255, 255, 13),
-            surface_white_10: Color::rgba8(255, 255, 255, 26),
-            surface_white_20: Color::rgba8(255, 255, 255, 51),
-            border_white_10:  Color::rgba8(255, 255, 255, 26),
-            border_white_20:  Color::rgba8(255, 255, 255, 51),
+            surface_white_5:  Color::from_rgba8(255, 255, 255, 13),
+            surface_white_10: Color::from_rgba8(255, 255, 255, 26),
+            surface_white_20: Color::from_rgba8(255, 255, 255, 51),
+            border_white_10:  Color::from_rgba8(255, 255, 255, 26),
+            border_white_20:  Color::from_rgba8(255, 255, 255, 51),
         }
     }
 }
@@ -195,11 +196,11 @@ mod tests {
     fn rgb(c: Color) -> [u8; 3] {
         // peniko 0.1.x exposes straight (non-premultiplied) u8
         // components directly on `Color`.
-        [c.r, c.g, c.b]
+        [c.r(), c.g(), c.b()]
     }
 
     fn rgba(c: Color) -> [u8; 4] {
-        [c.r, c.g, c.b, c.a]
+        [c.r(), c.g(), c.b(), c.a()]
     }
 
     #[test]

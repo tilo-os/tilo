@@ -193,7 +193,7 @@ impl Widget for Toggle {
 
         if let Some(scope) = self.permission_scope() {
             if !permissions.check(&scope) {
-                let overlay = vello::peniko::Color::rgba8(0, 0, 0, 77);
+                let overlay = vello::peniko::Color::from_rgba8(0, 0, 0, 77);
                 scene.fill(vello::peniko::Fill::NonZero, transform, overlay, None, &self.rect);
             }
         }

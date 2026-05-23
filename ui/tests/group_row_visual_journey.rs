@@ -90,7 +90,7 @@ fn render_row(renderer: &mut OffscreenRenderer, row: &mut GroupRow) -> Vec<u8> {
     // Dark slate backdrop so the accented chrome pops clearly off the
     // background — same base tone used by the window-group journey so
     // the two tests read as belonging to the same family.
-    let bg = Color::rgb8(0x0f, 0x17, 0x2a);
+    let bg = Color::from_rgb8(0x0f, 0x17, 0x2a);
     renderer.render(&scene, bg)
 }
 
