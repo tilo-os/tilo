@@ -237,7 +237,7 @@ fn revoke_click_removes_capability_from_grants() {
     dispatch_to_host(&mut host, &left_press());
 
     let st = chrome.borrow();
-    let ws = st.tree.active_workspace().expect("active workspace");
+    let tree = st.tree(); let ws = tree.active_workspace().expect("active workspace");
     // After revoking one of two grants, the app entry still exists
     // with one capability remaining.
     let firefox = ws.grants.get(&target_app);
@@ -283,7 +283,7 @@ fn revoke_button_disabled_for_non_owner() {
     dispatch_to_host(&mut host, &left_press());
 
     let st = chrome.borrow();
-    let ws = st.tree.active_workspace().expect("active workspace");
+    let tree = st.tree(); let ws = tree.active_workspace().expect("active workspace");
     let caps = ws
         .grants
         .get("firefox")

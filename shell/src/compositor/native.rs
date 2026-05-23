@@ -164,7 +164,7 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
         // can't `expect` because that would crash the live compositor
         // on a hypothetical bad write. Nulls are still
         // schema-compliant from the wire's perspective.
-        serde_json::to_value(&chrome.tree).unwrap_or(serde_json::Value::Null)
+        serde_json::to_value(&*chrome.tree()).unwrap_or(serde_json::Value::Null)
     }
 
     /// Build a structured view of [`ChromeState`] for the
@@ -957,7 +957,7 @@ mod tests {
             .copied()
             .expect("wheel_disc test_id resolves on bootstrap tree");
 
-        let initial_count = fb.chrome().tree.workspaces.len();
+        let initial_count = fb.chrome().tree().workspaces.len();
 
         // Walk down the wheel rect's vertical axis in 4 px increments
         // until a click lands on the plus slot (adds a workspace).
@@ -984,7 +984,7 @@ mod tests {
                 &mut fb,
                 &mut ctx,
             );
-            if fb.chrome().tree.workspaces.len() > initial_count {
+            if fb.chrome().tree().workspaces.len() > initial_count {
                 found = true;
                 break;
             }

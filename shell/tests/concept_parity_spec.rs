@@ -1825,9 +1825,9 @@ mod overview_add_workspace {
         let rect = h.host.add_workspace_rect_for_tests();
         assert!(rect.area() > 0.0, "add-workspace rect must be populated before clicking");
 
-        let initial_count = h.chrome.borrow().tree.workspaces.len();
+        let initial_count = h.chrome.borrow().tree().workspaces.len();
         assert!(initial_count >= 1, "bootstrap_default seeds at least one workspace");
-        let initial_active = h.chrome.borrow().tree.active;
+        let initial_active = h.chrome.borrow().tree().active;
 
         // Simulate the cursor-then-press sequence the real shell sees
         // from winit. `handle_event` reads `last_cursor` (set by
@@ -1871,13 +1871,13 @@ mod overview_add_workspace {
 
         let st = h.chrome.borrow();
         assert_eq!(
-            st.tree.workspaces.len(),
+            st.tree().workspaces.len(),
             initial_count + 1,
             "clicking the overview's '+ Add workspace' tile must append a \
              new workspace via chrome.add_workspace()"
         );
         assert_ne!(
-            st.tree.active, initial_active,
+            st.tree().active, initial_active,
             "the newly-appended workspace must be activated, mirroring \
              the wheel-disc plus slot's create-and-switch semantics"
         );
@@ -1887,9 +1887,9 @@ mod overview_add_workspace {
              workspace card animates in on the next frame"
         );
         // Sanity: the new workspace exists in the tree under the active id.
-        let active_id = st.tree.active;
+        let active_id = st.tree().active;
         assert!(
-            st.tree.workspaces.iter().any(|w| w.id == active_id),
+            st.tree().workspaces.iter().any(|w| w.id == active_id),
             "active id must point at one of the workspaces in the tree"
         );
 

@@ -344,12 +344,13 @@ fn dragged_tab_crosses_into_destination_strip_via_shell_dispatch() {
     // tree-side state stays in its pre-drag shape and the tab pops
     // back to strip A on the next reload.
     let st = chrome.borrow();
-    let tree_strip_a = st.tree.workspaces[0]
+    let tree = st.tree();
+    let tree_strip_a = tree.workspaces[0]
         .strips
         .iter()
         .find(|s| s.id == s_a)
         .expect("strip A in tree");
-    let tree_strip_b = st.tree.workspaces[0]
+    let tree_strip_b = tree.workspaces[0]
         .strips
         .iter()
         .find(|s| s.id == s_b)

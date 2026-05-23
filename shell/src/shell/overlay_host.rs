@@ -354,14 +354,14 @@ impl ShellOverlayHost {
     /// from above (-1).
     fn tick_workspace_slide(&mut self) -> Option<f64> {
         let chrome = self.chrome.as_ref()?.borrow();
-        let active_raw = chrome.tree.active.raw();
+        let tree = chrome.tree();
+        let active_raw = tree.active.raw();
         // Find the slide direction by comparing workspace index to the
         // last-observed one. Fallback to +1 when the prior id isn't in
         // the current tree (e.g. a workspace was removed).
         let dir = match self.last_active_ws {
             Some(prev) if prev == active_raw => 0.0_f32,
             Some(prev) => {
-                let tree = &chrome.tree;
                 let idx_prev = tree
                     .workspaces
                     .iter()
@@ -378,6 +378,7 @@ impl ShellOverlayHost {
             }
             None => 0.0,
         };
+        drop(tree);
         drop(chrome);
 
         if dir != 0.0 && Some(active_raw) != self.last_active_ws {
@@ -571,9 +572,9 @@ impl ShellOverlayHost {
         if closing_per_strip.is_empty() {
             return;
         }
-        let mut st = chrome.borrow_mut();
+        let st = chrome.borrow_mut();
         for (strip_id, closing) in closing_per_strip {
-            st.tree.nudge_active_group_off_closing(strip_id, &closing);
+            st.tree_mut().nudge_active_group_off_closing(strip_id, &closing);
         }
     }
 
@@ -622,14 +623,15 @@ impl ShellOverlayHost {
         if changes.is_empty() {
             return;
         }
-        let mut st = chrome.borrow_mut();
+        let st = chrome.borrow_mut();
         for (_strip_id, group_id, new_value) in changes {
             // Walk the tree to find the group by id — group ids are
             // unique across the whole tree, so a flat scan is correct.
             // The shell currently keeps trees small (single-digit groups
             // per strip in practice), so this is an O(g) write that runs
             // only on frames where a click actually flipped maximize.
-            for ws in st.tree.workspaces.iter_mut() {
+            let mut tree = st.tree_mut();
+            for ws in tree.workspaces.iter_mut() {
                 for strip in ws.strips.iter_mut() {
                     if let Some(g) = strip
                         .window_groups
@@ -644,7 +646,7 @@ impl ShellOverlayHost {
             // automerge doc so peer-sync observes the change. Tolerant
             // of the doc not yet carrying this group — see
             // `WorkspaceTree::doc_set_maximized` doc-comment.
-            st.tree.doc_set_maximized(group_id, new_value);
+            tree.doc_set_maximized(group_id, new_value);
         }
     }
 
@@ -683,9 +685,10 @@ impl ShellOverlayHost {
         if changes.is_empty() {
             return;
         }
-        let mut st = chrome.borrow_mut();
+        let st = chrome.borrow_mut();
         for (_strip_id, group_id, new_value) in changes {
-            for ws in st.tree.workspaces.iter_mut() {
+            let mut tree = st.tree_mut();
+            for ws in tree.workspaces.iter_mut() {
                 for strip in ws.strips.iter_mut() {
                     if let Some(g) = strip
                         .window_groups
@@ -699,7 +702,7 @@ impl ShellOverlayHost {
             // Unit C of #157: mirror the width gesture into the
             // automerge doc as a raw pixel scalar so peer-sync
             // observes the resize.
-            st.tree.doc_set_width(group_id, new_value);
+            tree.doc_set_width(group_id, new_value);
         }
     }
 
@@ -807,8 +810,8 @@ impl ShellOverlayHost {
             // the same (return-to-source path), it's a no-op write.
             if dest_strip_id != src_strip_id {
                 if let Some(chrome) = self.chrome.clone() {
-                    let mut st = chrome.borrow_mut();
-                    st.tree.move_tab_across_strips(
+                    let st = chrome.borrow_mut();
+                    st.tree_mut().move_tab_across_strips(
                         src_strip_id,
                         dest_strip_id,
                         payload.tab_id,
@@ -875,7 +878,7 @@ impl ShellOverlayHost {
                             // satisfied for this single call.
                         }
                         PromptChoice::Session => {
-                            if let Some(ws) = st.tree.active_workspace_mut() {
+                            if let Some(ws) = st.tree_mut().active_workspace_mut() {
                                 let cap = with_grant_scope(capability, GrantScope::Session);
                                 ws.grants
                                     .entry(app_id)
@@ -884,7 +887,7 @@ impl ShellOverlayHost {
                             }
                         }
                         PromptChoice::Always => {
-                            if let Some(ws) = st.tree.active_workspace_mut() {
+                            if let Some(ws) = st.tree_mut().active_workspace_mut() {
                                 let cap = with_grant_scope(capability, GrantScope::Always);
                                 ws.grants
                                     .entry(app_id)
@@ -1241,10 +1244,10 @@ impl ShellOverlayHost {
         let peers = self
             .chrome
             .as_ref()
-            .map(|c| c.borrow().tree.collaborators.len())
+            .map(|c| c.borrow().tree().collaborators.len())
             .unwrap_or(0);
         let rows = peers.max(1) as f64;
-        let popover_h = 48.0 + rows * 36.0 + 16.0;
+        let popover_h: f64 = 48.0 + rows * 36.0 + 16.0;
         let x1 = self.rect.x1 - 16.0;
         let y0 = self.rect.y0 + 48.0;
         Rect::new(x1 - popover_w, y0, x1, y0 + popover_h.min(420.0))
@@ -1354,7 +1357,8 @@ impl ShellOverlayHost {
     fn hit_test_overview(&self, p: Point) -> Option<usize> {
         let chrome = self.chrome.as_ref()?;
         let state = chrome.borrow();
-        for i in 0..state.tree.workspaces.len() {
+        let tree = state.tree();
+        for i in 0..tree.workspaces.len() {
             if self.overview_row_rect(i).contains(p) {
                 return Some(i);
             }
@@ -2332,14 +2336,18 @@ impl Widget for ShellOverlayHost {
                                     drop(st_ro);
                                     if is_owner {
                                         let mut st = chrome.borrow_mut();
-                                        if let Some(ws) =
-                                            st.tree.active_workspace_mut()
-                                        {
-                                            if crate::shell::workspace_settings::revoke_grant(
-                                                ws, app_id, *cap_index,
-                                            ) {
-                                                st.bump();
+                                        let revoked = {
+                                            let mut tree = st.tree_mut();
+                                            if let Some(ws) = tree.active_workspace_mut() {
+                                                crate::shell::workspace_settings::revoke_grant(
+                                                    ws, app_id, *cap_index,
+                                                )
+                                            } else {
+                                                false
                                             }
+                                        };
+                                        if revoked {
+                                            st.bump();
                                         }
                                     }
                                 }
@@ -2401,11 +2409,12 @@ impl Widget for ShellOverlayHost {
                         let mut st = chrome.borrow_mut();
                         if name_rect.contains(p) {
                             if st.editing_workspace_name.is_none() {
-                                st.editing_workspace_name = st
-                                    .tree
+                                let new_name = st
+                                    .tree()
                                     .active_workspace()
                                     .map(|w| w.name.clone())
                                     .or_else(|| Some(String::new()));
+                                st.editing_workspace_name = new_name;
                                 st.bump();
                             }
                         } else {
@@ -2456,9 +2465,10 @@ impl Widget for ShellOverlayHost {
                     if let Some(chrome) = self.chrome.clone() {
                         let mut st = chrome.borrow_mut();
                         if let Some(idx) = hit {
-                            if let Some(ws) = st.tree.workspaces.get(idx) {
+                            let mut tree = st.tree_mut();
+                            if let Some(ws) = tree.workspaces.get(idx) {
                                 let id = ws.id;
-                                st.tree.set_active(id);
+                                tree.set_active(id);
                             }
                         }
                         // Clicking anywhere dismisses the overview once a
@@ -3025,6 +3035,7 @@ impl ShellOverlayHost {
     ) {
         let Some(chrome) = self.chrome.clone() else { return };
         let state = chrome.borrow();
+        let tree = state.tree();
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
 
@@ -3082,7 +3093,7 @@ impl ShellOverlayHost {
         // bg-slate-800 -z-10` inside the rail container. We paint it
         // behind the cards, spanning the first row's top to the last
         // row's bottom so it tracks however many workspaces exist.
-        let n = state.tree.workspaces.len();
+        let n = tree.workspaces.len();
         let add_rect = self.overview_add_workspace_rect_for(n);
         if n > 0 {
             // Extend the rail past the last workspace card so it ties
@@ -3101,9 +3112,9 @@ impl ShellOverlayHost {
         }
 
         // -- Workspace rows ----------------------------------------------
-        for (i, ws) in state.tree.workspaces.iter().enumerate() {
+        for (i, ws) in tree.workspaces.iter().enumerate() {
             let rect = self.overview_row_rect(i);
-            let is_active = ws.id == state.tree.active;
+            let is_active = ws.id == tree.active;
 
             // Concept `:66` — `whileHover={{ scale: 1.01 }}`. Skip the
             // scale transform for the active row (it already has the
@@ -3430,7 +3441,7 @@ impl ShellOverlayHost {
                 if !ws.collaborators.is_empty() {
                     ws.collaborators.iter().collect()
                 } else {
-                    state.tree.collaborators.iter().collect()
+                    tree.collaborators.iter().collect()
                 };
             let avatar_r = 12.0_f64;
             let avatar_step = 22.0_f64; // 28 px avatar - 6 px overlap
@@ -3678,6 +3689,7 @@ impl ShellOverlayHost {
     ) {
         let Some(chrome) = self.chrome.clone() else { return };
         let state = chrome.borrow();
+        let tree = state.tree();
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
 
@@ -3732,8 +3744,7 @@ impl ShellOverlayHost {
         );
 
         // Active workspace label
-        let active_name = state
-            .tree
+        let active_name = tree
             .active_workspace()
             .map(|w| w.name.clone())
             .unwrap_or_default();
@@ -3769,8 +3780,7 @@ impl ShellOverlayHost {
         // strip stay pinned for empty-grants workspaces (the parity
         // baseline) so the existing `concept_parity_spec` x-coords
         // don't shift.
-        let permissions_visible = state
-            .tree
+        let permissions_visible = tree
             .active_workspace()
             .map(|ws| !ws.grants.is_empty())
             .unwrap_or(false);
@@ -3833,7 +3843,7 @@ impl ShellOverlayHost {
                 let body_top = rect.y0 + 144.0;
                 let body_rect =
                     Rect::new(rect.x0 + 16.0, body_top, rect.x1 - 16.0, rect.y1 - 16.0);
-                if let Some(ws) = state.tree.active_workspace() {
+                if let Some(ws) = tree.active_workspace() {
                     draw_roles_pane(
                         scene,
                         transform,
@@ -3868,7 +3878,7 @@ impl ShellOverlayHost {
                 let body_top = rect.y0 + 144.0;
                 let body_rect =
                     Rect::new(rect.x0 + 16.0, body_top, rect.x1 - 16.0, rect.y1 - 16.0);
-                if let Some(ws) = state.tree.active_workspace() {
+                if let Some(ws) = tree.active_workspace() {
                     draw_files_pane(scene, transform, body_rect, ws, text_renderer, theme);
                 }
                 // Close hint mirrors the Roles arm — each non-General
@@ -3898,7 +3908,7 @@ impl ShellOverlayHost {
                     Rect::new(rect.x0 + 16.0, body_top, rect.x1 - 16.0, rect.y1 - 16.0);
                 let is_owner = is_active_workspace_owner(&state);
                 self.permissions_revoke_rects.clear();
-                if let Some(ws) = state.tree.active_workspace() {
+                if let Some(ws) = tree.active_workspace() {
                     for row in crate::shell::workspace_settings::permissions_pane_rows(
                         ws, body_rect,
                     ) {
@@ -4034,8 +4044,7 @@ impl ShellOverlayHost {
         // Mirror WorkspaceSettings::invite_link's format so the URL is
         // stable per workspace id; the WorkspaceSettings widget itself
         // lives in Shell, not on chrome state, so we don't reach for it.
-        let invite_url = state
-            .tree
+        let invite_url = tree
             .active_workspace()
             .map(|w| format!("quickdesktop://invite/{}", u64::from(w.id)))
             .unwrap_or_else(|| "quickdesktop://invite/0".to_string());
@@ -4101,8 +4110,7 @@ impl ShellOverlayHost {
         // the display name produces a visually awkward "You [You]"
         // duplication in the General tab, while "Me [You]" reads
         // cleanly as "the local user, badged as You for the viewer".
-        let me_tile = state
-            .tree
+        let me_tile = tree
             .active_workspace()
             .and_then(|w| {
                 w.collaborators
@@ -4261,7 +4269,7 @@ impl ShellOverlayHost {
         presence: &PresenceCtx,
     ) {
         let Some(chrome_rc) = self.chrome.as_ref() else { return };
-        let active_id_str = format!("{}", chrome_rc.borrow().tree.active.raw());
+        let active_id_str = format!("{}", chrome_rc.borrow().tree().active.raw());
         let key = PresenceKey::Workspace { id: active_id_str };
         let Some(peers) = presence.pointers.get(&key) else { return };
         if peers.is_empty() {
@@ -5043,9 +5051,9 @@ impl ShellOverlayHost {
             .chrome
             .as_ref()
             .map(|c| {
-                c.borrow()
-                    .tree
-                    .collaborators
+                let chrome_ref = c.borrow();
+                let tree = chrome_ref.tree();
+                tree.collaborators
                     .iter()
                     .map(|p| {
                         let initial = p
@@ -5056,7 +5064,7 @@ impl ShellOverlayHost {
                             .unwrap_or('•');
                         (p.name.clone(), initial)
                     })
-                    .collect()
+                    .collect::<Vec<(String, char)>>()
             })
             .unwrap_or_default();
 
@@ -5502,7 +5510,7 @@ mod workspace_slide_tests {
     fn real_peers_filter_picks_up_pointers_on_active_workspace_only() {
         use ui::permissions::UserId;
         let (h, chrome) = host_with_two_workspaces();
-        let active = chrome.borrow().tree.active.raw();
+        let active = chrome.borrow().tree().active.raw();
         let active_key = PresenceKey::Workspace {
             id: format!("{}", active),
         };
@@ -5516,7 +5524,7 @@ mod workspace_slide_tests {
         // Same key-format the shell uses inside `draw_real_peers`: the
         // active workspace id stringified. Mismatches must never match.
         let shell_key = PresenceKey::Workspace {
-            id: format!("{}", h.chrome.as_ref().unwrap().borrow().tree.active.raw()),
+            id: format!("{}", h.chrome.as_ref().unwrap().borrow().tree().active.raw()),
         };
         let matches = presence
             .pointers
@@ -6612,7 +6620,7 @@ mod maximize_harvest_tests {
         {
             let st = chrome.borrow();
             assert!(
-                !st.tree.workspaces[0].strips[0].window_groups[0].maximized,
+                !st.tree().workspaces[0].strips[0].window_groups[0].maximized,
                 "persisted state lags widget until harvest runs",
             );
         }
@@ -6623,7 +6631,7 @@ mod maximize_harvest_tests {
         {
             let st = chrome.borrow();
             assert!(
-                st.tree.workspaces[0].strips[0].window_groups[0].maximized,
+                st.tree().workspaces[0].strips[0].window_groups[0].maximized,
                 "harvest writes pending change through to persisted state",
             );
         }
@@ -6644,7 +6652,7 @@ mod maximize_harvest_tests {
 
         let st = chrome.borrow();
         assert!(
-            st.tree.workspaces[0].strips[0].window_groups[0].maximized,
+            st.tree().workspaces[0].strips[0].window_groups[0].maximized,
             "no-op harvest must not overwrite persisted true with widget default",
         );
     }
