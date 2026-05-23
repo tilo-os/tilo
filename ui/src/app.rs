@@ -665,6 +665,12 @@ impl ApplicationHandler for AppHandler {
                     &app.presence_ctx,
                     &app.permission_ctx,
                 );
+                // Mark every visited widget as drawn — clears their
+                // per-widget `dirty` flag so `needs_redraw` returns
+                // false on the next frame unless an event mutates
+                // them. Without this the incremental gate is a no-op:
+                // widgets stay "dirty" forever.
+                app.root_widget.mark_drawn();
                 let t_draw_us = t_draw_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
 
                 // Draw Remote Cursors
@@ -1041,8 +1047,23 @@ impl ApplicationHandler for AppHandler {
                         app.commit_action();
                     }
                     app.needs_sync = true;
-                    app.layout_dirty = true;
-                    window.request_redraw();
+                    // Incremental-redraw gate (Unit 2 of the 2026-05-23
+                    // perf plan). The unconditional
+                    // `layout_dirty = true; request_redraw()` of the
+                    // pre-incremental era forced a full taffy re-flow
+                    // and a GPU submit on every handled event — even
+                    // pure-hover transitions. Now both are gated on
+                    // the widget tree's signal: a click that only
+                    // flipped `ToggleGroup::selected` schedules a
+                    // redraw but skips `compute_layout`; a hover that
+                    // didn't change any visible state schedules
+                    // neither.
+                    if app.root_widget.is_layout_dirty() {
+                        app.layout_dirty = true;
+                    }
+                    if app.root_widget.needs_redraw() {
+                        window.request_redraw();
+                    }
                 }
             }
         }
