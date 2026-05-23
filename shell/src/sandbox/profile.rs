@@ -399,6 +399,11 @@ fn path_to_string(p: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `apply_grants` reads/writes the process-wide `SCAN_MEMO` static
+    // (D-6's per-directory memoisation). Tests that exercise that path
+    // are tagged `#[serial(scan_memo)]` so parallel `cargo test` runs
+    // don't corrupt the shared walk counter the memo test asserts on.
+    use serial_test::serial;
 
     #[test]
     fn profile_renders_expected_argv_for_minimal_workspace() {
@@ -519,6 +524,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(scan_memo)]
     fn apply_grants_with_camera_capability_invokes_grant_camera() {
         use crate::shell::state::{Capability, GrantScope};
         let mut p = SandboxProfile::for_workspace_test(
@@ -534,6 +540,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(scan_memo)]
     fn apply_grants_with_no_camera_or_mic_is_noop_for_those_cases() {
         use crate::shell::state::{Capability, GrantScope};
         let mut p = SandboxProfile::for_workspace_test(
@@ -599,6 +606,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(scan_memo)]
     fn apply_grants_with_filesystem_always_scope_invokes_grant_filesystem() {
         use crate::shell::state::{Capability, FsMode, GrantScope};
         let mut p = SandboxProfile::for_workspace_test(
@@ -619,6 +627,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(scan_memo)]
     fn apply_grants_with_filesystem_session_scope_does_not_bind() {
         use crate::shell::state::{Capability, FsMode, GrantScope};
         let mut p = SandboxProfile::for_workspace_test(
@@ -640,6 +649,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(scan_memo)]
     fn apply_grants_with_network_always_scope_disables_isolation() {
         use crate::shell::state::{Capability, GrantScope};
         let mut p = SandboxProfile::for_workspace_test(
@@ -659,6 +669,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(scan_memo)]
     fn apply_grants_with_network_session_scope_does_not_change_isolation() {
         use crate::shell::state::{Capability, GrantScope};
         let mut p = SandboxProfile::for_workspace_test(
@@ -678,6 +689,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(scan_memo)]
     fn apply_grants_with_network_always_and_specific_hosts_still_disables_isolation_for_v1() {
         use crate::shell::state::{Capability, GrantScope};
         let mut p = SandboxProfile::for_workspace_test(
@@ -825,6 +837,7 @@ mod tests {
     /// against the cache being silently bypassed (e.g. a future
     /// refactor reaches into `std::fs::read_dir` directly).
     #[test]
+    #[serial(scan_memo)]
     fn apply_grants_dev_scan_is_memoised() {
         use crate::shell::state::{Capability, GrantScope};
         // Reset both the cache and the counter so other tests can't
