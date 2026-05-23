@@ -177,7 +177,7 @@ fn shell_tick_writes_maximize_click_through_to_persisted_state() {
     // chasing the harvest.
     {
         let st = chrome.borrow();
-        let g = &st.tree.workspaces[0].strips[0].window_groups[0];
+        let g = &st.tree().workspaces[0].strips[0].window_groups[0];
         assert_eq!(g.id, group_id);
         assert!(!g.maximized, "seed group must start un-maximized");
     }
@@ -224,7 +224,7 @@ fn shell_tick_writes_maximize_click_through_to_persisted_state() {
     // stay `false` forever even though the widget says `true`.
     {
         let st = chrome.borrow();
-        let g = &st.tree.workspaces[0].strips[0].window_groups[0];
+        let g = &st.tree().workspaces[0].strips[0].window_groups[0];
         assert!(
             !g.maximized,
             "before the harvest tick the persisted state lags the widget",
@@ -241,7 +241,7 @@ fn shell_tick_writes_maximize_click_through_to_persisted_state() {
     // the writeback #105 needs.
     {
         let st = chrome.borrow();
-        let g = &st.tree.workspaces[0].strips[0].window_groups[0];
+        let g = &st.tree().workspaces[0].strips[0].window_groups[0];
         assert!(
             g.maximized,
             "harvest tick must mirror the widget's maximize flip into \
@@ -268,7 +268,7 @@ fn shell_tick_writes_maximize_click_through_to_persisted_state() {
     host.tick_pending_maximize_harvest_for_tests();
     {
         let st = chrome.borrow();
-        let g = &st.tree.workspaces[0].strips[0].window_groups[0];
+        let g = &st.tree().workspaces[0].strips[0].window_groups[0];
         assert!(
             !g.maximized,
             "harvest must mirror the inverse flip, not just the rising edge",
@@ -309,7 +309,7 @@ fn shell_tick_leaves_persisted_maximize_alone_when_no_click_fired() {
     host.tick_pending_maximize_harvest_for_tests();
 
     let st = chrome.borrow();
-    let g = &st.tree.workspaces[0].strips[0].window_groups[0];
+    let g = &st.tree().workspaces[0].strips[0].window_groups[0];
     assert!(
         g.maximized,
         "harvest with no pending change must not overwrite persisted true \

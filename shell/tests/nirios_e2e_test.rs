@@ -123,7 +123,7 @@ fn commit_workspace_name_applies_buffer_to_active_workspace() {
     chrome.borrow_mut().commit_workspace_name();
     let st = chrome.borrow();
     assert_eq!(st.editing_workspace_name, None);
-    assert_eq!(st.tree.active_workspace().unwrap().name, "Research");
+    assert_eq!(st.tree().active_workspace().unwrap().name, "Research");
 
     // An empty/whitespace buffer must *not* overwrite the name.
     drop(st);
@@ -133,7 +133,7 @@ fn commit_workspace_name_applies_buffer_to_active_workspace() {
     }
     chrome.borrow_mut().commit_workspace_name();
     assert_eq!(
-        chrome.borrow().tree.active_workspace().unwrap().name,
+        chrome.borrow().tree().active_workspace().unwrap().name,
         "Research"
     );
 }
@@ -662,7 +662,7 @@ fn chrome_file_drop_appends_tab_and_bumps_revision() {
     let tree = WorkspaceTree::bootstrap_default();
     let chrome = ChromeState::new(tree);
     let before_rev = chrome.borrow().revision;
-    let before_tab_count = chrome.borrow().tree.workspaces[0].strips[0].window_groups[0]
+    let before_tab_count = chrome.borrow().tree().workspaces[0].strips[0].window_groups[0]
         .tabs
         .len();
 
@@ -676,7 +676,7 @@ fn chrome_file_drop_appends_tab_and_bumps_revision() {
         st.revision > before_rev,
         "handle_file_drop should bump the chrome revision so widgets re-sync"
     );
-    let group = &st.tree.workspaces[0].strips[0].window_groups[0];
+    let group = &st.tree().workspaces[0].strips[0].window_groups[0];
     assert_eq!(group.active_tab, tab_id);
     assert_eq!(group.tabs.len(), before_tab_count + 1);
     assert_eq!(group.tabs.last().unwrap().title, "main.ts");

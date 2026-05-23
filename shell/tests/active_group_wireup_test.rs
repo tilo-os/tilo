@@ -125,8 +125,8 @@ fn shell_tick_advances_active_group_off_closing_in_strip_0_only() {
     // chasing the wire-up.
     {
         let st = chrome.borrow();
-        assert_eq!(st.tree.active_group_for(s0_id), Some(a0));
-        assert_eq!(st.tree.active_group_for(s1_id), Some(b0));
+        assert_eq!(st.tree().active_group_for(s0_id), Some(a0));
+        assert_eq!(st.tree().active_group_for(s1_id), Some(b0));
     }
 
     // Drive a no-op tick: nothing is closing, so the reconciler must
@@ -135,8 +135,8 @@ fn shell_tick_advances_active_group_off_closing_in_strip_0_only() {
     host.tick_active_group_reconcile_for_tests();
     {
         let st = chrome.borrow();
-        assert_eq!(st.tree.active_group_for(s0_id), Some(a0));
-        assert_eq!(st.tree.active_group_for(s1_id), Some(b0));
+        assert_eq!(st.tree().active_group_for(s0_id), Some(a0));
+        assert_eq!(st.tree().active_group_for(s1_id), Some(b0));
     }
 
     // Latch the close fade on strip-0's active group via the public
@@ -164,14 +164,14 @@ fn shell_tick_advances_active_group_off_closing_in_strip_0_only() {
     {
         let st = chrome.borrow();
         assert_eq!(
-            st.tree.active_group_for(s0_id),
+            st.tree().active_group_for(s0_id),
             Some(a1),
             "active-group pointer must advance to A1 once A0 enters the close fade",
         );
         // Strip-1 is untouched: nothing in it is closing, so the
         // reconciler must not have rewritten its pointer.
         assert_eq!(
-            st.tree.active_group_for(s1_id),
+            st.tree().active_group_for(s1_id),
             Some(b0),
             "strip-1 pointer must not change when only strip-0 has a closing group",
         );
@@ -200,7 +200,7 @@ fn shell_tick_clears_pointer_when_every_group_in_strip_is_closing() {
 
     let st = chrome.borrow();
     assert_eq!(
-        st.tree.active_group_for(s0_id),
+        st.tree().active_group_for(s0_id),
         None,
         "every-group-closing must drop the strip-0 pointer entirely; \
          the data-layer reconciler clears it rather than dangle",
@@ -210,7 +210,7 @@ fn shell_tick_clears_pointer_when_every_group_in_strip_is_closing() {
     // regression guard for the strip-1-untouched assertion below.
     let _ = (a0, a1);
     assert_eq!(
-        st.tree.active_group_for(s1_id),
+        st.tree().active_group_for(s1_id),
         Some(b0),
         "strip-1 must remain unaffected even when strip-0 fully empties",
     );

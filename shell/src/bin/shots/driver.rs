@@ -526,8 +526,9 @@ mod tests {
         // with one Wide group carrying Notes/Files/Terminal/Browser.
         let strip_id = {
             let st = d.chrome();
-            let ws_id = st.tree.active;
-            *st.tree.active_strip.get(&ws_id).expect("active strip")
+            let tree = st.tree();
+            let ws_id = tree.active;
+            *tree.active_strip.get(&ws_id).expect("active strip")
         };
         let pre = d.host().groups_per_strip();
         let pre_strip = pre

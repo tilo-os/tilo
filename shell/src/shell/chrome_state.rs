@@ -16,8 +16,10 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
+use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
+
 use crate::shell::quick_settings::{BtDevice, QsLevel, WifiNetwork};
-use crate::shell::state::{AppId, Capability, WorkspaceTree};
+use crate::shell::state::{AppId, Capability, WorkspaceTree, WorkspaceTreeHandle};
 // Re-export WsTab so chrome users can refer to the tab routing enum
 // without reaching into `workspace_settings`. The enum itself lives
 // next to the modal widget; the chrome holds a copy of the active tab
@@ -161,7 +163,16 @@ impl QuickSettingsState {
 /// Mutable chrome state shared across the shell widget tree.
 #[derive(Debug)]
 pub struct ChromeState {
-    pub tree: WorkspaceTree,
+    /// Shared workspace tree handle. The portal (grants) and peer-sync
+    /// (replica) hold clones of the same `Arc<RwLock<_>>` so every
+    /// mutation is observed across subsystems. See C-3 RFC at
+    /// `docs/superpowers/specs/2026-05-22-workspace-tree-arc-mutex-design.md`.
+    ///
+    /// Field is named `tree_handle` (not `tree`) so unmigrated call-sites
+    /// that still read `chrome.tree.workspaces.iter()` get a clear
+    /// type-mismatch error rather than silently borrowing the wrong
+    /// thing. Use [`Self::tree`] / [`Self::tree_mut`] for guarded access.
+    pub tree_handle: WorkspaceTreeHandle,
     pub overlays: OverlayFlags,
     pub quick_settings: QuickSettingsState,
     /// When `Some`, the workspace-settings modal's Name input is in text-
@@ -210,9 +221,23 @@ pub struct ChromeState {
 }
 
 impl ChromeState {
+    /// Back-compat constructor: takes an owned [`WorkspaceTree`] and
+    /// wraps it in a fresh [`WorkspaceTreeHandle`]. Existing call-sites
+    /// (every test fixture in `quick-shell/tests/*`) keep this shape;
+    /// production callers that need to share the handle with portal /
+    /// peer-sync go through [`Self::new_with_handle`] instead.
     pub fn new(tree: WorkspaceTree) -> Rc<RefCell<Self>> {
+        Self::new_with_handle(tree.shared())
+    }
+
+    /// Construct a [`ChromeState`] sharing an existing
+    /// [`WorkspaceTreeHandle`]. Used by the hosted entry point so the
+    /// portal's `GrantStoreHandle` and peer-sync's
+    /// `WorkspaceTreeReplica` mutate the same underlying tree as the
+    /// shell chrome — closes audit finding C-3.
+    pub fn new_with_handle(tree_handle: WorkspaceTreeHandle) -> Rc<RefCell<Self>> {
         Rc::new(RefCell::new(Self {
-            tree,
+            tree_handle,
             overlays: OverlayFlags::default(),
             quick_settings: QuickSettingsState::default(),
             editing_workspace_name: None,
@@ -224,6 +249,31 @@ impl ChromeState {
         }))
     }
 
+    /// Read-guard accessor for the shared workspace tree. The returned
+    /// guard derefs to `&WorkspaceTree`, so existing patterns like
+    /// `state.tree().workspaces.iter()` work verbatim. Cheap (~10 ns
+    /// uncontended on `parking_lot::RwLock`).
+    pub fn tree(&self) -> RwLockReadGuard<'_, WorkspaceTree> {
+        self.tree_handle.read()
+    }
+
+    /// Write-guard accessor for the shared workspace tree. Used by
+    /// mutating helpers (`append_empty_workspace`, `set_active`, etc.)
+    /// — the guard is dropped at the end of the borrow scope, so
+    /// concurrent readers (paint, portal lookup, peer-sync export)
+    /// unblock as soon as the mutation lands.
+    pub fn tree_mut(&self) -> RwLockWriteGuard<'_, WorkspaceTree> {
+        self.tree_handle.write()
+    }
+
+    /// Test-only / observability accessor for the underlying shared
+    /// handle. Tests use this to assert that portal mutations land on
+    /// the same instance the chrome reads from (see
+    /// `grant_inserted_via_portal_is_visible_in_ws_settings`).
+    pub fn tree_handle(&self) -> WorkspaceTreeHandle {
+        self.tree_handle.clone()
+    }
+
     /// Commit the current `editing_workspace_name` buffer (if any) to the
     /// active workspace's name and clear the buffer. Empty buffers are
     /// treated as a cancel — we never overwrite the name with "".
@@ -231,7 +281,7 @@ impl ChromeState {
         if let Some(buf) = self.editing_workspace_name.take() {
             let trimmed = buf.trim();
             if !trimmed.is_empty() {
-                if let Some(ws) = self.tree.active_workspace_mut() {
+                if let Some(ws) = self.tree_mut().active_workspace_mut() {
                     ws.name = trimmed.to_string();
                 }
             }
@@ -249,7 +299,10 @@ impl ChromeState {
     /// the revision counter so widgets re-sync on the next frame.
     /// Returns the new tab id, or `None` if the path has no filename.
     pub fn handle_file_drop(&mut self, path: &std::path::Path) -> Option<u64> {
-        let tab_id = super::workspace_drop::apply_workspace_drop_from_path(&mut self.tree, path);
+        let tab_id = {
+            let mut tree = self.tree_mut();
+            super::workspace_drop::apply_workspace_drop_from_path(&mut *tree, path)
+        };
         if tab_id.is_some() {
             self.bump();
         }
@@ -268,8 +321,12 @@ impl ChromeState {
     /// `## Known gaps` #4 ("Plus button") in
     /// `docs/nirios/wheel-disc-design.md`.
     pub fn add_workspace(&mut self, name: impl Into<String>) -> crate::shell::state::WorkspaceId {
-        let id = self.tree.append_empty_workspace(&name.into());
-        self.tree.set_active(id);
+        let id = {
+            let mut tree = self.tree_mut();
+            let id = tree.append_empty_workspace(&name.into());
+            tree.set_active(id);
+            id
+        };
         self.bump();
         id
     }
@@ -277,10 +334,13 @@ impl ChromeState {
     /// Switch to the workspace at the given direction (±1). Returns true
     /// if the active workspace changed.
     pub fn switch_workspace(&mut self, dir: i32) -> bool {
-        let changed = match dir.signum() {
-            -1 => self.tree.switch_up(),
-            1 => self.tree.switch_down(),
-            _ => false,
+        let changed = {
+            let mut tree = self.tree_mut();
+            match dir.signum() {
+                -1 => tree.switch_up(),
+                1 => tree.switch_down(),
+                _ => false,
+            }
         };
         if changed {
             self.bump();
