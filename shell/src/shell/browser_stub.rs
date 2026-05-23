@@ -33,6 +33,17 @@ pub struct BrowserStubWidget {
     rect: Rect,
     runner: Runner,
     last_url: Option<String>,
+    /// Scene cache — the browser stub is purely a function of `rect`
+    /// (white card, chrome strip, traffic-light circles, address pill,
+    /// preview tile) with no per-frame state, so we encode once at the
+    /// current size and replay on subsequent frames via the outer
+    /// transform. Mirrors the cache pattern in `ui::widget::button`
+    /// and `shell::desktop_backdrop`.
+    cached: Scene,
+    /// Rect at which the cached scene was encoded. `Rect::ZERO`
+    /// sentinel means "no cache yet"; width/height mismatch triggers
+    /// a rebuild so a resized tile re-renders correctly.
+    cache_rect: Rect,
 }
 
 impl BrowserStubWidget {
@@ -47,6 +58,8 @@ impl BrowserStubWidget {
             rect: Rect::ZERO,
             runner,
             last_url: None,
+            cached: Scene::new(),
+            cache_rect: Rect::ZERO,
         }
     }
 
@@ -108,12 +121,37 @@ impl Widget for BrowserStubWidget {
 
     fn draw(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
+        out_scene: &mut Scene,
+        out_transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        // Cache fast-path: the browser stub is purely a function of
+        // `self.rect`'s size — no hover/focus/animation state ever
+        // changes the painted pixels. Replay the cached scene with a
+        // translation delta when the rect has only moved.
+        let size_changed = self.rect.width() != self.cache_rect.width()
+            || self.rect.height() != self.cache_rect.height();
+        let needs_rebuild = self.cache_rect == Rect::ZERO || size_changed;
+        if !needs_rebuild {
+            let dx = self.rect.x0 - self.cache_rect.x0;
+            let dy = self.rect.y0 - self.cache_rect.y0;
+            out_scene.append(
+                &self.cached,
+                Some(out_transform * Affine::translate((dx, dy))),
+            );
+            return;
+        }
+
+        // Cache miss — encode into `self.cached` at IDENTITY, then
+        // splice with `out_transform`. The `std::mem::take` dance
+        // keeps the borrow checker happy across the `&self.rect`
+        // read in the encode helper (no closure over `&mut self`).
+        let mut local = std::mem::take(&mut self.cached);
+        local.reset();
+        let scene = &mut local;
+        let transform = Affine::IDENTITY;
         // Concept-style browser chrome: white card, 48 px header with three
         // traffic-light circles on the left + a pill-shaped address bar
         // centred in the remaining width, and a body with a placeholder
@@ -306,6 +344,14 @@ impl Widget for BrowserStubWidget {
                 None,
             );
         }
+
+        // End of cache build — splice the freshly-encoded local scene
+        // into the caller's `out_scene` with the host transform, then
+        // restore `self.cached` and update `self.cache_rect` so the
+        // next frame can take the fast path.
+        out_scene.append(&local, Some(out_transform));
+        self.cached = local;
+        self.cache_rect = self.rect;
     }
 
     fn handle_event(
@@ -328,6 +374,31 @@ impl Widget for BrowserStubWidget {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    /// The stub renders a fixed placeholder card. After the first
+    /// successful draw populates `cache_rect`, the painted pixels are
+    /// frame-invariant — so we report not-dirty until either the rect
+    /// resizes (`apply_layout` will trigger a rebuild via the cache's
+    /// size-mismatch check on the next draw) or a fresh widget instance
+    /// is constructed (`cache_rect == ZERO`).
+    fn needs_redraw(&self) -> bool {
+        self.cache_rect == Rect::ZERO
+    }
+
+    /// The browser stub has no intrinsic size — it stretches to
+    /// `percent(1.0)` of its tile slot. Layout only needs recomputing
+    /// when the slot itself changes, which the parent container will
+    /// report independently; the stub itself is layout-clean after
+    /// the first pass.
+    fn is_layout_dirty(&self) -> bool {
+        self.cache_rect == Rect::ZERO
+    }
+
+    fn mark_drawn(&mut self) {
+        // No per-event dirty flag — `cache_rect` carries the "has been
+        // drawn" signal directly, so this is a no-op. Leaf widgets in
+        // `ui::widget::button` follow the same pattern.
     }
 }
 
