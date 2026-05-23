@@ -16,4 +16,3 @@ Cargo.lock
 .branchbox.env
 .env.local
 scripts/headless-examples/__pycache__/
-scripts/headless-examples/__pycache__/
