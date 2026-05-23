@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Scope
 
-QuickDesktop is a collaborative, spatial Linux OS built on **Fedora Bootc**. It is a stack, not a single app:
+qOS is a collaborative, spatial Linux OS built on **Fedora Bootc**. It is a stack, not a single app:
 
 - An immutable container-based OS image
 - A custom Wayland compositor with a 2D-cluster tile-first window model
@@ -12,22 +12,22 @@ QuickDesktop is a collaborative, spatial Linux OS built on **Fedora Bootc**. It 
 - A custom CRDT-native UI toolkit used by system apps
 - Native system apps (terminal, file explorer, browser)
 
-Treat these as deeply interrelated — a change in `quick-ui` or `quick-fs-fuse` can break the OS image build; changes to the compositor affect sandboxing and collaboration semantics.
+Treat these as deeply interrelated — a change in `ui` or `fs` can break the OS image build; changes to the compositor affect sandboxing and collaboration semantics.
 
 ## Repository Layout
 
 This is a **Cargo workspace with git submodules**. The workspace members in `Cargo.toml` are:
 
-- `quick-shell/` (submodule, binary `quick-desktop`) — Wayland compositor. Built on `smithay` + `iced` + `libp2p` (gossipsub, mdns). Contains the 2D cluster/sandbox/collaboration logic.
-- `quick-fs-fuse/` (submodule) — FUSE3 driver, Iroh-based P2P, mounted at `/var/workspace` with cache at `/var/cache/quick-fs`. 10s metadata TTL, 1MB readahead.
-- `quick-ui/` (in-tree) — The UI toolkit. Retained-mode, CRDT-native. Stack: `wgpu` + `vello` (render), `taffy` (layout), `cosmic-text` (text), `automerge` (state), `winit` (windowing), `fluent` (i18n).
-- `apps/terminal/` (submodule, binary `quick-terminal`) — GPU-accelerated terminal. Uses `quick-ui`. `--shots PATH` for headless screenshot.
-- `apps/file-explorer/` (submodule) — Spatial file manager. Uses `quick-ui` (was iced; migrated). `--shots PATH` for headless screenshot.
-- `apps/browser/` (submodule, binary `quick-browser`) — Servo-based, uses `iced` directly. No `--shots` mode yet — iced 0.13 has no headless surface; deferred until upstream exposes one or the browser migrates to `quick-ui`.
+- `shell/` (submodule, binary `shell`) — Wayland compositor. Built on `smithay` + `iced` + `libp2p` (gossipsub, mdns). Contains the 2D cluster/sandbox/collaboration logic.
+- `fs/` (submodule) — FUSE3 driver, Iroh-based P2P, mounted at `/var/workspace` with cache at `/var/cache/qos-fs`. 10s metadata TTL, 1MB readahead.
+- `ui/` (in-tree) — The UI toolkit. Retained-mode, CRDT-native. Stack: `wgpu` + `vello` (render), `taffy` (layout), `cosmic-text` (text), `automerge` (state), `winit` (windowing), `fluent` (i18n).
+- `apps/terminal/` (submodule, binary `terminal`) — GPU-accelerated terminal. Uses `ui`. `--shots PATH` for headless screenshot.
+- `apps/file-explorer/` (submodule) — Spatial file manager. Uses `ui` (was iced; migrated). `--shots PATH` for headless screenshot.
+- `apps/browser/` (submodule, binary `browser`) — Servo-based, uses `iced` directly. No `--shots` mode yet — iced 0.13 has no headless surface; deferred until upstream exposes one or the browser migrates to `ui`.
 - `os/` (submodule) — `Containerfile`, `Containerfile.test`, systemd units, build and VM scripts.
 - `plan/`, `docs/` — Architecture, collaboration, compositor, security design notes. Read these before non-trivial changes in those areas.
 
-Only `quick-ui` lives in the main repo. Everything else is a submodule — see the "Submodule workflow" section before committing.
+Only `ui` lives in the main repo. Everything else is a submodule — see the "Submodule workflow" section before committing.
 
 ## Build & Test
 
@@ -40,12 +40,12 @@ git submodule update --init --recursive
 ### Building Rust components individually (fast inner loop)
 
 ```bash
-cargo build -p quick-desktop        # compositor
-cargo build -p quick-fs-fuse        # FUSE driver
-cargo build -p quick-ui             # UI toolkit
-cargo build -p quick-terminal
+cargo build -p shell        # compositor
+cargo build -p fs        # FUSE driver
+cargo build -p ui             # UI toolkit
+cargo build -p terminal
 cargo build -p file-explorer
-cargo build -p quick-browser
+cargo build -p browser
 ```
 
 ### Build environment — distrobox
@@ -78,14 +78,14 @@ Missing one of these surfaces as a `pkg-config exited with status code 1` error 
 **Prefer targeted tests over workspace-wide runs.** Workspace-wide `cargo test` can take a long time and blocks the shared build lock across worktrees. Run tests for the crate you're changing:
 
 ```bash
-distrobox enter my-distrobox -- bash -c 'cd /home/quinten/Development/quickdesktop && cargo test -p quick-fs-fuse'
-distrobox enter my-distrobox -- bash -c 'cd /home/quinten/Development/quickdesktop && cargo test -p quick-ui'
+distrobox enter my-distrobox -- bash -c 'cd /home/quinten/Development/quickdesktop && cargo test -p fs'
+distrobox enter my-distrobox -- bash -c 'cd /home/quinten/Development/quickdesktop && cargo test -p ui'
 ```
 
-`quick-desktop --lib` runs cleanly under **default parallel** as of 2026-05-23. The previous SIGSEGV (wgpu Vulkan instance contention from many OffscreenRenderer-using tests creating Instances in parallel) was fixed by a process-wide shared `Arc<Mutex<RenderContext>>` in `quick-ui/src/offscreen.rs`. The `apply_grants_dev_scan_is_memoised` memo-flake (D-6 static state) was fixed via `serial_test::serial` on the 8 `apply_grants`-touching tests.
+`shell --lib` runs cleanly under **default parallel** as of 2026-05-23. The previous SIGSEGV (wgpu Vulkan instance contention from many OffscreenRenderer-using tests creating Instances in parallel) was fixed by a process-wide shared `Arc<Mutex<RenderContext>>` in `ui/src/offscreen.rs`. The `apply_grants_dev_scan_is_memoised` memo-flake (D-6 static state) was fixed via `serial_test::serial` on the 8 `apply_grants`-touching tests.
 
 ```bash
-distrobox enter my-distrobox -- bash -c 'cd /home/quinten/Development/quickdesktop && cargo test -p quick-desktop --lib'
+distrobox enter my-distrobox -- bash -c 'cd /home/quinten/Development/quickdesktop && cargo test -p shell --lib'
 ```
 
 If a future change reintroduces a parallel-test crash, the historical bisect threshold was 4-threads OK / 8-threads SIGSEGV — restart by running `--test-threads 4` and bisect upward.
@@ -93,16 +93,16 @@ If a future change reintroduces a parallel-test crash, the historical bisect thr
 The compositor has a headless integration test harness that exercises the Wayland state without a GPU:
 
 ```bash
-cd quick-shell && cargo test --test interaction_test
+cd shell && cargo test --test interaction_test
 ```
 
-### Running `quick-ui` examples
+### Running `ui` examples
 
 ```bash
-cargo run -p quick-ui --example gallery
-cargo run -p quick-ui --example responsive_gallery
+cargo run -p ui --example gallery
+cargo run -p ui --example responsive_gallery
 # Enable debug overlays:
-QUICK_UI_DEBUG=1 cargo run -p quick-ui --example gallery
+QUICK_UI_DEBUG=1 cargo run -p ui --example gallery
 ```
 
 ### Full OS image
@@ -119,9 +119,9 @@ QUICK_UI_DEBUG=1 cargo run -p quick-ui --example gallery
 
 ## Architecture Essentials
 
-### `quick-ui` — the UI toolkit
+### `ui` — the UI toolkit
 
-Every widget implements the `Widget` trait in `quick-ui/src/widget/mod.rs`. A frame is **five passes**, not one:
+Every widget implements the `Widget` trait in `ui/src/widget/mod.rs`. A frame is **five passes**, not one:
 
 1. `sync(state, path)` — pull visual state from the Automerge CRDT document.
 2. `build_layout(taffy, theme, node_map)` — build the Taffy tree; widgets that size themselves implement `measure`.
@@ -131,34 +131,34 @@ Every widget implements the `Widget` trait in `quick-ui/src/widget/mod.rs`. A fr
 
 Key implications when writing or modifying widgets:
 - State lives in the CRDT (`State::doc`, an `AutoCommit`), **not** in widget fields. Widget structs hold render/layout caches only.
-- Undo/redo is implemented by snapshotting the full CRDT (`State::commit_action`, see `quick-ui/src/state/mod.rs`). Widgets signal "this is an undo point" via `needs_commit()`/`on_commit()`. Ephemeral per-widget state (caret position, selection) is restored across undo via `get_state`/`set_state`.
-- Focus is 2D and directional, not tab-order-only. The `App` in `quick-ui/src/app.rs` maintains a `focusable_order` and does spatial navigation for arrow keys.
-- Collaboration (`quick-ui/src/collaboration.rs`) is implemented as a Unix-socket protocol to the compositor (`CollabRequest`/`CollabEvent`, serde-encoded). CRDT sync uses `SyncIncremental`. Remote cursors come in as `RemoteCursorMoved` events and render on top of the scene.
+- Undo/redo is implemented by snapshotting the full CRDT (`State::commit_action`, see `ui/src/state/mod.rs`). Widgets signal "this is an undo point" via `needs_commit()`/`on_commit()`. Ephemeral per-widget state (caret position, selection) is restored across undo via `get_state`/`set_state`.
+- Focus is 2D and directional, not tab-order-only. The `App` in `ui/src/app.rs` maintains a `focusable_order` and does spatial navigation for arrow keys.
+- Collaboration (`ui/src/collaboration.rs`) is implemented as a Unix-socket protocol to the compositor (`CollabRequest`/`CollabEvent`, serde-encoded). CRDT sync uses `SyncIncremental`. Remote cursors come in as `RemoteCursorMoved` events and render on top of the scene.
 - Theming is **OS-controlled**: widgets must read colors/spacing from the `Theme` passed to `draw`, never hard-code. This is how the OS enforces consistent look across system apps.
 - i18n via `fluent` — pass translation keys, not literal strings, to user-facing widgets.
 
-### Compositor (`quick-desktop`)
+### Compositor (`shell`)
 
 - **2D clusters, no overlap**: windows tile within a cluster; clusters tile on an infinite 2D canvas. Reject any design that reintroduces overlapping floating windows.
 - **Per-cluster sandbox**: each cluster is a Bubblewrap sandbox with its own file-access policy. When an app requests a path not in the cluster's allowlist, the compositor prompts the user; approvals can be granted temporarily or permanently to the cluster.
 - **Collaboration**: peers can be invited to a specific cluster. Sharing is via Wayland buffer streaming + remote input injection, coordinated over `libp2p` (gossipsub + mdns). Sandboxing is the security boundary — do not weaken it for convenience.
 - The Wayland state is decoupled from the graphical Iced layer so it can run headless for integration tests.
 
-### `quick-fs-fuse`
+### `fs`
 
 - Mounted at `/var/workspace`. Uses Iroh for content addressing + `iroh-blobs` for transfer; `blake3` hashes; `moka` for caching.
 - **Projection vs. hydration**: metadata is visible immediately via P2P gossip; content is fetched on first read. Don't assume `open()` implies bytes are local.
-- Cache lives at `/var/cache/quick-fs` so the root can stay read-only under bootc.
+- Cache lives at `/var/cache/qos-fs` so the root can stay read-only under bootc.
 
 ### OS image
 
 - Base: `quay.io/fedora/fedora-bootc:42`. The image is immutable; persistent state goes under `/var`.
-- Boot chain: UEFI/GRUB → `greetd` (tuigreet) → `quick-fs.service` mounts the FUSE → `quick-desktop` starts as the Wayland session → `quick-desktop-firstboot.service` handles first-run setup.
+- Boot chain: UEFI/GRUB → `greetd` (tuigreet) → `quick-fs.service` mounts the FUSE → `shell` starts as the Wayland session → `shell-firstboot.service` handles first-run setup.
 - `Containerfile.test` adds a validation systemd service; use it instead of shipping test code in the production image.
 
 ## Submodule workflow
 
-Everything except `quick-ui` is a submodule. Changes in those directories must be committed **inside** the submodule first, then the pointer bump is committed in the superproject:
+Everything except `ui` is a submodule. Changes in those directories must be committed **inside** the submodule first, then the pointer bump is committed in the superproject:
 
 ```bash
 # inside e.g. apps/browser
@@ -184,19 +184,19 @@ cp /var/home/quinten/Development/quickdesktop/Cargo.lock .claude/worktrees/<name
 
 ### Worker-driven cherry-pick (when a subagent works in a worktree)
 
-When a subagent commits inside `.claude/worktrees/<name>/quick-shell/` (the worktree's submodule has its own gitdir under `.git/worktrees/<name>/modules/quick-shell`), the main submodule cannot see those commits until you explicitly fetch them. Recipe:
+When a subagent commits inside `.claude/worktrees/<name>/shell/` (the worktree's submodule has its own gitdir under `.git/worktrees/<name>/modules/shell`), the main submodule cannot see those commits until you explicitly fetch them. Recipe:
 
 ```bash
 # 1. Inside the worktree's submodule, make the new commit's SHA reachable via a branch ref.
-WORKTREE_SHA=$(git -C .claude/worktrees/<name>/quick-shell rev-parse HEAD)
-git -C .claude/worktrees/<name>/quick-shell branch -f <name>-shell $WORKTREE_SHA
+WORKTREE_SHA=$(git -C .claude/worktrees/<name>/shell rev-parse HEAD)
+git -C .claude/worktrees/<name>/shell branch -f <name>-shell $WORKTREE_SHA
 
 # 2. From the main submodule, fetch via path + cherry-pick.
-git -C quick-shell fetch /var/home/quinten/Development/quickdesktop/.claude/worktrees/<name>/quick-shell <name>-shell
-git -C quick-shell cherry-pick FETCH_HEAD
+git -C shell fetch /var/home/quinten/Development/quickdesktop/.claude/worktrees/<name>/shell <name>-shell
+git -C shell cherry-pick FETCH_HEAD
 
 # 3. Cherry-pick will create a NEW SHA in the main submodule (different from $WORKTREE_SHA because committer date refreshes). Re-bump the superproject pointer:
-git add quick-shell && git commit -m "chore(quick-shell): bump for <name>"
+git add shell && git commit -m "chore(shell): bump for <name>"
 ```
 
 For the `os/` submodule the same recipe applies with `os` substituted.
@@ -210,7 +210,7 @@ For the `os/` submodule the same recipe applies with `os` substituted.
 ```bash
 # 1. Always commit (or at least `git add`) every file you want to keep.
 cd .claude/worktrees/<name>
-git -C quick-shell status --short            # Check for `??` files; commit them or note them
+git -C shell status --short            # Check for `??` files; commit them or note them
 git -C os status --short
 git status --short                            # And the main worktree
 # 2. Then it's safe to remove.
@@ -221,21 +221,21 @@ If a worker fails partway, **inspect `git status` in every relevant gitdir befor
 
 ## Where state lives across nirios
 
-Adding a field to `Workspace`, `WorkspaceTree`, `Strip`, or any other struct in `quick-shell/src/shell/state.rs` ripples to **every test fixture** that constructs that struct by-field. Symptoms: cargo errors like `E0063: missing field <new_field> in initializer of <Struct>`. Files that historically need updating:
+Adding a field to `Workspace`, `WorkspaceTree`, `Strip`, or any other struct in `shell/src/shell/state.rs` ripples to **every test fixture** that constructs that struct by-field. Symptoms: cargo errors like `E0063: missing field <new_field> in initializer of <Struct>`. Files that historically need updating:
 
 ```
-quick-shell/src/portal/*.rs              # test fixtures
-quick-shell/tests/active_group_wireup_test.rs
-quick-shell/tests/cross_strip_drag.rs
-quick-shell/tests/maximize_persist_wireup_test.rs
-quick-shell/tests/concept_parity_spec.rs (1000+ lines — be careful)
+shell/src/portal/*.rs              # test fixtures
+shell/tests/active_group_wireup_test.rs
+shell/tests/cross_strip_drag.rs
+shell/tests/maximize_persist_wireup_test.rs
+shell/tests/concept_parity_spec.rs (1000+ lines — be careful)
 ```
 
 Mitigation: prefer a `Workspace::test_default()` builder helper over hand-constructed `Workspace { ... }` blocks. The migration to that helper hasn't happened yet; until it does, expect ripples.
 
 ## Verification covenant (`tests/concept_parity_spec.rs`)
 
-The header of `quick-shell/tests/concept_parity_spec.rs` declares an explicit covenant:
+The header of `shell/tests/concept_parity_spec.rs` declares an explicit covenant:
 
 - **Never** add `#[ignore]` to weaken a failing test
 - **Never** weaken an assertion (replace `==` with `>=`, comment out a checked invariant, etc.)
@@ -245,19 +245,19 @@ This applies to **all** test files, not just `concept_parity_spec`. The "verific
 
 ## Conventions
 
-- **Rust edition:** `quick-ui`, `quick-shell`, `quick-fs-fuse` are on edition **2024**; the apps (`terminal`, `file-explorer`, `browser`) are on **2021**. Don't "normalize" these in passing.
+- **Rust edition:** `ui`, `shell`, `fs` are on edition **2024**; the apps (`terminal`, `file-explorer`, `browser`) are on **2021**. Don't "normalize" these in passing.
 - **Container tooling:** use rootless `podman` (no `sudo`) for image builds where possible. `os/build.sh` only needs `sudo` for the disk-image step.
 - **Don't run workspace-wide `cargo test`** unless you genuinely need it — it blocks the shared target lock and is slow. Scope to `-p <crate>`.
-- Debug overlays in `quick-ui` are gated by `QUICK_UI_DEBUG` **and** `debug_assertions`; they're unavailable in release builds.
+- Debug overlays in `ui` are gated by `QUICK_UI_DEBUG` **and** `debug_assertions`; they're unavailable in release builds.
 - **Never** run `scripts/screenshot-app.py` to "see" the UI. Use `cargo run --bin shots -- --mode offscreen --out target/<dir>` (still images per scenario) or `cargo run --bin shots -- --mode recording --scenario <name> --out target/<file>.h264` (H.264 video). Both produce output **identical** to the live binary.
-- For **ad-hoc headless testing** (click + snapshot + check), see `docs/headless-testing.md` — covers `shots`, the `NIRIOS_TEST_CONTROL` JSON socket, and `--backend headless`. The fastest path from "I want to test something" to "PNG on disk":
+- For **ad-hoc headless testing** (click + snapshot + check), see `docs/headless-testing.md` — covers `shots`, the `QOS_TEST_CONTROL` JSON socket, and `--backend headless`. The fastest path from "I want to test something" to "PNG on disk":
   ```bash
   ./scripts/headless-examples/full-loop.py
   # spawns compositor, drives it, writes /tmp/full-loop-{palette,final}.png, tears down. ~5s, no display.
   ```
   All five example scripts in `scripts/headless-examples/` are tested and ~50 LOC each; the `_control.py` helper in that dir is the canonical socket-client snippet to inline into your own automation.
 - **E2E click targeting**: `ShellDriver::resolve_named_rect(name)` walks the live widget tree via `Widget::test_id` to find click coordinates. Add `fn test_id(&self) -> Option<&str>` to a widget impl to make it addressable by name from scenarios. Path-fallback (`Parent/Child[index]`) works without opt-in.
-- **End goal**: nirios is a daily-driver collaborative spatial Linux OS. The current state is "research environment" — feature-complete for single-monitor single-user with full collaboration + sandbox semantics. The road to "daily-driver" needs multi-monitor, accessibility (AT-SPI tree), audio routing, notifications, session-lock + power-management hooks. The CRDT-native UI toolkit (`quick-ui`) is the highest-leverage layer — every system app uses it.
+- **End goal**: nirios is a daily-driver collaborative spatial Linux OS. The current state is "research environment" — feature-complete for single-monitor single-user with full collaboration + sandbox semantics. The road to "daily-driver" needs multi-monitor, accessibility (AT-SPI tree), audio routing, notifications, session-lock + power-management hooks. The CRDT-native UI toolkit (`ui`) is the highest-leverage layer — every system app uses it.
 
 ## Where to read first
 

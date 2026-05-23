@@ -1,9 +1,10 @@
 [workspace]
 members = [
-    "quick-fs-fuse",
-    "quick-shell",
+    "fs",
+    "shell",
+    "ui",
     "apps/file-explorer",
     "apps/terminal",
-    "apps/browser", "quick-ui",
+    "apps/browser",
 ]
 resolver = "2"

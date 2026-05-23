@@ -50,22 +50,22 @@ Minimal system packages baked into the immutable image:
 ```
 systemd -> graphical.target -> greetd.service
   -> tuigreet (TUI login screen)
-  -> user selects "QuickDesktop" session
-  -> /usr/bin/quick-desktop launches as compositor
+  -> user selects "qOS" session
+  -> /usr/bin/shell launches as compositor
 ```
 
 ### Services
 - `greetd.service`: Display manager, starts on graphical.target
-- `quick-desktop-firstboot.service`: One-shot, generates identity key, configures Flatpak remotes
+- `shell-firstboot.service`: One-shot, generates identity key, configures Flatpak remotes
 - PipeWire + WirePlumber: User session services (auto-started)
 
 ### Session Entry
-`/usr/share/wayland-sessions/quick-desktop.desktop` registers the compositor as a selectable Wayland session in greetd/tuigreet.
+`/usr/share/wayland-sessions/shell.desktop` registers the compositor as a selectable Wayland session in greetd/tuigreet.
 
 ## Build Pipeline
 
 ```
-1. cargo build --release    (in quick-shell/)
+1. cargo build --release    (in shell/)
 2. podman build             (builds container image from os/Containerfile)
 3. bootc-image-builder      (converts container -> QCOW2/ISO)
 4. qemu-system-x86_64       (test in VM)
@@ -90,11 +90,11 @@ Updates are atomic — the bootloader swaps the entire rootfs. No partial update
 ## Directory Layout (Deployed)
 
 ```
-/usr/bin/quick-desktop                              # Compositor binary
-/usr/share/wayland-sessions/quick-desktop.desktop   # Session entry
-/usr/lib/systemd/system/quick-desktop-firstboot.service
-/etc/quick-desktop/desktop.toml                     # Default config
+/usr/bin/shell                              # Compositor binary
+/usr/share/wayland-sessions/shell.desktop   # Session entry
+/usr/lib/systemd/system/shell-firstboot.service
+/etc/shell/desktop.toml                     # Default config
 /etc/greetd/config.toml                             # Login manager config
-/var/home/<user>/.config/quick-desktop/             # User config overrides
-/var/home/<user>/.config/quick-desktop/identity.key # Ed25519 keypair
+/var/home/<user>/.config/shell/             # User config overrides
+/var/home/<user>/.config/shell/identity.key # Ed25519 keypair
 ```
