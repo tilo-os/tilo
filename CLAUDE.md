@@ -82,17 +82,13 @@ distrobox enter my-distrobox -- bash -c 'cd /home/user/Development/quickdesktop 
 distrobox enter my-distrobox -- bash -c 'cd /home/user/Development/quickdesktop && cargo test -p quick-ui'
 ```
 
-**`quick-desktop --lib` needs bounded test parallelism.** Default parallel (16+ threads on a typical host) SIGSEGVs — wgpu Vulkan instance contention from the OffscreenRenderer-using tests (DRM/headless backends, snapshot, recording, surface_readback). Empirical threshold from bisect: **4 threads passes, 8 threads crashes**. Worker prompts + the integration recipe both use `--test-threads 1` for maximum safety. If you want faster runs locally, `--test-threads 4` works.
+`quick-desktop --lib` runs cleanly under **default parallel** as of 2026-05-23. The previous SIGSEGV (wgpu Vulkan instance contention from many OffscreenRenderer-using tests creating Instances in parallel) was fixed by a process-wide shared `Arc<Mutex<RenderContext>>` in `quick-ui/src/offscreen.rs`. The `apply_grants_dev_scan_is_memoised` memo-flake (D-6 static state) was fixed via `serial_test::serial` on the 8 `apply_grants`-touching tests.
 
 ```bash
-# Safe (recommended for CI / workers):
-distrobox enter my-distrobox -- bash -c 'cd /home/user/Development/quickdesktop && cargo test -p quick-desktop --lib -- --test-threads 1'
-
-# Faster local (verified clean on this hardware):
-distrobox enter my-distrobox -- bash -c 'cd /home/user/Development/quickdesktop && cargo test -p quick-desktop --lib -- --test-threads 4'
+distrobox enter my-distrobox -- bash -c 'cd /home/user/Development/quickdesktop && cargo test -p quick-desktop --lib'
 ```
 
-There's also a separate parallel-only flake: `sandbox::profile::tests::apply_grants_dev_scan_is_memoised` shares the D-6 memo's static state with other `apply_grants`-calling tests, so concurrent runs corrupt its counter. Same workaround.
+If a future change reintroduces a parallel-test crash, the historical bisect threshold was 4-threads OK / 8-threads SIGSEGV — restart by running `--test-threads 4` and bisect upward.
 
 The compositor has a headless integration test harness that exercises the Wayland state without a GPU:
 
