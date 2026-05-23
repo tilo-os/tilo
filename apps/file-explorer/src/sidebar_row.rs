@@ -12,6 +12,7 @@
 //! which tab hosts the file-explorer — matching the concept's
 //! `c.activeAppId === app.id` filter, which scopes to the app instance.
 
+use ui::ColorCompat;
 use ui::permissions::AppKind;
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::TextRenderer;
@@ -135,7 +136,7 @@ impl Widget for SidebarFolderRow {
     ) {
         // Pill chrome — indigo-500/10 when active, transparent otherwise.
         if self.active {
-            let bg = Color::rgba8(0x63, 0x66, 0xf1, (0.10 * 255.0) as u8);
+            let bg = Color::from_rgba8(0x63, 0x66, 0xf1, (0.10 * 255.0) as u8);
             let shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.sm as f64);
             scene.fill(Fill::NonZero, transform, bg, None, &shape);
         }
@@ -145,10 +146,10 @@ impl Widget for SidebarFolderRow {
         let text_size = 13.0_f32;
         let (tr, tg, tb) = {
             let c = theme.tokens.colors.text_primary;
-            (c.r, c.g, c.b)
+            (c.r(), c.g(), c.b())
         };
         let alpha = if self.active { 0xf0 } else { 0x8c };
-        let text_color = Color::rgba8(tr, tg, tb, alpha);
+        let text_color = Color::from_rgba8(tr, tg, tb, alpha);
         let (_tw, th) = text_renderer.measure(&self.label, text_size, None);
         let text_x = self.rect.x0 + 8.0;
         let text_y = self.rect.y0 + (self.rect.height() - th as f64) / 2.0;
@@ -172,14 +173,14 @@ impl Widget for SidebarFolderRow {
         for (i, (r, g, b)) in colors.iter().enumerate() {
             let cx = right - (i as f64) * (radius * 2.0 - overlap) - radius;
             let circle = Circle::new((cx, cy), radius);
-            let fill = Color::rgb8(*r, *g, *b);
+            let fill = Color::from_rgb8(*r, *g, *b);
             scene.fill(Fill::NonZero, transform, fill, None, &circle);
             // White ring so the dot reads against coloured pill backgrounds.
             let ring = Circle::new((cx, cy), radius + 0.5);
             scene.stroke(
                 &vello::kurbo::Stroke::new(0.75),
                 transform,
-                Color::rgba8(0xff, 0xff, 0xff, 0xb0),
+                Color::from_rgba8(0xff, 0xff, 0xff, 0xb0),
                 None,
                 &ring,
             );

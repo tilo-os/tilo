@@ -1,3 +1,4 @@
+use ui::ColorCompat;
 use ui::{Theme, widget::Widget, text_render::TextRenderer};
 use automerge::{AutoCommit, ObjId, Value, transaction::Transactable, ObjType, ReadDoc};
 use vello::Scene;
@@ -118,9 +119,9 @@ impl TerminalWidget {
             last_sync_heads: Vec::new(),
             current_attr: Attr::default(),
             pending_wrap: false,
-            last_cursor_color: Color::rgba8(0, 0, 0, 0),
-            last_fg_default: Color::rgba8(0, 0, 0, 0),
-            last_bg_default: Color::rgba8(0, 0, 0, 0),
+            last_cursor_color: Color::from_rgba8(0, 0, 0, 0),
+            last_fg_default: Color::from_rgba8(0, 0, 0, 0),
+            last_bg_default: Color::from_rgba8(0, 0, 0, 0),
         }
     }
 
@@ -695,10 +696,10 @@ pub(crate) fn map_ansi_256(code: u8, palette: &ui::tokens::TerminalPalette) -> C
         let r = (n / 36) * 51;
         let g = ((n % 36) / 6) * 51;
         let b = (n % 6) * 51;
-        Color::rgb8(r, g, b)
+        Color::from_rgb8(r, g, b)
     } else {
         let gray = (code - 232) * 10 + 8;
-        Color::rgb8(gray, gray, gray)
+        Color::from_rgb8(gray, gray, gray)
     }
 }
 

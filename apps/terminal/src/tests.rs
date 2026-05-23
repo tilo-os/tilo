@@ -131,12 +131,12 @@ mod tests {
 
         // Paint a distinctive hue into ANSI 1 (red slot) for each palette so
         // a passing test cannot be faked by reading the same byte.
-        palette_a.ansi[1] = Color::rgb8(10, 20, 30);
-        palette_b.ansi[1] = Color::rgb8(250, 240, 230);
-        palette_a.fg_default = Color::rgb8(11, 22, 33);
-        palette_b.fg_default = Color::rgb8(240, 230, 220);
-        palette_a.bg_default = Color::rgb8(1, 2, 3);
-        palette_b.bg_default = Color::rgb8(250, 251, 252);
+        palette_a.ansi[1] = Color::from_rgb8(10, 20, 30);
+        palette_b.ansi[1] = Color::from_rgb8(250, 240, 230);
+        palette_a.fg_default = Color::from_rgb8(11, 22, 33);
+        palette_b.fg_default = Color::from_rgb8(240, 230, 220);
+        palette_a.bg_default = Color::from_rgb8(1, 2, 3);
+        palette_b.bg_default = Color::from_rgb8(250, 251, 252);
 
         // ANSI 0..=15 lookups must return the palette-supplied color.
         let fg_a = crate::inner::map_ansi_256(1, &palette_a);
@@ -199,7 +199,7 @@ mod tests {
         let pre = widget.last_fg_default();
         assert_eq!(
             format!("{:?}", pre),
-            format!("{:?}", Color::rgba8(0, 0, 0, 0)),
+            format!("{:?}", Color::from_rgba8(0, 0, 0, 0)),
             "before first draw the cached fg must be the sentinel"
         );
 
@@ -207,7 +207,7 @@ mod tests {
         // helper does not round-trip to the default. This exercises the same
         // code path `draw` uses to populate `last_cursor_color`.
         let mut palette = TerminalPalette::dark();
-        palette.fg_default = Color::rgb8(42, 99, 200);
+        palette.fg_default = Color::from_rgb8(42, 99, 200);
         let cursor = crate::inner::cursor_from_palette(&palette);
         let default_cursor = crate::inner::cursor_from_palette(&TerminalPalette::dark());
         assert_ne!(
