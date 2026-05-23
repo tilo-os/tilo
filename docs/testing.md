@@ -1,10 +1,10 @@
 # VM Testing Guide
 
-This guide explains how to build and test the QuickDesktop OS using QEMU.
+This guide explains how to build and test the qOS OS using QEMU.
 
 ## Verification System
 
-QuickDesktop uses a tiered testing system to ensure the FUSE filesystem and system applications are correctly integrated without bloating the production image.
+qOS uses a tiered testing system to ensure the FUSE filesystem and system applications are correctly integrated without bloating the production image.
 
 ### 1. Automated Verification Build
 
@@ -42,7 +42,7 @@ journalctl -u quick-fs-test
 **The test confirms:**
 -   `/var/workspace` is a valid FUSE mount point.
 -   `hello.txt` exists and contains the expected collaborative metadata.
--   `quick-terminal`, `file-explorer`, and `quick-browser` are installed and executable in `/usr/bin/`.
+-   `terminal`, `file-explorer`, and `browser` are installed and executable in `/usr/bin/`.
 
 ---
 
@@ -50,11 +50,11 @@ journalctl -u quick-fs-test
 
 To ensure the window manager logic (2D clustering, non-overlapping constraints, sandbox permissions) is robust, the Wayland state is decoupled from the graphical UI layer:
 
-1. **Headless Mode:** The compositor (`quick-desktop`) can be instantiated in a headless mode without requiring a GPU or Iced winit window.
+1. **Headless Mode:** The compositor (`shell`) can be instantiated in a headless mode without requiring a GPU or Iced winit window.
 2. **Automated Client Integration Tests:** Using the `wayland-client` crate, test suites can connect to the headless compositor socket, spawn mock applications, and assert correct clustering behavior and portal permission prompts.
 3. **Running Headless Tests:**
    ```bash
-   cd quick-shell
+   cd shell
    cargo test --test interaction_test
    ```
 
@@ -73,8 +73,8 @@ If you want to test the production image manually:
 ### Useful VM Commands
 
 -   **Check FUSE Mount**: `mountpoint /var/workspace`
--   **Inspect Cache**: `ls -lah /var/cache/quick-fs`
+-   **Inspect Cache**: `ls -lah /var/cache/qos-fs`
 -   **Run Apps**:
-    -   `quick-terminal`
+    -   `terminal`
     -   `file-explorer`
-    -   `quick-browser`
+    -   `browser`

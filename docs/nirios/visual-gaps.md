@@ -37,14 +37,14 @@ and `target/nirios-screenshots/06-overview-open-vertical.png`) against
   `text-white/70`, `border-white/10`. With the `shadow-[0_8px_32px_rgba(0,0,0,0.2)]`
   under every pill, the active tab visually "pops forward" on the dark shell
   (`concept-features.md` §7.4).
-- **What we render today:** `quick-ui/src/widget/tabs.rs:459-471` picks
+- **What we render today:** `ui/src/widget/tabs.rs:459-471` picks
   alphas 38 (active) vs 13 (inactive) vs 26 (hover) with a border alpha of
   51/26. In `07-theme-tightened.png`, "Notes" (active) and "Files / Terminal /
   Browser" (inactive) look essentially identical — same pill height, same
   greyish fill, same title colour. The user cannot tell at a glance which
   tab is active; only the missing `×` hover-chip differs, and that's not
   rendered unless the cursor is on the pill.
-- **Concrete fix:** In `quick-ui/src/widget/tabs.rs:459`, widen the active
+- **Concrete fix:** In `ui/src/widget/tabs.rs:459`, widen the active
   vs inactive fill delta (e.g. active → alpha ~52 with a subtle 1 px inner
   highlight line; inactive → alpha ~8). Also: apply `text_dim` (not
   `text_primary`) to inactive titles so the title lightness shift is the
@@ -71,7 +71,7 @@ and `target/nirios-screenshots/06-overview-open-vertical.png`) against
   the Vello bump lands. Pinned constants: `TOP_BAR_SURFACE_ALPHA = 0.80`,
   `POPOVER_SURFACE_ALPHA = 0.80` (collaborators + QuickSettings),
   `PALETTE_SURFACE_ALPHA = 0.70` (GlobalSearch via theme override so
-  quick-ui's shared `CommandPalette` stays untouched),
+  ui's shared `CommandPalette` stays untouched),
   `MODAL_SURFACE_ALPHA = 0.70` (WorkspaceSettings), `MODAL_SCRIM_ALPHA = 0.20`
   (page scrim, down from 0.30). Regression tests:
   `topbar_chrome_surface_alpha_is_80_percent` + `global_search_surface_alpha_is_70_percent`
@@ -113,7 +113,7 @@ and `target/nirios-screenshots/06-overview-open-vertical.png`) against
 
 The sidebar-wheel-card gap no longer applies. The user's 2026-04-21 spec
 deliberately diverges from the concept's 96 px permanent sidebar in
-favour of an in-plane **wheel disc** (`quick-shell/src/shell/sidebar_wheel_disc.rs`,
+favour of an in-plane **wheel disc** (`shell/src/shell/sidebar_wheel_disc.rs`,
 commits `2a7ec2b` + `2337b21` + `65d105d`). Spokes render as radial
 labels around a central hub, not as rectangular cards. The concept's
 vertical-rl rotated labels are closest in spirit to the spokes on the

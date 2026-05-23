@@ -1,51 +1,98 @@
-# QuickDesktop (nirios)
+# qOS
 
-A collaborative, spatial Linux OS built on Fedora Bootc. Not a single app — a vertically-integrated stack:
+A spatial, collaborative Linux desktop built as a vertically-integrated stack:
 
-- Immutable container-based OS image
-- Custom Wayland compositor with a 2D-cluster tile-first window model (no overlapping windows)
-- P2P FUSE filesystem (Iroh + blake3 + moka cache; mounted at `/var/workspace`)
-- CRDT-native UI toolkit (`quick-ui`) — every widget reads/writes a shared automerge doc, so undo, redo, collaboration, and persistence all share one mechanism
-- Per-workspace bubblewrap sandbox with seccomp + capability grants + a portal D-Bus backend
-- Native system apps (terminal, file explorer, browser)
+- **`shell/`** — Wayland compositor. 2D tile-first window model; no overlapping windows. Per-workspace bubblewrap sandbox with seccomp deny-by-default. Built on `smithay` + `vello` + `wgpu`. Collaboration over `libp2p` (gossipsub + mDNS) + `automerge` incremental sync.
+- **`ui/`** — Retained-mode CRDT-native UI toolkit. Every widget reads/writes a shared automerge document, so undo, redo, persistence, and remote collaboration all share one mechanism. Stack: `wgpu` + `vello` + `taffy` + `cosmic-text` + `winit` + `fluent`.
+- **`fs/`** — FUSE3 driver. Iroh content addressing, `blake3` hashes, `moka` cache. Mounted at `/var/workspace`; cache at `/var/cache/qos-fs`. Projects metadata on first byte; hydrates content on demand.
+- **`apps/{terminal,file-explorer,browser}/`** — Native applications. All three use `ui`. The browser embeds Servo for page rendering.
+- **`os/`** — Bootc-based Fedora image. Greetd → Wayland session → `shell`. Disk image via `bootc-image-builder`.
 
-## Key features
+## Repository layout
 
-- **Spatial desktop**: clusters tile on an infinite 2D canvas; tabs tile within a cluster; sidebar wheel disc rotates workspaces; tabs can be dragged into new clusters or other workspaces.
-- **Collaborative by default**: workspaces sync over libp2p (gossipsub + mDNS) + automerge incremental sync. Peer cursors render live; tabs can be shared via H.264 streaming with read-only or read-write input replay.
-- **Per-workspace sandbox**: every cluster is a bwrap profile with seccomp deny-by-default for FS/network/camera/mic. Grants are stored in the workspace CRDT (so they sync), surfaced via an `xdg-desktop-portal` backend, manageable via the in-shell Permissions tab.
-- **Headless-testable**: `--backend headless` runs the full compositor without a display; the `NIRIOS_TEST_CONTROL` JSON socket + the `nirios-control` CLI drive any UI action; `shots --mode offscreen|recording` produces PNG/H.264 of every catalogued scenario. See [`docs/headless-testing.md`](docs/headless-testing.md).
+This is a Cargo workspace with git submodules. The members are:
 
-## Getting started
+| Path | Kind | Binary |
+|---|---|---|
+| `shell/` | submodule | `shell` (compositor), `qos-control` (test CLI), `shots` (screenshot tool) |
+| `fs/` | submodule | `fs` (FUSE driver) |
+| `ui/` | in-tree | library only |
+| `apps/terminal/` | submodule | `terminal` |
+| `apps/file-explorer/` | submodule | `file-explorer` |
+| `apps/browser/` | submodule | `browser` |
+| `os/` | submodule | Containerfile + systemd units + scripts |
+
+After cloning, run `git submodule update --init --recursive` once.
+
+## Building
+
+The host probably doesn't have all the build dependencies (`xkbcommon`, `libseat`, `pipewire`, `mesa-gbm`, …). The workflow assumes a [distrobox](https://distrobox.it) container named `my-distrobox` with the deps installed:
 
 ```bash
-git clone <url> quickdesktop && cd quickdesktop
-git submodule update --init --recursive
-cargo build -p quick-desktop --bin quick-desktop --bin nirios-control
-
-# Run the compositor (host window — needs a Wayland or X11 session):
-cargo run -p quick-desktop
-
-# OR headless (writes PNGs via the test_control socket, no display needed):
-./scripts/headless-examples/full-loop.py
+distrobox enter my-distrobox -- bash -c 'cd $(pwd) && cargo build -p shell'
 ```
 
-Full setup: [`DEVELOPMENT.md`](DEVELOPMENT.md).
+See [`DEVELOPMENT.md`](DEVELOPMENT.md) for the full distrobox setup and the list of system packages.
 
-## Documentation
+Targeted crate builds (faster inner loop):
 
-| Topic | Path |
-|---|---|
-| Architecture overview | [`plan/architecture.md`](plan/architecture.md) |
-| Compositor design | [`plan/compositor.md`](plan/compositor.md) |
-| Collaboration semantics | [`plan/collaboration.md`](plan/collaboration.md) |
-| Security model + sandbox | [`plan/security.md`](plan/security.md) |
-| Headless testing | [`docs/headless-testing.md`](docs/headless-testing.md) |
-| OS image build + VM testing | [`docs/testing.md`](docs/testing.md) |
-| Plans-in-flight + landed | [`docs/superpowers/plans/`](docs/superpowers/plans/) |
-| Specs + design RFCs | [`docs/superpowers/specs/`](docs/superpowers/specs/) |
-| Working with AI agents (Claude / Codex / Gemini) | [`CLAUDE.md`](CLAUDE.md) |
+```bash
+cargo build -p shell                     # compositor + qos-control + shots
+cargo build -p fs                        # FUSE driver
+cargo build -p ui                        # UI toolkit
+cargo build -p terminal                  # terminal app
+cargo build -p file-explorer
+cargo build -p browser
+```
 
-## License
+Full OS image:
 
-(Include license information here)
+```bash
+./os/build.sh                            # production qcow2 (needs podman)
+./os/verify-test.sh                      # test image with boot-time validation
+./os/test-vm.sh                          # boot it in QEMU (needs OVMF + KVM)
+```
+
+## Testing
+
+Scope tests to the crate you're changing — workspace-wide runs are slow and block the shared target lock:
+
+```bash
+distrobox enter my-distrobox -- bash -c 'cd $(pwd) && cargo test -p shell --lib'
+distrobox enter my-distrobox -- bash -c 'cd $(pwd) && cargo test -p ui --lib'
+```
+
+Current ledger: ~435 shell lib tests + ~269 ui lib tests, all passing under default parallel.
+
+The compositor has a headless integration harness — `shell/tests/interaction_test.rs` exercises the Wayland state without a GPU.
+
+## Headless testing
+
+Every system app can render offscreen to a PNG with no display attached:
+
+```bash
+cargo run -p shell --bin shots -- --mode offscreen --out target/shots
+cargo run -p shell --bin shots -- --mode recording --scenario palette --out target/palette.h264
+```
+
+The compositor exposes a JSON socket (`QOS_TEST_CONTROL`) for remote driving. The `qos-control` CLI wraps it; the `scripts/headless-examples/` directory has Python examples:
+
+```bash
+./scripts/headless-examples/full-loop.py   # spawn → click → snapshot → tear down, ~5s
+```
+
+Full reference: [`docs/headless-testing.md`](docs/headless-testing.md).
+
+## Where to read first
+
+- [`docs/architecture.md`](docs/architecture.md) — component overview
+- [`docs/testing.md`](docs/testing.md) — VM + headless test workflow
+- [`plan/architecture.md`](plan/architecture.md), [`plan/compositor.md`](plan/compositor.md), [`plan/collaboration.md`](plan/collaboration.md), [`plan/security.md`](plan/security.md) — design intent
+- [`DEVELOPMENT.md`](DEVELOPMENT.md) — submodule and build setup
+- [`CLAUDE.md`](CLAUDE.md) — conventions used when AI agents work in this repo
+
+## Status
+
+Single-monitor single-user is feature-complete: spatial tiling, drag-to-detach tabs, undo/redo everywhere, collaborative cursors, peer-shared tabs (H.264), per-workspace sandbox with portal-mediated grants, FUSE-projected workspaces, headless test infrastructure with the same output pixels as the live binary.
+
+Deferred for daily-driver: multi-monitor, AT-SPI tree (accessibility), audio routing, notifications, session-lock + power management, full DRM hardware paint on bare metal.

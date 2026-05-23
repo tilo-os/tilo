@@ -1,16 +1,16 @@
 # Development Guide
 
-Welcome to the QuickDesktop project! This document outlines how to set up your environment and work with our submodule-based architecture.
+Welcome to the qOS project! This document outlines how to set up your environment and work with our submodule-based architecture.
 
 ## 1. Project Structure
 
-QuickDesktop is organized as a Cargo Workspace using Git Submodules for its core components.
+qOS is organized as a Cargo Workspace using Git Submodules for its core components.
 
--   `quick-shell/`: The Wayland compositor (`quick-desktop`).
--   `quick-fs-fuse/`: The collaborative P2P filesystem.
+-   `shell/`: The Wayland compositor (`shell`).
+-   `fs/`: The collaborative P2P filesystem.
 -   `os/`: Build scripts and configurations for the Fedora Bootc OS.
 -   `apps/`:
-    -   `browser/`: The Servo-based browser (`quick-browser`).
+    -   `browser/`: The Servo-based browser (`browser`).
     -   `file-explorer/`: Spatial file manager.
     -   `terminal/`: GPU-accelerated terminal.
 
@@ -43,10 +43,10 @@ When working on a sub-project (e.g., the browser):
 ### Local Development (Rust)
 You can build individual components using Cargo from the root:
 ```bash
-cargo build -p quick-desktop
-cargo build -p quick-fs-fuse
-cargo build -p quick-browser
-cargo build -p quick-terminal
+cargo build -p shell
+cargo build -p fs
+cargo build -p browser
+cargo build -p terminal
 cargo build -p file-explorer
 ```
 
@@ -62,7 +62,7 @@ To build the full bootc-based OS image:
 ### Unit Tests
 Run tests for a specific package:
 ```bash
-cargo test -p quick-fs-fuse
+cargo test -p fs
 ```
 
 ### VM Testing
@@ -85,19 +85,19 @@ For automated tests, AI agents, and exploratory probes you can drive the live co
 ./scripts/headless-examples/full-loop.py
 # Writes /tmp/full-loop-{palette,final}.png in ~5 seconds.
 
-# OR: use the nirios-control CLI directly against a manually-spawned compositor:
-cargo build -p quick-desktop --bin quick-desktop --bin nirios-control
+# OR: use the qos-control CLI directly against a manually-spawned compositor:
+cargo build -p shell --bin shell --bin qos-control
 env -u DISPLAY -u WAYLAND_DISPLAY \
-    NIRIOS_TEST_CONTROL=/tmp/nirios.sock \
-    cargo run --bin quick-desktop -- --backend headless &
-nirios-control list-targets
-nirios-control click wheel_disc
-nirios-control snapshot /tmp/state.png
+    QOS_TEST_CONTROL=/tmp/nirios.sock \
+    cargo run --bin shell -- --backend headless &
+qos-control list-targets
+qos-control click wheel_disc
+qos-control snapshot /tmp/state.png
 ```
 
 Three layers, each useful on its own:
 - **`shots --mode offscreen|recording`** for pre-written scenarios → PNG / H.264
-- **`NIRIOS_TEST_CONTROL` socket + `nirios-control` CLI** for ad-hoc remote control
+- **`QOS_TEST_CONTROL` socket + `qos-control` CLI** for ad-hoc remote control
 - **`--backend headless`** for running the live compositor in CI / SSH / distrobox without forwarding a display
 
 Full guide: [`docs/headless-testing.md`](docs/headless-testing.md). Example scripts: [`scripts/headless-examples/`](scripts/headless-examples/).
@@ -107,5 +107,5 @@ Full guide: [`docs/headless-testing.md`](docs/headless-testing.md). Example scri
 -   **Rust**: Latest stable version.
 -   **Podman**: For building the OS container image.
 -   **QEMU**: For running the test VM.
--   **FUSE3**: Required for local testing of `quick-fs-fuse`.
--   **Wayland**: Required for local testing of `quick-desktop`.
+-   **FUSE3**: Required for local testing of `fs`.
+-   **Wayland**: Required for local testing of `shell`.

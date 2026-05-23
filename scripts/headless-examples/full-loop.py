@@ -10,8 +10,8 @@ Usage:
   ./full-loop.py [/tmp/nirios-full-loop.sock]
 
 What it does:
-  1. Spawns ./target/debug/quick-desktop --backend headless with
-     NIRIOS_TEST_CONTROL set to the socket path and DISPLAY +
+  1. Spawns ./target/debug/shell --backend headless with
+     QOS_TEST_CONTROL set to the socket path and DISPLAY +
      WAYLAND_DISPLAY unset.
   2. Waits up to 15s for the socket to appear.
   3. Lists targets, picks the workspace wheel, clicks it.
@@ -33,14 +33,14 @@ from _control import call, require_ok
 
 SOCKET = sys.argv[1] if len(sys.argv) > 1 else "/tmp/nirios-full-loop.sock"
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
-BINARY = SCRIPT_DIR / ".." / ".." / "target" / "debug" / "quick-desktop"
+BINARY = SCRIPT_DIR / ".." / ".." / "target" / "debug" / "shell"
 BINARY = BINARY.resolve()
 
 
 def main() -> int:
     if not BINARY.exists():
         print(f"FAIL: compositor not built at {BINARY}", file=sys.stderr)
-        print("      run: cargo build -p quick-desktop --bin quick-desktop", file=sys.stderr)
+        print("      run: cargo build -p shell --bin shell", file=sys.stderr)
         return 1
 
     # 1. Spawn.
@@ -48,7 +48,7 @@ def main() -> int:
         os.unlink(SOCKET)
     except FileNotFoundError:
         pass
-    env = {**os.environ, "NIRIOS_TEST_CONTROL": SOCKET}
+    env = {**os.environ, "QOS_TEST_CONTROL": SOCKET}
     env.pop("DISPLAY", None)
     env.pop("WAYLAND_DISPLAY", None)
     print(f"spawning {BINARY} --backend headless ...")
