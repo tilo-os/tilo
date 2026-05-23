@@ -1,4 +1,4 @@
-use quick_desktop::shell::system_monitor::{SparkSample, SystemMonitor};
+use shell::shell::system_monitor::{SparkSample, SystemMonitor};
 
 #[test]
 fn system_monitor_collects_samples() {

@@ -51,15 +51,15 @@ use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
 
-use quick_desktop::shell::state::WorkspaceTree;
-use quick_desktop::shell::topbar_chrome::TopBarChrome;
-use quick_desktop::shell::{build_nirios_root_with_chrome};
+use shell::shell::state::WorkspaceTree;
+use shell::shell::topbar_chrome::TopBarChrome;
+use shell::shell::{build_nirios_root_with_chrome};
 
-use quick_ui::presence::PresenceCtx;
-use quick_ui::state::State;
-use quick_ui::text_render::TextRenderer;
-use quick_ui::theme::Theme;
-use quick_ui::widget::{AppKind, TabBar, TabDescriptor, TileContent, Widget, WindowGroup, WindowWidth};
+use ui::presence::PresenceCtx;
+use ui::state::State;
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::widget::{AppKind, TabBar, TabDescriptor, TileContent, Widget, WindowGroup, WindowWidth};
 
 mod support;
 
@@ -127,7 +127,7 @@ struct Harness {
     doc_root: ObjId,
     modifiers: Modifiers,
     focus: Option<NodeId>,
-    chrome: quick_desktop::shell::chrome_state::Chrome,
+    chrome: shell::shell::chrome_state::Chrome,
 }
 
 impl Harness {
@@ -426,7 +426,7 @@ fn e2e_open_close_overview() {
 fn overview_btn_hit(
     tree: &WorkspaceTree,
     theme: &Theme,
-    chrome: quick_desktop::shell::chrome_state::Chrome,
+    chrome: shell::shell::chrome_state::Chrome,
 ) -> Point {
     let (_, centre) = probe_topbar(tree, theme, chrome, |bar| bar.overview_btn_rect());
     centre
@@ -437,7 +437,7 @@ fn overview_btn_hit(
 fn tray_pill_hit(
     tree: &WorkspaceTree,
     theme: &Theme,
-    chrome: quick_desktop::shell::chrome_state::Chrome,
+    chrome: shell::shell::chrome_state::Chrome,
 ) -> Point {
     let (_, centre) = probe_topbar(tree, theme, chrome, |bar| bar.tray_pill_rect());
     centre
@@ -453,7 +453,7 @@ fn tray_pill_hit(
 fn probe_topbar(
     tree: &WorkspaceTree,
     theme: &Theme,
-    chrome: quick_desktop::shell::chrome_state::Chrome,
+    chrome: shell::shell::chrome_state::Chrome,
     extract: impl FnOnce(&TopBarChrome) -> vello::kurbo::Rect,
 ) -> (vello::kurbo::Rect, Point) {
     let mut bar = TopBarChrome::from_tree(tree).with_chrome(chrome);
@@ -661,7 +661,7 @@ fn e2e_tab_drag_reorder() {
     );
 
     // Let the TabBar's layout-spring elapse. `LAYOUT_ANIM_MS = 180`
-    // in `quick-ui/src/widget/tabs.rs`; a 250 ms sleep gives a
+    // in `ui/src/widget/tabs.rs`; a 250 ms sleep gives a
     // comfortable margin so every surviving pill has converged from
     // its pre-drop `prev_rect` to its post-drop `tab_rects[i]` before
     // we capture the golden. Without this sleep the spring would
@@ -1301,7 +1301,7 @@ fn assert_png_nonempty(path: &Path) {
 // `quick-desktop` binary. The shell-layer `Shell::dispatch_key` table lives
 // in `src/shell/mod.rs:522` but is *never constructed* by `src/main.rs` —
 // main builds the widget tree via `build_nirios_root` and hands it to
-// `quick_ui::App`, bypassing the `Shell` struct. So the only hotkey path
+// `ui::App`, bypassing the `Shell` struct. So the only hotkey path
 // that actually fires for a real user is the pre-pass inside
 // `ShellOverlayHost::handle_event`. These tests pin that pre-pass so the
 // live-binary keyboard shortcuts don't silently regress again.
@@ -1333,7 +1333,7 @@ fn key_press(logical_key: Key) -> WindowEvent {
 /// `AutoCommit` + empty taffy tree so the hotkey pre-pass short-circuits
 /// before it would otherwise try to walk the widget tree's children.
 fn pump_host(
-    host: &mut quick_desktop::shell::overlay_host::ShellOverlayHost,
+    host: &mut shell::shell::overlay_host::ShellOverlayHost,
     event: &WindowEvent,
     modifiers: &Modifiers,
 ) -> bool {
@@ -1369,7 +1369,7 @@ fn e2e_ctrl_k_opens_search_palette_in_live_binary_path() {
     // hand-rolled stub.
     let tree = WorkspaceTree::bootstrap_default();
     let (mut host, _chrome) =
-        quick_desktop::shell::build_nirios_overlay_host_with_chrome(&tree);
+        shell::shell::build_nirios_overlay_host_with_chrome(&tree);
     assert!(!host.palette_visible(), "palette starts closed");
 
     let mods = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
@@ -1386,7 +1386,7 @@ fn e2e_escape_closes_search_palette() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tree = WorkspaceTree::bootstrap_default();
     let (mut host, _chrome) =
-        quick_desktop::shell::build_nirios_overlay_host_with_chrome(&tree);
+        shell::shell::build_nirios_overlay_host_with_chrome(&tree);
 
     // Open via Ctrl+K first so we're not bypassing the host's own state
     // machine. Asserts above already cover the toggle; re-checking here
@@ -1415,7 +1415,7 @@ fn e2e_ctrl_tab_toggles_overview_in_live_binary_path() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tree = WorkspaceTree::bootstrap_default();
     let (mut host, chrome) =
-        quick_desktop::shell::build_nirios_overlay_host_with_chrome(&tree);
+        shell::shell::build_nirios_overlay_host_with_chrome(&tree);
     assert!(!chrome.borrow().overlays.overview);
 
     let mods = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
@@ -1444,7 +1444,7 @@ fn e2e_ctrl_tab_toggles_overview_in_live_binary_path() {
 // # Keyboard path
 // We fell back to calling `state.undo()` / `state.redo()` directly
 // rather than synthesising Ctrl+Z / Ctrl+Shift+Z through winit: the
-// undo/redo keymap is wired in `quick_ui::App::run`, not in any widget,
+// undo/redo keymap is wired in `ui::App::run`, not in any widget,
 // and `App::run` owns its own event loop. This integration test drives
 // widgets directly (no `App::run`), so the keyboard synthesis path
 // would short-circuit — the widget tree never sees Ctrl+Z route to
@@ -1453,7 +1453,7 @@ fn e2e_ctrl_tab_toggles_overview_in_live_binary_path() {
 //
 // # The critical finding re: tab-close
 // Tab close / reorder / maximize do NOT push to `state.undo_stack`.
-// `TabBar::sync` is empty (`quick-ui/src/widget/tabs.rs:637`), tabs
+// `TabBar::sync` is empty (`ui/src/widget/tabs.rs:637`), tabs
 // aren't persisted in the CRDT, and the close/reorder handlers in
 // `WindowGroup::handle_event` mutate `self.bar`/`self.hosts` directly
 // without calling `state.commit_action`. So a tab-close gesture leaves
@@ -1502,7 +1502,7 @@ impl UndoHarness {
         // EditorApp needs focus before it processes keyboard; we flip
         // the flag up front because there's no App loop to route a
         // click-triggered focus_target back into `set_focus`.
-        let mut editor = quick_desktop::shell::editor_app::EditorApp::new();
+        let mut editor = shell::shell::editor_app::EditorApp::new();
         editor.set_focus(true);
 
         let tab = TabDescriptor {
@@ -1623,8 +1623,8 @@ impl UndoHarness {
 ///
 /// Keyboard path: we call `state.undo()` directly rather than synth-
 /// esising Ctrl+Z — the Ctrl+Z → `state.undo()` wiring lives in
-/// `quick_ui::App::run` (search for "z" | "Z" at
-/// `quick-ui/src/app.rs:547`), which this test deliberately does not
+/// `ui::App::run` (search for "z" | "Z" at
+/// `ui/src/app.rs:547`), which this test deliberately does not
 /// instantiate. Direct `state.undo()` exercises the same public API
 /// the `App` loop calls. See the module-level comment above for why.
 ///
@@ -1795,7 +1795,7 @@ fn e2e_undo_redo_round_trip_restores_golden() {
 /// post-mutation frame pixel-for-pixel.
 ///
 /// Uses the direct state API for the same reason as Test 1 (the Ctrl+
-/// Shift+Z / Ctrl+Y handlers live in `quick_ui::App::run:546-548`,
+/// Shift+Z / Ctrl+Y handlers live in `ui::App::run:546-548`,
 /// which we don't instantiate).
 #[test]
 fn e2e_redo_after_undo_rehydrates_golden() {
@@ -1841,7 +1841,7 @@ fn e2e_redo_after_undo_rehydrates_golden() {
     // CAVEAT: `State::undo` / `State::redo` only restore the CRDT snap-
     // shot. Widget-local state captured in `UndoEntry::widget_metadata`
     // (e.g. `EditorApp`'s cursor byte-offset via `get_state`/`set_state`)
-    // is applied by `quick_ui::App::apply_undo_entry:292-298`, which
+    // is applied by `ui::App::apply_undo_entry:292-298`, which
     // this harness doesn't run — we drive `WindowGroup` directly, not
     // through `App`. As of the "preserve widget metadata + focus across
     // undo/redo" fix, `State::redo` *does* carry the pre-undo metadata

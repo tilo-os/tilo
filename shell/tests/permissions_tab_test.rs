@@ -23,18 +23,18 @@ use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
-use quick_desktop::shell::build_nirios_overlay_host_with_chrome;
-use quick_desktop::shell::chrome_state::{Chrome, WsTab};
-use quick_desktop::shell::overlay_host::ShellOverlayHost;
-use quick_desktop::shell::state::{
+use shell::shell::build_nirios_overlay_host_with_chrome;
+use shell::shell::chrome_state::{Chrome, WsTab};
+use shell::shell::overlay_host::ShellOverlayHost;
+use shell::shell::state::{
     Capability, GrantScope, Workspace, WorkspaceId, WorkspaceTree,
 };
-use quick_desktop::shell::workspace_settings;
+use shell::shell::workspace_settings;
 
-use quick_ui::presence::PresenceCtx;
-use quick_ui::text_render::TextRenderer;
-use quick_ui::theme::Theme;
-use quick_ui::widget::Widget;
+use ui::presence::PresenceCtx;
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::widget::Widget;
 
 use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
 

@@ -118,7 +118,7 @@ impl TopicSubscriber for WorkspaceTreeReplica {
                     .apply_changes(changes)
                 {
                     tracing::error!(
-                        target: "quick_desktop::network::replica",
+                        target: "shell::network::replica",
                         sender,
                         change_count = changes.len(),
                         ?err,

@@ -12,18 +12,18 @@
 //! full `UiTile` type (which carries a `Box<dyn AppWidget>`) on the public
 //! shell API.
 
-use quick_desktop::shell::state::{
+use shell::shell::state::{
     AppKind, Strip, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceTree,
 };
-use quick_desktop::shell::{build_nirios_root, resolve_tile_shape_for_test};
+use shell::shell::{build_nirios_root, resolve_tile_shape_for_test};
 use std::collections::HashMap;
 
 /// Build a minimal single-workspace tree whose sole window-group holds one
 /// `AppPlaceholder` tab of `kind`. Avoids `bootstrap_default` so the test
 /// doesn't spuriously fail if the default tree's tile kinds drift.
 fn tree_with_single_placeholder(kind: AppKind, title: &str) -> WorkspaceTree {
-    let ws_id = quick_desktop::shell::state::WorkspaceId::new();
-    let strip_id = quick_desktop::shell::state::StripId::new();
+    let ws_id = shell::shell::state::WorkspaceId::new();
+    let strip_id = shell::shell::state::StripId::new();
     // IDs for group / tab — any unique u64 works; `next_id` isn't exported.
     let group_id: u64 = 9_001;
     let tab_id: u64 = 9_002;

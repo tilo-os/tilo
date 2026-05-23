@@ -27,7 +27,7 @@
 
 use std::time::Duration;
 
-use quick_ui::widget::tooltip::Tooltip;
+use ui::widget::tooltip::Tooltip;
 
 use crate::shell::state::{Collaborator, WorkspaceTree};
 use crate::shell::system_monitor::{SparkSample, SystemMonitor};

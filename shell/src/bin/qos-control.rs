@@ -1,22 +1,22 @@
-//! `nirios-control` — thin CLI over the `NIRIOS_TEST_CONTROL` socket.
+//! `qos-control` — thin CLI over the `QOS_TEST_CONTROL` socket.
 //!
 //! Wraps the JSON command protocol implemented by
-//! [`quick_desktop::compositor::test_control`] so humans and shell
+//! [`shell::compositor::test_control`] so humans and shell
 //! scripts don't have to glue `socat` to `jq`. Default socket path
-//! comes from `$NIRIOS_TEST_CONTROL` (matches the env-var the
+//! comes from `$QOS_TEST_CONTROL` (matches the env-var the
 //! compositor binds against), falling back to `/tmp/nirios.sock` when
 //! the var is unset — so the natural workflow is "set the env var
 //! once, both ends pick it up".
 //!
 //! Spec: `docs/superpowers/specs/2026-05-16-real-input-e2e-design.md`,
-//! "Component 3: `nirios-control` CLI". Implementation discipline
+//! "Component 3: `qos-control` CLI". Implementation discipline
 //! mirrors the spec's "single file, single purpose binary" — no
 //! `clap`, no async, just stdlib + `serde_json`.
 //!
 //! ## Subcommands
 //!
 //! ```text
-//! nirios-control [--socket /path] <op> [args]
+//! qos-control [--socket /path] <op> [args]
 //!
 //!   list-targets                  print every target as `NAME  (X, Y, W, H)`
 //!   click NAME                    click_named
@@ -40,7 +40,7 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-/// Default socket path when neither `--socket` nor `$NIRIOS_TEST_CONTROL`
+/// Default socket path when neither `--socket` nor `$QOS_TEST_CONTROL`
 /// is set. Mirrors the spec's "the natural workflow is set the env
 /// once, both ends pick it up" — production runs never bind here
 /// because the env-var gate inside the compositor refuses to listen
@@ -119,7 +119,7 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
     }
 
     let socket = socket
-        .or_else(|| std::env::var_os("NIRIOS_TEST_CONTROL").map(PathBuf::from))
+        .or_else(|| std::env::var_os("QOS_TEST_CONTROL").map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from(DEFAULT_SOCKET));
 
     let mut iter = positional.iter();
@@ -409,12 +409,12 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
 /// docstring's subcommand table.
 fn print_usage() {
     println!(
-        "nirios-control — drive a running quick-desktop's test_control socket\n\
+        "qos-control — drive a running quick-desktop's test_control socket\n\
          \n\
          Usage:\n\
-         \x20 nirios-control [--socket PATH] <subcommand> [args]\n\
+         \x20 qos-control [--socket PATH] <subcommand> [args]\n\
          \n\
-         Default socket path comes from $NIRIOS_TEST_CONTROL, falling back to\n\
+         Default socket path comes from $QOS_TEST_CONTROL, falling back to\n\
          {DEFAULT_SOCKET}.\n\
          \n\
          Subcommands:\n\
@@ -457,7 +457,7 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         Err(ParseError::Usage(msg)) => {
-            eprintln!("nirios-control: {msg}");
+            eprintln!("qos-control: {msg}");
             return ExitCode::from(2);
         }
     };
@@ -466,7 +466,7 @@ fn main() -> ExitCode {
         Ok(j) => j,
         Err(ParseError::Help) => unreachable!(),
         Err(ParseError::Usage(msg)) => {
-            eprintln!("nirios-control: {msg}");
+            eprintln!("qos-control: {msg}");
             return ExitCode::from(2);
         }
     };
@@ -475,7 +475,7 @@ fn main() -> ExitCode {
         Ok(s) => s,
         Err(e) => {
             eprintln!(
-                "nirios-control: connect {:?}: {e}",
+                "qos-control: connect {:?}: {e}",
                 invocation.socket
             );
             return ExitCode::from(2);
@@ -485,7 +485,7 @@ fn main() -> ExitCode {
     let response = match round_trip(&mut stream, &cmd_json) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("nirios-control: socket round-trip: {e}");
+            eprintln!("qos-control: socket round-trip: {e}");
             return ExitCode::from(2);
         }
     };
@@ -709,14 +709,14 @@ mod tests {
         // crate don't read this variable.
         // Note: this test asserts the *fallback* path; for the
         // env-var path see `default_socket_reads_env_when_set`.
-        let prev = std::env::var_os("NIRIOS_TEST_CONTROL");
-        unsafe { std::env::remove_var("NIRIOS_TEST_CONTROL"); }
+        let prev = std::env::var_os("QOS_TEST_CONTROL");
+        unsafe { std::env::remove_var("QOS_TEST_CONTROL"); }
         let inv = parse(&["list-targets"]).unwrap();
         // Restore before assertion so a panic doesn't poison the
         // test process's env for any later test (defensive — the
         // assertion below shouldn't fail in practice).
         if let Some(v) = prev {
-            unsafe { std::env::set_var("NIRIOS_TEST_CONTROL", v); }
+            unsafe { std::env::set_var("QOS_TEST_CONTROL", v); }
         }
         assert_eq!(inv.socket, PathBuf::from(DEFAULT_SOCKET));
     }

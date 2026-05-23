@@ -3,8 +3,8 @@
 //! Explicitly *not* a real browser port — the shell uses this placeholder
 //! tile until/unless Servo is revived. Plan 3 Task 14.
 
-use quick_desktop::shell::browser_stub::BrowserStubWidget;
-use quick_ui::{AppKind, AppWidget, IconDescriptor};
+use shell::shell::browser_stub::BrowserStubWidget;
+use ui::{AppKind, AppWidget, IconDescriptor};
 use std::sync::{Arc, Mutex};
 
 #[test]

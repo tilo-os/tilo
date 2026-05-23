@@ -68,13 +68,13 @@ use vello::kurbo::{Affine, BezPath, Circle, PathEl, Point, Rect, RoundedRect, St
 use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
-use quick_ui::animation::Spring;
-use quick_ui::icons::{self, Icon, LUCIDE_DEFAULT_STROKE_PX};
-use quick_ui::presence::{PresenceCtx, PresenceKey};
-use quick_ui::text_render::TextRenderer;
-use quick_ui::theme::Theme;
-use quick_ui::tokens::SpringPresets;
-use quick_ui::widget::Widget;
+use ui::animation::Spring;
+use ui::icons::{self, Icon, LUCIDE_DEFAULT_STROKE_PX};
+use ui::presence::{PresenceCtx, PresenceKey};
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::tokens::SpringPresets;
+use ui::widget::Widget;
 
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::state::WorkspaceId;
@@ -1734,8 +1734,8 @@ mod tests {
     /// count for that spoke's `PresenceKey::Workspace`.
     #[test]
     fn disc_renders_dot_per_seeded_peer_on_workspace() {
-        use quick_ui::permissions::UserId;
-        use quick_ui::presence::{PresenceCtx, PresenceKey};
+        use ui::permissions::UserId;
+        use ui::presence::{PresenceCtx, PresenceKey};
 
         let mut ctx = PresenceCtx::empty();
         let key = PresenceKey::Workspace { id: "77".to_string() };
@@ -1892,8 +1892,8 @@ mod tests {
     /// same workspace and asserts the helper reports exactly 3.
     #[test]
     fn disc_caps_presence_dots_at_three_per_spoke() {
-        use quick_ui::permissions::UserId;
-        use quick_ui::presence::{PresenceCtx, PresenceKey};
+        use ui::permissions::UserId;
+        use ui::presence::{PresenceCtx, PresenceKey};
 
         let mut ctx = PresenceCtx::empty();
         let key = PresenceKey::Workspace { id: "77".to_string() };

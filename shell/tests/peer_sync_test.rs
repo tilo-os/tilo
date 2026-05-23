@@ -15,11 +15,11 @@ use std::time::Duration;
 use libp2p::futures::StreamExt;
 use libp2p::swarm::SwarmEvent;
 use libp2p::{Multiaddr, Swarm, noise, tcp, yamux};
-use quick_desktop::network::{
+use shell::network::{
     Actor, NeighbourMsg, NetCmd, NetEvent, NiriosBehaviour,
     invite::{make_invite_token, validate_invite_token},
 };
-use quick_desktop::shell::state::WorkspaceTree;
+use shell::shell::state::WorkspaceTree;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
@@ -239,7 +239,7 @@ fn invite_token_round_trips() {
 /// the gossipsub round-trip.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn surface_frame_round_trips_through_gossipsub() {
-    use quick_desktop::network::{H264Decoder, H264Encoder};
+    use shell::network::{H264Decoder, H264Encoder};
 
     let (cmd_a, _ev_rx_a, addr_a) = spawn_actor().await;
     let (cmd_b, mut ev_rx_b, _addr_b) = spawn_actor().await;
@@ -316,7 +316,7 @@ async fn surface_frame_round_trips_through_gossipsub() {
 /// the wire-level vocabulary survives the gossipsub round-trip.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn remote_input_round_trips_through_gossipsub() {
-    use quick_desktop::network::InputEvent;
+    use shell::network::InputEvent;
 
     let (cmd_a, _ev_rx_a, addr_a) = spawn_actor().await;
     let (cmd_b, mut ev_rx_b, _addr_b) = spawn_actor().await;

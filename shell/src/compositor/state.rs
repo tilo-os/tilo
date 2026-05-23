@@ -236,7 +236,7 @@ impl State {
 impl RemoteInputSink for State {
     fn apply(&mut self, peer: MsgPeerId, surface: SurfaceId, event: InputEvent) {
         tracing::debug!(
-            target: "quick_desktop::compositor::state",
+            target: "shell::compositor::state",
             peer, surface, ?event,
             "remote-input applied (D-1: pointer events injected into seat; \
              keyboard injection deferred)"
@@ -377,7 +377,7 @@ impl CompositorHandler for State {
                         Ok(_) => {}
                         Err(err) => {
                             tracing::warn!(
-                                target: "quick_desktop::compositor::state",
+                                target: "shell::compositor::state",
                                 surface_id, ?err,
                                 "surface readback failed; tracker slot left empty",
                             );

@@ -1,7 +1,7 @@
 //! Real-input e2e Phase 1b — end-to-end test of the
-//! `NIRIOS_TEST_CONTROL` unix socket.
+//! `QOS_TEST_CONTROL` unix socket.
 //!
-//! Spawns `quick-desktop --mode native`, sets `NIRIOS_TEST_CONTROL` to
+//! Spawns `quick-desktop --mode native`, sets `QOS_TEST_CONTROL` to
 //! a temp path, waits for the socket-listening line on stderr, then
 //! connects as a client and exercises `list_targets`.
 //!
@@ -27,7 +27,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-/// Helper: spawn the compositor with `NIRIOS_TEST_CONTROL=path`, wait
+/// Helper: spawn the compositor with `QOS_TEST_CONTROL=path`, wait
 /// for the "test_control listening on" line, and return the child +
 /// socket path. The path is constructed under `/tmp` with the test
 /// process's pid to avoid collisions in parallel runs.
@@ -52,7 +52,7 @@ fn spawn_with_control() -> (Child, PathBuf) {
 
     let mut child = Command::new(&binary)
         .args(["--mode", "native"])
-        .env("NIRIOS_TEST_CONTROL", &socket_path)
+        .env("QOS_TEST_CONTROL", &socket_path)
         .stderr(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()

@@ -18,12 +18,12 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use quick_desktop::shell::chrome_state::{ChromeState, OverlayFlags};
-use quick_desktop::shell::overlay_host::ShellOverlayHost;
-use quick_desktop::shell::state::{
+use shell::shell::chrome_state::{ChromeState, OverlayFlags};
+use shell::shell::overlay_host::ShellOverlayHost;
+use shell::shell::state::{
     Capability, FsMode, GrantScope, Workspace, WorkspaceId, WorkspaceTree,
 };
-use quick_ui::widget::{PermissionPrompt, PromptChoice, Widget};
+use ui::widget::{PermissionPrompt, PromptChoice, Widget};
 
 use automerge::AutoCommit;
 use taffy::TaffyTree;
@@ -104,16 +104,16 @@ fn chrome_with_pending_grant(
 struct StubContent {
     rect: Rect,
 }
-impl quick_ui::widget::Widget for StubContent {
+impl ui::widget::Widget for StubContent {
     fn sync(&mut self, _s: &mut AutoCommit, _p: &automerge::ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &quick_ui::theme::Theme,
-        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn quick_ui::widget::Widget>,
+        _theme: &ui::theme::Theme,
+        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn ui::widget::Widget>,
     ) -> taffy::NodeId {
         let n = taffy.new_leaf(Default::default()).unwrap();
-        node_map.insert(n, self as *mut dyn quick_ui::widget::Widget);
+        node_map.insert(n, self as *mut dyn ui::widget::Widget);
         n
     }
     fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: taffy::NodeId, _origin: Point) {}
@@ -121,9 +121,9 @@ impl quick_ui::widget::Widget for StubContent {
         &mut self,
         _scene: &mut vello::Scene,
         _transform: vello::kurbo::Affine,
-        _text_renderer: &mut quick_ui::text_render::TextRenderer,
-        _theme: &quick_ui::theme::Theme,
-        _presence: &quick_ui::presence::PresenceCtx,
+        _text_renderer: &mut ui::text_render::TextRenderer,
+        _theme: &ui::theme::Theme,
+        _presence: &ui::presence::PresenceCtx,
     ) {
     }
     fn handle_event(

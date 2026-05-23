@@ -46,7 +46,7 @@ pub mod topbar_chrome;
 pub mod workspace_drop;
 pub mod workspace_settings;
 
-use quick_ui::widget::{
+use ui::widget::{
     AppKind as UiKind, AppWidget, Column, Container, GroupRow, Stack, StripView, TabDescriptor,
     TileContent as UiTile, Widget, WindowGroup as UiGroup, WindowWidth as UiWidth,
     WorkspaceView,
@@ -73,7 +73,7 @@ use crate::shell::tile::{
 use crate::shell::topbar::TopBar;
 use crate::shell::workspace_settings::WorkspaceSettings;
 use file_explorer::FileExplorerWidget;
-use quick_terminal::TerminalWidget;
+use terminal::TerminalWidget;
 
 /// Root nirios shell handle. Owns the runtime workspace tree — the live
 /// counterpart to the persisted [`state::WorkspaceTree`], carrying concrete
@@ -87,7 +87,7 @@ use quick_terminal::TerminalWidget;
 /// follow-up task rewires it onto the runtime tree.
 ///
 /// In addition to the tree, the shell owns a single Automerge document
-/// ([`quick_ui::state::State`]) shared across every hosted `AppWidget`. Each
+/// ([`ui::state::State`]) shared across every hosted `AppWidget`. Each
 /// app's own sub-tree under `state.root` is what the widget reads from in
 /// `sync` and mutates in `handle_event` / `update`, matching the direct-
 /// mutation event model `quick-ui` is built around (see `quick-ui` docs).
@@ -98,7 +98,7 @@ pub struct Shell {
     /// feeds into the quick-ui `App`; here we create one up-front so the
     /// test harness (and any eager `sync` call during construction) has a
     /// document to bind against.
-    state: quick_ui::state::State,
+    state: ui::state::State,
 
     // --- chrome widgets (T27 wires these into the root) ---
     /// Top-edge row: LeftNav + CenterWidgets + RightTray.
@@ -193,7 +193,7 @@ impl Shell {
         let active_ws_id = tree.active;
         let mut shell = Self {
             tree,
-            state: quick_ui::state::State::new(),
+            state: ui::state::State::new(),
             topbar: TopBar::new(),
             sidebar: SidebarWheel::new(),
             overview: OverviewView::new(),
@@ -643,7 +643,7 @@ impl Shell {
     /// reaching into the widget's internals. Mirrors
     /// [`Self::toast_count`] in the "read-only introspection" role.
     #[cfg(any(test, debug_assertions))]
-    pub fn toast_kinds(&self) -> Vec<quick_ui::widget::toast::ToastKind> {
+    pub fn toast_kinds(&self) -> Vec<ui::widget::toast::ToastKind> {
         self.toasts.iter().map(|t| t.kind).collect()
     }
 
@@ -729,7 +729,7 @@ impl Shell {
     /// side of the routing — T28's observable behaviour.
     #[cfg(any(test, debug_assertions))]
     pub fn simulate_overscroll_commit(&mut self) {
-        use quick_ui::widget::toast::ToastKind;
+        use ui::widget::toast::ToastKind;
         // Drive the wheel widget through a full gesture so its internal
         // state progresses through `begin → drag (past threshold) → release`.
         // We use a scratch state tree (same reason as
@@ -775,7 +775,7 @@ impl Shell {
     /// which create affordance the user reached for.
     #[cfg(any(test, debug_assertions))]
     pub fn simulate_new_workspace_via_management(&mut self) {
-        use quick_ui::widget::toast::ToastKind;
+        use ui::widget::toast::ToastKind;
         // Dispatch against a scratch state tree for the same reason
         // `simulate_sidebar_wheel` and `simulate_overscroll_commit` do:
         // the sidebar widget operates on the persisted `state::WorkspaceTree`
@@ -805,7 +805,7 @@ impl Shell {
     /// new value.
     #[cfg(any(test, debug_assertions))]
     pub fn simulate_rename_active_workspace(&mut self, new_name: &str) {
-        use quick_ui::widget::toast::ToastKind;
+        use ui::widget::toast::ToastKind;
         // As with the other simulators, operate on a scratch persisted
         // workspace so the runtime tree (which doesn't carry `collaborators`
         // / `roles` / `workspace_files`) stays untouched. The test only
@@ -1043,7 +1043,7 @@ fn to_ui_width(w: state::WindowWidth) -> UiWidth {
 }
 
 fn to_ui_kind(k: &ShellKind) -> UiKind {
-    // Note: `quick_ui::AppKind` was aligned to spec §7 variants in Plan 3
+    // Note: `ui::AppKind` was aligned to spec §7 variants in Plan 3
     // Task 1 (Terminal, Files, Editor, Browser, Settings). The shell's own
     // `AppKind` still carries `FileExplorer` and `Other(String)` for v1
     // compatibility; map them to the nearest UI variant.
@@ -1344,9 +1344,9 @@ pub fn build_nirios_overlay_host_with_options(
 /// cleared between frames should reset `PresenceCtx::here` first;
 /// this helper is additive by design so it can also be invoked from
 /// incremental presence-update handlers.
-pub fn sync_tab_presence_from_tree(tree: &WorkspaceTree, ctx: &mut quick_ui::presence::PresenceCtx) {
-    use quick_ui::permissions::UserId;
-    use quick_ui::presence::PresenceKey;
+pub fn sync_tab_presence_from_tree(tree: &WorkspaceTree, ctx: &mut ui::presence::PresenceCtx) {
+    use ui::permissions::UserId;
+    use ui::presence::PresenceKey;
     if let Some(ws) = tree.active_workspace() {
         for c in &ws.collaborators {
             // Push per-peer colour overrides first: both tree-level and
@@ -1384,9 +1384,9 @@ pub fn sync_tab_presence_from_tree(tree: &WorkspaceTree, ctx: &mut quick_ui::pre
 /// editor body, the per-char measurement in `EditorApp::draw` handles
 /// out-of-range indices gracefully — `char_index_to_byte` clamps to
 /// `text.len()` so the caret just rides at end-of-buffer.
-pub fn seed_demo_editor_presence(ctx: &mut quick_ui::presence::PresenceCtx) {
-    use quick_ui::permissions::UserId;
-    use quick_ui::presence::{PathSegment, PresenceKey, SelectionRange};
+pub fn seed_demo_editor_presence(ctx: &mut ui::presence::PresenceCtx) {
+    use ui::permissions::UserId;
+    use ui::presence::{PathSegment, PresenceKey, SelectionRange};
     let key = PresenceKey::Widget {
         path: vec![PathSegment::Field("editor_body".into())],
     };

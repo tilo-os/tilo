@@ -26,11 +26,11 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
 
-use quick_ui::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
-use quick_ui::overlay::{FocusTrap, Modal};
-use quick_ui::text_render::TextRenderer;
-use quick_ui::theme::Theme;
-use quick_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
+use ui::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
+use ui::overlay::{FocusTrap, Modal};
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 
 use crate::shell::state::{AppId, AppPerm, Capability, FilePerm, Role, Workspace, WorkspaceId};
 
@@ -1407,7 +1407,7 @@ pub fn draw_permissions_pane(
 /// ids never collide on the same dot. No-op until the workspace state
 /// gains a per-role `color` field — at that point this becomes a
 /// thin `role.color.unwrap_or_else(|| swatch_for_id(...))`.
-fn role_swatch_color(role_id: &str, colors: &quick_ui::tokens::colors::Colors) -> vello::peniko::Color {
+fn role_swatch_color(role_id: &str, colors: &ui::tokens::colors::Colors) -> vello::peniko::Color {
     let bucket = role_id.bytes().next().unwrap_or(0) as usize % 5;
     match bucket {
         0 => colors.accent[5],

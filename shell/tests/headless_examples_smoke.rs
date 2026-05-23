@@ -80,7 +80,7 @@ fn full_loop_writes_two_pngs() {
 
 #[test]
 #[ignore = "spawns a real headless compositor; opt in with --ignored"]
-fn library_demo_writes_two_pngs_via_nirios_client() {
+fn library_demo_writes_two_pngs_via_qos_client() {
     assert_binary_exists();
     let _ = std::fs::remove_file("/tmp/library-demo-palette.png");
     let _ = std::fs::remove_file("/tmp/library-demo-final.png");

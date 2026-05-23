@@ -1,5 +1,5 @@
 //! Display-free `Backend` implementation: paints into an offscreen wgpu
-//! texture (via [`quick_ui::offscreen::OffscreenRenderer`]) instead of a
+//! texture (via [`ui::offscreen::OffscreenRenderer`]) instead of a
 //! window. The compositor's chrome doesn't care which backend it paints
 //! into, so this is the third path alongside [`super::WinitBackend`]
 //! (host-window) and [`super::DrmBackend`] (TTY).
@@ -8,7 +8,7 @@
 //! `--mode native` previously required a Wayland/X11 host session
 //! (winit) or a free TTY + DRM/KMS (drm). Neither works in CI, in a
 //! distrobox without a display, or under a remote SSH session without
-//! X-forwarding. The `NIRIOS_TEST_CONTROL` socket protocol already
+//! X-forwarding. The `QOS_TEST_CONTROL` socket protocol already
 //! supports "click things via a unix socket and read back state", but
 //! only if a backend boots. This backend lets the live binary stay up
 //! with `unset WAYLAND_DISPLAY DISPLAY` so e2e harnesses can drive it
@@ -22,7 +22,7 @@
 //!   `wayland-N` and forwards client traffic. The headless flag only
 //!   affects the paint target.
 
-use quick_ui::offscreen::OffscreenRenderer;
+use ui::offscreen::OffscreenRenderer;
 use vello::peniko::Color;
 use vello::Scene;
 
@@ -31,7 +31,7 @@ use super::{Backend, BackendEvent, Output, OutputId};
 /// Env-var that overrides the synthetic output's dimensions. Format is
 /// `WxH` (e.g. `1280x720`). Anything malformed or absent falls back to
 /// the `shots --mode offscreen` default. Mirrors the env-var-driven
-/// shape of `NIRIOS_TEST_CONTROL` / `NIRIOS_TEST_STATE_DUMP` so the
+/// shape of `QOS_TEST_CONTROL` / `NIRIOS_TEST_STATE_DUMP` so the
 /// whole headless surface stays opt-in without CLI bloat.
 pub const HEADLESS_SIZE_ENV: &str = "NIRIOS_HEADLESS_SIZE";
 

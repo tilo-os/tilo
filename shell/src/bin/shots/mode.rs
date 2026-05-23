@@ -11,7 +11,7 @@ use std::path::Path;
 
 use vello::peniko::Color;
 
-use quick_ui::offscreen::OffscreenRenderer;
+use ui::offscreen::OffscreenRenderer;
 
 use super::driver::ShellDriver;
 use super::scenario::{self, JsonDirSink, NullSink, Scenario, SnapshotSink};
@@ -115,7 +115,7 @@ pub mod recording {
     use std::fs::File;
     use std::io::Write;
 
-    use quick_desktop::network::encoder::H264Encoder;
+    use shell::network::encoder::H264Encoder;
 
     /// Run a scenario and append one or more encoded H.264 NALU payloads
     /// per scenario step to the file at `out`.
@@ -246,11 +246,11 @@ pub mod recording {
 pub mod window {
     use super::*;
 
-    use quick_desktop::shell::{
+    use shell::shell::{
         build_nirios_root, persist, seed_demo_editor_presence, sync_tab_presence_from_tree,
     };
-    use quick_ui::presence::PresenceKey;
-    use quick_ui::{App, State};
+    use ui::presence::PresenceKey;
+    use ui::{App, State};
 
     /// Run the live shell in a real winit window. If `pre_roll` is
     /// `Some(_)`, the scenario runs against a throwaway driver first
@@ -280,7 +280,7 @@ pub mod window {
             }
         }
 
-        // Live binary boilerplate — mirror of `quick-shell/src/main.rs`.
+        // Live binary boilerplate — mirror of `shell/src/main.rs`.
         let path = persist::state_json_path();
         let tree = persist::load_or_default(&path);
         let state = State::new();
@@ -305,7 +305,7 @@ mod tests {
 
     use std::fs;
 
-    use quick_desktop::network::decoder::H264Decoder;
+    use shell::network::decoder::H264Decoder;
 
     use super::super::scenario::lookup;
 

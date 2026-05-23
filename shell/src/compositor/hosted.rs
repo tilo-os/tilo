@@ -13,9 +13,9 @@ use crate::shell::network::{DEFAULT_KEYPAIR_PATH, ShellNetwork};
 use crate::shell::{
     build_nirios_root, persist, seed_demo_editor_presence, sync_tab_presence_from_tree,
 };
-use quick_ui::collaboration::PresencePayload;
-use quick_ui::presence::PresenceKey;
-use quick_ui::{App, State};
+use ui::collaboration::PresencePayload;
+use ui::presence::PresenceKey;
+use ui::{App, State};
 
 /// Boot the shell on top of the host's existing display server with
 /// the legacy v1 behaviour — peer-sync OFF, portals OFF. Kept as a
