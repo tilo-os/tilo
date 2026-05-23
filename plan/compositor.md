@@ -1,6 +1,6 @@
 # Spatial Compositor Design
 
-The compositor is a single Rust binary, `quick-desktop`, that is a real **Wayland server** built on `smithay` 0.6+. It hosts the in-tree shell chrome (top bar, wheel disc, command palette, modals) and third-party Wayland clients adopted into the workspace/strip/group model.
+The compositor is a single Rust binary, `shell`, that is a real **Wayland server** built on `smithay` 0.6+. It hosts the in-tree shell chrome (top bar, wheel disc, command palette, modals) and third-party Wayland clients adopted into the workspace/strip/group model.
 
 The phased rewrite (`docs/superpowers/plans/2026-05-02-real-wayland-compositor.md` phases 0-7) is complete; this document describes the resulting design.
 
@@ -8,15 +8,15 @@ The phased rewrite (`docs/superpowers/plans/2026-05-02-real-wayland-compositor.m
 
 The binary picks a mode and a backend at startup:
 
-- `--mode native` (default since Phase 7) — `quick-desktop` IS the compositor. Hosts a real Wayland socket, accepts third-party clients, paints frames itself.
-- `--mode hosted` — runs as a regular `quick-ui` Wayland *client* of an existing display server. Useful for development inside an existing GNOME/Sway session; **not** a separate compositor.
+- `--mode native` (default since Phase 7) — `shell` IS the compositor. Hosts a real Wayland socket, accepts third-party clients, paints frames itself.
+- `--mode hosted` — runs as a regular `ui` Wayland *client* of an existing display server. Useful for development inside an existing GNOME/Sway session; **not** a separate compositor.
 
 Within `--mode native`, the backend is a trait (`compositor::backend::Backend`) and `--backend` picks the implementation:
 
 - `--backend winit` — smithay's winit backend. Compositor renders into a winit-managed window on top of an existing parent compositor. Used for dev and for the CI integration test.
 - `--backend drm` — libseat session + udev device enumeration + libinput for input + DRM/GBM for scanout. The path for booting on a bare TTY via greetd.
 
-The `Backend` trait surface (`quick-shell/src/compositor/backend/mod.rs`) is:
+The `Backend` trait surface (`shell/src/compositor/backend/mod.rs`) is:
 
 ```rust
 pub trait Backend {
@@ -30,7 +30,7 @@ pub trait Backend {
 
 ## Event loop + state
 
-A single `calloop::EventLoop<state::State>` owns everything. The `State` struct (`quick-shell/src/compositor/state.rs`) holds all smithay globals:
+A single `calloop::EventLoop<state::State>` owns everything. The `State` struct (`shell/src/compositor/state.rs`) holds all smithay globals:
 
 ```rust
 pub struct State {
@@ -46,11 +46,11 @@ pub struct State {
 
 Each protocol handler attaches via `delegate_compositor!`, `delegate_xdg_shell!`, `delegate_shm!`, `delegate_seat!`, `delegate_output!`. The main socket is registered via `ListeningSocketSource`; per-workspace bridge sockets register additional sources on the same loop (see `plan/security.md`).
 
-The Wayland state is decoupled from the graphical backend so the compositor's logic can run in the headless integration test harness (`quick-shell/tests/interaction_test.rs`, `compositor_test.rs`) without a GPU.
+The Wayland state is decoupled from the graphical backend so the compositor's logic can run in the headless integration test harness (`shell/tests/interaction_test.rs`, `compositor_test.rs`) without a GPU.
 
 ## Per-frame paint
 
-The frame builder (`quick-shell/src/compositor/frame.rs`) produces one `vello::Scene` per output per frame:
+The frame builder (`shell/src/compositor/frame.rs`) produces one `vello::Scene` per output per frame:
 
 1. Drive the shell-chrome widget tree (`ShellOverlayHost`) into the scene — top bar, wheel disc, palette, modals.
 2. For each foreign Wayland surface visible in the active workspace, look up its committed buffer (stored on the surface user-data in `CompositorHandler::commit`) and draw it into the scene at the tab's content-area rect. SHM buffers are converted ARGB8888 → RGBA8888 and rendered as `peniko::Image`. dmabuf foreign buffers are also supported via wgpu native textures.
@@ -60,7 +60,7 @@ The same `FrameBuilder` is used by `cargo run --bin shots -- --mode offscreen|re
 
 ## Foreign-client adoption
 
-Foreign Wayland clients are placed in the workspace model via app-id matching (`quick-shell/src/compositor/tab_binding.rs`). Rule:
+Foreign Wayland clients are placed in the workspace model via app-id matching (`shell/src/compositor/tab_binding.rs`). Rule:
 
 When `XdgShellHandler::new_toplevel` fires:
 
@@ -73,7 +73,7 @@ Tab lifecycle mirrors surface lifecycle:
 - `xdg_toplevel.set_app_id` retroactively triggers adoption if the app-id was previously unset.
 - `xdg_toplevel.destroy` marks the corresponding tab as `closing` (the existing animation runs); after the animation the tab is reaped.
 
-A CI integration test (`quick-shell/tests/compositor_test.rs`) spawns the compositor with `--backend winit` headless, connects a fake `wayland-client`, opens a toplevel, and asserts the toplevel becomes a tab in the active group; then closes the client and asserts the tab is reaped.
+A CI integration test (`shell/tests/compositor_test.rs`) spawns the compositor with `--backend winit` headless, connects a fake `wayland-client`, opens a toplevel, and asserts the toplevel becomes a tab in the active group; then closes the client and asserts the tab is reaped.
 
 ## Spatial constraints (invariants)
 
@@ -92,11 +92,11 @@ Backend events (`BackendEvent::Pointer / Key / …`) flow into `smithay::input::
 - Shell-chrome shortcuts (palette open, wheel disc, workspace switching) are intercepted before the seat dispatch.
 - Per-workspace input policy (host-priority over guests, per-peer `read_only` flags) is enforced when `RemoteInput` arrives — see `plan/collaboration.md`.
 
-### Test-control input (`NIRIOS_TEST_CONTROL`)
+### Test-control input (`QOS_TEST_CONTROL`)
 
 When the env var is set, the compositor binds an additional unix socket alongside the wayland one. Newline-delimited JSON commands dispatch on the calloop main thread via `calloop::ping::Ping`, so seat injection stays single-threaded. Inputs go through `smithay::input::Seat::input` — same focus rules as physical input.
 
-Phase 1 of the spec has landed (`quick-shell/src/compositor/test_control.rs`): the pure-logic dispatcher plus `list_targets` and `click_at`. Later phases (drag, key, type, modifiers, snapshot, state_dump, the `nirios-control` CLI binary, and `tests/support/live_compositor.rs`) are described in `docs/superpowers/specs/2026-05-16-real-input-e2e-design.md`.
+Phase 1 of the spec has landed (`shell/src/compositor/test_control.rs`): the pure-logic dispatcher plus `list_targets` and `click_at`. Later phases (drag, key, type, modifiers, snapshot, state_dump, the `qos-control` CLI binary, and `tests/support/live_compositor.rs`) are described in `docs/superpowers/specs/2026-05-16-real-input-e2e-design.md`.
 
 ### Keyboard shortcuts (host-only)
 
@@ -129,13 +129,13 @@ Fallback if bare DRM init fails: relaunch under `cage` as a single-window Waylan
 
 - **Sandboxing protocol details and the per-workspace Wayland bridge socket** — `plan/security.md`.
 - **Peer sync, foreign-surface streaming, remote input replay** — `plan/collaboration.md`.
-- **xdg-desktop-portal backend** — `plan/security.md` and `quick-shell/src/portal/`.
+- **xdg-desktop-portal backend** — `plan/security.md` and `shell/src/portal/`.
 - **WorkspaceTree CRDT shape** — `plan/architecture.md` plus `docs/superpowers/specs/2026-05-04-workspace-tree-automerge-design.md`.
 - **Future**: vello → DMA-BUF direct interop (deferred Phase 5.3), libei input emulation in addition to the control socket, multi-monitor workspace pinning.
 
 ## Where to read first
 
-- `quick-shell/src/compositor/{mod.rs, state.rs, native.rs, hosted.rs, frame.rs, tab_binding.rs, test_control.rs}` — the live wiring.
-- `quick-shell/src/compositor/backend/{mod.rs, winit.rs, drm/}` — backend implementations.
+- `shell/src/compositor/{mod.rs, state.rs, native.rs, hosted.rs, frame.rs, tab_binding.rs, test_control.rs}` — the live wiring.
+- `shell/src/compositor/backend/{mod.rs, winit.rs, drm/}` — backend implementations.
 - `docs/superpowers/plans/2026-05-02-real-wayland-compositor.md` — phase-by-phase implementation log.
-- `quick-shell/tests/{compositor_test.rs, interaction_test.rs, drm_backend_boot.rs, control_socket_test.rs}` — the integration coverage.
+- `shell/tests/{compositor_test.rs, interaction_test.rs, drm_backend_boot.rs, control_socket_test.rs}` — the integration coverage.

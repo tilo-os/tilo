@@ -8,7 +8,7 @@ building AI-driven automation, regression suites, or interactive probes.
 Run it (no args needed):
   ./library-demo.py
 """
-from nirios_client import NiriosClient
+from qos_client import NiriosClient
 
 with NiriosClient.spawn_headless() as nirios:
     # Discover what's clickable:

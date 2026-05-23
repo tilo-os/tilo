@@ -1,18 +1,18 @@
-[submodule "quick-fs-fuse"]
-	path = quick-fs-fuse
-	url = ./quick-fs-fuse
-[submodule "quick-shell"]
-	path = quick-shell
-	url = ./quick-shell
+[submodule "fs"]
+	path = fs
+	url = ssh://git@git.tu-po.com/qos/fs.git
+[submodule "shell"]
+	path = shell
+	url = ssh://git@git.tu-po.com/qos/shell.git
 [submodule "os"]
 	path = os
-	url = ./os
+	url = ssh://git@git.tu-po.com/qos/os.git
 [submodule "apps/browser"]
 	path = apps/browser
-	url = ./apps/browser
+	url = ssh://git@git.tu-po.com/qos/browser.git
 [submodule "apps/file-explorer"]
 	path = apps/file-explorer
-	url = ./apps/file-explorer
+	url = ssh://git@git.tu-po.com/qos/file-explorer.git
 [submodule "apps/terminal"]
 	path = apps/terminal
-	url = ./apps/terminal
+	url = ssh://git@git.tu-po.com/qos/terminal.git

@@ -1,6 +1,6 @@
 # Headless e2e examples
 
-Copy-pastable scripts that drive the nirios compositor headlessly via the `NIRIOS_TEST_CONTROL` unix socket. Use these as starting points when writing automation for AI agents, regression tests, or interactive exploration.
+Copy-pastable scripts that drive the nirios compositor headlessly via the `QOS_TEST_CONTROL` unix socket. Use these as starting points when writing automation for AI agents, regression tests, or interactive exploration.
 
 **All examples assume the compositor is running headlessly.** Start it once with:
 
@@ -8,7 +8,7 @@ Copy-pastable scripts that drive the nirios compositor headlessly via the `NIRIO
 ./scripts/headless-examples/spawn-headless.sh /tmp/nirios.sock
 ```
 
-The script spawns `quick-desktop --backend headless`, waits for the socket, prints `READY <socket>` to stdout when usable. Tear down with `kill` (or use `Ctrl+C` if you ran it in the foreground).
+The script spawns `shell --backend headless`, waits for the socket, prints `READY <socket>` to stdout when usable. Tear down with `kill` (or use `Ctrl+C` if you ran it in the foreground).
 
 For background lifetime management:
 
@@ -30,35 +30,35 @@ Each script takes the socket path as its first argument (default `/tmp/nirios.so
 | `keyboard-flow.py` | Ctrl+K opens the palette, type text, snapshot. |
 | `drag-demo.py` | Press-then-drag a tab handle between two coordinates. |
 | `full-loop.py` | Spawn → list → click → key → drag → snapshot → tear down (single file; the most copy-pastable). |
-| `nirios_client.py` | Library with `NiriosClient` class; `from nirios_client import NiriosClient`. Higher-level than the raw socket calls below. |
+| `qos_client.py` | Library with `NiriosClient` class; `from qos_client import NiriosClient`. Higher-level than the raw socket calls below. |
 | `library-demo.py` | Same flow as `full-loop.py` but via `NiriosClient` — shows the library's API. |
 
 Each script is < 50 lines of Python, no external deps (stdlib `socket` + `json` only).
 
-## Easier than this: the `nirios-control` CLI
+## Easier than this: the `qos-control` CLI
 
-If you don't need the Python scripts, the `nirios-control` binary wraps the JSON protocol:
+If you don't need the Python scripts, the `qos-control` binary wraps the JSON protocol:
 
 ```bash
-cargo build -p quick-desktop --bin nirios-control
+cargo build -p shell --bin qos-control
 
-nirios-control list-targets                  # one row per addressable widget
-nirios-control click add_workspace           # click named
-nirios-control snapshot /tmp/out.png         # write PNG
-nirios-control state-dump --pretty           # WorkspaceTree + Chrome as JSON
-nirios-control type "hello world"            # type text
-nirios-control key Enter                     # named key OR single char
-nirios-control modifiers ctrl,shift          # set modifier mask (empty arg clears)
+qos-control list-targets                  # one row per addressable widget
+qos-control click add_workspace           # click named
+qos-control snapshot /tmp/out.png         # write PNG
+qos-control state-dump --pretty           # WorkspaceTree + Chrome as JSON
+qos-control type "hello world"            # type text
+qos-control key Enter                     # named key OR single char
+qos-control modifiers ctrl,shift          # set modifier mask (empty arg clears)
 ```
 
-Default socket: `$NIRIOS_TEST_CONTROL` else `/tmp/nirios.sock`. Errors exit non-zero with the structured `code: message` on stderr. Reach for the Python scripts only when you need to compose multiple calls or scrape responses.
+Default socket: `$QOS_TEST_CONTROL` else `/tmp/nirios.sock`. Errors exit non-zero with the structured `code: message` on stderr. Reach for the Python scripts only when you need to compose multiple calls or scrape responses.
 
 ## Wire protocol cheat-sheet
 
 The socket accepts newline-delimited JSON. Every command produces exactly one JSON response line.
 
 ```json
-// Commands (excerpt — see quick-shell/src/compositor/test_control.rs::Command):
+// Commands (excerpt — see shell/src/compositor/test_control.rs::Command):
 {"op": "list_targets"}
 {"op": "click_at",     "x": 400, "y": 300}
 {"op": "click_named",  "name": "command_palette_input"}
@@ -92,5 +92,5 @@ The control socket is for **ad-hoc, programmatic, headless** drives — primaril
 
 - `docs/headless-testing.md` — full overview of the three e2e layers (shots / socket / headless backend)
 - `docs/superpowers/specs/2026-05-16-real-input-e2e-design.md` — design rationale + spec
-- `quick-shell/src/compositor/test_control.rs` — the protocol's source of truth (every command + response variant lives in the `Command` and `Response` enums)
-- `quick-shell/src/bin/shots/scenario.rs` — pre-written scenarios that exercise the same code paths in-process
+- `shell/src/compositor/test_control.rs` — the protocol's source of truth (every command + response variant lives in the `Command` and `Response` enums)
+- `shell/src/bin/shots/scenario.rs` — pre-written scenarios that exercise the same code paths in-process

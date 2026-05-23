@@ -6,7 +6,7 @@
 
 - [x] Write architecture, OS layer, compositor, collaboration, security, roadmap docs
 - [ ] Fix `Cargo.toml` edition to 2021, add `[[bin]]` section
-- [ ] Update `config.rs` for multi-path config search (`~/.config/quick-desktop/` -> `/etc/quick-desktop/` -> `./`)
+- [ ] Update `config.rs` for multi-path config search (`~/.config/shell/` -> `/etc/shell/` -> `./`)
 - [ ] Add `--firstboot` CLI argument to `main.rs`
 - [ ] Create `os/Containerfile` with Fedora bootc 42 base
 - [ ] Create supporting OS files (greetd config, session entry, systemd units)
