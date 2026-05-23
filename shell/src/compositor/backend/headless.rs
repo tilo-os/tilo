@@ -161,7 +161,7 @@ impl Backend for HeadlessBackend {
         // constant means a `headless` PNG and a `winit` host window
         // clear to identical pixels for a blank scene — useful when
         // diffing PNGs against winit-recorded references.
-        let bg = Color::rgb8(0x1A, 0x1B, 0x26);
+        let bg = Color::from_rgb8(0x1A, 0x1B, 0x26);
         self.last_frame = self.renderer.render(scene, bg);
     }
 
