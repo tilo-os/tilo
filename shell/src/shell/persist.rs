@@ -4,7 +4,7 @@ use crate::shell::state::WorkspaceTree;
 
 pub fn state_json_path() -> PathBuf {
     dirs::config_dir()
-        .map(|c| c.join("quick-desktop").join("state.json"))
+        .map(|c| c.join("qos").join("state.json"))
         .unwrap_or_else(|| PathBuf::from("state.json"))
 }
 
