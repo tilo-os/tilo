@@ -275,7 +275,7 @@ pub mod window {
             let mut sink = NullSink;
             scenario::run(&mut driver, scenario, &mut sink);
             let chrome = driver.chrome();
-            if let Err(e) = persist::save_tree_to(&chrome.tree, &path) {
+            if let Err(e) = persist::save_tree_to(&*chrome.tree(), &path) {
                 eprintln!("shots: pre-roll persist failed: {e}");
             }
         }

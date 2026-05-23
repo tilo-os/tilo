@@ -244,7 +244,7 @@ impl Widget for SidebarWheelChrome {
         if let Some(chrome) = self.chrome.clone() {
             let rev = chrome.borrow().revision;
             if rev != self.synced_revision {
-                let tree_snap = chrome.borrow().tree.clone();
+                let tree_snap = chrome.borrow().tree().clone();
                 self.sync_from_tree(&tree_snap);
                 self.synced_revision = rev;
                 return true;
@@ -767,7 +767,10 @@ impl Widget for SidebarWheelChrome {
                         // so we share the "append + activate + seed Main
                         // strip" semantics with the overscroll-gesture path.
                         let wheel = SidebarWheel::new();
-                        let _ = wheel.click_management_new_workspace(&mut state.tree);
+                        {
+                            let mut tree = state.tree_mut();
+                            let _ = wheel.click_management_new_workspace(&mut *tree);
+                        }
                         state.bump();
                     }
                     *handled = true;
@@ -814,7 +817,7 @@ impl Widget for SidebarWheelChrome {
                         self.pending_intent = Some(SidebarIntent::Activate(card.id));
                         if let Some(chrome) = self.chrome.clone() {
                             let mut state = chrome.borrow_mut();
-                            state.tree.set_active(card.id);
+                            state.tree_mut().set_active(card.id);
                             state.bump();
                         }
                         *handled = true;
@@ -854,7 +857,7 @@ mod drag_rotate_tests {
         let chrome = ChromeState::new(tree);
         let sidebar = {
             let state = chrome.borrow();
-            SidebarWheelChrome::from_tree(&state.tree).with_chrome(chrome.clone())
+            SidebarWheelChrome::from_tree(&*state.tree()).with_chrome(chrome.clone())
         };
         (sidebar, chrome)
     }
@@ -862,7 +865,7 @@ mod drag_rotate_tests {
     #[test]
     fn drag_down_past_threshold_rotates_to_next_workspace() {
         let (mut s, chrome) = sidebar_with_workspaces(3);
-        let active_before = chrome.borrow().tree.active;
+        let active_before = chrome.borrow().tree().active;
         // Simulate a press anchor inside the wheel and a dragged cursor.
         s.rect = Rect::new(0.0, 0.0, 96.0, 600.0);
         s.last_cursor = Some(Point::new(48.0, 100.0));
@@ -900,7 +903,7 @@ mod drag_rotate_tests {
             }
         }
 
-        let active_after = chrome.borrow().tree.active;
+        let active_after = chrome.borrow().tree().active;
         assert_ne!(
             active_after, active_before,
             "dragging one card-stride down must rotate to a new workspace"
@@ -934,7 +937,7 @@ mod drag_rotate_tests {
         // Advance to the second workspace first so we have somewhere to go
         // back to.
         chrome.borrow_mut().switch_workspace(1);
-        let active_before = chrome.borrow().tree.active;
+        let active_before = chrome.borrow().tree().active;
         s.rect = Rect::new(0.0, 0.0, 96.0, 600.0);
         s.drag_start_y = Some(400.0);
         s.drag_last_y = Some(400.0);
@@ -963,7 +966,7 @@ mod drag_rotate_tests {
             }
         }
 
-        let active_after = chrome.borrow().tree.active;
+        let active_after = chrome.borrow().tree().active;
         assert_ne!(
             active_after, active_before,
             "dragging one card-stride up must rotate back to the previous workspace"

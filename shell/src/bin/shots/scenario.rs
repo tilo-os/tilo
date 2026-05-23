@@ -141,9 +141,11 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
         }
         Action::SwitchWorkspace(idx) => {
             driver.with_chrome(|st: &mut ChromeState| {
-                if let Some(ws) = st.tree.workspaces.get(*idx) {
+                let mut tree = st.tree_mut();
+                if let Some(ws) = tree.workspaces.get(*idx) {
                     let id = ws.id;
-                    st.tree.set_active(id);
+                    tree.set_active(id);
+                    drop(tree);
                     st.bump();
                 }
             });
@@ -175,15 +177,14 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
 pub fn chrome_state_json(driver: &ShellDriver) -> String {
     let st = driver.chrome();
     let host = driver.host();
-    let active = st.tree.active.raw();
-    let active_idx = st
-        .tree
+    let tree = st.tree();
+    let active = tree.active.raw();
+    let active_idx = tree
         .workspaces
         .iter()
-        .position(|w| w.id == st.tree.active)
+        .position(|w| w.id == tree.active)
         .unwrap_or(0);
-    let workspace_names: Vec<String> = st
-        .tree
+    let workspace_names: Vec<String> = tree
         .workspaces
         .iter()
         .map(|w| w.name.clone())
@@ -558,13 +559,13 @@ mod tests {
     #[test]
     fn scenario_workspace_switch_moves_active_index() {
         let mut d = ShellDriver::new((1600, 900));
-        let initial = d.chrome().tree.active;
+        let initial = d.chrome().tree().active;
         let mut sink = NullSink;
         let scenario = workspace_switch();
         run(&mut d, &scenario, &mut sink);
         // After the round-trip the active workspace should match the
         // initial one again.
-        assert_eq!(d.chrome().tree.active, initial);
+        assert_eq!(d.chrome().tree().active, initial);
     }
 
     /// Regression: post-action waits in built-in scenarios must outlast

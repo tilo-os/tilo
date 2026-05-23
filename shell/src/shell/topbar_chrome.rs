@@ -419,7 +419,7 @@ impl Widget for TopBarChrome {
             if rev != self.synced_revision {
                 // Clone the tree to avoid re-borrowing chrome while calling
                 // `sync_from_tree` (which borrows &self mut).
-                let tree_snap = chrome.borrow().tree.clone();
+                let tree_snap = chrome.borrow().tree().clone();
                 self.sync_from_tree(&tree_snap);
                 self.synced_revision = rev;
                 return true;
