@@ -74,6 +74,16 @@ pub struct PeerView {
     pending_inputs: Vec<InputEvent>,
     /// Layout rect computed by taffy.
     rect: Rect,
+    /// True when the view needs to repaint — set in [`Self::push_encoded`]
+    /// on every new decoded frame, cleared by `mark_drawn` after the App
+    /// composes the frame. Without this flag the default leaf
+    /// [`Widget::needs_redraw`] returns `true` every frame, defeating
+    /// the App's redraw-only-when-dirty gate so pointer-move events over
+    /// a peer surface used to schedule unnecessary repaints.
+    ///
+    /// Starts `true` so the very first frame paints the "Awaiting peer
+    /// surface…" placeholder.
+    dirty: bool,
 }
 
 impl PeerView {
@@ -89,6 +99,7 @@ impl PeerView {
             cached_image: None,
             pending_inputs: Vec::new(),
             rect: Rect::ZERO,
+            dirty: true,
         }
     }
 
@@ -113,6 +124,10 @@ impl PeerView {
             Some(frame) => {
                 self.latest = Some(frame);
                 self.cached_image = None;
+                // New decoded frame → needs repaint. Flag is cleared by
+                // `Widget::mark_drawn` after the App composes the frame
+                // that draws this view.
+                self.dirty = true;
                 true
             }
             None => false,
@@ -195,12 +210,20 @@ impl Widget for PeerView {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).expect("layout");
-        self.rect = Rect::new(
+        let new_rect = Rect::new(
             origin.x + l.location.x as f64,
             origin.y + l.location.y as f64,
             origin.x + l.location.x as f64 + l.size.width as f64,
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
+        // Rect changed → the placement matrix in `draw` changes too;
+        // schedule a repaint. Use exact equality here because taffy
+        // produces integer-valued logical pixels and identical-input
+        // layout passes return identical rects.
+        if new_rect != self.rect {
+            self.dirty = true;
+        }
+        self.rect = new_rect;
     }
 
     fn draw(
@@ -280,6 +303,27 @@ impl Widget for PeerView {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    /// PeerView's painted pixels change only on (a) new decoded frame
+    /// (set by `push_encoded`), (b) layout rect change (set by
+    /// `apply_layout`). Hover / focus do nothing visually — the
+    /// surface is a passive blit of the latest H.264 frame. Override
+    /// so the App's CursorMoved redraw gate can skip frames over a
+    /// peer surface that hasn't received new H.264 NALUs.
+    fn needs_redraw(&self) -> bool {
+        self.dirty
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+    }
+
+    /// PeerView's taffy node is a `percent(1.0)` leaf — its intrinsic
+    /// size never changes, only its parent slot. Layout-clean after
+    /// the first apply.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
     }
 }
 
