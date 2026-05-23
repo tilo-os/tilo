@@ -1225,7 +1225,7 @@ impl SidebarWheelDisc {
             return;
         };
         let mut state = chrome.borrow_mut();
-        state.tree.set_active(WorkspaceId(id));
+        state.tree_mut().set_active(WorkspaceId(id));
         state.bump();
     }
 }
@@ -1532,12 +1532,12 @@ mod tests {
         // contract the disc now fulfils via `publish_active_to_chrome`.
         let expected_id = ws_ids[d.active_idx];
         assert_eq!(
-            chrome.borrow().tree.active,
+            chrome.borrow().tree().active,
             expected_id,
             "snap_to_nearest must publish the new active workspace id to chrome"
         );
         assert_ne!(
-            chrome.borrow().tree.active,
+            chrome.borrow().tree().active,
             initial_active,
             "chrome's tree.active must have changed after the snap"
         );
@@ -1709,12 +1709,12 @@ mod tests {
 
         let state = chrome.borrow();
         assert_eq!(
-            state.tree.workspaces.len(),
+            state.tree().workspaces.len(),
             initial_count + 1,
             "plus-press must grow the workspace count by exactly 1"
         );
         assert_ne!(
-            state.tree.active, initial_active,
+            state.tree().active, initial_active,
             "plus-press must activate the newly-created workspace"
         );
         // Drag must not start from a plus-slot press — the press path
