@@ -5,6 +5,11 @@ edition = "2024"
 
 [dependencies]
 automerge = "0.8.0"
+# Diagnostic event/handler tracing. Off by default at WARN; turn up with
+# `RUST_LOG=ui=debug` to see every MouseInput, CursorMoved, KeyboardInput
+# entering App::window_event + dispatch results. Lets a maintainer
+# diagnose interaction bugs in hosted mode without source-reading.
+tracing = "0.1"
 cosmic-text = { version = "0.19.0", default-features = false, features = ["swash", "std"] }
 pollster = "0.4.0"
 rand = "0.10.1"
