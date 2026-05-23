@@ -1,0 +1,28 @@
+# Binary artifacts staged by ./build.sh before bootc-image-builder picks
+# them up. Produced by `cargo build --release -p shell -p fs -p terminal
+# -p browser -p file-explorer` and copied here; never commit them.
+/shell
+/fs
+/terminal
+/browser
+/file-explorer
+# Legacy names from before the qos rename; kept for hygiene during the
+# transition so a stale build doesn't accidentally re-stage them.
+/quick-desktop
+/quick-fs-fuse
+/quick-terminal
+/quick-browser
+
+# bootc-image-builder outputs
+/output/
+/output-*/
+
+# QEMU + first-boot artifacts produced by ./test-vm.sh / ./verify-test.sh
+/qemu-*.log
+/test-boot*.log
+/test-results.log
+*.log
+
+# Captured VM journals (verify-test.sh dumps these to /vm-logs* on the host)
+/vm-logs/
+/vm-logs-*/

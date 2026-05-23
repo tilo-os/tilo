@@ -1,0 +1,15 @@
+[Desktop Entry]
+# Alternate Wayland session entry for users who explicitly want the
+# libp2p peer-sync stack enabled (mdns + gossipsub for cluster sharing
+# discovery). Off by default — see /usr/share/doc/qos/peer-sync.md
+# for the privacy/trust trade-off and how to opt in.
+#
+# Both entries land in /usr/share/wayland-sessions/, so tuigreet lists
+# "nirios" and "nirios (peer-sync)" side by side and the user picks at
+# login time.
+Name=nirios (peer-sync)
+GenericName=qOS with peer-sync
+Comment=Collaborative session with libp2p peer discovery enabled
+Exec=/usr/bin/shell --enable-peer-sync
+Type=Application
+DesktopNames=nirios
