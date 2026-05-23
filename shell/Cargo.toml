@@ -3,6 +3,16 @@ name = "shell"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# When set, the hosted-mode compositor (`shell --backend winit`) binds
+# the QOS_TEST_CONTROL Unix socket the same way the headless backend
+# does. A background thread reads JSON commands and injects equivalent
+# `ui::UserEvent`s into the App via winit's `EventLoopProxy`. Disable
+# in production builds to drop the test surface (`--no-default-features
+# --features ...`).
+default = ["hosted-test-control"]
+hosted-test-control = []
+
 [dependencies]
 tokio = { version = "1.52.3", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }

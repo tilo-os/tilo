@@ -240,6 +240,11 @@ impl ApplicationHandler for Inner {
                 s.config.format = s.config.format.add_srgb_suffix();
                 let dh = &render_cx.devices[s.dev_id];
                 s.surface.configure(&dh.device, &s.config);
+                // vello's `create_surface` built a `TextureBlitter` for the
+                // pre-srgb format; wgpu 29's TextureBlitter pipeline must
+                // match the render pass's target format exactly, so we
+                // rebuild it against the now-sRGB swap-chain format.
+                s.blitter = wgpu::util::TextureBlitter::new(&dh.device, s.config.format);
                 s
             }
             Err(e) => {
@@ -330,15 +335,18 @@ impl ApplicationHandler for Inner {
                 // don't rely on it.
                 self.event_buffer.push(BackendEvent::Redraw);
             }
-            WindowEvent::CursorMoved { .. }
+            ev @ (WindowEvent::CursorMoved { .. }
             | WindowEvent::MouseInput { .. }
             | WindowEvent::KeyboardInput { .. }
-            | WindowEvent::MouseWheel { .. } => {
-                // Phase 6 routes these through the smithay seat layer;
-                // for now the compositor only needs to know that
-                // *some* input happened so it can keep the frame loop
-                // hot.
-                self.event_buffer.push(BackendEvent::Input);
+            | WindowEvent::MouseWheel { .. }) => {
+                // Carry the full event so `compositor::native::run`
+                // can dispatch it through `FrameBuilder::dispatch_event`
+                // — the same wire `execute_planned_action` uses for
+                // headless / scripted input.
+                self.event_buffer.push(BackendEvent::Input(ev));
+            }
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.event_buffer.push(BackendEvent::ModifiersChanged(modifiers));
             }
             _ => {}
         }

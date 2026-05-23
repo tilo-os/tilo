@@ -6,6 +6,9 @@
 //! drive a TTY directly.
 
 use vello::Scene;
+// Absolute path: this module has a `pub mod winit;` child below that
+// would otherwise shadow the external `winit` crate.
+use ::winit::event::{Modifiers, WindowEvent};
 
 pub mod drm;
 pub mod headless;
@@ -29,7 +32,21 @@ pub struct Output {
 pub enum BackendEvent {
     CloseRequested,
     OutputResized { id: OutputId, size: (u32, u32), scale: f32 },
-    Input,
+    /// A pointer / keyboard / wheel event. The full `winit::WindowEvent`
+    /// is carried so `compositor::native::run` can hand it to
+    /// `FrameBuilder::dispatch_event` — the same dispatch path the
+    /// headless `execute_planned_action` uses.
+    ///
+    /// Previously a marker variant: the compositor knew "some input
+    /// happened" but the event was discarded. That meant the native
+    /// backend silently swallowed every click — visible only because
+    /// hardware-clicking the window produced no widget reaction
+    /// (headless tests bypassed this path entirely, so the bug hid).
+    Input(WindowEvent),
+    /// Modifier-state changed. Tracked separately because
+    /// `WindowEvent::ModifiersChanged` carries a `Modifiers` struct
+    /// the loop needs to retain across subsequent events.
+    ModifiersChanged(Modifiers),
     Redraw,
     Focus(bool),
 }
