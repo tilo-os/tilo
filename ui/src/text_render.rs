@@ -186,11 +186,13 @@ impl TextRenderer {
         let line_height = size * 1.25;
         let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(size, line_height));
         let attrs = cosmic_text::Attrs::new().weight(weight.to_cosmic_weight());
-        buffer.set_text(&mut self.font_system, text, &attrs, Shaping::Advanced, None);
+        // cosmic-text 0.19: setters are lazy and no longer take FontSystem;
+        // set_text gained a trailing `Option<Align>` arg.
+        buffer.set_text(text, &attrs, Shaping::Advanced, None);
 
-        buffer.set_size(&mut self.font_system, max_width, None);
+        buffer.set_size(max_width, None);
         // Explicitly set wrap mode. Word wrap is standard for UI labels.
-        buffer.set_wrap(&mut self.font_system, Wrap::Word);
+        buffer.set_wrap(Wrap::Word);
         buffer.shape_until_scroll(&mut self.font_system, false);
 
         let mut width = 0.0f32;
@@ -236,9 +238,11 @@ impl TextRenderer {
         let line_height = size * 1.25;
         let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(size, line_height));
         let attrs = cosmic_text::Attrs::new().weight(weight.to_cosmic_weight());
-        buffer.set_text(&mut self.font_system, text, &attrs, Shaping::Advanced, None);
-        buffer.set_size(&mut self.font_system, max_width, None);
-        buffer.set_wrap(&mut self.font_system, Wrap::Word);
+        // cosmic-text 0.19: setters are lazy and no longer take FontSystem;
+        // set_text gained a trailing `Option<Align>` arg.
+        buffer.set_text(text, &attrs, Shaping::Advanced, None);
+        buffer.set_size(max_width, None);
+        buffer.set_wrap(Wrap::Word);
         buffer.shape_until_scroll(&mut self.font_system, false);
 
         for run in buffer.layout_runs() {
