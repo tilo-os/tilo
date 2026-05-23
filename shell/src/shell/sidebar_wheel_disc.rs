@@ -2,8 +2,39 @@
 //! OFF-SCREEN-LEFT, with only a ~66° arc of its right edge protruding
 //! into the visible sidebar column. Each **workspace** is a spoke; the
 //! user drags vertically to rotate, and a release snaps to the nearest
-//! spoke. An additional fixed "ruler" of small dots near the rim
-//! indicates the active workspace at a glance.
+//! spoke.
+//!
+//! ## 2026-05-23 visual redesign
+//!
+//! The original concept (`radial-workspace-switcher/src/App.tsx`)
+//! painted every spoke as a 40×40 (active) or 32×32 (inactive) rounded
+//! pill card with a vertically-rotated label. On a 200 px sidebar that
+//! read as **crowded** — 4–5 pill cards overlapping inside the visible
+//! 66° arc — and the per-spoke rotation made the labels read at
+//! inconsistent angles (a regression user-spotted on the live build).
+//!
+//! The current design is a **quiet ring**:
+//! - A subtle solid-fill background panel covers the visible sidebar
+//!   footprint at low alpha — gives the wheel visual weight without
+//!   competing with the desktop.
+//! - One **thin ring stroke** along the protruding rim defines the
+//!   wheel disc. No filled tile cards, no halo'd glow band, no per-
+//!   spoke icon tiles.
+//! - Each workspace is a **dot marker** on the ring's perimeter. The
+//!   active marker is a larger filled circle in the workspace's
+//!   palette colour with a soft halo; inactive markers are 4 px low-
+//!   alpha white specks. Markers rotate WITH the ring on drag.
+//! - The active workspace's **label** renders **upright** (no rotation)
+//!   to the right of the active marker — horizontal text the user can
+//!   read at a glance regardless of any in-flight wheel rotation. As
+//!   the wheel spins, the active marker always sits at "3 o'clock"
+//!   (the rightmost visible point of the ring), and the label sits at
+//!   a fixed screen-space position next to it. The active workspace
+//!   *identity* changes when the snap completes, not when the angle
+//!   passes — same write-back semantics as before.
+//! - Inactive workspace markers omit text entirely; the active marker
+//!   is the only one with a label. Hovering an inactive marker is a
+//!   future affordance (tooltip).
 //!
 //! User-facing spec (verbatim, 2026-04-21 + 2026-04-30):
 //! *"No permanent sidebar, but workspaces appear as rotated axes of the
@@ -70,7 +101,7 @@ use winit::event::WindowEvent;
 
 use ui::ColorCompat;
 use ui::animation::Spring;
-use ui::icons::{self, Icon, LUCIDE_DEFAULT_STROKE_PX};
+use ui::icons::Icon;
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -117,9 +148,11 @@ pub struct SidebarWheelDisc {
     /// fills the parent slot vertically.
     pub rect: Rect,
     /// Disc diameter in logical pixels. Drives the geometry math and the
-    /// drag→angle mapping. Default 1200 px — paired with
-    /// `VISIBLE_RADIUS_FRACTION = 0.16` this gives a ~96 px-wide visible
-    /// arc, matching the live `SIDEBAR_WIDTH_PX = 96` slot.
+    /// drag→angle mapping. Default 4500 px — paired with
+    /// `VISIBLE_RADIUS_FRACTION = 0.16` this gives a 360 px-wide visible
+    /// arc, matching the live `SIDEBAR_WIDTH_PX = 360` slot post the
+    /// 2026-05-23 redesign. Math: `visible_width = radius * VISIBLE`,
+    /// so `radius = 360 / 0.16 = 2250`, `diameter = 4500`.
     pub diameter_px: f64,
     /// Optional shared chrome handle. When present, a snap that lands on
     /// a spoke whose `workspace_id` is known writes the new active
@@ -189,6 +222,14 @@ struct WheelCacheFp {
 /// and the visible arc width (`2·arccos(1 - VISIBLE) ≈ 66°`).
 pub(crate) const VISIBLE_RADIUS_FRACTION: f64 = 0.16;
 
+/// Fractional vertical inset applied at both the top and bottom of the
+/// taffy-allocated slot so the wheel disc occupies roughly 10%–90% of
+/// the available height. The overlay host allocates the full sidebar
+/// slot height to the disc's taffy node; we trim it here so the
+/// visible disc footprint reads as deliberately inset from the topbar
+/// and floor rather than running edge-to-edge.
+pub(crate) const SLOT_VERTICAL_INSET_FRAC: f64 = 0.10;
+
 /// Concept's `DRAG_FACTOR` from `App.tsx:41` — degrees of rotation per
 /// pixel of vertical drag.
 const DRAG_FACTOR: f32 = 0.15;
@@ -240,7 +281,7 @@ impl SidebarWheelDisc {
             hover_anchor: None,
             drag_rotation_origin: 0.0,
             rect: Rect::ZERO,
-            diameter_px: 1200.0,
+            diameter_px: 4500.0,
             chrome: None,
             rotation_spring: None,
             plus_rect: Rect::ZERO,
@@ -424,80 +465,13 @@ fn spoke_icon_for_label(label: &str) -> Icon {
     }
 }
 
-/// Project the cluster's left-tail screen x for a label of width `text_w`.
-///
-/// The cluster is anchored at `(anchor_x, anchor_y)` and rotated by
-/// `cluster_rot` radians. In the cluster's local frame the label's tail
-/// (its leftmost edge before rotation) sits at local x =
-/// `-tile_size - gap - text_w` (because the tile centres at
-/// `-tile_size/2` and the label centres at `-tile_size - gap - text_w/2`,
-/// so its leftmost point is one further `text_w/2` out). After the
-/// rotation that local point becomes a screen-space (x, y); we only
-/// need x for the column-edge fit test.
-fn cluster_label_tail_screen_x(
-    text_w: f64,
-    cluster_rot: f64,
-    anchor_x: f64,
-    tile_size: f64,
-    gap: f64,
-) -> f64 {
-    let local_x = -tile_size - gap - text_w;
-    let local_y = 0.0_f64;
-    // Affine::rotate followed by translate(anchor): screen_x =
-    // anchor_x + cos(θ)·local_x − sin(θ)·local_y.
-    anchor_x + cluster_rot.cos() * local_x - cluster_rot.sin() * local_y
-}
-
-/// Build the label string for an inactive spoke, truncating to 4-6
-/// chars if the full label would overrun the wheel column's left edge
-/// (`column_x0`). Active spokes return the full uppercase label.
-///
-/// Truncation strategy: try the full label first; if the rotated tail
-/// overshoots `column_x0` by more than 1 px, drop the tail char until
-/// it fits or 4 chars remain. This matches the spec ("first 4-6 chars")
-/// without abruptly cutting at 4 when 6 would still fit.
-#[allow(clippy::too_many_arguments)]
-fn build_label_text(
-    raw: &str,
-    is_active: bool,
-    label_size: f32,
-    letter_spacing_em: f32,
-    text_renderer: &mut TextRenderer,
-    cluster_rot: f64,
-    anchor_x: f64,
-    tile_size: f64,
-    gap: f64,
-    column_x0: f64,
-) -> String {
-    let upper = raw.to_uppercase();
-    if is_active {
-        return upper;
-    }
-    let chars: Vec<char> = upper.chars().collect();
-    // Try lengths from full → 4 (clamped at the actual length).
-    let mut best = upper.clone();
-    let max_len = chars.len();
-    let min_len = max_len.min(4);
-    for take in (min_len..=max_len).rev() {
-        let candidate: String = chars.iter().take(take).collect();
-        let (raw_w, _) = text_renderer.measure(&candidate, label_size, None);
-        let track =
-            candidate.chars().count() as f32 * label_size * letter_spacing_em;
-        let text_w = (raw_w + track) as f64;
-        let tail_x = cluster_label_tail_screen_x(
-            text_w,
-            cluster_rot,
-            anchor_x,
-            tile_size,
-            gap,
-        );
-        if tail_x >= column_x0 - 1.0 {
-            return candidate;
-        }
-        best = candidate;
-    }
-    best
-}
+// (Helpers `cluster_label_tail_screen_x` and `build_label_text` lived
+// here in the prior pill-card design — every spoke had a rotated cluster
+// whose label could overrun the left column edge, so we measured the
+// rotated tail and truncated. The 2026-05-23 quiet-ring redesign drops
+// per-spoke labels entirely (only the active spoke gets an upright
+// horizontal label, drawn in screen space inside the panel) so neither
+// helper is needed any more.)
 
 impl Widget for SidebarWheelDisc {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
@@ -535,13 +509,22 @@ impl Widget for SidebarWheelDisc {
         // and only the right ~66° arc paints inside this rect. The
         // hit-testing in `handle_event` uses `hit_visible_arc` so clicks
         // in the rect's corners (outside the arc) don't grab the wheel.
+        //
+        // 2026-05-23: trim the slot vertically by `SLOT_VERTICAL_INSET_FRAC`
+        // at both ends so the wheel reads as roughly 10%–90% of the
+        // available sidebar height. Without this trim the disc runs
+        // edge-to-edge inside the column and looks like a sliver.
         let x0 = origin.x + l.location.x as f64;
-        let y0 = origin.y + l.location.y as f64;
+        let y0_raw = origin.y + l.location.y as f64;
+        let h_raw = l.size.height as f64;
+        let inset_v = h_raw * SLOT_VERTICAL_INSET_FRAC;
+        let y0 = y0_raw + inset_v;
+        let y1 = y0_raw + h_raw - inset_v;
         self.rect = Rect::new(
             x0,
             y0,
             x0 + l.size.width as f64,
-            y0 + l.size.height as f64,
+            y1,
         );
     }
 
@@ -603,23 +586,35 @@ impl Widget for SidebarWheelDisc {
         let cx = c.x;
         let cy = c.y;
 
-        // ---- Pass 1: shadow / atmosphere --------------------------------
-        // Concept: `boxShadow: 40px 0 120px rgba(0,0,0,0.8)` — soft black
-        // shadow extending RIGHT of the rim into the desktop. We
-        // approximate with a few thin vertical bands of decaying alpha
-        // anchored just outside the visible-arc rim. Kept narrow (≤ ~16
-        // px) so the shadow reads as "wheel weight" without obscuring
-        // the workspace canvas behind it.
-        let shadow_x0 = self.rect.x1; // shadow starts just past the visible arc
-        let shadow_band_count = 8;
-        for i in 0..shadow_band_count {
-            let t = i as f64 / shadow_band_count as f64;
-            let alpha = (0.32 * (1.0 - t).powi(2)).clamp(0.0, 0.32);
-            let band_w = 2.0_f64;
+        // ---- Pass 1: quiet background panel -----------------------------
+        // A single very-low-alpha solid fill across the visible sidebar
+        // footprint. Gives the wheel a faint visual anchor without
+        // creating a hard panel edge. The shadow band at the right
+        // edge (Pass 2) is what really separates the sidebar from the
+        // desktop; this fill is mostly there so the eye reads the
+        // wheel disc + markers as a unified element rather than
+        // floating curves over the wallpaper.
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            Color::from_rgba8(255, 255, 255, 5), // white/0.02 — almost invisible
+            None,
+            &self.rect,
+        );
+
+        // ---- Pass 2: subtle right-edge atmosphere -----------------------
+        // Thin shadow band JUST past the panel's right edge to lift the
+        // sidebar off the desktop. Three bands of decaying alpha — much
+        // softer than the previous concept-mimicking 8-band cascade so
+        // the wheel reads as quiet, not glowing.
+        let shadow_x0 = self.rect.x1;
+        for i in 0..3 {
+            let t = i as f64 / 3.0;
+            let alpha = (0.16 * (1.0 - t).powi(2)).clamp(0.0, 0.16);
             let band = Rect::new(
-                shadow_x0 + (i as f64) * band_w,
+                shadow_x0 + (i as f64) * 2.0,
                 self.rect.y0,
-                shadow_x0 + ((i + 1) as f64) * band_w,
+                shadow_x0 + ((i + 1) as f64) * 2.0,
                 self.rect.y1,
             );
             scene.fill(
@@ -631,353 +626,240 @@ impl Widget for SidebarWheelDisc {
             );
         }
 
-        // ---- Pass 2: faint disc fill ------------------------------------
-        // Concept: `bg-white/[0.01] backdrop-blur-xl`. Without a real
-        // backdrop blur, substitute a flat very-low-alpha fill on the
-        // full circle. The off-screen-left part of the disc paints
-        // outside the visible canvas — only the visible-arc portion
-        // contributes pixels.
-        let disc_fill = Circle::new((cx, cy), radius);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            Color::from_rgba8(255, 255, 255, 3), // ≈ white/0.012
-            None,
-            &disc_fill,
-        );
-
-        // ---- Pass 3: dark rim band --------------------------------------
-        // Concept: `border-r-[40px] border-white/[0.02]`. Stroked 40-px
-        // band centred at radius `r - 20`. The concept's 0.02 alpha is
-        // barely visible against a near-black backdrop; we double it to
-        // 0.04 so the band reads as a subtle darker arc without
-        // overpowering the rim.
-        let band = Circle::new((cx, cy), radius - 20.0);
-        scene.stroke(
-            &Stroke::new(40.0),
-            transform,
-            Color::from_rgba8(255, 255, 255, 10), // ≈ white/0.04
-            None,
-            &band,
-        );
-
-        // ---- Pass 4: rim hairline ---------------------------------------
-        // 1.5-px hairline at the very edge — defines the disc's silhouette
-        // so the rim band doesn't fade into the backdrop. Tracks the
-        // reference screenshot, which shows a clear curved edge through
-        // the column.
+        // ---- Pass 3: the ring stroke (the wheel itself) -----------------
+        // ONE thin stroke along the rim — the curve the user can see is
+        // the only chrome that defines the disc. The disc's geometric
+        // centre sits off-screen-left, so only the right ~66° arc of
+        // this circle lands inside the visible panel. Stroke alpha is
+        // moderate so the curve reads clearly as an architectural
+        // element ("this is the wheel disc") while staying quiet
+        // enough to let the markers and label dominate visually.
         let rim = Circle::new((cx, cy), radius);
         scene.stroke(
-            &Stroke::new(1.5),
+            &Stroke::new(2.0),
             transform,
-            Color::from_rgba8(255, 255, 255, 36), // ≈ white/0.14
+            Color::from_rgba8(255, 255, 255, 64), // white/0.25
             None,
             &rim,
         );
 
-        // ---- Pass 5: rotating spokes (workspace clusters) ---------------
-        // Each spoke's cluster (icon-tile + label) is anchored at the
-        // rim, pulled back inward by `pull_back` (concept's `pr-9`),
-        // then rotated `+π/2` relative to the spoke direction so the
-        // cluster reads vertically (concept's `-rotate-90` in y-down
-        // screen coords). Active style: 40 px coloured tile, 18-px
-        // white label, gap 16 px. Inactive: 32 px white/10 tile, 15-px
-        // white/80 label, gap 12 px, cluster opacity 0.30.
+        // ---- Pass 4: workspace marker dots on the ring ------------------
+        // One dot per workspace, placed on the ring's perimeter at the
+        // spoke's current angle. The active workspace is always at
+        // angle 0° (the rightmost visible point of the ring) when the
+        // wheel is at rest; during a drag, every marker rotates
+        // together with the same logic — consistent rotation across
+        // all parts.
         //
-        // To match the concept's `WORKSPACES.length × 4 = 24` display-
-        // spoke cycle, we render `CYCLES_PER_SIDE` virtual cycles of
-        // the workspace list on each side of the active spoke. For
-        // small `N` (3-6) this means the user always sees neighbouring
-        // workspaces at ±15° from the active, just like the reference.
+        // Active marker: 10 px filled circle in workspace palette
+        // colour, soft white halo. Paired with an upright horizontal
+        // label rendered separately in Pass 5.
+        //
+        // Inactive markers: 6 px low-alpha white speck. No label —
+        // identity is communicated by position relative to the active
+        // marker plus the snap animation. Far simpler, far quieter.
+        //
+        // We iterate virtual cycles so multi-revolution rotations
+        // (more than one full wheel cycle from rest) keep every
+        // neighbour painted inside the visible band.
         self.spoke_hit_rects.clear();
         self.spoke_hit_rects.resize(self.spokes.len(), Rect::ZERO);
+
+        // Cache the active marker's screen position + colour so the
+        // upright-label pass (Pass 5) knows where to anchor.
+        let mut active_marker: Option<(Point, Color)> = None;
+
         if !self.spokes.is_empty() {
             let n = self.spokes.len();
-            // How many cycles to render on each side of the active.
-            // Visible band is ±70°; one cycle is `N * 15°`. For N=3
-            // that's 45° per cycle → 1 cycle on each side covers
-            // ±45°, plus the active = ±60° spread, well within band.
-            // For N>=6, one cycle covers ±90°, so even one side cycle
-            // is plenty (the visible_band cull discards the far entries).
-            let cycles_per_side: i32 = ((70.0_f32 / (SPOKE_ANGLE_STEP_DEG * n as f32)).ceil() as i32)
-                .max(1);
-            // Iterate virtual indices in `[-cycles*N, +cycles*N + N)` so
-            // each real spoke is rendered in every visible cycle. The
-            // mapping `virt_idx → real_idx = virt_idx.rem_euclid(N)`.
+            // Visible angular band: ±70° from due-east. Actual visible
+            // arc is ~66° but a few degrees of slop is fine — the cull
+            // just avoids painting markers outside the panel.
+            let visible_band_deg = 70.0_f32;
+            let gap = self.spoke_gap_deg();
+            let cycles_per_side: i32 =
+                (((visible_band_deg) / (gap * n as f32)).ceil() as i32).max(1);
             let total_cycles = (cycles_per_side * 2 + 1) as usize;
             let total_virtual = total_cycles * n;
             let virtual_start = -(cycles_per_side * n as i32);
+
             for k in 0..total_virtual {
                 let virt_offset = virtual_start + k as i32;
-                // Map virtual index → real workspace. At rest
-                // (virt_offset=0, rotation=0), the active workspace
-                // (`active_idx`) is the one at angle 0°. Going UP one
-                // virtual step (virt_offset=+1) means the wheel has
-                // rotated by +gap, putting active_idx+1 at angle 0°.
-                // So: `i = (virt_offset + active_idx).rem_euclid(N)`.
                 let i = ((virt_offset + self.active_idx as i32)
                     .rem_euclid(n as i32)) as usize;
                 let spoke = &self.spokes[i];
-                let gap = self.spoke_gap_deg();
                 let angle_deg = self.visual_rotation_deg() + virt_offset as f32 * gap;
                 let is_active = virt_offset == 0;
                 let a = ((angle_deg % 360.0) + 360.0) % 360.0;
-                let visible_band = a < 70.0 || a > 290.0;
-                if !visible_band {
+                let in_band = a < visible_band_deg || a > 360.0 - visible_band_deg;
+                if !in_band {
                     continue;
                 }
 
                 let angle_rad = (angle_deg as f64).to_radians();
-                let rim_x = cx + radius * angle_rad.cos();
-                let rim_y = cy + radius * angle_rad.sin();
-                // Pull cluster anchor inward by 36 px (concept's `pr-9`)
-                // along the spoke direction.
-                let pull_back = 36.0_f64;
-                let anchor_x = rim_x - pull_back * angle_rad.cos();
-                let anchor_y = rim_y - pull_back * angle_rad.sin();
+                let marker_x = cx + radius * angle_rad.cos();
+                let marker_y = cy + radius * angle_rad.sin();
+                let marker_p = Point::new(marker_x, marker_y);
 
-                let tile_size = if is_active { 40.0_f64 } else { 32.0_f64 };
-                let tile_radius = if is_active { 12.0_f64 } else { 8.0_f64 };
-                let label_size = if is_active { 18.0_f32 } else { 15.0_f32 };
-                let gap = if is_active { 16.0_f64 } else { 12.0_f64 };
-                let cluster_alpha = if is_active { 1.0_f32 } else { 0.30_f32 };
-                let letter_spacing_em = if is_active { 0.15_f32 } else { 0.10_f32 };
-
-                // Readability flip on the left half (rare with the
-                // cull above, but safe under unbounded `rotation_deg`).
-                let upside_down = a > 90.0 && a < 270.0;
-                let extra_pi = if upside_down { std::f64::consts::PI } else { 0.0 };
-
-                // Label text. Inactive spokes get clipped to fit the
-                // wheel column: rotated -90°, the label's "left edge"
-                // (which after the cluster rotation is whichever screen-
-                // space x-coordinate maps to the local `-text_w/2`
-                // tail) can extend past `self.rect.x0`. We measure the
-                // would-be screen-space bounding box and truncate to a
-                // 4-6 char head if it overruns. The active spoke is
-                // exempt — its label is the user's primary readout, and
-                // pulling it inside the column would mask the workspace
-                // identity. Truncation order is character-by-character
-                // until the rotated bbox fits with a 1-px safety margin.
-                let label_text: String = build_label_text(
-                    &spoke.text,
-                    is_active,
-                    label_size,
-                    letter_spacing_em,
-                    text_renderer,
-                    angle_rad + extra_pi + std::f64::consts::FRAC_PI_2,
-                    anchor_x,
-                    tile_size,
-                    gap,
-                    self.rect.x0,
-                );
-                let (text_w_raw, text_h) = text_renderer.measure(&label_text, label_size, None);
-                let extra_track =
-                    label_text.chars().count() as f32 * label_size * letter_spacing_em;
-                let text_w = (text_w_raw + extra_track) as f64;
-
-                // Cluster local frame: tile centred at local x = -tile_size/2
-                // (so the rim-pulled-back anchor sits at the cluster's
-                // RIGHT edge), label past it at x = -tile - gap - text_w/2.
-                // After the `-π/2` rotation the tile lands toward the
-                // disc centre and the label extends along the rim
-                // tangent — concept's vertical reading direction.
-                let cluster_xform = transform
-                    * Affine::translate((anchor_x, anchor_y))
-                    * Affine::rotate(angle_rad + extra_pi + std::f64::consts::FRAC_PI_2);
-
-                let tile_cx_local = -tile_size / 2.0;
-                let label_cx_local = -tile_size - gap - text_w / 2.0;
-
-                // -- Tile -----------------------------------------------
-                let tile_rect_local = Rect::new(
-                    tile_cx_local - tile_size / 2.0,
-                    -tile_size / 2.0,
-                    tile_cx_local + tile_size / 2.0,
-                    tile_size / 2.0,
-                );
-                let tile_rr = RoundedRect::from_rect(tile_rect_local, tile_radius);
-
-                let tile_fill = if is_active {
-                    let base = self.spoke_color(i);
-                    Color::from_rgba8(base.r(), base.g(), base.b(), (255.0 * cluster_alpha) as u8)
-                } else {
-                    Color::from_rgba8(255, 255, 255, (255.0 * 0.10 * cluster_alpha) as u8)
-                };
-                scene.fill(Fill::NonZero, cluster_xform, tile_fill, None, &tile_rr);
                 if is_active {
-                    // Soft white outer glow
-                    // (concept: `drop-shadow-[0_0_15px_rgba(255,255,255,0.2)]`).
-                    // Outer wide halo first (radius 14 @ alpha 0.05) to
-                    // approximate the concept's 15-px-blur drop-shadow,
-                    // then nested inner halos for crisp falloff.
-                    for &(r, a) in &[
-                        (14.0_f64, 0.05_f32),
-                        (10.0_f64, 0.07_f32),
-                        (6.0_f64, 0.10_f32),
-                        (3.0_f64, 0.14_f32),
-                    ] {
-                        scene.stroke(
-                            &Stroke::new(r * 2.0),
-                            cluster_xform,
-                            Color::from_rgba8(255, 255, 255, (a * 255.0) as u8),
+                    let base = self.spoke_color(i);
+                    // Soft halo — three concentric translucent circles
+                    // in the workspace colour fading outward. Sized so
+                    // the active marker reads as the visual anchor of
+                    // the entire sidebar.
+                    for &(r_halo, alpha) in &[(28.0_f64, 0.07_f64), (20.0, 0.12), (13.0, 0.20)] {
+                        let halo = Circle::new(marker_p, r_halo);
+                        scene.fill(
+                            Fill::NonZero,
+                            transform,
+                            Color::from_rgba8(base.r(), base.g(), base.b(), (alpha * 255.0) as u8),
                             None,
-                            &tile_rr,
+                            &halo,
                         );
                     }
-                    // Crisp white/0.20 border on top.
+                    // Outer crisp ring (white/0.32) — separates the
+                    // coloured core from the halo for readability on
+                    // bright backdrops.
+                    let outer = Circle::new(marker_p, 10.0);
                     scene.stroke(
-                        &Stroke::new(1.0),
-                        cluster_xform,
-                        Color::from_rgba8(255, 255, 255, 51),
+                        &Stroke::new(1.2),
+                        transform,
+                        Color::from_rgba8(255, 255, 255, 85),
                         None,
-                        &tile_rr,
+                        &outer,
+                    );
+                    // Coloured core.
+                    let core = Circle::new(marker_p, 8.0);
+                    scene.fill(Fill::NonZero, transform, base, None, &core);
+
+                    active_marker = Some((marker_p, base));
+                } else {
+                    // Inactive: small low-alpha white speck. Visually
+                    // present but unobtrusive.
+                    let speck = Circle::new(marker_p, 4.0);
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        Color::from_rgba8(255, 255, 255, 80), // white/0.31
+                        None,
+                        &speck,
                     );
                 }
 
-                // -- Glyph (per-workspace lucide icon) ------------------
-                // Active = solid white, inactive = white/40. Icon is
-                // resolved by the spoke's lower-cased label per the
-                // concept's `WORKSPACES` table; unknown labels fall back
-                // to `Layers`. Tile inset matches the concept's
-                // `w-5 h-5` glyph in a 40-px tile (~50 % of edge).
-                let glyph_color = if is_active {
-                    Color::from_rgba8(255, 255, 255, (255.0 * cluster_alpha) as u8)
-                } else {
-                    Color::from_rgba8(255, 255, 255, (255.0 * 0.40 * cluster_alpha) as u8)
-                };
-                let glyph_inset = if is_active { 10.0_f64 } else { 9.0_f64 };
-                let glyph_rect = Rect::new(
-                    tile_cx_local - tile_size / 2.0 + glyph_inset,
-                    -tile_size / 2.0 + glyph_inset,
-                    tile_cx_local + tile_size / 2.0 - glyph_inset,
-                    tile_size / 2.0 - glyph_inset,
-                );
-                icons::draw_icon(
-                    scene,
-                    cluster_xform,
-                    glyph_rect,
-                    spoke_icon_for_label(&spoke.text.to_lowercase()),
-                    glyph_color,
-                    LUCIDE_DEFAULT_STROKE_PX,
+                // Generous-but-bounded click hit rect on each marker.
+                // 28 px square centred on the marker — easy click target.
+                // Adjacent markers are well separated (15° at radius
+                // 2250 ≈ 590 px arc length) so there's no overlap.
+                let hit_half = 14.0_f64;
+                self.spoke_hit_rects[i] = Rect::new(
+                    marker_x - hit_half,
+                    marker_y - hit_half,
+                    marker_x + hit_half,
+                    marker_y + hit_half,
                 );
 
-                // -- Label ----------------------------------------------
-                let label_color = if is_active {
-                    Color::from_rgba8(255, 255, 255, (255.0 * cluster_alpha) as u8)
-                } else {
-                    Color::from_rgba8(255, 255, 255, (255.0 * 0.80 * cluster_alpha) as u8)
-                };
-                let label_xform = cluster_xform
-                    * Affine::translate((
-                        label_cx_local - (text_w_raw as f64) / 2.0,
-                        -(text_h as f64) / 2.0,
-                    ));
-                text_renderer.draw_text(
-                    scene,
-                    &label_text,
-                    label_size,
-                    label_color,
-                    label_xform,
-                    None,
-                );
-
-                // -- Cache cluster's screen-space hit rect --------------
-                let cluster_h = tile_size.max(text_h as f64);
-                let cluster_local_x0 = label_cx_local - text_w / 2.0;
-                let cluster_local_x1 = tile_cx_local + tile_size / 2.0;
-                let cluster_local_y0 = -cluster_h / 2.0;
-                let cluster_local_y1 = cluster_h / 2.0;
-                let corners_local = [
-                    Point::new(cluster_local_x0, cluster_local_y0),
-                    Point::new(cluster_local_x1, cluster_local_y0),
-                    Point::new(cluster_local_x1, cluster_local_y1),
-                    Point::new(cluster_local_x0, cluster_local_y1),
-                ];
-                let cluster_screen_xform = Affine::translate((anchor_x, anchor_y))
-                    * Affine::rotate(angle_rad + extra_pi + std::f64::consts::FRAC_PI_2);
-                let mut min_x = f64::INFINITY;
-                let mut min_y = f64::INFINITY;
-                let mut max_x = f64::NEG_INFINITY;
-                let mut max_y = f64::NEG_INFINITY;
-                for p in corners_local {
-                    let q = cluster_screen_xform * p;
-                    min_x = min_x.min(q.x);
-                    min_y = min_y.min(q.y);
-                    max_x = max_x.max(q.x);
-                    max_y = max_y.max(q.y);
-                }
-                self.spoke_hit_rects[i] = Rect::new(min_x, min_y, max_x, max_y);
-
-                // -- Per-spoke presence dots ----------------------------
+                // Per-spoke presence dots: small coloured dots sitting
+                // INSIDE the rim (toward the disc centre) at the
+                // marker's angle. Keeps them attached visually without
+                // being eclipsed by the marker itself.
                 if let Some(ws_id) = spoke.workspace_id {
                     let key = PresenceKey::Workspace { id: format!("{}", ws_id) };
                     let peers = presence.peers_on(&key);
                     if !peers.is_empty() {
                         let peer_count = peers.len().min(3);
-                        let dots_radius = radius - 8.0;
-                        let tip_x = cx + dots_radius * angle_rad.cos();
-                        let tip_y = cy + dots_radius * angle_rad.sin();
+                        let radial_offset = if is_active { -16.0_f64 } else { -12.0_f64 };
+                        let dot_base_x = cx + (radius + radial_offset) * angle_rad.cos();
+                        let dot_base_y = cy + (radius + radial_offset) * angle_rad.sin();
                         let perp_x = -angle_rad.sin();
                         let perp_y = angle_rad.cos();
-                        let spacing = 10.0_f64;
+                        let spacing = 7.0_f64;
                         let centre_bias = (peer_count as f64 - 1.0) / 2.0;
-                        for (k, user) in peers.iter().take(peer_count).enumerate() {
-                            let offset = (k as f64 - centre_bias) * spacing;
-                            let dx = perp_x * offset;
-                            let dy = perp_y * offset;
+                        for (kk, user) in peers.iter().take(peer_count).enumerate() {
+                            let off = (kk as f64 - centre_bias) * spacing;
                             let (rr, gg, bb) = presence.color_for(user);
-                            let color = Color::from_rgb8(rr, gg, bb);
-                            let dot = Circle::new((tip_x + dx, tip_y + dy), 4.0);
-                            scene.fill(Fill::NonZero, transform, color, None, &dot);
+                            let dot = Circle::new(
+                                (dot_base_x + perp_x * off, dot_base_y + perp_y * off),
+                                3.0,
+                            );
+                            scene.fill(
+                                Fill::NonZero,
+                                transform,
+                                Color::from_rgb8(rr, gg, bb),
+                                None,
+                                &dot,
+                            );
                         }
                     }
                 }
             }
         }
 
-        // ---- Pass 6: static centre-dot ruler ----------------------------
-        // Concept (App.tsx:108-122): one tiny dot per real workspace at
-        // angles `(i - (N-1)/2) · 2°`, near the rim, NOT rotating with
-        // the wheel. Active = coloured + soft white glow (1 px wider
-        // than concept's 8px to compensate for our smaller absolute
-        // size); inactive = 4-px white/20 specks. Dots are placed
-        // INSIDE the rim (`dots_r = radius - 6`) so they read as part
-        // of the disc rather than floating outside it.
-        if !self.spokes.is_empty() {
-            let dots_r = radius - 6.0;
-            let n = self.spokes.len() as f32;
-            for (i, _) in self.spokes.iter().enumerate() {
-                let dot_angle_deg = (i as f32 - (n - 1.0) / 2.0) * 2.0;
-                let a_rad = (dot_angle_deg as f64).to_radians();
-                let dx = cx + dots_r * a_rad.cos();
-                let dy = cy + dots_r * a_rad.sin();
-                if i == self.active_idx {
-                    // Soft white glow: three concentric translucent
-                    // circles fading outward, then the coloured core.
-                    for &(r, alpha) in &[(11.0_f64, 0.10_f64), (8.0, 0.18), (6.0, 0.30)] {
-                        let glow = Circle::new((dx, dy), r);
-                        scene.fill(
-                            Fill::NonZero,
-                            transform,
-                            Color::from_rgba8(255, 255, 255, (alpha * 255.0) as u8),
-                            None,
-                            &glow,
-                        );
-                    }
-                    let base = self.spoke_color(i);
-                    let core = Circle::new((dx, dy), 4.0);
-                    scene.fill(Fill::NonZero, transform, base, None, &core);
-                } else {
-                    let speck = Circle::new((dx, dy), 2.0);
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        Color::from_rgba8(255, 255, 255, 76), // white/0.30
-                        None,
-                        &speck,
-                    );
-                }
+        // ---- Pass 5: active workspace label (upright, horizontal) -------
+        // The active workspace's name renders as upright horizontal
+        // text next to the active marker. NO rotation — the label
+        // reads the same regardless of the wheel's visual angle. This
+        // fixes the "text orientation is weird when rotating" feedback
+        // from the previous design where every spoke's cluster
+        // rotated with the wheel.
+        //
+        // Position: label sits to the LEFT of the marker (inside the
+        // panel, toward the disc centre), centred vertically on the
+        // marker's y. A 3-px workspace-colour accent bar sits between
+        // the label and the marker to visually bind them.
+        if let Some((marker_p, base)) = active_marker {
+            let label_idx = self.active_idx;
+            let label_raw = self
+                .spokes
+                .get(label_idx)
+                .map(|s| s.text.as_str())
+                .unwrap_or("");
+            let label_upper = label_raw.to_uppercase();
+            let label_size = 22.0_f32;
+            let letter_spacing_em = 0.14_f32;
+            let (raw_w, text_h) = text_renderer.measure(&label_upper, label_size, None);
+            let track = label_upper.chars().count() as f32 * label_size * letter_spacing_em;
+            let text_w = (raw_w + track) as f64;
+
+            // Accent bar — 4 px wide colour swatch, 6 px taller than
+            // the label. Anchored 18 px to the LEFT of the marker so
+            // marker + accent read as a unit without colliding.
+            let accent_right = marker_p.x - 18.0;
+            let accent_rect = Rect::new(
+                accent_right - 4.0,
+                marker_p.y - (text_h as f64) / 2.0 - 4.0,
+                accent_right,
+                marker_p.y + (text_h as f64) / 2.0 + 4.0,
+            );
+            let accent_rr = RoundedRect::from_rect(accent_rect, 2.0);
+            scene.fill(Fill::NonZero, transform, base, None, &accent_rr);
+
+            // Label text — solid white, full alpha. Positioned to the
+            // LEFT of the accent bar with a small gap.
+            let label_gap = 10.0_f64;
+            let label_right_x = accent_right - 4.0 - label_gap;
+            let label_x0 = label_right_x - text_w;
+            let label_top_y = marker_p.y - (text_h as f64) / 2.0;
+            let label_xform = transform * Affine::translate((label_x0, label_top_y));
+            text_renderer.draw_text(
+                scene,
+                &label_upper,
+                label_size,
+                Color::from_rgba8(255, 255, 255, 255),
+                label_xform,
+                None,
+            );
+
+            // Expand the active spoke's hit rect to cover the label +
+            // accent, so a click anywhere on the readable label is
+            // captured by the active spoke (and becomes a no-op,
+            // rather than landing on the underlying panel/desktop).
+            if label_idx < self.spoke_hit_rects.len() {
+                let prev = self.spoke_hit_rects[label_idx];
+                self.spoke_hit_rects[label_idx] = Rect::new(
+                    prev.x0.min(label_x0 - 4.0),
+                    prev.y0.min(label_top_y - 4.0),
+                    prev.x1.max(marker_p.x + 16.0),
+                    prev.y1.max(label_top_y + text_h as f64 + 4.0),
+                );
             }
         }
 
