@@ -55,11 +55,15 @@ fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
     let mut col = Column::new()
         .push(Box::new(Text::new(title_key).with_size(18.0)));
 
-    // Twenty rows of (Label + status pill / button / toggle).
+    // Twenty rows. To exercise the Unit 2 redraw gate, only
+    // widgets whose `needs_redraw` is genuinely opt-in show up
+    // here — Toggle / Checkbox / Slider / DatePicker / etc. still
+    // default to `true` and would peg the gate forever. Once
+    // those are migrated this can grow back.
     for i in 0..20 {
         let row_idx = idx * 20 + i;
         let label_key = leak_label(&format!("dash_lbl_{row_idx}"));
-        match i % 5 {
+        match i % 3 {
             0 => col = col.push(Box::new(
                 Row::new()
                     .push(Box::new(Text::new(label_key)))
@@ -70,22 +74,6 @@ fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
                     ))),
             )),
             1 => col = col.push(Box::new(
-                Row::new()
-                    .push(Box::new(Text::new(label_key)))
-                    .push(Box::new(Toggle::new(
-                        leak_label(&format!("dash_tog_{row_idx}")),
-                        leak_label(&format!("dash_togdoc_{row_idx}")),
-                    ))),
-            )),
-            2 => col = col.push(Box::new(
-                Row::new()
-                    .push(Box::new(Text::new(label_key)))
-                    .push(Box::new(Checkbox::new(
-                        leak_label(&format!("dash_chk_{row_idx}")),
-                        leak_label(&format!("dash_chkdoc_{row_idx}")),
-                    ))),
-            )),
-            3 => col = col.push(Box::new(
                 Row::new()
                     .push(Box::new(Text::new(label_key)))
                     .push(Box::new(Badge::count((i as u32) * 3))),
@@ -112,11 +100,10 @@ fn leak_label(s: &str) -> &'static str {
     Box::leak(s.to_string().into_boxed_str())
 }
 
-fn build_tree() -> Box<dyn Widget> {
+fn build_tree(include_animated: bool) -> Box<dyn Widget> {
     // 8 columns × 20 rows × (label + control) ≈ 320 widgets.
-    // Plus a header row of complex widgets (ToggleGroup,
-    // ProgressBar, Spinner, DatePicker, ColorPicker).
-    let header = Row::new()
+    // Plus a header row of complex widgets.
+    let mut header = Row::new()
         .push(Box::new(Text::new("dash_title").with_size(24.0)))
         .push(Box::new(ToggleGroup::new(
             vec![
@@ -125,12 +112,15 @@ fn build_tree() -> Box<dyn Widget> {
                 Segment::new("Month"),
             ],
             1,
-        )))
-        .push(Box::new(ProgressBar::new(0.4)))
-        .push(Box::new(ProgressBar::indeterminate()))
-        .push(Box::new(Spinner::with_size(24.0)))
-        .push(Box::new(Spinner::with_size(24.0)))
-        .push(Box::new(Spinner::with_size(24.0)));
+        )));
+    if include_animated {
+        header = header
+            .push(Box::new(ProgressBar::new(0.4)))
+            .push(Box::new(ProgressBar::indeterminate()))
+            .push(Box::new(Spinner::with_size(24.0)))
+            .push(Box::new(Spinner::with_size(24.0)))
+            .push(Box::new(Spinner::with_size(24.0)));
+    }
 
     let mut panels = Row::new();
     let titles = [
@@ -141,18 +131,14 @@ fn build_tree() -> Box<dyn Widget> {
         panels = panels.push(panel(t, i));
     }
 
+    // Footer kept light — only migrated widgets so the static-mode
+    // gate experiment isn't poisoned by Breadcrumb / Slider / etc.
+    // still returning `needs_redraw = true` by default.
     let footer = Row::new()
-        .push(Box::new(Breadcrumb::new(vec![
-            "home".into(),
-            "metrics".into(),
-            "dashboard".into(),
-        ])))
-        .push(Box::new(DatePicker::new(
-            NaiveDate::from_ymd_opt(2026, 5, 23).unwrap(),
-        )))
-        .push(Box::new(TimePicker::new(14, 30)))
-        .push(Box::new(ColorPicker::new(Color::rgba8(99, 102, 241, 255))))
-        .push(Box::new(Slider::new("dash_sld", "dash_sld_doc")));
+        .push(Box::new(Text::new("dash_title")))
+        .push(Box::new(Avatar::from_initials("DB", 28.0)))
+        .push(Box::new(Avatar::from_initials("QD", 28.0)))
+        .push(Box::new(Badge::count(42)));
 
     Box::new(
         Scrollable::new(ScrollAxis::Vertical).with_child(Box::new(
@@ -272,7 +258,14 @@ fn main() {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(500);
+    let static_mode = std::env::var("QUICK_UI_DASH_STATIC").is_ok();
+    let include_animated = !static_mode;
     let (canvas_w, canvas_h) = (1800u32, 1200u32);
+    println!("mode: {}", if static_mode {
+        "static (no spinners / indeterminate bars — gate-skipped events should dominate)"
+    } else {
+        "animated (header contains spinners + indeterminate progress)"
+    });
 
     let mut renderer = OffscreenRenderer::new(canvas_w, canvas_h);
     let theme = Theme::dark();
@@ -281,7 +274,7 @@ fn main() {
     let perms = PermissionContext::permissive();
     let mut doc = AutoCommit::new();
 
-    let mut root = build_tree();
+    let mut root = build_tree(include_animated);
     let mut taffy = TaffyTree::<()>::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let root_node = root.build_layout(&mut taffy, &theme, &mut node_map);
@@ -302,6 +295,24 @@ fn main() {
             &mut text_renderer, &presence, &perms, &theme,
             &mut scene, &mut renderer, canvas_w, canvas_h, &mut warm,
         );
+    }
+    println!(
+        "after warm-up: root.needs_redraw()={} root.is_layout_dirty()={}",
+        root.needs_redraw(), root.is_layout_dirty()
+    );
+    fn dirty_culprits(w: &dyn Widget, depth: usize, out: &mut Vec<(String, usize)>) {
+        if w.needs_redraw() {
+            out.push((w.name().to_string(), depth));
+        }
+        for c in w.children() {
+            dirty_culprits(c, depth + 1, out);
+        }
+    }
+    let mut culprits = Vec::new();
+    dirty_culprits(root.as_ref(), 0, &mut culprits);
+    println!("dirty culprits after warmup: {} widgets", culprits.len());
+    for (name, d) in culprits.iter().take(8) {
+        println!("  {} (depth {})", name, d);
     }
     let (warm_hits, warm_misses) = text_renderer.cache_stats();
     println!(
@@ -330,24 +341,52 @@ fn main() {
     let mut total_skipped = 0usize;
     let mut histo: Vec<Phase> = Vec::with_capacity(iters);
 
+    // FROZEN mode: every event is the *same* CursorMoved at a
+    // position that's guaranteed to not cross any widget's hover
+    // rect (well past the rightmost panel). This drives the gate
+    // to fire — `Button::needs_redraw` only flips when hover
+    // state mutates, so re-sending identical positions is a true
+    // no-op for the migrated widgets. Used to demonstrate that
+    // the Unit 1+2 redraw gate can take the per-event cost to
+    // (essentially) `handle_event` time alone.
+    let frozen = std::env::var("QUICK_UI_DASH_FROZEN").is_ok();
+    if frozen {
+        // Prime the cursor at the frozen position so the first
+        // event doesn't trigger a hover-state change.
+        let p = (canvas_w as f64 - 5.0, canvas_h as f64 - 5.0);
+        dispatch(&mut root, &taffy, root_node, &mut doc, &make_cursor(p.0, p.1));
+        // Draw one frame to clear pending dirty flags.
+        let mut warm = Phase::default();
+        full_draw(
+            &mut root, &mut taffy, &node_map, root_node,
+            &mut text_renderer, &presence, &perms, &theme,
+            &mut scene, &mut renderer, canvas_w, canvas_h, &mut warm,
+        );
+    }
+
     for i in 0..iters {
         let t_total = Instant::now();
         let mut phase = Phase::default();
 
-        // Pick an event from the rotation.
-        let pick = i % 20;
         let t_handle = Instant::now();
-        match pick {
-            0..=13 => dispatch(&mut root, &taffy, root_node, &mut doc, &make_cursor(pa.0 + (i as f64).sin() * 4.0, pa.1)),
-            14 | 15 => dispatch(&mut root, &taffy, root_node, &mut doc, &make_cursor(pb.0, pb.1)),
-            16 => dispatch(&mut root, &taffy, root_node, &mut doc, &make_cursor(pc.0, pc.1)),
-            17 => {
-                let p = if i % 40 < 20 { pd } else { pe };
-                dispatch(&mut root, &taffy, root_node, &mut doc, &make_cursor(p.0, p.1));
-                dispatch(&mut root, &taffy, root_node, &mut doc, &make_click_press());
-                dispatch(&mut root, &taffy, root_node, &mut doc, &make_click_release());
+        if frozen {
+            // Identical no-op event — see comment above.
+            let p = (canvas_w as f64 - 5.0, canvas_h as f64 - 5.0);
+            dispatch(&mut root, &taffy, root_node, &mut doc, &make_cursor(p.0, p.1));
+        } else {
+            let pick = i % 20;
+            match pick {
+                0..=13 => dispatch(&mut root, &taffy, root_node, &mut doc, &make_cursor(pa.0 + (i as f64).sin() * 4.0, pa.1)),
+                14 | 15 => dispatch(&mut root, &taffy, root_node, &mut doc, &make_cursor(pb.0, pb.1)),
+                16 => dispatch(&mut root, &taffy, root_node, &mut doc, &make_cursor(pc.0, pc.1)),
+                17 => {
+                    let p = if i % 40 < 20 { pd } else { pe };
+                    dispatch(&mut root, &taffy, root_node, &mut doc, &make_cursor(p.0, p.1));
+                    dispatch(&mut root, &taffy, root_node, &mut doc, &make_click_press());
+                    dispatch(&mut root, &taffy, root_node, &mut doc, &make_click_release());
+                }
+                _ => dispatch(&mut root, &taffy, root_node, &mut doc, &make_cursor(pa.0 + (i as f64).cos() * 4.0, pa.1)),
             }
-            _ => dispatch(&mut root, &taffy, root_node, &mut doc, &make_cursor(pa.0 + (i as f64).cos() * 4.0, pa.1)),
         }
         phase.handle_us = t_handle.elapsed().as_micros();
 
