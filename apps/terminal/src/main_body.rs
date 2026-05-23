@@ -272,9 +272,8 @@ impl Widget for TerminalWidget {
                 current_attr: self.current_attr,
                 pending_wrap: self.pending_wrap,
             };
-            for byte in bytes {
-                self.parser.advance(&mut performer, byte);
-            }
+            // vte 0.15: `advance` takes `&[u8]` instead of one byte at a time.
+            self.parser.advance(&mut performer, &bytes);
             self.cursor_x = performer.cursor_x;
             self.cursor_y = performer.cursor_y;
             self.current_attr = performer.current_attr;
