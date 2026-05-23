@@ -337,11 +337,17 @@ impl Image {
 /// returned buffer is always 8-bit-per-channel RGBA, regardless of the
 /// PNG's source colour type.
 fn decode_png(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), ImageDecodeError> {
-    let decoder = png::Decoder::new(bytes);
+    // png 0.18 requires `Seek` on the decoder source; wrap the byte slice in
+    // a `std::io::Cursor` so it satisfies both `Read` and `Seek`.
+    let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     let mut reader = decoder
         .read_info()
         .map_err(|e| ImageDecodeError::Decode(e.to_string()))?;
-    let mut buf = vec![0; reader.output_buffer_size()];
+    // png 0.18: output_buffer_size / buffer_size return Option<usize>.
+    let buf_size = reader
+        .output_buffer_size()
+        .ok_or_else(|| ImageDecodeError::Decode("png output buffer size unavailable".into()))?;
+    let mut buf = vec![0; buf_size];
     let info = reader
         .next_frame(&mut buf)
         .map_err(|e| ImageDecodeError::Decode(e.to_string()))?;
