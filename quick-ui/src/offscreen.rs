@@ -14,11 +14,34 @@
 //! callers see a tight `width * 4` bytes-per-row buffer.
 
 use std::path::Path;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use pollster::FutureExt;
 use vello::peniko::Color;
 use vello::util::RenderContext;
 use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene};
+
+/// Process-wide shared `RenderContext` so we only ever construct ONE
+/// `wgpu::Instance` per process. Creating multiple Instances in
+/// parallel (the default `cargo test` pattern when many test cases
+/// build OffscreenRenderers concurrently) races inside vkCreateInstance
+/// on at least the radv + intel-iris Mesa drivers and SIGSEGVs. The
+/// shared context dodges that entirely: every OffscreenRenderer locks
+/// the same context briefly, reserves a DeviceHandle (which is cached
+/// internally by vello), and proceeds.
+///
+/// `OnceLock<Arc<Mutex<RenderContext>>>` because: `OnceLock` is the
+/// stdlib lazy-init primitive; `Arc` lets multiple OffscreenRenderers
+/// keep the context alive past process-stack frames; `Mutex` is needed
+/// because `RenderContext::device(...)` takes `&mut self` for the
+/// internal device-list mutation.
+static SHARED_RENDER_CONTEXT: OnceLock<Arc<Mutex<RenderContext>>> = OnceLock::new();
+
+fn shared_render_context() -> Arc<Mutex<RenderContext>> {
+    SHARED_RENDER_CONTEXT
+        .get_or_init(|| Arc::new(Mutex::new(RenderContext::new())))
+        .clone()
+}
 
 /// An offscreen wgpu + vello pipeline sized at `width × height`. Reuse
 /// a single instance for multiple renders to amortise adapter / device
@@ -26,7 +49,9 @@ use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene}
 pub struct OffscreenRenderer {
     pub width: u32,
     pub height: u32,
-    context: RenderContext,
+    /// Shared with every other OffscreenRenderer in the process — see
+    /// the module-level docs above for why this exists.
+    context: Arc<Mutex<RenderContext>>,
     dev_id: usize,
     texture: wgpu::Texture,
     view: wgpu::TextureView,
@@ -44,14 +69,13 @@ impl OffscreenRenderer {
     pub fn new(width: u32, height: u32) -> Self {
         assert!(width > 0 && height > 0, "width and height must be > 0");
 
-        let mut context = RenderContext::new();
-        let dev_id = context
+        let context = shared_render_context();
+        let mut ctx = context.lock().expect("shared RenderContext poisoned");
+        let dev_id = ctx
             .device(None)
             .block_on()
             .expect("couldn't request a wgpu adapter — is llvmpipe installed?");
-        let device = &context.devices[dev_id].device;
-        let queue = &context.devices[dev_id].queue;
-        let _ = queue;
+        let device = &ctx.devices[dev_id].device;
 
         let format = wgpu::TextureFormat::Rgba8Unorm;
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -95,6 +119,10 @@ impl OffscreenRenderer {
         )
         .expect("vello Renderer::new");
 
+        // Drop the lock before returning so subsequent OffscreenRenderer
+        // constructions don't have to wait on it.
+        drop(ctx);
+
         Self {
             width,
             height,
@@ -116,8 +144,14 @@ impl OffscreenRenderer {
     /// the buffer to an H.264 encoder (which also expects RGBA) can pass
     /// it through unmodified.
     pub fn render(&mut self, scene: &Scene, bg: Color) -> Vec<u8> {
-        let device = &self.context.devices[self.dev_id].device;
-        let queue = &self.context.devices[self.dev_id].queue;
+        // Lock the shared context for the duration of this render.
+        // wgpu internally serializes command submission on a single
+        // device anyway, and the hot path (vello's render kernels) runs
+        // GPU-side — the lock guards the host-side Vec<DeviceHandle>
+        // indexing, not the rendering itself.
+        let ctx = self.context.lock().expect("shared RenderContext poisoned");
+        let device = &ctx.devices[self.dev_id].device;
+        let queue = &ctx.devices[self.dev_id].queue;
 
         self.renderer
             .render_to_texture(
