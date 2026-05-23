@@ -5,10 +5,10 @@ pub mod offscreen;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
-use quick_ui::App;
-use quick_ui::collaboration::{CollabEvent, CollabRequest};
-use quick_ui::state::State;
-use quick_ui::widget::{Column, Text};
+use ui::App;
+use ui::collaboration::{CollabEvent, CollabRequest};
+use ui::state::State;
+use ui::widget::{Column, Text};
 
 /// An in-memory stand-in for the Unix-socket `CollaborationManager`.
 /// Each `Peer` exposes `send(req)` and `poll() -> Vec<CollabEvent>`.

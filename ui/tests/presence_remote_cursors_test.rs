@@ -1,4 +1,4 @@
-use quick_ui::presence::{PresenceCtx, RemoteCursor};
+use ui::presence::{PresenceCtx, RemoteCursor};
 
 #[test]
 fn presence_ctx_holds_remote_cursors() {

@@ -1,8 +1,8 @@
-use quick_ui::permissions::{
+use ui::permissions::{
     AppKind, FileId, Op, PermissionContext, PermissionScope, ResourceId,
     Role, RoleId, RolePermissions, UserId, WorkspaceId, DenyReason,
 };
-use quick_ui::widget::Widget as _;
+use ui::widget::Widget as _;
 
 fn viewer_role() -> Role {
     Role {
@@ -99,13 +99,13 @@ fn unknown_role_denies_everything() {
 // --- Task 6: Widget trait hooks for presence + permission ---
 
 struct NoOpWidget;
-impl quick_ui::widget::Widget for NoOpWidget {
+impl ui::widget::Widget for NoOpWidget {
     fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
     fn build_layout(
         &mut self,
         _t: &mut taffy::TaffyTree<()>,
-        _th: &quick_ui::theme::Theme,
-        _m: &mut std::collections::HashMap<taffy::NodeId, *mut dyn quick_ui::widget::Widget>,
+        _th: &ui::theme::Theme,
+        _m: &mut std::collections::HashMap<taffy::NodeId, *mut dyn ui::widget::Widget>,
     ) -> taffy::NodeId {
         unimplemented!()
     }
@@ -120,9 +120,9 @@ impl quick_ui::widget::Widget for NoOpWidget {
         &mut self,
         _s: &mut vello::Scene,
         _tr: vello::kurbo::Affine,
-        _txt: &mut quick_ui::text_render::TextRenderer,
-        _th: &quick_ui::theme::Theme,
-        _presence: &quick_ui::presence::PresenceCtx,
+        _txt: &mut ui::text_render::TextRenderer,
+        _th: &ui::theme::Theme,
+        _presence: &ui::presence::PresenceCtx,
     ) {
     }
     fn handle_event(
@@ -160,9 +160,9 @@ fn draw_with_presence_default_delegates_to_draw() {
     // implementation exists and forwards to draw.
     let mut w = NoOpWidget;
     let mut scene = vello::Scene::new();
-    let mut tr = quick_ui::text_render::TextRenderer::new();
-    let theme = quick_ui::theme::Theme::dark();
-    let presence = quick_ui::presence::PresenceCtx::empty();
+    let mut tr = ui::text_render::TextRenderer::new();
+    let theme = ui::theme::Theme::dark();
+    let presence = ui::presence::PresenceCtx::empty();
     let perms = PermissionContext::permissive();
     w.draw_with_presence(
         &mut scene,
@@ -176,7 +176,7 @@ fn draw_with_presence_default_delegates_to_draw() {
 
 // --- Task 7: Framework-level permission gating in event dispatch ---
 
-use quick_ui::permissions::{
+use ui::permissions::{
     AppKind as AK, Op as OpX, PermissionScope as PS, ResourceId as RI,
 };
 
@@ -185,13 +185,13 @@ struct GatedButton {
     scope: PS,
 }
 
-impl quick_ui::widget::Widget for GatedButton {
+impl ui::widget::Widget for GatedButton {
     fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
     fn build_layout(
         &mut self,
         _t: &mut taffy::TaffyTree<()>,
-        _th: &quick_ui::theme::Theme,
-        _m: &mut std::collections::HashMap<taffy::NodeId, *mut dyn quick_ui::widget::Widget>,
+        _th: &ui::theme::Theme,
+        _m: &mut std::collections::HashMap<taffy::NodeId, *mut dyn ui::widget::Widget>,
     ) -> taffy::NodeId {
         unimplemented!()
     }
@@ -206,9 +206,9 @@ impl quick_ui::widget::Widget for GatedButton {
         &mut self,
         _s: &mut vello::Scene,
         _tr: vello::kurbo::Affine,
-        _txt: &mut quick_ui::text_render::TextRenderer,
-        _th: &quick_ui::theme::Theme,
-        _presence: &quick_ui::presence::PresenceCtx,
+        _txt: &mut ui::text_render::TextRenderer,
+        _th: &ui::theme::Theme,
+        _presence: &ui::presence::PresenceCtx,
     ) {
     }
     fn handle_event(
@@ -251,7 +251,7 @@ fn gated_widget_rejected_by_framework_helper() {
         },
     };
     let mut fired = false;
-    let allowed = quick_ui::app::dispatch_gated_event(&ctx, &w, || {
+    let allowed = ui::app::dispatch_gated_event(&ctx, &w, || {
         fired = true;
     });
     assert!(!allowed);
@@ -273,7 +273,7 @@ fn gated_widget_allowed_when_role_grants_edit() {
         },
     };
     let mut fired = false;
-    let allowed = quick_ui::app::dispatch_gated_event(&ctx, &w, || {
+    let allowed = ui::app::dispatch_gated_event(&ctx, &w, || {
         fired = true;
     });
     assert!(allowed);
@@ -282,7 +282,7 @@ fn gated_widget_allowed_when_role_grants_edit() {
 
 // --- Task 8: Build PermissionContext from a WorkspaceSettings view ---
 
-use quick_ui::permissions::{WorkspaceSettingsView, PermissionAssignment};
+use ui::permissions::{WorkspaceSettingsView, PermissionAssignment};
 
 #[test]
 fn permission_context_built_from_workspace_settings_view() {

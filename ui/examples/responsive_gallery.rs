@@ -1,6 +1,6 @@
-use quick_ui::{App, State};
-use quick_ui::widget::{Button, Column, Row, Container, Text, Spacer, TextInput};
-use quick_ui::i18n::I18nManager;
+use ui::{App, State};
+use ui::widget::{Button, Column, Row, Container, Text, Spacer, TextInput};
+use ui::i18n::I18nManager;
 use std::fs;
 
 fn main() {

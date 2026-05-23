@@ -1,4 +1,4 @@
-use quick_ui::dnd::{DragDropManager, DragPayload};
+use ui::dnd::{DragDropManager, DragPayload};
 use vello::kurbo::Point;
 
 #[test]

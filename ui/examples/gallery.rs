@@ -1,7 +1,7 @@
-use quick_ui::{App, State};
-use quick_ui::widget::{Button, Column, Toggle, Checkbox, Slider, TextInput, Text};
-use quick_ui::state::RemoteCursor;
-use quick_ui::i18n::I18nManager;
+use ui::{App, State};
+use ui::widget::{Button, Column, Toggle, Checkbox, Slider, TextInput, Text};
+use ui::state::RemoteCursor;
+use ui::i18n::I18nManager;
 use vello::peniko::Color;
 
 fn main() {

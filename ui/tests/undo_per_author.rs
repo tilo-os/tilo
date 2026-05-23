@@ -1,5 +1,5 @@
-use quick_ui::state::State;
-use quick_ui::permissions::UserId;
+use ui::state::State;
+use ui::permissions::UserId;
 use automerge::transaction::Transactable;
 
 #[test]

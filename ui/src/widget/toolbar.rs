@@ -12,7 +12,7 @@
 //! always wins a slot on the trailing edge once visibility drops below
 //! the item count.
 //!
-//! See `quick-ui/src/widget/tabs.rs` for the strip-of-rects precedent
+//! See `ui/src/widget/tabs.rs` for the strip-of-rects precedent
 //! this implementation follows.
 
 use automerge::{AutoCommit, ObjId};
