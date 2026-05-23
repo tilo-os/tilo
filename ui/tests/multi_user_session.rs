@@ -1,13 +1,13 @@
 mod support;
 
 use support::{MemoryRelay, pump, headless_app};
-use quick_ui::collaboration::{CollabRequest, CollabEvent, PresencePayload};
-use quick_ui::presence::{PresenceKey, PathSegment};
-use quick_ui::permissions::{
+use ui::collaboration::{CollabRequest, CollabEvent, PresencePayload};
+use ui::presence::{PresenceKey, PathSegment};
+use ui::permissions::{
     AppKind, Op, PermissionAssignment, PermissionContext, PermissionScope, ResourceId,
     Role, RoleId, RolePermissions, UserId, WorkspaceSettingsView,
 };
-use quick_ui::widget::{TextInput, Widget};
+use ui::widget::{TextInput, Widget};
 
 #[test]
 fn memory_relay_fans_out_presence_updates_to_both_peers() {
@@ -280,9 +280,9 @@ fn peer_caret_in_text_input_renders_on_remote_app() {
     // Build a TextInput with matching presence path and render it.
     let mut input = TextInput::new(vec![PathSegment::Field("doc".into())]);
     let mut scene = vello::Scene::new();
-    let theme = quick_ui::theme::Theme::dark();
-    let mut tr = quick_ui::text_render::TextRenderer::new();
-    let perms = quick_ui::permissions::PermissionContext::permissive();
+    let theme = ui::theme::Theme::dark();
+    let mut tr = ui::text_render::TextRenderer::new();
+    let perms = ui::permissions::PermissionContext::permissive();
 
     input.draw_with_presence(
         &mut scene,

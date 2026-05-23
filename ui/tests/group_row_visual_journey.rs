@@ -24,10 +24,10 @@ use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 use vello::Scene;
 
-use quick_ui::presence::PresenceCtx;
-use quick_ui::text_render::TextRenderer;
-use quick_ui::theme::Theme;
-use quick_ui::widget::{
+use ui::presence::PresenceCtx;
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::widget::{
     AppKind, GroupRow, TabDescriptor, TileContent, Widget, WindowGroup, WindowWidth,
 };
 

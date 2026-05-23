@@ -470,7 +470,7 @@ impl WindowGroup {
     /// Public test-only twin of [`Self::bar_mut`]. The crate-private
     /// version above stays gated to `#[cfg(test)]` so it can't leak into
     /// non-test downstream callers, but cross-strip drag integration
-    /// tests in `quick-shell/tests/` need to publish a synthetic
+    /// tests in `shell/tests/` need to publish a synthetic
     /// `pending_detach` from outside this crate too — that's what this
     /// accessor exists for. Gated by `cfg(any(test, debug_assertions))`
     /// so it disappears from release builds, mirroring the pattern used

@@ -1,4 +1,4 @@
-use quick_ui::widget::context_menu::{ContextMenu, MenuItem};
+use ui::widget::context_menu::{ContextMenu, MenuItem};
 
 #[test]
 fn context_menu_shows_and_invokes_action() {

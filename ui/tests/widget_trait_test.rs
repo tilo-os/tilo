@@ -1,6 +1,6 @@
-use quick_ui::widget::{Widget, Button, AppWidget};
-use quick_ui::presence::PresenceCtx;
-use quick_ui::dnd::DragPayload;
+use ui::widget::{Widget, Button, AppWidget};
+use ui::presence::PresenceCtx;
+use ui::dnd::DragPayload;
 
 #[test]
 fn widget_defaults_for_collab_methods() {
@@ -19,8 +19,8 @@ fn draw_takes_presence_ctx() {
             w: &mut W,
             scene: &mut vello::Scene,
             transform: vello::kurbo::Affine,
-            tr: &mut quick_ui::text_render::TextRenderer,
-            theme: &quick_ui::Theme,
+            tr: &mut ui::text_render::TextRenderer,
+            theme: &ui::Theme,
             presence: &PresenceCtx,
         ) {
             w.draw(scene, transform, tr, theme, presence);
@@ -32,10 +32,10 @@ fn draw_takes_presence_ctx() {
 
 #[test]
 fn button_uses_token_radius() {
-    use quick_ui::tokens::Tokens;
+    use ui::tokens::Tokens;
     let mut t = Tokens::dark();
     t.radii.md = 99.0;
-    let theme = quick_ui::Theme {
+    let theme = ui::Theme {
         name: "T".into(),
         bg_app: t.colors.surfaces.base,
         bg_primary: t.colors.surfaces.raised,

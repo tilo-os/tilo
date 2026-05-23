@@ -1,4 +1,4 @@
-use quick_ui::overlay::{OverlayStack, Modal, Popover, FocusTrap};
+use ui::overlay::{OverlayStack, Modal, Popover, FocusTrap};
 use vello::kurbo::Point;
 
 #[test]

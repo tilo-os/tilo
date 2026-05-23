@@ -1,4 +1,4 @@
-use quick_ui::widget::Scrollable;
+use ui::widget::Scrollable;
 
 #[test]
 fn scrollable_clamps_to_content_bounds() {

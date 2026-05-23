@@ -1,5 +1,5 @@
-use quick_ui::presence::{PresenceCtx, PresenceKey, PathSegment, SelectionRange};
-use quick_ui::permissions::UserId;
+use ui::presence::{PresenceCtx, PresenceKey, PathSegment, SelectionRange};
+use ui::permissions::UserId;
 
 #[test]
 fn presence_key_widget_path_equality_and_hash() {
@@ -68,7 +68,7 @@ fn selection_for_returns_range() {
 }
 
 use vello::Scene;
-use quick_ui::theme::Theme;
+use ui::theme::Theme;
 
 #[test]
 fn draw_peer_caret_emits_scene_content() {
@@ -100,10 +100,10 @@ fn draw_peer_selection_emits_scene_content() {
 
 #[test]
 fn text_input_renders_peer_caret_when_presence_ctx_has_caret() {
-    use quick_ui::widget::TextInput;
-    use quick_ui::text_render::TextRenderer;
-    use quick_ui::permissions::PermissionContext;
-    use quick_ui::widget::Widget;
+    use ui::widget::TextInput;
+    use ui::text_render::TextRenderer;
+    use ui::permissions::PermissionContext;
+    use ui::widget::Widget;
     use vello::kurbo::Affine;
 
     let mut input = TextInput::new(vec![PathSegment::Field("body".into())]);
@@ -121,7 +121,7 @@ fn text_input_renders_peer_caret_when_presence_ctx_has_caret() {
         "peer caret should produce scene geometry");
 }
 
-use quick_ui::collaboration::{CollabEvent, PresencePayload};
+use ui::collaboration::{CollabEvent, PresencePayload};
 
 #[test]
 fn remote_presence_update_round_trips_through_serde() {

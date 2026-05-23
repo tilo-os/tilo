@@ -1,4 +1,4 @@
-use quick_ui::widget::{StripView, STRIP_COOLDOWN_MS};
+use ui::widget::{StripView, STRIP_COOLDOWN_MS};
 use std::time::Duration;
 
 #[test]

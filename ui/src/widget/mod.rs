@@ -137,7 +137,7 @@ pub use file_picker::{
 // These 16 modules are filled in by the per-unit dispatch agents.
 // Until each agent commits, the modules expose stub types (`pub struct Foo;`)
 // so the crate compiles. Public re-exports here let downstream code and
-// tests reach the widgets through the canonical `quick_ui::widget::*` path
+// tests reach the widgets through the canonical `ui::widget::*` path
 // regardless of which agent has completed.
 pub mod progress_bar;     pub use progress_bar::ProgressBar;
 pub mod spinner;          pub use spinner::Spinner;

@@ -557,7 +557,7 @@ mod tests {
 
     /// SAFETY: opaque `DeviceId` whose all-zero bit pattern is tolerated
     /// by winit — same trick used in `permission_prompt::tests` and in
-    /// `quick-shell/tests/e2e_shell_flows.rs::key_press`.
+    /// `shell/tests/e2e_shell_flows.rs::key_press`.
     fn synth_device() -> DeviceId {
         unsafe { std::mem::zeroed() }
     }
@@ -581,7 +581,7 @@ mod tests {
     /// `KeyEventExtra` field is `pub(crate)` so we can't struct-literal
     /// one). All public fields tolerate the all-zero pattern; we then
     /// overwrite the bits the dialog actually inspects. Same approach
-    /// `quick-shell/tests/e2e_shell_flows.rs::key_press` uses.
+    /// `shell/tests/e2e_shell_flows.rs::key_press` uses.
     fn key_press_event(named: NamedKey) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = Key::Named(named);

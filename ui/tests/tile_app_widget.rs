@@ -1,8 +1,8 @@
 //! Asserts `TileContent::App` holds an `AppWidget`, not a bare `Widget`.
 
-use quick_ui::{AppKind, AppWidget, IconDescriptor, Theme, Widget};
-use quick_ui::presence::PresenceCtx;
-use quick_ui::widget::{TileContent, TileHost};
+use ui::{AppKind, AppWidget, IconDescriptor, Theme, Widget};
+use ui::presence::PresenceCtx;
+use ui::widget::{TileContent, TileHost};
 use automerge::{AutoCommit, ObjId};
 
 struct DummyApp;
@@ -24,7 +24,7 @@ impl Widget for DummyApp {
         &mut self,
         _s: &mut vello::Scene,
         _t: vello::kurbo::Affine,
-        _tr: &mut quick_ui::text_render::TextRenderer,
+        _tr: &mut ui::text_render::TextRenderer,
         _th: &Theme,
         _presence: &PresenceCtx,
     ) {}

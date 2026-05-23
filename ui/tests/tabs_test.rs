@@ -1,4 +1,4 @@
-use quick_ui::widget::{TabBar, TabDescriptor};
+use ui::widget::{TabBar, TabDescriptor};
 
 #[test]
 fn tabbar_activates_by_index() {
@@ -24,7 +24,7 @@ fn tabbar_reorder_swaps_positions() {
     assert_eq!(ids, vec![2, 3, 1]);
 }
 
-use quick_ui::widget::{TileContent, TileHost, AppKind};
+use ui::widget::{TileContent, TileHost, AppKind};
 
 #[test]
 fn tile_content_stub_renders_label() {

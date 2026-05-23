@@ -1,5 +1,5 @@
-use quick_ui::animation::{Spring, Tween, Ease};
-use quick_ui::tokens::SpringParams;
+use ui::animation::{Spring, Tween, Ease};
+use ui::tokens::SpringParams;
 
 #[test]
 fn spring_converges_to_target() {

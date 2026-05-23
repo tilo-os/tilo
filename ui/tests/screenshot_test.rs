@@ -122,10 +122,10 @@ fn headless_renderer_captures_a_widget_tree() {
     // `apply_layout` → `draw`, then render to an offscreen texture.
     // Proves the offscreen harness can be pointed at the actual
     // widget pipeline — the foundation for visual regression tests.
-    use quick_ui::presence::PresenceCtx;
-    use quick_ui::text_render::TextRenderer;
-    use quick_ui::theme::Theme;
-    use quick_ui::widget::{Container, Widget};
+    use ui::presence::PresenceCtx;
+    use ui::text_render::TextRenderer;
+    use ui::theme::Theme;
+    use ui::widget::{Container, Widget};
     use std::collections::HashMap;
     use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 
@@ -208,10 +208,10 @@ fn headless_renderer_captures_a_widget_tree() {
 /// black rings into the inset and may darken the magenta base.
 #[test]
 fn tab_bar_renders_pills_inside_six_px_insets() {
-    use quick_ui::presence::PresenceCtx;
-    use quick_ui::text_render::TextRenderer;
-    use quick_ui::theme::Theme;
-    use quick_ui::widget::{TabBar, TabDescriptor, Widget};
+    use ui::presence::PresenceCtx;
+    use ui::text_render::TextRenderer;
+    use ui::theme::Theme;
+    use ui::widget::{TabBar, TabDescriptor, Widget};
     use std::collections::HashMap;
     use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 
