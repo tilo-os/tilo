@@ -122,10 +122,10 @@ impl VelloDrmBridge {
         let renderer = Renderer::new(
             device,
             RendererOptions {
-                surface_format: None,
                 use_cpu: false,
                 antialiasing_support: AaSupport::all(),
                 num_init_threads: None,
+                pipeline_cache: None,
             },
         )
         .map_err(|e| BridgeError::Renderer(format!("{e:?}")))?;
@@ -140,7 +140,7 @@ impl VelloDrmBridge {
             padded_bytes_per_row,
             readback: Vec::new(),
             size: (width, height),
-            base_color: Color::rgb8(0x1A, 0x1B, 0x26),
+            base_color: Color::from_rgb8(0x1A, 0x1B, 0x26),
         })
     }
 
@@ -188,15 +188,15 @@ impl VelloDrmBridge {
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         encoder.copy_texture_to_buffer(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: &self.texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            wgpu::ImageCopyBuffer {
+            wgpu::TexelCopyBufferInfo {
                 buffer: &self.readback_buf,
-                layout: wgpu::ImageDataLayout {
+                layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(self.padded_bytes_per_row),
                     rows_per_image: Some(height),
@@ -217,7 +217,7 @@ impl VelloDrmBridge {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             tx.send(r).ok();
         });
-        device.poll(wgpu::Maintain::Wait);
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
         rx.recv()
             .map_err(|e| BridgeError::Map(format!("map_async channel: {e}")))?
             .map_err(|e| BridgeError::Map(format!("{e:?}")))?;
@@ -344,7 +344,7 @@ mod tests {
             return;
         };
         // Fill with cyan so the buffer is definitely not the (dark) base color.
-        let scene = rect_scene(64, 64, Color::rgb8(0, 255, 255));
+        let scene = rect_scene(64, 64, Color::from_rgb8(0, 255, 255));
         let bytes = bridge.paint(&scene).expect("paint");
         assert_eq!(bytes.len(), 64 * 64 * 4);
         // Find at least one non-background pixel. Background is the
@@ -384,7 +384,7 @@ mod tests {
         };
         // Pick a distinctive base color so we can tell the empty
         // background apart from any other clear.
-        bridge.set_base_color(Color::rgb8(0x12, 0x34, 0x56));
+        bridge.set_base_color(Color::from_rgb8(0x12, 0x34, 0x56));
         let bytes = bridge.paint(&Scene::new()).expect("paint empty");
         assert_eq!(bytes.len(), 32 * 32 * 4);
         // Every pixel must be exactly the base color.
@@ -405,7 +405,7 @@ mod tests {
         let Some(mut bridge) = bridge_or_skip(33, 16) else {
             return;
         };
-        bridge.set_base_color(Color::rgb8(0xAA, 0xBB, 0xCC));
+        bridge.set_base_color(Color::from_rgb8(0xAA, 0xBB, 0xCC));
         let bytes = bridge.paint(&Scene::new()).expect("paint non-aligned");
         assert_eq!(bytes.len(), 33 * 16 * 4);
         for p in bytes.chunks_exact(4) {

@@ -29,6 +29,7 @@ use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use ui::ColorCompat;
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -1647,7 +1648,7 @@ impl Widget for ShellOverlayHost {
             self.draw_demo_peer(scene, transform, text_renderer, theme);
             self.draw_real_peers(scene, transform, text_renderer, theme, presence);
         } else if content_alpha > 0.0 {
-            scene.push_layer(BlendMode::default(), content_alpha, transform, &self.rect);
+            scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), content_alpha, transform, &self.rect);
             self.content
                 .draw(scene, content_xform, text_renderer, theme, presence);
             // Demo + real peers scale with the desktop so they appear to
@@ -1709,7 +1710,7 @@ impl Widget for ShellOverlayHost {
                 scene.fill(Fill::NonZero, transform, slate_950, None, &self.rect);
                 self.draw_overview(scene, transform, text_renderer, theme);
             } else {
-                scene.push_layer(BlendMode::default(), overview_alpha, transform, &self.rect);
+                scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), overview_alpha, transform, &self.rect);
                 draw_scrim(scene, transform, self.rect);
                 scene.fill(Fill::NonZero, transform, slate_950, None, &self.rect);
                 self.draw_overview(scene, overview_xform, text_renderer, theme);
@@ -1725,7 +1726,7 @@ impl Widget for ShellOverlayHost {
             if content_alpha >= 0.999 && (content_scale - 1.0).abs() <= f64::EPSILON {
                 sidebar.draw(scene, content_xform, text_renderer, theme, presence);
             } else if content_alpha > 0.0 {
-                scene.push_layer(BlendMode::default(), content_alpha, transform, &self.rect);
+                scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), content_alpha, transform, &self.rect);
                 sidebar.draw(scene, content_xform, text_renderer, theme, presence);
                 scene.pop_layer();
             }
@@ -1762,7 +1763,7 @@ impl Widget for ShellOverlayHost {
             if in_flight {
                 // Clip generously so the scrim doesn't get painted over by
                 // the modal's alpha layer.
-                scene.push_layer(BlendMode::default(), alpha, transform, &self.rect);
+                scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), alpha, transform, &self.rect);
             }
             let panel_xform = if dy != 0.0 || scale != 1.0 {
                 let cx = panel_rect.center().x;
@@ -1823,7 +1824,7 @@ impl Widget for ShellOverlayHost {
                 qs_rect.y1 + 8.0,
             );
             if in_flight {
-                scene.push_layer(BlendMode::default(), alpha, transform, &clip);
+                scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), alpha, transform, &clip);
             }
             let qs_xform = if dy != 0.0 || scale != 1.0 {
                 let cx = qs_rect.center().x;
@@ -1864,7 +1865,7 @@ impl Widget for ShellOverlayHost {
             let in_flight = alpha < 1.0;
             let palette_rect = self.palette.get_rect();
             if in_flight {
-                scene.push_layer(BlendMode::default(), alpha, transform, &self.rect);
+                scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), alpha, transform, &self.rect);
             }
             let palette_xform = if dy != 0.0 || scale != 1.0 {
                 let cx = palette_rect.center().x;
@@ -2838,7 +2839,7 @@ fn draw_scrim(scene: &mut Scene, transform: Affine, rect: Rect) {
     scene.fill(
         Fill::NonZero,
         transform,
-        Color::rgba8(0, 0, 0, alpha),
+        Color::from_rgba8(0, 0, 0, alpha),
         None,
         &rect,
     );
@@ -2858,7 +2859,7 @@ fn draw_modal_scrim(scene: &mut Scene, transform: Affine, rect: Rect) {
     scene.fill(
         Fill::NonZero,
         transform,
-        Color::rgba8(0, 0, 0, alpha),
+        Color::from_rgba8(0, 0, 0, alpha),
         None,
         &rect,
     );
@@ -2955,25 +2956,25 @@ fn draw_mini_window(
         let slate_600 = colors.neutral[4];
         let slate_700 = colors.neutral[3];
         let dot_color = if is_active {
-            Color::rgba(
-                slate_600.r as f64,
-                slate_600.g as f64,
-                slate_600.b as f64,
+            ui::color_compat::rgba(
+                slate_600.r() as f64,
+                slate_600.g() as f64,
+                slate_600.b() as f64,
                 0.80,
             )
         } else {
-            Color::rgba(
-                slate_700.r as f64,
-                slate_700.g as f64,
-                slate_700.b as f64,
+            ui::color_compat::rgba(
+                slate_700.r() as f64,
+                slate_700.g() as f64,
+                slate_700.b() as f64,
                 0.50,
             )
         };
         scene.fill(Fill::NonZero, transform, dot_color, None, &tab_rr);
-        let border = Color::rgba(
-            slate_600.r as f64,
-            slate_600.g as f64,
-            slate_600.b as f64,
+        let border = ui::color_compat::rgba(
+            slate_600.r() as f64,
+            slate_600.g() as f64,
+            slate_600.b() as f64,
             0.50,
         );
         scene.stroke(
@@ -3015,10 +3016,10 @@ fn draw_mini_window(
     if inner.width() > 0.0 && inner.height() > 0.0 {
         let inner_rr = RoundedRect::from_rect(inner, 4.0);
         let slate_800 = colors.neutral[2];
-        let inner_fill = Color::rgba(
-            slate_800.r as f64,
-            slate_800.g as f64,
-            slate_800.b as f64,
+        let inner_fill = ui::color_compat::rgba(
+            slate_800.r() as f64,
+            slate_800.g() as f64,
+            slate_800.b() as f64,
             0.5,
         );
         scene.fill(Fill::NonZero, transform, inner_fill, None, &inner_rr);
@@ -3169,10 +3170,10 @@ impl ShellOverlayHost {
                         glow_rect,
                         OVERVIEW_ROW_RADIUS_PX + spread,
                     );
-                    let glow_color = Color::rgba(
-                        indigo.r as f64,
-                        indigo.g as f64,
-                        indigo.b as f64,
+                    let glow_color = ui::color_compat::rgba(
+                        indigo.r() as f64,
+                        indigo.g() as f64,
+                        indigo.b() as f64,
                         *alpha,
                     );
                     scene.fill(Fill::NonZero, card_xform, glow_color, None, &glow);
@@ -3196,10 +3197,10 @@ impl ShellOverlayHost {
                 let fill = if is_hover {
                     slate_900
                 } else {
-                    Color::rgba(
-                        slate_900.r as f64,
-                        slate_900.g as f64,
-                        slate_900.b as f64,
+                    ui::color_compat::rgba(
+                        slate_900.r() as f64,
+                        slate_900.g() as f64,
+                        slate_900.b() as f64,
                         0.5,
                     )
                 };
@@ -3369,7 +3370,7 @@ impl ShellOverlayHost {
             );
             // blue-500 @ 20%
             let blue = colors.semantic.info;
-            let blue_bg = Color::rgba(blue.r as f64, blue.g as f64, blue.b as f64, 0.20);
+            let blue_bg = ui::color_compat::rgba(blue.r() as f64, blue.g() as f64, blue.b() as f64, 0.20);
             scene.fill(
                 Fill::NonZero,
                 card_xform,
@@ -3397,11 +3398,11 @@ impl ShellOverlayHost {
                 badge_y + flh as f64 + badge_pad_y * 2.0,
             );
             // purple-500 @ 20% — approximate via indigo[4]+red shift.
-            let purple = Color::rgb8(168, 85, 247);
-            let purple_bg = Color::rgba(
-                purple.r as f64,
-                purple.g as f64,
-                purple.b as f64,
+            let purple = Color::from_rgb8(168, 85, 247);
+            let purple_bg = ui::color_compat::rgba(
+                purple.r() as f64,
+                purple.g() as f64,
+                purple.b() as f64,
                 0.20,
             );
             scene.fill(
@@ -3615,10 +3616,10 @@ impl ShellOverlayHost {
         let add_fill = if add_hover {
             slate_900
         } else {
-            Color::rgba(
-                slate_900.r as f64,
-                slate_900.g as f64,
-                slate_900.b as f64,
+            ui::color_compat::rgba(
+                slate_900.r() as f64,
+                slate_900.g() as f64,
+                slate_900.b() as f64,
                 0.30,
             )
         };
@@ -4294,7 +4295,7 @@ impl ShellOverlayHost {
                 continue;
             }
             let (pr, pg, pb) = presence.color_for(user);
-            let peer = Color::rgb8(pr, pg, pb);
+            let peer = Color::from_rgb8(pr, pg, pb);
 
             let mut caret = vello::kurbo::BezPath::new();
             caret.move_to(apex);
@@ -6400,7 +6401,7 @@ mod tests {
     fn ws_settings_active_tab_pill_uses_white_overlay() {
         let tokens = ui::tokens::Tokens::dark();
         let c = tokens.colors.surface_white_10;
-        let expected = vello::peniko::Color::rgba8(255, 255, 255, 26);
+        let expected = vello::peniko::Color::from_rgba8(255, 255, 255, 26);
         assert_eq!(
             c, expected,
             "surface_white_10 must paint at the concept's `bg-white/10` \
@@ -6415,7 +6416,7 @@ mod tests {
     ///
     /// The lighter scrim painted under the GlobalSearch palette and the
     /// overview is `bg-black/30` per concept §5.1. The byte the magic
-    /// `Color::rgba8(0, 0, 0, …)` literal must round to is `77` (because
+    /// `Color::from_rgba8(0, 0, 0, …)` literal must round to is `77` (because
     /// `0.30 × 255 ≈ 76.5`). Pinning the constant *and* the rounded byte
     /// ensures a future tweak to one without the other surfaces here
     /// rather than as a silent shift in the rendered shadowing.

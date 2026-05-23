@@ -30,7 +30,8 @@ use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
 use vello::peniko::{
-    Blob, Brush, Color, ColorStop, ColorStops, Extend, Fill, Format, Gradient, GradientKind, Image,
+    Blob, Brush, Color, ColorStop, ColorStops, Extend, Fill, Gradient, GradientKind,
+    ImageAlphaType, ImageBrush as Image, ImageData, ImageFormat as Format,
 };
 use winit::event::{Modifiers, WindowEvent};
 
@@ -89,7 +90,14 @@ fn generate_noise_bytes() -> Vec<u8> {
 fn build_noise_image() -> Image {
     let bytes = generate_noise_bytes();
     let blob = Blob::new(Arc::new(bytes));
-    Image::new(blob, Format::Rgba8, NOISE_SIZE, NOISE_SIZE).with_extend(Extend::Repeat)
+    let data = ImageData {
+        data: blob,
+        format: Format::Rgba8,
+        alpha_type: ImageAlphaType::Alpha,
+        width: NOISE_SIZE,
+        height: NOISE_SIZE,
+    };
+    Image::new(data).with_extend(Extend::Repeat)
 }
 
 /// Widget that paints the nirios desktop backdrop (gradient + grid + noise)
@@ -120,28 +128,28 @@ impl DesktopBackdrop {
     /// overlay. Exposed for tests; there is no runtime consumer.
     #[cfg(test)]
     pub(crate) fn noise_bytes_len(&self) -> usize {
-        self.noise.data.len()
+        self.noise.image.data.len()
     }
 
     fn paint_backdrop(&self, scene: &mut Scene, transform: Affine) {
         // 1. Diagonal gradient: top-left slate-900 → bottom-right slate-950.
-        let gradient = Gradient {
-            kind: GradientKind::Linear {
-                start: Point::new(self.rect.x0, self.rect.y0),
-                end: Point::new(self.rect.x1, self.rect.y1),
-            },
-            extend: Extend::Pad,
-            stops: ColorStops::from_iter([
+        let gradient = Gradient::new_linear(
+            Point::new(self.rect.x0, self.rect.y0),
+            Point::new(self.rect.x1, self.rect.y1),
+        )
+        .with_extend(Extend::Pad)
+        .with_stops(
+            &[
                 ColorStop {
                     offset: 0.0,
-                    color: Color::rgb8(0x0f, 0x17, 0x2a),
+                    color: Color::from_rgb8(0x0f, 0x17, 0x2a).into(),
                 },
                 ColorStop {
                     offset: 1.0,
-                    color: Color::rgb8(0x02, 0x06, 0x17),
+                    color: Color::from_rgb8(0x02, 0x06, 0x17).into(),
                 },
-            ]),
-        };
+            ][..],
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -152,10 +160,11 @@ impl DesktopBackdrop {
 
         // 2. Grid — 1px lines at rgba(128, 128, 128, 0.07) every 24px.
         //    Clip to self.rect so lines don't bleed outside the backdrop.
-        let line_color = Color::rgba8(128, 128, 128, 18); // 0.07 * 255 ≈ 18
+        let line_color = Color::from_rgba8(128, 128, 128, 18); // 0.07 * 255 ≈ 18
         let stroke = Stroke::new(1.0);
 
         scene.push_layer(
+            vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
             1.0,
             transform,
@@ -186,6 +195,7 @@ impl DesktopBackdrop {
         //    dampens the already-subtle per-pixel alpha further so the effect
         //    registers as grain rather than visible dots.
         scene.push_layer(
+            vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
             NOISE_ALPHA,
             transform,
@@ -393,8 +403,8 @@ mod tests {
         let backdrop = DesktopBackdrop::new();
         let expected = (NOISE_SIZE as usize) * (NOISE_SIZE as usize) * 4;
         assert_eq!(backdrop.noise_bytes_len(), expected);
-        assert_eq!(backdrop.noise.width, NOISE_SIZE);
-        assert_eq!(backdrop.noise.height, NOISE_SIZE);
+        assert_eq!(backdrop.noise.image.width, NOISE_SIZE);
+        assert_eq!(backdrop.noise.image.height, NOISE_SIZE);
     }
 
     /// The noise should actually have some non-zero alpha pixels; a
