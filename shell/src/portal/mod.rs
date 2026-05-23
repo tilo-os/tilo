@@ -72,6 +72,7 @@ use tokio::sync::oneshot;
 
 use crate::shell::state::{
     AppId, Capability, FsMode, GrantScope, Workspace, WorkspaceId, WorkspaceTree,
+    WorkspaceTreeHandle,
 };
 
 /// Identity of the sandboxed app that issued a portal request.
@@ -134,17 +135,24 @@ impl CapabilityKind {
 /// Handle the portal hands to its interface impls so they can consult /
 /// mutate the workspace's `grants` map.
 ///
-/// Internally a thin wrapper around `Arc<Mutex<WorkspaceTree>>` — the
-/// same shape `ShellNetwork` uses for its replica. Cloneable so each
-/// interface impl can hold its own clone without locking strategy
-/// concerns.
+/// Holds a [`WorkspaceTreeHandle`] — the same `Arc<parking_lot::RwLock<_>>`
+/// the shell chrome and the peer-sync replica clone from (C-3). Portal
+/// `insert` writes land on the shared tree, so the shell's Permissions
+/// tab observes them immediately and peer-sync's next `export_changes_since`
+/// ships them to other peers.
+///
+/// Cloneable so each interface impl can hold its own clone without
+/// locking-strategy concerns. The handle is just an `Arc` bump.
 #[derive(Clone)]
 pub struct GrantStoreHandle {
-    tree: Arc<Mutex<WorkspaceTree>>,
+    tree: WorkspaceTreeHandle,
 }
 
 impl GrantStoreHandle {
-    pub fn new(tree: Arc<Mutex<WorkspaceTree>>) -> Self {
+    /// Construct a grant store over the shared workspace-tree handle.
+    /// In production the same handle is passed to `ChromeState` and
+    /// `WorkspaceTreeReplica` so every subsystem mutates the same tree.
+    pub fn new(tree: WorkspaceTreeHandle) -> Self {
         Self { tree }
     }
 
@@ -154,18 +162,18 @@ impl GrantStoreHandle {
         let mut tree = WorkspaceTree::default();
         tree.active = ws_id;
         tree.workspaces.push(ws);
-        (Self::new(Arc::new(Mutex::new(tree))), ws_id)
+        (Self::new(tree.shared()), ws_id)
     }
 
     /// Lookup the strongest existing grant (`Always` > `Session` > `Once`)
     /// of `kind` for `caller`. `None` means "no grant" → the portal
     /// will enqueue a prompt.
     ///
-    /// Locks the workspace tree for the duration of the read. Returns
+    /// Acquires a read lock for the duration of the lookup. Returns
     /// `None` if the workspace doesn't exist (drained workspace, racy
     /// portal request) — defaults safely to deny.
     pub fn lookup(&self, caller: &PortalCaller, kind: CapabilityKind) -> Option<GrantScope> {
-        let tree = self.tree.lock().ok()?;
+        let tree = self.tree.read();
         let ws = tree
             .workspaces
             .iter()
@@ -187,10 +195,13 @@ impl GrantStoreHandle {
 
     /// Persist `capability` under `caller.app_id` in `caller.workspace_id`.
     /// Used after the user clicks `Session` or `Always` on the prompt.
+    ///
+    /// Acquires the write lock briefly, mutates both the cache map and
+    /// the automerge doc (via `doc_insert_grant`), then releases the
+    /// lock. Peer-sync picks up the change on the next `export_changes`
+    /// tick.
     pub fn insert(&self, caller: &PortalCaller, capability: Capability) -> bool {
-        let Ok(mut tree) = self.tree.lock() else {
-            return false;
-        };
+        let mut tree = self.tree.write();
         let Some(ws) = tree
             .workspaces
             .iter_mut()
@@ -201,15 +212,30 @@ impl GrantStoreHandle {
         ws.grants
             .entry(caller.app_id.clone())
             .or_default()
-            .push(capability);
+            .push(capability.clone());
+        // Mirror into the automerge doc so peer-sync ships the grant on
+        // the next tick. Tolerant of the doc not being seeded yet (e.g.
+        // a brand-new workspace not yet flushed through
+        // `seed_doc_from_cache`).
+        tree.doc_insert_grant(caller.workspace_id, &caller.app_id, &capability);
         true
     }
 
-    /// Direct tree access for tests that need to assert on multiple
-    /// fields at once. Production callers should go through
+    /// Direct tree-handle accessor for tests that need to assert on
+    /// multiple fields at once, or that need to construct a peer
+    /// subsystem holding the same handle. Production callers go through
     /// [`Self::lookup`] / [`Self::insert`].
+    pub fn tree_handle(&self) -> WorkspaceTreeHandle {
+        self.tree.clone()
+    }
+
+    /// Test-only: the previous shape returned an `Arc<Mutex<WorkspaceTree>>`
+    /// for compat with the old code path. Production now consistently
+    /// uses [`Self::tree_handle`]; we keep this only because a handful
+    /// of older tests still reference it.
     #[cfg(any(test, debug_assertions))]
-    pub fn tree(&self) -> Arc<Mutex<WorkspaceTree>> {
+    #[allow(dead_code)]
+    pub fn tree(&self) -> WorkspaceTreeHandle {
         self.tree.clone()
     }
 }
@@ -672,6 +698,61 @@ mod tests {
         assert_eq!(
             store.lookup(&caller, CapabilityKind::Microphone),
             Some(GrantScope::Always)
+        );
+    }
+
+    /// C-3 Phase C integration test.
+    ///
+    /// A grant inserted via the portal's [`GrantStoreHandle`] must be
+    /// immediately visible to the shell chrome (the WS-Settings
+    /// "Permissions" tab reads from `ChromeState`'s shared
+    /// `WorkspaceTreeHandle`). Before this refactor each subsystem held
+    /// an independent `WorkspaceTree` clone and the grant never reached
+    /// the shell — closes the first observable consequence in
+    /// `docs/superpowers/specs/2026-05-22-workspace-tree-arc-mutex-design.md`.
+    #[test]
+    fn grant_inserted_via_portal_is_visible_in_ws_settings() {
+        use crate::shell::chrome_state::ChromeState;
+        use crate::shell::state::WorkspaceTreeHandleExt;
+
+        // Build the shared handle once and seed a workspace so the
+        // portal has somewhere to land grants.
+        let handle: WorkspaceTreeHandle = WorkspaceTreeHandle::test_default();
+        let ws_id = WorkspaceId(1);
+        {
+            let mut tree = handle.write();
+            tree.active = ws_id;
+            tree.workspaces.push(empty_ws(1));
+        }
+
+        // Wire portal + chrome to the *same* handle.
+        let portal = GrantStoreHandle::new(handle.clone());
+        let chrome = ChromeState::new_with_handle(handle.clone());
+
+        // Portal-side insert: simulate an `Allow → Session` outcome
+        // landing on the camera capability for `camera-app`.
+        let caller = PortalCaller::new(ws_id, "camera-app");
+        let cap = Capability::Camera {
+            scope: GrantScope::Session,
+        };
+        assert!(
+            portal.insert(&caller, cap),
+            "portal insert must succeed on a workspace that exists",
+        );
+
+        // Shell-side read: walking the chrome's tree must surface the
+        // grant under `camera-app`. This is the production code path
+        // the Permissions tab uses (see
+        // `shell::workspace_settings::permissions_pane_rows`).
+        let st = chrome.borrow();
+        let tree = st.tree();
+        let ws = tree
+            .active_workspace()
+            .expect("active workspace exists");
+        assert!(
+            ws.grants.iter().any(|(app, _)| app.as_str() == "camera-app"),
+            "portal-side grant insert must be visible to the shell chrome \
+             (audit C-3: shared WorkspaceTreeHandle ties subsystems together)",
         );
     }
 

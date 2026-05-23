@@ -1181,7 +1181,29 @@ pub fn build_nirios_overlay_host_with_options(
     tree: &WorkspaceTree,
     enable_peer_sync: bool,
 ) -> (overlay_host::ShellOverlayHost, chrome_state::Chrome) {
-    let chrome = chrome_state::ChromeState::new(tree.clone());
+    build_nirios_overlay_host_with_handle(tree.clone().shared(), enable_peer_sync)
+}
+
+/// Handle-based variant — the production entry point under C-3. The
+/// hosted boot path threads the *shared* [`WorkspaceTreeHandle`] (the
+/// same `Arc<RwLock<_>>` that the portal's `GrantStoreHandle` and
+/// peer-sync's `WorkspaceTreeReplica` hold), so chrome mutations land
+/// on the same tree the other subsystems read from.
+///
+/// Reads from the handle once to build the initial widget tree (the
+/// layout / draw structure only needs a snapshot of the workspaces /
+/// strips shape; subsequent rebuilds run through `sync_from_tree` on
+/// each chrome widget when the chrome revision bumps).
+pub fn build_nirios_overlay_host_with_handle(
+    tree_handle: state::WorkspaceTreeHandle,
+    enable_peer_sync: bool,
+) -> (overlay_host::ShellOverlayHost, chrome_state::Chrome) {
+    let chrome = chrome_state::ChromeState::new_with_handle(tree_handle.clone());
+    // Snapshot the tree to walk it without holding the read lock across
+    // widget construction (which involves Box-allocs, taffy fills,
+    // etc.). The snapshot only feeds the *initial* layout — the live
+    // chrome handle drives subsequent updates.
+    let tree: WorkspaceTree = tree_handle.read().clone();
 
     let strips_for_view: Vec<String> = tree
         .active_workspace()
@@ -1197,7 +1219,7 @@ pub fn build_nirios_overlay_host_with_options(
     ));
 
     let topbar: Box<dyn Widget> = Box::new(
-        topbar_chrome::TopBarChrome::from_tree(tree).with_chrome(chrome.clone()),
+        topbar_chrome::TopBarChrome::from_tree(&tree).with_chrome(chrome.clone()),
     );
 
     let mut content_col = Column::new()

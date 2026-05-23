@@ -113,10 +113,12 @@ fn run_portal_server_only() {
         // when the bridge accept path lands in the portal-only mode.
         // Until then the unit's job is to *own the bus name* so the
         // session has a portal backend at all.
-        let tree = std::sync::Arc::new(std::sync::Mutex::new(
-            shell::shell::state::WorkspaceTree::default(),
-        ));
-        let grants = portal::GrantStoreHandle::new(tree);
+        // C-3: the portal-only entry point doesn't share with chrome /
+        // peer-sync (no compositor is live in `--portal-only` mode), but
+        // the handle shape still has to match the production API. Build
+        // a fresh handle around a default tree.
+        let tree_handle = shell::shell::state::WorkspaceTree::default().shared();
+        let grants = portal::GrantStoreHandle::new(tree_handle);
         let prompts = portal::PromptQueueHandle::new(portal::PromptResolver::Channel);
         let ctx = portal::PortalContext::new_with_null_spawners(
             grants,
