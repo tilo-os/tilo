@@ -10,8 +10,8 @@ pollster = "0.4.0"
 rand = "0.10.0"
 taffy = { version = "0.9.2", features = ["content_size"] }
 tokio = { version = "1.50.0", features = ["full"] }
-vello = "0.2.1"
-wgpu = "0.20"
+vello = "0.9"
+wgpu = "29"
 winit = "0.30.13"
 fluent = "0.16.1"
 unic-langid = "0.9.5"
@@ -43,7 +43,7 @@ regex = "1"
 # Inspect Vello scene encodings (draw tags) in widget tests so we can pin
 # end-to-end paint contracts (e.g. `tabs::active_pill_emits_more_color_\
 # fills_than_inactive_siblings`) without rendering pixels.
-vello_encoding = "0.2.1"
+vello_encoding = "0.9"
 # `widget::file_picker::tests` build a real on-disk tree to exercise the
 # `std::fs::read_dir` path. Already pulled in by shell as a regular
 # dev-dep; pinning here for the leaf-test build.

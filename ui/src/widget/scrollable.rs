@@ -197,7 +197,7 @@ impl Widget for Scrollable {
     }
 
     fn draw(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
-        scene.push_layer(BlendMode::default(), 1.0, transform, &self.rect);
+        scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), 1.0, transform, &self.rect);
         if let Some(c) = &mut self.child { c.draw(scene, transform, tr, theme, presence); }
         scene.pop_layer();
     }

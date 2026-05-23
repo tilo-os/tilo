@@ -21,22 +21,22 @@ impl TerminalPalette {
         // Tailwind-400 ramp so the terminal's ANSI colors sit in the same
         // perceptual band as the concept's JSX classes. Bright variants use
         // the `-300` ramp for a softer but clearly distinct tier.
-        let red_400 = Color::rgb8(0xf8, 0x71, 0x71);
-        let green_400 = Color::rgb8(0x4a, 0xde, 0x80);
-        let yellow_400 = Color::rgb8(0xfa, 0xcc, 0x15);
-        let blue_400 = Color::rgb8(0x60, 0xa5, 0xfa);
-        let purple_400 = Color::rgb8(0xc0, 0x84, 0xfc);
-        let cyan_400 = Color::rgb8(0x22, 0xd3, 0xee);
-        let slate_300 = Color::rgb8(0xcb, 0xd5, 0xe1);
-        let slate_500 = Color::rgb8(0x64, 0x74, 0x8b);
+        let red_400 = Color::from_rgb8(0xf8, 0x71, 0x71);
+        let green_400 = Color::from_rgb8(0x4a, 0xde, 0x80);
+        let yellow_400 = Color::from_rgb8(0xfa, 0xcc, 0x15);
+        let blue_400 = Color::from_rgb8(0x60, 0xa5, 0xfa);
+        let purple_400 = Color::from_rgb8(0xc0, 0x84, 0xfc);
+        let cyan_400 = Color::from_rgb8(0x22, 0xd3, 0xee);
+        let slate_300 = Color::from_rgb8(0xcb, 0xd5, 0xe1);
+        let slate_500 = Color::from_rgb8(0x64, 0x74, 0x8b);
 
-        let red_300 = Color::rgb8(0xfc, 0xa5, 0xa5);
-        let green_300 = Color::rgb8(0x86, 0xef, 0xac);
-        let yellow_300 = Color::rgb8(0xfd, 0xe0, 0x47);
-        let blue_300 = Color::rgb8(0x93, 0xc5, 0xfd);
-        let purple_300 = Color::rgb8(0xd8, 0xb4, 0xfe);
-        let cyan_300 = Color::rgb8(0x67, 0xe8, 0xf9);
-        let slate_100 = Color::rgb8(0xf1, 0xf5, 0xf9);
+        let red_300 = Color::from_rgb8(0xfc, 0xa5, 0xa5);
+        let green_300 = Color::from_rgb8(0x86, 0xef, 0xac);
+        let yellow_300 = Color::from_rgb8(0xfd, 0xe0, 0x47);
+        let blue_300 = Color::from_rgb8(0x93, 0xc5, 0xfd);
+        let purple_300 = Color::from_rgb8(0xd8, 0xb4, 0xfe);
+        let cyan_300 = Color::from_rgb8(0x67, 0xe8, 0xf9);
+        let slate_100 = Color::from_rgb8(0xf1, 0xf5, 0xf9);
 
         Self {
             fg_default: green_400,
@@ -66,8 +66,8 @@ impl TerminalPalette {
     pub fn light() -> Self {
         // Same ANSI colors; default fg/bg flipped for light surfaces.
         let mut p = Self::dark();
-        p.fg_default = Color::rgb8(20, 20, 20);
-        p.bg_default = Color::rgb8(245, 245, 245);
+        p.fg_default = Color::from_rgb8(20, 20, 20);
+        p.bg_default = Color::from_rgb8(245, 245, 245);
         p
     }
 }

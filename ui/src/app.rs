@@ -528,10 +528,10 @@ impl ApplicationHandler for AppHandler {
         let renderer = Renderer::new(
             &device_handle.device,
             RendererOptions {
-                surface_format: Some(surface.config.format),
                 use_cpu: false,
                 antialiasing_support: vello::AaSupport::all(),
                 num_init_threads: None,
+                pipeline_cache: None,
             },
         )
         .unwrap();
@@ -733,7 +733,7 @@ impl ApplicationHandler for AppHandler {
                         scene.fill(
                             vello::peniko::Fill::NonZero,
                             transform,
-                            Color::rgba8(0, 0, 0, 180),
+                            Color::from_rgba8(0, 0, 0, 180),
                             None,
                             &bg_rect,
                         );
@@ -767,19 +767,19 @@ impl ApplicationHandler for AppHandler {
                 }
 
                 let t_gpu_start = if perf { Some(std::time::Instant::now()) } else { None };
-                let surface_texture = render
-                    .surface
-                    .surface
-                    .get_current_texture()
-                    .expect("failed to get surface texture");
                 let device_handle = &render.render_cx.devices[render.surface.dev_id];
+                // vello 0.5 removed `render_to_surface`. Canonical flow:
+                // render the scene into the surface's intermediate
+                // `target_view` texture, then blit that into the
+                // surface's swap-chain texture via the built-in blitter,
+                // then present.
                 render
                     .renderer
-                    .render_to_surface(
+                    .render_to_texture(
                         &device_handle.device,
                         &device_handle.queue,
                         scene,
-                        &surface_texture,
+                        &render.surface.target_view,
                         &vello::RenderParams {
                             base_color: app.theme.bg_app,
                             width,
@@ -788,10 +788,44 @@ impl ApplicationHandler for AppHandler {
                         },
                     )
                     .unwrap();
+                let surface_texture = match render.surface.surface.get_current_texture() {
+                    vello::wgpu::CurrentSurfaceTexture::Success(t) => t,
+                    vello::wgpu::CurrentSurfaceTexture::Outdated
+                    | vello::wgpu::CurrentSurfaceTexture::Suboptimal(_) => {
+                        render.render_cx.configure_surface(&render.surface);
+                        window.request_redraw();
+                        return;
+                    }
+                    vello::wgpu::CurrentSurfaceTexture::Occluded
+                    | vello::wgpu::CurrentSurfaceTexture::Timeout => {
+                        window.request_redraw();
+                        return;
+                    }
+                    vello::wgpu::CurrentSurfaceTexture::Lost => {
+                        panic!("wgpu surface lost — backend-level failure");
+                    }
+                    vello::wgpu::CurrentSurfaceTexture::Validation => {
+                        panic!("wgpu surface validation error");
+                    }
+                };
+                let mut encoder = device_handle.device.create_command_encoder(
+                    &vello::wgpu::CommandEncoderDescriptor {
+                        label: Some("ui-app blit-to-surface"),
+                    },
+                );
+                render.surface.blitter.copy(
+                    &device_handle.device,
+                    &mut encoder,
+                    &render.surface.target_view,
+                    &surface_texture
+                        .texture
+                        .create_view(&vello::wgpu::TextureViewDescriptor::default()),
+                );
+                device_handle.queue.submit([encoder.finish()]);
                 let t_render_us = t_gpu_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
                 let t_present_start = if perf { Some(std::time::Instant::now()) } else { None };
                 surface_texture.present();
-                device_handle.device.poll(vello::wgpu::Maintain::Poll);
+                let _ = device_handle.device.poll(vello::wgpu::PollType::Poll);
                 if let Some(start) = t_frame_start {
                     let total = start.elapsed().as_micros();
                     let t_present_us = t_present_start
@@ -1085,7 +1119,7 @@ impl ApplicationHandler for AppHandler {
                             crate::state::RemoteCursor {
                                 x: 0.0,
                                 y: 0.0,
-                                color: Color::rgb(
+                                color: crate::color_compat::rgb(
                                     c.color[0] as f64,
                                     c.color[1] as f64,
                                     c.color[2] as f64,

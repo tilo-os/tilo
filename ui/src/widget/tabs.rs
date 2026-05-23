@@ -5,6 +5,7 @@ use winit::event::{WindowEvent, MouseButton, ElementState};
 use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
+use crate::color_compat::ColorCompat;
 use crate::icons;
 use crate::widget::Widget;
 use crate::text_render::{TextRenderer, TextWeight};
@@ -434,7 +435,7 @@ impl TabBar {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 pill_transform,
-                vello::peniko::Color::rgba8(0, 0, 0, alpha),
+                vello::peniko::Color::from_rgba8(0, 0, 0, alpha),
                 None,
                 &shadow_shape,
             );
@@ -446,7 +447,7 @@ impl TabBar {
         // Mapped to the `surface_white_*` / `border_white_*` tokens added
         // in commit f7d5a70 so the contrast is consistent across widgets.
         let shape = RoundedRect::from_rect(r, radius);
-        if look.fill.a > 0 {
+        if look.fill.a() > 0 {
             scene.fill(vello::peniko::Fill::NonZero, pill_transform, look.fill, None, &shape);
         }
         if let Some(border) = look.border {
@@ -519,7 +520,7 @@ impl TabBar {
             // same relative distance no matter where the pill is painted.
             let close_x_visual = self.close_rects[i].x0 + dx;
             let clip_r = Rect::new(r.x0, r.y0, close_x_visual - 2.0, r.y1);
-            scene.push_layer(vello::peniko::BlendMode::default(), 1.0, transform, &clip_r);
+            scene.push_layer(vello::peniko::Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &clip_r);
             tr.draw_text_weighted(
                 scene,
                 &t.title,
@@ -536,7 +537,7 @@ impl TabBar {
         let tab_key = PresenceKey::Tab { id: format!("{:x}", t.id) };
         let peers = presence.peers_on(&tab_key);
         if !peers.is_empty() {
-            scene.push_layer(vello::peniko::BlendMode::default(), 1.0, transform, &shape);
+            scene.push_layer(vello::peniko::Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &shape);
             let dot_r = 8.0_f64;
             let span = (peers.len().min(4) as f64 - 1.0) * 10.0;
             let base_x = r.center().x - span / 2.0;
@@ -548,7 +549,7 @@ impl TabBar {
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    vello::peniko::Color::rgba8(cr, cg, cb, 140),
+                    vello::peniko::Color::from_rgba8(cr, cg, cb, 140),
                     None,
                     &c,
                 );
@@ -577,9 +578,9 @@ impl TabBar {
                     true,
                 )
             } else if is_hover {
-                (vello::peniko::Color::rgba8(255, 255, 255, 28), true)
+                (vello::peniko::Color::from_rgba8(255, 255, 255, 28), true)
             } else {
-                (vello::peniko::Color::rgba8(0, 0, 0, 0), false)
+                (vello::peniko::Color::from_rgba8(0, 0, 0, 0), false)
             };
             if close_chip_visible {
                 let chip = RoundedRect::from_rect(close_r, close_r.height() / 2.0);
@@ -594,7 +595,7 @@ impl TabBar {
             let glyph_color = if close_hover {
                 // Concept's `hover:text-white` — full white on close-hover
                 // so the × reads crisp against the red-500/80 fill.
-                vello::peniko::Color::rgba8(255, 255, 255, 255)
+                vello::peniko::Color::from_rgba8(255, 255, 255, 255)
             } else if is_active {
                 text_primary
             } else {
@@ -607,7 +608,7 @@ impl TabBar {
         // the drag-ghost so the ghost stays visually simple, and on
         // pinned tabs (icon-only — no room for the cluster).
         if is_hover && !is_pinned {
-            let chip_tint = vello::peniko::Color::rgba8(255, 255, 255, 64);
+            let chip_tint = vello::peniko::Color::from_rgba8(255, 255, 255, 64);
             let icon_idle = text_dim;
             let icon_active = text_primary;
 
@@ -699,7 +700,7 @@ impl TabBar {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                vello::peniko::Color::rgba8(0, 0, 0, alpha),
+                vello::peniko::Color::from_rgba8(0, 0, 0, alpha),
                 None,
                 &shadow_shape,
             );
@@ -735,7 +736,7 @@ impl TabBar {
         // `draw_pill_inner` so the title doesn't visibly slide past
         // the close × while the pill shrinks.
         let clip_r = Rect::new(r.x0, r.y0, c.close_rect.x0 - 2.0, r.y1);
-        scene.push_layer(vello::peniko::BlendMode::default(), 1.0, transform, &clip_r);
+        scene.push_layer(vello::peniko::Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &clip_r);
         tr.draw_text_weighted(
             scene,
             &c.desc.title,
@@ -1057,7 +1058,7 @@ impl TabBar {
         if close_hover {
             Some(theme.tokens.colors.semantic.danger.with_alpha_factor(0.8))
         } else if is_hover {
-            Some(vello::peniko::Color::rgba8(255, 255, 255, 28))
+            Some(vello::peniko::Color::from_rgba8(255, 255, 255, 28))
         } else {
             None
         }
@@ -1079,7 +1080,7 @@ impl TabBar {
         let close_hover = Some(idx) == self.hover_close_idx;
         let is_active = self.tabs[idx].id == self.active_id;
         Some(if close_hover {
-            vello::peniko::Color::rgba8(255, 255, 255, 255)
+            vello::peniko::Color::from_rgba8(255, 255, 255, 255)
         } else if is_active {
             theme.tokens.colors.text_primary
         } else {
@@ -1325,6 +1326,7 @@ impl Widget for TabBar {
                     r.y1 + 4.0,
                 );
                 scene.push_layer(
+                    vello::peniko::Fill::NonZero,
                     vello::peniko::BlendMode::default(),
                     combined_alpha,
                     transform,
@@ -1380,6 +1382,7 @@ impl Widget for TabBar {
                     c.pill_rect.y1 + 40.0,
                 );
                 scene.push_layer(
+                    vello::peniko::Fill::NonZero,
                     vello::peniko::BlendMode::default(),
                     alpha.max(0.0),
                     transform,
@@ -1518,6 +1521,7 @@ impl Widget for TabBar {
                     ghost_rect.y1 + 40.0,
                 );
                 scene.push_layer(
+                    vello::peniko::Fill::NonZero,
                     vello::peniko::BlendMode::default(),
                     Self::GHOST_PILL_ALPHA,
                     transform,
@@ -2722,7 +2726,7 @@ mod tests {
         let active_hover = pill_appearance(&theme, true, true, false);
 
         assert_eq!(
-            idle.fill.a, 0,
+            idle.fill.a(), 0,
             "idle inactive pill must paint zero fill so the bar reads as transparent",
         );
         assert!(
@@ -2730,8 +2734,8 @@ mod tests {
             "idle inactive pill must paint no border or glow",
         );
 
-        let hover_alpha = hover.fill.a;
-        let active_alpha = active.fill.a;
+        let hover_alpha = hover.fill.a();
+        let active_alpha = active.fill.a();
         assert!(
             hover_alpha > 0 && hover_alpha < active_alpha,
             "hover fill sits between idle and active (idle 0 < hover {hover_alpha} \
@@ -2746,7 +2750,7 @@ mod tests {
         // `WindowFrame.tsx` where the active tab doesn't escalate further
         // on hover.
         assert_eq!(
-            active.fill.a, active_hover.fill.a,
+            active.fill.a(), active_hover.fill.a(),
             "active pill should not change on hover",
         );
     }
@@ -2764,7 +2768,7 @@ mod tests {
 
         // Same fill / border / glow as active.
         assert_eq!(
-            pressed_inactive.fill.a, active.fill.a,
+            pressed_inactive.fill.a(), active.fill.a(),
             "pressed pill must adopt the active fill alpha for instant feedback",
         );
         assert!(pressed_inactive.border.is_some(), "pressed pill paints a border");
@@ -3436,7 +3440,7 @@ mod tests {
             .close_chip_color_for_tests(0, &theme)
             .expect("close-hover must produce a chip fill");
         assert_eq!(
-            (color.r, color.g, color.b, color.a),
+            (color.r(), color.g(), color.b(), color.a()),
             (239, 68, 68, 204),
             "close-hover must paint red-500 at 80% alpha (concept: hover:bg-red-500/80)",
         );
@@ -3448,7 +3452,7 @@ mod tests {
             .close_chip_color_for_tests(0, &theme)
             .expect("tab hover must still produce a subtle chip fill");
         assert_eq!(
-            (color.r, color.g, color.b, color.a),
+            (color.r(), color.g(), color.b(), color.a()),
             (255, 255, 255, 28),
             "tab-only hover must stay as the subtle white tint",
         );
@@ -3481,7 +3485,7 @@ mod tests {
             .close_glyph_color_for_tests(0, &theme)
             .expect("close glyph color must always be defined for a live tab");
         assert_eq!(
-            (color.r, color.g, color.b, color.a),
+            (color.r(), color.g(), color.b(), color.a()),
             (255, 255, 255, 255),
             "close-hover glyph must be opaque white (concept: hover:text-white)",
         );

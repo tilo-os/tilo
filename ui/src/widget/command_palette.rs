@@ -394,7 +394,7 @@ impl CommandPalette {
         let chip_text_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
 
         let active_fill = theme.tokens.colors.accent[5];
-        let idle_fill = Color::rgba8(255, 255, 255, 13);  // white/5
+        let idle_fill = Color::from_rgba8(255, 255, 255, 13);  // white/5
         let active_text = theme.tokens.colors.text_primary;
         let idle_text = theme.tokens.colors.text_dim;
 
@@ -430,8 +430,8 @@ impl CommandPalette {
         // Concept `GlobalSearch.tsx:227-231`: `bg-emerald-500/20
         // text-emerald-400` when on. Hex literals are pinned by the
         // plan's palette table.
-        let ft_active_fill = Color::rgba8(34, 197, 94, 51);  // emerald-500/20
-        let ft_active_text = Color::rgba8(0x4a, 0xde, 0x80, 0xff);  // emerald-400
+        let ft_active_fill = Color::from_rgba8(34, 197, 94, 51);  // emerald-500/20
+        let ft_active_text = Color::from_rgba8(0x4a, 0xde, 0x80, 0xff);  // emerald-400
         self.draw_chip(
             scene,
             transform,
@@ -516,7 +516,7 @@ impl CommandPalette {
     ) {
         let footer = self.footer_rect();
         // `bg-black/20` band — 20% black over the slate surface.
-        let band_body = Color::rgba8(0, 0, 0, 51);
+        let band_body = Color::from_rgba8(0, 0, 0, 51);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -538,8 +538,8 @@ impl CommandPalette {
         );
 
         let chip_text_size = (theme.tokens.typography.scale.sm - 2.0).max(9.0);
-        let chip_body = Color::rgba8(255, 255, 255, 13);  // white/5
-        let chip_border = Color::rgba8(255, 255, 255, 26);  // white/10
+        let chip_body = Color::from_rgba8(255, 255, 255, 13);  // white/5
+        let chip_border = Color::from_rgba8(255, 255, 255, 26);  // white/10
         let dim = theme.tokens.colors.text_dim;
         let chip_h = (footer.height() - 14.0).max(14.0);
         let cy = (footer.y0 + footer.y1) / 2.0;
@@ -750,8 +750,8 @@ impl Widget for CommandPalette {
         let chip_shape = RoundedRect::from_rect(layout.kbd_chip_rect, 6.0);
         // Concept: `bg-white/5 border border-white/10` — semi-transparent
         // white at 5% / 10% opacity over the slate-900 surface tint.
-        let chip_body = Color::rgba8(255, 255, 255, 13);
-        let chip_border = Color::rgba8(255, 255, 255, 26);
+        let chip_body = Color::from_rgba8(255, 255, 255, 13);
+        let chip_border = Color::from_rgba8(255, 255, 255, 26);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
