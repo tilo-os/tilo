@@ -15,6 +15,10 @@ pub struct Row {
     rect: vello::kurbo::Rect,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
+    /// Subtree cache — same pattern as `Column::subtree_cache`.
+    /// See that field for the gory rationale.
+    subtree_cache: Scene,
+    cache_rect: vello::kurbo::Rect,
 }
 
 impl Row {
@@ -24,6 +28,8 @@ impl Row {
             rect: vello::kurbo::Rect::ZERO,
             presence_path: Vec::new(),
             permission_scope: None,
+            subtree_cache: Scene::new(),
+            cache_rect: vello::kurbo::Rect::ZERO,
         }
     }
 
@@ -127,6 +133,21 @@ impl Widget for Row {
         self.children.iter().any(|c| c.wants_pointer_capture())
     }
 
+    /// Direct-field override — the default `Widget::needs_redraw`
+    /// allocates a `Vec<&dyn Widget>` via `children()` to recurse,
+    /// which is a per-frame heap allocation we'd rather skip.
+    /// Same shape for `is_layout_dirty`.
+    fn needs_redraw(&self) -> bool {
+        // Container itself is dirty only when its cache is stale;
+        // the children handle their own dirty state.
+        self.cache_rect == vello::kurbo::Rect::ZERO
+            || self.children.iter().any(|c| c.needs_redraw())
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        self.children.iter().any(|c| c.is_layout_dirty())
+    }
+
     fn children(&self) -> Vec<&dyn Widget> {
         self.children.iter().map(|c| c.as_ref()).collect()
     }
@@ -174,10 +195,27 @@ impl Widget for Row {
         permissions: &crate::permissions::PermissionContext,
     ) {
         if presence.should_cull(self.get_rect()) { return; }
-        // Propagate presence/permission context down to each child so nested
-        // opt-in widgets still render their chrome.
-        for child in &mut self.children {
-            child.draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+        // Subtree cache — same pattern as `Column`; see that
+        // widget's `draw_with_presence` for the rationale.
+        let size_changed = self.rect.width() != self.cache_rect.width()
+            || self.rect.height() != self.cache_rect.height();
+        let any_child_dirty = self.children.iter().any(|c| c.needs_redraw());
+        let needs_rebuild = self.cache_rect == vello::kurbo::Rect::ZERO
+            || size_changed
+            || any_child_dirty;
+        if !needs_rebuild {
+            let dx = self.rect.x0 - self.cache_rect.x0;
+            let dy = self.rect.y0 - self.cache_rect.y0;
+            scene.append(&self.subtree_cache, Some(transform * Affine::translate((dx, dy))));
+        } else {
+            let mut local = std::mem::take(&mut self.subtree_cache);
+            local.reset();
+            for child in &mut self.children {
+                child.draw_with_presence(&mut local, transform, text_renderer, theme, presence, permissions);
+            }
+            scene.append(&local, None);
+            self.subtree_cache = local;
+            self.cache_rect = self.rect;
         }
 
         if let Some(scope) = self.permission_scope() {
