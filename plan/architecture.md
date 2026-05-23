@@ -1,8 +1,8 @@
-# QuickDesktop Architecture
+# qOS Architecture
 
 ## Overview
 
-QuickDesktop (codename **nirios**) is a collaborative, spatial Linux OS built on Fedora Bootc. Instead of a traditional desktop metaphor, users navigate an infinite 2D canvas of **workspaces** — clusters of application windows organized into strips and tab-groups. Users can invite peers P2P to join individual workspaces, where native and legacy apps are streamed with near-native fidelity. Every workspace runs apps inside its own Bubblewrap sandbox with explicit capability grants.
+qOS (codename **nirios**) is a collaborative, spatial Linux OS built on Fedora Bootc. Instead of a traditional desktop metaphor, users navigate an infinite 2D canvas of **workspaces** — clusters of application windows organized into strips and tab-groups. Users can invite peers P2P to join individual workspaces, where native and legacy apps are streamed with near-native fidelity. Every workspace runs apps inside its own Bubblewrap sandbox with explicit capability grants.
 
 ## System Stack
 
@@ -11,7 +11,7 @@ QuickDesktop (codename **nirios**) is a collaborative, spatial Linux OS built on
 │                    User Applications                      │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌─────────┐  │
 │  │ Flatpak  │  │Distrobox │  │ Native   │  │ Wine /  │  │
-│  │  Apps    │  │Containers│  │ quick-ui │  │  Other  │  │
+│  │  Apps    │  │Containers│  │ ui │  │  Other  │  │
 │  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬────┘  │
 │       │              │             │              │       │
 │  ┌────┴──────────────┴─────────────┴──────────────┴────┐ │
@@ -21,7 +21,7 @@ QuickDesktop (codename **nirios**) is a collaborative, spatial Linux OS built on
 │  └─────────────────────┬───────────────────────────────┘ │
 │                        │ Wayland Protocol                 │
 │  ┌─────────────────────┴───────────────────────────────┐ │
-│  │     quick-desktop (Spatial Smithay Compositor)      │ │
+│  │     shell (Spatial Smithay Compositor)      │ │
 │  │  ┌───────────┐ ┌──────────┐ ┌───────────────────┐  │ │
 │  │  │  Smithay  │ │ vello +  │ │  Collaboration    │  │ │
 │  │  │  (proto)  │ │  wgpu    │ │  (libp2p+automerge)│ │ │
@@ -33,7 +33,7 @@ QuickDesktop (codename **nirios**) is a collaborative, spatial Linux OS built on
 │  └──────────────────────────────────────────────────── │ │
 │                                                          │
 │  ┌──────────────────────────────────────────────────┐   │
-│  │  quick-fs-fuse  (Iroh + iroh-blobs + blake3)     │   │
+│  │  fs  (Iroh + iroh-blobs + blake3)     │   │
 │  │  mounted at /var/workspace, cache /var/cache/    │   │
 │  └──────────────────────────────────────────────────┘   │
 │                                                          │
@@ -53,7 +53,7 @@ QuickDesktop (codename **nirios**) is a collaborative, spatial Linux OS built on
 - User apps via Flatpak; dev environments via Distrobox.
 - See `plan/os-layer.md`.
 
-### 2. Compositor (`quick-desktop`)
+### 2. Compositor (`shell`)
 - Smithay-based Wayland **server** (since the Phase 1-7 rewrite). Hosts foreign Wayland clients and adopts them as tabs in the active strip via `app-id` matching.
 - Two modes selected at boot: `--mode hosted` (smithay-backed Wayland session running as a client of a parent display server, for dev) and `--mode native` (default — smithay running on bare hardware via `--backend drm` or in winit for development).
 - Backends are a trait (`compositor::backend::Backend`); current implementations are `winit` and `drm` (libseat + libinput + udev + GBM).
@@ -110,7 +110,7 @@ Peer pointer/keyboard event on a peer_view widget
 
 ## State model
 
-The single source of truth for per-session shell state is `WorkspaceTree` in `quick-shell/src/shell/state.rs`. It uses a **cached materialisation** pattern (see `docs/superpowers/specs/2026-05-04-workspace-tree-automerge-design.md`):
+The single source of truth for per-session shell state is `WorkspaceTree` in `shell/src/shell/state.rs`. It uses a **cached materialisation** pattern (see `docs/superpowers/specs/2026-05-04-workspace-tree-automerge-design.md`):
 
 - A public struct of `Vec<Workspace>`, `HashMap<StripId, GroupId>`, etc. — every existing reader keeps `tree.workspaces.iter()` style access.
 - A backing `automerge::AutoCommit` document mirrors the cache. Every mutator writes through to both sides.
@@ -139,9 +139,9 @@ WorkspaceTree
 
 Three layers cover different parts of the stack:
 
-1. **In-process driver** (`quick-shell/src/bin/shots/`) — `ShellDriver` builds the same widget tree the live binary builds, runs the same paint pass, and exposes a `widget_registry: HashMap<String, Rect>` that walks the live tree via `Widget::test_id(&self) -> Option<&str>` (from `quick-ui::widget::Widget`). Path-fallback (`Parent/Child[index]`) works without opt-in. Used by >100 tests in `quick-shell/tests/*` and by `cargo run --bin shots`.
+1. **In-process driver** (`shell/src/bin/shots/`) — `ShellDriver` builds the same widget tree the live binary builds, runs the same paint pass, and exposes a `widget_registry: HashMap<String, Rect>` that walks the live tree via `Widget::test_id(&self) -> Option<&str>` (from `ui::widget::Widget`). Path-fallback (`Parent/Child[index]`) works without opt-in. Used by >100 tests in `shell/tests/*` and by `cargo run --bin shots`.
 2. **Offscreen / recording renderer** — `cargo run --bin shots -- --mode offscreen --out target/<dir>` writes PNGs per scenario; `--mode recording --out target/<file>.h264` writes a real H.264 video. Output is identical to the live binary's rendering. **Never** screenshot the user's running session — use the offscreen path.
-3. **Control socket** (spec at `docs/superpowers/specs/2026-05-16-real-input-e2e-design.md`) — when the compositor boots with `NIRIOS_TEST_CONTROL=<sock>` set, it binds an extra unix socket alongside the wayland one. Newline-delimited JSON commands inject through `smithay::input::Seat::input` so they go through real focus rules. Lives in `quick-shell/src/compositor/test_control.rs`. Phase 1 (pure-logic dispatcher + `list_targets` + `click_at`) has landed; later phases (drag, key, type, snapshot, state_dump, CLI wrapper, `tests/support/live_compositor.rs`) are tracked in the spec.
+3. **Control socket** (spec at `docs/superpowers/specs/2026-05-16-real-input-e2e-design.md`) — when the compositor boots with `QOS_TEST_CONTROL=<sock>` set, it binds an extra unix socket alongside the wayland one. Newline-delimited JSON commands inject through `smithay::input::Seat::input` so they go through real focus rules. Lives in `shell/src/compositor/test_control.rs`. Phase 1 (pure-logic dispatcher + `list_targets` + `click_at`) has landed; later phases (drag, key, type, snapshot, state_dump, CLI wrapper, `tests/support/live_compositor.rs`) are tracked in the spec.
 
 The control socket is the out-of-process path for covering the seat layer, frame-pacing regressions, and focus-stealing behaviour the in-process driver can't reproduce.
 
@@ -151,8 +151,8 @@ The control socket is the out-of-process path for covering the seat layer, frame
 quickdesktop/                            # superproject
 ├── plan/                                # this directory — design intent
 ├── docs/                                # architecture + testing + superpowers plans/specs
-├── quick-ui/                            # in-tree — UI toolkit
-├── quick-shell/                         # submodule — compositor + shell
+├── ui/                            # in-tree — UI toolkit
+├── shell/                         # submodule — compositor + shell
 │   └── src/
 │       ├── compositor/                  # smithay state, backends, frame, tab-binding, test_control
 │       │   └── backend/{winit,drm}/
@@ -160,13 +160,13 @@ quickdesktop/                            # superproject
 │       ├── sandbox/                     # bwrap profile, seccomp blob, spawn
 │       ├── portal/                      # FileChooser, ScreenCast, Camera D-Bus backends
 │       ├── network/                     # libp2p actor, behaviour, hub, replica, encoder, invite
-│       └── bin/{shots,nirios-control}/  # e2e harness + control-socket CLI
-├── quick-fs-fuse/                       # submodule — FUSE3 driver
+│       └── bin/{shots,qos-control}/  # e2e harness + control-socket CLI
+├── fs/                       # submodule — FUSE3 driver
 ├── apps/{terminal,file-explorer,browser}/  # submodules
 └── os/                                  # submodule — Containerfile + systemd units
 ```
 
-Only `quick-ui` lives in the main repo; everything else is a submodule. See `CLAUDE.md` for the submodule workflow.
+Only `ui` lives in the main repo; everything else is a submodule. See `CLAUDE.md` for the submodule workflow.
 
 ## Key spatial concepts
 
@@ -174,4 +174,4 @@ Only `quick-ui` lives in the main repo; everything else is a submodule. See `CLA
 - **Workspace**: a cluster of strips on the canvas that can be shared with peers; the unit of sandboxing, capability grants, and CRDT replication.
 - **Strip**: a horizontal lane within a workspace, containing one or more window-groups.
 - **WindowGroup**: a tabbed container holding one or more tabs (formerly "deck"). Tracks `maximized` and `width`.
-- **Tab**: a single application window. Either `TileContent::Native(...)` (a quick-ui app) or `Tab::Foreign { app_id, surface_id }` (a Wayland client adopted via app-id matching).
+- **Tab**: a single application window. Either `TileContent::Native(...)` (a ui app) or `Tab::Foreign { app_id, surface_id }` (a Wayland client adopted via app-id matching).

@@ -1,7 +1,7 @@
 # Screenshot + Interaction Workflow for Visual Parity
 
 This document explains how to capture screenshots of the running nirios shell
-(`quick-desktop`) and drive it interactively for visual-parity work against
+(`shell`) and drive it interactively for visual-parity work against
 the `nirios-concept/` React mockup.
 
 ## Why a custom workflow
@@ -59,19 +59,19 @@ If you see `method: List`, `GetFrameRect`, `Activate`, etc., you're set.
 
 ```bash
 scripts/screenshot-app.py \
-    --launch './target/debug/quick-desktop' \
+    --launch './target/debug/shell' \
     --title 'QuickUI App' \
     --out target/nirios-screenshots/01-desktop-baseline.png \
     --settle 1.5
 ```
 
 - `--title` is a **substring** match. The window's actual title is set in
-  `quick-ui/src/app.rs` via `.with_title("QuickUI App")`.
+  `ui/src/app.rs` via `.with_title("QuickUI App")`.
 - `--settle` waits that many seconds after the window is found before
   capturing, so the first frame has been painted. Bump to 2.0–3.0 if
   you're running a debug build that's slow to initialize.
 - If the host lacks `libxkbcommon-devel`, build/run the binary inside
-  distrobox: `distrobox enter my-distrobox -- bash -lc 'cargo build -p quick-desktop'`
+  distrobox: `distrobox enter my-distrobox -- bash -lc 'cargo build -p shell'`
   and invoke the script from the host as normal (the D-Bus session is shared).
 
 **Outputs** go under `target/nirios-screenshots/` (gitignored via the
@@ -94,7 +94,7 @@ Pass `--keep` to leave the launched process running after the screenshot:
 
 ```bash
 scripts/screenshot-app.py \
-    --launch './target/debug/quick-desktop' \
+    --launch './target/debug/shell' \
     --out target/nirios-screenshots/01-desktop-baseline.png \
     --keep
 ```
@@ -156,7 +156,7 @@ The pattern for "do X, then capture":
 ```bash
 # 1. Launch + screenshot baseline (keep alive)
 scripts/screenshot-app.py \
-    --launch './target/debug/quick-desktop' \
+    --launch './target/debug/shell' \
     --out target/nirios-screenshots/01-baseline.png \
     --keep
 
@@ -178,7 +178,7 @@ sleep 0.3
 scripts/screenshot-app.py --out target/nirios-screenshots/02-search-open.png
 
 # 5. Clean up
-kill $(pgrep -f target/debug/quick-desktop)
+kill $(pgrep -f target/debug/shell)
 ```
 
 ## Decisions
@@ -187,7 +187,7 @@ kill $(pgrep -f target/debug/quick-desktop)
   "ShellHarness" with offscreen rendering. Don't. Real-window capture via
   the portal exercises the actual wgpu + vello + winit paint path; a mock
   would diverge. Reserve offscreen rendering for unit tests of isolated
-  widgets (see `quick-ui/tests/support/offscreen.rs`).
+  widgets (see `ui/tests/support/offscreen.rs`).
 - **Only inspect screenshots where you suspect visual regressions.**
   Treat screenshots like integration-test fixtures — compare only when
   you've just changed something that should affect the view, or when you

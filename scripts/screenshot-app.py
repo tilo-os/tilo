@@ -28,7 +28,7 @@ Required Fedora packages:
      ID: window-calls-extended@hseliger.eu)
 
 Usage:
-    scripts/screenshot-app.py --launch ./target/debug/quick-desktop \
+    scripts/screenshot-app.py --launch ./target/debug/shell \
         --title "QuickUI App" --out /tmp/qd-shot.png
 """
 
@@ -186,7 +186,7 @@ def main() -> int:
     ap.add_argument(
         "--launch",
         help="Command to launch before capturing. Pass the full command as one "
-        "shell-quoted string, e.g. --launch './target/debug/quick-desktop'.",
+        "shell-quoted string, e.g. --launch './target/debug/shell'.",
     )
     ap.add_argument(
         "--title",
