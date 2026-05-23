@@ -197,7 +197,7 @@ fn pump_drains_pending_grant_after_choice() {
         st.pending_grants.is_empty(),
         "queue must be empty after the user clicks Allow",
     );
-    let ws = st.tree.active_workspace().expect("active workspace");
+    let tree = st.tree(); let ws = tree.active_workspace().expect("active workspace");
     assert!(
         ws.grants.get("org.example.app").is_none(),
         "Once doesn't persist on the workspace's grants map — \
@@ -234,7 +234,7 @@ fn pump_persists_session_grant_to_workspace_grants_map() {
 
     let st = chrome.borrow();
     assert!(st.pending_grants.is_empty(), "queue must drain");
-    let ws = st.tree.active_workspace().expect("active workspace");
+    let tree = st.tree(); let ws = tree.active_workspace().expect("active workspace");
     let caps = ws
         .grants
         .get("org.example.app")
@@ -285,7 +285,7 @@ fn pump_persists_always_grant_with_filesystem_capability() {
     host.tick_permission_prompt_for_tests();
 
     let st = chrome.borrow();
-    let ws = st.tree.active_workspace().expect("active workspace");
+    let tree = st.tree(); let ws = tree.active_workspace().expect("active workspace");
     let caps = ws.grants.get("org.gnome.gedit").expect("grant persisted");
     assert_eq!(caps.len(), 1);
     assert!(
@@ -328,7 +328,7 @@ fn pump_deny_drops_pending_grant_without_persisting() {
 
     let st = chrome.borrow();
     assert!(st.pending_grants.is_empty(), "queue must drain on Deny");
-    let ws = st.tree.active_workspace().expect("active workspace");
+    let tree = st.tree(); let ws = tree.active_workspace().expect("active workspace");
     assert!(
         ws.grants.get("org.example.app").is_none(),
         "Deny must not persist any grant — got {:?}",
@@ -340,10 +340,11 @@ fn pump_deny_drops_pending_grant_without_persisting() {
 fn pump_does_not_latch_when_queue_is_empty() {
     let chrome = ChromeState::new(WorkspaceTree::default());
     {
-        let mut st = chrome.borrow_mut();
-        st.tree.workspaces.push(Workspace::new(WorkspaceId::from(1), "demo"));
+        let st = chrome.borrow_mut();
+        let mut tree = st.tree_mut();
+        tree.workspaces.push(Workspace::new(WorkspaceId::from(1), "demo"));
         let id = WorkspaceId::from(1);
-        st.tree.set_active(id);
+        tree.set_active(id);
     }
     let mut host = host_with_chrome(chrome);
     host.tick_permission_prompt_for_tests();
