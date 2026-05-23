@@ -74,7 +74,11 @@ impl Widget for Spacer {
     /// rows), the default-true `needs_redraw` was pinning the
     /// whole tree to "always-dirty".
     fn needs_redraw(&self) -> bool { false }
-    fn is_layout_dirty(&self) -> bool { false }
+    /// Spacer has zero intrinsic primitives but its `flex_grow: 1.0`
+    /// means a parent reflow legitimately moves it. Rely on the
+    /// default container-recursion at the parent level — Spacer
+    /// itself reports false after the first apply_layout.
+    fn is_layout_dirty(&self) -> bool { self.rect == Rect::ZERO }
 
     fn get_rect(&self) -> Rect {
         self.rect
