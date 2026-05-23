@@ -44,6 +44,15 @@ pub struct Avatar {
     initials: String,
     size: f32,
     rect: Rect,
+    /// Scene cache. Avatars are stateless after construction (no
+    /// hover / press / focus visuals), so the cache invalidates
+    /// only when the rect moves (apply_layout). Once a tree settles
+    /// in steady state, every Avatar contributes one `Scene::append`
+    /// per frame instead of repeating the circle / image fill +
+    /// glyph emission.
+    cached: vello::Scene,
+    dirty: bool,
+    last_rect: Rect,
 }
 
 impl Avatar {
@@ -56,6 +65,9 @@ impl Avatar {
             initials: String::new(),
             size,
             rect: Rect::ZERO,
+            cached: vello::Scene::new(),
+            dirty: true,
+            last_rect: Rect::ZERO,
         }
     }
 
@@ -71,6 +83,9 @@ impl Avatar {
             initials,
             size,
             rect: Rect::ZERO,
+            cached: vello::Scene::new(),
+            dirty: true,
+            last_rect: Rect::ZERO,
         }
     }
 
@@ -203,12 +218,16 @@ impl Widget for Avatar {
             origin.x + layout.location.x as f64 + layout.size.width as f64,
             origin.y + layout.location.y as f64 + layout.size.height as f64,
         );
+        if self.rect != self.last_rect {
+            self.dirty = true;
+            self.last_rect = self.rect;
+        }
     }
 
     fn draw(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
+        out_scene: &mut Scene,
+        out_transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         _presence: &PresenceCtx,
@@ -216,12 +235,29 @@ impl Widget for Avatar {
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;
         }
-        if let Some(img) = self.image.clone() {
-            self.paint_image(scene, transform, &img);
-        } else {
-            self.paint_initials(scene, transform, text_renderer, theme);
+        if !self.dirty {
+            out_scene.append(&self.cached, Some(out_transform));
+            return;
         }
+        // Borrow-checker dance: paint_* take `&self`, but we'd be
+        // holding `&mut self.cached` at the same time. Move the
+        // cache out, mutate via the existing paint methods, then
+        // move it back. `Scene` is cheap to move (Vec of encoded
+        // bytes); no per-frame allocation.
+        let mut cached = std::mem::take(&mut self.cached);
+        cached.reset();
+        if let Some(img) = self.image.clone() {
+            self.paint_image(&mut cached, Affine::IDENTITY, &img);
+        } else {
+            self.paint_initials(&mut cached, Affine::IDENTITY, text_renderer, theme);
+        }
+        out_scene.append(&cached, Some(out_transform));
+        self.cached = cached;
     }
+
+    fn needs_redraw(&self) -> bool { self.dirty }
+    fn mark_drawn(&mut self) { self.dirty = false; }
+    fn is_layout_dirty(&self) -> bool { false }
 
     fn handle_event(
         &mut self,

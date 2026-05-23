@@ -66,6 +66,16 @@ impl Widget for Spacer {
 
     fn name(&self) -> &str { "Spacer" }
 
+    /// Spacers never paint anything — `draw` is a no-op. They're
+    /// also fixed-size relative to their parent's flex spec. Both
+    /// of these reduce to "never dirty, never needs layout reflow,
+    /// never blocks the App redraw gate". The cost saving here is
+    /// per-frame: with many Spacers in a tree (toolbars, padding
+    /// rows), the default-true `needs_redraw` was pinning the
+    /// whole tree to "always-dirty".
+    fn needs_redraw(&self) -> bool { false }
+    fn is_layout_dirty(&self) -> bool { false }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
