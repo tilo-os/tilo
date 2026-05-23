@@ -473,10 +473,17 @@ mod tests {
     #[test]
     fn push_appends_event() {
         let mut s = DrmDispatchState::default();
-        s.push(BackendEvent::Input);
+        // `BackendEvent::Input` now carries the actual `WindowEvent`
+        // (changed when hosted-mode click routing landed); synthesise
+        // a minimal CursorMoved so the variant constructs.
+        let fake = winit::event::WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(0.0, 0.0),
+        };
+        s.push(BackendEvent::Input(fake));
         s.push(BackendEvent::Redraw);
         assert_eq!(s.events.len(), 2);
-        assert!(matches!(s.events[0], BackendEvent::Input));
+        assert!(matches!(s.events[0], BackendEvent::Input(_)));
         assert!(matches!(s.events[1], BackendEvent::Redraw));
     }
 
