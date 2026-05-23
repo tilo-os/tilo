@@ -43,25 +43,43 @@ pub enum BadgeContent {
 pub struct Badge {
     content: BadgeContent,
     rect: Rect,
+    cached: vello::Scene,
+    dirty: bool,
+    last_rect: Rect,
 }
 
 impl Badge {
     /// Construct a [`BadgeContent::Dot`] badge.
     pub fn dot() -> Self {
-        Self { content: BadgeContent::Dot, rect: Rect::ZERO }
+        Self {
+            content: BadgeContent::Dot,
+            rect: Rect::ZERO,
+            cached: vello::Scene::new(),
+            dirty: true,
+            last_rect: Rect::ZERO,
+        }
     }
 
-    /// Construct a [`BadgeContent::Count`] badge. See variant docs for
-    /// the `0` / `>= 100` clamping rules; the constructor itself does
-    /// not transform the count — clamping happens at render time via
-    /// [`Badge::display_text`].
+    /// Construct a [`BadgeContent::Count`] badge.
     pub fn count(n: u32) -> Self {
-        Self { content: BadgeContent::Count(n), rect: Rect::ZERO }
+        Self {
+            content: BadgeContent::Count(n),
+            rect: Rect::ZERO,
+            cached: vello::Scene::new(),
+            dirty: true,
+            last_rect: Rect::ZERO,
+        }
     }
 
     /// Construct a [`BadgeContent::Text`] badge.
     pub fn text(s: impl Into<String>) -> Self {
-        Self { content: BadgeContent::Text(s.into()), rect: Rect::ZERO }
+        Self {
+            content: BadgeContent::Text(s.into()),
+            rect: Rect::ZERO,
+            cached: vello::Scene::new(),
+            dirty: true,
+            last_rect: Rect::ZERO,
+        }
     }
 
     /// The string that `draw` will hand to the text renderer for this
@@ -132,42 +150,44 @@ impl Widget for Badge {
             origin.x + layout.location.x as f64 + layout.size.width as f64,
             origin.y + layout.location.y as f64 + layout.size.height as f64,
         );
+        if self.rect != self.last_rect {
+            self.dirty = true;
+            self.last_rect = self.rect;
+        }
     }
 
     fn draw(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
+        out_scene: &mut Scene,
+        out_transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         _presence: &crate::presence::PresenceCtx,
     ) {
-        // Semantic "nothing to show" — `Count(0)` paints absolutely
-        // nothing. Early-return before any scene mutation so tests can
-        // assert via the encoding that zero draw tags are emitted.
         if matches!(self.content, BadgeContent::Count(0)) {
             return;
         }
-
+        if !self.dirty {
+            out_scene.append(&self.cached, Some(out_transform));
+            return;
+        }
+        // mem::take dance — `display_text` borrows &self while
+        // `scene` borrows `&mut self.cached`.
+        let mut cached = std::mem::take(&mut self.cached);
+        cached.reset();
+        let transform = Affine::IDENTITY;
         let bg = theme.tokens.colors.semantic.danger;
 
         match &self.content {
             BadgeContent::Dot => {
-                // Filled circle, radius = `spacing.s2`. Painted at the
-                // centre of the badge's rect so callers can position
-                // the rect itself wherever they want the dot.
                 let radius = theme.tokens.spacing.s2 as f64;
                 let circle = Circle::new(self.rect.center(), radius);
-                scene.fill(vello::peniko::Fill::NonZero, transform, bg, None, &circle);
+                cached.fill(vello::peniko::Fill::NonZero, transform, bg, None, &circle);
             }
             BadgeContent::Count(_) | BadgeContent::Text(_) => {
-                // Pill background. `radii.full` is the largest radius
-                // token (9999) — clamped against the pill's own
-                // half-height inside `RoundedRect` so the shape stays
-                // a proper pill rather than overshooting into a wedge.
                 let radius = theme.tokens.radii.full as f64;
                 let pill = RoundedRect::from_rect(self.rect, radius);
-                scene.fill(vello::peniko::Fill::NonZero, transform, bg, None, &pill);
+                cached.fill(vello::peniko::Fill::NonZero, transform, bg, None, &pill);
 
                 if let Some(label) = self.display_text() {
                     let text_size = theme.tokens.typography.scale.xs;
@@ -175,7 +195,7 @@ impl Widget for Badge {
                     let tx = self.rect.center().x - tw as f64 / 2.0;
                     let ty = self.rect.center().y - th as f64 / 2.0;
                     text_renderer.draw_text(
-                        scene,
+                        &mut cached,
                         &label,
                         text_size,
                         Color::WHITE,
@@ -185,7 +205,13 @@ impl Widget for Badge {
                 }
             }
         }
+        out_scene.append(&cached, Some(out_transform));
+        self.cached = cached;
     }
+
+    fn needs_redraw(&self) -> bool { self.dirty }
+    fn mark_drawn(&mut self) { self.dirty = false; }
+    fn is_layout_dirty(&self) -> bool { false }
 
     fn handle_event(
         &mut self,
