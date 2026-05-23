@@ -30,6 +30,13 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 # rely on a runtime-installed `libopenh264.so` — same pin as `shell`'s
 # screencast pipeline.
 openh264 = { version = "0.9", features = ["source"] }
+# System clipboard access for TextInput's Ctrl+C / Ctrl+V / Ctrl+X.
+# Wayland uses `wl_data_device`; X11 uses the selection protocol —
+# `arboard` wraps both. The "wayland-data-control" feature lets us
+# talk to the data-control compositor extension when available
+# (kanshi / GNOME / KDE), falling back to the seat-driven protocol
+# otherwise.
+arboard = { version = "3.4", default-features = false, features = ["wayland-data-control"] }
 
 [dev-dependencies]
 regex = "1"

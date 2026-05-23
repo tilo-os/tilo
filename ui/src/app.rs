@@ -16,6 +16,18 @@ use crate::collaboration::{CollaborationManager, CollabEvent, CollabRequest, Pre
 use crate::presence::{PresenceCtx, PresenceKey};
 use crate::permissions::PermissionContext;
 
+/// Cached `QUICK_UI_PERF=1` env-var check. Returns `true` once the env
+/// var is non-empty; the lookup happens once and the boolean is cached
+/// for the rest of the process. The `RedrawRequested` handler reads
+/// this once per frame so the typical (perf-off) hot path pays zero.
+fn perf_enabled() -> bool {
+    use std::sync::OnceLock;
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| {
+        std::env::var("QUICK_UI_PERF").map(|s| !s.is_empty()).unwrap_or(false)
+    })
+}
+
 /// Minimum gap between two outbound pointer presence broadcasts, in
 /// milliseconds. Winit delivers `CursorMoved` at vsync rate or higher; at
 /// 120 Hz the raw event stream is ~8 ms per delta, which would saturate
@@ -598,10 +610,23 @@ impl ApplicationHandler for AppHandler {
                     app.update_focusable_order();
                 }
 
+                // Phase timing (gated). `QUICK_UI_PERF=1` enables a
+                // per-frame stderr breakdown of compute_layout /
+                // apply_layout / draw_widget_tree / render_to_surface /
+                // present. The flag is checked once and cached in a
+                // static so we don't hit env vars on the hot path.
+                let perf = perf_enabled();
+                let t_frame_start = if perf { Some(std::time::Instant::now()) } else { None };
+                let mut t_compute_us = 0u128;
+                let mut t_apply_us = 0u128;
+                let mut t_relayout_branch = false;
+
                 let root_node = app.root_node.unwrap();
                 if app.layout_dirty {
+                    t_relayout_branch = true;
                     let node_map = &app.node_map;
                     let text_renderer = &mut app.text_renderer;
+                    let t0 = std::time::Instant::now();
                     app.taffy
                         .compute_layout_with_measure(
                             root_node,
@@ -618,15 +643,19 @@ impl ApplicationHandler for AppHandler {
                             },
                         )
                         .unwrap();
+                    t_compute_us = t0.elapsed().as_micros();
+                    let t1 = std::time::Instant::now();
                     app.root_widget.apply_layout(
                         &app.taffy,
                         root_node,
                         vello::kurbo::Point::new(0.0, 0.0),
                     );
+                    t_apply_us = t1.elapsed().as_micros();
                     app.layout_dirty = false;
                     app.update_focusable_order();
                 }
 
+                let t_draw_start = if perf { Some(std::time::Instant::now()) } else { None };
                 let transform = Affine::scale(scale_factor as f64);
                 app.root_widget.draw_with_presence(
                     scene,
@@ -636,6 +665,7 @@ impl ApplicationHandler for AppHandler {
                     &app.presence_ctx,
                     &app.permission_ctx,
                 );
+                let t_draw_us = t_draw_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
 
                 // Draw Remote Cursors
                 for (_, cursor) in &app.state.collab.cursors {
@@ -730,6 +760,7 @@ impl ApplicationHandler for AppHandler {
                     );
                 }
 
+                let t_gpu_start = if perf { Some(std::time::Instant::now()) } else { None };
                 let surface_texture = render
                     .surface
                     .surface
@@ -751,8 +782,22 @@ impl ApplicationHandler for AppHandler {
                         },
                     )
                     .unwrap();
+                let t_render_us = t_gpu_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
+                let t_present_start = if perf { Some(std::time::Instant::now()) } else { None };
                 surface_texture.present();
                 device_handle.device.poll(vello::wgpu::Maintain::Poll);
+                if let Some(start) = t_frame_start {
+                    let total = start.elapsed().as_micros();
+                    let t_present_us = t_present_start
+                        .map(|t| t.elapsed().as_micros())
+                        .unwrap_or(0);
+                    eprintln!(
+                        "perf frame: total={:>5}us layout={}({}+{}us) draw={:>5}us render={:>5}us present={:>5}us",
+                        total,
+                        if t_relayout_branch { "Y" } else { "n" },
+                        t_compute_us, t_apply_us, t_draw_us, t_render_us, t_present_us
+                    );
+                }
             }
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.app.modifiers = modifiers;
