@@ -66,6 +66,6 @@ pub fn format_path(path: &Path, home: Option<&Path>) -> String {
 pub fn initial_path() -> PathBuf {
     let workspace = PathBuf::from("/workspace");
     if workspace.exists() { return workspace; }
-    if let Some(home) = dirs_next::home_dir() { return home; }
+    if let Some(home) = dirs::home_dir() { return home; }
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
 }
