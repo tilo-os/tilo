@@ -19,7 +19,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::{Blob, Color as PenikoColor, Fill, Format, Image as PenikoImage};
+use vello::peniko::{Blob, Color as PenikoColor, Fill, ImageAlphaType, ImageData as PenikoImage, ImageFormat as Format};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key as WKey, NamedKey as WNamedKey};
 
@@ -173,8 +173,13 @@ impl Widget for ServoSurface {
                 let expected = (width as usize) * (height as usize) * 4;
                 if rgba.len() == expected {
                     let blob = Blob::new(Arc::new(rgba));
-                    self.cached_image =
-                        Some(PenikoImage::new(blob, Format::Rgba8, width, height));
+                    self.cached_image = Some(PenikoImage {
+                        data: blob,
+                        format: Format::Rgba8,
+                        alpha_type: ImageAlphaType::Alpha,
+                        width,
+                        height,
+                    });
                     self.cached_dims = dims;
                     self.cached_buffer_ptr = ptr;
                 }
@@ -198,7 +203,8 @@ impl Widget for ServoSurface {
             let sy = rh / ih as f64;
             let bt = Affine::translate((self.rect.x0, self.rect.y0))
                 * Affine::scale_non_uniform(sx, sy);
-            scene.fill(Fill::NonZero, transform, &img, Some(bt), &self.rect);
+            let image_brush = vello::peniko::ImageBrush::new(img);
+            scene.fill(Fill::NonZero, transform, &image_brush, Some(bt), &self.rect);
         } else {
             // Loading state: a 1 px dashed border so it's visible on
             // dark backgrounds without needing fonts loaded.
