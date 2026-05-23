@@ -49,10 +49,49 @@ impl Default for TextWeight {
     }
 }
 
+/// Hashable cache key for measured-text results. `max_width` is
+/// encoded as a `u32` bit-pattern so `f32` (which isn't `Hash`)
+/// participates in the key without surprise NaN collisions —
+/// callers either pass a sane finite max width or no max at all,
+/// so the bit-pattern is unique-per-input.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct MeasureKey {
+    text_hash: u64,
+    size_bits: u32,
+    max_width_bits: u32,
+    weight: u16,
+    generation: u64,
+}
+
+/// Maximum entries the text-measure cache holds before it starts
+/// evicting on insertion. 4096 entries × ~64 bytes ≈ 256 KB —
+/// enough for every static label in a several-hundred-widget tree
+/// to survive across frames, small enough that we don't bloat
+/// process RSS when the user types many distinct strings.
+const MEASURE_CACHE_LIMIT: usize = 4096;
+
 pub struct TextRenderer {
     pub font_system: FontSystem,
     pub swash_cache: SwashCache,
     font_cache: HashMap<cosmic_text::fontdb::ID, Font>,
+    /// `(text, size, max_width, weight)` → measured `(width, height)`.
+    /// The same `measure_weighted` call is the dominant cost in
+    /// `widget::*::draw` (see the 2026-05-23 perf plan: the cosmic-
+    /// text re-shape per frame is ~7.5 ms in debug across a 50-
+    /// widget tree). Most widgets re-measure the same static
+    /// strings every frame; caching the result drops that to a
+    /// hash lookup.
+    measure_cache: HashMap<MeasureKey, (f32, f32)>,
+    /// Generation counter — bumped by [`Self::bump_generation`]
+    /// when the user changes locale or hot-swaps a font. Cache
+    /// entries from prior generations stay in the map but never
+    /// match a lookup (since the generation is part of the key);
+    /// they're aged out when the cache hits its limit.
+    generation: u64,
+    /// Hits / misses counter — for the `cache_stats` accessor.
+    /// Useful in tests + benches; doesn't affect runtime behaviour.
+    hits: u64,
+    misses: u64,
 }
 
 impl TextRenderer {
@@ -61,6 +100,65 @@ impl TextRenderer {
             font_system: FontSystem::new(),
             swash_cache: SwashCache::new(),
             font_cache: HashMap::new(),
+            measure_cache: HashMap::with_capacity(256),
+            generation: 0,
+            hits: 0,
+            misses: 0,
+        }
+    }
+
+    /// Hit / miss snapshot of the measure cache. Useful for
+    /// benchmarks asserting "the static-label widgets warmed the
+    /// cache and subsequent frames are pure hits".
+    pub fn cache_stats(&self) -> (u64, u64) {
+        (self.hits, self.misses)
+    }
+
+    /// Invalidate every cached measurement. Call this when the
+    /// font set or active locale changes; cosmic-text will shape
+    /// glyphs differently after either swap, so stale numbers
+    /// would let widgets compute wrong layouts.
+    pub fn bump_generation(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.measure_cache.clear();
+    }
+
+    /// Internal: hash-based key lookup → cached measurement.
+    /// Returns `None` on miss. Mutates hit / miss counters.
+    fn measure_lookup(&mut self, key: MeasureKey) -> Option<(f32, f32)> {
+        if let Some(v) = self.measure_cache.get(&key).copied() {
+            self.hits += 1;
+            return Some(v);
+        }
+        self.misses += 1;
+        None
+    }
+
+    /// Internal: write a cache entry, evicting at random when the
+    /// table is full. Random eviction is cheap and good enough —
+    /// most missed entries are one-off animated values (Spinner
+    /// dots, scrubbing slider value) that we don't care about
+    /// keeping anyway.
+    fn measure_insert(&mut self, key: MeasureKey, value: (f32, f32)) {
+        if self.measure_cache.len() >= MEASURE_CACHE_LIMIT {
+            if let Some(victim) = self.measure_cache.keys().next().copied() {
+                self.measure_cache.remove(&victim);
+            }
+        }
+        self.measure_cache.insert(key, value);
+    }
+
+    fn make_measure_key(&self, text: &str, size: f32, max_width: Option<f32>, weight: TextWeight) -> MeasureKey {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        text.hash(&mut hasher);
+        MeasureKey {
+            text_hash: hasher.finish(),
+            size_bits: size.to_bits(),
+            max_width_bits: max_width.map(|w| w.to_bits()).unwrap_or(u32::MAX),
+            weight: weight.to_u16(),
+            generation: self.generation,
         }
     }
 
@@ -80,6 +178,11 @@ impl TextRenderer {
     ) -> (f32, f32) {
         if text.is_empty() { return (0.0, 0.0); }
 
+        let key = self.make_measure_key(text, size, max_width, weight);
+        if let Some(cached) = self.measure_lookup(key) {
+            return cached;
+        }
+
         let line_height = size * 1.25;
         let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(size, line_height));
         let attrs = cosmic_text::Attrs::new().weight(weight.to_cosmic_weight());
@@ -97,7 +200,9 @@ impl TextRenderer {
             lines += 1;
         }
         let height = lines as f32 * line_height;
-        (width, height)
+        let result = (width, height);
+        self.measure_insert(key, result);
+        result
     }
 
     pub fn draw_text(
@@ -225,5 +330,52 @@ mod tests {
         // Default must be Regular so existing call sites that go through
         // the legacy `draw_text` wrapper keep their 400-weight behaviour.
         assert_eq!(TextWeight::default(), TextWeight::Regular);
+    }
+
+    /// Measuring the same string twice should hit the cache the
+    /// second time — the dominant payoff of Unit 4. Without this,
+    /// every widget's `draw` pays a full cosmic-text shape per
+    /// frame.
+    #[test]
+    fn measure_cache_returns_hit_on_second_call() {
+        let mut tr = TextRenderer::new();
+        let label = "Hello, gallery!";
+        let (w1, h1) = tr.measure(label, 16.0, None);
+        let (hits1, misses1) = tr.cache_stats();
+        assert_eq!(misses1, 1);
+        assert_eq!(hits1, 0);
+
+        let (w2, h2) = tr.measure(label, 16.0, None);
+        let (hits2, misses2) = tr.cache_stats();
+        assert_eq!(hits2, 1, "second measure of same string must hit");
+        assert_eq!(misses2, 1, "miss count unchanged after a hit");
+        assert_eq!((w1, h1), (w2, h2), "cached value must equal recomputed");
+    }
+
+    /// A different `size` is a different cache entry — the cached
+    /// (width, height) at one size is no good for another.
+    #[test]
+    fn measure_cache_keys_on_size() {
+        let mut tr = TextRenderer::new();
+        let _ = tr.measure("abc", 12.0, None);
+        let _ = tr.measure("abc", 16.0, None);
+        let _ = tr.measure("abc", 12.0, None); // hit
+        let (hits, misses) = tr.cache_stats();
+        assert_eq!(hits, 1);
+        assert_eq!(misses, 2);
+    }
+
+    /// `bump_generation` blows away every cached entry — the next
+    /// measure of a previously-seen string registers as a miss.
+    #[test]
+    fn bump_generation_invalidates_cache() {
+        let mut tr = TextRenderer::new();
+        let _ = tr.measure("abc", 12.0, None);
+        let _ = tr.measure("abc", 12.0, None); // hit
+        tr.bump_generation();
+        let _ = tr.measure("abc", 12.0, None); // miss after bump
+        let (hits, misses) = tr.cache_stats();
+        assert_eq!(hits, 1);
+        assert_eq!(misses, 2);
     }
 }
