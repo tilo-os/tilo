@@ -6,9 +6,9 @@
 #
 # Behaviour:
 #   - Removes any stale socket at the chosen path.
-#   - Sets NIRIOS_TEST_CONTROL to the socket path.
+#   - Sets QOS_TEST_CONTROL to the socket path.
 #   - Unsets DISPLAY + WAYLAND_DISPLAY so the binary boots truly headless.
-#   - Runs ./target/debug/quick-desktop --backend headless.
+#   - Runs ./target/debug/shell --backend headless.
 #   - Waits up to 15s for the socket to appear.
 #   - Prints "READY <socket>" to stdout once usable; exits non-zero on
 #     timeout (the compositor's logs go to stderr so callers can grep
@@ -25,17 +25,17 @@
 set -euo pipefail
 
 SOCKET="${1:-/tmp/nirios.sock}"
-BINARY="$(dirname "$0")/../../target/debug/quick-desktop"
+BINARY="$(dirname "$0")/../../target/debug/shell"
 
 if [ ! -x "$BINARY" ]; then
     echo "FAIL: compositor not built at $BINARY" >&2
-    echo "      run: cargo build -p quick-desktop --bin quick-desktop" >&2
+    echo "      run: cargo build -p shell --bin shell" >&2
     exit 1
 fi
 
 rm -f "$SOCKET"
 
-export NIRIOS_TEST_CONTROL="$SOCKET"
+export QOS_TEST_CONTROL="$SOCKET"
 exec env -u DISPLAY -u WAYLAND_DISPLAY \
     "$BINARY" --backend headless &
 COMP_PID=$!

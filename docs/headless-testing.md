@@ -5,7 +5,7 @@ This guide covers everything you need to test the nirios shell (and individual a
 Three layers, each useful on its own:
 
 1. **`shots` — scenarios → PNG / H.264** (run pre-written interactions, capture per-step output)
-2. **`NIRIOS_TEST_CONTROL` socket — JSON RPC over a unix socket** (drive a running binary programmatically: click, drag, type, snapshot)
+2. **`QOS_TEST_CONTROL` socket — JSON RPC over a unix socket** (drive a running binary programmatically: click, drag, type, snapshot)
 3. **`--backend headless` — live compositor without a window** (the same binary that boots on a real display, running through the same code paths, but rendering into an off-screen wgpu texture)
 
 ## Layer 1: `shots` — pre-written scenarios
@@ -31,11 +31,11 @@ cargo run --bin shots --quiet -- --mode recording --scenario workspace_switch --
 cargo run --bin shots --quiet -- --mode window --scenario palette_typing
 ```
 
-Scenarios are defined in `quick-shell/src/bin/shots/scenario.rs`. Each is a `Vec<Action>` of `ClickNamed("add_workspace")`, `Drag {...}`, `Key(...)`, `Type(...)` steps. The engine resolves names against the live widget tree (see Layer 2's widget registry).
+Scenarios are defined in `shell/src/bin/shots/scenario.rs`. Each is a `Vec<Action>` of `ClickNamed("add_workspace")`, `Drag {...}`, `Key(...)`, `Type(...)` steps. The engine resolves names against the live widget tree (see Layer 2's widget registry).
 
 **No display server required.** `shots --mode offscreen` and `--mode recording` use `quick_ui::offscreen::OffscreenRenderer` — wgpu only, no window.
 
-## Layer 2: `NIRIOS_TEST_CONTROL` — drive the live binary via a unix socket
+## Layer 2: `QOS_TEST_CONTROL` — drive the live binary via a unix socket
 
 Best for: ad-hoc interactive testing from a script or an AI agent, exploratory "click here, snapshot that" flows, integration tests where you want to assert against the live compositor's state.
 
@@ -43,40 +43,40 @@ Best for: ad-hoc interactive testing from a script or an AI agent, exploratory "
 
 ```bash
 # Pick a socket path (must be writable; typically under /run/user/$UID/ or /tmp/):
-export NIRIOS_TEST_CONTROL=/tmp/nirios-test-control.sock
+export QOS_TEST_CONTROL=/tmp/nirios-test-control.sock
 
 # Spawn the compositor. The env var enables the socket; nothing else changes.
-cargo run --bin quick-desktop -- --backend headless &
+cargo run --bin shell -- --backend headless &
 # (`--backend headless` runs without a window — see Layer 3. For interactive
 # development you can also use the default winit backend; the socket works
 # either way.)
 
 # Confirm the socket bound:
-ls -la $NIRIOS_TEST_CONTROL
+ls -la $QOS_TEST_CONTROL
 ```
 
 The compositor prints `nirios compositor test_control listening on "<path>"` to stderr once the socket is ready to accept.
 
-### Easiest path: the `nirios-control` CLI
+### Easiest path: the `qos-control` CLI
 
 A wrapper binary ships in the same workspace. Subcommands take human-friendly arguments instead of raw JSON:
 
 ```bash
-cargo build -p quick-desktop --bin nirios-control      # builds alongside quick-desktop
+cargo build -p shell --bin qos-control      # builds alongside shell
 
-nirios-control list-targets                             # PNAME (X, Y, W, H) per line
-nirios-control click add_workspace                      # click_named
-nirios-control click-at 400 300                         # click_at
-nirios-control drag 100 100 300 200 12                  # drag with 12 motion steps
-nirios-control key Enter                                # named key OR single char
-nirios-control type "hello"                             # one press+release per character
-nirios-control modifiers ctrl,shift                     # comma-separated set; empty clears all
-nirios-control snapshot /tmp/state.png                  # PNG to disk
-nirios-control state-dump --pretty                      # live WorkspaceTree + Chrome as JSON
-nirios-control raw '{"op":"list_targets"}'              # escape hatch for unwrapped commands
+qos-control list-targets                             # PNAME (X, Y, W, H) per line
+qos-control click add_workspace                      # click_named
+qos-control click-at 400 300                         # click_at
+qos-control drag 100 100 300 200 12                  # drag with 12 motion steps
+qos-control key Enter                                # named key OR single char
+qos-control type "hello"                             # one press+release per character
+qos-control modifiers ctrl,shift                     # comma-separated set; empty clears all
+qos-control snapshot /tmp/state.png                  # PNG to disk
+qos-control state-dump --pretty                      # live WorkspaceTree + Chrome as JSON
+qos-control raw '{"op":"list_targets"}'              # escape hatch for unwrapped commands
 ```
 
-Default socket: `$NIRIOS_TEST_CONTROL` env var, else `/tmp/nirios.sock`. Override with `--socket /path`. Errors from the compositor surface as non-zero exit + structured `code: message` on stderr.
+Default socket: `$QOS_TEST_CONTROL` env var, else `/tmp/nirios.sock`. Override with `--socket /path`. Errors from the compositor surface as non-zero exit + structured `code: message` on stderr.
 
 ### Wire protocol (when you can't use the CLI)
 
@@ -84,33 +84,33 @@ The socket accepts newline-delimited JSON. Every command returns one JSON respon
 
 ```bash
 # List every clickable widget by name + rect:
-echo '{"op":"list_targets"}' | nc -U $NIRIOS_TEST_CONTROL
+echo '{"op":"list_targets"}' | nc -U $QOS_TEST_CONTROL
 
 # Click a widget by name (resolved from the live widget tree):
-echo '{"op":"click_named","name":"add_workspace"}' | nc -U $NIRIOS_TEST_CONTROL
+echo '{"op":"click_named","name":"add_workspace"}' | nc -U $QOS_TEST_CONTROL
 
 # Click at raw coordinates:
-echo '{"op":"click_at","x":400,"y":300}' | nc -U $NIRIOS_TEST_CONTROL
+echo '{"op":"click_at","x":400,"y":300}' | nc -U $QOS_TEST_CONTROL
 
 # Drag from one point to another (default 8 intermediate motions):
-echo '{"op":"drag","x_from":100,"y_from":100,"x_to":300,"y_to":200,"steps":12}' | nc -U $NIRIOS_TEST_CONTROL
+echo '{"op":"drag","x_from":100,"y_from":100,"x_to":300,"y_to":200,"steps":12}' | nc -U $QOS_TEST_CONTROL
 
 # Set modifiers, then send a key:
-echo '{"op":"modifiers","ctrl":true,"shift":false,"alt":false,"logo":false}' | nc -U $NIRIOS_TEST_CONTROL
-echo '{"op":"key","key":"k"}' | nc -U $NIRIOS_TEST_CONTROL    # Ctrl+K opens the palette
-echo '{"op":"modifiers","ctrl":false,"shift":false,"alt":false,"logo":false}' | nc -U $NIRIOS_TEST_CONTROL
+echo '{"op":"modifiers","ctrl":true,"shift":false,"alt":false,"logo":false}' | nc -U $QOS_TEST_CONTROL
+echo '{"op":"key","key":"k"}' | nc -U $QOS_TEST_CONTROL    # Ctrl+K opens the palette
+echo '{"op":"modifiers","ctrl":false,"shift":false,"alt":false,"logo":false}' | nc -U $QOS_TEST_CONTROL
 
 # Type a string (one press+release per character):
-echo '{"op":"type","text":"hello"}' | nc -U $NIRIOS_TEST_CONTROL
+echo '{"op":"type","text":"hello"}' | nc -U $QOS_TEST_CONTROL
 
 # Capture a PNG of the current state:
-echo '{"op":"snapshot","path":"/tmp/state.png"}' | nc -U $NIRIOS_TEST_CONTROL
+echo '{"op":"snapshot","path":"/tmp/state.png"}' | nc -U $QOS_TEST_CONTROL
 
 # Get the live workspace tree + chrome state as JSON:
-echo '{"op":"state_dump"}' | nc -U $NIRIOS_TEST_CONTROL
+echo '{"op":"state_dump"}' | nc -U $QOS_TEST_CONTROL
 ```
 
-Full command reference: `quick-shell/src/compositor/test_control.rs` (the `Command` enum is the source of truth; comments document each variant).
+Full command reference: `shell/src/compositor/test_control.rs` (the `Command` enum is the source of truth; comments document each variant).
 
 ### Response shapes
 
@@ -134,12 +134,12 @@ Error codes:
 ### Widget registry — how `click_named` finds things
 
 Every widget in the tree exposes a name through either:
-- `Widget::test_id()` (opt-in) — currently registered: `command_palette_input`, `wheel_disc`, more landing per the quick-ui plan
+- `Widget::test_id()` (opt-in) — currently registered: `command_palette_input`, `wheel_disc`, more landing per the ui plan
 - Path-based fallback: `Parent/Child[index]` — e.g. `OverlayHost/TopBarChrome/Button[0]`
 
 `list_targets` returns every widget with a non-zero rect. The bare name (`Parent/Child`) is registered when there's exactly one sibling of that name; an indexed form (`Parent/Child[N]`) always works.
 
-To make a widget more addressable, override `Widget::test_id()` in `quick-ui` to return `Some("my_stable_name")`. See `command_palette_input` in `quick-ui/src/widget/command_palette.rs` for the pattern.
+To make a widget more addressable, override `Widget::test_id()` in `ui` to return `Some("my_stable_name")`. See `command_palette_input` in `ui/src/widget/command_palette.rs` for the pattern.
 
 ## Layer 3: `--backend headless` — display-free live binary
 
@@ -148,8 +148,8 @@ Best for: running the full compositor in CI, on a remote shell, or in distrobox 
 ```bash
 # Spawn headless. Note: no DISPLAY or WAYLAND_DISPLAY needed.
 env -u DISPLAY -u WAYLAND_DISPLAY \
-    NIRIOS_TEST_CONTROL=/tmp/control.sock \
-    cargo run --bin quick-desktop --quiet -- --backend headless &
+    QOS_TEST_CONTROL=/tmp/control.sock \
+    cargo run --bin shell --quiet -- --backend headless &
 
 # Click + snapshot:
 echo '{"op":"click_named","name":"add_workspace"}' | nc -U /tmp/control.sock
@@ -161,7 +161,7 @@ kill %1
 
 Configure the headless viewport via env var (defaults to 1600×900):
 ```bash
-NIRIOS_HEADLESS_SIZE=1920x1080 cargo run --bin quick-desktop -- --backend headless
+NIRIOS_HEADLESS_SIZE=1920x1080 cargo run --bin shell -- --backend headless
 ```
 
 ## End-to-end recipe — "click, snapshot, look"
@@ -188,40 +188,40 @@ If you want to do it by hand without Python, use `socat` (Ncat doesn't have `-q`
 
 ```bash
 # 1. Start the compositor (no display required):
-export NIRIOS_TEST_CONTROL=/tmp/nirios-e2e.sock
+export QOS_TEST_CONTROL=/tmp/nirios-e2e.sock
 env -u DISPLAY -u WAYLAND_DISPLAY \
-    cargo run --bin quick-desktop --quiet -- --backend headless &
+    cargo run --bin shell --quiet -- --backend headless &
 COMP_PID=$!
 
 # 2. Wait for the socket to be ready:
-until [ -S $NIRIOS_TEST_CONTROL ]; do sleep 0.1; done
+until [ -S $QOS_TEST_CONTROL ]; do sleep 0.1; done
 
 # 3. Drive the UI (socat closes the connection cleanly after EOF, unlike Ncat):
-echo '{"op":"modifiers","ctrl":true,"shift":false,"alt":false,"logo":false}' | socat - UNIX-CONNECT:$NIRIOS_TEST_CONTROL
-echo '{"op":"key","key":"k"}'                                                          | socat - UNIX-CONNECT:$NIRIOS_TEST_CONTROL
-echo '{"op":"modifiers","ctrl":false,"shift":false,"alt":false,"logo":false}'          | socat - UNIX-CONNECT:$NIRIOS_TEST_CONTROL
-echo '{"op":"type","text":"terminal"}'                                                 | socat - UNIX-CONNECT:$NIRIOS_TEST_CONTROL
-echo '{"op":"snapshot","path":"/tmp/palette-with-query.png"}'                          | socat - UNIX-CONNECT:$NIRIOS_TEST_CONTROL
+echo '{"op":"modifiers","ctrl":true,"shift":false,"alt":false,"logo":false}' | socat - UNIX-CONNECT:$QOS_TEST_CONTROL
+echo '{"op":"key","key":"k"}'                                                          | socat - UNIX-CONNECT:$QOS_TEST_CONTROL
+echo '{"op":"modifiers","ctrl":false,"shift":false,"alt":false,"logo":false}'          | socat - UNIX-CONNECT:$QOS_TEST_CONTROL
+echo '{"op":"type","text":"terminal"}'                                                 | socat - UNIX-CONNECT:$QOS_TEST_CONTROL
+echo '{"op":"snapshot","path":"/tmp/palette-with-query.png"}'                          | socat - UNIX-CONNECT:$QOS_TEST_CONTROL
 
 # 4. Inspect the PNG:
 xdg-open /tmp/palette-with-query.png
 
 # 5. Tear down:
 kill $COMP_PID
-rm -f $NIRIOS_TEST_CONTROL
+rm -f $QOS_TEST_CONTROL
 ```
 
 ## Where to look in source
 
 | What | Where |
 |---|---|
-| `shots` binary | `quick-shell/src/bin/shots/` |
-| Scenario catalogue | `quick-shell/src/bin/shots/scenario.rs::catalogue()` |
-| Offscreen renderer | `quick-ui/src/offscreen.rs` |
-| `NIRIOS_TEST_CONTROL` protocol | `quick-shell/src/compositor/test_control.rs` |
-| Widget registry walk | `quick-shell/src/compositor/frame.rs::walk_widget` |
-| Backend trait | `quick-shell/src/compositor/backend/mod.rs` |
-| Headless backend impl | `quick-shell/src/compositor/backend/headless.rs` |
+| `shots` binary | `shell/src/bin/shots/` |
+| Scenario catalogue | `shell/src/bin/shots/scenario.rs::catalogue()` |
+| Offscreen renderer | `ui/src/offscreen.rs` |
+| `QOS_TEST_CONTROL` protocol | `shell/src/compositor/test_control.rs` |
+| Widget registry walk | `shell/src/compositor/frame.rs::walk_widget` |
+| Backend trait | `shell/src/compositor/backend/mod.rs` |
+| Headless backend impl | `shell/src/compositor/backend/headless.rs` |
 | Spec | `docs/superpowers/specs/2026-05-16-real-input-e2e-design.md` |
 
 ## Per-app screenshots
@@ -229,7 +229,7 @@ rm -f $NIRIOS_TEST_CONTROL
 `apps/terminal` and `apps/file-explorer` accept `--shots PATH` and write a 1200×720 RGBA PNG of the cold-start UI to `PATH` without opening a window:
 
 ```bash
-./target/debug/quick-terminal --shots /tmp/terminal.png
+./target/debug/terminal --shots /tmp/terminal.png
 ./target/debug/file-explorer  --shots /tmp/files.png
 ```
 
@@ -237,10 +237,10 @@ Both flow through `quick_ui::offscreen::OffscreenRenderer` and run a single `syn
 
 ## What's still missing
 
-- **`quick-browser --shots`.** The browser uses `iced` 0.13 directly plus a Servo engine; iced 0.13 has no straightforward headless rendering path (the runtime owns the winit event loop). A future shot harness would need to drive `iced_wgpu::Renderer` against an offscreen wgpu texture with a hand-rolled layout pass, or wait for upstream iced to expose a headless surface. The same gap applies if any future system app picks iced.
+- **`browser --shots`.** The browser uses `iced` 0.13 directly plus a Servo engine; iced 0.13 has no straightforward headless rendering path (the runtime owns the winit event loop). A future shot harness would need to drive `iced_wgpu::Renderer` against an offscreen wgpu texture with a hand-rolled layout pass, or wait for upstream iced to expose a headless surface. The same gap applies if any future system app picks iced.
 
 ## CI integration
 
 The `shots --mode offscreen` flow runs cleanly in CI (no display, no GPU forwarding) as long as the runner has a recent Mesa + a software wgpu fallback. The compositor's `--backend headless` does the same thing for live-binary tests.
 
-In distrobox locally: `distrobox enter my-distrobox -- bash -c 'cd /home/user/Development/quickdesktop && cargo test -p quick-desktop --test control_socket_test -- --ignored --test-threads 1'` — runs the full integration suite under `--ignored` (those tests spawn the binary themselves; opt-in via `--ignored` because they currently require a Wayland session for the legacy winit backend, but will work fully headless once the `--backend headless` worker lands).
+In distrobox locally: `distrobox enter my-distrobox -- bash -c 'cd /home/user/Development/quickdesktop && cargo test -p shell --test control_socket_test -- --ignored --test-threads 1'` — runs the full integration suite under `--ignored` (those tests spawn the binary themselves; opt-in via `--ignored` because they currently require a Wayland session for the legacy winit backend, but will work fully headless once the `--backend headless` worker lands).

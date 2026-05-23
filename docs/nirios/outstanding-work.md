@@ -11,13 +11,13 @@ functional gaps, architectural misses, and redesign asks.
 Earlier this doc claimed the hotkeys were dead because `main.rs` never
 builds a `Shell`. That was incorrect: the short-term fix was *already*
 implemented in `ShellOverlayHost::handle_event`
-(`quick-shell/src/shell/overlay_host.rs:951-1040`, added in commit
+(`shell/src/shell/overlay_host.rs:951-1040`, added in commit
 `e5c134d`). That pre-pass sees every `WindowEvent::KeyboardInput` because
 `quick_ui::App::run` routes them through `root_widget.handle_event`
-(`quick-ui/src/app.rs:575`).
+(`ui/src/app.rs:575`).
 
 Integration tests pinning all three shortcuts (Ctrl+K / Ctrl+Tab /
-Escape) now live in `quick-shell/tests/e2e_shell_flows.rs` so a future
+Escape) now live in `shell/tests/e2e_shell_flows.rs` so a future
 regression is caught.
 
 The long-term pre-event-hook idea (`App::add_pre_event_filter`) is not
@@ -30,7 +30,7 @@ All three root causes are addressed:
 - ~~`gap_index_for` y-band check~~ — removed; release point comes from
   the in-row `TabBar` so a drop anywhere in screen space that doesn't
   land on a group is now correctly classified as a new-window gap
-  (`quick-ui/src/widget/group_row.rs:107-113`).
+  (`ui/src/widget/group_row.rs:107-113`).
 - ~~`split_tab_into_new_group` refusal for single-tab sources~~ — removed;
   the refuse rule was costing every drag-out of a sole tab
   (`group_row.rs:383-392`).
@@ -100,7 +100,7 @@ So: spokes = **workspaces** (not strips). The disc **replaces**
 
 ### Proposed structure
 
-New file: `quick-shell/src/shell/sidebar_wheel_disc.rs`.
+New file: `shell/src/shell/sidebar_wheel_disc.rs`.
 
 - `SidebarWheelDisc { strips: Vec<SpokeLabel>, active_idx, rotation_deg,
   drag_from: Option<Point>, rect, radius_px }`.
@@ -153,12 +153,12 @@ Not a blocker for the current iteration.
 
 ### 4. Real-socket collab E2E — resolved (2026-04-21)
 
-Commit `066e112` adds `quick-ui/tests/real_socket_two_peer.rs`: a
+Commit `066e112` adds `ui/tests/real_socket_two_peer.rs`: a
 test-only Unix-socket broker accepts two `CollaborationManager`
 connections, fans each peer's `CollabRequest` to the opposite side as
 the matching `CollabEvent`, and asserts `SyncIncremental` ↔
 `CRDTIncremental` plus `Presence` ↔ `RemotePresenceUpdate` round-trips.
-Runs in `cargo test -p quick-ui --test real_socket_two_peer` in 0.20s.
+Runs in `cargo test -p ui --test real_socket_two_peer` in 0.20s.
 
 Previously all collab tests went through in-process `MemoryRelay`; the
 real wire protocol (4-byte LE length prefix + JSON body) was unexercised
@@ -170,7 +170,7 @@ Commits `44e7053` + `ab62d41` close the loop: `PresenceCtx` gained
 `upsert_remote_cursor(user_id, position, display_name)` which resolves
 colours via `color_for(&UserId)` (pinned palette + FNV→HSL fallback),
 and all three `CollabEvent::RemoteCursorMoved` handlers in
-`quick-ui/src/app.rs` (`poll_and_apply_collab_events`,
+`ui/src/app.rs` (`poll_and_apply_collab_events`,
 `apply_collab_event_for_test`, `Event::AboutToWait`) now feed it. The
 `CollabEvent::Context` seed also upserts once per collaborator so
 display names are attached before the first cursor move. Tests:
@@ -191,7 +191,7 @@ See `docs/nirios/visual-gaps.md` for the full list.
   hook — submodule commits `8c3d619` + `6a9c677`, superproject bump
   `5f0df57`. Pins `e2e_open_close_overview` and
   `sidebar_wheel_disc_renders_a_spoke_per_workspace` against committed
-  PNG goldens at `quick-shell/tests/snapshots/`.
+  PNG goldens at `shell/tests/snapshots/`.
 - Drag-ghost translucent preview on tab drag (source dims to 0.35, ghost
   paints at 0.6 at `last_cursor - drag_offset`) — commit `4e579ac`
 - Lucide X/Maximize2/Minimize2/Search on tab decorations + maximized
@@ -317,7 +317,7 @@ shipped; Gaussian convolution deferred).
   golden-path flows (open overview → switch workspace → drag tab to new
   window → collab join → undo). **Harness in place** (commits `8c3d619`
   + `6a9c677` + `5f0df57`): `SnapshotAssertion` with `UPDATE_SNAPSHOTS=1`
-  refresh, golden PNGs committed under `quick-shell/tests/snapshots/`.
+  refresh, golden PNGs committed under `shell/tests/snapshots/`.
   Pinned so far: overview settled, wheel-disc three-spokes, tab-drag
   reorder settled, maximized-tile floating controls (submodule
   `7b47b42`, superproject `3be9db2`), undo-restored + redo-rehydrated

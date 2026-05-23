@@ -15,7 +15,7 @@ The scenarios we defend against:
 
 ## Identity
 
-- Per-host ed25519 keypair at `/var/lib/quick-fs/peer-key`, auto-created on first boot.
+- Per-host ed25519 keypair at `/var/lib/qos-fs/peer-key`, auto-created on first boot.
 - libp2p `PeerId` is the multihash of the protobuf-encoded public key. Used everywhere a stable peer-identity is needed.
 - Per-user identity (display name, avatar) is self-asserted for v1; federated identity is a follow-up.
 
@@ -23,7 +23,7 @@ Invite tokens are signed ed25519 blobs scoped to a workspace; see `plan/collabor
 
 ## Sandbox: Bubblewrap profile
 
-Every app launched into a workspace runs through `bwrap`, configured by a `SandboxProfile` (`quick-shell/src/sandbox/profile.rs`):
+Every app launched into a workspace runs through `bwrap`, configured by a `SandboxProfile` (`shell/src/sandbox/profile.rs`):
 
 ```rust
 pub struct SandboxProfile {
@@ -42,7 +42,7 @@ pub struct SandboxProfile {
 Default workspace profile presents the sandboxed app:
 
 - `binds_ro`: `/usr` → `/usr`. `/etc/resolv.conf` only if the workspace has network.
-- `binds_rw`: `/var/workspace/<ws_id>` → `/work`. `/var/cache/quick-fs/<ws_id>` → `/cache`. The bridge socket → `/run/user/1000/wayland-0`.
+- `binds_rw`: `/var/workspace/<ws_id>` → `/work`. `/var/cache/qos-fs/<ws_id>` → `/cache`. The bridge socket → `/run/user/1000/wayland-0`.
 - `env`: `WAYLAND_DISPLAY=wayland-0`, `XDG_RUNTIME_DIR=/run/user/1000`, `HOME=/work`.
 - Empty `/home` (tmpfs).
 - Private DBus session bus per workspace.
@@ -52,7 +52,7 @@ The profile renders to `bwrap` argv via `into_argv(command)`; `spawn_in_workspac
 
 ## Seccomp-bpf blocklist
 
-A per-workspace BPF blob is compiled via the `seccompiler` crate and cached at `/var/cache/quick-fs/<ws_id>/seccomp.bpf`. v1 blocks:
+A per-workspace BPF blob is compiled via the `seccompiler` crate and cached at `/var/cache/qos-fs/<ws_id>/seccomp.bpf`. v1 blocks:
 
 ```
 ptrace, mount, umount2, pivot_root, chroot,
@@ -64,7 +64,7 @@ The blocklist is conservative and expands as we learn. It is applied via `bwrap 
 
 ## Per-workspace Wayland bridge socket
 
-The compositor's main wayland socket lives at `$XDG_RUNTIME_DIR/wayland-1` (or whatever the listener registered). For each workspace, the bridge (`quick-shell/src/compositor/bridge.rs`) binds an additional listening socket `$XDG_RUNTIME_DIR/nirios-ws-<ws_id>` and proxies its connections to the main socket.
+The compositor's main wayland socket lives at `$XDG_RUNTIME_DIR/wayland-1` (or whatever the listener registered). For each workspace, the bridge (`shell/src/compositor/bridge.rs`) binds an additional listening socket `$XDG_RUNTIME_DIR/nirios-ws-<ws_id>` and proxies its connections to the main socket.
 
 The bridge:
 
@@ -76,7 +76,7 @@ Surfaces from sandbox A literally cannot adopt into workspace B — the bridge t
 
 ## Capability grants
 
-Capabilities are CRDT-persisted (`quick-shell/src/shell/state.rs`):
+Capabilities are CRDT-persisted (`shell/src/shell/state.rs`):
 
 ```rust
 pub enum Capability {
@@ -104,7 +104,7 @@ When an unscoped capability request arrives, a `PermissionPrompt` widget pushes 
 
 ### Portal D-Bus backend
 
-The compositor implements the `org.freedesktop.impl.portal.*` backend (`quick-shell/src/portal/`) via `zbus`. We expose three impls under the service:
+The compositor implements the `org.freedesktop.impl.portal.*` backend (`shell/src/portal/`) via `zbus`. We expose three impls under the service:
 
 | Interface                               | Methods                                | Capability flow                                   |
 |-----------------------------------------|----------------------------------------|---------------------------------------------------|
@@ -118,7 +118,7 @@ Per request:
 2. Look up the caller's app-id in `Workspace::grants`. If `Always`/`Workspace`-scoped, grant immediately.
 3. Else push to `pending_grants`; await user response; cache per `GrantScope` rules.
 
-`xdg-desktop-portal`'s config registers `nirios` as the backend for these interfaces. ScreenCast output streams use PipeWire (`quick-shell/src/portal/screencast_pipewire.rs`).
+`xdg-desktop-portal`'s config registers `nirios` as the backend for these interfaces. ScreenCast output streams use PipeWire (`shell/src/portal/screencast_pipewire.rs`).
 
 `tests/portal_test.rs` exercises one round-trip per interface plus prompt-resolution branches. A `PromptResolver::AutoAllow` mode is used in tests so the round-trip doesn't need a human.
 
@@ -161,7 +161,7 @@ When a peer publishes `RemoteInput { peer, surface, event }`:
 ## Encryption
 
 - libp2p uses the `noise` transport with ChaCha20-Poly1305. All P2P traffic is encrypted; identities are bound to peer-IDs.
-- iroh's FUSE traffic (`quick-fs-fuse`) is QUIC + TLS 1.3.
+- iroh's FUSE traffic (`fs`) is QUIC + TLS 1.3.
 - At-rest encryption for cloud-backed `/var/workspace` is a follow-up.
 
 ## Security matrix
@@ -183,9 +183,9 @@ When a peer publishes `RemoteInput { peer, surface, event }`:
 
 ## Where to read first
 
-- `quick-shell/src/sandbox/{mod.rs, profile.rs, spawn.rs, seccomp.rs}` — the bwrap profile + seccomp blob.
-- `quick-shell/src/compositor/bridge.rs` — the per-workspace Wayland bridge socket.
-- `quick-shell/src/portal/{mod.rs, file_chooser.rs, screencast.rs, camera.rs}` — D-Bus impls.
-- `quick-shell/src/shell/state.rs` — `Capability`, `GrantScope`, `Workspace.grants`.
-- `quick-shell/src/network/invite.rs` — invite tokens.
+- `shell/src/sandbox/{mod.rs, profile.rs, spawn.rs, seccomp.rs}` — the bwrap profile + seccomp blob.
+- `shell/src/compositor/bridge.rs` — the per-workspace Wayland bridge socket.
+- `shell/src/portal/{mod.rs, file_chooser.rs, screencast.rs, camera.rs}` — D-Bus impls.
+- `shell/src/shell/state.rs` — `Capability`, `GrantScope`, `Workspace.grants`.
+- `shell/src/network/invite.rs` — invite tokens.
 - `docs/superpowers/plans/2026-05-02-per-workspace-sandbox-permissions.md` — phase log.
