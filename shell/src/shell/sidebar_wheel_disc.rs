@@ -149,6 +149,37 @@ pub struct SidebarWheelDisc {
     /// `handle_event` to route a press on a non-active spoke into a
     /// `click_to_spoke` rotation animation.
     pub spoke_hit_rects: Vec<Rect>,
+    /// Scene cache — covers the entire disc paint: shadow bands, disc
+    /// fill, rim hairlines, all spokes, the "+" add-workspace slot. At
+    /// rest (no rotation animation), the disc is fully static and
+    /// caching saves the per-spoke trig + many strokes/fills.
+    cached_scene: Scene,
+    /// Cache-validity fingerprint. Reused iff every field matches the
+    /// current frame — see [`SidebarWheelDisc::current_fingerprint`].
+    cached_fp: WheelCacheFp,
+}
+
+/// Inputs that change the disc's painted pixels. The visual rotation
+/// is bucketed into 0.01-degree integers so spring-in-flight values
+/// invalidate on every micro-step while still being comparable.
+#[derive(Default, Clone, PartialEq, Eq)]
+struct WheelCacheFp {
+    rect_px: (i64, i64, u64, u64),
+    /// `visual_rotation_deg() * 100` rounded to i64. Bucketing to
+    /// hundredths keeps the cache stable across float-precision
+    /// noise while still invalidating on every visible animation tick.
+    rotation_centi_deg: i64,
+    active_idx: usize,
+    /// Number of spokes. Spoke labels live in `cached_spoke_signature`
+    /// because they don't change without a tree mutation that already
+    /// bumps the chrome revision.
+    spoke_count: usize,
+    /// FNV-1a hash of every spoke's `text` field. Catches label
+    /// renames without paying the clone cost of the full Vec<String>.
+    spoke_signature: u64,
+    /// Diameter in integer pixels — paired with `rect_px` to cover
+    /// every input to `center()` / `radius`.
+    diameter_px: u64,
 }
 
 /// Fraction of the disc's radius that protrudes into the viewport.
@@ -217,6 +248,8 @@ impl SidebarWheelDisc {
             wheel_accumulator: 0.0,
             wheel_last_event: None,
             spoke_hit_rects: Vec::new(),
+            cached_scene: Scene::new(),
+            cached_fp: WheelCacheFp::default(),
         }
     }
 
@@ -304,6 +337,44 @@ impl SidebarWheelDisc {
         match self.rotation_spring.as_ref() {
             Some(s) if !s.is_settled() => s.value(),
             _ => self.rotation_deg,
+        }
+    }
+
+    /// Snapshot every input that affects the disc's painted pixels.
+    /// Used by [`Widget::draw`] to decide whether `self.cached_scene`
+    /// can be reused. See [`WheelCacheFp`] for the field semantics.
+    fn current_fingerprint(&self) -> WheelCacheFp {
+        let rect_px = (
+            self.rect.x0.round() as i64,
+            self.rect.y0.round() as i64,
+            self.rect.width().round() as u64,
+            self.rect.height().round() as u64,
+        );
+        // 0.01° granularity — fine enough to invalidate on every
+        // visible animation tick (the spring steps at 60 Hz with
+        // sub-degree per-step deltas during the settling phase),
+        // coarse enough to ignore float-precision noise at rest.
+        let rotation_centi_deg = (self.visual_rotation_deg() as f64 * 100.0).round() as i64;
+        // FNV-1a over the concatenated spoke labels. Avoids cloning
+        // the Vec<SpokeLabel> for the fingerprint while still
+        // detecting renames.
+        let mut h: u64 = 0xcbf29ce484222325;
+        for spoke in &self.spokes {
+            for b in spoke.text.as_bytes() {
+                h ^= *b as u64;
+                h = h.wrapping_mul(0x100000001b3);
+            }
+            // Separator byte so "ab"+"c" and "a"+"bc" hash differently.
+            h ^= 0xff;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        WheelCacheFp {
+            rect_px,
+            rotation_centi_deg,
+            active_idx: self.active_idx,
+            spoke_count: self.spokes.len(),
+            spoke_signature: h,
+            diameter_px: self.diameter_px.round() as u64,
         }
     }
 
@@ -476,17 +547,56 @@ impl Widget for SidebarWheelDisc {
 
     fn draw(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
+        out_scene: &mut Scene,
+        out_transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // Cache fast-path. The disc paints a *lot* per frame — eight
+        // shadow bands, the full-disc fill, the rim band stroke, the
+        // hairline stroke, every visible spoke's cluster (tile + glyph
+        // + label, each with a `Affine::rotate` per spoke), plus the
+        // "+" add-workspace slot. At rest (no rotation animation), all
+        // of those are identical frame-to-frame.
+        //
+        // We fingerprint every input that affects the painted pixels —
+        // rect, rotation (centi-degree bucket so the spring's 60-Hz
+        // sub-degree steps still invalidate), active index, spoke
+        // labels, diameter — and replay the cached scene with the
+        // caller's transform on a hit. During an animation every
+        // frame still rebuilds; once the spring settles back to
+        // `rotation_deg`, subsequent frames take the fast path.
+        //
+        // `spoke_hit_rects` and `plus_rect` live in member fields
+        // already; the prior cache-miss draw populated them at the
+        // same rotation/rect, so a cache hit implies they're still
+        // valid.
+        let fp = self.current_fingerprint();
+        // `rect_px.2` is the rect's width — zero means we haven't
+        // drawn yet, so always go through the slow path.
+        if fp == self.cached_fp && fp.rect_px.2 > 0 {
+            out_scene.append(&self.cached_scene, Some(out_transform));
+            return;
+        }
+
+        // Cache miss — encode at IDENTITY into `self.cached_scene`,
+        // then splice with `out_transform`. Same `std::mem::take`
+        // dance as the other shell widgets so the encode body has an
+        // exclusive `&mut Scene` without aliasing `self`.
+        let mut local = std::mem::take(&mut self.cached_scene);
+        local.reset();
+        let scene = &mut local;
+        let transform = Affine::IDENTITY;
+
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
 
         let radius = self.diameter_px / 2.0;
         if radius <= 1.0 || self.rect.area() <= 0.0 {
+            // Restore the (empty) cache without recording a fingerprint
+            // — we don't want a zero-width rect to lock the cache.
+            self.cached_scene = local;
             return;
         }
         let c = self.center();
@@ -917,6 +1027,14 @@ impl Widget for SidebarWheelDisc {
             None,
             &plus,
         );
+
+        // End of cache build — splice the freshly-encoded local scene
+        // into the caller's `out_scene` with the host transform, then
+        // restore `self.cached_scene` and record the fingerprint so
+        // the next idle frame takes the fast path.
+        out_scene.append(&local, Some(out_transform));
+        self.cached_scene = local;
+        self.cached_fp = fp;
     }
 
     fn handle_event(
@@ -1111,6 +1229,32 @@ impl Widget for SidebarWheelDisc {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    /// The disc reports clean once the cache has been populated. Animation-
+    /// driven invalidation comes through [`Widget::needs_animation_frame`]
+    /// (`App` pumps redraws on its own while the spring or wheel snap-
+    /// timeout is in flight) and the fingerprint check inside `draw`
+    /// detects the rotation delta on each pumped frame.
+    ///
+    /// Without this override the default leaf impl returns `true` every
+    /// frame, defeating the App's "skip the redraw on a hover-only
+    /// CursorMoved" gate.
+    fn needs_redraw(&self) -> bool {
+        // `WheelCacheFp::default().rect_px.2` is zero, so a fresh widget
+        // (no successful draw yet) reports dirty until the first paint.
+        self.cached_fp.rect_px.2 == 0
+    }
+
+    fn mark_drawn(&mut self) {
+        // Leaf widget — `cached_fp` is updated inside `draw` itself,
+        // so this is a no-op. Mirrors `Button::mark_drawn`.
+    }
+
+    /// The disc's taffy node is a fixed-width leaf (`visible_width_px`),
+    /// so its layout never needs recomputing after the first pass.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
     }
 }
 
