@@ -1,0 +1,33 @@
+[package]
+name = "terminal"
+version = "0.2.1"
+edition = "2021"
+
+[lib]
+name = "terminal"
+path = "src/lib.rs"
+
+[[bin]]
+name = "terminal"
+path = "src/main.rs"
+
+[dependencies]
+ui = { path = "../../ui" }
+automerge = "0.7.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.15", features = ["v4", "serde"] }
+tokio = { version = "1.50.0", features = ["full"] }
+portable-pty = "0.8"
+vte = "0.11"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+futures = "0.3"
+tokio-util = { version = "0.7", features = ["codec"] }
+unicode-width = "0.1"
+crossbeam-channel = "0.5"
+chrono = "0.4"
+vello = "0.2.1"
+winit = "0.30.13"
+taffy = "0.9.2"
+anyhow = "1.0"
