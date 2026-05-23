@@ -27,11 +27,9 @@
 //! Override iterations: `QUICK_UI_DASH_ITERS=2000`.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Instant;
 
 use automerge::AutoCommit;
-use chrono::NaiveDate;
 use quick_ui::i18n::I18nManager;
 use quick_ui::offscreen::OffscreenRenderer;
 use quick_ui::permissions::PermissionContext;
@@ -40,13 +38,12 @@ use quick_ui::text_render::TextRenderer;
 use quick_ui::theme::Theme;
 use quick_ui::widget::toggle_group::Segment;
 use quick_ui::widget::{
-    Avatar, Badge, Breadcrumb, Button, Checkbox, Column, ColorPicker, DatePicker, ProgressBar,
-    Row, ScrollAxis, Scrollable, Slider, Spinner, Text, TimePicker, Toggle, ToggleGroup, Widget,
+    Avatar, Badge, Button, Column, ProgressBar, Row, ScrollAxis, Scrollable, Spinner, Text,
+    ToggleGroup, Widget,
 };
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
 use winit::dpi::PhysicalPosition;
 use winit::event::{DeviceId, ElementState, Modifiers, MouseButton, WindowEvent};
 
@@ -117,6 +114,12 @@ fn build_tree(include_animated: bool) -> Box<dyn Widget> {
         header = header
             .push(Box::new(ProgressBar::new(0.4)))
             .push(Box::new(ProgressBar::indeterminate()))
+            .push(Box::new(ProgressBar::indeterminate()))
+            .push(Box::new(Spinner::with_size(24.0)))
+            .push(Box::new(Spinner::with_size(24.0)))
+            .push(Box::new(Spinner::with_size(24.0)))
+            .push(Box::new(Spinner::with_size(24.0)))
+            .push(Box::new(Spinner::with_size(24.0)))
             .push(Box::new(Spinner::with_size(24.0)))
             .push(Box::new(Spinner::with_size(24.0)))
             .push(Box::new(Spinner::with_size(24.0)));
