@@ -133,6 +133,12 @@ pub trait Widget {
     /// Called by `App` during draw. Widgets that consume presence/permission
     /// context can override this; the default forwards to `draw`, passing
     /// through `presence` and ignoring `_permissions`.
+    ///
+    /// **Spatial culling**: short-circuits when the widget's rect
+    /// doesn't intersect `presence.viewport`. Overrides MUST
+    /// honour this — calling [`PresenceCtx::should_cull`] at the
+    /// top before doing any per-widget paint work. Off-viewport
+    /// widgets stay dirty so they re-emit when scrolled back in.
     fn draw_with_presence(
         &mut self,
         scene: &mut Scene,
@@ -142,6 +148,7 @@ pub trait Widget {
         presence: &PresenceCtx,
         _permissions: &crate::permissions::PermissionContext,
     ) {
+        if presence.should_cull(self.get_rect()) { return; }
         self.draw(scene, transform, text_renderer, theme, presence);
     }
 }

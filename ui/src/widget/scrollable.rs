@@ -202,6 +202,31 @@ impl Widget for Scrollable {
         scene.pop_layer();
     }
 
+    /// Override so the child recursion uses `draw_with_presence`
+    /// (not `draw`) and the inner viewport is set to *this*
+    /// scrollable's clip rect. Without this, scrollable content
+    /// past the viewport edge would still emit primitives even
+    /// though the `push_layer` above would clip them away — wasted
+    /// work that the cull check is meant to eliminate.
+    fn draw_with_presence(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        permissions: &crate::permissions::PermissionContext,
+    ) {
+        if presence.should_cull(self.get_rect()) { return; }
+        scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), 1.0, transform, &self.rect);
+        let prev_vp = presence.push_viewport(self.rect);
+        if let Some(c) = &mut self.child {
+            c.draw_with_presence(scene, transform, tr, theme, presence, permissions);
+        }
+        presence.pop_viewport(prev_vp);
+        scene.pop_layer();
+    }
+
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, m: &winit::event::Modifiers, s: &mut AutoCommit, p: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, taffy: &TaffyTree<()>) {
         if let WindowEvent::MouseWheel { delta, .. } = event {
             // Wheel-to-px conversion. winit's `LineDelta` reports

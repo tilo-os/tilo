@@ -19,10 +19,10 @@
 //! Set `QUICK_UI_PERF=1` to see per-frame phase timings printed
 //! to stderr (the App's redraw cycle is instrumented in `app.rs`).
 
-use quick_ui::{App, State};
-use quick_ui::i18n::I18nManager;
-use quick_ui::widget::toggle_group::Segment;
-use quick_ui::widget::{
+use ui::{App, State};
+use ui::i18n::I18nManager;
+use ui::widget::toggle_group::Segment;
+use ui::widget::{
     Avatar, Badge, Button, Column, ProgressBar, Row, ScrollAxis, Scrollable, Spinner, Text,
     ToggleGroup, Widget,
 };

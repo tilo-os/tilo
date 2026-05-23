@@ -195,6 +195,7 @@ impl Widget for Container {
         presence: &crate::presence::PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
+        if presence.should_cull(self.get_rect()) { return; }
         // Draw the container's own background, then propagate presence/permission
         // context down to the child so its opt-in chrome still renders.
         if self.has_background {

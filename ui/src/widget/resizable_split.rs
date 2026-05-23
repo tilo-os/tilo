@@ -525,6 +525,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         presence: &PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
+        if presence.should_cull(self.get_rect()) { return; }
         // Forward to children so nested presence-opt-in widgets still
         // paint their chrome. The divider strip itself isn't presence-
         // bearing so we route through the regular `draw` after.

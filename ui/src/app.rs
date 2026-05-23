@@ -741,6 +741,21 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
                 let t_draw_start = if perf { Some(std::time::Instant::now()) } else { None };
                 let transform = Affine::scale(scale_factor as f64);
+                // Initialise the spatial-culling viewport to the
+                // entire window in *logical* coords (the App's
+                // transform applies a scale_factor at composite
+                // time, so widget rects live in logical space).
+                // Scrollables push a tighter inner viewport during
+                // their child recursion. Restored to `None` after
+                // draw so the bench's offscreen renderer paths
+                // aren't accidentally bound to a stale viewport.
+                let window_rect = vello::kurbo::Rect::new(
+                    0.0,
+                    0.0,
+                    (width as f64) / (scale_factor as f64),
+                    (height as f64) / (scale_factor as f64),
+                );
+                let prev_vp = app.presence_ctx.push_viewport(window_rect);
                 app.root_widget.draw_with_presence(
                     scene,
                     transform,
@@ -749,6 +764,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     &app.presence_ctx,
                     &app.permission_ctx,
                 );
+                app.presence_ctx.pop_viewport(prev_vp);
                 // Mark every visited widget as drawn — clears their
                 // per-widget `dirty` flag so `needs_redraw` returns
                 // false on the next frame unless an event mutates
