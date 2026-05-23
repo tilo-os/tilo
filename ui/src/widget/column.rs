@@ -17,13 +17,17 @@ pub struct Column {
     permission_scope: Option<PermissionScope>,
     extra_left_padding: f32,
     no_padding: bool,
-    /// When true, the column's height resolves to its content's
-    /// intrinsic sum (`Dimension::auto`) instead of filling the parent
-    /// (`Dimension::percent(1.0)`). Required when the column is the
-    /// child of a vertical `Scrollable` — without it, the column's
-    /// height is clamped to the viewport, `content_h == viewport_h`,
-    /// and the scrollable has nothing to scroll.
     intrinsic_height: bool,
+    /// Subtree scene cache — composition of every descendant's
+    /// own cached scene, recorded once and translated on subsequent
+    /// frames as long as no descendant signals dirty. Saves
+    /// hundreds of `Scene::append` calls per frame when most of
+    /// the column's content is stable.
+    subtree_cache: Scene,
+    /// Rect (at cache-emit time) the subtree was composed against.
+    /// Size mismatch → rebuild; pure translation → reuse with a
+    /// `translate(delta)` on the outer append.
+    cache_rect: vello::kurbo::Rect,
 }
 
 impl Column {
@@ -36,6 +40,8 @@ impl Column {
             extra_left_padding: 0.0,
             no_padding: false,
             intrinsic_height: false,
+            subtree_cache: Scene::new(),
+            cache_rect: vello::kurbo::Rect::ZERO,
         }
     }
 
@@ -197,6 +203,21 @@ impl Widget for Column {
         self.children.iter().any(|c| c.wants_pointer_capture())
     }
 
+    /// Direct-field override of `needs_redraw` / `is_layout_dirty`
+    /// — the default `Widget` impls allocate a fresh
+    /// `Vec<&dyn Widget>` via `children()` for the recurse, which
+    /// is a heap allocation per check. Subtree caching above
+    /// queries these on every frame, so the allocation cost is on
+    /// the per-frame hot path.
+    fn needs_redraw(&self) -> bool {
+        self.cache_rect == vello::kurbo::Rect::ZERO
+            || self.children.iter().any(|c| c.needs_redraw())
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        self.children.iter().any(|c| c.is_layout_dirty())
+    }
+
     fn children(&self) -> Vec<&dyn Widget> {
         self.children.iter().map(|c| c.as_ref()).collect()
     }
@@ -246,10 +267,41 @@ impl Widget for Column {
         permissions: &crate::permissions::PermissionContext,
     ) {
         if presence.should_cull(self.get_rect()) { return; }
-        // Propagate presence/permission context down to each child so nested
-        // opt-in widgets still render their chrome.
-        for child in &mut self.children {
-            child.draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+
+        // Subtree cache (Item 2 of 2026-05-23 perf plan):
+        //   - If our size is unchanged AND no descendant signals
+        //     dirty, paste the cached composition with just a
+        //     translate(delta) — saves hundreds of per-child
+        //     Scene::append calls during scroll / hover where
+        //     most of the tree didn't actually change.
+        //   - On miss, we recompose into a fresh local scene and
+        //     swap it in. Each child still gets its own cache
+        //     hit (they participate in the recurse).
+        let size_changed = self.rect.width() != self.cache_rect.width()
+            || self.rect.height() != self.cache_rect.height();
+        let any_child_dirty = self.children.iter().any(|c| c.needs_redraw());
+        let needs_rebuild = self.cache_rect == vello::kurbo::Rect::ZERO
+            || size_changed
+            || any_child_dirty;
+
+        if !needs_rebuild {
+            let dx = self.rect.x0 - self.cache_rect.x0;
+            let dy = self.rect.y0 - self.cache_rect.y0;
+            scene.append(&self.subtree_cache, Some(transform * Affine::translate((dx, dy))));
+        } else {
+            // Rebuild — recurse into children's draw_with_presence,
+            // writing into our local subtree cache. mem::take so
+            // the children can still call self.* helpers if any
+            // do (defensive — Column's children don't, but
+            // future containers might).
+            let mut local = std::mem::take(&mut self.subtree_cache);
+            local.reset();
+            for child in &mut self.children {
+                child.draw_with_presence(&mut local, transform, text_renderer, theme, presence, permissions);
+            }
+            scene.append(&local, None);
+            self.subtree_cache = local;
+            self.cache_rect = self.rect;
         }
 
         if let Some(scope) = self.permission_scope() {
