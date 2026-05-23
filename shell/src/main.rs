@@ -22,9 +22,9 @@
 //!
 //! The two are mutually exclusive: passing both is a usage error.
 
-use quick_desktop::compositor::hosted::HostedOptions;
-use quick_desktop::compositor::{self, Mode};
-use quick_desktop::{firstboot, portal};
+use shell::compositor::hosted::HostedOptions;
+use shell::compositor::{self, Mode};
+use shell::{firstboot, portal};
 
 fn main() {
     tracing_subscriber::fmt::init();
@@ -114,7 +114,7 @@ fn run_portal_server_only() {
         // Until then the unit's job is to *own the bus name* so the
         // session has a portal backend at all.
         let tree = std::sync::Arc::new(std::sync::Mutex::new(
-            quick_desktop::shell::state::WorkspaceTree::default(),
+            shell::shell::state::WorkspaceTree::default(),
         ));
         let grants = portal::GrantStoreHandle::new(tree);
         let prompts = portal::PromptQueueHandle::new(portal::PromptResolver::Channel);

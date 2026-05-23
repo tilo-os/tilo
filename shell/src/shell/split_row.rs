@@ -1,6 +1,6 @@
 //! Shell-level horizontal split layout.
 //!
-//! `quick_ui::Row` is opinionated toward wrapping, gap-spaced,
+//! `ui::Row` is opinionated toward wrapping, gap-spaced,
 //! `AlignItems::Center` layouts suited to toolbars; the shell-root needs a
 //! plain two-child row where the left child keeps its intrinsic width and
 //! the right child stretches to fill the remaining horizontal and vertical
@@ -16,10 +16,10 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
-use quick_ui::presence::PresenceCtx;
-use quick_ui::text_render::TextRenderer;
-use quick_ui::theme::Theme;
-use quick_ui::widget::Widget;
+use ui::presence::PresenceCtx;
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::widget::Widget;
 
 pub struct SplitRow {
     left: Box<dyn Widget>,

@@ -244,7 +244,7 @@ pub struct PendingGrant {
 }
 
 /// Outcome of a permission prompt — mirrors the widget's
-/// [`quick_ui::widget::PromptChoice`] but keeps the portal module
+/// [`ui::widget::PromptChoice`] but keeps the portal module
 /// dependency-free from `quick_ui` for the lookup path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PromptOutcome {

@@ -60,7 +60,7 @@ pub enum BackendKind {
     /// [`backend::HeadlessBackend`]. Lets the live binary boot in CI,
     /// distrobox without a display, or remote SSH sessions without
     /// X-forwarding. Drivable end-to-end through the
-    /// `NIRIOS_TEST_CONTROL` socket protocol.
+    /// `QOS_TEST_CONTROL` socket protocol.
     Headless,
 }
 
@@ -408,7 +408,7 @@ mod tests {
         // resolve to `BackendKind::Headless`. The headless backend is
         // the third path alongside winit (default) and drm; it lets
         // the live binary boot without a display server so e2e
-        // harnesses can drive it via `NIRIOS_TEST_CONTROL`.
+        // harnesses can drive it via `QOS_TEST_CONTROL`.
         assert!(matches!(
             parse_backend(&["--backend", "headless"]),
             BackendKind::Headless

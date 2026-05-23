@@ -1,4 +1,4 @@
-use quick_desktop::shell::state::{
+use shell::shell::state::{
     AppKind, Collaborator, Role, Strip, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceTree,
 };
@@ -48,8 +48,8 @@ fn _type_refs() {
 
 #[test]
 fn persistence_roundtrip_atomic() {
-    use quick_desktop::shell::persist::{save_tree_to, load_tree_from};
-    use quick_desktop::shell::state::WorkspaceTree;
+    use shell::shell::persist::{save_tree_to, load_tree_from};
+    use shell::shell::state::WorkspaceTree;
     let tmp = std::env::temp_dir().join(format!("qd-test-{}.json", std::process::id()));
     let t = WorkspaceTree::bootstrap_default();
     save_tree_to(&t, &tmp).expect("save");
@@ -61,7 +61,7 @@ fn persistence_roundtrip_atomic() {
 
 #[test]
 fn load_missing_file_returns_default() {
-    use quick_desktop::shell::persist::load_or_default;
+    use shell::shell::persist::load_or_default;
     use std::path::PathBuf;
     let missing = PathBuf::from("/tmp/definitely-missing-xyz.json");
     let _ = std::fs::remove_file(&missing);
@@ -74,7 +74,7 @@ fn load_missing_file_returns_default() {
 
 #[test]
 fn nirios_shell_root_constructs_from_tree() {
-    use quick_desktop::shell::build_nirios_root;
-    let tree = quick_desktop::shell::state::WorkspaceTree::bootstrap_default();
-    let _boxed: Box<dyn quick_ui::widget::Widget> = build_nirios_root(&tree);
+    use shell::shell::build_nirios_root;
+    let tree = shell::shell::state::WorkspaceTree::bootstrap_default();
+    let _boxed: Box<dyn ui::widget::Widget> = build_nirios_root(&tree);
 }

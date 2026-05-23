@@ -20,11 +20,11 @@ use seccompiler::{
 
 /// Default on-disk cache root for compiled seccomp blobs.
 ///
-/// Lives under `/var/cache/quick-fs` so the bootc root can stay
+/// Lives under `/var/cache/qos-fs` so the bootc root can stay
 /// read-only and the FUSE driver's cache layout (see
-/// `quick-fs-fuse`'s `/var/cache/quick-fs` convention) keeps a single
+/// `quick-fs-fuse`'s `/var/cache/qos-fs` convention) keeps a single
 /// owner for that prefix.
-pub const DEFAULT_CACHE_ROOT: &str = "/var/cache/quick-fs";
+pub const DEFAULT_CACHE_ROOT: &str = "/var/cache/qos-fs";
 
 /// Errors produced by the workspace seccomp pipeline.
 ///
@@ -197,7 +197,7 @@ pub fn compile_workspace_seccomp() -> Result<Vec<u8>, SeccompError> {
 /// (the second write is a clobber, not an append).
 ///
 /// Split from [`cache_blob`] so tests can point at a tempdir without
-/// needing root access to `/var/cache/quick-fs`.
+/// needing root access to `/var/cache/qos-fs`.
 pub fn cache_blob_at(
     cache_root: &Path,
     ws_id: u64,
@@ -210,7 +210,7 @@ pub fn cache_blob_at(
     Ok(path)
 }
 
-/// Cache the BPF blob at `/var/cache/quick-fs/<ws_id>/seccomp.bpf`.
+/// Cache the BPF blob at `/var/cache/qos-fs/<ws_id>/seccomp.bpf`.
 ///
 /// Production wrapper around [`cache_blob_at`]. Use the `_at` variant
 /// in tests so we don't need write access to `/var`.

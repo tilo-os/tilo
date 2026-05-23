@@ -19,10 +19,10 @@ use automerge::{
     AutoCommit, ObjId, ObjType, ReadDoc, Value,
     transaction::Transactable,
 };
-use quick_ui::presence::PresenceCtx;
-use quick_ui::text_render::TextRenderer;
-use quick_ui::theme::Theme;
-use quick_ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
+use ui::presence::PresenceCtx;
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};

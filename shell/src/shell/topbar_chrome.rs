@@ -2,7 +2,7 @@
 //!
 //! `TopBar` in `shell/topbar.rs` owns the logical state (workspace nav,
 //! center-widget cooldown, tooltip timing, collaborator helpers). This file
-//! provides a [`TopBarChrome`] that implements [`quick_ui::widget::Widget`]
+//! provides a [`TopBarChrome`] that implements [`ui::widget::Widget`]
 //! and paints the bar onto the root scene. Phase 1 wires it into
 //! `build_nirios_root` so there is finally a visible top-bar surface; later
 //! phases will route clicks on its left/center/right clusters back into the
@@ -18,10 +18,10 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Brush, ColorStop, ColorStops, Extend, Fill, Gradient, GradientKind};
 use winit::event::WindowEvent;
 
-use quick_ui::presence::{PresenceCtx, parse_hex_color, user_color};
-use quick_ui::text_render::{TextRenderer, TextWeight};
-use quick_ui::theme::Theme;
-use quick_ui::widget::Widget;
+use ui::presence::{PresenceCtx, parse_hex_color, user_color};
+use ui::text_render::{TextRenderer, TextWeight};
+use ui::theme::Theme;
+use ui::widget::Widget;
 use vello::peniko::Color;
 
 use crate::shell::chrome_state::Chrome;
@@ -33,7 +33,7 @@ pub const TOPBAR_HEIGHT_PX: f32 = 40.0;
 /// pinned Vello supports `push_blur_layer`, we honour just the alpha split
 /// (gap #3 in `docs/nirios/visual-gaps.md`): the top-bar surface is tinted
 /// at 0.80 over whatever sits beneath it. The `surfaces.overlay` token in
-/// `quick_ui::tokens::colors` is defined as `rgba8(0, 0, 0, 204)` —
+/// `ui::tokens::colors` is defined as `rgba8(0, 0, 0, 204)` —
 /// `204 / 255 ≈ 0.8` — so this constant is the single source of truth the
 /// `shell_chrome_test` suite pins the token against.
 pub const TOP_BAR_SURFACE_ALPHA: f32 = 0.80;
@@ -109,7 +109,7 @@ pub struct TopBarChrome {
     /// Per-peer fill colour for the avatar circles (one per entry in
     /// `collaborator_initials`, same index). Resolved from the
     /// collaborator's `cursor_color` override when present and otherwise
-    /// from [`quick_ui::presence::user_color`], so the top-bar stack
+    /// from [`ui::presence::user_color`], so the top-bar stack
     /// matches the concept's `USERS[*].cursorColor` palette.
     collaborator_colors: Vec<Color>,
     /// Count of collaborators beyond the three rendered as avatars. When
@@ -247,7 +247,7 @@ impl TopBarChrome {
     /// Resolved avatar fill colours (one per entry in
     /// `collaborator_initials`, same index). Each peer's own
     /// `cursor_color` takes precedence; otherwise the palette-pinned
-    /// [`quick_ui::presence::user_color`] is used. Exposed so tests can
+    /// [`ui::presence::user_color`] is used. Exposed so tests can
     /// assert two different peers map to two different hues.
     pub fn collaborator_colors(&self) -> &[Color] {
         &self.collaborator_colors
@@ -304,8 +304,8 @@ impl TopBarChrome {
     /// Pinned so the gap-#5 icon swap survives later refactors — if a
     /// future change reverts the overview glyph back to the four-rect
     /// quad, this accessor's test will fail loudly.
-    pub fn overview_glyph_icon() -> quick_ui::icons::Icon {
-        quick_ui::icons::Icon::LayoutGrid
+    pub fn overview_glyph_icon() -> ui::icons::Icon {
+        ui::icons::Icon::LayoutGrid
     }
 
     /// Typographic weight the top bar paints the clock with. Concept
@@ -527,7 +527,7 @@ impl Widget for TopBarChrome {
         let mut x = self.rect.x0 + pad_x;
 
         // Overview glyph: lucide `LayoutGrid` (gap #5). Drawn as stroked
-        // rounded rects via `quick_ui::icons::draw_icon` so it matches
+        // rounded rects via `ui::icons::draw_icon` so it matches
         // the concept's lucide-react lockup instead of the ad-hoc four
         // filled squares we used before.
         self.overview_btn_rect = Rect::new(
@@ -542,13 +542,13 @@ impl Widget for TopBarChrome {
             x + icon_size,
             center_y + icon_size / 2.0,
         );
-        quick_ui::icons::draw_icon(
+        ui::icons::draw_icon(
             scene,
             transform,
             overview_icon_rect,
             Self::overview_glyph_icon(),
             colors.text_dim,
-            quick_ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         x += icon_size + tokens.spacing.s3 as f64;
 
@@ -558,7 +558,7 @@ impl Widget for TopBarChrome {
         x += 1.0 + tokens.spacing.s2 as f64;
 
         // Up-chevron: lucide `ChevronUp` (gap #5). Drawn through
-        // `quick_ui::icons::draw_icon` so the chrome's chevrons share
+        // `ui::icons::draw_icon` so the chrome's chevrons share
         // stroke caps + joins with the rest of the lucide lockup
         // (`LayoutGrid` / `Settings2` / `Wifi` / `Monitor`) instead of
         // the previous hand-rolled BezPath polyline.
@@ -575,13 +575,13 @@ impl Widget for TopBarChrome {
             x + chev,
             center_y + chev / 2.0,
         );
-        quick_ui::icons::draw_icon(
+        ui::icons::draw_icon(
             scene,
             transform,
             up_icon_rect,
-            quick_ui::icons::Icon::ChevronUp,
+            ui::icons::Icon::ChevronUp,
             if self.workspace_index == 0 { colors.border_standard } else { colors.text_dim },
-            quick_ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         x += chev + tokens.spacing.s2 as f64;
 
@@ -599,17 +599,17 @@ impl Widget for TopBarChrome {
             x + chev,
             center_y + chev / 2.0,
         );
-        quick_ui::icons::draw_icon(
+        ui::icons::draw_icon(
             scene,
             transform,
             dn_icon_rect,
-            quick_ui::icons::Icon::ChevronDown,
+            ui::icons::Icon::ChevronDown,
             if self.workspace_index + 1 >= self.workspace_total {
                 colors.border_standard
             } else {
                 colors.text_dim
             },
-            quick_ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         x += chev + tokens.spacing.s3 as f64;
 
@@ -654,13 +654,13 @@ impl Widget for TopBarChrome {
             gear_x + 10.0,
             center_y + 6.0,
         );
-        quick_ui::icons::draw_icon(
+        ui::icons::draw_icon(
             scene,
             transform,
             gear_rect,
-            quick_ui::icons::Icon::Settings2,
+            ui::icons::Icon::Settings2,
             colors.text_dim,
-            quick_ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
 
         // --- Center cluster: carousel band with 3 dots + active widget ---
@@ -934,9 +934,9 @@ impl Widget for TopBarChrome {
         // glance, matching the concept's right-cluster icon row.
         let tray_icon_size = 14.0_f64;
         let tray_icons = [
-            quick_ui::icons::Icon::Wifi,
-            quick_ui::icons::Icon::Monitor,
-            quick_ui::icons::Icon::Battery,
+            ui::icons::Icon::Wifi,
+            ui::icons::Icon::Monitor,
+            ui::icons::Icon::Battery,
         ];
         for (i, icon) in tray_icons.iter().enumerate() {
             let dx = rx - tray_w + 12.0 + i as f64 * 14.0;
@@ -946,13 +946,13 @@ impl Widget for TopBarChrome {
                 dx + tray_icon_size / 2.0,
                 center_y + tray_icon_size / 2.0,
             );
-            quick_ui::icons::draw_icon(
+            ui::icons::draw_icon(
                 scene,
                 transform,
                 icon_rect,
                 *icon,
                 colors.text_dim,
-                quick_ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
         }
         rx -= tray_w + tokens.spacing.s4 as f64; // s4 = 16, ≥ 8 px after avatar radius

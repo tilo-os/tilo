@@ -16,11 +16,11 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
-use quick_desktop::shell::sidebar_wheel_disc::{SidebarWheelDisc, SpokeLabel};
-use quick_ui::presence::PresenceCtx;
-use quick_ui::text_render::TextRenderer;
-use quick_ui::theme::Theme;
-use quick_ui::widget::Widget;
+use shell::shell::sidebar_wheel_disc::{SidebarWheelDisc, SpokeLabel};
+use ui::presence::PresenceCtx;
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::widget::Widget;
 
 mod support;
 
