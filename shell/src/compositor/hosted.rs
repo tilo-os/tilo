@@ -6,15 +6,18 @@
 //!
 //! Behaviour is unchanged from before the split.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::network::behaviour::{load_or_create_keypair, peer_salt_from_keypair};
 use crate::shell::network::{DEFAULT_KEYPAIR_PATH, ShellNetwork};
+use crate::shell::state::WorkspaceTree;
 use crate::shell::{
-    build_nirios_root, persist, seed_demo_editor_presence, sync_tab_presence_from_tree,
+    build_nirios_overlay_host_with_handle, persist, seed_demo_editor_presence,
+    sync_tab_presence_from_tree,
 };
 use ui::collaboration::PresencePayload;
 use ui::presence::PresenceKey;
+use ui::widget::Widget;
 use ui::{App, State};
 
 /// Boot the shell on top of the host's existing display server with
@@ -110,14 +113,35 @@ pub fn run_with_full_options(opts: HostedOptions) {
         }
     }
 
+    // C-3: one `WorkspaceTreeHandle` shared across compositor / portal /
+    // peer-sync. The shell chrome, the portal's `GrantStoreHandle`, and
+    // the peer-sync `WorkspaceTreeReplica` each hold a clone of this
+    // handle — every mutation lands on the same underlying tree.
+    let active_at_boot = tree.active.0;
+    let tree_handle: crate::shell::state::WorkspaceTreeHandle = tree.shared();
+
+    // Snapshot for the pre-app seeding helpers (`sync_tab_presence_from_tree`,
+    // `seed_demo_editor_presence`) that only read the cache once at
+    // startup. Held briefly under a read lock.
+    let tree_snapshot: WorkspaceTree = tree_handle.read().clone();
+
     // Optional peer-sync handle — construction only, per Task 3.1.
     // Held alive for the life of `run` so the actor's tokio runtime
     // doesn't drop out from under us mid-session. Failure is logged
     // and treated as "peer-sync stays off" — the shell must keep
     // working even if the keypair store is unreadable.
+    //
+    // C-3 Phase D unifies this handle with `tree_handle` above; Phase
+    // C keeps the dedicated `Arc<Mutex<_>>` so the portal swap can land
+    // independently. Peer-sync still sees a clone-once snapshot until
+    // Phase D wires it through.
     let peer_sync: Option<Arc<ShellNetwork>> = if enable_peer_sync {
-        let shared_tree = Arc::new(Mutex::new(tree.clone()));
-        match ShellNetwork::spawn(shared_tree, std::path::Path::new(DEFAULT_KEYPAIR_PATH)) {
+        let shared_tree =
+            std::sync::Arc::new(std::sync::Mutex::new(tree_handle.read().clone()));
+        match ShellNetwork::spawn(
+            shared_tree,
+            std::path::Path::new(DEFAULT_KEYPAIR_PATH),
+        ) {
             Ok(handle) => {
                 // Subscribe to the default workspace topic so the
                 // actor's gossipsub mesh has somewhere to deliver
@@ -136,13 +160,15 @@ pub fn run_with_full_options(opts: HostedOptions) {
     };
 
     let state = State::new();
-    let root = build_nirios_root(&tree);
+    let (host, _chrome) =
+        build_nirios_overlay_host_with_handle(tree_handle.clone(), enable_peer_sync);
+    let root: Box<dyn Widget> = Box::new(host) as Box<dyn Widget>;
     let mut app = App::new(state, root);
     // Seed per-tab presence from the tree's collaborator roster so
     // tab-pill presence dots render on first draw. Network-driven
     // presence updates later rewrite the same keys via the collab
     // pump, so this does not conflict with live peer attribution.
-    sync_tab_presence_from_tree(&tree, app.presence_ctx_mut());
+    sync_tab_presence_from_tree(&tree_snapshot, app.presence_ctx_mut());
     // Seed a demo peer caret + selection inside the editor body so the
     // collab chrome in `EditorApp::draw` is visible in single-process
     // development. Network traffic replaces this with real peer state
@@ -153,7 +179,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
     // peers receive `CollabEvent::RemotePresenceUpdate` on the same
     // key and render this user's pointer on the correct workspace.
     app.set_presence_broadcast_scope(Some(PresenceKey::Workspace {
-        id: format!("{}", tree.active.0),
+        id: format!("{}", active_at_boot),
     }));
 
     // Phase 3.2 cursor-presence pump: when peer-sync is enabled,
@@ -239,14 +265,13 @@ pub fn run_with_full_options(opts: HostedOptions) {
                 }
             }
         };
-        // Construct the portal context on a shared `WorkspaceTree`
-        // clone. v1 mirrors what peer-sync does — the in-memory
-        // `Arc<Mutex<WorkspaceTree>>` is enough for the round-trip
-        // tests + lets the prompt pump later read the same grants
-        // map. Full integration with the live shell tree (the
-        // `Rc<RefCell<ChromeState>>` chain) is a follow-up unit.
-        let shared_tree = std::sync::Arc::new(std::sync::Mutex::new(tree.clone()));
-        let grants = crate::portal::GrantStoreHandle::new(shared_tree);
+        // C-3: the portal's grant store shares the same
+        // `WorkspaceTreeHandle` as the shell chrome + peer-sync
+        // replica. Portal `Allow` outcomes flip a workspace grant on
+        // the same tree the Permissions tab reads from, and
+        // `doc_insert_grant` mirrors the change into the automerge doc
+        // so peer-sync ships it on the next tick.
+        let grants = crate::portal::GrantStoreHandle::new(tree_handle.clone());
         let prompts =
             crate::portal::PromptQueueHandle::new(crate::portal::PromptResolver::Channel);
         let ctx = crate::portal::PortalContext::new_with_null_spawners(
