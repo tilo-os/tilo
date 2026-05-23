@@ -15,8 +15,8 @@ fn visual_smoke_checklist_is_documented() {
     }
 }
 
-use quick_desktop::shell::overview::OverviewView;
-use quick_desktop::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
+use shell::shell::overview::OverviewView;
+use shell::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
 
 /// Helper that builds a workspace with a caller-supplied id so each test
 /// keeps a stable shape without minting fresh monotonic ids.
@@ -47,7 +47,7 @@ fn overview_view_click_activates_workspace() {
     assert_eq!(tree.active, b_id);
 }
 
-use quick_desktop::shell::search::GlobalSearch;
+use shell::shell::search::GlobalSearch;
 
 #[test]
 fn global_search_seeds_commands_and_filters() {
@@ -61,14 +61,14 @@ fn global_search_seeds_commands_and_filters() {
 fn global_search_context_filter_narrows_results() {
     let mut s = GlobalSearch::new();
     s.seed_default_commands();
-    s.set_context_kind(quick_desktop::shell::search::SearchContext::Files);
+    s.set_context_kind(shell::shell::search::SearchContext::Files);
     let labels: Vec<String> = s.palette().visible_entries().iter().map(|e| e.label.clone()).collect();
     assert!(labels.iter().all(|l| l.to_lowercase().contains("file") || l.to_lowercase().contains("open")));
 }
 
 #[test]
 fn quick_settings_brightness_and_volume_clamp_and_mutate() {
-    use quick_desktop::shell::quick_settings::QuickSettings;
+    use shell::shell::quick_settings::QuickSettings;
     let mut q = QuickSettings::new();
     q.set_brightness(50.0);
     q.set_volume(80.0);
@@ -82,7 +82,7 @@ fn quick_settings_brightness_and_volume_clamp_and_mutate() {
 
 #[test]
 fn quick_settings_drill_in_and_back() {
-    use quick_desktop::shell::quick_settings::{QuickSettings, QsLevel};
+    use shell::shell::quick_settings::{QuickSettings, QsLevel};
     let mut q = QuickSettings::new();
     assert_eq!(q.current_level(), &QsLevel::Root);
     q.push_level(QsLevel::Wifi);
@@ -99,8 +99,8 @@ fn quick_settings_drill_in_and_back() {
 
 #[test]
 fn workspace_settings_general_edits_name_and_removes_collaborator() {
-    use quick_desktop::shell::state::{Collaborator, Workspace, WorkspaceId};
-    use quick_desktop::shell::workspace_settings::{WorkspaceSettings, WsTab};
+    use shell::shell::state::{Collaborator, Workspace, WorkspaceId};
+    use shell::shell::workspace_settings::{WorkspaceSettings, WsTab};
     let mut ws = Workspace::new(WorkspaceId::new(), "Design");
     ws.collaborators = vec![
         Collaborator::new("u1", "Ada"),
@@ -117,8 +117,8 @@ fn workspace_settings_general_edits_name_and_removes_collaborator() {
 
 #[test]
 fn workspace_settings_roles_tab_edits_app_permissions() {
-    use quick_desktop::shell::state::{AppPerm, Role, RolePermissions, Workspace, WorkspaceId};
-    use quick_desktop::shell::workspace_settings::{WorkspaceSettings, WsTab};
+    use shell::shell::state::{AppPerm, Role, RolePermissions, Workspace, WorkspaceId};
+    use shell::shell::workspace_settings::{WorkspaceSettings, WsTab};
     let mut ws = Workspace::new(WorkspaceId::new(), "Design");
     ws.roles.push(Role {
         id: "r1".into(),
@@ -142,8 +142,8 @@ fn workspace_settings_roles_tab_edits_app_permissions() {
 
 #[test]
 fn workspace_settings_roles_tab_builds_apps_table_with_columns() {
-    use quick_desktop::shell::workspace_settings::WorkspaceSettings;
-    use quick_desktop::shell::state::WorkspaceId;
+    use shell::shell::workspace_settings::WorkspaceSettings;
+    use shell::shell::state::WorkspaceId;
     let modal = WorkspaceSettings::new(WorkspaceId::new());
     // Apps table should expose two columns: the app name (flex) and the
     // permission picker (fixed width). Keys are stable so callers can hook
@@ -159,10 +159,10 @@ fn workspace_settings_roles_tab_builds_apps_table_with_columns() {
 
 #[test]
 fn workspace_settings_files_tab_edits_file_permissions() {
-    use quick_desktop::shell::state::{
+    use shell::shell::state::{
         FilePerm, Role, RolePermissions, Workspace, WorkspaceFile, WorkspaceId,
     };
-    use quick_desktop::shell::workspace_settings::{WorkspaceSettings, WsTab};
+    use shell::shell::workspace_settings::{WorkspaceSettings, WsTab};
     let mut ws = Workspace::new(WorkspaceId::new(), "Design");
     ws.roles.push(Role {
         id: "r1".into(),
@@ -191,8 +191,8 @@ fn workspace_settings_files_tab_edits_file_permissions() {
 
 #[test]
 fn workspace_settings_files_tab_builds_files_table_with_columns() {
-    use quick_desktop::shell::state::WorkspaceId;
-    use quick_desktop::shell::workspace_settings::WorkspaceSettings;
+    use shell::shell::state::WorkspaceId;
+    use shell::shell::workspace_settings::WorkspaceSettings;
     let modal = WorkspaceSettings::new(WorkspaceId::new());
     // Files table should expose two columns: the file name (flex) and the
     // permission picker (fixed width). Keys are stable so callers can hook
@@ -208,8 +208,8 @@ fn workspace_settings_files_tab_builds_files_table_with_columns() {
 
 #[test]
 fn topbar_leftnav_navigates_workspaces() {
-    use quick_desktop::shell::topbar::{TopBar, TopBarEvent};
-    use quick_desktop::shell::state::{WorkspaceTree, Workspace, WorkspaceId};
+    use shell::shell::topbar::{TopBar, TopBarEvent};
+    use shell::shell::state::{WorkspaceTree, Workspace, WorkspaceId};
     let mut tree = WorkspaceTree {
         workspaces: vec![],
         active: WorkspaceId::from(0),
@@ -237,7 +237,7 @@ fn topbar_leftnav_navigates_workspaces() {
 
 #[test]
 fn topbar_workspace_name_button_emits_settings_request() {
-    use quick_desktop::shell::topbar::{TopBar, TopBarOutput};
+    use shell::shell::topbar::{TopBar, TopBarOutput};
     let mut tb = TopBar::new();
     let out = tb.click_workspace_name();
     assert!(matches!(out, TopBarOutput::OpenWorkspaceSettings));
@@ -245,8 +245,8 @@ fn topbar_workspace_name_button_emits_settings_request() {
 
 #[test]
 fn topbar_right_tray_renders_collaborators_and_opens_quick_settings() {
-    use quick_desktop::shell::topbar::{TopBar, TopBarOutput};
-    use quick_desktop::shell::state::{WorkspaceTree, Collaborator, Workspace, WorkspaceId};
+    use shell::shell::topbar::{TopBar, TopBarOutput};
+    use shell::shell::state::{WorkspaceTree, Collaborator, Workspace, WorkspaceId};
     let mut tree = WorkspaceTree {
         workspaces: vec![],
         active: WorkspaceId::from(0),
@@ -273,8 +273,8 @@ fn topbar_right_tray_renders_collaborators_and_opens_quick_settings() {
 
 #[test]
 fn topbar_chrome_maps_two_peers_to_two_distinct_avatar_hues() {
-    use quick_desktop::shell::topbar_chrome::TopBarChrome;
-    use quick_desktop::shell::state::{WorkspaceTree, Collaborator, Workspace, WorkspaceId};
+    use shell::shell::topbar_chrome::TopBarChrome;
+    use shell::shell::state::{WorkspaceTree, Collaborator, Workspace, WorkspaceId};
     let mut tree = WorkspaceTree {
         workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
         active: WorkspaceId::from(0),
@@ -304,8 +304,8 @@ fn topbar_chrome_maps_two_peers_to_two_distinct_avatar_hues() {
 /// (which defaults to Regular).
 #[test]
 fn topbar_chrome_clock_renders_at_bold_weight() {
-    use quick_desktop::shell::topbar_chrome::TopBarChrome;
-    use quick_ui::text_render::TextWeight;
+    use shell::shell::topbar_chrome::TopBarChrome;
+    use ui::text_render::TextWeight;
     let tree = WorkspaceTree {
         workspaces: vec![mk_workspace(0, "A")],
         active: WorkspaceId::from(0),
@@ -335,7 +335,7 @@ fn topbar_chrome_clock_renders_at_bold_weight() {
 /// (α = 1.0) flips this test to red without needing a pixel snapshot.
 #[test]
 fn topbar_chrome_surface_alpha_is_80_percent() {
-    use quick_desktop::shell::topbar_chrome::TopBarChrome;
+    use shell::shell::topbar_chrome::TopBarChrome;
     let a = TopBarChrome::top_bar_alpha();
     assert!(
         (a - 0.80).abs() < f32::EPSILON,
@@ -349,7 +349,7 @@ fn topbar_chrome_surface_alpha_is_80_percent() {
 /// draw path uses so the palette can't silently revert to an opaque fill.
 #[test]
 fn global_search_surface_alpha_is_70_percent() {
-    use quick_desktop::shell::search::GlobalSearch;
+    use shell::shell::search::GlobalSearch;
     let a = GlobalSearch::surface_alpha();
     assert!(
         (a - 0.70).abs() < f32::EPSILON,
@@ -358,15 +358,15 @@ fn global_search_surface_alpha_is_70_percent() {
 }
 
 /// Gap #5: the top-bar overview button paints lucide `LayoutGrid` via
-/// the shared `quick_ui::icons` module, not the legacy 4-filled-rect
+/// the shared `ui::icons` module, not the legacy 4-filled-rect
 /// quad. Route the assertion through the `overview_glyph_icon()`
 /// accessor so a future revert (e.g. someone replacing `draw_icon` with
 /// a hand-rolled shape again) flips this test to red without needing a
 /// pixel snapshot harness.
 #[test]
 fn topbar_chrome_overview_glyph_is_lucide_layout_grid() {
-    use quick_desktop::shell::topbar_chrome::TopBarChrome;
-    use quick_ui::icons::Icon;
+    use shell::shell::topbar_chrome::TopBarChrome;
+    use ui::icons::Icon;
     assert_eq!(
         TopBarChrome::overview_glyph_icon(),
         Icon::LayoutGrid,
@@ -381,7 +381,7 @@ fn topbar_chrome_overview_glyph_is_lucide_layout_grid() {
 /// circles and the carousel loses its "where are we" affordance.
 #[test]
 fn topbar_chrome_active_center_dot_is_larger_than_inactive() {
-    use quick_desktop::shell::topbar_chrome::TopBarChrome;
+    use shell::shell::topbar_chrome::TopBarChrome;
     let tree = WorkspaceTree {
         workspaces: vec![mk_workspace(0, "A")],
         active: WorkspaceId::from(0),
@@ -401,8 +401,8 @@ fn topbar_chrome_active_center_dot_is_larger_than_inactive() {
 
 #[test]
 fn sidebar_wheel_switches_active_strip() {
-    use quick_desktop::shell::sidebar_wheel::SidebarWheel;
-    use quick_desktop::shell::state::{WorkspaceTree, Workspace, WorkspaceId, Strip, StripId};
+    use shell::shell::sidebar_wheel::SidebarWheel;
+    use shell::shell::state::{WorkspaceTree, Workspace, WorkspaceId, Strip, StripId};
     let mut ws = Workspace::new(WorkspaceId::new(), "A");
     ws.strips = vec![
         Strip::new(StripId::new(), "s1"),
@@ -434,8 +434,8 @@ fn sidebar_wheel_switches_active_strip() {
 
 #[test]
 fn sidebar_wheel_overscroll_commits_new_workspace_past_threshold() {
-    use quick_desktop::shell::sidebar_wheel::SidebarWheel;
-    use quick_desktop::shell::state::{Strip, StripId, Workspace, WorkspaceId, WorkspaceTree};
+    use shell::shell::sidebar_wheel::SidebarWheel;
+    use shell::shell::state::{Strip, StripId, Workspace, WorkspaceId, WorkspaceTree};
     let mut ws = Workspace::new(WorkspaceId::new(), "A");
     ws.strips = vec![Strip::new(StripId::new(), "s1")];
     let mut tree = WorkspaceTree {
@@ -477,8 +477,8 @@ fn sidebar_wheel_overscroll_commits_new_workspace_past_threshold() {
 
 #[test]
 fn sidebar_wheel_overscroll_below_threshold_snaps_back() {
-    use quick_desktop::shell::sidebar_wheel::SidebarWheel;
-    use quick_desktop::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
+    use shell::shell::sidebar_wheel::SidebarWheel;
+    use shell::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
     let mut tree = WorkspaceTree {
         workspaces: vec![],
         active: WorkspaceId::from(0),
@@ -499,8 +499,8 @@ fn sidebar_wheel_overscroll_below_threshold_snaps_back() {
 
 #[test]
 fn sidebar_wheel_management_button_creates_workspace() {
-    use quick_desktop::shell::sidebar_wheel::SidebarWheel;
-    use quick_desktop::shell::state::{WorkspaceTree, Workspace, WorkspaceId};
+    use shell::shell::sidebar_wheel::SidebarWheel;
+    use shell::shell::state::{WorkspaceTree, Workspace, WorkspaceId};
     let mut tree = WorkspaceTree {
         workspaces: vec![],
         active: WorkspaceId::from(0),
@@ -519,7 +519,7 @@ fn sidebar_wheel_management_button_creates_workspace() {
 
 #[test]
 fn topbar_center_widget_cycles_with_wheel_cooldown() {
-    use quick_desktop::shell::topbar::{TopBar, CenterWidget};
+    use shell::shell::topbar::{TopBar, CenterWidget};
     use std::time::Duration;
     let mut tb = TopBar::new();
     assert_eq!(tb.center_widget(), CenterWidget::Clock);
@@ -540,7 +540,7 @@ fn topbar_center_widget_cycles_with_wheel_cooldown() {
 
 #[test]
 fn shell_root_wires_all_chrome() {
-    use quick_desktop::shell::Shell;
+    use shell::shell::Shell;
     let shell = Shell::new_for_test();
     assert!(shell.has_topbar());
     assert!(shell.has_sidebar_wheel());
@@ -558,8 +558,8 @@ fn shell_root_wires_all_chrome() {
 
 #[test]
 fn cmd_k_opens_and_escape_closes_search() {
-    use quick_desktop::shell::Shell;
-    use quick_desktop::shell::test_support::{key_press, Mods};
+    use shell::shell::Shell;
+    use shell::shell::test_support::{key_press, Mods};
     let mut shell = Shell::new_for_test();
     shell.dispatch_key(key_press("K", Mods::CMD));
     assert!(shell.search_visible());
@@ -569,8 +569,8 @@ fn cmd_k_opens_and_escape_closes_search() {
 
 #[test]
 fn cmd_tab_toggles_overview() {
-    use quick_desktop::shell::Shell;
-    use quick_desktop::shell::test_support::{key_press, Mods};
+    use shell::shell::Shell;
+    use shell::shell::test_support::{key_press, Mods};
     let mut shell = Shell::new_for_test();
     shell.dispatch_key(key_press("Tab", Mods::CMD));
     assert!(shell.overview_visible());
@@ -580,7 +580,7 @@ fn cmd_tab_toggles_overview() {
 
 #[test]
 fn overscroll_commit_fires_toast() {
-    use quick_desktop::shell::Shell;
+    use shell::shell::Shell;
     let mut shell = Shell::new_for_test();
     let before = shell.toast_count();
     shell.simulate_overscroll_commit();
@@ -589,8 +589,8 @@ fn overscroll_commit_fires_toast() {
 
 #[test]
 fn toast_fires_on_rename_and_create() {
-    use quick_desktop::shell::Shell;
-    use quick_ui::widget::toast::ToastKind;
+    use shell::shell::Shell;
+    use ui::widget::toast::ToastKind;
     let mut shell = Shell::new_for_test();
     let b0 = shell.toast_count();
     shell.simulate_overscroll_commit(); // "Workspace created"
@@ -606,7 +606,7 @@ fn toast_fires_on_rename_and_create() {
 
 #[test]
 fn sidebar_wheel_event_routes_through_shell() {
-    use quick_desktop::shell::Shell;
+    use shell::shell::Shell;
     let mut shell = Shell::new_for_test();
     // Seed the active workspace with a second strip so a +1 wheel can advance
     // without being clamped. Going through the runtime tree here is fine —
@@ -625,7 +625,7 @@ fn sidebar_wheel_event_routes_through_shell() {
 
 #[test]
 fn tray_gear_toggles_quick_settings_via_shell() {
-    use quick_desktop::shell::Shell;
+    use shell::shell::Shell;
     let mut shell = Shell::new_for_test();
     assert!(!shell.quick_settings_visible());
     shell.simulate_tray_gear_click();
@@ -640,7 +640,7 @@ fn tray_gear_toggles_quick_settings_via_shell() {
 
 #[test]
 fn topbar_ws_name_tooltip_reveals_after_delay() {
-    use quick_desktop::shell::topbar::TopBar;
+    use shell::shell::topbar::TopBar;
     use std::time::Duration;
     let mut tb = TopBar::new();
     tb.hover_ws_name(true);
@@ -656,7 +656,7 @@ fn topbar_ws_name_tooltip_reveals_after_delay() {
 
 #[test]
 fn right_click_on_tile_opens_default_context_menu() {
-    use quick_desktop::shell::Shell;
+    use shell::shell::Shell;
     let mut shell = Shell::new_for_test();
     assert!(!shell.context_menu_is_open());
     shell.simulate_right_click_on_active_tile([120.0, 200.0]);
@@ -676,11 +676,11 @@ fn right_click_on_tile_opens_default_context_menu() {
 // ---------------------------------------------------------------------------
 #[test]
 fn overview_header_font_size_is_at_least_32px() {
-    use quick_desktop::shell::state::WorkspaceTree;
-    use quick_ui::theme::Theme;
+    use shell::shell::state::WorkspaceTree;
+    use ui::theme::Theme;
     let tree = WorkspaceTree::bootstrap_default();
     let (host, _chrome) =
-        quick_desktop::shell::build_nirios_overlay_host_with_chrome(&tree);
+        shell::shell::build_nirios_overlay_host_with_chrome(&tree);
     let theme = Theme::dark();
     let size = host.overview_header_font_size(&theme);
     assert!(

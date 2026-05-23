@@ -13,7 +13,7 @@
 //! shell UI (chrome, strips, tabs) can treat both uniformly when it
 //! introspects structure — only the `tile` variant differs.
 
-use quick_ui::widget::{AppKind as UiAppKind, AppWidget};
+use ui::widget::{AppKind as UiAppKind, AppWidget};
 
 use crate::shell::state::{GroupId, StripId, TabId, WindowWidth, WorkspaceId};
 

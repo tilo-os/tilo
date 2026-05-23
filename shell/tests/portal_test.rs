@@ -16,13 +16,13 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use quick_desktop::portal::{
+use shell::portal::{
     self, CallerMap, CapabilityKind, FilePickerSpawnerHandle, GrantStoreHandle,
     MockFilePickerSpawner, MockScreenCastProvisioner, NullFilePickerSpawner,
     PortalCaller, PortalContext, PromptQueueHandle, PromptResolver,
     ScreenCastStreamProvisionerHandle, BUS_NAME, OBJECT_PATH,
 };
-use quick_desktop::shell::state::{
+use shell::shell::state::{
     Capability, FsMode, GrantScope, Workspace, WorkspaceId,
 };
 use std::time::Duration;
@@ -94,7 +94,7 @@ async fn bring_up_pair_with_spawners(
     // pair so both ends of the socket negotiate auth concurrently —
     // serial `await` calls deadlock because the server-side handshake
     // wants bytes the client hasn't sent yet.
-    use quick_desktop::portal::{AccessBackend, FileChooserBackend, ScreenCastBackend};
+    use shell::portal::{AccessBackend, FileChooserBackend, ScreenCastBackend};
     let fc = FileChooserBackend::new(ctx.clone());
     let sc = ScreenCastBackend::new(ctx.clone());
     let ac = AccessBackend::new(ctx.clone());

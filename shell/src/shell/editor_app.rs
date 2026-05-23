@@ -25,10 +25,10 @@ use automerge::{
     AutoCommit, ObjId, ObjType, ReadDoc, Value,
     transaction::Transactable,
 };
-use quick_ui::presence::{PathSegment, PresenceCtx, PresenceKey};
-use quick_ui::text_render::TextRenderer;
-use quick_ui::theme::Theme;
-use quick_ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
+use ui::presence::{PathSegment, PresenceCtx, PresenceKey};
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};

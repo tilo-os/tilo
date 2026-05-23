@@ -33,10 +33,10 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
-use quick_ui::Theme;
-use quick_ui::presence::PresenceCtx;
-use quick_ui::text_render::TextRenderer;
-use quick_ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
+use ui::Theme;
+use ui::presence::PresenceCtx;
+use ui::text_render::TextRenderer;
+use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 
 use crate::network::decoder::{DecodedFrame, H264Decoder};
 use crate::network::protocol::{PeerId, SurfaceId};

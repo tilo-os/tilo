@@ -26,17 +26,17 @@
 
 use std::collections::HashMap;
 
-use quick_desktop::shell::build_nirios_overlay_host_with_chrome;
-use quick_desktop::shell::overlay_host::ShellOverlayHost;
-use quick_desktop::shell::state::{
+use shell::shell::build_nirios_overlay_host_with_chrome;
+use shell::shell::overlay_host::ShellOverlayHost;
+use shell::shell::state::{
     AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceId, WorkspaceTree,
 };
 // `handle_event` / `build_layout` / `apply_layout` live on the `Widget`
 // trait — must be in scope at the call site for the integration test to
 // drive the drain block.
-use quick_ui::theme::Theme;
-use quick_ui::widget::Widget;
+use ui::theme::Theme;
+use ui::widget::Widget;
 use vello::kurbo::Point;
 
 /// Drive one no-op `CursorMoved` event through the strip-0/group-0
@@ -67,7 +67,7 @@ fn pump_no_op_event(
         .new_with_children(Style::default(), &[group_node])
         .unwrap();
     let map_for_measure = node_map.clone();
-    let mut tr = quick_ui::text_render::TextRenderer::new();
+    let mut tr = ui::text_render::TextRenderer::new();
     taffy
         .compute_layout_with_measure(
             root,
@@ -186,7 +186,7 @@ fn shell_tick_writes_maximize_click_through_to_persisted_state() {
     // the per-tab Maximize2 press arm writes to. We avoid a synthetic
     // pointer-event walk through `apply_layout` here because the bar
     // rect math is already pinned by the unit tests in
-    // `quick-ui/src/widget/window_group.rs::tests` — what *this* test
+    // `ui/src/widget/window_group.rs::tests` — what *this* test
     // pins is the writeback from the widget's drained state to the
     // chrome's `WorkspaceTree`.
     {
