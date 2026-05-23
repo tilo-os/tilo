@@ -58,6 +58,11 @@ sysinfo = "0.32"
 automerge = "0.7.4"
 taffy = "0.9.2"
 vello = "0.2.1"
+# C-3 WorkspaceTreeHandle unification: shared `Arc<parking_lot::RwLock<WorkspaceTree>>`
+# across compositor / portal / peer-sync (one source of truth, no diverging clones).
+# Already a transitive via wgpu — pinning here is one-line and keeps Cargo
+# collapsed to a single copy in the workspace lock.
+parking_lot = "0.12"
 # Phase 2 of `docs/superpowers/plans/2026-05-02-per-workspace-sandbox-permissions.md`:
 # host-side compiler for the per-workspace seccomp-bpf deny-list. Pinned to the
 # latest 0.5.x to track upstream sock_filter / TargetArch shape (x86_64,
