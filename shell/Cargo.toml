@@ -115,6 +115,11 @@ tempfile = "3"
 # transitively (libp2p, zbus, tokio) — pinning it here is just for the
 # `try_join!` macro at the test-fixture call site.
 futures-util = "0.3"
+# Serializes the 8 `apply_grants`-calling tests in `sandbox::profile`
+# that share a process-wide `SCAN_MEMO` static. Without this, parallel
+# `cargo test` races on the memo's walk-counter and surfaces as a
+# flaky `apply_grants_dev_scan_is_memoised` failure.
+serial_test = "3"
 
 # Real-input e2e Phase 5: the `nirios-control` CLI is a thin wrapper over the
 # `NIRIOS_TEST_CONTROL` JSON socket — humans and shell scripts use it instead
