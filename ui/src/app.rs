@@ -1,9 +1,35 @@
 use winit::{
     application::ApplicationHandler,
-    event::WindowEvent,
-    event_loop::{ActiveEventLoop, EventLoop},
+    dpi::PhysicalPosition,
+    event::{ElementState, MouseButton, WindowEvent},
+    event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy},
     window::{Window, WindowId},
 };
+
+/// Synthetic input events that can be injected into a running `App` via
+/// `EventLoopProxy`. Each variant is translated back into the exact
+/// `WindowEvent`(s) winit would deliver from real hardware, then routed
+/// through the SAME `window_event` handler — so injected and hardware
+/// events take the IDENTICAL code path. This is the foundation for the
+/// hosted-mode `QOS_TEST_CONTROL` socket; the socket-listener thread
+/// reads JSON commands and pumps the equivalent `UserEvent`s via the
+/// proxy.
+///
+/// v1 covers mouse input — enough to reproduce the immediate
+/// hosted-mode click bug. Keyboard injection is a follow-up (winit's
+/// `KeyEvent` constructor isn't pub, so we'd need a forwarder helper).
+///
+/// Defined in `ui` (not `shell`) because the `App` owns the event loop
+/// and proxy; `shell` depends on `ui`, not the other way around.
+#[derive(Debug, Clone)]
+pub enum UserEvent {
+    /// Move the cursor only (no click). For hover tests.
+    Hover { x: f64, y: f64 },
+    /// Full click sequence at the given coords: CursorMoved → Pressed → Released.
+    /// One UserEvent dispatches THREE `WindowEvent`s through the same path
+    /// a real click would take.
+    Click { x: f64, y: f64 },
+}
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use vello::{Scene, Renderer, RendererOptions, util::{RenderContext, RenderSurface}, peniko::Color, kurbo::Affine, kurbo::Rect as KurboRect, kurbo::Point};
@@ -438,16 +464,32 @@ impl App {
         if let Some(new_id) = best_candidate { self.set_focused_node(Some(new_id)); }
     }
 
-    pub fn run(mut self) {
-        let event_loop = EventLoop::new().unwrap();
+    pub fn run(self) {
+        self.run_with_setup(|_| {});
+    }
+
+    /// Like [`App::run`] but exposes the winit [`EventLoopProxy`] before
+    /// the loop starts running so callers (e.g. the shell's hosted-mode
+    /// `QOS_TEST_CONTROL` socket listener) can spawn background threads
+    /// that inject [`UserEvent`]s into the App. The closure runs once,
+    /// after the event loop is created and before `run_app`. Any thread
+    /// the closure spawns may move the proxy and `send_event(_)` from
+    /// any thread; the App processes each via `ApplicationHandler::
+    /// user_event`, translating to the equivalent `WindowEvent` and
+    /// routing through the SAME dispatch path as hardware events.
+    pub fn run_with_setup<F>(mut self, setup: F)
+    where
+        F: FnOnce(EventLoopProxy<UserEvent>),
+    {
+        let event_loop = EventLoop::<UserEvent>::with_user_event()
+            .build()
+            .unwrap();
+        let proxy = event_loop.create_proxy();
+        setup(proxy);
 
         // Build the taffy tree up-front so widgets that don't depend on a
         // live window (focus order, undo bookkeeping) are wired before the
-        // first `resumed` callback. The same calls used to live at the top
-        // of the old `event_loop.run` closure; pulling them here keeps the
-        // behaviour identical while letting the window be created lazily
-        // inside `ApplicationHandler::resumed` (winit 0.30's non-deprecated
-        // path).
+        // first `resumed` callback.
         self.node_map.clear();
         self.root_node = Some(self.root_widget.build_layout(
             &mut self.taffy,
@@ -501,7 +543,49 @@ struct AppHandler {
     scene: Scene,
 }
 
-impl ApplicationHandler for AppHandler {
+impl ApplicationHandler<UserEvent> for AppHandler {
+    /// External-input translator: every variant becomes the WindowEvent
+    /// winit would have delivered, then routes back through
+    /// `Self::window_event` so injected and hardware events take the
+    /// IDENTICAL code path (same dispatch, same handlers, same redraw
+    /// gate). The unsafe transmute of a zeroed DeviceId is the same
+    /// trick `shell::compositor::native` uses for the headless event
+    /// path — winit's DeviceId is opaque and the dispatch chain doesn't
+    /// inspect it.
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
+        let Some(window) = self.window.as_ref().cloned() else { return };
+        let window_id = window.id();
+        match event {
+            UserEvent::Hover { x, y } => {
+                let ev = WindowEvent::CursorMoved {
+                    device_id: unsafe { std::mem::zeroed() },
+                    position: PhysicalPosition::new(x, y),
+                };
+                self.window_event(event_loop, window_id, ev);
+            }
+            UserEvent::Click { x, y } => {
+                let moved = WindowEvent::CursorMoved {
+                    device_id: unsafe { std::mem::zeroed() },
+                    position: PhysicalPosition::new(x, y),
+                };
+                self.window_event(event_loop, window_id, moved);
+                let press = WindowEvent::MouseInput {
+                    device_id: unsafe { std::mem::zeroed() },
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                };
+                self.window_event(event_loop, window_id, press);
+                let release = WindowEvent::MouseInput {
+                    device_id: unsafe { std::mem::zeroed() },
+                    state: ElementState::Released,
+                    button: MouseButton::Left,
+                };
+                self.window_event(event_loop, window_id, release);
+            }
+        }
+    }
+
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         // `resumed` can fire more than once (suspend/resume on mobile);
         // after the first init the window/render state stays valid, so
@@ -845,6 +929,25 @@ impl ApplicationHandler for AppHandler {
             other => {
                 let event = other;
                 let app = &mut self.app;
+                // DEBUGABILITY (RUST_LOG=ui::app=debug): trace every
+                // mouse/keyboard event hitting the App so a real
+                // click reproducer (xdotool, ydotool, the live
+                // window) can be diagnosed without source-reading.
+                // Pointer-move spam is intentionally NOT throttled
+                // here — when the bug is "no clicks work", you want
+                // to see whether moves arrive at all.
+                match &event {
+                    WindowEvent::MouseInput { state, button, .. } => {
+                        tracing::debug!(?state, ?button, "App::window_event MouseInput");
+                    }
+                    WindowEvent::CursorMoved { position, .. } => {
+                        tracing::trace!(x = position.x, y = position.y, "App::window_event CursorMoved");
+                    }
+                    WindowEvent::KeyboardInput { event: ke, .. } => {
+                        tracing::debug!(key = ?ke.logical_key, state = ?ke.state, "App::window_event KeyboardInput");
+                    }
+                    _ => {}
+                }
                 // Outbound pointer-presence broadcast: if the
                 // shell has declared a presence scope, relay
                 // every pointer move (throttled to ~30 Hz) so
@@ -1021,6 +1124,10 @@ impl ApplicationHandler for AppHandler {
                 if !handled {
                     let scale_factor = window.scale_factor();
                     let root_node = app.root_node.unwrap();
+                    let was_mouse_click = matches!(
+                        event,
+                        WindowEvent::MouseInput { state: winit::event::ElementState::Pressed, .. }
+                    );
                     app.root_widget.handle_event(
                         &event,
                         scale_factor,
@@ -1032,6 +1139,14 @@ impl ApplicationHandler for AppHandler {
                         root_node,
                         &app.taffy,
                     );
+                    if was_mouse_click {
+                        tracing::debug!(
+                            handled,
+                            needs_redraw = app.root_widget.needs_redraw(),
+                            is_layout_dirty = app.root_widget.is_layout_dirty(),
+                            "root_widget.handle_event(MouseInput Pressed) returned"
+                        );
+                    }
                 }
 
                 if !handled {
@@ -1082,20 +1197,29 @@ impl ApplicationHandler for AppHandler {
                     }
                     app.needs_sync = true;
                     // Incremental-redraw gate (Unit 2 of the 2026-05-23
-                    // perf plan). The unconditional
-                    // `layout_dirty = true; request_redraw()` of the
-                    // pre-incremental era forced a full taffy re-flow
-                    // and a GPU submit on every handled event — even
-                    // pure-hover transitions. Now both are gated on
-                    // the widget tree's signal: a click that only
-                    // flipped `ToggleGroup::selected` schedules a
-                    // redraw but skips `compute_layout`; a hover that
-                    // didn't change any visible state schedules
-                    // neither.
-                    if app.root_widget.is_layout_dirty() {
+                    // perf plan), narrowed to its actual target: hover
+                    // spam. The original "gate everything on
+                    // `needs_redraw()`" was wrong because container
+                    // widgets like Tabs / GroupRow / TabBar mutate
+                    // their own active-index state without setting
+                    // any descendant leaf widget's `dirty` flag —
+                    // so the tree's recursive `needs_redraw` returned
+                    // false and CLICKS WERE INVISIBLE on hosted-mode.
+                    // (Headless was unaffected because the FrameBuilder
+                    // dispatch path doesn't go through this gate.)
+                    //
+                    // The conservative gate now: pointer MOVES (the
+                    // 60+ Hz stream the perf plan cared about) still
+                    // skip a redraw when nothing reports dirty; every
+                    // other handled event (MouseInput, KeyboardInput,
+                    // …) requests a redraw unconditionally. This
+                    // preserves the hover-spam win and restores
+                    // click-to-paint.
+                    let is_pointer_move = matches!(&event, WindowEvent::CursorMoved { .. });
+                    if !is_pointer_move || app.root_widget.is_layout_dirty() {
                         app.layout_dirty = true;
                     }
-                    if app.root_widget.needs_redraw() {
+                    if !is_pointer_move || app.root_widget.needs_redraw() {
                         window.request_redraw();
                     }
                 }
