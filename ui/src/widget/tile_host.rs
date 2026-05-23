@@ -271,8 +271,22 @@ impl Widget for TileHost {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(origin.x + l.location.x as f64, origin.y + l.location.y as f64, origin.x + l.location.x as f64 + l.size.width as f64, origin.y + l.location.y as f64 + l.size.height as f64);
         if let TileContent::App(w) = &mut self.content {
-            let child_node = taffy.children(node).unwrap()[0];
-            w.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
+            // Defensive guard for a structural mismatch where `self.content`
+            // is `App` but the taffy node has no child (the build_layout
+            // pass that registered the node ran while content was still
+            // `Stub`, or a structure_dirty rebuild hasn't fired yet).
+            // Previously panicked with "index out of bounds: the len is
+            // 0 but the index is 0" when opening Files for the first
+            // time on a freshly-booted shell.
+            let children = taffy.children(node).unwrap_or_default();
+            if let Some(&child_node) = children.first() {
+                w.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
+            } else {
+                tracing::warn!(
+                    "TileHost::apply_layout: App content with no taffy child; \
+                     skipping (next frame's structure rebuild should resolve)"
+                );
+            }
         }
     }
     fn draw(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
@@ -329,8 +343,11 @@ impl Widget for TileHost {
     }
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, m: &winit::event::Modifiers, s: &mut AutoCommit, p: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, taffy: &TaffyTree<()>) {
         if let TileContent::App(w) = &mut self.content {
-            let child_node = taffy.children(node_id).unwrap()[0];
-            w.handle_event(event, scale_factor, m, s, p, handled, focus_target, child_node, taffy);
+            // Same structural-mismatch guard as apply_layout above.
+            let children = taffy.children(node_id).unwrap_or_default();
+            if let Some(&child_node) = children.first() {
+                w.handle_event(event, scale_factor, m, s, p, handled, focus_target, child_node, taffy);
+            }
         }
     }
     fn name(&self) -> &str { "TileHost" }
