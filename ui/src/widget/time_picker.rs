@@ -18,8 +18,9 @@
 
 use automerge::{AutoCommit, ObjId};
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
+use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 
 use crate::widget::Widget;
@@ -41,6 +42,11 @@ const PICKER_HEIGHT: f32 = 72.0;
 /// Width of the colon separator between spinners.
 const COLON_WIDTH: f32 = 8.0;
 
+/// Which cell currently has keyboard focus (digit-input target).
+/// `None` means no cell is focused and digit keys are ignored.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TimeCell { Hours, Minutes, Seconds }
+
 /// Three-spinner time picker. See module docs.
 pub struct TimePicker {
     hours: u8,           // 0..=23
@@ -52,6 +58,16 @@ pub struct TimePicker {
     minute_rect: Rect,
     second_rect: Rect,   // ZERO when seconds == None
     last_cursor: Point,
+    is_focused: bool,
+    /// Which cell consumes the next digit key. Set by clicking a
+    /// value cell or by Tab cycling. `None` while no cell is in
+    /// edit mode — digit keys then fall through to the rest of the
+    /// tree as usual.
+    focused_cell: Option<TimeCell>,
+    /// Per-cell digit accumulator. Two characters max — the third
+    /// digit closes the cell and starts a fresh sequence on the next
+    /// cell. Cleared when a cell is entered or when Esc is pressed.
+    digit_buffer: String,
 }
 
 impl TimePicker {
@@ -70,7 +86,104 @@ impl TimePicker {
             minute_rect: Rect::ZERO,
             second_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
+            is_focused: false,
+            focused_cell: None,
+            digit_buffer: String::new(),
         }
+    }
+
+    /// Which cell currently consumes digit keys, if any. Mostly for
+    /// tests; the chrome reads this for visual focus highlighting.
+    pub fn focused_cell(&self) -> Option<TimeCell> { self.focused_cell }
+
+    /// Current per-cell digit accumulator (visible while typing).
+    pub fn digit_buffer(&self) -> &str { &self.digit_buffer }
+
+    /// Append a single digit to the focused cell's accumulator and
+    /// commit it. Behaviour:
+    /// - First digit: replaces the cell value (so typing "9" into a
+    ///   field currently showing "23" gives "09").
+    /// - Second digit: appends if the resulting two-digit number is
+    ///   still in range; otherwise replaces the buffer with just the
+    ///   new digit (so typing "2" then "5" into hours gives "5", not
+    ///   "25").
+    /// - After two valid digits the focus auto-advances to the next
+    ///   cell, matching every native time-input.
+    fn accept_digit(&mut self, d: u8) {
+        let Some(cell) = self.focused_cell else { return; };
+        let max = match cell {
+            TimeCell::Hours => HOUR_MAX,
+            TimeCell::Minutes | TimeCell::Seconds => MINSEC_MAX,
+        };
+        if self.digit_buffer.is_empty() || self.digit_buffer.len() >= 2 {
+            self.digit_buffer.clear();
+        }
+        let mut candidate = self.digit_buffer.clone();
+        candidate.push(char::from_digit(d as u32, 10).unwrap());
+        let parsed: u8 = candidate.parse().unwrap_or(0);
+        if parsed > max {
+            // The two-digit candidate overflows: drop the prior digit
+            // and treat the new one as a fresh first character.
+            self.digit_buffer = char::from_digit(d as u32, 10).unwrap().to_string();
+        } else {
+            self.digit_buffer = candidate;
+        }
+        let v: u8 = self.digit_buffer.parse().unwrap_or(0);
+        match cell {
+            TimeCell::Hours => self.hours = v,
+            TimeCell::Minutes => self.minutes = v,
+            TimeCell::Seconds => self.seconds = Some(v),
+        }
+        self.fire_on_change();
+        if self.digit_buffer.len() == 2 {
+            self.advance_focus();
+        }
+    }
+
+    /// Move focus to the next cell (Tab semantic). Wraps off the
+    /// trailing edge to `None` so the user can step out of the
+    /// picker by tabbing past its last cell.
+    fn advance_focus(&mut self) {
+        self.focused_cell = match self.focused_cell {
+            Some(TimeCell::Hours) => Some(TimeCell::Minutes),
+            Some(TimeCell::Minutes) => if self.seconds.is_some() {
+                Some(TimeCell::Seconds)
+            } else {
+                None
+            },
+            Some(TimeCell::Seconds) => None,
+            None => None,
+        };
+        self.digit_buffer.clear();
+    }
+
+    /// Move focus to the previous cell (Shift+Tab semantic).
+    fn retreat_focus(&mut self) {
+        self.focused_cell = match self.focused_cell {
+            Some(TimeCell::Seconds) => Some(TimeCell::Minutes),
+            Some(TimeCell::Minutes) => Some(TimeCell::Hours),
+            _ => None,
+        };
+        self.digit_buffer.clear();
+    }
+
+    fn cell_for_point(&self, p: Point) -> Option<TimeCell> {
+        if self.hour_rect.contains(p) { return Some(TimeCell::Hours); }
+        if self.minute_rect.contains(p) { return Some(TimeCell::Minutes); }
+        if self.seconds.is_some() && self.second_rect.contains(p) {
+            return Some(TimeCell::Seconds);
+        }
+        None
+    }
+
+    fn cell_value_rect(&self, cell: TimeCell) -> Rect {
+        let outer = match cell {
+            TimeCell::Hours => self.hour_rect,
+            TimeCell::Minutes => self.minute_rect,
+            TimeCell::Seconds => self.second_rect,
+        };
+        let (_, value, _) = Self::spinner_subrects(outer);
+        value
     }
 
     /// Enable the seconds spinner with the given initial value (clamped to
@@ -258,7 +371,7 @@ impl Widget for TimePicker {
             cells.push((self.second_rect, s));
         }
 
-        for (cell, value) in &cells {
+        for (cell_idx, (cell, value)) in cells.iter().enumerate() {
             let (up_rect, value_rect, down_rect) = Self::spinner_subrects(*cell);
 
             // Value cell background.
@@ -270,6 +383,21 @@ impl Widget for TimePicker {
                 None,
                 &bg,
             );
+            // Focus ring on the cell currently consuming digit keys.
+            let cell_kind = match cell_idx {
+                0 => TimeCell::Hours,
+                1 => TimeCell::Minutes,
+                _ => TimeCell::Seconds,
+            };
+            if self.is_focused && self.focused_cell == Some(cell_kind) {
+                scene.stroke(
+                    &Stroke::new(2.0),
+                    transform,
+                    colors.border_focus,
+                    None,
+                    &bg,
+                );
+            }
 
             // Two-digit value label centred in the value cell.
             let label = format!("{:02}", value);
@@ -321,12 +449,12 @@ impl Widget for TimePicker {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
+        modifiers: &Modifiers,
         _state: &mut AutoCommit,
         _path: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
         match event {
@@ -339,8 +467,24 @@ impl Widget for TimePicker {
                 ..
             } => {
                 let p = self.last_cursor;
-                // Determine which spinner cell the cursor sits in (if any)
-                // and which third of that cell — top = up, bottom = down.
+                // First: did the click land on a value cell (the
+                // middle third)? If so, latch keyboard focus on that
+                // cell so digit keys flow through `accept_digit`.
+                if let Some(cell) = self.cell_for_point(p) {
+                    let value_rect = self.cell_value_rect(cell);
+                    if value_rect.contains(p) {
+                        if !self.is_focused {
+                            *focus_target = Some(node_id);
+                        }
+                        if self.focused_cell != Some(cell) {
+                            self.focused_cell = Some(cell);
+                            self.digit_buffer.clear();
+                        }
+                        *handled = true;
+                        return;
+                    }
+                }
+                // Otherwise: same up/down chevron handling as before.
                 let mut cells: Vec<(Rect, u8)> = vec![
                     (self.hour_rect, 0),
                     (self.minute_rect, 1),
@@ -370,6 +514,88 @@ impl Widget for TimePicker {
                         *handled = true;
                     }
                     break;
+                }
+            }
+            WindowEvent::KeyboardInput { event: KeyEvent { logical_key, state: element_state, text, .. }, .. } => {
+                if !self.is_focused || *element_state != ElementState::Pressed {
+                    return;
+                }
+                let shift = modifiers.state().shift_key();
+                match logical_key {
+                    Key::Named(NamedKey::Tab) => {
+                        if shift { self.retreat_focus(); } else { self.advance_focus(); }
+                        *handled = true;
+                    }
+                    Key::Named(NamedKey::Escape) => {
+                        self.focused_cell = None;
+                        self.digit_buffer.clear();
+                        *handled = true;
+                    }
+                    Key::Named(NamedKey::Backspace) => {
+                        // Drop the most recent digit from the buffer.
+                        // Empty buffer → reset the cell value to zero
+                        // (clearing the field).
+                        if let Some(cell) = self.focused_cell {
+                            self.digit_buffer.pop();
+                            let v: u8 = self.digit_buffer.parse().unwrap_or(0);
+                            match cell {
+                                TimeCell::Hours => self.hours = v,
+                                TimeCell::Minutes => self.minutes = v,
+                                TimeCell::Seconds => self.seconds = Some(v),
+                            }
+                            self.fire_on_change();
+                            *handled = true;
+                        }
+                    }
+                    Key::Named(NamedKey::ArrowUp) => {
+                        if let Some(cell) = self.focused_cell {
+                            self.digit_buffer.clear();
+                            match cell {
+                                TimeCell::Hours => self.step_hours(1),
+                                TimeCell::Minutes => self.step_minutes(1),
+                                TimeCell::Seconds => self.step_seconds(1),
+                            }
+                            *handled = true;
+                        }
+                    }
+                    Key::Named(NamedKey::ArrowDown) => {
+                        if let Some(cell) = self.focused_cell {
+                            self.digit_buffer.clear();
+                            match cell {
+                                TimeCell::Hours => self.step_hours(-1),
+                                TimeCell::Minutes => self.step_minutes(-1),
+                                TimeCell::Seconds => self.step_seconds(-1),
+                            }
+                            *handled = true;
+                        }
+                    }
+                    Key::Named(NamedKey::ArrowLeft) => {
+                        self.retreat_focus();
+                        *handled = true;
+                    }
+                    Key::Named(NamedKey::ArrowRight) => {
+                        self.advance_focus();
+                        *handled = true;
+                    }
+                    Key::Named(NamedKey::Enter) => {
+                        self.digit_buffer.clear();
+                        self.advance_focus();
+                        *handled = true;
+                    }
+                    _ => {
+                        // Direct digit input. We deliberately use the
+                        // logical-key character path so numpad digits
+                        // also work (winit reports them as
+                        // `Key::Character("0".."9")` after IME).
+                        if let Some(t) = text {
+                            for c in t.chars() {
+                                if let Some(d) = c.to_digit(10) {
+                                    self.accept_digit(d as u8);
+                                    *handled = true;
+                                }
+                            }
+                        }
+                    }
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -414,6 +640,19 @@ impl Widget for TimePicker {
     fn name(&self) -> &str { "TimePicker" }
 
     fn get_rect(&self) -> Rect { self.rect }
+
+    fn is_focusable(&self) -> bool { true }
+    fn set_focus(&mut self, focused: bool) {
+        self.is_focused = focused;
+        if !focused {
+            self.focused_cell = None;
+            self.digit_buffer.clear();
+        } else if self.focused_cell.is_none() {
+            // Keyboard-focus entry without a click — default to hours.
+            self.focused_cell = Some(TimeCell::Hours);
+        }
+    }
+    fn is_focused(&self) -> bool { self.is_focused }
 }
 
 // =====================================================================
@@ -504,5 +743,87 @@ mod tests {
         dispatch(&mut tp, &wheel(1.0));
 
         assert_eq!(tp.minutes(), 31, "wheel up over minute cell must increment minutes");
+    }
+
+    /// Clicking on the hour value cell must latch keyboard focus on
+    /// hours so subsequent digit keys edit the hour value (winit's
+    /// `KeyEvent` can't be constructed in tests, so we exercise the
+    /// click path here and the digit-acceptance path below directly).
+    #[test]
+    fn time_picker_click_on_hour_value_cell_focuses_hours() {
+        let mut tp = TimePicker::new(10, 30);
+        picker_with_layout(&mut tp);
+        Widget::set_focus(&mut tp, true);
+
+        let centre = tp.hour_rect.center();
+        dispatch(&mut tp, &cursor_moved(centre.x, centre.y));
+        dispatch(&mut tp, &WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        });
+        assert_eq!(tp.focused_cell(), Some(TimeCell::Hours));
+    }
+
+    /// Typing two digits into the focused hour cell sets the hour
+    /// directly (replaces, not appends). Auto-advances to minutes
+    /// after the second digit lands.
+    #[test]
+    fn time_picker_two_digit_input_sets_hours_then_advances() {
+        let mut tp = TimePicker::new(0, 0);
+        Widget::set_focus(&mut tp, true);
+        tp.focused_cell = Some(TimeCell::Hours);
+
+        tp.accept_digit(1);
+        assert_eq!(tp.hours(), 1);
+        assert_eq!(tp.digit_buffer(), "1");
+        assert_eq!(tp.focused_cell(), Some(TimeCell::Hours));
+
+        tp.accept_digit(4);
+        assert_eq!(tp.hours(), 14);
+        assert_eq!(tp.focused_cell(), Some(TimeCell::Minutes));
+    }
+
+    /// Typing a second digit that would overflow the max drops the
+    /// prior digit and accepts the new one as a fresh first
+    /// character — "2" → "5" leaves hours = 5, not 25.
+    #[test]
+    fn time_picker_two_digit_overflow_resets_to_new_digit() {
+        let mut tp = TimePicker::new(0, 0);
+        Widget::set_focus(&mut tp, true);
+        tp.focused_cell = Some(TimeCell::Hours);
+
+        tp.accept_digit(2);
+        assert_eq!(tp.hours(), 2);
+        tp.accept_digit(5);
+        assert_eq!(tp.hours(), 5);
+        assert_eq!(tp.digit_buffer(), "5");
+    }
+
+    #[test]
+    fn time_picker_tab_cycles_cells() {
+        let mut tp = TimePicker::new(12, 30).with_seconds(45);
+        Widget::set_focus(&mut tp, true);
+        assert_eq!(tp.focused_cell(), Some(TimeCell::Hours));
+
+        tp.advance_focus();
+        assert_eq!(tp.focused_cell(), Some(TimeCell::Minutes));
+        tp.advance_focus();
+        assert_eq!(tp.focused_cell(), Some(TimeCell::Seconds));
+        tp.advance_focus();
+        assert_eq!(tp.focused_cell(), None);
+    }
+
+    /// Shift+Tab equivalent: walking back through the cells.
+    #[test]
+    fn time_picker_retreat_focus_walks_back() {
+        let mut tp = TimePicker::new(12, 30).with_seconds(45);
+        Widget::set_focus(&mut tp, true);
+        tp.focused_cell = Some(TimeCell::Seconds);
+
+        tp.retreat_focus();
+        assert_eq!(tp.focused_cell(), Some(TimeCell::Minutes));
+        tp.retreat_focus();
+        assert_eq!(tp.focused_cell(), Some(TimeCell::Hours));
     }
 }
