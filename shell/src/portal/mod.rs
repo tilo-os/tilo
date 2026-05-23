@@ -229,12 +229,10 @@ impl GrantStoreHandle {
         self.tree.clone()
     }
 
-    /// Test-only: the previous shape returned an `Arc<Mutex<WorkspaceTree>>`
-    /// for compat with the old code path. Production now consistently
-    /// uses [`Self::tree_handle`]; we keep this only because a handful
-    /// of older tests still reference it.
+    /// Back-compat alias for [`Self::tree_handle`]. A handful of older
+    /// tests/portals still reference `.tree()`; both now return the
+    /// shared `WorkspaceTreeHandle`.
     #[cfg(any(test, debug_assertions))]
-    #[allow(dead_code)]
     pub fn tree(&self) -> WorkspaceTreeHandle {
         self.tree.clone()
     }
