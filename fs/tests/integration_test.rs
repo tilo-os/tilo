@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use fuser::{MountOption, Config};
-use quick_fs_fuse::{QuickFS, MetadataStore, Hydrator, Heuristics};
+use fs::{QuickFS, MetadataStore, Hydrator, Heuristics};
 use tempfile::tempdir;
 use tokio::time::timeout;
 use iroh::endpoint::Endpoint;
