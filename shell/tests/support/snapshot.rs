@@ -140,7 +140,13 @@ fn decode_png(path: &Path) -> DecodedPng {
     let mut reader = decoder
         .read_info()
         .unwrap_or_else(|e| panic!("snapshot: png header {}: {e}", path.display()));
-    let mut buf = vec![0u8; reader.output_buffer_size()];
+    // `output_buffer_size()` returns `Option<usize>` in png 0.18; unwrap
+    // with a clear panic if the header is malformed enough to deny a
+    // size hint (extremely unlikely for a PNG we just produced).
+    let buf_size = reader
+        .output_buffer_size()
+        .expect("snapshot: png output_buffer_size returned None");
+    let mut buf = vec![0u8; buf_size];
     let info = reader
         .next_frame(&mut buf)
         .unwrap_or_else(|e| panic!("snapshot: png decode {}: {e}", path.display()));
