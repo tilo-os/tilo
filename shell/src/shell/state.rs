@@ -1367,6 +1367,113 @@ impl WorkspaceTree {
         }
     }
 
+    /// Walk the doc to the workspace map for `workspace_id` and return
+    /// its `ObjId`. None on miss — used by the grant mirror helpers
+    /// below, same null-tolerance as [`Self::locate_group`].
+    fn locate_workspace(&self, workspace_id: WorkspaceId) -> Option<automerge::ObjId> {
+        use automerge::{ReadDoc, ROOT, ScalarValue, Value};
+        let (_, workspaces_id) =
+            self.doc.get(&ROOT, "workspaces").ok().flatten()?;
+        let len = self.doc.length(&workspaces_id);
+        for i in 0..len {
+            let (_, ws_entry) = self.doc.get(&workspaces_id, i).ok().flatten()?;
+            if let Some((Value::Scalar(s), _)) =
+                self.doc.get(&ws_entry, "id").ok().flatten()
+            {
+                if let ScalarValue::Uint(raw) = s.as_ref() {
+                    if *raw == workspace_id.raw() {
+                        return Some(ws_entry);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Mirror a `Workspace::grants` insert into the automerge doc so
+    /// peer-sync ships it on the next tick. Grants are stored under
+    /// `workspaces[i]/grants/<app_id>/[]: bytes(JSON of Capability)` —
+    /// the JSON-blob shim mirrors the v1 tab `tile_json` pattern from
+    /// [`Self::seed_doc_from_cache`]. A peer that receives the change
+    /// deserialises each blob back into a [`Capability`] enum.
+    ///
+    /// Tolerant of the doc not yet carrying the workspace (e.g. a
+    /// fresh tree that hasn't been flushed through
+    /// [`Self::seed_doc_from_cache`]): the cache write already
+    /// happened in the caller, and a future seed pass will pick up
+    /// the new grant alongside everything else. Same shape as
+    /// [`Self::doc_set_maximized`] in that respect.
+    ///
+    /// C-3 (`docs/superpowers/specs/2026-05-22-workspace-tree-arc-mutex-design.md`,
+    /// Phase C): without this mirror, portal-side `GrantStoreHandle::insert`
+    /// updates only the cache; peer-sync's next `export_changes_since`
+    /// returns empty and the grant never reaches other peers.
+    pub fn doc_insert_grant(
+        &mut self,
+        workspace_id: WorkspaceId,
+        app_id: &AppId,
+        capability: &Capability,
+    ) {
+        use automerge::{ObjType, ReadDoc, ScalarValue, transaction::Transactable};
+        let Some(ws_entry) = self.locate_workspace(workspace_id) else {
+            return;
+        };
+        // grants/ map under the workspace entry — create lazily.
+        let grants_id = match self.doc.get(&ws_entry, "grants").ok().flatten() {
+            Some((_, id)) => id,
+            None => match self.doc.put_object(&ws_entry, "grants", ObjType::Map) {
+                Ok(id) => id,
+                Err(_) => return,
+            },
+        };
+        // grants/<app_id> list — create lazily so multiple grants for
+        // the same app stack.
+        let app_key: String = app_id.as_str().to_string();
+        let app_list = match self.doc.get(&grants_id, &app_key).ok().flatten() {
+            Some((_, id)) => id,
+            None => match self.doc.put_object(&grants_id, &app_key, ObjType::List) {
+                Ok(id) => id,
+                Err(_) => return,
+            },
+        };
+        let Ok(blob) = serde_json::to_vec(capability) else {
+            return;
+        };
+        let idx = self.doc.length(&app_list);
+        let _ = self
+            .doc
+            .insert(&app_list, idx, ScalarValue::Bytes(blob));
+    }
+
+    /// Mirror a `Workspace::grants` revoke into the automerge doc.
+    /// Removes the entry at `cap_index` from the
+    /// `workspaces[i]/grants/<app_id>` list. Tolerant of the doc not
+    /// carrying the workspace / app / index — see
+    /// [`Self::doc_insert_grant`] for the null-tolerance rationale.
+    pub fn doc_revoke_grant(
+        &mut self,
+        workspace_id: WorkspaceId,
+        app_id: &AppId,
+        cap_index: usize,
+    ) {
+        use automerge::{ReadDoc, transaction::Transactable};
+        let Some(ws_entry) = self.locate_workspace(workspace_id) else {
+            return;
+        };
+        let Some((_, grants_id)) = self.doc.get(&ws_entry, "grants").ok().flatten()
+        else {
+            return;
+        };
+        let app_key: String = app_id.as_str().to_string();
+        let Some((_, app_list)) = self.doc.get(&grants_id, &app_key).ok().flatten()
+        else {
+            return;
+        };
+        if cap_index < self.doc.length(&app_list) {
+            let _ = self.doc.delete(&app_list, cap_index);
+        }
+    }
+
     /// Walk the doc to the `Tab` map for `(strip_id, tab_id)`. Returns
     /// the parent group entry, the tabs list, the tab entry, and the
     /// tab's index in the list. Strip id disambiguates if a tab id ever
