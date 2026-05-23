@@ -230,7 +230,7 @@ impl TopBarChrome {
                 .as_deref()
                 .and_then(parse_hex_color)
                 .unwrap_or_else(|| user_color(&c.id));
-            self.collaborator_colors.push(Color::rgb8(r, g, b));
+            self.collaborator_colors.push(Color::from_rgb8(r, g, b));
         }
         self.collaborator_overflow = peer_count.saturating_sub(3);
     }
@@ -359,11 +359,11 @@ impl TopBarChrome {
     pub fn metric_label_color(&self, k: MetricKind) -> Color {
         match k {
             // concept: text-emerald-400 (#4ade80)
-            MetricKind::Cpu => Color::rgba8(0x4a, 0xde, 0x80, 0xff),
+            MetricKind::Cpu => Color::from_rgba8(0x4a, 0xde, 0x80, 0xff),
             // concept: text-blue-400 (#60a5fa)
-            MetricKind::Ram => Color::rgba8(0x60, 0xa5, 0xfa, 0xff),
+            MetricKind::Ram => Color::from_rgba8(0x60, 0xa5, 0xfa, 0xff),
             // concept: text-orange-400 (#fb923c)
-            MetricKind::Tmp => Color::rgba8(0xfb, 0x92, 0x3c, 0xff),
+            MetricKind::Tmp => Color::from_rgba8(0xfb, 0x92, 0x3c, 0xff),
         }
     }
 
@@ -379,7 +379,7 @@ impl TopBarChrome {
     /// wired in later without changing the helper signature.
     pub fn sparkline_fill(&self, _k: MetricKind) -> Color {
         // concept: bg-emerald-500/30 (#10b981 at 0x4d ≈ 30% alpha)
-        Color::rgba8(0x10, 0xb9, 0x81, 0x4d)
+        Color::from_rgba8(0x10, 0xb9, 0x81, 0x4d)
     }
 
     /// Bounding rect of the overview button. Populated during `draw`;
@@ -494,23 +494,23 @@ impl Widget for TopBarChrome {
             self.rect.x1,
             self.rect.y1 + shadow_h,
         );
-        let shadow_grad = Gradient {
-            kind: GradientKind::Linear {
-                start: Point::new(0.0, self.rect.y1),
-                end: Point::new(0.0, self.rect.y1 + shadow_h),
-            },
-            extend: Extend::Pad,
-            stops: ColorStops::from_iter([
+        let shadow_grad = Gradient::new_linear(
+            Point::new(0.0, self.rect.y1),
+            Point::new(0.0, self.rect.y1 + shadow_h),
+        )
+        .with_extend(Extend::Pad)
+        .with_stops(
+            &[
                 ColorStop {
                     offset: 0.0,
-                    color: Color::rgba8(0, 0, 0, 46), // ≈ 0.18
+                    color: Color::from_rgba8(0, 0, 0, 46).into(), // ≈ 0.18
                 },
                 ColorStop {
                     offset: 1.0,
-                    color: Color::rgba8(0, 0, 0, 0),
+                    color: Color::from_rgba8(0, 0, 0, 0).into(),
                 },
-            ]),
-        };
+            ][..],
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -977,7 +977,7 @@ impl Widget for TopBarChrome {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                Color::rgb8(0, 0, 0),
+                Color::from_rgb8(0, 0, 0),
                 None,
                 &vello::kurbo::Circle::new(center, 9.0),
             );
@@ -1245,13 +1245,13 @@ mod tests {
         let ram = chrome.metric_label_color(MetricKind::Ram);
         let tmp = chrome.metric_label_color(MetricKind::Tmp);
         // emerald-400
-        assert_eq!(cpu, Color::rgba8(0x4a, 0xde, 0x80, 0xff));
+        assert_eq!(cpu, Color::from_rgba8(0x4a, 0xde, 0x80, 0xff));
         // blue-400
-        assert_eq!(ram, Color::rgba8(0x60, 0xa5, 0xfa, 0xff));
+        assert_eq!(ram, Color::from_rgba8(0x60, 0xa5, 0xfa, 0xff));
         // orange-400
-        assert_eq!(tmp, Color::rgba8(0xfb, 0x92, 0x3c, 0xff));
+        assert_eq!(tmp, Color::from_rgba8(0xfb, 0x92, 0x3c, 0xff));
         // Guard rail: none of the three may be indigo-500 again.
-        let indigo = Color::rgba8(0x63, 0x66, 0xf1, 0xff);
+        let indigo = Color::from_rgba8(0x63, 0x66, 0xf1, 0xff);
         assert_ne!(cpu, indigo);
         assert_ne!(ram, indigo);
         assert_ne!(tmp, indigo);
@@ -1269,7 +1269,7 @@ mod tests {
         // The integration spec test pairs with this — see
         // `concept_parity_spec::topbar_system_monitor_sparkline_is_\
         // emerald_500_not_indigo`.
-        assert_eq!(fill, Color::rgba8(0x10, 0xb9, 0x81, 0x4d));
+        assert_eq!(fill, Color::from_rgba8(0x10, 0xb9, 0x81, 0x4d));
     }
 
     /// Audit #3 / Wave 3 unit 3-D: the rightmost avatar must sit ≥ 8 px

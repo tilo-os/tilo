@@ -147,11 +147,16 @@ fn render_overlay_host(tree: &WorkspaceTree) -> (Scene, Chrome) {
 
 /// Walk a `vello::Scene`'s encoding and return every solid-colour brush
 /// that was emitted into the draw stream, as a tight `(r, g, b, a)`
-/// tuple for ergonomic comparison. Premultiplied → unpremultiplied is
-/// done losslessly when alpha == 0xff, which covers every spec-relevant
-/// fill in the shell (we never pre-blend the indigo accent or the
-/// emerald monitor colour against an alpha < 255 — those compositions
-/// happen at the layer level).
+/// tuple for ergonomic comparison.
+///
+/// In peniko 0.6 / vello 0.9 the `DrawColor` packed-u32 byte order was
+/// rotated: red lives in the low byte, alpha in the high byte (was the
+/// other way around). Memory order: `[r, g, b, a]` LE.
+///
+/// Premultiplied → unpremultiplied is done losslessly when alpha ==
+/// 0xff, which covers every spec-relevant fill in the shell (we never
+/// pre-blend the indigo accent or the emerald monitor colour against an
+/// alpha < 255 — those compositions happen at the layer level).
 fn collect_solid_colors(scene: &Scene) -> Vec<(u8, u8, u8, u8)> {
     use vello_encoding::DrawTag;
     let enc = scene.encoding();
@@ -159,21 +164,21 @@ fn collect_solid_colors(scene: &Scene) -> Vec<(u8, u8, u8, u8)> {
     let mut data_cursor = 0usize;
     for tag in enc.draw_tags.iter() {
         if *tag == DrawTag::COLOR {
-            // 4 bytes = u32 RGBA (LE), low byte = alpha.
-            if data_cursor + 4 <= enc.draw_data.len() {
-                let bytes = &enc.draw_data[data_cursor..data_cursor + 4];
-                // u32 = (r<<24)|(g<<16)|(b<<8)|a — see DrawColor doc.
-                // LE memory order: [a, b, g, r].
-                let a = bytes[0];
-                let b = bytes[1];
-                let g = bytes[2];
-                let r = bytes[3];
+            // `draw_data` is `Vec<u32>` in vello_encoding 0.9. Each
+            // `DrawColor` is a single packed u32 with red in the low
+            // byte and alpha in the high byte.
+            if data_cursor < enc.draw_data.len() {
+                let packed = enc.draw_data[data_cursor];
+                let r = (packed & 0xff) as u8;
+                let g = ((packed >> 8) & 0xff) as u8;
+                let b = ((packed >> 16) & 0xff) as u8;
+                let a = ((packed >> 24) & 0xff) as u8;
                 out.push((r, g, b, a));
             }
-            data_cursor += 4;
+            data_cursor += 1;
         } else {
-            // info_size is in u32 words.
-            data_cursor += (tag.info_size() as usize) * 4;
+            // info_size is already in u32 words.
+            data_cursor += tag.info_size() as usize;
         }
     }
     out
@@ -1920,7 +1925,7 @@ mod helper_tests {
         scene.fill(
             Fill::NonZero,
             vello::kurbo::Affine::IDENTITY,
-            Color::rgb8(99, 102, 241),
+            Color::from_rgb8(99, 102, 241),
             None,
             &rect,
         );

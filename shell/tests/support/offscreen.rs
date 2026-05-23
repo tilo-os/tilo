@@ -93,10 +93,10 @@ impl OffscreenRenderer {
         let renderer = Renderer::new(
             device,
             RendererOptions {
-                surface_format: None,
                 use_cpu: false,
                 antialiasing_support: AaSupport::all(),
                 num_init_threads: None,
+                pipeline_cache: None,
             },
         )
         .expect("vello Renderer::new");
@@ -139,15 +139,15 @@ impl OffscreenRenderer {
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         encoder.copy_texture_to_buffer(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: &self.texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            wgpu::ImageCopyBuffer {
+            wgpu::TexelCopyBufferInfo {
                 buffer: &self.readback_buf,
-                layout: wgpu::ImageDataLayout {
+                layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(self.padded_bytes_per_row),
                     rows_per_image: Some(self.height),
@@ -168,7 +168,7 @@ impl OffscreenRenderer {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             tx.send(r).ok();
         });
-        device.poll(wgpu::Maintain::Wait);
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
         rx.recv()
             .expect("map_async channel")
             .expect("buffer map failed");

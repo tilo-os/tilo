@@ -125,7 +125,7 @@ fn sidebar_wheel_disc_renders_a_spoke_per_workspace() {
     disc.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
     let path = screenshots_dir().join("wheel-disc-01-baseline.png");
-    let bg = Color::rgb8(0x02, 0x06, 0x14);
+    let bg = Color::from_rgb8(0x02, 0x06, 0x14);
     renderer.render_png(&scene, bg, &path);
     assert!(path.exists(), "snapshot PNG should be written to {:?}", path);
 

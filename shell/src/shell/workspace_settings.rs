@@ -26,6 +26,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
 
+use ui::ColorCompat;
 use ui::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
 use ui::overlay::{FocusTrap, Modal};
 use ui::text_render::TextRenderer;
