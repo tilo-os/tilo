@@ -23,6 +23,9 @@ mod tests {
             fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> { Ok(Box::new(std::io::empty())) }
             fn process_group_leader(&self) -> Option<i32> { None }
             fn as_raw_fd(&self) -> Option<i32> { None }
+            // portable-pty 0.9 added a `tty_name` accessor. Test mock has no
+            // real TTY behind it, so return None.
+            fn tty_name(&self) -> Option<std::path::PathBuf> { None }
         }
 
         let mut widget = TerminalWidget::new(
@@ -187,6 +190,9 @@ mod tests {
             fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> { Ok(Box::new(std::io::empty())) }
             fn process_group_leader(&self) -> Option<i32> { None }
             fn as_raw_fd(&self) -> Option<i32> { None }
+            // portable-pty 0.9 added a `tty_name` accessor. Test mock has no
+            // real TTY behind it, so return None.
+            fn tty_name(&self) -> Option<std::path::PathBuf> { None }
         }
 
         let widget = TerminalWidget::new(
