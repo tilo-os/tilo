@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use fuser::*;
-use quick_fs_fuse::{QuickFS, MetadataStore, Hydrator, Heuristics};
+use fs::{QuickFS, MetadataStore, Hydrator, Heuristics};
 use iroh::endpoint::Endpoint;
 use iroh_blobs::BlobsProtocol;
 use iroh_blobs::store::mem::MemStore;
