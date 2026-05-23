@@ -57,7 +57,7 @@ sysinfo = "0.32"
 # `ui::widget::Widget`. Versions are pinned to match ui's Cargo.toml.
 automerge = "0.7.4"
 taffy = "0.9.2"
-vello = "0.2.1"
+vello = "0.9"
 # C-3 WorkspaceTreeHandle unification: shared `Arc<parking_lot::RwLock<WorkspaceTree>>`
 # across compositor / portal / peer-sync (one source of truth, no diverging clones).
 # Already a transitive via wgpu — pinning here is one-line and keeps Cargo
@@ -106,12 +106,12 @@ tokio-test = "0.4"
 # Offscreen headless renderer used by `tests/e2e_shell_flows.rs`. Versions
 # mirror ui so Cargo collapses to a single copy in the workspace lock.
 pollster = "0.4.0"
-wgpu = "0.20"
+wgpu = "29"
 # Scene-encoding inspection used by `tests/concept_parity_spec.rs` to walk
 # `Scene::encoding().draw_data` for solid-colour brushes and image-paint
 # tags without round-tripping pixels through wgpu. Same minor version as
 # the `vello = "0.2.1"` runtime dep; Cargo collapses to a single copy.
-vello_encoding = "0.2.1"
+vello_encoding = "0.9"
 # Tempdir helper for `network::behaviour::load_or_create_keypair` tests so we
 # never write a real key to `/var/lib/qos-fs/peer-key` from the test suite.
 tempfile = "3"

@@ -68,6 +68,7 @@ use vello::kurbo::{Affine, BezPath, Circle, PathEl, Point, Rect, RoundedRect, St
 use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
+use ui::ColorCompat;
 use ui::animation::Spring;
 use ui::icons::{self, Icon, LUCIDE_DEFAULT_STROKE_PX};
 use ui::presence::{PresenceCtx, PresenceKey};
@@ -180,12 +181,12 @@ const WHEEL_SCROLL_TIMEOUT_MS: u64 = 80;
 /// `radial-workspace-switcher/src/App.tsx:10-17`). Wraps modulo for
 /// trees with more than six workspaces.
 const SPOKE_PALETTE: &[Color] = &[
-    Color::rgb8(0xec, 0x48, 0x99), // pink-500
-    Color::rgb8(0x3b, 0x82, 0xf6), // blue-500
-    Color::rgb8(0xf5, 0x9e, 0x0b), // amber-500
-    Color::rgb8(0x10, 0xb9, 0x81), // emerald-500
-    Color::rgb8(0xa8, 0x55, 0xf7), // purple-500
-    Color::rgb8(0xa1, 0xa1, 0xaa), // zinc-400
+    Color::from_rgb8(0xec, 0x48, 0x99), // pink-500
+    Color::from_rgb8(0x3b, 0x82, 0xf6), // blue-500
+    Color::from_rgb8(0xf5, 0x9e, 0x0b), // amber-500
+    Color::from_rgb8(0x10, 0xb9, 0x81), // emerald-500
+    Color::from_rgb8(0xa8, 0x55, 0xf7), // purple-500
+    Color::from_rgb8(0xa1, 0xa1, 0xaa), // zinc-400
 ];
 
 impl SidebarWheelDisc {
@@ -514,7 +515,7 @@ impl Widget for SidebarWheelDisc {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                Color::rgba8(0, 0, 0, (alpha * 255.0) as u8),
+                Color::from_rgba8(0, 0, 0, (alpha * 255.0) as u8),
                 None,
                 &band,
             );
@@ -530,7 +531,7 @@ impl Widget for SidebarWheelDisc {
         scene.fill(
             Fill::NonZero,
             transform,
-            Color::rgba8(255, 255, 255, 3), // ≈ white/0.012
+            Color::from_rgba8(255, 255, 255, 3), // ≈ white/0.012
             None,
             &disc_fill,
         );
@@ -545,7 +546,7 @@ impl Widget for SidebarWheelDisc {
         scene.stroke(
             &Stroke::new(40.0),
             transform,
-            Color::rgba8(255, 255, 255, 10), // ≈ white/0.04
+            Color::from_rgba8(255, 255, 255, 10), // ≈ white/0.04
             None,
             &band,
         );
@@ -559,7 +560,7 @@ impl Widget for SidebarWheelDisc {
         scene.stroke(
             &Stroke::new(1.5),
             transform,
-            Color::rgba8(255, 255, 255, 36), // ≈ white/0.14
+            Color::from_rgba8(255, 255, 255, 36), // ≈ white/0.14
             None,
             &rim,
         );
@@ -689,9 +690,9 @@ impl Widget for SidebarWheelDisc {
 
                 let tile_fill = if is_active {
                     let base = self.spoke_color(i);
-                    Color::rgba8(base.r, base.g, base.b, (255.0 * cluster_alpha) as u8)
+                    Color::from_rgba8(base.r(), base.g(), base.b(), (255.0 * cluster_alpha) as u8)
                 } else {
-                    Color::rgba8(255, 255, 255, (255.0 * 0.10 * cluster_alpha) as u8)
+                    Color::from_rgba8(255, 255, 255, (255.0 * 0.10 * cluster_alpha) as u8)
                 };
                 scene.fill(Fill::NonZero, cluster_xform, tile_fill, None, &tile_rr);
                 if is_active {
@@ -709,7 +710,7 @@ impl Widget for SidebarWheelDisc {
                         scene.stroke(
                             &Stroke::new(r * 2.0),
                             cluster_xform,
-                            Color::rgba8(255, 255, 255, (a * 255.0) as u8),
+                            Color::from_rgba8(255, 255, 255, (a * 255.0) as u8),
                             None,
                             &tile_rr,
                         );
@@ -718,7 +719,7 @@ impl Widget for SidebarWheelDisc {
                     scene.stroke(
                         &Stroke::new(1.0),
                         cluster_xform,
-                        Color::rgba8(255, 255, 255, 51),
+                        Color::from_rgba8(255, 255, 255, 51),
                         None,
                         &tile_rr,
                     );
@@ -731,9 +732,9 @@ impl Widget for SidebarWheelDisc {
                 // to `Layers`. Tile inset matches the concept's
                 // `w-5 h-5` glyph in a 40-px tile (~50 % of edge).
                 let glyph_color = if is_active {
-                    Color::rgba8(255, 255, 255, (255.0 * cluster_alpha) as u8)
+                    Color::from_rgba8(255, 255, 255, (255.0 * cluster_alpha) as u8)
                 } else {
-                    Color::rgba8(255, 255, 255, (255.0 * 0.40 * cluster_alpha) as u8)
+                    Color::from_rgba8(255, 255, 255, (255.0 * 0.40 * cluster_alpha) as u8)
                 };
                 let glyph_inset = if is_active { 10.0_f64 } else { 9.0_f64 };
                 let glyph_rect = Rect::new(
@@ -753,9 +754,9 @@ impl Widget for SidebarWheelDisc {
 
                 // -- Label ----------------------------------------------
                 let label_color = if is_active {
-                    Color::rgba8(255, 255, 255, (255.0 * cluster_alpha) as u8)
+                    Color::from_rgba8(255, 255, 255, (255.0 * cluster_alpha) as u8)
                 } else {
-                    Color::rgba8(255, 255, 255, (255.0 * 0.80 * cluster_alpha) as u8)
+                    Color::from_rgba8(255, 255, 255, (255.0 * 0.80 * cluster_alpha) as u8)
                 };
                 let label_xform = cluster_xform
                     * Affine::translate((
@@ -816,7 +817,7 @@ impl Widget for SidebarWheelDisc {
                             let dx = perp_x * offset;
                             let dy = perp_y * offset;
                             let (rr, gg, bb) = presence.color_for(user);
-                            let color = Color::rgb8(rr, gg, bb);
+                            let color = Color::from_rgb8(rr, gg, bb);
                             let dot = Circle::new((tip_x + dx, tip_y + dy), 4.0);
                             scene.fill(Fill::NonZero, transform, color, None, &dot);
                         }
@@ -849,7 +850,7 @@ impl Widget for SidebarWheelDisc {
                         scene.fill(
                             Fill::NonZero,
                             transform,
-                            Color::rgba8(255, 255, 255, (alpha * 255.0) as u8),
+                            Color::from_rgba8(255, 255, 255, (alpha * 255.0) as u8),
                             None,
                             &glow,
                         );
@@ -862,7 +863,7 @@ impl Widget for SidebarWheelDisc {
                     scene.fill(
                         Fill::NonZero,
                         transform,
-                        Color::rgba8(255, 255, 255, 76), // white/0.30
+                        Color::from_rgba8(255, 255, 255, 76), // white/0.30
                         None,
                         &speck,
                     );

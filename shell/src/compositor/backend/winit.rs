@@ -45,7 +45,7 @@ const INITIAL_HEIGHT: u32 = 900;
 /// `ui::theme::Theme::dark().bg_app` so the host window doesn't
 /// flash white on boot. The compositor overrides this each frame via
 /// [`WinitBackend::set_base_color`].
-const FALLBACK_BG: Color = Color::rgb8(0x1A, 0x1B, 0x26);
+const FALLBACK_BG: Color = Color::from_rgb8(0x1A, 0x1B, 0x26);
 
 pub struct WinitBackend {
     event_loop: EventLoop<()>,
@@ -123,19 +123,17 @@ impl Backend for WinitBackend {
         };
         let width = render.surface.config.width;
         let height = render.surface.config.height;
-        let surface_texture = match render.surface.surface.get_current_texture() {
-            Ok(tex) => tex,
-            Err(e) => {
-                eprintln!("nirios compositor: get_current_texture: {e:?}");
-                return;
-            }
-        };
         let device_handle = &render.render_cx.devices[render.surface.dev_id];
-        let result = render.renderer.render_to_surface(
+
+        // vello 0.5 removed `render_to_surface`. The canonical replacement
+        // is: render the scene into the surface's intermediate
+        // `target_view` texture, then blit that into the swap-chain
+        // texture via the bundled `TextureBlitter`, then present.
+        let result = render.renderer.render_to_texture(
             &device_handle.device,
             &device_handle.queue,
             scene,
-            &surface_texture,
+            &render.surface.target_view,
             &RenderParams {
                 base_color: inner.base_color,
                 width,
@@ -144,11 +142,43 @@ impl Backend for WinitBackend {
             },
         );
         if let Err(e) = result {
-            eprintln!("nirios compositor: render_to_surface: {e:?}");
+            eprintln!("nirios compositor: render_to_texture: {e:?}");
             return;
         }
+        let surface_texture = match render.surface.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(tex) => tex,
+            wgpu::CurrentSurfaceTexture::Outdated
+            | wgpu::CurrentSurfaceTexture::Suboptimal(_) => {
+                render.render_cx.configure_surface(&render.surface);
+                return;
+            }
+            wgpu::CurrentSurfaceTexture::Occluded
+            | wgpu::CurrentSurfaceTexture::Timeout => return,
+            wgpu::CurrentSurfaceTexture::Lost => {
+                eprintln!("nirios compositor: surface lost");
+                return;
+            }
+            wgpu::CurrentSurfaceTexture::Validation => {
+                eprintln!("nirios compositor: surface validation error");
+                return;
+            }
+        };
+        let mut encoder = device_handle
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("nirios compositor blit"),
+            });
+        render.surface.blitter.copy(
+            &device_handle.device,
+            &mut encoder,
+            &render.surface.target_view,
+            &surface_texture
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default()),
+        );
+        device_handle.queue.submit([encoder.finish()]);
         surface_texture.present();
-        device_handle.device.poll(wgpu::Maintain::Poll);
+        let _ = device_handle.device.poll(wgpu::PollType::Poll);
     }
 
     fn poll_events(&mut self, callback: &mut dyn FnMut(BackendEvent)) {
@@ -222,10 +252,10 @@ impl ApplicationHandler for Inner {
         let renderer = match Renderer::new(
             &device_handle.device,
             RendererOptions {
-                surface_format: Some(surface.config.format),
                 use_cpu: false,
                 antialiasing_support: AaSupport::all(),
                 num_init_threads: None,
+                pipeline_cache: None,
             },
         ) {
             Ok(r) => r,

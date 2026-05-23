@@ -11,6 +11,7 @@
 //! test in Task 16; the unit tests in `tests/browser_stub.rs` cover the
 //! metadata and runner wiring.
 
+use ui::ColorCompat;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
