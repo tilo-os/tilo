@@ -26,8 +26,58 @@ use shell::compositor::hosted::HostedOptions;
 use shell::compositor::{self, Mode};
 use shell::{firstboot, portal};
 
+/// Install a panic hook that writes a clearly-formatted crash report to
+/// `~/.cache/qos/crashes/<timestamp>.log` AND echoes the panic message
+/// + the crash-log path to stderr. Without this, panics on the live
+/// shell write to stderr only — and a session launched outside a
+/// terminal (greetd, .desktop file double-click) discards stderr,
+/// making "the shell just disappeared" reports unactionable.
+///
+/// Chains to the default hook AFTER writing the file so a developer
+/// running from a terminal still sees the colored panic + backtrace
+/// in stderr.
+fn install_crash_log_hook() {
+    let dir = dirs::cache_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join("qos")
+        .join("crashes");
+    let _ = std::fs::create_dir_all(&dir);
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let ts = chrono::Local::now().format("%Y-%m-%d-%H%M%S");
+        let path = dir.join(format!("{ts}.log"));
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        let payload = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "<unknown payload>".to_string());
+        let loc = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "<unknown location>".to_string());
+        let body = format!(
+            "qos shell panic\n\
+             ===============\n\
+             timestamp: {ts}\n\
+             location:  {loc}\n\
+             message:   {payload}\n\n\
+             backtrace:\n{backtrace}\n"
+        );
+        let wrote = std::fs::write(&path, &body).is_ok();
+        if wrote {
+            eprintln!("\n[qos] crash log written to {}", path.display());
+        } else {
+            eprintln!("\n[qos] FAILED to write crash log to {}", path.display());
+        }
+        default_hook(info);
+    }));
+}
+
 fn main() {
     tracing_subscriber::fmt::init();
+    install_crash_log_hook();
 
     let portal_only = compositor::parse_portal_server_only_from_args();
     let firstboot_requested = compositor::parse_firstboot_from_args();
