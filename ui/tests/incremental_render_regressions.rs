@@ -75,7 +75,10 @@ fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
     Box::new(col)
 }
 
-fn build_dashboard_root() -> Box<dyn Widget> {
+fn build_dashboard_root() -> Box<Scrollable> {
+    // 1:1 copy of `examples/dashboard.rs`. If you change that file,
+    // mirror the change here so the regression coverage stays
+    // honest.
     let header = Row::new()
         .push(Box::new(Text::new("dash_title").with_size(24.0)))
         .push(Box::new(ToggleGroup::new(
@@ -84,32 +87,48 @@ fn build_dashboard_root() -> Box<dyn Widget> {
         )))
         .push(Box::new(ProgressBar::new(0.4)))
         .push(Box::new(ProgressBar::indeterminate()))
+        .push(Box::new(ProgressBar::indeterminate()))
+        .push(Box::new(Spinner::with_size(24.0)))
+        .push(Box::new(Spinner::with_size(24.0)))
+        .push(Box::new(Spinner::with_size(24.0)))
+        .push(Box::new(Spinner::with_size(24.0)))
+        .push(Box::new(Spinner::with_size(24.0)))
+        .push(Box::new(Spinner::with_size(24.0)))
         .push(Box::new(Spinner::with_size(24.0)))
         .push(Box::new(Spinner::with_size(24.0)));
 
     let mut panels = Row::new();
-    for i in 0..4 {
+    for i in 0..8 {
         panels = panels.push(panel(leak(&format!("dash_p{i}")), i));
     }
 
-    Box::new(
-        Scrollable::new(ScrollAxis::Vertical).with_child(Box::new(
-            Column::new()
-                .with_intrinsic_height()
-                .push(Box::new(header))
-                .push(Box::new(panels)),
-        )),
-    )
+    let footer = Row::new()
+        .push(Box::new(Text::new("dash_title")))
+        .push(Box::new(Avatar::from_initials("DB", 28.0)))
+        .push(Box::new(Avatar::from_initials("QD", 28.0)))
+        .push(Box::new(Avatar::from_initials("AL", 28.0)))
+        .push(Box::new(Avatar::from_initials("PB", 28.0)))
+        .push(Box::new(Badge::count(42)))
+        .push(Box::new(Badge::count(7)))
+        .push(Box::new(Badge::count(120)));
+
+    Box::new(Scrollable::new(ScrollAxis::Vertical).with_child(Box::new(
+        Column::new()
+            .with_intrinsic_height()
+            .push(Box::new(header))
+            .push(Box::new(panels))
+            .push(Box::new(footer)),
+    )))
 }
 
 fn register_i18n() {
     I18nManager::init("en-US");
     let mut ftl = String::new();
     ftl.push_str("dash_title = QuickDesktop Dashboard\n");
-    for i in 0..4 {
+    for i in 0..8 {
         ftl.push_str(&format!("dash_p{i} = Panel {i}\n"));
     }
-    for row_idx in 0..(4 * ROWS_PER_PANEL) {
+    for row_idx in 0..(8 * ROWS_PER_PANEL) {
         ftl.push_str(&format!("dash_lbl_{row_idx} = Metric {row_idx}\n"));
         ftl.push_str(&format!("dash_btn_{row_idx} = btn_{row_idx}\n"));
         ftl.push_str(&format!("dash_btnlbl_{row_idx} = Open\n"));
@@ -138,7 +157,10 @@ fn count_non_bg(rgba: &[u8], bg: vello::peniko::Color) -> usize {
 }
 
 struct Harness {
-    root: Box<dyn Widget>,
+    root: Box<Scrollable>,
+    taffy: TaffyTree<()>,
+    root_node: NodeId,
+    node_map: HashMap<NodeId, *mut dyn Widget>,
     text_renderer: TextRenderer,
     presence: PresenceCtx,
     perms: PermissionContext,
@@ -161,7 +183,10 @@ impl Harness {
         let mut root = build_dashboard_root();
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let root_node = root.build_layout(&mut taffy, &theme, &mut node_map);
+        let root_node = {
+            let root: &mut dyn Widget = root.as_mut();
+            root.build_layout(&mut taffy, &theme, &mut node_map)
+        };
 
         let logical_w = (canvas_w as f64) / scale;
         let logical_h = (canvas_h as f64) / scale;
@@ -184,11 +209,16 @@ impl Harness {
                 },
             )
             .unwrap();
-        root.apply_layout(&taffy, root_node, Point::ZERO);
+        {
+            let root: &mut dyn Widget = root.as_mut();
+            root.apply_layout(&taffy, root_node, Point::ZERO);
+        }
 
-        drop((taffy, root_node, node_map));
         Self {
             root,
+            taffy,
+            root_node,
+            node_map,
             text_renderer,
             presence,
             perms,
@@ -202,11 +232,38 @@ impl Harness {
         }
     }
 
+    /// Re-run compute_layout + apply_layout — the live App
+    /// fires this on any frame where `layout_dirty` is set
+    /// (scroll, resize, text change, …).
+    fn relayout(&mut self) {
+        let node_map = &self.node_map;
+        let text_renderer = &mut self.text_renderer;
+        self.taffy
+            .compute_layout_with_measure(
+                self.root_node,
+                Size {
+                    width: AvailableSpace::Definite(self.logical_w as f32),
+                    height: AvailableSpace::Definite(self.logical_h as f32),
+                },
+                |known, available, node_id, _, _| {
+                    if let Some(&ptr) = node_map.get(&node_id) {
+                        unsafe { (*ptr).measure(known, available, text_renderer) }
+                    } else {
+                        Size::ZERO
+                    }
+                },
+            )
+            .unwrap();
+        let root: &mut dyn Widget = self.root.as_mut();
+        root.apply_layout(&self.taffy, self.root_node, Point::ZERO);
+    }
+
     fn draw_one_frame(&mut self) -> Vec<u8> {
         self.scene.reset();
         let vp = vello::kurbo::Rect::new(0.0, 0.0, self.logical_w, self.logical_h);
         let prev = self.presence.push_viewport(vp);
-        self.root.draw_with_presence(
+        let root: &mut dyn Widget = self.root.as_mut();
+        root.draw_with_presence(
             &mut self.scene,
             self.transform,
             &mut self.text_renderer,
@@ -215,7 +272,7 @@ impl Harness {
             &self.perms,
         );
         self.presence.pop_viewport(prev);
-        self.root.mark_drawn();
+        root.mark_drawn();
         // Step spinner phases — they read `Instant::now()` in
         // `draw`, so without a real delay between frames the
         // animation rate doesn't accumulate.
@@ -252,6 +309,166 @@ fn column_row_subtree_cache_renders_correctly_at_dpi_scale_2() {
         "cache-hit frame lost pixels relative to rebuild \
          (cache_hit={n_cache_hit}, rebuild={n_rebuild}, ratio={ratio:.3}); \
          double-transform regression in Column/Row subtree cache?",
+    );
+}
+
+#[test]
+fn scrolled_scrollable_renders_widgets_that_were_offscreen_at_initial_layout() {
+    // Focused repro: a Scrollable wrapping a Column with 200 Text
+    // rows. Initial layout puts only the top ~25 rows in the
+    // 600-px logical viewport. Then we scroll deep, relayout, and
+    // assert the now-visible rows render. With the Column/Row
+    // subtree cache, if the rebuild path applied spatial culling
+    // the cache would only contain rows 0..~25; the post-scroll
+    // viewport would be blank.
+    ensure_i18n();
+    let canvas_w = 800u32;
+    let canvas_h = 600u32;
+    let scale = 1.0_f64;
+    let logical_w = canvas_w as f64;
+    let logical_h = canvas_h as f64;
+
+    let theme = Theme::dark();
+    let mut text_renderer = TextRenderer::new();
+    let presence = PresenceCtx::default();
+    let perms = PermissionContext::permissive();
+
+    let mut col = Column::new().with_intrinsic_height();
+    for i in 0..200 {
+        let key = leak(&format!("scroll_row_{i}"));
+        I18nManager::add_resource("en-US", format!("{key} = Row {i}\n"));
+        col = col.push(Box::new(Text::new(key)));
+    }
+    let mut root: Box<Scrollable> = Box::new(
+        Scrollable::new(ScrollAxis::Vertical).with_child(Box::new(col)),
+    );
+
+    let mut taffy = TaffyTree::<()>::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let root_node = {
+        let r: &mut dyn Widget = root.as_mut();
+        r.build_layout(&mut taffy, &theme, &mut node_map)
+    };
+
+    let do_layout = |root: &mut Scrollable,
+                     taffy: &mut TaffyTree<()>,
+                     node_map: &HashMap<NodeId, *mut dyn Widget>,
+                     text_renderer: &mut TextRenderer| {
+        taffy
+            .compute_layout_with_measure(
+                root_node,
+                Size {
+                    width: AvailableSpace::Definite(logical_w as f32),
+                    height: AvailableSpace::Definite(logical_h as f32),
+                },
+                |known, available, node_id, _, _| {
+                    if let Some(&ptr) = node_map.get(&node_id) {
+                        unsafe { (*ptr).measure(known, available, text_renderer) }
+                    } else {
+                        Size::ZERO
+                    }
+                },
+            )
+            .unwrap();
+        let r: &mut dyn Widget = root;
+        r.apply_layout(taffy, root_node, Point::ZERO);
+    };
+    do_layout(&mut root, &mut taffy, &node_map, &mut text_renderer);
+
+    let mut renderer = OffscreenRenderer::new(canvas_w, canvas_h);
+    let bg = theme.tokens.colors.surfaces.base;
+    let transform = Affine::scale(scale);
+    let mut scene = Scene::new();
+    let vp = vello::kurbo::Rect::new(0.0, 0.0, logical_w, logical_h);
+
+    let draw = |root: &mut Scrollable,
+                scene: &mut Scene,
+                text_renderer: &mut TextRenderer,
+                presence: &PresenceCtx| {
+        scene.reset();
+        let prev = presence.push_viewport(vp);
+        let r: &mut dyn Widget = root;
+        r.draw_with_presence(scene, transform, text_renderer, &theme, presence, &perms);
+        presence.pop_viewport(prev);
+        r.mark_drawn();
+    };
+
+    // Warmup.
+    draw(&mut root, &mut scene, &mut text_renderer, &presence);
+    let warm_rgba = renderer.render(&scene, bg);
+    let warm_pixels = count_non_bg(&warm_rgba, bg);
+    renderer.render_png(&scene, bg, "/tmp/scroll_warmup.png");
+    assert!(warm_pixels > 1000, "warmup frame is blank ({warm_pixels}px) — test setup broken");
+
+    // Scroll to row ~150-ish (each row is ~20 px logical → ~3000 px).
+    root.scroll_by(0.0, 3000.0);
+    let off = root.offset_y();
+    assert!(off > 1000.0, "offset_y={off}, scroll didn't take effect");
+    do_layout(&mut root, &mut taffy, &node_map, &mut text_renderer);
+
+    draw(&mut root, &mut scene, &mut text_renderer, &presence);
+    let scrolled_rgba = renderer.render(&scene, bg);
+    let scrolled_pixels = count_non_bg(&scrolled_rgba, bg);
+    renderer.render_png(&scene, bg, "/tmp/scroll_after.png");
+    eprintln!("warmup={warm_pixels} scrolled={scrolled_pixels} offset_y={off}");
+    assert!(
+        scrolled_pixels > 1000,
+        "post-scroll frame has only {scrolled_pixels} non-bg pixels — \
+         viewport blanked out after scroll; the subtree cache likely \
+         captured only the originally-visible primitives.",
+    );
+}
+
+#[test]
+fn scrolling_to_the_end_of_dashboard_still_renders_content() {
+    // Walks the full dashboard from offset 0 → max via repeated
+    // wheel-sized scrolls (60 px logical per tick — the same step
+    // a real mouse wheel produces in `Scrollable::handle_event`).
+    // At each step it relayouts, draws, mark_drawns, and counts
+    // non-bg pixels. Any frame below the threshold is a
+    // regression: the user-reported failure was "scrolled all the
+    // way down, suddenly all content vanishes — just background
+    // remains". The dashboard tree mirrors `examples/dashboard.rs`
+    // exactly (8 panels × 40 rows + header + footer); the canvas
+    // matches a HiDPI 800×600 logical window.
+    let mut h = Harness::new(1600, 1200, 2.0);
+
+    // Warmup + a few animation-only frames so the caches settle.
+    for _ in 0..4 {
+        let _ = h.draw_one_frame();
+    }
+
+    let bg = h.theme.tokens.colors.surfaces.base;
+    let mut min_pixels = usize::MAX;
+    let mut min_offset = 0.0_f32;
+    let mut last_offset: f32 = -1.0;
+
+    // 250 × 60 px = up to 15,000 px of scroll. The dashboard is
+    // ~9,800 px logical so this comfortably hits max_y.
+    for step in 0..250 {
+        h.root.scroll_by(0.0, 60.0);
+        let off = h.root.offset_y();
+        h.relayout();
+        let rgba = h.draw_one_frame();
+        let n = count_non_bg(&rgba, bg);
+        if n < min_pixels {
+            min_pixels = n;
+            min_offset = off;
+            h.renderer.render_png(&h.scene, bg, "/tmp/dash_scroll_min.png");
+        }
+        if (off - last_offset).abs() < 0.5 && step > 5 {
+            eprintln!("hit max scroll at step={step} offset_y={off}");
+            break;
+        }
+        last_offset = off;
+    }
+
+    eprintln!("min non-bg pixels across scroll: {min_pixels} at offset_y={min_offset}");
+    assert!(
+        min_pixels > 30_000,
+        "during scroll, the worst frame (offset_y={min_offset}) \
+         dropped to {min_pixels} non-bg pixels — content went blank. \
+         PNG: /tmp/dash_scroll_min.png",
     );
 }
 
