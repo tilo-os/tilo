@@ -89,14 +89,19 @@ impl Widget for Row {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
+        // See `Column::apply_layout` for why we max() against
+        // content_size — covers taffy under-reporting under a
+        // constrained-height parent.
+        let w = layout.size.width.max(layout.content_size.width) as f64;
+        let h = layout.size.height.max(layout.content_size.height) as f64;
         self.rect = vello::kurbo::Rect::new(
             origin.x + layout.location.x as f64,
             origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + layout.location.x as f64 + w,
+            origin.y + layout.location.y as f64 + h,
         );
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
-        
+
         let children = taffy.children(node).unwrap();
         for (child_widget, child_node) in self.children.iter_mut().zip(children.iter()) {
             child_widget.apply_layout(taffy, *child_node, new_origin);
@@ -205,6 +210,9 @@ impl Widget for Row {
             let dy = self.rect.y0 - self.cache_rect.y0;
             scene.append(&self.subtree_cache, Some(transform * Affine::translate((dx, dy))));
         } else {
+            // Drop the active viewport for the recursion — see
+            // `Column::draw_with_presence` for why.
+            let prev_vp = presence.viewport.replace(None);
             let mut local = std::mem::take(&mut self.subtree_cache);
             local.reset();
             for child in &mut self.children {
@@ -213,6 +221,7 @@ impl Widget for Row {
             scene.append(&local, Some(transform));
             self.subtree_cache = local;
             self.cache_rect = self.rect;
+            presence.viewport.set(prev_vp);
         }
 
         if let Some(scope) = self.permission_scope() {
