@@ -151,14 +151,24 @@ impl Widget for Column {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
+        // Use the larger of the own size and the children's content
+        // bounds — taffy can clamp a Block container's reported size
+        // to its parent's available main axis (notably inside a
+        // Scrollable), leaving the rect smaller than the area its
+        // children actually occupy. If we used `layout.size` alone,
+        // `should_cull` would incorrectly discard the whole subtree
+        // once scrolling pushed the under-reported rect off the
+        // viewport, even though children remained on screen.
+        let w = layout.size.width.max(layout.content_size.width) as f64;
+        let h = layout.size.height.max(layout.content_size.height) as f64;
         self.rect = vello::kurbo::Rect::new(
             origin.x + layout.location.x as f64,
             origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + layout.location.x as f64 + w,
+            origin.y + layout.location.y as f64 + h,
         );
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
-        
+
         let children = taffy.children(node).unwrap();
         for (child_widget, child_node) in self.children.iter_mut().zip(children.iter()) {
             child_widget.apply_layout(taffy, *child_node, new_origin);
@@ -282,6 +292,18 @@ impl Widget for Column {
             // primitive transform, so passing `transform` here would
             // double-apply it on the outer `append` below — at any DPI
             // scale ≠ 1, cached widgets land off-screen.
+            //
+            // Clear the active viewport for the recursion so children
+            // don't spatially cull themselves out of the cache. If we
+            // left culling on, the cache would only contain primitives
+            // for the *currently visible* sub-range; a subsequent scroll
+            // (cache-hit path, no rebuild) would translate the cache
+            // into a new viewport position where the now-visible widgets
+            // were never recorded — the visible region renders as
+            // background. vello's tile binner skips off-viewport tiles
+            // at compose time anyway, so the wasted-work concern that
+            // motivated culling here is illusory.
+            let prev_vp = presence.viewport.replace(None);
             let mut local = std::mem::take(&mut self.subtree_cache);
             local.reset();
             for child in &mut self.children {
@@ -290,6 +312,7 @@ impl Widget for Column {
             scene.append(&local, Some(transform));
             self.subtree_cache = local;
             self.cache_rect = self.rect;
+            presence.viewport.set(prev_vp);
         }
 
         if let Some(scope) = self.permission_scope() {
