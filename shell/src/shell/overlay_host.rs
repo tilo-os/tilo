@@ -1182,6 +1182,54 @@ impl ShellOverlayHost {
         self.transition_started = None;
     }
 
+    /// Single-frame settle helpers for the rising-edge entry animations
+    /// of the modal/popover overlays — palette, quick-settings, and the
+    /// workspace-settings modal. Used by the headless screenshot harness
+    /// (`shots --mode offscreen --scenes …`), which paints exactly one
+    /// frame per scene: without these the harness lands at `elapsed == 0`
+    /// on the open curve and renders the overlays at `alpha == 0` →
+    /// indistinguishable from the bare desktop.
+    ///
+    /// Each helper backdates the `*_opened_at` timestamp by the matching
+    /// animation duration so `modal_open_curve` / the QS open curve
+    /// short-circuit to the "fully open" branch, and sets the
+    /// `*_was_visible` mirror so the next `draw` doesn't immediately
+    /// re-arm the rising edge.
+    ///
+    /// Live runs should keep using the natural rising-edge gate in
+    /// [`Widget::draw`]; these are purely a screenshot/test affordance.
+    pub fn force_palette_settled(&mut self) {
+        if !self.palette_visible {
+            return;
+        }
+        self.palette_was_visible = true;
+        self.palette_opened_at = Some(
+            Instant::now() - Duration::from_millis(MODAL_OPEN_ANIM_MS + 1),
+        );
+    }
+
+    /// See [`Self::force_palette_settled`].
+    pub fn force_quick_settings_settled(&mut self) {
+        if !self.overlay_flags().quick_settings {
+            return;
+        }
+        self.qs_was_open = true;
+        self.qs_opened_at = Some(
+            Instant::now() - Duration::from_millis(QS_OPEN_ANIM_MS + 1),
+        );
+    }
+
+    /// See [`Self::force_palette_settled`].
+    pub fn force_ws_settings_settled(&mut self) {
+        if !self.overlay_flags().ws_settings {
+            return;
+        }
+        self.ws_settings_was_open = true;
+        self.ws_settings_opened_at = Some(
+            Instant::now() - Duration::from_millis(MODAL_OPEN_ANIM_MS + 1),
+        );
+    }
+
     /// Font size the overview "Workspaces" h1 is drawn at, in logical pixels.
     /// Exposed so the shell-chrome test can pin "header reads as large/bold"
     /// (visual gap #12 — concept is Tailwind `text-4xl`, 36 px). This is
@@ -3082,27 +3130,12 @@ fn draw_mini_window(
         let slate_600 = colors.neutral[4];
         let slate_700 = colors.neutral[3];
         let dot_color = if is_active {
-            ui::color_compat::rgba(
-                slate_600.r() as f64,
-                slate_600.g() as f64,
-                slate_600.b() as f64,
-                0.80,
-            )
+            slate_600.with_alpha_factor(0.80)
         } else {
-            ui::color_compat::rgba(
-                slate_700.r() as f64,
-                slate_700.g() as f64,
-                slate_700.b() as f64,
-                0.50,
-            )
+            slate_700.with_alpha_factor(0.50)
         };
         scene.fill(Fill::NonZero, transform, dot_color, None, &tab_rr);
-        let border = ui::color_compat::rgba(
-            slate_600.r() as f64,
-            slate_600.g() as f64,
-            slate_600.b() as f64,
-            0.50,
-        );
+        let border = slate_600.with_alpha_factor(0.50);
         scene.stroke(
             &vello::kurbo::Stroke::new(0.5),
             transform,
@@ -3141,13 +3174,7 @@ fn draw_mini_window(
     );
     if inner.width() > 0.0 && inner.height() > 0.0 {
         let inner_rr = RoundedRect::from_rect(inner, 4.0);
-        let slate_800 = colors.neutral[2];
-        let inner_fill = ui::color_compat::rgba(
-            slate_800.r() as f64,
-            slate_800.g() as f64,
-            slate_800.b() as f64,
-            0.5,
-        );
+        let inner_fill = colors.neutral[2].with_alpha_factor(0.5);
         scene.fill(Fill::NonZero, transform, inner_fill, None, &inner_rr);
     }
 }
@@ -3296,12 +3323,7 @@ impl ShellOverlayHost {
                         glow_rect,
                         OVERVIEW_ROW_RADIUS_PX + spread,
                     );
-                    let glow_color = ui::color_compat::rgba(
-                        indigo.r() as f64,
-                        indigo.g() as f64,
-                        indigo.b() as f64,
-                        *alpha,
-                    );
+                    let glow_color = indigo.with_alpha_factor(*alpha as f32);
                     scene.fill(Fill::NonZero, card_xform, glow_color, None, &glow);
                 }
                 scene.fill(
@@ -3320,29 +3342,36 @@ impl ShellOverlayHost {
                 );
             } else {
                 let slate_900 = colors.neutral[1];
+                // Both states use a solid slate-900 fill so the card chrome
+                // reads identical to the active card minus the indigo
+                // accent ring. The previous `rgba(slate_900.r() as f64,
+                // ...)` call passed channel u8s into a float-unit-range
+                // constructor and clamped to white, making inactive cards
+                // bright white instead of slate. Use the solid token; the
+                // visual differentiation from active comes from the
+                // accent ring + glow above, not from card-fill alpha.
                 let fill = if is_hover {
                     slate_900
                 } else {
-                    ui::color_compat::rgba(
-                        slate_900.r() as f64,
-                        slate_900.g() as f64,
-                        slate_900.b() as f64,
-                        0.5,
-                    )
+                    slate_900.with_alpha_factor(0.5)
                 };
                 scene.fill(Fill::NonZero, card_xform, fill, None, &card);
-                // Inactive: `border-transparent` at rest, `border-slate-700`
-                // on hover. We only stroke on hover to avoid competing with
-                // the rail; at rest the card reads as floating on slate-950.
-                if is_hover {
-                    scene.stroke(
-                        &vello::kurbo::Stroke::new(OVERVIEW_ROW_BORDER_PX),
-                        card_xform,
-                        colors.neutral[3], // slate-700
-                        None,
-                        &card,
-                    );
-                }
+                // Always stroke inactive cards with slate-700 so the
+                // chrome matches the active card's accent ring weight
+                // (just a different colour). Without this the inactive
+                // cards have no chrome at all at rest, making them feel
+                // unfinished next to the bordered active card.
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(OVERVIEW_ROW_BORDER_PX),
+                    card_xform,
+                    if is_hover {
+                        colors.neutral[4] // slate-600 — bump on hover
+                    } else {
+                        colors.neutral[3] // slate-700
+                    },
+                    None,
+                    &card,
+                );
             }
 
             // Active-indicator dot on the rail.
@@ -3496,7 +3525,7 @@ impl ShellOverlayHost {
             );
             // blue-500 @ 20%
             let blue = colors.semantic.info;
-            let blue_bg = ui::color_compat::rgba(blue.r() as f64, blue.g() as f64, blue.b() as f64, 0.20);
+            let blue_bg = blue.with_alpha_factor(0.20);
             scene.fill(
                 Fill::NonZero,
                 card_xform,
@@ -3525,12 +3554,7 @@ impl ShellOverlayHost {
             );
             // purple-500 @ 20% — approximate via indigo[4]+red shift.
             let purple = Color::from_rgb8(168, 85, 247);
-            let purple_bg = ui::color_compat::rgba(
-                purple.r() as f64,
-                purple.g() as f64,
-                purple.b() as f64,
-                0.20,
-            );
+            let purple_bg = purple.with_alpha_factor(0.20);
             scene.fill(
                 Fill::NonZero,
                 card_xform,
@@ -3742,12 +3766,7 @@ impl ShellOverlayHost {
         let add_fill = if add_hover {
             slate_900
         } else {
-            ui::color_compat::rgba(
-                slate_900.r() as f64,
-                slate_900.g() as f64,
-                slate_900.b() as f64,
-                0.30,
-            )
+            slate_900.with_alpha_factor(0.30)
         };
         let accent_color = if add_hover {
             colors.accent[5]
