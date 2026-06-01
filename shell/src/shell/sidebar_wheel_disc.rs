@@ -241,11 +241,34 @@ const DRAG_FACTOR: f32 = 0.15;
 /// `15° · N` of rotation.
 const SPOKE_ANGLE_STEP_DEG: f32 = 15.0;
 
-/// Concept's wheel-scroll multiplier (`App.tsx:56`).
-const WHEEL_SCROLL_FACTOR: f32 = 0.04;
+/// Pixels of accumulated wheel scroll required to advance one
+/// workspace. The wheel uses *discrete detents*: scroll input
+/// accumulates as raw pixels and every `WHEEL_DETENT_PX` worth of
+/// movement triggers a `click_to_spoke` animation to the next
+/// workspace. There is no free-running mid-detent rotation — the
+/// wheel either sits at a workspace or is animating between two —
+/// which reads as "heavy" (slow to start moving) and "attracted"
+/// (always lands on a workspace, never drifts mid-state).
+///
+/// History: the previous continuous-rotation model combined with the
+/// quadratic accumulator bug produced the "maddening speed" of
+/// 2026-05-25, and a then-attempted fix (factor 0.006 linear) made
+/// the wheel feel locked because tiny rotations rounded to the same
+/// detent on snap so no visible motion occurred. Discrete detents
+/// sidestep both failure modes at once.
+///
+/// 120 px is calibrated against ~16 px per mouse-wheel click (so
+/// ~8 clicks per workspace, deliberate but not slow) and ~40 px
+/// per trackpad pixel-delta tick (3 ticks per workspace).
+const WHEEL_DETENT_PX: f32 = 120.0;
 
-/// Concept's wheel-scroll snap timeout (`App.tsx:67`).
-const WHEEL_SCROLL_TIMEOUT_MS: u64 = 80;
+/// Idle gap after which any sub-detent residual `wheel_accumulator`
+/// is cleared. Without this, a partial swipe (say 80 px / 120 px)
+/// would carry over into the next scroll burst and cause a workspace
+/// switch from a movement the user didn't realise was queued. 250 ms
+/// is long enough that a continuous flick isn't broken into separate
+/// gestures, short enough that an obvious pause feels deliberate.
+const WHEEL_SCROLL_TIMEOUT_MS: u64 = 250;
 
 /// Per-spoke palette. Maps a workspace's *index* in the tree to one of
 /// six concept colours (`pink-500`, `blue-500`, `amber-500`,
@@ -526,6 +549,19 @@ impl Widget for SidebarWheelDisc {
             x0 + l.size.width as f64,
             y1,
         );
+        // Keep the disc's curvature locked to the live rect width — the
+        // host (overlay_host) overrides the sidebar slot to a viewport-
+        // driven width, so the visible-arc width changes on resize. We
+        // recompute `diameter_px` from rect.width() / VISIBLE so the
+        // visual arc-fraction stays identical regardless of how wide
+        // the slot ends up. Constructor / `with_diameter` callers
+        // remain useful for early frames (before the first layout pass
+        // runs) and for unit tests that hand-build the disc with a
+        // synthetic rect.
+        let rw = self.rect.width();
+        if rw > 1.0 {
+            self.diameter_px = rw / VISIBLE_RADIUS_FRACTION * 2.0;
+        }
     }
 
     fn draw(
@@ -586,21 +622,16 @@ impl Widget for SidebarWheelDisc {
         let cx = c.x;
         let cy = c.y;
 
-        // ---- Pass 1: quiet background panel -----------------------------
-        // A single very-low-alpha solid fill across the visible sidebar
-        // footprint. Gives the wheel a faint visual anchor without
-        // creating a hard panel edge. The shadow band at the right
-        // edge (Pass 2) is what really separates the sidebar from the
-        // desktop; this fill is mostly there so the eye reads the
-        // wheel disc + markers as a unified element rather than
-        // floating curves over the wallpaper.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            Color::from_rgba8(255, 255, 255, 5), // white/0.02 — almost invisible
-            None,
-            &self.rect,
-        );
+        // ---- Pass 1: (removed) quiet background panel -------------------
+        // A 2-px-equivalent white/0.02 rectangle used to fill the
+        // sidebar's visible footprint here to "anchor" the wheel
+        // visually. On real displays it read as a faint grey rectangle
+        // against the dark wallpaper grid — exactly the "hard panel
+        // edge" the comment originally claimed to avoid. The shadow
+        // band (Pass 2) and the rim stroke (Pass 3) are enough visual
+        // anchor on their own; removing the rectangular fill keeps the
+        // wheel reading as quiet curves over the desktop, not a faint
+        // box.
 
         // ---- Pass 2: subtle right-edge atmosphere -----------------------
         // Thin shadow band JUST past the panel's right edge to lift the
@@ -676,19 +707,21 @@ impl Widget for SidebarWheelDisc {
             // just avoids painting markers outside the panel.
             let visible_band_deg = 70.0_f32;
             let gap = self.spoke_gap_deg();
-            let cycles_per_side: i32 =
-                (((visible_band_deg) / (gap * n as f32)).ceil() as i32).max(1);
-            let total_cycles = (cycles_per_side * 2 + 1) as usize;
-            let total_virtual = total_cycles * n;
-            let virtual_start = -(cycles_per_side * n as i32);
 
-            for k in 0..total_virtual {
-                let virt_offset = virtual_start + k as i32;
-                let i = ((virt_offset + self.active_idx as i32)
-                    .rem_euclid(n as i32)) as usize;
+            // ONE marker per real workspace — no virtual cycles. The
+            // earlier design repeated each workspace's marker for every
+            // (visible_band / (gap * N)) revolutions so that during a
+            // multi-cycle rotation neighbours kept painting. But because
+            // inactive markers are visually identical 4-px specks, the
+            // repeats read as "phantom workspaces": three workspaces
+            // would draw nine indistinguishable dots inside the visible
+            // band. Painting exactly N markers — culled to the visible
+            // band — gives users one dot per workspace, no ghosts.
+            for i in 0..n {
                 let spoke = &self.spokes[i];
+                let virt_offset = i as i32 - self.active_idx as i32;
                 let angle_deg = self.visual_rotation_deg() + virt_offset as f32 * gap;
-                let is_active = virt_offset == 0;
+                let is_active = i == self.active_idx;
                 let a = ((angle_deg % 360.0) + 360.0) % 360.0;
                 let in_band = a < visible_band_deg || a > 360.0 - visible_band_deg;
                 if !in_band {
@@ -1040,9 +1073,25 @@ impl Widget for SidebarWheelDisc {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => y * 16.0,
                     winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32,
                 };
-                self.wheel_accumulator += dy * WHEEL_SCROLL_FACTOR;
+                // Discrete-detent model. Accumulate raw pixels of
+                // scroll. Every `WHEEL_DETENT_PX` worth in either
+                // direction triggers a workspace advance via the
+                // shared `click_to_spoke` animation (so the visual is
+                // an actual spring settle, not a teleport). There is
+                // NO mid-detent rotation — the wheel either rests on
+                // a workspace or is animating to the next one.
+                self.wheel_accumulator += dy;
                 self.wheel_last_event = Some(Instant::now());
-                self.rotation_deg -= self.wheel_accumulator;
+                let n = self.spokes.len();
+                if n > 1 {
+                    while self.wheel_accumulator.abs() >= WHEEL_DETENT_PX {
+                        let dir: i32 = if self.wheel_accumulator < 0.0 { 1 } else { -1 };
+                        let target =
+                            ((self.active_idx as i32 + dir).rem_euclid(n as i32)) as usize;
+                        self.click_to_spoke(target);
+                        self.wheel_accumulator -= dir as f32 * WHEEL_DETENT_PX;
+                    }
+                }
                 *handled = true;
             }
             _ => {}
@@ -1075,25 +1124,23 @@ impl Widget for SidebarWheelDisc {
                 keep = true;
             }
         }
-        // Wheel-scroll snap-back: fire once the gap since the last
-        // wheel event exceeds `WHEEL_SCROLL_TIMEOUT_MS`.
+        // Wheel-scroll idle reset. The discrete-detent path in
+        // `handle_event` already triggers `click_to_spoke` (and its
+        // spring animation) for each `WHEEL_DETENT_PX` of scroll, so
+        // there's nothing to "snap back" — we just need to clear the
+        // sub-detent residual `wheel_accumulator` once the user
+        // pauses, otherwise a partial scroll would silently bias the
+        // next gesture and a workspace switch could fire from input
+        // the user thought they'd cancelled.
         if let Some(last) = self.wheel_last_event {
             if last.elapsed() > Duration::from_millis(WHEEL_SCROLL_TIMEOUT_MS) {
-                let pre_snap = self.rotation_deg;
-                self.snap_to_nearest();
-                let snapped = self.rotation_deg;
-                if (pre_snap - snapped).abs() > f32::EPSILON {
-                    let params = SpringPresets::default().snappy;
-                    let mut s = Spring::new(pre_snap, params);
-                    s.set_target(snapped);
-                    self.rotation_spring = Some(s);
-                }
                 self.wheel_accumulator = 0.0;
                 self.wheel_last_event = None;
-                keep = true;
-            } else {
-                keep = true;
             }
+            // Always keep pumping while a wheel gesture is in flight —
+            // even sub-threshold movement holds the redraw loop awake
+            // until the idle timer clears the accumulator.
+            keep = true;
         }
         keep
     }
