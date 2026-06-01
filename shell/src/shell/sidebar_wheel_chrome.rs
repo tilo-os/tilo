@@ -39,17 +39,20 @@ use crate::shell::chrome_state::Chrome;
 use crate::shell::sidebar_wheel::SidebarWheel;
 use crate::shell::state::{WorkspaceId, WorkspaceTree};
 
-/// Reserved horizontal slot for the radial workspace switcher.
+/// Reserved horizontal gutter that the content column leaves clear for
+/// the floating sidebar wheel. The sidebar slot itself is now
+/// viewport-driven (see `overlay_host::sidebar_width_for_viewport`) and
+/// varies between `SIDEBAR_WIDTH_MIN_PX = 220` and `SIDEBAR_WIDTH_MAX_PX
+/// = 320` at runtime. We pin the gutter to the *max* slot width so the
+/// content never reflows when the viewport changes — and on small
+/// viewports the sidebar narrows inside the gutter, leaving a slim band
+/// of wallpaper between sidebar and content (a deliberate breathing-room
+/// margin, not wasted space).
 ///
-/// 2026-05-23 redesign: bumped from 200 → 360 px. The previous
-/// concept-faithful 96/200 px column read as "crowded" because the
-/// per-spoke pill cards stacked too densely in a narrow strip. The new
-/// quiet-panel design (ring + workspace-color dot markers + upright
-/// horizontal active label) needs ~360 px so the active workspace's
-/// label has room to read horizontally without truncation, while still
-/// being only ~1.8× the prior width so the desktop content area is not
-/// meaningfully eaten into.
-pub const SIDEBAR_WIDTH_PX: f32 = 360.0;
+/// History: was 200 (concept-pill design) → 360 (initial quiet-disc
+/// redesign, 2026-05-23) → 320 fixed gutter + viewport-driven slot
+/// (2026-05-25, addressing "looks slightly too wide at 1080p").
+pub const SIDEBAR_WIDTH_PX: f32 = 320.0;
 
 /// Intents the sidebar wheel can emit. Held internally so the shell can
 /// poll for them after dispatching events, mirroring the topbar's

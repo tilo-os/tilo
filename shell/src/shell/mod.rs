@@ -1224,6 +1224,17 @@ pub fn build_nirios_overlay_host_with_handle(
 
     let mut content_col = Column::new()
         .with_extra_left_padding(sidebar_wheel_chrome::SIDEBAR_WIDTH_PX)
+        // Fill the remaining viewport height AFTER the topbar (its
+        // sibling in `foreground_col` takes 40 px). Without this the
+        // column's `percent(1.0)` height plus the topbar's 40 px
+        // overflowed the viewport by 40 px and the column's own
+        // bottom padding ended up below the screen edge — apps were
+        // painted right up to the absolute bottom.
+        .with_fill_remaining_height()
+        // A little extra breathing room on top of the column's default
+        // 24 px gutter so the active tile card has a deliberate margin
+        // (32 px = spacing.s8 token, used for major-section gutters).
+        .with_extra_bottom_padding(8.0)
         .push(workspace_view)
         .push(strip_view);
 

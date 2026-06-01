@@ -331,6 +331,76 @@ impl ChromeState {
         id
     }
 
+    /// Cycle the active tab within the active group of the active strip
+    /// of the active workspace by `dir` (sign-extracted; ±1). Wraps
+    /// around the tab list ends — a forward step past the last tab
+    /// lands on the first, and vice versa. Returns true if a tab
+    /// switch actually occurred (false if there's no active workspace
+    /// / strip / group, or the group has fewer than two tabs).
+    ///
+    /// Used by the DE-level horizontal-scroll fallback in
+    /// `overlay_host`: when the focused app/widget doesn't consume a
+    /// horizontal-dominant wheel event, the shell promotes the scroll
+    /// to a tab cycle so "swipe sideways = next window" works
+    /// everywhere — including over the empty desktop, where no app
+    /// is positioned to claim the gesture in the first place.
+    pub fn cycle_active_tab(&mut self, dir: i32) -> bool {
+        let dir = dir.signum();
+        if dir == 0 {
+            return false;
+        }
+        let switched = {
+            let mut tree = self.tree_mut();
+            let ws_id = tree.active;
+            let strip_id_opt = tree.active_strip.get(&ws_id).copied().or_else(|| {
+                tree.workspaces
+                    .iter()
+                    .find(|w| w.id == ws_id)
+                    .and_then(|w| w.strips.first().map(|s| s.id))
+            });
+            let Some(strip_id) = strip_id_opt else {
+                return false;
+            };
+            let group_id_opt = tree.active_group.get(&strip_id).copied().or_else(|| {
+                tree.workspaces
+                    .iter()
+                    .find(|w| w.id == ws_id)
+                    .and_then(|w| w.strips.iter().find(|s| s.id == strip_id))
+                    .and_then(|s| s.window_groups.first().map(|g| g.id))
+            });
+            let Some(group_id) = group_id_opt else {
+                return false;
+            };
+            let Some(ws) = tree.workspaces.iter_mut().find(|w| w.id == ws_id) else {
+                return false;
+            };
+            let Some(strip) = ws.strips.iter_mut().find(|s| s.id == strip_id) else {
+                return false;
+            };
+            let Some(group) = strip
+                .window_groups
+                .iter_mut()
+                .find(|g| g.id == group_id)
+            else {
+                return false;
+            };
+            if group.tabs.len() < 2 {
+                return false;
+            }
+            let Some(cur_idx) = group.tabs.iter().position(|t| t.id == group.active_tab) else {
+                return false;
+            };
+            let n = group.tabs.len() as i32;
+            let new_idx = ((cur_idx as i32 + dir).rem_euclid(n)) as usize;
+            group.active_tab = group.tabs[new_idx].id;
+            true
+        };
+        if switched {
+            self.bump();
+        }
+        switched
+    }
+
     /// Switch to the workspace at the given direction (±1). Returns true
     /// if the active workspace changed.
     pub fn switch_workspace(&mut self, dir: i32) -> bool {
