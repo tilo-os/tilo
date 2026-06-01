@@ -222,15 +222,35 @@ const OVERVIEW_TRANSITION_MS: u64 = 400;
 /// single f32.
 const SIDEBAR_TOP_OFFSET_PX: f32 = 40.0;
 
-/// Width of the floating sidebar overlay. Mirrors
-/// `sidebar_wheel_chrome::SIDEBAR_WIDTH_PX` so the two stay in sync
-/// without a cross-module constant dependency.
+/// Clamp range for the viewport-driven sidebar width. The slot used to
+/// be a hard-coded `360 px`; user feedback (2026-05-25) was that at
+/// 1080p fullscreen this read as "slightly too wide" while the curve /
+/// disc fraction itself was the right size. Solution: derive the slot
+/// from the live viewport height (scales naturally between laptop
+/// 13" and 4K monitors) and let the disc's `apply_layout` recompute
+/// its `diameter_px` to keep the visible-arc curvature identical
+/// across widths.
 ///
-/// 2026-05-23: 200 → 360 px alongside the wheel-disc redesign (ring +
-/// upright horizontal label + workspace-color dot markers). The two
-/// constants are required to match — if they diverge the overlay's
-/// taffy reservation and the wheel's intrinsic-width math disagree.
-const SIDEBAR_WIDTH_PX: f32 = 360.0;
+/// `SIDEBAR_WIDTH_MAX_PX` doubles as the *fixed* extra-left-padding
+/// the content column reserves (`sidebar_wheel_chrome::SIDEBAR_WIDTH_PX`),
+/// so the sidebar is never wider than the gutter content reserves.
+/// Result: on small viewports the sidebar narrows; the gutter still
+/// has a (slightly larger) constant width, leaving wallpaper breathing
+/// room between the sidebar's right edge and the content's left edge.
+const SIDEBAR_WIDTH_MIN_PX: f32 = 220.0;
+const SIDEBAR_WIDTH_MAX_PX: f32 = 320.0;
+const SIDEBAR_WIDTH_VIEWPORT_FRACTION: f32 = 0.26;
+
+/// Compute the sidebar width for a given viewport height. `0.26 * h`
+/// at 1080p gives ~281 px (down from the prior fixed 360), at 1440p
+/// gives ~374 → clamped to 320, at 720p gives ~187 → clamped to 220.
+/// First-frame callers (before any layout pass) pass `0.0` and get
+/// the lower bound, which is a fine seed: the slot reflows on the
+/// next frame once `ShellOverlayHost::rect` is known.
+fn sidebar_width_for_viewport(viewport_h: f32) -> f32 {
+    (viewport_h * SIDEBAR_WIDTH_VIEWPORT_FRACTION)
+        .clamp(SIDEBAR_WIDTH_MIN_PX, SIDEBAR_WIDTH_MAX_PX)
+}
 
 /// Duration of the vertical workspace-swap slide. Matches the concept's
 /// wheel-spin feel — long enough to register as motion, short enough to
@@ -1547,7 +1567,9 @@ impl Widget for ShellOverlayHost {
                     bottom: LengthPercentageAuto::length(0.0),
                 };
                 style.size = Size {
-                    width: Dimension::length(SIDEBAR_WIDTH_PX),
+                    width: Dimension::length(sidebar_width_for_viewport(
+                        self.rect.height() as f32,
+                    )),
                     height: Dimension::auto(),
                 };
                 style.flex_grow = 0.0;
@@ -2596,6 +2618,37 @@ impl Widget for ShellOverlayHost {
             children[0],
             taffy,
         );
+
+        // DE-level horizontal-scroll fallback. If the cursor's host
+        // app/widget didn't consume the MouseWheel (most apps don't
+        // implement horizontal scroll at all — only widgets like the
+        // GroupRow strip-pan and a terminal with overflow do), and the
+        // event is horizontally-dominant, promote it to a tab cycle in
+        // the active group. This makes "swipe sideways = next window"
+        // work everywhere the app under the cursor doesn't claim it,
+        // including over the empty desktop. Vertical wheel is left
+        // untouched — it's reserved for the wheel disc's workspace
+        // rotate (handled above when the cursor is over the sidebar)
+        // and the focused widget's own vertical scroll (e.g. the
+        // terminal's scrollback). Threshold of 0.5 guards against
+        // trackpad axis noise — a real horizontal flick is well
+        // above one line's worth of delta.
+        if !*handled {
+            if let WindowEvent::MouseWheel { delta, .. } = event {
+                let dx = match *delta {
+                    winit::event::MouseScrollDelta::LineDelta(x, _) => x,
+                    winit::event::MouseScrollDelta::PixelDelta(p) => (p.x as f32) / 40.0,
+                };
+                if dx.abs() > 0.5 {
+                    if let Some(chrome) = &self.chrome {
+                        let dir = if dx > 0.0 { 1 } else { -1 };
+                        if chrome.borrow_mut().cycle_active_tab(dir) {
+                            *handled = true;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn name(&self) -> &str {
