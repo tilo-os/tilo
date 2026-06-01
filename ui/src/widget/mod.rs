@@ -176,6 +176,8 @@ pub mod context_menu;
 pub mod data_table;
 mod window_group;
 pub use window_group::{WindowGroup, WindowWidth, WIDTH_MIN_PX, WIDTH_MAX_PX, RESIZE_HANDLE_PX};
+mod resize_handle;
+pub use resize_handle::{ResizeHandle, HANDLE_HIT_HALF_PX, HANDLE_HOVER_PX, HANDLE_VISIBLE_PX};
 mod group_row;
 pub use group_row::{CrossStripDetach, GroupRow};
 mod strip_view;
