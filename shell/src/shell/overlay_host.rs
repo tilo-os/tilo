@@ -37,6 +37,7 @@ use ui::widget::{CrossStripDetach, GroupRow, PermissionPrompt, PromptChoice, Wid
 use ui::{CommandEntry, CommandPalette};
 
 use crate::shell::chrome_state::{Chrome, WsTab};
+use crate::shell::notification::NotificationStack;
 use crate::shell::state::{Capability, GrantScope, GroupId, StripId};
 use crate::shell::workspace_settings::{draw_files_pane, draw_roles_pane};
 
@@ -187,6 +188,12 @@ pub struct ShellOverlayHost {
     /// `peer_sync_enabled` is false because the entries aren't
     /// registered in the palette.
     peer_sync_actions: Vec<PeerSyncAction>,
+    /// Top-right notification stack. Painted above the desktop content
+    /// but below the permission prompt and modal overlays so a
+    /// permission prompt always wins focus. `None` until
+    /// [`Self::with_chrome`] runs — the stack needs a chrome handle
+    /// to read notifications from.
+    notification_stack: Option<NotificationStack>,
 }
 
 /// Action emitted from the palette into [`ShellOverlayHost::peer_sync_actions`]
@@ -365,6 +372,7 @@ impl ShellOverlayHost {
             permission_prompt: None,
             peer_sync_enabled: false,
             peer_sync_actions: Vec::new(),
+            notification_stack: None,
         }
     }
 
@@ -463,6 +471,11 @@ impl ShellOverlayHost {
     }
 
     pub fn with_chrome(mut self, chrome: Chrome) -> Self {
+        // Mount the notification stack once we have a chrome handle to
+        // read from. The widget paints into the viewport's top-right
+        // corner each frame via `set_viewport`; it doesn't participate
+        // in Taffy because its position is purely absolute.
+        self.notification_stack = Some(NotificationStack::new(chrome.clone()));
         self.chrome = Some(chrome);
         self
     }
@@ -1514,7 +1527,20 @@ impl Widget for ShellOverlayHost {
         // and drains entries when the user clicks an action button.
         // Idempotent — runs every frame regardless of queue state.
         self.pump_permission_prompt();
-        a || b || c
+        // Notification lifecycle: drop expired toasts so the stack
+        // shrinks even on frames where the user does nothing. The
+        // widget's own `update` also drives this, but routing it
+        // here too means the chrome stays consistent for tests that
+        // never call the widget directly.
+        let d = if let Some(chrome) = self.chrome.as_ref() {
+            let dropped = chrome
+                .borrow_mut()
+                .update_notification_lifecycle(std::time::Instant::now());
+            dropped > 0
+        } else {
+            false
+        };
+        a || b || c || d
     }
 
     fn build_layout(
@@ -1706,6 +1732,23 @@ impl Widget for ShellOverlayHost {
             let bar_x1 = self.rect.x1 - self.sidebar_top_y as f64;
             prompt.set_rect(Rect::new(bar_x0, bar_y0, bar_x1, bar_y0 + PROMPT_HEIGHT));
             prompt.draw(scene, transform, text_renderer, theme, presence);
+        }
+
+        // Top-right notification stack. Drawn above the desktop content
+        // but below modal overlays (palette / settings / overview) and
+        // the permission prompt so a prompt always wins focus.
+        if let Some(stack) = self.notification_stack.as_mut() {
+            // Offset top inset below the topbar so toasts don't crash
+            // into clock / tray. Right edge is the viewport's right
+            // edge — the stack itself insets by EDGE_INSET.
+            let viewport = Rect::new(
+                self.rect.x0,
+                self.rect.y0 + self.sidebar_top_y as f64,
+                self.rect.x1,
+                self.rect.y1,
+            );
+            stack.set_viewport(viewport);
+            stack.draw(scene, transform, text_renderer, theme, presence);
         }
 
         // Overview grid (Cmd+Tab) scales+fades into place on the second
@@ -1965,6 +2008,31 @@ impl Widget for ShellOverlayHost {
         if is_absorbable_pointer {
             if let Some(p) = self.last_cursor {
                 if self.cursor_over_open_overlay(p) {
+                    *handled = true;
+                    return;
+                }
+            }
+        }
+
+        // Notification click-to-dismiss. The stack publishes per-toast
+        // hit rects each `draw`; we consume a left-click that lands on
+        // one of them by dismissing the matching id, *before* the
+        // permission prompt or any other overlay sees it. A toast
+        // never overlaps the permission prompt (prompt is anchored
+        // top-left below the topbar, toasts top-right), but routing
+        // them in this order keeps the contract simple: click on a
+        // toast = dismiss, no other widget runs for that press.
+        if let (
+            Some(stack),
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+                ..
+            },
+        ) = (self.notification_stack.as_mut(), event)
+        {
+            if let Some(p) = self.last_cursor {
+                if stack.notify_click_at(p) {
                     *handled = true;
                     return;
                 }

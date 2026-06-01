@@ -18,6 +18,9 @@ use std::rc::Rc;
 
 use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
 
+use crate::shell::notification::{
+    MAX_NOTIFICATIONS, Notification, NotificationIconKind, NotificationSeverity,
+};
 use crate::shell::quick_settings::{BtDevice, QsLevel, WifiNetwork};
 use crate::shell::state::{AppId, Capability, WorkspaceTree, WorkspaceTreeHandle};
 // Re-export WsTab so chrome users can refer to the tab routing enum
@@ -218,6 +221,16 @@ pub struct ChromeState {
     /// replace this field once the peer-sync work lands a
     /// `local_user_id` + `Workspace::owner_id` pair.
     pub test_only_owner_override: Option<bool>,
+    /// Active toast / banner notifications. Ordered oldest-first so the
+    /// stack widget paints from the top of the screen downward in the
+    /// same order entries were pushed. Capped at
+    /// [`MAX_NOTIFICATIONS`]; pushing past the cap evicts the oldest
+    /// entry (FIFO drop). Any subsystem can append via
+    /// [`Self::push_notification`] / [`Self::push_notification_full`];
+    /// the [`crate::shell::notification::NotificationStack`] widget
+    /// reads from here and drives expiry via
+    /// [`Self::update_notification_lifecycle`] each frame.
+    pub notifications: Vec<Notification>,
 }
 
 impl ChromeState {
@@ -246,6 +259,7 @@ impl ChromeState {
             revision: 0,
             pending_grants: VecDeque::new(),
             test_only_owner_override: None,
+            notifications: Vec::new(),
         }))
     }
 
@@ -413,9 +427,107 @@ impl ChromeState {
             }
         };
         if changed {
+            // Smoke-test the notification system: every successful
+            // workspace switch pushes a transient toast naming the
+            // new active workspace. Any subsystem can call
+            // `push_notification`; this is just the canonical first
+            // consumer so the system is visibly exercised.
+            let new_name = self
+                .tree()
+                .active_workspace()
+                .map(|ws| ws.name.clone())
+                .unwrap_or_else(|| "(unnamed)".to_string());
+            self.push_notification(
+                format!("Switched to workspace {new_name}"),
+                String::new(),
+            );
             self.bump();
         }
         changed
+    }
+
+    // ---------- Notifications ----------
+
+    /// Read-only view of the currently active notifications, ordered
+    /// oldest first.
+    pub fn notifications(&self) -> &[Notification] {
+        &self.notifications
+    }
+
+    /// Push a new info-level notification with the given title and
+    /// body. Returns the freshly assigned id so callers can dismiss
+    /// it later via [`Self::dismiss_notification`]. Bumps the chrome
+    /// revision so widgets re-sync on the next frame.
+    pub fn push_notification(
+        &mut self,
+        title: impl Into<String>,
+        body: impl Into<String>,
+    ) -> u64 {
+        self.push_notification_full(Notification::new(title, body))
+    }
+
+    /// Push a fully-formed [`Notification`] (typically constructed
+    /// with `.with_severity(...)` / `.with_dismiss_after(...)`).
+    /// Returns the notification's id. Enforces the
+    /// [`MAX_NOTIFICATIONS`] cap by dropping oldest entries first.
+    pub fn push_notification_full(&mut self, n: Notification) -> u64 {
+        let id = n.id;
+        self.notifications.push(n);
+        while self.notifications.len() > MAX_NOTIFICATIONS {
+            self.notifications.remove(0);
+        }
+        self.bump();
+        id
+    }
+
+    /// Convenience: push a warning-severity notification.
+    pub fn push_warning_notification(
+        &mut self,
+        title: impl Into<String>,
+        body: impl Into<String>,
+    ) -> u64 {
+        self.push_notification_full(
+            Notification::new(title, body)
+                .with_severity(NotificationSeverity::Warning)
+                .with_icon_kind(NotificationIconKind::Generic),
+        )
+    }
+
+    /// Convenience: push an error-severity notification.
+    pub fn push_error_notification(
+        &mut self,
+        title: impl Into<String>,
+        body: impl Into<String>,
+    ) -> u64 {
+        self.push_notification_full(
+            Notification::new(title, body)
+                .with_severity(NotificationSeverity::Error)
+                .with_icon_kind(NotificationIconKind::Generic),
+        )
+    }
+
+    /// Dismiss a notification by id. No-op if the id has already
+    /// expired or was never pushed.
+    pub fn dismiss_notification(&mut self, id: u64) {
+        let before = self.notifications.len();
+        self.notifications.retain(|n| n.id != id);
+        if self.notifications.len() != before {
+            self.bump();
+        }
+    }
+
+    /// Drop every notification whose `created_at + dismiss_after`
+    /// has passed `now`. Returns the number of entries removed.
+    /// Called by [`crate::shell::notification::NotificationStack::update`]
+    /// each frame so the stack shrinks automatically.
+    pub fn update_notification_lifecycle(&mut self, now: std::time::Instant) -> usize {
+        let before = self.notifications.len();
+        self.notifications.retain(|n| !n.is_expired_at(now));
+        let dropped = before - self.notifications.len();
+        if dropped > 0 {
+            self.bump();
+        }
+        dropped
     }
 }
 
