@@ -23,7 +23,7 @@ use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::{TabDescriptor, TileHost, Widget, WindowGroup, WindowWidth};
+use crate::widget::{ResizeHandle, TabDescriptor, TileHost, Widget, WindowGroup, WindowWidth};
 
 /// Idle threshold after the last wheel event before we kick off a
 /// snap-to-nearest-group animation. Mirrors the concept's
@@ -70,6 +70,20 @@ pub struct CrossStripDetach {
 
 pub struct GroupRow {
     pub groups: Vec<WindowGroup>,
+    /// Inter-group resize handles — one per gap, so for N groups we
+    /// keep `max(0, N - 1)` handles. Sized by `build_layout` to match
+    /// the current group count; each handle's neighbour rects are
+    /// refreshed by `apply_layout` after `WindowGroup::apply_layout`
+    /// has populated screen-space coordinates. Held inline (not as
+    /// children-managed boxes) so the widget tree's lifetime
+    /// invariants stay simple — handles only exist while their two
+    /// neighbours both exist, which the row's structural mutations
+    /// already enforce via `structure_dirty`.
+    handles: Vec<ResizeHandle>,
+    /// Per-handle taffy node ids, captured during `build_layout` so
+    /// `apply_layout` and `handle_event` can dispatch in order. Always
+    /// `handles.len()` entries when populated.
+    handle_node_ids: Vec<NodeId>,
     rect: Rect,
     /// Per-child taffy node ids, captured during `build_layout` so
     /// `apply_layout` can walk them back out in order.
@@ -150,6 +164,8 @@ impl GroupRow {
     pub fn new(groups: Vec<WindowGroup>) -> Self {
         Self {
             groups,
+            handles: Vec::new(),
+            handle_node_ids: Vec::new(),
             rect: Rect::ZERO,
             node_ids: Vec::new(),
             last_cursor: Point::ZERO,
@@ -169,6 +185,21 @@ impl GroupRow {
     /// reaching through private fields.
     pub fn scroll_x(&self) -> f64 {
         self.scroll_x
+    }
+
+    /// Count of inter-group resize handles currently held by the
+    /// row. Exposed so tests can assert the pool stays in lockstep
+    /// with `groups.len() - 1` across structural mutations.
+    pub fn handle_count(&self) -> usize {
+        self.handles.len()
+    }
+
+    /// Read-only access to the inter-group resize handle at `idx`.
+    /// Returns `None` if the index is out of range. Exposed so
+    /// integration tests can assert on hover/drag state without
+    /// reaching through private fields.
+    pub fn handle_at(&self, idx: usize) -> Option<&ResizeHandle> {
+        self.handles.get(idx)
     }
 
     /// Total natural content width (sum of group widths + inter-group
@@ -583,12 +614,46 @@ impl Widget for GroupRow {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.node_ids.clear();
-        let children: Vec<NodeId> = self
+        let group_nodes: Vec<NodeId> = self
             .groups
             .iter_mut()
             .map(|g| g.build_layout(taffy, theme, node_map))
             .collect();
-        self.node_ids = children.clone();
+        self.node_ids = group_nodes.clone();
+        // Resize the handle pool to match the inter-group gap count
+        // (`max(0, N-1)`). Handles are structurally tied to gaps
+        // between adjacent groups, so a group insert/remove drives
+        // the pool's resize. We grow with fresh `ResizeHandle::new`
+        // entries (idle, no drag state) and truncate from the tail
+        // when the group count shrinks. Preserving in-flight drag
+        // state across a re-layout isn't required: the App rebuilds
+        // taffy whenever `structure_dirty` fires (every group
+        // insert/remove), so any active drag would have been on a
+        // handle whose neighbours just changed structurally anyway.
+        let desired_handles = self.groups.len().saturating_sub(1);
+        if self.handles.len() < desired_handles {
+            self.handles.extend(
+                (self.handles.len()..desired_handles).map(|_| ResizeHandle::new()),
+            );
+        } else if self.handles.len() > desired_handles {
+            self.handles.truncate(desired_handles);
+        }
+        // Build per-handle taffy nodes and interleave them between
+        // the group nodes. Order: `[g0, h0, g1, h1, g2, …, g_{N-1}]`
+        // — handles only sit between adjacent siblings, never as
+        // leading or trailing children. Their declared 8 px width
+        // replaces the row's old inter-group gap, so the gap on the
+        // flex container drops to 0 below.
+        self.handle_node_ids.clear();
+        let mut children: Vec<NodeId> = Vec::with_capacity(group_nodes.len() + desired_handles);
+        for (i, gn) in group_nodes.iter().enumerate() {
+            children.push(*gn);
+            if i + 1 < group_nodes.len() {
+                let hn = self.handles[i].build_layout(taffy, theme, node_map);
+                self.handle_node_ids.push(hn);
+                children.push(hn);
+            }
+        }
         // Children may shrink below their declared `WindowWidth` so the
         // row never overflows the viewport horizontally — a 600 px
         // Normal group inside a 480 px content area shrinks to 480 px
@@ -607,7 +672,7 @@ impl Widget for GroupRow {
         // group-side `max_size` we set in `WindowGroup::build_layout` so
         // a single Normal group never overflows even with
         // `flex_shrink: 1.0` defaults.
-        for &node in &children {
+        for &node in &group_nodes {
             let mut style = taffy.style(node).unwrap().clone();
             style.flex_shrink = 1.0;
             taffy.set_style(node, style).unwrap();
@@ -636,8 +701,14 @@ impl Widget for GroupRow {
                         height: Dimension::auto(),
                     },
                     flex_grow: 1.0,
+                    // Gap goes to zero: the inter-group `ResizeHandle`
+                    // widgets supply the visible 8-px footprint per
+                    // gap. Keeping a non-zero gap here in addition to
+                    // the handle's declared 8 px width would double
+                    // the inter-group distance and push every group
+                    // further apart than the original strip layout.
                     gap: Size {
-                        width: taffy::LengthPercentage::length(8.0),
+                        width: taffy::LengthPercentage::length(0.0),
                         height: taffy::LengthPercentage::length(0.0),
                     },
                     ..Default::default()
@@ -708,6 +779,22 @@ impl Widget for GroupRow {
         for (g, child_id) in self.groups.iter_mut().zip(self.node_ids.iter()) {
             g.apply_layout(taffy, *child_id, child_origin);
         }
+        // Refresh each inter-group `ResizeHandle`'s neighbour rect
+        // snapshot. We always re-derive these from the freshly
+        // laid-out group rects (post-`scroll_x` shift) so the hit
+        // area + paint geometry track the visible groups exactly.
+        // The handle count must match `groups.len() - 1` because
+        // `build_layout` resized the pool to that value just above.
+        debug_assert_eq!(
+            self.handles.len(),
+            self.groups.len().saturating_sub(1),
+            "ResizeHandle pool must mirror inter-group gap count after build_layout",
+        );
+        for i in 0..self.handles.len() {
+            let left = self.groups[i].get_rect();
+            let right = self.groups[i + 1].get_rect();
+            self.handles[i].set_neighbour_rects(left, right);
+        }
     }
 
     fn draw(
@@ -720,6 +807,18 @@ impl Widget for GroupRow {
     ) {
         for g in &mut self.groups {
             g.draw(scene, transform, tr, theme, presence);
+        }
+        // Paint the inter-group resize handles after the groups so
+        // the accent rule sits on top of any group-edge artwork.
+        // The handles are skipped entirely while a tab-drag is in
+        // flight: the cross-group drop-zone capsule (drawn below)
+        // takes priority during a drag so the user isn't confused
+        // by two overlapping affordances on the same gap.
+        let any_drag = self.groups.iter().any(|g| g.drag_in_flight());
+        if !any_drag {
+            for h in &mut self.handles {
+                h.draw(scene, transform, tr, theme, presence);
+            }
         }
 
         // Inter-group drop-zone indicator: while any child has a drag in
@@ -881,6 +980,61 @@ impl Widget for GroupRow {
                 self.last_wheel_at = Some(Instant::now());
                 self.snap_anim = None;
                 *handled = true;
+            }
+        }
+
+        // Dispatch to inter-group resize handles FIRST so a press in
+        // the gap claims the event before it reaches the adjacent
+        // groups. Skipped while any child has a tab-drag in flight —
+        // the cross-group drop resolution owns the gap during a
+        // drag and would compete with the resize handle's press if
+        // both ran. Each handle's `handle_event` is independent: a
+        // press inside one handle's hit area doesn't perturb any
+        // other handle's state.
+        let any_drag_inflight = self.groups.iter().any(|g| g.drag_in_flight());
+        if !any_drag_inflight {
+            for (i, h) in self.handles.iter_mut().enumerate() {
+                let Some(&node_id) = self.handle_node_ids.get(i) else {
+                    break;
+                };
+                h.handle_event(
+                    event, scale_factor, modifiers, state, root, handled, focus_target,
+                    node_id, taffy,
+                );
+                if *handled {
+                    break;
+                }
+            }
+        }
+
+        // Drain any handle width pulses produced by the dispatch above
+        // and apply them to the two adjacent groups via `set_width`.
+        // We do this before the group dispatch loop so a mid-drag
+        // CursorMoved sees the updated widths on the same frame —
+        // otherwise the user perceives one frame of lag between
+        // cursor motion and edge response.
+        for i in 0..self.handles.len() {
+            if let Some((new_left, new_right)) = self.handles[i].take_pending() {
+                if i < self.groups.len() {
+                    self.groups[i].set_width(WindowWidth::Custom(new_left));
+                }
+                if i + 1 < self.groups.len() {
+                    self.groups[i + 1].set_width(WindowWidth::Custom(new_right));
+                }
+            }
+            if self.handles[i].take_pending_commit() {
+                // End-of-drag persistence pulse: stamp pending width-
+                // change on both neighbours so the shell harvests
+                // them on the next frame and writes through to the
+                // persisted `WorkspaceTree`. Mirrors what
+                // `WindowGroup::end_resize` does for the per-group
+                // right-edge handle.
+                if i < self.groups.len() {
+                    self.groups[i].stamp_pending_width_change();
+                }
+                if i + 1 < self.groups.len() {
+                    self.groups[i + 1].stamp_pending_width_change();
+                }
             }
         }
 
@@ -1223,7 +1377,7 @@ impl Widget for GroupRow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widget::{TabDescriptor, TileContent, WindowWidth};
+    use crate::widget::{TabDescriptor, TileContent, WindowWidth, WIDTH_MIN_PX};
 
     fn make_group(id: u64, tab_ids: &[u64]) -> WindowGroup {
         let tabs: Vec<(TabDescriptor, TileContent)> = tab_ids
@@ -2666,6 +2820,307 @@ mod tests {
         assert_eq!(
             row.groups.len(), 3,
             "drop 2 must produce 3 groups (was {})", row.groups.len()
+        );
+    }
+
+    // ==================================================================
+    // Inter-group `ResizeHandle` integration
+    // ==================================================================
+
+    /// Two groups should produce exactly one handle, three groups should
+    /// produce two, single-group rows should produce none. The pool's
+    /// `N-1` invariant is structural — verifying it here pins the
+    /// `build_layout` resize policy so a refactor can't silently leak
+    /// or under-allocate handles. Pairs with the unit-level
+    /// `set_neighbour_rects_recomputes_hit_area` test on the handle
+    /// itself.
+    #[test]
+    fn handle_pool_matches_inter_group_gap_count() {
+        // 1 group → 0 handles.
+        let row = make_row_with_groups(&[&[1]]);
+        assert_eq!(row.handle_count(), 0, "single-group row needs no handle");
+
+        // 2 groups → 1 handle.
+        let row = make_row_with_groups(&[&[1], &[2]]);
+        assert_eq!(row.handle_count(), 1, "two-group row has exactly one handle");
+
+        // 3 groups → 2 handles.
+        let row = make_row_with_groups(&[&[1], &[2], &[3]]);
+        assert_eq!(row.handle_count(), 2, "three-group row has exactly two handles");
+    }
+
+    /// After a successful split-into-new-group, the next `build_layout`
+    /// must extend the handle pool to match the new group count.
+    /// Driven via the structural mutation flag the App already polls.
+    #[test]
+    fn handle_pool_grows_on_split_into_new_group() {
+        use std::collections::HashMap;
+        use taffy::{AvailableSpace, Size as TSize};
+
+        let mut row = make_row_with_groups(&[&[1, 2]]);
+        assert_eq!(row.handle_count(), 0, "precondition: one-group row has no handle");
+
+        // Split tab 2 into a brand-new group at the trailing gap.
+        assert!(row.split_tab_into_new_group(0, 2, 1));
+        assert_eq!(row.groups.len(), 2);
+        assert!(row.take_structure_dirty(), "split must flag structure_dirty");
+
+        // Re-run build_layout (what the App does on structure_dirty)
+        // — the handle pool must grow to 1.
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let root = row.build_layout(&mut taffy, &theme, &mut node_map);
+        let viewport = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(2000.0),
+                        height: Dimension::length(600.0),
+                    },
+                    ..Default::default()
+                },
+                &[root],
+            )
+            .unwrap();
+        taffy
+            .compute_layout_with_measure(
+                viewport,
+                TSize {
+                    width: AvailableSpace::Definite(2000.0),
+                    height: AvailableSpace::Definite(600.0),
+                },
+                |_, _, _, _, _| taffy::Size::ZERO,
+            )
+            .unwrap();
+        row.apply_layout(&taffy, root, Point::ORIGIN);
+        assert_eq!(
+            row.handle_count(),
+            1,
+            "after split: pool must grow to groups.len() - 1",
+        );
+        // And the handle's neighbour rects must be populated — set
+        // by apply_layout. A degenerate (zero-area) rect would mean
+        // the handle has nothing to paint.
+        let handle = row.handle_at(0).expect("handle 0 must exist");
+        let r = handle.get_rect();
+        assert!(r.width() > 0.0, "handle rect width must be positive after apply_layout");
+        assert!(r.height() > 0.0, "handle rect height must be positive after apply_layout");
+    }
+
+    /// End-to-end press-drag-release on the inter-group handle: the row
+    /// must dispatch the events to the handle, apply the resulting
+    /// width pulses to both neighbours, and stamp pending width-changes
+    /// on release so the shell persists. This is the closing-the-loop
+    /// test the task brief calls out — exercising the actual
+    /// production code path the user's mouse drives.
+    #[test]
+    fn drag_handle_resizes_both_neighbours_via_set_width() {
+        use winit::dpi::PhysicalPosition;
+        use winit::event::WindowEvent;
+
+        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+        assert_eq!(row.handle_count(), 1);
+
+        // Capture starting widths. Both groups default to
+        // `WindowWidth::Normal` = 600 px.
+        let pre_left_w = row.groups[0].width().pixels();
+        let pre_right_w = row.groups[1].width().pixels();
+        assert_eq!(pre_left_w, 600);
+        assert_eq!(pre_right_w, 600);
+
+        // Resolve handle centre from the live row geometry.
+        let handle_rect = row.handle_at(0).unwrap().get_rect();
+        let cx = (handle_rect.x0 + handle_rect.x1) / 2.0;
+        let cy = (handle_rect.y0 + handle_rect.y1) / 2.0;
+
+        let dev = unsafe { std::mem::zeroed() };
+        let modifiers = Modifiers::default();
+        let mut state = AutoCommit::new();
+        let path = automerge::ROOT.clone();
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+
+        // 1. CursorMoved over the handle → hover engages.
+        row.handle_event(
+            &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(cx, cy) },
+            1.0, &modifiers, &mut state, &path,
+            &mut handled, &mut focus, root, &taffy,
+        );
+        assert!(
+            row.handle_at(0).unwrap().is_hovered(),
+            "cursor over handle hit area must engage hover",
+        );
+
+        // 2. MouseInput::Pressed → drag starts.
+        handled = false;
+        row.handle_event(
+            &WindowEvent::MouseInput {
+                device_id: dev,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+            1.0, &modifiers, &mut state, &path,
+            &mut handled, &mut focus, root, &taffy,
+        );
+        assert!(handled, "press on handle must claim the event");
+        assert!(row.handle_at(0).unwrap().is_dragging(), "press starts drag");
+
+        // 3. CursorMoved +50 px right → width pulse applied to both
+        //    neighbours via `set_width`.
+        handled = false;
+        row.handle_event(
+            &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(cx + 50.0, cy) },
+            1.0, &modifiers, &mut state, &path,
+            &mut handled, &mut focus, root, &taffy,
+        );
+        assert_eq!(
+            row.groups[0].width().pixels(),
+            650,
+            "left neighbour grew by exactly dx",
+        );
+        assert_eq!(
+            row.groups[1].width().pixels(),
+            550,
+            "right neighbour shrank by exactly dx",
+        );
+
+        // Mid-drag must NOT stamp pending changes — that's
+        // reserved for release. Drain both groups; both must be
+        // None.
+        assert_eq!(
+            row.groups[0].take_pending_width_change(),
+            None,
+            "mid-drag does NOT pulse pending_width_change",
+        );
+        assert_eq!(row.groups[1].take_pending_width_change(), None);
+
+        // 4. MouseInput::Released → drag ends, BOTH neighbours
+        //    receive a pending width-change pulse.
+        handled = false;
+        row.handle_event(
+            &WindowEvent::MouseInput {
+                device_id: dev,
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+            1.0, &modifiers, &mut state, &path,
+            &mut handled, &mut focus, root, &taffy,
+        );
+        assert!(handled, "release on handle must claim the event");
+        assert!(!row.handle_at(0).unwrap().is_dragging(), "release ends drag");
+        assert_eq!(
+            row.groups[0].take_pending_width_change(),
+            Some(650),
+            "release stamps left neighbour's persisted width",
+        );
+        assert_eq!(
+            row.groups[1].take_pending_width_change(),
+            Some(550),
+            "release stamps right neighbour's persisted width",
+        );
+    }
+
+    /// A handle drag that pushes the left neighbour past `WIDTH_MIN_PX`
+    /// must NOT shrink it further. The right neighbour absorbs only
+    /// the actual movement up to the clamp point — equivalent to the
+    /// `compute_widths_clamps_left_at_min` unit test but driven
+    /// through the row's full event dispatch path.
+    #[test]
+    fn drag_clamps_left_neighbour_at_minimum_width() {
+        use winit::dpi::PhysicalPosition;
+        use winit::event::WindowEvent;
+
+        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+
+        // Resolve handle centre.
+        let handle_rect = row.handle_at(0).unwrap().get_rect();
+        let cx = (handle_rect.x0 + handle_rect.x1) / 2.0;
+        let cy = (handle_rect.y0 + handle_rect.y1) / 2.0;
+
+        let dev = unsafe { std::mem::zeroed() };
+        let modifiers = Modifiers::default();
+        let mut state = AutoCommit::new();
+        let path = automerge::ROOT.clone();
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+
+        // Press the handle.
+        row.handle_event(
+            &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(cx, cy) },
+            1.0, &modifiers, &mut state, &path,
+            &mut handled, &mut focus, root, &taffy,
+        );
+        row.handle_event(
+            &WindowEvent::MouseInput {
+                device_id: dev,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+            1.0, &modifiers, &mut state, &path,
+            &mut handled, &mut focus, root, &taffy,
+        );
+        // Drag 500 px LEFT. Both groups start at 600 px; pushing
+        // left by 500 would land left at 100 (below MIN=300). The
+        // clamp pins left at 300; right absorbs only the actual
+        // 300 px the left moved, settling at 900.
+        row.handle_event(
+            &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(cx - 500.0, cy) },
+            1.0, &modifiers, &mut state, &path,
+            &mut handled, &mut focus, root, &taffy,
+        );
+        assert_eq!(
+            row.groups[0].width().pixels(),
+            WIDTH_MIN_PX,
+            "left neighbour must clamp at WIDTH_MIN_PX (300), not shrink past it",
+        );
+        assert_eq!(
+            row.groups[1].width().pixels(),
+            900,
+            "right neighbour absorbs only the actual movement (300), not the requested 500",
+        );
+        assert_eq!(
+            row.groups[0].width().pixels() + row.groups[1].width().pixels(),
+            1200,
+            "pair sum is preserved across the clamp",
+        );
+    }
+
+    /// During a tab drag-in-flight, the inter-group handle must NOT
+    /// receive events — the cross-group drop resolution owns the gap.
+    /// Otherwise a fast user dragging a tab past the gap centre would
+    /// accidentally start a resize on the same frame.
+    #[test]
+    fn handle_does_not_engage_during_tab_drag_in_flight() {
+        use winit::dpi::PhysicalPosition;
+        use winit::event::WindowEvent;
+
+        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+        // Stage a tab-drag on group 0's bar.
+        start_drag(&mut row, 0, 1);
+        assert!(row.groups[0].drag_in_flight());
+
+        let handle_rect = row.handle_at(0).unwrap().get_rect();
+        let cx = (handle_rect.x0 + handle_rect.x1) / 2.0;
+        let cy = (handle_rect.y0 + handle_rect.y1) / 2.0;
+
+        let dev = unsafe { std::mem::zeroed() };
+        let modifiers = Modifiers::default();
+        let mut state = AutoCommit::new();
+        let path = automerge::ROOT.clone();
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+
+        // Cursor over the handle — but tab drag is in flight, so
+        // the handle's hover branch must NOT activate.
+        row.handle_event(
+            &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(cx, cy) },
+            1.0, &modifiers, &mut state, &path,
+            &mut handled, &mut focus, root, &taffy,
+        );
+        assert!(
+            !row.handle_at(0).unwrap().is_hovered(),
+            "tab drag in flight must inhibit handle hover (cross-group drop owns the gap)",
         );
     }
 }
