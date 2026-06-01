@@ -263,45 +263,56 @@ impl ShellDriver {
             }
             "palette" => {
                 self.fb.host_mut().set_palette_visible(true);
+                // Settle the rising-edge open animation so a single-frame
+                // paint shows the fully-opened modal instead of frame 0
+                // (`alpha == 0` → indistinguishable from bare desktop).
+                self.fb.host_mut().force_palette_settled();
             }
             "quick-settings" => {
                 self.with_chrome(|st| st.overlays.quick_settings = true);
+                self.fb.host_mut().force_quick_settings_settled();
             }
             "qs-wifi-drillin" => {
                 self.with_chrome(|st| {
                     st.overlays.quick_settings = true;
                     st.quick_settings.push_level(QsLevel::Wifi);
                 });
+                self.fb.host_mut().force_quick_settings_settled();
             }
             "qs-bt-drillin" => {
                 self.with_chrome(|st| {
                     st.overlays.quick_settings = true;
                     st.quick_settings.push_level(QsLevel::Bluetooth);
                 });
+                self.fb.host_mut().force_quick_settings_settled();
             }
             "ws-settings-general" => {
                 self.with_chrome(|st| {
                     st.overlays.ws_settings = true;
                     st.ws_settings_tab = WsTab::General;
                 });
+                self.fb.host_mut().force_ws_settings_settled();
             }
             "ws-settings-roles" => {
                 self.with_chrome(|st| {
                     st.overlays.ws_settings = true;
                     st.ws_settings_tab = WsTab::Roles;
                 });
+                self.fb.host_mut().force_ws_settings_settled();
             }
             "ws-settings-files" => {
                 self.with_chrome(|st| {
                     st.overlays.ws_settings = true;
                     st.ws_settings_tab = WsTab::Files;
                 });
+                self.fb.host_mut().force_ws_settings_settled();
             }
             "ws-settings-permissions" => {
                 self.with_chrome(|st| {
                     st.overlays.ws_settings = true;
                     st.ws_settings_tab = WsTab::Permissions;
                 });
+                self.fb.host_mut().force_ws_settings_settled();
             }
             "notifications" => {
                 use shell::shell::notification::{Notification, NotificationSeverity};
