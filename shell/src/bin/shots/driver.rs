@@ -303,6 +303,40 @@ impl ShellDriver {
                     st.ws_settings_tab = WsTab::Permissions;
                 });
             }
+            "notifications" => {
+                use shell::shell::notification::{Notification, NotificationSeverity};
+                self.with_chrome(|st| {
+                    // Three sample toasts spanning the severity ramp so
+                    // the snapshot exercises info / warning / error
+                    // colour treatment in one frame. Long dismiss
+                    // windows so the still-image scene captures the
+                    // stack fully visible.
+                    st.push_notification_full(
+                        Notification::new(
+                            "Switched to workspace Research",
+                            "Active tab: Notes",
+                        )
+                        .with_severity(NotificationSeverity::Info)
+                        .with_dismiss_after(Duration::from_secs(60)),
+                    );
+                    st.push_notification_full(
+                        Notification::new(
+                            "Slow network",
+                            "Peer sync delayed; retrying",
+                        )
+                        .with_severity(NotificationSeverity::Warning)
+                        .with_dismiss_after(Duration::from_secs(60)),
+                    );
+                    st.push_notification_full(
+                        Notification::new(
+                            "Permission denied",
+                            "Files cannot access /etc/shadow",
+                        )
+                        .with_severity(NotificationSeverity::Error)
+                        .with_dismiss_after(Duration::from_secs(60)),
+                    );
+                });
+            }
             other => return Err(format!("unknown scene '{other}'")),
         }
         Ok(())
@@ -321,6 +355,7 @@ impl ShellDriver {
         "ws-settings-roles",
         "ws-settings-files",
         "ws-settings-permissions",
+        "notifications",
     ];
 
     /// Resolve a "named" UI target (button, pill, tab) to its on-screen
