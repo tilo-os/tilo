@@ -589,20 +589,27 @@ impl Widget for GroupRow {
             .map(|g| g.build_layout(taffy, theme, node_map))
             .collect();
         self.node_ids = children.clone();
-        // Pin `flex_shrink: 0.0` on every child so the row is permitted
-        // to overflow horizontally when the sum of group widths exceeds
-        // the row's viewport-aligned width — without this override,
-        // Taffy's default `flex_shrink: 1.0` squishes every group below
-        // its declared `WindowWidth` and the user can't see overflowed
-        // groups at all. Non-maximized groups already declare a fixed
-        // width via `Dimension::length`, so refusing to shrink keeps
-        // them at that exact size; the maximized group keeps its
-        // `flex_grow: 1e6` and absorbs leftover space *within* the
-        // visible viewport, with siblings sitting at their natural
-        // width past the right edge until the user scrolls.
+        // Children may shrink below their declared `WindowWidth` so the
+        // row never overflows the viewport horizontally — a 600 px
+        // Normal group inside a 480 px content area shrinks to 480 px
+        // instead of painting past the right edge of the window. This
+        // reversed the 2026-04 stance ("pin `flex_shrink: 0` so the row
+        // can overflow + scroll for overflowed groups") because user
+        // feedback on 2026-05-25 was that fixed-size groups "draw way
+        // over the window border" — concept-fidelity isn't worth a
+        // visually broken initial paint.
+        //
+        // Maximized groups keep their `flex_grow: 1e6` (from
+        // `WindowGroup::build_layout`) so they still absorb leftover
+        // space inside the strip; non-maximized siblings sit at their
+        // preferred width with a soft shrink budget when space tightens.
+        // Each group also caps its width at the row's width via the
+        // group-side `max_size` we set in `WindowGroup::build_layout` so
+        // a single Normal group never overflows even with
+        // `flex_shrink: 1.0` defaults.
         for &node in &children {
             let mut style = taffy.style(node).unwrap().clone();
-            style.flex_shrink = 0.0;
+            style.flex_shrink = 1.0;
             taffy.set_style(node, style).unwrap();
         }
         // The row must fill the remaining vertical space inside the
@@ -717,20 +724,32 @@ impl Widget for GroupRow {
 
         // Inter-group drop-zone indicator: while any child has a drag in
         // flight and the cursor is hovering an inter-group gap, paint a
-        // single translucent indigo capsule centred on that gap. Mirrors
-        // the concept's `DropZone` component in `DesktopView.tsx:414`,
-        // which only highlights the gap the cursor is over (not every
-        // gap in the row) — this is the "drop here" confirmation that
-        // was missing from the previous feel-bad "zones always visible"
-        // treatment.
+        // section-shaped placeholder where the dropped tab will land —
+        // not a 4 px line. Concept ref: `DesktopView.tsx:414` renders a
+        // full-height rectangle with dashed accent border + translucent
+        // accent fill that reads as a "ghost window group" the drop
+        // will materialise into.
+        //
+        // Pre-2026-06-01 this was a 4 px capsule at the gap, which the
+        // user described as a "single strip" — not how a drop preview
+        // should read. Now it's a ~`WIDTH_MIN_PX`-wide rounded section
+        // matching the cards' visual language, so the user can see at a
+        // glance the shape of the future group.
         let any_drag = self.groups.iter().any(|g| g.drag_in_flight());
         if any_drag
             && !self.groups.is_empty()
             && let Some(idx) = self.hover_gap_idx
         {
-            let fill = theme.tokens.colors.accent[5].with_alpha_factor(0.5);
-            let bar_w = 4.0_f64;
-            let radius = 2.0_f64;
+            // Match the actual card's outer chrome so the placeholder
+            // reads as the same kind of object. `radii.xl` is what
+            // `TileHost::draw_steady_state` uses for the white card.
+            let radius = theme.tokens.radii.xl as f64;
+            let stroke = theme.tokens.colors.accent[5];
+            let fill = theme.tokens.colors.accent[5].with_alpha_factor(0.10);
+            // Preview width: match a Normal group (600 px). On narrow
+            // strips it'd overflow; cap to half the row's width so the
+            // placeholder is always visibly *inside* the strip.
+            let preview_w = (self.rect.width() / 2.0).min(600.0).max(280.0);
             let mid_x = if idx == 0 {
                 self.groups[0].get_rect().x0 - 4.0
             } else if idx >= self.groups.len() {
@@ -740,16 +759,30 @@ impl Widget for GroupRow {
                     + self.groups[idx].get_rect().x0)
                     / 2.0
             };
-            let capsule = RoundedRect::from_rect(
-                Rect::new(mid_x - bar_w / 2.0, self.rect.y0, mid_x + bar_w / 2.0, self.rect.y1),
-                radius,
+            // Match the steady-state card's vertical inset — the bar
+            // sits at the top, the content card below. The preview
+            // covers the *whole* group footprint (bar + body) so the
+            // user sees the entire future shape, not just the body.
+            let zone = Rect::new(
+                mid_x - preview_w / 2.0,
+                self.rect.y0,
+                mid_x + preview_w / 2.0,
+                self.rect.y1,
             );
+            let zone_rect = RoundedRect::from_rect(zone, radius);
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
                 fill,
                 None,
-                &capsule,
+                &zone_rect,
+            );
+            scene.stroke(
+                &vello::kurbo::Stroke::new(2.0),
+                transform,
+                stroke,
+                None,
+                &zone_rect,
             );
         }
     }
@@ -2198,19 +2231,23 @@ mod tests {
 
     #[test]
     fn content_width_exceeds_viewport_when_groups_overflow() {
-        // Pre-fix invariant: with `flex_shrink: 1.0` (Taffy default),
-        // children would shrink to fit and `content_w == rect.width()`.
-        // After the override, content_w must equal the natural sum of
-        // group widths (+ gaps) regardless of viewport size, so
-        // `max_scroll_x()` is non-zero when content overflows. The
-        // scroll machinery hangs off this invariant — without it,
-        // wheel events are silently absorbed but pan nothing.
-        let (row, _t, _r) = make_overflow_row(4, 1200.0);
-        // Four 600-px Normal groups + three 8-px gaps = 2424 px.
-        let expected_min = 4.0 * 600.0 + 3.0 * 8.0 - 1.0; // 1 px wiggle for fp.
+        // Invariant: when the sum of `WindowGroup`s' MINIMUM widths
+        // (WIDTH_MIN_PX = 300) exceeds the strip's viewport, the strip
+        // can no longer shrink them all to fit and `content_width()`
+        // stays above viewport. `max_scroll_x()` then engages so the
+        // wheel-pan / snap machinery has positive headroom.
+        //
+        // Original design (pre-2026-05-25) pinned `flex_shrink: 0` on
+        // every child so even 4 Normal groups (4*600=2400) overflowed
+        // a 1200 viewport. New design (`flex_shrink: 1`, `min_size:
+        // 300`) lets groups shrink to fit until the minimums also
+        // overflow — so the test now uses 8 groups so the sum-of-mins
+        // (8*300 + 7*8 = 2456) clears the 1200 viewport regardless.
+        let (row, _t, _r) = make_overflow_row(8, 1200.0);
+        let expected_min = 8.0 * 300.0 + 7.0 * 8.0 - 1.0; // 2455, 1 px fp slop.
         assert!(
             row.content_width() >= expected_min,
-            "content_w must reflect the natural group widths; got {} expected ≥{}",
+            "content_w must reflect the floored group widths; got {} expected ≥{}",
             row.content_width(),
             expected_min
         );
@@ -2264,7 +2301,12 @@ mod tests {
         // doesn't paginate strips out from under the user.
         use winit::dpi::PhysicalPosition;
 
-        let (mut row, taffy, root) = make_overflow_row(4, 1200.0);
+        // 8 groups so the sum of `WIDTH_MIN_PX` (300) floors exceeds
+        // the 1200 px viewport even after shrink — without this the
+        // scroll machinery doesn't engage, since groups would shrink
+        // to fit. See the matching update on
+        // `content_width_exceeds_viewport_when_groups_overflow`.
+        let (mut row, taffy, root) = make_overflow_row(8, 1200.0);
         let pre_rect_0 = row.groups[0].get_rect();
 
         // Move the cursor to the centre of the row so the wheel
@@ -2479,7 +2521,10 @@ mod tests {
         // input mid-curve.
         use winit::dpi::PhysicalPosition;
 
-        let (mut row, taffy, root) = make_overflow_row(4, 1200.0);
+        // 8 groups → sum-of-mins exceeds the 1200 px viewport so
+        // overflow + scroll engage regardless of shrink. Matches the
+        // updated `content_width_exceeds_viewport_when_groups_overflow`.
+        let (mut row, taffy, root) = make_overflow_row(8, 1200.0);
         // Stage an in-flight snap directly so we don't have to wait
         // out a real idle window.
         row.set_scroll_x_for_test(300.0);

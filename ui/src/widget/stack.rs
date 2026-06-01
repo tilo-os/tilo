@@ -71,7 +71,19 @@ impl Widget for Stack {
                 display: taffy::Display::Flex,
                 size: taffy::Size {
                     width: percent(1.0),
-                    height: taffy::Dimension::auto(),
+                    // `Dimension::auto()` here was the long-standing default,
+                    // but with every child set to `position: Absolute` the
+                    // stack contributes zero to intrinsic size — and that
+                    // upstream zero made the parent ration percent-based
+                    // descendant heights from 0 rather than from the
+                    // viewport. End effect: a Column with bottom-padding
+                    // got its padding silently dropped. Pinning the stack
+                    // to its parent's height (`percent(1.0)`) makes the
+                    // viewport size flow through to absolute children
+                    // correctly, so e.g. `content_col`'s 24 px bottom
+                    // padding actually reserves 24 px of wallpaper between
+                    // the panel and the screen edge.
+                    height: percent(1.0),
                 },
                 ..Default::default()
             },

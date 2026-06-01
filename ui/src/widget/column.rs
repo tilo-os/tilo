@@ -16,8 +16,18 @@ pub struct Column {
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
     extra_left_padding: f32,
+    extra_bottom_padding: f32,
     no_padding: bool,
     intrinsic_height: bool,
+    /// Use `flex_grow: 1 + flex_basis: 0` instead of the default
+    /// `height: percent(1.0)` outer size. The percent variant claims
+    /// 100 % of the parent's height even when the column is a flex
+    /// sibling of a fixed-height header (e.g. the shell's topbar) —
+    /// the sum overflows the parent and any bottom padding ends up
+    /// off-screen. Fill-remaining-height absorbs the leftover space
+    /// after siblings have taken their share, which is what most
+    /// "full-bleed below header" layouts actually want.
+    fill_remaining_height: bool,
     /// Subtree scene cache — composition of every descendant's
     /// own cached scene, recorded once and translated on subsequent
     /// frames as long as no descendant signals dirty. Saves
@@ -38,8 +48,10 @@ impl Column {
             presence_path: Vec::new(),
             permission_scope: None,
             extra_left_padding: 0.0,
+            extra_bottom_padding: 0.0,
             no_padding: false,
             intrinsic_height: false,
+            fill_remaining_height: false,
             subtree_cache: Scene::new(),
             cache_rect: vello::kurbo::Rect::ZERO,
         }
@@ -73,6 +85,27 @@ impl Column {
     /// shifting the surrounding chrome.
     pub fn with_extra_left_padding(mut self, px: f32) -> Self {
         self.extra_left_padding = px;
+        self
+    }
+
+    /// Add extra padding on the bottom edge on top of the column's
+    /// default `padding_standard * 2`. Used by the shell's content
+    /// column to keep the active window group from touching the
+    /// screen's bottom edge — the default 24 px gutter wasn't enough
+    /// breathing room for tile cards on smaller viewports.
+    pub fn with_extra_bottom_padding(mut self, px: f32) -> Self {
+        self.extra_bottom_padding = px;
+        self
+    }
+
+    /// Switch the column from `height: percent(1.0)` to
+    /// `flex_grow: 1 + flex_basis: 0`. Use this when the column is a
+    /// flex sibling of a fixed-height widget (a topbar, say) — the
+    /// percent variant would claim 100 % of the parent on top of the
+    /// sibling's height, overflowing and pushing the column's own
+    /// bottom padding off-screen.
+    pub fn with_fill_remaining_height(mut self) -> Self {
+        self.fill_remaining_height = true;
         self
     }
 
@@ -130,17 +163,25 @@ impl Widget for Column {
                         left: length(base + self.extra_left_padding),
                         right: length(base),
                         top: length(base),
-                        bottom: length(base),
+                        bottom: length(base + self.extra_bottom_padding),
                     }
                 },
                 size: taffy::Size {
                     width: percent(1.0),
                     height: if self.intrinsic_height {
                         taffy::Dimension::auto()
+                    } else if self.fill_remaining_height {
+                        taffy::Dimension::auto()
                     } else {
                         percent(1.0)
                     },
                 },
+                flex_basis: if self.fill_remaining_height {
+                    taffy::Dimension::length(0.0)
+                } else {
+                    taffy::Dimension::auto()
+                },
+                flex_grow: if self.fill_remaining_height { 1.0 } else { 0.0 },
                 ..Default::default()
             },
             &child_nodes
