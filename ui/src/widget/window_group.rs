@@ -290,6 +290,32 @@ impl WindowGroup {
         self.resize_origin = None;
         self.pending_width_change = Some(self.width.pixels());
     }
+
+    /// Imperative setter used by the between-groups `ResizeHandle`. Clamps
+    /// `px` into `[WIDTH_MIN_PX, WIDTH_MAX_PX]` (via `WindowWidth::Custom`)
+    /// and stamps the new value. Does NOT touch `resize_origin` — the
+    /// inter-group handle owns its own drag state. Callers wanting a
+    /// "user finished resizing" pulse should follow up with
+    /// [`Self::stamp_pending_width_change`] on mouse-release; mid-drag
+    /// updates should NOT pulse so the shell isn't writing every frame.
+    pub fn set_width(&mut self, w: WindowWidth) {
+        // Normalise through Custom so callers passing Narrow/Normal/Wide
+        // still land on the clamping path's invariant — Custom(p) clamps
+        // internally in `pixels()`. Mid-drag math operates on raw pixels
+        // and feeds clamped values back in via `Custom(px)`.
+        match w {
+            WindowWidth::Custom(p) => self.width = WindowWidth::Custom(p.clamp(WIDTH_MIN_PX, WIDTH_MAX_PX)),
+            other => self.width = other,
+        }
+    }
+
+    /// Stamp a pending width-change pulse so the shell harvests this
+    /// group's width on the next frame and persists it. Used by the
+    /// inter-group `ResizeHandle` on mouse-release, mirroring what
+    /// [`Self::end_resize`] does for the per-group right-edge handle.
+    pub fn stamp_pending_width_change(&mut self) {
+        self.pending_width_change = Some(self.width.pixels());
+    }
     /// Drain a one-shot pending width change produced by a completed
     /// resize gesture (press → drag → release on the right-edge handle).
     /// Returns `Some(pixels)` once per gesture, then `None` until the
