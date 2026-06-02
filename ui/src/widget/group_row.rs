@@ -1089,26 +1089,48 @@ impl Widget for GroupRow {
                 // same gesture to a tab cycle on top of the pan.
                 *handled = true;
             } else {
-                // No overflow: there's nothing to pan against. Only
-                // promote to a tab-cycle pulse when the wheel input
-                // is HORIZONTAL-dominant — vertical-only mouse wheel
-                // is left for the sibling `StripView` so its inter-
-                // strip pagination still works (the user's mental
-                // model: vertical wheel is for vertical movement,
-                // strip-cycling is a horizontal gesture). Trackpad
-                // two-finger horizontal swipe and Shift+wheel both
-                // arrive as horizontal-dominant deltas → they fire
-                // the cycle.
+                // No overflow: nothing to pan against. If the wheel
+                // input is HORIZONTAL-dominant, cycle the focused
+                // group's active tab directly via `cycle_active_tab`
+                // — widget-side, so the visible `Tabs::active_id`
+                // changes the same frame. Going through chrome here
+                // would mutate the persisted `WorkspaceTree` but
+                // leave the widget's own `active_id` stale until a
+                // future revision-driven rebuild (which doesn't
+                // exist yet — see #263).
+                //
+                // Vertical-only mouse wheel still falls through so
+                // the sibling `StripView` keeps its inter-strip
+                // pagination (the existing
+                // `wheel_does_not_claim_when_strip_fits_inside_viewport`
+                // invariant stays green).
                 let (axis_x, axis_y): (f32, f32) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => (*x, *y),
                     MouseScrollDelta::PixelDelta(pp) => (pp.x as f32, pp.y as f32),
                 };
                 if axis_x.abs() > axis_y.abs() && dx.abs() > 5.0 {
                     let dir: i32 = if dx > 0.0 { 1 } else { -1 };
-                    self.pending_tab_cycle = self
-                        .pending_tab_cycle
-                        .map(|cur| cur.saturating_add(dir))
-                        .or(Some(dir));
+                    // Pick the group under the cursor first; fall back
+                    // to the first group so a wheel over an empty
+                    // strip area still does something.
+                    let target_idx = self
+                        .groups
+                        .iter()
+                        .position(|g| g.get_rect().contains(self.last_cursor))
+                        .or(if self.groups.is_empty() { None } else { Some(0) });
+                    if let Some(idx) = target_idx {
+                        if self.groups[idx].cycle_active_tab(dir) {
+                            // Mirror the change in the chrome's
+                            // persisted tree so it survives a re-
+                            // render or a re-sync. The pulse field
+                            // remains for tests that assert the
+                            // shell-side dispatcher fires too.
+                            self.pending_tab_cycle = self
+                                .pending_tab_cycle
+                                .map(|cur| cur.saturating_add(dir))
+                                .or(Some(dir));
+                        }
+                    }
                     *handled = true;
                 }
             }
