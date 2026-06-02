@@ -29,7 +29,7 @@ use ui::theme::Theme;
 use crate::main_panel::MainPanel;
 use crate::model::Workspace;
 use crate::sidebar::{NoteTreeView, OutEvent};
-use crate::storage::{self, Saver};
+use crate::storage::{self, PageSaver, Saver};
 
 /// Fixed sidebar width for Phase 1 (we ship a collapsible drawer in
 /// a later phase — see the roadmap). 240 px reads as "comfortable but
@@ -53,6 +53,10 @@ pub struct NotesApp {
     main_node: Option<NodeId>,
     root: PathBuf,
     saver: Option<Saver>,
+    /// Debounced background saver for per-page bodies. Receives a
+    /// new snapshot whenever the main panel's `BlockEditor` reports
+    /// a dirty edit; coalesces multiple edits in `SAVE_DEBOUNCE`.
+    page_saver: Option<PageSaver>,
 }
 
 impl NotesApp {
@@ -71,7 +75,10 @@ impl NotesApp {
         sidebar.sync_from_workspace(&workspace);
         let mut main = MainPanel::new();
         if let Some(sel) = workspace.selected() {
-            main.set_title(workspace.get(sel).map(|p| p.title.clone()));
+            if let Some(meta) = workspace.get(sel) {
+                let body = storage::read_page_body(&root, sel).unwrap_or_default();
+                main.load_page(sel, meta.title.clone(), body);
+            }
         } else {
             // Auto-select the first root page on launch so the panel
             // isn't empty out of the gate. Clone the picked metadata
@@ -82,12 +89,14 @@ impl NotesApp {
                 .map(|p| (p.id, p.title.clone()));
             if let Some((id, title)) = first {
                 workspace.set_selected(Some(id));
-                main.set_title(Some(title));
+                let body = storage::read_page_body(&root, id).unwrap_or_default();
+                main.load_page(id, title, body);
                 sidebar.sync_from_workspace(&workspace);
             }
         }
 
         let saver = Saver::spawn(root.clone(), SAVE_DEBOUNCE);
+        let page_saver = PageSaver::spawn(root.clone(), SAVE_DEBOUNCE);
 
         Ok(Self {
             workspace,
@@ -98,6 +107,7 @@ impl NotesApp {
             main_node: None,
             root,
             saver: Some(saver),
+            page_saver: Some(page_saver),
         })
     }
 
@@ -113,9 +123,17 @@ impl NotesApp {
     fn apply_event(&mut self, ev: OutEvent) {
         match ev {
             OutEvent::Select(id) => {
+                // Flush any pending edits to the previously-selected
+                // page before swapping. Otherwise a quick click from
+                // page A to page B could lose A's most recent edit
+                // if the debounce window hadn't elapsed yet.
+                self.flush_main_panel_edit();
                 self.workspace.set_selected(Some(id));
-                self.main
-                    .set_title(self.workspace.get(id).map(|p| p.title.clone()));
+                if let Some(meta) = self.workspace.get(id) {
+                    let title = meta.title.clone();
+                    let body = storage::read_page_body(&self.root, id).unwrap_or_default();
+                    self.main.load_page(id, title, body);
+                }
             }
             OutEvent::Rename { id, new_title } => {
                 self.workspace.rename(id, &new_title);
@@ -139,22 +157,55 @@ impl NotesApp {
                         .map(|p| (p.id, p.title.clone()));
                     if let Some((id, title)) = first {
                         self.workspace.set_selected(Some(id));
-                        self.main.set_title(Some(title));
+                        let body =
+                            storage::read_page_body(&self.root, id).unwrap_or_default();
+                        self.main.load_page(id, title, body);
                     } else {
-                        self.main.set_title(None);
+                        self.main.clear();
                     }
                 }
             }
             OutEvent::CreateChild { parent } => {
+                self.flush_main_panel_edit();
                 let id = self.workspace.create_page(parent);
                 self.workspace.set_selected(Some(id));
                 if let Err(e) = storage::write_page_body(&self.root, id, "") {
                     tracing::error!(error = %e, page = %id, "notes: write empty page failed");
                 }
-                self.main.set_title(Some("Untitled".to_string()));
+                self.main.load_page(id, "Untitled".to_string(), String::new());
             }
         }
         self.persist();
+    }
+
+    /// If the editor has pending edits for the current page, snapshot
+    /// the body and request a save before swapping pages.
+    fn flush_main_panel_edit(&mut self) {
+        if let (Some(id), true) = (self.main.page_id(), self.main.editor_is_dirty()) {
+            let body = self.main.take_body_snapshot();
+            if let Some(saver) = &self.page_saver {
+                saver.request(id, body);
+                // Force the worker to flush immediately so the next
+                // load_page (for a different page) doesn't race with
+                // the still-queued save of this page.
+                saver.flush();
+            }
+        }
+    }
+
+    /// Poll-style: called once per tick after a `handle_event` to
+    /// detect editor edits and request a debounced save. Triggers a
+    /// workspace mtime bump so the sidebar can highlight "modified"
+    /// state if we ever add that affordance.
+    fn drain_editor_edits(&mut self) {
+        if !self.main.editor_is_dirty() {
+            return;
+        }
+        let Some(id) = self.main.page_id() else { return };
+        let body = self.main.take_body_snapshot();
+        if let Some(saver) = &self.page_saver {
+            saver.request(id, body);
+        }
     }
 
     /// Schedule a debounced save of the current workspace.
@@ -182,8 +233,13 @@ impl NotesApp {
     /// Force-flush the background saver. Called from main on
     /// shutdown so the user's last edits never get lost in the
     /// debounce window.
-    pub fn flush_saves(&self) {
+    pub fn flush_saves(&mut self) {
+        // Drain any pending body before we ask the savers to flush.
+        self.flush_main_panel_edit();
         if let Some(s) = &self.saver {
+            s.flush();
+        }
+        if let Some(s) = &self.page_saver {
             s.flush();
         }
     }
@@ -195,6 +251,22 @@ impl NotesApp {
     #[doc(hidden)]
     pub fn workspace_pages_for_test(&self) -> Vec<crate::model::PageMeta> {
         self.workspace.pages().to_vec()
+    }
+
+    /// Test hook: mutable access to the main panel. Lets integration
+    /// tests drive the editor programmatically without dispatching
+    /// fake winit events.
+    #[doc(hidden)]
+    pub fn main_panel_mut(&mut self) -> &mut MainPanel {
+        &mut self.main
+    }
+
+    /// Test hook: run one tick's worth of the edit-drain logic so
+    /// tests don't have to actually go through `handle_event`. After
+    /// this returns, any dirty edit is queued on the page saver.
+    #[doc(hidden)]
+    pub fn tick_for_test(&mut self) {
+        self.drain_editor_edits();
     }
 }
 
@@ -242,18 +314,25 @@ impl Widget for NotesApp {
         self.sidebar_node = Some(sidebar_node);
 
         let main_node = self.main.build_layout(taffy, theme, node_map);
-        let _ = taffy.set_style(
-            main_node,
-            Style {
-                size: Size {
-                    width: Dimension::auto(),
-                    height: Dimension::percent(1.0),
+        // Augment the panel's own style (preserve its flex-column
+        // layout) with the parent-driven sizing. `taffy.style(...)`
+        // returns the existing Style, which we clone then overwrite
+        // only the fields we care about — preserves the panel's
+        // internal `flex_direction: Column`, padding, etc.
+        if let Ok(existing) = taffy.style(main_node).cloned() {
+            let _ = taffy.set_style(
+                main_node,
+                Style {
+                    size: Size {
+                        width: Dimension::auto(),
+                        height: Dimension::percent(1.0),
+                    },
+                    flex_grow: 1.0,
+                    flex_basis: Dimension::length(0.0),
+                    ..existing
                 },
-                flex_grow: 1.0,
-                flex_basis: Dimension::length(0.0),
-                ..Default::default()
-            },
-        );
+            );
+        }
         self.main_node = Some(main_node);
 
         let root = taffy
@@ -342,6 +421,22 @@ impl Widget for NotesApp {
         }
         // Drain any commands the sidebar produced.
         self.drain_sidebar_events();
+        if let Some(n) = self.main_node {
+            self.main.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
+        }
+        // After every event, observe the editor's dirty flag and
+        // request a debounced save if the user just edited.
+        self.drain_editor_edits();
     }
 
     fn name(&self) -> &str {
