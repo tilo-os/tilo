@@ -16,10 +16,9 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use taffy::{Dimension, Display, FlexDirection, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 
-use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -848,72 +847,19 @@ impl Widget for GroupRow {
             }
         }
 
-        // Inter-group drop-zone indicator: while any child has a drag in
-        // flight and the cursor is hovering an inter-group gap, paint a
-        // section-shaped placeholder where the dropped tab will land —
-        // not a 4 px line. Concept ref: `DesktopView.tsx:414` renders a
-        // full-height rectangle with dashed accent border + translucent
-        // accent fill that reads as a "ghost window group" the drop
-        // will materialise into.
+        // Drop-zone indicator: removed entirely per user feedback on
+        // 2026-06-02. The previous bar / section / rectangle
+        // visualisations were all overcorrections — the user wants the
+        // gap between groups to remain WITHOUT a visual hint, because
+        // a drop there means "create a new group" (an obvious
+        // outcome from the inter-group gap itself). The fine-grained
+        // tab-bar drop indicator (a thin white line between tabs) is
+        // implemented in the TabBar widget, not here.
         //
-        // Pre-2026-06-01 this was a 4 px capsule at the gap, which the
-        // user described as a "single strip" — not how a drop preview
-        // should read. Now it's a ~`WIDTH_MIN_PX`-wide rounded section
-        // matching the cards' visual language, so the user can see at a
-        // glance the shape of the future group.
-        let any_drag = self.groups.iter().any(|g| g.drag_in_flight());
-        if any_drag
-            && !self.groups.is_empty()
-            && let Some(idx) = self.hover_gap_idx
-        {
-            // Match the actual card's outer chrome so the placeholder
-            // reads as the same kind of object. `radii.xl` is what
-            // `TileHost::draw_steady_state` uses for the white card.
-            let radius = theme.tokens.radii.xl as f64;
-            let stroke = theme.tokens.colors.accent[5];
-            let fill = theme.tokens.colors.accent[5].with_alpha_factor(0.10);
-            // Preview width: ~`WIDTH_MIN_PX` (300 px). Earlier we used
-            // 600 px (matching a Normal group), which the user said
-            // dominated the visual — "too big". 300 reads as a clear
-            // ghost-section without overwhelming the underlying groups
-            // it sits next to. Capped to a third of the row so it
-            // never overlaps both neighbours on narrow strips.
-            let preview_w = (self.rect.width() / 3.0).min(300.0).max(220.0);
-            let mid_x = if idx == 0 {
-                self.groups[0].get_rect().x0 - 4.0
-            } else if idx >= self.groups.len() {
-                self.groups.last().unwrap().get_rect().x1 + 4.0
-            } else {
-                (self.groups[idx - 1].get_rect().x1
-                    + self.groups[idx].get_rect().x0)
-                    / 2.0
-            };
-            // Match the steady-state card's vertical inset — the bar
-            // sits at the top, the content card below. The preview
-            // covers the *whole* group footprint (bar + body) so the
-            // user sees the entire future shape, not just the body.
-            let zone = Rect::new(
-                mid_x - preview_w / 2.0,
-                self.rect.y0,
-                mid_x + preview_w / 2.0,
-                self.rect.y1,
-            );
-            let zone_rect = RoundedRect::from_rect(zone, radius);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                fill,
-                None,
-                &zone_rect,
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(2.0),
-                transform,
-                stroke,
-                None,
-                &zone_rect,
-            );
-        }
+        // The hit-test path that decides "release in gap → new
+        // group" / "release inside an existing group's tile area →
+        // prepend/append tab" still runs in `handle_event` below;
+        // it just no longer paints anything.
         // Close the strip clip layer we pushed at the top of `draw`.
         scene.pop_layer();
     }
