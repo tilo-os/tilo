@@ -193,6 +193,76 @@ fn group_row_visual_journey_distinguishes_all_states() {
     );
 }
 
+/// Concept-parity maximize: rendering a `GroupRow` with one of its
+/// groups flagged `maximized` must produce pixel output distinct from
+/// the same row's non-maximized baseline AND must visually collapse
+/// the siblings — verified by checking the maximized group's stored
+/// rect absorbs the row's full inner width while the siblings'
+/// stored rects collapse to zero. Mirrors the concept's
+/// `width: 100vw` fixed overlay in `WindowFrame.tsx:188-200`.
+#[test]
+fn group_row_maximized_paints_distinct_pixels_and_hides_siblings() {
+    let (w, h) = (960u32, 220u32);
+    let mut renderer = match try_new_renderer(w, h) {
+        Some(r) => r,
+        None => {
+            eprintln!("offscreen: no wgpu adapter available — skipping maximize scene");
+            return;
+        }
+    };
+
+    let mut row = GroupRow::new(vec![
+        make_group(
+            100,
+            &[
+                (1, "A1", AppKind::Editor),
+                (2, "A2", AppKind::Files),
+            ],
+        ),
+        make_group(200, &[(10, "B1", AppKind::Browser)]),
+        make_group(300, &[(20, "C1", AppKind::Terminal)]),
+    ]);
+
+    let baseline = render_row(&mut renderer, &mut row);
+    let baseline_hash = pixel_hash(&baseline);
+    maybe_write_png(&baseline, w, h, "group_row_maximize_baseline");
+
+    // Flip group 1 (middle) to maximized. The next render must paint
+    // ONLY that group at the row's full width — siblings collapsed.
+    row.groups[1].maximized = true;
+    let maximized = render_row(&mut renderer, &mut row);
+    let maximized_hash = pixel_hash(&maximized);
+    maybe_write_png(&maximized, w, h, "group_row_maximized");
+
+    assert_ne!(
+        baseline_hash, maximized_hash,
+        "flipping a group to maximized must change the rendered output",
+    );
+
+    // Stored rects: siblings collapsed to zero width; maximized group
+    // absorbs the row's full inner width.
+    let r0 = row.groups[0].get_rect();
+    let r1 = row.groups[1].get_rect();
+    let r2 = row.groups[2].get_rect();
+    assert!(
+        r0.width() <= 0.5,
+        "left sibling must collapse to zero width when peer is maximized; got {}",
+        r0.width(),
+    );
+    assert!(
+        r2.width() <= 0.5,
+        "right sibling must collapse to zero width when peer is maximized; got {}",
+        r2.width(),
+    );
+    let row_w = row.get_rect().width();
+    assert!(
+        (r1.width() - row_w).abs() < 1.0,
+        "maximized group must absorb the row's full width; got group={} row={}",
+        r1.width(),
+        row_w,
+    );
+}
+
 /// Determinism guard: two GroupRows built identically must produce
 /// byte-identical pixels. Without this, the journey test's pixel-hash
 /// comparisons are meaningless.
