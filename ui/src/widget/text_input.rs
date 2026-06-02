@@ -330,6 +330,47 @@ impl TextInput {
         self.selection_anchor = None;
     }
 
+    /// If a selection is active, return its byte range as
+    /// `Some((min, max))`. Used by `RichTextLine` to apply inline
+    /// marks (`Ctrl-B` / `Ctrl-I` / `Ctrl-E`) to the selected slice.
+    pub fn selection_range_public(&self) -> Option<(usize, usize)> {
+        self.selection_range()
+    }
+
+    /// Per-character left-edge x positions in logical pixels
+    /// (filled by the most-recent draw call). `len()` is
+    /// `text.len() + 1` — the last entry is the right edge of the
+    /// final glyph. Empty until the first draw lands.
+    pub fn char_x_positions(&self) -> &[f64] {
+        &self.char_x_positions
+    }
+
+    /// Current horizontal scroll offset (logical pixels). Used by
+    /// `RichTextLine` overlay drawing to project mark backgrounds
+    /// against the same scroll axis as the underlying text.
+    pub fn scroll_x(&self) -> f64 {
+        self.scroll_x
+    }
+
+    /// True iff the input is currently rendering in plain-chrome mode
+    /// (no rounded background / border). Block-editor cells use this.
+    pub fn is_plain(&self) -> bool {
+        self.plain
+    }
+
+    /// Internal-padding-x the input uses when laying out its text
+    /// against `rect`. In plain-chrome mode this is 0; in the styled
+    /// form-field mode it's `theme.padding_standard`. Exposed so
+    /// wrapper widgets can compute the absolute pixel position of a
+    /// byte offset (caret-precise popover anchoring, link hit-test).
+    pub fn text_padding_x(&self, theme: &Theme) -> f64 {
+        if self.plain {
+            0.0
+        } else {
+            theme.padding_standard as f64
+        }
+    }
+
     /// One-shot read of user edits. Returns `Some(text)` if any
     /// user-initiated edit has landed since the last call, else
     /// `None`. The dirty flag is cleared.
