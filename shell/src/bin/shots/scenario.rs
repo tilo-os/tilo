@@ -47,6 +47,30 @@ pub enum Action {
         to: Point,
         steps: u32,
     },
+    /// Synthesise a `WindowEvent::MouseWheel { LineDelta(dx, dy) }`.
+    /// The host's wheel handlers gate on `last_cursor`, so the caller
+    /// is expected to have dispatched a recent `MoveCursor` to align
+    /// the cursor over the target widget first.
+    MouseWheel { dx: f32, dy: f32 },
+    /// Synthesise a `CursorMoved` without a press/release. Use with
+    /// `MousePress`/`MouseRelease` to compose drags that need mid-
+    /// gesture snapshots.
+    MoveCursor(Point),
+    /// Synthesise a left-button `Pressed` at the current cursor.
+    /// Caller owns the matching `MouseRelease`.
+    MousePress,
+    /// Synthesise a left-button `Released` at the current cursor.
+    MouseRelease,
+    /// Capture `frames` snapshots in a row, each separated by
+    /// `gap_frames` of animation tick. Names them `prefix-001`,
+    /// `prefix-002`, …. Useful for inspecting every frame of an
+    /// animation (workspace switch, drag-out spawn, maximize
+    /// transition) without re-driving the scenario for each.
+    SnapshotSequence {
+        prefix: &'static str,
+        frames: u32,
+        gap_frames: u32,
+    },
     /// Synth a `KeyboardInput { Pressed }` for a logical key.
     Key(Key),
     /// Type a literal string (one Key::Character per char, skipping
@@ -113,6 +137,29 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
             ),
         },
         Action::Drag { from, to, steps } => driver.drag(*from, *to, *steps),
+        Action::MouseWheel { dx, dy } => driver.mouse_wheel(*dx, *dy),
+        Action::MoveCursor(p) => driver.move_cursor(*p),
+        Action::MousePress => driver.press(),
+        Action::MouseRelease => driver.release(),
+        Action::SnapshotSequence {
+            prefix,
+            frames,
+            gap_frames,
+        } => {
+            for i in 1..=*frames {
+                if *gap_frames > 0 {
+                    driver.step_frames(*gap_frames);
+                }
+                driver.relayout();
+                // Use a heap-allocated name leaked to 'static so the
+                // `&'static str` `Snapshot` variant can carry it. The
+                // process exits at the end of `shots`, so the leak is
+                // bounded by scenario length and stays within tens of KB.
+                let name: &'static str =
+                    Box::leak(format!("{}-{:03}", prefix, i).into_boxed_str());
+                sink.capture(driver, name);
+            }
+        }
         Action::Key(k) => driver.press_key(k.clone()),
         Action::Type(s) => driver.type_str(s),
         Action::Modifiers(m) => driver.set_modifiers(*m),
@@ -376,6 +423,8 @@ pub fn catalogue() -> Vec<Scenario> {
         tab_drag(),
         tab_drag_out_to_new_group(),
         workspace_switch(),
+        workspace_switch_animated(),
+        wheel_scroll_workspaces(),
     ]
 }
 
@@ -473,6 +522,58 @@ fn tab_drag_out_to_new_group() -> Scenario {
             },
             Action::Wait(4),
             Action::Snapshot("02-after-drag"),
+        ],
+    }
+}
+
+/// Capture every frame of the workspace-slide animation. After
+/// triggering a switch we snapshot N frames in a row with 1 animation
+/// tick between each so the slide ease is visible. `WS_SLIDE_MS = 260`,
+/// so 18 frames at 16 ms each (288 ms) covers the slide + a touch of
+/// post-settle.
+fn workspace_switch_animated() -> Scenario {
+    Scenario {
+        name: "workspace_switch_animated",
+        description: "Per-frame capture of the workspace-slide animation (ws 0 → ws 1).",
+        actions: vec![
+            Action::Snapshot("00-rest"),
+            Action::SwitchWorkspace(1),
+            Action::SnapshotSequence {
+                prefix: "slide",
+                frames: 18,
+                gap_frames: 1,
+            },
+        ],
+    }
+}
+
+/// Drive the wheel disc via MouseWheel events over its hit area and
+/// capture frame-by-frame so the user can verify the discrete-detent
+/// click_to_spoke animation is visible (one workspace per scroll burst).
+fn wheel_scroll_workspaces() -> Scenario {
+    Scenario {
+        name: "wheel_scroll_workspaces",
+        description:
+            "Scroll the workspace wheel via MouseWheel; capture every animation frame.",
+        actions: vec![
+            // Move cursor over the wheel disc (left edge of viewport).
+            Action::MoveCursor(Point::new(80.0, 540.0)),
+            Action::Snapshot("00-pre"),
+            // Negative dy advances forward (LineDelta sign convention
+            // matches a wheel-down gesture). 8 lines × 16 px/line =
+            // 128 px > the 120-px detent → fires one click_to_spoke.
+            Action::MouseWheel { dx: 0.0, dy: -8.0 },
+            Action::SnapshotSequence {
+                prefix: "detent-1",
+                frames: 12,
+                gap_frames: 1,
+            },
+            Action::MouseWheel { dx: 0.0, dy: -8.0 },
+            Action::SnapshotSequence {
+                prefix: "detent-2",
+                frames: 12,
+                gap_frames: 1,
+            },
         ],
     }
 }
