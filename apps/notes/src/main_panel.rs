@@ -46,17 +46,24 @@ use ui::widget::BlockEditor;
 
 use crate::model::PageId;
 
-/// Heading point size for the title row. Reads as a "page title"
-/// rather than body copy.
-const HEADING_SIZE: f32 = 32.0;
+/// Breadcrumb-style title size. v0.1 used a 32-pt "page title" up top
+/// which then collided with the body's H1 block (most pages open with
+/// a `# Title` heading, so the H1 reads as the page heading and the
+/// panel title is redundant). The new title is a small dim breadcrumb
+/// — always shown so the user can still tell which page they're on,
+/// but visually subordinate to the body so the H1 in the body reads
+/// as THE heading.
+const TITLE_SIZE: f32 = 13.0;
 /// Inner padding around the panel content.
 const PADDING_PX: f64 = 32.0;
 /// Empty-state hint size.
 const HINT_SIZE: f32 = 14.0;
-/// Vertical gap between the title row and the block editor.
-const TITLE_TO_EDITOR_GAP: f64 = 24.0;
-/// Title row height in CSS-like px (~ HEADING_SIZE * 1.25 + a bit).
-const TITLE_HEIGHT: f64 = 44.0;
+/// Vertical gap between the breadcrumb title and the block editor.
+/// Shorter than the previous 24 px since the title is now a small
+/// chip rather than a heading row.
+const TITLE_TO_EDITOR_GAP: f64 = 12.0;
+/// Breadcrumb title row height (~ TITLE_SIZE * 1.5).
+const TITLE_HEIGHT: f64 = 20.0;
 
 pub struct MainPanel {
     /// Currently displayed page (None until a selection lands).
@@ -80,6 +87,22 @@ pub struct MainPanel {
     /// True until the next `mark_drawn`. Flipped on page swap, on
     /// title change, on rect resize, on editor mutations.
     dirty: bool,
+    /// Vertical scroll offset for the panel body (in CSS-like px).
+    /// Bumped by mouse-wheel events; clamped each frame to the
+    /// content overflow extent in `apply_layout`. We hand-roll this
+    /// rather than wrapping in `ui::widget::Scrollable` because the
+    /// panel owns its sub-tree (title + editor) as struct fields, not
+    /// as boxed Elements — wrapping in Scrollable would require
+    /// significant ownership churn for what amounts to "clip + shift".
+    scroll_y: f64,
+    /// True after a click on the panel that wasn't routed to a block
+    /// — used to grant scroll focus so wheel events target the panel
+    /// even when the editor itself isn't focused. Stored so a future
+    /// trackpad/keyboard-scroll path has somewhere to read it. Always
+    /// safe to be true: the panel is the only scrollable region in
+    /// the notes app.
+    #[allow(dead_code)]
+    has_scroll_focus: bool,
 }
 
 impl MainPanel {
@@ -93,6 +116,8 @@ impl MainPanel {
             editor_node: None,
             title_node: None,
             dirty: true,
+            scroll_y: 0.0,
+            has_scroll_focus: false,
         }
     }
 
@@ -116,6 +141,9 @@ impl MainPanel {
         // focused_block needs to be primed.
         self.editor.set_focus(true);
         self.body = body;
+        // Brand-new page → reset scroll to top (the previous page's
+        // scroll position is meaningless for the new content).
+        self.scroll_y = 0.0;
         self.dirty = true;
     }
 
@@ -142,6 +170,7 @@ impl MainPanel {
         self.editor.set_blocks(blocks);
         self.editor.set_focus(true);
         self.body = body;
+        self.scroll_y = 0.0;
         self.dirty = true;
     }
 
@@ -151,6 +180,7 @@ impl MainPanel {
         self.title = None;
         self.editor = BlockEditor::new();
         self.body = String::new();
+        self.scroll_y = 0.0;
         self.dirty = true;
     }
 
@@ -221,68 +251,71 @@ impl Widget for MainPanel {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        theme: &Theme,
+        _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The title is drawn directly in `draw`, but we still want a
-        // taffy leaf reserving that space so the editor lands below it.
-        let title_node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::length(TITLE_HEIGHT as f32),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
-        self.title_node = Some(title_node);
-
-        let editor_node = self.editor.build_layout(taffy, theme, node_map);
-        // Preserve the editor's own internal flex-column layout
-        // while overriding the parent-driven sizing fields. See the
-        // matching pattern in `NotesApp::build_layout` for why
-        // `..Default::default()` would be wrong here.
+        // The panel is a **leaf** in the parent's flex tree — we do
+        // all internal positioning by hand in `apply_layout`. Using a
+        // flex container with the editor as a child caused taffy's
+        // `content_size` for long pages (many blocks → big intrinsic
+        // height) to grow the panel past the parent's allocation,
+        // pushing the status bar off-screen. A leaf with parent-driven
+        // sizing sidesteps that — the editor is laid out manually
+        // inside the panel rect with overflow clipped via push_layer
+        // in `draw` and `scroll_y` shifting block rects.
+        //
+        // We still register the editor's tree so its descendants get
+        // taffy-measured (RichTextLine reports intrinsic height per
+        // block). The editor's parent in the taffy tree IS the panel
+        // node, but we hide that by giving the editor `position:
+        // Absolute` — so taffy doesn't push the panel's size from the
+        // editor's content extent.
+        let editor_node = self.editor.build_layout(taffy, _theme, node_map);
         if let Ok(existing) = taffy.style(editor_node).cloned() {
             let _ = taffy.set_style(
                 editor_node,
                 Style {
+                    position: taffy::Position::Absolute,
                     size: Size {
-                        width: Dimension::percent(1.0),
+                        // Width = panel width minus padding. Pulled from
+                        // the parent's resolved size at `apply_layout`
+                        // time; here we use auto so taffy doesn't
+                        // pre-clamp before we know the panel width.
+                        width: Dimension::auto(),
                         height: Dimension::auto(),
                     },
-                    flex_grow: 1.0,
+                    inset: taffy::Rect {
+                        left: length(PADDING_PX as f32),
+                        right: length(PADDING_PX as f32),
+                        top: length(
+                            (PADDING_PX + TITLE_HEIGHT + TITLE_TO_EDITOR_GAP) as f32,
+                        ),
+                        bottom: taffy::LengthPercentageAuto::auto(),
+                    },
                     ..existing
                 },
             );
         }
         self.editor_node = Some(editor_node);
+        // Title is drawn directly in `draw`; no taffy node needed.
+        self.title_node = None;
 
         let node = taffy
             .new_with_children(
                 Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Column,
-                    align_items: Some(taffy::AlignItems::Stretch),
-                    padding: taffy::Rect {
-                        left: length(PADDING_PX as f32),
-                        right: length(PADDING_PX as f32),
-                        top: length(PADDING_PX as f32),
-                        bottom: length(PADDING_PX as f32),
-                    },
-                    gap: taffy::Size {
-                        width: length(0.0),
-                        height: length(TITLE_TO_EDITOR_GAP as f32),
-                    },
                     size: Size {
                         width: Dimension::auto(),
                         height: Dimension::auto(),
+                    },
+                    overflow: taffy::Point {
+                        x: taffy::Overflow::Hidden,
+                        y: taffy::Overflow::Hidden,
                     },
                     flex_grow: 1.0,
                     flex_basis: Dimension::length(0.0),
                     ..Default::default()
                 },
-                &[title_node, editor_node],
+                &[editor_node],
             )
             .unwrap();
         node_map.insert(node, self as *mut dyn Widget);
@@ -301,9 +334,42 @@ impl Widget for MainPanel {
             self.dirty = true;
         }
         self.rect = new_rect;
-        let new_origin = Point::new(self.rect.x0, self.rect.y0);
+        // Lay the editor out at the unshifted origin first so we can
+        // compute its natural content extent, then shift by -scroll_y
+        // for the second pass. Cheaper than measuring twice through
+        // taffy — we only re-walk the apply_layout origin.
         if let Some(n) = self.editor_node {
-            self.editor.apply_layout(taffy, n, new_origin);
+            let unshifted_origin = Point::new(self.rect.x0, self.rect.y0);
+            self.editor.apply_layout(taffy, n, unshifted_origin);
+            let editor_rect = self.editor.get_rect();
+            let last_block_bottom = self
+                .editor
+                .blocks()
+                .iter()
+                .map(|b| b.line.get_rect().y1)
+                .fold(editor_rect.y0, f64::max);
+            // Content height = where the lowest block actually ends,
+            // minus the editor's top. This catches taffy under-reports
+            // for flex-column overflow (same kludge ui::Scrollable uses
+            // in its apply_layout).
+            let content_h = (last_block_bottom - editor_rect.y0).max(0.0);
+            let viewport_h = (self.rect.height() - 2.0 * PADDING_PX
+                - TITLE_HEIGHT
+                - TITLE_TO_EDITOR_GAP)
+                .max(0.0);
+            let max_scroll = (content_h - viewport_h).max(0.0);
+            let clamped = self.scroll_y.clamp(0.0, max_scroll);
+            if clamped != self.scroll_y {
+                self.scroll_y = clamped;
+                self.dirty = true;
+            }
+            // Re-apply layout with the (possibly clamped) scroll
+            // offset so block rects reflect their on-screen position.
+            // Without this, click hit-tests would target stale rects
+            // for a scrolled view.
+            let shifted_origin =
+                Point::new(self.rect.x0, self.rect.y0 - self.scroll_y);
+            self.editor.apply_layout(taffy, n, shifted_origin);
         }
     }
 
@@ -332,21 +398,45 @@ impl Widget for MainPanel {
 
         match &self.title {
             Some(t) => {
+                // Breadcrumb-style title — dim, small, always visible.
+                // The body's H1 (if present) is the real heading; this
+                // chip is just "you are here". Draw OUTSIDE the scroll
+                // clip so the breadcrumb stays put while body scrolls.
                 text_renderer.draw_text(
                     scene,
                     t,
-                    HEADING_SIZE,
-                    tokens.colors.text_primary,
+                    TITLE_SIZE,
+                    tokens.colors.text_dim,
                     transform * Affine::translate((inner_x, inner_y)),
                     Some(inner_w),
                 );
+
+                // Clip the editor body to the panel's scrollable
+                // viewport so blocks past the bottom don't bleed onto
+                // the status bar.
+                let body_clip = Rect::new(
+                    self.rect.x0,
+                    self.rect.y0 + PADDING_PX + TITLE_HEIGHT + TITLE_TO_EDITOR_GAP,
+                    self.rect.x1,
+                    self.rect.y1 - PADDING_PX,
+                );
+                scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    1.0,
+                    transform,
+                    &body_clip,
+                );
                 self.editor
                     .draw(scene, transform, text_renderer, theme, presence);
+                scene.pop_layer();
                 // Overlay popovers (slash menu) — drawn AFTER the
                 // main editor scene so they land on top of every
                 // block. The BlockEditor exposes its overlay drawer
                 // directly so the host doesn't have to know which
-                // overlays the editor owns.
+                // overlays the editor owns. Drawn OUTSIDE the scroll
+                // clip — popovers must be visible at their anchor
+                // even if the editor scrolls past them.
                 self.editor.draw_overlay(scene, transform, text_renderer, theme);
             }
             None => {
@@ -376,6 +466,26 @@ impl Widget for MainPanel {
     ) {
         if self.page_id.is_none() {
             return;
+        }
+        // Mouse wheel: scroll the panel's body. Matches ui::Scrollable's
+        // wheel-to-px conversion (~120 px / notch). Consumes the event
+        // so the underlying TextInput doesn't try to interpret a wheel
+        // delta as a cursor move.
+        if let WindowEvent::MouseWheel { delta, .. } = event {
+            let dy = match delta {
+                winit::event::MouseScrollDelta::LineDelta(_, y) => -(*y as f64) * 40.0,
+                winit::event::MouseScrollDelta::PixelDelta(p) => -p.y,
+            };
+            if dy != 0.0 {
+                let prev = self.scroll_y;
+                self.scroll_y = (self.scroll_y + dy).max(0.0);
+                // Clamp against max_scroll happens in apply_layout
+                // since that's where we know the content extent.
+                if self.scroll_y != prev {
+                    self.dirty = true;
+                    *handled = true;
+                }
+            }
         }
         if let Some(n) = self.editor_node {
             self.editor.handle_event(
