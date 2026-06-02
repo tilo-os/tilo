@@ -77,6 +77,12 @@ pub struct ColorPicker {
     /// release binaries so the test surface doesn't leak into prod.
     #[cfg(any(test, debug_assertions))]
     hex_input_force_dirty_for_test: bool,
+    /// Stashed mid-`handle_event` when the embedded hex input asked
+    /// for focus; consumed inside `set_focus(true)` to redirect the
+    /// App's "focus this node" call onto the embedded input.
+    /// Routing focus through the App (instead of taking it locally)
+    /// is the path that blurs whatever sibling held focus before.
+    hex_input_focus_pending: bool,
 }
 
 impl ColorPicker {
@@ -98,6 +104,7 @@ impl ColorPicker {
             hex_input_rect: Rect::ZERO,
             #[cfg(any(test, debug_assertions))]
             hex_input_force_dirty_for_test: false,
+            hex_input_focus_pending: false,
         };
         let hex = s.hex_string();
         s.hex_input.set_text(&hex);
@@ -619,12 +626,13 @@ impl Widget for ColorPicker {
             handled, focus_target, node_id, taffy,
         );
         if *focus_target != prev_focus && self.hex_input_rect.contains(self.last_cursor) {
-            self.hex_input.set_focus(true);
-            // Drop picker-level focus — only one of us is focused
-            // at a time.
-            self.is_focused = false;
-            // Don't let the App route focus to the picker by id.
-            *focus_target = prev_focus;
+            // The input wants focus. Keep `focus_target = Some(node_id)`
+            // (the input set it on our id, since it's not in node_map)
+            // so the App calls `set_focused_node(picker_id)` — that
+            // path blurs any previously-focused sibling widget. Our
+            // `set_focus(true)` will then see `hex_input_focus_pending`
+            // and redirect the focus onto the embedded input.
+            self.hex_input_focus_pending = true;
         }
 
         match event {
@@ -708,7 +716,21 @@ impl Widget for ColorPicker {
     fn get_rect(&self) -> Rect { self.rect }
 
     fn is_focusable(&self) -> bool { true }
-    fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
+    fn set_focus(&mut self, focused: bool) {
+        if focused && self.hex_input_focus_pending {
+            // The App is delivering the focus the embedded hex input
+            // asked for. Redirect into the input; keep our own
+            // `is_focused` false so we don't double-claim.
+            self.hex_input_focus_pending = false;
+            self.is_focused = false;
+            self.hex_input.set_focus(true);
+        } else {
+            self.is_focused = focused;
+            if !focused {
+                self.hex_input.set_focus(false);
+            }
+        }
+    }
     fn is_focused(&self) -> bool { self.is_focused }
 }
 

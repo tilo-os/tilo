@@ -255,8 +255,8 @@ impl TextInput {
     pub fn set_text(&mut self, s: &str) {
         if self.text == s { return; }
         self.text = s.to_string();
-        self.cursor_pos = self.cursor_pos.min(self.text.len());
         self.selection_anchor = None;
+        self.clamp_to_text();
         self.dirty = false;
         self.last_edit_time = None;
     }
@@ -417,6 +417,7 @@ impl TextInput {
 
 impl Widget for TextInput {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if !self.crdt_bound { return; }
         if let Ok(Some((val, obj_id))) = state.get(root, self.on_change_path.as_str()) {
             match val {
                 Value::Scalar(s) => {
