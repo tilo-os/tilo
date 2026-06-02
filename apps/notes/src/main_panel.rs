@@ -304,6 +304,12 @@ impl Widget for MainPanel {
                 );
                 self.editor
                     .draw(scene, transform, text_renderer, theme, presence);
+                // Overlay popovers (slash menu) — drawn AFTER the
+                // main editor scene so they land on top of every
+                // block. The BlockEditor exposes its overlay drawer
+                // directly so the host doesn't have to know which
+                // overlays the editor owns.
+                self.editor.draw_overlay(scene, transform, text_renderer, theme);
             }
             None => {
                 text_renderer.draw_text(
