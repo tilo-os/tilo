@@ -394,6 +394,50 @@ impl ShellDriver {
                     );
                 });
             }
+            "multi-group" => {
+                // Construct a 3-group strip in the active workspace by
+                // pushing two extra `WindowGroup` rows alongside the
+                // bootstrap default. This is the only scene-time mutation
+                // that exercises the inter-group chrome (resize handles,
+                // active-group outlines, gap drop-zones) — every other
+                // scene operates on the single-group bootstrap.
+                use shell::shell::state::{WindowGroup, Tab, TileContent, WindowWidth};
+                self.with_chrome(|st| {
+                    let mut tree = st.tree_mut();
+                    if let Some(ws) = tree.active_workspace_mut() {
+                        if let Some(strip) = ws.strips.first_mut() {
+                            // Two synthetic groups, Normal-width, each
+                            // with one stub tab. IDs picked far above the
+                            // bootstrap range so they don't collide with
+                            // anything the persistence layer might
+                            // produce.
+                            for (gid, tid, label) in [
+                                (9001u64, 9101u64, "Stub-A"),
+                                (9002u64, 9102u64, "Stub-B"),
+                            ] {
+                                let stub_tab = Tab {
+                                    id: tid,
+                                    title: label.to_string(),
+                                    tile: TileContent::Stub {
+                                        kind: shell::shell::state::AppKind::Settings,
+                                        label: label.to_string(),
+                                    },
+                                };
+                                let group = WindowGroup {
+                                    id: gid,
+                                    tabs: vec![stub_tab],
+                                    active_tab: tid,
+                                    width: WindowWidth::Normal,
+                                    maximized: false,
+                                };
+                                strip.window_groups.push(group);
+                            }
+                        }
+                    }
+                    drop(tree);
+                    st.bump();
+                });
+            }
             other => return Err(format!("unknown scene '{other}'")),
         }
         Ok(())
@@ -403,6 +447,7 @@ impl ShellDriver {
     /// legacy `--scenes` flag for default expansion + validation.
     pub const ALL_SCENES: &'static [&'static str] = &[
         "desktop",
+        "multi-group",
         "overview",
         "palette",
         "quick-settings",
