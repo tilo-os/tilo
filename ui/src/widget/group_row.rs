@@ -619,6 +619,26 @@ impl Widget for GroupRow {
             .map(|g| g.build_layout(taffy, theme, node_map))
             .collect();
         self.node_ids = group_nodes.clone();
+        // Concept-parity maximize: the moment any child group is
+        // maximized, the row visually collapses to that single group
+        // at the strip's full width and every sibling vanishes.
+        // Mirrors the concept's `WindowFrame.tsx:188-200` behaviour
+        // where the maximized frame is `position: fixed`,
+        // `width: 100vw`, `height: 100vh`, `z-index: 50` — siblings
+        // stay in the DOM but are visually obscured by the fixed
+        // overlay. We model the same outcome via `display: None` on
+        // sibling taffy nodes so they collapse to zero size and don't
+        // paint. Inter-group `ResizeHandle`s are skipped entirely in
+        // the maximize branch — they belong to gaps between visible
+        // siblings, and the strip has no visible siblings while one
+        // group owns the row.
+        //
+        // Edge case: if multiple groups happen to be flagged maximized
+        // simultaneously (e.g. via a persisted-state restore path), the
+        // first one wins; the rest are hidden alongside the non-
+        // maximized siblings. Same observable outcome as the click-
+        // toggle flow where only one is ever true at a time.
+        let maximized_idx = self.groups.iter().position(|g| g.maximized);
         // Resize the handle pool to match the inter-group gap count
         // (`max(0, N-1)`). Handles are structurally tied to gaps
         // between adjacent groups, so a group insert/remove drives
@@ -643,14 +663,27 @@ impl Widget for GroupRow {
         // leading or trailing children. Their declared 8 px width
         // replaces the row's old inter-group gap, so the gap on the
         // flex container drops to 0 below.
+        //
+        // While any group is maximized, handles are omitted from the
+        // child list entirely: the row has no visible inter-group
+        // gaps because every sibling is collapsed to `display: None`.
+        // Skipping the build keeps the handles from claiming non-zero
+        // width inside the maximized layout and matches the concept's
+        // absent resize affordance in fullscreen mode.
         self.handle_node_ids.clear();
         let mut children: Vec<NodeId> = Vec::with_capacity(group_nodes.len() + desired_handles);
-        for (i, gn) in group_nodes.iter().enumerate() {
-            children.push(*gn);
-            if i + 1 < group_nodes.len() {
-                let hn = self.handles[i].build_layout(taffy, theme, node_map);
-                self.handle_node_ids.push(hn);
-                children.push(hn);
+        if maximized_idx.is_some() {
+            for gn in group_nodes.iter() {
+                children.push(*gn);
+            }
+        } else {
+            for (i, gn) in group_nodes.iter().enumerate() {
+                children.push(*gn);
+                if i + 1 < group_nodes.len() {
+                    let hn = self.handles[i].build_layout(taffy, theme, node_map);
+                    self.handle_node_ids.push(hn);
+                    children.push(hn);
+                }
             }
         }
         // Pin `flex_shrink: 0.0` on every group child so the strip is
@@ -670,12 +703,20 @@ impl Widget for GroupRow {
         // groups; clipping was missing, so overflow bled into the
         // window's edge / OS chrome.
         //
-        // Maximized groups keep `flex_grow: 1e6` (from
-        // `WindowGroup::build_layout`), absorbing the strip's slack
-        // when the user explicitly invokes Maximize2.
-        for &node in &group_nodes {
+        // Maximize branch (`maximized_idx == Some(i)`): siblings at
+        // index `!= i` get `display: None` so they collapse to zero
+        // and don't paint. The maximized group keeps its own
+        // `flex_grow: 1e6` (set in `WindowGroup::build_layout`),
+        // which absorbs the strip's entire width inside the Flex row
+        // — the concept's `width: 100vw` outcome.
+        for (i, &node) in group_nodes.iter().enumerate() {
             let mut style = taffy.style(node).unwrap().clone();
             style.flex_shrink = 0.0;
+            if let Some(max_i) = maximized_idx {
+                if i != max_i {
+                    style.display = Display::None;
+                }
+            }
             taffy.set_style(node, style).unwrap();
         }
         // The row must fill the remaining vertical space inside the
@@ -831,8 +872,23 @@ impl Widget for GroupRow {
             transform,
             &clip,
         );
-        for g in &mut self.groups {
-            g.draw(scene, transform, tr, theme, presence);
+        // Concept-parity maximize: when any group is maximized, paint
+        // ONLY that group. The siblings are already collapsed to
+        // `display: None` by `build_layout`, so their stored rects are
+        // degenerate (zero-area), but calling `draw` on them would
+        // still emit chrome (bar pill outlines, shadow sprites) at the
+        // origin — visible as ghost artwork bleeding behind the
+        // maximized tile. Skipping the per-sibling draw keeps the row
+        // looking like the concept's `width: 100vw` fixed overlay.
+        let maximized_idx = self.groups.iter().position(|g| g.maximized);
+        if let Some(max_i) = maximized_idx {
+            if let Some(g) = self.groups.get_mut(max_i) {
+                g.draw(scene, transform, tr, theme, presence);
+            }
+        } else {
+            for g in &mut self.groups {
+                g.draw(scene, transform, tr, theme, presence);
+            }
         }
         // Paint the inter-group resize handles after the groups so
         // the accent rule sits on top of any group-edge artwork.
@@ -840,8 +896,14 @@ impl Widget for GroupRow {
         // flight: the cross-group drop-zone capsule (drawn below)
         // takes priority during a drag so the user isn't confused
         // by two overlapping affordances on the same gap.
+        //
+        // Handles are also skipped entirely while any group is
+        // maximized — `build_layout` doesn't include the handle nodes
+        // in the maximize branch, so their stored neighbour rects are
+        // stale; painting them anyway would draw ghost rules at the
+        // pre-maximize gap positions.
         let any_drag = self.groups.iter().any(|g| g.drag_in_flight());
-        if !any_drag {
+        if !any_drag && maximized_idx.is_none() {
             for h in &mut self.handles {
                 h.draw(scene, transform, tr, theme, presence);
             }
@@ -3287,6 +3349,166 @@ mod tests {
         assert!(
             !row.handle_at(0).unwrap().is_hovered(),
             "tab drag in flight must inhibit handle hover (cross-group drop owns the gap)",
+        );
+    }
+
+    /// Concept-parity guard: when ANY group is maximized, every sibling
+    /// must collapse to zero rendered area (matches the concept's
+    /// `position: fixed; width: 100vw` overlay in `WindowFrame.tsx:188`
+    /// where siblings stay in the DOM but are obscured), the maximized
+    /// group must absorb the row's full inner width, and no inter-group
+    /// resize handles must be present.
+    ///
+    /// Pre-fix the row used `flex_grow: 1e6 + flex_basis: 0` to make
+    /// siblings squeeze toward min-content, but siblings remained
+    /// visible at non-zero width. That's not the concept's behaviour —
+    /// the maximized frame fully covers the strip.
+    #[test]
+    fn maximized_group_hides_siblings_and_absorbs_row_width() {
+        // Three groups so we can verify BOTH a left-of-max and a
+        // right-of-max sibling collapse, not just one.
+        let (mut row, taffy, root) =
+            make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+        // Sanity: pre-maximize, every group has positive width and a
+        // resize handle exists between each adjacent pair.
+        assert!(row.groups[0].get_rect().width() > 0.0);
+        assert!(row.groups[1].get_rect().width() > 0.0);
+        assert!(row.groups[2].get_rect().width() > 0.0);
+        assert_eq!(row.handle_count(), 2, "two gaps → two handles pre-maximize");
+
+        // Flip group 1 (the middle one) to maximized and re-run the
+        // full layout pass, mirroring what the App does after
+        // `take_structure_dirty()` reports true on a maximize toggle.
+        row.groups[1].maximized = true;
+        let theme = Theme::dark();
+        let mut taffy_new: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let new_root = row.build_layout(&mut taffy_new, &theme, &mut node_map);
+        use taffy::AvailableSpace;
+        let viewport = taffy_new
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(2000.0),
+                        height: Dimension::length(600.0),
+                    },
+                    ..Default::default()
+                },
+                &[new_root],
+            )
+            .unwrap();
+        taffy_new
+            .compute_layout_with_measure(
+                viewport,
+                taffy::Size {
+                    width: AvailableSpace::Definite(2000.0),
+                    height: AvailableSpace::Definite(600.0),
+                },
+                |_, _, _, _, _| taffy::Size::ZERO,
+            )
+            .expect("taffy compute_layout");
+        row.apply_layout(&taffy_new, new_root, Point::ORIGIN);
+        let _ = taffy; // silence unused-binding lint from the helper.
+        let _ = root;
+
+        // Siblings (indices 0 and 2) must collapse to zero width — the
+        // concept's "obscured behind the fixed overlay" outcome,
+        // modelled here via `display: None` on the taffy nodes.
+        let r0 = row.groups[0].get_rect();
+        let r2 = row.groups[2].get_rect();
+        assert!(
+            r0.width() <= 0.5,
+            "left sibling must collapse to zero width when a peer is maximized; got {}",
+            r0.width(),
+        );
+        assert!(
+            r2.width() <= 0.5,
+            "right sibling must collapse to zero width when a peer is maximized; got {}",
+            r2.width(),
+        );
+
+        // The maximized group must absorb the row's inner width (within
+        // a small fp tolerance for taffy rounding). It paints the
+        // concept's `width: 100vw` fixed overlay.
+        let r1 = row.groups[1].get_rect();
+        let row_w = row.rect.width();
+        assert!(
+            (r1.width() - row_w).abs() < 1.0,
+            "maximized group must absorb the row's full width; got group={} row={}",
+            r1.width(),
+            row_w,
+        );
+
+        // No inter-group resize handle nodes were built in the maximize
+        // branch — they would be visible affordances on collapsed gaps.
+        // The pool itself stays sized to N-1 (the handle_pool always
+        // mirrors the gap count for structural simplicity), but
+        // `handle_node_ids` must be empty so no draw / dispatch runs.
+        assert_eq!(
+            row.handle_node_ids.len(),
+            0,
+            "no handle taffy nodes must be built while a group is maximized",
+        );
+    }
+
+    /// Restoring (un-maximizing) must put the row back to its
+    /// pre-maximize layout: every sibling visible at positive width,
+    /// every inter-group handle re-created. Guards against a one-way
+    /// latch where the maximize branch leaves stale state behind.
+    #[test]
+    fn unmaximize_restores_siblings_and_handles() {
+        let (mut row, _t, _r) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+        // Maximize then immediately un-maximize, re-running layout
+        // after each flip.
+        row.groups[1].maximized = true;
+        let theme = Theme::dark();
+        let mut relayout = |row: &mut GroupRow| -> TaffyTree<()> {
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let root = row.build_layout(&mut taffy, &theme, &mut node_map);
+            use taffy::AvailableSpace;
+            let viewport = taffy
+                .new_with_children(
+                    Style {
+                        size: Size {
+                            width: Dimension::length(2000.0),
+                            height: Dimension::length(600.0),
+                        },
+                        ..Default::default()
+                    },
+                    &[root],
+                )
+                .unwrap();
+            taffy
+                .compute_layout_with_measure(
+                    viewport,
+                    taffy::Size {
+                        width: AvailableSpace::Definite(2000.0),
+                        height: AvailableSpace::Definite(600.0),
+                    },
+                    |_, _, _, _, _| taffy::Size::ZERO,
+                )
+                .expect("taffy compute_layout");
+            row.apply_layout(&taffy, root, Point::ORIGIN);
+            taffy
+        };
+        let _ = relayout(&mut row);
+
+        // Now restore.
+        row.groups[1].maximized = false;
+        let _ = relayout(&mut row);
+
+        for (i, g) in row.groups.iter().enumerate() {
+            assert!(
+                g.get_rect().width() > 0.0,
+                "group {} must regain positive width after un-maximize",
+                i,
+            );
+        }
+        assert_eq!(
+            row.handle_node_ids.len(),
+            2,
+            "handle nodes must be rebuilt on un-maximize (2 gaps → 2 handles)",
         );
     }
 }
