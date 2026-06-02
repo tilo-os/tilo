@@ -184,6 +184,15 @@ pub struct TextInput {
     last_click_time: Option<Instant>,
     last_click_pos: Point,
     click_count: u32,
+    /// True when a user edit landed since the last `take_dirty()`.
+    /// Cleared on `take_dirty()` and on `set_text()` (programmatic
+    /// writes by the parent don't count as user edits).
+    dirty: bool,
+    /// `true` in CRDT mode (a path was supplied); `false` in local
+    /// mode. Gates whether the edit helpers attempt to splice into
+    /// `state` (they no-op cleanly when this is false even if a
+    /// path string was set without an actual CRDT object).
+    crdt_bound: bool,
     on_change_path: String,
     last_mouse_pos: Point,
     char_x_positions: Vec<f64>,
@@ -214,6 +223,58 @@ impl TextInput {
             char_x_positions: Vec::new(),
             scroll_x: 0.0,
             last_edit_time: None,
+            dirty: false,
+            crdt_bound: false,
+        }
+    }
+
+    /// Construct a TextInput that owns its own string with no CRDT
+    /// integration. Use when a parent widget needs a small edit
+    /// field (color-picker hex, in-place rename, etc.) and doesn't
+    /// have a CRDT path to spend on it. Read the live string via
+    /// [`value`] and observe changes with [`take_dirty`].
+    pub fn local() -> Self {
+        let mut s = Self::new(Vec::new());
+        s.crdt_bound = false;
+        s
+    }
+
+    /// Set the initial text. Cursor is parked at the end. The
+    /// dirty flag stays false — this is a programmatic seed, not
+    /// a user edit.
+    pub fn with_initial_value(mut self, s: &str) -> Self {
+        self.text = s.to_string();
+        self.cursor_pos = self.text.len();
+        self.dirty = false;
+        self
+    }
+
+    /// Programmatically replace the text. Clamps the cursor,
+    /// clears the dirty flag — the parent set this, the user
+    /// didn't edit it.
+    pub fn set_text(&mut self, s: &str) {
+        if self.text == s { return; }
+        self.text = s.to_string();
+        self.cursor_pos = self.cursor_pos.min(self.text.len());
+        self.selection_anchor = None;
+        self.dirty = false;
+        self.last_edit_time = None;
+    }
+
+    /// Current text content, regardless of CRDT/local mode.
+    pub fn value(&self) -> &str {
+        &self.text
+    }
+
+    /// One-shot read of user edits. Returns `Some(text)` if any
+    /// user-initiated edit has landed since the last call, else
+    /// `None`. The dirty flag is cleared.
+    pub fn take_dirty(&mut self) -> Option<String> {
+        if self.dirty {
+            self.dirty = false;
+            Some(self.text.clone())
+        } else {
+            None
         }
     }
 
@@ -224,6 +285,7 @@ impl TextInput {
 
     pub fn with_on_change_path(mut self, path: &str) -> Self {
         self.on_change_path = path.to_string();
+        self.crdt_bound = !path.is_empty();
         self
     }
 
@@ -262,8 +324,9 @@ impl TextInput {
     }
 
     /// Delete the current selection from both the local string and
-    /// the CRDT. No-op if there's no selection.
-    fn delete_selection(&mut self, state: &mut AutoCommit, obj_id: &ObjId) {
+    /// the CRDT. No-op if there's no selection. In local mode
+    /// (`obj_id` is `None`), only the local string is updated.
+    fn delete_selection(&mut self, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
         let Some((start, end)) = self.selection_range() else { return; };
         let char_start = self.text[..start].chars().count();
         let char_count = self.text[start..end].chars().count();
@@ -271,26 +334,36 @@ impl TextInput {
         self.cursor_pos = start;
         self.selection_anchor = None;
         self.last_edit_time = Some(Instant::now());
-        let _ = state.splice_text(obj_id, char_start, char_count as isize, "");
+        if let Some(obj_id) = obj_id {
+            let _ = state.splice_text(obj_id, char_start, char_count as isize, "");
+        }
+        self.dirty = true;
     }
 
     /// Insert `s` at the caret, replacing the current selection if
     /// any. The CRDT delta and the local cursor are kept in sync.
-    fn insert_str(&mut self, s: &str, state: &mut AutoCommit, obj_id: &ObjId) {
+    /// In local mode (`obj_id` is `None`), only the local string is
+    /// updated.
+    fn insert_str(&mut self, s: &str, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
         if let Some((start, end)) = self.selection_range() {
             let char_start = self.text[..start].chars().count();
             let char_count = self.text[start..end].chars().count();
             self.text.replace_range(start..end, s);
             self.cursor_pos = start + s.len();
             self.selection_anchor = None;
-            let _ = state.splice_text(obj_id, char_start, char_count as isize, s);
+            if let Some(obj_id) = obj_id {
+                let _ = state.splice_text(obj_id, char_start, char_count as isize, s);
+            }
         } else {
             let char_idx = self.text[..self.cursor_pos].chars().count();
             self.text.insert_str(self.cursor_pos, s);
-            let _ = state.splice_text(obj_id, char_idx, 0, s);
+            if let Some(obj_id) = obj_id {
+                let _ = state.splice_text(obj_id, char_idx, 0, s);
+            }
             self.cursor_pos += s.len();
         }
         self.last_edit_time = Some(Instant::now());
+        self.dirty = true;
     }
 
     /// Resolve the cursor byte-position from a logical-space x point
@@ -541,8 +614,14 @@ impl Widget for TextInput {
                 if !self.is_focused || *element_state != ElementState::Pressed {
                     return;
                 }
-                let Ok(Some((Value::Object(ObjType::Text), obj_id))) =
-                    state.get(root, self.on_change_path.as_str()) else { return; };
+                let obj_id_opt: Option<ObjId> = if self.crdt_bound {
+                    match state.get(root, self.on_change_path.as_str()) {
+                        Ok(Some((Value::Object(ObjType::Text), id))) => Some(id),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
                 let shift = modifiers.state().shift_key();
                 let ctrl = modifiers.state().control_key();
 
@@ -595,7 +674,7 @@ impl Widget for TextInput {
                     }
                     Key::Named(NamedKey::Backspace) => {
                         if self.has_selection() {
-                            self.delete_selection(state, &obj_id);
+                            self.delete_selection(state, obj_id_opt.as_ref());
                         } else if self.cursor_pos > 0 {
                             let start = if ctrl {
                                 prev_word_boundary(&self.text, self.cursor_pos)
@@ -608,13 +687,16 @@ impl Widget for TextInput {
                             self.text.replace_range(start..end, "");
                             self.cursor_pos = start;
                             self.last_edit_time = Some(Instant::now());
-                            let _ = state.splice_text(&obj_id, char_start, char_count as isize, "");
+                            if let Some(obj_id) = obj_id_opt.as_ref() {
+                                let _ = state.splice_text(obj_id, char_start, char_count as isize, "");
+                            }
+                            self.dirty = true;
                         }
                         *handled = true;
                     }
                     Key::Named(NamedKey::Delete) => {
                         if self.has_selection() {
-                            self.delete_selection(state, &obj_id);
+                            self.delete_selection(state, obj_id_opt.as_ref());
                         } else if self.cursor_pos < self.text.len() {
                             let start = self.cursor_pos;
                             let end = if ctrl {
@@ -626,12 +708,15 @@ impl Widget for TextInput {
                             let char_count = self.text[start..end].chars().count();
                             self.text.replace_range(start..end, "");
                             self.last_edit_time = Some(Instant::now());
-                            let _ = state.splice_text(&obj_id, char_start, char_count as isize, "");
+                            if let Some(obj_id) = obj_id_opt.as_ref() {
+                                let _ = state.splice_text(obj_id, char_start, char_count as isize, "");
+                            }
+                            self.dirty = true;
                         }
                         *handled = true;
                     }
                     Key::Named(NamedKey::Space) => {
-                        self.insert_str(" ", state, &obj_id);
+                        self.insert_str(" ", state, obj_id_opt.as_ref());
                         *handled = true;
                     }
                     Key::Character(c) if ctrl => {
@@ -653,7 +738,7 @@ impl Widget for TextInput {
                             "x" => {
                                 if let Some(s) = self.selected_str() {
                                     clipboard_copy(&s.to_string());
-                                    self.delete_selection(state, &obj_id);
+                                    self.delete_selection(state, obj_id_opt.as_ref());
                                 }
                                 *handled = true;
                             }
@@ -665,7 +750,7 @@ impl Widget for TextInput {
                                         .filter(|c| !c.is_control())
                                         .collect();
                                     if !cleaned.is_empty() {
-                                        self.insert_str(&cleaned, state, &obj_id);
+                                        self.insert_str(&cleaned, state, obj_id_opt.as_ref());
                                     }
                                 }
                                 *handled = true;
@@ -676,11 +761,28 @@ impl Widget for TextInput {
                     _ => {
                         if let Some(t) = text {
                             if !t.as_str().chars().all(|c| c.is_control()) {
-                                self.insert_str(t.as_str(), state, &obj_id);
+                                self.insert_str(t.as_str(), state, obj_id_opt.as_ref());
                                 *handled = true;
                             }
                         }
                     }
+                }
+            }
+            WindowEvent::Ime(winit::event::Ime::Commit(t)) => {
+                if !self.is_focused {
+                    return;
+                }
+                let obj_id_opt: Option<ObjId> = if self.crdt_bound {
+                    match state.get(root, self.on_change_path.as_str()) {
+                        Ok(Some((Value::Object(ObjType::Text), id))) => Some(id),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                if !t.chars().all(|c| c.is_control()) {
+                    self.insert_str(t.as_str(), state, obj_id_opt.as_ref());
+                    *handled = true;
                 }
             }
             _ => {}
@@ -890,7 +992,7 @@ mod tests {
             .put_object(&automerge::ROOT, "text_1", ObjType::Text)
             .unwrap();
         let _ = doc.splice_text(&obj_id, 0, 0, "hello world");
-        ti.delete_selection(&mut doc, &obj_id);
+        ti.delete_selection(&mut doc, Some(&obj_id));
         assert_eq!(ti.text, "hello ");
         assert_eq!(ti.cursor_pos, 6);
         assert!(!ti.has_selection());
@@ -910,7 +1012,7 @@ mod tests {
             .put_object(&automerge::ROOT, "text_1", ObjType::Text)
             .unwrap();
         let _ = doc.splice_text(&obj_id, 0, 0, "hello world");
-        ti.insert_str("there", &mut doc, &obj_id);
+        ti.insert_str("there", &mut doc, Some(&obj_id));
         assert_eq!(ti.text, "hello there");
         assert_eq!(ti.cursor_pos, "hello there".len());
         assert!(!ti.has_selection());
