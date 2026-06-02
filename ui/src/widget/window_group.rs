@@ -623,38 +623,21 @@ impl Widget for WindowGroup {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
             size: Size { width: Dimension::length(self.width.pixels() as f32), height: Dimension::percent(1.0) },
-            // Hard cap at the parent's width so a single Normal (600 px)
-            // or Wide (800 px) group never paints past the right edge
-            // when the viewport's content area is narrower than the
-            // declared `WindowWidth`. Pairs with the `flex_shrink: 1.0`
-            // override in `GroupRow::build_layout` to make the group
-            // adapt down rather than overflow.
-            max_size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::auto(),
-            },
-            // …but never below `WIDTH_MIN_PX = 300` px, the readable
-            // minimum. Once the sum of mins exceeds the strip's
-            // viewport, groups stop shrinking and the strip starts to
-            // overflow — the same threshold that engages the strip's
-            // horizontal-pan + snap machinery (see `GroupRow::handle_event`).
-            min_size: Size {
-                width: Dimension::length(WIDTH_MIN_PX as f32),
-                height: Dimension::auto(),
-            },
-            // `flex_grow: 0.0` keeps the group at its declared
-            // `WindowWidth` (Normal=600, Wide=800, …) when there's
-            // viewport slack on the right — the spare space is
-            // wallpaper, *the spatial-OS canvas the user drops things
-            // into*. The earlier `flex_grow: 1.0` made a sole group
-            // fill the viewport so its right edge sat flush against
-            // the screen, which broke "drag a tab past the group's
-            // right edge to detach into a new group" (there was no
-            // such edge left to drag past) and made the user describe
-            // the resulting drop as "single strips" — the drag never
-            // produced the section-shaped sibling it was supposed to.
-            // Maximized groups still override to `flex_grow: 1e6`
-            // (further below) when the user explicitly maximises.
+            // Niri-style infinite strip: groups stay at their declared
+            // `WindowWidth` regardless of how many siblings the strip
+            // already has. Placing a new app *never resizes* siblings —
+            // the strip extends past the viewport and the user scrolls
+            // horizontally to reveal off-screen content. This is the
+            // core spatial-OS invariant; the earlier "shrink to fit"
+            // attempt (flex_shrink: 1 + max_size: 100%) silently
+            // violated it whenever a second tile spawned. GroupRow's
+            // `flex_shrink: 0` override on every child enforces this
+            // at the row level; `flex_grow: 0` keeps the group at its
+            // declared width even when there's strip-internal slack.
+            //
+            // Maximized groups still override to `flex_grow: 1e6` (a
+            // few lines down) so the user's explicit Maximize2 click
+            // expands one group to absorb the strip.
             flex_grow: 0.0,
             gap: taffy::Size { width: length(0.0), height: length(0.0) },
             ..Default::default()
