@@ -24,17 +24,58 @@ fn render_one_frame_against_seeded_workspace() {
     let tmp = TempDir::new().unwrap();
     let mut app = NotesApp::spawn(tmp.path().into()).expect("spawn ok");
 
-    // Phase 3: reload the Welcome page from the canonical seed so
-    // the snapshot includes every block kind (paragraph, headings,
-    // bullets, checklists, code block, divider). Bypasses winit but
-    // hits the same `BlockEditor::from_markdown` path the live app
-    // uses on selection change.
+    // v0.1: reload a short demo so the snapshot stays small enough
+    // for the status bar to be visible at the bottom. The full
+    // WELCOME_BODY is intentionally long — pin its round-trip in
+    // welcome_page_renders_all_block_kinds, not here.
     {
         let panel = app.main_panel_mut();
         if let Some(id) = panel.page_id() {
-            panel.load_page(id, "Welcome".into(), WELCOME_BODY.into());
+            let demo = "\
+# Welcome to notes
+
+A collaborative notes app for qOS.
+
+## Block types
+
+Bullet lists look like this:
+
+- Coffee
+
+- Tea
+
+Checklists track open work:
+
+- [ ] Open todo
+
+- [x] Completed item
+
+Code blocks:
+
+```rust
+fn hello() {}
+```
+
+---
+
+## Keyboard
+
+- `Cmd-K` jumps to any page
+
+- `?` opens the shortcuts overlay
+";
+            panel.load_page(id, "Welcome".into(), demo.into());
         }
     }
+    // The full welcome body still has to round-trip for the
+    // dedicated welcome test — pin its presence here just so the
+    // `WELCOME_BODY` constant isn't dropped as unused.
+    let _ = WELCOME_BODY;
+
+    // Refresh the status bar so it picks up the new (smaller)
+    // demo's word count. In the real app every winit event refreshes
+    // the bar; in tests we drive it explicitly.
+    app.tick_for_test();
 
     let theme = Theme::dark();
     let presence = PresenceCtx::empty();
