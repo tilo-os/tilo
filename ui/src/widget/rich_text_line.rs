@@ -75,8 +75,15 @@ impl RichTextLine {
     /// Empty, unfocused line ready to be filled by [`with_text`] or
     /// [`set_text`].
     pub fn new() -> Self {
+        // Block-editor cells render as document copy, not as form
+        // fields — so we suppress the inner input's rounded
+        // background. Font size lands via `with_font_size` from the
+        // outer builder chain.
+        let inner = TextInput::local()
+            .with_plain_chrome()
+            .with_font_size(DEFAULT_FONT_SIZE);
         Self {
-            inner: TextInput::local(),
+            inner,
             signal: None,
             font_size: DEFAULT_FONT_SIZE,
         }
@@ -94,6 +101,7 @@ impl RichTextLine {
     /// H3=18) larger than paragraph blocks.
     pub fn with_size(mut self, size: f32) -> Self {
         self.font_size = size;
+        self.inner.set_font_size(size);
         self
     }
 
