@@ -654,27 +654,29 @@ impl Widget for GroupRow {
                 children.push(hn);
             }
         }
-        // Children may shrink below their declared `WindowWidth` so the
-        // row never overflows the viewport horizontally — a 600 px
-        // Normal group inside a 480 px content area shrinks to 480 px
-        // instead of painting past the right edge of the window. This
-        // reversed the 2026-04 stance ("pin `flex_shrink: 0` so the row
-        // can overflow + scroll for overflowed groups") because user
-        // feedback on 2026-05-25 was that fixed-size groups "draw way
-        // over the window border" — concept-fidelity isn't worth a
-        // visually broken initial paint.
+        // Pin `flex_shrink: 0.0` on every group child so the strip is
+        // Niri-style: placing a new tile NEVER resizes siblings. The
+        // row's intrinsic `content_width` then grows past the
+        // viewport-aligned `rect.width()`; the user pans horizontally
+        // through the wheel handler below, and the visible region is
+        // clipped to `self.rect` in `draw` so off-screen-right groups
+        // don't bleed past the window edge.
         //
-        // Maximized groups keep their `flex_grow: 1e6` (from
-        // `WindowGroup::build_layout`) so they still absorb leftover
-        // space inside the strip; non-maximized siblings sit at their
-        // preferred width with a soft shrink budget when space tightens.
-        // Each group also caps its width at the row's width via the
-        // group-side `max_size` we set in `WindowGroup::build_layout` so
-        // a single Normal group never overflows even with
-        // `flex_shrink: 1.0` defaults.
+        // A short-lived 2026-06-01 attempt (`flex_shrink: 1.0`) tried
+        // to make groups shrink-to-fit instead, motivated by "apps draw
+        // way over the window border" feedback. That fix violated the
+        // infinite-strip invariant — siblings silently shrunk whenever
+        // a new tile spawned, and the user immediately rejected it.
+        // The real fix is the clip layer in `draw`, not shrinking
+        // groups; clipping was missing, so overflow bled into the
+        // window's edge / OS chrome.
+        //
+        // Maximized groups keep `flex_grow: 1e6` (from
+        // `WindowGroup::build_layout`), absorbing the strip's slack
+        // when the user explicitly invokes Maximize2.
         for &node in &group_nodes {
             let mut style = taffy.style(node).unwrap().clone();
-            style.flex_shrink = 1.0;
+            style.flex_shrink = 0.0;
             taffy.set_style(node, style).unwrap();
         }
         // The row must fill the remaining vertical space inside the
@@ -805,6 +807,31 @@ impl Widget for GroupRow {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // Clip every painted child to the row's own rect. The strip is
+        // Niri-style infinite: groups stay at their declared width
+        // regardless of how many siblings exist, so the row's
+        // `content_width` routinely exceeds the viewport-aligned
+        // `rect.width()` and post-`scroll_x` off-screen-right groups
+        // would otherwise bleed past the window's right edge. The clip
+        // layer truncates them at the row boundary; horizontal scroll
+        // brings them into view. Padding the clip vertically by 16 px
+        // each side keeps the shadow / glow sprites (ambient_pad=50,
+        // bloom_pad=120 — see `TileHost::draw_steady_state`) intact at
+        // the row's top and bottom edges while still cutting horizontal
+        // overflow at the strip boundary.
+        let clip = Rect::new(
+            self.rect.x0,
+            self.rect.y0 - 16.0,
+            self.rect.x1,
+            self.rect.y1 + 16.0,
+        );
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &clip,
+        );
         for g in &mut self.groups {
             g.draw(scene, transform, tr, theme, presence);
         }
@@ -845,10 +872,13 @@ impl Widget for GroupRow {
             let radius = theme.tokens.radii.xl as f64;
             let stroke = theme.tokens.colors.accent[5];
             let fill = theme.tokens.colors.accent[5].with_alpha_factor(0.10);
-            // Preview width: match a Normal group (600 px). On narrow
-            // strips it'd overflow; cap to half the row's width so the
-            // placeholder is always visibly *inside* the strip.
-            let preview_w = (self.rect.width() / 2.0).min(600.0).max(280.0);
+            // Preview width: ~`WIDTH_MIN_PX` (300 px). Earlier we used
+            // 600 px (matching a Normal group), which the user said
+            // dominated the visual — "too big". 300 reads as a clear
+            // ghost-section without overwhelming the underlying groups
+            // it sits next to. Capped to a third of the row so it
+            // never overlaps both neighbours on narrow strips.
+            let preview_w = (self.rect.width() / 3.0).min(300.0).max(220.0);
             let mid_x = if idx == 0 {
                 self.groups[0].get_rect().x0 - 4.0
             } else if idx >= self.groups.len() {
@@ -884,6 +914,8 @@ impl Widget for GroupRow {
                 &zone_rect,
             );
         }
+        // Close the strip clip layer we pushed at the top of `draw`.
+        scene.pop_layer();
     }
 
     fn handle_event(
