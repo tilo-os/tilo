@@ -266,6 +266,28 @@ impl TextInput {
         &self.text
     }
 
+    /// Current caret position as a byte index into [`value`]. Guaranteed
+    /// to land on a UTF-8 char boundary. Used by wrapper widgets (like
+    /// `RichTextLine`) that need to know where to split / merge / decide
+    /// whether the cursor is at the start or end of the line.
+    pub fn cursor_pos(&self) -> usize {
+        self.cursor_pos
+    }
+
+    /// Move the caret to `pos` bytes. Clamped to the text length and
+    /// to the nearest preceding char boundary. Selection is collapsed.
+    /// Programmatic only — does not count as a user edit (dirty stays
+    /// false). Used by `RichTextLine` after a split to land the caret
+    /// at the start of the new line.
+    pub fn set_cursor_pos(&mut self, pos: usize) {
+        let mut p = pos.min(self.text.len());
+        while p > 0 && !self.text.is_char_boundary(p) {
+            p -= 1;
+        }
+        self.cursor_pos = p;
+        self.selection_anchor = None;
+    }
+
     /// One-shot read of user edits. Returns `Some(text)` if any
     /// user-initiated edit has landed since the last call, else
     /// `None`. The dirty flag is cleared.
