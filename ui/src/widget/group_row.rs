@@ -157,15 +157,6 @@ pub struct GroupRow {
     /// row or hasn't fired yet. The take-pattern accessor leaves the slot
     /// empty so a subsequent harvester call doesn't double-deliver.
     pending_cross_strip_detach: Option<CrossStripDetach>,
-    /// Tab-cycle pulse: signed step count to apply to the active
-    /// group's tab list via `Chrome::cycle_active_tab(dir)`. The
-    /// strip's wheel handler bumps this when there's no scroll target
-    /// (single group, fits viewport) so a wheel-over-strip gesture
-    /// has SOME visible effect — without this, the user sees nothing
-    /// happen on a single-tile workspace and describes the strip as
-    /// "horizontal scrolling doesn't work". Drained by the shell each
-    /// frame via [`Self::take_pending_tab_cycle`].
-    pending_tab_cycle: Option<i32>,
 }
 
 impl GroupRow {
@@ -185,16 +176,7 @@ impl GroupRow {
             last_wheel_at: None,
             snap_anim: None,
             pending_cross_strip_detach: None,
-            pending_tab_cycle: None,
         }
-    }
-
-    /// Drain the wheel-driven tab-cycle pulse. Returns the signed step
-    /// count (sign = direction, magnitude = number of detents to
-    /// advance) and clears the slot so a follow-up call returns
-    /// `None` until the next wheel gesture stamps a fresh value.
-    pub fn take_pending_tab_cycle(&mut self) -> Option<i32> {
-        self.pending_tab_cycle.take()
     }
 
     /// Current horizontal scroll offset in logical pixels. Exposed so
@@ -812,14 +794,24 @@ impl Widget for GroupRow {
         }
         self.content_w = content_w;
         self.group_left_edges = edges;
-        // Clamp scroll into bounds. A structural mutation that shrinks
-        // the strip (group close, tab merge that prunes) can leave
-        // `scroll_x` past the new max; clamping here keeps the next
-        // frame's draw inside the visible content without requiring the
-        // mutation site to know about scroll state.
-        let max_scroll = self.max_scroll_x();
-        if self.scroll_x > max_scroll {
-            self.scroll_x = max_scroll;
+        // Clamp scroll into bounds — but use the SAME widened upper
+        // bound the wheel handler uses (max_scroll_x OR three
+        // viewports of empty wallpaper past the rightmost group).
+        // A tight clamp to `max_scroll_x` was the bug that silently
+        // reset the strip's scroll position every frame, defeating
+        // the Niri-style "scroll into empty space" affordance the
+        // user expects on a single-group strip.
+        //
+        // The original clamp's structural-mutation purpose (a closed
+        // group can leave scroll_x past the new max) is preserved
+        // by `max_scroll_x` clamping when the strip has real
+        // content overflow; for the no-overflow case the widened
+        // upper bound matches the wheel handler so we don't
+        // perpetually reset whatever scroll the user dialled in.
+        let viewport = self.rect.width().max(1.0);
+        let upper = self.max_scroll_x().max(viewport * 3.0);
+        if self.scroll_x > upper {
+            self.scroll_x = upper;
         }
         if self.scroll_x < 0.0 {
             self.scroll_x = 0.0;
@@ -1045,24 +1037,19 @@ impl Widget for GroupRow {
         // (non-existent) internal scroll. The dispatch loop still runs
         // after, but with `handled = true` the loop early-exits on the
         // first child it visits.
-        // Wheel-over-strip is the spatial OS's main pan affordance —
-        // Niri's signature behaviour. We always claim the event when
-        // the cursor is inside the row's rect so a mouse-wheel user
-        // can navigate the strip the same way trackpad-horizontal-
-        // swipe does. Two regimes inside the handler:
+        // Wheel-over-strip pans `scroll_x` Niri-style. The strip is
+        // an INFINITE canvas — even when the current content fits
+        // inside the viewport, scrolling must reveal "future" empty
+        // strip space where the user can drop new windows. We
+        // therefore don't gate on `max_scroll_x() > 0` and don't
+        // clamp `scroll_x` to that tight bound either; instead the
+        // upper clamp is `max(max_scroll_x, viewport * 3)` so the
+        // user can pan two screenfuls of empty wallpaper past their
+        // rightmost group. Lower clamp stays at 0 — Niri-likely you
+        // can't scroll past the strip's leftmost edge.
         //
-        //   * `max_scroll_x() > 0` (content overflows the viewport):
-        //     pan `scroll_x` by `dx`, clamped to legal range. Same as
-        //     before, except we now CLAIM the event regardless of dx
-        //     direction so the DE-level fallback doesn't double-fire.
-        //
-        //   * `max_scroll_x() == 0` (single group, fits viewport):
-        //     no useful pan target, so escalate to "cycle the active
-        //     tab" via the shell's chrome — `take_pending_tab_cycle`
-        //     publishes one tick per detent. Without this, a wheel
-        //     spin over the strip would visibly do nothing on a
-        //     single-tile workspace, which the user described as
-        //     "horizontal scrolling doesn't work".
+        // Tab cycling (the 1ccb405 mistake) belongs to a completely
+        // different gesture; the strip pans, period.
         if let WindowEvent::MouseWheel { delta, .. } = event
             && self.rect.contains(self.last_cursor)
         {
@@ -1077,62 +1064,13 @@ impl Widget for GroupRow {
                 MouseScrollDelta::LineDelta(x, y) => (*x - *y) as f64 * 30.0,
                 MouseScrollDelta::PixelDelta(pp) => pp.x - pp.y,
             };
-            let max = self.max_scroll_x();
-            if max > 0.0 {
-                if dx != 0.0 {
-                    self.scroll_x = (self.scroll_x + dx).clamp(0.0, max);
-                    self.last_wheel_at = Some(Instant::now());
-                    self.snap_anim = None;
-                }
-                // Always claim — even a sub-pixel dx — so the DE-
-                // level horizontal-scroll fallback can't promote the
-                // same gesture to a tab cycle on top of the pan.
+            if dx != 0.0 {
+                let viewport = self.rect.width().max(1.0);
+                let upper = self.max_scroll_x().max(viewport * 3.0);
+                self.scroll_x = (self.scroll_x + dx).clamp(0.0, upper);
+                self.last_wheel_at = Some(Instant::now());
+                self.snap_anim = None;
                 *handled = true;
-            } else {
-                // No overflow: nothing to pan against. If the wheel
-                // input is HORIZONTAL-dominant, cycle the focused
-                // group's active tab directly via `cycle_active_tab`
-                // — widget-side, so the visible `Tabs::active_id`
-                // changes the same frame. Going through chrome here
-                // would mutate the persisted `WorkspaceTree` but
-                // leave the widget's own `active_id` stale until a
-                // future revision-driven rebuild (which doesn't
-                // exist yet — see #263).
-                //
-                // Vertical-only mouse wheel still falls through so
-                // the sibling `StripView` keeps its inter-strip
-                // pagination (the existing
-                // `wheel_does_not_claim_when_strip_fits_inside_viewport`
-                // invariant stays green).
-                let (axis_x, axis_y): (f32, f32) = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => (*x, *y),
-                    MouseScrollDelta::PixelDelta(pp) => (pp.x as f32, pp.y as f32),
-                };
-                if axis_x.abs() > axis_y.abs() && dx.abs() > 5.0 {
-                    let dir: i32 = if dx > 0.0 { 1 } else { -1 };
-                    // Pick the group under the cursor first; fall back
-                    // to the first group so a wheel over an empty
-                    // strip area still does something.
-                    let target_idx = self
-                        .groups
-                        .iter()
-                        .position(|g| g.get_rect().contains(self.last_cursor))
-                        .or(if self.groups.is_empty() { None } else { Some(0) });
-                    if let Some(idx) = target_idx {
-                        if self.groups[idx].cycle_active_tab(dir) {
-                            // Mirror the change in the chrome's
-                            // persisted tree so it survives a re-
-                            // render or a re-sync. The pulse field
-                            // remains for tests that assert the
-                            // shell-side dispatcher fires too.
-                            self.pending_tab_cycle = self
-                                .pending_tab_cycle
-                                .map(|cur| cur.saturating_add(dir))
-                                .or(Some(dir));
-                        }
-                    }
-                    *handled = true;
-                }
             }
         }
 
@@ -2875,15 +2813,23 @@ mod tests {
             root,
             &taffy,
         );
+        // 2026-06-02 design change: the strip is Niri-style infinite,
+        // so wheel-over-strip ALWAYS pans (into empty wallpaper past
+        // the rightmost group when there's no content overflow). The
+        // wheel handler claims the event regardless of overflow; the
+        // sibling StripView's inter-strip pagination has been moved
+        // out of the wheel path (use chord keys / palette commands).
         assert!(
-            !handled,
-            "wheel over a fitting row must not claim the event so StripView \
-             retains its inter-strip pagination"
+            handled,
+            "wheel over the strip must always be claimed (Niri-style infinite pan)"
         );
-        assert_eq!(
-            row.scroll_x(),
-            0.0,
-            "no overflow → scroll_x must remain at 0"
+        // Wheel-down (y < 0) translates to dx = (0 - (-3)) * 30 = 90,
+        // so scroll_x advances by 90 px into the empty-wallpaper
+        // buffer (`viewport * 3` upper clamp).
+        assert!(
+            row.scroll_x() > 0.0,
+            "no-overflow strip must STILL pan into empty wallpaper space; got scroll_x={}",
+            row.scroll_x()
         );
     }
 
