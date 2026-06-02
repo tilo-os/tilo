@@ -482,6 +482,30 @@ impl WindowGroup {
     /// (e.g. detaching the active tab must promote a sibling to active).
     pub fn active_tab_id(&self) -> u64 { self.bar.active_id() }
 
+    /// Step the active-tab index by `dir` (sign-extracted; ±1) with
+    /// wrap-around at the tab list's ends. Returns `true` if the
+    /// active tab changed. Used by the strip's wheel handler when
+    /// there's no overflow to pan against — the user's wheel input
+    /// then cycles tabs widget-side, sidestepping the chrome-tree /
+    /// widget-tree sync gap (`WorkspaceTree::set_active_tab` mutates
+    /// the persisted state, but the `Tabs` widget keeps its own
+    /// `active_id` and doesn't re-read from the tree each frame).
+    pub fn cycle_active_tab(&mut self, dir: i32) -> bool {
+        let n = self.bar.tabs().len();
+        if n < 2 || dir.signum() == 0 {
+            return false;
+        }
+        let cur = self.bar.active_id();
+        let Some(idx) = self.bar.tabs().iter().position(|t| t.id == cur) else {
+            return false;
+        };
+        let step = dir.signum();
+        let new_idx = ((idx as i32 + step).rem_euclid(n as i32)) as usize;
+        let new_id = self.bar.tabs()[new_idx].id;
+        self.bar.set_active(new_id);
+        true
+    }
+
     /// True while this group's `TabBar` has a drag in flight. Exposed so
     /// the parent `GroupRow` can paint inter-group drop-zone indicators
     /// while any child is dragging.
