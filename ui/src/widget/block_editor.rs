@@ -1173,13 +1173,77 @@ impl Widget for BlockEditor {
         presence: &PresenceCtx,
     ) {
         let tokens = &theme.tokens;
-        for b in &mut self.blocks {
+
+        // Empty-state hint: when the whole editor consists of one
+        // empty Paragraph block, draw a dim placeholder next to the
+        // caret so a brand-new page doesn't look like a void. Painted
+        // BEFORE the block content so the live caret (drawn by the
+        // inner TextInput) stays on top of the hint glyphs. We bail
+        // when the line is non-empty (or there's more than one block)
+        // because the hint would compete with real content.
+        let is_lone_empty_paragraph = self.blocks.len() == 1
+            && matches!(self.blocks[0].kind, BlockKind::Paragraph)
+            && self.blocks[0].line.value().is_empty();
+        if is_lone_empty_paragraph {
+            let line_rect = self.blocks[0].line.get_rect();
+            // Same vertical centring as the inner TextInput uses so
+            // the hint reads as the placeholder for THIS line, not as
+            // a floating label above/below it.
+            let size = self.blocks[0].line.font_size();
+            let line_height = (size as f64) * 1.25;
+            let text_y = line_rect.y0 + (line_rect.height() - line_height) / 2.0;
+            // Offset 2 px right of the caret so the hint doesn't
+            // collide with the caret bar itself.
+            let caret_w = 2.0;
+            let x = line_rect.x0 + caret_w + 4.0;
+            text_renderer.draw_text(
+                scene,
+                "Start typing — / for blocks, [[ to link a page",
+                size,
+                tokens.colors.text_dim,
+                transform * Affine::translate((x, text_y)),
+                None,
+            );
+        }
+
+        for (idx, b) in self.blocks.iter_mut().enumerate() {
             let line_rect = b.line.get_rect();
             let indent_px =
                 LIST_INDENT_STEP_PX as f64 * b.kind.indent() as f64;
             let gutter = prefix_gutter_for(&b.kind);
             // x0 of the prefix region (before the gutter shift).
             let prefix_x0 = line_rect.x0 - gutter;
+            // Editor-column left edge — where the block "row" starts,
+            // before any indent shift or kind-specific prefix gutter.
+            // Used by the focused-block accent bar so the bar lines up
+            // across every kind regardless of indent level.
+            let row_x0 = prefix_x0 - indent_px;
+
+            // Focused-block indicator: a 2 px accent-tinted vertical
+            // bar at the leftmost edge of the focused block's row.
+            // Drawn at ~50% alpha so it reads as a subtle cue rather
+            // than competing with the caret. Skipped for Dividers
+            // since they don't get focus.
+            if Some(idx) == self.focused && self.is_focused
+                && !matches!(b.kind, BlockKind::Divider)
+            {
+                use crate::color_compat::ColorCompat;
+                let bar_color =
+                    theme.accent_primary.with_alpha_factor(0.5);
+                let bar = Rect::new(
+                    row_x0,
+                    line_rect.y0 + 2.0,
+                    row_x0 + 2.0,
+                    line_rect.y1 - 2.0,
+                );
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    bar_color,
+                    None,
+                    &bar,
+                );
+            }
 
             match &b.kind {
                 BlockKind::Paragraph | BlockKind::Heading(_) => {
