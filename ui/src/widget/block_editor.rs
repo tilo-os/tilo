@@ -208,6 +208,10 @@ pub struct BlockEditor {
     /// Internal: set to true when any block reported a user edit
     /// since the last `is_dirty()` call. Drained by `is_dirty`.
     edit_pending: bool,
+    /// Last mouse position in logical coords, cached from
+    /// `CursorMoved` events so click-handling code can hit-test the
+    /// checkbox glyphs without re-reading the winit event.
+    last_mouse_pos: Point,
 }
 
 impl BlockEditor {
@@ -224,6 +228,7 @@ impl BlockEditor {
             dirty: true,
             structure_dirty: true,
             edit_pending: false,
+            last_mouse_pos: Point::ZERO,
         };
         s.blocks.push(Block::paragraph(""));
         s
@@ -250,6 +255,7 @@ impl BlockEditor {
             dirty: true,
             structure_dirty: true,
             edit_pending: false,
+            last_mouse_pos: Point::ZERO,
         };
         let mut lines = md.split('\n').peekable();
         while let Some(line) = lines.next() {
@@ -753,6 +759,44 @@ impl BlockEditor {
         true
     }
 
+    /// Hit-test the cached last mouse position against the checkbox
+    /// rect of every Checklist block. Returns the block index whose
+    /// checkbox was clicked, or `None`. Used by `handle_event` to
+    /// route checkbox clicks to `try_toggle_check`.
+    pub(crate) fn checkbox_hit_test_last_mouse(&self) -> Option<usize> {
+        let p = self.last_mouse_pos;
+        for (idx, b) in self.blocks.iter().enumerate() {
+            if !matches!(b.kind, BlockKind::Checklist { .. }) {
+                continue;
+            }
+            let line_rect = b.line.get_rect();
+            let gutter = prefix_gutter_for(&b.kind);
+            // The drawn checkbox is centered in the gutter to the
+            // left of line_rect.
+            let cy = (line_rect.y0 + line_rect.y1) / 2.0;
+            let cx = line_rect.x0 - gutter + gutter / 2.0;
+            let r = Rect::new(
+                cx - CHECKBOX_SIZE_PX / 2.0,
+                cy - CHECKBOX_SIZE_PX / 2.0,
+                cx + CHECKBOX_SIZE_PX / 2.0,
+                cy + CHECKBOX_SIZE_PX / 2.0,
+            );
+            // Slight slop margin (~4 px) so users don't have to land
+            // pixel-perfect.
+            let slop = 4.0;
+            let slopped = Rect::new(
+                r.x0 - slop,
+                r.y0 - slop,
+                r.x1 + slop,
+                r.y1 + slop,
+            );
+            if slopped.contains(p) {
+                return Some(idx);
+            }
+        }
+        None
+    }
+
     /// Flip the `done` flag on a Checklist block. No-op for other
     /// kinds. Returns the new `done` value, or `None` if the block
     /// isn't a Checklist.
@@ -825,6 +869,26 @@ fn push_indent(out: &mut String, indent: u8) {
     }
 }
 
+/// Width in CSS-like pixels of the reserved gutter to the left of the
+/// editable line where a kind-specific prefix glyph (bullet point,
+/// checkbox, code-fence marker) is drawn.
+///
+/// Returns 0 for kinds with no prefix (paragraph, heading, divider,
+/// code block — the latter draws its prefix as a left-edge bar in
+/// `draw`, not inline glyphs).
+pub(crate) fn prefix_gutter_for(kind: &BlockKind) -> f64 {
+    match kind {
+        BlockKind::Bullet { .. } => 20.0,
+        BlockKind::Checklist { .. } => 24.0,
+        BlockKind::CodeBlock { .. } => 12.0,
+        _ => 0.0,
+    }
+}
+
+/// Width of the clickable checkbox square in a checklist row. Slightly
+/// smaller than the gutter so there's visual breathing room either side.
+pub(crate) const CHECKBOX_SIZE_PX: f64 = 16.0;
+
 impl Default for BlockEditor {
     fn default() -> Self {
         Self::new()
@@ -885,6 +949,25 @@ impl Widget for BlockEditor {
         let children = taffy.children(node).unwrap();
         for (b, child_node) in self.blocks.iter_mut().zip(children.iter()) {
             b.line.apply_layout(taffy, *child_node, new_origin);
+            // For prefixed kinds (bullets, checklists, code blocks) we
+            // narrow the line's rect on the left so the prefix glyph
+            // (bullet point, checkbox, etc.) lands in a reserved
+            // gutter that doesn't overlap the editable text. The
+            // gutter width is fixed per kind so the caret-x math
+            // inside TextInput stays consistent.
+            let gutter = prefix_gutter_for(&b.kind);
+            let indent_px =
+                LIST_INDENT_STEP_PX as f64 * b.kind.indent() as f64;
+            let original = b.line.get_rect();
+            if gutter > 0.0 || indent_px > 0.0 {
+                let shifted = Rect::new(
+                    original.x0 + indent_px + gutter,
+                    original.y0,
+                    original.x1,
+                    original.y1,
+                );
+                b.line.apply_layout_external(shifted);
+            }
         }
     }
 
@@ -896,8 +979,135 @@ impl Widget for BlockEditor {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        let tokens = &theme.tokens;
         for b in &mut self.blocks {
-            b.line.draw(scene, transform, text_renderer, theme, presence);
+            let line_rect = b.line.get_rect();
+            let indent_px =
+                LIST_INDENT_STEP_PX as f64 * b.kind.indent() as f64;
+            let gutter = prefix_gutter_for(&b.kind);
+            // x0 of the prefix region (before the gutter shift).
+            let prefix_x0 = line_rect.x0 - gutter;
+
+            match &b.kind {
+                BlockKind::Paragraph | BlockKind::Heading(_) => {
+                    b.line.draw(scene, transform, text_renderer, theme, presence);
+                }
+                BlockKind::Bullet { .. } => {
+                    // Bullet glyph (•) centered vertically against the
+                    // line band. We draw a small filled disc instead of
+                    // a "•" character so the dot reads the same across
+                    // fonts.
+                    let cy = (line_rect.y0 + line_rect.y1) / 2.0;
+                    let cx = prefix_x0 + gutter / 2.0;
+                    let radius = 3.0;
+                    let circle = vello::kurbo::Circle::new((cx, cy), radius);
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        transform,
+                        tokens.colors.text_primary,
+                        None,
+                        &circle,
+                    );
+                    b.line.draw(scene, transform, text_renderer, theme, presence);
+                    let _ = indent_px;
+                }
+                BlockKind::Checklist { done, .. } => {
+                    // Clickable checkbox square. Filled + with a check
+                    // glyph when done; empty stroke when not.
+                    let cy = (line_rect.y0 + line_rect.y1) / 2.0;
+                    let cx = prefix_x0 + gutter / 2.0;
+                    let box_rect = Rect::new(
+                        cx - CHECKBOX_SIZE_PX / 2.0,
+                        cy - CHECKBOX_SIZE_PX / 2.0,
+                        cx + CHECKBOX_SIZE_PX / 2.0,
+                        cy + CHECKBOX_SIZE_PX / 2.0,
+                    );
+                    let shape = vello::kurbo::RoundedRect::from_rect(box_rect, 3.0);
+                    if *done {
+                        scene.fill(
+                            vello::peniko::Fill::NonZero,
+                            transform,
+                            tokens.colors.accent[5],
+                            None,
+                            &shape,
+                        );
+                        // Simple check mark — two lines from lower-left
+                        // through center to upper-right.
+                        let mut path = vello::kurbo::BezPath::new();
+                        let pad = CHECKBOX_SIZE_PX * 0.22;
+                        path.move_to((box_rect.x0 + pad, box_rect.y0 + CHECKBOX_SIZE_PX * 0.55));
+                        path.line_to((box_rect.x0 + CHECKBOX_SIZE_PX * 0.42, box_rect.y1 - pad));
+                        path.line_to((box_rect.x1 - pad, box_rect.y0 + pad));
+                        scene.stroke(
+                            &vello::kurbo::Stroke::new(2.0),
+                            transform,
+                            tokens.colors.text_primary,
+                            None,
+                            &path,
+                        );
+                    } else {
+                        scene.stroke(
+                            &vello::kurbo::Stroke::new(1.5),
+                            transform,
+                            tokens.colors.border_standard,
+                            None,
+                            &shape,
+                        );
+                    }
+                    b.line.draw(scene, transform, text_renderer, theme, presence);
+                }
+                BlockKind::CodeBlock { .. } => {
+                    // Subtle monospace-style chrome: a soft surface
+                    // background spanning the line's full width + a
+                    // thin accent bar on the left edge.
+                    let bg_rect = Rect::new(
+                        line_rect.x0 - gutter,
+                        line_rect.y0,
+                        line_rect.x1,
+                        line_rect.y1,
+                    );
+                    let shape =
+                        vello::kurbo::RoundedRect::from_rect(bg_rect, 4.0);
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        transform,
+                        tokens.colors.surfaces.raised,
+                        None,
+                        &shape,
+                    );
+                    let bar = Rect::new(
+                        bg_rect.x0,
+                        bg_rect.y0,
+                        bg_rect.x0 + 3.0,
+                        bg_rect.y1,
+                    );
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        transform,
+                        tokens.colors.accent[5],
+                        None,
+                        &bar,
+                    );
+                    b.line.draw(scene, transform, text_renderer, theme, presence);
+                }
+                BlockKind::Divider => {
+                    // Horizontal rule centered vertically in the row.
+                    let cy = (line_rect.y0 + line_rect.y1) / 2.0;
+                    let rule = Rect::new(
+                        line_rect.x0,
+                        cy - 0.5,
+                        line_rect.x1,
+                        cy + 0.5,
+                    );
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        transform,
+                        tokens.colors.border_standard,
+                        None,
+                        &rule,
+                    );
+                }
+            }
         }
     }
 
@@ -913,6 +1123,61 @@ impl Widget for BlockEditor {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        use winit::event::{ElementState, KeyEvent, MouseButton};
+        use winit::keyboard::{Key, NamedKey};
+
+        // Mouse: checkbox-click hit-test on Checklist rows. Runs BEFORE
+        // event routing so the click doesn't fall through to TextInput
+        // (which would just place the caret at byte 0).
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+        {
+            if let Some(hit_idx) = self.checkbox_hit_test_last_mouse() {
+                let _ = self.try_toggle_check(hit_idx);
+                *handled = true;
+                return;
+            }
+        }
+        // Cache the last mouse position so the next MouseInput knows
+        // where the click landed. Same shape as TextInput.
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            let logical =
+                Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_mouse_pos = logical;
+        }
+
+        // Tab / Shift-Tab on a list block adjusts indent BEFORE the
+        // inner line sees it (TextInput does NOT handle Tab, but we
+        // intercept anyway so future TextInput changes don't break
+        // the contract).
+        if let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key: Key::Named(NamedKey::Tab),
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        {
+            if let Some(focused_idx) = self.focused {
+                let supports = self
+                    .blocks
+                    .get(focused_idx)
+                    .map(|b| b.kind.supports_indent())
+                    .unwrap_or(false);
+                if supports {
+                    let delta = if modifiers.state().shift_key() { -1 } else { 1 };
+                    self.try_indent(focused_idx, delta);
+                    *handled = true;
+                    return;
+                }
+            }
+        }
+
         // Route the event to the focused block (if any). Each block
         // re-reads `*handled` so a previously-handled event isn't
         // re-processed.
@@ -925,17 +1190,19 @@ impl Widget for BlockEditor {
                 })
                 .unwrap_or(false);
             if let Some(b) = self.blocks.get_mut(focused_idx) {
-                b.line.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
-                );
+                if b.kind.is_editable() {
+                    b.line.handle_event(
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        path,
+                        handled,
+                        focus_target,
+                        node_id,
+                        taffy,
+                    );
+                }
             }
             // Drain the signal from the line and act on it.
             if let Some(sig) = self
