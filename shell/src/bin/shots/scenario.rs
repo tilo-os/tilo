@@ -427,6 +427,7 @@ pub fn catalogue() -> Vec<Scenario> {
         workspace_switch(),
         workspace_switch_animated(),
         wheel_scroll_workspaces(),
+        strip_horizontal_scroll(),
     ]
 }
 
@@ -576,6 +577,43 @@ fn wheel_scroll_workspaces() -> Scenario {
                 frames: 12,
                 gap_frames: 1,
             },
+        ],
+    }
+}
+
+/// Drive the strip's MouseWheel path: cursor over the active tile
+/// (where the strip occupies most of the viewport), fire two
+/// horizontal-dominant wheel events, capture before / after.
+/// On a single-group strip (no overflow), `GroupRow`'s wheel handler
+/// stamps `pending_tab_cycle`; the shell's `dispatch_pending_tab_cycles`
+/// then calls `Chrome::cycle_active_tab(dir)` so the active tab pill
+/// in the topbar shifts. If the snapshots are identical the wheel
+/// path is broken — exactly the user's complaint on 2026-06-02.
+fn strip_horizontal_scroll() -> Scenario {
+    Scenario {
+        name: "strip_horizontal_scroll",
+        description:
+            "Fire a horizontal-dominant wheel over the strip and assert the active \
+             tab cycled (visible in the topbar's pill highlight).",
+        actions: vec![
+            // Cursor over the active tile / strip area (well below the
+            // topbar's 40 px band and well to the right of the 320 px
+            // sidebar gutter).
+            Action::MoveCursor(Point::new(900.0, 500.0)),
+            Action::Snapshot("00-before"),
+            // LineDelta(x=4, y=0) is unambiguously horizontal: dx_axis
+            // > dy_axis, so the strip's no-overflow branch stamps the
+            // tab-cycle pulse. dy is 0 so the wheel doesn't also try
+            // to pan vertically anywhere.
+            Action::MouseWheel { dx: 4.0, dy: 0.0 },
+            // Two frames for the per-frame harvest to drain the
+            // pulse + the chrome bump to propagate to the next paint.
+            Action::Wait(2),
+            Action::Snapshot("01-after-right"),
+            // And the reverse direction.
+            Action::MouseWheel { dx: -4.0, dy: 0.0 },
+            Action::Wait(2),
+            Action::Snapshot("02-after-left"),
         ],
     }
 }
