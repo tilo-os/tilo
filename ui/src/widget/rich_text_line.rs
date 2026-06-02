@@ -441,17 +441,32 @@ impl Widget for RichTextLine {
                 .copied()
                 .unwrap_or(0.0);
             let x = rect.x0 + pad + x_offset - scroll_x;
+            let sans_end_x_offset = xs
+                .get(seg.range.end.min(xs.len().saturating_sub(1)))
+                .copied()
+                .unwrap_or(x_offset);
+            let sans_end_x = rect.x0 + pad + sans_end_x_offset - scroll_x;
 
             // Background chip for inline code.
+            //
+            // Width choice — measure the *monospace* advance for the
+            // slice and use the wider of (sans, mono) so the chip
+            // covers the sans-serif glyphs the inner TextInput already
+            // drew underneath. Using only the sans-serif extent (the
+            // original implementation) leaves the chip too wide when
+            // monospace is narrower than sans, producing the visible
+            // "chip overflows past the code text" artifact reported in
+            // the v0.1 critique. Using only the mono extent the other
+            // way around would leak the sans `code` tail past the
+            // chip's right edge. `max(sans, mono)` handles both.
             if seg.code {
-                let end_x_offset = xs
-                    .get(seg.range.end.min(xs.len().saturating_sub(1)))
-                    .copied()
-                    .unwrap_or(x_offset);
+                let mono_width = chip_mono_width(text_renderer, slice, text_size);
+                let mono_end_x = x + mono_width;
+                let chip_right = sans_end_x.max(mono_end_x);
                 let bg_rect = Rect::new(
                     x - 2.0,
                     text_y + 1.0,
-                    rect.x0 + pad + end_x_offset - scroll_x + 2.0,
+                    chip_right + 2.0,
                     text_y + line_height - 1.0,
                 );
                 let bg = vello::kurbo::RoundedRect::from_rect(bg_rect, 3.0);
@@ -466,16 +481,10 @@ impl Widget for RichTextLine {
 
             // Underline for links.
             if seg.link.is_some() {
-                let end_x_offset = xs
-                    .get(seg.range.end.min(xs.len().saturating_sub(1)))
-                    .copied()
-                    .unwrap_or(x_offset);
-                let ux0 = x;
-                let ux1 = rect.x0 + pad + end_x_offset - scroll_x;
                 let underline = Rect::new(
-                    ux0,
+                    x,
                     text_y + line_height - 2.0,
-                    ux1,
+                    sans_end_x,
                     text_y + line_height - 1.0,
                 );
                 scene.fill(
@@ -715,6 +724,28 @@ pub(crate) fn diff_splice(old: &str, new: &str) -> (usize, usize, usize) {
 /// don't have to depend on the `marks` module directly.
 pub fn segments_of(text_len: usize, marks: &[MarkSpan]) -> Vec<MarkSegment> {
     marks::segments_for(text_len, marks)
+}
+
+/// Width (in CSS-like px) of `slice` when rendered in the monospace
+/// face the inline-code chip uses. Pulled out as a free function so
+/// the chip-sizing math is unit-testable independent of the full draw
+/// path (which requires a populated Scene + Theme). The matching
+/// rendering call uses `text_renderer.draw_text_styled(..., monospace
+/// = true)` — see `RichTextLine::draw`.
+pub fn chip_mono_width(
+    text_renderer: &mut TextRenderer,
+    slice: &str,
+    size: f32,
+) -> f64 {
+    let (w, _) = text_renderer.measure_styled(
+        slice,
+        size,
+        None,
+        TextWeight::Regular,
+        false,
+        true,
+    );
+    w as f64
 }
 
 /// Conveniently look up a page-link mark covering `byte`, returning
@@ -1021,6 +1052,41 @@ mod tests {
             other => panic!("expected LinkOpen{{open_at:0}}, got {:?}", other),
         }
         assert_eq!(l.value(), "[[");
+    }
+
+    #[test]
+    fn chip_mono_width_uses_monospace_face_not_sans() {
+        // Anchor for the inline-code chip-width fix (v0.1 critique A1).
+        // The chip BG width must be measured in the same face the
+        // *visible* code text uses (monospace), not the underlying
+        // sans-serif width the inner TextInput's `char_x_positions`
+        // reports. Otherwise the chip's right edge sits in the gap
+        // between the (sans) layout end and the (mono) glyph end —
+        // visible as "chip overflows past the code text".
+        //
+        // We pin two properties:
+        // 1. `chip_mono_width` returns a non-zero value for non-empty
+        //    input.
+        // 2. The mono advance differs from the sans-serif advance for
+        //    a typical lowercase string. Without this differentiation
+        //    the bug couldn't exist in the first place, so the test
+        //    has to observe both.
+        let mut tr = crate::text_render::TextRenderer::new();
+        let mono = super::chip_mono_width(&mut tr, "inline code", 16.0);
+        let (sans_w, _) = tr.measure_styled(
+            "inline code",
+            16.0,
+            None,
+            TextWeight::Regular,
+            false,
+            false,
+        );
+        assert!(mono > 0.0, "mono width must be non-zero for non-empty input");
+        assert!(
+            (mono - sans_w as f64).abs() > 0.5,
+            "mono and sans widths must differ for this string (got mono={mono}, sans={sans_w}) — \
+             otherwise the chip-width-mismatch bug is undetectable",
+        );
     }
 
     /// Unused helper kept for symmetry with future ModifiersState test
