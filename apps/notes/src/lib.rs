@@ -6,6 +6,7 @@
 
 pub mod model;
 pub mod storage;
+pub mod markdown;
 pub mod main_panel;
 pub mod sidebar;
 pub mod app;
