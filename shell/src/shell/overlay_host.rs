@@ -1421,9 +1421,40 @@ impl ShellOverlayHost {
     /// Y-coordinate where the first workspace row card starts. Matches the
     /// draw path so hit-test + draw stay in sync. The header sits above the
     /// rail container; the rail container sits `mb-16` below the header.
+    /// `overview_scroll_y` shifts every row upward so the wheel handler
+    /// can pan beyond the visible band when the workspace list overflows.
     fn overview_first_row_top(&self) -> f64 {
         let col = self.overview_column_rect();
         col.y0 + OVERVIEW_HEADER_HEIGHT_PX + OVERVIEW_HEADER_MARGIN_BOTTOM_PX
+            - self.overview_scroll_y
+    }
+
+    /// Total scrollable content height in the overview (all workspace
+    /// rows + their gaps + the trailing "+ Add workspace" tile). Used by
+    /// the wheel handler to clamp `overview_scroll_y` so the user can't
+    /// pan past the last row.
+    fn overview_content_height(&self) -> f64 {
+        let chrome = match self.chrome.as_ref() {
+            Some(c) => c,
+            None => return 0.0,
+        };
+        let state = chrome.borrow();
+        let tree = state.tree();
+        let ws_count = tree.workspaces.len();
+        ws_count as f64 * (OVERVIEW_ROW_HEIGHT_PX + OVERVIEW_ROW_GAP_PX)
+            + OVERVIEW_ADD_ROW_HEIGHT_PX
+    }
+
+    /// Maximum legal `overview_scroll_y` — the content overflow below
+    /// the visible band, clamped to ≥ 0. Zero when the workspace list
+    /// fits inside the column.
+    fn overview_max_scroll_y(&self) -> f64 {
+        let col = self.overview_column_rect();
+        let visible = (col.y1 - col.y0
+            - OVERVIEW_HEADER_HEIGHT_PX
+            - OVERVIEW_HEADER_MARGIN_BOTTOM_PX)
+            .max(0.0);
+        (self.overview_content_height() - visible).max(0.0)
     }
 
     /// Rect of the workspace card at `idx` in the vertical list.
@@ -2578,6 +2609,32 @@ impl Widget for ShellOverlayHost {
             }
         }
 
+        // Vertical-wheel scroll for the workspace overview. When the
+        // overview is visible, wheel events pan its row list — the
+        // column header (Workspaces title + subtitle) stays pinned.
+        // Wheel-up reveals workspaces above the visible band (scroll_y
+        // decreases); wheel-down reveals workspaces below (scroll_y
+        // increases). The clamp guards both ends so a hard flick can't
+        // strand the column past the tail.
+        if self.overlay_flags().overview {
+            if let WindowEvent::MouseWheel { delta, .. } = event {
+                let dy: f64 = match *delta {
+                    // 30 px per LineDelta matches the strip's wheel
+                    // factor (`GroupRow::handle_event`), so a single
+                    // wheel detent reveals roughly a quarter of one
+                    // workspace row (`OVERVIEW_ROW_HEIGHT_PX ~ 160`).
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => -(y as f64) * 30.0,
+                    winit::event::MouseScrollDelta::PixelDelta(p) => -p.y,
+                };
+                if dy != 0.0 {
+                    let max = self.overview_max_scroll_y();
+                    self.overview_scroll_y = (self.overview_scroll_y + dy).clamp(0.0, max);
+                    *handled = true;
+                    return;
+                }
+            }
+        }
+
         // Click-on-overview-card: if the overview is visible, consume the
         // mouse click and — if it lands on a workspace card — activate
         // that workspace + close the overview.
@@ -3273,6 +3330,26 @@ impl ShellOverlayHost {
         }
 
         // -- Workspace rows ----------------------------------------------
+        // Push a clip layer that bounds the scrollable card region to
+        // the space BELOW the header — so a row that's been scrolled
+        // upward past `overview_first_row_top()` doesn't bleed onto the
+        // "Workspaces" title. Top edge sits just above the first row's
+        // resting Y; bottom + sides match the overview column so the
+        // card shadows extending past the column still get trimmed at
+        // the gutter.
+        let scroll_clip = Rect::new(
+            col.x0 - 32.0,
+            col.y0 + OVERVIEW_HEADER_HEIGHT_PX + OVERVIEW_HEADER_MARGIN_BOTTOM_PX - 8.0,
+            col.x1 + 32.0,
+            col.y1,
+        );
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &scroll_clip,
+        );
         for (i, ws) in tree.workspaces.iter().enumerate() {
             let rect = self.overview_row_rect(i);
             let is_active = ws.id == tree.active;
@@ -3831,6 +3908,9 @@ impl ShellOverlayHost {
             None,
         );
         self.add_workspace_rect = add_rect;
+        // Close the scroll-clip layer that was pushed before the
+        // workspace-rows loop above.
+        scene.pop_layer();
     }
 
     fn draw_ws_settings(
