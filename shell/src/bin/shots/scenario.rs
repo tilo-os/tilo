@@ -54,7 +54,8 @@ pub enum Action {
     MouseWheel { dx: f32, dy: f32 },
     /// Synthesise a `CursorMoved` without a press/release. Use with
     /// `MousePress`/`MouseRelease` to compose drags that need mid-
-    /// gesture snapshots.
+    /// gesture snapshots — useful for the new tab-bar `hover_drop_idx`
+    /// indicator which only paints between press and release.
     MoveCursor(Point),
     /// Synthesise a left-button `Pressed` at the current cursor.
     /// Caller owns the matching `MouseRelease`.
@@ -422,6 +423,7 @@ pub fn catalogue() -> Vec<Scenario> {
         palette_typing(),
         tab_drag(),
         tab_drag_out_to_new_group(),
+        tab_drag_hover_line_indicator(),
         workspace_switch(),
         workspace_switch_animated(),
         wheel_scroll_workspaces(),
@@ -574,6 +576,38 @@ fn wheel_scroll_workspaces() -> Scenario {
                 frames: 12,
                 gap_frames: 1,
             },
+        ],
+    }
+}
+
+/// Mid-drag capture of the new minimalist white-line drop indicator
+/// (`hover_drop_idx` in `quick-ui::widget::tabs`). Press inside the
+/// second tab pill, move past the drag threshold to latch
+/// `pending_drag`, then move the cursor over a different inter-pill
+/// gap and snapshot WITHOUT releasing so the indicator is visible in
+/// the captured frame. Pairs the visual with the unit tests in
+/// `widget::tabs::tests::hover_drop_idx_*` that pin the same field
+/// without going through the GPU. Composed out of the
+/// `MoveCursor` / `MousePress` / `MouseRelease` primitives because
+/// `Action::Drag` always releases — and a release clears the
+/// indicator before the snapshot fires.
+fn tab_drag_hover_line_indicator() -> Scenario {
+    Scenario {
+        name: "tab_drag_hover_line_indicator",
+        description:
+            "Capture the minimalist white-line drop indicator that paints in the tab \
+             bar while a drag is in flight over an inter-pill gap. Holds the drag \
+             open (no release) so the line is visible in the snapshot.",
+        actions: vec![
+            Action::MoveCursor(Point::new(424.0, 120.0)),
+            Action::MousePress,
+            Action::MoveCursor(Point::new(484.0, 120.0)),
+            Action::MoveCursor(Point::new(700.0, 120.0)),
+            Action::Wait(4),
+            Action::Snapshot("01-mid-drag-with-line"),
+            Action::MouseRelease,
+            Action::Wait(12),
+            Action::Snapshot("02-after-release"),
         ],
     }
 }
