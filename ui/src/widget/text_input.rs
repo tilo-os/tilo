@@ -278,11 +278,18 @@ impl TextInput {
         }
     }
 
-    /// Override the rect that this TextInput renders at, for callers
-    /// that embed an input inside a parent widget without registering
-    /// it in the taffy tree (the parent owns its layout). The parent
-    /// must call this from its own `apply_layout`.
-    pub fn set_rect_for_embed(&mut self, rect: Rect) {
+    /// External-layout assignment for callers that embed this widget
+    /// outside the taffy tree (the parent owns layout). Pairs with the
+    /// trait method `apply_layout`: a parent calling this is asserting
+    /// it has done what `apply_layout` would normally do. Today the
+    /// only invariant `apply_layout` would establish is `self.rect`; if
+    /// `apply_layout` grows responsibilities in the future, this method
+    /// will need to grow with it.
+    ///
+    /// Embed bypasses `draw_with_presence` too — only safe with
+    /// local-mode TextInputs that have no presence path or permission
+    /// scope.
+    pub fn apply_layout_external(&mut self, rect: Rect) {
         self.rect = rect;
     }
 

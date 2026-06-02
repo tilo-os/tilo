@@ -73,7 +73,9 @@ pub struct ColorPicker {
     hex_input_rect: Rect,
     /// Set by `set_hex_text_for_test` so tests can drive a parse
     /// pass without faking IME keystrokes. Drained inside
-    /// `handle_event`. Always `false` in production.
+    /// `handle_event`. Gated to test/debug builds — absent from
+    /// release binaries so the test surface doesn't leak into prod.
+    #[cfg(any(test, debug_assertions))]
     hex_input_force_dirty_for_test: bool,
 }
 
@@ -94,6 +96,7 @@ impl ColorPicker {
             is_focused: false,
             hex_input: TextInput::local(),
             hex_input_rect: Rect::ZERO,
+            #[cfg(any(test, debug_assertions))]
             hex_input_force_dirty_for_test: false,
         };
         let hex = s.hex_string();
@@ -113,9 +116,22 @@ impl ColorPicker {
     /// driving; production users edit the input themselves. The
     /// next `handle_event` call will attempt to parse the new text
     /// and apply it to `self.color`.
+    ///
+    /// Gated to test/debug builds — release binaries don't carry
+    /// the matching dirty-sentinel branch.
+    #[cfg(any(test, debug_assertions))]
     pub fn set_hex_text_for_test(&mut self, s: &str) {
         self.hex_input.set_text(s);
         self.hex_input_force_dirty_for_test = true;
+    }
+
+    /// Test-only accessor confirming the embedded hex input owns
+    /// keyboard focus. Used by the click-then-type regression test
+    /// to prove the picker forwards focus to the input after a
+    /// click inside `hex_input_rect`.
+    #[cfg(any(test, debug_assertions))]
+    pub fn is_hex_input_focused_for_test(&self) -> bool {
+        self.hex_input.is_focused()
     }
 
     /// Convenience helper used after the SV square / hue strip /
@@ -442,7 +458,7 @@ impl Widget for ColorPicker {
             self.preview_rect.x1.max(self.preview_rect.x0 + 96.0),
             self.preview_rect.y1 + COMPONENT_GAP + text_h,
         );
-        self.hex_input.set_rect_for_embed(self.hex_input_rect);
+        self.hex_input.apply_layout_external(self.hex_input_rect);
     }
 
     fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
@@ -586,10 +602,30 @@ impl Widget for ColorPicker {
         // Embedded hex input gets the event first — keyboard, IME
         // commit and click-inside-the-input all need to route there
         // before the picker considers them for SV/hue/slider drags.
+        //
+        // The embedded input was never registered in the parent's
+        // taffy/node_map, so when it sets `*focus_target = Some(id)`
+        // it's setting *our* node id. App::set_focused_node would
+        // then call `picker.set_focus(true)` — never the input —
+        // and KeyboardInput/Ime would silently no-op behind the
+        // input's `if !self.is_focused` guard.
+        //
+        // Take over: snapshot the proposal before forwarding, and
+        // if the input asked for focus while the cursor was inside
+        // its rect, grant focus locally and undo the proposal.
+        let prev_focus = *focus_target;
         self.hex_input.handle_event(
             event, scale_factor, modifiers, state, root,
             handled, focus_target, node_id, taffy,
         );
+        if *focus_target != prev_focus && self.hex_input_rect.contains(self.last_cursor) {
+            self.hex_input.set_focus(true);
+            // Drop picker-level focus — only one of us is focused
+            // at a time.
+            self.is_focused = false;
+            // Don't let the App route focus to the picker by id.
+            *focus_target = prev_focus;
+        }
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -608,6 +644,13 @@ impl Widget for ColorPicker {
                     // start an SV/hue/slider drag on top of that.
                     let in_input = self.hex_input_rect.contains(self.last_cursor);
                     if !in_input {
+                        // Click outside the hex input — release any
+                        // focus the input was holding so subsequent
+                        // keyboard events don't keep landing in the
+                        // (now invisible) input.
+                        if self.hex_input.is_focused() {
+                            self.hex_input.set_focus(false);
+                        }
                         if let Some(target) = self.target_at(self.last_cursor) {
                             self.drag_target = Some(target);
                             *focus_target = Some(node_id);
@@ -634,7 +677,9 @@ impl Widget for ColorPicker {
         // Invalid text is silently ignored — `self.color` stays as
         // it was, and the next `sync_input` will overwrite the bad
         // string when any other control mutates the colour.
-        let dirty = self.hex_input.take_dirty().or_else(|| {
+        let dirty = self.hex_input.take_dirty();
+        #[cfg(any(test, debug_assertions))]
+        let dirty = dirty.or_else(|| {
             if self.hex_input_force_dirty_for_test {
                 self.hex_input_force_dirty_for_test = false;
                 Some(self.hex_input.value().to_string())
@@ -674,6 +719,7 @@ impl Widget for ColorPicker {
 /// and silently ignores parse failures.
 fn parse_hex(s: &str) -> Option<Color> {
     let s = s.trim().trim_start_matches('#');
+    if !s.is_ascii() { return None; }
     if s.len() != 6 { return None; }
     let r = u8::from_str_radix(&s[0..2], 16).ok()?;
     let g = u8::from_str_radix(&s[2..4], 16).ok()?;
@@ -901,5 +947,14 @@ mod tests {
     fn rgb_string_formats_decimal_triple() {
         let p = ColorPicker::new(Color::from_rgba8(99, 102, 241, 255));
         assert_eq!(p.rgb_string(), "rgb(99, 102, 241)");
+    }
+
+    #[test]
+    fn parse_hex_rejects_non_ascii_six_byte_input() {
+        // 6 bytes via UTF-8 multi-byte chars; previously panicked on slice
+        assert!(parse_hex("ä♥X").is_none());
+        assert!(parse_hex("##abc12").is_none());  // not 6 hex digits
+        assert!(parse_hex("#ABCDEF").is_some());  // sanity
+        assert!(parse_hex("#abcdef").is_some());  // lowercase
     }
 }
