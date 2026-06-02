@@ -26,6 +26,8 @@ use winit::event::{Modifiers, WindowEvent};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::link_popover::{LinkPopover, PageEntry};
+use crate::widget::marks::{Mark, MarkSpan};
 use crate::widget::rich_text_line::{LineSignal, RichTextLine};
 use crate::widget::slash_menu::SlashMenu;
 use crate::widget::Widget;
@@ -222,6 +224,13 @@ pub struct BlockEditor {
     /// `/<filter>` text back out of the block when a kind is committed
     /// (so the block ends up with just the existing content).
     slash_open_at: Option<usize>,
+    /// Page-link popover. Opens when the user types `[[` inside any
+    /// editable block; closes on Enter / Escape / no-match-backspace.
+    link_popover: LinkPopover,
+    /// Byte offset of the leading `[[` that opened the popover. Used
+    /// to splice the `[[<filter>` back out of the block once a page
+    /// is selected.
+    link_open_at: Option<usize>,
 }
 
 impl BlockEditor {
@@ -241,6 +250,8 @@ impl BlockEditor {
             last_mouse_pos: Point::ZERO,
             slash_menu: SlashMenu::new(),
             slash_open_at: None,
+            link_popover: LinkPopover::new(),
+            link_open_at: None,
         };
         s.blocks.push(Block::paragraph(""));
         s
@@ -270,6 +281,8 @@ impl BlockEditor {
             last_mouse_pos: Point::ZERO,
             slash_menu: SlashMenu::new(),
             slash_open_at: None,
+            link_popover: LinkPopover::new(),
+            link_open_at: None,
         };
         let mut lines = md.split('\n').peekable();
         while let Some(line) = lines.next() {
@@ -481,6 +494,21 @@ impl BlockEditor {
     /// should prefer the public mutators (`split_at_cursor` etc.).
     pub fn blocks_mut(&mut self) -> &mut Vec<Block> {
         &mut self.blocks
+    }
+
+    /// Replace the entire block list with `blocks`. Pairs with the
+    /// notes app's markdown parser, which produces a richer
+    /// representation (carrying inline marks) than this widget's
+    /// own from_markdown can express.
+    pub fn set_blocks(&mut self, blocks: Vec<Block>) {
+        self.blocks = blocks;
+        if self.blocks.is_empty() {
+            self.blocks.push(Block::paragraph(""));
+        }
+        self.focused = None;
+        self.is_focused = false;
+        self.structure_dirty = true;
+        self.dirty = true;
     }
 
     /// Test/integration hook: mark the edit-pending flag so the
@@ -854,6 +882,52 @@ impl BlockEditor {
         theme: &Theme,
     ) {
         self.slash_menu.draw_overlay(scene, transform, text_renderer, theme);
+        self.link_popover.draw_overlay(scene, transform, text_renderer, theme);
+    }
+
+    /// Seed the link popover's page list (call whenever the host
+    /// workspace changes — e.g. on `NotesApp::sync_from_workspace`).
+    pub fn set_link_pages(&mut self, pages: Vec<PageEntry>) {
+        self.link_popover.set_items(pages);
+    }
+
+    /// Read-only access to the link popover (for tests + the host
+    /// app that wants to peek at the current filter / visibility).
+    pub fn link_popover(&self) -> &LinkPopover {
+        &self.link_popover
+    }
+
+    /// Mutable access to the link popover (test hook).
+    #[doc(hidden)]
+    pub fn link_popover_mut(&mut self) -> &mut LinkPopover {
+        &mut self.link_popover
+    }
+
+    /// Apply a link-popover selection: strip the `[[<filter>` slice
+    /// out of the focused block, then insert the chosen page's title
+    /// covered by a `Mark::Link(page_id)` span.
+    fn commit_link_selection(&mut self, page: PageEntry) {
+        let Some(focused_idx) = self.focused else { return };
+        let Some(open_byte) = self.link_open_at.take() else { return };
+        let Some(b) = self.blocks.get_mut(focused_idx) else { return };
+        let text = b.line.value().to_string();
+        let cursor = b.line.cursor_pos().min(text.len());
+        let start = open_byte.min(text.len());
+        if cursor <= start {
+            return;
+        }
+        // Splice: replace [start, cursor) with the page title.
+        let mut new_text = String::with_capacity(text.len() + page.title.len());
+        new_text.push_str(&text[..start]);
+        new_text.push_str(&page.title);
+        new_text.push_str(&text[cursor..]);
+        b.line.set_text(&new_text);
+        // Add a Mark::Link covering the inserted title.
+        let mark_range = start..(start + page.title.len());
+        b.line.add_mark(MarkSpan::new(mark_range.clone(), Mark::Link(page.id)));
+        b.line.set_cursor_pos(start + page.title.len());
+        self.dirty = true;
+        self.edit_pending = true;
     }
 
     /// True iff the slash menu is currently displayed (so the host
@@ -1245,6 +1319,27 @@ impl Widget for BlockEditor {
         use winit::event::{ElementState, KeyEvent, MouseButton};
         use winit::keyboard::{Key, NamedKey};
 
+        // Link popover: while visible, intercept keystrokes BEFORE
+        // the editable line sees them. Same pattern as the slash
+        // menu below. Enter commits the highlighted page; Escape
+        // closes.
+        if self.link_popover.is_visible() {
+            if let WindowEvent::KeyboardInput { .. } = event {
+                let consumed = self.link_popover.handle_key(event);
+                if let Some(page) = self.link_popover.take_selection() {
+                    self.commit_link_selection(page);
+                }
+                if !self.link_popover.is_visible() {
+                    self.link_open_at = None;
+                }
+                if consumed {
+                    *handled = true;
+                    self.dirty = true;
+                    return;
+                }
+            }
+        }
+
         // Slash menu: while visible, intercept keystrokes BEFORE the
         // editable line sees them. The menu owns arrow nav / Enter /
         // Escape / typing-into-filter. If the menu signals Enter
@@ -1505,6 +1600,20 @@ impl BlockEditor {
                 if idx + 1 < self.blocks.len() {
                     self.focus_block(idx + 1, CursorPlacement::Start);
                 }
+            }
+            LineSignal::LinkOpen { open_at } => {
+                // Anchor the popover under the line's bottom-left
+                // (the same convention SlashMenu uses). A future
+                // polish pass can switch to caret-precise anchoring.
+                let line_rect = self
+                    .blocks
+                    .get(idx)
+                    .map(|b| b.line.get_rect())
+                    .unwrap_or(Rect::ZERO);
+                self.link_popover.set_anchor(Point::new(line_rect.x0, line_rect.y1 + 2.0));
+                self.link_popover.set_filter("");
+                self.link_popover.set_visible(true);
+                self.link_open_at = Some(open_at);
             }
         }
     }
