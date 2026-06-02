@@ -270,13 +270,46 @@ impl NotesApp {
     }
 }
 
-/// First-launch seed: one page titled "Welcome". The body is empty —
-/// Phase 2's BlockEditor will fill in default copy.
+/// First-launch seed: one page titled "Welcome" with a small
+/// example of every supported block kind so the user sees what the
+/// notes app is capable of immediately. The body must round-trip
+/// through `notes::markdown::{parse,serialize}` byte-stably —
+/// `welcome_page_renders_all_block_kinds` pins that.
+pub const WELCOME_BODY: &str = "\
+# Welcome to notes
+
+This is a paragraph — start typing anywhere.
+
+## Block types
+
+- Bullet list
+
+  - Nested with Tab / Shift-Tab
+
+- [ ] Open todo
+
+- [x] Done todo
+
+```rust
+fn hello() { println!(\"slash to open the menu\"); }
+```
+
+---
+
+### Tips
+
+- Type `/` to open the block menu
+
+- Press `Enter` inside a list to continue it
+
+- `Tab` indents, `Shift-Tab` outdents
+";
+
 fn seed_welcome(root: &std::path::Path, workspace: &mut Workspace) {
     let id = workspace.create_page(None);
     workspace.rename(id, "Welcome");
     workspace.set_selected(Some(id));
-    if let Err(e) = storage::write_page_body(root, id, "") {
+    if let Err(e) = storage::write_page_body(root, id, WELCOME_BODY) {
         tracing::error!(error = %e, "notes: write Welcome page failed");
     }
 }

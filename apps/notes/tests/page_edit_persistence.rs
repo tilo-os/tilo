@@ -63,6 +63,15 @@ fn split_and_save_round_trip_through_disk() {
     let mut app = NotesApp::spawn(tmp.path().into()).expect("spawn");
     let welcome_id = app.workspace_pages_for_test()[0].id;
 
+    // Reset the welcome page to a single empty paragraph so the
+    // remainder of the test seeds the body from scratch. Phase 3's
+    // seed_welcome ships several demo blocks which would otherwise
+    // appear in the saved body alongside the test's edits.
+    {
+        let panel = app.main_panel_mut();
+        panel.load_page(welcome_id, "Welcome".into(), String::new());
+    }
+
     // Seed: type "First", press Enter, type "Second" — via the
     // editor's split helper since we don't dispatch winit events here.
     {
@@ -99,6 +108,14 @@ fn heading_promotion_survives_save_reload() {
     let tmp = TempDir::new().unwrap();
     let mut app = NotesApp::spawn(tmp.path().into()).expect("spawn");
     let welcome_id = app.workspace_pages_for_test()[0].id;
+
+    // Reset to an empty body — Phase 3's welcome seed pre-fills
+    // multiple blocks, and try_promote_to_heading only acts on
+    // empty Paragraphs.
+    {
+        let panel = app.main_panel_mut();
+        panel.load_page(welcome_id, "Welcome".into(), String::new());
+    }
 
     {
         let panel = app.main_panel_mut();
