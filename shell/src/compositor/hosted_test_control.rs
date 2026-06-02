@@ -43,6 +43,10 @@ enum HostedCommand {
     ClickAt { x: f64, y: f64 },
     /// Cursor move only — for hover tests.
     Hover { x: f64, y: f64 },
+    /// Synthesise a `MouseWheel(LineDelta(dx, dy))` at the cursor's
+    /// last-known position. Used to drive strip pan / overview scroll
+    /// / wheel-disc rotation from external scripts.
+    MouseWheel { dx: f32, dy: f32 },
 }
 
 #[derive(Debug, Serialize)]
@@ -118,6 +122,7 @@ fn execute(cmd: HostedCommand, proxy: &EventLoopProxy<UserEvent>) -> HostedRespo
     let event = match cmd {
         HostedCommand::ClickAt { x, y } => UserEvent::Click { x, y },
         HostedCommand::Hover { x, y } => UserEvent::Hover { x, y },
+        HostedCommand::MouseWheel { dx, dy } => UserEvent::Wheel { dx, dy },
     };
     if proxy.send_event(event).is_err() {
         return HostedResponse::Err {
