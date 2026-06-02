@@ -78,6 +78,12 @@ pub struct ShellOverlayHost {
     overview_target: f32,
     transition_started: Option<Instant>,
     transition_from: f32,
+    /// Vertical scroll offset (px) for the workspace overview's row list.
+    /// Wheel events over the overview pan the cards through this offset
+    /// while the header (`Workspaces` h1 + subtitle) stays pinned. Clamped
+    /// in [0, max] each frame against the total content extent so a
+    /// workspace deletion can't strand the scroll past the tail.
+    overview_scroll_y: f64,
     /// Active-workspace id observed during the last `draw` call. When the
     /// chrome-held active workspace diverges from this, we latch a slide
     /// animation so the new workspace visibly enters from the edge rather
@@ -353,6 +359,7 @@ impl ShellOverlayHost {
             started: Instant::now(),
             overview_t: 0.0,
             overview_target: 0.0,
+            overview_scroll_y: 0.0,
             transition_started: None,
             transition_from: 0.0,
             last_active_ws: None,
