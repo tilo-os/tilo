@@ -35,12 +35,14 @@ use crate::presence::{PathSegment, PresenceKey};
 /// Render-time font size for the input's body text. Kept as a single
 /// constant so the measure-and-draw pair always agrees.
 const FONT_SIZE: f32 = 16.0;
-/// `line_height` follows the same `× 1.25` ratio cosmic-text uses
-/// when shaping (see `text_render.rs::measure_weighted`). The caret
-/// is centered against this band, not against `FONT_SIZE` directly,
-/// so the glyph row that draws *below* the cosmic-text baseline ends
-/// up vertically aligned with the caret.
-const LINE_HEIGHT: f32 = FONT_SIZE * 1.25;
+/// Line-height ratio cosmic-text uses when shaping (see
+/// `text_render.rs::measure_weighted`). The caret is centered
+/// against this band, not against the font size directly, so the
+/// glyph row that draws *below* the cosmic-text baseline ends up
+/// vertically aligned with the caret. Multiplied against the
+/// effective font size (which may be a per-widget override) at
+/// draw time.
+const LINE_HEIGHT_RATIO: f32 = 1.25;
 /// Caret thickness in CSS-like pixels. 2 px reads as a clean ibeam
 /// without becoming an obvious block at smaller font sizes.
 const CARET_WIDTH: f64 = 2.0;
@@ -198,6 +200,16 @@ pub struct TextInput {
     char_x_positions: Vec<f64>,
     scroll_x: f64,
     last_edit_time: Option<Instant>,
+    /// When `Some`, overrides the default body font size. Set via
+    /// [`with_font_size`] / [`set_font_size`]. Wrapper widgets such as
+    /// `RichTextLine` use this to render heading rows larger than
+    /// paragraph rows without forking the widget.
+    font_size_override: Option<f32>,
+    /// When true, the input renders without the rounded-rect bg /
+    /// border that signals "this is a form field". Used by block-
+    /// editor cells where the surrounding text should read as plain
+    /// document copy, not as a form input.
+    plain: bool,
 }
 
 impl TextInput {
@@ -225,7 +237,37 @@ impl TextInput {
             last_edit_time: None,
             dirty: false,
             crdt_bound: false,
+            font_size_override: None,
+            plain: false,
         }
+    }
+
+    /// Builder-style: override the body font size in CSS-like pixels.
+    /// Affects both the rendered glyph height and the row's intrinsic
+    /// vertical centering. Returning `Self` matches the with_*
+    /// pattern across the widget family.
+    pub fn with_font_size(mut self, size: f32) -> Self {
+        self.font_size_override = Some(size);
+        self
+    }
+
+    /// Builder-style: render without the rounded-rect bg + border.
+    /// The caret + selection still paint as usual when focused.
+    /// Used by `RichTextLine` so a block-editor cell reads as
+    /// document copy instead of a form field.
+    pub fn with_plain_chrome(mut self) -> Self {
+        self.plain = true;
+        self
+    }
+
+    /// Mutate the font-size override after construction.
+    pub fn set_font_size(&mut self, size: f32) {
+        self.font_size_override = Some(size);
+    }
+
+    /// Mutate the plain-chrome flag after construction.
+    pub fn set_plain_chrome(&mut self, plain: bool) {
+        self.plain = plain;
     }
 
     /// Construct a TextInput that owns its own string with no CRDT
@@ -481,25 +523,38 @@ impl Widget for TextInput {
     }
 
     fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
-        let bg_color = if self.is_focused {
-            theme.bg_active
-        } else {
-            theme.tokens.colors.surfaces.raised
-        };
-
         let shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
-        scene.fill(vello::peniko::Fill::NonZero, transform, bg_color, None, &shape);
+        if !self.plain {
+            let bg_color = if self.is_focused {
+                theme.bg_active
+            } else {
+                theme.tokens.colors.surfaces.raised
+            };
+            scene.fill(vello::peniko::Fill::NonZero, transform, bg_color, None, &shape);
+            let border_color = if self.is_focused {
+                theme.tokens.colors.border_focus
+            } else {
+                theme.tokens.colors.border_standard
+            };
+            scene.stroke(
+                &Stroke::new(if self.is_focused { 2.0 } else { 1.0 }),
+                transform,
+                border_color,
+                None,
+                &shape,
+            );
+        }
 
-        let border_color = if self.is_focused {
-            theme.tokens.colors.border_focus
+        let text_size = self.font_size_override.unwrap_or(FONT_SIZE);
+        let line_height = (text_size * LINE_HEIGHT_RATIO) as f64;
+        let padding_x = if self.plain {
+            // Plain-chrome inputs (block editor cells) don't need the
+            // inset gutter — the parent already adds whatever gutter
+            // the document layout wants. Saves ~10 px per side.
+            0.0
         } else {
-            theme.tokens.colors.border_standard
+            theme.padding_standard as f64
         };
-        scene.stroke(&Stroke::new(if self.is_focused { 2.0 } else { 1.0 }), transform, border_color, None, &shape);
-
-        let text_size = FONT_SIZE;
-        let line_height = LINE_HEIGHT as f64;
-        let padding_x = theme.padding_standard as f64;
 
         // Pre-calculate positions for exact caret placement and click resolution.
         self.char_x_positions.clear();
@@ -1057,17 +1112,21 @@ mod tests {
     }
 
     /// The fix for visual-gap "text below center" pins the text top
-    /// against `line_height` (= `FONT_SIZE * 1.25`), *not* against
-    /// `FONT_SIZE` itself. Without this, the cosmic-text baseline
-    /// shifts the glyphs ~3 px below the caret in a 40 px input.
+    /// against `line_height` (= `FONT_SIZE * LINE_HEIGHT_RATIO`),
+    /// *not* against `FONT_SIZE` itself. Without this, the cosmic-
+    /// text baseline shifts the glyphs ~3 px below the caret in a
+    /// 40 px input.
     #[test]
     fn text_baseline_centred_with_caret() {
         let rect_h = 40.0_f32;
-        let text_y_correct = (rect_h - LINE_HEIGHT) / 2.0;
+        let line_height = FONT_SIZE * LINE_HEIGHT_RATIO;
+        let text_y_correct = (rect_h - line_height) / 2.0;
         let text_y_naive = (rect_h - FONT_SIZE) / 2.0;
         // The naive computation lands ~2 px below the correct one for
         // 16 px text → that's the "below center" the user reported.
         assert!(text_y_naive > text_y_correct);
-        assert!((text_y_naive - text_y_correct - (LINE_HEIGHT - FONT_SIZE) / 2.0).abs() < 0.01);
+        assert!(
+            (text_y_naive - text_y_correct - (line_height - FONT_SIZE) / 2.0).abs() < 0.01
+        );
     }
 }
