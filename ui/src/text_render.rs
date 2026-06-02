@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use cosmic_text::{FontSystem, SwashCache, Buffer, Metrics, Shaping, Wrap};
+use cosmic_text::{FontSystem, SwashCache, Buffer, Family, Metrics, Shaping, Style as FontStyle, Wrap};
 use cosmic_text::fontdb::Weight;
 use vello::Scene;
 use vello::kurbo::Affine;
@@ -217,6 +217,115 @@ impl TextRenderer {
         max_width: Option<f32>,
     ) {
         self.draw_text_weighted(scene, text, size, color, transform, max_width, TextWeight::Regular)
+    }
+
+    /// Draw `text` with explicit weight + italic + optional monospace
+    /// family override. Used by [`crate::widget::RichTextLine`] to
+    /// paint inline-mark spans (bold / italic / code) with the right
+    /// glyph styling.
+    ///
+    /// `monospace = true` switches the font family to the system's
+    /// `Family::Monospace` so inline code reads as code without the
+    /// caller needing to manage a custom font db. Width is consistent
+    /// because cosmic-text picks one face for the whole call —
+    /// callers wanting accurate measurement should pair with
+    /// [`Self::measure_styled`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_text_styled(
+        &mut self,
+        scene: &mut Scene,
+        text: &str,
+        size: f32,
+        color: Color,
+        transform: Affine,
+        max_width: Option<f32>,
+        weight: TextWeight,
+        italic: bool,
+        monospace: bool,
+    ) {
+        if text.is_empty() { return; }
+
+        let line_height = size * 1.25;
+        let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(size, line_height));
+        let mut attrs = cosmic_text::Attrs::new().weight(weight.to_cosmic_weight());
+        if italic {
+            attrs = attrs.style(FontStyle::Italic);
+        }
+        if monospace {
+            attrs = attrs.family(Family::Monospace);
+        }
+        buffer.set_text(text, &attrs, Shaping::Advanced, None);
+        buffer.set_size(max_width, None);
+        buffer.set_wrap(Wrap::Word);
+        buffer.shape_until_scroll(&mut self.font_system, false);
+
+        for run in buffer.layout_runs() {
+            let mut current_face_id: Option<cosmic_text::fontdb::ID> = None;
+            let mut glyphs_to_draw = Vec::new();
+
+            for glyph in run.glyphs.iter() {
+                let face_id = glyph.font_id;
+
+                if current_face_id != Some(face_id) && !glyphs_to_draw.is_empty() {
+                    self.flush_glyphs(scene, current_face_id.unwrap(), &glyphs_to_draw, size, color, transform, run.line_y);
+                    glyphs_to_draw.clear();
+                }
+
+                current_face_id = Some(face_id);
+                glyphs_to_draw.push(glyph.clone());
+            }
+
+            if let Some(face_id) = current_face_id {
+                if !glyphs_to_draw.is_empty() {
+                    self.flush_glyphs(scene, face_id, &glyphs_to_draw, size, color, transform, run.line_y);
+                }
+            }
+        }
+    }
+
+    /// Measure `text` with style attributes. Mirrors
+    /// [`Self::draw_text_styled`]; used by [`crate::widget::RichTextLine`]
+    /// to compute per-segment advances when painting inline-mark spans.
+    /// NOT cached — these calls are rare (one per segment per frame)
+    /// and the cache key would need to include the italic/mono flags
+    /// too, which isn't worth the complication right now.
+    pub fn measure_styled(
+        &mut self,
+        text: &str,
+        size: f32,
+        max_width: Option<f32>,
+        weight: TextWeight,
+        italic: bool,
+        monospace: bool,
+    ) -> (f32, f32) {
+        if text.is_empty() {
+            return (0.0, 0.0);
+        }
+        // Fast path: regular non-italic non-mono → reuse the cached
+        // measure_weighted, which is the hottest path.
+        if !italic && !monospace {
+            return self.measure_weighted(text, size, max_width, weight);
+        }
+        let line_height = size * 1.25;
+        let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(size, line_height));
+        let mut attrs = cosmic_text::Attrs::new().weight(weight.to_cosmic_weight());
+        if italic {
+            attrs = attrs.style(FontStyle::Italic);
+        }
+        if monospace {
+            attrs = attrs.family(Family::Monospace);
+        }
+        buffer.set_text(text, &attrs, Shaping::Advanced, None);
+        buffer.set_size(max_width, None);
+        buffer.set_wrap(Wrap::Word);
+        buffer.shape_until_scroll(&mut self.font_system, false);
+        let mut width = 0.0f32;
+        let mut lines = 0;
+        for run in buffer.layout_runs() {
+            width = width.max(run.line_w);
+            lines += 1;
+        }
+        (width, lines as f32 * line_height)
     }
 
     /// Same as [`TextRenderer::draw_text`] but takes an explicit typographic
