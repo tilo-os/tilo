@@ -278,6 +278,14 @@ impl TextInput {
         }
     }
 
+    /// Override the rect that this TextInput renders at, for callers
+    /// that embed an input inside a parent widget without registering
+    /// it in the taffy tree (the parent owns its layout). The parent
+    /// must call this from its own `apply_layout`.
+    pub fn set_rect_for_embed(&mut self, rect: Rect) {
+        self.rect = rect;
+    }
+
     pub fn with_id(mut self, id: &str) -> Self {
         self._id = id.to_string();
         self
