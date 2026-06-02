@@ -30,7 +30,7 @@ fn round_trip_bullets_at_three_indents() {
     match &blocks[0] {
         BlockSpec::Bullet { indent, text } => {
             assert_eq!(*indent, 0);
-            assert_eq!(text, "a");
+            assert_eq!(text.text, "a");
         }
         b => panic!("expected Bullet, got {:?}", b),
     }
@@ -110,7 +110,7 @@ fn parse_accepts_max_indent_level() {
     match &blocks[0] {
         BlockSpec::Bullet { indent, text } => {
             assert_eq!(*indent, 5);
-            assert_eq!(text, "deep");
+            assert_eq!(text.text, "deep");
         }
         b => panic!("expected Bullet, got {:?}", b),
     }
