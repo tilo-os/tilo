@@ -847,19 +847,45 @@ impl Widget for GroupRow {
             }
         }
 
-        // Drop-zone indicator: removed entirely per user feedback on
-        // 2026-06-02. The previous bar / section / rectangle
-        // visualisations were all overcorrections — the user wants the
-        // gap between groups to remain WITHOUT a visual hint, because
-        // a drop there means "create a new group" (an obvious
-        // outcome from the inter-group gap itself). The fine-grained
-        // tab-bar drop indicator (a thin white line between tabs) is
-        // implemented in the TabBar widget, not here.
+        // Drop-zone indicators: most gaps render no visual — release
+        // inside a group's tile area prepends/appends the tab (left/
+        // right half resolution), and an interior inter-group gap
+        // unambiguously means "new group between these two". The
+        // extreme gaps (gap_idx == 0 — before the leftmost group; and
+        // gap_idx == groups.len() — after the rightmost) DO need a
+        // visual hint per user feedback on 2026-06-02: dropping past
+        // the strip's leftmost edge has no "left tile half" to infer
+        // intent from, so without an explicit cue the user can't tell
+        // the action will create a new group there.
         //
-        // The hit-test path that decides "release in gap → new
-        // group" / "release inside an existing group's tile area →
-        // prepend/append tab" still runs in `handle_event` below;
-        // it just no longer paints anything.
+        // A 2-px-wide accent capsule, full strip height, painted only
+        // when a drag is in flight AND `hover_gap_idx` resolves to
+        // one of the two extremes.
+        let any_drag = self.groups.iter().any(|g| g.drag_in_flight());
+        if any_drag
+            && !self.groups.is_empty()
+            && let Some(idx) = self.hover_gap_idx
+            && (idx == 0 || idx == self.groups.len())
+        {
+            let accent = theme.tokens.colors.accent[5];
+            let bar_w = 2.0_f64;
+            let mid_x = if idx == 0 {
+                self.groups[0].get_rect().x0 - 4.0
+            } else {
+                self.groups.last().unwrap().get_rect().x1 + 4.0
+            };
+            let capsule = vello::kurbo::RoundedRect::from_rect(
+                Rect::new(mid_x - bar_w / 2.0, self.rect.y0 + 8.0, mid_x + bar_w / 2.0, self.rect.y1 - 8.0),
+                1.0,
+            );
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                accent,
+                None,
+                &capsule,
+            );
+        }
         // Close the strip clip layer we pushed at the top of `draw`.
         scene.pop_layer();
     }
