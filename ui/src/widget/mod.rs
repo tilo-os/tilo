@@ -168,6 +168,7 @@ mod image;       pub use image::{Image, ImageFit, ImageDecodeError};
 mod slider;      pub use slider::Slider;
 mod text_input;  pub use text_input::TextInput;
 pub mod rich_text_line; pub use rich_text_line::{RichTextLine, LineSignal};
+pub mod block_editor;   pub use block_editor::{Block, BlockEditor, BlockKind, CursorPlacement};
 pub mod tabs;    pub use tabs::{TabBar, TabDescriptor};
 mod scrollable;  pub use scrollable::{Scrollable, ScrollAxis};
 mod tile_host;   pub use tile_host::{TileHost, TileContent, AppKind};
