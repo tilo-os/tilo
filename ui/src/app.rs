@@ -29,6 +29,11 @@ pub enum UserEvent {
     /// One UserEvent dispatches THREE `WindowEvent`s through the same path
     /// a real click would take.
     Click { x: f64, y: f64 },
+    /// Synthesise a `MouseWheel { LineDelta(dx, dy) }` at the cursor's
+    /// most-recent position. Used by the hosted-mode test_control socket
+    /// so an external script can drive strip-pan / overview-scroll /
+    /// wheel-disc gestures without a real mouse.
+    Wheel { dx: f32, dy: f32 },
 }
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -578,6 +583,14 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     button: MouseButton::Left,
                 };
                 self.window_event(event_loop, window_id, release);
+            }
+            UserEvent::Wheel { dx, dy } => {
+                let ev = WindowEvent::MouseWheel {
+                    device_id: unsafe { std::mem::zeroed() },
+                    delta: winit::event::MouseScrollDelta::LineDelta(dx, dy),
+                    phase: winit::event::TouchPhase::Moved,
+                };
+                self.window_event(event_loop, window_id, ev);
             }
         }
     }
