@@ -46,7 +46,7 @@ fn missing_workspace_file_loads_as_none() {
 fn notes_app_spawn_restart_preserves_welcome_page() {
     use notes::NotesApp;
     let tmp = TempDir::new().unwrap();
-    let first = NotesApp::spawn(tmp.path().into()).unwrap();
+    let mut first = NotesApp::spawn(tmp.path().into()).unwrap();
     let id = first.workspace_pages_for_test()[0].id;
     first.flush_saves();
     drop(first);

@@ -24,6 +24,23 @@ fn render_one_frame_against_seeded_workspace() {
     let tmp = TempDir::new().unwrap();
     let mut app = NotesApp::spawn(tmp.path().into()).expect("spawn ok");
 
+    // Phase 2: seed the currently-loaded page with a heading + two
+    // paragraphs so the snapshot reflects the new BlockEditor pane.
+    // This bypasses the event loop (no winit dispatching) but
+    // exercises the same `BlockEditor::from_markdown` path the live
+    // app uses on selection change.
+    {
+        let panel = app.main_panel_mut();
+        if let Some(id) = panel.page_id() {
+            panel.load_page(
+                id,
+                "Welcome".into(),
+                "# Welcome to notes\n\nThis is the first paragraph.\n\nAnd a second one.\n"
+                    .into(),
+            );
+        }
+    }
+
     let theme = Theme::dark();
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
@@ -68,6 +85,29 @@ fn render_one_frame_against_seeded_workspace() {
             .unwrap();
     }
     app.apply_layout(&taffy, child, Point::ORIGIN);
+
+    // Sanity-assert the editor laid out three non-degenerate blocks.
+    // Pinned so a future regression in MainPanel's flex chain (where
+    // an outside `set_style` accidentally drops `flex_direction:
+    // Column`, collapsing every block to width 0 — happened in the
+    // first round of Phase 2 wiring) gets caught here instead of in
+    // a quiet snapshot.
+    {
+        let panel = app.main_panel_mut();
+        assert_eq!(
+            panel.editor().blocks().len(),
+            3,
+            "seeded markdown should parse into 3 blocks"
+        );
+        for b in panel.editor().blocks() {
+            let r = b.line.get_rect();
+            assert!(
+                r.width() > 0.0 && r.height() > 0.0,
+                "block rect must be non-degenerate (got {:?})",
+                r
+            );
+        }
+    }
 
     let mut scene = Scene::new();
     app.draw_with_presence(

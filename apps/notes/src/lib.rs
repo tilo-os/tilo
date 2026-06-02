@@ -12,4 +12,5 @@ pub mod sidebar;
 pub mod app;
 
 pub use app::NotesApp;
+pub use main_panel::MainPanel;
 pub use model::{PageId, PageMeta, Workspace, WorkspaceData};
