@@ -30,8 +30,10 @@ use ui::widget::page_palette::PageJumpPalette;
 
 use crate::main_panel::MainPanel;
 use crate::model::{PageId, Workspace};
+use crate::shortcuts_overlay::ShortcutsOverlay;
 use crate::sidebar::{NoteTreeView, OutEvent};
-use crate::storage::{self, PageSaver, Saver};
+use crate::status_bar::{count_words, StatusBar, StatusBarState};
+use crate::storage::{self, PageSaver, SaveStatus, Saver};
 
 /// Fixed sidebar width for Phase 1 (we ship a collapsible drawer in
 /// a later phase — see the roadmap). 240 px reads as "comfortable but
@@ -47,12 +49,21 @@ pub struct NotesApp {
     workspace: Workspace,
     sidebar: NoteTreeView,
     main: MainPanel,
+    status: StatusBar,
+    shortcuts: ShortcutsOverlay,
     /// Root container rect, populated by `apply_layout`.
     rect: Rect,
-    /// Cached taffy node IDs for the two children. Filled in
-    /// `build_layout`, used by `apply_layout` and `handle_event`.
+    /// Cached taffy node IDs. Filled in `build_layout`, used by
+    /// `apply_layout` and `handle_event`.
     sidebar_node: Option<NodeId>,
     main_node: Option<NodeId>,
+    status_node: Option<NodeId>,
+    /// Rect covering [sidebar + main] — the upper "content row" of
+    /// the column layout, sibling of the status bar. We don't expose
+    /// this through taffy node ids; it's a flex sub-container whose
+    /// rect we never need outside of layout. Tracked locally for
+    /// completeness.
+    content_node: Option<NodeId>,
     root: PathBuf,
     saver: Option<Saver>,
     /// Debounced background saver for per-page bodies. Receives a
@@ -119,9 +130,13 @@ impl NotesApp {
             workspace,
             sidebar,
             main,
+            status: StatusBar::new(),
+            shortcuts: ShortcutsOverlay::new(),
             rect: Rect::ZERO,
             sidebar_node: None,
             main_node: None,
+            status_node: None,
+            content_node: None,
             root,
             saver: Some(saver),
             page_saver: Some(page_saver),
@@ -129,7 +144,80 @@ impl NotesApp {
             last_mouse: Point::ZERO,
         };
         app.refresh_link_pages();
+        app.refresh_status();
         Ok(app)
+    }
+
+    /// Recompute the status bar snapshot from the workspace + savers.
+    /// Cheap — called from `handle_event`'s tail and after every
+    /// `apply_event`. The status bar diffs internally so a no-op
+    /// refresh doesn't dirty its render.
+    fn refresh_status(&mut self) {
+        let path = match self.workspace.selected() {
+            Some(id) => self.breadcrumb_for(id),
+            None => String::new(),
+        };
+        // Count words from the live editor (not the on-disk body) so
+        // the indicator stays in sync with what the user is typing.
+        // We count over each block's plain text body — not the
+        // serialised markdown — so chrome like `- `, `**`, `` ` ``
+        // doesn't inflate the total.
+        let word_count = if self.workspace.selected().is_some() {
+            let mut total = 0usize;
+            for b in self.main.editor().blocks() {
+                total += count_words(b.text());
+            }
+            Some(total)
+        } else {
+            None
+        };
+        // Combined save status: worst-of(workspace, page bodies). If
+        // either is in-flight the user sees "Saving…"; either failure
+        // surfaces "Save failed".
+        let workspace_status = self
+            .saver
+            .as_ref()
+            .map(|s| s.status())
+            .unwrap_or(SaveStatus::Saved);
+        let page_status = self
+            .page_saver
+            .as_ref()
+            .map(|s| s.status())
+            .unwrap_or(SaveStatus::Saved);
+        let save_status = match (workspace_status, page_status) {
+            (SaveStatus::Failed, _) | (_, SaveStatus::Failed) => SaveStatus::Failed,
+            (SaveStatus::Saving, _) | (_, SaveStatus::Saving) => SaveStatus::Saving,
+            _ => SaveStatus::Saved,
+        };
+        self.status.set_state(StatusBarState {
+            save_status,
+            page_path: path,
+            page_count: self.workspace.pages().len(),
+            word_count,
+        });
+    }
+
+    /// Resolve a page's breadcrumb path by walking parent pointers.
+    /// Format: `Root / Mid / Leaf`. Caps recursion at 16 for safety.
+    fn breadcrumb_for(&self, id: PageId) -> String {
+        let mut chain: Vec<String> = Vec::new();
+        let mut cur = Some(id);
+        let mut hops = 0;
+        while let Some(pid) = cur {
+            if hops > 16 {
+                break;
+            }
+            match self.workspace.get(pid) {
+                Some(meta) => {
+                    chain.push(meta.title.clone());
+                    cur = meta.parent;
+                }
+                None => break,
+            }
+            hops += 1;
+        }
+        chain.reverse();
+        chain.join(" / ")
     }
 
     /// Sync the page list into both the editor's [[link popover]] and
@@ -250,6 +338,7 @@ impl NotesApp {
         // see fresh titles.
         self.refresh_link_pages();
         self.persist();
+        self.refresh_status();
     }
 
     /// Load a page through `MainPanel::load_page_with_link_resolver`,
@@ -371,6 +460,15 @@ impl NotesApp {
     #[doc(hidden)]
     pub fn tick_for_test(&mut self) {
         self.drain_editor_edits();
+        self.refresh_status();
+    }
+
+    /// Test hook: read-only access to the status bar so integration
+    /// tests can assert on save state / page count / word count
+    /// without going through pixel-level inspection.
+    #[doc(hidden)]
+    pub fn status_bar_for_test(&self) -> &crate::status_bar::StatusBar {
+        &self.status
     }
 
     /// Test hook: apply one [`OutEvent`] through the same code path
@@ -383,41 +481,70 @@ impl NotesApp {
     }
 }
 
-/// First-launch seed: one page titled "Welcome" with a small
-/// example of every supported block kind so the user sees what the
-/// notes app is capable of immediately. The body must round-trip
-/// through `notes::markdown::{parse,serialize}` byte-stably —
+/// First-launch seed: one page titled "Welcome" that doubles as a
+/// guided tour. Each section opens with a paragraph caption so the
+/// downstream block reads as a labelled demo rather than a test
+/// fixture. The body must round-trip through
+/// `notes::markdown::{parse,serialize}` byte-stably —
 /// `welcome_page_renders_all_block_kinds` pins that.
 pub const WELCOME_BODY: &str = "\
 # Welcome to notes
 
-This paragraph has **bold**, *italic*, `code`, and a [[Welcome]] self-link.
+A collaborative notes app for qOS. Edit anywhere; the page tree on the left organises your pages, the panel on the right is for typing.
+
+You can have **bold**, *italic*, `inline code`, and a [[Welcome]] link to any other page right in the middle of a paragraph.
 
 ## Block types
 
-- Bullet list
+Headings look like this — type `#`, `##`, or `###` followed by a space at the start of a line.
 
-  - Nested with Tab / Shift-Tab
+Bullet lists look like this:
+
+- Coffee
+
+- Tea
+
+- Hot chocolate
+
+  - With marshmallows
+
+Checklists track open work:
 
 - [ ] Open todo
 
-- [x] Done todo
+- [x] Completed item
+
+Code blocks are great for snippets:
 
 ```rust
 fn hello() { println!(\"slash to open the menu\"); }
 ```
 
+A divider separates sections:
+
 ---
 
-### Tips
+## Keyboard
 
-- Type `/` to open the block menu
+The essentials, in roughly the order you'll need them:
 
-- Type `[[` to link another page
+- `Cmd-N` / `Ctrl-N` creates a new page under the selected one
 
-- Press `Ctrl-B`, `Ctrl-I`, `Ctrl-E` to toggle **bold**, *italic*, `code`
+- `Cmd-K` / `Ctrl-K` jumps to any page by name
 
-- Press `Cmd-K` / `Ctrl-K` to jump to any page
+- `/` opens the block menu wherever the cursor is
+
+- `[[` opens a link picker — start typing a page title
+
+- `**bold**`, `*italic*`, and backtick-code work inline as you type
+
+- `Tab` / `Shift-Tab` indents and outdents list items
+
+- `Delete` (with the sidebar focused) removes the selected page
+
+- `?` opens the full shortcuts overlay
+
+Create your first page from the sidebar — double-click any title to rename it.
 ";
 
 fn seed_welcome(root: &std::path::Path, workspace: &mut Workspace) {
@@ -483,11 +610,40 @@ impl Widget for NotesApp {
         }
         self.main_node = Some(main_node);
 
-        let root = taffy
+        // Content row: sidebar + main, side-by-side. Lives inside the
+        // outer column so the status bar sits beneath it.
+        let content_node = taffy
             .new_with_children(
                 Style {
                     display: taffy::Display::Flex,
                     flex_direction: taffy::FlexDirection::Row,
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::auto(),
+                    },
+                    flex_grow: 1.0,
+                    flex_basis: Dimension::length(0.0),
+                    gap: taffy::Size {
+                        width: length(0.0),
+                        height: length(0.0),
+                    },
+                    ..Default::default()
+                },
+                &[sidebar_node, main_node],
+            )
+            .unwrap();
+        self.content_node = Some(content_node);
+
+        // Status bar.
+        let status_node = self.status.build_layout(taffy, theme, node_map);
+        self.status_node = Some(status_node);
+
+        // Outer column: content row + status bar.
+        let root = taffy
+            .new_with_children(
+                Style {
+                    display: taffy::Display::Flex,
+                    flex_direction: taffy::FlexDirection::Column,
                     size: Size {
                         width: Dimension::percent(1.0),
                         height: Dimension::percent(1.0),
@@ -498,7 +654,7 @@ impl Widget for NotesApp {
                     },
                     ..Default::default()
                 },
-                &[sidebar_node, main_node],
+                &[content_node, status_node],
             )
             .unwrap();
         node_map.insert(root, self as *mut dyn Widget);
@@ -514,12 +670,29 @@ impl Widget for NotesApp {
             origin.y + layout.location.y as f64 + layout.size.height as f64,
         );
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
-        if let Some(n) = self.sidebar_node {
-            self.sidebar.apply_layout(taffy, n, new_origin);
+        // The content row sits inside the root column; sidebar + main
+        // are children of it. Each child widget's `apply_layout` adds
+        // its own `layout.location` to the origin we pass, so we need
+        // to hand it the *parent's* absolute origin.
+        if let Some(content_node) = self.content_node {
+            let content_layout = taffy.layout(content_node).unwrap();
+            let content_origin = Point::new(
+                new_origin.x + content_layout.location.x as f64,
+                new_origin.y + content_layout.location.y as f64,
+            );
+            if let Some(n) = self.sidebar_node {
+                self.sidebar.apply_layout(taffy, n, content_origin);
+            }
+            if let Some(n) = self.main_node {
+                self.main.apply_layout(taffy, n, content_origin);
+            }
         }
-        if let Some(n) = self.main_node {
-            self.main.apply_layout(taffy, n, new_origin);
+        if let Some(n) = self.status_node {
+            self.status.apply_layout(taffy, n, new_origin);
         }
+        // Keep the shortcuts overlay's viewport synced — host-driven
+        // since the overlay never participates in the taffy pass.
+        self.shortcuts.set_viewport(self.rect);
     }
 
     fn draw(
@@ -540,18 +713,25 @@ impl Widget for NotesApp {
         );
         self.sidebar.draw(scene, transform, text_renderer, theme, presence);
         self.main.draw(scene, transform, text_renderer, theme, presence);
+        // v0.1: status bar across the bottom edge of the window.
+        self.status.draw(scene, transform, text_renderer, theme, presence);
         // Phase 4: page-jump palette renders on top of everything.
         if self.palette.is_visible() {
-            // Dim backdrop.
+            // Dim backdrop — `surfaces.overlay` is `bg-black/80` (the
+            // concept's modal scrim alpha). Reuse it rather than
+            // hand-rolling a colour literal.
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                vello::peniko::Color::from_rgba8(0, 0, 0, 102),
+                theme.tokens.colors.surfaces.overlay,
                 None,
                 &self.rect,
             );
             self.palette.draw_overlay(scene, transform, text_renderer, theme);
         }
+        // v0.1: shortcuts overlay sits above every other layer when
+        // visible. Drawn last so it covers the palette too.
+        self.shortcuts.draw_overlay(scene, transform, text_renderer, theme);
     }
 
     fn handle_event(
@@ -568,6 +748,35 @@ impl Widget for NotesApp {
     ) {
         use winit::event::{ElementState, KeyEvent, MouseButton};
         use winit::keyboard::Key;
+
+        // v0.1: shortcuts overlay is fully blocking when visible.
+        if self.shortcuts.is_visible() {
+            if self.shortcuts.handle_key(event, scale_factor) {
+                *handled = true;
+                self.refresh_status();
+                return;
+            }
+            // Even unconsumed events (e.g. mouse move when the overlay
+            // is up) shouldn't reach the editor underneath.
+            *handled = true;
+            return;
+        }
+
+        // v0.1: `?` (Shift+/) opens the shortcuts overlay. Two flavours:
+        // a literal `?` character commit (most layouts) and the named
+        // key Slash with shift held (some IME / mobile-keyboard paths).
+        if let WindowEvent::KeyboardInput {
+            event: KeyEvent { logical_key: Key::Character(c), state: ElementState::Pressed, .. },
+            ..
+        } = event
+        {
+            if c.as_str() == "?" {
+                self.shortcuts.set_visible(true);
+                *handled = true;
+                self.refresh_status();
+                return;
+            }
+        }
 
         // Phase 4: Cmd-K / Ctrl-K opens the page jump palette.
         // Intercepted BEFORE child widgets so a focused input
@@ -660,6 +869,10 @@ impl Widget for NotesApp {
             );
             self.last_mouse = logical;
         }
+        // Status bar refresh runs at the tail of every event so word
+        // count + save indicator stay current. Cheap — the StatusBar
+        // diffs internally.
+        self.refresh_status();
     }
 
     fn name(&self) -> &str {
@@ -671,12 +884,17 @@ impl Widget for NotesApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.sidebar.needs_redraw() || self.main.needs_redraw()
+        self.sidebar.needs_redraw()
+            || self.main.needs_redraw()
+            || self.status.needs_redraw()
+            || self.shortcuts.needs_redraw()
     }
 
     fn mark_drawn(&mut self) {
         self.sidebar.mark_drawn();
         self.main.mark_drawn();
+        self.status.mark_drawn();
+        self.shortcuts.mark_drawn();
     }
 
     fn draw_with_presence(
