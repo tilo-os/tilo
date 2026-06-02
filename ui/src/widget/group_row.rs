@@ -157,6 +157,15 @@ pub struct GroupRow {
     /// row or hasn't fired yet. The take-pattern accessor leaves the slot
     /// empty so a subsequent harvester call doesn't double-deliver.
     pending_cross_strip_detach: Option<CrossStripDetach>,
+    /// Tab-cycle pulse: signed step count to apply to the active
+    /// group's tab list via `Chrome::cycle_active_tab(dir)`. The
+    /// strip's wheel handler bumps this when there's no scroll target
+    /// (single group, fits viewport) so a wheel-over-strip gesture
+    /// has SOME visible effect — without this, the user sees nothing
+    /// happen on a single-tile workspace and describes the strip as
+    /// "horizontal scrolling doesn't work". Drained by the shell each
+    /// frame via [`Self::take_pending_tab_cycle`].
+    pending_tab_cycle: Option<i32>,
 }
 
 impl GroupRow {
@@ -176,7 +185,16 @@ impl GroupRow {
             last_wheel_at: None,
             snap_anim: None,
             pending_cross_strip_detach: None,
+            pending_tab_cycle: None,
         }
+    }
+
+    /// Drain the wheel-driven tab-cycle pulse. Returns the signed step
+    /// count (sign = direction, magnitude = number of detents to
+    /// advance) and clears the slot so a follow-up call returns
+    /// `None` until the next wheel gesture stamps a fresh value.
+    pub fn take_pending_tab_cycle(&mut self) -> Option<i32> {
+        self.pending_tab_cycle.take()
     }
 
     /// Current horizontal scroll offset in logical pixels. Exposed so
@@ -1027,45 +1045,72 @@ impl Widget for GroupRow {
         // (non-existent) internal scroll. The dispatch loop still runs
         // after, but with `handled = true` the loop early-exits on the
         // first child it visits.
+        // Wheel-over-strip is the spatial OS's main pan affordance —
+        // Niri's signature behaviour. We always claim the event when
+        // the cursor is inside the row's rect so a mouse-wheel user
+        // can navigate the strip the same way trackpad-horizontal-
+        // swipe does. Two regimes inside the handler:
+        //
+        //   * `max_scroll_x() > 0` (content overflows the viewport):
+        //     pan `scroll_x` by `dx`, clamped to legal range. Same as
+        //     before, except we now CLAIM the event regardless of dx
+        //     direction so the DE-level fallback doesn't double-fire.
+        //
+        //   * `max_scroll_x() == 0` (single group, fits viewport):
+        //     no useful pan target, so escalate to "cycle the active
+        //     tab" via the shell's chrome — `take_pending_tab_cycle`
+        //     publishes one tick per detent. Without this, a wheel
+        //     spin over the strip would visibly do nothing on a
+        //     single-tile workspace, which the user described as
+        //     "horizontal scrolling doesn't work".
         if let WindowEvent::MouseWheel { delta, .. } = event
             && self.rect.contains(self.last_cursor)
-            && self.max_scroll_x() > 0.0
         {
-            // 30 px per LineDelta unit lines up with the `scrollable.rs`
-            // module's per-line factor (it uses 20 px there; we go a
-            // touch wider so a single wheel detent reveals the next
-            // group's leading edge with a 600 px window). PixelDelta is
-            // honoured 1:1 — trackpad gestures already supply pixels.
-            //
-            // Sign convention matches GTK / browser `overflow-x-auto`:
-            // winit gives `delta.y > 0` for wheel-up; rotating the
-            // wheel UP scrolls content LEFT (reveals stuff to the
-            // left, equivalent to decreasing `scroll_x`). So the y
-            // contribution is `-y`. Trackpad horizontal: `delta.x > 0`
-            // means "two-finger swipe right", which reveals content to
-            // the right (increases `scroll_x`), so the x contribution
-            // is `+x`. PixelDelta carries the same axis convention
-            // 1:1.
+            // Sign convention: GTK / browser `overflow-x-auto`
+            // (LineDelta y>0 = wheel-up = reveal content to the
+            // LEFT = decrease scroll_x → contribution `-y`).
+            // Trackpad horizontal: dx>0 = swipe-right = reveal
+            // content to the RIGHT → contribution `+x`. PixelDelta
+            // carries the same axis convention 1:1. 30 px / LineDelta
+            // matches the strip's prior per-line factor.
             let dx = match delta {
-                MouseScrollDelta::LineDelta(x, y) => {
-                    let raw = (*x - *y) as f64;
-                    raw * 30.0
-                }
+                MouseScrollDelta::LineDelta(x, y) => (*x - *y) as f64 * 30.0,
                 MouseScrollDelta::PixelDelta(pp) => pp.x - pp.y,
             };
-            if dx != 0.0 {
-                let max = self.max_scroll_x();
-                self.scroll_x = (self.scroll_x + dx).clamp(0.0, max);
-                // Reset the idle gate and cancel any in-flight snap —
-                // a fresh wheel event means the user is actively
-                // panning, so we restart the 200 ms idle countdown
-                // from now and drop whatever snap target the previous
-                // gesture committed to. The next `tick_snap_at` after
-                // the user stops will compute a new target against
-                // the current `scroll_x`.
-                self.last_wheel_at = Some(Instant::now());
-                self.snap_anim = None;
+            let max = self.max_scroll_x();
+            if max > 0.0 {
+                if dx != 0.0 {
+                    self.scroll_x = (self.scroll_x + dx).clamp(0.0, max);
+                    self.last_wheel_at = Some(Instant::now());
+                    self.snap_anim = None;
+                }
+                // Always claim — even a sub-pixel dx — so the DE-
+                // level horizontal-scroll fallback can't promote the
+                // same gesture to a tab cycle on top of the pan.
                 *handled = true;
+            } else {
+                // No overflow: there's nothing to pan against. Only
+                // promote to a tab-cycle pulse when the wheel input
+                // is HORIZONTAL-dominant — vertical-only mouse wheel
+                // is left for the sibling `StripView` so its inter-
+                // strip pagination still works (the user's mental
+                // model: vertical wheel is for vertical movement,
+                // strip-cycling is a horizontal gesture). Trackpad
+                // two-finger horizontal swipe and Shift+wheel both
+                // arrive as horizontal-dominant deltas → they fire
+                // the cycle.
+                let (axis_x, axis_y): (f32, f32) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => (*x, *y),
+                    MouseScrollDelta::PixelDelta(pp) => (pp.x as f32, pp.y as f32),
+                };
+                if axis_x.abs() > axis_y.abs() && dx.abs() > 5.0 {
+                    let dir: i32 = if dx > 0.0 { 1 } else { -1 };
+                    self.pending_tab_cycle = self
+                        .pending_tab_cycle
+                        .map(|cur| cur.saturating_add(dir))
+                        .or(Some(dir));
+                    *handled = true;
+                }
             }
         }
 
