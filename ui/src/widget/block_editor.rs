@@ -29,13 +29,46 @@ use crate::theme::Theme;
 use crate::widget::rich_text_line::{LineSignal, RichTextLine};
 use crate::widget::Widget;
 
-/// Heading levels supported by the Phase 2 block editor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Maximum indent level for `Bullet` / `Checklist` blocks. Beyond
+/// this the visual hierarchy stops reading as nested and just shifts
+/// off the right edge of the panel — so we clamp aggressively.
+pub const MAX_LIST_INDENT: u8 = 5;
+/// Horizontal indent per level, in CSS-like pixels. Matches the
+/// `28px` indent step Notion uses in its dense block view.
+pub const LIST_INDENT_STEP_PX: f32 = 28.0;
+
+/// Block kinds supported by the Phase 3 block editor.
+///
+/// Each variant carries the per-block state the editor needs to
+/// render and serialise it:
+/// - `Bullet { indent }` / `Checklist { indent, done }` carry the
+///   nesting depth (clamped to [0, MAX_LIST_INDENT]).
+/// - `CodeBlock { lang }` carries the optional language tag for the
+///   fenced markdown serialisation. **v0.1 limitation**: code blocks
+///   are single-line per block — Enter inside a code block creates a
+///   *new* code block below, not a literal newline. Multi-line code
+///   editing is a Phase 3+ follow-up; the existing `RichTextLine`
+///   substrate is single-line only.
+/// - `Divider` is non-editable, non-focusable. It serialises to
+///   `---` on a line by itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlockKind {
     Paragraph,
     /// 1, 2, or 3. Any other value is invalid; the constructor
     /// helpers in this module clamp to [1, 3].
     Heading(u8),
+    /// Unordered list item. `indent` is the nesting depth in
+    /// [0, MAX_LIST_INDENT].
+    Bullet { indent: u8 },
+    /// Checklist item. `indent` is the nesting depth; `done` flips
+    /// when the user clicks the checkbox glyph.
+    Checklist { indent: u8, done: bool },
+    /// Fenced code block. `lang` is the language tag after the
+    /// opening fence (e.g. `rust`), or `None` for a bare ` ``` ` fence.
+    /// Single-line per block — see the type doc-comment.
+    CodeBlock { lang: Option<String> },
+    /// Horizontal rule. Non-editable, non-focusable.
+    Divider,
 }
 
 impl BlockKind {
@@ -49,6 +82,34 @@ impl BlockKind {
             BlockKind::Heading(3) => 18.0,
             // Future-proof: unknown heading level falls back to H3.
             BlockKind::Heading(_) => 18.0,
+            BlockKind::Bullet { .. } => 16.0,
+            BlockKind::Checklist { .. } => 16.0,
+            BlockKind::CodeBlock { .. } => 14.0,
+            // Dividers don't render text — height comes from the
+            // editor's row scaffolding, not the font.
+            BlockKind::Divider => 16.0,
+        }
+    }
+
+    /// True iff this block kind supports indent / outdent via
+    /// Tab / Shift-Tab.
+    pub fn supports_indent(&self) -> bool {
+        matches!(self, BlockKind::Bullet { .. } | BlockKind::Checklist { .. })
+    }
+
+    /// True iff this block has an editable text body. Dividers and
+    /// (visually, but not structurally) future placeholder kinds
+    /// return false. Used to skip event routing to non-editable rows.
+    pub fn is_editable(&self) -> bool {
+        !matches!(self, BlockKind::Divider)
+    }
+
+    /// Current indent level (0 for non-list kinds).
+    pub fn indent(&self) -> u8 {
+        match self {
+            BlockKind::Bullet { indent } => *indent,
+            BlockKind::Checklist { indent, .. } => *indent,
+            _ => 0,
         }
     }
 }
@@ -72,8 +133,49 @@ impl Block {
     pub fn heading(level: u8, text: &str) -> Self {
         let kind = BlockKind::Heading(level.clamp(1, 3));
         Self {
-            kind,
+            kind: kind.clone(),
             line: RichTextLine::new().with_text(text).with_size(kind.font_size()),
+        }
+    }
+
+    /// Bullet list item with the given indent + text. Indent clamped
+    /// to [0, MAX_LIST_INDENT].
+    pub fn bullet(indent: u8, text: &str) -> Self {
+        let kind = BlockKind::Bullet { indent: indent.min(MAX_LIST_INDENT) };
+        Self {
+            kind: kind.clone(),
+            line: RichTextLine::new().with_text(text).with_size(kind.font_size()),
+        }
+    }
+
+    /// Checklist item with the given indent + done flag + text.
+    pub fn checklist(indent: u8, done: bool, text: &str) -> Self {
+        let kind = BlockKind::Checklist { indent: indent.min(MAX_LIST_INDENT), done };
+        Self {
+            kind: kind.clone(),
+            line: RichTextLine::new().with_text(text).with_size(kind.font_size()),
+        }
+    }
+
+    /// Fenced code block. `lang` is `None` for a bare ` ``` ` fence.
+    ///
+    /// **v0.1 limitation**: single-line per block — see `BlockKind`
+    /// doc-comment. Multi-line code editing is a follow-up.
+    pub fn code_block(lang: Option<String>, text: &str) -> Self {
+        let kind = BlockKind::CodeBlock { lang };
+        Self {
+            kind: kind.clone(),
+            line: RichTextLine::new().with_text(text).with_size(kind.font_size()),
+        }
+    }
+
+    /// Horizontal rule. Carries an empty inner line so the layout
+    /// machinery keeps a uniform shape; the line is never focused or
+    /// edited.
+    pub fn divider() -> Self {
+        Self {
+            kind: BlockKind::Divider,
+            line: RichTextLine::new().with_size(BlockKind::Divider.font_size()),
         }
     }
 
@@ -149,13 +251,76 @@ impl BlockEditor {
             structure_dirty: true,
             edit_pending: false,
         };
-        for line in md.split('\n') {
+        let mut lines = md.split('\n').peekable();
+        while let Some(line) = lines.next() {
             // Skip pure blank lines — they serve as block separators
             // but don't produce a block themselves. (A trailing
             // newline at EOF is the common case.)
             if line.is_empty() {
                 continue;
             }
+            // Fenced code block: parse the optional language tag, then
+            // consume lines until the closing fence. Single-line in v0.1
+            // means we expect ``` -> one body line -> ``` and serialise
+            // back the same. If the body spans multiple lines we join
+            // them with `\n` into the single RichTextLine — the user
+            // sees the literal newlines as characters (a known v0.1
+            // limitation flagged in `BlockKind::CodeBlock` docs).
+            if let Some(rest) = line.strip_prefix("```") {
+                let lang = if rest.is_empty() {
+                    None
+                } else {
+                    Some(rest.to_string())
+                };
+                let mut body: Vec<&str> = Vec::new();
+                while let Some(next) = lines.peek() {
+                    if *next == "```" {
+                        // Consume the closing fence.
+                        lines.next();
+                        break;
+                    }
+                    body.push(lines.next().unwrap());
+                }
+                editor.blocks.push(Block::code_block(lang, &body.join("\n")));
+                continue;
+            }
+            // Divider: a line of exactly `---`. Three or more hyphens
+            // is the markdown convention but we only emit exactly
+            // three so round-trip is byte-stable.
+            if line == "---" {
+                editor.blocks.push(Block::divider());
+                continue;
+            }
+            // Checklist comes BEFORE bullet because `- [ ]` matches the
+            // bullet prefix `- ` too. Indent: count leading 4-space
+            // groups (matches Notion / GFM nesting). Tabs are treated
+            // as one indent step.
+            let (indent, body) = parse_list_indent(line);
+            if let Some(check_body) = body
+                .strip_prefix("- [ ] ")
+                .or_else(|| body.strip_prefix("* [ ] "))
+            {
+                editor.blocks.push(Block::checklist(indent, false, check_body));
+                continue;
+            }
+            if let Some(check_body) = body
+                .strip_prefix("- [x] ")
+                .or_else(|| body.strip_prefix("* [x] "))
+                .or_else(|| body.strip_prefix("- [X] "))
+                .or_else(|| body.strip_prefix("* [X] "))
+            {
+                editor.blocks.push(Block::checklist(indent, true, check_body));
+                continue;
+            }
+            if let Some(bullet_body) = body
+                .strip_prefix("- ")
+                .or_else(|| body.strip_prefix("* "))
+            {
+                editor.blocks.push(Block::bullet(indent, bullet_body));
+                continue;
+            }
+            // Headings are NOT indented in our grammar — they live at
+            // column 0 always. So we use the raw `line`, not `body`.
             if let Some(rest) = line.strip_prefix("### ") {
                 editor.blocks.push(Block::heading(3, rest));
             } else if let Some(rest) = line.strip_prefix("## ") {
@@ -188,7 +353,7 @@ impl BlockEditor {
             if i > 0 {
                 out.push_str("\n\n");
             }
-            match b.kind {
+            match &b.kind {
                 BlockKind::Paragraph => out.push_str(b.text()),
                 BlockKind::Heading(1) => {
                     out.push_str("# ");
@@ -205,6 +370,28 @@ impl BlockEditor {
                 BlockKind::Heading(_) => {
                     out.push_str("### ");
                     out.push_str(b.text());
+                }
+                BlockKind::Bullet { indent } => {
+                    push_indent(&mut out, *indent);
+                    out.push_str("- ");
+                    out.push_str(b.text());
+                }
+                BlockKind::Checklist { indent, done } => {
+                    push_indent(&mut out, *indent);
+                    out.push_str(if *done { "- [x] " } else { "- [ ] " });
+                    out.push_str(b.text());
+                }
+                BlockKind::CodeBlock { lang } => {
+                    out.push_str("```");
+                    if let Some(l) = lang {
+                        out.push_str(l);
+                    }
+                    out.push('\n');
+                    out.push_str(b.text());
+                    out.push_str("\n```");
+                }
+                BlockKind::Divider => {
+                    out.push_str("---");
                 }
             }
         }
@@ -335,6 +522,7 @@ impl BlockEditor {
         let Some(block) = self.blocks.get_mut(idx) else {
             return;
         };
+        let cur_kind = block.kind.clone();
         let text = block.line.value().to_string();
         let split = split_at.min(text.len());
         // Char-boundary safety: round down to the nearest char start.
@@ -342,7 +530,24 @@ impl BlockEditor {
         let (prefix, suffix) = text.split_at(split);
         // Update the current block's text to the prefix; preserve kind.
         block.line.set_text(prefix);
-        let suffix_block = Block::paragraph(suffix);
+        // Suffix's kind depends on the current block's kind:
+        // - Bullet/Checklist: new item of the SAME kind + indent. This
+        //   matches every Notion-style editor — pressing Enter on a
+        //   list item continues the list.
+        // - CodeBlock: new code block (Enter inside a code block does
+        //   NOT insert a literal newline in v0.1 — see BlockKind doc).
+        // - Anything else: a fresh paragraph.
+        let suffix_block = match cur_kind {
+            BlockKind::Bullet { indent } => Block::bullet(indent, suffix),
+            BlockKind::Checklist { indent, .. } => {
+                // The new item is unchecked even if the source was
+                // checked — matches the user's mental model of "add a
+                // new todo".
+                Block::checklist(indent, false, suffix)
+            }
+            BlockKind::CodeBlock { ref lang } => Block::code_block(lang.clone(), suffix),
+            _ => Block::paragraph(suffix),
+        };
         self.blocks.insert(idx + 1, suffix_block);
         self.structure_dirty = true;
         self.dirty = true;
@@ -420,7 +625,7 @@ impl BlockEditor {
         let Some(b) = self.blocks.get_mut(idx) else {
             return false;
         };
-        if b.kind != BlockKind::Paragraph {
+        if !matches!(b.kind, BlockKind::Paragraph) {
             return false;
         }
         let text = b.line.value().to_string();
@@ -434,10 +639,11 @@ impl BlockEditor {
             return false;
         };
         let kind = BlockKind::Heading(level);
+        let font_size = kind.font_size();
         b.kind = kind;
         let mut new_line = RichTextLine::new()
             .with_text(&prefix)
-            .with_size(kind.font_size());
+            .with_size(font_size);
         new_line.set_focus(true);
         // Park the caret at the start of the stripped text — that's
         // where the user expects to keep typing.
@@ -446,6 +652,125 @@ impl BlockEditor {
         self.structure_dirty = true;
         self.dirty = true;
         true
+    }
+
+    /// Convert the block at `idx` to `new_kind`, preserving the
+    /// current text content. Used by the SlashMenu Enter handler:
+    /// the menu picks the target kind and this applies the conversion.
+    ///
+    /// Behaviour:
+    /// - Paragraph ↔ Heading(n): text body is preserved, font size
+    ///   changes. No-op if the block is already that kind.
+    /// - Paragraph ↔ Bullet/Checklist: indent resets to 0, done = false.
+    /// - Any → Divider: replaces the block entirely (no text).
+    /// - Any → CodeBlock: keeps text, drops marks, sets lang = None.
+    ///
+    /// Returns `true` if a conversion happened. After a successful
+    /// conversion, focus stays on the same block index with the caret
+    /// at end of the preserved text.
+    pub fn try_convert_to(&mut self, idx: usize, new_kind: BlockKind) -> bool {
+        let Some(b) = self.blocks.get_mut(idx) else {
+            return false;
+        };
+        if b.kind == new_kind {
+            return false;
+        }
+        let text = b.line.value().to_string();
+        let font_size = new_kind.font_size();
+        b.kind = new_kind.clone();
+        // Replace the inner line so the new font size lands cleanly
+        // (`set_font_size` propagates, but rebuilding the input also
+        // resets selection / dirty state — a clean cut for what is
+        // visually a hard conversion). For dividers we keep an empty
+        // line to satisfy layout but it's never rendered or focused.
+        let body = if matches!(new_kind, BlockKind::Divider) { "" } else { &text };
+        let was_focused = b.line.is_focused();
+        let mut new_line = RichTextLine::new()
+            .with_text(body)
+            .with_size(font_size);
+        // After conversion, keep the caret at the end of the preserved
+        // body so the user can keep typing in the new kind. Focus
+        // restoration honours the editor's current focused-block state.
+        new_line.set_cursor_pos(body.len());
+        new_line.set_focus(was_focused && !matches!(new_kind, BlockKind::Divider));
+        b.line = new_line;
+        self.structure_dirty = true;
+        self.dirty = true;
+        // Dividers are not focusable — push focus to the next block
+        // (or fall back to a paragraph we splice in if we're at the end).
+        if matches!(new_kind, BlockKind::Divider) {
+            if self.focused == Some(idx) {
+                if idx + 1 < self.blocks.len() {
+                    self.focus_block(idx + 1, CursorPlacement::Start);
+                } else {
+                    // Add a trailing empty paragraph so the user can
+                    // keep typing below the divider. Common Notion
+                    // pattern: inserting a divider lands the caret on
+                    // the line after it.
+                    self.blocks.push(Block::paragraph(""));
+                    self.focus_block(idx + 1, CursorPlacement::Start);
+                }
+            }
+        }
+        true
+    }
+
+    /// Adjust the indent of the block at `idx` by `delta` (signed).
+    /// Only Bullet / Checklist blocks have an indent — for any other
+    /// kind this is a no-op and returns `false`. Indent is clamped to
+    /// [0, MAX_LIST_INDENT].
+    ///
+    /// Returns `true` if the indent actually changed.
+    pub fn try_indent(&mut self, idx: usize, delta: i8) -> bool {
+        let Some(b) = self.blocks.get_mut(idx) else {
+            return false;
+        };
+        let (new_kind, changed) = match &b.kind {
+            BlockKind::Bullet { indent } => {
+                let next = (*indent as i16 + delta as i16)
+                    .clamp(0, MAX_LIST_INDENT as i16) as u8;
+                let changed = next != *indent;
+                (BlockKind::Bullet { indent: next }, changed)
+            }
+            BlockKind::Checklist { indent, done } => {
+                let next = (*indent as i16 + delta as i16)
+                    .clamp(0, MAX_LIST_INDENT as i16) as u8;
+                let changed = next != *indent;
+                (BlockKind::Checklist { indent: next, done: *done }, changed)
+            }
+            _ => return false,
+        };
+        if !changed {
+            return false;
+        }
+        b.kind = new_kind;
+        // Mark dirty so the renderer re-positions the bullet glyph at
+        // the new indent. Structure doesn't actually change (still one
+        // block at the same index), but the row's horizontal layout
+        // does — flag both so MainPanel rebuilds taffy if needed.
+        self.structure_dirty = true;
+        self.dirty = true;
+        true
+    }
+
+    /// Flip the `done` flag on a Checklist block. No-op for other
+    /// kinds. Returns the new `done` value, or `None` if the block
+    /// isn't a Checklist.
+    pub fn try_toggle_check(&mut self, idx: usize) -> Option<bool> {
+        let Some(b) = self.blocks.get_mut(idx) else {
+            return None;
+        };
+        if let BlockKind::Checklist { indent, done } = &b.kind {
+            let new_done = !*done;
+            b.kind = BlockKind::Checklist { indent: *indent, done: new_done };
+            self.dirty = true;
+            // Toggling check counts as a user edit so the page is
+            // dirty + gets persisted.
+            self.edit_pending = true;
+            Some(new_done)
+        } else {
+            None
+        }
     }
 }
 
@@ -463,6 +788,41 @@ fn clamp_char_boundary(text: &str, byte: usize) -> usize {
         b -= 1;
     }
     b
+}
+
+/// Parse the leading indent of a list-item line. Returns `(indent_level,
+/// remainder)` where `remainder` is the line with the indent stripped.
+///
+/// Convention (matches GFM nested lists): each indent level is **two
+/// spaces**. We use 2 here rather than 4 to match what Notion / Obsidian
+/// emit by default for nested bullets. A single tab character counts
+/// as one indent step.
+fn parse_list_indent(line: &str) -> (u8, &str) {
+    let mut bytes = 0usize;
+    let mut level: u8 = 0;
+    let b = line.as_bytes();
+    while level < MAX_LIST_INDENT {
+        if b.len() >= bytes + 2 && &b[bytes..bytes + 2] == b"  " {
+            bytes += 2;
+            level += 1;
+        } else if b.len() > bytes && b[bytes] == b'\t' {
+            bytes += 1;
+            level += 1;
+        } else {
+            break;
+        }
+    }
+    (level, &line[bytes..])
+}
+
+/// Append `indent` levels of 2-space indent to `out`. Inverse of
+/// [`parse_list_indent`] when the input contained spaces (tabs are
+/// re-emitted as spaces on the round-trip, which is fine — the parser
+/// accepts both).
+fn push_indent(out: &mut String, indent: u8) {
+    for _ in 0..indent.min(MAX_LIST_INDENT) {
+        out.push_str("  ");
+    }
 }
 
 impl Default for BlockEditor {
@@ -820,5 +1180,185 @@ mod tests {
         assert!(BlockKind::Heading(1).font_size() > BlockKind::Heading(2).font_size());
         assert!(BlockKind::Heading(2).font_size() > BlockKind::Heading(3).font_size());
         assert!(BlockKind::Heading(3).font_size() > BlockKind::Paragraph.font_size());
+    }
+
+    // ---- Phase 3: convert / indent / toggle ----------------------------
+
+    #[test]
+    fn try_convert_paragraph_to_h1() {
+        let mut e = BlockEditor::new();
+        e.blocks[0].line.set_text("hello");
+        assert!(e.try_convert_to(0, BlockKind::Heading(1)));
+        assert!(matches!(e.blocks()[0].kind, BlockKind::Heading(1)));
+        // Text preserved.
+        assert_eq!(e.blocks()[0].text(), "hello");
+    }
+
+    #[test]
+    fn try_convert_h1_to_bullet_preserves_text_resets_indent() {
+        let mut e = BlockEditor::new();
+        e.blocks[0] = Block::heading(1, "task");
+        assert!(e.try_convert_to(0, BlockKind::Bullet { indent: 0 }));
+        match &e.blocks()[0].kind {
+            BlockKind::Bullet { indent } => assert_eq!(*indent, 0),
+            k => panic!("expected Bullet, got {:?}", k),
+        }
+        assert_eq!(e.blocks()[0].text(), "task");
+    }
+
+    #[test]
+    fn try_convert_bullet_to_paragraph() {
+        let mut e = BlockEditor::new();
+        e.blocks[0] = Block::bullet(2, "item");
+        assert!(e.try_convert_to(0, BlockKind::Paragraph));
+        assert!(matches!(e.blocks()[0].kind, BlockKind::Paragraph));
+        assert_eq!(e.blocks()[0].text(), "item");
+    }
+
+    #[test]
+    fn try_convert_to_same_kind_is_noop() {
+        let mut e = BlockEditor::new();
+        // Paragraph→Paragraph
+        assert!(!e.try_convert_to(0, BlockKind::Paragraph));
+    }
+
+    #[test]
+    fn try_convert_to_divider_appends_trailing_paragraph_when_focused() {
+        let mut e = BlockEditor::new();
+        e.blocks[0].line.set_text("body");
+        e.focused = Some(0);
+        e.blocks[0].line.set_focus(true);
+        e.is_focused = true;
+        assert!(e.try_convert_to(0, BlockKind::Divider));
+        assert!(matches!(e.blocks()[0].kind, BlockKind::Divider));
+        // Focus moved to the new paragraph spliced after the divider.
+        assert_eq!(e.blocks().len(), 2);
+        assert!(matches!(e.blocks()[1].kind, BlockKind::Paragraph));
+        assert_eq!(e.focused_index(), Some(1));
+    }
+
+    #[test]
+    fn try_indent_bullet_steps_up_and_down() {
+        let mut e = BlockEditor::new();
+        e.blocks[0] = Block::bullet(0, "a");
+        assert!(e.try_indent(0, 1));
+        assert_eq!(e.blocks()[0].kind.indent(), 1);
+        assert!(e.try_indent(0, 1));
+        assert_eq!(e.blocks()[0].kind.indent(), 2);
+        assert!(e.try_indent(0, -1));
+        assert_eq!(e.blocks()[0].kind.indent(), 1);
+    }
+
+    #[test]
+    fn try_indent_clamps_at_max_and_zero() {
+        let mut e = BlockEditor::new();
+        e.blocks[0] = Block::bullet(MAX_LIST_INDENT, "deep");
+        // +1 is clamped, returns false (no change).
+        assert!(!e.try_indent(0, 1));
+        assert_eq!(e.blocks()[0].kind.indent(), MAX_LIST_INDENT);
+
+        let mut e = BlockEditor::new();
+        e.blocks[0] = Block::bullet(0, "top");
+        assert!(!e.try_indent(0, -1));
+        assert_eq!(e.blocks()[0].kind.indent(), 0);
+    }
+
+    #[test]
+    fn try_indent_on_paragraph_is_noop() {
+        let mut e = BlockEditor::new();
+        e.blocks[0].line.set_text("body");
+        assert!(!e.try_indent(0, 1));
+        assert!(matches!(e.blocks()[0].kind, BlockKind::Paragraph));
+    }
+
+    #[test]
+    fn try_indent_on_checklist_preserves_done() {
+        let mut e = BlockEditor::new();
+        e.blocks[0] = Block::checklist(0, true, "task");
+        assert!(e.try_indent(0, 1));
+        match &e.blocks()[0].kind {
+            BlockKind::Checklist { indent, done } => {
+                assert_eq!(*indent, 1);
+                assert!(*done, "toggling indent must not change done");
+            }
+            k => panic!("expected Checklist, got {:?}", k),
+        }
+    }
+
+    #[test]
+    fn try_toggle_check_flips_done_flag() {
+        let mut e = BlockEditor::new();
+        e.blocks[0] = Block::checklist(0, false, "task");
+        assert_eq!(e.try_toggle_check(0), Some(true));
+        match &e.blocks()[0].kind {
+            BlockKind::Checklist { done, .. } => assert!(*done),
+            _ => panic!("expected Checklist"),
+        }
+        assert_eq!(e.try_toggle_check(0), Some(false));
+    }
+
+    #[test]
+    fn try_toggle_check_on_paragraph_is_none() {
+        let mut e = BlockEditor::new();
+        assert_eq!(e.try_toggle_check(0), None);
+    }
+
+    #[test]
+    fn split_bullet_continues_list_at_same_indent() {
+        let mut e = BlockEditor::new();
+        e.blocks[0] = Block::bullet(2, "first");
+        e.focused = Some(0);
+        e.split_at_cursor(0, 5);
+        assert_eq!(e.blocks().len(), 2);
+        match &e.blocks()[1].kind {
+            BlockKind::Bullet { indent } => assert_eq!(*indent, 2),
+            k => panic!("expected Bullet at indent 2, got {:?}", k),
+        }
+    }
+
+    #[test]
+    fn split_checklist_creates_unchecked_followup() {
+        let mut e = BlockEditor::new();
+        e.blocks[0] = Block::checklist(1, true, "first");
+        e.focused = Some(0);
+        e.split_at_cursor(0, 5);
+        assert_eq!(e.blocks().len(), 2);
+        match &e.blocks()[1].kind {
+            BlockKind::Checklist { indent, done } => {
+                assert_eq!(*indent, 1);
+                assert!(!*done, "new checklist item should default to unchecked");
+            }
+            k => panic!("expected Checklist, got {:?}", k),
+        }
+    }
+
+    #[test]
+    fn supports_indent_predicate() {
+        assert!(BlockKind::Bullet { indent: 0 }.supports_indent());
+        assert!(BlockKind::Checklist { indent: 0, done: false }.supports_indent());
+        assert!(!BlockKind::Paragraph.supports_indent());
+        assert!(!BlockKind::Heading(1).supports_indent());
+        assert!(!BlockKind::CodeBlock { lang: None }.supports_indent());
+        assert!(!BlockKind::Divider.supports_indent());
+    }
+
+    #[test]
+    fn divider_is_not_editable() {
+        assert!(!BlockKind::Divider.is_editable());
+        assert!(BlockKind::Paragraph.is_editable());
+        assert!(BlockKind::CodeBlock { lang: None }.is_editable());
+    }
+
+    #[test]
+    fn parse_indent_two_spaces_per_level() {
+        let (l, rest) = parse_list_indent("    item");
+        assert_eq!(l, 2);
+        assert_eq!(rest, "item");
+        let (l, rest) = parse_list_indent("\t\titem");
+        assert_eq!(l, 2);
+        assert_eq!(rest, "item");
+        let (l, rest) = parse_list_indent("no indent");
+        assert_eq!(l, 0);
+        assert_eq!(rest, "no indent");
     }
 }
