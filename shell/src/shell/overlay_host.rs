@@ -792,41 +792,6 @@ impl ShellOverlayHost {
     /// pointer addresses a `GroupRow` owned by the content tree, the host
     /// outlives the content, and the `&mut self` borrow keeps the other
     /// reconcile sweeps from racing this one.
-    /// Per-frame: drain any `GroupRow::pending_tab_cycle` pulse and
-    /// apply it via `Chrome::cycle_active_tab`. The strip's wheel
-    /// handler stamps the slot when the cursor sits over a row with
-    /// no overflow (single-group strip) and the wheel input is
-    /// horizontally-dominant. Sum across all strips: every row gets
-    /// drained and its step count is added together, so a continuous
-    /// trackpad swipe that visits multiple rows still produces a
-    /// single coherent cycle direction.
-    fn dispatch_pending_tab_cycles(&mut self) {
-        if self.group_row_ptrs.is_empty() {
-            return;
-        }
-        let mut total: i32 = 0;
-        for &ptr in self.group_row_ptrs.values() {
-            // SAFETY: see field doc on `group_row_ptrs` — the pointer
-            // is owned by the content tree; `&mut self` keeps other
-            // reconcile sweeps from racing.
-            let row: &mut GroupRow = unsafe { &mut *ptr };
-            if let Some(step) = row.take_pending_tab_cycle() {
-                total = total.saturating_add(step);
-            }
-        }
-        if total == 0 {
-            return;
-        }
-        if let Some(chrome) = &self.chrome {
-            let mut st = chrome.borrow_mut();
-            let dir = total.signum();
-            for _ in 0..total.abs() {
-                if !st.cycle_active_tab(dir) {
-                    break;
-                }
-            }
-        }
-    }
 
     fn dispatch_cross_strip_detaches(&mut self) {
         if self.group_row_ptrs.is_empty() {
@@ -1644,14 +1609,6 @@ impl Widget for ShellOverlayHost {
         // splice the dragged tab into whichever strip's row contains the
         // release point (or back into source if no strip matched).
         self.dispatch_cross_strip_detaches();
-        // Wheel-driven tab cycling (single-group strip): when a wheel
-        // gesture lands over a `GroupRow` with no scroll target,
-        // `GroupRow::handle_event` stamps a signed step count on
-        // `pending_tab_cycle`. Drain it here and apply through the
-        // chrome's `cycle_active_tab` API (which also wraps the index
-        // around the tab list). Same take-pattern as the maximize /
-        // resize harvests so the pulse fires once per detent.
-        self.dispatch_pending_tab_cycles();
         // Sandbox Phase 4 Task 4.2: drive the permission-prompt pump.
         // Latches a fresh widget for the front of `chrome.pending_grants`,
         // and drains entries when the user clicks an action button.
