@@ -99,14 +99,47 @@ impl MainPanel {
     /// Load a page into the panel. The body is parsed and handed to
     /// a fresh `BlockEditor`. The previous editor's state (focus,
     /// caret) is discarded — switching pages is a hard cut.
+    ///
+    /// Phase 4: the parse path goes through `notes::markdown` so the
+    /// inline-mark grammar is the canonical one (the widget's own
+    /// `BlockEditor::from_markdown` doesn't see inline marks).
     pub fn load_page(&mut self, id: PageId, title: String, body: String) {
         self.page_id = Some(id);
         self.title = Some(title);
-        self.editor = BlockEditor::from_markdown(&body);
+        let specs = crate::markdown::parse(&body);
+        let blocks = crate::markdown::specs_to_blocks(&specs);
+        self.editor = BlockEditor::new();
+        self.editor.set_blocks(blocks);
         // Focus the editor's first block so the user can start
         // typing immediately. The App will route keystrokes through
         // its focused-node machinery, but the editor's internal
         // focused_block needs to be primed.
+        self.editor.set_focus(true);
+        self.body = body;
+        self.dirty = true;
+    }
+
+    /// Load a page with caller-pre-resolved link page-ids. Used by
+    /// `NotesApp` so a `[[Page Title]]` in the markdown resolves to
+    /// the actual `PageId` at load time (otherwise links would be
+    /// `Mark::Link(Uuid::nil())` placeholders).
+    pub fn load_page_with_link_resolver<F>(
+        &mut self,
+        id: PageId,
+        title: String,
+        body: String,
+        resolver: F,
+    )
+    where
+        F: FnMut(&str) -> Option<PageId>,
+    {
+        self.page_id = Some(id);
+        self.title = Some(title);
+        let mut specs = crate::markdown::parse(&body);
+        crate::markdown::resolve_link_ids(&mut specs, resolver);
+        let blocks = crate::markdown::specs_to_blocks(&specs);
+        self.editor = BlockEditor::new();
+        self.editor.set_blocks(blocks);
         self.editor.set_focus(true);
         self.body = body;
         self.dirty = true;
@@ -143,8 +176,13 @@ impl MainPanel {
     /// Re-serialise the editor's content into the cached `body` and
     /// return a clone for persistence. Called by the app's tick when
     /// `editor_is_dirty()` came back true.
+    ///
+    /// Phase 4: serialisation goes through `notes::markdown` so
+    /// inline marks survive the round-trip. The editor's own
+    /// `to_markdown` only emits plain-text bodies.
     pub fn take_body_snapshot(&mut self) -> String {
-        let md = self.editor.to_markdown();
+        let specs = crate::markdown::blocks_to_specs(self.editor.blocks());
+        let md = crate::markdown::serialize(&specs);
         self.body = md.clone();
         md
     }

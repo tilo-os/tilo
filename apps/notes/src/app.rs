@@ -25,9 +25,11 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::link_popover::PageEntry;
+use ui::widget::page_palette::PageJumpPalette;
 
 use crate::main_panel::MainPanel;
-use crate::model::Workspace;
+use crate::model::{PageId, Workspace};
 use crate::sidebar::{NoteTreeView, OutEvent};
 use crate::storage::{self, PageSaver, Saver};
 
@@ -57,6 +59,13 @@ pub struct NotesApp {
     /// new snapshot whenever the main panel's `BlockEditor` reports
     /// a dirty edit; coalesces multiple edits in `SAVE_DEBOUNCE`.
     page_saver: Option<PageSaver>,
+    /// Cmd-K / Ctrl-K page jump palette. Always present; visibility
+    /// is toggled by the keystroke handler below.
+    palette: PageJumpPalette,
+    /// Last mouse position in logical coords. Used to hit-test
+    /// link marks on mouse click without dragging the click event
+    /// through every nested widget.
+    last_mouse: Point,
 }
 
 impl NotesApp {
@@ -74,15 +83,21 @@ impl NotesApp {
         let mut sidebar = NoteTreeView::new();
         sidebar.sync_from_workspace(&workspace);
         let mut main = MainPanel::new();
+        // Build a title→id map for any [[Title]] link marks parsed
+        // out of the initial page body.
+        let by_title: std::collections::HashMap<String, PageId> = workspace
+            .pages()
+            .iter()
+            .map(|p| (p.title.clone(), p.id))
+            .collect();
         if let Some(sel) = workspace.selected() {
             if let Some(meta) = workspace.get(sel) {
                 let body = storage::read_page_body(&root, sel).unwrap_or_default();
-                main.load_page(sel, meta.title.clone(), body);
+                main.load_page_with_link_resolver(sel, meta.title.clone(), body, |t| {
+                    by_title.get(t).copied()
+                });
             }
         } else {
-            // Auto-select the first root page on launch so the panel
-            // isn't empty out of the gate. Clone the picked metadata
-            // so we drop the immutable borrow before mutating.
             let first = workspace
                 .children_of(None)
                 .first()
@@ -90,7 +105,9 @@ impl NotesApp {
             if let Some((id, title)) = first {
                 workspace.set_selected(Some(id));
                 let body = storage::read_page_body(&root, id).unwrap_or_default();
-                main.load_page(id, title, body);
+                main.load_page_with_link_resolver(id, title, body, |t| {
+                    by_title.get(t).copied()
+                });
                 sidebar.sync_from_workspace(&workspace);
             }
         }
@@ -98,7 +115,7 @@ impl NotesApp {
         let saver = Saver::spawn(root.clone(), SAVE_DEBOUNCE);
         let page_saver = PageSaver::spawn(root.clone(), SAVE_DEBOUNCE);
 
-        Ok(Self {
+        let mut app = Self {
             workspace,
             sidebar,
             main,
@@ -108,7 +125,61 @@ impl NotesApp {
             root,
             saver: Some(saver),
             page_saver: Some(page_saver),
-        })
+            palette: PageJumpPalette::new(),
+            last_mouse: Point::ZERO,
+        };
+        app.refresh_link_pages();
+        Ok(app)
+    }
+
+    /// Sync the page list into both the editor's [[link popover]] and
+    /// the Cmd-K palette so they always see the latest set of titles.
+    fn refresh_link_pages(&mut self) {
+        let entries: Vec<PageEntry> = self
+            .workspace
+            .pages()
+            .iter()
+            .map(|p| PageEntry { id: p.id, title: p.title.clone() })
+            .collect();
+        self.main.editor_mut().set_link_pages(entries.clone());
+        self.palette.set_items(entries);
+    }
+
+    /// Test accessor: the currently selected page id.
+    #[doc(hidden)]
+    pub fn selected_for_test(&self) -> Option<PageId> {
+        self.workspace.selected()
+    }
+
+    /// Test accessor: handle to the palette so tests can drive
+    /// open / close / typing programmatically.
+    #[doc(hidden)]
+    pub fn palette_mut(&mut self) -> &mut PageJumpPalette {
+        &mut self.palette
+    }
+
+    /// Hit-test the cached last-mouse-position against every link
+    /// span in every block. Returns the page id of the first link
+    /// covering that pixel, or `None` if the click missed.
+    fn link_under_last_mouse(&self) -> Option<PageId> {
+        let p = self.last_mouse;
+        for b in self.main.editor().blocks() {
+            let rect = b.line.get_rect();
+            if !rect.contains(p) {
+                continue;
+            }
+            // The pixel-precise byte lookup uses the inner
+            // TextInput's per-char advance cache. We need a theme to
+            // resolve padding; conservatively use the dark theme
+            // (the editor cells render in plain-chrome mode where
+            // padding_x is zero, so this is a no-op anyway).
+            let theme = ui::theme::Theme::dark();
+            let byte = b.line.byte_for_pixel_x(&theme, p.x);
+            if let Some(id) = ui::widget::rich_text_line::link_at_byte(b.line.marks(), byte) {
+                return Some(id);
+            }
+        }
+        None
     }
 
     /// Default constructor — resolves the workspace root via `dirs`,
@@ -132,7 +203,7 @@ impl NotesApp {
                 if let Some(meta) = self.workspace.get(id) {
                     let title = meta.title.clone();
                     let body = storage::read_page_body(&self.root, id).unwrap_or_default();
-                    self.main.load_page(id, title, body);
+                    self.load_page_with_resolver(id, title, body);
                 }
             }
             OutEvent::Rename { id, new_title } => {
@@ -175,7 +246,40 @@ impl NotesApp {
                 self.main.load_page(id, "Untitled".to_string(), String::new());
             }
         }
+        // After every event refresh the link pages so the popovers
+        // see fresh titles.
+        self.refresh_link_pages();
         self.persist();
+    }
+
+    /// Load a page through `MainPanel::load_page_with_link_resolver`,
+    /// resolving `[[Title]]` link marks against the current
+    /// workspace's page list.
+    fn load_page_with_resolver(&mut self, id: PageId, title: String, body: String) {
+        // Snapshot the title→id map ahead of borrowing main mutably.
+        let by_title: std::collections::HashMap<String, PageId> = self
+            .workspace
+            .pages()
+            .iter()
+            .map(|p| (p.title.clone(), p.id))
+            .collect();
+        self.main.load_page_with_link_resolver(id, title, body, |t| {
+            by_title.get(t).copied()
+        });
+    }
+
+    /// Navigate to `id`: select + load the page. Used both by the
+    /// Cmd-K palette and by click-on-link events.
+    pub fn navigate_to(&mut self, id: PageId) {
+        self.flush_main_panel_edit();
+        if let Some(meta) = self.workspace.get(id) {
+            let title = meta.title.clone();
+            let body = storage::read_page_body(&self.root, id).unwrap_or_default();
+            self.workspace.set_selected(Some(id));
+            self.load_page_with_resolver(id, title, body);
+            self.sidebar.sync_from_workspace(&self.workspace);
+            self.persist();
+        }
     }
 
     /// If the editor has pending edits for the current page, snapshot
@@ -268,6 +372,15 @@ impl NotesApp {
     pub fn tick_for_test(&mut self) {
         self.drain_editor_edits();
     }
+
+    /// Test hook: apply one [`OutEvent`] through the same code path
+    /// the sidebar would drive it. Lets integration tests simulate
+    /// "user clicked Create Child in the sidebar" without forging
+    /// fake winit events.
+    #[doc(hidden)]
+    pub fn apply_event_for_test(&mut self, ev: OutEvent) {
+        self.apply_event(ev);
+    }
 }
 
 /// First-launch seed: one page titled "Welcome" with a small
@@ -278,7 +391,7 @@ impl NotesApp {
 pub const WELCOME_BODY: &str = "\
 # Welcome to notes
 
-This is a paragraph — start typing anywhere.
+This paragraph has **bold**, *italic*, `code`, and a [[Welcome]] self-link.
 
 ## Block types
 
@@ -300,9 +413,11 @@ fn hello() { println!(\"slash to open the menu\"); }
 
 - Type `/` to open the block menu
 
-- Press `Enter` inside a list to continue it
+- Type `[[` to link another page
 
-- `Tab` indents, `Shift-Tab` outdents
+- Press `Ctrl-B`, `Ctrl-I`, `Ctrl-E` to toggle **bold**, *italic*, `code`
+
+- Press `Cmd-K` / `Ctrl-K` to jump to any page
 ";
 
 fn seed_welcome(root: &std::path::Path, workspace: &mut Workspace) {
@@ -425,6 +540,18 @@ impl Widget for NotesApp {
         );
         self.sidebar.draw(scene, transform, text_renderer, theme, presence);
         self.main.draw(scene, transform, text_renderer, theme, presence);
+        // Phase 4: page-jump palette renders on top of everything.
+        if self.palette.is_visible() {
+            // Dim backdrop.
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                vello::peniko::Color::from_rgba8(0, 0, 0, 102),
+                None,
+                &self.rect,
+            );
+            self.palette.draw_overlay(scene, transform, text_renderer, theme);
+        }
     }
 
     fn handle_event(
@@ -439,6 +566,59 @@ impl Widget for NotesApp {
         _node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        use winit::event::{ElementState, KeyEvent, MouseButton};
+        use winit::keyboard::Key;
+
+        // Phase 4: Cmd-K / Ctrl-K opens the page jump palette.
+        // Intercepted BEFORE child widgets so a focused input
+        // doesn't swallow the keystroke.
+        if !self.palette.is_visible() {
+            if let WindowEvent::KeyboardInput {
+                event: KeyEvent { logical_key: Key::Character(c), state: ElementState::Pressed, .. },
+                ..
+            } = event
+            {
+                let mods = modifiers.state();
+                if (mods.control_key() || mods.super_key()) && c.to_lowercase().as_str() == "k" {
+                    let anchor_x =
+                        (self.rect.x0 + self.rect.x1) / 2.0 - self.palette.width() / 2.0;
+                    let anchor_y = self.rect.y0 + 80.0;
+                    self.palette.set_anchor(vello::kurbo::Point::new(anchor_x, anchor_y));
+                    self.palette.set_visible(true);
+                    *handled = true;
+                    return;
+                }
+            }
+        }
+
+        // While the palette is visible it owns ALL keystrokes.
+        if self.palette.is_visible() {
+            if let WindowEvent::KeyboardInput { .. } = event {
+                let consumed = self.palette.handle_key(event);
+                if let Some(entry) = self.palette.take_selection() {
+                    self.navigate_to(entry.id);
+                }
+                if consumed {
+                    *handled = true;
+                    return;
+                }
+            }
+        }
+
+        // Phase 4: click on a link mark navigates.
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+        {
+            if let Some(id) = self.link_under_last_mouse() {
+                self.navigate_to(id);
+                *handled = true;
+                return;
+            }
+        }
+
         if let Some(n) = self.sidebar_node {
             self.sidebar.handle_event(
                 event,
@@ -470,6 +650,16 @@ impl Widget for NotesApp {
         // After every event, observe the editor's dirty flag and
         // request a debounced save if the user just edited.
         self.drain_editor_edits();
+
+        // Update the last-mouse cache so the next MouseInput knows
+        // where to hit-test for link clicks.
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            let logical = vello::kurbo::Point::new(
+                position.x / scale_factor,
+                position.y / scale_factor,
+            );
+            self.last_mouse = logical;
+        }
     }
 
     fn name(&self) -> &str {
