@@ -917,6 +917,26 @@ impl Widget for GroupRow {
             } else {
                 None
             };
+            // Cross-group minimalist drop indicator: while any child's
+            // bar has a drag in flight, push the current cursor into
+            // every sibling bar so the new `hover_drop_idx`-driven
+            // white line paints at the correct inter-pill gap in
+            // whichever bar the cursor is currently over. The source
+            // bar drives its own `hover_drop_idx` from inside the bar's
+            // own `CursorMoved` arm (see `TabBar::handle_event`); for
+            // siblings we have to plumb the cursor through here because
+            // the bars don't see each other's drag state. The setter
+            // is a no-op while a bar has its own drag in flight, so a
+            // fan-out that visits the source bar last (after the bar
+            // itself wrote its target) can't wipe it.
+            let cursor_for_external = if any_drag {
+                Some(self.last_cursor)
+            } else {
+                None
+            };
+            for g in &mut self.groups {
+                g.set_external_drag_hover(cursor_for_external);
+            }
         }
 
         // Drop is resolved on release — the indicator has served its
@@ -1239,6 +1259,55 @@ impl Widget for GroupRow {
                 // rects: left of the first pill's midpoint → 0, between
                 // pills → that pill's index, past the last pill → append.
                 let drop_idx = self.groups[tgt_idx].drop_index_for(release_point);
+                let detached = self.groups[src_idx].detach_tab(tab_id);
+                if let Some((desc, host)) = detached {
+                    self.groups[tgt_idx].insert_detached_tab(drop_idx, desc, host);
+                    *handled = true;
+                }
+                continue;
+            }
+            // 2026-06-02 user feedback: a drop in the TILE AREA of an
+            // existing sibling group (the white card below the tab bar,
+            // i.e. inside the group's `rect` but below `bar_rect.y1`)
+            // should splice the tab into that group's tab list — left
+            // half → prepend (idx 0), right half → append (idx =
+            // tabs.len()). No visual indicator during hover: the
+            // affordance is intentionally invisible/implicit so the
+            // tile area still reads as the host's working surface, not
+            // a drop zone. Only tab-bar drops get the new white-line
+            // indicator (`hover_drop_idx` in `TabBar`).
+            //
+            // Closing groups are excluded for the same reason the
+            // sibling-bar branch above filters them out: a tab spliced
+            // into a group that's about to be pruned would be lost
+            // alongside the group at fade-end. Drops on closing
+            // groups' tile areas fall through to the gap-based
+            // new-window path below, same as drops on their bar areas.
+            let tile_target_idx = self
+                .groups
+                .iter()
+                .enumerate()
+                .find(|(i, g)| {
+                    *i != src_idx
+                        && !g.is_closing()
+                        && g.get_rect().contains(release_point)
+                        // Bar already excluded above (the first branch
+                        // matched and `continue`'d), so any release
+                        // that reaches here and is inside the group
+                        // rect must be inside the tile content area.
+                        // The explicit guard keeps the intent legible
+                        // and stays correct even if the bar check is
+                        // ever lifted.
+                        && !g.bar_rect().contains(release_point)
+                })
+                .map(|(i, _)| i);
+            if let Some(tgt_idx) = tile_target_idx {
+                let tgt_rect = self.groups[tgt_idx].get_rect();
+                let drop_idx = if release_point.x < tgt_rect.center().x {
+                    0
+                } else {
+                    self.groups[tgt_idx].tabs().len()
+                };
                 let detached = self.groups[src_idx].detach_tab(tab_id);
                 if let Some((desc, host)) = detached {
                     self.groups[tgt_idx].insert_detached_tab(drop_idx, desc, host);
@@ -2108,6 +2177,99 @@ mod tests {
         assert!(
             !row.groups[1].is_closing(),
             "the new group must NOT inherit the closing state",
+        );
+    }
+
+    /// 2026-06-02 user feedback: a cross-group drag whose release lands
+    /// in the TILE AREA of an existing sibling group (the white card
+    /// below the tab bar) must splice the dragged tab into that group's
+    /// tab list — left half → prepend (idx 0), right half → append
+    /// (idx = tabs().len()). No visual indicator during hover (the
+    /// affordance is invisible/implicit). This test pins both halves
+    /// end-to-end through the post-dispatch detach sweep so a refactor
+    /// that drops the new branch shows up red.
+    #[test]
+    fn drop_in_sibling_tile_area_left_half_prepends_right_half_appends() {
+        use winit::event::WindowEvent;
+
+        // Build a row where group B (idx 1) has tabs [10, 11, 12] so
+        // both prepend (→ [1, 10, 11, 12]) and append (→ [10, 11, 12, 1])
+        // outcomes are distinguishable from a default insert-at-zero.
+        let (mut row, taffy, root) =
+            make_row_with_groups_with_taffy(&[&[1, 2], &[10, 11, 12]]);
+        let b_rect = row.groups[1].get_rect();
+        let b_bar = row.groups[1].bar_rect();
+
+        // Release point inside B's tile area, on the LEFT half:
+        // y below the bar, x left of B's centre.
+        let release_left = Point::new(
+            b_rect.x0 + (b_rect.width() * 0.25),
+            (b_bar.y1 + b_rect.y1) / 2.0,
+        );
+        assert!(b_rect.contains(release_left));
+        assert!(!b_bar.contains(release_left));
+        assert!(release_left.x < b_rect.center().x);
+
+        row.groups[0].bar_mut().pending_detach = Some((1, release_left));
+        let mut doc = AutoCommit::new();
+        let doc_root = automerge::ROOT.clone();
+        let modifiers = Modifiers::default();
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        let release_event = WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        };
+        row.handle_event(
+            &release_event, 1.0, &modifiers, &mut doc, &doc_root,
+            &mut handled, &mut focus, root, &taffy,
+        );
+
+        let b_ids: Vec<u64> =
+            row.groups[1].tabs().iter().map(|t| t.id).collect();
+        assert_eq!(
+            b_ids,
+            vec![1, 10, 11, 12],
+            "left-half tile drop must prepend the dragged tab to the target's tab list",
+        );
+        let a_ids: Vec<u64> =
+            row.groups[0].tabs().iter().map(|t| t.id).collect();
+        assert_eq!(
+            a_ids, vec![2],
+            "source group must lose the dragged tab to the target",
+        );
+        // Dragged tab becomes the target's active tab — `insert_detached_tab`
+        // pins this, mirroring the existing `transfer_tab` test.
+        assert_eq!(row.groups[1].active_tab_id(), 1);
+
+        // Reset for the right-half case using a fresh row.
+        let (mut row, taffy, root) =
+            make_row_with_groups_with_taffy(&[&[1, 2], &[10, 11, 12]]);
+        let b_rect = row.groups[1].get_rect();
+        let b_bar = row.groups[1].bar_rect();
+        let release_right = Point::new(
+            b_rect.x0 + (b_rect.width() * 0.75),
+            (b_bar.y1 + b_rect.y1) / 2.0,
+        );
+        assert!(b_rect.contains(release_right));
+        assert!(!b_bar.contains(release_right));
+        assert!(release_right.x > b_rect.center().x);
+
+        row.groups[0].bar_mut().pending_detach = Some((1, release_right));
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        row.handle_event(
+            &release_event, 1.0, &modifiers, &mut doc, &doc_root,
+            &mut handled, &mut focus, root, &taffy,
+        );
+
+        let b_ids: Vec<u64> =
+            row.groups[1].tabs().iter().map(|t| t.id).collect();
+        assert_eq!(
+            b_ids,
+            vec![10, 11, 12, 1],
+            "right-half tile drop must append the dragged tab to the target's tab list",
         );
     }
 
