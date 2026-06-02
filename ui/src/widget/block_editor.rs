@@ -268,6 +268,25 @@ impl BlockEditor {
         &self.blocks
     }
 
+    /// Mutable block-list view. Used by integration tests + the
+    /// notes app's persistence path that needs to seed blocks
+    /// programmatically (bypassing the event loop). Production code
+    /// should prefer the public mutators (`split_at_cursor` etc.).
+    pub fn blocks_mut(&mut self) -> &mut Vec<Block> {
+        &mut self.blocks
+    }
+
+    /// Test/integration hook: mark the edit-pending flag so the
+    /// next `is_dirty()` returns true. Necessary because programmatic
+    /// `set_text` on the inner line deliberately doesn't flip dirty
+    /// (it's not a user edit). Tests use this to simulate the user
+    /// having edited.
+    pub fn force_dirty_for_test(&mut self) {
+        self.edit_pending = true;
+        self.dirty = true;
+        self.structure_dirty = true;
+    }
+
     /// Currently focused block index, if any.
     pub fn focused_index(&self) -> Option<usize> {
         self.focused
