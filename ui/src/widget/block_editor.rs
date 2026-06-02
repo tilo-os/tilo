@@ -27,6 +27,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::rich_text_line::{LineSignal, RichTextLine};
+use crate::widget::slash_menu::SlashMenu;
 use crate::widget::Widget;
 
 /// Maximum indent level for `Bullet` / `Checklist` blocks. Beyond
@@ -212,6 +213,15 @@ pub struct BlockEditor {
     /// `CursorMoved` events so click-handling code can hit-test the
     /// checkbox glyphs without re-reading the winit event.
     last_mouse_pos: Point,
+    /// Slash menu popover. Owned by the editor so it shares lifecycle
+    /// with the surrounding block list; rendered out-of-band via
+    /// [`BlockEditor::draw_overlay`].
+    slash_menu: SlashMenu,
+    /// Byte offset (in the focused block) where the `/` keystroke
+    /// that opened the slash menu landed. Used to splice the menu's
+    /// `/<filter>` text back out of the block when a kind is committed
+    /// (so the block ends up with just the existing content).
+    slash_open_at: Option<usize>,
 }
 
 impl BlockEditor {
@@ -229,6 +239,8 @@ impl BlockEditor {
             structure_dirty: true,
             edit_pending: false,
             last_mouse_pos: Point::ZERO,
+            slash_menu: SlashMenu::new(),
+            slash_open_at: None,
         };
         s.blocks.push(Block::paragraph(""));
         s
@@ -256,6 +268,8 @@ impl BlockEditor {
             structure_dirty: true,
             edit_pending: false,
             last_mouse_pos: Point::ZERO,
+            slash_menu: SlashMenu::new(),
+            slash_open_at: None,
         };
         let mut lines = md.split('\n').peekable();
         while let Some(line) = lines.next() {
@@ -797,6 +811,111 @@ impl BlockEditor {
         None
     }
 
+    /// Apply a slash-menu commit: strip the `/<filter>` text from the
+    /// focused block (between `slash_open_at` and current caret), then
+    /// convert the block to `new_kind`. Run by handle_event after the
+    /// menu fires its Enter. Idempotent — if the focused block has
+    /// changed since the menu was opened we still apply the conversion
+    /// and leave the text alone.
+    fn commit_slash_selection(&mut self, new_kind: BlockKind) {
+        let Some(focused_idx) = self.focused else {
+            return;
+        };
+        if let Some(open_byte) = self.slash_open_at {
+            if let Some(b) = self.blocks.get_mut(focused_idx) {
+                let text = b.line.value().to_string();
+                let cursor = b.line.cursor_pos().min(text.len());
+                let start = open_byte.min(text.len());
+                if cursor > start {
+                    // Drop bytes [start, cursor) — the `/<filter>` slice.
+                    let mut new_text = String::with_capacity(text.len());
+                    new_text.push_str(&text[..start]);
+                    new_text.push_str(&text[cursor..]);
+                    b.line.set_text(&new_text);
+                    b.line.set_cursor_pos(start);
+                }
+            }
+        }
+        self.slash_open_at = None;
+        // Apply the conversion. Skip if block already matches (e.g.
+        // user picked Paragraph on a Paragraph block).
+        let _ = self.try_convert_to(focused_idx, new_kind);
+    }
+
+    /// Paint the slash menu popover on top of the editor's own
+    /// scene. The host (`MainPanel` / `NotesApp`) calls this AFTER
+    /// the main draw pass — popovers must paint last so they land
+    /// above every other widget. See [`SlashMenu`] for the contract.
+    pub fn draw_overlay(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        self.slash_menu.draw_overlay(scene, transform, text_renderer, theme);
+    }
+
+    /// True iff the slash menu is currently displayed (so the host
+    /// can avoid stealing focus from the popover).
+    pub fn slash_menu_visible(&self) -> bool {
+        self.slash_menu.is_visible()
+    }
+
+    /// Test/integration hook: read-only access to the slash menu so
+    /// tests can assert on its filter / highlighted kind without
+    /// going through `pub(crate)` indirection.
+    #[doc(hidden)]
+    pub fn slash_menu(&self) -> &SlashMenu {
+        &self.slash_menu
+    }
+
+    /// Test/integration hook: mutable slash-menu access. Used by the
+    /// integration test that pre-positions the menu rather than
+    /// driving the `/` keystroke through the full event chain.
+    #[doc(hidden)]
+    pub fn slash_menu_mut(&mut self) -> &mut SlashMenu {
+        &mut self.slash_menu
+    }
+
+    /// Test hook: open the slash menu programmatically on the focused
+    /// block, anchoring it under the line's bottom-left. Mirrors what
+    /// the `/` keystroke does internally.
+    #[doc(hidden)]
+    pub fn open_slash_menu_for_test(&mut self) {
+        let Some(focused_idx) = self.focused else { return };
+        let caret = self
+            .blocks
+            .get(focused_idx)
+            .map(|b| b.line.cursor_pos())
+            .unwrap_or(0);
+        let line_rect = self
+            .blocks
+            .get(focused_idx)
+            .map(|b| b.line.get_rect())
+            .unwrap_or(Rect::ZERO);
+        self.slash_menu
+            .set_anchor(Point::new(line_rect.x0, line_rect.y1 + 2.0));
+        self.slash_menu.set_filter("");
+        self.slash_menu.set_visible(true);
+        self.slash_open_at = Some(caret);
+    }
+
+    /// Test hook: route a key event into the slash menu and, if the
+    /// menu fires an Enter, apply the commit. Returns whether the menu
+    /// consumed the key.
+    #[doc(hidden)]
+    pub fn slash_menu_handle_key_for_test(&mut self, event: &WindowEvent) -> bool {
+        let consumed = self.slash_menu.handle_key(event);
+        if let Some(new_kind) = self.slash_menu.take_selected_kind() {
+            self.commit_slash_selection(new_kind);
+        }
+        if !self.slash_menu.is_visible() {
+            self.slash_open_at = None;
+        }
+        consumed
+    }
+
     /// Flip the `done` flag on a Checklist block. No-op for other
     /// kinds. Returns the new `done` value, or `None` if the block
     /// isn't a Checklist.
@@ -1126,6 +1245,33 @@ impl Widget for BlockEditor {
         use winit::event::{ElementState, KeyEvent, MouseButton};
         use winit::keyboard::{Key, NamedKey};
 
+        // Slash menu: while visible, intercept keystrokes BEFORE the
+        // editable line sees them. The menu owns arrow nav / Enter /
+        // Escape / typing-into-filter. If the menu signals Enter
+        // (pending_selection becomes Some), we splice the `/<filter>`
+        // out of the block and apply the conversion.
+        if self.slash_menu.is_visible() {
+            if let WindowEvent::KeyboardInput { .. } = event {
+                let consumed = self.slash_menu.handle_key(event);
+                // Whether or not the menu consumed the key, an Enter
+                // press may have set pending_selection — drain it.
+                if let Some(new_kind) = self.slash_menu.take_selected_kind() {
+                    self.commit_slash_selection(new_kind);
+                }
+                // If the menu went invisible without committing (Escape
+                // or empty-filter Backspace), close it without altering
+                // the block.
+                if !self.slash_menu.is_visible() {
+                    self.slash_open_at = None;
+                }
+                if consumed {
+                    *handled = true;
+                    self.dirty = true;
+                    return;
+                }
+            }
+        }
+
         // Mouse: checkbox-click hit-test on Checklist rows. Runs BEFORE
         // event routing so the click doesn't fall through to TextInput
         // (which would just place the caret at byte 0).
@@ -1139,6 +1285,12 @@ impl Widget for BlockEditor {
                 let _ = self.try_toggle_check(hit_idx);
                 *handled = true;
                 return;
+            }
+            // A click anywhere closes an open slash menu (matches
+            // every popover convention).
+            if self.slash_menu.is_visible() {
+                self.slash_menu.set_visible(false);
+                self.slash_open_at = None;
             }
         }
         // Cache the last mouse position so the next MouseInput knows
@@ -1174,6 +1326,65 @@ impl Widget for BlockEditor {
                     self.try_indent(focused_idx, delta);
                     *handled = true;
                     return;
+                }
+            }
+        }
+
+        // `/` keystroke: if pressed in an editable block while the
+        // menu is NOT already open, open the menu anchored under the
+        // current line. The leading `/` STILL falls through to
+        // TextInput (so the user sees it as feedback that they're
+        // typing a slash command); we remember `slash_open_at` so we
+        // can remove it on commit. Code blocks don't get the slash
+        // menu (typing `/` in code is meaningful).
+        if !self.slash_menu.is_visible() {
+            if let WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Character(c),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } = event
+            {
+                if c.as_str() == "/" {
+                    if let Some(focused_idx) = self.focused {
+                        let can_open = self
+                            .blocks
+                            .get(focused_idx)
+                            .map(|b| {
+                                !matches!(b.kind, BlockKind::CodeBlock { .. })
+                                    && b.kind.is_editable()
+                            })
+                            .unwrap_or(false);
+                        if can_open {
+                            let caret_byte = self
+                                .blocks
+                                .get(focused_idx)
+                                .map(|b| b.line.cursor_pos())
+                                .unwrap_or(0);
+                            // Anchor the popover just below the line's
+                            // left edge — close enough to the caret
+                            // for the user to associate the popover
+                            // with their `/`.
+                            let line_rect = self
+                                .blocks
+                                .get(focused_idx)
+                                .map(|b| b.line.get_rect())
+                                .unwrap_or(Rect::ZERO);
+                            self.slash_menu.set_anchor(Point::new(
+                                line_rect.x0,
+                                line_rect.y1 + 2.0,
+                            ));
+                            self.slash_menu.set_filter("");
+                            self.slash_menu.set_visible(true);
+                            self.slash_open_at = Some(caret_byte);
+                            // Let the `/` keystroke ALSO fall through
+                            // to TextInput so it appears in the line —
+                            // commit_slash_selection will strip it.
+                        }
+                    }
                 }
             }
         }
