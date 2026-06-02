@@ -581,14 +581,12 @@ fn wheel_scroll_workspaces() -> Scenario {
     }
 }
 
-/// Drive the strip's MouseWheel path: cursor over the active tile
-/// (where the strip occupies most of the viewport), fire two
-/// horizontal-dominant wheel events, capture before / after.
-/// On a single-group strip (no overflow), `GroupRow`'s wheel handler
-/// stamps `pending_tab_cycle`; the shell's `dispatch_pending_tab_cycles`
-/// then calls `Chrome::cycle_active_tab(dir)` so the active tab pill
-/// in the topbar shifts. If the snapshots are identical the wheel
-/// path is broken — exactly the user's complaint on 2026-06-02.
+/// Drive the strip's MouseWheel path: cursor over the active tile,
+/// fire horizontal-dominant wheel events, capture before / after.
+/// On a single-group strip the strip pans into empty wallpaper space
+/// past the rightmost group (Niri-style infinite canvas). The
+/// snapshot should show the white tile shifted leftward in the
+/// viewport (revealing wallpaper to the right of where it was).
 fn strip_horizontal_scroll() -> Scenario {
     Scenario {
         name: "strip_horizontal_scroll",
@@ -605,13 +603,15 @@ fn strip_horizontal_scroll() -> Scenario {
             // > dy_axis, so the strip's no-overflow branch stamps the
             // tab-cycle pulse. dy is 0 so the wheel doesn't also try
             // to pan vertically anywhere.
-            Action::MouseWheel { dx: 4.0, dy: 0.0 },
-            // Two frames for the per-frame harvest to drain the
-            // pulse + the chrome bump to propagate to the next paint.
+            // Strong horizontal swipe right. 10 LineDelta units ×
+            // 30 px = 300 px of pan, well inside the viewport*3
+            // upper clamp.
+            Action::MouseWheel { dx: 10.0, dy: 0.0 },
             Action::Wait(2),
             Action::Snapshot("01-after-right"),
-            // And the reverse direction.
-            Action::MouseWheel { dx: -4.0, dy: 0.0 },
+            // And the reverse direction — should bring the strip
+            // back to the leftmost position (clamped to 0).
+            Action::MouseWheel { dx: -10.0, dy: 0.0 },
             Action::Wait(2),
             Action::Snapshot("02-after-left"),
         ],
