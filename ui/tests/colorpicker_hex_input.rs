@@ -113,8 +113,10 @@ fn clicking_hex_input_focuses_it() {
         &mut handled, &mut focus_target, root_node, &taffy,
     );
 
-    // Press inside the input — this must focus the embedded
-    // TextInput, not just propose focus on the picker's node id.
+    // Press inside the input. The picker proposes focus on its
+    // own node id (the App needs that to blur sibling widgets);
+    // the focus take-over inside set_focus(true) then redirects
+    // onto the embedded input.
     let press_ev = WindowEvent::MouseInput {
         device_id: synth_device_id(),
         state: ElementState::Pressed,
@@ -124,6 +126,12 @@ fn clicking_hex_input_focuses_it() {
         &press_ev, 1.0, &modifiers, &mut doc, &automerge::ObjId::Root,
         &mut handled, &mut focus_target, root_node, &taffy,
     );
+
+    // Simulate App::set_focused_node: it blurs the previous holder
+    // and calls set_focus(true) on the new node. Tests don't run
+    // App.run(), so we drive the same path manually.
+    assert_eq!(focus_target, Some(root_node), "picker must propose its own node as the focus target");
+    (&mut picker as &mut dyn Widget).set_focus(true);
 
     assert!(
         picker.is_hex_input_focused_for_test(),
@@ -167,6 +175,8 @@ fn clicking_outside_hex_input_releases_input_focus() {
         &press, 1.0, &modifiers, &mut doc, &automerge::ObjId::Root,
         &mut handled, &mut focus_target, root_node, &taffy,
     );
+    // Drive the App-side focus routing (see other test).
+    (&mut picker as &mut dyn Widget).set_focus(true);
     assert!(picker.is_hex_input_focused_for_test(), "precondition: input must be focused after click-in");
 
     // Step 2 — release, then move outside the input rect and press.
