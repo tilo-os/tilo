@@ -93,3 +93,115 @@ fn heading_with_no_text_is_paragraph() {
     assert!(matches!(editor.blocks()[0].kind, BlockKind::Paragraph));
     assert_eq!(editor.blocks()[0].text(), "#");
 }
+
+// ---- Phase 3: new block kinds round-trip ----------------------------
+
+#[test]
+fn round_trip_bullet_list_with_indent() {
+    let md = "- a\n\n  - b\n\n    - c\n";
+    let editor = BlockEditor::from_markdown(md);
+    assert_eq!(editor.blocks().len(), 3);
+    match &editor.blocks()[0].kind {
+        BlockKind::Bullet { indent } => assert_eq!(*indent, 0),
+        k => panic!("expected Bullet, got {:?}", k),
+    }
+    match &editor.blocks()[1].kind {
+        BlockKind::Bullet { indent } => assert_eq!(*indent, 1),
+        k => panic!("expected Bullet, got {:?}", k),
+    }
+    match &editor.blocks()[2].kind {
+        BlockKind::Bullet { indent } => assert_eq!(*indent, 2),
+        k => panic!("expected Bullet, got {:?}", k),
+    }
+    assert_eq!(editor.to_markdown(), md);
+}
+
+#[test]
+fn round_trip_checklist_done_and_undone() {
+    let md = "- [ ] todo\n\n- [x] done\n";
+    let editor = BlockEditor::from_markdown(md);
+    assert_eq!(editor.blocks().len(), 2);
+    match &editor.blocks()[0].kind {
+        BlockKind::Checklist { indent, done } => {
+            assert_eq!(*indent, 0);
+            assert!(!*done);
+        }
+        k => panic!("expected Checklist, got {:?}", k),
+    }
+    match &editor.blocks()[1].kind {
+        BlockKind::Checklist { indent, done } => {
+            assert_eq!(*indent, 0);
+            assert!(*done);
+        }
+        k => panic!("expected Checklist, got {:?}", k),
+    }
+    assert_eq!(editor.to_markdown(), md);
+}
+
+#[test]
+fn round_trip_code_block_with_lang() {
+    let md = "```rust\nfn main() {}\n```\n";
+    let editor = BlockEditor::from_markdown(md);
+    assert_eq!(editor.blocks().len(), 1);
+    match &editor.blocks()[0].kind {
+        BlockKind::CodeBlock { lang } => {
+            assert_eq!(lang.as_deref(), Some("rust"));
+        }
+        k => panic!("expected CodeBlock, got {:?}", k),
+    }
+    assert_eq!(editor.blocks()[0].text(), "fn main() {}");
+    assert_eq!(editor.to_markdown(), md);
+}
+
+#[test]
+fn round_trip_code_block_no_lang() {
+    let md = "```\nplain code\n```\n";
+    let editor = BlockEditor::from_markdown(md);
+    assert_eq!(editor.blocks().len(), 1);
+    match &editor.blocks()[0].kind {
+        BlockKind::CodeBlock { lang } => assert!(lang.is_none()),
+        k => panic!("expected CodeBlock, got {:?}", k),
+    }
+    assert_eq!(editor.to_markdown(), md);
+}
+
+#[test]
+fn round_trip_divider() {
+    let md = "before\n\n---\n\nafter\n";
+    let editor = BlockEditor::from_markdown(md);
+    assert_eq!(editor.blocks().len(), 3);
+    assert!(matches!(editor.blocks()[1].kind, BlockKind::Divider));
+    assert_eq!(editor.to_markdown(), md);
+}
+
+#[test]
+fn round_trip_mixed_kitchen_sink() {
+    // The full corpus the Welcome page will ship with — every kind
+    // present exactly once. If this round-trips byte-stably the
+    // markdown grammar handles realistic documents.
+    let md = "\
+# Welcome
+
+This is a paragraph.
+
+## Subtitle
+
+- bullet one
+
+  - nested
+
+- [ ] todo
+
+- [x] done
+
+```rust
+fn main() {}
+```
+
+---
+
+after the rule
+";
+    let editor = BlockEditor::from_markdown(md);
+    assert_eq!(editor.to_markdown(), md);
+}
