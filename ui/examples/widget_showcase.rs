@@ -37,7 +37,9 @@ use ui::widget::{
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::{Blob, Color, Fill, Format, Image as PenikoImage};
+use vello::peniko::{
+    Blob, Color, Fill, ImageAlphaType, ImageData as PenikoImage, ImageFormat as Format,
+};
 
 /// Minimal stand-in widget for the generic content slots of
 /// `PopoverWidget`, `ModalDialog`, and `ResizableSplit`. Paints a
@@ -144,7 +146,13 @@ fn placeholder_image() -> PenikoImage {
             }
         }
     }
-    PenikoImage::new(Blob::new(Arc::new(buf)), Format::Rgba8, 16, 16)
+    PenikoImage {
+        data: Blob::new(Arc::new(buf)),
+        format: Format::Rgba8,
+        alpha_type: ImageAlphaType::Alpha,
+        width: 16,
+        height: 16,
+    }
 }
 
 fn caption(key: &'static str) -> Box<dyn Widget> {
