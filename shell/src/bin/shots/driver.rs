@@ -166,6 +166,52 @@ impl ShellDriver {
         });
     }
 
+    /// Synthesise a `MouseWheel` event at the cursor's current position
+    /// (the host's wheel handlers gate on `last_cursor`, which is the
+    /// last `CursorMoved` value the driver dispatched). `dx`/`dy` are
+    /// `LineDelta` units — one wheel detent ≈ `1.0`. Trackpad-style
+    /// pixel deltas should multiply by ~`1.0/16.0` first to stay
+    /// concept-faithful with the strip's per-line factor.
+    pub fn mouse_wheel(&mut self, dx: f32, dy: f32) {
+        self.dispatch(WindowEvent::MouseWheel {
+            device_id: unsafe { std::mem::zeroed() },
+            delta: winit::event::MouseScrollDelta::LineDelta(dx, dy),
+            phase: winit::event::TouchPhase::Moved,
+        });
+    }
+
+    /// Synthesise a `CursorMoved` event WITHOUT pressing or releasing.
+    /// Use with `press()`/`release()` to compose drags that need
+    /// intermediate snapshots — e.g. mid-drag drop-zone capture or
+    /// scrub-then-pause behaviour. Updates `self.last_cursor` so any
+    /// follow-up `mouse_wheel()` lands at the new position.
+    pub fn move_cursor(&mut self, p: Point) {
+        self.dispatch(WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: PhysicalPosition::new(p.x, p.y),
+        });
+    }
+
+    /// Synthesise a left-button `Pressed` at the current cursor without
+    /// releasing. Caller is responsible for the matching `release()`
+    /// once the drag is complete.
+    pub fn press(&mut self) {
+        self.dispatch(WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        });
+    }
+
+    /// Synthesise a left-button `Released` at the current cursor.
+    pub fn release(&mut self) {
+        self.dispatch(WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        });
+    }
+
     /// Press at `from`, drag through `steps` intermediate `CursorMoved`
     /// events, release at `to`. Used by scenarios that exercise the
     /// tab-drag / wheel-spin flows.
