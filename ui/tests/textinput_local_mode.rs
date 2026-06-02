@@ -49,3 +49,13 @@ fn local_textinput_accepts_typed_characters_and_reports_via_take_dirty() {
     assert!(input.take_dirty().is_none());
     assert_eq!(input.value(), "hi!");
 }
+
+#[test]
+fn local_textinput_set_text_overrides_without_marking_dirty() {
+    let mut input = TextInput::local().with_initial_value("#ff0000");
+    assert_eq!(input.value(), "#ff0000");
+    assert!(input.take_dirty().is_none(), "seeded value should not be dirty");
+    input.set_text("#00ff00");
+    assert_eq!(input.value(), "#00ff00");
+    assert!(input.take_dirty().is_none(), "set_text is a programmatic write, not user edit");
+}
