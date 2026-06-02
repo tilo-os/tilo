@@ -1,0 +1,431 @@
+//! Root widget for the notes binary. Owns the in-memory [`Workspace`],
+//! the storage layer, and the two pane widgets ([`NoteTreeView`] +
+//! [`MainPanel`]). Coordinates the data flow:
+//!
+//! - sidebar emits [`OutEvent`]s when the user clicks / renames /
+//!   creates / deletes,
+//! - the app applies them to the workspace,
+//! - the workspace is then pushed back into the sidebar (so the new
+//!   tree shape reflects), the main panel (title update), and the
+//!   storage saver (debounced disk persistence).
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use automerge::{AutoCommit, ObjId};
+use taffy::style_helpers::length;
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
+use winit::event::WindowEvent;
+
+use ui::Widget;
+use ui::permissions::PermissionContext;
+use ui::presence::PresenceCtx;
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+
+use crate::main_panel::MainPanel;
+use crate::model::Workspace;
+use crate::sidebar::{NoteTreeView, OutEvent};
+use crate::storage::{self, Saver};
+
+/// Fixed sidebar width for Phase 1 (we ship a collapsible drawer in
+/// a later phase — see the roadmap). 240 px reads as "comfortable but
+/// not greedy" against the dashboard widgets in the existing apps.
+const SIDEBAR_WIDTH: f64 = 240.0;
+/// Debounce window for the background save thread. Long enough that
+/// a burst of keystrokes during inline rename coalesces, short enough
+/// that the user's next "is this saved yet" sanity check doesn't have
+/// to wait.
+const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
+
+pub struct NotesApp {
+    workspace: Workspace,
+    sidebar: NoteTreeView,
+    main: MainPanel,
+    /// Root container rect, populated by `apply_layout`.
+    rect: Rect,
+    /// Cached taffy node IDs for the two children. Filled in
+    /// `build_layout`, used by `apply_layout` and `handle_event`.
+    sidebar_node: Option<NodeId>,
+    main_node: Option<NodeId>,
+    root: PathBuf,
+    saver: Option<Saver>,
+}
+
+impl NotesApp {
+    /// Load (or create) the workspace under `root` and wire up the
+    /// debounced background saver. Returns a fully-initialised widget
+    /// ready to be handed to `ui::App`.
+    pub fn spawn(root: PathBuf) -> Result<Self, String> {
+        storage::ensure_layout(&root).map_err(|e| e.to_string())?;
+        let mut workspace = storage::load_workspace(&root)?.unwrap_or_default();
+        if workspace.pages().is_empty() {
+            seed_welcome(&root, &mut workspace);
+            storage::save_workspace(&root, &workspace).map_err(|e| e.to_string())?;
+        }
+
+        let mut sidebar = NoteTreeView::new();
+        sidebar.sync_from_workspace(&workspace);
+        let mut main = MainPanel::new();
+        if let Some(sel) = workspace.selected() {
+            main.set_title(workspace.get(sel).map(|p| p.title.clone()));
+        } else {
+            // Auto-select the first root page on launch so the panel
+            // isn't empty out of the gate. Clone the picked metadata
+            // so we drop the immutable borrow before mutating.
+            let first = workspace
+                .children_of(None)
+                .first()
+                .map(|p| (p.id, p.title.clone()));
+            if let Some((id, title)) = first {
+                workspace.set_selected(Some(id));
+                main.set_title(Some(title));
+                sidebar.sync_from_workspace(&workspace);
+            }
+        }
+
+        let saver = Saver::spawn(root.clone(), SAVE_DEBOUNCE);
+
+        Ok(Self {
+            workspace,
+            sidebar,
+            main,
+            rect: Rect::ZERO,
+            sidebar_node: None,
+            main_node: None,
+            root,
+            saver: Some(saver),
+        })
+    }
+
+    /// Default constructor — resolves the workspace root via `dirs`,
+    /// falls back to `./notes` if the home dir is unavailable.
+    pub fn spawn_default() -> Result<Self, String> {
+        let root = storage::default_root()
+            .unwrap_or_else(|| PathBuf::from("./notes"));
+        Self::spawn(root)
+    }
+
+    /// Apply one [`OutEvent`] from the sidebar to the workspace + disk.
+    fn apply_event(&mut self, ev: OutEvent) {
+        match ev {
+            OutEvent::Select(id) => {
+                self.workspace.set_selected(Some(id));
+                self.main
+                    .set_title(self.workspace.get(id).map(|p| p.title.clone()));
+            }
+            OutEvent::Rename { id, new_title } => {
+                self.workspace.rename(id, &new_title);
+                if self.workspace.selected() == Some(id) {
+                    self.main.set_title(Some(new_title));
+                }
+            }
+            OutEvent::Delete(id) => {
+                let removed = self.workspace.delete_page(id);
+                for rid in &removed {
+                    if let Err(e) = storage::delete_page_file(&self.root, *rid) {
+                        tracing::error!(error = %e, page = %rid, "notes: delete page file failed");
+                    }
+                }
+                // If the selection was nuked, pick a reasonable fallback.
+                if self.workspace.selected().is_none() {
+                    let first = self
+                        .workspace
+                        .children_of(None)
+                        .first()
+                        .map(|p| (p.id, p.title.clone()));
+                    if let Some((id, title)) = first {
+                        self.workspace.set_selected(Some(id));
+                        self.main.set_title(Some(title));
+                    } else {
+                        self.main.set_title(None);
+                    }
+                }
+            }
+            OutEvent::CreateChild { parent } => {
+                let id = self.workspace.create_page(parent);
+                self.workspace.set_selected(Some(id));
+                if let Err(e) = storage::write_page_body(&self.root, id, "") {
+                    tracing::error!(error = %e, page = %id, "notes: write empty page failed");
+                }
+                self.main.set_title(Some("Untitled".to_string()));
+            }
+        }
+        self.persist();
+    }
+
+    /// Schedule a debounced save of the current workspace.
+    fn persist(&self) {
+        if let Some(s) = &self.saver {
+            s.request(self.workspace.clone());
+        }
+    }
+
+    /// Drain the sidebar's outbound event queue and apply each.
+    /// Called after every `handle_event` call.
+    fn drain_sidebar_events(&mut self) {
+        let events = self.sidebar.take_events();
+        if events.is_empty() {
+            return;
+        }
+        for ev in events {
+            self.apply_event(ev);
+        }
+        // After mutation, push the new workspace snapshot back into
+        // the sidebar so the tree shape reflects.
+        self.sidebar.sync_from_workspace(&self.workspace);
+    }
+
+    /// Force-flush the background saver. Called from main on
+    /// shutdown so the user's last edits never get lost in the
+    /// debounce window.
+    pub fn flush_saves(&self) {
+        if let Some(s) = &self.saver {
+            s.flush();
+        }
+    }
+
+    /// Test accessor: snapshot of the current page list. Kept out of
+    /// the public surface so external callers can't poke at internal
+    /// model state — `cfg(any)` since both the integration tests in
+    /// `tests/` and the unit tests need it.
+    #[doc(hidden)]
+    pub fn workspace_pages_for_test(&self) -> Vec<crate::model::PageMeta> {
+        self.workspace.pages().to_vec()
+    }
+}
+
+/// First-launch seed: one page titled "Welcome". The body is empty —
+/// Phase 2's BlockEditor will fill in default copy.
+fn seed_welcome(root: &std::path::Path, workspace: &mut Workspace) {
+    let id = workspace.create_page(None);
+    workspace.rename(id, "Welcome");
+    workspace.set_selected(Some(id));
+    if let Err(e) = storage::write_page_body(root, id, "") {
+        tracing::error!(error = %e, "notes: write Welcome page failed");
+    }
+}
+
+impl Widget for NotesApp {
+    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        self.sidebar.sync(state, path);
+        self.main.sync(state, path);
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let sidebar_node = self.sidebar.build_layout(taffy, theme, node_map);
+        // Wrap the sidebar in a fixed-width container so the split is
+        // deterministic (no flexbox squeezing).
+        let _ = taffy.set_style(
+            sidebar_node,
+            Style {
+                size: Size {
+                    width: Dimension::length(SIDEBAR_WIDTH as f32),
+                    height: Dimension::percent(1.0),
+                },
+                min_size: Size {
+                    width: Dimension::length(160.0),
+                    height: Dimension::auto(),
+                },
+                flex_shrink: 0.0,
+                ..Default::default()
+            },
+        );
+        self.sidebar_node = Some(sidebar_node);
+
+        let main_node = self.main.build_layout(taffy, theme, node_map);
+        let _ = taffy.set_style(
+            main_node,
+            Style {
+                size: Size {
+                    width: Dimension::auto(),
+                    height: Dimension::percent(1.0),
+                },
+                flex_grow: 1.0,
+                flex_basis: Dimension::length(0.0),
+                ..Default::default()
+            },
+        );
+        self.main_node = Some(main_node);
+
+        let root = taffy
+            .new_with_children(
+                Style {
+                    display: taffy::Display::Flex,
+                    flex_direction: taffy::FlexDirection::Row,
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::percent(1.0),
+                    },
+                    gap: taffy::Size {
+                        width: length(0.0),
+                        height: length(0.0),
+                    },
+                    ..Default::default()
+                },
+                &[sidebar_node, main_node],
+            )
+            .unwrap();
+        node_map.insert(root, self as *mut dyn Widget);
+        root
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let layout = taffy.layout(node).unwrap();
+        self.rect = Rect::new(
+            origin.x + layout.location.x as f64,
+            origin.y + layout.location.y as f64,
+            origin.x + layout.location.x as f64 + layout.size.width as f64,
+            origin.y + layout.location.y as f64 + layout.size.height as f64,
+        );
+        let new_origin = Point::new(self.rect.x0, self.rect.y0);
+        if let Some(n) = self.sidebar_node {
+            self.sidebar.apply_layout(taffy, n, new_origin);
+        }
+        if let Some(n) = self.main_node {
+            self.main.apply_layout(taffy, n, new_origin);
+        }
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        // Background of the whole window.
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.base,
+            None,
+            &self.rect,
+        );
+        self.sidebar.draw(scene, transform, text_renderer, theme, presence);
+        self.main.draw(scene, transform, text_renderer, theme, presence);
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        _node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        if let Some(n) = self.sidebar_node {
+            self.sidebar.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
+        }
+        // Drain any commands the sidebar produced.
+        self.drain_sidebar_events();
+    }
+
+    fn name(&self) -> &str {
+        "NotesApp"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.sidebar.needs_redraw() || self.main.needs_redraw()
+    }
+
+    fn mark_drawn(&mut self) {
+        self.sidebar.mark_drawn();
+        self.main.mark_drawn();
+    }
+
+    fn draw_with_presence(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        _permissions: &PermissionContext,
+    ) {
+        // The root rect is the whole window — always paint, never cull.
+        self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn spawn_seeds_welcome_on_empty_root() {
+        let tmp = TempDir::new().unwrap();
+        let app = NotesApp::spawn(tmp.path().into()).unwrap();
+        assert_eq!(app.workspace.pages().len(), 1);
+        assert_eq!(app.workspace.pages()[0].title, "Welcome");
+        // Welcome page file exists on disk.
+        let id = app.workspace.pages()[0].id;
+        assert!(storage::page_file_path(tmp.path(), id).exists());
+    }
+
+    #[test]
+    fn apply_event_create_child_appends_and_selects() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+        let root = app.workspace.pages()[0].id;
+        app.apply_event(OutEvent::CreateChild { parent: Some(root) });
+        let children = app.workspace.children_of(Some(root));
+        assert_eq!(children.len(), 1);
+        assert_eq!(app.workspace.selected(), Some(children[0].id));
+    }
+
+    #[test]
+    fn apply_event_delete_removes_file_and_resets_selection() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+        let root = app.workspace.pages()[0].id;
+        app.apply_event(OutEvent::CreateChild { parent: Some(root) });
+        let child = app.workspace.selected().unwrap();
+        let child_path = storage::page_file_path(tmp.path(), child);
+        assert!(child_path.exists());
+        app.apply_event(OutEvent::Delete(child));
+        assert!(!child_path.exists());
+        // Selection falls back to a remaining root page.
+        assert_eq!(app.workspace.selected(), Some(root));
+    }
+
+    #[test]
+    fn rename_updates_main_panel_title() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+        let root = app.workspace.pages()[0].id;
+        app.apply_event(OutEvent::Rename {
+            id: root,
+            new_title: "Index".into(),
+        });
+        assert_eq!(app.main.title(), Some("Index"));
+    }
+}
