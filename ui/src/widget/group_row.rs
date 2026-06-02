@@ -157,6 +157,14 @@ pub struct GroupRow {
     /// row or hasn't fired yet. The take-pattern accessor leaves the slot
     /// empty so a subsequent harvester call doesn't double-deliver.
     pending_cross_strip_detach: Option<CrossStripDetach>,
+    /// `true` whenever `scroll_x` has changed since the last `draw`.
+    /// The parent Column / Stack caches its subtree scene and only
+    /// rebuilds when a child reports `needs_redraw() == true`. Without
+    /// this flag, a wheel-pan updates `scroll_x` but the cached scene
+    /// keeps painting the old child positions — the user sees no
+    /// movement (exactly the "I scroll and nothing happens" bug from
+    /// 2026-06-02). Cleared in `draw` once the new scene is recorded.
+    scroll_dirty: bool,
 }
 
 impl GroupRow {
@@ -176,6 +184,7 @@ impl GroupRow {
             last_wheel_at: None,
             snap_anim: None,
             pending_cross_strip_detach: None,
+            scroll_dirty: false,
         }
     }
 
@@ -857,6 +866,11 @@ impl Widget for GroupRow {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // Clear the wheel-pan dirty flag now that we're about to
+        // re-record the strip with the new `scroll_x`. The parent
+        // Column's subtree cache picks up the new scene this call
+        // emits.
+        self.scroll_dirty = false;
         // Clip every painted child to the row's own rect. The strip is
         // Niri-style infinite: groups stay at their declared width
         // regardless of how many siblings exist, so the row's
@@ -1067,7 +1081,14 @@ impl Widget for GroupRow {
             if dx != 0.0 {
                 let viewport = self.rect.width().max(1.0);
                 let upper = self.max_scroll_x().max(viewport * 3.0);
+                let before = self.scroll_x;
                 self.scroll_x = (self.scroll_x + dx).clamp(0.0, upper);
+                if (self.scroll_x - before).abs() > f64::EPSILON {
+                    // Force the parent Column's subtree cache to
+                    // rebuild this frame — without it the cache
+                    // keeps painting the pre-pan positions.
+                    self.scroll_dirty = true;
+                }
                 self.last_wheel_at = Some(Instant::now());
                 self.snap_anim = None;
                 *handled = true;
@@ -1472,6 +1493,26 @@ impl Widget for GroupRow {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn needs_redraw(&self) -> bool {
+        // The parent Column / Stack caches its subtree scene via
+        // `draw_with_presence` and only rebuilds when at least one
+        // child reports `needs_redraw() == true`. A wheel-pan changes
+        // `scroll_x` without changing this row's outer rect or any
+        // child's leaf-level dirty bit — so without this override
+        // the cached scene keeps painting the strip at the
+        // pre-scroll positions (user-visible bug: "I scroll and
+        // nothing happens"). The flag is cleared at the top of
+        // `draw` once the new scene records.
+        if self.scroll_dirty {
+            return true;
+        }
+        // Fallback to the default "any descendant dirty" behaviour
+        // so a tab-pill hover or in-tile state change still triggers
+        // a redraw even when scroll_x hasn't moved.
+        self.groups.iter().any(|g| g.needs_redraw())
+            || self.handles.iter().any(|h| h.needs_redraw())
     }
 
     fn needs_animation_frame(&self) -> bool {
