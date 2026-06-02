@@ -246,6 +246,12 @@ impl NotesApp {
         &mut self.palette
     }
 
+    /// Test accessor: handle to the shortcuts overlay.
+    #[doc(hidden)]
+    pub fn shortcuts_mut(&mut self) -> &mut ShortcutsOverlay {
+        &mut self.shortcuts
+    }
+
     /// Hit-test the cached last-mouse-position against every link
     /// span in every block. Returns the page id of the first link
     /// covering that pixel, or `None` if the click missed.
