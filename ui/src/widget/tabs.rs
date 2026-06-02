@@ -30,6 +30,18 @@ const DROP_ZONE_EXPANDED_PX: f64 = 18.0;
 /// rather than a warning.
 const DROP_ZONE_IDLE_PX: f64 = 2.0;
 
+/// Width of the minimalist white-line drop-target indicator painted at
+/// the inter-pill gap the cursor is currently hovering. 1.5 px reads as
+/// a crisp guide without competing with the pill chrome — the user's
+/// 2026-06-01 feedback explicitly asked for "*some* minimalistic kind
+/// of indicator … e.g. a single white line spawning between tabs".
+const HOVER_DROP_LINE_PX: f64 = 1.5;
+/// Duration of the white-line fade-in when `hover_drop_idx` changes to
+/// a new gap. Shorter than the accent expand curve (140 ms) because the
+/// line is much smaller visual — a quick fade-in keeps it from feeling
+/// laggy while still avoiding a hard pop.
+const HOVER_DROP_FADE_MS: u64 = 90;
+
 /// Duration of the tab-layout spring that plays when pills reorder, insert,
 /// or close. Longer than the drop-zone animation because this one moves
 /// *every* pill's position — 180 ms is enough for the eye to track the
@@ -247,6 +259,29 @@ pub struct TabBar {
     /// `draw` to derive `eased = (elapsed / DROP_ZONE_ANIM_MS).min(1)`.
     /// Wrapped in `Option` because `Instant` has no `ZERO` constant.
     drop_zone_animated_at: Option<Instant>,
+    /// Inter-tab gap index (0..=tabs.len()) where a minimalist 1.5-px
+    /// white line should paint as a drop-target indicator while a tab
+    /// drag is hovering this bar. `None` means "no drag over this bar"
+    /// — either no drag at all, or the cursor isn't on this bar's
+    /// pills. Set in two paths:
+    ///   1. Own-bar drag (this bar's `pending_drag` is in flight) —
+    ///      written by `handle_event::CursorMoved` alongside
+    ///      `drop_zone_target`.
+    ///   2. Cross-group drag (a sibling bar's drag is in flight) —
+    ///      written by [`Self::set_external_drag_hover`], called from
+    ///      `GroupRow::handle_event` so every sibling bar lights up its
+    ///      inter-pill gap while the cursor passes over it.
+    ///
+    /// Cleared on release (and whenever the cursor leaves a bar with
+    /// an external drag in flight) so a fresh drag starts with no
+    /// stale indicator.
+    hover_drop_idx: Option<usize>,
+    /// `Instant` at which `hover_drop_idx` last changed to a different
+    /// `Some(_)`. Drives a short fade-in on the white line so the
+    /// indicator reads as appearing rather than popping. `None`
+    /// alongside `hover_drop_idx = None`. Wrapped in `Option` because
+    /// `Instant` has no `ZERO` constant.
+    hover_drop_animated_at: Option<Instant>,
     /// Snapshot of each tab's `tab_rects[i]` keyed by tab id, captured
     /// just before the last reorder/insert/remove. `draw` uses this to
     /// interpolate each pill's *visual* position toward its new
@@ -329,6 +364,8 @@ impl TabBar {
             pending_detach: None,
             drop_zone_target: None,
             drop_zone_animated_at: None,
+            hover_drop_idx: None,
+            hover_drop_animated_at: None,
             prev_tab_rects_by_id: HashMap::new(),
             layout_anim_started: None,
             inserted_at: HashMap::new(),
@@ -1037,6 +1074,50 @@ impl TabBar {
         self.drop_zone_target
     }
 
+    /// Current inter-pill gap targeted by the minimalist white-line
+    /// drop indicator. Exposed for tests so the cross-group hover
+    /// wiring can assert against the resolved index without scraping a
+    /// Vello scene. `None` while no drag is hovering this bar.
+    #[cfg(test)]
+    pub(crate) fn hover_drop_idx(&self) -> Option<usize> {
+        self.hover_drop_idx
+    }
+
+    /// Push an external (cross-group) drag's hover cursor into this bar
+    /// so the minimalist white-line drop indicator paints at the right
+    /// inter-pill gap. Called by `GroupRow::handle_event` for every
+    /// sibling bar while a child group's tab drag is in flight:
+    ///
+    ///   - `Some(point)` — a drag is in flight in a sibling bar and the
+    ///     cursor is currently inside this bar's rect. `point` is the
+    ///     logical cursor; we resolve it to a gap index via
+    ///     [`Self::drop_index_for`] and stash it in `hover_drop_idx`.
+    ///   - `None` — no relevant external drag, or the cursor moved out
+    ///     of this bar. Clears the indicator.
+    ///
+    /// No-op while this bar has its own `pending_drag` in flight: the
+    /// own-bar `CursorMoved` branch already drives `hover_drop_idx`
+    /// from inside the same handler, and we don't want the parent's
+    /// per-frame fan-out to fight with it (one `set_external` call per
+    /// sibling bar AFTER the local hover wrote the indicator would
+    /// otherwise wipe the source bar's own indicator).
+    pub fn set_external_drag_hover(&mut self, cursor: Option<Point>) {
+        if self.pending_drag.is_some() {
+            return;
+        }
+        let new_target = cursor
+            .filter(|p| self.rect.contains(*p))
+            .map(|p| self.drop_index_for(p));
+        if new_target != self.hover_drop_idx {
+            self.hover_drop_idx = new_target;
+            if new_target.is_some() {
+                self.hover_drop_animated_at = Some(Instant::now());
+            } else {
+                self.hover_drop_animated_at = None;
+            }
+        }
+    }
+
     /// Test hook: returns the close-chip fill color `draw_pill_inner`
     /// would paint for tab `idx` under the current theme + hover state,
     /// or `None` when the chip wouldn't paint at all (neither the tab
@@ -1490,6 +1571,72 @@ impl Widget for TabBar {
             }
         }
 
+        // Minimalist white-line drop indicator at `hover_drop_idx`.
+        // Drawn AFTER the existing accent-colored drop zones (the
+        // expanded indigo bar + glow at the targeted gap and the thin
+        // hints at every other gap, painted above) so the white line
+        // composes over them — that lets the same bar serve the
+        // single-bar concept-parity case (accent visuals + line at the
+        // target gap) and the cross-group case (line ONLY, since
+        // `pending_drag.is_some()` is false on sibling bars so the
+        // accent block above is skipped). Concept-wise: this is the
+        // user's 2026-06-01 explicit request for "*some* minimalistic
+        // kind of indicator … a single white line spawning between
+        // tabs" for cross-group drop hovers. Paint clamped to
+        // `[idle_alpha, 1.0]` via an ease-out-cubic fade-in over
+        // `HOVER_DROP_FADE_MS` so the line reads as appearing rather
+        // than popping.
+        if let Some(gap_idx) = self.hover_drop_idx
+            && !self.tab_rects.is_empty()
+        {
+            let now = Instant::now();
+            let elapsed_ms = self
+                .hover_drop_animated_at
+                .map(|t| now.duration_since(t).as_millis() as f64)
+                .unwrap_or(HOVER_DROP_FADE_MS as f64);
+            let raw_t = (elapsed_ms / HOVER_DROP_FADE_MS as f64).clamp(0.0, 1.0);
+            let eased_t = 1.0 - (1.0 - raw_t).powi(3);
+            // Compute the gap's centre x and the vertical extent of the
+            // line, mirroring the accent-bar geometry above so the two
+            // indicators (when both visible on the source bar) sit at
+            // the same x with the line passing through the centre of
+            // the accent capsule. The line extends 4 px above/below
+            // the pill's vertical extent so it has clear bleed past
+            // the rounded pill caps.
+            let (cx, y0, y1) = if gap_idx == 0 {
+                let r = self.tab_rects[0];
+                (r.x0 - 3.0, r.y0 - 4.0, r.y1 + 4.0)
+            } else if gap_idx >= self.tab_rects.len() {
+                let r = *self.tab_rects.last().unwrap();
+                (r.x1 + 3.0, r.y0 - 4.0, r.y1 + 4.0)
+            } else {
+                let prev = self.tab_rects[gap_idx - 1];
+                let next = self.tab_rects[gap_idx];
+                let cx = (prev.x1 + next.x0) / 2.0;
+                (
+                    cx,
+                    prev.y0.min(next.y0) - 4.0,
+                    prev.y1.max(next.y1) + 4.0,
+                )
+            };
+            let half_w = HOVER_DROP_LINE_PX / 2.0;
+            let line = Rect::new(cx - half_w, y0, cx + half_w, y1);
+            // Pure white at 80% terminal alpha — crisp against the
+            // dark backdrop and the (sometimes-coloured) accent zone
+            // beneath, while still feeling restrained. Ease the alpha
+            // up over `HOVER_DROP_FADE_MS` so the indicator fades in
+            // rather than popping the moment the cursor enters a new
+            // gap.
+            let alpha = (0.85 * eased_t as f32).clamp(0.0, 1.0);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                vello::peniko::Color::from_rgba8(255, 255, 255, (alpha * 255.0) as u8),
+                None,
+                &line,
+            );
+        }
+
         // Drag-ghost: translucent copy of the pill being dragged,
         // painted LAST so it composites over every other pill and over
         // the drop-zone indicators. Follows `last_cursor` at the
@@ -1602,6 +1749,20 @@ impl Widget for TabBar {
                     if new_target != self.drop_zone_target {
                         self.drop_zone_target = new_target;
                         self.drop_zone_animated_at = Some(Instant::now());
+                    }
+                    // Same gap drives the minimalist white-line indicator
+                    // for the own-bar case. Cross-group hovers reach the
+                    // same field via `set_external_drag_hover` from
+                    // `GroupRow::handle_event`. Latching `_animated_at`
+                    // only when the gap *changes* (or appears) keeps the
+                    // fade-in tied to each meaningful transition.
+                    if new_target != self.hover_drop_idx {
+                        self.hover_drop_idx = new_target;
+                        if new_target.is_some() {
+                            self.hover_drop_animated_at = Some(Instant::now());
+                        } else {
+                            self.hover_drop_animated_at = None;
+                        }
                     }
                 }
             }
@@ -1753,6 +1914,8 @@ impl Widget for TabBar {
                 // with no stale zone visible.
                 self.drop_zone_target = None;
                 self.drop_zone_animated_at = None;
+                self.hover_drop_idx = None;
+                self.hover_drop_animated_at = None;
             }
             _ => {}
         }
@@ -1790,7 +1953,17 @@ impl Widget for TabBar {
         let close_fade = self.closing_tabs.iter().any(|c| {
             c.started_at.elapsed().as_millis() < CLOSE_FADE_MS as u128
         });
-        drop_zone || layout || insert_fade || close_fade
+        // White-line drop indicator fade-in. Short curve (90 ms) but
+        // we still need to keep the redraw pump alive while it plays
+        // out, otherwise the line pops to full alpha on the next
+        // event-driven frame instead of easing in. While the indicator
+        // is past its fade window the line just paints at terminal
+        // alpha — no further frames needed until the gap changes.
+        let hover_drop_fade = self
+            .hover_drop_animated_at
+            .map(|t| t.elapsed() < Duration::from_millis(HOVER_DROP_FADE_MS))
+            .unwrap_or(false);
+        drop_zone || layout || insert_fade || close_fade || hover_drop_fade
     }
 }
 
@@ -2547,6 +2720,159 @@ mod tests {
         assert!(
             !b.needs_animation_frame(),
             "at rest (no drag) the bar must not pump frames"
+        );
+    }
+
+    /// User's 2026-06-01 feedback: the tab-bar drop indicator should be
+    /// "*some* minimalistic kind of indicator … e.g. a single white
+    /// line spawning between tabs". The white line is gated by the new
+    /// `hover_drop_idx` field. Two paths must drive it:
+    ///   1. Own-bar drag (this bar's `pending_drag` is in flight) —
+    ///      tracked alongside `drop_zone_target` from `CursorMoved`.
+    ///   2. Cross-group drag (a sibling bar's drag is in flight) — set
+    ///      by `set_external_drag_hover` from `GroupRow::handle_event`.
+    /// Both paths must resolve to the same gap index that
+    /// `drop_index_for` produces, so the line lands consistently with
+    /// where a release would splice the tab.
+    #[test]
+    fn hover_drop_idx_follows_own_bar_drag_cursor() {
+        // Hand-build three pills [0..80, 80..160, 160..240], bar covers
+        // [0..240, 0..40] — same fixture the existing drop-zone test
+        // uses so the resolved gap indices are easy to verify by eye.
+        let mut b = bar();
+        b.rect = Rect::new(0.0, 0.0, 240.0, 40.0);
+        b.tab_rects = vec![
+            Rect::new(0.0, 6.0, 80.0, 34.0),
+            Rect::new(80.0, 6.0, 160.0, 34.0),
+            Rect::new(160.0, 6.0, 240.0, 34.0),
+        ];
+        assert_eq!(
+            b.hover_drop_idx(),
+            None,
+            "fresh bar with no drag has no hover-drop indicator",
+        );
+
+        // Latch own-bar drag and move cursor over pill B's left half →
+        // gap 1.
+        b.pending_drag = Some(DragPayload::Tab { group: 0, tab: 1 });
+        b.last_cursor = Point::new(90.0, 20.0);
+        let event = WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(90.0, 20.0),
+        };
+        let mut tree = TaffyTree::<()>::new();
+        let node = tree.new_leaf(Style::default()).unwrap();
+        let mut handled = false;
+        let mut focus_target = None;
+        let mut state = automerge::AutoCommit::new();
+        let root_id = automerge::ROOT;
+        b.handle_event(
+            &event,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut state,
+            &root_id,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &tree,
+        );
+        assert_eq!(
+            b.hover_drop_idx(),
+            Some(1),
+            "own-bar drag must set hover_drop_idx to the resolved gap (B's left half → 1)",
+        );
+        assert!(
+            b.needs_animation_frame(),
+            "hover-drop fade in flight must request redraws",
+        );
+
+        // Release clears the indicator so a fresh drag starts clean.
+        let release = WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        };
+        b.handle_event(
+            &release,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut state,
+            &root_id,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &tree,
+        );
+        assert_eq!(
+            b.hover_drop_idx(),
+            None,
+            "release must clear hover_drop_idx so a fresh drag starts with no stale line",
+        );
+    }
+
+    /// `set_external_drag_hover` is the entry point `GroupRow` uses to
+    /// drive the white-line indicator on sibling bars during a
+    /// cross-group drag. `None` clears; `Some(point)` inside the bar
+    /// resolves to the matching gap index via `drop_index_for`; a
+    /// point outside the bar's rect is ignored (the parent's
+    /// per-sibling fan-out passes `Some(_)` to every bar; only the
+    /// hovered one is supposed to light up). The setter is a no-op
+    /// when the bar has its own drag in flight so the parent's
+    /// fan-out can't wipe a freshly-set own-bar indicator.
+    #[test]
+    fn set_external_drag_hover_resolves_gap_for_sibling_bars() {
+        let mut b = bar();
+        b.rect = Rect::new(0.0, 0.0, 240.0, 40.0);
+        b.tab_rects = vec![
+            Rect::new(0.0, 6.0, 80.0, 34.0),
+            Rect::new(80.0, 6.0, 160.0, 34.0),
+            Rect::new(160.0, 6.0, 240.0, 34.0),
+        ];
+
+        // Cursor over pill C's right half → past every midpoint → gap 3
+        // (append). Sibling case: no own drag, so the indicator lights up.
+        b.set_external_drag_hover(Some(Point::new(230.0, 20.0)));
+        assert_eq!(
+            b.hover_drop_idx(),
+            Some(3),
+            "external hover past every midpoint → gap 3 (append)",
+        );
+
+        // Same gap on a subsequent call is a stable no-op (timestamp
+        // doesn't latch a fresh fade). Move it to gap 0 (left of A).
+        b.set_external_drag_hover(Some(Point::new(-5.0, 20.0)));
+        // -5 is outside the bar rect so the setter clamps to None.
+        assert_eq!(
+            b.hover_drop_idx(),
+            None,
+            "point outside the bar rect clears the indicator",
+        );
+
+        // Within bar but left of A's midpoint (40) → gap 0.
+        b.set_external_drag_hover(Some(Point::new(10.0, 20.0)));
+        assert_eq!(b.hover_drop_idx(), Some(0));
+
+        // None clears.
+        b.set_external_drag_hover(None);
+        assert_eq!(b.hover_drop_idx(), None);
+
+        // Own drag-in-flight: the setter becomes a no-op so the parent's
+        // fan-out can't wipe the source bar's own indicator.
+        b.pending_drag = Some(DragPayload::Tab { group: 0, tab: 1 });
+        b.hover_drop_idx = Some(2);
+        b.set_external_drag_hover(None);
+        assert_eq!(
+            b.hover_drop_idx(),
+            Some(2),
+            "set_external_drag_hover is a no-op while own drag is in flight",
+        );
+        b.set_external_drag_hover(Some(Point::new(10.0, 20.0)));
+        assert_eq!(
+            b.hover_drop_idx(),
+            Some(2),
+            "set_external_drag_hover is a no-op while own drag is in flight, \
+             even with an in-bar point",
         );
     }
 

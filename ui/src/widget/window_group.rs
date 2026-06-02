@@ -487,6 +487,20 @@ impl WindowGroup {
     /// while any child is dragging.
     pub fn drag_in_flight(&self) -> bool { self.bar.drag_in_flight() }
 
+    /// Push an external (cross-group) drag's cursor into this group's
+    /// `TabBar` so its minimalist white-line drop indicator
+    /// (`hover_drop_idx`) paints at the correct inter-pill gap. Called
+    /// by `GroupRow::handle_event` for every group while any child has
+    /// a tab drag in flight: `Some(point)` when the cursor is somewhere
+    /// in the row; `None` when no relevant drag is active.
+    ///
+    /// `TabBar::set_external_drag_hover` is a no-op while the bar has
+    /// its own `pending_drag` in flight, so the source bar's own
+    /// indicator stays put even when the parent's fan-out visits it.
+    pub fn set_external_drag_hover(&mut self, cursor: Option<Point>) {
+        self.bar.set_external_drag_hover(cursor);
+    }
+
     /// Test-only mutable accessor for the underlying `TabBar`. Used by
     /// `GroupRow` tests that need to publish a synthetic `pending_detach`
     /// to exercise the post-dispatch detach sweep without staging a full
