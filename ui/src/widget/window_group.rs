@@ -806,10 +806,38 @@ impl Widget for WindowGroup {
                 scene.pop_layer();
             }
         }
-        // resize handle visualization
-        let handle_rect = Rect::new(self.rect.x1 - RESIZE_HANDLE_PX, self.rect.y0, self.rect.x1, self.rect.y1);
-        let col = if self.hover_resize || self.resize_origin.is_some() { theme.tokens.colors.border_focus } else { theme.tokens.colors.border_standard };
-        scene.fill(vello::peniko::Fill::NonZero, transform, col, None, &handle_rect);
+        // Per-group resize handle. Painted as two short vertical accent
+        // strokes (a "grip" affordance) just inside the group's right
+        // edge — much more legible than the previous full-height
+        // slate-700 stripe, which blended into the white card and the
+        // dark wallpaper. Hover/drag brightens to `border_focus` so
+        // the user can see whether they've grabbed the handle.
+        //
+        // Hit zone is wider (`RESIZE_HANDLE_PX = 6`) than the painted
+        // grip so a mouse-cursor approach catches before the user
+        // notices the visual.
+        let grip_col = if self.hover_resize || self.resize_origin.is_some() {
+            theme.tokens.colors.border_focus
+        } else {
+            theme.tokens.colors.text_dim.with_alpha_factor(0.55)
+        };
+        let group_h = self.rect.height();
+        let grip_h = (group_h * 0.25).clamp(24.0, 80.0);
+        let grip_cx = self.rect.x1 - 3.0;
+        let grip_cy = self.rect.center().y;
+        let bar = |dx: f64| {
+            vello::kurbo::RoundedRect::from_rect(
+                Rect::new(
+                    grip_cx + dx - 1.0,
+                    grip_cy - grip_h / 2.0,
+                    grip_cx + dx + 1.0,
+                    grip_cy + grip_h / 2.0,
+                ),
+                1.0,
+            )
+        };
+        scene.fill(vello::peniko::Fill::NonZero, transform, grip_col, None, &bar(-2.0));
+        scene.fill(vello::peniko::Fill::NonZero, transform, grip_col, None, &bar(2.0));
 
         // Drag-in-flight visual: subtle accent ring around the whole group
         // so the user has a spatial signal the drag is live. Matches the
