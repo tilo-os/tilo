@@ -1,12 +1,12 @@
 [submodule "fs"]
 	path = fs
-	url = ssh://git@git.tu-po.com/qos/fs.git
+	url = ssh://git@code.podesta.ai/qos/fs.git
 [submodule "shell"]
 	path = shell
-	url = ssh://git@git.tu-po.com/qos/shell.git
+	url = ssh://git@code.podesta.ai/qos/shell.git
 [submodule "ui"]
 	path = ui
-	url = ssh://git@git.tu-po.com/qos/ui.git
+	url = ssh://git@code.podesta.ai/qos/ui.git
 [submodule "apps"]
 	path = apps
-	url = ssh://git@git.tu-po.com/qos/apps.git
+	url = ssh://git@code.podesta.ai/qos/apps.git
