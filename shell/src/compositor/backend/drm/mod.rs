@@ -46,6 +46,7 @@ pub mod devices;
 pub mod outputs;
 pub mod paint;
 pub mod runtime;
+pub mod scanout;
 pub mod session;
 
 use vello::Scene;
@@ -135,13 +136,15 @@ impl Backend for DrmBackend {
             }
         };
 
-        // Phase 5.2 v1: at this point the RGBA bytes are ready. The
-        // GLES texture upload + page-flip is the Phase 5.3 follow-up.
-        // We touch `bytes.len()` so the optimiser doesn't elide the
-        // paint call once Phase 5.3 plugs the upload in (and so that
-        // tests verifying "the bridge was invoked" can intercept via
-        // a future trait seam).
-        let _ = bytes.len();
+        // Push the painted RGBA frame onto the physical display. The
+        // scanout converts to the framebuffer's XRGB8888 and flushes
+        // (dirtyfb). If modeset failed at construction (`scanout` is
+        // `None`) we simply drop the frame — the compositor still
+        // serves its wayland socket headless.
+        let (w, h) = target_size;
+        if let Some(scanout) = self.inner.scanout.as_mut() {
+            scanout.present(bytes, w, h);
+        }
     }
 
     fn poll_events(&mut self, callback: &mut dyn FnMut(BackendEvent)) {
