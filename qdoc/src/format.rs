@@ -2,7 +2,7 @@
 //! transforms between file bytes and canonical-document changes; in production
 //! they run sandboxed (Phase 3). Here we define the contract + registry.
 
-use crate::document::Document;
+use crate::model::{DocMut, DocRef};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Confidence {
@@ -30,13 +30,15 @@ pub enum CodecError {
 }
 
 /// A format provider: a pure transform between file bytes and a canonical
-/// `Document`. In production this trait object lives behind a sandbox IPC
-/// boundary (Phase 3); the contract is identical either side.
+/// document. In production this trait object lives behind a sandbox IPC
+/// boundary (Phase 3); the contract is identical either side. Operating over
+/// the borrowed [`DocMut`]/[`DocRef`] views means the same codec works whether
+/// the document lives in an owned `Document` (FS) or a host's doc (editor).
 pub trait FormatProvider: Send + Sync {
     fn schema_id(&self) -> &str;
     fn detect(&self, head: &[u8]) -> Confidence;
-    fn import(&self, bytes: &[u8], doc: &mut Document) -> Result<(), CodecError>;
-    fn export(&self, doc: &Document) -> Result<Vec<u8>, CodecError>;
+    fn import(&self, bytes: &[u8], doc: &mut DocMut) -> Result<(), CodecError>;
+    fn export(&self, doc: DocRef) -> Result<Vec<u8>, CodecError>;
 }
 
 struct Entry {
@@ -74,6 +76,7 @@ impl Registry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Document;
 
     struct DummyMd;
     impl FormatProvider for DummyMd {
@@ -87,13 +90,13 @@ mod tests {
                 Confidence::Low
             }
         }
-        fn import(&self, bytes: &[u8], doc: &mut Document) -> Result<(), CodecError> {
+        fn import(&self, bytes: &[u8], doc: &mut DocMut) -> Result<(), CodecError> {
             let s = std::str::from_utf8(bytes).map_err(|e| CodecError::Parse(e.to_string()))?;
             let p = doc.insert_block(None, "paragraph");
             doc.splice_text(&p, 0, 0, s.trim());
             Ok(())
         }
-        fn export(&self, doc: &Document) -> Result<Vec<u8>, CodecError> {
+        fn export(&self, doc: DocRef) -> Result<Vec<u8>, CodecError> {
             let snap = doc.materialize();
             Ok(snap
                 .blocks
@@ -113,10 +116,10 @@ mod tests {
         fn detect(&self, _: &[u8]) -> Confidence {
             Confidence::High
         }
-        fn import(&self, _: &[u8], _: &mut Document) -> Result<(), CodecError> {
+        fn import(&self, _: &[u8], _: &mut DocMut) -> Result<(), CodecError> {
             Ok(())
         }
-        fn export(&self, _: &Document) -> Result<Vec<u8>, CodecError> {
+        fn export(&self, _: DocRef) -> Result<Vec<u8>, CodecError> {
             Ok(b"builtin".to_vec())
         }
     }
@@ -125,8 +128,8 @@ mod tests {
     fn import_export_roundtrip_via_provider() {
         let p = DummyMd;
         let mut d = Document::new();
-        p.import(b"# Hello", &mut d).unwrap();
-        let out = p.export(&d).unwrap();
+        p.import(b"# Hello", &mut d.as_mut()).unwrap();
+        let out = p.export(d.as_ref()).unwrap();
         assert_eq!(out, b"# Hello");
     }
 
@@ -138,7 +141,7 @@ mod tests {
         let prov = r.provider_for_ext("md").unwrap();
         // Builtin wins → its export returns b"builtin".
         let d = Document::new();
-        assert_eq!(prov.export(&d).unwrap(), b"builtin");
+        assert_eq!(prov.export(d.as_ref()).unwrap(), b"builtin");
     }
 
     #[test]
