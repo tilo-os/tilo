@@ -48,6 +48,16 @@ pub trait Widget {
     /// Stable identity used to look up presence and permissions for this widget.
     /// Default: opt-out (no presence tracking).
     fn presence_key(&self) -> Option<PresenceKey> { None }
+    /// Outbound presence this widget wants broadcast while it holds focus
+    /// — typically its text caret or selection, keyed to the sub-element
+    /// (e.g. a block) the caret is in. The App polls the focused widget
+    /// for this after each event and broadcasts the diff so peers can
+    /// render the remote caret/selection. Default: nothing to broadcast.
+    fn presence_payload(
+        &self,
+    ) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
+        None
+    }
     /// Which permission scope, if any, gates this widget. Default: no gating.
     fn permission_scope(&self) -> Option<PermissionScope> { None }
     fn accepts_drop(&self, _payload: &DragPayload) -> bool { false }
