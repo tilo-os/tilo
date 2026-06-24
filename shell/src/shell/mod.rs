@@ -21,6 +21,7 @@
 
 pub mod browser_stub;
 pub mod chrome_state;
+pub mod collab_broker;
 pub mod desktop_backdrop;
 pub mod editor_app;
 pub mod network;
