@@ -37,6 +37,7 @@ use smithay::reexports::input::Libinput;
 
 use super::devices::{filter_kms_nodes, ModeInfo};
 use super::outputs::{ConnectorInfo, OutputRegistry};
+use super::scanout::DrmScanout;
 use super::session::SessionState;
 use crate::compositor::backend::{BackendEvent, Output, OutputId};
 
@@ -98,6 +99,10 @@ pub struct DrmRuntime {
     /// `NoDevices` in that case, but keeping the field is convenient
     /// for follow-ups).
     pub primary_gpu: Option<PathBuf>,
+    /// Live scanout for the primary connector. `None` if modeset failed
+    /// (e.g. not DRM master / no connected connector) — the compositor
+    /// still runs headless in that case rather than crashing.
+    pub scanout: Option<DrmScanout>,
 }
 
 impl DrmRuntime {
@@ -134,17 +139,46 @@ impl DrmRuntime {
             "DRM backend: enumerated KMS card nodes"
         );
 
-        // 2.5. Connector enumeration. Open each KMS node via the
-        //      session, read the resource handles + per-connector
-        //      info, and project into the registry. Failures here are
-        //      logged and skipped rather than aborting the boot — a
-        //      single bad GPU shouldn't down the compositor.
+        // 2.2. Bring up scanout on the primary GPU FIRST, keeping its fd
+        //      open as DRM master. libseat refuses a second `open` of the
+        //      same node, so the primary must NOT also be opened by the
+        //      connector-enumeration pass below — we exclude it when
+        //      scanout owns it. A modeset failure is non-fatal: log and
+        //      run headless (the wayland socket is still served).
+        let scanout = match primary_gpu.as_ref() {
+            Some(path) => {
+                let mut scanout_session = session.clone();
+                match DrmScanout::new(&mut scanout_session, path) {
+                    Ok(s) => {
+                        tracing::info!("DRM backend: scanout live on primary GPU");
+                        Some(s)
+                    }
+                    Err(e) => {
+                        tracing::warn!("DRM backend: scanout setup failed ({e}); running headless");
+                        None
+                    }
+                }
+            }
+            None => None,
+        };
+
+        // 2.5. Connector enumeration on the GPUs scanout does NOT own
+        //      (the primary is held open above). Failures here are logged
+        //      and skipped rather than aborting the boot.
         //
         //      `LibSeatSession` is cheap to clone (internal `Arc`), so
-        //      we hand a borrow to the enumeration helper that lives
-        //      independently of the session we plumb into libinput.
+        //      we hand a borrow to the enumeration helper.
+        let enum_gpus: Vec<PathBuf> = if scanout.is_some() {
+            kms_gpus
+                .iter()
+                .filter(|p| Some((*p).clone()) != primary_gpu)
+                .cloned()
+                .collect()
+        } else {
+            kms_gpus.clone()
+        };
         let mut session_for_enum = session.clone();
-        let connectors = enumerate_connectors(&mut session_for_enum, &kms_gpus);
+        let connectors = enumerate_connectors(&mut session_for_enum, &enum_gpus);
         tracing::info!(
             count = connectors.len(),
             "DRM backend: enumerated DRM connectors"
@@ -238,7 +272,22 @@ impl DrmRuntime {
 
         let mut outputs = OutputRegistry::new();
         let populated = outputs.populate(&connectors);
-        let output_meta: HashMap<OutputId, Output> = populated.into_iter().collect();
+        let mut output_meta: HashMap<OutputId, Output> = populated.into_iter().collect();
+
+        // The scanout-driven primary is the canonical output the frame
+        // loop paints into (`submit_frame` targets `outputs().first()`).
+        // Expose it at the lowest id so it sorts first.
+        if let Some(s) = &scanout {
+            let (w, h) = s.size();
+            output_meta.insert(
+                OutputId(0),
+                Output {
+                    id: OutputId(0),
+                    size: (w, h),
+                    scale: 1.0,
+                },
+            );
+        }
 
         let dispatch = DrmDispatchState {
             session: Some(session_state),
@@ -252,6 +301,7 @@ impl DrmRuntime {
             dispatch,
             _session: session,
             primary_gpu,
+            scanout,
         })
     }
 
