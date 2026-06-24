@@ -1,0 +1,11 @@
+[package]
+name = "collab-broker"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "collab-broker"
+path = "src/main.rs"
+
+[dependencies]
+ui = { path = "../../ui" }
