@@ -136,6 +136,15 @@ impl RichTextLine {
         self.inner.value()
     }
 
+    /// Bind this line to an Automerge `Text` object so its content syncs
+    /// from the shared CRDT document and every edit splices back into
+    /// it. Used by `BlockEditor` to back each block with the per-block
+    /// `Text` at `pages[id].blocks[i].text`. After binding, [`sync`]
+    /// pulls the latest text on each frame.
+    pub fn bind_text(&mut self, obj: ObjId) {
+        self.inner.bind_text(obj);
+    }
+
     /// Replace the text programmatically. Does NOT mark the line as
     /// dirty (programmatic writes are not user edits). Cursor lands
     /// at the end after clamping to a char boundary.
@@ -330,8 +339,15 @@ impl Default for RichTextLine {
 }
 
 impl Widget for RichTextLine {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
-        // Local-mode input; nothing to sync from the CRDT.
+    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        // When bound to a Text object the inner input pulls the latest
+        // content from the shared CRDT here; when unbound this is a
+        // no-op (local mode). Either way, realign the mark-diff snapshot
+        // so a remotely-synced edit isn't misread as a local splice on
+        // the next keystroke.
+        self.inner.sync(state, path);
+        self.prev_text = self.inner.value().to_string();
+        self.prev_cursor = self.inner.cursor_pos();
     }
 
     fn build_layout(
@@ -836,6 +852,56 @@ mod tests {
             fake_node,
             &taffy,
         );
+    }
+
+    // ---- CRDT binding (re-enabled CRDT path) -------------------------
+
+    #[test]
+    fn bound_line_reads_text_from_doc() {
+        use automerge::{ObjType, ROOT, transaction::Transactable};
+        let mut doc = automerge::AutoCommit::new();
+        let tid = doc.put_object(&ROOT, "t", ObjType::Text).unwrap();
+        doc.splice_text(&tid, 0, 0, "hello").unwrap();
+
+        let mut line = RichTextLine::new();
+        line.bind_text(tid.clone());
+        // Widget::sync; the root arg is unused once a Text is bound.
+        line.sync(&mut doc, &ROOT);
+        assert_eq!(line.value(), "hello");
+    }
+
+    #[test]
+    fn editing_bound_line_splices_into_doc() {
+        use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
+        let mut doc = automerge::AutoCommit::new();
+        let tid = doc.put_object(&ROOT, "t", ObjType::Text).unwrap();
+
+        let mut line = RichTextLine::new();
+        line.bind_text(tid.clone());
+        line.set_focus(true);
+
+        // Type "hi" against OUR doc (not the throwaway doc `dispatch`
+        // would make) so we can observe the splice land in the CRDT.
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        for c in ["h", "i"] {
+            let ev = char_press(c);
+            let mut handled = false;
+            let mut focus_target = None;
+            line.handle_event(
+                &ev,
+                1.0,
+                &Modifiers::default(),
+                &mut doc,
+                &ROOT,
+                &mut handled,
+                &mut focus_target,
+                NodeId::new(0),
+                &taffy,
+            );
+        }
+
+        assert_eq!(line.value(), "hi");
+        assert_eq!(doc.text(&tid).unwrap(), "hi", "edits must splice into the bound Text");
     }
 
     #[test]
