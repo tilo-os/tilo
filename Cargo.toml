@@ -7,5 +7,6 @@ members = [
     "apps/terminal",
     "apps/browser",
     "apps/notes",
+    "apps/collab-broker",
 ]
 resolver = "2"
