@@ -885,6 +885,35 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     );
                 }
 
+                // Draw remote pointers delivered over the app collab
+                // socket (the broker path): these land in
+                // `PresenceCtx::pointers` keyed by the broadcast scope,
+                // NOT the legacy `state.collab.cursors` map. Render each
+                // as a round, color-coded cursor with a name label.
+                for peers in app.presence_ctx.pointers.values() {
+                    for (uid, pos) in peers {
+                        app.presence_ctx.draw_peer_pointer(
+                            &mut scene,
+                            &app.theme,
+                            transform,
+                            uid,
+                            *pos,
+                        );
+                        app.text_renderer.draw_text(
+                            &mut scene,
+                            &uid.0,
+                            10.0,
+                            Color::WHITE,
+                            transform
+                                * Affine::translate((
+                                    pos.0 as f64 + 11.0,
+                                    pos.1 as f64 + 4.0,
+                                )),
+                            None,
+                        );
+                    }
+                }
+
                 if app.debug_mode {
                     let debug_outline_cycle = [
                         app.theme.tokens.colors.semantic.warning,
