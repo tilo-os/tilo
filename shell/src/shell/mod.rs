@@ -1224,7 +1224,6 @@ pub fn build_nirios_overlay_host_with_handle(
     );
 
     let mut content_col = Column::new()
-        .with_extra_left_padding(sidebar_wheel_chrome::SIDEBAR_WIDTH_PX)
         // Fill the remaining viewport height AFTER the topbar (its
         // sibling in `foreground_col` takes 40 px). Without this the
         // column's `percent(1.0)` height plus the topbar's 40 px
@@ -1232,10 +1231,23 @@ pub fn build_nirios_overlay_host_with_handle(
         // bottom padding ended up below the screen edge — apps were
         // painted right up to the absolute bottom.
         .with_fill_remaining_height()
-        // A little extra breathing room on top of the column's default
-        // 24 px gutter so the active tile card has a deliberate margin
-        // (32 px = spacing.s8 token, used for major-section gutters).
-        .with_extra_bottom_padding(8.0)
+        // 2026-06-24 user spec: "window/tab groups need to be higher
+        // with less border to top and bottom by default (only a few
+        // px on my screen)". 8 px is the minimum that keeps the
+        // active-tile bottom from clipping past the windowed DE's
+        // bottom edge — the tile-host's bloom shadow paints up to
+        // 120 px past `self.rect.y1` (see `TileHost::draw_steady_
+        // state`) and at 4 px the shadow / tile-rounding combination
+        // visibly bled past the window edge on small viewports.
+        .with_vertical_padding(8.0)
+        // No horizontal padding: the strip's `GroupRow::leading_inset`
+        // reserves canvas-x [0, SIDEBAR_WIDTH] for the wheel disc, and
+        // the wheel/strip pan as one unit — leaving a wallpaper gutter
+        // on the left would split that canvas in two. The previous
+        // `extra_left_padding(SIDEBAR_WIDTH_PX)` lived here back when
+        // the wheel was a fixed overlay sitting outside the strip;
+        // 2026-06-24 redesign collapses that into a single canvas.
+        .with_horizontal_padding(0.0, 0.0)
         .push(workspace_view)
         .push(strip_view);
 
@@ -1293,7 +1305,18 @@ pub fn build_nirios_overlay_host_with_handle(
                         .with_maximized(g.maximized)
                 })
                 .collect();
-            let mut strip_row: Box<GroupRow> = Box::new(GroupRow::new(groups));
+            let mut strip_row: Box<GroupRow> = Box::new(
+                GroupRow::new(groups)
+                    // Reserve canvas-x [0, SIDEBAR_WIDTH] for the
+                    // wheel disc. The wheel itself lives in the
+                    // overlay layer; this just tells the strip's
+                    // apply_layout to leave that band empty when
+                    // positioning the first group, so wheel and
+                    // strip share the same canvas and pan together.
+                    .with_leading_inset(
+                        sidebar_wheel_chrome::SIDEBAR_WIDTH_PX as f64,
+                    ),
+            );
             // Capture the heap address before unsizing into `Box<dyn Widget>`.
             // The unsizing coercion preserves the pointee's address, so this
             // remains a valid `*mut GroupRow` for the lifetime of the host.
