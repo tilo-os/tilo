@@ -7,12 +7,14 @@
 
 pub mod document;
 pub mod format;
+pub mod model;
 pub mod order;
 pub mod schema;
 pub mod snapshot;
 
 pub use document::{DocError, Document, MarkSpan};
 pub use format::{CodecError, Confidence, FormatProvider, ProviderTier, Registry};
+pub use model::{Containers, DocMut, DocRef, IdGen};
 pub use snapshot::{BlockView, DocSnapshot};
 
 #[cfg(test)]
