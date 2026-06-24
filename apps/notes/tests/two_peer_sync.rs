@@ -13,6 +13,8 @@ use automerge::{AutoCommit, ReadDoc, ROOT};
 use notes::doc::NotesDoc;
 use notes::NotesApp;
 use ui::Widget;
+use ui::collaboration::PresencePayload;
+use ui::presence::PresenceKey;
 
 /// A fresh notes app rooted at a temp dir, with the seed grace window
 /// collapsed so the first `sync` seeds immediately.
@@ -57,6 +59,22 @@ fn second_peer_adopts_without_duplicating_welcome() {
         a_count,
         "B adopts A's page tree instead of duplicating the welcome page"
     );
+}
+
+#[test]
+fn presence_payload_reports_current_page_as_tab() {
+    // The location-presence the App broadcasts (and peers render as
+    // indicative mist) is the Tab key for the page this instance views.
+    let (mut app, _d) = spawn_app();
+    let mut doc = AutoCommit::new();
+    app.sync(&mut doc, &ROOT);
+    let sel = app.selected_for_test().expect("a page is selected");
+    match app.presence_payload() {
+        Some((PresenceKey::Tab { id }, PresencePayload::Arrived)) => {
+            assert_eq!(id, sel.to_string());
+        }
+        other => panic!("expected Tab location presence, got {other:?}"),
+    }
 }
 
 #[test]
