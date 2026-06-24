@@ -55,6 +55,22 @@ impl PresenceCtx {
         }
     }
 
+    /// Draw an authorship "marker" highlight — a translucent underlay in
+    /// the author's color behind the runs they wrote, like a highlighter
+    /// pen. Lower alpha than a selection so the text stays readable.
+    pub fn draw_peer_authorship(
+        &self,
+        scene: &mut Scene,
+        theme: &Theme,
+        user: &UserId,
+        rects: &[Rect],
+    ) {
+        let color = color_for(self, user, theme).with_alpha_factor(0.20);
+        for r in rects {
+            scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, r);
+        }
+    }
+
     /// Draw a peer's mouse pointer as a round, color-coded cursor: a
     /// soft translucent halo, a filled dot in the peer's color, and a
     /// thin white ring for contrast against any background. `transform`

@@ -21,7 +21,7 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
+use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -89,6 +89,11 @@ pub struct RichTextLine {
     /// Previous cursor position before the most-recent edit. Used
     /// alongside `prev_text` to figure out where the splice landed.
     prev_cursor: usize,
+    /// Cached authorship runs `(byte_start, byte_end, author_id)` read
+    /// from the bound Text's Automerge marks during `sync`. Drives the
+    /// authorship highlight in `BlockEditor::draw`; empty when unbound or
+    /// unmarked.
+    author_runs: Vec<(usize, usize, String)>,
 }
 
 impl RichTextLine {
@@ -110,6 +115,7 @@ impl RichTextLine {
             pending_marks: Vec::new(),
             prev_text: String::new(),
             prev_cursor: 0,
+            author_runs: Vec::new(),
         }
     }
 
@@ -148,6 +154,18 @@ impl RichTextLine {
     /// The Automerge `Text` this line is bound to, if any.
     pub fn bound_obj(&self) -> Option<ObjId> {
         self.inner.bound_obj().cloned()
+    }
+
+    /// Set the local user's id for authorship stamping on edits.
+    pub fn set_local_author(&mut self, author: Option<String>) {
+        self.inner.set_local_author(author);
+    }
+
+    /// Authorship runs `(byte_start, byte_end, author_id)` cached from
+    /// the bound Text's Automerge marks during the last `sync`. Used by
+    /// `BlockEditor::draw` to paint the authorship highlight.
+    pub fn author_runs(&self) -> &[(usize, usize, String)] {
+        &self.author_runs
     }
 
     /// Replace the text programmatically. Does NOT mark the line as
@@ -360,6 +378,29 @@ impl Widget for RichTextLine {
         self.inner.sync(state, path);
         self.prev_text = self.inner.value().to_string();
         self.prev_cursor = self.inner.cursor_pos();
+
+        // Refresh the cached authorship runs from the bound Text's marks.
+        // Marks are char-indexed; convert to byte ranges so the draw pass
+        // can place them with `pixel_x_for_byte`.
+        self.author_runs.clear();
+        if let Some(obj) = self.inner.bound_obj().cloned() {
+            let text = self.inner.value().to_string();
+            if let Ok(marks) = state.marks(&obj) {
+                for m in marks {
+                    if m.name.as_str() != crate::widget::text_input::AUTHOR_MARK {
+                        continue;
+                    }
+                    let ScalarValue::Str(author) = &m.value else {
+                        continue;
+                    };
+                    let bs = char_to_byte(&text, m.start);
+                    let be = char_to_byte(&text, m.end);
+                    if be > bs {
+                        self.author_runs.push((bs, be, author.to_string()));
+                    }
+                }
+            }
+        }
     }
 
     fn build_layout(
@@ -725,6 +766,16 @@ impl Widget for RichTextLine {
 /// simple LCP / LCS-prefix algorithm is fine for the single-line
 /// edits this widget sees (a TextInput splices at the caret, so the
 /// diff is always a single insertion or deletion).
+/// Convert a char index into a byte index within `text`, clamping to the
+/// end. Used to map Automerge marks (char-indexed) to the byte offsets
+/// the layout/`pixel_x_for_byte` path uses.
+fn char_to_byte(text: &str, char_idx: usize) -> usize {
+    text.char_indices()
+        .nth(char_idx)
+        .map(|(b, _)| b)
+        .unwrap_or(text.len())
+}
+
 pub(crate) fn diff_splice(old: &str, new: &str) -> (usize, usize, usize) {
     let oa = old.as_bytes();
     let na = new.as_bytes();
@@ -914,6 +965,61 @@ mod tests {
 
         assert_eq!(line.value(), "hi");
         assert_eq!(doc.text(&tid).unwrap(), "hi", "edits must splice into the bound Text");
+    }
+
+    #[test]
+    fn authored_edit_stamps_mark_caches_run_and_survives_round_trip() {
+        use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
+        let mut doc = automerge::AutoCommit::new();
+        let tid = doc.put_object(&ROOT, "t", ObjType::Text).unwrap();
+
+        let mut line = RichTextLine::new();
+        line.bind_text(tid.clone());
+        line.set_local_author(Some("alice".to_string()));
+        line.set_focus(true);
+
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        for c in ["h", "i"] {
+            let ev = char_press(c);
+            let mut handled = false;
+            let mut focus_target = None;
+            line.handle_event(
+                &ev,
+                1.0,
+                &Modifiers::default(),
+                &mut doc,
+                &ROOT,
+                &mut handled,
+                &mut focus_target,
+                NodeId::new(0),
+                &taffy,
+            );
+        }
+        assert_eq!(doc.text(&tid).unwrap(), "hi");
+
+        // An author mark covers the inserted run.
+        let marks = doc.marks(&tid).unwrap();
+        assert!(
+            marks.iter().any(|m| m.name.as_str() == "author"),
+            "expected an author mark, got {marks:?}"
+        );
+
+        // sync caches it as a byte-range run attributed to alice.
+        line.sync(&mut doc, &ROOT);
+        assert!(
+            line.author_runs().iter().any(|(_, _, a)| a == "alice"),
+            "expected an alice author run, got {:?}",
+            line.author_runs()
+        );
+
+        // The mark rides the CRDT: it survives a save/load round-trip,
+        // which is how authorship reaches a peer.
+        let reloaded = automerge::AutoCommit::load(&doc.save()).unwrap();
+        let marks2 = reloaded.marks(&tid).unwrap();
+        assert!(
+            marks2.iter().any(|m| m.name.as_str() == "author"),
+            "author mark must survive save/load (CRDT sync)"
+        );
     }
 
     #[test]
