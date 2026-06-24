@@ -1,10 +1,10 @@
-//! `Document`: a handle over an automerge `AutoCommit` holding the canonical
-//! rich-text model.
+//! `Document`: an owned handle over an automerge `AutoCommit` holding the
+//! canonical rich-text model. Thin wrapper that delegates to [`crate::model`];
+//! the borrowed [`crate::model::DocMut`] view drives the same operations over a
+//! host's doc (e.g. `ui::State.doc`).
 
-use crate::schema::*;
-use automerge::marks::{ExpandMark, Mark};
-use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, ROOT};
+use crate::model::{Containers, DocMut, DocRef, IdGen};
+use automerge::{AutoCommit, ObjId, ROOT};
 
 #[derive(thiserror::Error, Debug)]
 pub enum DocError {
@@ -26,36 +26,26 @@ pub struct MarkSpan {
 
 pub struct Document {
     pub(crate) doc: AutoCommit,
-    pub(crate) blocks: ObjId,
     #[allow(dead_code)]
-    pub(crate) styles: ObjId,
-    #[allow(dead_code)]
-    pub(crate) preserved: ObjId,
-    #[allow(dead_code)]
-    pub(crate) meta: ObjId,
-    next_local: u64,
+    pub(crate) root: ObjId,
+    pub(crate) c: Containers,
+    ids: IdGen,
 }
 
 impl Document {
     pub fn new() -> Self {
         let mut doc = AutoCommit::new();
-        doc.put(&ROOT, KEY_SCHEMA, SCHEMA_ID).unwrap();
-        doc.put(&ROOT, KEY_SCHEMA_VERSION, SCHEMA_VERSION).unwrap();
-        let blocks = doc.put_object(&ROOT, KEY_BLOCKS, ObjType::Map).unwrap();
-        let styles = doc.put_object(&ROOT, KEY_STYLES, ObjType::Map).unwrap();
-        let preserved = doc.put_object(&ROOT, KEY_PRESERVED, ObjType::Map).unwrap();
-        let meta = doc.put_object(&ROOT, KEY_META, ObjType::Map).unwrap();
+        let c = crate::model::init(&mut doc, &ROOT);
+        let ids = IdGen::new(doc.get_actor().to_hex_string());
         doc.commit();
-        Self { doc, blocks, styles, preserved, meta, next_local: 0 }
+        Self { doc, root: ROOT, c, ids }
     }
 
     pub fn load(bytes: &[u8]) -> Result<Self, DocError> {
         let doc = AutoCommit::load(bytes).map_err(|e| DocError::Load(e.to_string()))?;
-        let blocks = obj_at(&doc, KEY_BLOCKS)?;
-        let styles = obj_at(&doc, KEY_STYLES)?;
-        let preserved = obj_at(&doc, KEY_PRESERVED)?;
-        let meta = obj_at(&doc, KEY_META)?;
-        Ok(Self { doc, blocks, styles, preserved, meta, next_local: 0 })
+        let c = crate::model::open(&doc, &ROOT)?;
+        let ids = IdGen::new(doc.get_actor().to_hex_string());
+        Ok(Self { doc, root: ROOT, c, ids })
     }
 
     pub fn save(&mut self) -> Vec<u8> {
@@ -66,230 +56,66 @@ impl Document {
         self.doc.get_actor().to_hex_string()
     }
 
-    /// Mint a globally-unique block id: `{actor_hex}.{counter}`.
-    pub(crate) fn mint_id(&mut self) -> String {
-        let id = format!("{}.{}", self.actor_hex(), self.next_local);
-        self.next_local += 1;
-        id
+    /// Borrowed mutable view (for codecs / shared editing paths).
+    pub fn as_mut(&mut self) -> DocMut<'_> {
+        DocMut { doc: &mut self.doc, c: &self.c, ids: &mut self.ids }
     }
 
-    // ---- blocks ------------------------------------------------------------
-
-    pub fn blocks_in_order(&self) -> Vec<String> {
-        let mut v: Vec<(Vec<u8>, String)> = self
-            .doc
-            .keys(&self.blocks)
-            .filter_map(|id| self.block_order(&id).map(|ord| (ord, id)))
-            .collect();
-        v.sort_by(|a, b| crate::order::cmp_keys(&a.0, &b.0).then(a.1.cmp(&b.1)));
-        v.into_iter().map(|(_, id)| id).collect()
+    /// Borrowed read-only view (for codec export).
+    pub fn as_ref(&self) -> DocRef<'_> {
+        DocRef { doc: &self.doc, c: &self.c }
     }
 
-    fn block_obj(&self, id: &str) -> Option<ObjId> {
-        match self.doc.get(&self.blocks, id) {
-            Ok(Some((Value::Object(ObjType::Map), oid))) => Some(oid),
-            _ => None,
-        }
-    }
-
-    fn block_order(&self, id: &str) -> Option<Vec<u8>> {
-        let obj = self.block_obj(id)?;
-        match self.doc.get(&obj, BLOCK_ORDER) {
-            Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                ScalarValue::Bytes(b) => Some(b.clone()),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    pub fn block_kind(&self, id: &str) -> Option<String> {
-        let obj = self.block_obj(id)?;
-        match self.doc.get(&obj, BLOCK_KIND) {
-            Ok(Some((v, _))) => v.to_str().map(|s| s.to_string()),
-            _ => None,
-        }
-    }
-
-    /// Key sorting immediately after `after` (or at the very front if None),
-    /// and before whatever currently follows it.
-    fn order_after(&self, after: Option<&str>) -> Vec<u8> {
-        let ordered = self.blocks_in_order();
-        let pos = match after {
-            None => 0,
-            Some(id) => ordered
-                .iter()
-                .position(|x| x == id)
-                .map(|i| i + 1)
-                .unwrap_or(ordered.len()),
-        };
-        let lo = if pos == 0 { None } else { self.block_order(&ordered[pos - 1]) };
-        let hi = if pos >= ordered.len() { None } else { self.block_order(&ordered[pos]) };
-        crate::order::key_between(lo.as_deref(), hi.as_deref())
-    }
+    // ---- delegating convenience API ---------------------------------------
 
     pub fn insert_block(&mut self, after: Option<&str>, kind: &str) -> String {
-        let key = self.order_after(after);
-        let id = self.mint_id();
-        let obj = self.doc.put_object(&self.blocks, id.as_str(), ObjType::Map).unwrap();
-        self.doc.put(&obj, BLOCK_ORDER, ScalarValue::Bytes(key)).unwrap();
-        self.doc.put(&obj, BLOCK_KIND, kind).unwrap();
-        self.doc.put_object(&obj, BLOCK_ATTRS, ObjType::Map).unwrap();
-        self.doc.commit();
-        id
+        self.as_mut().insert_block(after, kind)
     }
 
     pub fn remove_block(&mut self, id: &str) {
-        let _ = self.doc.delete(&self.blocks, id);
-        self.doc.commit();
+        self.as_mut().remove_block(id)
     }
 
     pub fn move_block(&mut self, id: &str, after: Option<&str>) {
-        let key = self.order_after(after);
-        if let Some(obj) = self.block_obj(id) {
-            self.doc.put(&obj, BLOCK_ORDER, ScalarValue::Bytes(key)).unwrap();
-            self.doc.commit();
-        }
-    }
-
-    // ---- text --------------------------------------------------------------
-
-    /// Resolve the block's `Text` object, creating it on first edit.
-    fn text_obj(&mut self, block_id: &str) -> Option<ObjId> {
-        let obj = self.block_obj(block_id)?;
-        // Scope the read borrow so the mutable `put_object` below is allowed.
-        let existing = match self.doc.get(&obj, BLOCK_TEXT) {
-            Ok(Some((Value::Object(ObjType::Text), tid))) => Some(tid),
-            _ => None,
-        };
-        if let Some(tid) = existing {
-            return Some(tid);
-        }
-        self.doc.put_object(&obj, BLOCK_TEXT, ObjType::Text).ok()
+        self.as_mut().move_block(id, after)
     }
 
     pub fn splice_text(&mut self, block_id: &str, char_idx: usize, del: isize, ins: &str) {
-        if let Some(tid) = self.text_obj(block_id) {
-            let _ = self.doc.splice_text(&tid, char_idx, del, ins);
-            self.doc.commit();
-        }
+        self.as_mut().splice_text(block_id, char_idx, del, ins)
+    }
+
+    pub fn add_mark(&mut self, block_id: &str, start: usize, end: usize, name: &str, value: bool) {
+        self.as_mut().add_mark(block_id, start, end, name, value)
+    }
+
+    pub fn blocks_in_order(&self) -> Vec<String> {
+        crate::model::blocks_in_order(&self.doc, &self.c)
+    }
+
+    pub fn block_kind(&self, id: &str) -> Option<String> {
+        crate::model::block_kind(&self.doc, &self.c, id)
     }
 
     pub fn block_text(&self, block_id: &str) -> Option<String> {
-        let obj = self.block_obj(block_id)?;
-        match self.doc.get(&obj, BLOCK_TEXT) {
-            Ok(Some((Value::Object(ObjType::Text), tid))) => self.doc.text(&tid).ok(),
-            _ => None,
-        }
-    }
-
-    // ---- marks -------------------------------------------------------------
-
-    pub fn add_mark(&mut self, block_id: &str, start: usize, end: usize, name: &str, value: bool) {
-        if let Some(tid) = self.text_obj(block_id) {
-            let mark = Mark::new(name.to_string(), value, start, end);
-            let _ = self.doc.mark(&tid, mark, ExpandMark::After);
-            self.doc.commit();
-        }
+        crate::model::block_text(&self.doc, &self.c, block_id)
     }
 
     pub fn marks(&self, block_id: &str) -> Vec<MarkSpan> {
-        let Some(obj) = self.block_obj(block_id) else {
-            return vec![];
-        };
-        let tid = match self.doc.get(&obj, BLOCK_TEXT) {
-            Ok(Some((Value::Object(ObjType::Text), tid))) => tid,
-            _ => return vec![],
-        };
-        self.doc
-            .marks(&tid)
-            .map(|ms| {
-                ms.into_iter()
-                    .map(|m| MarkSpan { start: m.start, end: m.end, name: m.name().to_string() })
-                    .collect()
-            })
-            .unwrap_or_default()
+        crate::model::marks(&self.doc, &self.c, block_id)
     }
-
-    // ---- materialize -------------------------------------------------------
 
     pub fn materialize(&self) -> crate::snapshot::DocSnapshot {
-        let blocks = self
-            .blocks_in_order()
-            .into_iter()
-            .map(|id| self.materialize_block(&id, &self.blocks))
-            .collect();
-        crate::snapshot::DocSnapshot {
-            schema: SCHEMA_ID.to_string(),
-            schema_version: SCHEMA_VERSION,
-            blocks,
-        }
+        crate::model::materialize(&self.doc, &self.c)
     }
-
-    fn materialize_block(&self, id: &str, parent: &ObjId) -> crate::snapshot::BlockView {
-        let obj = match self.doc.get(parent, id) {
-            Ok(Some((Value::Object(ObjType::Map), oid))) => oid,
-            _ => {
-                return crate::snapshot::BlockView {
-                    id: id.into(),
-                    kind: String::new(),
-                    text: String::new(),
-                    marks: vec![],
-                    children: vec![],
-                }
-            }
-        };
-        let kind = match self.doc.get(&obj, BLOCK_KIND) {
-            Ok(Some((v, _))) => v.to_str().unwrap_or("").to_string(),
-            _ => String::new(),
-        };
-        let text = match self.doc.get(&obj, BLOCK_TEXT) {
-            Ok(Some((Value::Object(ObjType::Text), tid))) => self.doc.text(&tid).unwrap_or_default(),
-            _ => String::new(),
-        };
-        let marks = self.marks(id);
-        let children = match self.doc.get(&obj, BLOCK_CHILDREN) {
-            Ok(Some((Value::Object(ObjType::Map), cid))) => self
-                .children_in_order(&cid)
-                .into_iter()
-                .map(|c| self.materialize_block(&c, &cid))
-                .collect(),
-            _ => vec![],
-        };
-        crate::snapshot::BlockView { id: id.into(), kind, text, marks, children }
-    }
-
-    fn children_in_order(&self, container: &ObjId) -> Vec<String> {
-        let mut v: Vec<(Vec<u8>, String)> = self
-            .doc
-            .keys(container)
-            .filter_map(|id| {
-                let cobj = match self.doc.get(container, &id) {
-                    Ok(Some((Value::Object(ObjType::Map), o))) => o,
-                    _ => return None,
-                };
-                let ord = match self.doc.get(&cobj, BLOCK_ORDER) {
-                    Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                        ScalarValue::Bytes(b) => b.clone(),
-                        _ => return None,
-                    },
-                    _ => return None,
-                };
-                Some((ord, id))
-            })
-            .collect();
-        v.sort_by(|a, b| crate::order::cmp_keys(&a.0, &b.0).then(a.1.cmp(&b.1)));
-        v.into_iter().map(|(_, id)| id).collect()
-    }
-
-    // ---- replication -------------------------------------------------------
 
     /// Independent replica with a fresh actor id (distinct edit lineage).
     pub fn fork(&mut self) -> Document {
         let bytes = self.save();
-        let mut d = Document::load(&bytes).expect("fork load");
-        d.doc.set_actor(automerge::ActorId::random());
-        d
+        let mut doc = AutoCommit::load(&bytes).expect("fork load");
+        doc.set_actor(automerge::ActorId::random());
+        let c = crate::model::open(&doc, &ROOT).expect("fork open");
+        let ids = IdGen::new(doc.get_actor().to_hex_string());
+        Document { doc, root: ROOT, c, ids }
     }
 
     /// Merge another replica's changes into this one.
@@ -305,16 +131,11 @@ impl Default for Document {
     }
 }
 
-fn obj_at(doc: &AutoCommit, key: &str) -> Result<ObjId, DocError> {
-    match doc.get(&ROOT, key)? {
-        Some((Value::Object(ObjType::Map), id)) => Ok(id),
-        _ => Err(DocError::Invalid(format!("root.{key} is not a map"))),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schema::*;
+    use automerge::{ObjType, ReadDoc, Value};
 
     #[test]
     fn new_doc_has_root_layout() {
