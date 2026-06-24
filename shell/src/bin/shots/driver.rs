@@ -10,7 +10,7 @@
 //!   - "pre-run a scenario then go interactive" (window mode)
 
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
 use vello::Scene;
@@ -362,6 +362,14 @@ impl ShellDriver {
             }
             "notifications" => {
                 use shell::shell::notification::{Notification, NotificationSeverity};
+                // Backdate `created_at` past the slide-in window so the
+                // still-frame snapshot captures the toasts settled at
+                // their resting position. Without this, every toast's
+                // `enter` progress is ~0 at snapshot time and
+                // `slide_dx == TOAST_WIDTH` pushes them entirely off-
+                // screen-right — the audit on 2026-06-24 mistook this
+                // for a text-truncation bug in the notification widget.
+                let settled_at = Instant::now() - Duration::from_secs(1);
                 self.with_chrome(|st| {
                     // Three sample toasts spanning the severity ramp so
                     // the snapshot exercises info / warning / error
@@ -374,7 +382,8 @@ impl ShellDriver {
                             "Active tab: Notes",
                         )
                         .with_severity(NotificationSeverity::Info)
-                        .with_dismiss_after(Duration::from_secs(60)),
+                        .with_dismiss_after(Duration::from_secs(60))
+                        .with_created_at(settled_at),
                     );
                     st.push_notification_full(
                         Notification::new(
@@ -382,7 +391,8 @@ impl ShellDriver {
                             "Peer sync delayed; retrying",
                         )
                         .with_severity(NotificationSeverity::Warning)
-                        .with_dismiss_after(Duration::from_secs(60)),
+                        .with_dismiss_after(Duration::from_secs(60))
+                        .with_created_at(settled_at),
                     );
                     st.push_notification_full(
                         Notification::new(
@@ -390,7 +400,8 @@ impl ShellDriver {
                             "Files cannot access /etc/shadow",
                         )
                         .with_severity(NotificationSeverity::Error)
-                        .with_dismiss_after(Duration::from_secs(60)),
+                        .with_dismiss_after(Duration::from_secs(60))
+                        .with_created_at(settled_at),
                     );
                 });
             }
