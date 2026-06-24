@@ -300,7 +300,46 @@ pub fn run_with_full_options(opts: HostedOptions) {
         _portal_handle = None;
     }
 
-    let _peer_sync = peer_sync; // keep alive for lifetime of `app.run()`
+    let _peer_sync = peer_sync.clone(); // keep alive for lifetime of `app.run()`
+
+    // Local CRDT fan-out broker: when QUICK_COLLAB_SOCK is set, bind
+    // the path and detach a listener thread so every app launched
+    // with the same env var connects through us and shares CRDT
+    // updates live. Held for the lifetime of `app.run()` so the
+    // socket file survives the session and reader threads stay
+    // alive. See `shell::collab_broker` module docs for the protocol
+    // surface and the test-only relay in `ui/tests/real_socket_two_peer.rs`
+    // for the original spec.
+    //
+    // Phase 2: when peer-sync is also enabled, the broker bridges
+    // through `ShellNetwork` so two laptops on the same gossipsub
+    // topic share app-level CRDT increments via libp2p too.
+    let _collab_broker: Option<crate::shell::collab_broker::BrokerHandle> =
+        if let Some(path) = std::env::var_os("QUICK_COLLAB_SOCK") {
+            let socket_path = std::path::PathBuf::from(path);
+            match crate::shell::collab_broker::spawn_with_peer_sync(
+                socket_path.clone(),
+                peer_sync.clone(),
+            ) {
+                Ok(handle) => {
+                    tracing::info!(
+                        "collab_broker: bound {} for local CRDT fan-out (peer_sync={})",
+                        socket_path.display(),
+                        peer_sync.is_some()
+                    );
+                    Some(handle)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "collab_broker: bind {} failed ({e}); apps will run without collab",
+                        socket_path.display()
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
     // Hosted-mode test-control socket: when QOS_TEST_CONTROL is set,
     // bind it the same way the headless backend does and run the App
