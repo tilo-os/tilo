@@ -260,6 +260,13 @@ impl TextInput {
         self.crdt_bound = true;
     }
 
+    /// The Automerge `Text` this input is bound to, if any. Used by
+    /// `BlockEditor` to match local blocks to doc list elements by
+    /// object identity when reconciling structure.
+    pub fn bound_obj(&self) -> Option<&ObjId> {
+        self.bound_text.as_ref()
+    }
+
     /// Resolve the Automerge `Text` this input edits, if any. A directly
     /// bound `ObjId` (via [`bind_text`]) wins over the string-path mode.
     fn resolve_text_obj(&self, state: &AutoCommit, root: &ObjId) -> Option<ObjId> {
