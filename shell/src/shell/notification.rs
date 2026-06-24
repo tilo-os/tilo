@@ -136,6 +136,16 @@ impl Notification {
         self
     }
 
+    /// Backdate `created_at`. Used by snapshot scenarios so the
+    /// toast skips its slide-in animation and renders settled in a
+    /// still frame — without this, `shots --scenes notifications`
+    /// captures the very-first frame of the enter animation, with
+    /// every toast still ~`TOAST_WIDTH` off-screen-right.
+    pub fn with_created_at(mut self, t: Instant) -> Self {
+        self.created_at = t;
+        self
+    }
+
     /// `true` once `created_at + dismiss_after <= now`.
     pub fn is_expired_at(&self, now: Instant) -> bool {
         now.saturating_duration_since(self.created_at) >= self.dismiss_after
