@@ -242,6 +242,9 @@ pub struct BlockEditor {
     /// preserving existing block `Text` objects by identity. Distinct
     /// from `structure_dirty`, which drives taffy rebuilds on the host.
     doc_structure_dirty: bool,
+    /// The local user's id, threaded into the focused block's line so its
+    /// edits stamp authorship marks. `None` = no authorship attribution.
+    local_author: Option<String>,
 }
 
 impl BlockEditor {
@@ -265,6 +268,7 @@ impl BlockEditor {
             link_open_at: None,
             blocks_list: None,
             doc_structure_dirty: false,
+            local_author: None,
         };
         s.blocks.push(Block::paragraph(""));
         s
@@ -298,6 +302,7 @@ impl BlockEditor {
             link_open_at: None,
             blocks_list: None,
             doc_structure_dirty: false,
+            local_author: None,
         };
         let mut lines = md.split('\n').peekable();
         while let Some(line) = lines.next() {
@@ -527,6 +532,16 @@ impl BlockEditor {
         self.dirty = true;
     }
 
+    /// Set the local user's id for authorship attribution. Applied to
+    /// every block's line so edits stamp marks regardless of which block
+    /// is focused.
+    pub fn set_local_author(&mut self, author: Option<String>) {
+        self.local_author = author.clone();
+        for b in &mut self.blocks {
+            b.line.set_local_author(author.clone());
+        }
+    }
+
     /// Back this editor with an Automerge `List` of block Maps
     /// (`pages[id].blocks`). After binding, every edit syncs through the
     /// CRDT and remote edits appear via [`sync`].
@@ -618,6 +633,7 @@ impl BlockEditor {
         for i in 0..doc_len {
             let kind = kind_from_str(&read_block_kind(state, list, i));
             let mut b = block_for_kind(&kind);
+            b.line.set_local_author(self.local_author.clone());
             if let Some(t) = doc_text_obj(state, list, i) {
                 b.line.bind_text(t);
                 b.line.sync(state, list);
@@ -1414,6 +1430,7 @@ impl Widget for BlockEditor {
                     self.blocks[i].line.bind_text(t);
                 }
             }
+            self.blocks[i].line.set_local_author(self.local_author.clone());
             self.blocks[i].line.sync(state, &list);
         }
     }
@@ -1708,6 +1725,25 @@ impl Widget for BlockEditor {
                 let p1 = transform * Point::new(brect.x1, brect.y1);
                 Rect::new(p0.x, p0.y, p1.x, p1.y)
             };
+            // Authorship highlight (drawn first, under caret/selection):
+            // the runs each foreign author wrote, marker-style in their
+            // color. Skip runs the local user authored.
+            for (bs, be, author) in line.author_runs() {
+                if self.local_author.as_deref() == Some(author.as_str()) {
+                    continue;
+                }
+                let x0 = line.pixel_x_for_byte(theme, *bs);
+                let x1 = line.pixel_x_for_byte(theme, *be);
+                let p0 = transform * Point::new(x0, brect.y0);
+                let p1 = transform * Point::new(x1, brect.y1);
+                let user = crate::permissions::UserId(author.clone());
+                presence.draw_peer_authorship(
+                    scene,
+                    theme,
+                    &user,
+                    &[Rect::new(p0.x, p0.y, p1.x, p1.y)],
+                );
+            }
             if let Some(list) = presence.carets.get(&key) {
                 for (user, byte_pos) in list {
                     // Highlight the block this peer is editing.

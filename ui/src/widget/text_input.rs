@@ -217,7 +217,15 @@ pub struct TextInput {
     /// index that a flat string key can't address. `sync` reads from it
     /// and every edit splices into it.
     bound_text: Option<ObjId>,
+    /// The local user's id, stamped as an authorship mark on every
+    /// inserted run so peers can highlight "what they wrote" in this
+    /// user's color. `None` disables authorship stamping (examples,
+    /// tests, the pre-collab single-user case).
+    local_author: Option<String>,
 }
+
+/// Automerge mark name used to attribute each character's author.
+pub(crate) const AUTHOR_MARK: &str = "author";
 
 impl TextInput {
     /// Construct a text input bound to a presence `path` (used as the
@@ -247,7 +255,14 @@ impl TextInput {
             font_size_override: None,
             plain: false,
             bound_text: None,
+            local_author: None,
         }
+    }
+
+    /// Set the local user's id for authorship stamping. Every subsequent
+    /// edit attributes the inserted run to this id. `None` disables it.
+    pub fn set_local_author(&mut self, author: Option<String>) {
+        self.local_author = author;
     }
 
     /// Bind this input directly to an Automerge `Text` object. After
@@ -506,6 +521,9 @@ impl TextInput {
     /// In local mode (`obj_id` is `None`), only the local string is
     /// updated.
     fn insert_str(&mut self, s: &str, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
+        // Char index where the inserted text lands, captured so we can
+        // stamp an authorship mark over exactly the inserted run.
+        let insert_char_at;
         if let Some((start, end)) = self.selection_range() {
             let char_start = self.text[..start].chars().count();
             let char_count = self.text[start..end].chars().count();
@@ -515,6 +533,7 @@ impl TextInput {
             if let Some(obj_id) = obj_id {
                 let _ = state.splice_text(obj_id, char_start, char_count as isize, s);
             }
+            insert_char_at = char_start;
         } else {
             let char_idx = self.text[..self.cursor_pos].chars().count();
             self.text.insert_str(self.cursor_pos, s);
@@ -522,6 +541,23 @@ impl TextInput {
                 let _ = state.splice_text(obj_id, char_idx, 0, s);
             }
             self.cursor_pos += s.len();
+            insert_char_at = char_idx;
+        }
+        // Authorship: stamp the inserted run with the local user's id so
+        // peers can highlight "what they wrote" in the author's color.
+        // Latest-wins per position, so a peer typing into another's text
+        // splits the prior author's run correctly.
+        if let (Some(obj_id), Some(author)) = (obj_id, &self.local_author) {
+            let nchars = s.chars().count();
+            if nchars > 0 {
+                let mark = automerge::marks::Mark::new(
+                    AUTHOR_MARK.to_string(),
+                    author.clone(),
+                    insert_char_at,
+                    insert_char_at + nchars,
+                );
+                let _ = state.mark(obj_id, mark, automerge::marks::ExpandMark::None);
+            }
         }
         self.last_edit_time = Some(Instant::now());
         self.dirty = true;
