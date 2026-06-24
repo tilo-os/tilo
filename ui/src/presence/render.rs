@@ -1,4 +1,4 @@
-use vello::{Scene, kurbo::{Rect, Affine, Stroke}, peniko::{Color, Fill}};
+use vello::{Scene, kurbo::{Circle, Point, Rect, Affine, Stroke}, peniko::{Color, Fill}};
 use crate::color_compat::ColorCompat;
 use crate::theme::Theme;
 use crate::permissions::UserId;
@@ -55,19 +55,64 @@ impl PresenceCtx {
         }
     }
 
-    /// Draw a small 8-px circle for the peer's pointer.
+    /// Draw a peer's mouse pointer as a round, color-coded cursor: a
+    /// soft translucent halo, a filled dot in the peer's color, and a
+    /// thin white ring for contrast against any background. `transform`
+    /// is the scene transform (HiDPI scale etc.); `pos` is the pointer
+    /// position in logical coordinates.
     pub fn draw_peer_pointer(
         &self,
         scene: &mut Scene,
         theme: &Theme,
+        transform: Affine,
         user: &UserId,
         pos: (f32, f32),
     ) {
         let color = color_for(self, user, theme);
-        let x = pos.0 as f64;
-        let y = pos.1 as f64;
-        let rect = Rect::new(x - 4.0, y - 4.0, x + 4.0, y + 4.0);
-        scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, &rect);
+        let t = transform * Affine::translate((pos.0 as f64, pos.1 as f64));
+        // Soft halo so the pointer reads over busy content.
+        let halo = Circle::new(Point::ORIGIN, 9.0);
+        scene.fill(Fill::NonZero, t, color.with_alpha_factor(0.22), None, &halo);
+        // Solid dot in the peer's color.
+        let dot = Circle::new(Point::ORIGIN, 5.0);
+        scene.fill(Fill::NonZero, t, color, None, &dot);
+        // White ring for contrast.
+        scene.stroke(&Stroke::new(1.5), t, Color::WHITE, None, &dot);
+    }
+
+    /// Draw a soft "indicative mist" over `rect` in the peer's color —
+    /// a wayfinding cue painted on the navigational element that leads to
+    /// where a peer currently is (e.g. a sidebar row for the page they're
+    /// editing). Layered translucent fills approximate a radial glow
+    /// without a gradient: a faint wash over the whole element plus a
+    /// brighter core.
+    pub fn draw_peer_mist(
+        &self,
+        scene: &mut Scene,
+        theme: &Theme,
+        user: &UserId,
+        rect: Rect,
+    ) {
+        let color = color_for(self, user, theme);
+        // Faint full-element wash.
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            color.with_alpha_factor(0.16),
+            None,
+            &rect,
+        );
+        // Brighter core inset from the edges so it reads as a glow
+        // rather than a flat highlight.
+        let pad = (rect.height() * 0.2).min(rect.width() * 0.45);
+        let core = rect.inflate(-pad, -pad);
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            color.with_alpha_factor(0.22),
+            None,
+            &core,
+        );
     }
 
     /// Draw a 2-px focus outline around `rect` in `user`'s assigned color.
@@ -84,5 +129,58 @@ impl PresenceCtx {
         // Inflate inward by 1px so the 2px stroke sits inside `rect`.
         let outline = rect.inflate(-1.0, -1.0);
         scene.stroke(&Stroke::new(2.0), Affine::IDENTITY, color, None, &outline);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::offscreen::OffscreenRenderer;
+    use crate::permissions::UserId;
+
+    /// The round remote pointer paints the peer's color at its center.
+    /// "alice" maps to the pinned pink (0xec, 0x48, 0x99), so the dot
+    /// center should read red-high / green-low / blue-mid.
+    #[test]
+    fn peer_pointer_paints_peer_color_at_center() {
+        let ctx = PresenceCtx::empty();
+        let theme = Theme::default();
+        let mut scene = Scene::new();
+        let user = UserId("alice".to_string());
+        ctx.draw_peer_pointer(&mut scene, &theme, Affine::IDENTITY, &user, (40.0, 40.0));
+
+        let mut r = OffscreenRenderer::new(80, 80);
+        let rgba = r.render(&scene, Color::BLACK);
+        let (red, green, blue, _a) = OffscreenRenderer::sample(&rgba, 80, 40, 40);
+        assert!(
+            red > 150 && green < 150 && blue > 70,
+            "expected alice's pink pointer at center, got ({red},{green},{blue})"
+        );
+    }
+
+    /// Indicative mist tints a navigational element in the peer's color.
+    /// "bob" maps to orange (0xf9, 0x73, 0x16): red-high, green-mid,
+    /// blue-low. The mist is translucent, so over a dark background the
+    /// channel ordering (R > G > B) still holds.
+    #[test]
+    fn peer_mist_tints_element_in_peer_color() {
+        let ctx = PresenceCtx::empty();
+        let theme = Theme::default();
+        let mut scene = Scene::new();
+        let user = UserId("bob".to_string());
+        ctx.draw_peer_mist(
+            &mut scene,
+            &theme,
+            &user,
+            Rect::new(10.0, 10.0, 70.0, 30.0),
+        );
+
+        let mut r = OffscreenRenderer::new(80, 80);
+        let rgba = r.render(&scene, Color::BLACK);
+        let (red, green, blue, _a) = OffscreenRenderer::sample(&rgba, 80, 40, 20);
+        assert!(
+            red > green && green >= blue && red > 20,
+            "expected bob's orange mist (R>G>=B), got ({red},{green},{blue})"
+        );
     }
 }
