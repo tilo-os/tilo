@@ -210,10 +210,20 @@ impl App {
     /// attributed to the right scope. Passing `None` disables outbound
     /// pointer broadcast.
     pub fn set_presence_broadcast_scope(&mut self, key: Option<PresenceKey>) {
-        self.presence_broadcast_scope = key;
+        self.presence_broadcast_scope = key.clone();
         // Reset the throttle so a new scope's first pointer move fires
         // immediately rather than waiting on the stale last-send gate.
         self.last_pointer_broadcast = None;
+        // Announce arrival under the new scope so peers already in the
+        // room reply with a full document snapshot — this is the
+        // app-side half of the late-join convergence handshake. A `None`
+        // scope (teardown / headless) announces nothing.
+        if let Some(k) = key {
+            self.broadcast_presence(
+                k,
+                crate::collaboration::PresencePayload::Arrived,
+            );
+        }
     }
 
     /// Returns the currently active presence-broadcast scope, if any.
@@ -317,8 +327,10 @@ impl App {
                 self.needs_sync = true;
             }
             CollabEvent::CRDTUpdate { data } => {
-                if let Ok(new_state) = crate::state::State::load(&data) {
-                    self.state.doc = new_state.doc;
+                // MERGE (not replace) — see the production handler in
+                // `run`'s about_to_wait loop for the rationale.
+                if let Ok(mut incoming) = crate::state::State::load(&data) {
+                    let _ = self.state.doc.merge(&mut incoming.doc);
                     self.needs_sync = true;
                 }
             }
@@ -377,6 +389,15 @@ impl App {
                     self.presence_ctx.set_tab_focus(&key, uid);
                 } else {
                     self.presence_ctx.register_presence(&key, uid);
+                    // A non-Tab (app/workspace-level) arrival is a peer
+                    // announcing themselves — possibly a late joiner with
+                    // an empty document. Reply with our full state so they
+                    // converge. The broker fans this to all peers; an
+                    // already-synced peer merges it idempotently. (Page
+                    // switches use Tab keys and never trigger this.)
+                    let data = self.state.save();
+                    self.collab_manager
+                        .send(crate::collaboration::CollabRequest::SyncCRDT { data });
                 }
             }
             Left => self.presence_ctx.remove_presence(&key, &uid),
@@ -1314,8 +1335,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     app.presence_ctx.upsert_remote_cursor(user_id, [x, y], None);
                 }
                 CollabEvent::CRDTUpdate { data } => {
-                    if let Ok(new_state) = State::load(&data) {
-                        app.state.doc = new_state.doc;
+                    // MERGE incoming full state into our doc rather than
+                    // replacing it — a replace would clobber our own
+                    // concurrent edits. Merge is the correct CRDT join and
+                    // is what makes bidirectional editing converge.
+                    if let Ok(mut incoming) = State::load(&data) {
+                        let _ = app.state.doc.merge(&mut incoming.doc);
                         app.needs_sync = true;
                         window.request_redraw();
                     }
@@ -1465,6 +1490,78 @@ mod pointer_broadcast_tests {
         let root = Box::new(crate::widget::Text::new("t"));
         let app = App::new(state, root);
         assert!(app.presence_broadcast_scope().is_none());
+    }
+
+    #[test]
+    fn setting_scope_announces_arrival() {
+        // The app-side half of the late-join handshake: setting a
+        // presence scope must announce `Arrived` so peers already in the
+        // room reply with full state.
+        use std::sync::{Arc, Mutex};
+        let state = State::new();
+        let root = Box::new(crate::widget::Text::new("t"));
+        let mut app = App::new(state, root);
+        let captured: Arc<Mutex<Vec<(PresenceKey, PresencePayload)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let sink_captured = Arc::clone(&captured);
+        app.set_presence_broadcast_sink(move |k, p| {
+            sink_captured.lock().unwrap().push((k.clone(), p.clone()));
+        });
+        let key = PresenceKey::Workspace { id: "home".into() };
+        app.set_presence_broadcast_scope(Some(key.clone()));
+        let observed = captured.lock().unwrap();
+        assert!(
+            observed
+                .iter()
+                .any(|(k, p)| *k == key && matches!(p, PresencePayload::Arrived)),
+            "setting a scope must announce Arrival, got {observed:?}"
+        );
+    }
+
+    #[test]
+    fn crdt_update_merges_not_replaces() {
+        use automerge::transaction::Transactable;
+        use automerge::{ObjType, ReadDoc, ROOT};
+        // Shared base with a map "m" holding "x" — peers share this base
+        // via the late-join handshake, so merge is conflict-free.
+        let mut base = automerge::AutoCommit::new();
+        let m = base.put_object(&ROOT, "m", ObjType::Map).unwrap();
+        base.put(&m, "x", 1).unwrap();
+        let base_bytes = base.save();
+
+        // App from base; add a local edit m["a"].
+        let app_state = State::load(&base_bytes).unwrap();
+        let root = Box::new(crate::widget::Text::new("t"));
+        let mut app = App::new(app_state, root);
+        {
+            let doc = &mut app.state_mut_for_test().doc;
+            let m = match doc.get(&ROOT, "m") {
+                Ok(Some((automerge::Value::Object(ObjType::Map), id))) => id,
+                _ => panic!("m exists"),
+            };
+            doc.put(&m, "a", 10).unwrap();
+        }
+
+        // A remote peer (same base) adds m["b"] and sends full state.
+        let mut peer = automerge::AutoCommit::load(&base_bytes).unwrap();
+        let pm = match peer.get(&ROOT, "m") {
+            Ok(Some((automerge::Value::Object(ObjType::Map), id))) => id,
+            _ => panic!("m exists"),
+        };
+        peer.put(&pm, "b", 20).unwrap();
+        let incoming = peer.save();
+
+        app.apply_collab_event_for_test(CollabEvent::CRDTUpdate { data: incoming });
+
+        // Both edits must survive the merge (a replace would drop "a").
+        let doc = &mut app.state_mut_for_test().doc;
+        let m = match doc.get(&ROOT, "m") {
+            Ok(Some((automerge::Value::Object(ObjType::Map), id))) => id,
+            _ => panic!("m exists"),
+        };
+        assert!(doc.get(&m, "a").unwrap().is_some(), "local edit survives merge");
+        assert!(doc.get(&m, "b").unwrap().is_some(), "remote edit merged in");
+        assert!(doc.get(&m, "x").unwrap().is_some(), "base value present");
     }
 
     #[test]
