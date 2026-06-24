@@ -127,6 +127,10 @@ pub struct App {
     /// used to avoid re-sending unchanged presence every frame.
     last_focus_presence:
         Option<(PresenceKey, crate::collaboration::PresencePayload)>,
+    /// Last location presence (e.g. current tab/page) broadcast for the
+    /// root widget, diffed to avoid re-sending unchanged presence.
+    last_location_presence:
+        Option<(PresenceKey, crate::collaboration::PresencePayload)>,
     /// Optional out-of-band sink invoked alongside the Unix-socket
     /// `broadcast_presence` send. The shell registers a closure here
     /// when peer-sync is enabled so local cursor moves get fanned out
@@ -168,6 +172,7 @@ impl App {
             presence_broadcast_scope: None,
             last_pointer_broadcast: None,
             last_focus_presence: None,
+            last_location_presence: None,
             presence_broadcast_sink: None,
             frame_tick: None,
         }
@@ -285,6 +290,20 @@ impl App {
                 self.broadcast_presence(key, payload);
             }
             self.last_focus_presence = current;
+        }
+    }
+
+    /// Poll the ROOT widget for its location presence (e.g. which page /
+    /// tab it's viewing) and broadcast the diff, so peers can render
+    /// "indicative mist" on the navigational element leading here. Unlike
+    /// focus presence, this is polled on the root regardless of focus.
+    fn broadcast_location_presence(&mut self) {
+        let current = self.root_widget.presence_payload();
+        if current != self.last_location_presence {
+            if let Some((key, payload)) = current.clone() {
+                self.broadcast_presence(key, payload);
+            }
+            self.last_location_presence = current;
         }
     }
 
@@ -1286,9 +1305,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 }
 
                 // Broadcast the focused widget's caret/selection presence
-                // (diffed) so peers can render the remote caret. Cheap: a
-                // no-op when nothing changed or no collab socket is bound.
+                // and the root widget's location presence (diffed) so
+                // peers can render the remote caret + indicative mist.
+                // Cheap: no-ops when nothing changed or no socket is bound.
                 app.broadcast_focus_presence();
+                app.broadcast_location_presence();
 
                 if let Some(id) = focus_target {
                     app.set_focused_node(Some(id));
@@ -1428,6 +1449,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             app.needs_sync = true;
             window.request_redraw();
         }
+
+        // Re-broadcast location presence here too: the active page can
+        // change during `sync` (e.g. the initial auto-select), which the
+        // post-event broadcast above wouldn't catch. Diffed, so it only
+        // sends on an actual change.
+        app.broadcast_location_presence();
 
         // If a widget mutated its child composition between
         // frames (e.g. GroupRow split a tab into a new group

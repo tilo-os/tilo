@@ -1701,8 +1701,17 @@ impl Widget for BlockEditor {
             let key = block_presence_key(i);
             let line = &self.blocks[i].line;
             let brect = line.get_rect();
+            // The block's rect mapped into scaled scene space, reused for
+            // the per-peer focus outline ("highlighted UI element").
+            let tr_rect = {
+                let p0 = transform * Point::new(brect.x0, brect.y0);
+                let p1 = transform * Point::new(brect.x1, brect.y1);
+                Rect::new(p0.x, p0.y, p1.x, p1.y)
+            };
             if let Some(list) = presence.carets.get(&key) {
                 for (user, byte_pos) in list {
+                    // Highlight the block this peer is editing.
+                    presence.draw_peer_focus(scene, theme, user, tr_rect);
                     let x = line.pixel_x_for_byte(theme, *byte_pos);
                     let p = transform * Point::new(x, brect.y0);
                     presence.draw_peer_caret(
