@@ -174,6 +174,34 @@ impl MainPanel {
         self.dirty = true;
     }
 
+    /// Bind the panel's editor to a page's `blocks` List in the shared
+    /// Automerge document. `body` is the page's markdown, used only to
+    /// **seed** the doc when its block list is still empty (a brand-new
+    /// page); if the doc already has blocks (an existing or remote page)
+    /// the editor adopts them and `body` is ignored. After this, every
+    /// edit syncs through the CRDT and remote edits appear via `sync`.
+    pub fn bind_page(
+        &mut self,
+        state: &mut AutoCommit,
+        id: PageId,
+        title: String,
+        blocks_list: ObjId,
+        body: &str,
+    ) {
+        self.page_id = Some(id);
+        self.title = Some(title);
+        let specs = crate::markdown::parse(body);
+        let blocks = crate::markdown::specs_to_blocks(&specs);
+        self.editor = BlockEditor::new();
+        self.editor.set_blocks(blocks);
+        // Seeds the doc if empty, otherwise adopts the doc's blocks.
+        self.editor.bind_blocks(state, blocks_list);
+        self.editor.set_focus(true);
+        self.body = body.to_string();
+        self.scroll_y = 0.0;
+        self.dirty = true;
+    }
+
     /// Clear the panel back to the empty state.
     pub fn clear(&mut self) {
         self.page_id = None;
