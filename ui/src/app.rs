@@ -123,6 +123,10 @@ pub struct App {
     /// [`pointer_broadcast_allowed`] to throttle the wire rate to
     /// ~30 Hz regardless of how fast winit delivers `CursorMoved`.
     last_pointer_broadcast: Option<Instant>,
+    /// Last caret/selection presence broadcast for the focused widget,
+    /// used to avoid re-sending unchanged presence every frame.
+    last_focus_presence:
+        Option<(PresenceKey, crate::collaboration::PresencePayload)>,
     /// Optional out-of-band sink invoked alongside the Unix-socket
     /// `broadcast_presence` send. The shell registers a closure here
     /// when peer-sync is enabled so local cursor moves get fanned out
@@ -163,6 +167,7 @@ impl App {
             permission_ctx: PermissionContext::permissive(),
             presence_broadcast_scope: None,
             last_pointer_broadcast: None,
+            last_focus_presence: None,
             presence_broadcast_sink: None,
             frame_tick: None,
         }
@@ -263,6 +268,24 @@ impl App {
         }
         self.collab_manager
             .send(CollabRequest::Presence { key, payload });
+    }
+
+    /// Poll the focused widget for its caret/selection presence and
+    /// broadcast it when it changes since the last send, so peers see the
+    /// local caret/selection move in near-real-time. The focused widget
+    /// supplies both the key (which sub-element the caret is in) and the
+    /// payload via [`Widget::presence_payload`].
+    fn broadcast_focus_presence(&mut self) {
+        let current = self
+            .focused_node
+            .and_then(|id| self.node_map.get(&id).copied())
+            .and_then(|w| unsafe { (*w).presence_payload() });
+        if current != self.last_focus_presence {
+            if let Some((key, payload)) = current.clone() {
+                self.broadcast_presence(key, payload);
+            }
+            self.last_focus_presence = current;
+        }
     }
 
     /// Poll the collaboration manager and apply any pending events
@@ -1261,6 +1284,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         }
                     }
                 }
+
+                // Broadcast the focused widget's caret/selection presence
+                // (diffed) so peers can render the remote caret. Cheap: a
+                // no-op when nothing changed or no collab socket is bound.
+                app.broadcast_focus_presence();
 
                 if let Some(id) = focus_target {
                     app.set_focused_node(Some(id));
