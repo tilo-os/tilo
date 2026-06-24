@@ -24,7 +24,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_id = std::env::var("QUICK_APP_ID")
         .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
 
-    let app_widget = NotesApp::spawn_default()?;
+    let mut app_widget = NotesApp::spawn_default()?;
+    // Attribute this instance's edits to `app_id` so peers can highlight
+    // "what they wrote" in this user's color.
+    app_widget.set_local_author(Some(app_id.clone()));
     let mut state = ui::State::new();
     state
         .doc

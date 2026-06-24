@@ -402,6 +402,13 @@ impl NotesApp {
         self.bound_page = Some(sel);
     }
 
+    /// Set the local user's id for authorship attribution. The same id
+    /// the binary derives from `QUICK_APP_ID` and uses for presence, so
+    /// authored text and the peer's cursor share a color.
+    pub fn set_local_author(&mut self, author: Option<String>) {
+        self.main.set_local_author(author);
+    }
+
     /// Test hook: collapse the seed grace window so the next `sync`
     /// seeds immediately (tests can't wait 800 ms of wall-clock).
     #[doc(hidden)]
