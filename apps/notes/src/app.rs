@@ -28,6 +28,7 @@ use ui::theme::Theme;
 use ui::widget::link_popover::PageEntry;
 use ui::widget::page_palette::PageJumpPalette;
 
+use crate::doc::NotesDoc;
 use crate::main_panel::MainPanel;
 use crate::model::{PageId, Workspace};
 use crate::shortcuts_overlay::ShortcutsOverlay;
@@ -44,6 +45,12 @@ const SIDEBAR_WIDTH: f64 = 240.0;
 /// that the user's next "is this saved yet" sanity check doesn't have
 /// to wait.
 const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
+/// How long a freshly-started instance waits before seeding its own
+/// welcome page into the shared document. This gives an already-running
+/// peer's full-state reply (the late-join handshake) time to arrive, so
+/// a second instance adopts the first's workspace instead of creating a
+/// duplicate. A lone instance simply seeds after the window elapses.
+const SEED_GRACE: Duration = Duration::from_millis(800);
 
 pub struct NotesApp {
     workspace: Workspace,
@@ -77,6 +84,17 @@ pub struct NotesApp {
     /// link marks on mouse click without dragging the click event
     /// through every nested widget.
     last_mouse: Point,
+    /// Wall-clock start, used for the [`SEED_GRACE`] seed window.
+    started: std::time::Instant,
+    /// True once we've taken on shared document state — either by
+    /// adopting a peer's or by seeding our own. Gates the one-time
+    /// discard-local-welcome-on-adopt.
+    adopted: bool,
+    /// True once our page tree has been mirrored into the shared doc.
+    seeded: bool,
+    /// The page the MainPanel editor is currently bound to in the doc.
+    /// `sync` rebinds whenever this drifts from the selected page.
+    bound_page: Option<PageId>,
 }
 
 impl NotesApp {
@@ -142,6 +160,10 @@ impl NotesApp {
             page_saver: Some(page_saver),
             palette: PageJumpPalette::new(),
             last_mouse: Point::ZERO,
+            started: std::time::Instant::now(),
+            adopted: false,
+            seeded: false,
+            bound_page: None,
         };
         app.refresh_link_pages();
         app.refresh_status();
@@ -282,6 +304,122 @@ impl NotesApp {
         let root = storage::default_root()
             .unwrap_or_else(|| PathBuf::from("./notes"));
         Self::spawn(root)
+    }
+
+    /// Reconcile our in-memory page tree with the shared Automerge
+    /// document. Seeds the doc from our welcome page when we're the
+    /// origin, adopts a peer's tree when we join late, and keeps both in
+    /// step thereafter. Runs every frame from [`sync`].
+    fn sync_workspace_tree(&mut self, state: &mut AutoCommit) {
+        let doc_pages = NotesDoc::list_pages(state);
+        if !doc_pages.is_empty() {
+            if !self.adopted {
+                // First shared state we've seen — adopt it wholesale,
+                // discarding our locally-seeded welcome so we don't push
+                // a duplicate page tree.
+                self.workspace.data.pages = doc_pages;
+                if let Some(s) = self.workspace.selected() {
+                    if self.workspace.get(s).is_none() {
+                        self.workspace.set_selected(None);
+                    }
+                }
+                self.bound_page = None;
+                self.main.clear();
+                self.adopted = true;
+                self.seeded = true;
+                self.sidebar.sync_from_workspace(&self.workspace);
+            } else {
+                // Already sharing: pull any new remote pages and push our
+                // local ones (idempotent upsert propagates local
+                // creates / renames).
+                let local: std::collections::HashSet<PageId> =
+                    self.workspace.pages().iter().map(|p| p.id).collect();
+                let mut changed = false;
+                for dp in &doc_pages {
+                    if !local.contains(&dp.id) {
+                        self.workspace.data.pages.push(dp.clone());
+                        changed = true;
+                    }
+                }
+                for p in self.workspace.pages().to_vec() {
+                    NotesDoc::upsert_page_meta(state, &p);
+                }
+                if changed {
+                    self.sidebar.sync_from_workspace(&self.workspace);
+                }
+            }
+        } else if !self.seeded && self.started.elapsed() > SEED_GRACE {
+            // Doc still empty after the grace window — we're the origin.
+            for p in self.workspace.pages().to_vec() {
+                NotesDoc::upsert_page_meta(state, &p);
+            }
+            self.seeded = true;
+            self.adopted = true;
+        }
+    }
+
+    /// Ensure a page is selected and the MainPanel editor is bound to
+    /// that page's `blocks` List in the shared doc, so its text syncs.
+    fn ensure_editor_bound(&mut self, state: &mut AutoCommit) {
+        if self.workspace.selected().is_none() {
+            if let Some(first) =
+                self.workspace.children_of(None).first().map(|p| p.id)
+            {
+                self.workspace.set_selected(Some(first));
+            }
+        }
+        let Some(sel) = self.workspace.selected() else {
+            if self.bound_page.is_some() {
+                self.main.clear();
+                self.bound_page = None;
+            }
+            return;
+        };
+        if self.bound_page != Some(sel) {
+            self.bind_selected_page(state, sel);
+        }
+    }
+
+    /// Bind the editor to `sel`'s blocks in the doc (creating the page
+    /// in the doc if needed, seeding its blocks from the on-disk body).
+    fn bind_selected_page(&mut self, state: &mut AutoCommit, sel: PageId) {
+        if !NotesDoc::list_pages(state).iter().any(|p| p.id == sel) {
+            if let Some(meta) = self.workspace.get(sel).cloned() {
+                NotesDoc::upsert_page_meta(state, &meta);
+            }
+        }
+        let Some(list) = NotesDoc::page_blocks_list(state, sel) else {
+            return;
+        };
+        let title = self
+            .workspace
+            .get(sel)
+            .map(|m| m.title.clone())
+            .unwrap_or_default();
+        let body = storage::read_page_body(&self.root, sel).unwrap_or_default();
+        self.main.bind_page(state, sel, title, list, &body);
+        self.bound_page = Some(sel);
+    }
+
+    /// Test hook: collapse the seed grace window so the next `sync`
+    /// seeds immediately (tests can't wait 800 ms of wall-clock).
+    #[doc(hidden)]
+    pub fn bypass_seed_grace_for_test(&mut self) {
+        self.started = std::time::Instant::now()
+            .checked_sub(SEED_GRACE + Duration::from_secs(1))
+            .unwrap_or_else(std::time::Instant::now);
+    }
+
+    /// Test hook: the editor's block text joined by newlines.
+    #[doc(hidden)]
+    pub fn editor_text_for_test(&self) -> String {
+        self.main
+            .editor()
+            .blocks()
+            .iter()
+            .map(|b| b.text())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// Apply one [`OutEvent`] from the sidebar to the workspace + disk.
@@ -564,6 +702,11 @@ fn seed_welcome(root: &std::path::Path, workspace: &mut Workspace) {
 
 impl Widget for NotesApp {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        // Bridge the in-memory workspace to the shared CRDT document:
+        // seed/adopt the page tree, then bind the editor to the selected
+        // page so its text syncs between instances.
+        self.sync_workspace_tree(state);
+        self.ensure_editor_bound(state);
         self.sidebar.sync(state, path);
         self.main.sync(state, path);
     }
