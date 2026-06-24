@@ -42,7 +42,7 @@ pub enum CollabEvent {
     },
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum PresencePayload {
     Pointer { x: f32, y: f32 },
     Caret { pos: usize },

@@ -202,6 +202,13 @@ impl RichTextLine {
         self.inner.cursor_pos()
     }
 
+    /// Active selection as `(start, end)` byte offsets, or `None` when
+    /// there's no selection. Used to broadcast the local selection as
+    /// presence so peers can highlight it.
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        self.inner.selection_range_public()
+    }
+
     /// Move the caret to the given byte index. Clamped + char-boundary
     /// safe. Used by `BlockEditor` after a split to land the caret at
     /// position 0 of the new block, or after a merge to land it at

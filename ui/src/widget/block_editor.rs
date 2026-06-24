@@ -24,7 +24,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
-use crate::presence::PresenceCtx;
+use crate::presence::{PathSegment, PresenceCtx, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::link_popover::{LinkPopover, PageEntry};
@@ -1229,6 +1229,19 @@ pub(crate) const CHECKBOX_SIZE_PX: f64 = 16.0;
 // bullet:{indent} / checklist:{indent}:{0|1} / code:{lang} / divider.
 // ---------------------------------------------------------------------
 
+/// Presence key addressing block `index` within the editor, so a peer's
+/// caret/selection in that block can be looked up. Both peers derive the
+/// same key from the block's position in the shared `blocks` list, so the
+/// caret renders on the matching block on every peer.
+pub(crate) fn block_presence_key(index: usize) -> PresenceKey {
+    PresenceKey::Widget {
+        path: vec![
+            PathSegment::Field("notes_block".to_string()),
+            PathSegment::Index(index as u32),
+        ],
+    }
+}
+
 fn kind_to_str(kind: &BlockKind) -> String {
     match kind {
         BlockKind::Paragraph => "paragraph".to_string(),
@@ -1678,6 +1691,44 @@ impl Widget for BlockEditor {
                 }
             }
         }
+
+        // Remote presence: draw each peer's caret + selection on the
+        // block it's in, using real glyph metrics. This runs AFTER the
+        // block loop so every line's `char_x_positions` are fresh this
+        // frame (pixel_x_for_byte reads them). Positions are mapped
+        // through `transform` to match the scaled scene.
+        for i in 0..self.blocks.len() {
+            let key = block_presence_key(i);
+            let line = &self.blocks[i].line;
+            let brect = line.get_rect();
+            if let Some(list) = presence.carets.get(&key) {
+                for (user, byte_pos) in list {
+                    let x = line.pixel_x_for_byte(theme, *byte_pos);
+                    let p = transform * Point::new(x, brect.y0);
+                    presence.draw_peer_caret(
+                        scene,
+                        theme,
+                        user,
+                        (p.x as f32, p.y as f32),
+                    );
+                }
+            }
+            if let Some(list) = presence.selections.get(&key) {
+                for (user, range) in list {
+                    let x0 = line.pixel_x_for_byte(theme, range.start);
+                    let x1 = line.pixel_x_for_byte(theme, range.end);
+                    let p0 = transform * Point::new(x0, brect.y0);
+                    let p1 = transform * Point::new(x1, brect.y1);
+                    presence.draw_peer_selection(
+                        scene,
+                        theme,
+                        user,
+                        range,
+                        &[Rect::new(p0.x, p0.y, p1.x, p1.y)],
+                    );
+                }
+            }
+        }
     }
 
     fn handle_event(
@@ -1912,6 +1963,23 @@ impl Widget for BlockEditor {
         Some("block_editor")
     }
 
+    fn presence_payload(
+        &self,
+    ) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
+        use crate::collaboration::PresencePayload;
+        let idx = self.focused?;
+        let block = self.blocks.get(idx)?;
+        if !block.line.is_focused() {
+            return None;
+        }
+        let key = block_presence_key(idx);
+        // A selection takes priority over the bare caret.
+        if let Some((start, end)) = block.line.selection_range() {
+            return Some((key, PresencePayload::Selection { start, end }));
+        }
+        Some((key, PresencePayload::Caret { pos: block.line.cursor_pos() }))
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -2076,6 +2144,29 @@ mod tests {
         let t1 = doc_text_obj(&doc, &list, 1).unwrap();
         assert_eq!(doc.text(&t0).unwrap(), "abc");
         assert_eq!(doc.text(&t1).unwrap(), "def");
+    }
+
+    #[test]
+    fn presence_payload_reports_focused_block_caret() {
+        use crate::collaboration::PresencePayload;
+        let mut ed = BlockEditor::new();
+        ed.set_blocks(vec![Block::paragraph("hello world")]);
+        ed.focus_block(0, CursorPlacement::Byte(3));
+        match ed.presence_payload() {
+            Some((key, PresencePayload::Caret { pos })) => {
+                assert_eq!(key, block_presence_key(0));
+                assert_eq!(pos, 3);
+            }
+            other => panic!("expected caret payload at byte 3, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn presence_payload_none_when_unfocused() {
+        let mut ed = BlockEditor::new();
+        ed.set_blocks(vec![Block::paragraph("hi")]);
+        // set_blocks leaves the editor unfocused.
+        assert!(ed.presence_payload().is_none());
     }
 
     #[test]

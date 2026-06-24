@@ -158,6 +158,26 @@ mod tests {
         );
     }
 
+    /// The remote caret paints the peer's color as a thin vertical bar.
+    /// "charlie" maps to emerald (0x10, 0xb9, 0x81): green dominant.
+    #[test]
+    fn peer_caret_paints_peer_color() {
+        let ctx = PresenceCtx::empty();
+        let theme = Theme::default();
+        let mut scene = Scene::new();
+        let user = UserId("charlie".to_string());
+        ctx.draw_peer_caret(&mut scene, &theme, &user, (20.0, 10.0));
+
+        let mut r = OffscreenRenderer::new(80, 80);
+        let rgba = r.render(&scene, Color::BLACK);
+        // Sample inside the 2px-wide, 16px-tall caret bar at (20, 18).
+        let (red, green, blue, _a) = OffscreenRenderer::sample(&rgba, 80, 20, 18);
+        assert!(
+            green > red && green > blue && green > 100,
+            "expected charlie's emerald caret (G dominant), got ({red},{green},{blue})"
+        );
+    }
+
     /// Indicative mist tints a navigational element in the peer's color.
     /// "bob" maps to orange (0xf9, 0x73, 0x16): red-high, green-mid,
     /// blue-low. The mist is translucent, so over a dark background the
