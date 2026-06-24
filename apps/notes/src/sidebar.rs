@@ -23,7 +23,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use ui::Widget;
 use ui::color_compat::ColorCompat;
-use ui::presence::PresenceCtx;
+use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::TextInput;
@@ -316,6 +316,19 @@ impl Widget for NoteTreeView {
                     None,
                     &row_rect,
                 );
+            }
+            // Indicative mist: glow this row in a peer's color when that
+            // peer is currently viewing the page it leads to. Only remote
+            // peers appear in `peers_on` (we don't register ourselves
+            // locally), so the mist marks "where everyone else is".
+            let here = presence.peers_on(&PresenceKey::Tab { id: row.id.to_string() });
+            if !here.is_empty() {
+                let p0 = transform * Point::new(row_rect.x0, row_rect.y0);
+                let p1 = transform * Point::new(row_rect.x1, row_rect.y1);
+                let mist_rect = Rect::new(p0.x, p0.y, p1.x, p1.y);
+                for user in here {
+                    presence.draw_peer_mist(scene, theme, user, mist_rect);
+                }
             }
             let glyph_x = row_rect.x0 + (row.depth as f64) * INDENT_PX;
             let label_x = glyph_x + GLYPH_WIDTH;

@@ -21,8 +21,9 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use ui::Widget;
+use ui::collaboration::PresencePayload;
 use ui::permissions::PermissionContext;
-use ui::presence::PresenceCtx;
+use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::link_popover::PageEntry;
@@ -709,6 +710,18 @@ impl Widget for NotesApp {
         self.ensure_editor_bound(state);
         self.sidebar.sync(state, path);
         self.main.sync(state, path);
+    }
+
+    fn presence_payload(&self) -> Option<(PresenceKey, PresencePayload)> {
+        // Broadcast which page we're viewing as a Tab location so peers
+        // can render "indicative mist" on the sidebar row that leads here.
+        // This is per-peer (never in the shared doc), which is what lets
+        // two instances view different pages.
+        let sel = self.workspace.selected()?;
+        Some((
+            PresenceKey::Tab { id: sel.to_string() },
+            PresencePayload::Arrived,
+        ))
     }
 
     fn build_layout(
