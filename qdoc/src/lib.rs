@@ -5,7 +5,13 @@
 //! `Document` model that md/odt/docx map onto. See
 //! `docs/superpowers/specs/2026-06-24-crdt-native-file-formats-design.md`.
 
+pub mod document;
 pub mod order;
+pub mod schema;
+pub mod snapshot;
+
+pub use document::{DocError, Document, MarkSpan};
+pub use snapshot::{BlockView, DocSnapshot};
 
 #[cfg(test)]
 mod smoke {
