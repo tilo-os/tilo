@@ -1720,16 +1720,67 @@ impl Widget for ShellOverlayHost {
             origin.x + l.location.x as f64 + l.size.width as f64,
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
+        // Push the current wheel-disc slot width (plus a small
+        // breathing-room gap) into every GroupRow's `leading_inset`
+        // BEFORE the content tree lays out, so the strip reserves the
+        // canvas-x the wheel disc is about to render into AND a
+        // 16 px wallpaper gutter to its right. 2026-06-24 user
+        // feedback: with the inset == wheel_w exactly, the radial
+        // switcher's right edge butted into the first window — the
+        // small gap reads as visual separation between the canvas
+        // chrome (wheel) and the workspace's actual content. Skipped
+        // when there's no sidebar (no wheel ⇒ no gutter to reserve).
+        const WHEEL_TO_STRIP_GAP_PX: f64 = 28.0;
+        let wheel_w = if self.sidebar.is_some() {
+            sidebar_width_for_viewport(self.rect.height() as f32) as f64
+                + WHEEL_TO_STRIP_GAP_PX
+        } else {
+            0.0
+        };
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: same contract as the other group_row_ptrs
+            // accessors — pointer captured from a `Box<GroupRow>` we
+            // own through the content tree; host outlives content;
+            // &mut self → unaliased mutable access.
+            unsafe { (&mut *ptr).set_leading_inset(wheel_w) };
+        }
         let children = taffy.children(node).unwrap();
         self.content
             .apply_layout(taffy, children[0], Point::new(self.rect.x0, self.rect.y0));
         self.palette
             .apply_layout(taffy, children[1], Point::new(self.rect.x0, self.rect.y0));
         if let (Some(sidebar), Some(sidebar_child)) = (self.sidebar.as_mut(), children.get(2)) {
+            // 2026-06-24 user spec: "the radial wheel on the left is
+            // fixed in place – it should be part of the workspace and
+            // scroll with the rest of the desktop". The wheel disc
+            // lives in the overlay layer (absolute-positioned above
+            // the content) so we can't make it a sibling of the
+            // GroupRow; instead, shift its origin by the active
+            // strip's `scroll_x` so it pans in lock-step.
+            //
+            // group_row_ptrs only contains strips from the currently-
+            // active workspace (see `shell/mod.rs` build path), so
+            // picking the first strip's scroll_x is correct for the
+            // common single-strip case. Multi-strip workspaces aren't
+            // wired up yet; a future fix would pick the topmost
+            // visible strip, but for now any strip's scroll_x is the
+            // active workspace's pan offset.
+            let active_scroll_x: f64 = self
+                .group_row_ptrs
+                .values()
+                .next()
+                .map(|&ptr| {
+                    // SAFETY: same contract as the other group_row_ptrs
+                    // accessors — pointer captured from a `Box<GroupRow>`
+                    // we own through the content tree, host outlives
+                    // content, &mut self → unaliased read.
+                    unsafe { (&*ptr).scroll_x() }
+                })
+                .unwrap_or(0.0);
             sidebar.apply_layout(
                 taffy,
                 *sidebar_child,
-                Point::new(self.rect.x0, self.rect.y0),
+                Point::new(self.rect.x0 - active_scroll_x, self.rect.y0),
             );
         }
     }
