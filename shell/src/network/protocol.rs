@@ -57,6 +57,33 @@ pub enum NeighbourMsg {
     /// 15 s. Per-message `peer` is the publisher's libp2p PeerId hashed to
     /// u64; `ts` is unix-millis.
     Heartbeat { peer: PeerId, ts: u64 },
+    /// App-level CRDT incremental — a peer-to-peer bridge for the
+    /// app-side Automerge incremental change blobs that flow through
+    /// the local `QUICK_COLLAB_SOCK` broker. Distinct from
+    /// [`NeighbourMsg::SyncResp`], which carries shell-side
+    /// `WorkspaceTree` changes; this variant ships the bytes the
+    /// `quick-ui` toolkit's `ui::collaboration::CollabRequest::SyncIncremental`
+    /// produces, opaque to the shell.
+    ///
+    /// Two laptops with the broker wired up exchange these so two
+    /// terminals (or any pair of apps) running on different hosts
+    /// share their CRDT state via libp2p. The remote-receive path
+    /// fans the payload into every locally-connected app as a
+    /// `CollabEvent::CRDTIncremental` — same translation the broker's
+    /// local fan-out does.
+    AppCrdtIncremental {
+        peer: PeerId,
+        /// App-id from the originating `CollabRequest::Hello`. v1
+        /// doesn't route on this — every app on a peer sees every
+        /// app's update — but the field lets future routers filter.
+        app_id: String,
+        /// Cluster id from the originating Hello. Same caveat —
+        /// v1 doesn't filter on it.
+        cluster_id: String,
+        /// Opaque Automerge incremental change blob, passed through
+        /// untouched.
+        data: Vec<u8>,
+    },
 }
 
 #[cfg(test)]
@@ -140,6 +167,16 @@ mod tests {
         round_trip(NeighbourMsg::Heartbeat {
             peer: 0xDEADBEEF,
             ts: 1_700_000_002,
+        });
+    }
+
+    #[test]
+    fn app_crdt_incremental_round_trips() {
+        round_trip(NeighbourMsg::AppCrdtIncremental {
+            peer: 0xABCDEF,
+            app_id: "terminal".into(),
+            cluster_id: "00000000-0000-0000-0000-000000000000".into(),
+            data: vec![0x01, 0x02, 0x03, 0x04],
         });
     }
 }

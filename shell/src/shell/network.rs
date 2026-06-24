@@ -73,6 +73,31 @@ pub struct ShellNetwork {
     /// hook drains this into `PresenceCtx::remote_cursors` once per
     /// wakeup so the overlay paints remote peers' cursors.
     inbound_presence: Arc<Mutex<Vec<InboundPresence>>>,
+    /// Buffer of inbound app-CRDT increments pushed by [`Self::tick`]
+    /// when a `NeighbourMsg::AppCrdtIncremental` arrives. The
+    /// `collab_broker` drainer copies these into every locally-
+    /// connected app via [`super::collab_broker::BrokerHandle::fanout_event`].
+    /// See [`Self::inbound_app_crdt_handle`].
+    inbound_app_crdt: Arc<Mutex<Vec<InboundAppCrdt>>>,
+}
+
+/// One received app-CRDT incremental update, queued by
+/// [`ShellNetwork::tick`] for the `collab_broker` drainer to fan out
+/// to every locally-connected app.
+#[derive(Debug, Clone)]
+pub struct InboundAppCrdt {
+    /// Hashed libp2p peer id of the publisher. Useful for future
+    /// debugging / attribution; the broker's fan-out doesn't filter
+    /// on it.
+    pub peer: u64,
+    /// Originating app id (e.g. `"terminal"`), opaque to the bridge.
+    pub app_id: String,
+    /// Originating cluster id (uuid as string), opaque to the bridge.
+    pub cluster_id: String,
+    /// Opaque Automerge incremental change blob, passed through to
+    /// the receiving app's `CollaborationManager` as a
+    /// `CollabEvent::CRDTIncremental`.
+    pub data: Vec<u8>,
 }
 
 /// One received cursor-presence update, queued by [`ShellNetwork::tick`]
@@ -161,6 +186,7 @@ impl ShellNetwork {
             runtime: Some(runtime),
             local_peer_hash,
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
+            inbound_app_crdt: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -231,6 +257,60 @@ impl ShellNetwork {
         }
     }
 
+    /// Shared handle to the inbound-app-CRDT buffer. The
+    /// `collab_broker` per-frame drainer takes a clone, swaps the
+    /// `Vec` out under the lock once per wakeup, and fans each entry
+    /// to every locally-connected app. Mirrors the
+    /// [`Self::inbound_presence_handle`] pattern.
+    pub fn inbound_app_crdt_handle(&self) -> Arc<Mutex<Vec<InboundAppCrdt>>> {
+        Arc::clone(&self.inbound_app_crdt)
+    }
+
+    /// Publish a `NeighbourMsg::AppCrdtIncremental` to the default
+    /// workspace topic. The broker calls this for every local
+    /// `SyncIncremental` it relays so two laptops sharing the topic
+    /// converge their app-level CRDTs. `try_send` failures are
+    /// swallowed — CRDT updates are idempotent and the next
+    /// `SyncIncremental` will republish, so a brief actor backlog
+    /// is recoverable.
+    pub fn publish_app_crdt_incremental(
+        &self,
+        app_id: String,
+        cluster_id: String,
+        data: Vec<u8>,
+    ) {
+        let msg = NeighbourMsg::AppCrdtIncremental {
+            peer: self.local_peer_id_hash(),
+            app_id,
+            cluster_id,
+            data,
+        };
+        let _ = self.cmd_tx.try_send(NetCmd::Publish {
+            ws: self.active_ws_for_publish(),
+            msg,
+        });
+    }
+
+    /// Adapter: queue a received `AppCrdtIncremental` into the
+    /// inbound buffer. Public so integration tests can inject
+    /// messages without going through gossipsub.
+    pub fn handle_app_crdt_message(
+        &self,
+        peer: u64,
+        app_id: String,
+        cluster_id: String,
+        data: Vec<u8>,
+    ) {
+        if let Ok(mut buf) = self.inbound_app_crdt.lock() {
+            buf.push(InboundAppCrdt {
+                peer,
+                app_id,
+                cluster_id,
+                data,
+            });
+        }
+    }
+
     /// Subscribe the actor to the default workspace topic, registering
     /// our `event_tx` as the per-workspace event sink. v1 uses a
     /// single topic ([`DEFAULT_WS_TOPIC`]); per-workspace routing
@@ -277,6 +357,29 @@ impl ShellNetwork {
                 } = msg
                 {
                     self.handle_presence_message(peer_hash, key.clone(), point, ts);
+                    continue;
+                }
+                // App-CRDT updates skip the shell-tree replica too —
+                // they're opaque app-level Automerge blobs, not
+                // shell-tree changes — and land in the broker's
+                // inbound queue for local fan-out. Self-publishes are
+                // filtered out so a local edit doesn't loop back to
+                // its own broker as a "remote" event.
+                if let NeighbourMsg::AppCrdtIncremental {
+                    peer: peer_hash,
+                    ref app_id,
+                    ref cluster_id,
+                    ref data,
+                } = msg
+                {
+                    if peer_hash != self.local_peer_hash {
+                        self.handle_app_crdt_message(
+                            peer_hash,
+                            app_id.clone(),
+                            cluster_id.clone(),
+                            data.clone(),
+                        );
+                    }
                     continue;
                 }
                 let mut rep = self.replica.lock().unwrap();
@@ -339,6 +442,7 @@ fn shell_network_for_test(
         runtime: None,
         local_peer_hash,
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
+        inbound_app_crdt: Arc::new(Mutex::new(Vec::new())),
     };
     (net, cmd_rx)
 }
@@ -416,6 +520,85 @@ mod tests {
         assert_eq!(buf[0].ts, 1_700_000_000);
     }
 
+    #[test]
+    fn publish_app_crdt_incremental_emits_a_publish_command() {
+        // Phase 2 bridge: the broker should be able to forward a
+        // local `SyncIncremental` as a `NeighbourMsg::AppCrdtIncremental`.
+        // Verify the wrapping is correct (peer id stamped, payload
+        // round-trips verbatim, default workspace topic) without
+        // spinning up libp2p.
+        let tree = WorkspaceTree::bootstrap_default().shared();
+        let (net, mut cmd_rx) = shell_network_for_test(tree, 0xCAFEu64);
+        net.publish_app_crdt_incremental(
+            "terminal".into(),
+            "00000000-0000-0000-0000-000000000000".into(),
+            vec![0xAA, 0xBB, 0xCC],
+        );
+        let cmd = cmd_rx
+            .try_recv()
+            .expect("publish_app_crdt_incremental must enqueue a NetCmd");
+        match cmd {
+            NetCmd::Publish { ws, msg } => {
+                assert_eq!(ws, DEFAULT_WS_TOPIC);
+                match msg {
+                    NeighbourMsg::AppCrdtIncremental { peer, app_id, cluster_id, data } => {
+                        assert_eq!(peer, 0xCAFEu64);
+                        assert_eq!(app_id, "terminal");
+                        assert_eq!(cluster_id, "00000000-0000-0000-0000-000000000000");
+                        assert_eq!(data, vec![0xAA, 0xBB, 0xCC]);
+                    }
+                    other => panic!("expected AppCrdtIncremental, got {other:?}"),
+                }
+            }
+            other => panic!("expected NetCmd::Publish, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_app_crdt_message_buffers_for_drain() {
+        // The inbound receive-side adapter pushes onto the buffer
+        // the broker's drainer reads from. Verify all four fields
+        // round-trip so the local fan-out can attribute payloads.
+        let tree = WorkspaceTree::bootstrap_default().shared();
+        let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
+        let buf_handle = net.inbound_app_crdt_handle();
+        net.handle_app_crdt_message(
+            7u64,
+            "terminal".into(),
+            "cluster-uuid".into(),
+            vec![0x01, 0x02],
+        );
+        let buf = buf_handle.lock().unwrap();
+        assert_eq!(buf.len(), 1);
+        assert_eq!(buf[0].peer, 7u64);
+        assert_eq!(buf[0].app_id, "terminal");
+        assert_eq!(buf[0].cluster_id, "cluster-uuid");
+        assert_eq!(buf[0].data, vec![0x01, 0x02]);
+    }
+
+    /// Document why a real network test (two `ShellNetwork`s + a real
+    /// libp2p mesh) isn't covered here:
+    ///
+    /// - `ShellNetwork::spawn` builds a tokio runtime and binds a
+    ///   real TCP listener via `libp2p::SwarmBuilder`. Two parallel
+    ///   spawns in the same test process compete for the same
+    ///   ports unless we plumb `0.0.0.0:0` end-to-end (which the
+    ///   current builder doesn't expose). The existing peer-sync
+    ///   integration test (`tests/peer_sync_test.rs`) uses the
+    ///   in-process `Hub` for the same reason.
+    /// - The actor-level encoder/decoder loop already round-trips
+    ///   every `NeighbourMsg` variant via `protocol::tests::*` (see
+    ///   the `app_crdt_incremental_round_trips` test below the
+    ///   enum) so the wire format itself is covered.
+    /// - The replica/match-arm side of `AppCrdtIncremental` is a
+    ///   no-op (the bridge code is in `ShellNetwork::tick` above
+    ///   and routes into the inbound buffer), so the unit tests
+    ///   above are sufficient to assert routing.
+    ///
+    /// A real two-host test belongs in the headless-integration
+    /// harness (`tests/peer_sync_test.rs` follow-up) once that
+    /// harness supports app-level CRDT injection. The two unit
+    /// tests above are the contract for now.
     #[test]
     fn active_ws_for_publish_returns_default_topic() {
         // v1: publishes go to the single default workspace topic. This
