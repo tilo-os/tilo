@@ -103,6 +103,9 @@ pub struct MainPanel {
     /// the notes app.
     #[allow(dead_code)]
     has_scroll_focus: bool,
+    /// Local user's id for authorship attribution, re-applied to the
+    /// editor whenever a page is (re)bound.
+    local_author: Option<String>,
 }
 
 impl MainPanel {
@@ -118,6 +121,7 @@ impl MainPanel {
             dirty: true,
             scroll_y: 0.0,
             has_scroll_focus: false,
+            local_author: None,
         }
     }
 
@@ -194,12 +198,20 @@ impl MainPanel {
         let blocks = crate::markdown::specs_to_blocks(&specs);
         self.editor = BlockEditor::new();
         self.editor.set_blocks(blocks);
+        self.editor.set_local_author(self.local_author.clone());
         // Seeds the doc if empty, otherwise adopts the doc's blocks.
         self.editor.bind_blocks(state, blocks_list);
         self.editor.set_focus(true);
         self.body = body.to_string();
         self.scroll_y = 0.0;
         self.dirty = true;
+    }
+
+    /// Set the local user's id for authorship attribution. Re-applied to
+    /// the editor on every `bind_page`.
+    pub fn set_local_author(&mut self, author: Option<String>) {
+        self.local_author = author.clone();
+        self.editor.set_local_author(author);
     }
 
     /// Clear the panel back to the empty state.
