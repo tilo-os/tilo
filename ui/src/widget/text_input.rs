@@ -210,6 +210,13 @@ pub struct TextInput {
     /// editor cells where the surrounding text should read as plain
     /// document copy, not as a form input.
     plain: bool,
+    /// When `Some`, the input is bound directly to this Automerge `Text`
+    /// object. This takes precedence over the string-`on_change_path`
+    /// mode and is how a `BlockEditor` binds each block's text — its
+    /// `Text` lives at `pages[id].blocks[i].text`, nested through a List
+    /// index that a flat string key can't address. `sync` reads from it
+    /// and every edit splices into it.
+    bound_text: Option<ObjId>,
 }
 
 impl TextInput {
@@ -239,7 +246,34 @@ impl TextInput {
             crdt_bound: false,
             font_size_override: None,
             plain: false,
+            bound_text: None,
         }
+    }
+
+    /// Bind this input directly to an Automerge `Text` object. After
+    /// binding, [`sync`] reads its content from `obj` and every edit
+    /// splices into `obj` — regardless of the string-path mode. Used by
+    /// `RichTextLine`/`BlockEditor` to back a block with a per-block
+    /// `Text` nested inside the page's `blocks` List.
+    pub fn bind_text(&mut self, obj: ObjId) {
+        self.bound_text = Some(obj);
+        self.crdt_bound = true;
+    }
+
+    /// Resolve the Automerge `Text` this input edits, if any. A directly
+    /// bound `ObjId` (via [`bind_text`]) wins over the string-path mode.
+    fn resolve_text_obj(&self, state: &AutoCommit, root: &ObjId) -> Option<ObjId> {
+        if let Some(obj) = &self.bound_text {
+            return Some(obj.clone());
+        }
+        if self.crdt_bound {
+            if let Ok(Some((Value::Object(ObjType::Text), id))) =
+                state.get(root, self.on_change_path.as_str())
+            {
+                return Some(id);
+            }
+        }
+        None
     }
 
     /// Builder-style: override the body font size in CSS-like pixels.
@@ -522,6 +556,15 @@ impl TextInput {
 
 impl Widget for TextInput {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        // Directly-bound Text wins: read its content straight from the
+        // object, ignoring the string-path mode entirely.
+        if let Some(obj_id) = self.bound_text.clone() {
+            if let Ok(text) = state.text(&obj_id) {
+                self.text = text;
+            }
+            self.clamp_to_text();
+            return;
+        }
         if !self.crdt_bound { return; }
         if let Ok(Some((val, obj_id))) = state.get(root, self.on_change_path.as_str()) {
             match val {
@@ -748,14 +791,7 @@ impl Widget for TextInput {
                 if !self.is_focused || *element_state != ElementState::Pressed {
                     return;
                 }
-                let obj_id_opt: Option<ObjId> = if self.crdt_bound {
-                    match state.get(root, self.on_change_path.as_str()) {
-                        Ok(Some((Value::Object(ObjType::Text), id))) => Some(id),
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
+                let obj_id_opt: Option<ObjId> = self.resolve_text_obj(state, root);
                 let shift = modifiers.state().shift_key();
                 let ctrl = modifiers.state().control_key();
 
@@ -906,14 +942,7 @@ impl Widget for TextInput {
                 if !self.is_focused {
                     return;
                 }
-                let obj_id_opt: Option<ObjId> = if self.crdt_bound {
-                    match state.get(root, self.on_change_path.as_str()) {
-                        Ok(Some((Value::Object(ObjType::Text), id))) => Some(id),
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
+                let obj_id_opt: Option<ObjId> = self.resolve_text_obj(state, root);
                 if !t.chars().all(|c| c.is_control()) {
                     self.insert_str(t.as_str(), state, obj_id_opt.as_ref());
                     *handled = true;
