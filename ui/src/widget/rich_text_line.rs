@@ -145,6 +145,11 @@ impl RichTextLine {
         self.inner.bind_text(obj);
     }
 
+    /// The Automerge `Text` this line is bound to, if any.
+    pub fn bound_obj(&self) -> Option<ObjId> {
+        self.inner.bound_obj().cloned()
+    }
+
     /// Replace the text programmatically. Does NOT mark the line as
     /// dirty (programmatic writes are not user edits). Cursor lands
     /// at the end after clamping to a char boundary.

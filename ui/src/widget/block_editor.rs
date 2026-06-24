@@ -16,7 +16,8 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
+use automerge::transaction::Transactable;
+use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -231,6 +232,16 @@ pub struct BlockEditor {
     /// to splice the `[[<filter>` back out of the block once a page
     /// is selected.
     link_open_at: Option<usize>,
+    /// When `Some`, the editor is backed by this Automerge `List` of
+    /// block Maps (`pages[id].blocks`). Each block's `Text` is bound to
+    /// the matching line so edits sync. `None` = local-only editor (the
+    /// pre-collaboration behaviour, kept for examples/tests).
+    blocks_list: Option<ObjId>,
+    /// Set by structural edits (split / merge / delete) so the next
+    /// `sync` mirrors the new block structure into the doc List,
+    /// preserving existing block `Text` objects by identity. Distinct
+    /// from `structure_dirty`, which drives taffy rebuilds on the host.
+    doc_structure_dirty: bool,
 }
 
 impl BlockEditor {
@@ -252,6 +263,8 @@ impl BlockEditor {
             slash_open_at: None,
             link_popover: LinkPopover::new(),
             link_open_at: None,
+            blocks_list: None,
+            doc_structure_dirty: false,
         };
         s.blocks.push(Block::paragraph(""));
         s
@@ -283,6 +296,8 @@ impl BlockEditor {
             slash_open_at: None,
             link_popover: LinkPopover::new(),
             link_open_at: None,
+            blocks_list: None,
+            doc_structure_dirty: false,
         };
         let mut lines = md.split('\n').peekable();
         while let Some(line) = lines.next() {
@@ -508,7 +523,122 @@ impl BlockEditor {
         self.focused = None;
         self.is_focused = false;
         self.structure_dirty = true;
+        self.doc_structure_dirty = true;
         self.dirty = true;
+    }
+
+    /// Back this editor with an Automerge `List` of block Maps
+    /// (`pages[id].blocks`). After binding, every edit syncs through the
+    /// CRDT and remote edits appear via [`sync`].
+    ///
+    /// - If the doc List already has blocks (an existing or remote
+    ///   page), the editor **adopts** them, discarding the locally
+    ///   seeded blocks.
+    /// - If the doc List is empty (a brand-new page), the editor
+    ///   **seeds** it from its current local blocks.
+    pub fn bind_blocks(&mut self, state: &mut AutoCommit, list: ObjId) {
+        self.blocks_list = Some(list.clone());
+        let doc_len = state.length(&list);
+        if doc_len == 0 {
+            // Seed the doc from our current local blocks.
+            self.doc_structure_dirty = true;
+            self.reconcile_structure_to_doc(state, &list);
+            self.doc_structure_dirty = false;
+        } else {
+            // Adopt the doc's blocks.
+            self.rebuild_from_doc(state, &list, doc_len);
+        }
+    }
+
+    /// Mirror the local block structure into the doc `List`, preserving
+    /// each existing block's `Text` object by identity (Automerge list
+    /// insert/delete keep other elements' object ids stable, so a
+    /// mid-list split doesn't disturb its neighbours' history). New
+    /// blocks get a fresh `Text` seeded from their local content;
+    /// blocks whose `Text` is bound but whose local text drifted (after
+    /// a programmatic `set_text` during split/merge) are reconciled with
+    /// a minimal splice.
+    fn reconcile_structure_to_doc(&mut self, state: &mut AutoCommit, list: &ObjId) {
+        let mut doc_idx = 0usize;
+        let len = self.blocks.len();
+        for i in 0..len {
+            let kind_str = kind_to_str(&self.blocks[i].kind);
+            let local_text = self.blocks[i].line.value().to_string();
+            match self.blocks[i].line.bound_obj() {
+                Some(bound) => {
+                    // Delete any doc blocks before the bound one — they
+                    // were removed locally.
+                    while doc_idx < state.length(list)
+                        && doc_text_obj(state, list, doc_idx).as_ref() != Some(&bound)
+                    {
+                        let _ = state.delete(list, doc_idx);
+                    }
+                    if doc_idx < state.length(list) {
+                        let block_map = list_map(state, list, doc_idx);
+                        if let Some(bm) = block_map {
+                            let _ = state.put(&bm, "kind", kind_str.as_str());
+                        }
+                        push_text_diff(state, &bound, &local_text);
+                        doc_idx += 1;
+                    } else {
+                        // Bound object vanished from the doc — re-insert.
+                        let t = insert_doc_block(state, list, doc_idx, &kind_str, &local_text);
+                        self.blocks[i].line.bind_text(t);
+                        doc_idx += 1;
+                    }
+                }
+                None => {
+                    // New block (e.g. the suffix of a split): insert a
+                    // fresh doc block and bind it.
+                    let t = insert_doc_block(state, list, doc_idx, &kind_str, &local_text);
+                    self.blocks[i].line.bind_text(t);
+                    doc_idx += 1;
+                }
+            }
+        }
+        // Drop any trailing doc blocks beyond what we have locally.
+        while state.length(list) > doc_idx {
+            let last = state.length(list) - 1;
+            let _ = state.delete(list, last);
+        }
+    }
+
+    /// Rebuild the local block list from the doc `List`, binding each
+    /// line to its `Text`. Preserves the focused block index + caret
+    /// offset across the rebuild so a remote edit elsewhere doesn't
+    /// yank the local caret.
+    fn rebuild_from_doc(&mut self, state: &mut AutoCommit, list: &ObjId, doc_len: usize) {
+        let saved_focus = self.focused;
+        let saved_caret = self
+            .focused
+            .and_then(|i| self.blocks.get(i))
+            .map(|b| b.line.cursor_pos());
+
+        let mut new_blocks = Vec::with_capacity(doc_len);
+        for i in 0..doc_len {
+            let kind = kind_from_str(&read_block_kind(state, list, i));
+            let mut b = block_for_kind(&kind);
+            if let Some(t) = doc_text_obj(state, list, i) {
+                b.line.bind_text(t);
+                b.line.sync(state, list);
+            }
+            new_blocks.push(b);
+        }
+        if new_blocks.is_empty() {
+            new_blocks.push(Block::paragraph(""));
+        }
+        self.blocks = new_blocks;
+        self.structure_dirty = true;
+
+        if let Some(fi) = saved_focus {
+            let fi = fi.min(self.blocks.len().saturating_sub(1));
+            self.focused = Some(fi);
+            self.is_focused = true;
+            self.blocks[fi].line.set_focus(true);
+            if let Some(c) = saved_caret {
+                self.blocks[fi].line.set_cursor_pos(c);
+            }
+        }
     }
 
     /// Test/integration hook: mark the edit-pending flag so the
@@ -520,6 +650,7 @@ impl BlockEditor {
         self.edit_pending = true;
         self.dirty = true;
         self.structure_dirty = true;
+        self.doc_structure_dirty = true;
     }
 
     /// Currently focused block index, if any.
@@ -598,6 +729,7 @@ impl BlockEditor {
         };
         self.blocks.insert(idx + 1, suffix_block);
         self.structure_dirty = true;
+        self.doc_structure_dirty = true;
         self.dirty = true;
         self.focus_block(idx + 1, CursorPlacement::Start);
     }
@@ -622,6 +754,7 @@ impl BlockEditor {
         self.blocks[idx - 1].line.set_text(&merged);
         self.blocks.remove(idx);
         self.structure_dirty = true;
+        self.doc_structure_dirty = true;
         self.dirty = true;
         self.focus_block(idx - 1, CursorPlacement::Byte(join_at));
     }
@@ -644,12 +777,15 @@ impl BlockEditor {
             }
             self.focused = Some(0);
             self.structure_dirty = true;
+            self.doc_structure_dirty = true;
+        self.doc_structure_dirty = true;
             self.dirty = true;
             return;
         }
         let target = if idx == 0 { 0 } else { idx - 1 };
         self.blocks.remove(idx);
         self.structure_dirty = true;
+        self.doc_structure_dirty = true;
         self.dirty = true;
         // After removal the target index is correct only if we
         // removed something *after* it.
@@ -698,6 +834,7 @@ impl BlockEditor {
         new_line.set_cursor_pos(0);
         b.line = new_line;
         self.structure_dirty = true;
+        self.doc_structure_dirty = true;
         self.dirty = true;
         true
     }
@@ -743,6 +880,7 @@ impl BlockEditor {
         new_line.set_focus(was_focused && !matches!(new_kind, BlockKind::Divider));
         b.line = new_line;
         self.structure_dirty = true;
+        self.doc_structure_dirty = true;
         self.dirty = true;
         // Dividers are not focusable — push focus to the next block
         // (or fall back to a paragraph we splice in if we're at the end).
@@ -797,6 +935,7 @@ impl BlockEditor {
         // block at the same index), but the row's horizontal layout
         // does — flag both so MainPanel rebuilds taffy if needed.
         self.structure_dirty = true;
+        self.doc_structure_dirty = true;
         self.dirty = true;
         true
     }
@@ -1082,6 +1221,144 @@ pub(crate) fn prefix_gutter_for(kind: &BlockKind) -> f64 {
 /// smaller than the gutter so there's visual breathing room either side.
 pub(crate) const CHECKBOX_SIZE_PX: f64 = 16.0;
 
+// ---------------------------------------------------------------------
+// CRDT block-list helpers (used by sync / reconcile / rebuild).
+//
+// `BlockKind` is encoded as a compact string in the doc's `kind` field
+// so the full block model round-trips: paragraph / heading{1..3} /
+// bullet:{indent} / checklist:{indent}:{0|1} / code:{lang} / divider.
+// ---------------------------------------------------------------------
+
+fn kind_to_str(kind: &BlockKind) -> String {
+    match kind {
+        BlockKind::Paragraph => "paragraph".to_string(),
+        BlockKind::Heading(n) => format!("heading{n}"),
+        BlockKind::Bullet { indent } => format!("bullet:{indent}"),
+        BlockKind::Checklist { indent, done } => {
+            format!("checklist:{indent}:{}", if *done { 1 } else { 0 })
+        }
+        BlockKind::CodeBlock { lang } => {
+            format!("code:{}", lang.clone().unwrap_or_default())
+        }
+        BlockKind::Divider => "divider".to_string(),
+    }
+}
+
+fn kind_from_str(s: &str) -> BlockKind {
+    if s == "paragraph" {
+        return BlockKind::Paragraph;
+    }
+    if s == "divider" {
+        return BlockKind::Divider;
+    }
+    if let Some(n) = s.strip_prefix("heading") {
+        let lvl = n.parse::<u8>().unwrap_or(1).clamp(1, 3);
+        return BlockKind::Heading(lvl);
+    }
+    if let Some(rest) = s.strip_prefix("bullet:") {
+        let indent = rest.parse::<u8>().unwrap_or(0).min(MAX_LIST_INDENT);
+        return BlockKind::Bullet { indent };
+    }
+    if let Some(rest) = s.strip_prefix("checklist:") {
+        let mut parts = rest.split(':');
+        let indent = parts
+            .next()
+            .and_then(|p| p.parse::<u8>().ok())
+            .unwrap_or(0)
+            .min(MAX_LIST_INDENT);
+        let done = parts.next().map(|p| p == "1").unwrap_or(false);
+        return BlockKind::Checklist { indent, done };
+    }
+    if let Some(rest) = s.strip_prefix("code:") {
+        let lang = if rest.is_empty() { None } else { Some(rest.to_string()) };
+        return BlockKind::CodeBlock { lang };
+    }
+    BlockKind::Paragraph
+}
+
+/// Build an empty `Block` of the given kind. Text is bound + pulled from
+/// the doc afterwards, so we seed with "".
+fn block_for_kind(kind: &BlockKind) -> Block {
+    match kind {
+        BlockKind::Paragraph => Block::paragraph(""),
+        BlockKind::Heading(n) => Block::heading(*n, ""),
+        BlockKind::Bullet { indent } => Block::bullet(*indent, ""),
+        BlockKind::Checklist { indent, done } => Block::checklist(*indent, *done, ""),
+        BlockKind::CodeBlock { lang } => Block::code_block(lang.clone(), ""),
+        BlockKind::Divider => Block::divider(),
+    }
+}
+
+/// The block Map at `index` in a `blocks` List, if present.
+fn list_map(state: &AutoCommit, list: &ObjId, index: usize) -> Option<ObjId> {
+    match state.get(list, index) {
+        Ok(Some((Value::Object(ObjType::Map), m))) => Some(m),
+        _ => None,
+    }
+}
+
+/// The `Text` ObjId for block `index`, if present.
+fn doc_text_obj(state: &AutoCommit, list: &ObjId, index: usize) -> Option<ObjId> {
+    let block = list_map(state, list, index)?;
+    match state.get(&block, "text") {
+        Ok(Some((Value::Object(ObjType::Text), t))) => Some(t),
+        _ => None,
+    }
+}
+
+/// The `kind` string for block `index`, defaulting to "paragraph".
+fn read_block_kind(state: &AutoCommit, list: &ObjId, index: usize) -> String {
+    let Some(block) = list_map(state, list, index) else {
+        return "paragraph".to_string();
+    };
+    match state.get(&block, "kind") {
+        Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
+            automerge::ScalarValue::Str(s) => s.to_string(),
+            _ => "paragraph".to_string(),
+        },
+        _ => "paragraph".to_string(),
+    }
+}
+
+/// Insert a new block Map `{ kind, text }` at `index` in the List and
+/// return the new `Text` ObjId, seeded with `text`.
+fn insert_doc_block(
+    state: &mut AutoCommit,
+    list: &ObjId,
+    index: usize,
+    kind: &str,
+    text: &str,
+) -> ObjId {
+    let block = state
+        .insert_object(list, index, ObjType::Map)
+        .expect("insert block map never fails");
+    let _ = state.put(&block, "kind", kind);
+    let text_id = state
+        .put_object(&block, "text", ObjType::Text)
+        .expect("put_object block text never fails");
+    if !text.is_empty() {
+        let _ = state.splice_text(&text_id, 0, 0, text);
+    }
+    text_id
+}
+
+/// Reconcile a doc `Text` object's content toward `local` with a single
+/// minimal splice (the structural ops produce one contiguous change).
+fn push_text_diff(state: &mut AutoCommit, text_obj: &ObjId, local: &str) {
+    let cur = state.text(text_obj).unwrap_or_default();
+    if cur == local {
+        return;
+    }
+    let (at_byte, inserted, removed) =
+        crate::widget::rich_text_line::diff_splice(&cur, local);
+    let char_at = cur[..at_byte.min(cur.len())].chars().count();
+    let removed_chars = cur[at_byte..(at_byte + removed).min(cur.len())]
+        .chars()
+        .count();
+    let inserted_str = &local[at_byte..(at_byte + inserted).min(local.len())];
+    let _ = state.splice_text(text_obj, char_at, removed_chars as isize, inserted_str);
+}
+
 impl Default for BlockEditor {
     fn default() -> Self {
         Self::new()
@@ -1089,8 +1366,43 @@ impl Default for BlockEditor {
 }
 
 impl Widget for BlockEditor {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
-        // Local-mode children; nothing to sync from the CRDT.
+    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+        let Some(list) = self.blocks_list.clone() else {
+            // Unbound (examples / tests): local-mode, nothing to sync.
+            return;
+        };
+
+        // 1. Push any pending local structural edit into the doc first,
+        //    preserving existing block Text objects by identity.
+        if self.doc_structure_dirty {
+            self.reconcile_structure_to_doc(state, &list);
+            self.doc_structure_dirty = false;
+        }
+
+        // 2. If the doc now has a different block count than we do, a
+        //    remote peer changed the structure — adopt it (caret-safe).
+        let doc_len = state.length(&list);
+        if doc_len != self.blocks.len() {
+            self.rebuild_from_doc(state, &list, doc_len);
+            return;
+        }
+
+        // 3. Same structure: refresh each block's kind + text from the
+        //    doc. RichTextLine::sync pulls bound text without disturbing
+        //    the local caret.
+        for i in 0..self.blocks.len() {
+            let k = kind_from_str(&read_block_kind(state, &list, i));
+            if self.blocks[i].kind != k {
+                self.blocks[i].kind = k;
+                self.structure_dirty = true;
+            }
+            if self.blocks[i].line.bound_obj().is_none() {
+                if let Some(t) = doc_text_obj(state, &list, i) {
+                    self.blocks[i].line.bind_text(t);
+                }
+            }
+            self.blocks[i].line.sync(state, &list);
+        }
     }
 
     fn build_layout(
@@ -1686,6 +1998,85 @@ impl BlockEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- CRDT backing (sync / bind / converge) -----------------------
+
+    #[test]
+    fn editor_adopts_blocks_from_doc() {
+        use automerge::{ObjType, ROOT, transaction::Transactable};
+        let mut doc = AutoCommit::new();
+        let list = doc.put_object(&ROOT, "blocks", ObjType::List).unwrap();
+        let b0 = doc.insert_object(&list, 0, ObjType::Map).unwrap();
+        doc.put(&b0, "kind", "heading1").unwrap();
+        let t0 = doc.put_object(&b0, "text", ObjType::Text).unwrap();
+        doc.splice_text(&t0, 0, 0, "Title").unwrap();
+
+        let mut ed = BlockEditor::new();
+        ed.bind_blocks(&mut doc, list);
+        // Non-empty doc -> adopt it.
+        assert_eq!(ed.blocks().len(), 1);
+        assert_eq!(ed.blocks()[0].text(), "Title");
+        assert!(matches!(ed.blocks()[0].kind, BlockKind::Heading(1)));
+    }
+
+    #[test]
+    fn editor_seeds_empty_doc_from_local_blocks() {
+        use automerge::{ObjType, ROOT, transaction::Transactable};
+        let mut doc = AutoCommit::new();
+        let list = doc.put_object(&ROOT, "blocks", ObjType::List).unwrap();
+
+        let mut ed = BlockEditor::new();
+        ed.set_blocks(vec![Block::paragraph("hello")]);
+        ed.bind_blocks(&mut doc, list.clone());
+
+        // Empty doc -> seeded from local blocks.
+        assert_eq!(doc.length(&list), 1);
+        let t = doc_text_obj(&doc, &list, 0).unwrap();
+        assert_eq!(doc.text(&t).unwrap(), "hello");
+    }
+
+    #[test]
+    fn two_editors_converge_on_block_text() {
+        use automerge::{ObjType, ROOT, transaction::Transactable};
+        // Peer A seeds a one-block document.
+        let mut a_doc = AutoCommit::new();
+        let a_list = a_doc.put_object(&ROOT, "blocks", ObjType::List).unwrap();
+        let mut a = BlockEditor::new();
+        a.set_blocks(vec![Block::paragraph("from-A")]);
+        a.bind_blocks(&mut a_doc, a_list);
+
+        // Peer B joins from A's full state (the late-join handshake).
+        let mut b_doc = AutoCommit::load(&a_doc.save()).unwrap();
+        let b_list = match b_doc.get(&ROOT, "blocks") {
+            Ok(Some((Value::Object(ObjType::List), id))) => id,
+            _ => panic!("blocks list should exist in B's adopted doc"),
+        };
+        let mut b = BlockEditor::new();
+        b.bind_blocks(&mut b_doc, b_list);
+
+        assert_eq!(b.blocks()[0].text(), "from-A", "B adopts A's block text");
+    }
+
+    #[test]
+    fn split_then_sync_mirrors_structure_into_doc() {
+        use automerge::{ObjType, ROOT, transaction::Transactable};
+        let mut doc = AutoCommit::new();
+        let list = doc.put_object(&ROOT, "blocks", ObjType::List).unwrap();
+        let mut ed = BlockEditor::new();
+        ed.set_blocks(vec![Block::paragraph("abcdef")]);
+        ed.bind_blocks(&mut doc, list.clone());
+        assert_eq!(doc.length(&list), 1);
+
+        // Split into "abc" | "def" locally, then sync to mirror to doc.
+        ed.split_at_cursor(0, 3);
+        ed.sync(&mut doc, &ROOT);
+
+        assert_eq!(doc.length(&list), 2, "doc gained the split block");
+        let t0 = doc_text_obj(&doc, &list, 0).unwrap();
+        let t1 = doc_text_obj(&doc, &list, 1).unwrap();
+        assert_eq!(doc.text(&t0).unwrap(), "abc");
+        assert_eq!(doc.text(&t1).unwrap(), "def");
+    }
 
     #[test]
     fn new_has_one_empty_paragraph() {
