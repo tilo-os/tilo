@@ -108,6 +108,16 @@ impl Document {
         crate::model::materialize(&self.doc, &self.c)
     }
 
+    /// Timeline of authored changes (oldest first).
+    pub fn versions(&mut self) -> Vec<crate::history::VersionMeta> {
+        crate::history::versions(&mut self.doc)
+    }
+
+    /// Reconstruct the document as of `version` (time-travel).
+    pub fn materialize_at(&mut self, version: usize) -> Result<crate::snapshot::DocSnapshot, DocError> {
+        crate::history::materialize_at(&mut self.doc, version)
+    }
+
     /// Independent replica with a fresh actor id (distinct edit lineage).
     pub fn fork(&mut self) -> Document {
         let bytes = self.save();
