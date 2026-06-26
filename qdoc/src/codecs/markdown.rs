@@ -54,6 +54,9 @@ fn import_md(src: &str, doc: &mut DocMut) {
     let mut in_item = false; // inside a list item (suppress the inner paragraph wrapper)
     let mut ordered_stack: Vec<bool> = Vec::new();
     let mut mark_stack: Vec<(&'static str, usize)> = Vec::new();
+    // Apply marks after the full parse so trailing text doesn't expand them
+    // (add_mark uses ExpandMark::After).
+    let mut pending_marks: Vec<(String, usize, usize, &'static str)> = Vec::new();
 
     for ev in Parser::new(src) {
         match ev {
@@ -89,13 +92,13 @@ fn import_md(src: &str, doc: &mut DocMut) {
             Event::Start(Tag::Strong) => mark_stack.push(("strong", cur_len)),
             Event::End(TagEnd::Strong) => {
                 if let (Some((name, start)), Some(b)) = (mark_stack.pop(), cur.as_ref()) {
-                    doc.add_mark(b, start, cur_len, name, true);
+                    pending_marks.push((b.clone(), start, cur_len, name));
                 }
             }
             Event::Start(Tag::Emphasis) => mark_stack.push(("em", cur_len)),
             Event::End(TagEnd::Emphasis) => {
                 if let (Some((name, start)), Some(b)) = (mark_stack.pop(), cur.as_ref()) {
-                    doc.add_mark(b, start, cur_len, name, true);
+                    pending_marks.push((b.clone(), start, cur_len, name));
                 }
             }
             Event::Text(t) => {
@@ -109,7 +112,7 @@ fn import_md(src: &str, doc: &mut DocMut) {
                     let start = cur_len;
                     doc.splice_text(b, cur_len, 0, &t);
                     cur_len += t.chars().count();
-                    doc.add_mark(b, start, cur_len, "code", true);
+                    pending_marks.push((b.clone(), start, cur_len, "code"));
                 }
             }
             Event::SoftBreak | Event::HardBreak => {
@@ -120,6 +123,10 @@ fn import_md(src: &str, doc: &mut DocMut) {
             }
             _ => {}
         }
+    }
+
+    for (b, start, end, name) in pending_marks {
+        doc.add_mark(&b, start, end, name, true);
     }
 }
 
