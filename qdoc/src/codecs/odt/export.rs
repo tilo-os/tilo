@@ -148,6 +148,13 @@ fn build_content_xml(snap: &DocSnapshot) -> String {
                 }
                 body.push_str("</text:list>");
             }
+            "fidelity" => {
+                // Re-emit the preserved unmodeled element verbatim, in place.
+                if let Some(AttrVal::Str(xml)) = b.attrs.get("xml") {
+                    body.push_str(xml);
+                }
+                i += 1;
+            }
             _ => {
                 body.push_str(&format!(
                     r#"<text:p>{}</text:p>"#,
@@ -167,9 +174,12 @@ fn build_content_xml(snap: &DocSnapshot) -> String {
         ));
     }
 
+    // Declare the common ODF namespaces so re-emitted fidelity atoms (tables,
+    // drawings, …) stay well-formed. Truly exotic namespaces are only fully
+    // preserved once the original content prologue is carried verbatim (future).
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
-<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0">
+<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0" xmlns:number="urn:oasis:names:tc:opendocument:xmlns:datastyle:1.0">
 <office:automatic-styles>{styles}</office:automatic-styles>
 <office:body><office:text>{body}</office:text></office:body>
 </office:document-content>"#
