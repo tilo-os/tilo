@@ -1360,11 +1360,17 @@ impl ShellOverlayHost {
     /// Modal grows when Roles / Files tabs are active so the longer per-
     /// app permission grid + file list fit without overflowing into the
     /// workspace area below; click-detection geometry stays in sync.
+    ///
+    /// 2026-06-24 audit lifted the resting width 520 → 720 and the
+    /// tab-expanded height 520 → 600 so the General/Roles/Files/
+    /// Permissions/Collaborators row + collaborators block read as a
+    /// proper modal sheet instead of a cramped popover dwarfed by the
+    /// 1600×900 viewport.
     fn ws_settings_rect(&self) -> Rect {
-        let modal_w = 520.0_f64;
+        let modal_w = 720.0_f64;
         let modal_h = match self.chrome.as_ref().map(|c| c.borrow().ws_settings_tab) {
-            Some(WsTab::Roles) | Some(WsTab::Files) | Some(WsTab::Permissions) => 520.0_f64,
-            _ => 360.0_f64,
+            Some(WsTab::Roles) | Some(WsTab::Files) | Some(WsTab::Permissions) => 600.0_f64,
+            _ => 440.0_f64,
         };
         let cx = (self.rect.x0 + self.rect.x1) / 2.0;
         let cy = (self.rect.y0 + self.rect.y1) / 2.0;
@@ -1640,9 +1646,17 @@ impl Widget for ShellOverlayHost {
         let palette_node = self.palette.build_layout(taffy, theme, node_map);
         // Overlay the palette above content: absolute positioning with
         // auto-margin horizontal centering and a fixed top offset so it
-        // floats below the shell's top bar like a popover.
+        // floats below the shell's top bar like a popover. The widget's
+        // own `build_layout` defaults to a narrow 360 px footprint —
+        // override to 640 px here so the palette reads as a proper
+        // centered modal sheet, not a top-right anchored popover (2026-
+        // 06-24 audit pinned this as the most visible chrome regression).
         let mut palette_style = taffy.style(palette_node).unwrap().clone();
         palette_style.position = Position::Absolute;
+        palette_style.size = Size {
+            width: Dimension::length(640.0),
+            height: palette_style.size.height,
+        };
         palette_style.margin = TaffyRect {
             left: LengthPercentageAuto::auto(),
             right: LengthPercentageAuto::auto(),
@@ -1652,7 +1666,7 @@ impl Widget for ShellOverlayHost {
         palette_style.inset = TaffyRect {
             left: LengthPercentageAuto::auto(),
             right: LengthPercentageAuto::auto(),
-            top: LengthPercentageAuto::length(120.0),
+            top: LengthPercentageAuto::length(96.0),
             bottom: LengthPercentageAuto::auto(),
         };
         taffy.set_style(palette_node, palette_style).unwrap();
@@ -3978,24 +3992,11 @@ impl ShellOverlayHost {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
 
-        let modal_w = 520.0_f64;
-        // Roles + Files tabs render long lists (5 apps, N files) that
-        // overflow the 360 px General-tab modal. Grow the modal when
-        // those tabs are active so the per-app permission grid + role
-        // sidebar fit without bleeding past the modal frame into the
-        // workspace area below.
-        let modal_h = match state.ws_settings_tab {
-            WsTab::Roles | WsTab::Files | WsTab::Permissions => 520.0_f64,
-            _ => 360.0_f64,
-        };
-        let cx = (self.rect.x0 + self.rect.x1) / 2.0;
-        let cy = (self.rect.y0 + self.rect.y1) / 2.0;
-        let rect = Rect::new(
-            cx - modal_w / 2.0,
-            cy - modal_h / 2.0,
-            cx + modal_w / 2.0,
-            cy + modal_h / 2.0,
-        );
+        // Single source of truth — `ws_settings_rect()` owns the
+        // centered-modal geometry; hit-tests reach for the same
+        // helper so a width bump (2026-06-24: 520→720, h 360→440)
+        // can't desync the painted card vs the clickable bounds.
+        let rect = self.ws_settings_rect();
         let card = RoundedRect::from_rect(rect, tokens.radii.lg as f64);
         // Settings modal surface — concept §4.1: `bg-slate-900/70
         // backdrop-blur-md`. Blur primitive unavailable on the pinned Vello,
