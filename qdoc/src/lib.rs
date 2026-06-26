@@ -8,6 +8,7 @@
 pub mod codecs;
 pub mod document;
 pub mod format;
+pub mod history;
 pub mod model;
 pub mod order;
 pub mod schema;
@@ -16,6 +17,7 @@ pub mod snapshot;
 pub use codecs::MarkdownCodec;
 pub use document::{DocError, Document, MarkSpan};
 pub use format::{CodecError, Confidence, FormatProvider, ProviderTier, Registry};
+pub use history::VersionMeta;
 pub use model::{Containers, DocMut, DocRef, IdGen};
 pub use snapshot::{AttrVal, BlockView, DocSnapshot};
 
