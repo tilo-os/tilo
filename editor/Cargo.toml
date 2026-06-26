@@ -1,0 +1,10 @@
+[package]
+name = "editor"
+version = "0.1.0"
+edition = "2021"
+description = "CRDT rich-text editor binding (qdoc <-> ui::State). Interactive GUI widget deferred; this crate provides the binding + integration tests."
+
+[dependencies]
+ui = { path = "../ui" }
+qdoc = { path = "../qdoc" }
+automerge = "0.8.0"
