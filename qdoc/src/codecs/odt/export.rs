@@ -1,0 +1,206 @@
+//! Export the canonical model back to a `.odt`. Phase 4 Task 4 generates a
+//! fresh minimal ODF from the model (model round-trip). Verbatim preservation of
+//! the *original* container's parts + prologue is Task 5 — this exporter is what
+//! Task 5 will splice the generated body into.
+
+use super::container::OdtContainer;
+use crate::document::MarkSpan;
+use crate::format::CodecError;
+use crate::model::DocRef;
+use crate::snapshot::{AttrVal, DocSnapshot};
+use std::collections::BTreeSet;
+
+const MIMETYPE: &[u8] = b"application/vnd.oasis.opendocument.text";
+const MANIFEST: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
+<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0">
+<manifest:file-entry manifest:full-path="/" manifest:media-type="application/vnd.oasis.opendocument.text"/>
+<manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>
+</manifest:manifest>"#;
+
+pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
+    let snap = doc.materialize();
+    let content = build_content_xml(&snap);
+    let mut c = OdtContainer { parts: Vec::new() };
+    c.set("mimetype", MIMETYPE.to_vec());
+    c.set("content.xml", content.into_bytes());
+    c.set("META-INF/manifest.xml", MANIFEST.to_vec());
+    c.write()
+}
+
+/// Codec-authored automatic style name for a mark.
+fn style_for(name: &str) -> Option<&'static str> {
+    match name {
+        "strong" => Some("qdoc-strong"),
+        "em" => Some("qdoc-em"),
+        "underline" => Some("qdoc-underline"),
+        _ => None,
+    }
+}
+
+/// The static mark name, for known marks only.
+fn static_mark(name: &str) -> Option<&'static str> {
+    match name {
+        "strong" => Some("strong"),
+        "em" => Some("em"),
+        "underline" => Some("underline"),
+        _ => None,
+    }
+}
+
+fn style_props(name: &str) -> &'static str {
+    match name {
+        "strong" => r#"fo:font-weight="bold""#,
+        "em" => r#"fo:font-style="italic""#,
+        "underline" => r#"style:text-underline-style="solid""#,
+        _ => "",
+    }
+}
+
+fn push_escaped(out: &mut String, c: char) {
+    match c {
+        '&' => out.push_str("&amp;"),
+        '<' => out.push_str("&lt;"),
+        '>' => out.push_str("&gt;"),
+        _ => out.push(c),
+    }
+}
+
+/// Render a block's text with `text:span` wrappers for its marks. Spans are
+/// closed and re-opened whenever the active mark set changes, so the output is
+/// always well-nested even for overlapping marks.
+fn render_inline(text: &str, marks: &[MarkSpan], used: &mut BTreeSet<&'static str>) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    let mut out = String::new();
+    let mut open: Vec<&'static str> = Vec::new();
+    for i in 0..n {
+        let mut want: Vec<&'static str> = marks
+            .iter()
+            .filter(|m| i >= m.start && i < m.end)
+            .filter_map(|m| static_mark(&m.name))
+            .collect();
+        want.sort();
+        want.dedup();
+        if want != open {
+            for _ in 0..open.len() {
+                out.push_str("</text:span>");
+            }
+            open.clear();
+            for &name in &want {
+                out.push_str(&format!(r#"<text:span text:style-name="{}">"#, style_for(name).unwrap()));
+                used.insert(name);
+                open.push(name);
+            }
+        }
+        push_escaped(&mut out, chars[i]);
+    }
+    for _ in 0..open.len() {
+        out.push_str("</text:span>");
+    }
+    out
+}
+
+fn build_content_xml(snap: &DocSnapshot) -> String {
+    let mut body = String::new();
+    let mut used: BTreeSet<&'static str> = BTreeSet::new();
+    let mut i = 0;
+    while i < snap.blocks.len() {
+        let b = &snap.blocks[i];
+        match b.kind.as_str() {
+            "heading" => {
+                let level = match b.attrs.get("level") {
+                    Some(AttrVal::Int(n)) => (*n).clamp(1, 6),
+                    _ => 1,
+                };
+                body.push_str(&format!(
+                    r#"<text:h text:outline-level="{level}">{}</text:h>"#,
+                    render_inline(&b.text, &b.marks, &mut used)
+                ));
+                i += 1;
+            }
+            "list_item" => {
+                body.push_str("<text:list>");
+                while i < snap.blocks.len() && snap.blocks[i].kind == "list_item" {
+                    let li = &snap.blocks[i];
+                    body.push_str(&format!(
+                        r#"<text:list-item><text:p>{}</text:p></text:list-item>"#,
+                        render_inline(&li.text, &li.marks, &mut used)
+                    ));
+                    i += 1;
+                }
+                body.push_str("</text:list>");
+            }
+            _ => {
+                body.push_str(&format!(
+                    r#"<text:p>{}</text:p>"#,
+                    render_inline(&b.text, &b.marks, &mut used)
+                ));
+                i += 1;
+            }
+        }
+    }
+
+    let mut styles = String::new();
+    for &name in &used {
+        styles.push_str(&format!(
+            r#"<style:style style:name="{}" style:family="text"><style:text-properties {}/></style:style>"#,
+            style_for(name).unwrap(),
+            style_props(name)
+        ));
+    }
+
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0">
+<office:automatic-styles>{styles}</office:automatic-styles>
+<office:body><office:text>{body}</office:text></office:body>
+</office:document-content>"#
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::container::{minimal_odt_styled, OdtContainer};
+    use super::super::OdtCodec;
+    use crate::{AttrVal, DocSnapshot, Document, FormatProvider};
+    use std::collections::BTreeMap;
+
+    type Norm = Vec<(String, String, Vec<(usize, usize, String)>, BTreeMap<String, AttrVal>)>;
+
+    fn norm(snap: &DocSnapshot) -> Norm {
+        snap.blocks
+            .iter()
+            .map(|b| {
+                let mut m: Vec<_> = b.marks.iter().map(|x| (x.start, x.end, x.name.clone())).collect();
+                m.sort();
+                (b.kind.clone(), b.text.clone(), m, b.attrs.clone())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn export_import_roundtrips_model() {
+        let styles = r#"<style:style style:name="T1" style:family="text"><style:text-properties fo:font-weight="bold"/></style:style>"#;
+        let body = concat!(
+            r#"<text:h text:outline-level="1">Title</text:h>"#,
+            r#"<text:p>a <text:span text:style-name="T1">bold</text:span> b</text:p>"#,
+            r#"<text:list><text:list-item><text:p>one</text:p></text:list-item>"#,
+            r#"<text:list-item><text:p>two</text:p></text:list-item></text:list>"#,
+        );
+        let odt = minimal_odt_styled(styles, body);
+
+        let mut d = Document::new();
+        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        let m1 = norm(&d.materialize());
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let c = OdtContainer::read(&exported).unwrap();
+        assert_eq!(c.parts[0].0, "mimetype", "exported .odt has mimetype first");
+        assert!(c.get("content.xml").is_some());
+
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let m2 = norm(&d2.materialize());
+        assert_eq!(m1, m2, "model round-trips through .odt export then import");
+    }
+}
