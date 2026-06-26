@@ -87,8 +87,34 @@ pub(crate) fn parse_body(content_xml: &[u8], doc: &mut DocMut) -> Result<(), Cod
     // trailing boundary).
     let mut pending_marks: Vec<(String, usize, usize, &'static str)> = Vec::new();
 
+    // Capture state for unmodeled top-level body elements → fidelity atoms.
+    let mut capture: Option<(usize, i32)> = None; // (start byte, open depth)
+
     loop {
-        match reader.read_event().map_err(|e| CodecError::Parse(format!("xml: {e}")))? {
+        let pos_before = reader.buffer_position() as usize;
+        let ev = reader.read_event().map_err(|e| CodecError::Parse(format!("xml: {e}")))?;
+
+        // While capturing an unmodeled subtree, only track depth; when it closes,
+        // stash the raw XML verbatim as a fidelity-atom block.
+        if let Some((start, depth)) = capture.as_mut() {
+            match &ev {
+                Event::Start(_) => *depth += 1,
+                Event::End(_) => {
+                    *depth -= 1;
+                    if *depth == 0 {
+                        let raw = s[*start..reader.buffer_position() as usize].to_string();
+                        let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "fidelity");
+                        doc.set_attr(&id, "xml", raw.as_str());
+                        cur = None;
+                        capture = None;
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+
+        match ev {
             Event::Start(e) => match e.name().as_ref() {
                 b"office:automatic-styles" => in_styles = true,
                 b"style:style" if in_styles => {
@@ -116,6 +142,12 @@ pub(crate) fn parse_body(content_xml: &[u8], doc: &mut DocMut) -> Result<(), Cod
                         .unwrap_or_default();
                     span_stack.push((marks, cur_len));
                 }
+                b"text:list" => {} // container; handled via its list items
+                // Any other element directly under office:text is unmodeled →
+                // capture its whole subtree verbatim as a fidelity atom.
+                _ if in_text && cur.is_none() && !in_item => {
+                    capture = Some((pos_before, 1));
+                }
                 _ => {}
             },
             Event::Empty(e) => match e.name().as_ref() {
@@ -127,6 +159,13 @@ pub(crate) fn parse_body(content_xml: &[u8], doc: &mut DocMut) -> Result<(), Cod
                 b"text:h" if in_text => {
                     let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "heading");
                     doc.set_attr(&id, "level", outline_level(&e).unwrap_or(1));
+                    cur = None;
+                }
+                // Self-closing unmodeled element under office:text → fidelity atom.
+                _ if in_text && cur.is_none() && !in_item => {
+                    let raw = s[pos_before..reader.buffer_position() as usize].to_string();
+                    let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "fidelity");
+                    doc.set_attr(&id, "xml", raw.as_str());
                     cur = None;
                 }
                 _ => {}
@@ -228,5 +267,46 @@ mod tests {
             "em over 'em', got {:?}",
             p.marks
         );
+    }
+
+    #[test]
+    fn preserves_unmodeled_body_element_as_fidelity_atom() {
+        let body = concat!(
+            r#"<text:p>before</text:p>"#,
+            r#"<table:table table:name="T"><table:table-row>"#,
+            r#"<table:table-cell><text:p>cell</text:p></table:table-cell>"#,
+            r#"</table:table-row></table:table>"#,
+            r#"<text:p>after</text:p>"#,
+        );
+        let odt = minimal_odt_styled("", body);
+        let mut d = Document::new();
+        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        let snap = d.materialize();
+
+        assert_eq!(snap.blocks.len(), 3, "before / fidelity / after: {snap:?}");
+        assert_eq!(snap.blocks[0].kind, "paragraph");
+        assert_eq!(snap.blocks[0].text, "before");
+        assert_eq!(snap.blocks[1].kind, "fidelity");
+        assert_eq!(snap.blocks[2].text, "after");
+        let raw1 = match snap.blocks[1].attrs.get("xml") {
+            Some(AttrVal::Str(x)) => x.clone(),
+            other => panic!("fidelity atom missing xml attr: {other:?}"),
+        };
+        assert!(
+            raw1.starts_with("<table:table") && raw1.contains("cell") && raw1.ends_with("</table:table>"),
+            "captured raw: {raw1}"
+        );
+
+        // Round-trip: export then re-import → the table atom survives verbatim.
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap2 = d2.materialize();
+        assert_eq!(snap2.blocks.len(), 3);
+        let raw2 = match snap2.blocks[1].attrs.get("xml") {
+            Some(AttrVal::Str(x)) => x.clone(),
+            other => panic!("fidelity atom missing after round-trip: {other:?}"),
+        };
+        assert_eq!(raw1, raw2, "fidelity atom round-trips verbatim");
     }
 }
