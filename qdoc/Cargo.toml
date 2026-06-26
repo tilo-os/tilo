@@ -6,6 +6,7 @@ description = "CRDT-native canonical document model and format-provider API for 
 
 [dependencies]
 automerge = "0.8.0"
+pulldown-cmark = { version = "0.12", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
