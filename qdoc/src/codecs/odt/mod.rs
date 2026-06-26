@@ -31,9 +31,16 @@ impl FormatProvider for OdtCodec {
         let container = container::OdtContainer::read(bytes)?;
         let content = container
             .get("content.xml")
-            .ok_or_else(|| CodecError::Parse("odt: missing content.xml".into()))?;
-        content::parse_body(content, doc)?;
-        // Verbatim part preservation for lossless export lands in Phase 4 Task 5.
+            .ok_or_else(|| CodecError::Parse("odt: missing content.xml".into()))?
+            .to_vec();
+        content::parse_body(&content, doc)?;
+        // Preservation layer: stash every part except the (regenerated)
+        // content.xml verbatim so export round-trips them losslessly.
+        for (name, part) in &container.parts {
+            if name != "content.xml" {
+                doc.set_preserved(&format!("odt/part/{name}"), part);
+            }
+        }
         Ok(())
     }
 
