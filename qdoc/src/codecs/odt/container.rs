@@ -76,10 +76,16 @@ impl OdtContainer {
 /// tests so the suite is self-contained (no LibreOffice dependency).
 #[cfg(test)]
 pub(crate) fn minimal_odt(body_xml: &str) -> Vec<u8> {
+    minimal_odt_styled("", body_xml)
+}
+
+/// As [`minimal_odt`], with explicit `office:automatic-styles` content.
+#[cfg(test)]
+pub(crate) fn minimal_odt_styled(styles_xml: &str, body_xml: &str) -> Vec<u8> {
     let content = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0">
-<office:automatic-styles/>
+<office:automatic-styles>{styles_xml}</office:automatic-styles>
 <office:body><office:text>{body_xml}</office:text></office:body>
 </office:document-content>"#
     );
