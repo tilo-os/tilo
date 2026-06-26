@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "qdoc",
+    "editor",
     "fs",
     "shell",
     "ui",
