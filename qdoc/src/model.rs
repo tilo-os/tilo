@@ -5,10 +5,11 @@
 
 use crate::document::{DocError, MarkSpan};
 use crate::schema::*;
-use crate::snapshot::{BlockView, DocSnapshot};
+use crate::snapshot::{AttrVal, BlockView, DocSnapshot};
 use automerge::marks::{ExpandMark, Mark};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
+use std::collections::BTreeMap;
 
 /// Resolved object ids for the canonical container maps under a document root.
 #[derive(Clone, Debug)]
@@ -134,6 +135,27 @@ pub fn marks(doc: &AutoCommit, c: &Containers, id: &str) -> Vec<MarkSpan> {
     }
 }
 
+fn read_attrs(doc: &AutoCommit, block_obj: &ObjId) -> BTreeMap<String, AttrVal> {
+    let attrs_obj = match doc.get(block_obj, BLOCK_ATTRS) {
+        Ok(Some((Value::Object(ObjType::Map), a))) => a,
+        _ => return BTreeMap::new(),
+    };
+    let mut out = BTreeMap::new();
+    for key in doc.keys(&attrs_obj) {
+        if let Ok(Some((Value::Scalar(s), _))) = doc.get(&attrs_obj, &key) {
+            let val = match s.as_ref() {
+                ScalarValue::Int(i) => AttrVal::Int(*i),
+                ScalarValue::Uint(u) => AttrVal::Int(*u as i64),
+                ScalarValue::Boolean(b) => AttrVal::Bool(*b),
+                ScalarValue::Str(st) => AttrVal::Str(st.to_string()),
+                _ => continue,
+            };
+            out.insert(key, val);
+        }
+    }
+    out
+}
+
 pub fn materialize(doc: &AutoCommit, c: &Containers) -> DocSnapshot {
     let blocks = blocks_in_order(doc, c)
         .into_iter()
@@ -151,6 +173,7 @@ fn materialize_block(doc: &AutoCommit, container: &ObjId, id: &str) -> BlockView
                 kind: String::new(),
                 text: String::new(),
                 marks: vec![],
+                attrs: BTreeMap::new(),
                 children: vec![],
             }
         }
@@ -164,6 +187,7 @@ fn materialize_block(doc: &AutoCommit, container: &ObjId, id: &str) -> BlockView
         _ => String::new(),
     };
     let marks = marks_on(doc, &obj);
+    let attrs = read_attrs(doc, &obj);
     let children = match doc.get(&obj, BLOCK_CHILDREN) {
         Ok(Some((Value::Object(ObjType::Map), cid))) => ordered_keys(doc, &cid)
             .into_iter()
@@ -171,7 +195,7 @@ fn materialize_block(doc: &AutoCommit, container: &ObjId, id: &str) -> BlockView
             .collect(),
         _ => vec![],
     };
-    BlockView { id: id.into(), kind, text, marks, children }
+    BlockView { id: id.into(), kind, text, marks, attrs, children }
 }
 
 // ---- borrowed mutable view -------------------------------------------------
@@ -262,5 +286,19 @@ impl<'a> DocMut<'a> {
             let _ = self.doc.mark(&tid, mark, ExpandMark::After);
             self.doc.commit();
         }
+    }
+
+    /// Set a scalar attribute (e.g. heading `level`, list `ordered`) in the
+    /// block's `attrs` map.
+    pub fn set_attr(&mut self, block_id: &str, key: &str, value: impl Into<ScalarValue>) {
+        let Some(obj) = block_obj(self.doc, &self.c.blocks, block_id) else {
+            return;
+        };
+        let attrs = match self.doc.get(&obj, BLOCK_ATTRS) {
+            Ok(Some((Value::Object(ObjType::Map), a))) => a,
+            _ => return,
+        };
+        let _ = self.doc.put(&attrs, key, value);
+        self.doc.commit();
     }
 }
