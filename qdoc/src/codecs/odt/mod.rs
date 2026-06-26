@@ -5,6 +5,7 @@
 
 pub mod container;
 pub mod content;
+pub mod export;
 
 use crate::format::{CodecError, Confidence, FormatProvider};
 use crate::model::{DocMut, DocRef};
@@ -36,9 +37,7 @@ impl FormatProvider for OdtCodec {
         Ok(())
     }
 
-    fn export(&self, _doc: DocRef) -> Result<Vec<u8>, CodecError> {
-        Err(CodecError::Unsupported(
-            "odt export is implemented in Phase 4 Task 4".into(),
-        ))
+    fn export(&self, doc: DocRef) -> Result<Vec<u8>, CodecError> {
+        export::export(doc)
     }
 }
