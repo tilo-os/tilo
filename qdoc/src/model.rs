@@ -135,6 +135,20 @@ pub fn marks(doc: &AutoCommit, c: &Containers, id: &str) -> Vec<MarkSpan> {
     }
 }
 
+/// All preserved blobs (the lossless preservation layer — verbatim bytes a codec
+/// stashed for content it doesn't model), as `(key, bytes)`.
+pub fn preserved_parts(doc: &AutoCommit, c: &Containers) -> Vec<(String, Vec<u8>)> {
+    doc.keys(&c.preserved)
+        .filter_map(|k| match doc.get(&c.preserved, &k) {
+            Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+                ScalarValue::Bytes(b) => Some((k, b.clone())),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
 fn read_attrs(doc: &AutoCommit, block_obj: &ObjId) -> BTreeMap<String, AttrVal> {
     let attrs_obj = match doc.get(block_obj, BLOCK_ATTRS) {
         Ok(Some((Value::Object(ObjType::Map), a))) => a,
@@ -299,6 +313,13 @@ impl<'a> DocMut<'a> {
             _ => return,
         };
         let _ = self.doc.put(&attrs, key, value);
+        self.doc.commit();
+    }
+
+    /// Stash a verbatim blob in the preservation layer (e.g. an unmodeled ODF
+    /// part), keyed by `key`. Re-emitted unchanged on export.
+    pub fn set_preserved(&mut self, key: &str, bytes: &[u8]) {
+        let _ = self.doc.put(&self.c.preserved, key, ScalarValue::Bytes(bytes.to_vec()));
         self.doc.commit();
     }
 }

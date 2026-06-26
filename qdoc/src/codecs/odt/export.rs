@@ -20,10 +20,28 @@ const MANIFEST: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
 pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     let snap = doc.materialize();
     let content = build_content_xml(&snap);
+
     let mut c = OdtContainer { parts: Vec::new() };
-    c.set("mimetype", MIMETYPE.to_vec());
+    // Re-emit every preserved part verbatim (styles.xml, settings.xml, images,
+    // the original manifest/mimetype, …).
+    let mut had_mimetype = false;
+    let mut had_manifest = false;
+    for (key, bytes) in crate::model::preserved_parts(doc.doc, doc.c) {
+        if let Some(name) = key.strip_prefix("odt/part/") {
+            had_mimetype |= name == "mimetype";
+            had_manifest |= name == "META-INF/manifest.xml";
+            c.set(name, bytes);
+        }
+    }
+    // Fall back to generated mimetype/manifest when the source had none (e.g. a
+    // doc created from scratch rather than imported).
+    if !had_mimetype {
+        c.set("mimetype", MIMETYPE.to_vec());
+    }
+    if !had_manifest {
+        c.set("META-INF/manifest.xml", MANIFEST.to_vec());
+    }
     c.set("content.xml", content.into_bytes());
-    c.set("META-INF/manifest.xml", MANIFEST.to_vec());
     c.write()
 }
 
@@ -202,5 +220,27 @@ mod tests {
         OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let m2 = norm(&d2.materialize());
         assert_eq!(m1, m2, "model round-trips through .odt export then import");
+    }
+
+    #[test]
+    fn preserves_unmodeled_parts() {
+        // Inject a part the codec doesn't model.
+        let base = minimal_odt_styled("", "<text:p>hi</text:p>");
+        let mut c = OdtContainer::read(&base).unwrap();
+        c.set("settings.xml", b"<office:settings>custom</office:settings>".to_vec());
+        let odt = c.write().unwrap();
+
+        let mut d = Document::new();
+        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+
+        let out = OdtContainer::read(&exported).unwrap();
+        assert_eq!(
+            out.get("settings.xml"),
+            Some(&b"<office:settings>custom</office:settings>"[..]),
+            "unmodeled part must round-trip byte-identically"
+        );
+        assert_eq!(out.parts[0].0, "mimetype", "mimetype still first");
+        assert!(out.get("content.xml").is_some(), "content regenerated");
     }
 }
