@@ -26,7 +26,7 @@ pub use widget::{Widget, Element};
 pub use widget::{AppCommand, AppKind, AppWidget, IconDescriptor};
 pub use widget::command_palette::{CommandEntry, CommandPalette};
 pub use text_render::{TextRenderer, TextWeight};
-pub use richtext::{RichSpan, RichTextLayout, TextAlign};
+pub use richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
 
 // Unified animation primitives (foundation #17).
 pub use animation::{Animated, Curve, Lerp};
