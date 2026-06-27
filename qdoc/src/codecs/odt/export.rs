@@ -8,7 +8,7 @@ use crate::document::MarkSpan;
 use crate::format::CodecError;
 use crate::model::DocRef;
 use crate::snapshot::{AttrVal, DocSnapshot};
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 const MIMETYPE: &[u8] = b"application/vnd.oasis.opendocument.text";
 const MANIFEST: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
@@ -45,32 +45,16 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     c.write()
 }
 
-/// Codec-authored automatic style name for a mark.
-fn style_for(name: &str) -> Option<&'static str> {
-    match name {
-        "strong" => Some("qdoc-strong"),
-        "em" => Some("qdoc-em"),
-        "underline" => Some("qdoc-underline"),
+/// Codec-authored automatic *text* style for a mark: `(style name, properties)`.
+/// Boolean marks map to fixed styles; valued font marks get a per-value style.
+fn mark_style(m: &MarkSpan) -> Option<(String, String)> {
+    match m.name.as_str() {
+        "strong" => Some(("qdoc-strong".into(), r#"fo:font-weight="bold""#.into())),
+        "em" => Some(("qdoc-em".into(), r#"fo:font-style="italic""#.into())),
+        "underline" => Some(("qdoc-underline".into(), r#"style:text-underline-style="solid""#.into())),
+        "fontSize" => m.value.as_int().map(|n| (format!("qdoc-fs-{n}"), format!(r#"fo:font-size="{n}pt""#))),
+        "fontFamily" => m.value.as_str().map(|f| (format!("qdoc-ff-{f}"), format!(r#"style:font-name="{}""#, font_name(f)))),
         _ => None,
-    }
-}
-
-/// The static mark name, for known marks only.
-fn static_mark(name: &str) -> Option<&'static str> {
-    match name {
-        "strong" => Some("strong"),
-        "em" => Some("em"),
-        "underline" => Some("underline"),
-        _ => None,
-    }
-}
-
-fn style_props(name: &str) -> &'static str {
-    match name {
-        "strong" => r#"fo:font-weight="bold""#,
-        "em" => r#"fo:font-style="italic""#,
-        "underline" => r#"style:text-underline-style="solid""#,
-        _ => "",
     }
 }
 
@@ -86,16 +70,21 @@ fn push_escaped(out: &mut String, c: char) {
 /// Render a block's text with `text:span` wrappers for its marks. Spans are
 /// closed and re-opened whenever the active mark set changes, so the output is
 /// always well-nested even for overlapping marks.
-fn render_inline(text: &str, marks: &[MarkSpan], used: &mut BTreeSet<&'static str>) -> String {
+fn render_inline(text: &str, marks: &[MarkSpan], used: &mut std::collections::BTreeMap<String, String>) -> String {
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();
     let mut out = String::new();
-    let mut open: Vec<&'static str> = Vec::new();
+    let mut open: Vec<String> = Vec::new();
     for i in 0..n {
-        let mut want: Vec<&'static str> = marks
+        let mut want: Vec<String> = marks
             .iter()
             .filter(|m| i >= m.start && i < m.end)
-            .filter_map(|m| static_mark(&m.name))
+            .filter_map(|m| {
+                mark_style(m).map(|(name, props)| {
+                    used.insert(name.clone(), props);
+                    name
+                })
+            })
             .collect();
         want.sort();
         want.dedup();
@@ -104,10 +93,9 @@ fn render_inline(text: &str, marks: &[MarkSpan], used: &mut BTreeSet<&'static st
                 out.push_str("</text:span>");
             }
             open.clear();
-            for &name in &want {
-                out.push_str(&format!(r#"<text:span text:style-name="{}">"#, style_for(name).unwrap()));
-                used.insert(name);
-                open.push(name);
+            for name in &want {
+                out.push_str(&format!(r#"<text:span text:style-name="{name}">"#));
+                open.push(name.clone());
             }
         }
         push_escaped(&mut out, chars[i]);
@@ -127,11 +115,10 @@ fn font_name(generic: &str) -> &'static str {
     }
 }
 
-/// Paragraph-properties + text-properties XML for a block's align/font/size, if
-/// any are non-default.
+/// Paragraph-properties for a block's alignment, if non-default. (Font is a
+/// per-run mark, handled by `render_inline`.)
 fn para_props(b: &BlockView) -> Option<(String, String)> {
     let mut pp = String::new();
-    let mut tp = String::new();
     if let Some(AttrVal::Str(a)) = b.attrs.get("align") {
         let v = match a.as_str() {
             "center" => "center",
@@ -142,16 +129,10 @@ fn para_props(b: &BlockView) -> Option<(String, String)> {
             pp.push_str(&format!(r#" fo:text-align="{v}""#));
         }
     }
-    if let Some(AttrVal::Int(n)) = b.attrs.get("fontSize") {
-        tp.push_str(&format!(r#" fo:font-size="{n}pt""#));
-    }
-    if let Some(AttrVal::Str(f)) = b.attrs.get("font") {
-        tp.push_str(&format!(r#" style:font-name="{}""#, font_name(f)));
-    }
-    if pp.is_empty() && tp.is_empty() {
+    if pp.is_empty() {
         None
     } else {
-        Some((pp, tp))
+        Some((pp, String::new()))
     }
 }
 
@@ -184,7 +165,7 @@ use crate::snapshot::BlockView;
 
 fn build_content_xml(snap: &DocSnapshot) -> String {
     let mut body = String::new();
-    let mut used: BTreeSet<&'static str> = BTreeSet::new();
+    let mut used: BTreeMap<String, String> = BTreeMap::new();
     let mut pstyles: Vec<(String, String)> = Vec::new();
     let mut style_attr = |b: &BlockView| -> String {
         match para_props(b) {
@@ -266,11 +247,9 @@ fn build_content_xml(snap: &DocSnapshot) -> String {
     }
 
     let mut styles = String::new();
-    for &name in &used {
+    for (name, props) in &used {
         styles.push_str(&format!(
-            r#"<style:style style:name="{}" style:family="text"><style:text-properties {}/></style:style>"#,
-            style_for(name).unwrap(),
-            style_props(name)
+            r#"<style:style style:name="{name}" style:family="text"><style:text-properties {props}/></style:style>"#
         ));
     }
     for (idx, (pp, tp)) in pstyles.iter().enumerate() {
@@ -340,15 +319,16 @@ mod tests {
 
     #[test]
     fn paragraph_props_roundtrip() {
-        // A paragraph with alignment + font + size must survive .odt round-trip.
+        use crate::document::MarkValue;
+        // Alignment (paragraph attr) + per-run font marks must survive .odt round-trip.
         let mut d = Document::new();
         let id = d.insert_block(None, "paragraph");
         d.splice_text(&id, 0, 0, "styled");
         {
             let mut dm = d.as_mut();
             dm.set_attr(&id, "align", "center");
-            dm.set_attr(&id, "fontSize", 22_i64);
-            dm.set_attr(&id, "font", "serif");
+            dm.add_mark(&id, 0, 6, "fontSize", 22_i64);
+            dm.add_mark(&id, 0, 6, "fontFamily", "serif");
         }
 
         let exported = OdtCodec.export(d.as_ref()).unwrap();
@@ -358,8 +338,8 @@ mod tests {
         let b = &snap.blocks[0];
         assert_eq!(b.text, "styled");
         assert_eq!(b.attrs.get("align"), Some(&AttrVal::Str("center".into())));
-        assert_eq!(b.attrs.get("fontSize"), Some(&AttrVal::Int(22)));
-        assert_eq!(b.attrs.get("font"), Some(&AttrVal::Str("serif".into())));
+        assert!(b.marks.iter().any(|m| m.name == "fontSize" && m.value == MarkValue::Int(22)), "{:?}", b.marks);
+        assert!(b.marks.iter().any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into())), "{:?}", b.marks);
     }
 
     #[test]
