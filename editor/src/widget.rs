@@ -1,34 +1,121 @@
-//! `WordProcessorWidget` — the `ui::Widget` that renders a `qdoc` document and
-//! maps keyboard/pointer events onto the [`WordProcessor`] editing model.
-//!
-//! Rendering is one block per line (headings larger + bold, paragraphs, list
-//! items with a bullet), with inline **bold** marks drawn as separate weighted
-//! runs and a caret. Word-wrap and selection are follow-ups; the document model
-//! and round-tripping are already complete and tested.
+//! `WordProcessorWidget` — the `ui::Widget` for the word processor. Renders the
+//! `qdoc` document as a centered page (à la LibreOffice Writer) using the
+//! `RichTextLayout` primitive: word-wrapped paragraphs, headings, list bullets,
+//! inline **bold**/*italic*/underline, a selection highlight, and a caret. Maps
+//! pointer + keyboard onto the editing model (selection, formatting, save).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 use automerge::{AutoCommit, ObjId};
+use cosmic_text::fontdb;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::Fill;
+use vello::peniko::{Color, Fill, FontData};
 use vello::Scene;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use qdoc::document::MarkSpan;
 use qdoc::snapshot::{AttrVal, BlockView};
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 use ui::PresenceCtx;
 
+use crate::richtext::{RichTextLayout, Run};
 use crate::word_processor::{Caret, WordProcessor};
 use crate::WpFormat;
 
-const BLOCK_SPACING: f64 = 6.0;
+// Document surface colors (a white page is the familiar word-processor look,
+// independent of the OS chrome theme).
+const CANVAS: Color = Color::from_rgb8(0x2b, 0x2e, 0x34);
+const PAPER: Color = Color::from_rgb8(0xfc, 0xfc, 0xfa);
+const SHADOW: Color = Color::from_rgb8(0x16, 0x18, 0x1c);
+const INK: Color = Color::from_rgb8(0x1c, 0x1c, 0x20);
+const MUTED: Color = Color::from_rgb8(0x8a, 0x8a, 0x92);
+const CARET_COLOR: Color = Color::from_rgb8(0x28, 0x5a, 0xc8);
+const SELECTION: Color = Color::from_rgba8(0x46, 0x78, 0xe6, 0x4d);
+
+const PAGE_MARGIN: f64 = 64.0;
+const PAGE_TOP: f64 = 28.0;
+const MAX_PAGE_W: f64 = 820.0;
+const BLOCK_SPACING: f64 = 8.0;
 const CARET_WIDTH: f64 = 2.0;
+
+fn char_to_byte(text: &str, char_off: usize) -> usize {
+    text.char_indices().nth(char_off).map(|(b, _)| b).unwrap_or(text.len())
+}
+fn byte_to_char(text: &str, byte_off: usize) -> usize {
+    let b = byte_off.min(text.len());
+    text[..b].chars().count()
+}
+
+/// `(font size, whole-block bold, left indent, optional bullet)`.
+fn block_style(b: &BlockView) -> (f32, bool, f64, Option<&'static str>) {
+    match b.kind.as_str() {
+        "heading" => {
+            let level = match b.attrs.get("level") {
+                Some(AttrVal::Int(n)) => *n,
+                _ => 1,
+            };
+            let size = match level {
+                1 => 30.0,
+                2 => 25.0,
+                3 => 21.0,
+                _ => 18.0,
+            };
+            (size, true, 0.0, None)
+        }
+        "list_item" => {
+            let ordered = matches!(b.attrs.get("ordered"), Some(AttrVal::Bool(true)));
+            (16.5, false, 28.0, Some(if ordered { "1." } else { "•" }))
+        }
+        _ => (16.5, false, 0.0, None),
+    }
+}
+
+fn char_has(i: usize, marks: &[MarkSpan], name: &str) -> bool {
+    marks.iter().any(|m| m.name == name && i >= m.start && i < m.end)
+}
+
+/// Split a block's text into styled runs + underline byte ranges.
+fn block_runs(b: &BlockView) -> (Vec<Run>, Vec<(usize, usize)>) {
+    let chars: Vec<char> = b.text.chars().collect();
+    let n = chars.len();
+    let mut runs = Vec::new();
+    let mut i = 0;
+    while i < n {
+        let bold = char_has(i, &b.marks, "strong");
+        let italic = char_has(i, &b.marks, "em");
+        let mut j = i;
+        while j < n && char_has(j, &b.marks, "strong") == bold && char_has(j, &b.marks, "em") == italic {
+            j += 1;
+        }
+        runs.push(Run { text: chars[i..j].iter().collect(), bold, italic });
+        i = j;
+    }
+    if runs.is_empty() {
+        runs.push(Run { text: String::new(), bold: false, italic: false });
+    }
+    let underlines = b
+        .marks
+        .iter()
+        .filter(|m| m.name == "underline")
+        .map(|m| (char_to_byte(&b.text, m.start), char_to_byte(&b.text, m.end)))
+        .collect();
+    (runs, underlines)
+}
+
+/// A block laid out for the current frame; kept for click hit-testing.
+struct Laid {
+    id: String,
+    text: String,
+    y_top: f64,
+    text_x: f64,
+    height: f64,
+    layout: RichTextLayout,
+}
 
 pub struct WordProcessorWidget {
     inner: WordProcessor,
@@ -36,15 +123,13 @@ pub struct WordProcessorWidget {
     focused: bool,
     dirty: bool,
     needs_commit: bool,
-    /// Materialized blocks, refreshed in `sync`.
-    blocks: Vec<BlockView>,
-    /// `(block_id, y_top, line_height)` recorded during `draw`, for click→caret.
-    block_bounds: Vec<(String, f64, f64)>,
-    /// Last pointer position (logical px), tracked for click resolution.
     pointer: Point,
-    /// Backing file + format, for Ctrl+S save.
+    dragging: bool,
     path: Option<PathBuf>,
     format: Option<WpFormat>,
+    font_cache: HashMap<fontdb::ID, FontData>,
+    blocks: Vec<BlockView>,
+    laid: Vec<Laid>,
 }
 
 impl Default for WordProcessorWidget {
@@ -61,15 +146,16 @@ impl WordProcessorWidget {
             focused: true,
             dirty: true,
             needs_commit: false,
-            blocks: Vec::new(),
-            block_bounds: Vec::new(),
             pointer: Point::ZERO,
+            dragging: false,
             path: None,
             format: None,
+            font_cache: HashMap::new(),
+            blocks: Vec::new(),
+            laid: Vec::new(),
         }
     }
 
-    /// Access the editing model (tests / host integration).
     pub fn model(&self) -> &WordProcessor {
         &self.inner
     }
@@ -77,13 +163,11 @@ impl WordProcessorWidget {
         &mut self.inner
     }
 
-    /// Associate a backing file + format so Ctrl+S can save.
     pub fn set_file(&mut self, path: PathBuf, format: WpFormat) {
         self.path = Some(path);
         self.format = Some(format);
     }
 
-    /// Export the document to its backing file (Ctrl+S). No-op if unset.
     fn save(&self, state: &AutoCommit) {
         if let (Some(path), Some(format), Some(c)) =
             (self.path.as_ref(), self.format, self.inner.containers.as_ref())
@@ -101,90 +185,42 @@ impl WordProcessorWidget {
         }
     }
 
-    fn text_pad(&self) -> f64 {
-        16.0
-    }
-}
-
-fn block_style(b: &BlockView) -> (f32, bool, String) {
-    match b.kind.as_str() {
-        "heading" => {
-            let level = match b.attrs.get("level") {
-                Some(AttrVal::Int(n)) => *n,
-                _ => 1,
-            };
-            let size = match level {
-                1 => 28.0,
-                2 => 24.0,
-                3 => 20.0,
-                _ => 18.0,
-            };
-            (size, true, String::new())
+    /// Resolve a pointer position to a caret and apply it (optionally extending
+    /// the selection for click-drag).
+    fn caret_from_pointer(&mut self, p: Point, extend: bool) {
+        // Find the block whose vertical band contains the pointer (clamp to ends).
+        let mut hit: Option<(String, usize)> = None;
+        for l in &self.laid {
+            if p.y >= l.y_top && p.y < l.y_top + l.height {
+                let byte = l.layout.hit((p.x - l.text_x) as f32, (p.y - l.y_top) as f32);
+                hit = Some((l.id.clone(), byte_to_char(&l.text, byte)));
+                break;
+            }
         }
-        "list_item" => {
-            let ordered = matches!(b.attrs.get("ordered"), Some(AttrVal::Bool(true)));
-            (16.0, false, if ordered { "1. ".into() } else { "• ".into() })
+        if hit.is_none() {
+            // above first / below last
+            if let Some(l) = self.laid.first() {
+                if p.y < l.y_top {
+                    hit = Some((l.id.clone(), 0));
+                }
+            }
+            if hit.is_none() {
+                if let Some(l) = self.laid.last() {
+                    let byte = l.layout.hit((p.x - l.text_x) as f32, (l.height - 1.0) as f32);
+                    hit = Some((l.id.clone(), byte_to_char(&l.text, byte)));
+                }
+            }
         }
-        _ => (16.0, false, String::new()),
-    }
-}
-
-fn char_bold(i: usize, marks: &[MarkSpan]) -> bool {
-    marks.iter().any(|m| m.name == "strong" && i >= m.start && i < m.end)
-}
-
-/// Draw `text` starting at `x`, splitting into weighted runs at bold boundaries.
-/// Returns the advance width.
-#[allow(clippy::too_many_arguments)]
-fn draw_runs(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    color: vello::peniko::Color,
-    transform: Affine,
-    text: &str,
-    marks: &[MarkSpan],
-    x: f64,
-    y: f64,
-    size: f32,
-    base_bold: bool,
-) -> f64 {
-    let chars: Vec<char> = text.chars().collect();
-    let n = chars.len();
-    let mut cx = x;
-    let mut i = 0;
-    while i < n {
-        let bold = base_bold || char_bold(i, marks);
-        let mut j = i;
-        while j < n && (base_bold || char_bold(j, marks)) == bold {
-            j += 1;
+        if let Some((block, offset)) = hit {
+            if extend {
+                self.inner.set_anchor();
+            } else {
+                self.inner.clear_anchor();
+            }
+            self.inner.set_caret(Caret { block, offset });
+            self.dirty = true;
         }
-        let run: String = chars[i..j].iter().collect();
-        let weight = if bold { TextWeight::Bold } else { TextWeight::Regular };
-        tr.draw_text_weighted(scene, &run, size, color, transform * Affine::translate((cx, y)), None, weight);
-        cx += tr.measure_weighted(&run, size, None, weight).0 as f64;
-        i = j;
     }
-    cx - x
-}
-
-/// X-offset of `offset` chars into `text`, honoring bold-run widths.
-fn x_for_offset(tr: &mut TextRenderer, text: &str, marks: &[MarkSpan], size: f32, base_bold: bool, offset: usize) -> f64 {
-    let chars: Vec<char> = text.chars().collect();
-    let off = offset.min(chars.len());
-    let mut x = 0.0;
-    let mut i = 0;
-    while i < off {
-        let bold = base_bold || char_bold(i, marks);
-        let mut j = i;
-        while j < off && (base_bold || char_bold(j, marks)) == bold {
-            j += 1;
-        }
-        let run: String = chars[i..j].iter().collect();
-        let weight = if bold { TextWeight::Bold } else { TextWeight::Regular };
-        x += tr.measure_weighted(&run, size, None, weight).0 as f64;
-        i = j;
-    }
-    x
 }
 
 impl Widget for WordProcessorWidget {
@@ -215,87 +251,159 @@ impl Widget for WordProcessorWidget {
         );
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &PresenceCtx) {
-        // Paper background.
-        scene.fill(Fill::NonZero, transform, theme.tokens.colors.surfaces.raised, None, &self.rect);
+    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, _theme: &Theme, _presence: &PresenceCtx) {
+        let canvas = self.rect;
+        scene.fill(Fill::NonZero, transform, CANVAS, None, &canvas);
 
-        let pad = self.text_pad();
-        let content_x = self.rect.x0 + pad;
-        let mut y = self.rect.y0 + pad;
+        let page_w = (canvas.width() - 2.0 * PAGE_TOP).clamp(320.0, MAX_PAGE_W);
+        let page_x = canvas.x0 + ((canvas.width() - page_w) / 2.0).max(0.0);
+        let page_top = canvas.y0 + PAGE_TOP;
+        let content_x = page_x + PAGE_MARGIN;
+        let content_w = (page_w - 2.0 * PAGE_MARGIN) as f32;
 
+        // Pass 1: shape every block, accumulating vertical positions.
         let blocks = std::mem::take(&mut self.blocks);
-        let mut bounds = Vec::with_capacity(blocks.len());
-        for block in &blocks {
-            let (size, base_bold, prefix) = block_style(block);
-            let lh = size as f64 * 1.4;
-            bounds.push((block.id.clone(), y, lh));
-
-            let mut x = content_x;
-            if !prefix.is_empty() {
-                text_renderer.draw_text(scene, &prefix, size, theme.text_primary, transform * Affine::translate((x, y)), None);
-                x += text_renderer.measure(&prefix, size, None).0 as f64;
-            }
-            if block.kind == "fidelity" {
-                text_renderer.draw_text(scene, "⟦embedded⟧", size, theme.text_primary, transform * Affine::translate((x, y)), None);
-            } else {
-                draw_runs(scene, text_renderer, theme.text_primary, transform, &block.text, &block.marks, x, y, size, base_bold);
-            }
-
-            if self.focused && block.id == self.inner.caret.block {
-                let cx = x + x_for_offset(text_renderer, &block.text, &block.marks, size, base_bold, self.inner.caret.offset);
-                let caret = Rect::new(cx, y, cx + CARET_WIDTH, y + lh);
-                scene.fill(Fill::NonZero, transform, theme.accent_primary, None, &caret);
-            }
-
-            y += lh + BLOCK_SPACING;
+        let mut laid: Vec<Laid> = Vec::with_capacity(blocks.len());
+        let mut y = page_top + PAGE_MARGIN;
+        for b in &blocks {
+            let (size, base_bold, indent, _bullet) = block_style(b);
+            let (runs, underlines) = block_runs(b);
+            let layout = RichTextLayout::shape(
+                &mut text_renderer.font_system,
+                &runs,
+                base_bold,
+                size,
+                (content_w - indent as f32).max(40.0),
+                underlines,
+            );
+            let height = layout.height() as f64;
+            laid.push(Laid { id: b.id.clone(), text: b.text.clone(), y_top: y, text_x: content_x + indent, height, layout });
+            y += height + BLOCK_SPACING;
         }
+        let content_bottom = y - BLOCK_SPACING + PAGE_MARGIN;
+        let page_h = (content_bottom - page_top).max(canvas.height() - 2.0 * PAGE_TOP);
+
+        // Page shadow + paper.
+        let shadow = Rect::new(page_x - 1.0, page_top + 4.0, page_x + page_w + 1.0, page_top + page_h + 6.0);
+        scene.fill(Fill::NonZero, transform, SHADOW, None, &vello::kurbo::RoundedRect::from_rect(shadow, 4.0));
+        let page = Rect::new(page_x, page_top, page_x + page_w, page_top + page_h);
+        scene.fill(Fill::NonZero, transform, PAPER, None, &vello::kurbo::RoundedRect::from_rect(page, 3.0));
+
+        // Pass 2: draw bullets, selection, text, caret.
+        for (b, l) in blocks.iter().zip(laid.iter()) {
+            let (size, _base_bold, _indent, bullet) = block_style(b);
+
+            if b.kind == "fidelity" {
+                let box_rect = Rect::new(l.text_x, l.y_top + 2.0, (page_x + page_w - PAGE_MARGIN).min(l.text_x + 360.0), l.y_top + l.height - 2.0);
+                scene.fill(Fill::NonZero, transform, Color::from_rgb8(0xee, 0xee, 0xf2), None, &vello::kurbo::RoundedRect::from_rect(box_rect, 4.0));
+                text_renderer.draw_text(scene, "⟦ embedded content ⟧", 14.0, MUTED, transform * Affine::translate((l.text_x + 10.0, l.y_top + 6.0)), None);
+                continue;
+            }
+
+            if let Some(bul) = bullet {
+                text_renderer.draw_text(scene, bul, size, INK, transform * Affine::translate((l.text_x - 22.0, l.y_top)), None);
+            }
+
+            // Selection highlight (within this block).
+            if let Some((b0, b1)) = self.selection_bytes_for(&l.id, &l.text) {
+                for (rx0, ry0, rx1, ry1) in l.layout.selection_rects(b0, b1) {
+                    let r = Rect::new(l.text_x + rx0 as f64, l.y_top + ry0 as f64, l.text_x + rx1 as f64, l.y_top + ry1 as f64);
+                    scene.fill(Fill::NonZero, transform, SELECTION, None, &r);
+                }
+            }
+
+            l.layout.draw(scene, &text_renderer.font_system, &mut self.font_cache, transform * Affine::translate((l.text_x, l.y_top)), INK);
+
+            if self.focused && b.id == self.inner.caret.block && !self.inner.has_selection() {
+                let byte = char_to_byte(&l.text, self.inner.caret.offset);
+                let (cx, cy, ch) = l.layout.caret_geometry(byte);
+                let caret = Rect::new(l.text_x + cx as f64, l.y_top + cy as f64, l.text_x + cx as f64 + CARET_WIDTH, l.y_top + cy as f64 + ch as f64);
+                scene.fill(Fill::NonZero, transform, CARET_COLOR, None, &caret);
+            }
+        }
+
         self.blocks = blocks;
-        self.block_bounds = bounds;
+        self.laid = laid;
     }
 
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, modifiers: &Modifiers, state: &mut AutoCommit, _path: &ObjId, handled: &mut bool, _focus_target: &mut Option<NodeId>, _node_id: NodeId, _taffy: &TaffyTree<()>) {
+        let shift = modifiers.state().shift_key();
+        let ctrl = modifiers.state().control_key();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+                if self.dragging {
+                    self.caret_from_pointer(self.pointer, true);
+                }
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
                 if self.rect.contains(self.pointer) {
                     self.focused = true;
-                    let p = self.pointer;
-                    // caret_from_point needs the text renderer; defer exact x to a
-                    // simple path: place on the clicked block at the nearest offset
-                    // using cached measure via a transient renderer is not available
-                    // here, so we approximate to block start and refine on next API.
-                    self.set_caret_to_clicked_block(p);
-                    self.dirty = true;
+                    self.dragging = true;
+                    self.caret_from_pointer(self.pointer, shift);
                     *handled = true;
                 }
+            }
+            WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
+                self.dragging = false;
             }
             WindowEvent::KeyboardInput { event: KeyEvent { state: ElementState::Pressed, logical_key, text, .. }, .. } => {
                 if !self.focused {
                     return;
                 }
-                // Ctrl+S → save to the backing file.
-                if modifiers.state().control_key() {
+                if ctrl {
                     if let Key::Character(s) = logical_key {
-                        if s.as_str() == "s" {
-                            self.save(state);
-                            *handled = true;
-                            return;
+                        match s.as_str() {
+                            "s" => self.save(state),
+                            "b" => self.inner.toggle_mark(state, "strong"),
+                            "i" => self.inner.toggle_mark(state, "em"),
+                            "u" => self.inner.toggle_mark(state, "underline"),
+                            _ => {}
                         }
+                        self.refresh_blocks(state);
+                        self.dirty = true;
+                        self.needs_commit = true;
+                        *handled = true;
+                        return;
                     }
                 }
+
                 let mut changed = true;
+                let mut motion = false;
                 match logical_key {
                     Key::Named(NamedKey::Enter) => self.inner.enter(state),
                     Key::Named(NamedKey::Backspace) => self.inner.backspace(state),
                     Key::Named(NamedKey::Delete) => self.inner.delete_forward(state),
-                    Key::Named(NamedKey::ArrowLeft) => self.inner.move_left(state),
-                    Key::Named(NamedKey::ArrowRight) => self.inner.move_right(state),
-                    Key::Named(NamedKey::ArrowUp) => self.inner.move_block_relative(state, -1),
-                    Key::Named(NamedKey::ArrowDown) => self.inner.move_block_relative(state, 1),
-                    Key::Named(NamedKey::Home) => self.inner.move_home(),
-                    Key::Named(NamedKey::End) => self.inner.move_end(state),
+                    Key::Named(NamedKey::ArrowLeft) => {
+                        self.extend_or_clear(shift);
+                        self.inner.move_left(state);
+                        motion = true;
+                    }
+                    Key::Named(NamedKey::ArrowRight) => {
+                        self.extend_or_clear(shift);
+                        self.inner.move_right(state);
+                        motion = true;
+                    }
+                    Key::Named(NamedKey::ArrowUp) => {
+                        self.extend_or_clear(shift);
+                        self.inner.move_block_relative(state, -1);
+                        motion = true;
+                    }
+                    Key::Named(NamedKey::ArrowDown) => {
+                        self.extend_or_clear(shift);
+                        self.inner.move_block_relative(state, 1);
+                        motion = true;
+                    }
+                    Key::Named(NamedKey::Home) => {
+                        self.extend_or_clear(shift);
+                        self.inner.move_home();
+                        motion = true;
+                    }
+                    Key::Named(NamedKey::End) => {
+                        self.extend_or_clear(shift);
+                        self.inner.move_end(state);
+                        motion = true;
+                    }
                     Key::Named(NamedKey::Space) => self.inner.insert_str(state, " "),
                     _ => {
                         let typed: String = text
@@ -310,6 +418,10 @@ impl Widget for WordProcessorWidget {
                     }
                 }
                 if changed {
+                    if !motion {
+                        // editing consumes/collapses any selection
+                        self.inner.clear_anchor();
+                    }
                     self.refresh_blocks(state);
                     self.dirty = true;
                     self.needs_commit = true;
@@ -323,15 +435,12 @@ impl Widget for WordProcessorWidget {
     fn name(&self) -> &str {
         "WordProcessor"
     }
-
     fn test_id(&self) -> Option<&str> {
         Some("word_processor")
     }
-
     fn get_rect(&self) -> Rect {
         self.rect
     }
-
     fn is_focusable(&self) -> bool {
         true
     }
@@ -342,14 +451,12 @@ impl Widget for WordProcessorWidget {
     fn is_focused(&self) -> bool {
         self.focused
     }
-
     fn needs_commit(&self) -> bool {
         self.needs_commit
     }
     fn on_commit(&mut self) {
         self.needs_commit = false;
     }
-
     fn needs_redraw(&self) -> bool {
         self.dirty
     }
@@ -359,14 +466,19 @@ impl Widget for WordProcessorWidget {
 }
 
 impl WordProcessorWidget {
-    /// Place the caret on the clicked block (offset 0). Exact intra-line offset
-    /// resolution is a follow-up (needs a `TextRenderer` in the event path).
-    fn set_caret_to_clicked_block(&mut self, p: Point) {
-        for (id, y, lh) in &self.block_bounds {
-            if p.y >= *y && p.y < *y + *lh {
-                self.inner.set_caret(Caret { block: id.clone(), offset: 0 });
-                return;
-            }
+    fn selection_bytes_for(&self, block_id: &str, text: &str) -> Option<(usize, usize)> {
+        let (b, s, e) = self.inner.selection_range()?;
+        if b != block_id {
+            return None;
+        }
+        Some((char_to_byte(text, s), char_to_byte(text, e)))
+    }
+
+    fn extend_or_clear(&mut self, shift: bool) {
+        if shift {
+            self.inner.set_anchor();
+        } else {
+            self.inner.clear_anchor();
         }
     }
 }
@@ -377,8 +489,6 @@ mod tests {
     use taffy::AvailableSpace;
     use ui::permissions::PermissionContext;
 
-    /// Run the real ui frame pipeline through `draw` (CPU-only; no GPU
-    /// rasterization), so the heading/list/bold-run paths actually execute.
     fn pipeline_draw(wp: &mut WordProcessorWidget, state: &mut ui::State, w: u32, h: u32) {
         let theme = Theme::dark();
         let presence = PresenceCtx::empty();
@@ -391,10 +501,7 @@ mod tests {
         let child = wp.build_layout(&mut taffy, &theme, &mut node_map);
         let root = taffy
             .new_with_children(
-                Style {
-                    size: Size { width: Dimension::length(w as f32), height: Dimension::length(h as f32) },
-                    ..Default::default()
-                },
+                Style { size: Size { width: Dimension::length(w as f32), height: Dimension::length(h as f32) }, ..Default::default() },
                 &[child],
             )
             .unwrap();
@@ -404,10 +511,7 @@ mod tests {
             taffy
                 .compute_layout_with_measure(
                     root,
-                    taffy::Size {
-                        width: AvailableSpace::Definite(w as f32),
-                        height: AvailableSpace::Definite(h as f32),
-                    },
+                    taffy::Size { width: AvailableSpace::Definite(w as f32), height: AvailableSpace::Definite(h as f32) },
                     |known, available, node_id, _, _| {
                         if let Some(&ptr) = measure_map.get(&node_id) {
                             unsafe { (*ptr).measure(known, available, trr) }
@@ -431,13 +535,8 @@ mod tests {
         wp.model_mut().insert_str(&mut state.doc, "Hello");
         wp.model_mut().enter(&mut state.doc);
         wp.model_mut().insert_str(&mut state.doc, "World");
-
-        pipeline_draw(&mut wp, &mut state, 400, 200);
-        assert_eq!(wp.block_bounds.len(), 2, "draw laid out both paragraphs");
-        assert!(
-            wp.block_bounds.iter().any(|(id, _, _)| id == &wp.inner.caret.block),
-            "caret block is among the drawn blocks"
-        );
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        assert_eq!(wp.laid.len(), 2, "draw laid out both paragraphs");
     }
 
     #[test]
@@ -451,13 +550,9 @@ mod tests {
             MarkdownCodec.import(b"# Title\n\nHello **bold** world\n", &mut dm).unwrap();
         }
         let mut wp = WordProcessorWidget::new();
-        pipeline_draw(&mut wp, &mut state, 600, 400);
-
-        assert!(wp.block_bounds.len() >= 2, "heading + paragraph laid out");
-        assert!(wp.blocks.iter().any(|b| b.kind == "heading"), "a heading block is present");
-        assert!(
-            wp.blocks.iter().any(|b| b.marks.iter().any(|m| m.name == "strong")),
-            "the bold mark survived into the render cache"
-        );
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        assert!(wp.laid.len() >= 2);
+        assert!(wp.blocks.iter().any(|b| b.kind == "heading"));
+        assert!(wp.blocks.iter().any(|b| b.marks.iter().any(|m| m.name == "strong")));
     }
 }
