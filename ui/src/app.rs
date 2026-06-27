@@ -269,24 +269,78 @@ impl App {
     pub fn poll_and_apply_collab_events(&mut self) {
         let events = self.collab_manager.poll();
         for event in events {
+            self.apply_collab_event_for_test(event);
+        }
+    }
+
+    /// Drain every pending [`CollabEvent`] from the collaboration
+    /// manager and route the payload into [`Self::presence_ctx`]:
+    /// remote cursor moves stamp the `remote_cursors` overlay vec,
+    /// arrivals / departures update the `here` map, caret /
+    /// selection / pointer updates land in their respective maps,
+    /// and a CRDT incremental merge is applied so peer mutations
+    /// become visible at the next sync. Returns `true` iff at least
+    /// one event was processed; the caller can use that to decide
+    /// whether the window needs a fresh redraw.
+    ///
+    /// This is the **single shared entry point** the per-frame tick
+    /// and the headless test path both go through. Keeping the
+    /// dispatch in one place means a future protocol addition
+    /// (e.g. a new payload variant) doesn't have to be added to
+    /// two near-identical match arms.
+    pub fn pump_collab_presence(&mut self) -> bool {
+        let events = self.collab_manager.poll();
+        let mut any = false;
+        for event in events {
+            any = true;
             match event {
+                CollabEvent::Context { collaborators, .. } => {
+                    for c in collaborators {
+                        self.state.collab.cursors.entry(c.id.clone()).or_insert(
+                            crate::state::RemoteCursor {
+                                x: 0.0,
+                                y: 0.0,
+                                color: crate::color_compat::rgb(
+                                    c.color[0] as f64,
+                                    c.color[1] as f64,
+                                    c.color[2] as f64,
+                                ),
+                                name: c.name.clone(),
+                            },
+                        );
+                        // Seed the overlay-side presence so peer
+                        // labels come through with the server-
+                        // announced friendly name; later cursor
+                        // moves preserve the label because they
+                        // pass display_name=None.
+                        self.presence_ctx
+                            .upsert_remote_cursor(c.id.clone(), [0.0, 0.0], Some(&c.name));
+                    }
+                }
                 CollabEvent::RemoteCursorMoved { user_id, x, y } => {
                     if let Some(cursor) = self.state.collab.cursors.get_mut(&user_id) {
                         cursor.x = x;
                         cursor.y = y;
                     }
-                    // Mirror the update into PresenceCtx so the shell's
-                    // RemoteCursorOverlay (which reads from
-                    // `presence_ctx.remote_cursors`, not the legacy
-                    // `state.collab.cursors` map) lights up too.
-                    self.presence_ctx.upsert_remote_cursor(user_id, [x, y], None);
+                    self.presence_ctx
+                        .upsert_remote_cursor(user_id, [x, y], None);
                 }
                 CollabEvent::RemotePresenceUpdate { user_id, key, payload } => {
                     self.apply_remote_presence(user_id, key, payload);
                 }
-                _ => {}
+                CollabEvent::CRDTUpdate { data } => {
+                    if let Ok(new_state) = State::load(&data) {
+                        self.state.doc = new_state.doc;
+                        self.needs_sync = true;
+                    }
+                }
+                CollabEvent::CRDTIncremental { data } => {
+                    let _ = self.state.load_incremental(&data);
+                    self.needs_sync = true;
+                }
             }
         }
+        any
     }
 
     /// Test-only hook: apply a single `CollabEvent` directly, bypassing the
@@ -364,27 +418,35 @@ impl App {
     ) {
         use crate::collaboration::PresencePayload::*;
         use crate::permissions::UserId;
-        let uid = UserId(user_id);
         match payload {
-            Pointer { x, y } => self.presence_ctx.set_pointer(&key, uid, (x, y)),
-            Caret { pos } => self.presence_ctx.set_caret(&key, uid, pos),
-            Selection { start, end } => self.presence_ctx.set_selection(
-                &key,
-                uid,
-                crate::presence::SelectionRange { start, end },
-            ),
-            Arrived => {
-                // For Tab keys, route through set_tab_focus so a peer
-                // switching tabs moves their dot instead of accumulating
-                // attribution on every tab they've ever visited. Non-tab
-                // keys fall through to plain register_presence.
-                if matches!(key, crate::presence::PresenceKey::Tab { .. }) {
-                    self.presence_ctx.set_tab_focus(&key, uid);
-                } else {
-                    self.presence_ctx.register_presence(&key, uid);
-                }
+            Pointer { x, y } => {
+                let uid = UserId(user_id.clone());
+                self.presence_ctx.set_pointer(&key, uid, (x, y));
+                // ALSO stamp the screen-space overlay vec so the
+                // generic `draw_remote_cursors` helper paints a
+                // triangle + name pill for this peer. The shell's
+                // richer per-workspace overlay reads from
+                // `pointers[key]`; the cross-process per-app case
+                // reads from `remote_cursors`.
+                self.presence_ctx
+                    .upsert_remote_cursor(user_id, [x, y], None);
             }
-            Left => self.presence_ctx.remove_presence(&key, &uid),
+            Caret { pos } => self
+                .presence_ctx
+                .set_remote_caret(user_id, key, pos),
+            Selection { start, end } => self
+                .presence_ctx
+                .set_remote_selection(user_id, key, start, end),
+            Arrived => {
+                self.presence_ctx.register_peer_at(user_id, key);
+            }
+            Left => {
+                // `Left` drops the peer everywhere — they're gone, not
+                // just from this one key. The previous implementation
+                // only cleared `here[key]`, which left stale cursors
+                // on screen if the peer had moved their pointer first.
+                self.presence_ctx.unregister_peer(user_id);
+            }
         }
     }
 
@@ -841,7 +903,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 app.root_widget.mark_drawn();
                 let t_draw_us = t_draw_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
 
-                // Draw Remote Cursors
+                // Draw Remote Cursors (legacy path — `state.collab.cursors`
+                // is the pre-PresenceCtx map; kept for compat with apps
+                // that still write into it directly).
                 for (_, cursor) in &app.state.collab.cursors {
                     let mut path = vello::kurbo::BezPath::new();
                     path.move_to(Point::new(0.0, 0.0));
@@ -876,6 +940,23 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         None,
                     );
                 }
+
+                // Draw cross-process remote cursors (the new
+                // `PresenceCtx::remote_cursors` overlay vec). Two
+                // `cargo run -p terminal` instances pointing at the
+                // same QUICK_COLLAB_SOCK end up here: each one's
+                // pointer broadcasts populate the peer's overlay
+                // vec, which this pass turns into a triangle + name
+                // pill. Helper lives in `ui::presence::render` so
+                // the same drawing covers the shell and every
+                // non-shell app.
+                crate::presence::draw_remote_cursors(
+                    &mut scene,
+                    transform,
+                    &mut app.text_renderer,
+                    &app.theme,
+                    &app.presence_ctx,
+                );
 
                 if app.debug_mode {
                     let debug_outline_cycle = [
@@ -1283,74 +1364,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             return;
         };
         let app = &mut self.app;
-        // Poll collaboration events
-        for event in app.collab_manager.poll() {
-            match event {
-                CollabEvent::Context { collaborators, .. } => {
-                    // Update collaborators
-                    // We'll need a better way to map this, but for now:
-                    for c in collaborators {
-                        app.state.collab.cursors.entry(c.id.clone()).or_insert(
-                            crate::state::RemoteCursor {
-                                x: 0.0,
-                                y: 0.0,
-                                color: crate::color_compat::rgb(
-                                    c.color[0] as f64,
-                                    c.color[1] as f64,
-                                    c.color[2] as f64,
-                                ),
-                                name: c.name.clone(),
-                            },
-                        );
-                        // Seed the overlay-side presence so peer
-                        // labels come through with the server-
-                        // announced friendly name (later cursor
-                        // moves will preserve that label because
-                        // they pass display_name=None).
-                        app.presence_ctx.upsert_remote_cursor(
-                            c.id.clone(),
-                            [0.0, 0.0],
-                            Some(&c.name),
-                        );
-                    }
-                }
-                CollabEvent::RemoteCursorMoved { user_id, x, y } => {
-                    if let Some(cursor) = app.state.collab.cursors.get_mut(&user_id) {
-                        cursor.x = x;
-                        cursor.y = y;
-                        window.request_redraw();
-                    }
-                    // Always mirror into PresenceCtx — a peer
-                    // can send cursor moves before we've seen
-                    // their Context entry, and the overlay still
-                    // needs to paint them.
-                    app.presence_ctx.upsert_remote_cursor(user_id, [x, y], None);
-                }
-                CollabEvent::CRDTUpdate { data } => {
-                    if let Ok(new_state) = State::load(&data) {
-                        app.state.doc = new_state.doc;
-                        app.needs_sync = true;
-                        window.request_redraw();
-                    }
-                }
-                CollabEvent::CRDTIncremental { data } => {
-                    // Merge the incremental patch into the local
-                    // CRDT. If the bytes are malformed we keep the
-                    // local doc unchanged (best-effort) — a noisy
-                    // peer can't brick our state.
-                    let _ = app.state.load_incremental(&data);
-                    app.needs_sync = true;
-                    window.request_redraw();
-                }
-                CollabEvent::RemotePresenceUpdate {
-                    user_id,
-                    key,
-                    payload,
-                } => {
-                    app.apply_remote_presence(user_id, key, payload);
-                    window.request_redraw();
-                }
-            }
+        // Drain every pending CollabEvent into PresenceCtx /
+        // state.collab via the single shared dispatch. If any event
+        // came through, kick a redraw so the freshly-stamped remote
+        // cursor / caret / selection appears on the next frame.
+        if app.pump_collab_presence() {
+            window.request_redraw();
         }
 
         if app.root_widget.needs_commit() {
