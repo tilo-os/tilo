@@ -196,6 +196,8 @@ struct Laid {
     bullet: Option<String>,
     /// Full grid-cell rectangle (table cells only) — for borders + precise hit.
     cell_box: Option<Rect>,
+    /// Grid row index (table cells only) — for header tint + zebra striping.
+    cell_row: Option<usize>,
 }
 
 fn cell_table(b: &BlockView) -> Option<String> {
@@ -422,6 +424,7 @@ impl Widget for WordProcessorWidget {
                             layout,
                             bullet: None,
                             cell_box: Some(cbox),
+                            cell_row: Some(r),
                         });
                     }
                     y += row_h;
@@ -465,6 +468,7 @@ impl Widget for WordProcessorWidget {
                     layout,
                     bullet,
                     cell_box: None,
+                    cell_row: None,
                 });
                 y += laid.last().unwrap().height + BLOCK_SPACING;
                 bi += 1;
@@ -482,6 +486,12 @@ impl Widget for WordProcessorWidget {
         // Pass 2: draw cell borders, bullets, selection, text, caret.
         for l in &laid {
             if let Some(bx) = l.cell_box {
+                let fill = match l.cell_row {
+                    Some(0) => Color::from_rgb8(0xec, 0xee, 0xf3), // header row tint
+                    Some(r) if r % 2 == 0 => Color::from_rgb8(0xf6, 0xf6, 0xf9), // zebra
+                    _ => PAPER,
+                };
+                scene.fill(Fill::NonZero, transform, fill, None, &bx);
                 scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, Color::from_rgb8(0xc4, 0xc6, 0xcc), None, &bx);
             }
 
@@ -997,6 +1007,11 @@ impl WordProcessorWidget {
                 tr.draw_text_weighted(scene, label, 15.0, color, transform * Affine::translate((lx, ly)), None, ui::text_render::TextWeight::Bold);
             } else {
                 tr.draw_text(scene, label, 15.0, color, transform * Affine::translate((lx, ly)), None);
+            }
+            // Visual cue: underline the "U" (underline) button's label.
+            if *action == ToolAction::Underline {
+                let uy = ly + 18.0;
+                scene.fill(Fill::NonZero, transform, color, None, &Rect::new(lx, uy, lx + lw as f64, uy + 1.5));
             }
             self.toolbar.push((*action, r));
             x += w + 6.0;
