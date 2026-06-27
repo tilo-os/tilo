@@ -7,6 +7,7 @@
 //! and round-tripping are already complete and tested.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -24,6 +25,7 @@ use ui::widget::Widget;
 use ui::PresenceCtx;
 
 use crate::word_processor::{Caret, WordProcessor};
+use crate::WpFormat;
 
 const BLOCK_SPACING: f64 = 6.0;
 const CARET_WIDTH: f64 = 2.0;
@@ -40,6 +42,9 @@ pub struct WordProcessorWidget {
     block_bounds: Vec<(String, f64, f64)>,
     /// Last pointer position (logical px), tracked for click resolution.
     pointer: Point,
+    /// Backing file + format, for Ctrl+S save.
+    path: Option<PathBuf>,
+    format: Option<WpFormat>,
 }
 
 impl Default for WordProcessorWidget {
@@ -59,6 +64,8 @@ impl WordProcessorWidget {
             blocks: Vec::new(),
             block_bounds: Vec::new(),
             pointer: Point::ZERO,
+            path: None,
+            format: None,
         }
     }
 
@@ -68,6 +75,24 @@ impl WordProcessorWidget {
     }
     pub fn model_mut(&mut self) -> &mut WordProcessor {
         &mut self.inner
+    }
+
+    /// Associate a backing file + format so Ctrl+S can save.
+    pub fn set_file(&mut self, path: PathBuf, format: WpFormat) {
+        self.path = Some(path);
+        self.format = Some(format);
+    }
+
+    /// Export the document to its backing file (Ctrl+S). No-op if unset.
+    fn save(&self, state: &AutoCommit) {
+        if let (Some(path), Some(format), Some(c)) =
+            (self.path.as_ref(), self.format, self.inner.containers.as_ref())
+        {
+            let dr = qdoc::DocRef { doc: state, c };
+            if let Ok(bytes) = format.export(dr) {
+                let _ = std::fs::write(path, bytes);
+            }
+        }
     }
 
     fn refresh_blocks(&mut self, state: &AutoCommit) {
@@ -228,7 +253,7 @@ impl Widget for WordProcessorWidget {
         self.block_bounds = bounds;
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, _modifiers: &Modifiers, state: &mut AutoCommit, _path: &ObjId, handled: &mut bool, _focus_target: &mut Option<NodeId>, _node_id: NodeId, _taffy: &TaffyTree<()>) {
+    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, modifiers: &Modifiers, state: &mut AutoCommit, _path: &ObjId, handled: &mut bool, _focus_target: &mut Option<NodeId>, _node_id: NodeId, _taffy: &TaffyTree<()>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -249,6 +274,16 @@ impl Widget for WordProcessorWidget {
             WindowEvent::KeyboardInput { event: KeyEvent { state: ElementState::Pressed, logical_key, text, .. }, .. } => {
                 if !self.focused {
                     return;
+                }
+                // Ctrl+S → save to the backing file.
+                if modifiers.state().control_key() {
+                    if let Key::Character(s) = logical_key {
+                        if s.as_str() == "s" {
+                            self.save(state);
+                            *handled = true;
+                            return;
+                        }
+                    }
                 }
                 let mut changed = true;
                 match logical_key {
