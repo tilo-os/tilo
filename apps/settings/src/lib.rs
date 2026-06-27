@@ -9,14 +9,16 @@
 //! The structure follows the same shape as `apps/file-explorer`:
 //! `categories.rs` enumerates the left sidebar entries, `panes/`
 //! contains one module per category that renders the right-hand
-//! content pane. Most panes are placeholders today; only `about`
-//! pulls real data (from `/etc/os-release`, `/proc/sys/kernel/osrelease`
-//! and `/proc/uptime`). The interactive panes (display brightness,
-//! audio volume, Wi-Fi, BT, workspaces, collaboration) are stubbed
-//! out behind a `Coming soon` placeholder until the shell-side
-//! `qs_actions` binding lands.
+//! content pane. Each interactive pane (display, audio, network,
+//! bluetooth) holds a `Dispatcher` from the shared `os-actions` crate
+//! so the same brightnessctl/wpctl/nmcli/bluetoothctl bindings the
+//! compositor's quick-settings panel uses drive the Settings sliders
+//! and toggles. `workspaces` and `collaboration` show informational
+//! stubs — the data they'd surface lives in the compositor, which the
+//! Settings app deliberately doesn't depend on.
 
 pub mod categories;
+pub mod dispatcher;
 pub mod panes;
 pub mod settings_app;
 pub mod shots;
