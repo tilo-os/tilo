@@ -147,13 +147,18 @@ fn marks_on(doc: &AutoCommit, block_obj: &ObjId) -> Vec<MarkSpan> {
         Ok(Some((Value::Object(ObjType::Text), t))) => t,
         _ => return vec![],
     };
-    doc.marks(&tid)
+    let mut spans: Vec<MarkSpan> = doc
+        .marks(&tid)
         .map(|ms| {
             ms.into_iter()
                 .map(|m| MarkSpan { start: m.start, end: m.end, name: m.name().to_string() })
                 .collect()
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // Canonical order so two replicas that merged in different orders produce
+    // byte-identical materializations (mark *set* is order-independent).
+    spans.sort_by(|a, b| (a.start, a.end, &a.name).cmp(&(b.start, b.end, &b.name)));
+    spans
 }
 
 pub fn marks(doc: &AutoCommit, c: &Containers, id: &str) -> Vec<MarkSpan> {
