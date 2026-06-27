@@ -513,6 +513,20 @@ impl Widget for WordProcessorWidget {
             }
         }
 
+        // Empty-document placeholder.
+        if blocks.len() == 1 && blocks[0].kind == "paragraph" && blocks[0].text.is_empty() {
+            if let Some(l) = laid.first() {
+                text_renderer.draw_text(
+                    scene,
+                    "Start writing…",
+                    16.5,
+                    Color::from_rgb8(0xbc, 0xbc, 0xc2),
+                    transform * Affine::translate((l.text_x, l.y_top)),
+                    None,
+                );
+            }
+        }
+
         self.blocks = blocks;
         self.laid = laid;
 
@@ -906,13 +920,20 @@ impl WordProcessorWidget {
         let ty = bar.y0 + (STATUS_H - 15.0) / 2.0;
         tr.draw_text(scene, &left, 13.0, muted, transform * Affine::translate((bar.x0 + 18.0, ty)), None);
 
-        let right = match self.format {
-            Some(WpFormat::Odt) => "ODF Text · .odt",
-            Some(WpFormat::Markdown) => "Markdown · .md",
-            None => "Untitled",
+        let fname = self
+            .path
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("Untitled");
+        let kind = match self.format {
+            Some(WpFormat::Odt) => "ODF Text",
+            Some(WpFormat::Markdown) => "Markdown",
+            None => "",
         };
-        let (rw, _) = tr.measure(right, 13.0, None);
-        tr.draw_text(scene, right, 13.0, muted, transform * Affine::translate((bar.x1 - 18.0 - rw as f64, ty)), None);
+        let right = if kind.is_empty() { fname.to_string() } else { format!("{fname}    ·    {kind}") };
+        let (rw, _) = tr.measure(&right, 13.0, None);
+        tr.draw_text(scene, &right, 13.0, muted, transform * Affine::translate((bar.x1 - 18.0 - rw as f64, ty)), None);
     }
 
     fn draw_toolbar(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, tb: Rect) {
