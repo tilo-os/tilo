@@ -118,9 +118,65 @@ fn render_inline(text: &str, marks: &[MarkSpan], used: &mut BTreeSet<&'static st
     out
 }
 
+/// ODF font name for a generic family (round-trips with `font_from_name`).
+fn font_name(generic: &str) -> &'static str {
+    match generic {
+        "serif" => "Liberation Serif",
+        "mono" => "Liberation Mono",
+        _ => "Liberation Sans",
+    }
+}
+
+/// Paragraph-properties + text-properties XML for a block's align/font/size, if
+/// any are non-default.
+fn para_props(b: &BlockView) -> Option<(String, String)> {
+    let mut pp = String::new();
+    let mut tp = String::new();
+    if let Some(AttrVal::Str(a)) = b.attrs.get("align") {
+        let v = match a.as_str() {
+            "center" => "center",
+            "right" => "end",
+            _ => "",
+        };
+        if !v.is_empty() {
+            pp.push_str(&format!(r#" fo:text-align="{v}""#));
+        }
+    }
+    if let Some(AttrVal::Int(n)) = b.attrs.get("fontSize") {
+        tp.push_str(&format!(r#" fo:font-size="{n}pt""#));
+    }
+    if let Some(AttrVal::Str(f)) = b.attrs.get("font") {
+        tp.push_str(&format!(r#" style:font-name="{}""#, font_name(f)));
+    }
+    if pp.is_empty() && tp.is_empty() {
+        None
+    } else {
+        Some((pp, tp))
+    }
+}
+
+/// Get-or-create a paragraph automatic style name for these props.
+fn register_para_style(styles: &mut Vec<(String, String)>, props: (String, String)) -> String {
+    if let Some(i) = styles.iter().position(|p| p == &props) {
+        format!("P{}", i + 1)
+    } else {
+        styles.push(props);
+        format!("P{}", styles.len())
+    }
+}
+
+use crate::snapshot::BlockView;
+
 fn build_content_xml(snap: &DocSnapshot) -> String {
     let mut body = String::new();
     let mut used: BTreeSet<&'static str> = BTreeSet::new();
+    let mut pstyles: Vec<(String, String)> = Vec::new();
+    let mut style_attr = |b: &BlockView| -> String {
+        match para_props(b) {
+            Some(props) => format!(r#" text:style-name="{}""#, register_para_style(&mut pstyles, props)),
+            None => String::new(),
+        }
+    };
     let mut i = 0;
     while i < snap.blocks.len() {
         let b = &snap.blocks[i];
@@ -130,8 +186,9 @@ fn build_content_xml(snap: &DocSnapshot) -> String {
                     Some(AttrVal::Int(n)) => (*n).clamp(1, 6),
                     _ => 1,
                 };
+                let sa = style_attr(b);
                 body.push_str(&format!(
-                    r#"<text:h text:outline-level="{level}">{}</text:h>"#,
+                    r#"<text:h text:outline-level="{level}"{sa}>{}</text:h>"#,
                     render_inline(&b.text, &b.marks, &mut used)
                 ));
                 i += 1;
@@ -140,8 +197,9 @@ fn build_content_xml(snap: &DocSnapshot) -> String {
                 body.push_str("<text:list>");
                 while i < snap.blocks.len() && snap.blocks[i].kind == "list_item" {
                     let li = &snap.blocks[i];
+                    let sa = style_attr(li);
                     body.push_str(&format!(
-                        r#"<text:list-item><text:p>{}</text:p></text:list-item>"#,
+                        r#"<text:list-item><text:p{sa}>{}</text:p></text:list-item>"#,
                         render_inline(&li.text, &li.marks, &mut used)
                     ));
                     i += 1;
@@ -156,8 +214,9 @@ fn build_content_xml(snap: &DocSnapshot) -> String {
                 i += 1;
             }
             _ => {
+                let sa = style_attr(b);
                 body.push_str(&format!(
-                    r#"<text:p>{}</text:p>"#,
+                    r#"<text:p{sa}>{}</text:p>"#,
                     render_inline(&b.text, &b.marks, &mut used)
                 ));
                 i += 1;
@@ -171,6 +230,12 @@ fn build_content_xml(snap: &DocSnapshot) -> String {
             r#"<style:style style:name="{}" style:family="text"><style:text-properties {}/></style:style>"#,
             style_for(name).unwrap(),
             style_props(name)
+        ));
+    }
+    for (idx, (pp, tp)) in pstyles.iter().enumerate() {
+        styles.push_str(&format!(
+            r#"<style:style style:name="P{}" style:family="paragraph"><style:paragraph-properties{pp}/><style:text-properties{tp}/></style:style>"#,
+            idx + 1
         ));
     }
 
@@ -230,6 +295,30 @@ mod tests {
         OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let m2 = norm(&d2.materialize());
         assert_eq!(m1, m2, "model round-trips through .odt export then import");
+    }
+
+    #[test]
+    fn paragraph_props_roundtrip() {
+        // A paragraph with alignment + font + size must survive .odt round-trip.
+        let mut d = Document::new();
+        let id = d.insert_block(None, "paragraph");
+        d.splice_text(&id, 0, 0, "styled");
+        {
+            let mut dm = d.as_mut();
+            dm.set_attr(&id, "align", "center");
+            dm.set_attr(&id, "fontSize", 22_i64);
+            dm.set_attr(&id, "font", "serif");
+        }
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+        let b = &snap.blocks[0];
+        assert_eq!(b.text, "styled");
+        assert_eq!(b.attrs.get("align"), Some(&AttrVal::Str("center".into())));
+        assert_eq!(b.attrs.get("fontSize"), Some(&AttrVal::Int(22)));
+        assert_eq!(b.attrs.get("font"), Some(&AttrVal::Str("serif".into())));
     }
 
     #[test]
