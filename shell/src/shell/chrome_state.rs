@@ -189,6 +189,14 @@ pub struct ChromeState {
     /// active workspace's persisted name until the user commits with
     /// Enter). Cleared on commit or Esc.
     pub editing_workspace_name: Option<String>,
+    /// Caret + selection inside `editing_workspace_name`. Only
+    /// meaningful while the option is `Some(_)` — when no edit is
+    /// in flight this is a collapsed `Selection::default()` placeholder.
+    /// `begin_workspace_name_edit` seeds it to a collapsed selection
+    /// at the buffer's end so typing immediately appends; the overlay
+    /// host's keyboard handler mutates it on arrow / shift / backspace
+    /// / Ctrl-chord events.
+    pub editing_workspace_name_selection: ui::text_selection::Selection,
     /// Active global-search scope. The overlay host paints a scope-pill
     /// banner above the palette, and clicking a pill rotates through the
     /// variants of [`SearchScope`].
@@ -260,6 +268,7 @@ impl ChromeState {
             overlays: OverlayFlags::default(),
             quick_settings: QuickSettingsState::default(),
             editing_workspace_name: None,
+            editing_workspace_name_selection: ui::text_selection::Selection::default(),
             search_scope: SearchScope::default(),
             ws_settings_tab: WsTab::default(),
             revision: 0,

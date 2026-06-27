@@ -2540,45 +2540,152 @@ impl Widget for ShellOverlayHost {
             // chance at them — modifiers already handled above.
             if let Some(chrome) = self.chrome.clone() {
                 let is_editing = chrome.borrow().editing_workspace_name.is_some();
-                if is_editing && !is_mod {
+                if is_editing {
+                    use ui::text_selection::{
+                        clipboard_copy, clipboard_paste, next_char_boundary,
+                        next_word_boundary, prev_char_boundary,
+                        prev_word_boundary, Selection,
+                    };
+                    let mods_state = modifiers.state();
+                    let shift = mods_state.shift_key();
+                    let ctrl = mods_state.control_key() || mods_state.super_key();
+                    let mut st = chrome.borrow_mut();
+                    // Borrow the buffer + selection out together. The
+                    // selection's anchor/cursor are byte indices into
+                    // the buffer.
+                    // Pull the selection out by value first so we don't
+                    // hold a separate immutable borrow alongside `buf`.
+                    let mut sel = st.editing_workspace_name_selection;
+                    let Some(buf) = st.editing_workspace_name.as_mut()
+                    else {
+                        return;
+                    };
+                    let mut consumed = true;
+                    let mut needs_bump = true;
                     match logical_key {
                         Key::Named(NamedKey::Enter) => {
+                            drop(st);
                             chrome.borrow_mut().commit_workspace_name();
                             *handled = true;
                             return;
                         }
+                        Key::Named(NamedKey::ArrowLeft) => {
+                            let new_pos = if ctrl {
+                                prev_word_boundary(buf, sel.cursor)
+                            } else {
+                                prev_char_boundary(buf, sel.cursor)
+                            };
+                            sel.cursor = new_pos;
+                            if !shift { sel.collapse_to_cursor(); }
+                        }
+                        Key::Named(NamedKey::ArrowRight) => {
+                            let new_pos = if ctrl {
+                                next_word_boundary(buf, sel.cursor)
+                            } else {
+                                next_char_boundary(buf, sel.cursor)
+                            };
+                            sel.cursor = new_pos;
+                            if !shift { sel.collapse_to_cursor(); }
+                        }
+                        Key::Named(NamedKey::Home) => {
+                            sel.cursor = 0;
+                            if !shift { sel.collapse_to_cursor(); }
+                        }
+                        Key::Named(NamedKey::End) => {
+                            sel.cursor = buf.len();
+                            if !shift { sel.collapse_to_cursor(); }
+                        }
                         Key::Named(NamedKey::Backspace) => {
-                            let mut st = chrome.borrow_mut();
-                            if let Some(buf) = st.editing_workspace_name.as_mut() {
-                                buf.pop();
+                            if sel.is_collapsed() {
+                                if sel.cursor > 0 {
+                                    let prev = prev_char_boundary(buf, sel.cursor);
+                                    buf.replace_range(prev..sel.cursor, "");
+                                    sel = Selection::collapsed(prev);
+                                }
+                            } else {
+                                let r = sel.range();
+                                buf.replace_range(r.clone(), "");
+                                sel = Selection::collapsed(r.start);
                             }
-                            st.bump();
-                            *handled = true;
-                            return;
+                        }
+                        Key::Named(NamedKey::Delete) => {
+                            if sel.is_collapsed() {
+                                if sel.cursor < buf.len() {
+                                    let next = next_char_boundary(buf, sel.cursor);
+                                    buf.replace_range(sel.cursor..next, "");
+                                }
+                            } else {
+                                let r = sel.range();
+                                buf.replace_range(r.clone(), "");
+                                sel = Selection::collapsed(r.start);
+                            }
                         }
                         Key::Named(NamedKey::Space) => {
-                            let mut st = chrome.borrow_mut();
-                            if let Some(buf) = st.editing_workspace_name.as_mut() {
-                                buf.push(' ');
-                            }
-                            st.bump();
-                            *handled = true;
-                            return;
+                            let r = sel.range();
+                            buf.replace_range(r.clone(), " ");
+                            sel = Selection::collapsed(r.start + 1);
                         }
-                        Key::Character(s) => {
-                            let mut st = chrome.borrow_mut();
-                            if let Some(buf) = st.editing_workspace_name.as_mut() {
-                                for c in s.chars() {
-                                    if !c.is_control() {
-                                        buf.push(c);
+                        Key::Character(s) if ctrl => {
+                            match s.as_str() {
+                                "a" | "A" => {
+                                    sel.anchor = 0;
+                                    sel.cursor = buf.len();
+                                    needs_bump = false;
+                                }
+                                "c" | "C" => {
+                                    let r = sel.range();
+                                    if !r.is_empty() {
+                                        clipboard_copy(&buf[r]);
+                                    }
+                                    needs_bump = false;
+                                }
+                                "x" | "X" => {
+                                    let r = sel.range();
+                                    if !r.is_empty() {
+                                        clipboard_copy(&buf[r.clone()]);
+                                        buf.replace_range(r.clone(), "");
+                                        sel = Selection::collapsed(r.start);
+                                    } else {
+                                        needs_bump = false;
                                     }
                                 }
+                                "v" | "V" => {
+                                    if let Some(paste) = clipboard_paste() {
+                                        let r = sel.range();
+                                        buf.replace_range(r.clone(), &paste);
+                                        sel = Selection::collapsed(
+                                            r.start + paste.len(),
+                                        );
+                                    } else {
+                                        needs_bump = false;
+                                    }
+                                }
+                                _ => { consumed = false; needs_bump = false; }
                             }
-                            st.bump();
-                            *handled = true;
-                            return;
                         }
-                        _ => {}
+                        Key::Character(s) => {
+                            let filtered: String =
+                                s.chars().filter(|c| !c.is_control()).collect();
+                            if filtered.is_empty() {
+                                consumed = false;
+                                needs_bump = false;
+                            } else {
+                                let r = sel.range();
+                                buf.replace_range(r.clone(), &filtered);
+                                sel = Selection::collapsed(
+                                    r.start + filtered.len(),
+                                );
+                            }
+                        }
+                        _ => { consumed = false; needs_bump = false; }
+                    }
+                    if consumed {
+                        st.editing_workspace_name_selection = sel;
+                        if needs_bump {
+                            st.bump();
+                        }
+                        *handled = true;
+                        return;
                     }
                 }
             }
@@ -2965,7 +3072,11 @@ impl Widget for ShellOverlayHost {
                                     .active_workspace()
                                     .map(|w| w.name.clone())
                                     .or_else(|| Some(String::new()));
+                                let caret =
+                                    new_name.as_ref().map(|s| s.len()).unwrap_or(0);
                                 st.editing_workspace_name = new_name;
+                                st.editing_workspace_name_selection =
+                                    ui::text_selection::Selection::collapsed(caret);
                                 st.bump();
                             }
                         } else {
