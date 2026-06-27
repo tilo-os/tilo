@@ -69,9 +69,10 @@ fn byte_to_char(text: &str, byte_off: usize) -> usize {
     text[..b].chars().count()
 }
 
-/// `(font size, whole-block bold, left indent, optional bullet)`.
+/// `(font size, whole-block bold, left indent, optional bullet)`. Size is the
+/// style default; per-run `fontSize` marks override it in `block_runs`.
 fn block_style(b: &BlockView) -> (f32, bool, f64, Option<&'static str>) {
-    let (mut size, bold, indent, bullet) = match b.kind.as_str() {
+    match b.kind.as_str() {
         "heading" => {
             let level = match b.attrs.get("level") {
                 Some(AttrVal::Int(n)) => *n,
@@ -90,27 +91,37 @@ fn block_style(b: &BlockView) -> (f32, bool, f64, Option<&'static str>) {
             (16.5, false, 28.0, Some(if ordered { "1." } else { "•" }))
         }
         _ => (16.5, false, 0.0, None),
-    };
-    // An explicit font size overrides the style default.
-    if let Some(AttrVal::Int(n)) = b.attrs.get("fontSize") {
-        if (6..=200).contains(n) {
-            size = *n as f32;
-        }
-    }
-    (size, bold, indent, bullet)
-}
-
-/// Pick a block's font family from its `font` attribute.
-fn block_family(b: &BlockView) -> FontFamily {
-    match b.attrs.get("font") {
-        Some(AttrVal::Str(s)) if s == "serif" => FontFamily::Serif,
-        Some(AttrVal::Str(s)) if s == "mono" => FontFamily::Mono,
-        _ => FontFamily::Sans,
     }
 }
 
 fn char_has(i: usize, marks: &[MarkSpan], name: &str) -> bool {
     marks.iter().any(|m| m.name == name && i >= m.start && i < m.end)
+}
+
+fn parse_family(s: &str) -> FontFamily {
+    match s {
+        "serif" => FontFamily::Serif,
+        "mono" => FontFamily::Mono,
+        _ => FontFamily::Sans,
+    }
+}
+
+/// The `fontSize` mark value covering char `i`, if any.
+fn char_font_size(i: usize, marks: &[MarkSpan]) -> Option<f32> {
+    marks
+        .iter()
+        .find(|m| m.name == "fontSize" && i >= m.start && i < m.end)
+        .and_then(|m| m.value.as_int())
+        .map(|n| n as f32)
+}
+
+/// The `fontFamily` mark value covering char `i`, if any.
+fn char_font_family(i: usize, marks: &[MarkSpan]) -> Option<FontFamily> {
+    marks
+        .iter()
+        .find(|m| m.name == "fontFamily" && i >= m.start && i < m.end)
+        .and_then(|m| m.value.as_str())
+        .map(parse_family)
 }
 
 /// Pick a block's horizontal alignment from its `align` attribute.
@@ -122,24 +133,39 @@ fn block_align(b: &BlockView) -> TextAlign {
     }
 }
 
-/// Split a block's text into styled runs + underline byte ranges.
+/// Split a block's text into styled runs (bold/italic/size/family) + underlines.
 fn block_runs(b: &BlockView) -> (Vec<RichSpan>, Vec<(usize, usize)>) {
     let chars: Vec<char> = b.text.chars().collect();
     let n = chars.len();
+    // Run key: f32 size as bits so the tuple is comparable.
+    let key = |i: usize| {
+        (
+            char_has(i, &b.marks, "strong"),
+            char_has(i, &b.marks, "em"),
+            char_font_size(i, &b.marks).map(f32::to_bits),
+            char_font_family(i, &b.marks),
+        )
+    };
     let mut runs = Vec::new();
     let mut i = 0;
     while i < n {
-        let bold = char_has(i, &b.marks, "strong");
-        let italic = char_has(i, &b.marks, "em");
+        let k = key(i);
         let mut j = i;
-        while j < n && char_has(j, &b.marks, "strong") == bold && char_has(j, &b.marks, "em") == italic {
+        while j < n && key(j) == k {
             j += 1;
         }
-        runs.push(RichSpan { text: chars[i..j].iter().collect(), bold, italic });
+        let (bold, italic, size_bits, family) = k;
+        runs.push(RichSpan {
+            text: chars[i..j].iter().collect(),
+            bold,
+            italic,
+            size: size_bits.map(f32::from_bits),
+            family,
+        });
         i = j;
     }
     if runs.is_empty() {
-        runs.push(RichSpan { text: String::new(), bold: false, italic: false });
+        runs.push(RichSpan::new(""));
     }
     let underlines = b
         .marks
@@ -367,7 +393,7 @@ impl Widget for WordProcessorWidget {
                                 16.0,
                                 (col_w - 2.0 * cell_pad).max(24.0) as f32,
                                 block_align(cell),
-                                block_family(cell),
+                                FontFamily::Sans,
                                 underlines,
                             );
                             row_h = row_h.max(layout.height() as f64 + 2.0 * cell_pad);
@@ -417,7 +443,7 @@ impl Widget for WordProcessorWidget {
                     size,
                     wrap_w,
                     block_align(b),
-                    block_family(b),
+                    FontFamily::Sans,
                     underlines,
                 );
                 laid.push(Laid {
@@ -754,15 +780,15 @@ impl WordProcessorWidget {
                     FontFamily::Serif => "serif",
                     FontFamily::Mono => "mono",
                 };
-                self.inner.set_block_attr(state, "font", name);
+                self.inner.set_font_family(state, name);
             }
             ToolAction::SizeUp => {
                 let s = ((self.current_size() + 2.0).round() as i64).min(200);
-                self.inner.set_block_attr(state, "fontSize", s);
+                self.inner.set_font_size(state, s);
             }
             ToolAction::SizeDown => {
                 let s = ((self.current_size() - 2.0).round() as i64).max(6);
-                self.inner.set_block_attr(state, "fontSize", s);
+                self.inner.set_font_size(state, s);
             }
             ToolAction::InsertTable => self.inner.insert_table(state, 2, 2),
         }
@@ -780,20 +806,25 @@ impl WordProcessorWidget {
         }
     }
 
+    /// The char position the toolbar reports font state for: just left of the
+    /// caret (so it reflects the run you're typing into), else the caret.
+    fn font_probe(&self) -> Option<(&BlockView, usize)> {
+        let b = self.blocks.iter().find(|b| b.id == self.inner.caret.block)?;
+        let pos = self.inner.caret.offset.saturating_sub(1);
+        Some((b, pos))
+    }
+
     fn current_font(&self) -> FontFamily {
-        self.blocks
-            .iter()
-            .find(|b| b.id == self.inner.caret.block)
-            .map(block_family)
+        self.font_probe()
+            .and_then(|(b, pos)| char_font_family(pos, &b.marks))
             .unwrap_or_default()
     }
 
     fn current_size(&self) -> f32 {
-        self.blocks
-            .iter()
-            .find(|b| b.id == self.inner.caret.block)
-            .map(|b| block_style(b).0)
-            .unwrap_or(16.5)
+        match self.font_probe() {
+            Some((b, pos)) => char_font_size(pos, &b.marks).unwrap_or_else(|| block_style(b).0),
+            None => 16.5,
+        }
     }
 
     fn current_align(&self) -> String {
