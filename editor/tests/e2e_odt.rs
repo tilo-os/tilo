@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use editor::{open_document, save_document, WpFormat};
+use editor::{open_document, save_document, WordProcessorWidget, WpFormat};
 use ui::Widget;
 
 fn temp_path(name: &str) -> PathBuf {
@@ -56,6 +56,45 @@ fn open_edit_save_reload_odt() {
     );
 
     std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn two_word_processors_collaborate_and_converge() {
+    // Peer A starts a shared document.
+    let mut sa = ui::State::new();
+    let mut wpa = WordProcessorWidget::new();
+    wpa.sync(&mut sa.doc, &sa.root);
+    wpa.model_mut().insert_str(&mut sa.doc, "shared");
+    sa.commit_action(None, None);
+
+    // Peer B forks A's state (distinct actor) and opens the same document.
+    let bytes = sa.save();
+    let mut sb = ui::State::load(&bytes).unwrap();
+    sb.doc.set_actor(automerge::ActorId::random());
+    let mut wpb = WordProcessorWidget::new();
+    wpb.sync(&mut sb.doc, &sb.root);
+    assert_eq!(wpb.model().block_texts(&sb.doc), vec!["shared".to_string()]);
+
+    // Concurrent edits: each appends to the shared paragraph.
+    wpa.model_mut().move_end(&sa.doc);
+    wpa.model_mut().insert_str(&mut sa.doc, " A");
+    wpb.model_mut().move_end(&sb.doc);
+    wpb.model_mut().insert_str(&mut sb.doc, " B");
+
+    // Exchange incremental changes (the live-collab path).
+    let da = sa.save_incremental();
+    let db = sb.save_incremental();
+    sa.load_incremental(&db).unwrap();
+    sb.load_incremental(&da).unwrap();
+    wpa.sync(&mut sa.doc, &sa.root);
+    wpb.sync(&mut sb.doc, &sb.root);
+
+    // Both replicas converge to the same document, containing both edits.
+    let ta = wpa.model().block_texts(&sa.doc);
+    let tb = wpb.model().block_texts(&sb.doc);
+    assert_eq!(ta, tb, "collaborating word processors converge");
+    assert_eq!(ta.len(), 1);
+    assert!(ta[0].contains("shared") && ta[0].contains('A') && ta[0].contains('B'), "both edits present: {ta:?}");
 }
 
 #[test]
