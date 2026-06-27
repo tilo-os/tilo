@@ -1,0 +1,26 @@
+[package]
+name = "settings"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "settings"
+path = "src/lib.rs"
+
+[[bin]]
+name = "settings"
+path = "src/main.rs"
+
+[dependencies]
+ui = { path = "../../ui" }
+# Trait passes (`sync`, `build_layout`, `handle_event`) mention these crates
+# in their signatures; we re-export them at the same versions the sibling
+# native apps pin so a shared `target/` cache hits across crates.
+automerge = "0.8.0"
+vello = "0.9"
+winit = "0.30.13"
+taffy = "0.10.1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+[dev-dependencies]
