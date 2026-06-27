@@ -11,6 +11,6 @@
 Name=nirios
 GenericName=qOS
 Comment=Collaborative spatial desktop environment
-Exec=/usr/bin/shell
+Exec=/usr/bin/shell --backend drm
 Type=Application
 DesktopNames=nirios
