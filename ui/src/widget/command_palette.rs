@@ -176,6 +176,14 @@ pub struct InputRowLayout {
 pub struct CommandPalette {
     entries: Vec<CommandEntry>,
     query: String,
+    /// Text-cursor + selection inside the query string. Lets the
+    /// palette participate in the same keyboard model `TextInput` /
+    /// `NotesApp` use: arrow keys move the caret, shift+arrow
+    /// extends, Ctrl+A/C/X/V copy / cut / paste / select-all via
+    /// the shared `ui::text_selection` clipboard helpers. Defaults
+    /// to a collapsed selection at position 0 (matches the new()
+    /// "" query).
+    query_selection: crate::text_selection::Selection,
     filter: Option<Box<dyn Fn(&CommandEntry) -> bool + Send + Sync>>,
     visible: Vec<usize>,
     cursor: usize,
@@ -193,6 +201,7 @@ impl CommandPalette {
         Self {
             entries: Vec::new(),
             query: String::new(),
+            query_selection: crate::text_selection::Selection::collapsed(0),
             filter: None,
             visible: Vec::new(),
             cursor: 0,
@@ -216,7 +225,39 @@ impl CommandPalette {
 
     pub fn set_query(&mut self, q: &str) {
         self.query = q.into();
+        // Pin caret to end on programmatic set — preserves the legacy
+        // semantics callers expect (set_query("") + new chars typed
+        // appears at end).
+        let end = self.query.len();
+        self.query_selection = crate::text_selection::Selection::collapsed(end);
         self.rebuild();
+    }
+
+    /// Replace the selected range in the query (or insert at the
+    /// caret when the selection is collapsed) with `s`. Used by the
+    /// keyboard handler for character input and Ctrl+V paste.
+    fn replace_query_selection(&mut self, s: &str) {
+        let r = self.query_selection.range();
+        self.query.replace_range(r.clone(), s);
+        let new_caret = r.start + s.len();
+        self.query_selection =
+            crate::text_selection::Selection::collapsed(new_caret);
+        self.rebuild();
+    }
+
+    /// Delete the selection if non-empty, returns `true` if a range
+    /// was actually removed (so the caller can skip the per-char
+    /// fallback path for Backspace / Delete).
+    fn delete_query_selection(&mut self) -> bool {
+        if self.query_selection.is_collapsed() {
+            return false;
+        }
+        let r = self.query_selection.range();
+        self.query.replace_range(r.clone(), "");
+        self.query_selection =
+            crate::text_selection::Selection::collapsed(r.start);
+        self.rebuild();
+        true
     }
 
     pub fn query(&self) -> &str { &self.query }
@@ -848,7 +889,7 @@ impl Widget for CommandPalette {
         &mut self,
         event: &WindowEvent,
         _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
+        modifiers: &winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -863,7 +904,16 @@ impl Widget for CommandPalette {
         } = event
         {
             if *element_state != ElementState::Pressed { return; }
+            use crate::text_selection::{
+                clipboard_copy, clipboard_paste, next_char_boundary,
+                next_word_boundary, prev_char_boundary, prev_word_boundary,
+                Selection,
+            };
+            let mods = modifiers.state();
+            let shift = mods.shift_key();
+            let ctrl = mods.control_key() || mods.super_key();
             match logical_key {
+                // --- Row navigation: down / up over visible entries.
                 Key::Named(NamedKey::ArrowDown) => {
                     if !self.visible.is_empty() {
                         self.cursor = (self.cursor + 1).min(self.visible.len() - 1);
@@ -888,30 +938,114 @@ impl Widget for CommandPalette {
                     self.is_focused = false;
                     *handled = true;
                 }
-                Key::Named(NamedKey::Backspace) => {
-                    if self.query.pop().is_some() {
-                        self.rebuild();
+                // --- Caret navigation inside the query.
+                Key::Named(NamedKey::ArrowLeft) => {
+                    let pos = self.query_selection.cursor;
+                    let new_pos = if ctrl {
+                        prev_word_boundary(&self.query, pos)
+                    } else {
+                        prev_char_boundary(&self.query, pos)
+                    };
+                    self.query_selection.cursor = new_pos;
+                    if !shift {
+                        self.query_selection.collapse_to_cursor();
                     }
                     *handled = true;
                 }
+                Key::Named(NamedKey::ArrowRight) => {
+                    let pos = self.query_selection.cursor;
+                    let new_pos = if ctrl {
+                        next_word_boundary(&self.query, pos)
+                    } else {
+                        next_char_boundary(&self.query, pos)
+                    };
+                    self.query_selection.cursor = new_pos;
+                    if !shift {
+                        self.query_selection.collapse_to_cursor();
+                    }
+                    *handled = true;
+                }
+                Key::Named(NamedKey::Home) => {
+                    self.query_selection.cursor = 0;
+                    if !shift {
+                        self.query_selection.collapse_to_cursor();
+                    }
+                    *handled = true;
+                }
+                Key::Named(NamedKey::End) => {
+                    self.query_selection.cursor = self.query.len();
+                    if !shift {
+                        self.query_selection.collapse_to_cursor();
+                    }
+                    *handled = true;
+                }
+                // --- Deletion.
+                Key::Named(NamedKey::Backspace) => {
+                    if !self.delete_query_selection() {
+                        let pos = self.query_selection.cursor;
+                        if pos > 0 {
+                            let prev = prev_char_boundary(&self.query, pos);
+                            self.query.replace_range(prev..pos, "");
+                            self.query_selection = Selection::collapsed(prev);
+                            self.rebuild();
+                        }
+                    }
+                    *handled = true;
+                }
+                Key::Named(NamedKey::Delete) => {
+                    if !self.delete_query_selection() {
+                        let pos = self.query_selection.cursor;
+                        if pos < self.query.len() {
+                            let next = next_char_boundary(&self.query, pos);
+                            self.query.replace_range(pos..next, "");
+                            self.rebuild();
+                        }
+                    }
+                    *handled = true;
+                }
+                // --- Clipboard / select-all chords.
+                Key::Character(s) if ctrl => {
+                    match s.as_str() {
+                        "a" | "A" => {
+                            self.query_selection.anchor = 0;
+                            self.query_selection.cursor = self.query.len();
+                            *handled = true;
+                        }
+                        "c" | "C" => {
+                            let r = self.query_selection.range();
+                            if !r.is_empty() {
+                                clipboard_copy(&self.query[r]);
+                            }
+                            *handled = true;
+                        }
+                        "x" | "X" => {
+                            let r = self.query_selection.range();
+                            if !r.is_empty() {
+                                clipboard_copy(&self.query[r.clone()]);
+                                self.delete_query_selection();
+                            }
+                            *handled = true;
+                        }
+                        "v" | "V" => {
+                            if let Some(s) = clipboard_paste() {
+                                self.replace_query_selection(&s);
+                            }
+                            *handled = true;
+                        }
+                        _ => {}
+                    }
+                }
                 Key::Named(NamedKey::Space) => {
-                    self.query.push(' ');
-                    self.rebuild();
+                    self.replace_query_selection(" ");
                     *handled = true;
                 }
                 Key::Character(s) => {
-                    // Same shape as `overlay_host.rs:1383-1395` — push
-                    // every non-control char carried by the smol-str
-                    // payload, then rebuild + consume the event.
-                    let mut pushed = false;
-                    for c in s.chars() {
-                        if !c.is_control() {
-                            self.query.push(c);
-                            pushed = true;
-                        }
-                    }
-                    if pushed {
-                        self.rebuild();
+                    // smol-str carries the typed text — strip control
+                    // chars, splice the remainder at the caret.
+                    let filtered: String =
+                        s.chars().filter(|c| !c.is_control()).collect();
+                    if !filtered.is_empty() {
+                        self.replace_query_selection(&filtered);
                         *handled = true;
                     }
                 }
@@ -1198,5 +1332,123 @@ mod tests {
             "footer must be tall enough for kbd chips (got {})",
             footer.height(),
         );
+    }
+
+    /// Helper for keyboard-routing tests below.
+    fn dispatch(
+        p: &mut CommandPalette,
+        event: WindowEvent,
+        modifiers: Modifiers,
+    ) {
+        let mut doc = AutoCommit::new();
+        let doc_root = automerge::ROOT.clone();
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        p.handle_event(
+            &event,
+            1.0,
+            &modifiers,
+            &mut doc,
+            &doc_root,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
+    }
+
+    /// ArrowLeft / ArrowRight move the caret inside the query without
+    /// touching the row cursor. Pins #277-style caret support in the
+    /// palette.
+    #[test]
+    fn arrow_keys_move_caret_inside_query() {
+        let mut p = CommandPalette::new();
+        p.set_focus(true);
+        p.set_query("hello");
+        assert_eq!(p.query_selection.cursor, 5);
+        dispatch(
+            &mut p,
+            key_press(Key::Named(NamedKey::ArrowLeft)),
+            Modifiers::default(),
+        );
+        assert_eq!(p.query_selection.cursor, 4);
+        dispatch(
+            &mut p,
+            key_press(Key::Named(NamedKey::Home)),
+            Modifiers::default(),
+        );
+        assert_eq!(p.query_selection.cursor, 0);
+    }
+
+    /// Backspace at a non-end caret deletes the char to the left of
+    /// the caret (not the last char of the string).
+    #[test]
+    fn backspace_deletes_at_caret_not_end() {
+        let mut p = CommandPalette::new();
+        p.set_focus(true);
+        p.set_query("abc");
+        p.query_selection.cursor = 1;
+        p.query_selection.anchor = 1;
+        dispatch(
+            &mut p,
+            key_press(Key::Named(NamedKey::Backspace)),
+            Modifiers::default(),
+        );
+        assert_eq!(p.query(), "bc");
+        assert_eq!(p.query_selection.cursor, 0);
+    }
+
+    /// Typing splices into the query at the caret, not at the end.
+    #[test]
+    fn typing_inserts_at_caret() {
+        let mut p = CommandPalette::new();
+        p.set_focus(true);
+        p.set_query("ac");
+        p.query_selection.cursor = 1;
+        p.query_selection.anchor = 1;
+        dispatch(
+            &mut p,
+            key_press(Key::Character(SmolStr::new("b"))),
+            Modifiers::default(),
+        );
+        assert_eq!(p.query(), "abc");
+        assert_eq!(p.query_selection.cursor, 2);
+    }
+
+    /// Ctrl+A selects the entire query.
+    #[test]
+    fn ctrl_a_selects_query() {
+        let mut p = CommandPalette::new();
+        p.set_focus(true);
+        p.set_query("hello");
+        let mut mods_state = winit::keyboard::ModifiersState::empty();
+        mods_state.set(winit::keyboard::ModifiersState::CONTROL, true);
+        dispatch(
+            &mut p,
+            key_press(Key::Character(SmolStr::new("a"))),
+            Modifiers::from(mods_state),
+        );
+        assert_eq!(p.query_selection.anchor, 0);
+        assert_eq!(p.query_selection.cursor, 5);
+    }
+
+    /// Typing into a query with an active selection replaces the
+    /// selection instead of appending past it.
+    #[test]
+    fn typing_replaces_selection() {
+        let mut p = CommandPalette::new();
+        p.set_focus(true);
+        p.set_query("hello");
+        p.query_selection.anchor = 1;
+        p.query_selection.cursor = 4;
+        dispatch(
+            &mut p,
+            key_press(Key::Character(SmolStr::new("i"))),
+            Modifiers::default(),
+        );
+        assert_eq!(p.query(), "hio");
+        assert_eq!(p.query_selection.cursor, 2);
     }
 }
