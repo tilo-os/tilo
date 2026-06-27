@@ -26,8 +26,13 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
 use smithay::backend::drm::{DrmDevice, DrmDeviceFd};
-use smithay::backend::input::InputEvent;
+use smithay::backend::input::{
+    AbsolutePositionEvent, Axis, ButtonState, InputEvent, PointerAxisEvent, PointerButtonEvent,
+    PointerMotionEvent,
+};
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
+use winit::dpi::PhysicalPosition;
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 use smithay::backend::session::libseat::LibSeatSession;
 use smithay::backend::session::Session;
 use smithay::backend::udev::{all_gpus, UdevBackend};
@@ -75,6 +80,13 @@ pub struct DrmDispatchState {
     pub events: Vec<BackendEvent>,
     /// Per-device output metadata, keyed by the public `OutputId`.
     pub output_meta: HashMap<OutputId, Output>,
+    /// Current pointer position in output coords. Updated from libinput
+    /// motion; the scanout composites a software cursor here and the
+    /// compositor receives matching `CursorMoved` events.
+    pub pointer: (f64, f64),
+    /// Primary output size (px) — needed to transform libinput's
+    /// absolute (0..1) coordinates and to clamp relative motion.
+    pub output_size: (i32, i32),
 }
 
 impl DrmDispatchState {
@@ -250,22 +262,43 @@ impl DrmRuntime {
         // hot.
         handle
             .insert_source(libinput_backend, move |event, _, state| match event {
-                InputEvent::Keyboard { .. }
-                | InputEvent::PointerMotion { .. }
-                | InputEvent::PointerMotionAbsolute { .. }
-                | InputEvent::PointerButton { .. }
-                | InputEvent::PointerAxis { .. } => {
-                    // TODO(drm-input): translate libinput's
-                    // InputEvent::{Keyboard,Pointer*} into the
-                    // `winit::WindowEvent` shape that
-                    // `BackendEvent::Input(WindowEvent)` carries so
-                    // `FrameBuilder::dispatch_event` can route real
-                    // input on a bare TTY too. For now the DRM path
-                    // silently drops input (same as before the
-                    // hosted-mode fix); winit-backed dev binaries
-                    // are the only path that delivers clicks.
-                    let _ = state;
+                // Absolute motion (usb-tablet / touch): map normalized
+                // coords through the output size to a pixel position.
+                InputEvent::PointerMotionAbsolute { event } => {
+                    let (w, h) = state.output_size;
+                    let x = event.x_transformed(w.max(1));
+                    let y = event.y_transformed(h.max(1));
+                    state.pointer = (x, y);
+                    state.push(BackendEvent::Input(cursor_moved_event(x, y)));
                 }
+                // Relative motion (mouse): accumulate + clamp to output.
+                InputEvent::PointerMotion { event } => {
+                    let (w, h) = state.output_size;
+                    let max_x = (w.max(1) - 1) as f64;
+                    let max_y = (h.max(1) - 1) as f64;
+                    let x = (state.pointer.0 + event.delta_x()).clamp(0.0, max_x);
+                    let y = (state.pointer.1 + event.delta_y()).clamp(0.0, max_y);
+                    state.pointer = (x, y);
+                    state.push(BackendEvent::Input(cursor_moved_event(x, y)));
+                }
+                InputEvent::PointerButton { event } => {
+                    if let Some(button) = map_mouse_button(event.button()) {
+                        let st = match event.state() {
+                            ButtonState::Pressed => ElementState::Pressed,
+                            ButtonState::Released => ElementState::Released,
+                        };
+                        state.push(BackendEvent::Input(mouse_input_event(st, button)));
+                    }
+                }
+                InputEvent::PointerAxis { event } => {
+                    let dx = event.amount(Axis::Horizontal).unwrap_or(0.0);
+                    let dy = event.amount(Axis::Vertical).unwrap_or(0.0);
+                    if dx != 0.0 || dy != 0.0 {
+                        state.push(BackendEvent::Input(mouse_wheel_event(dx, dy)));
+                    }
+                }
+                // Keyboard on a bare TTY still needs an xkb keymap layer to
+                // turn libinput keycodes into `winit::Key`s — deferred.
                 _ => {}
             })
             .map_err(|e| DrmBackendError::Calloop(format!("{e}")))?;
@@ -289,11 +322,17 @@ impl DrmRuntime {
             );
         }
 
+        // Seed pointer state from the scanout's mode so absolute-motion
+        // transforms and cursor clamping use the right output size; start
+        // the cursor centered.
+        let (ow, oh) = scanout.as_ref().map(|s| s.size()).unwrap_or((0, 0));
         let dispatch = DrmDispatchState {
             session: Some(session_state),
             outputs,
             events: Vec::new(),
             output_meta,
+            pointer: (ow as f64 / 2.0, oh as f64 / 2.0),
+            output_size: (ow as i32, oh as i32),
         };
 
         Ok(Self {
@@ -336,7 +375,50 @@ impl DrmRuntime {
             outputs: registry,
             events: Vec::new(),
             output_meta: outputs.into_iter().collect(),
+            pointer: (0.0, 0.0),
+            output_size: (0, 0),
         }
+    }
+}
+
+/// Build a `WindowEvent::CursorMoved` for the compositor's input wire.
+/// `device_id` is zeroed — the host path never inspects it (mirrors
+/// `native::execute_planned_action`).
+fn cursor_moved_event(x: f64, y: f64) -> WindowEvent {
+    WindowEvent::CursorMoved {
+        device_id: unsafe { std::mem::zeroed() },
+        position: PhysicalPosition::new(x, y),
+    }
+}
+
+/// Build a `WindowEvent::MouseInput`.
+fn mouse_input_event(state: ElementState, button: MouseButton) -> WindowEvent {
+    WindowEvent::MouseInput {
+        device_id: unsafe { std::mem::zeroed() },
+        state,
+        button,
+    }
+}
+
+/// Build a `WindowEvent::MouseWheel` from libinput axis amounts. libinput's
+/// `amount` is ~15 per wheel notch with `+y` = scroll *down*; winit's
+/// `LineDelta` uses `+y` = scroll *up*, so we negate and scale to lines.
+fn mouse_wheel_event(dx: f64, dy: f64) -> WindowEvent {
+    WindowEvent::MouseWheel {
+        device_id: unsafe { std::mem::zeroed() },
+        delta: MouseScrollDelta::LineDelta(-(dx / 15.0) as f32, -(dy / 15.0) as f32),
+        phase: TouchPhase::Moved,
+    }
+}
+
+/// Map a raw Linux input button code (`input-event-codes.h`) to winit's
+/// `MouseButton`. Side/extra buttons are dropped.
+fn map_mouse_button(code: u32) -> Option<MouseButton> {
+    match code {
+        0x110 => Some(MouseButton::Left),
+        0x111 => Some(MouseButton::Right),
+        0x112 => Some(MouseButton::Middle),
+        _ => None,
     }
 }
 
