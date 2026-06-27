@@ -1,0 +1,30 @@
+[package]
+name = "greeter"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "greeter"
+path = "src/lib.rs"
+
+[[bin]]
+name = "qos-greeter"
+path = "src/main.rs"
+
+[dependencies]
+# Mirrors the dep set used by the in-tree `ui`-based apps
+# (file-explorer / terminal): the toolkit plus the trait crates its
+# `Widget` impls reference directly.
+ui = { path = "../ui" }
+automerge = "0.8.0"
+vello = "0.9"
+winit = "0.30.13"
+taffy = "0.10.1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+# greetd's wire protocol. `sync-codec` pulls in the blocking
+# `SyncCodec` (`Request::write_to` / `Response::read_from` over
+# `std::io::{Read,Write}`) — no async runtime needed for a login box.
+greetd_ipc = { version = "0.10", features = ["sync-codec"] }
+
+[dev-dependencies]

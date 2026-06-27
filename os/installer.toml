@@ -1,0 +1,40 @@
+# bootc-image-builder config for the qOS INSTALLER medium (--type anaconda-iso).
+#
+# This produces a bootable installer ISO that embeds the qOS bootc image and
+# deploys it to a target disk via Anaconda's `ostreecontainer` path. Anaconda
+# handles the genuinely hard parts (disk partitioning, ESP/Secure Boot/
+# bootloader, user creation) so the MVP doesn't reimplement them.
+#
+# Build:  ./os/dev/build-installer.sh   -> os/output/bootiso/install.iso
+# Test:   ./os/dev/vm.sh boot-iso       (boots the ISO against a blank disk)
+#
+# Two modes, toggled by which [customizations.installer.kickstart] block is
+# active below:
+#
+#   * INTERACTIVE (default): an EMPTY kickstart drops Anaconda into its normal
+#     interactive UI — the user picks the disk and creates their account.
+#     bootc-image-builder auto-injects the `ostreecontainer` directive.
+#
+#   * UNATTENDED (commented): wipes the FIRST disk, auto-partitions btrfs, and
+#     creates tester/quickdesktop with no prompts. Useful for automated
+#     end-to-end VM testing (install -> reboot -> qOS boots from disk).
+#     NOTE: when a kickstart creates the user, you must NOT also use
+#     [[customizations.user]] (they conflict) — that's why this is separate
+#     from os/config.toml.
+
+# --- INTERACTIVE (default) ---
+[customizations.installer.kickstart]
+contents = ""
+
+# --- UNATTENDED (uncomment to auto-install for testing; comment out the block
+#     above first) ---
+# [customizations.installer.kickstart]
+# contents = """
+# text
+# zerombr
+# clearpart --all --initlabel --disklabel=gpt
+# autopart --noswap --type=btrfs
+# rootpw --lock
+# user --name=tester --password=quickdesktop --groups=wheel
+# reboot
+# """
