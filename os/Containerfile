@@ -83,6 +83,12 @@ RUN chmod 755 /usr/bin/file-explorer
 # does not build against the GCC-15/C23 toolchain (glsl-optimizer once_flag
 # conflict). Re-add the COPY/chmod once the browser is revived.
 
+# Graphical login greeter (ui-toolkit based). Launched at the greetd VT
+# inside `cage` — see etc/greetd/config.toml. cage + greetd are already
+# installed in the System utilities block above.
+COPY qos-greeter /usr/bin/qos-greeter
+RUN chmod 755 /usr/bin/qos-greeter
+
 # FUSE mount service
 COPY usr/lib/systemd/system/fs.service /usr/lib/systemd/system/fs.service
 

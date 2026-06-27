@@ -8,5 +8,6 @@ members = [
     "apps/terminal",
     "apps/browser",
     "apps/settings",
+    "greeter",
 ]
 resolver = "2"

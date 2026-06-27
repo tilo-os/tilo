@@ -90,6 +90,46 @@ cmd_boot() {
   msg "up. monitor=$QOS_MON serial=$QOS_SERIAL"
 }
 
+# Boot the installer ISO (CD-ROM) against a fresh blank target disk, so Anaconda
+# can install qOS onto it. After the install completes + reboots, boot the
+# installed system with:  vm.sh boot --gl --disk $QOS_RUN/target.qcow2
+cmd_boot_iso() {
+  local mode=2d
+  while [ $# -gt 0 ]; do case "$1" in
+    --gl) mode=gl;; --2d) mode=2d;; --window) mode=window;;
+    *) die "boot-iso: unknown arg $1";; esac; shift; done
+  local iso="$QOS_ISO"
+  [ -z "$iso" ] && iso="$(find "$QOS_OUTPUT" -name '*.iso' -type f 2>/dev/null | head -1)"
+  [ -n "$iso" ] && [ -f "$iso" ] || die "no installer ISO (run ./os/dev/build-installer.sh) — or set QOS_ISO=..."
+  vm_running && die "VM already running; stop it first"
+  local code vars display rn
+  code="$(ovmf_code)"; vars="$(ovmf_vars)"
+  rm -f "$QOS_SERIAL" "$QOS_MON" "$QOS_PIDFILE"
+  inenv "cp -f '$vars' '$QOS_RUN/vars.fd'"
+  local target="$QOS_RUN/target.qcow2"
+  inenv "test -f '$target' || qemu-img create -f qcow2 '$target' 20G" >/dev/null
+  local res="xres=$QOS_XRES,yres=$QOS_YRES"
+  case "$mode" in
+    gl) rn="$(detect_rendernode)"; display="-device virtio-vga-gl,$res -display egl-headless,rendernode=$rn";;
+    window) display="-device virtio-vga-gl,$res -display gtk,gl=on";;
+    *) display="-device virtio-vga,$res -display none";;
+  esac
+  msg "boot-iso ($mode, ${QOS_XRES}x${QOS_YRES}) iso=$iso -> target=$target"
+  local args="-machine q35,accel=kvm -enable-kvm -m $QOS_MEM -cpu host -smp $QOS_SMP \
+    -drive if=pflash,format=raw,readonly=on,file=$code \
+    -drive if=pflash,format=raw,file=$QOS_RUN/vars.fd \
+    -drive file=$iso,format=raw,media=cdrom,if=ide \
+    -drive file=$target,format=qcow2,if=virtio \
+    -boot d $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$QOS_SSH_PORT-:22 \
+    -usb -device usb-tablet \
+    -monitor unix:$QOS_MON,server,nowait -serial file:$QOS_SERIAL \
+    -pidfile $QOS_PIDFILE -name qos-installer"
+  inenv "setsid nohup qemu-system-x86_64 $args >'$QOS_QEMU_LOG' 2>&1 & disown"
+  sleep 1
+  inenv "test -S '$QOS_MON'" || { warn "monitor not up; qemu.log:"; cat "$QOS_QEMU_LOG" >&2; die "boot-iso failed"; }
+  msg "installer up. monitor=$QOS_MON serial=$QOS_SERIAL  (installs onto $target)"
+}
+
 cmd_wait() {
   msg "waiting for greeter (greetd) ..."
   local i
@@ -196,6 +236,7 @@ cmd_capture_boot() {
 sub="${1:-}"; shift || true
 case "$sub" in
   boot) cmd_boot "$@";;
+  boot-iso) cmd_boot_iso "$@";;
   wait) cmd_wait "$@";;
   login) cmd_login "$@";;
   shot) cmd_shot "$@";;
