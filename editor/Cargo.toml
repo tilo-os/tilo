@@ -8,3 +8,6 @@ description = "CRDT rich-text editor binding (qdoc <-> ui::State). Interactive G
 ui = { path = "../ui" }
 qdoc = { path = "../qdoc" }
 automerge = "0.8.0"
+vello = "0.9"
+taffy = "0.10.1"
+winit = "0.30.13"
