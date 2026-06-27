@@ -58,6 +58,7 @@ enum ToolAction {
     FontCycle,
     SizeUp,
     SizeDown,
+    InsertTable,
 }
 
 fn char_to_byte(text: &str, char_off: usize) -> usize {
@@ -153,10 +154,31 @@ fn block_runs(b: &BlockView) -> (Vec<RichSpan>, Vec<(usize, usize)>) {
 struct Laid {
     id: String,
     text: String,
+    kind: String,
+    size: f32,
     y_top: f64,
     text_x: f64,
+    width: f64,
     height: f64,
     layout: RichTextLayout,
+    bullet: Option<String>,
+    /// Full grid-cell rectangle (table cells only) — for borders + precise hit.
+    cell_box: Option<Rect>,
+}
+
+fn cell_table(b: &BlockView) -> Option<String> {
+    match b.attrs.get("table") {
+        Some(AttrVal::Str(s)) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+fn cell_rc(b: &BlockView) -> (usize, usize) {
+    let get = |k: &str| match b.attrs.get(k) {
+        Some(AttrVal::Int(n)) if *n >= 0 => *n as usize,
+        _ => 0,
+    };
+    (get("row"), get("col"))
 }
 
 pub struct WordProcessorWidget {
@@ -230,10 +252,15 @@ impl WordProcessorWidget {
     /// Resolve a pointer position to a caret and apply it (optionally extending
     /// the selection for click-drag).
     fn caret_from_pointer(&mut self, p: Point, extend: bool) {
-        // Find the block whose vertical band contains the pointer (clamp to ends).
+        // Find the laid block under the pointer: cells hit by their full box (so
+        // the right column is chosen), normal blocks by their vertical band.
         let mut hit: Option<(String, usize)> = None;
         for l in &self.laid {
-            if p.y >= l.y_top && p.y < l.y_top + l.height {
+            let inside = match l.cell_box {
+                Some(bx) => bx.contains(p),
+                None => p.y >= l.y_top && p.y < l.y_top + l.height,
+            };
+            if inside {
                 let byte = l.layout.hit((p.x - l.text_x) as f32, (p.y - l.y_top) as f32);
                 hit = Some((l.id.clone(), byte_to_char(&l.text, byte)));
                 break;
@@ -307,28 +334,108 @@ impl Widget for WordProcessorWidget {
         let content_x = page_x + PAGE_MARGIN;
         let content_w = (page_w - 2.0 * PAGE_MARGIN) as f32;
 
-        // Pass 1: shape every block, accumulating vertical positions.
+        // Pass 1: shape blocks top-to-bottom. Runs of consecutive `cell` blocks
+        // sharing a table id lay out as a grid; everything else stacks normally.
         let blocks = std::mem::take(&mut self.blocks);
         let mut laid: Vec<Laid> = Vec::with_capacity(blocks.len());
         let mut y = page_top + PAGE_MARGIN;
-        for b in &blocks {
-            let (size, base_bold, indent, _bullet) = block_style(b);
-            let align = block_align(b);
-            let family = block_family(b);
-            let (runs, underlines) = block_runs(b);
-            let layout = RichTextLayout::shape(
-                &mut text_renderer.font_system,
-                &runs,
-                base_bold,
-                size,
-                (content_w - indent as f32).max(40.0),
-                align,
-                family,
-                underlines,
-            );
-            let height = layout.height() as f64;
-            laid.push(Laid { id: b.id.clone(), text: b.text.clone(), y_top: y, text_x: content_x + indent, height, layout });
-            y += height + BLOCK_SPACING;
+        let mut ol_count = 0u32;
+        let cell_pad = 8.0f64;
+        let mut bi = 0;
+        while bi < blocks.len() {
+            let b = &blocks[bi];
+            if let Some(tid) = cell_table(b) {
+                ol_count = 0;
+                let start = bi;
+                while bi < blocks.len() && cell_table(&blocks[bi]).as_deref() == Some(tid.as_str()) {
+                    bi += 1;
+                }
+                let cells = &blocks[start..bi];
+                let ncols = cells.iter().map(|c| cell_rc(c).1).max().unwrap_or(0) + 1;
+                let nrows = cells.iter().map(|c| cell_rc(c).0).max().unwrap_or(0) + 1;
+                let col_w = content_w as f64 / ncols as f64;
+                for r in 0..nrows {
+                    let mut row_items: Vec<(usize, RichTextLayout, &BlockView)> = Vec::new();
+                    let mut row_h = 26.0f64;
+                    for c in 0..ncols {
+                        if let Some(cell) = cells.iter().find(|cl| cell_rc(cl) == (r, c)) {
+                            let (runs, underlines) = block_runs(cell);
+                            let layout = RichTextLayout::shape(
+                                &mut text_renderer.font_system,
+                                &runs,
+                                false,
+                                16.0,
+                                (col_w - 2.0 * cell_pad).max(24.0) as f32,
+                                block_align(cell),
+                                block_family(cell),
+                                underlines,
+                            );
+                            row_h = row_h.max(layout.height() as f64 + 2.0 * cell_pad);
+                            row_items.push((c, layout, cell));
+                        }
+                    }
+                    for (c, layout, cell) in row_items {
+                        let cell_x = content_x + c as f64 * col_w;
+                        let cbox = Rect::new(cell_x, y, cell_x + col_w, y + row_h);
+                        laid.push(Laid {
+                            id: cell.id.clone(),
+                            text: cell.text.clone(),
+                            kind: "cell".into(),
+                            size: 16.0,
+                            y_top: y + cell_pad,
+                            text_x: cell_x + cell_pad,
+                            width: col_w - 2.0 * cell_pad,
+                            height: layout.height() as f64,
+                            layout,
+                            bullet: None,
+                            cell_box: Some(cbox),
+                        });
+                    }
+                    y += row_h;
+                }
+                y += BLOCK_SPACING;
+            } else {
+                let (size, base_bold, indent, _bullet) = block_style(b);
+                let bullet = if b.kind == "list_item" {
+                    if matches!(b.attrs.get("ordered"), Some(AttrVal::Bool(true))) {
+                        ol_count += 1;
+                        Some(format!("{ol_count}."))
+                    } else {
+                        ol_count = 0;
+                        Some("•".to_string())
+                    }
+                } else {
+                    ol_count = 0;
+                    None
+                };
+                let wrap_w = (content_w - indent as f32).max(40.0);
+                let (runs, underlines) = block_runs(b);
+                let layout = RichTextLayout::shape(
+                    &mut text_renderer.font_system,
+                    &runs,
+                    base_bold,
+                    size,
+                    wrap_w,
+                    block_align(b),
+                    block_family(b),
+                    underlines,
+                );
+                laid.push(Laid {
+                    id: b.id.clone(),
+                    text: b.text.clone(),
+                    kind: b.kind.clone(),
+                    size,
+                    y_top: y,
+                    text_x: content_x + indent,
+                    width: wrap_w as f64,
+                    height: layout.height() as f64,
+                    layout,
+                    bullet,
+                    cell_box: None,
+                });
+                y += laid.last().unwrap().height + BLOCK_SPACING;
+                bi += 1;
+            }
         }
         let content_bottom = y - BLOCK_SPACING + PAGE_MARGIN;
         let page_h = (content_bottom - page_top).max(canvas.height() - 2.0 * PAGE_TOP);
@@ -339,35 +446,23 @@ impl Widget for WordProcessorWidget {
         let page = Rect::new(page_x, page_top, page_x + page_w, page_top + page_h);
         scene.fill(Fill::NonZero, transform, PAPER, None, &vello::kurbo::RoundedRect::from_rect(page, 3.0));
 
-        // Pass 2: draw bullets, selection, text, caret.
-        let mut ol_count = 0u32;
-        for (b, l) in blocks.iter().zip(laid.iter()) {
-            let (size, _base_bold, _indent, _) = block_style(b);
-            let bullet: Option<String> = if b.kind == "list_item" {
-                if matches!(b.attrs.get("ordered"), Some(AttrVal::Bool(true))) {
-                    ol_count += 1;
-                    Some(format!("{ol_count}."))
-                } else {
-                    ol_count = 0;
-                    Some("•".to_string())
-                }
-            } else {
-                ol_count = 0;
-                None
-            };
+        // Pass 2: draw cell borders, bullets, selection, text, caret.
+        for l in &laid {
+            if let Some(bx) = l.cell_box {
+                scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, Color::from_rgb8(0xc4, 0xc6, 0xcc), None, &bx);
+            }
 
-            if b.kind == "fidelity" {
+            if l.kind == "fidelity" {
                 let box_rect = Rect::new(l.text_x, l.y_top + 2.0, (page_x + page_w - PAGE_MARGIN).min(l.text_x + 360.0), l.y_top + l.height - 2.0);
                 scene.fill(Fill::NonZero, transform, Color::from_rgb8(0xee, 0xee, 0xf2), None, &vello::kurbo::RoundedRect::from_rect(box_rect, 4.0));
                 text_renderer.draw_text(scene, "⟦ embedded content ⟧", 14.0, MUTED, transform * Affine::translate((l.text_x + 10.0, l.y_top + 6.0)), None);
                 continue;
             }
 
-            if let Some(bul) = &bullet {
-                text_renderer.draw_text(scene, bul, size, INK, transform * Affine::translate((l.text_x - 24.0, l.y_top)), None);
+            if let Some(bul) = &l.bullet {
+                text_renderer.draw_text(scene, bul, l.size, INK, transform * Affine::translate((l.text_x - 24.0, l.y_top)), None);
             }
 
-            // Selection highlight (within this block).
             if let Some((b0, b1)) = self.selection_bytes_for(&l.id, &l.text) {
                 for (rx0, ry0, rx1, ry1) in l.layout.selection_rects(b0, b1) {
                     let r = Rect::new(l.text_x + rx0 as f64, l.y_top + ry0 as f64, l.text_x + rx1 as f64, l.y_top + ry1 as f64);
@@ -377,7 +472,7 @@ impl Widget for WordProcessorWidget {
 
             text_renderer.draw_rich(scene, &l.layout, transform * Affine::translate((l.text_x, l.y_top)), INK);
 
-            if self.focused && b.id == self.inner.caret.block && !self.inner.has_selection() {
+            if self.focused && l.id == self.inner.caret.block && !self.inner.has_selection() {
                 let byte = char_to_byte(&l.text, self.inner.caret.offset);
                 let (cx, cy, ch) = l.layout.caret_geometry(byte);
                 let caret = Rect::new(l.text_x + cx as f64, l.y_top + cy as f64, l.text_x + cx as f64 + CARET_WIDTH, l.y_top + cy as f64 + ch as f64);
@@ -454,6 +549,15 @@ impl Widget for WordProcessorWidget {
                 let mut changed = true;
                 let mut motion = false;
                 match logical_key {
+                    Key::Named(NamedKey::Tab) => {
+                        if let Some(next) = self.tab_cell(!shift) {
+                            self.inner.clear_anchor();
+                            self.inner.set_caret(Caret { block: next, offset: 0 });
+                            motion = true;
+                        } else {
+                            self.inner.insert_str(state, "    ");
+                        }
+                    }
                     Key::Named(NamedKey::Enter) => self.inner.enter(state),
                     Key::Named(NamedKey::Backspace) => self.inner.backspace(state),
                     Key::Named(NamedKey::Delete) => self.inner.delete_forward(state),
@@ -660,6 +764,19 @@ impl WordProcessorWidget {
                 let s = ((self.current_size() - 2.0).round() as i64).max(6);
                 self.inner.set_block_attr(state, "fontSize", s);
             }
+            ToolAction::InsertTable => self.inner.insert_table(state, 2, 2),
+        }
+    }
+
+    /// The next/previous cell id within the caret cell's table, if any.
+    fn tab_cell(&self, forward: bool) -> Option<String> {
+        let idx = self.blocks.iter().position(|b| b.id == self.inner.caret.block)?;
+        let table = cell_table(&self.blocks[idx])?;
+        let same = |b: &BlockView| cell_table(b).as_deref() == Some(table.as_str());
+        if forward {
+            self.blocks[idx + 1..].iter().find(|b| same(b)).map(|b| b.id.clone())
+        } else {
+            self.blocks[..idx].iter().rev().find(|b| same(b)).map(|b| b.id.clone())
         }
     }
 
@@ -745,7 +862,7 @@ impl WordProcessorWidget {
         let font_label = self.current_font().label();
 
         let white = Color::from_rgb8(0xff, 0xff, 0xff);
-        let buttons: [(ToolAction, &str, f64, bool, bool); 13] = [
+        let buttons: [(ToolAction, &str, f64, bool, bool); 14] = [
             (ToolAction::Bold, "B", 34.0, bold_a, true),
             (ToolAction::Italic, "I", 30.0, italic_a, false),
             (ToolAction::Underline, "U", 32.0, under_a, false),
@@ -759,6 +876,7 @@ impl WordProcessorWidget {
             (ToolAction::FontCycle, font_label, 58.0, false, false),
             (ToolAction::SizeDown, "A−", 34.0, false, false),
             (ToolAction::SizeUp, "A+", 34.0, false, false),
+            (ToolAction::InsertTable, "⊞ Table", 78.0, kind == "cell", false),
         ];
 
         self.toolbar.clear();
@@ -766,7 +884,7 @@ impl WordProcessorWidget {
         let bh = 34.0;
         let mut x = tb.x0 + 14.0;
         for (i, (action, label, w, active, bold_label)) in buttons.iter().enumerate() {
-            if i == 3 || i == 7 || i == 10 {
+            if i == 3 || i == 7 || i == 10 || i == 13 {
                 let sep = Rect::new(x + 2.0, cy - 12.0, x + 3.0, cy + 12.0);
                 scene.fill(Fill::NonZero, transform, theme.tokens.colors.border_standard, None, &sep);
                 x += 14.0;

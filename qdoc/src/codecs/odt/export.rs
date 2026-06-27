@@ -155,6 +155,21 @@ fn para_props(b: &BlockView) -> Option<(String, String)> {
     }
 }
 
+fn snap_cell_table(b: &BlockView) -> Option<String> {
+    match b.attrs.get("table") {
+        Some(AttrVal::Str(s)) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+fn snap_cell_rc(b: &BlockView) -> (usize, usize) {
+    let g = |k: &str| match b.attrs.get(k) {
+        Some(AttrVal::Int(n)) if *n >= 0 => *n as usize,
+        _ => 0,
+    };
+    (g("row"), g("col"))
+}
+
 /// Get-or-create a paragraph automatic style name for these props.
 fn register_para_style(styles: &mut Vec<(String, String)>, props: (String, String)) -> String {
     if let Some(i) = styles.iter().position(|p| p == &props) {
@@ -212,6 +227,32 @@ fn build_content_xml(snap: &DocSnapshot) -> String {
                     body.push_str(xml);
                 }
                 i += 1;
+            }
+            "cell" => {
+                // Emit a run of same-`table` cells as a real ODF table.
+                let tid = snap_cell_table(b).unwrap_or_default();
+                let start = i;
+                while i < snap.blocks.len() && snap_cell_table(&snap.blocks[i]).as_deref() == Some(tid.as_str()) {
+                    i += 1;
+                }
+                let cells = &snap.blocks[start..i];
+                let nrows = cells.iter().map(|c| snap_cell_rc(c).0).max().unwrap_or(0) + 1;
+                let ncols = cells.iter().map(|c| snap_cell_rc(c).1).max().unwrap_or(0) + 1;
+                body.push_str(&format!(r#"<table:table table:name="{tid}">"#));
+                body.push_str(&format!(r#"<table:table-column table:number-columns-repeated="{ncols}"/>"#));
+                for r in 0..nrows {
+                    body.push_str("<table:table-row>");
+                    for c in 0..ncols {
+                        let inner = cells
+                            .iter()
+                            .find(|cl| snap_cell_rc(cl) == (r, c))
+                            .map(|cl| render_inline(&cl.text, &cl.marks, &mut used))
+                            .unwrap_or_default();
+                        body.push_str(&format!(r#"<table:table-cell><text:p>{inner}</text:p></table:table-cell>"#));
+                    }
+                    body.push_str("</table:table-row>");
+                }
+                body.push_str("</table:table>");
             }
             _ => {
                 let sa = style_attr(b);
