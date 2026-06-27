@@ -52,6 +52,9 @@ enum ToolAction {
     H2,
     Body,
     Bullet,
+    AlignLeft,
+    AlignCenter,
+    AlignRight,
 }
 
 fn char_to_byte(text: &str, char_off: usize) -> usize {
@@ -571,7 +574,21 @@ impl WordProcessorWidget {
             ToolAction::H2 => self.inner.set_paragraph_style(state, "heading", Some(2), None),
             ToolAction::Body => self.inner.set_paragraph_style(state, "paragraph", None, None),
             ToolAction::Bullet => self.inner.set_paragraph_style(state, "list_item", None, Some(false)),
+            ToolAction::AlignLeft => self.inner.set_align(state, "left"),
+            ToolAction::AlignCenter => self.inner.set_align(state, "center"),
+            ToolAction::AlignRight => self.inner.set_align(state, "right"),
         }
+    }
+
+    fn current_align(&self) -> String {
+        self.blocks
+            .iter()
+            .find(|b| b.id == self.inner.caret.block)
+            .and_then(|b| match b.attrs.get("align") {
+                Some(AttrVal::Str(s)) => Some(s.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| "left".into())
     }
 
     fn selection_text(&self) -> Option<String> {
@@ -614,9 +631,10 @@ impl WordProcessorWidget {
         let italic_a = self.mark_active_in_selection("em");
         let under_a = self.mark_active_in_selection("underline");
         let (kind, level) = self.current_block_style();
+        let align = self.current_align();
 
         let white = Color::from_rgb8(0xff, 0xff, 0xff);
-        let buttons: [(ToolAction, &str, f64, bool, bool); 7] = [
+        let buttons: [(ToolAction, &str, f64, bool, bool); 10] = [
             (ToolAction::Bold, "B", 34.0, bold_a, true),
             (ToolAction::Italic, "I", 30.0, italic_a, false),
             (ToolAction::Underline, "U", 32.0, under_a, false),
@@ -624,6 +642,9 @@ impl WordProcessorWidget {
             (ToolAction::H2, "H2", 42.0, kind == "heading" && level == Some(2), false),
             (ToolAction::Body, "Body", 58.0, kind == "paragraph", false),
             (ToolAction::Bullet, "• List", 66.0, kind == "list_item", false),
+            (ToolAction::AlignLeft, "L", 30.0, align == "left", false),
+            (ToolAction::AlignCenter, "C", 30.0, align == "center", false),
+            (ToolAction::AlignRight, "R", 30.0, align == "right", false),
         ];
 
         self.toolbar.clear();
@@ -631,7 +652,7 @@ impl WordProcessorWidget {
         let bh = 34.0;
         let mut x = tb.x0 + 14.0;
         for (i, (action, label, w, active, bold_label)) in buttons.iter().enumerate() {
-            if i == 3 {
+            if i == 3 || i == 7 {
                 let sep = Rect::new(x + 2.0, cy - 12.0, x + 3.0, cy + 12.0);
                 scene.fill(Fill::NonZero, transform, theme.tokens.colors.border_standard, None, &sep);
                 x += 14.0;
