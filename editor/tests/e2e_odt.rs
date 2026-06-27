@@ -59,6 +59,23 @@ fn open_edit_save_reload_odt() {
 }
 
 #[test]
+fn undo_reverts_word_processor_edit() {
+    // The host App snapshots on commit_action and restores on undo; the word
+    // processor only needs to edit the shared doc + signal commits.
+    let mut s = ui::State::new();
+    let mut wp = WordProcessorWidget::new();
+    wp.sync(&mut s.doc, &s.root);
+    s.commit_action(None, None); // baseline: one empty paragraph
+
+    wp.model_mut().insert_str(&mut s.doc, "hello");
+    s.commit_action(None, None);
+    assert_eq!(wp.model().block_texts(&s.doc), vec!["hello".to_string()]);
+
+    s.undo(None, None);
+    assert_eq!(wp.model().block_texts(&s.doc), vec![String::new()], "undo reverts the edit");
+}
+
+#[test]
 fn two_word_processors_collaborate_and_converge() {
     // Peer A starts a shared document.
     let mut sa = ui::State::new();
