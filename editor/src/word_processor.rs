@@ -300,6 +300,193 @@ impl WordProcessor {
         }
     }
 
+    /// `(table id, Vec<(cell_id, row, col)>)` for the table the caret is in.
+    fn caret_table(&self, state: &AutoCommit) -> Option<(String, Vec<(String, usize, usize)>)> {
+        let containers = self.containers.as_ref()?;
+        let snap = qdoc::model::materialize(state, containers);
+        let cur = snap.blocks.iter().find(|b| b.id == self.caret.block)?;
+        let tid = match cur.attrs.get("table") {
+            Some(qdoc::AttrVal::Str(s)) => s.clone(),
+            _ => return None,
+        };
+        let int = |b: &qdoc::snapshot::BlockView, k: &str| match b.attrs.get(k) {
+            Some(qdoc::AttrVal::Int(n)) if *n >= 0 => *n as usize,
+            _ => 0,
+        };
+        let cells = snap
+            .blocks
+            .iter()
+            .filter(|b| b.kind == "cell" && matches!(b.attrs.get("table"), Some(qdoc::AttrVal::Str(s)) if s == &tid))
+            .map(|b| (b.id.clone(), int(b, "row"), int(b, "col")))
+            .collect();
+        Some((tid, cells))
+    }
+
+    fn caret_rc(&self, cells: &[(String, usize, usize)]) -> (usize, usize) {
+        cells.iter().find(|(id, _, _)| id == &self.caret.block).map(|(_, r, c)| (*r, *c)).unwrap_or((0, 0))
+    }
+
+    /// Add a row below the caret's row.
+    pub fn table_add_row(&mut self, state: &mut AutoCommit) {
+        let Some((tid, cells)) = self.caret_table(state) else {
+            return;
+        };
+        let (cur_row, _) = self.caret_rc(&cells);
+        let ncols = cells.iter().map(|(_, _, c)| *c).max().unwrap_or(0) + 1;
+        let anchor = cells.iter().find(|(_, r, c)| *r == cur_row && *c == ncols - 1).map(|(id, _, _)| id.clone());
+        let to_bump: Vec<(String, usize)> = cells.iter().filter(|(_, r, _)| *r > cur_row).map(|(id, r, _)| (id.clone(), *r)).collect();
+        let containers = self.containers.clone().unwrap();
+        let mut first_new = None;
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            for (id, r) in &to_bump {
+                dm.set_attr(id, "row", (*r + 1) as i64);
+            }
+            let mut prev = anchor;
+            for col in 0..ncols {
+                let id = dm.insert_block(prev.as_deref(), "cell");
+                dm.set_attr(&id, "table", tid.as_str());
+                dm.set_attr(&id, "row", (cur_row + 1) as i64);
+                dm.set_attr(&id, "col", col as i64);
+                if first_new.is_none() {
+                    first_new = Some(id.clone());
+                }
+                prev = Some(id);
+            }
+        }
+        if let Some(fc) = first_new {
+            self.caret = Caret { block: fc, offset: 0 };
+            self.selection_anchor = None;
+        }
+    }
+
+    /// Add a column to the right of the caret's column.
+    pub fn table_add_col(&mut self, state: &mut AutoCommit) {
+        let Some((tid, cells)) = self.caret_table(state) else {
+            return;
+        };
+        let (cur_row, cur_col) = self.caret_rc(&cells);
+        let nrows = cells.iter().map(|(_, r, _)| *r).max().unwrap_or(0) + 1;
+        let to_bump: Vec<(String, usize)> = cells.iter().filter(|(_, _, c)| *c > cur_col).map(|(id, _, c)| (id.clone(), *c)).collect();
+        let containers = self.containers.clone().unwrap();
+        let mut caret_new = None;
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            for (id, c) in &to_bump {
+                dm.set_attr(id, "col", (*c + 1) as i64);
+            }
+            for r in 0..nrows {
+                let anchor = cells.iter().find(|(_, rr, cc)| *rr == r && *cc == cur_col).map(|(id, _, _)| id.clone());
+                let id = dm.insert_block(anchor.as_deref(), "cell");
+                dm.set_attr(&id, "table", tid.as_str());
+                dm.set_attr(&id, "row", r as i64);
+                dm.set_attr(&id, "col", (cur_col + 1) as i64);
+                if r == cur_row {
+                    caret_new = Some(id.clone());
+                }
+            }
+        }
+        if let Some(fc) = caret_new {
+            self.caret = Caret { block: fc, offset: 0 };
+            self.selection_anchor = None;
+        }
+    }
+
+    /// Delete the caret's row (deletes the whole table if it was the last row).
+    pub fn table_del_row(&mut self, state: &mut AutoCommit) {
+        let Some((_, cells)) = self.caret_table(state) else {
+            return;
+        };
+        let nrows = cells.iter().map(|(_, r, _)| *r).max().unwrap_or(0) + 1;
+        if nrows <= 1 {
+            self.table_delete(state);
+            return;
+        }
+        let (cur_row, cur_col) = self.caret_rc(&cells);
+        let to_remove: Vec<String> = cells.iter().filter(|(_, r, _)| *r == cur_row).map(|(id, _, _)| id.clone()).collect();
+        let to_shift: Vec<(String, usize)> = cells.iter().filter(|(_, r, _)| *r > cur_row).map(|(id, r, _)| (id.clone(), *r)).collect();
+        let target_row = if cur_row + 1 < nrows { cur_row + 1 } else { cur_row - 1 };
+        let new_caret = cells.iter().find(|(_, r, c)| *r == target_row && *c == cur_col).map(|(id, _, _)| id.clone());
+        let containers = self.containers.clone().unwrap();
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            for id in &to_remove {
+                dm.remove_block(id);
+            }
+            for (id, r) in &to_shift {
+                dm.set_attr(id, "row", (*r - 1) as i64);
+            }
+        }
+        if let Some(nc) = new_caret {
+            self.caret = Caret { block: nc, offset: 0 };
+            self.selection_anchor = None;
+        }
+    }
+
+    /// Delete the caret's column (deletes the whole table if it was the last).
+    pub fn table_del_col(&mut self, state: &mut AutoCommit) {
+        let Some((_, cells)) = self.caret_table(state) else {
+            return;
+        };
+        let ncols = cells.iter().map(|(_, _, c)| *c).max().unwrap_or(0) + 1;
+        if ncols <= 1 {
+            self.table_delete(state);
+            return;
+        }
+        let (cur_row, cur_col) = self.caret_rc(&cells);
+        let to_remove: Vec<String> = cells.iter().filter(|(_, _, c)| *c == cur_col).map(|(id, _, _)| id.clone()).collect();
+        let to_shift: Vec<(String, usize)> = cells.iter().filter(|(_, _, c)| *c > cur_col).map(|(id, _, c)| (id.clone(), *c)).collect();
+        let target_col = if cur_col + 1 < ncols { cur_col + 1 } else { cur_col - 1 };
+        let new_caret = cells.iter().find(|(_, r, c)| *r == cur_row && *c == target_col).map(|(id, _, _)| id.clone());
+        let containers = self.containers.clone().unwrap();
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            for id in &to_remove {
+                dm.remove_block(id);
+            }
+            for (id, c) in &to_shift {
+                dm.set_attr(id, "col", (*c - 1) as i64);
+            }
+        }
+        if let Some(nc) = new_caret {
+            self.caret = Caret { block: nc, offset: 0 };
+            self.selection_anchor = None;
+        }
+    }
+
+    /// Delete the whole table the caret is in; caret moves to the block before it.
+    pub fn table_delete(&mut self, state: &mut AutoCommit) {
+        let Some((_, cells)) = self.caret_table(state) else {
+            return;
+        };
+        let order = self.ordered_blocks(state);
+        let first_idx = cells.iter().filter_map(|(id, _, _)| order.iter().position(|b| b == id)).min();
+        let before = first_idx.and_then(|i| if i > 0 { Some(order[i - 1].clone()) } else { None });
+        let cell_ids: Vec<String> = cells.iter().map(|(id, _, _)| id.clone()).collect();
+        let containers = self.containers.clone().unwrap();
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            for id in &cell_ids {
+                dm.remove_block(id);
+            }
+        }
+        let remaining = self.ordered_blocks(state);
+        match before.or_else(|| remaining.first().cloned()) {
+            Some(t) => {
+                let off = self.block_len(state, &t);
+                self.caret = Caret { block: t, offset: off };
+            }
+            None => {
+                if let Some(ids) = self.ids.as_mut() {
+                    let mut dm = DocMut { doc: state, c: &containers, ids };
+                    let id = dm.insert_block(None, "paragraph");
+                    self.caret = Caret { block: id, offset: 0 };
+                }
+            }
+        }
+        self.selection_anchor = None;
+    }
+
     /// Insert text, splitting on newlines into new paragraphs (multi-line paste).
     pub fn insert_multiline(&mut self, state: &mut AutoCommit, text: &str) {
         let normalized = text.replace('\r', "");
@@ -722,6 +909,26 @@ mod tests {
         let (mut wp, mut state) = bound();
         wp.insert_multiline(&mut state, "alpha\nbeta\ngamma");
         assert_eq!(wp.block_texts(&state), vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()]);
+    }
+
+    #[test]
+    fn table_add_and_delete_rows_cols() {
+        let (mut wp, mut state) = bound();
+        wp.insert_table(&mut state, 2, 2);
+        let count = |wp: &WordProcessor, st: &AutoCommit| {
+            qdoc::model::materialize(st, wp.containers.as_ref().unwrap()).blocks.iter().filter(|b| b.kind == "cell").count()
+        };
+        assert_eq!(count(&wp, &state), 4);
+        wp.table_add_row(&mut state);
+        assert_eq!(count(&wp, &state), 6);
+        wp.table_add_col(&mut state);
+        assert_eq!(count(&wp, &state), 9);
+        wp.table_del_row(&mut state);
+        assert_eq!(count(&wp, &state), 6);
+        wp.table_del_col(&mut state);
+        assert_eq!(count(&wp, &state), 4);
+        wp.table_delete(&mut state);
+        assert_eq!(count(&wp, &state), 0);
     }
 
     #[test]
