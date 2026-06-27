@@ -14,21 +14,13 @@ use crate::presence::{PresenceCtx, PresenceKey};
 use crate::dnd::{DragPayload, DRAG_START_THRESHOLD_PX};
 use crate::widget::AppKind;
 
-/// Duration of the inter-pill drop-zone expand animation. Matches the
-/// concept's `motion.div layout` spring feel — short enough that the user
-/// perceives the zone "tracking" the cursor but long enough that the eye
-/// catches the transition. Paired with `needs_animation_frame()` so the
-/// host keeps pumping redraws while interpolation is in flight.
+/// Frame-pump window for the (now-removed) inter-pill drop-zone expand
+/// animation. Retained because `needs_animation_frame` and a
+/// regression test still gate on it — the constant tells the host to
+/// keep pumping redraws for ~140 ms after `drop_zone_animated_at`
+/// updates, so a future paint can re-tap the in-flight progress
+/// without re-wiring the gesture pipeline.
 const DROP_ZONE_ANIM_MS: u64 = 140;
-/// Width a drop-zone indicator expands to when it's the current target
-/// gap. Mirrors the concept's `w-16` (64 px Tailwind). We clamp visually
-/// against the actual gap between pills (6 px) at rest — the expansion is
-/// an overlay painted *over* adjacent pills, not a layout change.
-const DROP_ZONE_EXPANDED_PX: f64 = 18.0;
-/// Width of the idle drop-zone hint painted in every inter-pill gap while
-/// a drag is in flight. Stays thin (2 px) so it reads as a subtle guide
-/// rather than a warning.
-const DROP_ZONE_IDLE_PX: f64 = 2.0;
 
 /// Width of the minimalist white-line drop-target indicator painted at
 /// the inter-pill gap the cursor is currently hovering. 1.5 px reads as
@@ -1486,90 +1478,15 @@ impl Widget for TabBar {
             }
         }
 
-        // Drop-zone indicators: while a tab drag is in flight, paint one
-        // vertical bar per inter-pill gap (N+1 gaps for N tabs, including
-        // one at the start and one at the end). The gap the cursor is
-        // currently over animates from the idle width to `_EXPANDED_PX`
-        // with a glow — this is the Rust port of the concept's
-        // `TabDropZone` which uses `motion.div layout` to spring between
-        // `w-2` and `w-16`. Animation state (`drop_zone_target` +
-        // `drop_zone_animated_at`) is updated in `handle_event`; `draw`
-        // only reads it here to interpolate.
-        if self.pending_drag.is_some() && !self.tab_rects.is_empty() {
-            let accent = theme.tokens.colors.accent[5];
-            let target = self.drop_zone_target;
-            let now = Instant::now();
-            let elapsed_ms = self
-                .drop_zone_animated_at
-                .map(|t| now.duration_since(t).as_millis() as f64)
-                .unwrap_or(DROP_ZONE_ANIM_MS as f64);
-            // Ease-out-cubic over DROP_ZONE_ANIM_MS; clamps to [0, 1].
-            let raw_t = (elapsed_ms / DROP_ZONE_ANIM_MS as f64).clamp(0.0, 1.0);
-            let eased_t = 1.0 - (1.0 - raw_t).powi(3);
-
-            for gap_idx in 0..=self.tab_rects.len() {
-                // Compute the gap's centre x: between pills, or just past
-                // the outermost edge at the endpoints.
-                let (cx, y0, y1) = if gap_idx == 0 {
-                    let r = self.tab_rects[0];
-                    (r.x0 - 3.0, r.y0 - 2.0, r.y1 + 2.0)
-                } else if gap_idx == self.tab_rects.len() {
-                    let r = *self.tab_rects.last().unwrap();
-                    (r.x1 + 3.0, r.y0 - 2.0, r.y1 + 2.0)
-                } else {
-                    let prev = self.tab_rects[gap_idx - 1];
-                    let next = self.tab_rects[gap_idx];
-                    let cx = (prev.x1 + next.x0) / 2.0;
-                    (cx, prev.y0.min(next.y0) - 2.0, prev.y1.max(next.y1) + 2.0)
-                };
-
-                // Target gap expands smoothly. Non-target gaps stay at
-                // the idle width + ~30% alpha so the user still sees
-                // every possible drop location (concept's always-visible
-                // spacers).
-                let is_target = target == Some(gap_idx);
-                let (w, alpha) = if is_target {
-                    let w = DROP_ZONE_IDLE_PX
-                        + (DROP_ZONE_EXPANDED_PX - DROP_ZONE_IDLE_PX) * eased_t;
-                    // Interpolate 0.3 → 1.0 alpha too so the target zone
-                    // brightens as it widens.
-                    let a = 0.3 + 0.7 * eased_t;
-                    (w, a)
-                } else {
-                    (DROP_ZONE_IDLE_PX, 0.3)
-                };
-
-                let bar = Rect::new(cx - w / 2.0, y0, cx + w / 2.0, y1);
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    accent.with_alpha_factor(alpha as f32),
-                    None,
-                    &bar,
-                );
-
-                // Extra outer glow on the target gap while it's past ~60%
-                // of the animation. Cheap approximation of the concept's
-                // `shadow-[0_0_12px_rgba(99,102,241,0.8)]` without needing
-                // a blur primitive — two wider strokes at lower alpha.
-                if is_target && eased_t > 0.6 {
-                    let glow_t = ((eased_t - 0.6) / 0.4).clamp(0.0, 1.0);
-                    let glow = Rect::new(
-                        cx - (w / 2.0 + 4.0),
-                        y0 - 1.0,
-                        cx + (w / 2.0 + 4.0),
-                        y1 + 1.0,
-                    );
-                    scene.fill(
-                        vello::peniko::Fill::NonZero,
-                        transform,
-                        accent.with_alpha_factor(0.25 * glow_t as f32),
-                        None,
-                        &glow,
-                    );
-                }
-            }
-        }
+        // The minimalist white-line drop indicator below is the only
+        // drag affordance the bar paints — the old indigo capsule + glow
+        // at every inter-pill gap was removed 2026-06-24 per user
+        // feedback ("weird purple-ish rectangles as drop off zones —
+        // these will eventually need to be removed"). State for the
+        // removed animation (`drop_zone_target`, `drop_zone_animated_at`,
+        // `DROP_ZONE_*_PX`) is still updated by `handle_event` so a
+        // future re-introduction wouldn't need to rewire the gesture
+        // pipeline; the paint is just suppressed.
 
         // Minimalist white-line drop indicator at `hover_drop_idx`.
         // Drawn AFTER the existing accent-colored drop zones (the
