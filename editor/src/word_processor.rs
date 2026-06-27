@@ -21,6 +21,9 @@ pub struct WordProcessor {
     pub(crate) containers: Option<Containers>,
     pub(crate) ids: Option<IdGen>,
     pub(crate) caret: Caret,
+    /// Selection anchor; a selection exists when this is set and differs from
+    /// the caret (within the same block, for v1).
+    pub(crate) selection_anchor: Option<Caret>,
 }
 
 impl Default for WordProcessor {
@@ -31,7 +34,70 @@ impl Default for WordProcessor {
 
 impl WordProcessor {
     pub fn new() -> Self {
-        Self { containers: None, ids: None, caret: Caret::default() }
+        Self { containers: None, ids: None, caret: Caret::default(), selection_anchor: None }
+    }
+
+    // ---- selection ---------------------------------------------------------
+
+    /// Begin (or keep) a selection anchored at the current caret.
+    pub fn set_anchor(&mut self) {
+        if self.selection_anchor.is_none() {
+            self.selection_anchor = Some(self.caret.clone());
+        }
+    }
+
+    pub fn clear_anchor(&mut self) {
+        self.selection_anchor = None;
+    }
+
+    /// The selection as `(block, start, end)` if it is non-empty and within a
+    /// single block.
+    pub fn selection_range(&self) -> Option<(String, usize, usize)> {
+        let anchor = self.selection_anchor.as_ref()?;
+        if anchor.block != self.caret.block {
+            return None;
+        }
+        let (a, b) = (anchor.offset, self.caret.offset);
+        if a == b {
+            return None;
+        }
+        Some((self.caret.block.clone(), a.min(b), a.max(b)))
+    }
+
+    pub fn has_selection(&self) -> bool {
+        self.selection_range().is_some()
+    }
+
+    /// Delete the current selection (no-op if none); returns whether it deleted.
+    pub fn delete_selection(&mut self, state: &mut AutoCommit) -> bool {
+        let Some((block, start, end)) = self.selection_range() else {
+            return false;
+        };
+        let containers = self.containers.clone().unwrap();
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            dm.splice_text(&block, start, (end - start) as isize, "");
+        }
+        self.caret = Caret { block, offset: start };
+        self.selection_anchor = None;
+        true
+    }
+
+    /// Toggle an inline mark (`strong`/`em`/`underline`) over the selection.
+    pub fn toggle_mark(&mut self, state: &mut AutoCommit, name: &str) {
+        let Some((block, start, end)) = self.selection_range() else {
+            return;
+        };
+        let containers = self.containers.clone().unwrap();
+        let marked = qdoc::model::has_mark_over(state, &containers, &block, start, end, name);
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            if marked {
+                dm.remove_mark(&block, start, end, name);
+            } else {
+                dm.add_mark(&block, start, end, name, true);
+            }
+        }
     }
 
     /// Resolve the document model under `root` (initialising the schema if
@@ -101,8 +167,9 @@ impl WordProcessor {
 
     // ---- edit operations ---------------------------------------------------
 
-    /// Insert `s` at the caret and advance.
+    /// Insert `s` at the caret and advance. Replaces the selection if any.
     pub fn insert_str(&mut self, state: &mut AutoCommit, s: &str) {
+        self.delete_selection(state);
         let Some(containers) = self.containers.clone() else {
             return;
         };
@@ -146,6 +213,9 @@ impl WordProcessor {
     /// Delete the character before the caret; at offset 0 merge into the
     /// previous block.
     pub fn backspace(&mut self, state: &mut AutoCommit) {
+        if self.delete_selection(state) {
+            return;
+        }
         let Some(containers) = self.containers.clone() else {
             return;
         };
@@ -185,6 +255,9 @@ impl WordProcessor {
     /// Delete the character after the caret; at end-of-block merge the next
     /// block in.
     pub fn delete_forward(&mut self, state: &mut AutoCommit) {
+        if self.delete_selection(state) {
+            return;
+        }
         let Some(containers) = self.containers.clone() else {
             return;
         };
@@ -386,5 +459,37 @@ mod tests {
         wp.move_left(&state);
         assert_eq!(wp.current_text(&state), "ab");
         assert_eq!(wp.caret.offset, 2);
+    }
+
+    #[test]
+    fn selection_delete_and_replace() {
+        let (mut wp, mut state) = bound();
+        wp.insert_str(&mut state, "hello world");
+        // select "hello" (0..5)
+        wp.caret.offset = 0;
+        wp.set_anchor();
+        wp.caret.offset = 5;
+        assert_eq!(wp.selection_range().map(|(_, s, e)| (s, e)), Some((0, 5)));
+        // typing replaces the selection
+        wp.insert_str(&mut state, "HI");
+        assert_eq!(wp.current_text(&state), "HI world");
+        assert_eq!(wp.caret.offset, 2);
+        assert!(wp.selection_anchor.is_none());
+    }
+
+    #[test]
+    fn toggle_mark_adds_then_removes() {
+        let (mut wp, mut state) = bound();
+        wp.insert_str(&mut state, "hello");
+        wp.caret.offset = 0;
+        wp.set_anchor();
+        wp.caret.offset = 5;
+        let c = wp.containers.clone().unwrap();
+        let block = wp.caret.block.clone();
+
+        wp.toggle_mark(&mut state, "strong");
+        assert!(qdoc::model::has_mark_over(&state, &c, &block, 0, 5, "strong"), "mark applied");
+        wp.toggle_mark(&mut state, "strong");
+        assert!(!qdoc::model::has_mark_over(&state, &c, &block, 0, 5, "strong"), "mark toggled off");
     }
 }
