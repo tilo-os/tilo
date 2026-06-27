@@ -8,7 +8,9 @@
 //! (undo, two-peer convergence, timeline, codec round-trip) against the real
 //! `ui::State` via tests.
 
+pub mod widget;
 pub mod word_processor;
+pub use widget::WordProcessorWidget;
 pub use word_processor::WordProcessor;
 
 use automerge::{AutoCommit, ObjId};
