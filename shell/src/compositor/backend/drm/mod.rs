@@ -142,8 +142,9 @@ impl Backend for DrmBackend {
         // `None`) we simply drop the frame — the compositor still
         // serves its wayland socket headless.
         let (w, h) = target_size;
+        let cursor = Some(self.inner.dispatch.pointer);
         if let Some(scanout) = self.inner.scanout.as_mut() {
-            scanout.present(bytes, w, h);
+            scanout.present(bytes, w, h, cursor);
         }
     }
 
