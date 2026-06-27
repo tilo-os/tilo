@@ -105,6 +105,13 @@ pub struct App {
     pub debug_mode: bool,
     pub focused_node: Option<NodeId>,
     pub focusable_order: Vec<NodeId>,
+    /// Opt-in: when set, the first focusable widget is focused once the
+    /// initial layout is built (before the event loop runs) so the app is
+    /// keyboard-usable without a click. Default `false` — existing apps
+    /// (shell, terminal, file-explorer) keep "nothing focused until the
+    /// user acts". The greeter sets this so the username field is typeable
+    /// immediately at the login prompt.
+    pub autofocus_first: bool,
     modifiers: winit::event::Modifiers,
     
     // Stable state for Undo/Redo tracking
@@ -160,6 +167,7 @@ impl App {
             debug_mode: std::env::var("QUICK_UI_DEBUG").is_ok(),
             focused_node: None,
             focusable_order: Vec::new(),
+            autofocus_first: false,
             modifiers: winit::event::Modifiers::default(),
             last_stable_focus_idx: None,
             last_stable_metadata: None,
@@ -565,6 +573,14 @@ impl App {
             &mut self.node_map,
         ));
         self.update_focusable_order();
+        // Opt-in startup focus: hand the keyboard to the first focusable
+        // widget so the app is typeable without a click (used by the
+        // greeter so the username field is ready at the login prompt).
+        if self.autofocus_first && self.focused_node.is_none() {
+            if let Some(&first) = self.focusable_order.first() {
+                self.set_focused_node(Some(first));
+            }
+        }
         self.last_stable_focus_idx = self
             .focused_node
             .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
