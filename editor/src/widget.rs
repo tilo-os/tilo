@@ -59,6 +59,11 @@ enum ToolAction {
     SizeUp,
     SizeDown,
     InsertTable,
+    TableRowAdd,
+    TableRowDel,
+    TableColAdd,
+    TableColDel,
+    TableDelete,
 }
 
 fn char_to_byte(text: &str, char_off: usize) -> usize {
@@ -791,6 +796,11 @@ impl WordProcessorWidget {
                 self.inner.set_font_size(state, s);
             }
             ToolAction::InsertTable => self.inner.insert_table(state, 2, 2),
+            ToolAction::TableRowAdd => self.inner.table_add_row(state),
+            ToolAction::TableRowDel => self.inner.table_del_row(state),
+            ToolAction::TableColAdd => self.inner.table_add_col(state),
+            ToolAction::TableColDel => self.inner.table_del_col(state),
+            ToolAction::TableDelete => self.inner.table_delete(state),
         }
     }
 
@@ -893,7 +903,7 @@ impl WordProcessorWidget {
         let font_label = self.current_font().label();
 
         let white = Color::from_rgb8(0xff, 0xff, 0xff);
-        let buttons: [(ToolAction, &str, f64, bool, bool); 14] = [
+        let mut buttons: Vec<(ToolAction, &str, f64, bool, bool)> = vec![
             (ToolAction::Bold, "B", 34.0, bold_a, true),
             (ToolAction::Italic, "I", 30.0, italic_a, false),
             (ToolAction::Underline, "U", 32.0, under_a, false),
@@ -907,8 +917,17 @@ impl WordProcessorWidget {
             (ToolAction::FontCycle, font_label, 58.0, false, false),
             (ToolAction::SizeDown, "A−", 34.0, false, false),
             (ToolAction::SizeUp, "A+", 34.0, false, false),
-            (ToolAction::InsertTable, "⊞ Table", 78.0, kind == "cell", false),
         ];
+        // Contextual table section: editing controls inside a cell, else insert.
+        if kind == "cell" {
+            buttons.push((ToolAction::TableRowAdd, "+Row", 54.0, false, false));
+            buttons.push((ToolAction::TableRowDel, "−Row", 54.0, false, false));
+            buttons.push((ToolAction::TableColAdd, "+Col", 52.0, false, false));
+            buttons.push((ToolAction::TableColDel, "−Col", 52.0, false, false));
+            buttons.push((ToolAction::TableDelete, "✕", 30.0, false, false));
+        } else {
+            buttons.push((ToolAction::InsertTable, "⊞ Table", 78.0, false, false));
+        }
 
         self.toolbar.clear();
         let cy = tb.y0 + TOOLBAR_H / 2.0;
