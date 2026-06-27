@@ -137,9 +137,21 @@ impl Document {
     }
 
     /// Merge another replica's changes into this one.
+    ///
+    /// Done via the low-level `Automerge` (no patch log) to sidestep an
+    /// automerge-0.8 `AutoCommit::merge` panic (`PatchLogMismatch`) that can fire
+    /// when concurrent **mark** ops are reconciled. The merged result is reloaded
+    /// as an `AutoCommit`; containers/ids are re-resolved (object ids are stable).
     pub fn merge(&mut self, other: &mut Document) {
-        let _ = self.doc.merge(&mut other.doc);
-        self.doc.commit();
+        let merged = {
+            let mut a = automerge::Automerge::load(&self.doc.save()).expect("merge: load self");
+            let mut b = automerge::Automerge::load(&other.doc.save()).expect("merge: load other");
+            let _ = a.merge(&mut b);
+            a.save()
+        };
+        self.doc = AutoCommit::load(&merged).expect("merge: reload");
+        self.c = crate::model::open(&self.doc, &ROOT).expect("merge: open");
+        self.ids = crate::model::seeded_id_gen(&self.doc, &self.c);
     }
 }
 
