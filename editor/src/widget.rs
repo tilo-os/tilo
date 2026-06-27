@@ -42,6 +42,7 @@ const MAX_PAGE_W: f64 = 820.0;
 const BLOCK_SPACING: f64 = 8.0;
 const CARET_WIDTH: f64 = 2.0;
 const TOOLBAR_H: f64 = 50.0;
+const STATUS_H: f64 = 28.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ToolAction {
@@ -356,7 +357,8 @@ impl Widget for WordProcessorWidget {
         let tb = Rect::new(full.x0, full.y0, full.x1, full.y0 + TOOLBAR_H);
         self.draw_toolbar(scene, transform, text_renderer, theme, tb);
 
-        let canvas = Rect::new(full.x0, full.y0 + TOOLBAR_H, full.x1, full.y1);
+        let status_top = (full.y1 - STATUS_H).max(full.y0 + TOOLBAR_H);
+        let canvas = Rect::new(full.x0, full.y0 + TOOLBAR_H, full.x1, status_top);
         scene.fill(Fill::NonZero, transform, CANVAS, None, &canvas);
 
         let page_w = (canvas.width() - 2.0 * PAGE_TOP).clamp(320.0, MAX_PAGE_W);
@@ -513,6 +515,9 @@ impl Widget for WordProcessorWidget {
 
         self.blocks = blocks;
         self.laid = laid;
+
+        let bar = Rect::new(full.x0, status_top, full.x1, full.y1);
+        self.draw_status_bar(scene, transform, text_renderer, theme, bar);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, modifiers: &Modifiers, state: &mut AutoCommit, _path: &ObjId, handled: &mut bool, _focus_target: &mut Option<NodeId>, _node_id: NodeId, _taffy: &TaffyTree<()>) {
@@ -888,6 +893,26 @@ impl WordProcessorWidget {
         self.inner.clear_anchor();
         self.inner.set_anchor();
         self.inner.move_end(state);
+    }
+
+    fn draw_status_bar(&self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, bar: Rect) {
+        scene.fill(Fill::NonZero, transform, theme.tokens.colors.surfaces.raised, None, &bar);
+        scene.fill(Fill::NonZero, transform, theme.tokens.colors.border_standard, None, &Rect::new(bar.x0, bar.y0, bar.x1, bar.y0 + 1.0));
+
+        let muted = Color::from_rgb8(0x9a, 0x9c, 0xa4);
+        let words: usize = self.blocks.iter().map(|b| b.text.split_whitespace().count()).sum();
+        let chars: usize = self.blocks.iter().map(|b| b.text.chars().count()).sum();
+        let left = format!("{words} words    {chars} characters");
+        let ty = bar.y0 + (STATUS_H - 15.0) / 2.0;
+        tr.draw_text(scene, &left, 13.0, muted, transform * Affine::translate((bar.x0 + 18.0, ty)), None);
+
+        let right = match self.format {
+            Some(WpFormat::Odt) => "ODF Text · .odt",
+            Some(WpFormat::Markdown) => "Markdown · .md",
+            None => "Untitled",
+        };
+        let (rw, _) = tr.measure(right, 13.0, None);
+        tr.draw_text(scene, right, 13.0, muted, transform * Affine::translate((bar.x1 - 18.0 - rw as f64, ty)), None);
     }
 
     fn draw_toolbar(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, tb: Rect) {
