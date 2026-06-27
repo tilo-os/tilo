@@ -237,6 +237,39 @@ impl WordProcessor {
         }
     }
 
+    /// Insert a `rows`×`cols` table after the caret block. Cells are modeled as
+    /// consecutive top-level `cell` blocks tagged with `table`/`row`/`col`, so
+    /// they edit/select/collaborate through the normal block machinery; the
+    /// widget renders consecutive same-`table` cells as a grid.
+    pub fn insert_table(&mut self, state: &mut AutoCommit, rows: usize, cols: usize) {
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        let after = self.caret.block.clone();
+        let mut first_cell: Option<String> = None;
+        if let Some(ids) = self.ids.as_mut() {
+            let table_id = ids.mint(); // a unique id shared by every cell
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            let mut prev = Some(after);
+            for r in 0..rows {
+                for col in 0..cols {
+                    let id = dm.insert_block(prev.as_deref(), "cell");
+                    dm.set_attr(&id, "table", table_id.as_str());
+                    dm.set_attr(&id, "row", r as i64);
+                    dm.set_attr(&id, "col", col as i64);
+                    if first_cell.is_none() {
+                        first_cell = Some(id.clone());
+                    }
+                    prev = Some(id);
+                }
+            }
+        }
+        if let Some(fc) = first_cell {
+            self.caret = Caret { block: fc, offset: 0 };
+            self.selection_anchor = None;
+        }
+    }
+
     /// Insert text, splitting on newlines into new paragraphs (multi-line paste).
     pub fn insert_multiline(&mut self, state: &mut AutoCommit, text: &str) {
         let normalized = text.replace('\r', "");
@@ -659,6 +692,28 @@ mod tests {
         let (mut wp, mut state) = bound();
         wp.insert_multiline(&mut state, "alpha\nbeta\ngamma");
         assert_eq!(wp.block_texts(&state), vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()]);
+    }
+
+    #[test]
+    fn insert_table_creates_editable_cells() {
+        let (mut wp, mut state) = bound();
+        wp.insert_str(&mut state, "before");
+        wp.insert_table(&mut state, 2, 3);
+        let snap = qdoc::model::materialize(&state, wp.containers.as_ref().unwrap());
+        let cells: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "cell").collect();
+        assert_eq!(cells.len(), 6, "2x3 = 6 cells");
+        // every cell shares one table id; rows/cols are tagged
+        let tid = match cells[0].attrs.get("table") {
+            Some(qdoc::AttrVal::Str(s)) => s.clone(),
+            other => panic!("cell missing table attr: {other:?}"),
+        };
+        assert!(cells.iter().all(|c| c.attrs.get("table") == Some(&qdoc::AttrVal::Str(tid.clone()))));
+        // caret landed in the first cell; typing edits it
+        assert!(cells.iter().any(|c| c.id == wp.caret.block));
+        wp.insert_str(&mut state, "A1");
+        let snap2 = qdoc::model::materialize(&state, wp.containers.as_ref().unwrap());
+        let first = snap2.blocks.iter().find(|b| b.id == wp.caret.block).unwrap();
+        assert_eq!(first.text, "A1");
     }
 
     #[test]
