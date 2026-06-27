@@ -22,6 +22,7 @@ QOS_DISTROBOX="${QOS_DISTROBOX-my-distrobox}"        # "" => run tools on host
 QOS_IMAGE="${QOS_IMAGE:-localhost/qos:latest}"
 QOS_OUTPUT="${QOS_OUTPUT:-$QOS_OS_DIR/output}"
 QOS_DISK="${QOS_DISK:-$QOS_OUTPUT/qcow2/disk.qcow2}"
+QOS_ISO="${QOS_ISO:-}"   # resolved at boot-iso time (find *.iso under output)
 QOS_BIB="${QOS_BIB:-quay.io/centos-bootc/bootc-image-builder:latest}"
 
 # Runtime/scratch dir for the VM. MUST be short: AF_UNIX socket paths are capped

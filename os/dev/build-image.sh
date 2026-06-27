@@ -33,8 +33,8 @@ for a in "$@"; do
   esac
 done
 
-PKGS=(-p shell -p fs -p file-explorer -p terminal)
-BINS=(shell fs terminal file-explorer)
+PKGS=(-p shell -p fs -p file-explorer -p terminal -p greeter)
+BINS=(shell fs terminal file-explorer qos-greeter)
 if [ "$WITH_BROWSER" = 1 ]; then PKGS+=(-p browser); BINS+=(browser); fi
 
 if [ "$DO_CARGO" = 1 ]; then
