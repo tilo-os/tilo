@@ -286,6 +286,11 @@ impl<'a> DocMut<'a> {
         crate::order::key_between(lo.as_deref(), hi.as_deref())
     }
 
+    // NOTE: DocMut does NOT commit the automerge transaction — the host owns the
+    // transaction boundary. The owned `Document` commits per op (for fine-grained
+    // history); a host like `ui::State` commits once per user action (so its
+    // snapshot-based undo records each action). Reads always observe pending ops.
+
     pub fn insert_block(&mut self, after: Option<&str>, kind: &str) -> String {
         let key = self.order_after(after);
         let id = self.ids.mint();
@@ -293,20 +298,17 @@ impl<'a> DocMut<'a> {
         self.doc.put(&obj, BLOCK_ORDER, ScalarValue::Bytes(key)).unwrap();
         self.doc.put(&obj, BLOCK_KIND, kind).unwrap();
         self.doc.put_object(&obj, BLOCK_ATTRS, ObjType::Map).unwrap();
-        self.doc.commit();
         id
     }
 
     pub fn remove_block(&mut self, id: &str) {
         let _ = self.doc.delete(&self.c.blocks, id);
-        self.doc.commit();
     }
 
     pub fn move_block(&mut self, id: &str, after: Option<&str>) {
         let key = self.order_after(after);
         if let Some(obj) = block_obj(self.doc, &self.c.blocks, id) {
             self.doc.put(&obj, BLOCK_ORDER, ScalarValue::Bytes(key)).unwrap();
-            self.doc.commit();
         }
     }
 
@@ -325,7 +327,6 @@ impl<'a> DocMut<'a> {
     pub fn splice_text(&mut self, block_id: &str, idx: usize, del: isize, ins: &str) {
         if let Some(tid) = self.text_obj(block_id) {
             let _ = self.doc.splice_text(&tid, idx, del, ins);
-            self.doc.commit();
         }
     }
 
@@ -333,7 +334,6 @@ impl<'a> DocMut<'a> {
         if let Some(tid) = self.text_obj(block_id) {
             let mark = Mark::new(name.to_string(), value, start, end);
             let _ = self.doc.mark(&tid, mark, ExpandMark::After);
-            self.doc.commit();
         }
     }
 
@@ -348,14 +348,12 @@ impl<'a> DocMut<'a> {
             _ => return,
         };
         let _ = self.doc.put(&attrs, key, value);
-        self.doc.commit();
     }
 
     /// Change a block's kind (e.g. `paragraph` ↔ `heading` ↔ `list_item`).
     pub fn set_kind(&mut self, block_id: &str, kind: &str) {
         if let Some(obj) = block_obj(self.doc, &self.c.blocks, block_id) {
             let _ = self.doc.put(&obj, BLOCK_KIND, kind);
-            self.doc.commit();
         }
     }
 
@@ -363,7 +361,6 @@ impl<'a> DocMut<'a> {
     pub fn remove_mark(&mut self, block_id: &str, start: usize, end: usize, name: &str) {
         if let Some(tid) = self.text_obj(block_id) {
             let _ = self.doc.unmark(&tid, name, start, end, ExpandMark::After);
-            self.doc.commit();
         }
     }
 
@@ -371,6 +368,5 @@ impl<'a> DocMut<'a> {
     /// part), keyed by `key`. Re-emitted unchanged on export.
     pub fn set_preserved(&mut self, key: &str, bytes: &[u8]) {
         let _ = self.doc.put(&self.c.preserved, key, ScalarValue::Bytes(bytes.to_vec()));
-        self.doc.commit();
     }
 }
