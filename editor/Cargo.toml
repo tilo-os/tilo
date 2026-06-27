@@ -2,7 +2,15 @@
 name = "editor"
 version = "0.1.0"
 edition = "2021"
-description = "CRDT rich-text editor binding (qdoc <-> ui::State). Interactive GUI widget deferred; this crate provides the binding + integration tests."
+description = "CRDT rich-text word processor: a ui app over qdoc with .odt support."
+
+[lib]
+name = "editor"
+path = "src/lib.rs"
+
+[[bin]]
+name = "word-processor"
+path = "src/main.rs"
 
 [dependencies]
 ui = { path = "../ui" }
