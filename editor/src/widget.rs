@@ -42,6 +42,18 @@ const PAGE_TOP: f64 = 28.0;
 const MAX_PAGE_W: f64 = 820.0;
 const BLOCK_SPACING: f64 = 8.0;
 const CARET_WIDTH: f64 = 2.0;
+const TOOLBAR_H: f64 = 50.0;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ToolAction {
+    Bold,
+    Italic,
+    Underline,
+    H1,
+    H2,
+    Body,
+    Bullet,
+}
 
 fn char_to_byte(text: &str, char_off: usize) -> usize {
     text.char_indices().nth(char_off).map(|(b, _)| b).unwrap_or(text.len())
@@ -130,6 +142,7 @@ pub struct WordProcessorWidget {
     font_cache: HashMap<fontdb::ID, FontData>,
     blocks: Vec<BlockView>,
     laid: Vec<Laid>,
+    toolbar: Vec<(ToolAction, Rect)>,
 }
 
 impl Default for WordProcessorWidget {
@@ -153,6 +166,7 @@ impl WordProcessorWidget {
             font_cache: HashMap::new(),
             blocks: Vec::new(),
             laid: Vec::new(),
+            toolbar: Vec::new(),
         }
     }
 
@@ -251,8 +265,12 @@ impl Widget for WordProcessorWidget {
         );
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, _theme: &Theme, _presence: &PresenceCtx) {
-        let canvas = self.rect;
+    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &PresenceCtx) {
+        let full = self.rect;
+        let tb = Rect::new(full.x0, full.y0, full.x1, full.y0 + TOOLBAR_H);
+        self.draw_toolbar(scene, transform, text_renderer, theme, tb);
+
+        let canvas = Rect::new(full.x0, full.y0 + TOOLBAR_H, full.x1, full.y1);
         scene.fill(Fill::NonZero, transform, CANVAS, None, &canvas);
 
         let page_w = (canvas.width() - 2.0 * PAGE_TOP).clamp(320.0, MAX_PAGE_W);
@@ -337,12 +355,24 @@ impl Widget for WordProcessorWidget {
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
-                if self.rect.contains(self.pointer) {
-                    self.focused = true;
-                    self.dragging = true;
-                    self.caret_from_pointer(self.pointer, shift);
-                    *handled = true;
+                if !self.rect.contains(self.pointer) {
+                    return;
                 }
+                self.focused = true;
+                if self.pointer.y < self.rect.y0 + TOOLBAR_H {
+                    let clicked = self.toolbar.iter().find(|(_, r)| r.contains(self.pointer)).map(|(a, _)| *a);
+                    if let Some(action) = clicked {
+                        self.apply_tool(state, action);
+                        self.refresh_blocks(state);
+                        self.dirty = true;
+                        self.needs_commit = true;
+                    }
+                    *handled = true;
+                    return;
+                }
+                self.dragging = true;
+                self.caret_from_pointer(self.pointer, shift);
+                *handled = true;
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
                 self.dragging = false;
@@ -479,6 +509,88 @@ impl WordProcessorWidget {
             self.inner.set_anchor();
         } else {
             self.inner.clear_anchor();
+        }
+    }
+
+    fn mark_active_in_selection(&self, name: &str) -> bool {
+        let Some((bid, s, e)) = self.inner.selection_range() else {
+            return false;
+        };
+        self.blocks
+            .iter()
+            .find(|b| b.id == bid)
+            .map(|b| b.marks.iter().any(|m| m.name == name && m.start <= s && m.end >= e))
+            .unwrap_or(false)
+    }
+
+    fn current_block_style(&self) -> (String, Option<i64>) {
+        let b = self.blocks.iter().find(|b| b.id == self.inner.caret.block);
+        let kind = b.map(|b| b.kind.clone()).unwrap_or_else(|| "paragraph".into());
+        let level = b.and_then(|b| match b.attrs.get("level") {
+            Some(AttrVal::Int(n)) => Some(*n),
+            _ => None,
+        });
+        (kind, level)
+    }
+
+    fn apply_tool(&mut self, state: &mut AutoCommit, action: ToolAction) {
+        match action {
+            ToolAction::Bold => self.inner.toggle_mark(state, "strong"),
+            ToolAction::Italic => self.inner.toggle_mark(state, "em"),
+            ToolAction::Underline => self.inner.toggle_mark(state, "underline"),
+            ToolAction::H1 => self.inner.set_paragraph_style(state, "heading", Some(1), None),
+            ToolAction::H2 => self.inner.set_paragraph_style(state, "heading", Some(2), None),
+            ToolAction::Body => self.inner.set_paragraph_style(state, "paragraph", None, None),
+            ToolAction::Bullet => self.inner.set_paragraph_style(state, "list_item", None, Some(false)),
+        }
+    }
+
+    fn draw_toolbar(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, tb: Rect) {
+        scene.fill(Fill::NonZero, transform, theme.tokens.colors.surfaces.raised, None, &tb);
+        let border = Rect::new(tb.x0, tb.y1 - 1.0, tb.x1, tb.y1);
+        scene.fill(Fill::NonZero, transform, theme.tokens.colors.border_standard, None, &border);
+
+        let bold_a = self.mark_active_in_selection("strong");
+        let italic_a = self.mark_active_in_selection("em");
+        let under_a = self.mark_active_in_selection("underline");
+        let (kind, level) = self.current_block_style();
+
+        let white = Color::from_rgb8(0xff, 0xff, 0xff);
+        let buttons: [(ToolAction, &str, f64, bool, bool); 7] = [
+            (ToolAction::Bold, "B", 34.0, bold_a, true),
+            (ToolAction::Italic, "I", 30.0, italic_a, false),
+            (ToolAction::Underline, "U", 32.0, under_a, false),
+            (ToolAction::H1, "H1", 42.0, kind == "heading" && level == Some(1), false),
+            (ToolAction::H2, "H2", 42.0, kind == "heading" && level == Some(2), false),
+            (ToolAction::Body, "Body", 58.0, kind == "paragraph", false),
+            (ToolAction::Bullet, "• List", 66.0, kind == "list_item", false),
+        ];
+
+        self.toolbar.clear();
+        let cy = tb.y0 + TOOLBAR_H / 2.0;
+        let bh = 34.0;
+        let mut x = tb.x0 + 14.0;
+        for (i, (action, label, w, active, bold_label)) in buttons.iter().enumerate() {
+            if i == 3 {
+                let sep = Rect::new(x + 2.0, cy - 12.0, x + 3.0, cy + 12.0);
+                scene.fill(Fill::NonZero, transform, theme.tokens.colors.border_standard, None, &sep);
+                x += 14.0;
+            }
+            let r = Rect::new(x, cy - bh / 2.0, x + w, cy + bh / 2.0);
+            if *active {
+                scene.fill(Fill::NonZero, transform, theme.accent_primary, None, &vello::kurbo::RoundedRect::from_rect(r, 6.0));
+            }
+            let color = if *active { white } else { theme.text_primary };
+            let (lw, _) = tr.measure(label, 15.0, None);
+            let lx = x + (*w - lw as f64) / 2.0;
+            let ly = cy - 9.0;
+            if *bold_label {
+                tr.draw_text_weighted(scene, label, 15.0, color, transform * Affine::translate((lx, ly)), None, ui::text_render::TextWeight::Bold);
+            } else {
+                tr.draw_text(scene, label, 15.0, color, transform * Affine::translate((lx, ly)), None);
+            }
+            self.toolbar.push((*action, r));
+            x += w + 6.0;
         }
     }
 }
