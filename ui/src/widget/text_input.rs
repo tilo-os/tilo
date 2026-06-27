@@ -15,8 +15,6 @@
 //! the glyphs don't drift below the caret (visual-gap regression
 //! pinned by `text_baseline_centred_with_caret`).
 
-use std::sync::OnceLock;
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId, Value, ReadDoc, transaction::Transactable, ObjType};
@@ -29,6 +27,10 @@ use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use crate::color_compat::ColorCompat;
 use crate::widget::Widget;
 use crate::text_render::TextRenderer;
+use crate::text_selection::{
+    clipboard_copy, clipboard_paste, next_char_boundary, next_word_boundary,
+    prev_char_boundary, prev_word_boundary, word_boundaries,
+};
 use crate::theme::Theme;
 use crate::presence::{PathSegment, PresenceKey};
 
@@ -50,113 +52,6 @@ const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(400);
 /// Pixels of cursor wiggle still allowed between rapid clicks before
 /// they're treated as separate click chains.
 const MULTI_CLICK_RADIUS: f64 = 4.0;
-
-/// Lazy global clipboard handle. `arboard::Clipboard::new()` can be
-/// slow on Wayland the first time (sets up the data-control device),
-/// so we cache one handle process-wide and lock it per access. Kept
-/// behind a `Mutex` because arboard's handle isn't `Sync`.
-fn clipboard() -> Option<&'static Mutex<arboard::Clipboard>> {
-    static CB: OnceLock<Option<Mutex<arboard::Clipboard>>> = OnceLock::new();
-    CB.get_or_init(|| arboard::Clipboard::new().ok().map(Mutex::new)).as_ref()
-}
-
-fn clipboard_copy(text: &str) {
-    if let Some(cb) = clipboard() {
-        if let Ok(mut handle) = cb.lock() {
-            let _ = handle.set_text(text.to_string());
-        }
-    }
-}
-
-fn clipboard_paste() -> Option<String> {
-    let cb = clipboard()?;
-    let mut handle = cb.lock().ok()?;
-    handle.get_text().ok()
-}
-
-/// A character counts as a "word" character if it's a letter, digit,
-/// or underscore — same convention as POSIX `\w` and Vim's `iskeyword`.
-/// Whitespace and punctuation are word boundaries; double-click word
-/// selection and Ctrl+Left/Right use this predicate.
-fn is_word_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
-}
-
-/// Walk back to the previous "word boundary" (start of the word the
-/// cursor sits in, or start of the previous word if already at a
-/// boundary). Returns a byte index that is always on a char boundary.
-fn prev_word_boundary(text: &str, byte_idx: usize) -> usize {
-    if byte_idx == 0 { return 0; }
-    let mut i = byte_idx.min(text.len());
-    while i > 0 && !text.is_char_boundary(i) { i -= 1; }
-    // Skip non-word chars walking left (whitespace + punctuation eaten
-    // before reaching the previous word's body).
-    while i > 0 {
-        let c = text[..i].chars().rev().next().unwrap();
-        if is_word_char(c) { break; }
-        i -= c.len_utf8();
-    }
-    // Skip the word body itself.
-    while i > 0 {
-        let c = text[..i].chars().rev().next().unwrap();
-        if !is_word_char(c) { break; }
-        i -= c.len_utf8();
-    }
-    i
-}
-
-/// Mirror of [`prev_word_boundary`] for the forward direction.
-fn next_word_boundary(text: &str, byte_idx: usize) -> usize {
-    let mut i = byte_idx.min(text.len());
-    while i < text.len() && !text.is_char_boundary(i) { i += 1; }
-    while i < text.len() {
-        let c = text[i..].chars().next().unwrap();
-        if !is_word_char(c) { break; }
-        i += c.len_utf8();
-    }
-    while i < text.len() {
-        let c = text[i..].chars().next().unwrap();
-        if is_word_char(c) { break; }
-        i += c.len_utf8();
-    }
-    i
-}
-
-/// Range of the word containing `byte_idx` (or the next word if
-/// `byte_idx` sits on a boundary). Returns `(start, end)` as byte
-/// indices; used by double-click word selection.
-fn word_range_containing(text: &str, byte_idx: usize) -> (usize, usize) {
-    let mut start = byte_idx.min(text.len());
-    while start > 0 && !text.is_char_boundary(start) { start -= 1; }
-    // Find left edge of current word.
-    while start > 0 {
-        let c = text[..start].chars().rev().next().unwrap();
-        if !is_word_char(c) { break; }
-        start -= c.len_utf8();
-    }
-    // Find right edge.
-    let mut end = start;
-    while end < text.len() {
-        let c = text[end..].chars().next().unwrap();
-        if !is_word_char(c) { break; }
-        end += c.len_utf8();
-    }
-    (start, end)
-}
-
-fn prev_char_boundary(text: &str, byte_idx: usize) -> usize {
-    if byte_idx == 0 { return 0; }
-    let mut i = byte_idx.min(text.len()) - 1;
-    while i > 0 && !text.is_char_boundary(i) { i -= 1; }
-    i
-}
-
-fn next_char_boundary(text: &str, byte_idx: usize) -> usize {
-    if byte_idx >= text.len() { return text.len(); }
-    let mut i = byte_idx + 1;
-    while i < text.len() && !text.is_char_boundary(i) { i += 1; }
-    i
-}
 
 pub struct TextInput {
     _id: String,
@@ -560,7 +455,7 @@ impl Widget for TextInput {
                                 }
                             }
                             2 => {
-                                let (start, end) = word_range_containing(&self.text, pos);
+                                let (start, end) = word_boundaries(&self.text, pos);
                                 self.selection_anchor = Some(start);
                                 self.cursor_pos = end;
                             }
@@ -902,19 +797,18 @@ mod tests {
         assert_eq!(next_word_boundary(s, s.len()), s.len());
     }
 
-    /// `word_range_containing` should snap to the word the cursor is
-    /// sitting *inside* — and at a space immediately after a word, to
-    /// the word on the left (matches every native editor's double-
-    /// click-on-trailing-space behaviour). Used by double-click word
-    /// selection.
+    /// `word_boundaries` should snap to the word the cursor is sitting
+    /// *inside* — and at a space immediately after a word, to the word
+    /// on the left (matches every native editor's double-click-on-
+    /// trailing-space behaviour). Used by double-click word selection.
     #[test]
-    fn word_range_containing_snaps_to_word_bounds() {
+    fn word_boundaries_snaps_to_word_bounds() {
         let s = "hello world";
-        assert_eq!(word_range_containing(s, 2), (0, 5));   // mid-word
-        assert_eq!(word_range_containing(s, 0), (0, 5));   // word start
-        assert_eq!(word_range_containing(s, 5), (0, 5));   // space → snap left
-        assert_eq!(word_range_containing(s, 6), (6, 11));  // start of next word
-        assert_eq!(word_range_containing(s, 11), (6, 11)); // end → snap left
+        assert_eq!(word_boundaries(s, 2), (0, 5));   // mid-word
+        assert_eq!(word_boundaries(s, 0), (0, 5));   // word start
+        assert_eq!(word_boundaries(s, 5), (0, 5));   // space → snap left
+        assert_eq!(word_boundaries(s, 6), (6, 11));  // start of next word
+        assert_eq!(word_boundaries(s, 11), (6, 11)); // end → snap left
     }
 
     /// Mock the bare minimum to drive a selection delete through
