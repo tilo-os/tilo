@@ -102,6 +102,18 @@ impl WordProcessor {
         }
     }
 
+    /// Set the current block's horizontal alignment (`left`/`center`/`right`).
+    pub fn set_align(&mut self, state: &mut AutoCommit, align: &str) {
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        let block = self.caret.block.clone();
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            dm.set_attr(&block, "align", align);
+        }
+    }
+
     /// Toggle an inline mark (`strong`/`em`/`underline`) over the selection.
     pub fn toggle_mark(&mut self, state: &mut AutoCommit, name: &str) {
         let Some((block, start, end)) = self.selection_range() else {
@@ -510,5 +522,18 @@ mod tests {
         assert!(qdoc::model::has_mark_over(&state, &c, &block, 0, 5, "strong"), "mark applied");
         wp.toggle_mark(&mut state, "strong");
         assert!(!qdoc::model::has_mark_over(&state, &c, &block, 0, 5, "strong"), "mark toggled off");
+    }
+
+    #[test]
+    fn set_align_and_paragraph_style() {
+        let (mut wp, mut state) = bound();
+        wp.insert_str(&mut state, "Title");
+        wp.set_align(&mut state, "center");
+        wp.set_paragraph_style(&mut state, "heading", Some(2), None);
+        let c = wp.containers.clone().unwrap();
+        let snap = qdoc::model::materialize(&state, &c);
+        assert_eq!(snap.blocks[0].kind, "heading");
+        assert_eq!(snap.blocks[0].attrs.get("level"), Some(&qdoc::AttrVal::Int(2)));
+        assert_eq!(snap.blocks[0].attrs.get("align"), Some(&qdoc::AttrVal::Str("center".into())));
     }
 }
