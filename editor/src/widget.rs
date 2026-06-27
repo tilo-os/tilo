@@ -528,9 +528,52 @@ impl Widget for WordProcessorWidget {
 }
 
 impl WordProcessorWidget {
+    fn block_index_cached(&self, block: &str) -> Option<usize> {
+        self.blocks.iter().position(|b| b.id == block)
+    }
+
+    /// Selection endpoints in document order, computed from the block cache
+    /// (so it works during `draw`, which has no `state`).
+    fn selection_span_cached(&self) -> Option<(Caret, Caret)> {
+        let anchor = self.inner.selection_anchor.clone()?;
+        let caret = self.inner.caret.clone();
+        if anchor == caret {
+            return None;
+        }
+        match (self.block_index_cached(&anchor.block), self.block_index_cached(&caret.block)) {
+            (Some(pa), Some(pc)) => {
+                if (pa, anchor.offset) <= (pc, caret.offset) {
+                    Some((anchor, caret))
+                } else {
+                    Some((caret, anchor))
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Per-block selected char ranges spanning the selection (cache-based).
+    fn selection_blocks_cached(&self) -> Vec<(String, usize, usize)> {
+        let Some((start, end)) = self.selection_span_cached() else {
+            return vec![];
+        };
+        let (Some(si), Some(ei)) = (self.block_index_cached(&start.block), self.block_index_cached(&end.block)) else {
+            return vec![];
+        };
+        (si..=ei)
+            .map(|i| {
+                let b = &self.blocks[i];
+                let blen = b.text.chars().count();
+                let s = if i == si { start.offset } else { 0 };
+                let e = if i == ei { end.offset } else { blen };
+                (b.id.clone(), s, e)
+            })
+            .collect()
+    }
+
     fn selection_bytes_for(&self, block_id: &str, text: &str) -> Option<(usize, usize)> {
-        let (b, s, e) = self.inner.selection_range()?;
-        if b != block_id {
+        let (_, s, e) = self.selection_blocks_cached().into_iter().find(|(b, _, _)| b == block_id)?;
+        if s >= e {
             return None;
         }
         Some((char_to_byte(text, s), char_to_byte(text, e)))
@@ -545,14 +588,17 @@ impl WordProcessorWidget {
     }
 
     fn mark_active_in_selection(&self, name: &str) -> bool {
-        let Some((bid, s, e)) = self.inner.selection_range() else {
+        let sel: Vec<_> = self.selection_blocks_cached().into_iter().filter(|(_, s, e)| s < e).collect();
+        if sel.is_empty() {
             return false;
-        };
-        self.blocks
-            .iter()
-            .find(|b| b.id == bid)
-            .map(|b| b.marks.iter().any(|m| m.name == name && m.start <= s && m.end >= e))
-            .unwrap_or(false)
+        }
+        sel.iter().all(|(bid, s, e)| {
+            self.blocks
+                .iter()
+                .find(|b| &b.id == bid)
+                .map(|b| b.marks.iter().any(|m| m.name == name && m.start <= *s && m.end >= *e))
+                .unwrap_or(false)
+        })
     }
 
     fn current_block_style(&self) -> (String, Option<i64>) {
@@ -592,9 +638,21 @@ impl WordProcessorWidget {
     }
 
     fn selection_text(&self) -> Option<String> {
-        let (bid, s, e) = self.inner.selection_range()?;
-        let b = self.blocks.iter().find(|b| b.id == bid)?;
-        Some(b.text.chars().skip(s).take(e.saturating_sub(s)).collect())
+        let sel = self.selection_blocks_cached();
+        if sel.is_empty() {
+            return None;
+        }
+        let parts: Vec<String> = sel
+            .into_iter()
+            .map(|(bid, s, e)| {
+                self.blocks
+                    .iter()
+                    .find(|b| b.id == bid)
+                    .map(|b| b.text.chars().skip(s).take(e.saturating_sub(s)).collect::<String>())
+                    .unwrap_or_default()
+            })
+            .collect();
+        Some(parts.join("\n"))
     }
 
     fn clipboard_copy(&self) {
@@ -608,9 +666,8 @@ impl WordProcessorWidget {
     fn clipboard_paste(&mut self, state: &mut AutoCommit) {
         if let Ok(mut cb) = arboard::Clipboard::new() {
             if let Ok(t) = cb.get_text() {
-                // Single-block paste (v1): flatten newlines to spaces.
-                let flat = t.replace(['\n', '\r'], " ");
-                self.inner.insert_str(state, &flat);
+                // Multi-paragraph paste: newlines split into new paragraphs.
+                self.inner.insert_multiline(state, &t);
             }
         }
     }
