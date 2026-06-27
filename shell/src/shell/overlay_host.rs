@@ -210,6 +210,12 @@ pub struct ShellOverlayHost {
     /// so the first poll always rebuilds, even when chrome boots
     /// with `revision: 0`.
     last_chrome_revision: u64,
+    /// Side-effect dispatcher for quick-settings actions. Production
+    /// builds use [`crate::shell::qs_actions::RealQsActions`]; tests
+    /// can swap in a recording impl via [`Self::with_qs_actions`] to
+    /// assert that clicks routed through the popover translate into
+    /// the expected shell-outs without actually invoking `nmcli` etc.
+    qs_actions: Box<dyn crate::shell::qs_actions::QsActions>,
 }
 
 /// Action emitted from the palette into [`ShellOverlayHost::peer_sync_actions`]
@@ -391,7 +397,21 @@ impl ShellOverlayHost {
             peer_sync_actions: Vec::new(),
             notification_stack: None,
             last_chrome_revision: u64::MAX,
+            qs_actions: Box::new(crate::shell::qs_actions::RealQsActions),
         }
+    }
+
+    /// Replace the QS action dispatcher. Tests use this to swap in a
+    /// recording impl that captures every `set_*` call instead of
+    /// shelling out to `nmcli` / `brightnessctl` / `bluetoothctl` /
+    /// `wpctl` / `powerprofilesctl`. Production builds keep the
+    /// default [`crate::shell::qs_actions::RealQsActions`].
+    pub fn with_qs_actions(
+        mut self,
+        actions: Box<dyn crate::shell::qs_actions::QsActions>,
+    ) -> Self {
+        self.qs_actions = actions;
+        self
     }
 
     /// Return the slide translation to apply to the content widget this
@@ -1310,6 +1330,72 @@ impl ShellOverlayHost {
         );
     }
 
+    /// Refresh every quick-settings field from the OS by calling the
+    /// matching getter in [`crate::shell::qs_actions`]. Called once on
+    /// the popover's rising-edge open so the user sees live values
+    /// instead of the stale snapshot from last time. Each call is
+    /// best-effort: a missing daemon logs a warning and leaves the
+    /// previous value in place.
+    fn refresh_quick_settings_from_os(&mut self) {
+        use crate::shell::qs_actions as qs;
+        let brightness = qs::log_qs_get("get_brightness", qs::get_brightness());
+        let volume = qs::log_qs_get("get_volume", qs::get_volume());
+        let wifi = qs::log_qs_get("get_wifi", qs::get_wifi());
+        let bluetooth = qs::log_qs_get("get_bluetooth", qs::get_bluetooth());
+        let power = qs::log_qs_get("get_power_profile", qs::get_power_profile());
+        let wifi_nets = qs::log_qs_get("list_wifi_networks", qs::list_wifi_networks());
+        let bt_devices = qs::log_qs_get("list_bt_devices", qs::list_bt_devices());
+
+        if let Some(chrome) = self.chrome.clone() {
+            let mut st = chrome.borrow_mut();
+            if let Some(v) = brightness {
+                st.quick_settings.brightness = v;
+            }
+            if let Some(v) = volume {
+                st.quick_settings.volume = v;
+            }
+            if let Some(v) = wifi {
+                st.quick_settings.wifi = v;
+            }
+            if let Some(v) = bluetooth {
+                st.quick_settings.bluetooth = v;
+            }
+            if let Some(p) = power {
+                use crate::shell::qs_actions::PowerProfile as ActPP;
+                use crate::shell::quick_settings::PowerProfile as UiPP;
+                st.quick_settings.power_profile = match p {
+                    ActPP::Saver => UiPP::Saver,
+                    ActPP::Balanced => UiPP::Balanced,
+                    ActPP::Performance => UiPP::Performance,
+                };
+            }
+            if let Some(nets) = wifi_nets {
+                use crate::shell::quick_settings::WifiNetwork;
+                st.quick_settings.wifi_networks = nets
+                    .into_iter()
+                    .map(|n| WifiNetwork {
+                        ssid: n.ssid,
+                        signal: n.signal,
+                        secure: n.secure,
+                        connected: n.connected,
+                    })
+                    .collect();
+            }
+            if let Some(devs) = bt_devices {
+                use crate::shell::quick_settings::BtDevice;
+                st.quick_settings.bt_devices = devs
+                    .into_iter()
+                    .map(|d| BtDevice {
+                        name: d.name,
+                        battery: d.battery,
+                        connected: d.connected,
+                    })
+                    .collect();
+            }
+            st.bump();
+        }
+    }
+
     /// See [`Self::force_palette_settled`].
     pub fn force_ws_settings_settled(&mut self) {
         if !self.overlay_flags().ws_settings {
@@ -1412,6 +1498,13 @@ impl ShellOverlayHost {
         let x1 = self.rect.x1 - 16.0;
         let y0 = self.rect.y0 + 48.0;
         Rect::new(x1 - popover_w, y0, x1, y0 + popover_h)
+    }
+
+    /// Public alias for [`Self::quick_settings_rect`] so integration
+    /// tests can compute drill-in row coordinates without duplicating
+    /// the popover-rect math.
+    pub fn quick_settings_rect_for_tests(&self) -> Rect {
+        self.quick_settings_rect()
     }
 
     /// Collaborators dropdown rect — anchored to the top-right like quick-
@@ -2103,6 +2196,13 @@ impl Widget for ShellOverlayHost {
         // and play the same motion for `QS_OPEN_ANIM_MS`.
         if flags.quick_settings && !self.qs_was_open {
             self.qs_opened_at = Some(Instant::now());
+            // Rising edge: refresh QS state from the OS. Reads are
+            // inline because each shell-out completes in <50 ms on
+            // typical hardware; if any take longer, the worst case is
+            // a single frame stutter the first time the panel opens.
+            // Failed reads are logged and leave the stale value in
+            // place so a missing daemon doesn't blank the UI.
+            self.refresh_quick_settings_from_os();
         }
         if !flags.quick_settings {
             self.qs_opened_at = None;
@@ -2560,9 +2660,10 @@ impl Widget for ShellOverlayHost {
                         current_level,
                         crate::shell::quick_settings::QsLevel::Root
                     ) {
-                        // Drill-in pane: only the back-chevron pops the
-                        // stack; everything else inside the popover is
-                        // swallowed (per-row actions land in a follow-up).
+                        // Drill-in pane: the back-chevron pops the stack,
+                        // and on the Wi-Fi pane a row click triggers
+                        // `nmcli device wifi connect <ssid>` via the
+                        // QS dispatcher. Everything else is swallowed.
                         let back = self.qs_back_chevron_rect();
                         if back.contains(p) {
                             if let Some(chrome) = self.chrome.clone() {
@@ -2572,6 +2673,40 @@ impl Widget for ShellOverlayHost {
                             }
                             *handled = true;
                             return;
+                        }
+                        if matches!(
+                            current_level,
+                            crate::shell::quick_settings::QsLevel::Wifi
+                        ) {
+                            // Row geometry mirrors `draw_qs_wifi_list`:
+                            // row_h = 56 px, list_y0 = rect.y0 + 56, rows
+                            // span rect.x0 + 12 to rect.x1 - 12.
+                            let rect = self.quick_settings_rect();
+                            let row_h = 56.0_f64;
+                            let list_y0 = rect.y0 + 56.0;
+                            let nets = self
+                                .chrome
+                                .as_ref()
+                                .map(|c| c.borrow().quick_settings.wifi_networks.clone())
+                                .unwrap_or_default();
+                            for (i, net) in nets.iter().enumerate() {
+                                let row_y = list_y0 + i as f64 * row_h;
+                                let row_rect = Rect::new(
+                                    rect.x0 + 12.0,
+                                    row_y,
+                                    rect.x1 - 12.0,
+                                    row_y + row_h - 4.0,
+                                );
+                                if row_rect.contains(p) {
+                                    let ssid = net.ssid.clone();
+                                    crate::shell::qs_actions::log_qs_result(
+                                        "connect_wifi",
+                                        self.qs_actions.connect_wifi(&ssid, None),
+                                    );
+                                    *handled = true;
+                                    return;
+                                }
+                            }
                         }
                         *handled = true;
                         return;
@@ -2602,6 +2737,16 @@ impl Widget for ShellOverlayHost {
                             *handled = true;
                             return;
                         }
+                        // Track which actions to dispatch *after* dropping the
+                        // chrome borrow — calling into `qs_actions` while
+                        // `st` is alive would risk a re-entrant `borrow_mut`
+                        // from a tracing subscriber or anything else that
+                        // touches the chrome.
+                        let mut pending_brightness: Option<f32> = None;
+                        let mut pending_volume: Option<f32> = None;
+                        let mut pending_wifi: Option<bool> = None;
+                        let mut pending_bt: Option<bool> = None;
+                        let mut pending_power: Option<crate::shell::quick_settings::PowerProfile> = None;
                         let mut st = chrome.borrow_mut();
                         let mut changed = false;
                         for i in 0..2 {
@@ -2614,8 +2759,10 @@ impl Widget for ShellOverlayHost {
                                 let t = ((p.x - bar.x0) / bar.width()).clamp(0.0, 1.0) as f32;
                                 if i == 0 {
                                     st.quick_settings.brightness = t;
+                                    pending_brightness = Some(t * 100.0);
                                 } else {
                                     st.quick_settings.volume = t;
+                                    pending_volume = Some(t * 100.0);
                                 }
                                 changed = true;
                             }
@@ -2626,14 +2773,69 @@ impl Widget for ShellOverlayHost {
                             if hit.contains(p) {
                                 if i == 0 {
                                     st.quick_settings.wifi = !st.quick_settings.wifi;
+                                    pending_wifi = Some(st.quick_settings.wifi);
                                 } else {
                                     st.quick_settings.bluetooth = !st.quick_settings.bluetooth;
+                                    pending_bt = Some(st.quick_settings.bluetooth);
                                 }
                                 changed = true;
                             }
                         }
+                        // Power profile chip — cycle Balanced → Performance →
+                        // Saver and push the new value through to
+                        // `powerprofilesctl`.
+                        let pp_rect = self.quick_settings_power_profile_geometry();
+                        if pp_rect.contains(p) {
+                            use crate::shell::quick_settings::PowerProfile;
+                            let next = match st.quick_settings.power_profile {
+                                PowerProfile::Saver => PowerProfile::Balanced,
+                                PowerProfile::Balanced => PowerProfile::Performance,
+                                PowerProfile::Performance => PowerProfile::Saver,
+                            };
+                            st.quick_settings.power_profile = next;
+                            pending_power = Some(next);
+                            changed = true;
+                        }
                         if changed {
                             st.bump();
+                            drop(st);
+                            if let Some(v) = pending_brightness {
+                                crate::shell::qs_actions::log_qs_result(
+                                    "set_brightness",
+                                    self.qs_actions.set_brightness(v),
+                                );
+                            }
+                            if let Some(v) = pending_volume {
+                                crate::shell::qs_actions::log_qs_result(
+                                    "set_volume",
+                                    self.qs_actions.set_volume(v),
+                                );
+                            }
+                            if let Some(v) = pending_wifi {
+                                crate::shell::qs_actions::log_qs_result(
+                                    "set_wifi",
+                                    self.qs_actions.set_wifi(v),
+                                );
+                            }
+                            if let Some(v) = pending_bt {
+                                crate::shell::qs_actions::log_qs_result(
+                                    "set_bluetooth",
+                                    self.qs_actions.set_bluetooth(v),
+                                );
+                            }
+                            if let Some(p) = pending_power {
+                                use crate::shell::quick_settings::PowerProfile as UiPP;
+                                use crate::shell::qs_actions::PowerProfile as ActPP;
+                                let mapped = match p {
+                                    UiPP::Saver => ActPP::Saver,
+                                    UiPP::Balanced => ActPP::Balanced,
+                                    UiPP::Performance => ActPP::Performance,
+                                };
+                                crate::shell::qs_actions::log_qs_result(
+                                    "set_power_profile",
+                                    self.qs_actions.set_power_profile(mapped),
+                                );
+                            }
                             *handled = true;
                             return;
                         }
@@ -5092,13 +5294,11 @@ impl ShellOverlayHost {
             colors.semantic.success,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        // Power profile label. The active profile lives on the
-        // `QuickSettings` widget owned by the shell root (`mod.rs`); the
-        // overlay host doesn't currently hold a back-reference to that
-        // widget, so until T9 plumbs the drill-in render the label falls
-        // back to the default `Balanced` profile.
-        let profile_label =
-            crate::shell::quick_settings::PowerProfile::Balanced.label();
+        // Power profile label. Reads from the chrome's shared
+        // `QuickSettingsState`, which the click handler mutates on the
+        // chip and the rising-edge refresh pulls from
+        // `powerprofilesctl get`.
+        let profile_label = qs.power_profile.label();
         text_renderer.draw_text_weighted(
             scene,
             profile_label,
@@ -5508,7 +5708,7 @@ impl ShellOverlayHost {
     /// Leading 24 px of the row is reserved for the icon (Sun / Volume2),
     /// then a 12 px gap, then the bar fills the remaining width minus the
     /// trailing 12 px padding.
-    pub(crate) fn quick_settings_slider_geometry(&self, i: usize) -> (Rect, f64) {
+    pub fn quick_settings_slider_geometry(&self, i: usize) -> (Rect, f64) {
         let r = self.quick_settings_rect();
         // Slider card: y0 + 88 to y0 + 88 + 72.
         let card_y = r.y0 + 88.0;
@@ -5526,7 +5726,7 @@ impl ShellOverlayHost {
     /// Toggle card rect for the i-th quick-settings toggle card
     /// (0 = Wi-Fi, 1 = Bluetooth). The cards sit in a 2-col grid below
     /// the slider card.
-    pub(crate) fn quick_settings_toggle_geometry(&self, i: usize) -> Rect {
+    pub fn quick_settings_toggle_geometry(&self, i: usize) -> Rect {
         let r = self.quick_settings_rect();
         let grid_y = r.y0 + 176.0;
         let grid_h = 88.0;
@@ -5549,7 +5749,7 @@ impl ShellOverlayHost {
     }
 
     /// Power Profile row rect — sits at the bottom of the popover.
-    pub(crate) fn quick_settings_power_profile_geometry(&self) -> Rect {
+    pub fn quick_settings_power_profile_geometry(&self) -> Rect {
         let r = self.quick_settings_rect();
         let row_y = r.y0 + 280.0;
         let row_h = 48.0;
