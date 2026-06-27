@@ -19,3 +19,4 @@ automerge = "0.8.0"
 vello = "0.9"
 taffy = "0.10.1"
 winit = "0.30.13"
+cosmic-text = { version = "0.19.0", default-features = false, features = ["swash", "std"] }
