@@ -308,8 +308,21 @@ impl Widget for WordProcessorWidget {
         scene.fill(Fill::NonZero, transform, PAPER, None, &vello::kurbo::RoundedRect::from_rect(page, 3.0));
 
         // Pass 2: draw bullets, selection, text, caret.
+        let mut ol_count = 0u32;
         for (b, l) in blocks.iter().zip(laid.iter()) {
-            let (size, _base_bold, _indent, bullet) = block_style(b);
+            let (size, _base_bold, _indent, _) = block_style(b);
+            let bullet: Option<String> = if b.kind == "list_item" {
+                if matches!(b.attrs.get("ordered"), Some(AttrVal::Bool(true))) {
+                    ol_count += 1;
+                    Some(format!("{ol_count}."))
+                } else {
+                    ol_count = 0;
+                    Some("•".to_string())
+                }
+            } else {
+                ol_count = 0;
+                None
+            };
 
             if b.kind == "fidelity" {
                 let box_rect = Rect::new(l.text_x, l.y_top + 2.0, (page_x + page_w - PAGE_MARGIN).min(l.text_x + 360.0), l.y_top + l.height - 2.0);
@@ -318,8 +331,8 @@ impl Widget for WordProcessorWidget {
                 continue;
             }
 
-            if let Some(bul) = bullet {
-                text_renderer.draw_text(scene, bul, size, INK, transform * Affine::translate((l.text_x - 22.0, l.y_top)), None);
+            if let Some(bul) = &bullet {
+                text_renderer.draw_text(scene, bul, size, INK, transform * Affine::translate((l.text_x - 24.0, l.y_top)), None);
             }
 
             // Selection highlight (within this block).
@@ -388,6 +401,14 @@ impl Widget for WordProcessorWidget {
                             "b" => self.inner.toggle_mark(state, "strong"),
                             "i" => self.inner.toggle_mark(state, "em"),
                             "u" => self.inner.toggle_mark(state, "underline"),
+                            "c" => self.clipboard_copy(),
+                            "x" => {
+                                self.clipboard_copy();
+                                self.inner.delete_selection(state);
+                            }
+                            "v" => self.clipboard_paste(state),
+                            "a" => self.select_all_in_block(state),
+                            // z / y (undo/redo) are handled by the host App.
                             _ => {}
                         }
                         self.refresh_blocks(state);
@@ -543,6 +564,37 @@ impl WordProcessorWidget {
             ToolAction::Body => self.inner.set_paragraph_style(state, "paragraph", None, None),
             ToolAction::Bullet => self.inner.set_paragraph_style(state, "list_item", None, Some(false)),
         }
+    }
+
+    fn selection_text(&self) -> Option<String> {
+        let (bid, s, e) = self.inner.selection_range()?;
+        let b = self.blocks.iter().find(|b| b.id == bid)?;
+        Some(b.text.chars().skip(s).take(e.saturating_sub(s)).collect())
+    }
+
+    fn clipboard_copy(&self) {
+        if let Some(t) = self.selection_text() {
+            if let Ok(mut cb) = arboard::Clipboard::new() {
+                let _ = cb.set_text(t);
+            }
+        }
+    }
+
+    fn clipboard_paste(&mut self, state: &mut AutoCommit) {
+        if let Ok(mut cb) = arboard::Clipboard::new() {
+            if let Ok(t) = cb.get_text() {
+                // Single-block paste (v1): flatten newlines to spaces.
+                let flat = t.replace(['\n', '\r'], " ");
+                self.inner.insert_str(state, &flat);
+            }
+        }
+    }
+
+    fn select_all_in_block(&mut self, state: &AutoCommit) {
+        self.inner.move_home();
+        self.inner.clear_anchor();
+        self.inner.set_anchor();
+        self.inner.move_end(state);
     }
 
     fn draw_toolbar(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, tb: Rect) {
