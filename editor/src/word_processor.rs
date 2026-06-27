@@ -83,6 +83,25 @@ impl WordProcessor {
         true
     }
 
+    /// Set the current block's paragraph style (kind + optional heading level /
+    /// list ordering).
+    pub fn set_paragraph_style(&mut self, state: &mut AutoCommit, kind: &str, level: Option<i64>, ordered: Option<bool>) {
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        let block = self.caret.block.clone();
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            dm.set_kind(&block, kind);
+            if let Some(l) = level {
+                dm.set_attr(&block, "level", l);
+            }
+            if let Some(o) = ordered {
+                dm.set_attr(&block, "ordered", o);
+            }
+        }
+    }
+
     /// Toggle an inline mark (`strong`/`em`/`underline`) over the selection.
     pub fn toggle_mark(&mut self, state: &mut AutoCommit, name: &str) {
         let Some((block, start, end)) = self.selection_range() else {
