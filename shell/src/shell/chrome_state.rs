@@ -21,7 +21,7 @@ use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
 use crate::shell::notification::{
     MAX_NOTIFICATIONS, Notification, NotificationIconKind, NotificationSeverity,
 };
-use crate::shell::quick_settings::{BtDevice, QsLevel, WifiNetwork};
+use crate::shell::quick_settings::{BtDevice, PowerProfile, QsLevel, WifiNetwork};
 use crate::shell::state::{AppId, Capability, WorkspaceTree, WorkspaceTreeHandle};
 // Re-export WsTab so chrome users can refer to the tab routing enum
 // without reaching into `workspace_settings`. The enum itself lives
@@ -84,6 +84,11 @@ pub struct QuickSettingsState {
     /// Demo Bluetooth devices rendered in the BT drill-in list. Mock data
     /// until real pairing lands; concept ref: `QuickSettings.tsx:140-160`.
     pub bt_devices: Vec<BtDevice>,
+    /// Active power profile, mirrored from `powerprofilesctl` when the
+    /// panel opens and pushed back via `set_power_profile` when the
+    /// user cycles the chip. Defaults to `Balanced` so a host without
+    /// `power-profiles-daemon` still renders a sensible label.
+    pub power_profile: PowerProfile,
 }
 
 impl Default for QuickSettingsState {
@@ -137,6 +142,7 @@ impl Default for QuickSettingsState {
                     connected: false,
                 },
             ],
+            power_profile: PowerProfile::Balanced,
         }
     }
 }
