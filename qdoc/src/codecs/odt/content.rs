@@ -162,6 +162,12 @@ pub(crate) fn parse_body(content_xml: &[u8], doc: &mut DocMut) -> Result<(), Cod
     // trailing boundary).
     let mut pending_marks: Vec<(String, usize, usize, &'static str)> = Vec::new();
 
+    // Table state: cells become consecutive `cell` blocks tagged table/row/col.
+    let mut table_id: Option<String> = None;
+    let mut trow: usize = 0;
+    let mut tcol: usize = 0;
+    let mut table_seq: usize = 0;
+
     // Capture state for unmodeled top-level body elements → fidelity atoms.
     let mut capture: Option<(usize, i32)> = None; // (start byte, open depth)
 
@@ -209,9 +215,25 @@ pub(crate) fn parse_body(content_xml: &[u8], doc: &mut DocMut) -> Result<(), Cod
                     doc.set_attr(&id, "level", outline_level(&e).unwrap_or(1));
                     apply_para_style(doc, &id, &e, &para_styles);
                 }
-                b"text:p" if in_text && !in_item => {
+                b"text:p" if in_text && !in_item && table_id.is_none() => {
                     let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "paragraph");
                     apply_para_style(doc, &id, &e, &para_styles);
+                }
+                b"table:table" if in_text => {
+                    table_id = Some(attr_val(&e, b"table:name").unwrap_or_else(|| {
+                        table_seq += 1;
+                        format!("t{table_seq}")
+                    }));
+                    trow = 0;
+                }
+                b"table:table-row" if in_text => tcol = 0,
+                b"table:table-cell" if in_text => {
+                    if let Some(tid) = table_id.clone() {
+                        let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "cell");
+                        doc.set_attr(&id, "table", tid.as_str());
+                        doc.set_attr(&id, "row", trow as i64);
+                        doc.set_attr(&id, "col", tcol as i64);
+                    }
                 }
                 b"text:list-item" if in_text => {
                     let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "list_item");
@@ -233,7 +255,7 @@ pub(crate) fn parse_body(content_xml: &[u8], doc: &mut DocMut) -> Result<(), Cod
                 b"text:list" => {} // container; handled via its list items
                 // Any other element directly under office:text is unmodeled →
                 // capture its whole subtree verbatim as a fidelity atom.
-                _ if in_text && cur.is_none() && !in_item => {
+                _ if in_text && cur.is_none() && !in_item && table_id.is_none() => {
                     capture = Some((pos_before, 1));
                 }
                 _ => {}
@@ -246,7 +268,7 @@ pub(crate) fn parse_body(content_xml: &[u8], doc: &mut DocMut) -> Result<(), Cod
                 b"style:paragraph-properties" if in_styles => {
                     record_para_align(&e, &cur_style, &cur_family, &mut para_styles);
                 }
-                b"text:p" if in_text && !in_item => {
+                b"text:p" if in_text && !in_item && table_id.is_none() => {
                     let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "paragraph");
                     apply_para_style(doc, &id, &e, &para_styles);
                     cur = None;
@@ -257,8 +279,19 @@ pub(crate) fn parse_body(content_xml: &[u8], doc: &mut DocMut) -> Result<(), Cod
                     apply_para_style(doc, &id, &e, &para_styles);
                     cur = None;
                 }
+                b"table:table-cell" if in_text => {
+                    // Self-closing (empty) cell.
+                    if let Some(tid) = table_id.clone() {
+                        let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "cell");
+                        doc.set_attr(&id, "table", tid.as_str());
+                        doc.set_attr(&id, "row", trow as i64);
+                        doc.set_attr(&id, "col", tcol as i64);
+                        cur = None;
+                    }
+                    tcol += 1;
+                }
                 // Self-closing unmodeled element under office:text → fidelity atom.
-                _ if in_text && cur.is_none() && !in_item => {
+                _ if in_text && cur.is_none() && !in_item && table_id.is_none() => {
                     let raw = s[pos_before..reader.buffer_position() as usize].to_string();
                     let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "fidelity");
                     doc.set_attr(&id, "xml", raw.as_str());
@@ -274,7 +307,16 @@ pub(crate) fn parse_body(content_xml: &[u8], doc: &mut DocMut) -> Result<(), Cod
                 }
                 b"office:text" => in_text = false,
                 b"text:h" => cur = None,
-                b"text:p" if !in_item => cur = None,
+                b"text:p" if !in_item && table_id.is_none() => cur = None,
+                b"table:table" => {
+                    table_id = None;
+                    cur = None;
+                }
+                b"table:table-row" => trow += 1,
+                b"table:table-cell" => {
+                    cur = None;
+                    tcol += 1;
+                }
                 b"text:list-item" => {
                     cur = None;
                     in_item = false;
@@ -387,12 +429,39 @@ mod tests {
     }
 
     #[test]
+    fn table_roundtrips_as_editable_cells() {
+        let body = concat!(
+            r#"<table:table table:name="T1">"#,
+            r#"<table:table-row><table:table-cell><text:p>a</text:p></table:table-cell>"#,
+            r#"<table:table-cell><text:p>b</text:p></table:table-cell></table:table-row>"#,
+            r#"<table:table-row><table:table-cell><text:p>c</text:p></table:table-cell>"#,
+            r#"<table:table-cell><text:p>d</text:p></table:table-cell></table:table-row>"#,
+            r#"</table:table>"#,
+        );
+        let odt = minimal_odt_styled("", body);
+        let mut d = Document::new();
+        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        let snap = d.materialize();
+        let cells: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "cell").collect();
+        assert_eq!(cells.len(), 4, "2x2 cells: {snap:?}");
+        assert_eq!(cells.iter().map(|c| c.text.clone()).collect::<Vec<_>>(), vec!["a", "b", "c", "d"]);
+        assert_eq!(cells[0].attrs.get("table"), Some(&AttrVal::Str("T1".into())));
+        assert_eq!(cells[3].attrs.get("row"), Some(&AttrVal::Int(1)));
+        assert_eq!(cells[3].attrs.get("col"), Some(&AttrVal::Int(1)));
+
+        // Round-trip: export then re-import → still a 2x2 table with the same text.
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let cells2: Vec<_> = d2.materialize().blocks.iter().filter(|b| b.kind == "cell").map(|b| b.text.clone()).collect();
+        assert_eq!(cells2, vec!["a", "b", "c", "d"], "table survives export+import");
+    }
+
+    #[test]
     fn preserves_unmodeled_body_element_as_fidelity_atom() {
         let body = concat!(
             r#"<text:p>before</text:p>"#,
-            r#"<table:table table:name="T"><table:table-row>"#,
-            r#"<table:table-cell><text:p>cell</text:p></table:table-cell>"#,
-            r#"</table:table-row></table:table>"#,
+            r#"<draw:frame draw:name="F"><draw:image xlink:href="pic.png"/></draw:frame>"#,
             r#"<text:p>after</text:p>"#,
         );
         let odt = minimal_odt_styled("", body);
@@ -410,7 +479,7 @@ mod tests {
             other => panic!("fidelity atom missing xml attr: {other:?}"),
         };
         assert!(
-            raw1.starts_with("<table:table") && raw1.contains("cell") && raw1.ends_with("</table:table>"),
+            raw1.starts_with("<draw:frame") && raw1.contains("pic.png") && raw1.ends_with("</draw:frame>"),
             "captured raw: {raw1}"
         );
 
