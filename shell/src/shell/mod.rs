@@ -1196,6 +1196,36 @@ pub fn build_nirios_overlay_host_with_options(
 /// layout / draw structure only needs a snapshot of the workspaces /
 /// strips shape; subsequent rebuilds run through `sync_from_tree` on
 /// each chrome widget when the chrome revision bumps).
+/// Convert a persisted [`state::WindowGroup`] into the UI-side
+/// [`UiGroup`] the shell paints. Extracted from
+/// [`build_nirios_overlay_host_with_handle`] so the
+/// [`ShellOverlayHost::resync_strips_from_tree`] path on chrome-
+/// revision bumps can reach for the same conversion when splicing
+/// freshly-added groups into a live [`GroupRow`].
+pub fn to_ui_window_group(g: &state::WindowGroup) -> UiGroup {
+    let tabs_with_content: Vec<(TabDescriptor, UiTile)> = g
+        .tabs
+        .iter()
+        .map(|t| {
+            let kind = match &t.tile {
+                ShellTile::Stub { kind, .. } => to_ui_kind(kind),
+                ShellTile::AppPlaceholder { kind, .. } => to_ui_kind(kind),
+                ShellTile::Foreign { .. } => UiKind::Settings,
+            };
+            (
+                TabDescriptor {
+                    id: t.id,
+                    title: t.title.clone(),
+                    app_kind: Some(kind),
+                },
+                to_ui_tile(&t.tile),
+            )
+        })
+        .collect();
+    UiGroup::new(g.id, tabs_with_content, g.active_tab, to_ui_width(g.width))
+        .with_maximized(g.maximized)
+}
+
 pub fn build_nirios_overlay_host_with_handle(
     tree_handle: state::WorkspaceTreeHandle,
     enable_peer_sync: bool,
@@ -1272,39 +1302,7 @@ pub fn build_nirios_overlay_host_with_handle(
             let groups: Vec<UiGroup> = strip
                 .window_groups
                 .iter()
-                .map(|g| {
-                    let tabs_with_content: Vec<(TabDescriptor, UiTile)> = g
-                        .tabs
-                        .iter()
-                        .map(|t| {
-                            // Pull the tile's app-kind up to the tab so
-                            // `TabBar::draw` can paint a typed leading
-                            // glyph (concept's `getAppIcon` in
-                            // `WindowFrame.tsx:10-18`). Both `Stub` and
-                            // `AppPlaceholder` carry a `kind`, so this
-                            // works for every live tile.
-                            let kind = match &t.tile {
-                                ShellTile::Stub { kind, .. } => to_ui_kind(kind),
-                                ShellTile::AppPlaceholder { kind, .. } => to_ui_kind(kind),
-                                // Phase 6: foreign clients don't carry a
-                                // shell-known kind — fall back to
-                                // `UiKind::Settings` glyph until icon-theme
-                                // resolution is wired up.
-                                ShellTile::Foreign { .. } => UiKind::Settings,
-                            };
-                            (
-                                TabDescriptor {
-                                    id: t.id,
-                                    title: t.title.clone(),
-                                    app_kind: Some(kind),
-                                },
-                                to_ui_tile(&t.tile),
-                            )
-                        })
-                        .collect();
-                    UiGroup::new(g.id, tabs_with_content, g.active_tab, to_ui_width(g.width))
-                        .with_maximized(g.maximized)
-                })
+                .map(to_ui_window_group)
                 .collect();
             let mut strip_row: Box<GroupRow> = Box::new(
                 GroupRow::new(groups)
