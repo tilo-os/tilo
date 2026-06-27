@@ -1838,8 +1838,17 @@ impl Widget for ShellOverlayHost {
         // 06-24 audit pinned this as the most visible chrome regression).
         let mut palette_style = taffy.style(palette_node).unwrap().clone();
         palette_style.position = Position::Absolute;
+        // Adaptive width: 70 % of viewport, clamped to [560, 640]. At
+        // 800 wide the palette shrinks to 560 (120 px margin per
+        // side); at 1280+ it caps at 640. Lower bound is the minimum
+        // that still fits the filter strip's eight pills (WORKSPACE
+        // / ALL / DOCS / CODE / IMG / VID / FULL TEXT) without the
+        // last pill bleeding into the close glyph. Caught by
+        // `shots --sweep` on 2026-06-27 — the fixed 640 was clipping
+        // hard against the 800×600 viewport's right edge.
+        let palette_target_w = (self.rect.width() * 0.7).clamp(560.0, 640.0);
         palette_style.size = Size {
-            width: Dimension::length(640.0),
+            width: Dimension::length(palette_target_w as f32),
             height: palette_style.size.height,
         };
         palette_style.margin = TaffyRect {
