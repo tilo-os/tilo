@@ -16,12 +16,50 @@ pub enum DocError {
     Invalid(String),
 }
 
+/// The value carried by a mark. Boolean marks (`strong`/`em`/`underline`) carry
+/// `Bool(true)`; valued marks like `fontSize`/`fontFamily` carry `Int`/`Str`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum MarkValue {
+    Bool(bool),
+    Int(i64),
+    Str(String),
+}
+
+impl MarkValue {
+    pub fn as_int(&self) -> Option<i64> {
+        match self {
+            MarkValue::Int(n) => Some(*n),
+            _ => None,
+        }
+    }
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            MarkValue::Str(s) => Some(s),
+            _ => None,
+        }
+    }
+}
+
+impl From<&automerge::ScalarValue> for MarkValue {
+    fn from(v: &automerge::ScalarValue) -> Self {
+        use automerge::ScalarValue;
+        match v {
+            ScalarValue::Boolean(b) => MarkValue::Bool(*b),
+            ScalarValue::Int(i) => MarkValue::Int(*i),
+            ScalarValue::Uint(u) => MarkValue::Int(*u as i64),
+            ScalarValue::Str(s) => MarkValue::Str(s.to_string()),
+            _ => MarkValue::Bool(true),
+        }
+    }
+}
+
 /// One inline formatting span as seen from the read side.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MarkSpan {
     pub start: usize,
     pub end: usize,
     pub name: String,
+    pub value: MarkValue,
 }
 
 pub struct Document {
@@ -91,7 +129,7 @@ impl Document {
         self.doc.commit();
     }
 
-    pub fn add_mark(&mut self, block_id: &str, start: usize, end: usize, name: &str, value: bool) {
+    pub fn add_mark(&mut self, block_id: &str, start: usize, end: usize, name: &str, value: impl Into<automerge::ScalarValue>) {
         self.as_mut().add_mark(block_id, start, end, name, value);
         self.doc.commit();
     }

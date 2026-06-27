@@ -198,15 +198,45 @@ impl WordProcessor {
     }
 
     /// Set a block-level attribute (e.g. font) on every selected block.
-    pub fn set_block_attr(&mut self, state: &mut AutoCommit, key: &str, value: impl Into<automerge::ScalarValue> + Clone) {
+    /// Char ranges to apply an inline font mark to: the selection, or — with no
+    /// selection — the whole caret block.
+    fn font_ranges(&self, state: &AutoCommit) -> Vec<(String, usize, usize)> {
+        if self.has_selection() {
+            self.selection_blocks(state)
+        } else {
+            let len = self.block_len(state, &self.caret.block);
+            vec![(self.caret.block.clone(), 0, len)]
+        }
+    }
+
+    /// Set the font size over the selection (per-run), or the caret block.
+    pub fn set_font_size(&mut self, state: &mut AutoCommit, size: i64) {
+        let ranges = self.font_ranges(state);
         let Some(containers) = self.containers.clone() else {
             return;
         };
-        let targets = self.selected_block_ids(state);
         if let Some(ids) = self.ids.as_mut() {
             let mut dm = DocMut { doc: state, c: &containers, ids };
-            for block in &targets {
-                dm.set_attr(block, key, value.clone());
+            for (b, s, e) in &ranges {
+                if s < e {
+                    dm.add_mark(b, *s, *e, "fontSize", size);
+                }
+            }
+        }
+    }
+
+    /// Set the font family over the selection (per-run), or the caret block.
+    pub fn set_font_family(&mut self, state: &mut AutoCommit, family: &str) {
+        let ranges = self.font_ranges(state);
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            for (b, s, e) in &ranges {
+                if s < e {
+                    dm.add_mark(b, *s, *e, "fontFamily", family);
+                }
             }
         }
     }

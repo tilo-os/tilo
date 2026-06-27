@@ -5,6 +5,7 @@
 //! over the span's text range. Unknown spans keep their text (preservation of
 //! the span element itself is Task 5).
 
+use crate::document::MarkValue;
 use crate::format::CodecError;
 use crate::model::DocMut;
 use quick_xml::events::{BytesStart, Event};
@@ -37,15 +38,22 @@ fn outline_level(e: &BytesStart) -> Option<i64> {
     attr_val(e, b"text:outline-level").and_then(|v| v.parse::<i64>().ok())
 }
 
-/// Marks implied by a `style:text-properties` element.
-fn marks_from_text_props(e: &BytesStart) -> Vec<&'static str> {
+/// Marks (with values) implied by a `style:text-properties` element. Font size
+/// and family become valued inline marks (`fontSize`/`fontFamily`).
+fn marks_from_text_props(e: &BytesStart) -> Vec<(String, MarkValue)> {
     let mut m = Vec::new();
     for a in e.attributes().flatten() {
         let val = a.unescape_value().unwrap_or_default();
         match a.key.as_ref() {
-            b"fo:font-weight" if val == "bold" => m.push("strong"),
-            b"fo:font-style" if val == "italic" => m.push("em"),
-            b"style:text-underline-style" if val != "none" => m.push("underline"),
+            b"fo:font-weight" if val == "bold" => m.push(("strong".into(), MarkValue::Bool(true))),
+            b"fo:font-style" if val == "italic" => m.push(("em".into(), MarkValue::Bool(true))),
+            b"style:text-underline-style" if val != "none" => m.push(("underline".into(), MarkValue::Bool(true))),
+            b"fo:font-size" => {
+                if let Some(n) = parse_pt(&val) {
+                    m.push(("fontSize".into(), MarkValue::Int(n)));
+                }
+            }
+            b"style:font-name" => m.push(("fontFamily".into(), MarkValue::Str(generic_font(&val)))),
             _ => {}
         }
     }
@@ -53,26 +61,13 @@ fn marks_from_text_props(e: &BytesStart) -> Vec<&'static str> {
 }
 
 /// Record the marks for the text style currently being defined.
-fn record_style(
-    e: &BytesStart,
-    cur_style: &Option<String>,
-    styles: &mut HashMap<String, Vec<&'static str>>,
-) {
+fn record_style(e: &BytesStart, cur_style: &Option<String>, styles: &mut HashMap<String, Vec<(String, MarkValue)>>) {
     if let Some(name) = cur_style {
         let marks = marks_from_text_props(e);
         if !marks.is_empty() {
             styles.insert(name.clone(), marks);
         }
     }
-}
-
-/// Paragraph-level properties (alignment + font) recovered from a paragraph
-/// automatic style.
-#[derive(Default, Clone)]
-struct ParaProps {
-    align: Option<String>,
-    font_size: Option<i64>,
-    font: Option<String>,
 }
 
 fn parse_pt(v: &str) -> Option<i64> {
@@ -98,20 +93,11 @@ fn map_align(v: &str) -> String {
     }
 }
 
-/// Record font-size / font-name from a paragraph style's `text-properties`.
-fn record_para_text(e: &BytesStart, cur: &Option<String>, fam: &Option<String>, m: &mut HashMap<String, ParaProps>) {
-    if fam.as_deref() != Some("paragraph") {
-        return;
-    }
-    if let Some(name) = cur {
-        let p = m.entry(name.clone()).or_default();
-        if let Some(sz) = attr_val(e, b"fo:font-size").and_then(|v| parse_pt(&v)) {
-            p.font_size = Some(sz);
-        }
-        if let Some(f) = attr_val(e, b"style:font-name") {
-            p.font = Some(generic_font(&f));
-        }
-    }
+/// Paragraph alignment recovered from a paragraph automatic style. (Font is a
+/// per-run inline mark, handled via `style:text-properties` on text spans.)
+#[derive(Default, Clone)]
+struct ParaProps {
+    align: Option<String>,
 }
 
 /// Record alignment from a paragraph style's `paragraph-properties`.
@@ -124,17 +110,11 @@ fn record_para_align(e: &BytesStart, cur: &Option<String>, fam: &Option<String>,
     }
 }
 
-/// Apply a referenced paragraph style's properties to a block.
+/// Apply a referenced paragraph style's alignment to a block.
 fn apply_para_style(doc: &mut DocMut, id: &str, e: &BytesStart, m: &HashMap<String, ParaProps>) {
     if let Some(p) = attr_val(e, b"text:style-name").and_then(|s| m.get(&s)) {
         if let Some(a) = &p.align {
             doc.set_attr(id, "align", a.as_str());
-        }
-        if let Some(s) = p.font_size {
-            doc.set_attr(id, "fontSize", s);
-        }
-        if let Some(f) = &p.font {
-            doc.set_attr(id, "font", f.as_str());
         }
     }
 }
@@ -154,13 +134,13 @@ pub(crate) fn parse_body(content_xml: &[u8], doc: &mut DocMut) -> Result<(), Cod
     let mut in_styles = false;
     let mut cur_style: Option<String> = None; // style being defined
     let mut cur_family: Option<String> = None; // its style:family
-    let mut styles: HashMap<String, Vec<&'static str>> = HashMap::new();
+    let mut styles: HashMap<String, Vec<(String, MarkValue)>> = HashMap::new();
     let mut para_styles: HashMap<String, ParaProps> = HashMap::new();
-    let mut span_stack: Vec<(Vec<&'static str>, usize)> = Vec::new();
+    let mut span_stack: Vec<(Vec<(String, MarkValue)>, usize)> = Vec::new();
     // Marks are recorded during the walk and applied *after* all text is in, so
     // text appended after a span doesn't expand its mark (add_mark expands at the
     // trailing boundary).
-    let mut pending_marks: Vec<(String, usize, usize, &'static str)> = Vec::new();
+    let mut pending_marks: Vec<(String, usize, usize, String, MarkValue)> = Vec::new();
 
     // Table state: cells become consecutive `cell` blocks tagged table/row/col.
     let mut table_id: Option<String> = None;
@@ -202,10 +182,7 @@ pub(crate) fn parse_body(content_xml: &[u8], doc: &mut DocMut) -> Result<(), Cod
                     cur_family = attr_val(&e, b"style:family");
                     cur_style = attr_val(&e, b"style:name");
                 }
-                b"style:text-properties" if in_styles => {
-                    record_style(&e, &cur_style, &mut styles);
-                    record_para_text(&e, &cur_style, &cur_family, &mut para_styles);
-                }
+                b"style:text-properties" if in_styles => record_style(&e, &cur_style, &mut styles),
                 b"style:paragraph-properties" if in_styles => {
                     record_para_align(&e, &cur_style, &cur_family, &mut para_styles);
                 }
@@ -261,10 +238,7 @@ pub(crate) fn parse_body(content_xml: &[u8], doc: &mut DocMut) -> Result<(), Cod
                 _ => {}
             },
             Event::Empty(e) => match e.name().as_ref() {
-                b"style:text-properties" if in_styles => {
-                    record_style(&e, &cur_style, &mut styles);
-                    record_para_text(&e, &cur_style, &cur_family, &mut para_styles);
-                }
+                b"style:text-properties" if in_styles => record_style(&e, &cur_style, &mut styles),
                 b"style:paragraph-properties" if in_styles => {
                     record_para_align(&e, &cur_style, &cur_family, &mut para_styles);
                 }
@@ -324,8 +298,8 @@ pub(crate) fn parse_body(content_xml: &[u8], doc: &mut DocMut) -> Result<(), Cod
                 b"text:span" if in_text => {
                     if let Some((marks, start)) = span_stack.pop() {
                         if let Some(b) = cur.as_ref() {
-                            for name in marks {
-                                pending_marks.push((b.clone(), start, cur_len, name));
+                            for (name, value) in marks {
+                                pending_marks.push((b.clone(), start, cur_len, name, value));
                             }
                         }
                     }
@@ -347,8 +321,12 @@ pub(crate) fn parse_body(content_xml: &[u8], doc: &mut DocMut) -> Result<(), Cod
     }
 
     // Apply marks now that all text is present (exact ranges, no expansion).
-    for (b, start, end, name) in pending_marks {
-        doc.add_mark(&b, start, end, name, true);
+    for (b, start, end, name, value) in pending_marks {
+        match value {
+            MarkValue::Bool(v) => doc.add_mark(&b, start, end, &name, v),
+            MarkValue::Int(n) => doc.add_mark(&b, start, end, &name, n),
+            MarkValue::Str(s) => doc.add_mark(&b, start, end, &name, s.as_str()),
+        }
     }
     Ok(())
 }
@@ -411,21 +389,22 @@ mod tests {
     }
 
     #[test]
-    fn imports_paragraph_align_and_font() {
+    fn imports_paragraph_align_and_inline_font() {
+        use crate::document::MarkValue;
+        // Alignment comes from the paragraph style; font from a text span.
         let styles = concat!(
-            r#"<style:style style:name="P2" style:family="paragraph">"#,
-            r#"<style:paragraph-properties fo:text-align="center"/>"#,
-            r#"<style:text-properties fo:font-size="20pt" style:font-name="Liberation Serif"/></style:style>"#,
+            r#"<style:style style:name="P2" style:family="paragraph"><style:paragraph-properties fo:text-align="center"/></style:style>"#,
+            r#"<style:style style:name="T1" style:family="text"><style:text-properties fo:font-size="20pt" style:font-name="Liberation Serif"/></style:style>"#,
         );
-        let body = r#"<text:p text:style-name="P2">centered</text:p>"#;
+        let body = r#"<text:p text:style-name="P2"><text:span text:style-name="T1">big</text:span></text:p>"#;
         let odt = minimal_odt_styled(styles, body);
         let mut d = Document::new();
         OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
         let b = &d.materialize().blocks[0];
-        assert_eq!(b.text, "centered");
+        assert_eq!(b.text, "big");
         assert_eq!(b.attrs.get("align"), Some(&AttrVal::Str("center".into())), "{:?}", b.attrs);
-        assert_eq!(b.attrs.get("font"), Some(&AttrVal::Str("serif".into())));
-        assert_eq!(b.attrs.get("fontSize"), Some(&AttrVal::Int(20)));
+        assert!(b.marks.iter().any(|m| m.name == "fontSize" && m.value == MarkValue::Int(20)), "{:?}", b.marks);
+        assert!(b.marks.iter().any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into())), "{:?}", b.marks);
     }
 
     #[test]

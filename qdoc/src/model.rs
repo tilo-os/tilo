@@ -151,7 +151,7 @@ fn marks_on(doc: &AutoCommit, block_obj: &ObjId) -> Vec<MarkSpan> {
         .marks(&tid)
         .map(|ms| {
             ms.into_iter()
-                .map(|m| MarkSpan { start: m.start, end: m.end, name: m.name().to_string() })
+                .map(|m| MarkSpan { start: m.start, end: m.end, name: m.name().to_string(), value: m.value().into() })
                 .collect()
         })
         .unwrap_or_default();
@@ -335,7 +335,7 @@ impl<'a> DocMut<'a> {
         }
     }
 
-    pub fn add_mark(&mut self, block_id: &str, start: usize, end: usize, name: &str, value: bool) {
+    pub fn add_mark(&mut self, block_id: &str, start: usize, end: usize, name: &str, value: impl Into<ScalarValue>) {
         if let Some(tid) = self.text_obj(block_id) {
             let mark = Mark::new(name.to_string(), value, start, end);
             let _ = self.doc.mark(&tid, mark, ExpandMark::After);
