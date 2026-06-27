@@ -200,6 +200,16 @@ pub struct ShellOverlayHost {
     /// [`Self::with_chrome`] runs — the stack needs a chrome handle
     /// to read notifications from.
     notification_stack: Option<NotificationStack>,
+    /// Last `chrome.revision` value observed by
+    /// [`Self::resync_strips_from_tree`]. The chrome bumps its
+    /// revision counter on every structural mutation (workspace
+    /// add, group insert, tab close, …); when the cached value
+    /// disagrees with the live one we know the persisted tree has
+    /// changed shape and the live [`GroupRow`] widgets need to
+    /// pick up the new strip contents. `u64::MAX` at construction
+    /// so the first poll always rebuilds, even when chrome boots
+    /// with `revision: 0`.
+    last_chrome_revision: u64,
 }
 
 /// Action emitted from the palette into [`ShellOverlayHost::peer_sync_actions`]
@@ -380,6 +390,7 @@ impl ShellOverlayHost {
             peer_sync_enabled: false,
             peer_sync_actions: Vec::new(),
             notification_stack: None,
+            last_chrome_revision: u64::MAX,
         }
     }
 
@@ -591,6 +602,78 @@ impl ShellOverlayHost {
     /// keyboard input, and presence broadcasts to a fading-away corpse.
     /// Called from [`Widget::update`] so it runs every frame the App
     /// pumps.
+    /// Per-frame diff of the live `WorkspaceTree` against every
+    /// `GroupRow`'s current children. Returns `true` if the row
+    /// shape actually changed (so callers can propagate a redraw
+    /// signal).
+    ///
+    /// Closes #263: chrome bumps its revision on every structural
+    /// mutation (workspace add, group insert, tab close, file
+    /// drop, …), but the live `GroupRow` widgets cache their
+    /// children in `groups: Vec<WindowGroup>` — without this poll
+    /// the rows keep painting the boot-time snapshot even after the
+    /// persisted tree has grown new strips/groups. We compare the
+    /// row's `group_ids()` against the strip's
+    /// `window_groups.iter().map(|g| g.id)` and call
+    /// `insert_group` / `remove_group_by_id` to converge, which
+    /// preserves existing rows' host state (per-tile scroll, tab
+    /// selection, etc.) on revision bumps that don't touch them.
+    ///
+    /// Cheap on the no-op path: `chrome.revision` is a single u64
+    /// compare against the cached `last_chrome_revision`. The diff
+    /// only runs when something changed.
+    fn resync_strips_from_tree(&mut self) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let current_rev = chrome.borrow().revision;
+        if current_rev == self.last_chrome_revision {
+            return false;
+        }
+        let mut any_change = false;
+        let st = chrome.borrow();
+        let tree = st.tree();
+        if let Some(ws) = tree.active_workspace() {
+            for strip in &ws.strips {
+                let Some(&row_ptr) = self.group_row_ptrs.get(&strip.id) else {
+                    continue;
+                };
+                // SAFETY: same contract as the other `group_row_ptrs`
+                // accessors — pointer captured from a `Box<GroupRow>`
+                // owned by the content tree; host outlives content;
+                // `&mut self` → unaliased mutable access.
+                let row: &mut GroupRow = unsafe { &mut *row_ptr };
+                let live_ids: std::collections::HashSet<u64> =
+                    row.group_ids().into_iter().collect();
+                let tree_ids: std::collections::HashSet<u64> =
+                    strip.window_groups.iter().map(|g| g.id).collect();
+                // Splice in any new groups (preserves existing row
+                // groups' host state — scroll positions, per-tile
+                // selection, etc. — instead of rebuilding the whole
+                // vector and losing it).
+                for (idx, g) in strip.window_groups.iter().enumerate() {
+                    if !live_ids.contains(&g.id) {
+                        row.insert_group(
+                            crate::shell::to_ui_window_group(g),
+                            idx,
+                        );
+                        any_change = true;
+                    }
+                }
+                // Drop any groups the tree no longer carries.
+                for id in live_ids.difference(&tree_ids) {
+                    if row.remove_group_by_id(*id) {
+                        any_change = true;
+                    }
+                }
+            }
+        }
+        drop(tree);
+        drop(st);
+        self.last_chrome_revision = current_rev;
+        any_change
+    }
+
     fn reconcile_active_group_off_closing(&mut self) {
         if self.group_row_ptrs.is_empty() {
             return;
@@ -1587,6 +1670,15 @@ impl Widget for ShellOverlayHost {
     }
 
     fn update(&mut self, s: &mut AutoCommit, p: &ObjId) -> bool {
+        // Diff the live tree against each `GroupRow`'s current
+        // children. Closes #263 — every structural mutation in the
+        // persisted `WorkspaceTree` bumps `chrome.revision`; if our
+        // cached value disagrees the tree has changed shape and the
+        // live rows need to splice new groups in (or drop removed
+        // ones) so the painted strip matches state. Runs BEFORE the
+        // children's own `update` calls so the freshly-spliced
+        // groups participate in the same frame's sync pass.
+        let chrome_dirty = self.resync_strips_from_tree();
         let a = self.content.update(s, p);
         let b = self.palette.update(s, p);
         let c = self
@@ -1633,7 +1725,7 @@ impl Widget for ShellOverlayHost {
         } else {
             false
         };
-        a || b || c || d
+        a || b || c || d || chrome_dirty
     }
 
     fn build_layout(
@@ -2947,6 +3039,16 @@ impl Widget for ShellOverlayHost {
     /// would leave a stale flag pending in whichever subtree we
     /// skipped.
     fn take_structure_dirty(&mut self) -> bool {
+        // Pump the chrome-revision diff here too — the shots driver's
+        // `relayout()` path skips `update()` entirely (it only takes
+        // structure_dirty + reruns the layout pass), so the resync
+        // wouldn't otherwise fire between a `scene_setup` mutation
+        // and the snapshot capture. Live `App::run` already pumps
+        // update each frame so the call there is also valid; calling
+        // it from both sites makes the diff idempotent (the
+        // `last_chrome_revision` guard short-circuits the second
+        // call when nothing changed).
+        let _ = self.resync_strips_from_tree();
         let content = self.content.take_structure_dirty();
         let sidebar = self
             .sidebar
