@@ -189,6 +189,11 @@ pub struct TextInput {
     char_x_positions: Vec<f64>,
     scroll_x: f64,
     last_edit_time: Option<Instant>,
+    /// When true the widget renders / measures a row of bullet glyphs in
+    /// place of the real text (password masking). The CRDT-backed
+    /// `self.text` stays the *true* value so callers that read the
+    /// document (e.g. the greeter's auth path) get the real secret.
+    secret: bool,
 }
 
 impl TextInput {
@@ -214,6 +219,7 @@ impl TextInput {
             char_x_positions: Vec::new(),
             scroll_x: 0.0,
             last_edit_time: None,
+            secret: false,
         }
     }
 
@@ -225,6 +231,37 @@ impl TextInput {
     pub fn with_on_change_path(mut self, path: &str) -> Self {
         self.on_change_path = path.to_string();
         self
+    }
+
+    /// Enable password masking: glyphs render as `•` bullets while the
+    /// stored CRDT value remains the real text. No-op visual change for
+    /// the default (`false`) so existing callers are unaffected.
+    pub fn with_secret(mut self, on: bool) -> Self {
+        self.secret = on;
+        self
+    }
+
+    /// The string actually painted / measured. For secret inputs this is
+    /// one bullet per *character* of the real text; otherwise it's the
+    /// real text itself.
+    fn display_text(&self) -> String {
+        if self.secret {
+            "•".repeat(self.text.chars().count())
+        } else {
+            self.text.clone()
+        }
+    }
+
+    /// Display string for the prefix `self.text[..byte_idx]` — used to
+    /// keep `char_x_positions` (which is keyed by real-text byte offsets)
+    /// aligned with the masked glyph run, so caret placement and click
+    /// resolution stay correct under masking.
+    fn display_prefix(&self, byte_idx: usize) -> String {
+        if self.secret {
+            "•".repeat(self.text[..byte_idx].chars().count())
+        } else {
+            self.text[..byte_idx].to_string()
+        }
     }
 
     /// Sorted `(start, end)` byte indices of the live selection, or
@@ -390,14 +427,20 @@ impl Widget for TextInput {
         let line_height = LINE_HEIGHT as f64;
         let padding_x = theme.padding_standard as f64;
 
+        // The painted/measured string — bullets when masked, real text
+        // otherwise. `char_x_positions` stays keyed by *real-text* byte
+        // offsets (so the caret/click logic below is unchanged) but the
+        // measured widths come from the masked glyph run.
+        let display = self.display_text();
+
         // Pre-calculate positions for exact caret placement and click resolution.
         self.char_x_positions.clear();
         self.char_x_positions.resize(self.text.len() + 1, 0.0);
         for (byte_idx, _) in self.text.char_indices() {
-            let (w, _) = text_renderer.measure(&self.text[..byte_idx], text_size, None);
+            let (w, _) = text_renderer.measure(&self.display_prefix(byte_idx), text_size, None);
             self.char_x_positions[byte_idx] = w as f64;
         }
-        let (total_w, _) = text_renderer.measure(&self.text, text_size, None);
+        let (total_w, _) = text_renderer.measure(&display, text_size, None);
         self.char_x_positions[self.text.len()] = total_w as f64;
 
         // Caret + scroll math.
@@ -439,7 +482,7 @@ impl Widget for TextInput {
 
         text_renderer.draw_text(
             scene,
-            &self.text,
+            &display,
             text_size,
             theme.text_primary,
             transform * Affine::translate((self.rect.x0 + padding_x - self.scroll_x, text_y)),
@@ -914,6 +957,39 @@ mod tests {
         assert_eq!(ti.text, "hello there");
         assert_eq!(ti.cursor_pos, "hello there".len());
         assert!(!ti.has_selection());
+    }
+
+    /// Password masking: a `secret` input must render bullets (one per
+    /// character) while the CRDT-backed `text` keeps the *real* value —
+    /// auth code reads `self.text`, the screen shows `•`. Drives a real
+    /// Automerge `Text` object through `sync` to prove the stored secret
+    /// is intact end-to-end.
+    #[test]
+    fn secret_input_masks_glyphs_but_keeps_value() {
+        let mut ti = TextInput::new(Vec::new())
+            .with_on_change_path("password")
+            .with_secret(true);
+
+        let mut doc = AutoCommit::new();
+        let obj_id = doc
+            .put_object(&automerge::ROOT, "password", ObjType::Text)
+            .unwrap();
+        let _ = doc.splice_text(&obj_id, 0, 0, "hunter2");
+
+        // sync pulls the real value out of the CRDT.
+        ti.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(ti.text, "hunter2", "stored value must be the real secret");
+
+        // What gets painted/measured is a bullet per character.
+        assert_eq!(ti.display_text(), "•••••••");
+        // The masked prefix tracks character count, not bytes.
+        assert_eq!(ti.display_prefix(3), "•••");
+
+        // A non-secret input is unaffected (no behaviour change).
+        let mut plain = TextInput::new(Vec::new());
+        plain.text = "hunter2".to_string();
+        assert_eq!(plain.display_text(), "hunter2");
+        assert_eq!(plain.display_prefix(3), "hun");
     }
 
     /// The fix for visual-gap "text below center" pins the text top
