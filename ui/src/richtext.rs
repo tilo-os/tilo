@@ -4,7 +4,41 @@
 //! rectangles, and point↔offset hit-testing. Render it with
 //! [`crate::text_render::TextRenderer::draw_rich`].
 
-use cosmic_text::{Align, Attrs, Buffer, FontSystem, Metrics, Shaping, Style, Weight, Wrap};
+use cosmic_text::{Align, Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Style, Weight, Wrap};
+
+/// A generic font family the toolkit can resolve from system fonts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum FontFamily {
+    #[default]
+    Sans,
+    Serif,
+    Mono,
+}
+
+impl FontFamily {
+    fn to_cosmic(self) -> Family<'static> {
+        match self {
+            FontFamily::Sans => Family::SansSerif,
+            FontFamily::Serif => Family::Serif,
+            FontFamily::Mono => Family::Monospace,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            FontFamily::Sans => "Sans",
+            FontFamily::Serif => "Serif",
+            FontFamily::Mono => "Mono",
+        }
+    }
+    /// Cycle to the next family (for a toolbar toggle).
+    pub fn next(self) -> Self {
+        match self {
+            FontFamily::Sans => FontFamily::Serif,
+            FontFamily::Serif => FontFamily::Mono,
+            FontFamily::Mono => FontFamily::Sans,
+        }
+    }
+}
 
 /// A styled inline run.
 #[derive(Clone, Debug)]
@@ -65,11 +99,13 @@ impl RichTextLayout {
         size: f32,
         width: f32,
         align: TextAlign,
+        family: FontFamily,
         underlines: Vec<(usize, usize)>,
     ) -> Self {
         let line_height = size * 1.4;
         let mut buffer = Buffer::new(fs, Metrics::new(size, line_height));
-        let base = Attrs::new().weight(if base_bold { Weight::BOLD } else { Weight::NORMAL });
+        let fam = family.to_cosmic();
+        let base = Attrs::new().family(fam).weight(if base_bold { Weight::BOLD } else { Weight::NORMAL });
 
         let built: Vec<(&str, Attrs)> = if spans.iter().all(|r| r.text.is_empty()) {
             vec![("", base.clone())]
@@ -78,8 +114,9 @@ impl RichTextLayout {
                 .iter()
                 .filter(|r| !r.text.is_empty())
                 .map(|r| {
-                    let mut a =
-                        Attrs::new().weight(if r.bold || base_bold { Weight::BOLD } else { Weight::NORMAL });
+                    let mut a = Attrs::new()
+                        .family(fam)
+                        .weight(if r.bold || base_bold { Weight::BOLD } else { Weight::NORMAL });
                     if r.italic {
                         a = a.style(Style::Italic);
                     }
@@ -166,6 +203,7 @@ mod tests {
             16.0,
             400.0,
             TextAlign::Left,
+            FontFamily::Sans,
             vec![],
         );
         assert!(layout.height() > 0.0);
@@ -180,11 +218,21 @@ mod tests {
     }
 
     #[test]
+    fn center_alignment_offsets_text() {
+        let mut fs = FontSystem::new();
+        let left = RichTextLayout::shape(&mut fs, &[RichSpan::new("hi")], false, 16.0, 400.0, TextAlign::Left, FontFamily::Sans, vec![]);
+        let center = RichTextLayout::shape(&mut fs, &[RichSpan::new("hi")], false, 16.0, 400.0, TextAlign::Center, FontFamily::Sans, vec![]);
+        let lx = left.caret_geometry(0).0;
+        let cx = center.caret_geometry(0).0;
+        assert!(cx > lx + 50.0, "centered text should start further right: left={lx} center={cx}");
+    }
+
+    #[test]
     fn wrapping_produces_multiple_lines() {
         let mut fs = FontSystem::new();
         let long = "word ".repeat(60);
-        let one = RichTextLayout::shape(&mut fs, &[RichSpan::new("word")], false, 16.0, 1000.0, TextAlign::Left, vec![]);
-        let wrapped = RichTextLayout::shape(&mut fs, &[RichSpan::new(long)], false, 16.0, 120.0, TextAlign::Left, vec![]);
+        let one = RichTextLayout::shape(&mut fs, &[RichSpan::new("word")], false, 16.0, 1000.0, TextAlign::Left, FontFamily::Sans, vec![]);
+        let wrapped = RichTextLayout::shape(&mut fs, &[RichSpan::new(long)], false, 16.0, 120.0, TextAlign::Left, FontFamily::Sans, vec![]);
         assert!(wrapped.height() > one.height() * 3.0);
     }
 }
