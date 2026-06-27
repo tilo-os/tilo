@@ -252,8 +252,28 @@ impl WordProcessor {
         self.caret.offset = 0;
     }
 
+    pub fn caret(&self) -> &Caret {
+        &self.caret
+    }
+
+    pub fn set_caret(&mut self, caret: Caret) {
+        self.caret = caret;
+    }
+
     pub fn move_end(&mut self, state: &AutoCommit) {
         self.caret.offset = self.block_len(state, &self.caret.block);
+    }
+
+    /// Move the caret up/down by `delta` blocks (block-granular Up/Down).
+    pub fn move_block_relative(&mut self, state: &AutoCommit, delta: i32) {
+        let blocks = self.ordered_blocks(state);
+        if blocks.is_empty() {
+            return;
+        }
+        if let Some(pos) = blocks.iter().position(|b| b == &self.caret.block) {
+            let new = (pos as i32 + delta).clamp(0, blocks.len() as i32 - 1) as usize;
+            self.move_to_block(state, new);
+        }
     }
 
     /// Move the caret to the block at `index` (clamped), preserving a target
