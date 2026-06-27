@@ -115,6 +115,29 @@ fn two_word_processors_collaborate_and_converge() {
 }
 
 #[test]
+fn table_created_in_editor_survives_odt_save_reload() {
+    let path = temp_path("table.odt");
+    let mut state = ui::State::new();
+    let mut wp = WordProcessorWidget::new();
+    wp.sync(&mut state.doc, &state.root);
+    wp.model_mut().insert_str(&mut state.doc, "Title");
+    wp.model_mut().insert_table(&mut state.doc, 2, 2); // caret lands in first cell
+    wp.model_mut().insert_str(&mut state.doc, "X");
+
+    save_document(&state, &path, WpFormat::Odt).unwrap();
+
+    let (mut s2, mut wp2, _) = open_document(&path).unwrap();
+    wp2.sync(&mut s2.doc, &s2.root);
+    // Title paragraph + a 2x2 table whose first cell kept "X".
+    assert_eq!(
+        wp2.model().block_texts(&s2.doc),
+        vec!["Title".to_string(), "X".to_string(), String::new(), String::new(), String::new()],
+        "table + cell text round-tripped through .odt",
+    );
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
 fn open_edit_save_reload_markdown() {
     let path = temp_path("doc.md");
     std::fs::write(&path, b"# Title\n\nbody\n").unwrap();
