@@ -66,6 +66,79 @@ fn record_style(
     }
 }
 
+/// Paragraph-level properties (alignment + font) recovered from a paragraph
+/// automatic style.
+#[derive(Default, Clone)]
+struct ParaProps {
+    align: Option<String>,
+    font_size: Option<i64>,
+    font: Option<String>,
+}
+
+fn parse_pt(v: &str) -> Option<i64> {
+    v.trim_end_matches("pt").trim().parse::<f64>().ok().map(|f| f.round() as i64)
+}
+
+fn generic_font(name: &str) -> String {
+    let n = name.to_ascii_lowercase();
+    if n.contains("serif") && !n.contains("sans") {
+        "serif".into()
+    } else if n.contains("mono") {
+        "mono".into()
+    } else {
+        "sans".into()
+    }
+}
+
+fn map_align(v: &str) -> String {
+    match v {
+        "center" => "center".into(),
+        "end" | "right" => "right".into(),
+        _ => "left".into(),
+    }
+}
+
+/// Record font-size / font-name from a paragraph style's `text-properties`.
+fn record_para_text(e: &BytesStart, cur: &Option<String>, fam: &Option<String>, m: &mut HashMap<String, ParaProps>) {
+    if fam.as_deref() != Some("paragraph") {
+        return;
+    }
+    if let Some(name) = cur {
+        let p = m.entry(name.clone()).or_default();
+        if let Some(sz) = attr_val(e, b"fo:font-size").and_then(|v| parse_pt(&v)) {
+            p.font_size = Some(sz);
+        }
+        if let Some(f) = attr_val(e, b"style:font-name") {
+            p.font = Some(generic_font(&f));
+        }
+    }
+}
+
+/// Record alignment from a paragraph style's `paragraph-properties`.
+fn record_para_align(e: &BytesStart, cur: &Option<String>, fam: &Option<String>, m: &mut HashMap<String, ParaProps>) {
+    if fam.as_deref() != Some("paragraph") {
+        return;
+    }
+    if let (Some(name), Some(al)) = (cur, attr_val(e, b"fo:text-align")) {
+        m.entry(name.clone()).or_default().align = Some(map_align(&al));
+    }
+}
+
+/// Apply a referenced paragraph style's properties to a block.
+fn apply_para_style(doc: &mut DocMut, id: &str, e: &BytesStart, m: &HashMap<String, ParaProps>) {
+    if let Some(p) = attr_val(e, b"text:style-name").and_then(|s| m.get(&s)) {
+        if let Some(a) = &p.align {
+            doc.set_attr(id, "align", a.as_str());
+        }
+        if let Some(s) = p.font_size {
+            doc.set_attr(id, "fontSize", s);
+        }
+        if let Some(f) = &p.font {
+            doc.set_attr(id, "font", f.as_str());
+        }
+    }
+}
+
 pub(crate) fn parse_body(content_xml: &[u8], doc: &mut DocMut) -> Result<(), CodecError> {
     let s = std::str::from_utf8(content_xml).map_err(|e| CodecError::Parse(e.to_string()))?;
     let mut reader = Reader::from_str(s);
@@ -79,8 +152,10 @@ pub(crate) fn parse_body(content_xml: &[u8], doc: &mut DocMut) -> Result<(), Cod
 
     // Style state.
     let mut in_styles = false;
-    let mut cur_style: Option<String> = None; // text style being defined
+    let mut cur_style: Option<String> = None; // style being defined
+    let mut cur_family: Option<String> = None; // its style:family
     let mut styles: HashMap<String, Vec<&'static str>> = HashMap::new();
+    let mut para_styles: HashMap<String, ParaProps> = HashMap::new();
     let mut span_stack: Vec<(Vec<&'static str>, usize)> = Vec::new();
     // Marks are recorded during the walk and applied *after* all text is in, so
     // text appended after a span doesn't expand its mark (add_mark expands at the
@@ -118,23 +193,36 @@ pub(crate) fn parse_body(content_xml: &[u8], doc: &mut DocMut) -> Result<(), Cod
             Event::Start(e) => match e.name().as_ref() {
                 b"office:automatic-styles" => in_styles = true,
                 b"style:style" if in_styles => {
-                    if attr_val(&e, b"style:family").as_deref() == Some("text") {
-                        cur_style = attr_val(&e, b"style:name");
-                    }
+                    cur_family = attr_val(&e, b"style:family");
+                    cur_style = attr_val(&e, b"style:name");
                 }
-                b"style:text-properties" if in_styles => record_style(&e, &cur_style, &mut styles),
+                b"style:text-properties" if in_styles => {
+                    record_style(&e, &cur_style, &mut styles);
+                    record_para_text(&e, &cur_style, &cur_family, &mut para_styles);
+                }
+                b"style:paragraph-properties" if in_styles => {
+                    record_para_align(&e, &cur_style, &cur_family, &mut para_styles);
+                }
                 b"office:text" => in_text = true,
                 b"text:h" if in_text => {
                     let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "heading");
                     doc.set_attr(&id, "level", outline_level(&e).unwrap_or(1));
+                    apply_para_style(doc, &id, &e, &para_styles);
                 }
                 b"text:p" if in_text && !in_item => {
-                    start_block(doc, &mut prev, &mut cur, &mut cur_len, "paragraph");
+                    let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "paragraph");
+                    apply_para_style(doc, &id, &e, &para_styles);
                 }
                 b"text:list-item" if in_text => {
                     let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "list_item");
                     doc.set_attr(&id, "ordered", false);
                     in_item = true;
+                }
+                b"text:p" if in_text && in_item => {
+                    // List-item paragraph carries the item's paragraph style.
+                    if let Some(id) = cur.clone() {
+                        apply_para_style(doc, &id, &e, &para_styles);
+                    }
                 }
                 b"text:span" if in_text => {
                     let marks = attr_val(&e, b"text:style-name")
@@ -151,14 +239,22 @@ pub(crate) fn parse_body(content_xml: &[u8], doc: &mut DocMut) -> Result<(), Cod
                 _ => {}
             },
             Event::Empty(e) => match e.name().as_ref() {
-                b"style:text-properties" if in_styles => record_style(&e, &cur_style, &mut styles),
+                b"style:text-properties" if in_styles => {
+                    record_style(&e, &cur_style, &mut styles);
+                    record_para_text(&e, &cur_style, &cur_family, &mut para_styles);
+                }
+                b"style:paragraph-properties" if in_styles => {
+                    record_para_align(&e, &cur_style, &cur_family, &mut para_styles);
+                }
                 b"text:p" if in_text && !in_item => {
-                    start_block(doc, &mut prev, &mut cur, &mut cur_len, "paragraph");
+                    let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "paragraph");
+                    apply_para_style(doc, &id, &e, &para_styles);
                     cur = None;
                 }
                 b"text:h" if in_text => {
                     let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "heading");
                     doc.set_attr(&id, "level", outline_level(&e).unwrap_or(1));
+                    apply_para_style(doc, &id, &e, &para_styles);
                     cur = None;
                 }
                 // Self-closing unmodeled element under office:text → fidelity atom.
@@ -172,7 +268,10 @@ pub(crate) fn parse_body(content_xml: &[u8], doc: &mut DocMut) -> Result<(), Cod
             },
             Event::End(e) => match e.name().as_ref() {
                 b"office:automatic-styles" => in_styles = false,
-                b"style:style" => cur_style = None,
+                b"style:style" => {
+                    cur_style = None;
+                    cur_family = None;
+                }
                 b"office:text" => in_text = false,
                 b"text:h" => cur = None,
                 b"text:p" if !in_item => cur = None,
@@ -267,6 +366,24 @@ mod tests {
             "em over 'em', got {:?}",
             p.marks
         );
+    }
+
+    #[test]
+    fn imports_paragraph_align_and_font() {
+        let styles = concat!(
+            r#"<style:style style:name="P2" style:family="paragraph">"#,
+            r#"<style:paragraph-properties fo:text-align="center"/>"#,
+            r#"<style:text-properties fo:font-size="20pt" style:font-name="Liberation Serif"/></style:style>"#,
+        );
+        let body = r#"<text:p text:style-name="P2">centered</text:p>"#;
+        let odt = minimal_odt_styled(styles, body);
+        let mut d = Document::new();
+        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        let b = &d.materialize().blocks[0];
+        assert_eq!(b.text, "centered");
+        assert_eq!(b.attrs.get("align"), Some(&AttrVal::Str("center".into())), "{:?}", b.attrs);
+        assert_eq!(b.attrs.get("font"), Some(&AttrVal::Str("serif".into())));
+        assert_eq!(b.attrs.get("fontSize"), Some(&AttrVal::Int(20)));
     }
 
     #[test]

@@ -17,7 +17,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use qdoc::document::MarkSpan;
 use qdoc::snapshot::{AttrVal, BlockView};
-use ui::richtext::{RichSpan, RichTextLayout, TextAlign};
+use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
@@ -55,6 +55,9 @@ enum ToolAction {
     AlignLeft,
     AlignCenter,
     AlignRight,
+    FontCycle,
+    SizeUp,
+    SizeDown,
 }
 
 fn char_to_byte(text: &str, char_off: usize) -> usize {
@@ -67,7 +70,7 @@ fn byte_to_char(text: &str, byte_off: usize) -> usize {
 
 /// `(font size, whole-block bold, left indent, optional bullet)`.
 fn block_style(b: &BlockView) -> (f32, bool, f64, Option<&'static str>) {
-    match b.kind.as_str() {
+    let (mut size, bold, indent, bullet) = match b.kind.as_str() {
         "heading" => {
             let level = match b.attrs.get("level") {
                 Some(AttrVal::Int(n)) => *n,
@@ -86,6 +89,22 @@ fn block_style(b: &BlockView) -> (f32, bool, f64, Option<&'static str>) {
             (16.5, false, 28.0, Some(if ordered { "1." } else { "•" }))
         }
         _ => (16.5, false, 0.0, None),
+    };
+    // An explicit font size overrides the style default.
+    if let Some(AttrVal::Int(n)) = b.attrs.get("fontSize") {
+        if (6..=200).contains(n) {
+            size = *n as f32;
+        }
+    }
+    (size, bold, indent, bullet)
+}
+
+/// Pick a block's font family from its `font` attribute.
+fn block_family(b: &BlockView) -> FontFamily {
+    match b.attrs.get("font") {
+        Some(AttrVal::Str(s)) if s == "serif" => FontFamily::Serif,
+        Some(AttrVal::Str(s)) if s == "mono" => FontFamily::Mono,
+        _ => FontFamily::Sans,
     }
 }
 
@@ -295,6 +314,7 @@ impl Widget for WordProcessorWidget {
         for b in &blocks {
             let (size, base_bold, indent, _bullet) = block_style(b);
             let align = block_align(b);
+            let family = block_family(b);
             let (runs, underlines) = block_runs(b);
             let layout = RichTextLayout::shape(
                 &mut text_renderer.font_system,
@@ -303,6 +323,7 @@ impl Widget for WordProcessorWidget {
                 size,
                 (content_w - indent as f32).max(40.0),
                 align,
+                family,
                 underlines,
             );
             let height = layout.height() as f64;
@@ -623,7 +644,39 @@ impl WordProcessorWidget {
             ToolAction::AlignLeft => self.inner.set_align(state, "left"),
             ToolAction::AlignCenter => self.inner.set_align(state, "center"),
             ToolAction::AlignRight => self.inner.set_align(state, "right"),
+            ToolAction::FontCycle => {
+                let name = match self.current_font().next() {
+                    FontFamily::Sans => "sans",
+                    FontFamily::Serif => "serif",
+                    FontFamily::Mono => "mono",
+                };
+                self.inner.set_block_attr(state, "font", name);
+            }
+            ToolAction::SizeUp => {
+                let s = ((self.current_size() + 2.0).round() as i64).min(200);
+                self.inner.set_block_attr(state, "fontSize", s);
+            }
+            ToolAction::SizeDown => {
+                let s = ((self.current_size() - 2.0).round() as i64).max(6);
+                self.inner.set_block_attr(state, "fontSize", s);
+            }
         }
+    }
+
+    fn current_font(&self) -> FontFamily {
+        self.blocks
+            .iter()
+            .find(|b| b.id == self.inner.caret.block)
+            .map(block_family)
+            .unwrap_or_default()
+    }
+
+    fn current_size(&self) -> f32 {
+        self.blocks
+            .iter()
+            .find(|b| b.id == self.inner.caret.block)
+            .map(|b| block_style(b).0)
+            .unwrap_or(16.5)
     }
 
     fn current_align(&self) -> String {
@@ -689,9 +742,10 @@ impl WordProcessorWidget {
         let under_a = self.mark_active_in_selection("underline");
         let (kind, level) = self.current_block_style();
         let align = self.current_align();
+        let font_label = self.current_font().label();
 
         let white = Color::from_rgb8(0xff, 0xff, 0xff);
-        let buttons: [(ToolAction, &str, f64, bool, bool); 10] = [
+        let buttons: [(ToolAction, &str, f64, bool, bool); 13] = [
             (ToolAction::Bold, "B", 34.0, bold_a, true),
             (ToolAction::Italic, "I", 30.0, italic_a, false),
             (ToolAction::Underline, "U", 32.0, under_a, false),
@@ -702,6 +756,9 @@ impl WordProcessorWidget {
             (ToolAction::AlignLeft, "L", 30.0, align == "left", false),
             (ToolAction::AlignCenter, "C", 30.0, align == "center", false),
             (ToolAction::AlignRight, "R", 30.0, align == "right", false),
+            (ToolAction::FontCycle, font_label, 58.0, false, false),
+            (ToolAction::SizeDown, "A−", 34.0, false, false),
+            (ToolAction::SizeUp, "A+", 34.0, false, false),
         ];
 
         self.toolbar.clear();
@@ -709,7 +766,7 @@ impl WordProcessorWidget {
         let bh = 34.0;
         let mut x = tb.x0 + 14.0;
         for (i, (action, label, w, active, bold_label)) in buttons.iter().enumerate() {
-            if i == 3 || i == 7 {
+            if i == 3 || i == 7 || i == 10 {
                 let sep = Rect::new(x + 2.0, cy - 12.0, x + 3.0, cy + 12.0);
                 scene.fill(Fill::NonZero, transform, theme.tokens.colors.border_standard, None, &sep);
                 x += 14.0;
