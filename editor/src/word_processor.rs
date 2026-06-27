@@ -50,84 +50,205 @@ impl WordProcessor {
         self.selection_anchor = None;
     }
 
-    /// The selection as `(block, start, end)` if it is non-empty and within a
-    /// single block.
-    pub fn selection_range(&self) -> Option<(String, usize, usize)> {
-        let anchor = self.selection_anchor.as_ref()?;
-        if anchor.block != self.caret.block {
-            return None;
-        }
-        let (a, b) = (anchor.offset, self.caret.offset);
-        if a == b {
-            return None;
-        }
-        Some((self.caret.block.clone(), a.min(b), a.max(b)))
+    pub fn has_selection(&self) -> bool {
+        self.selection_anchor.as_ref().map(|a| a != &self.caret).unwrap_or(false)
     }
 
-    pub fn has_selection(&self) -> bool {
-        self.selection_range().is_some()
+    /// Selection endpoints in document order, if non-empty.
+    pub fn selection_span(&self, state: &AutoCommit) -> Option<(Caret, Caret)> {
+        let anchor = self.selection_anchor.clone()?;
+        if anchor == self.caret {
+            return None;
+        }
+        let blocks = self.ordered_blocks(state);
+        let pos = |c: &Caret| blocks.iter().position(|b| b == &c.block);
+        match (pos(&anchor), pos(&self.caret)) {
+            (Some(pa), Some(pc)) => {
+                if (pa, anchor.offset) <= (pc, self.caret.offset) {
+                    Some((anchor, self.caret.clone()))
+                } else {
+                    Some((self.caret.clone(), anchor))
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Per-block selected ranges `(block, start, end)` spanning the selection.
+    pub fn selection_blocks(&self, state: &AutoCommit) -> Vec<(String, usize, usize)> {
+        let Some((start, end)) = self.selection_span(state) else {
+            return vec![];
+        };
+        let blocks = self.ordered_blocks(state);
+        let (Some(si), Some(ei)) = (
+            blocks.iter().position(|b| b == &start.block),
+            blocks.iter().position(|b| b == &end.block),
+        ) else {
+            return vec![];
+        };
+        (si..=ei)
+            .map(|i| {
+                let b = &blocks[i];
+                let blen = self.block_len(state, b);
+                let s = if i == si { start.offset } else { 0 };
+                let e = if i == ei { end.offset } else { blen };
+                (b.clone(), s, e)
+            })
+            .collect()
+    }
+
+    /// The selected text, joining blocks with newlines.
+    pub fn selection_text(&self, state: &AutoCommit) -> String {
+        let Some(containers) = self.containers.as_ref() else {
+            return String::new();
+        };
+        self.selection_blocks(state)
+            .into_iter()
+            .map(|(b, s, e)| {
+                qdoc::model::block_text(state, containers, &b)
+                    .unwrap_or_default()
+                    .chars()
+                    .skip(s)
+                    .take(e.saturating_sub(s))
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn selected_block_ids(&self, state: &AutoCommit) -> Vec<String> {
+        let sel = self.selection_blocks(state);
+        if sel.is_empty() {
+            vec![self.caret.block.clone()]
+        } else {
+            sel.into_iter().map(|(b, _, _)| b).collect()
+        }
     }
 
     /// Delete the current selection (no-op if none); returns whether it deleted.
     pub fn delete_selection(&mut self, state: &mut AutoCommit) -> bool {
-        let Some((block, start, end)) = self.selection_range() else {
+        let Some((start, end)) = self.selection_span(state) else {
             return false;
         };
         let containers = self.containers.clone().unwrap();
-        if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
-            dm.splice_text(&block, start, (end - start) as isize, "");
+        if start.block == end.block {
+            if let Some(ids) = self.ids.as_mut() {
+                let mut dm = DocMut { doc: state, c: &containers, ids };
+                dm.splice_text(&start.block, start.offset, (end.offset - start.offset) as isize, "");
+            }
+        } else {
+            // Keep start[..start.offset] + end[end.offset..], drop the rest.
+            let end_text = qdoc::model::block_text(state, &containers, &end.block).unwrap_or_default();
+            let tail: String = end_text.chars().skip(end.offset).collect();
+            let start_len = self.block_len(state, &start.block);
+            let blocks = self.ordered_blocks(state);
+            let si = blocks.iter().position(|b| b == &start.block).unwrap();
+            let ei = blocks.iter().position(|b| b == &end.block).unwrap();
+            let to_remove: Vec<String> = blocks[si + 1..=ei].to_vec();
+            if let Some(ids) = self.ids.as_mut() {
+                let mut dm = DocMut { doc: state, c: &containers, ids };
+                if start.offset < start_len {
+                    dm.splice_text(&start.block, start.offset, (start_len - start.offset) as isize, "");
+                }
+                if !tail.is_empty() {
+                    dm.splice_text(&start.block, start.offset, 0, &tail);
+                }
+                for b in &to_remove {
+                    dm.remove_block(b);
+                }
+            }
         }
-        self.caret = Caret { block, offset: start };
+        self.caret = start;
         self.selection_anchor = None;
         true
     }
 
-    /// Set the current block's paragraph style (kind + optional heading level /
-    /// list ordering).
+    /// Set paragraph style on every block in the selection (or the caret block).
     pub fn set_paragraph_style(&mut self, state: &mut AutoCommit, kind: &str, level: Option<i64>, ordered: Option<bool>) {
         let Some(containers) = self.containers.clone() else {
             return;
         };
-        let block = self.caret.block.clone();
+        let targets = self.selected_block_ids(state);
         if let Some(ids) = self.ids.as_mut() {
             let mut dm = DocMut { doc: state, c: &containers, ids };
-            dm.set_kind(&block, kind);
-            if let Some(l) = level {
-                dm.set_attr(&block, "level", l);
-            }
-            if let Some(o) = ordered {
-                dm.set_attr(&block, "ordered", o);
+            for block in &targets {
+                dm.set_kind(block, kind);
+                if let Some(l) = level {
+                    dm.set_attr(block, "level", l);
+                }
+                if let Some(o) = ordered {
+                    dm.set_attr(block, "ordered", o);
+                }
             }
         }
     }
 
-    /// Set the current block's horizontal alignment (`left`/`center`/`right`).
+    /// Set alignment on every block in the selection (or the caret block).
     pub fn set_align(&mut self, state: &mut AutoCommit, align: &str) {
         let Some(containers) = self.containers.clone() else {
             return;
         };
-        let block = self.caret.block.clone();
+        let targets = self.selected_block_ids(state);
         if let Some(ids) = self.ids.as_mut() {
             let mut dm = DocMut { doc: state, c: &containers, ids };
-            dm.set_attr(&block, "align", align);
+            for block in &targets {
+                dm.set_attr(block, "align", align);
+            }
         }
     }
 
-    /// Toggle an inline mark (`strong`/`em`/`underline`) over the selection.
-    pub fn toggle_mark(&mut self, state: &mut AutoCommit, name: &str) {
-        let Some((block, start, end)) = self.selection_range() else {
+    /// Set a block-level attribute (e.g. font) on every selected block.
+    pub fn set_block_attr(&mut self, state: &mut AutoCommit, key: &str, value: impl Into<automerge::ScalarValue> + Clone) {
+        let Some(containers) = self.containers.clone() else {
             return;
         };
-        let containers = self.containers.clone().unwrap();
-        let marked = qdoc::model::has_mark_over(state, &containers, &block, start, end, name);
+        let targets = self.selected_block_ids(state);
         if let Some(ids) = self.ids.as_mut() {
             let mut dm = DocMut { doc: state, c: &containers, ids };
-            if marked {
-                dm.remove_mark(&block, start, end, name);
-            } else {
-                dm.add_mark(&block, start, end, name, true);
+            for block in &targets {
+                dm.set_attr(block, key, value.clone());
             }
+        }
+    }
+
+    /// Toggle an inline mark over the selection (across blocks).
+    pub fn toggle_mark(&mut self, state: &mut AutoCommit, name: &str) {
+        let sel = self.selection_blocks(state);
+        if sel.is_empty() {
+            return;
+        }
+        let containers = self.containers.clone().unwrap();
+        let all_marked = sel
+            .iter()
+            .filter(|(_, s, e)| s < e)
+            .all(|(b, s, e)| qdoc::model::has_mark_over(state, &containers, b, *s, *e, name));
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            for (b, s, e) in &sel {
+                if s >= e {
+                    continue;
+                }
+                if all_marked {
+                    dm.remove_mark(b, *s, *e, name);
+                } else {
+                    dm.add_mark(b, *s, *e, name, true);
+                }
+            }
+        }
+    }
+
+    /// Insert text, splitting on newlines into new paragraphs (multi-line paste).
+    pub fn insert_multiline(&mut self, state: &mut AutoCommit, text: &str) {
+        let normalized = text.replace('\r', "");
+        let mut first = true;
+        for line in normalized.split('\n') {
+            if !first {
+                self.enter(state);
+            }
+            if !line.is_empty() {
+                self.insert_str(state, line);
+            }
+            first = false;
         }
     }
 
@@ -500,12 +621,44 @@ mod tests {
         wp.caret.offset = 0;
         wp.set_anchor();
         wp.caret.offset = 5;
-        assert_eq!(wp.selection_range().map(|(_, s, e)| (s, e)), Some((0, 5)));
+        assert_eq!(wp.selection_blocks(&state).into_iter().map(|(_, s, e)| (s, e)).collect::<Vec<_>>(), vec![(0, 5)]);
         // typing replaces the selection
         wp.insert_str(&mut state, "HI");
         assert_eq!(wp.current_text(&state), "HI world");
         assert_eq!(wp.caret.offset, 2);
         assert!(wp.selection_anchor.is_none());
+    }
+
+    #[test]
+    fn multi_block_selection_copy_and_delete() {
+        let (mut wp, mut state) = bound();
+        wp.insert_str(&mut state, "first");
+        wp.enter(&mut state);
+        wp.insert_str(&mut state, "second");
+        wp.enter(&mut state);
+        wp.insert_str(&mut state, "third");
+        let blocks = wp.ordered_blocks(&state);
+        assert_eq!(blocks.len(), 3);
+
+        // Select from "rst" of block 0 through "thi" of block 2.
+        wp.set_caret(Caret { block: blocks[0].clone(), offset: 2 });
+        wp.set_anchor();
+        wp.set_caret(Caret { block: blocks[2].clone(), offset: 3 });
+
+        // Selected text spans three blocks, joined by newlines.
+        assert_eq!(wp.selection_text(&state), "rst\nsecond\nthi");
+
+        // Deleting the selection merges the surviving heads/tails into one block.
+        assert!(wp.delete_selection(&mut state));
+        assert_eq!(wp.block_texts(&state), vec!["fird".to_string()]);
+        assert!(!wp.has_selection());
+    }
+
+    #[test]
+    fn insert_multiline_splits_into_paragraphs() {
+        let (mut wp, mut state) = bound();
+        wp.insert_multiline(&mut state, "alpha\nbeta\ngamma");
+        assert_eq!(wp.block_texts(&state), vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()]);
     }
 
     #[test]
