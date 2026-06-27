@@ -32,6 +32,7 @@ pub mod overlay_host;
 pub mod overview;
 pub mod peer_view;
 pub mod persist;
+pub mod qs_actions;
 pub mod quick_settings;
 pub mod remote_cursors;
 pub mod search;
