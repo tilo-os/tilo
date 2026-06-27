@@ -123,8 +123,62 @@ impl SnapshotSink for NullSink {
 /// Run a scenario through `driver`, sending each `Snapshot` to `sink`.
 /// Resets modifiers between snapshots so chord state doesn't leak.
 pub fn run<S: SnapshotSink>(driver: &mut ShellDriver, scenario: &Scenario, sink: &mut S) {
+    run_with(driver, scenario, sink, None);
+}
+
+/// Variant of [`run`] that, when `per_frame` is `Some(n)`, expands every
+/// [`Action::Wait`] into `n` evenly-spaced intermediate `Snapshot`
+/// captures. Output names are `<step-name>-frame<NN>` where `<step-name>`
+/// is taken from the most recent named `Snapshot` action (so a single
+/// `Wait` between two `Snapshot`s lands its frames under the upstream
+/// snapshot's name).
+///
+/// The intent is to make animation curves inspectable per frame without
+/// hand-authoring `SnapshotSequence` actions in every animated scenario.
+/// When `per_frame` is `None` this collapses to the plain `run` path.
+pub fn run_with<S: SnapshotSink>(
+    driver: &mut ShellDriver,
+    scenario: &Scenario,
+    sink: &mut S,
+    per_frame: Option<u32>,
+) {
+    // Track the most recent named Snapshot so per-frame intermediate
+    // captures hang off it. Each `Snapshot(name)` rolls the index back
+    // to 0; each per-frame capture increments it.
+    let mut last_snapshot: Option<&'static str> = None;
     for action in &scenario.actions {
-        apply(driver, action, sink);
+        match (action, per_frame) {
+            (Action::Wait(n), Some(frames)) if frames > 0 => {
+                // Split the wait into `frames` equal slices, snapshotting
+                // after each slice. The animation timer is real wall-time
+                // inside the host, so we still spend the full `n` ticks —
+                // just punctuated with extra captures.
+                let total = *n;
+                let frames = frames.min(total.max(1));
+                let per_slice = total / frames.max(1);
+                let remainder = total - per_slice * frames;
+                let prefix = last_snapshot.unwrap_or("frame");
+                for i in 0..frames {
+                    // Distribute the remainder over the first `remainder`
+                    // slices so the total advance still equals `n`.
+                    let extra = if i < remainder { 1 } else { 0 };
+                    let advance = per_slice + extra;
+                    if advance > 0 {
+                        driver.step_frames(advance);
+                    }
+                    driver.relayout();
+                    let name: &'static str = Box::leak(
+                        format!("{}-frame{:02}", prefix, i).into_boxed_str(),
+                    );
+                    sink.capture(driver, name);
+                }
+            }
+            (Action::Snapshot(name), _) => {
+                last_snapshot = Some(*name);
+                apply(driver, action, sink);
+            }
+            _ => apply(driver, action, sink),
+        }
     }
 }
 
@@ -790,6 +844,80 @@ mod tests {
                 "tab_drag Wait({n}) is shorter than LAYOUT_ANIM_MS=180; snapshot will paint adjacent pills overlapping"
             );
         }
+    }
+
+    /// Sink that only records snapshot names — used to verify the
+    /// per-frame expansion in `run_with` inserts the right number of
+    /// intermediate captures between snapshots.
+    struct NameSink {
+        names: Vec<String>,
+    }
+    impl SnapshotSink for NameSink {
+        fn capture(&mut self, _driver: &mut ShellDriver, name: &str) {
+            self.names.push(name.to_string());
+        }
+    }
+
+    /// `run_with(per_frame = Some(n))` must insert `n` intermediate
+    /// snapshots between a named snapshot and the surrounding waits.
+    /// Pinned so a future edit that drops the wait expansion would
+    /// re-introduce the "single still frame for animated scenarios"
+    /// gap the harness was added to close.
+    #[test]
+    fn per_frame_flag_inserts_snapshots_between_waits() {
+        // Synthetic minimal scenario: one named snapshot, one wait, one
+        // closing snapshot. Drives no real animation so the test stays
+        // fast (~step_frames sleeps for 16 ms × frames).
+        let scenario = Scenario {
+            name: "_per_frame_test",
+            description: "",
+            actions: vec![
+                Action::Snapshot("a"),
+                Action::Wait(4),
+                Action::Snapshot("b"),
+            ],
+        };
+        let mut d = ShellDriver::new((128, 96));
+        let mut sink = NameSink { names: Vec::new() };
+        run_with(&mut d, &scenario, &mut sink, Some(4));
+        // Expected: ["a", "a-frame00", "a-frame01", "a-frame02", "a-frame03", "b"].
+        // The intermediate frames hang off the most-recent named snapshot
+        // ("a"), so a regression that loses the upstream name would
+        // surface as "frame-00" instead of "a-frame00".
+        assert_eq!(
+            sink.names,
+            vec![
+                "a".to_string(),
+                "a-frame00".to_string(),
+                "a-frame01".to_string(),
+                "a-frame02".to_string(),
+                "a-frame03".to_string(),
+                "b".to_string(),
+            ],
+            "per-frame expansion must insert 4 intermediate snapshots between Wait(4) and Snapshot",
+        );
+    }
+
+    /// When `per_frame` is `None`, `run_with` must behave exactly like
+    /// `run` — no extra snapshots inserted.
+    #[test]
+    fn per_frame_none_is_identical_to_plain_run() {
+        let scenario = Scenario {
+            name: "_no_per_frame",
+            description: "",
+            actions: vec![
+                Action::Snapshot("first"),
+                Action::Wait(2),
+                Action::Snapshot("second"),
+            ],
+        };
+        let mut d = ShellDriver::new((128, 96));
+        let mut sink = NameSink { names: Vec::new() };
+        run_with(&mut d, &scenario, &mut sink, None);
+        assert_eq!(
+            sink.names,
+            vec!["first".to_string(), "second".to_string()],
+        );
     }
 
     #[test]
