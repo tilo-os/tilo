@@ -39,8 +39,16 @@ pub mod offscreen {
         }
     }
 
-    /// Run a scenario through the offscreen renderer.
-    pub fn run_scenario(driver: &mut ShellDriver, scenario: &Scenario, dir: &Path) {
+    /// Run a scenario through the offscreen renderer. When `per_frame`
+    /// is `Some(n)`, every `Wait(k)` step in the scenario is expanded
+    /// into `n` intermediate snapshots so animation curves are inspectable
+    /// frame-by-frame.
+    pub fn run_scenario(
+        driver: &mut ShellDriver,
+        scenario: &Scenario,
+        dir: &Path,
+        per_frame: Option<u32>,
+    ) {
         std::fs::create_dir_all(dir).expect("create offscreen output dir");
         let (w, h) = driver.viewport();
         let mut renderer = OffscreenRenderer::new(w as u32, h as u32);
@@ -55,7 +63,7 @@ pub mod offscreen {
             dir,
             renderer: &mut renderer,
         };
-        scenario::run(driver, scenario, &mut sink);
+        scenario::run_with(driver, scenario, &mut sink, per_frame);
     }
 
     /// Backwards-compat scene-set path: render each named scene with a
@@ -90,7 +98,12 @@ pub mod offscreen {
 pub mod headless {
     use super::*;
 
-    pub fn run_scenario(driver: &mut ShellDriver, scenario: &Scenario, dir: &Path) {
+    pub fn run_scenario(
+        driver: &mut ShellDriver,
+        scenario: &Scenario,
+        dir: &Path,
+        per_frame: Option<u32>,
+    ) {
         std::fs::create_dir_all(dir).expect("create headless output dir");
         let (w, h) = driver.viewport();
         println!(
@@ -101,7 +114,7 @@ pub mod headless {
             dir.display()
         );
         let mut sink = JsonDirSink::new(dir);
-        scenario::run(driver, scenario, &mut sink);
+        scenario::run_with(driver, scenario, &mut sink, per_frame);
     }
 }
 
