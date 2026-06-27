@@ -163,6 +163,13 @@ pub fn marks(doc: &AutoCommit, c: &Containers, id: &str) -> Vec<MarkSpan> {
     }
 }
 
+/// Whether a mark named `name` fully covers `[start, end)` of block `id`.
+pub fn has_mark_over(doc: &AutoCommit, c: &Containers, id: &str, start: usize, end: usize, name: &str) -> bool {
+    marks(doc, c, id)
+        .iter()
+        .any(|m| m.name == name && m.start <= start && m.end >= end)
+}
+
 /// All preserved blobs (the lossless preservation layer — verbatim bytes a codec
 /// stashed for content it doesn't model), as `(key, bytes)`.
 pub fn preserved_parts(doc: &AutoCommit, c: &Containers) -> Vec<(String, Vec<u8>)> {
@@ -342,6 +349,14 @@ impl<'a> DocMut<'a> {
         };
         let _ = self.doc.put(&attrs, key, value);
         self.doc.commit();
+    }
+
+    /// Remove a mark named `name` over `[start, end)` of the block's text.
+    pub fn remove_mark(&mut self, block_id: &str, start: usize, end: usize, name: &str) {
+        if let Some(tid) = self.text_obj(block_id) {
+            let _ = self.doc.unmark(&tid, name, start, end, ExpandMark::After);
+            self.doc.commit();
+        }
     }
 
     /// Stash a verbatim blob in the preservation layer (e.g. an unmodeled ODF
