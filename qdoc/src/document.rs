@@ -44,7 +44,7 @@ impl Document {
     pub fn load(bytes: &[u8]) -> Result<Self, DocError> {
         let doc = AutoCommit::load(bytes).map_err(|e| DocError::Load(e.to_string()))?;
         let c = crate::model::open(&doc, &ROOT)?;
-        let ids = IdGen::new(doc.get_actor().to_hex_string());
+        let ids = crate::model::seeded_id_gen(&doc, &c);
         Ok(Self { doc, root: ROOT, c, ids })
     }
 
@@ -254,6 +254,28 @@ mod tests {
         assert_eq!(snap.blocks[0].text, "Title");
         assert_eq!(snap.blocks[1].text, "Body");
         assert!(snap.blocks[1].marks.iter().any(|m| m.name == "strong"));
+    }
+
+    #[test]
+    fn seeded_id_gen_avoids_collision_over_existing_doc() {
+        let mut d = Document::new();
+        let a = d.insert_block(None, "paragraph");
+        d.splice_text(&a, 0, 0, "first");
+        // Re-create a generator over the same doc + actor (as the editor does
+        // when binding to a loaded document). A fresh IdGen at 0 would re-mint
+        // `a`'s id and overwrite it; the seeded one must not.
+        let c = d.c.clone();
+        let mut ids = crate::model::seeded_id_gen(&d.doc, &c);
+        {
+            let mut dm = DocMut { doc: &mut d.doc, c: &c, ids: &mut ids };
+            let b = dm.insert_block(Some(&a), "paragraph");
+            assert_ne!(a, b, "minted id must differ from the existing block");
+            dm.splice_text(&b, 0, 0, "second");
+        }
+        let snap = d.materialize();
+        assert_eq!(snap.blocks.len(), 2, "must not overwrite the existing block");
+        assert_eq!(snap.blocks[0].text, "first");
+        assert_eq!(snap.blocks[1].text, "second");
     }
 
     #[test]
