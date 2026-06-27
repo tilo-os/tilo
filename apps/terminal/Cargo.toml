@@ -31,3 +31,9 @@ vello = "0.9"
 winit = "0.30.13"
 taffy = "0.10.1"
 anyhow = "1.0"
+# Clipboard for cell-grid text selection (Ctrl+Shift+C). Mirrors the
+# feature set used by `ui::widget::text_input` so Wayland data-control
+# works without a hard dep on X11. Tracked as a fallback: a parallel
+# subagent is extracting a shared `ui::clipboard_copy` helper; once that
+# lands the terminal can drop this direct dep and call the helper.
+arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
