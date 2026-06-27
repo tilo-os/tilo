@@ -144,9 +144,11 @@ impl DrmScanout {
 
     /// Present a tight-packed RGBA8 frame (`src_w * src_h * 4`, from the
     /// vello bridge) by converting to the framebuffer's XRGB8888 and
-    /// flushing. Logged-and-skipped on any error so a bad frame never
-    /// crashes the compositor.
-    pub fn present(&mut self, rgba: &[u8], src_w: u32, src_h: u32) {
+    /// flushing. `cursor` is the pointer position (output coords); when
+    /// `Some`, a software cursor is composited on top (the DRM backend has
+    /// no host to draw it). Logged-and-skipped on any error so a bad frame
+    /// never crashes the compositor.
+    pub fn present(&mut self, rgba: &[u8], src_w: u32, src_h: u32, cursor: Option<(f64, f64)>) {
         let pitch = self.buffer.pitch() as usize;
         let dw = self.width as usize;
         let dh = self.height as usize;
@@ -179,6 +181,9 @@ impl DrmScanout {
                         d[3] = 0xFF;
                     }
                 }
+                if let Some((px, py)) = cursor {
+                    draw_cursor(dst, pitch, dw, dh, px as i32, py as i32);
+                }
             }
             Err(e) => {
                 tracing::warn!("DRM scanout: map_dumb_buffer: {e}");
@@ -210,11 +215,87 @@ impl DrmScanout {
     }
 }
 
-/// Pick the connector's PREFERRED mode, else the first advertised one.
+/// Choose a scanout mode. The kernel lists the EDID-preferred mode first
+/// (qemu's `xres`/`yres` set it), so we trust the first *reasonable* mode
+/// (>= 1024 wide). virtio-gpu sometimes flags a tiny default (640x480) as
+/// PREFERRED and advertises huge modes (up to 5120x2160), so we don't
+/// trust the flag and we cap the software-render fallback at 1920x1080.
 fn pick_mode(modes: &[Mode]) -> Option<Mode> {
-    modes
-        .iter()
-        .find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED))
+    for m in modes {
+        let (w, h) = m.size();
+        tracing::debug!(
+            w,
+            h,
+            preferred = m.mode_type().contains(ModeTypeFlags::PREFERRED),
+            "DRM scanout: candidate mode"
+        );
+    }
+    let first_reasonable = modes.first().filter(|m| m.size().0 >= 1024);
+    first_reasonable
+        .or_else(|| {
+            modes
+                .iter()
+                .filter(|m| {
+                    let (w, h) = m.size();
+                    w <= 1920 && h <= 1080
+                })
+                .max_by_key(|m| {
+                    let (w, h) = m.size();
+                    (w as u32) * (h as u32)
+                })
+        })
         .or_else(|| modes.first())
         .copied()
+}
+
+/// Classic left-pointing arrow cursor. `'#'` = black outline, `'.'` =
+/// white fill, space = transparent. The hot-spot is the top-left tip.
+const CURSOR: [&str; 18] = [
+    "#                ",
+    "##               ",
+    "#.#              ",
+    "#..#             ",
+    "#...#            ",
+    "#....#           ",
+    "#.....#          ",
+    "#......#         ",
+    "#.......#        ",
+    "#........#       ",
+    "#.........#      ",
+    "#......#####      ",
+    "#...#..#         ",
+    "#..# #..#        ",
+    "#.#  #..#        ",
+    "##    #..#       ",
+    "#     #..#       ",
+    "       ##        ",
+];
+
+/// Composite the software cursor into an XRGB8888 buffer at `(px, py)`
+/// (the hot-spot). Bytes are little-endian XRGB: `[B, G, R, X]`.
+fn draw_cursor(dst: &mut [u8], pitch: usize, dw: usize, dh: usize, px: i32, py: i32) {
+    for (row, line) in CURSOR.iter().enumerate() {
+        let y = py + row as i32;
+        if y < 0 || y as usize >= dh {
+            continue;
+        }
+        for (col, ch) in line.bytes().enumerate() {
+            let (r, g, b) = match ch {
+                b'#' => (0u8, 0u8, 0u8),
+                b'.' => (0xFFu8, 0xFFu8, 0xFFu8),
+                _ => continue,
+            };
+            let x = px + col as i32;
+            if x < 0 || x as usize >= dw {
+                continue;
+            }
+            let o = y as usize * pitch + x as usize * 4;
+            if o + 4 <= dst.len() {
+                dst[o] = b;
+                dst[o + 1] = g;
+                dst[o + 2] = r;
+                dst[o + 3] = 0xFF;
+            }
+        }
+    }
 }
