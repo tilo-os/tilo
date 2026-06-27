@@ -3,6 +3,7 @@ pub mod color_compat;
 pub mod state;
 pub mod widget;
 pub mod text_render;
+pub mod richtext;
 pub mod theme;
 pub mod i18n;
 pub mod collaboration;
@@ -25,6 +26,7 @@ pub use widget::{Widget, Element};
 pub use widget::{AppCommand, AppKind, AppWidget, IconDescriptor};
 pub use widget::command_palette::{CommandEntry, CommandPalette};
 pub use text_render::{TextRenderer, TextWeight};
+pub use richtext::{RichSpan, RichTextLayout, TextAlign};
 
 // Unified animation primitives (foundation #17).
 pub use animation::{Animated, Curve, Lerp};
