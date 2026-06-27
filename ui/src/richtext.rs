@@ -40,17 +40,19 @@ impl FontFamily {
     }
 }
 
-/// A styled inline run.
+/// A styled inline run. `size`/`family` override the block defaults per run.
 #[derive(Clone, Debug)]
 pub struct RichSpan {
     pub text: String,
     pub bold: bool,
     pub italic: bool,
+    pub size: Option<f32>,
+    pub family: Option<FontFamily>,
 }
 
 impl RichSpan {
     pub fn new(text: impl Into<String>) -> Self {
-        Self { text: text.into(), bold: false, italic: false }
+        Self { text: text.into(), bold: false, italic: false, size: None, family: None }
     }
     pub fn bold(mut self, b: bool) -> Self {
         self.bold = b;
@@ -114,9 +116,12 @@ impl RichTextLayout {
                 .iter()
                 .filter(|r| !r.text.is_empty())
                 .map(|r| {
+                    let run_fam = r.family.map(|f| f.to_cosmic()).unwrap_or(fam);
+                    let run_size = r.size.unwrap_or(size);
                     let mut a = Attrs::new()
-                        .family(fam)
-                        .weight(if r.bold || base_bold { Weight::BOLD } else { Weight::NORMAL });
+                        .family(run_fam)
+                        .weight(if r.bold || base_bold { Weight::BOLD } else { Weight::NORMAL })
+                        .metrics(Metrics::new(run_size, run_size * 1.4));
                     if r.italic {
                         a = a.style(Style::Italic);
                     }
