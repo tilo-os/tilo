@@ -51,6 +51,72 @@ impl EditorDoc {
     }
 }
 
+// ---- document open / save (format-aware file I/O) -------------------------
+
+use std::path::Path;
+
+/// The file formats the word processor can open and save.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WpFormat {
+    Odt,
+    Markdown,
+}
+
+impl WpFormat {
+    /// Pick a format from a path extension (defaults to Markdown).
+    pub fn from_path(path: &Path) -> Self {
+        match path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
+            Some("odt") => WpFormat::Odt,
+            _ => WpFormat::Markdown,
+        }
+    }
+
+    pub(crate) fn import(&self, bytes: &[u8], dm: &mut qdoc::DocMut) -> Result<(), qdoc::CodecError> {
+        use qdoc::FormatProvider;
+        match self {
+            WpFormat::Odt => qdoc::OdtCodec.import(bytes, dm),
+            WpFormat::Markdown => qdoc::MarkdownCodec.import(bytes, dm),
+        }
+    }
+
+    pub(crate) fn export(&self, dr: qdoc::DocRef) -> Result<Vec<u8>, qdoc::CodecError> {
+        use qdoc::FormatProvider;
+        match self {
+            WpFormat::Odt => qdoc::OdtCodec.export(dr),
+            WpFormat::Markdown => qdoc::MarkdownCodec.export(dr),
+        }
+    }
+}
+
+fn invalid_data<E: std::fmt::Display>(e: E) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
+}
+
+/// Open `path` into a fresh `ui::State` (holding the canonical document) plus a
+/// `WordProcessorWidget` to edit it. The format is chosen by extension.
+pub fn open_document(path: &Path) -> std::io::Result<(ui::State, WordProcessorWidget, WpFormat)> {
+    let bytes = std::fs::read(path)?;
+    let format = WpFormat::from_path(path);
+    let mut state = ui::State::new();
+    let containers = qdoc::model::init(&mut state.doc, &state.root);
+    let mut ids = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
+    {
+        let mut dm = qdoc::DocMut { doc: &mut state.doc, c: &containers, ids: &mut ids };
+        format.import(&bytes, &mut dm).map_err(invalid_data)?;
+    }
+    let mut widget = WordProcessorWidget::new();
+    widget.set_file(path.to_path_buf(), format);
+    Ok((state, widget, format))
+}
+
+/// Export the document currently in `state` to `path` using `format`.
+pub fn save_document(state: &ui::State, path: &Path, format: WpFormat) -> std::io::Result<()> {
+    let containers = qdoc::model::open(&state.doc, &state.root).map_err(invalid_data)?;
+    let dr = qdoc::DocRef { doc: &state.doc, c: &containers };
+    let bytes = format.export(dr).map_err(|e| std::io::Error::other(e.to_string()))?;
+    std::fs::write(path, bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

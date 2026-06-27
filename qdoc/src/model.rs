@@ -30,11 +30,39 @@ impl IdGen {
     pub fn new(actor_hex: String) -> Self {
         Self { actor_hex, next: 0 }
     }
+    /// Start the counter at `next` — used to seed past ids that already exist in
+    /// a loaded/opened document (otherwise a fresh generator re-mints existing
+    /// ids and overwrites those blocks).
+    pub fn with_counter(actor_hex: String, next: u64) -> Self {
+        Self { actor_hex, next }
+    }
     pub fn mint(&mut self) -> String {
         let id = format!("{}.{}", self.actor_hex, self.next);
         self.next += 1;
         id
     }
+}
+
+/// The next free id counter for `actor_hex`, scanning the existing block ids so a
+/// generator created over an already-populated document won't collide.
+pub fn next_counter_for(doc: &AutoCommit, c: &Containers, actor_hex: &str) -> u64 {
+    let prefix = format!("{actor_hex}.");
+    let mut next = 0u64;
+    for id in blocks_in_order(doc, c) {
+        if let Some(rest) = id.strip_prefix(&prefix) {
+            if let Ok(n) = rest.parse::<u64>() {
+                next = next.max(n + 1);
+            }
+        }
+    }
+    next
+}
+
+/// An [`IdGen`] for `doc`'s current actor, seeded past existing block ids.
+pub fn seeded_id_gen(doc: &AutoCommit, c: &Containers) -> IdGen {
+    let actor = doc.get_actor().to_hex_string();
+    let next = next_counter_for(doc, c, &actor);
+    IdGen::with_counter(actor, next)
 }
 
 /// Write schema scalars + create the four container maps under `root`.
