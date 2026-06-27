@@ -165,6 +165,17 @@ pub struct GroupRow {
     /// movement (exactly the "I scroll and nothing happens" bug from
     /// 2026-06-02). Cleared in `draw` once the new scene is recorded.
     scroll_dirty: bool,
+    /// Horizontal canvas-x of the first group. The strip's
+    /// "canvas" goes [0, leading_inset, leading_inset+g0_w, ...].
+    /// When zero (default) the first group sits flush against
+    /// `rect.x0`; the shell sets this to the wheel-disc width so
+    /// the first group leaves room for the overlay-drawn wheel to
+    /// pan into and out of off-screen-left territory in lock-step
+    /// with the strip itself. `apply_layout` translates every
+    /// child's screen-space origin by `rect.x0 + leading_inset -
+    /// scroll_x`, so the leading_inset moves with `scroll_x` just
+    /// like every other point in canvas space.
+    leading_inset: f64,
 }
 
 impl GroupRow {
@@ -185,7 +196,82 @@ impl GroupRow {
             snap_anim: None,
             pending_cross_strip_detach: None,
             scroll_dirty: false,
+            leading_inset: 0.0,
         }
+    }
+
+    /// Reserve a canvas-x gutter to the left of the first group. The
+    /// strip's content origin shifts right by `px` before any group
+    /// paints, so the leading gutter pans with `scroll_x` the same
+    /// way every group does. The shell sets this to the wheel-disc
+    /// width so the wheel (drawn in the overlay layer above the
+    /// strip) and the first group move as one when the user pans the
+    /// strip horizontally — replacing the old "wheel is fixed,
+    /// content pans underneath" hack with a single canvas that the
+    /// wheel happens to render the leftmost-96 px of.
+    pub fn with_leading_inset(mut self, px: f64) -> Self {
+        self.leading_inset = px;
+        self
+    }
+
+    /// Width of the leading gutter on the strip's canvas. Read by the
+    /// shell so the overlay-layer wheel disc can be positioned at the
+    /// same canvas-x the strip's `apply_layout` reserved.
+    pub fn leading_inset(&self) -> f64 {
+        self.leading_inset
+    }
+
+    /// Update the leading-inset width at runtime. The wheel disc's
+    /// rendered width is viewport-dependent (`sidebar_width_for_
+    /// viewport`); the shell's `ShellOverlayHost::apply_layout` calls
+    /// this once per frame so the strip's canvas always reserves
+    /// exactly the wheel's current width — no overlap when the wheel
+    /// is wide, no wallpaper gap when it's narrow.
+    pub fn set_leading_inset(&mut self, px: f64) {
+        if (self.leading_inset - px).abs() > f64::EPSILON {
+            self.leading_inset = px;
+            // Treat a leading-inset change like a scroll: the parent
+            // Column's subtree cache must rebuild so the new origin
+            // takes effect on the next paint.
+            self.scroll_dirty = true;
+        }
+    }
+
+    /// Ordered list of group ids currently held by the row. Used by
+    /// the shell's `resync_strips_from_tree` (overlay_host) to diff
+    /// against the persisted [`shell::state::Strip::window_groups`]
+    /// after a `chrome.bump()` so newly-added groups can be spliced
+    /// in (or removed groups dropped) without rebuilding the entire
+    /// row — preserves existing groups' host state (scroll positions,
+    /// per-tile selection, etc.) on every revision bump that doesn't
+    /// actually touch them.
+    pub fn group_ids(&self) -> Vec<u64> {
+        self.groups.iter().map(|g| g.id).collect()
+    }
+
+    /// Splice a [`WindowGroup`] into the row at `idx`. Clamps `idx`
+    /// to `groups.len()` so callers don't have to bounds-check.
+    /// Flags `structure_dirty` so the App's next layout pass
+    /// rebuilds the taffy tree with the new child's node id.
+    pub fn insert_group(&mut self, group: WindowGroup, idx: usize) {
+        let clamped = idx.min(self.groups.len());
+        self.groups.insert(clamped, group);
+        self.structure_dirty = true;
+    }
+
+    /// Remove the group with id `id`. No-op if absent. Returns
+    /// `true` if a group was actually removed (so the caller can
+    /// avoid a redundant `structure_dirty` flag set elsewhere).
+    /// Flags `structure_dirty` on success so the taffy tree
+    /// drops the now-orphaned node id.
+    pub fn remove_group_by_id(&mut self, id: u64) -> bool {
+        let before = self.groups.len();
+        self.groups.retain(|g| g.id != id);
+        let removed = self.groups.len() != before;
+        if removed {
+            self.structure_dirty = true;
+        }
+        removed
     }
 
     /// Current horizontal scroll offset in logical pixels. Exposed so
@@ -262,6 +348,13 @@ impl GroupRow {
     /// into `[0, max_scroll_x()]`. Returns `None` if there are no
     /// groups (nothing to snap to) or if the strip can't actually
     /// scroll (max_scroll_x == 0 — content fits).
+    ///
+    /// Candidates are every group's canvas-x left edge PLUS canvas-x
+    /// = 0 ("wheel visible" home position) when `leading_inset > 0`.
+    /// Without the home target a small flick away from 0 would snap
+    /// FORWARD to the first group (canvas-x = leading_inset) instead
+    /// of relaxing back to the wheel-visible rest state — observably
+    /// the strip "bounces away from home" after a tiny wheel flick.
     fn nearest_group_edge(&self) -> Option<f64> {
         if self.group_left_edges.is_empty() {
             return None;
@@ -272,7 +365,11 @@ impl GroupRow {
         }
         let mut best: Option<f64> = None;
         let mut best_dist = f64::MAX;
-        for &edge in &self.group_left_edges {
+        // Walk the explicit per-group edges, then optionally consider
+        // the home position. Using `chain` here keeps the loop body a
+        // single closure-free expression so the compiler can inline it.
+        let home_targets: &[f64] = if self.leading_inset > 0.0 { &[0.0] } else { &[] };
+        for &edge in self.group_left_edges.iter().chain(home_targets.iter()) {
             let candidate = edge.clamp(0.0, max);
             let d = (candidate - self.scroll_x).abs();
             if d < best_dist {
@@ -298,6 +395,7 @@ impl GroupRow {
     ///   has elapsed since the last wheel event, kick off a fresh snap
     ///   targeting the nearest group's left edge.
     pub fn tick_snap_at(&mut self, now: Instant) {
+        let before = self.scroll_x;
         // No snap in flight — should we start one? Only if the user
         // actually wheeled (`last_wheel_at` is set) AND has been quiet
         // for at least the idle threshold AND the current scroll_x is
@@ -347,15 +445,25 @@ impl GroupRow {
                 self.scroll_x = anim.to;
                 self.snap_anim = None;
                 self.last_wheel_at = None;
-                return;
+            } else {
+                let raw = (elapsed.as_secs_f64() / (SNAP_ANIM_MS as f64 / 1000.0))
+                    .clamp(0.0, 1.0);
+                // Cubic-out ease — same shape the spawn animation in
+                // `window_group.rs` uses for its slide-in. Punchy at the
+                // start, gentle settle at the end.
+                let eased = 1.0 - (1.0 - raw).powi(3);
+                self.scroll_x = anim.from + (anim.to - anim.from) * eased;
             }
-            let raw = (elapsed.as_secs_f64() / (SNAP_ANIM_MS as f64 / 1000.0))
-                .clamp(0.0, 1.0);
-            // Cubic-out ease — same shape the spawn animation in
-            // `window_group.rs` uses for its slide-in. Punchy at the
-            // start, gentle settle at the end.
-            let eased = 1.0 - (1.0 - raw).powi(3);
-            self.scroll_x = anim.from + (anim.to - anim.from) * eased;
+        }
+        // Any tick that actually moved scroll_x must invalidate the
+        // parent Column's subtree cache, otherwise the snap curve
+        // updates the value but `needs_redraw()` returns false (no
+        // `scroll_dirty`, no child-leaf dirty bit) and the parent
+        // re-emits its pre-snap cached scene. Symptom: the strip
+        // staggers / freezes mid-snap and only paints intermittently
+        // when an unrelated dirty source forces a rebuild.
+        if (self.scroll_x - before).abs() > f64::EPSILON {
+            self.scroll_dirty = true;
         }
     }
 
@@ -791,12 +899,20 @@ impl Widget for GroupRow {
         // wheel-idle snap animation eases `scroll_x` toward. Re-built
         // every layout pass so insertions / removals / reorderings
         // produce the updated set of legal snap stops automatically.
-        let mut content_w = 0.0_f64;
+        // Snap targets and content_w live in CANVAS-x (with the
+        // leading inset baked in), not in taffy-local-x. The wheel
+        // disc's overlay rendering occupies canvas-x [0, leading_inset];
+        // every group sits at canvas-x = leading_inset + taffy.x. The
+        // strip's `scroll_x` is "how far the canvas has panned past the
+        // viewport's left edge", so a snap target at canvas-x = K means
+        // `scroll_x = K - rect.x0` brings that point flush against the
+        // viewport left.
+        let mut content_w = self.leading_inset;
         let mut edges: Vec<f64> = Vec::with_capacity(self.node_ids.len());
         for &cn in &self.node_ids {
             let cl = taffy.layout(cn).unwrap();
-            edges.push(cl.location.x as f64);
-            let right = cl.location.x as f64 + cl.size.width as f64;
+            edges.push(self.leading_inset + cl.location.x as f64);
+            let right = self.leading_inset + cl.location.x as f64 + cl.size.width as f64;
             if right > content_w {
                 content_w = right;
             }
@@ -830,13 +946,20 @@ impl Widget for GroupRow {
         // threshold. Done AFTER the clamp so a structural mutation
         // that snapped scroll_x to max doesn't get re-eased.
         self.tick_snap_at(Instant::now());
-        // Children's origin is shifted left by `scroll_x` so a positive
-        // scroll reveals groups originally laid out off the right edge.
-        // Each child's stored `Rect` is in screen space (post-shift),
-        // so hit-testing against `last_cursor` (also screen space)
-        // remains consistent for `gap_index_for` and the per-tab
-        // sibling-bar matching in the post-dispatch detach sweep.
-        let child_origin = Point::new(self.rect.x0 - self.scroll_x, self.rect.y0);
+        // Children's origin: the strip's canvas starts at canvas-x=0
+        // (wheel disc occupies canvas-x [0, leading_inset]) and the
+        // viewport shows canvas-x [scroll_x, scroll_x + viewport_w].
+        // Translating taffy-local x by `rect.x0 + leading_inset -
+        // scroll_x` gives the correct screen-space position for every
+        // group: at scroll_x=0 the first group sits at
+        // `rect.x0 + leading_inset` (flush against the wheel's right
+        // edge); as scroll_x grows the whole canvas pans left in
+        // lock-step with the wheel-disc's own `-scroll_x` shift in
+        // `ShellOverlayHost::apply_layout`.
+        let child_origin = Point::new(
+            self.rect.x0 + self.leading_inset - self.scroll_x,
+            self.rect.y0,
+        );
         for (g, child_id) in self.groups.iter_mut().zip(self.node_ids.iter()) {
             g.apply_layout(taffy, *child_id, child_origin);
         }
@@ -933,45 +1056,14 @@ impl Widget for GroupRow {
             }
         }
 
-        // Drop-zone indicators: most gaps render no visual — release
-        // inside a group's tile area prepends/appends the tab (left/
-        // right half resolution), and an interior inter-group gap
-        // unambiguously means "new group between these two". The
-        // extreme gaps (gap_idx == 0 — before the leftmost group; and
-        // gap_idx == groups.len() — after the rightmost) DO need a
-        // visual hint per user feedback on 2026-06-02: dropping past
-        // the strip's leftmost edge has no "left tile half" to infer
-        // intent from, so without an explicit cue the user can't tell
-        // the action will create a new group there.
-        //
-        // A 2-px-wide accent capsule, full strip height, painted only
-        // when a drag is in flight AND `hover_gap_idx` resolves to
-        // one of the two extremes.
-        let any_drag = self.groups.iter().any(|g| g.drag_in_flight());
-        if any_drag
-            && !self.groups.is_empty()
-            && let Some(idx) = self.hover_gap_idx
-            && (idx == 0 || idx == self.groups.len())
-        {
-            let accent = theme.tokens.colors.accent[5];
-            let bar_w = 2.0_f64;
-            let mid_x = if idx == 0 {
-                self.groups[0].get_rect().x0 - 4.0
-            } else {
-                self.groups.last().unwrap().get_rect().x1 + 4.0
-            };
-            let capsule = vello::kurbo::RoundedRect::from_rect(
-                Rect::new(mid_x - bar_w / 2.0, self.rect.y0 + 8.0, mid_x + bar_w / 2.0, self.rect.y1 - 8.0),
-                1.0,
-            );
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                accent,
-                None,
-                &capsule,
-            );
-        }
+        // No inter-group drop-zone visual: the white line drawn by the
+        // active tab bar already shows the per-pill drop target, and any
+        // release in a sibling group's tile-area edge band (resolved by
+        // the new edge-drop logic in `handle_event`) creates a new group
+        // without needing a strip-level cue. The previous extreme-gap
+        // accent capsule (gap_idx == 0 / groups.len()) was removed
+        // 2026-06-24 per user feedback ("weird purple-ish rectangles as
+        // drop off zones — these will eventually need to be removed").
         // Close the strip clip layer we pushed at the top of `draw`.
         scene.pop_layer();
     }
@@ -1354,23 +1446,30 @@ impl Widget for GroupRow {
                 }
                 continue;
             }
-            // 2026-06-02 user feedback: a drop in the TILE AREA of an
-            // existing sibling group (the white card below the tab bar,
-            // i.e. inside the group's `rect` but below `bar_rect.y1`)
-            // should splice the tab into that group's tab list — left
-            // half → prepend (idx 0), right half → append (idx =
-            // tabs.len()). No visual indicator during hover: the
-            // affordance is intentionally invisible/implicit so the
-            // tile area still reads as the host's working surface, not
-            // a drop zone. Only tab-bar drops get the new white-line
-            // indicator (`hover_drop_idx` in `TabBar`).
+            // Tile-area drops on a sibling group. The release point
+            // falls inside the group's `rect` but below `bar_rect.y1`
+            // (the tab-bar branch already matched and `continue`'d
+            // above). We split the tile horizontally into three bands:
             //
-            // Closing groups are excluded for the same reason the
-            // sibling-bar branch above filters them out: a tab spliced
+            //   1. Left edge band (outermost ~25% of width, capped at
+            //      48 px) → CREATE a new group immediately to the LEFT
+            //      of this sibling. This is the practical solution to
+            //      the 2026-06-24 user complaint that the 8 px inter-
+            //      group gap is impossible to hit, so dragging a tab
+            //      to the area between G(A) and G(B) had nowhere to
+            //      land that produced "new group between A and B".
+            //   2. Right edge band (symmetric) → CREATE a new group
+            //      immediately to the RIGHT of this sibling.
+            //   3. Centre band (everything else) → splice into the
+            //      sibling's existing tab list, left half → prepend
+            //      (idx 0), right half → append (idx = tabs.len()),
+            //      matching the 2026-06-02 user spec.
+            //
+            // Closing groups are excluded throughout: a tab spliced
             // into a group that's about to be pruned would be lost
             // alongside the group at fade-end. Drops on closing
             // groups' tile areas fall through to the gap-based
-            // new-window path below, same as drops on their bar areas.
+            // new-window path below.
             let tile_target_idx = self
                 .groups
                 .iter()
@@ -1379,18 +1478,28 @@ impl Widget for GroupRow {
                     *i != src_idx
                         && !g.is_closing()
                         && g.get_rect().contains(release_point)
-                        // Bar already excluded above (the first branch
-                        // matched and `continue`'d), so any release
-                        // that reaches here and is inside the group
-                        // rect must be inside the tile content area.
-                        // The explicit guard keeps the intent legible
-                        // and stays correct even if the bar check is
-                        // ever lifted.
                         && !g.bar_rect().contains(release_point)
                 })
                 .map(|(i, _)| i);
             if let Some(tgt_idx) = tile_target_idx {
                 let tgt_rect = self.groups[tgt_idx].get_rect();
+                let edge_band = (tgt_rect.width() * 0.25).min(48.0);
+                let in_left_band = release_point.x < tgt_rect.x0 + edge_band;
+                let in_right_band = release_point.x > tgt_rect.x1 - edge_band;
+                if in_left_band || in_right_band {
+                    // Edge band → create a new group at the gap to the
+                    // left (or right) of the target sibling. The split
+                    // helper handles detach + source-prune + structure-
+                    // dirty exactly the same as the explicit inter-
+                    // group gap branch below; passing the correct
+                    // gap_idx is what selects "between A and B" vs
+                    // "after B".
+                    let gap_idx = if in_left_band { tgt_idx } else { tgt_idx + 1 };
+                    if self.split_tab_into_new_group(src_idx, tab_id, gap_idx) {
+                        *handled = true;
+                    }
+                    continue;
+                }
                 let drop_idx = if release_point.x < tgt_rect.center().x {
                     0
                 } else {
