@@ -8,22 +8,21 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use automerge::{AutoCommit, ObjId};
-use cosmic_text::fontdb;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::{Color, Fill, FontData};
+use vello::peniko::{Color, Fill};
 use vello::Scene;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use qdoc::document::MarkSpan;
 use qdoc::snapshot::{AttrVal, BlockView};
+use ui::richtext::{RichSpan, RichTextLayout, TextAlign};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 use ui::PresenceCtx;
 
-use crate::richtext::{RichTextLayout, Run};
 use crate::word_processor::{Caret, WordProcessor};
 use crate::WpFormat;
 
@@ -91,8 +90,17 @@ fn char_has(i: usize, marks: &[MarkSpan], name: &str) -> bool {
     marks.iter().any(|m| m.name == name && i >= m.start && i < m.end)
 }
 
+/// Pick a block's horizontal alignment from its `align` attribute.
+fn block_align(b: &BlockView) -> TextAlign {
+    match b.attrs.get("align") {
+        Some(AttrVal::Str(s)) if s == "center" => TextAlign::Center,
+        Some(AttrVal::Str(s)) if s == "right" => TextAlign::Right,
+        _ => TextAlign::Left,
+    }
+}
+
 /// Split a block's text into styled runs + underline byte ranges.
-fn block_runs(b: &BlockView) -> (Vec<Run>, Vec<(usize, usize)>) {
+fn block_runs(b: &BlockView) -> (Vec<RichSpan>, Vec<(usize, usize)>) {
     let chars: Vec<char> = b.text.chars().collect();
     let n = chars.len();
     let mut runs = Vec::new();
@@ -104,11 +112,11 @@ fn block_runs(b: &BlockView) -> (Vec<Run>, Vec<(usize, usize)>) {
         while j < n && char_has(j, &b.marks, "strong") == bold && char_has(j, &b.marks, "em") == italic {
             j += 1;
         }
-        runs.push(Run { text: chars[i..j].iter().collect(), bold, italic });
+        runs.push(RichSpan { text: chars[i..j].iter().collect(), bold, italic });
         i = j;
     }
     if runs.is_empty() {
-        runs.push(Run { text: String::new(), bold: false, italic: false });
+        runs.push(RichSpan { text: String::new(), bold: false, italic: false });
     }
     let underlines = b
         .marks
@@ -139,7 +147,6 @@ pub struct WordProcessorWidget {
     dragging: bool,
     path: Option<PathBuf>,
     format: Option<WpFormat>,
-    font_cache: HashMap<fontdb::ID, FontData>,
     blocks: Vec<BlockView>,
     laid: Vec<Laid>,
     toolbar: Vec<(ToolAction, Rect)>,
@@ -163,7 +170,6 @@ impl WordProcessorWidget {
             dragging: false,
             path: None,
             format: None,
-            font_cache: HashMap::new(),
             blocks: Vec::new(),
             laid: Vec::new(),
             toolbar: Vec::new(),
@@ -285,6 +291,7 @@ impl Widget for WordProcessorWidget {
         let mut y = page_top + PAGE_MARGIN;
         for b in &blocks {
             let (size, base_bold, indent, _bullet) = block_style(b);
+            let align = block_align(b);
             let (runs, underlines) = block_runs(b);
             let layout = RichTextLayout::shape(
                 &mut text_renderer.font_system,
@@ -292,6 +299,7 @@ impl Widget for WordProcessorWidget {
                 base_bold,
                 size,
                 (content_w - indent as f32).max(40.0),
+                align,
                 underlines,
             );
             let height = layout.height() as f64;
@@ -343,7 +351,7 @@ impl Widget for WordProcessorWidget {
                 }
             }
 
-            l.layout.draw(scene, &text_renderer.font_system, &mut self.font_cache, transform * Affine::translate((l.text_x, l.y_top)), INK);
+            text_renderer.draw_rich(scene, &l.layout, transform * Affine::translate((l.text_x, l.y_top)), INK);
 
             if self.focused && b.id == self.inner.caret.block && !self.inner.has_selection() {
                 let byte = char_to_byte(&l.text, self.inner.caret.offset);
