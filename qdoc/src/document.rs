@@ -68,24 +68,32 @@ impl Document {
 
     // ---- delegating convenience API ---------------------------------------
 
+    // The owned `Document` commits per op so its change history (the timeline)
+    // stays fine-grained. (Borrowed `DocMut` does not — see model.rs.)
     pub fn insert_block(&mut self, after: Option<&str>, kind: &str) -> String {
-        self.as_mut().insert_block(after, kind)
+        let id = self.as_mut().insert_block(after, kind);
+        self.doc.commit();
+        id
     }
 
     pub fn remove_block(&mut self, id: &str) {
-        self.as_mut().remove_block(id)
+        self.as_mut().remove_block(id);
+        self.doc.commit();
     }
 
     pub fn move_block(&mut self, id: &str, after: Option<&str>) {
-        self.as_mut().move_block(id, after)
+        self.as_mut().move_block(id, after);
+        self.doc.commit();
     }
 
     pub fn splice_text(&mut self, block_id: &str, char_idx: usize, del: isize, ins: &str) {
-        self.as_mut().splice_text(block_id, char_idx, del, ins)
+        self.as_mut().splice_text(block_id, char_idx, del, ins);
+        self.doc.commit();
     }
 
     pub fn add_mark(&mut self, block_id: &str, start: usize, end: usize, name: &str, value: bool) {
-        self.as_mut().add_mark(block_id, start, end, name, value)
+        self.as_mut().add_mark(block_id, start, end, name, value);
+        self.doc.commit();
     }
 
     pub fn blocks_in_order(&self) -> Vec<String> {

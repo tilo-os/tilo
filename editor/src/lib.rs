@@ -196,10 +196,12 @@ mod tests {
             dm.splice_text(&id, 0, 0, "hello");
             id
         };
+        s.doc.commit(); // host commits each action (borrowed DocMut no longer auto-commits)
         {
             let mut dm = ed.edit(&mut s.doc);
             dm.splice_text(&p, 5, 0, " world");
         }
+        s.doc.commit();
 
         let vers = qdoc::history::versions(&mut s.doc);
         assert!(vers.len() >= 2, "multiple authored changes");
