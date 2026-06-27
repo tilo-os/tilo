@@ -7246,3 +7246,194 @@ mod maximize_harvest_tests {
     }
 }
 
+#[cfg(test)]
+mod resync_strips_tests {
+    //! #263 regression coverage: a `chrome.bump()` after pushing fresh
+    //! `WindowGroup`s into the persisted tree must propagate to the
+    //! live `GroupRow` widgets on the next `take_structure_dirty`
+    //! tick, even when the harness has never called `update()`. The
+    //! `shots` driver's relayout path skips update, so this test
+    //! exercises the structure-dirty pump in isolation.
+    use super::*;
+    use crate::shell::build_nirios_overlay_host_with_chrome;
+    use crate::shell::state::{
+        AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
+        WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree,
+    };
+    use std::collections::HashMap as StdHashMap;
+
+    fn one_group_seed() -> (WorkspaceTree, StripId, GroupId) {
+        let ws_id = WorkspaceId::new();
+        let strip_id = StripId::new();
+        let group_id: GroupId = 100;
+        let tab_id: u64 = 1;
+        let strip = Strip {
+            id: strip_id,
+            name: "Solo".into(),
+            window_groups: vec![StateGroup {
+                id: group_id,
+                tabs: vec![Tab {
+                    id: tab_id,
+                    title: "T".into(),
+                    tile: TileContent::Stub {
+                        kind: AppKind::Other("Test".into()),
+                        label: "s".into(),
+                    },
+                }],
+                active_tab: tab_id,
+                width: StateWidth::Normal,
+                maximized: false,
+            }],
+        };
+        let ws = Workspace {
+            id: ws_id,
+            name: "Test".into(),
+            strips: vec![strip],
+            roles: vec![],
+            workspace_files: vec![],
+            collaborators: vec![],
+            grants: StdHashMap::new(),
+            shared_surfaces: StdHashMap::new(),
+        };
+        let mut active_strip = StdHashMap::new();
+        active_strip.insert(ws_id, strip_id);
+        let mut active_group = StdHashMap::new();
+        active_group.insert(strip_id, group_id);
+        let tree = WorkspaceTree {
+            workspaces: vec![ws],
+            active: ws_id,
+            active_strip,
+            active_group,
+            collaborators: vec![],
+            ..Default::default()
+        };
+        (tree, strip_id, group_id)
+    }
+
+    fn make_stub_group(id: GroupId, label: &str) -> StateGroup {
+        let tab_id = (id as u64) + 1000;
+        StateGroup {
+            id,
+            tabs: vec![Tab {
+                id: tab_id,
+                title: label.into(),
+                tile: TileContent::Stub {
+                    kind: AppKind::Other("Test".into()),
+                    label: label.into(),
+                },
+            }],
+            active_tab: tab_id,
+            width: StateWidth::Normal,
+            maximized: false,
+        }
+    }
+
+    #[test]
+    fn resync_picks_up_new_groups_added_after_bump() {
+        let (tree, strip_id, _) = one_group_seed();
+        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        assert!(host.group_at_for_tests(strip_id, 0).is_some());
+        assert!(host.group_at_for_tests(strip_id, 1).is_none());
+        // Mirror what the `shots` multi-group scene does: push two
+        // fresh `WindowGroup`s into the active strip and bump.
+        {
+            let mut st = chrome.borrow_mut();
+            let mut tree = st.tree_mut();
+            let strip = tree.workspaces[0]
+                .strips
+                .iter_mut()
+                .find(|s| s.id == strip_id)
+                .expect("seed strip");
+            strip.window_groups.push(make_stub_group(201, "Stub-A"));
+            strip.window_groups.push(make_stub_group(202, "Stub-B"));
+            drop(tree);
+            st.bump();
+        }
+        // Single take_structure_dirty tick must pump the resync diff
+        // and splice the new groups into the live row.
+        let _ = host.take_structure_dirty();
+        assert!(
+            host.group_at_for_tests(strip_id, 1).is_some(),
+            "stub-A spliced into row at index 1"
+        );
+        assert!(
+            host.group_at_for_tests(strip_id, 2).is_some(),
+            "stub-B spliced into row at index 2"
+        );
+        assert!(
+            host.group_at_for_tests(strip_id, 3).is_none(),
+            "no phantom fourth group"
+        );
+    }
+
+    #[test]
+    fn resync_drops_groups_removed_after_bump() {
+        let (mut tree, strip_id, _) = one_group_seed();
+        // Seed two extra groups so the first frame already has 3.
+        tree.workspaces[0]
+            .strips
+            .iter_mut()
+            .find(|s| s.id == strip_id)
+            .unwrap()
+            .window_groups
+            .push(make_stub_group(301, "Drop-A"));
+        tree.workspaces[0]
+            .strips
+            .iter_mut()
+            .find(|s| s.id == strip_id)
+            .unwrap()
+            .window_groups
+            .push(make_stub_group(302, "Drop-B"));
+        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        assert!(host.group_at_for_tests(strip_id, 2).is_some());
+        // Remove one group and bump.
+        {
+            let mut st = chrome.borrow_mut();
+            let mut tree = st.tree_mut();
+            let strip = tree.workspaces[0]
+                .strips
+                .iter_mut()
+                .find(|s| s.id == strip_id)
+                .unwrap();
+            strip.window_groups.retain(|g| g.id != 301);
+            drop(tree);
+            st.bump();
+        }
+        let _ = host.take_structure_dirty();
+        // Row now has 2 groups (original + Drop-B).
+        assert!(host.group_at_for_tests(strip_id, 0).is_some());
+        assert!(host.group_at_for_tests(strip_id, 1).is_some());
+        assert!(
+            host.group_at_for_tests(strip_id, 2).is_none(),
+            "removed group dropped from row"
+        );
+    }
+
+    #[test]
+    fn resync_no_op_when_revision_unchanged() {
+        let (tree, strip_id, group_id) = one_group_seed();
+        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let id_before = host
+            .group_at_for_tests(strip_id, 0)
+            .map(|g| g.id)
+            .unwrap_or(0);
+        assert_eq!(id_before, group_id);
+        // First tick observes initial revision and caches it.
+        let _ = host.take_structure_dirty();
+        // Second tick without any chrome.bump() must be a no-op —
+        // the persisted group id stays the same and no spurious
+        // insert happens.
+        let _ = host.take_structure_dirty();
+        let _st = chrome.borrow();
+        assert_eq!(
+            host.group_at_for_tests(strip_id, 0).map(|g| g.id),
+            Some(group_id),
+            "stable revision leaves row identity intact"
+        );
+        assert!(
+            host.group_at_for_tests(strip_id, 1).is_none(),
+            "no phantom group inserted by repeated no-op ticks"
+        );
+    }
+}
+
