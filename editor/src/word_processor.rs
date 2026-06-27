@@ -39,8 +39,10 @@ impl WordProcessor {
     pub fn bind(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if self.containers.is_none() {
             let c = qdoc::model::open(state, root).unwrap_or_else(|_| qdoc::model::init(state, root));
+            // Seed past existing block ids so editing a loaded/imported document
+            // never re-mints (and overwrites) an existing block.
+            self.ids = Some(qdoc::model::seeded_id_gen(state, &c));
             self.containers = Some(c);
-            self.ids = Some(IdGen::new(state.get_actor().to_hex_string()));
         }
         let containers = self.containers.clone().unwrap();
         let blocks = qdoc::model::blocks_in_order(state, &containers);
