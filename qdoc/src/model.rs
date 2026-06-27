@@ -351,6 +351,14 @@ impl<'a> DocMut<'a> {
         self.doc.commit();
     }
 
+    /// Change a block's kind (e.g. `paragraph` ↔ `heading` ↔ `list_item`).
+    pub fn set_kind(&mut self, block_id: &str, kind: &str) {
+        if let Some(obj) = block_obj(self.doc, &self.c.blocks, block_id) {
+            let _ = self.doc.put(&obj, BLOCK_KIND, kind);
+            self.doc.commit();
+        }
+    }
+
     /// Remove a mark named `name` over `[start, end)` of the block's text.
     pub fn remove_mark(&mut self, block_id: &str, start: usize, end: usize, name: &str) {
         if let Some(tid) = self.text_obj(block_id) {
