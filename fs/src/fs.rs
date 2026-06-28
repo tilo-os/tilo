@@ -1,5 +1,5 @@
 use fuser::*;
-use libc::{EINVAL, EIO, EISDIR, ENOENT};
+use libc::{EINVAL, EIO, EISDIR, ENOENT, ENOTDIR, ENOTEMPTY};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io;
@@ -53,41 +53,92 @@ impl QuickFS {
         }
     }
 
-    /// Synchronously ingest bytes into the content store (None for empty).
-    fn ingest_blocking(&self, data: &[u8]) -> Option<Hash> {
+    /// Synchronously ingest bytes into the content store. `Ok(None)` for empty
+    /// data; `Err` if the ingest itself fails (so callers never persist a
+    /// non-empty file with a missing hash).
+    fn ingest_blocking(&self, data: &[u8]) -> io::Result<Option<Hash>> {
         if data.is_empty() {
-            return None;
+            return Ok(None);
         }
         let store = self.hydrator.store.clone();
         let rt = self.hydrator.runtime_handle.clone();
         let bytes = Bytes::copy_from_slice(data);
-        tokio::task::block_in_place(|| rt.block_on(async move { store.ingest(bytes).await })).ok()
+        tokio::task::block_in_place(|| rt.block_on(async move { store.ingest(bytes).await }))
+            .map(Some)
+            .map_err(|e| io::Error::other(e.to_string()))
     }
 
-    /// Current full content of an inode (in-flight buffer if any, else hydrated).
-    fn read_full_blocking(&self, ino: u64) -> Vec<u8> {
+    /// Current full content of an inode: the in-flight buffer if any, else the
+    /// hydrated blob. `Ok(empty)` only for a genuinely empty/hashless file;
+    /// a hydration failure is `Err` (so a write never seeds from empty and
+    /// silently truncates a not-yet-local file).
+    fn read_full_blocking(&self, ino: u64) -> io::Result<Vec<u8>> {
         if let Some(buf) = self.write_buffers.lock().unwrap().get(&ino) {
-            return buf.clone();
+            return Ok(buf.clone());
         }
         let hash = self.namespace.lock().unwrap().hash_for(ino);
         let Some(hash) = hash else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
         let hydrator = self.hydrator.clone();
         let rt = hydrator.runtime_handle.clone();
-        tokio::task::block_in_place(|| rt.block_on(async move { hydrator.read(hash, 0, u64::MAX).await }))
-            .unwrap_or_default()
+        tokio::task::block_in_place(|| {
+            rt.block_on(async move { hydrator.read(hash, 0, u64::MAX).await })
+        })
+        .map_err(|e| io::Error::other(e.to_string()))
     }
 
     /// Ingest `data` as the new content of `ino` and broadcast the change.
-    fn commit_content(&self, ino: u64, data: &[u8]) {
-        let hash = self.ingest_blocking(data);
+    /// Aborts (returns Err) WITHOUT mutating the entry if the ingest fails, so
+    /// a failed write preserves the previously-committed content.
+    fn commit_content(&self, ino: u64, data: &[u8]) -> io::Result<()> {
+        let hash = self.ingest_blocking(data)?;
         let delta = {
             let mut ns = self.namespace.lock().unwrap();
             ns.set_content(ino, hash.as_ref(), data.len() as u64, now_ms());
             ns.save_incremental()
         };
         self.publish(delta);
+        Ok(())
+    }
+
+    fn remove_entry(&self, parent: INodeNo, name: &OsStr, expect_dir: bool, reply: ReplyEmpty) {
+        let Some(name) = name.to_str() else {
+            reply.error(to_errno(EINVAL));
+            return;
+        };
+        let delta = {
+            let mut ns = self.namespace.lock().unwrap();
+            let Some(attr) = ns.lookup(parent.0, name) else {
+                reply.error(to_errno(ENOENT));
+                return;
+            };
+            let is_dir = attr.kind == FileType::Directory;
+            if expect_dir && !is_dir {
+                reply.error(to_errno(ENOTDIR));
+                return;
+            }
+            if !expect_dir && is_dir {
+                reply.error(to_errno(EISDIR));
+                return;
+            }
+            if expect_dir {
+                // A directory must be empty to rmdir (entries beyond "." "..").
+                if let Some(entries) = ns.readdir(attr.ino.0) {
+                    if entries.len() > 2 {
+                        reply.error(to_errno(ENOTEMPTY));
+                        return;
+                    }
+                }
+            }
+            if !ns.remove(attr.ino.0) {
+                reply.error(to_errno(ENOENT));
+                return;
+            }
+            ns.save_incremental()
+        };
+        self.publish(delta);
+        reply.ok();
     }
 }
 
@@ -127,9 +178,22 @@ impl Filesystem for QuickFS {
     }
 
     fn getattr(&self, _req: &Request, ino: INodeNo, _fh: Option<FileHandle>, reply: ReplyAttr) {
+        // Reflect an in-flight write buffer so stat() sees read-your-writes size.
+        let buf_len = self
+            .write_buffers
+            .lock()
+            .unwrap()
+            .get(&ino.0)
+            .map(|b| b.len() as u64);
         let ns = self.namespace.lock().unwrap();
         match ns.getattr(ino.0) {
-            Some(attr) => reply.attr(&TTL, &attr),
+            Some(mut attr) => {
+                if let Some(len) = buf_len {
+                    attr.size = len;
+                    attr.blocks = len.div_ceil(512);
+                }
+                reply.attr(&TTL, &attr);
+            }
             None => reply.error(to_errno(ENOENT)),
         }
     }
@@ -147,7 +211,7 @@ impl Filesystem for QuickFS {
             ns.readdir(ino.0)
         };
         let Some(entries) = entries else {
-            reply.error(to_errno(ENOENT));
+            reply.error(to_errno(ENOTDIR));
             return;
         };
         for (i, (e_ino, kind, name)) in entries.into_iter().enumerate().skip(offset as usize) {
@@ -263,20 +327,29 @@ impl Filesystem for QuickFS {
         _lock_owner: Option<LockOwner>,
         reply: ReplyWrite,
     ) {
-        // Lazily seed the buffer with the file's current content.
-        let need_init = self.write_buffers.lock().unwrap().get(&ino.0).is_none();
-        if need_init {
-            let current = self.read_full_blocking(ino.0);
-            self.write_buffers
-                .lock()
-                .unwrap()
-                .entry(ino.0)
-                .or_insert(current);
-        }
+        // Seed the buffer with current content if this is the first write.
+        // Done outside the buffer lock (it may do blocking I/O); a hydration
+        // failure must fail the write, never seed-from-empty and truncate.
+        let absent = self.write_buffers.lock().unwrap().get(&ino.0).is_none();
+        let seed = if absent {
+            match self.read_full_blocking(ino.0) {
+                Ok(d) => Some(d),
+                Err(_) => {
+                    reply.error(to_errno(EIO));
+                    return;
+                }
+            }
+        } else {
+            None
+        };
 
         {
             let mut bufs = self.write_buffers.lock().unwrap();
-            let buf = bufs.get_mut(&ino.0).unwrap();
+            // or_insert keeps any buffer a racing op already created.
+            let buf = match seed {
+                Some(d) => bufs.entry(ino.0).or_insert(d),
+                None => bufs.entry(ino.0).or_default(),
+            };
             let start = offset as usize;
             let end = start + data.len();
             if end > buf.len() {
@@ -297,7 +370,9 @@ impl Filesystem for QuickFS {
     ) {
         let buffered = self.write_buffers.lock().unwrap().get(&ino.0).cloned();
         if let Some(data) = buffered {
-            self.commit_content(ino.0, &data);
+            if let Err(e) = self.commit_content(ino.0, &data) {
+                eprintln!("flush: commit failed (content preserved): {e}");
+            }
         }
         reply.ok();
     }
@@ -305,7 +380,9 @@ impl Filesystem for QuickFS {
     fn fsync(&self, _req: &Request, ino: INodeNo, _fh: FileHandle, _datasync: bool, reply: ReplyEmpty) {
         let buffered = self.write_buffers.lock().unwrap().get(&ino.0).cloned();
         if let Some(data) = buffered {
-            self.commit_content(ino.0, &data);
+            if let Err(e) = self.commit_content(ino.0, &data) {
+                eprintln!("fsync: commit failed (content preserved): {e}");
+            }
         }
         reply.ok();
     }
@@ -322,7 +399,9 @@ impl Filesystem for QuickFS {
     ) {
         let buffered = self.write_buffers.lock().unwrap().remove(&ino.0);
         if let Some(data) = buffered {
-            self.commit_content(ino.0, &data);
+            if let Err(e) = self.commit_content(ino.0, &data) {
+                eprintln!("release: commit failed (content preserved): {e}");
+            }
         }
         reply.ok();
     }
@@ -345,21 +424,39 @@ impl Filesystem for QuickFS {
         _flags: Option<BsdFileFlags>,
         reply: ReplyAttr,
     ) {
-        // Handle truncation/extension; ignore perm/owner/time changes (the OS
-        // controls those, and we don't persist them).
+        // Handle truncation/extension; ignore perm/owner/time changes.
         if let Some(new_size) = size {
-            let mut data = self.read_full_blocking(ino.0);
+            let mut data = match self.read_full_blocking(ino.0) {
+                Ok(d) => d,
+                Err(_) => {
+                    reply.error(to_errno(EIO));
+                    return;
+                }
+            };
             data.resize(new_size as usize, 0);
-            // Update the in-flight buffer if open, else commit straight away.
             let open = self.write_buffers.lock().unwrap().contains_key(&ino.0);
             if open {
                 self.write_buffers.lock().unwrap().insert(ino.0, data);
-            } else {
-                self.commit_content(ino.0, &data);
+            } else if let Err(_e) = self.commit_content(ino.0, &data) {
+                reply.error(to_errno(EIO));
+                return;
             }
         }
+
+        let buf_len = self
+            .write_buffers
+            .lock()
+            .unwrap()
+            .get(&ino.0)
+            .map(|b| b.len() as u64);
         match self.namespace.lock().unwrap().getattr(ino.0) {
-            Some(attr) => reply.attr(&TTL, &attr),
+            Some(mut attr) => {
+                if let Some(len) = buf_len {
+                    attr.size = len;
+                    attr.blocks = len.div_ceil(512);
+                }
+                reply.attr(&TTL, &attr);
+            }
             None => reply.error(to_errno(ENOENT)),
         }
     }
@@ -395,11 +492,11 @@ impl Filesystem for QuickFS {
     }
 
     fn unlink(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
-        self.remove_entry(parent, name, reply);
+        self.remove_entry(parent, name, false, reply);
     }
 
     fn rmdir(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
-        self.remove_entry(parent, name, reply);
+        self.remove_entry(parent, name, true, reply);
     }
 
     fn rename(
@@ -419,29 +516,6 @@ impl Filesystem for QuickFS {
         let delta = {
             let mut ns = self.namespace.lock().unwrap();
             if !ns.rename(parent.0, name, newparent.0, newname, now_ms()) {
-                reply.error(to_errno(ENOENT));
-                return;
-            }
-            ns.save_incremental()
-        };
-        self.publish(delta);
-        reply.ok();
-    }
-}
-
-impl QuickFS {
-    fn remove_entry(&self, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
-        let Some(name) = name.to_str() else {
-            reply.error(to_errno(EINVAL));
-            return;
-        };
-        let delta = {
-            let mut ns = self.namespace.lock().unwrap();
-            let Some(attr) = ns.lookup(parent.0, name) else {
-                reply.error(to_errno(ENOENT));
-                return;
-            };
-            if !ns.remove(attr.ino.0) {
                 reply.error(to_errno(ENOENT));
                 return;
             }
