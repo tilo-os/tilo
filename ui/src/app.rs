@@ -1102,6 +1102,20 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // them. Without this the incremental gate is a no-op:
                 // widgets stay "dirty" forever.
                 app.root_widget.mark_drawn();
+
+                // Top-layer overlay pass: widgets whose visual extent
+                // escapes their layout box (an open `Dropdown` list, a
+                // popover) paint here so they composite ABOVE every
+                // later-drawn sibling instead of being occluded by it.
+                // Default is a no-op recursion, so this is free for the
+                // shell / greeter and every widget that doesn't opt in.
+                app.root_widget.draw_overlay(
+                    &mut scene,
+                    transform,
+                    &mut app.text_renderer,
+                    &app.theme,
+                    &app.presence_ctx,
+                );
                 let t_draw_us = t_draw_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
 
                 // Draw Remote Cursors (legacy path — `state.collab.cursors`
