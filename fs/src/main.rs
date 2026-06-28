@@ -1,23 +1,25 @@
+use anyhow::Result;
 use clap::Parser;
+use fs::{ContentStore, Heuristics, Hydrator, Namespace, QuickFS};
+use fuser::*;
+use iroh::endpoint::Endpoint;
+use iroh::protocol::Router;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use anyhow::Result;
-use fuser::*;
-use fs::{QuickFS, MetadataStore, Hydrator, Heuristics};
-use iroh::endpoint::Endpoint;
-use iroh_blobs::BlobsProtocol;
-use iroh_blobs::store::mem::MemStore;
-use iroh::protocol::Router;
-use iroh_blobs::provider::events::{EventMask, EventSender, ProviderMessage};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Mount point
+    /// Where to mount the collaborative filesystem.
     #[arg(short, long)]
     mount_point: PathBuf,
 
-    /// Iroh Ticket for the workspace
+    /// Persistent content cache directory (the iroh-blobs store root).
+    /// In-memory if omitted.
+    #[arg(short, long)]
+    cache_dir: Option<PathBuf>,
+
+    /// Iroh ticket for the workspace to join.
     #[arg(short, long)]
     ticket: Option<String>,
 }
@@ -30,60 +32,44 @@ async fn main() -> Result<()> {
         std::fs::create_dir_all(&args.mount_point)?;
     }
 
-    // 1. Create an iroh endpoint.
-    let endpoint = Endpoint::builder()
-        .bind() 
-        .await?;
-    
-    // 2. Setup event tracking for participants
-    let (event_sender, mut event_rx) = EventSender::channel(32, EventMask::ALL_READONLY);
-    
-    // 3. Create a blob store and net protocol.
-    let store = MemStore::new();
-    let blobs = BlobsProtocol::new(&store, Some(event_sender));
+    let endpoint = Endpoint::bind().await?;
 
-    // 4. Build and spawn the router.
-    let _router = Router::builder(endpoint.clone())
-        .accept(iroh_blobs::ALPN, blobs)
-        .spawn();
-
-    // 5. Run event loop to track participants
-    tokio::spawn(async move {
-        while let Some(msg) = event_rx.recv().await {
-             match msg {
-                 ProviderMessage::ClientConnected(c) => {
-                     println!("Participant connected: {:?}", c.inner.endpoint_id);
-                     let _ = c.tx.send(Ok(())).await;
-                 }
-                 ProviderMessage::ConnectionClosed(c) => {
-                     println!("Participant disconnected: connection {}", c.inner.connection_id);
-                 }
-                 _ => {}
-             }
-        }
+    let store = Arc::new(match &args.cache_dir {
+        Some(dir) => ContentStore::open(dir).await?,
+        None => ContentStore::memory(),
     });
 
-    let metadata = Arc::new(Mutex::new(MetadataStore::new()));
-    let hydrator = Arc::new(Hydrator::new(endpoint.clone()));
-    let heuristics = Arc::new(Heuristics::new(hydrator.clone(), metadata.clone()));
+    let _router = Router::builder(endpoint.clone())
+        .accept(iroh_blobs::ALPN, store.blobs_protocol(None))
+        .spawn();
 
-    let fs = QuickFS::new(metadata, hydrator, heuristics);
+    let namespace = Arc::new(Mutex::new(Namespace::new(endpoint.id().to_string())));
+    let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
+    let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+
+    // TODO(Phase D): join the gossip workspace + bootstrap-sync from --ticket.
+    if args.ticket.is_some() {
+        eprintln!("note: --ticket provided but workspace sync is not yet wired");
+    }
+
+    let fs = QuickFS::new(namespace, hydrator, heuristics);
 
     println!("Mounting QuickFS at {:?}", args.mount_point);
-    println!("Iroh NodeID: {}", endpoint.secret_key().public());
-    
+    println!("Iroh NodeID: {}", endpoint.id());
+
     let options = vec![
-        MountOption::RO,
         MountOption::FSName("quickfs".to_string()),
         MountOption::AutoUnmount,
     ];
-
     let mut config = Config::default();
     config.mount_options = options;
     config.acl = SessionACL::All;
 
+    let mount_point = args.mount_point.clone();
     tokio::task::spawn_blocking(move || {
-        fuser::mount2(fs, args.mount_point, &config).expect("FUSE mount failed");
+        if let Err(e) = fuser::mount2(fs, &mount_point, &config) {
+            eprintln!("FUSE mount failed: {e}");
+        }
     });
 
     tokio::signal::ctrl_c().await?;
