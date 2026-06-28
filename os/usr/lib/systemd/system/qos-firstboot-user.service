@@ -1,0 +1,15 @@
+[Unit]
+Description=qOS first-boot user creation (from custom installer)
+# Only runs if the custom installer seeded a credential file.
+ConditionPathExists=/etc/qos/install-user.conf
+After=local-fs.target
+# Must finish before the login greeter so the new account is loginable.
+Before=greetd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/qos-firstboot-user
+
+[Install]
+WantedBy=multi-user.target

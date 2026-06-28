@@ -21,10 +21,13 @@ RUN dnf install -y \
     gstreamer1-plugins-good \
     && dnf clean all
 
-# Display manager
+# Display manager + fingerprint auth (pam_fprintd for the greeter; the
+# greeter's PAM stack references it via a tolerant `-auth` line).
 RUN dnf install -y \
     greetd \
     greetd-tuigreet \
+    fprintd \
+    fprintd-pam \
     && dnf clean all
 
 # System utilities
@@ -104,6 +107,10 @@ COPY etc/qos/desktop.toml /etc/qos/desktop.toml
 
 # greetd display manager config
 COPY etc/greetd/config.toml /etc/greetd/config.toml
+
+# PAM stack for the greetd auth service (adds tolerant pam_fprintd so a
+# fingerprint can satisfy login; falls back to password-auth).
+COPY etc/pam.d/greetd /etc/pam.d/greetd
 
 # First-boot setup service
 COPY usr/lib/systemd/system/shell-firstboot.service /usr/lib/systemd/system/shell-firstboot.service
