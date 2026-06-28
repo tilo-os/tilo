@@ -207,6 +207,22 @@ impl Namespace {
         Ok(())
     }
 
+    /// Apply a remote delta, then advance the local-delta watermark so the
+    /// just-applied change is NOT re-emitted by the next [`Self::save_incremental`]
+    /// (prevents a broadcast echo storm on the gossip mesh).
+    pub fn apply_remote(&mut self, data: &[u8]) -> Result<(), automerge::AutomergeError> {
+        self.doc.load_incremental(data)?;
+        let _ = self.doc.save_incremental();
+        Ok(())
+    }
+
+    /// Advance the local-delta watermark past everything currently in the doc,
+    /// discarding the delta. Call after seeding / bootstrap so the first real
+    /// local write produces a clean, minimal delta.
+    pub fn prime_baseline(&mut self) {
+        let _ = self.doc.save_incremental();
+    }
+
     /// Merge another full document into this one (bootstrap exchange).
     pub fn merge_doc(&mut self, other: &mut Namespace) -> Result<(), automerge::AutomergeError> {
         self.doc.merge(&mut other.doc)?;
