@@ -3,7 +3,7 @@ use crate::color_compat::ColorCompat;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::permissions::UserId;
-use super::{PresenceCtx, SelectionRange};
+use super::PresenceCtx;
 
 /// Deterministic per-user color — maps a UserId string to a hue with stable lightness.
 ///
@@ -24,36 +24,37 @@ pub(crate) fn color_for(ctx: &PresenceCtx, user: &UserId, theme: &Theme) -> Colo
 }
 
 impl PresenceCtx {
-    /// Draw a 2-px vertical caret at `pos`, 16px tall, in the user's assigned color.
+    /// Paint a peer's caret in their colour. `rect` is the caret geometry
+    /// the widget itself produced (`TextInput::caret_rect` /
+    /// `RichTextLine::caret_rect`) in its local coordinates, and
+    /// `transform` maps that into scene space — so a peer caret is
+    /// pixel-identical to the widget's own focused caret, never a
+    /// re-derived approximation.
     pub fn draw_peer_caret(
         &self,
         scene: &mut Scene,
         theme: &Theme,
+        transform: Affine,
         user: &UserId,
-        pos: (f32, f32),
+        rect: Rect,
     ) {
         let color = color_for(self, user, theme);
-        let x = pos.0 as f64;
-        let y = pos.1 as f64;
-        let rect = Rect::new(x, y, x + 2.0, y + 16.0);
-        scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, &rect);
+        scene.fill(Fill::NonZero, transform, color, None, &rect);
     }
 
-    /// Draw a translucent selection highlight over `line_rects` lines.
+    /// Paint a peer's selection highlight in their colour at read-through
+    /// alpha. `rect` comes from the widget's own `selection_rect`, mapped
+    /// to scene space by `transform`.
     pub fn draw_peer_selection(
         &self,
         scene: &mut Scene,
         theme: &Theme,
+        transform: Affine,
         user: &UserId,
-        _range: &SelectionRange,
-        line_rects: &[Rect],
+        rect: Rect,
     ) {
-        let mut color = color_for(self, user, theme);
-        // 35% alpha.
-        color = color.with_alpha_factor(0.35);
-        for r in line_rects {
-            scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, r);
-        }
+        let color = color_for(self, user, theme).with_alpha_factor(0.35);
+        scene.fill(Fill::NonZero, transform, color, None, &rect);
     }
 
     /// Draw an authorship "marker" highlight — a translucent underlay in
@@ -286,7 +287,14 @@ mod tests {
         let theme = Theme::default();
         let mut scene = Scene::new();
         let user = UserId("charlie".to_string());
-        ctx.draw_peer_caret(&mut scene, &theme, &user, (20.0, 10.0));
+        // The widget supplies the caret rect; the helper just recolours it.
+        ctx.draw_peer_caret(
+            &mut scene,
+            &theme,
+            Affine::IDENTITY,
+            &user,
+            Rect::new(20.0, 10.0, 22.0, 26.0),
+        );
 
         let mut r = OffscreenRenderer::new(80, 80);
         let rgba = r.render(&scene, Color::BLACK);

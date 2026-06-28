@@ -312,6 +312,18 @@ impl RichTextLine {
         self.inner.get_rect().x0 + pad + xs[idx] - self.inner.scroll_x()
     }
 
+    /// Exact caret rect for byte `byte`, in local coords — delegates to
+    /// the inner `TextInput` so a peer caret on this line is pixel-
+    /// identical to the line's own focused caret.
+    pub fn caret_rect(&self, theme: &Theme, byte: usize) -> Rect {
+        self.inner.caret_rect(theme, byte)
+    }
+
+    /// Selection rect for `[start, end)` in local coords (delegates).
+    pub fn selection_rect(&self, theme: &Theme, start: usize, end: usize) -> Rect {
+        self.inner.selection_rect(theme, start, end)
+    }
+
     /// Inverse of [`pixel_x_for_byte`] — clamps `x` to the nearest
     /// char boundary. Used by the click-on-link hit-test in the host
     /// app: caller passes a click x coordinate, gets back the byte
