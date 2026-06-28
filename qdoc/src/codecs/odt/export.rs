@@ -55,8 +55,39 @@ fn mark_style(m: &MarkSpan) -> Option<(String, String)> {
         "strike" => Some(("qdoc-strike".into(), r#"style:text-line-through-style="solid""#.into())),
         "fontSize" => m.value.as_int().map(|n| (format!("qdoc-fs-{n}"), format!(r#"fo:font-size="{n}pt""#))),
         "fontFamily" => m.value.as_str().map(|f| (format!("qdoc-ff-{f}"), format!(r#"style:font-name="{}""#, font_name(f)))),
+        "color" => m.value.as_str().map(|c| (format!("qdoc-color-{}", color_token(c)), format!(r#"fo:color="{}""#, c))),
         _ => None,
     }
+}
+
+/// A style-name-safe token for a colour value (`#rrggbb` → `rrggbb`); keeps the
+/// generated automatic-style name a valid XML name.
+fn color_token(c: &str) -> String {
+    c.chars().filter(|ch| ch.is_ascii_alphanumeric()).collect()
+}
+
+/// Escape a string for use inside a double-quoted XML attribute value.
+fn escape_attr(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// The active `link` href at character index `i`, if any. Same-name marks never
+/// overlap in automerge's materialised output, so this is unambiguous.
+fn link_at(marks: &[MarkSpan], i: usize) -> Option<String> {
+    marks
+        .iter()
+        .find(|m| m.name == "link" && i >= m.start && i < m.end)
+        .and_then(|m| m.value.as_str().map(|s| s.to_string()))
 }
 
 fn push_escaped(out: &mut String, c: char) {
@@ -68,15 +99,36 @@ fn push_escaped(out: &mut String, c: char) {
     }
 }
 
-/// Render a block's text with `text:span` wrappers for its marks. Spans are
-/// closed and re-opened whenever the active mark set changes, so the output is
-/// always well-nested even for overlapping marks.
+/// Render a block's text with `text:a` hyperlinks (outer) and `text:span` style
+/// wrappers (inner) for its marks. The link wrapper and the span set are each
+/// closed and re-opened whenever they change, so the output is always
+/// well-nested even for overlapping marks.
 fn render_inline(text: &str, marks: &[MarkSpan], used: &mut std::collections::BTreeMap<String, String>) -> String {
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();
     let mut out = String::new();
     let mut open: Vec<String> = Vec::new();
+    let mut cur_link: Option<String> = None;
+    let close_spans = |out: &mut String, open: &mut Vec<String>| {
+        for _ in 0..open.len() {
+            out.push_str("</text:span>");
+        }
+        open.clear();
+    };
     for i in 0..n {
+        let link = link_at(marks, i);
+        if link != cur_link {
+            // A link is the outer element, so close any open spans first, then the
+            // old link, then open the new link (spans re-open below).
+            close_spans(&mut out, &mut open);
+            if cur_link.is_some() {
+                out.push_str("</text:a>");
+            }
+            if let Some(href) = &link {
+                out.push_str(&format!(r#"<text:a xlink:href="{}">"#, escape_attr(href)));
+            }
+            cur_link = link;
+        }
         let mut want: Vec<String> = marks
             .iter()
             .filter(|m| i >= m.start && i < m.end)
@@ -90,10 +142,7 @@ fn render_inline(text: &str, marks: &[MarkSpan], used: &mut std::collections::BT
         want.sort();
         want.dedup();
         if want != open {
-            for _ in 0..open.len() {
-                out.push_str("</text:span>");
-            }
-            open.clear();
+            close_spans(&mut out, &mut open);
             for name in &want {
                 out.push_str(&format!(r#"<text:span text:style-name="{name}">"#));
                 open.push(name.clone());
@@ -101,8 +150,9 @@ fn render_inline(text: &str, marks: &[MarkSpan], used: &mut std::collections::BT
         }
         push_escaped(&mut out, chars[i]);
     }
-    for _ in 0..open.len() {
-        out.push_str("</text:span>");
+    close_spans(&mut out, &mut open);
+    if cur_link.is_some() {
+        out.push_str("</text:a>");
     }
     out
 }
@@ -225,12 +275,11 @@ fn build_content_xml(snap: &DocSnapshot) -> String {
                 for r in 0..nrows {
                     body.push_str("<table:table-row>");
                     for c in 0..ncols {
-                        let inner = cells
-                            .iter()
-                            .find(|cl| snap_cell_rc(cl) == (r, c))
-                            .map(|cl| render_inline(&cl.text, &cl.marks, &mut used))
-                            .unwrap_or_default();
-                        body.push_str(&format!(r#"<table:table-cell><text:p>{inner}</text:p></table:table-cell>"#));
+                        let cell = cells.iter().find(|cl| snap_cell_rc(cl) == (r, c));
+                        // The cell's alignment lives on the inner paragraph in ODF.
+                        let sa = cell.map(|cl| style_attr(cl)).unwrap_or_default();
+                        let inner = cell.map(|cl| render_inline(&cl.text, &cl.marks, &mut used)).unwrap_or_default();
+                        body.push_str(&format!(r#"<table:table-cell><text:p{sa}>{inner}</text:p></table:table-cell>"#));
                     }
                     body.push_str("</table:table-row>");
                 }
@@ -341,6 +390,95 @@ mod tests {
         assert_eq!(b.attrs.get("align"), Some(&AttrVal::Str("center".into())));
         assert!(b.marks.iter().any(|m| m.name == "fontSize" && m.value == MarkValue::Int(22)), "{:?}", b.marks);
         assert!(b.marks.iter().any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into())), "{:?}", b.marks);
+    }
+
+    #[test]
+    fn hyperlink_roundtrips() {
+        use crate::document::MarkValue;
+        // A `link` mark exports as `text:a` and re-imports as the same mark+href.
+        let mut d = Document::new();
+        let id = d.insert_block(None, "paragraph");
+        d.splice_text(&id, 0, 0, "go home now");
+        d.as_mut().add_mark(&id, 3, 7, "link", "https://qos.dev/");
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let c = OdtContainer::read(&exported).unwrap();
+        let content = std::str::from_utf8(c.get("content.xml").unwrap()).unwrap();
+        assert!(
+            content.contains(r#"<text:a xlink:href="https://qos.dev/">home</text:a>"#),
+            "exported a text:a element: {content}"
+        );
+
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let b = &d2.materialize().blocks[0];
+        assert_eq!(b.text, "go home now");
+        let link = b.marks.iter().find(|m| m.name == "link").expect("link survives round-trip");
+        assert_eq!((link.start, link.end), (3, 7), "{:?}", b.marks);
+        assert_eq!(link.value, MarkValue::Str("https://qos.dev/".into()));
+    }
+
+    #[test]
+    fn hyperlink_escapes_href() {
+        // An href with `&` must be attribute-escaped on export and unescaped on import.
+        let mut d = Document::new();
+        let id = d.insert_block(None, "paragraph");
+        d.splice_text(&id, 0, 0, "link");
+        d.as_mut().add_mark(&id, 0, 4, "link", "https://x/?a=1&b=2");
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let c = OdtContainer::read(&exported).unwrap();
+        let content = std::str::from_utf8(c.get("content.xml").unwrap()).unwrap();
+        assert!(content.contains("a=1&amp;b=2"), "ampersand escaped: {content}");
+
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let link = d2.materialize().blocks[0].marks.iter().find(|m| m.name == "link").unwrap().value.clone();
+        assert_eq!(link, crate::document::MarkValue::Str("https://x/?a=1&b=2".into()));
+    }
+
+    #[test]
+    fn text_color_roundtrips() {
+        use crate::document::MarkValue;
+        let mut d = Document::new();
+        let id = d.insert_block(None, "paragraph");
+        d.splice_text(&id, 0, 0, "red text");
+        d.as_mut().add_mark(&id, 0, 3, "color", "#ff0000");
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let b = &d2.materialize().blocks[0];
+        assert_eq!(b.text, "red text");
+        assert!(
+            b.marks.iter().any(|m| m.name == "color" && m.start == 0 && m.end == 3 && m.value == MarkValue::Str("#ff0000".into())),
+            "color survives round-trip: {:?}",
+            b.marks
+        );
+    }
+
+    #[test]
+    fn link_and_style_marks_nest_well() {
+        use crate::document::MarkValue;
+        // A bold, coloured hyperlink: link (outer text:a) wraps the style spans.
+        let mut d = Document::new();
+        let id = d.insert_block(None, "paragraph");
+        d.splice_text(&id, 0, 0, "click");
+        {
+            let mut dm = d.as_mut();
+            dm.add_mark(&id, 0, 5, "link", "http://q/");
+            dm.add_mark(&id, 0, 5, "strong", true);
+            dm.add_mark(&id, 0, 5, "color", "#0000ff");
+        }
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let b = &d2.materialize().blocks[0];
+        assert_eq!(b.text, "click");
+        for name in ["link", "strong", "color"] {
+            assert!(b.marks.iter().any(|m| m.name == name && m.start == 0 && m.end == 5), "{name} survives: {:?}", b.marks);
+        }
+        assert_eq!(b.marks.iter().find(|m| m.name == "link").unwrap().value, MarkValue::Str("http://q/".into()));
     }
 
     #[test]
