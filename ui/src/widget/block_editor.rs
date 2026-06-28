@@ -1748,28 +1748,25 @@ impl Widget for BlockEditor {
                 for (user, byte_pos) in list {
                     // Highlight the block this peer is editing.
                     presence.draw_peer_focus(scene, theme, user, tr_rect);
-                    let x = line.pixel_x_for_byte(theme, *byte_pos);
-                    let p = transform * Point::new(x, brect.y0);
+                    // The line owns the caret geometry, so the peer caret
+                    // is pixel-identical to a local caret (just recoloured).
                     presence.draw_peer_caret(
                         scene,
                         theme,
+                        transform,
                         user,
-                        (p.x as f32, p.y as f32),
+                        line.caret_rect(theme, *byte_pos),
                     );
                 }
             }
             if let Some(list) = presence.selections.get(&key) {
                 for (user, range) in list {
-                    let x0 = line.pixel_x_for_byte(theme, range.start);
-                    let x1 = line.pixel_x_for_byte(theme, range.end);
-                    let p0 = transform * Point::new(x0, brect.y0);
-                    let p1 = transform * Point::new(x1, brect.y1);
                     presence.draw_peer_selection(
                         scene,
                         theme,
+                        transform,
                         user,
-                        range,
-                        &[Rect::new(p0.x, p0.y, p1.x, p1.y)],
+                        line.selection_rect(theme, range.start, range.end),
                     );
                 }
             }
