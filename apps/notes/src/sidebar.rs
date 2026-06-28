@@ -307,7 +307,13 @@ impl Widget for NoteTreeView {
         );
 
         for (i, row) in self.flat_rows.iter().enumerate() {
-            let row_rect = self.row_rects[i];
+            // `row_rects` is rebuilt in `apply_layout`; a collab-driven
+            // `sync` can grow `flat_rows` a frame before the relayout
+            // lands, so guard rather than index out of bounds. The row
+            // appears next frame once layout catches up.
+            let Some(&row_rect) = self.row_rects.get(i) else {
+                break;
+            };
             if self.selected == Some(row.id) {
                 scene.fill(
                     vello::peniko::Fill::NonZero,
@@ -465,7 +471,9 @@ impl Widget for NoteTreeView {
                     return;
                 }
                 for i in 0..self.flat_rows.len() {
-                    let row_rect = self.row_rects[i];
+                    let Some(&row_rect) = self.row_rects.get(i) else {
+                        break;
+                    };
                     if !row_rect.contains(pt) {
                         continue;
                     }
