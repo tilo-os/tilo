@@ -29,6 +29,11 @@ pub enum UserEvent {
     /// One UserEvent dispatches THREE `WindowEvent`s through the same path
     /// a real click would take.
     Click { x: f64, y: f64 },
+    /// Synthesise a `MouseWheel { LineDelta(dx, dy) }` at the cursor's
+    /// most-recent position. Used by the hosted-mode test_control socket
+    /// so an external script can drive strip-pan / overview-scroll /
+    /// wheel-disc gestures without a real mouse.
+    Wheel { dx: f32, dy: f32 },
 }
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -100,6 +105,13 @@ pub struct App {
     pub debug_mode: bool,
     pub focused_node: Option<NodeId>,
     pub focusable_order: Vec<NodeId>,
+    /// Opt-in: when set, the first focusable widget is focused once the
+    /// initial layout is built (before the event loop runs) so the app is
+    /// keyboard-usable without a click. Default `false` — existing apps
+    /// (shell, terminal, file-explorer) keep "nothing focused until the
+    /// user acts". The greeter sets this so the username field is typeable
+    /// immediately at the login prompt.
+    pub autofocus_first: bool,
     modifiers: winit::event::Modifiers,
     
     // Stable state for Undo/Redo tracking
@@ -163,6 +175,7 @@ impl App {
             debug_mode: std::env::var("QUICK_UI_DEBUG").is_ok(),
             focused_node: None,
             focusable_order: Vec::new(),
+            autofocus_first: false,
             modifiers: winit::event::Modifiers::default(),
             last_stable_focus_idx: None,
             last_stable_metadata: None,
@@ -341,24 +354,88 @@ impl App {
     pub fn poll_and_apply_collab_events(&mut self) {
         let events = self.collab_manager.poll();
         for event in events {
+            self.apply_collab_event_for_test(event);
+        }
+    }
+
+    /// Drain every pending [`CollabEvent`] from the collaboration
+    /// manager and route the payload into [`Self::presence_ctx`]:
+    /// remote cursor moves stamp the `remote_cursors` overlay vec,
+    /// arrivals / departures update the `here` map, caret /
+    /// selection / pointer updates land in their respective maps,
+    /// and a CRDT incremental merge is applied so peer mutations
+    /// become visible at the next sync. Returns `true` iff at least
+    /// one event was processed; the caller can use that to decide
+    /// whether the window needs a fresh redraw.
+    ///
+    /// This is the **single shared entry point** the per-frame tick
+    /// and the headless test path both go through. Keeping the
+    /// dispatch in one place means a future protocol addition
+    /// (e.g. a new payload variant) doesn't have to be added to
+    /// two near-identical match arms.
+    pub fn pump_collab_presence(&mut self) -> bool {
+        let events = self.collab_manager.poll();
+        let mut any = false;
+        for event in events {
+            any = true;
             match event {
+                CollabEvent::Context { collaborators, .. } => {
+                    for c in collaborators {
+                        self.state.collab.cursors.entry(c.id.clone()).or_insert(
+                            crate::state::RemoteCursor {
+                                x: 0.0,
+                                y: 0.0,
+                                color: crate::color_compat::rgb(
+                                    c.color[0] as f64,
+                                    c.color[1] as f64,
+                                    c.color[2] as f64,
+                                ),
+                                name: c.name.clone(),
+                            },
+                        );
+                        // Seed the overlay-side presence so peer
+                        // labels come through with the server-
+                        // announced friendly name; later cursor
+                        // moves preserve the label because they
+                        // pass display_name=None.
+                        self.presence_ctx
+                            .upsert_remote_cursor(c.id.clone(), [0.0, 0.0], Some(&c.name));
+                    }
+                }
                 CollabEvent::RemoteCursorMoved { user_id, x, y } => {
                     if let Some(cursor) = self.state.collab.cursors.get_mut(&user_id) {
                         cursor.x = x;
                         cursor.y = y;
                     }
-                    // Mirror the update into PresenceCtx so the shell's
-                    // RemoteCursorOverlay (which reads from
-                    // `presence_ctx.remote_cursors`, not the legacy
-                    // `state.collab.cursors` map) lights up too.
-                    self.presence_ctx.upsert_remote_cursor(user_id, [x, y], None);
+                    self.presence_ctx
+                        .upsert_remote_cursor(user_id, [x, y], None);
                 }
                 CollabEvent::RemotePresenceUpdate { user_id, key, payload } => {
                     self.apply_remote_presence(user_id, key, payload);
                 }
-                _ => {}
+                CollabEvent::CRDTUpdate { data } => {
+                    // MERGE incoming full state rather than replacing the
+                    // doc — a replace clobbers our own concurrent edits.
+                    if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
+                        eprintln!("[app] recv CRDTUpdate {}B", data.len());
+                    }
+                    if let Ok(mut incoming) = State::load(&data) {
+                        let _ = self.state.doc.merge(&mut incoming.doc);
+                        self.needs_sync = true;
+                        // A remote change can grow the widget tree (new
+                        // page/block), so force a relayout before the next
+                        // draw — else a stale layout indexes out of bounds.
+                        self.layout_dirty = true;
+                    }
+                }
+                CollabEvent::CRDTIncremental { data } => {
+                    let _ = self.state.load_incremental(&data);
+                    self.needs_sync = true;
+                    self.layout_dirty = true;
+                }
             }
         }
+        any
     }
 
     /// Test-only hook: apply a single `CollabEvent` directly, bypassing the
@@ -438,30 +515,50 @@ impl App {
     ) {
         use crate::collaboration::PresencePayload::*;
         use crate::permissions::UserId;
-        let uid = UserId(user_id);
         match payload {
-            Pointer { x, y } => self.presence_ctx.set_pointer(&key, uid, (x, y)),
-            Caret { pos } => self.presence_ctx.set_caret(&key, uid, pos),
-            Selection { start, end } => self.presence_ctx.set_selection(
-                &key,
-                uid,
-                crate::presence::SelectionRange { start, end },
-            ),
+            Pointer { x, y } => {
+                // Populate BOTH presence stores: `pointers` (keyed by
+                // scope, read by the shell's per-workspace overlay and by
+                // `pointer_for`) and the screen-space `remote_cursors` vec
+                // the shared `draw_remote_cursors` helper renders. Only the
+                // latter is painted by the App, so there's no double-draw.
+                let uid = UserId(user_id.clone());
+                self.presence_ctx.set_pointer(&key, uid, (x, y));
+                self.presence_ctx
+                    .upsert_remote_cursor(user_id, [x, y], None);
+            }
+            Caret { pos } => {
+                // Feed BOTH presence stores: the in-app BlockEditor reads
+                // `carets` (set_caret); the cross-process overlay reads
+                // the `remote_caret` map (set_remote_caret).
+                let uid = UserId(user_id.clone());
+                self.presence_ctx.set_caret(&key, uid, pos);
+                self.presence_ctx.set_remote_caret(user_id, key, pos);
+            }
+            Selection { start, end } => {
+                let uid = UserId(user_id.clone());
+                self.presence_ctx.set_selection(
+                    &key,
+                    uid,
+                    crate::presence::SelectionRange { start, end },
+                );
+                self.presence_ctx
+                    .set_remote_selection(user_id, key, start, end);
+            }
             Arrived => {
-                // For Tab keys, route through set_tab_focus so a peer
-                // switching tabs moves their dot instead of accumulating
-                // attribution on every tab they've ever visited. Non-tab
-                // keys fall through to plain register_presence.
+                let uid = UserId(user_id.clone());
+                // Register in #280's cross-process peer registry too.
+                self.presence_ctx
+                    .register_peer_at(user_id.clone(), key.clone());
+                // Tab keys move the peer's dot between tabs/pages; non-Tab
+                // (app/workspace) arrivals are (possibly late) joiners, so
+                // reply with our full state to converge. The broker fans
+                // this to all peers; an already-synced peer merges it
+                // idempotently. (Page switches use Tab keys, never this.)
                 if matches!(key, crate::presence::PresenceKey::Tab { .. }) {
                     self.presence_ctx.set_tab_focus(&key, uid);
                 } else {
                     self.presence_ctx.register_presence(&key, uid);
-                    // A non-Tab (app/workspace-level) arrival is a peer
-                    // announcing themselves — possibly a late joiner with
-                    // an empty document. Reply with our full state so they
-                    // converge. The broker fans this to all peers; an
-                    // already-synced peer merges it idempotently. (Page
-                    // switches use Tab keys and never trigger this.)
                     let data = self.state.save();
                     if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
                         eprintln!(
@@ -473,7 +570,13 @@ impl App {
                         .send(crate::collaboration::CollabRequest::SyncCRDT { data });
                 }
             }
-            Left => self.presence_ctx.remove_presence(&key, &uid),
+            Left => {
+                // Drop the peer everywhere — they're gone, not just from
+                // one key (a stale pointer would otherwise linger).
+                let uid = UserId(user_id.clone());
+                self.presence_ctx.unregister_peer(user_id);
+                self.presence_ctx.remove_presence(&key, &uid);
+            }
         }
     }
 
@@ -592,6 +695,14 @@ impl App {
             &mut self.node_map,
         ));
         self.update_focusable_order();
+        // Opt-in startup focus: hand the keyboard to the first focusable
+        // widget so the app is typeable without a click (used by the
+        // greeter so the username field is ready at the login prompt).
+        if self.autofocus_first && self.focused_node.is_none() {
+            if let Some(&first) = self.focusable_order.first() {
+                self.set_focused_node(Some(first));
+            }
+        }
         self.last_stable_focus_idx = self
             .focused_node
             .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
@@ -672,6 +783,14 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     button: MouseButton::Left,
                 };
                 self.window_event(event_loop, window_id, release);
+            }
+            UserEvent::Wheel { dx, dy } => {
+                let ev = WindowEvent::MouseWheel {
+                    device_id: unsafe { std::mem::zeroed() },
+                    delta: winit::event::MouseScrollDelta::LineDelta(dx, dy),
+                    phase: winit::event::TouchPhase::Moved,
+                };
+                self.window_event(event_loop, window_id, ev);
             }
         }
     }
@@ -922,7 +1041,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 app.root_widget.mark_drawn();
                 let t_draw_us = t_draw_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
 
-                // Draw Remote Cursors
+                // Draw Remote Cursors (legacy path — `state.collab.cursors`
+                // is the pre-PresenceCtx map; kept for compat with apps
+                // that still write into it directly).
                 for (_, cursor) in &app.state.collab.cursors {
                     let mut path = vello::kurbo::BezPath::new();
                     path.move_to(Point::new(0.0, 0.0));
@@ -958,34 +1079,18 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     );
                 }
 
-                // Draw remote pointers delivered over the app collab
-                // socket (the broker path): these land in
-                // `PresenceCtx::pointers` keyed by the broadcast scope,
-                // NOT the legacy `state.collab.cursors` map. Render each
-                // as a round, color-coded cursor with a name label.
-                for peers in app.presence_ctx.pointers.values() {
-                    for (uid, pos) in peers {
-                        app.presence_ctx.draw_peer_pointer(
-                            &mut scene,
-                            &app.theme,
-                            transform,
-                            uid,
-                            *pos,
-                        );
-                        app.text_renderer.draw_text(
-                            &mut scene,
-                            &uid.0,
-                            10.0,
-                            Color::WHITE,
-                            transform
-                                * Affine::translate((
-                                    pos.0 as f64 + 11.0,
-                                    pos.1 as f64 + 4.0,
-                                )),
-                            None,
-                        );
-                    }
-                }
+                // Remote peer cursors (both collab-socket and libp2p
+                // sources land in `remote_cursors`): one shared helper
+                // paints each as a round, color-coded dot + name pill.
+                // `pointers` is kept populated for the shell overlay but
+                // not painted here, so no peer is drawn twice.
+                crate::presence::draw_remote_cursors(
+                    &mut scene,
+                    transform,
+                    &mut app.text_renderer,
+                    &app.theme,
+                    &app.presence_ctx,
+                );
 
                 if app.debug_mode {
                     let debug_outline_cycle = [
@@ -1412,89 +1517,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             return;
         };
         let app = &mut self.app;
-        // Poll collaboration events
-        for event in app.collab_manager.poll() {
-            match event {
-                CollabEvent::Context { collaborators, .. } => {
-                    // Update collaborators
-                    // We'll need a better way to map this, but for now:
-                    for c in collaborators {
-                        app.state.collab.cursors.entry(c.id.clone()).or_insert(
-                            crate::state::RemoteCursor {
-                                x: 0.0,
-                                y: 0.0,
-                                color: crate::color_compat::rgb(
-                                    c.color[0] as f64,
-                                    c.color[1] as f64,
-                                    c.color[2] as f64,
-                                ),
-                                name: c.name.clone(),
-                            },
-                        );
-                        // Seed the overlay-side presence so peer
-                        // labels come through with the server-
-                        // announced friendly name (later cursor
-                        // moves will preserve that label because
-                        // they pass display_name=None).
-                        app.presence_ctx.upsert_remote_cursor(
-                            c.id.clone(),
-                            [0.0, 0.0],
-                            Some(&c.name),
-                        );
-                    }
-                }
-                CollabEvent::RemoteCursorMoved { user_id, x, y } => {
-                    if let Some(cursor) = app.state.collab.cursors.get_mut(&user_id) {
-                        cursor.x = x;
-                        cursor.y = y;
-                        window.request_redraw();
-                    }
-                    // Always mirror into PresenceCtx — a peer
-                    // can send cursor moves before we've seen
-                    // their Context entry, and the overlay still
-                    // needs to paint them.
-                    app.presence_ctx.upsert_remote_cursor(user_id, [x, y], None);
-                }
-                CollabEvent::CRDTUpdate { data } => {
-                    // MERGE incoming full state into our doc rather than
-                    // replacing it — a replace would clobber our own
-                    // concurrent edits. Merge is the correct CRDT join and
-                    // is what makes bidirectional editing converge.
-                    if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                        eprintln!("[app] recv CRDTUpdate {}B", data.len());
-                    }
-                    if let Ok(mut incoming) = State::load(&data) {
-                        let _ = app.state.doc.merge(&mut incoming.doc);
-                        app.needs_sync = true;
-                        // A remote change can alter widget structure (e.g.
-                        // a peer added a page / block), so the next frame's
-                        // `sync` may grow the tree. Force a relayout so
-                        // per-row/per-block rects are rebuilt before draw —
-                        // otherwise a stale layout indexes out of bounds.
-                        app.layout_dirty = true;
-                        window.request_redraw();
-                    }
-                }
-                CollabEvent::CRDTIncremental { data } => {
-                    // Merge the incremental patch into the local
-                    // CRDT. If the bytes are malformed we keep the
-                    // local doc unchanged (best-effort) — a noisy
-                    // peer can't brick our state.
-                    let _ = app.state.load_incremental(&data);
-                    app.needs_sync = true;
-                    // See CRDTUpdate above: relayout after a remote change.
-                    app.layout_dirty = true;
-                    window.request_redraw();
-                }
-                CollabEvent::RemotePresenceUpdate {
-                    user_id,
-                    key,
-                    payload,
-                } => {
-                    app.apply_remote_presence(user_id, key, payload);
-                    window.request_redraw();
-                }
-            }
+        // Drain every pending CollabEvent into PresenceCtx /
+        // state.collab via the single shared dispatch. If any event
+        // came through, kick a redraw so the freshly-stamped remote
+        // cursor / caret / selection appears on the next frame.
+        if app.pump_collab_presence() {
+            window.request_redraw();
         }
 
         if app.root_widget.needs_commit() {

@@ -4,7 +4,10 @@ use crate::permissions::UserId;
 mod key;
 mod render;
 pub use key::{PresenceKey, PathSegment, SelectionRange};
-// render.rs adds impl blocks; nothing new to pub use.
+// `render::draw_remote_cursors` is a free function — re-export so
+// downstream apps (terminal, settings, file-explorer) can call it from
+// their per-frame draw without depending on the shell.
+pub use render::draw_remote_cursors;
 
 /// Stable RGB color for a collaborator, used by every widget that paints a
 /// per-peer affordance (tab presence dots, remote cursor, per-folder
@@ -299,6 +302,82 @@ impl PresenceCtx {
     pub fn remove_remote_cursor(&mut self, user_id: &str) {
         self.remote_cursors.retain(|c| c.user_id != user_id);
     }
+
+    // -----------------------------------------------------------------
+    // String-id wrappers used by the App's collab-event pump.
+    //
+    // The wire protocol (`CollabEvent::RemotePresenceUpdate`) carries
+    // peer ids as `String`s; the rest of `PresenceCtx` is keyed by
+    // [`UserId`] (a newtype around `String`). The wrappers below let
+    // the pump forward straight from the event payload without paying
+    // for a manual `UserId(...)` wrap on every call, and ensure that
+    // peer arrivals / departures / caret moves / selection changes
+    // all touch the SAME fields the widget render passes already read
+    // from (`here`, `carets`, `selections`, `remote_cursors`).
+    // -----------------------------------------------------------------
+
+    /// Record `user_id`'s caret position under `key`. Mirrors the
+    /// `Caret` payload of [`crate::collaboration::PresencePayload`] and
+    /// stores into the existing [`Self::carets`] map so widgets that
+    /// already call [`Self::caret_for`] light up without a second lookup.
+    pub fn set_remote_caret(&mut self, user_id: String, key: PresenceKey, pos: usize) {
+        self.set_caret(&key, UserId(user_id), pos);
+    }
+
+    /// Record `user_id`'s selection range under `key`. Mirrors the
+    /// `Selection` payload of [`crate::collaboration::PresencePayload`]
+    /// and stores into the existing [`Self::selections`] map.
+    pub fn set_remote_selection(
+        &mut self,
+        user_id: String,
+        key: PresenceKey,
+        start: usize,
+        end: usize,
+    ) {
+        self.set_selection(&key, UserId(user_id), SelectionRange { start, end });
+    }
+
+    /// Attribute `user_id` to `key` (peer "arrived"). Routes through
+    /// [`Self::set_tab_focus`] for `Tab` keys so a peer switching tabs
+    /// moves their dot rather than accumulating attribution on every
+    /// tab they've ever visited; other keys fall through to
+    /// [`Self::register_presence`].
+    pub fn register_peer_at(&mut self, user_id: String, key: PresenceKey) {
+        let uid = UserId(user_id);
+        if matches!(key, PresenceKey::Tab { .. }) {
+            self.set_tab_focus(&key, uid);
+        } else {
+            self.register_presence(&key, uid);
+        }
+    }
+
+    /// Drop every trace of `user_id`: remove them from every
+    /// [`Self::here`] list, every [`Self::pointers`] / [`Self::carets`]
+    /// / [`Self::selections`] list, and drop their entry from
+    /// [`Self::remote_cursors`]. Called on the `Left` payload of
+    /// [`crate::collaboration::PresencePayload`] and whenever a peer
+    /// disconnects.
+    pub fn unregister_peer(&mut self, user_id: String) {
+        let uid = UserId(user_id.clone());
+        // here
+        for list in self.here.values_mut() {
+            list.retain(|u| u != &uid);
+        }
+        // pointers
+        for list in self.pointers.values_mut() {
+            list.retain(|(u, _)| u != &uid);
+        }
+        // carets
+        for list in self.carets.values_mut() {
+            list.retain(|(u, _)| u != &uid);
+        }
+        // selections
+        for list in self.selections.values_mut() {
+            list.retain(|(u, _)| u != &uid);
+        }
+        // remote cursor stamp
+        self.remove_remote_cursor(&user_id);
+    }
 }
 
 /// Parse a `#rgb` / `#rrggbb` / `#rrggbbaa` colour string to an RGB triple.
@@ -495,5 +574,100 @@ mod remote_cursor_tests {
         // Removing an unknown id is a no-op.
         ctx.remove_remote_cursor("nobody");
         assert_eq!(ctx.remote_cursors.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod string_id_wrapper_tests {
+    use super::*;
+
+    #[test]
+    fn set_remote_caret_writes_to_carets_map() {
+        let mut ctx = PresenceCtx::empty();
+        let key = PresenceKey::Workspace { id: "home".into() };
+        ctx.set_remote_caret("alice".into(), key.clone(), 42);
+        assert_eq!(ctx.caret_for(&key, &UserId("alice".into())), Some(42));
+    }
+
+    #[test]
+    fn set_remote_selection_writes_to_selections_map() {
+        let mut ctx = PresenceCtx::empty();
+        let key = PresenceKey::Workspace { id: "home".into() };
+        ctx.set_remote_selection("bob".into(), key.clone(), 3, 9);
+        let r = ctx.selection_for(&key, &UserId("bob".into())).expect("selection");
+        assert_eq!((r.start, r.end), (3, 9));
+    }
+
+    #[test]
+    fn register_peer_at_workspace_adds_to_here() {
+        let mut ctx = PresenceCtx::empty();
+        let key = PresenceKey::Workspace { id: "home".into() };
+        ctx.register_peer_at("alice".into(), key.clone());
+        assert_eq!(ctx.peers_on(&key), &[UserId("alice".into())]);
+    }
+
+    #[test]
+    fn register_peer_at_tab_routes_through_set_tab_focus() {
+        // A peer switching between two tab keys must end up on exactly
+        // one — the previous tab should drop them. This guards the
+        // routing through set_tab_focus.
+        let mut ctx = PresenceCtx::empty();
+        let a = PresenceKey::Tab { id: "aaa".into() };
+        let b = PresenceKey::Tab { id: "bbb".into() };
+        ctx.register_peer_at("alice".into(), a.clone());
+        ctx.register_peer_at("alice".into(), b.clone());
+        assert!(ctx.peers_on(&a).is_empty(),
+            "peer must have been evicted from previous tab");
+        assert_eq!(ctx.peers_on(&b), &[UserId("alice".into())]);
+    }
+
+    #[test]
+    fn unregister_peer_drops_every_trace() {
+        let mut ctx = PresenceCtx::empty();
+        let key_a = PresenceKey::Workspace { id: "home".into() };
+        let key_b = PresenceKey::Tab { id: "tab1".into() };
+
+        ctx.register_peer_at("alice".into(), key_a.clone());
+        ctx.register_peer_at("alice".into(), key_b.clone());
+        ctx.set_remote_caret("alice".into(), key_a.clone(), 5);
+        ctx.set_remote_selection("alice".into(), key_a.clone(), 1, 4);
+        ctx.set_pointer(&key_a, UserId("alice".into()), (10.0, 20.0));
+        ctx.upsert_remote_cursor("alice".into(), [10.0, 20.0], None);
+
+        // Sanity: alice is everywhere.
+        assert!(!ctx.peers_on(&key_a).is_empty());
+        assert!(!ctx.peers_on(&key_b).is_empty());
+        assert!(ctx.caret_for(&key_a, &UserId("alice".into())).is_some());
+        assert!(ctx.selection_for(&key_a, &UserId("alice".into())).is_some());
+        assert!(ctx.pointer_for(&key_a, &UserId("alice".into())).is_some());
+        assert_eq!(ctx.remote_cursors.len(), 1);
+
+        ctx.unregister_peer("alice".into());
+
+        // Alice is purged.
+        assert!(ctx.peers_on(&key_a).is_empty());
+        assert!(ctx.peers_on(&key_b).is_empty());
+        assert!(ctx.caret_for(&key_a, &UserId("alice".into())).is_none());
+        assert!(ctx.selection_for(&key_a, &UserId("alice".into())).is_none());
+        assert!(ctx.pointer_for(&key_a, &UserId("alice".into())).is_none());
+        assert!(ctx.remote_cursors.is_empty());
+    }
+
+    #[test]
+    fn unregister_peer_leaves_other_users_alone() {
+        // Removing alice must not collateral-damage bob.
+        let mut ctx = PresenceCtx::empty();
+        let key = PresenceKey::Workspace { id: "home".into() };
+        ctx.register_peer_at("alice".into(), key.clone());
+        ctx.register_peer_at("bob".into(), key.clone());
+        ctx.set_remote_caret("bob".into(), key.clone(), 7);
+        ctx.upsert_remote_cursor("bob".into(), [99.0, 99.0], None);
+
+        ctx.unregister_peer("alice".into());
+
+        assert_eq!(ctx.peers_on(&key), &[UserId("bob".into())]);
+        assert_eq!(ctx.caret_for(&key, &UserId("bob".into())), Some(7));
+        assert_eq!(ctx.remote_cursors.len(), 1);
+        assert_eq!(ctx.remote_cursors[0].user_id, "bob");
     }
 }
