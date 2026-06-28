@@ -12,7 +12,7 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
 use vello::Scene;
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use qdoc::document::MarkSpan;
@@ -236,6 +236,10 @@ pub struct WordProcessorWidget {
     /// Last rich copy: `(plain_text, blocks)`. Paste uses it when the system
     /// clipboard still holds this exact plain text.
     rich_clip: Option<(String, Vec<ClipBlock>)>,
+    /// Vertical scroll offset (px) and the max scroll (content overflow), updated
+    /// each frame from the laid-out content height.
+    scroll_y: f64,
+    max_scroll: f64,
 }
 
 impl Default for WordProcessorWidget {
@@ -260,6 +264,8 @@ impl WordProcessorWidget {
             laid: Vec::new(),
             toolbar: Vec::new(),
             rich_clip: None,
+            scroll_y: 0.0,
+            max_scroll: 0.0,
         }
     }
 
@@ -487,8 +493,26 @@ impl Widget for WordProcessorWidget {
         let content_bottom = y - BLOCK_SPACING + PAGE_MARGIN;
         let page_h = (content_bottom - page_top).max(canvas.height() - 2.0 * PAGE_TOP);
 
+        // Scrolling: clamp the offset to the overflow, then shift the laid-out
+        // content (+ page) into screen space so hit-testing needs no offset.
+        self.max_scroll = (page_h + 2.0 * PAGE_TOP - canvas.height()).max(0.0);
+        self.scroll_y = self.scroll_y.clamp(0.0, self.max_scroll);
+        let sy = self.scroll_y;
+        if sy != 0.0 {
+            for l in laid.iter_mut() {
+                l.y_top -= sy;
+                if let Some(bx) = l.cell_box.as_mut() {
+                    *bx = Rect::new(bx.x0, bx.y0 - sy, bx.x1, bx.y1 - sy);
+                }
+            }
+        }
+
+        // Clip the document to the canvas so scrolled content never paints over
+        // the toolbar / status bar.
+        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &canvas);
+
         // Page shadow + paper (the document surface).
-        let page = Rect::new(page_x, page_top, page_x + page_w, page_top + page_h);
+        let page = Rect::new(page_x, page_top - sy, page_x + page_w, page_top + page_h - sy);
         chrome::page::draw(scene, transform, page, PAPER, SHADOW);
 
         // Restore the block cache before pass 2 so selection lookups resolve.
@@ -554,6 +578,18 @@ impl Widget for WordProcessorWidget {
             }
         }
 
+        scene.pop_layer();
+
+        // Scrollbar thumb (right edge) when the content overflows the canvas.
+        if self.max_scroll > 0.0 {
+            let track = canvas.height();
+            let thumb_h = (track * track / (track + self.max_scroll)).max(28.0);
+            let frac = self.scroll_y / self.max_scroll;
+            let thumb_y = canvas.y0 + frac * (track - thumb_h);
+            let thumb = Rect::new(canvas.x1 - 8.0, thumb_y + 2.0, canvas.x1 - 4.0, thumb_y + thumb_h - 2.0);
+            scene.fill(Fill::NonZero, transform, Color::from_rgb8(0x55, 0x58, 0x60), None, &vello::kurbo::RoundedRect::from_rect(thumb, 2.0));
+        }
+
         self.laid = laid;
 
         let bar = Rect::new(full.x0, status_top, full.x1, full.y1);
@@ -564,6 +600,18 @@ impl Widget for WordProcessorWidget {
         let shift = modifiers.state().shift_key();
         let ctrl = modifiers.state().control_key();
         match event {
+            WindowEvent::MouseWheel { delta, .. } => {
+                let dy = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => *y as f64 * 48.0,
+                    MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
+                };
+                let new = (self.scroll_y - dy).clamp(0.0, self.max_scroll);
+                if new != self.scroll_y {
+                    self.scroll_y = new;
+                    self.dirty = true;
+                    *handled = true;
+                }
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
                 if self.drag.drag().is_some() {
