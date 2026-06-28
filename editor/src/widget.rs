@@ -18,6 +18,7 @@ use winit::keyboard::{Key, NamedKey};
 use qdoc::document::MarkSpan;
 use qdoc::snapshot::{AttrVal, BlockView};
 use ui::chrome::{self, LabelCue, ToolbarItem};
+use ui::gesture::{DragSelect, Granularity};
 use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -226,10 +227,7 @@ pub struct WordProcessorWidget {
     dirty: bool,
     needs_commit: bool,
     pointer: Point,
-    dragging: bool,
-    last_click: Option<std::time::Instant>,
-    last_click_pos: Point,
-    click_count: u8,
+    drag: DragSelect,
     path: Option<PathBuf>,
     format: Option<WpFormat>,
     blocks: Vec<BlockView>,
@@ -255,10 +253,7 @@ impl WordProcessorWidget {
             dirty: true,
             needs_commit: false,
             pointer: Point::ZERO,
-            dragging: false,
-            last_click: None,
-            last_click_pos: Point::ZERO,
-            click_count: 0,
+            drag: DragSelect::new(),
             path: None,
             format: None,
             blocks: Vec::new(),
@@ -571,10 +566,11 @@ impl Widget for WordProcessorWidget {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
-                if self.dragging {
+                if self.drag.drag().is_some() {
+                    // Extend the selection: keep the anchor, move the caret.
                     self.caret_from_pointer(self.pointer, true);
-                    // Claim the move so the host App repaints the growing selection
-                    // (its redraw is gated behind `handled`).
+                    // Claim the move so the host App repaints (its redraw is gated
+                    // behind `handled`).
                     *handled = true;
                 }
             }
@@ -597,28 +593,20 @@ impl Widget for WordProcessorWidget {
                 if self.pointer.y > self.rect.y1 - STATUS_H {
                     return; // status bar — not editable
                 }
-                self.dragging = true;
-
-                // Double-click selects the word, triple-click the paragraph.
-                let now = std::time::Instant::now();
-                let recent = self.last_click.map(|t| now.duration_since(t).as_millis() < 450).unwrap_or(false);
-                let near = self.last_click_pos.distance(self.pointer) < 4.0;
-                self.click_count = if recent && near { (self.click_count + 1).min(3) } else { 1 };
-                self.last_click = Some(now);
-                self.last_click_pos = self.pointer;
-
-                self.caret_from_pointer(self.pointer, shift);
-                match self.click_count {
-                    2 => self.inner.select_word(state),
-                    3 => self.select_all_in_block(state),
-                    _ => {}
+                // Selection gesture (ui::DragSelect): shift extends; double/triple
+                // click select word/paragraph; a plain press starts a fresh drag.
+                let intent = self.drag.press(self.pointer, shift);
+                self.caret_from_pointer(self.pointer, intent.extend);
+                match intent.granularity {
+                    Granularity::Word => self.inner.select_word(state),
+                    Granularity::Line => self.select_all_in_block(state),
+                    Granularity::Char => {}
                 }
                 self.dirty = true;
                 *handled = true;
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
-                if self.dragging {
-                    self.dragging = false;
+                if self.drag.release() {
                     self.dirty = true;
                     *handled = true;
                 }
@@ -928,24 +916,6 @@ impl WordProcessorWidget {
                 _ => None,
             })
             .unwrap_or_else(|| "left".into())
-    }
-
-    fn selection_text(&self) -> Option<String> {
-        let sel = self.selection_blocks_cached();
-        if sel.is_empty() {
-            return None;
-        }
-        let parts: Vec<String> = sel
-            .into_iter()
-            .map(|(bid, s, e)| {
-                self.blocks
-                    .iter()
-                    .find(|b| b.id == bid)
-                    .map(|b| b.text.chars().skip(s).take(e.saturating_sub(s)).collect::<String>())
-                    .unwrap_or_default()
-            })
-            .collect();
-        Some(parts.join("\n"))
     }
 
     fn clipboard_copy(&mut self, state: &AutoCommit) {
