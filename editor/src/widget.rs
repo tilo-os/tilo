@@ -367,11 +367,10 @@ impl Widget for WordProcessorWidget {
         let canvas = Rect::new(full.x0, full.y0 + TOOLBAR_H, full.x1, status_top);
         scene.fill(Fill::NonZero, transform, CANVAS, None, &canvas);
 
-        let page_w = (canvas.width() - 2.0 * PAGE_TOP).clamp(320.0, MAX_PAGE_W);
-        let page_x = canvas.x0 + ((canvas.width() - page_w) / 2.0).max(0.0);
-        let page_top = canvas.y0 + PAGE_TOP;
-        let content_x = page_x + PAGE_MARGIN;
-        let content_w = (page_w - 2.0 * PAGE_MARGIN) as f32;
+        let geo = chrome::page::geometry(canvas, MAX_PAGE_W, PAGE_TOP, PAGE_MARGIN);
+        let (page_x, page_top, page_w) = (geo.page_x, geo.page_top, geo.page_width);
+        let content_x = geo.content_x;
+        let content_w = geo.content_width as f32;
 
         // Pass 1: shape blocks top-to-bottom. Runs of consecutive `cell` blocks
         // sharing a table id lay out as a grid; everything else stacks normally.
@@ -483,11 +482,9 @@ impl Widget for WordProcessorWidget {
         let content_bottom = y - BLOCK_SPACING + PAGE_MARGIN;
         let page_h = (content_bottom - page_top).max(canvas.height() - 2.0 * PAGE_TOP);
 
-        // Page shadow + paper.
-        let shadow = Rect::new(page_x - 1.0, page_top + 4.0, page_x + page_w + 1.0, page_top + page_h + 6.0);
-        scene.fill(Fill::NonZero, transform, SHADOW, None, &vello::kurbo::RoundedRect::from_rect(shadow, 4.0));
+        // Page shadow + paper (the document surface).
         let page = Rect::new(page_x, page_top, page_x + page_w, page_top + page_h);
-        scene.fill(Fill::NonZero, transform, PAPER, None, &vello::kurbo::RoundedRect::from_rect(page, 3.0));
+        chrome::page::draw(scene, transform, page, PAPER, SHADOW);
 
         // Pass 2: draw cell borders, bullets, selection, text, caret.
         for l in &laid {
