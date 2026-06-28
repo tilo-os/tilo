@@ -21,6 +21,17 @@ pub fn builtin_registry() -> Registry {
     r
 }
 
+/// Extensions the built-in codecs handle (`md`, `markdown`, `odt`, `docx`) —
+/// the OS source of truth for "this file is an editable document".
+pub fn supported_extensions() -> Vec<String> {
+    builtin_registry().extensions()
+}
+
+/// Whether `ext` (case-insensitive, no dot) is a built-in document format.
+pub fn is_supported_ext(ext: &str) -> bool {
+    builtin_registry().provider_for_ext(ext).is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -51,6 +62,16 @@ mod tests {
         assert!(r.provider_for_ext("markdown").is_some());
         assert!(r.provider_for_ext("DOCX").is_some(), "extension lookup is case-insensitive");
         assert!(r.provider_for_ext("rtf").is_none(), "unregistered type resolves to None");
+    }
+
+    #[test]
+    fn supported_extensions_is_registry_driven() {
+        let exts = supported_extensions();
+        for want in ["md", "markdown", "odt", "docx"] {
+            assert!(exts.iter().any(|e| e == want), "{want} should be a supported document format");
+        }
+        assert!(is_supported_ext("ODT"), "case-insensitive");
+        assert!(!is_supported_ext("rtf"), "unregistered is not supported");
     }
 
     use proptest::prelude::*;

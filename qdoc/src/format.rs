@@ -71,6 +71,14 @@ impl Registry {
             .max_by_key(|e| e.tier)
             .map(|e| e.provider.as_ref())
     }
+
+    /// Every registered extension (lowercased), sorted. The OS uses this as the
+    /// source of truth for which files are editable documents.
+    pub fn extensions(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.by_ext.keys().cloned().collect();
+        v.sort();
+        v
+    }
 }
 
 #[cfg(test)]
