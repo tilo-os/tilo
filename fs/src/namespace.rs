@@ -436,6 +436,22 @@ impl Namespace {
         true
     }
 
+    /// Create a conflict-copy file entry at an absolute path, pointing at a
+    /// losing blob. No-op (returns false) if that path already exists.
+    pub fn insert_conflict_copy(
+        &mut self,
+        path: &str,
+        hash: &Hash,
+        size: u64,
+        mtime: u64,
+    ) -> bool {
+        if self.entry_at(path).is_some() {
+            return false;
+        }
+        self.write_entry(path, NodeKind::File, Some(hash), size, mtime);
+        true
+    }
+
     /// Tombstone an inode (and, for directories, its whole subtree).
     pub fn remove(&mut self, ino: u64) -> bool {
         let Some(path) = self.ino_to_path.get(&ino).cloned() else {

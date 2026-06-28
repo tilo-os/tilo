@@ -1,3 +1,4 @@
+pub mod conflict;
 pub mod fs;
 pub mod namespace;
 pub mod store;
