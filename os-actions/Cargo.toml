@@ -1,0 +1,17 @@
+[package]
+name = "os-actions"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "os_actions"
+path = "src/lib.rs"
+
+# Pure shell-out wrappers around brightnessctl / wpctl / nmcli /
+# bluetoothctl / powerprofilesctl. No GUI or compositor deps — this crate
+# exists so the `shell` compositor and the standalone `settings` app can
+# both drive the same hardware controls without cross-depending. See the
+# crate docstring in `src/lib.rs` for the design intent.
+
+[dependencies]
+tracing = "0.1"
