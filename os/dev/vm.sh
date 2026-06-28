@@ -4,6 +4,8 @@
 # in a distrobox and the host is immutable (see os/dev/_common.sh for config).
 #
 #   ./os/dev/vm.sh boot [--gl] [--disk PATH]   start the VM (detached)
+#   ./os/dev/vm.sh boot-installer [--gl]       boot the custom installer + blank /dev/vdb
+#   ./os/dev/vm.sh boot-target [--gl]          boot the installed result (target.qcow2)
 #   ./os/dev/vm.sh wait                        block until the greeter is up
 #   ./os/dev/vm.sh login [USER PASS]           type credentials into tuigreet
 #   ./os/dev/vm.sh shot NAME                   framebuffer -> $QOS_RUN/NAME.png
@@ -130,6 +132,79 @@ cmd_boot_iso() {
   msg "installer up. monitor=$QOS_MON serial=$QOS_SERIAL  (installs onto $target)"
 }
 
+# Boot the CUSTOM installer live qcow2 (build-custom-installer.sh) with a blank
+# target disk attached as a SECOND virtio disk (/dev/vdb). The installer
+# self-installs the booted image onto /dev/vdb. After it finishes, boot the
+# result with:  vm.sh boot-target [--gl]
+cmd_boot_installer() {
+  local mode=2d
+  while [ $# -gt 0 ]; do case "$1" in
+    --gl) mode=gl;; --2d) mode=2d;; --window) mode=window;;
+    *) die "boot-installer: unknown arg $1";; esac; shift; done
+  local disk="$QOS_INSTALLER_DISK"
+  [ -f "$disk" ] || die "installer disk not found: $disk (run ./os/dev/build-custom-installer.sh)"
+  vm_running && die "VM already running; stop it first"
+  local code vars display rn
+  code="$(ovmf_code)"; vars="$(ovmf_vars)"
+  rm -f "$QOS_SERIAL" "$QOS_MON" "$QOS_PIDFILE"
+  inenv "cp -f '$vars' '$QOS_RUN/vars.fd'"
+  local target="$QOS_TARGET_DISK"
+  inenv "test -f '$target' || qemu-img create -f qcow2 '$target' '$QOS_TARGET_SIZE'" >/dev/null
+  local res="xres=$QOS_XRES,yres=$QOS_YRES"
+  case "$mode" in
+    gl) rn="$(detect_rendernode)"; display="-device virtio-vga-gl,$res -display egl-headless,rendernode=$rn";;
+    window) display="-device virtio-vga-gl,$res -display gtk,gl=on";;
+    *) display="-device virtio-vga,$res -display none";;
+  esac
+  msg "boot-installer ($mode, ${QOS_XRES}x${QOS_YRES}) disk=$disk target=$target (/dev/vdb)"
+  # First virtio disk = installer (/dev/vda); second = blank target (/dev/vdb).
+  local args="-machine q35,accel=kvm -enable-kvm -m $QOS_MEM -cpu host -smp $QOS_SMP \
+    -drive if=pflash,format=raw,readonly=on,file=$code \
+    -drive if=pflash,format=raw,file=$QOS_RUN/vars.fd \
+    -drive file=$disk,format=qcow2,if=virtio \
+    -drive file=$target,format=qcow2,if=virtio \
+    $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$QOS_SSH_PORT-:22 -usb -device usb-tablet \
+    -monitor unix:$QOS_MON,server,nowait -serial file:$QOS_SERIAL \
+    -pidfile $QOS_PIDFILE -name qos-custom-installer"
+  inenv "setsid nohup qemu-system-x86_64 $args >'$QOS_QEMU_LOG' 2>&1 & disown"
+  sleep 1
+  inenv "test -S '$QOS_MON'" || { warn "monitor not up; qemu.log:"; cat "$QOS_QEMU_LOG" >&2; die "boot-installer failed"; }
+  msg "installer up. monitor=$QOS_MON serial=$QOS_SERIAL  (installs onto $target as /dev/vdb)"
+}
+
+# Boot the installed system — the target disk the custom installer wrote
+# (default $QOS_RUN/target.qcow2). This is the post-install result.
+cmd_boot_target() {
+  local mode=2d disk="$QOS_TARGET_DISK"
+  while [ $# -gt 0 ]; do case "$1" in
+    --gl) mode=gl;; --2d) mode=2d;; --window) mode=window;; --disk) disk="$2"; shift;;
+    *) die "boot-target: unknown arg $1";; esac; shift; done
+  [ -f "$disk" ] || die "target disk not found: $disk (run vm.sh boot-installer and install first)"
+  vm_running && die "VM already running; stop it first"
+  local code vars display rn
+  code="$(ovmf_code)"; vars="$(ovmf_vars)"
+  rm -f "$QOS_SERIAL" "$QOS_MON" "$QOS_PIDFILE"
+  inenv "cp -f '$vars' '$QOS_RUN/vars.fd'"
+  local res="xres=$QOS_XRES,yres=$QOS_YRES"
+  case "$mode" in
+    gl) rn="$(detect_rendernode)"; display="-device virtio-vga-gl,$res -display egl-headless,rendernode=$rn";;
+    window) display="-device virtio-vga-gl,$res -display gtk,gl=on";;
+    *) display="-device virtio-vga,$res -display none";;
+  esac
+  msg "boot-target ($mode, ${QOS_XRES}x${QOS_YRES}) disk=$disk (installed system)"
+  local args="-machine q35,accel=kvm -enable-kvm -m $QOS_MEM -cpu host -smp $QOS_SMP \
+    -drive if=pflash,format=raw,readonly=on,file=$code \
+    -drive if=pflash,format=raw,file=$QOS_RUN/vars.fd \
+    -drive file=$disk,format=qcow2,if=virtio \
+    $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$QOS_SSH_PORT-:22 -usb -device usb-tablet \
+    -monitor unix:$QOS_MON,server,nowait -serial file:$QOS_SERIAL \
+    -pidfile $QOS_PIDFILE -name qos-target"
+  inenv "setsid nohup qemu-system-x86_64 $args >'$QOS_QEMU_LOG' 2>&1 & disown"
+  sleep 1
+  inenv "test -S '$QOS_MON'" || { warn "monitor not up; qemu.log:"; cat "$QOS_QEMU_LOG" >&2; die "boot-target failed"; }
+  msg "target up. monitor=$QOS_MON serial=$QOS_SERIAL"
+}
+
 cmd_wait() {
   msg "waiting for greeter (greetd) ..."
   local i
@@ -237,6 +312,8 @@ sub="${1:-}"; shift || true
 case "$sub" in
   boot) cmd_boot "$@";;
   boot-iso) cmd_boot_iso "$@";;
+  boot-installer) cmd_boot_installer "$@";;
+  boot-target) cmd_boot_target "$@";;
   wait) cmd_wait "$@";;
   login) cmd_login "$@";;
   shot) cmd_shot "$@";;

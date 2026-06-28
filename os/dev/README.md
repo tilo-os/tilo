@@ -100,7 +100,55 @@ So: screenshot the **greeter in `--2d`**, screenshot the **desktop in `--gl`**.
   `.desktop` entries launch it with **`--backend drm`** (smithay libseat + udev +
   DRM/KMS) so it can be the display server on real hardware / in the VM.
 
+## Custom installer (self-install)
+
+Besides the Anaconda ISO (`build-installer.sh` / `installer.toml`), there is a
+**custom, qOS-branded installer**: a bootable live qcow2 that runs the graphical
+installer (`installer/`, binary `qos-installer`) under `cage` and **self-installs
+the booted image** onto a target disk — offline, no network pull.
+
+How it works:
+
+- `installer-disk.toml` bakes the kernel arg **`qos.installer=1`**. That single
+  flag drives everything: `qos-session-select` launches the installer (not the
+  greeter), the `qos-install` backend refuses to run without it, and
+  `qos-installer-setup.service` (which drops in the passwordless sudoers rule)
+  only fires on the live medium. The **installed** system has no such arg, so it
+  boots straight to the desktop.
+- The backend (`/usr/libexec/qos-install`) does: `bootc image copy-to-storage`
+  → privileged `podman run … localhost/bootc bootc install to-disk --wipe
+  --filesystem btrfs --target-imgref "$QOS_TARGET_IMGREF" <disk>` → mounts the
+  fresh root and writes `name:hash` (password via `openssl passwd -6`) into the
+  deployment's writable `/etc/qos/install-user.conf`.
+- On the installed system's first boot, `qos-firstboot-user.service` creates the
+  account from that file (`useradd -G wheel` + `chpasswd -e`) and shreds it.
+
+```bash
+# 1. Build + load the desktop image (the installer is FROM localhost/qos).
+./os/dev/build-image.sh
+
+# 2. Build the installer qcow2 (-> os/output/installer/qcow2/disk.qcow2).
+./os/dev/build-custom-installer.sh
+#    …or test the OS plumbing without the real UI:
+./os/dev/build-custom-installer.sh --stub-ui
+
+# 3. Boot the installer with a blank target disk attached as /dev/vdb.
+./os/dev/vm.sh boot-installer --gl     # GL so the installer UI can render
+./os/dev/vm.sh wait                    # block until greetd brings it up
+#    (drive the UI: pick /dev/vdb, set user/pass, install)
+
+# 4. Stop, then boot the installed result.
+./os/dev/vm.sh stop
+./os/dev/vm.sh boot-target --gl        # boots $QOS_RUN/target.qcow2
+```
+
+The installed system's update origin defaults to `ghcr.io/nirios/qos:latest`;
+override with `QOS_TARGET_IMGREF=…` (preserved across the backend's sudo
+re-exec via the live-medium sudoers `env_keep`).
+
 ## Configuration (env vars)
 
 `QOS_DISTROBOX` `QOS_IMAGE` `QOS_OUTPUT` `QOS_DISK` `QOS_BIB` `QOS_RUN`
 `QOS_RENDERNODE` `QOS_USER` `QOS_PASS` `QOS_MEM` `QOS_SMP` — see `_common.sh`.
+Custom installer: `QOS_INSTALLER_IMAGE` `QOS_INSTALLER_OUTPUT`
+`QOS_INSTALLER_DISK` `QOS_TARGET_DISK` `QOS_TARGET_SIZE` `QOS_TARGET_IMGREF`.
