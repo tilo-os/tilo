@@ -5,8 +5,11 @@ members = [
     "fs",
     "shell",
     "ui",
+    "os-actions",
     "apps/file-explorer",
     "apps/terminal",
     "apps/browser",
+    "apps/settings",
+    "greeter",
 ]
 resolver = "2"
