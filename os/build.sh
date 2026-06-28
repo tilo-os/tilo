@@ -23,10 +23,11 @@ echo "FUSE binary copied to os/fs"
 # Step 1.7: Build the applications
 echo "--- Step 1.7: Building applications ---"
 cd "$PROJECT_DIR"
-cargo build --release -p file-explorer -p terminal -p browser
+cargo build --release -p file-explorer -p terminal -p browser -p greeter
 cp target/release/file-explorer "$SCRIPT_DIR/file-explorer"
 cp target/release/terminal "$SCRIPT_DIR/terminal"
 cp target/release/browser "$SCRIPT_DIR/browser"
+cp target/release/qos-greeter "$SCRIPT_DIR/qos-greeter"
 echo "Application binaries copied to os/"
 
 # Step 2: Build the container image (as user)
