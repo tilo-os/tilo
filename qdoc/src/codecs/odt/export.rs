@@ -52,6 +52,7 @@ fn mark_style(m: &MarkSpan) -> Option<(String, String)> {
         "strong" => Some(("qdoc-strong".into(), r#"fo:font-weight="bold""#.into())),
         "em" => Some(("qdoc-em".into(), r#"fo:font-style="italic""#.into())),
         "underline" => Some(("qdoc-underline".into(), r#"style:text-underline-style="solid""#.into())),
+        "strike" => Some(("qdoc-strike".into(), r#"style:text-line-through-style="solid""#.into())),
         "fontSize" => m.value.as_int().map(|n| (format!("qdoc-fs-{n}"), format!(r#"fo:font-size="{n}pt""#))),
         "fontFamily" => m.value.as_str().map(|f| (format!("qdoc-ff-{f}"), format!(r#"style:font-name="{}""#, font_name(f)))),
         _ => None,

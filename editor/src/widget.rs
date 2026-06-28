@@ -49,6 +49,7 @@ enum ToolAction {
     Bold,
     Italic,
     Underline,
+    Strike,
     H1,
     H2,
     Body,
@@ -139,8 +140,9 @@ fn block_align(b: &BlockView) -> TextAlign {
     }
 }
 
-/// Split a block's text into styled runs (bold/italic/size/family) + underlines.
-fn block_runs(b: &BlockView) -> (Vec<RichSpan>, Vec<(usize, usize)>) {
+/// Split a block's text into styled runs (bold/italic/size/family) + underline
+/// and strikethrough byte ranges.
+fn block_runs(b: &BlockView) -> (Vec<RichSpan>, Vec<(usize, usize)>, Vec<(usize, usize)>) {
     let chars: Vec<char> = b.text.chars().collect();
     let n = chars.len();
     // Run key: f32 size as bits so the tuple is comparable.
@@ -173,13 +175,14 @@ fn block_runs(b: &BlockView) -> (Vec<RichSpan>, Vec<(usize, usize)>) {
     if runs.is_empty() {
         runs.push(RichSpan::new(""));
     }
-    let underlines = b
-        .marks
-        .iter()
-        .filter(|m| m.name == "underline")
-        .map(|m| (char_to_byte(&b.text, m.start), char_to_byte(&b.text, m.end)))
-        .collect();
-    (runs, underlines)
+    let deco = |name: &str| {
+        b.marks
+            .iter()
+            .filter(|m| m.name == name)
+            .map(|m| (char_to_byte(&b.text, m.start), char_to_byte(&b.text, m.end)))
+            .collect::<Vec<_>>()
+    };
+    (runs, deco("underline"), deco("strike"))
 }
 
 /// A block laid out for the current frame; kept for click hit-testing.
@@ -394,7 +397,7 @@ impl Widget for WordProcessorWidget {
                     let mut row_h = 26.0f64;
                     for c in 0..ncols {
                         if let Some(cell) = cells.iter().find(|cl| cell_rc(cl) == (r, c)) {
-                            let (runs, underlines) = block_runs(cell);
+                            let (runs, underlines, strikes) = block_runs(cell);
                             let layout = RichTextLayout::shape(
                                 &mut text_renderer.font_system,
                                 &runs,
@@ -404,6 +407,7 @@ impl Widget for WordProcessorWidget {
                                 block_align(cell),
                                 FontFamily::Sans,
                                 underlines,
+                                strikes,
                             );
                             row_h = row_h.max(layout.height() as f64 + 2.0 * cell_pad);
                             row_items.push((c, layout, cell));
@@ -445,7 +449,7 @@ impl Widget for WordProcessorWidget {
                     None
                 };
                 let wrap_w = (content_w - indent as f32).max(40.0);
-                let (runs, underlines) = block_runs(b);
+                let (runs, underlines, strikes) = block_runs(b);
                 let layout = RichTextLayout::shape(
                     &mut text_renderer.font_system,
                     &runs,
@@ -455,6 +459,7 @@ impl Widget for WordProcessorWidget {
                     block_align(b),
                     FontFamily::Sans,
                     underlines,
+                    strikes,
                 );
                 laid.push(Laid {
                     id: b.id.clone(),
@@ -801,6 +806,7 @@ impl WordProcessorWidget {
             ToolAction::Bold => self.inner.toggle_mark(state, "strong"),
             ToolAction::Italic => self.inner.toggle_mark(state, "em"),
             ToolAction::Underline => self.inner.toggle_mark(state, "underline"),
+            ToolAction::Strike => self.inner.toggle_mark(state, "strike"),
             ToolAction::H1 => self.inner.set_paragraph_style(state, "heading", Some(1), None),
             ToolAction::H2 => self.inner.set_paragraph_style(state, "heading", Some(2), None),
             ToolAction::Body => self.inner.set_paragraph_style(state, "paragraph", None, None),
@@ -954,6 +960,7 @@ impl WordProcessorWidget {
         let bold_a = self.mark_active_in_selection("strong");
         let italic_a = self.mark_active_in_selection("em");
         let under_a = self.mark_active_in_selection("underline");
+        let strike_a = self.mark_active_in_selection("strike");
         let (kind, level) = self.current_block_style();
         let align = self.current_align();
         let font_label = self.current_font().label();
@@ -963,6 +970,7 @@ impl WordProcessorWidget {
             (ToolAction::Bold, "B", 34.0, bold_a, true),
             (ToolAction::Italic, "I", 30.0, italic_a, false),
             (ToolAction::Underline, "U", 32.0, under_a, false),
+            (ToolAction::Strike, "S", 30.0, strike_a, false),
             (ToolAction::H1, "H1", 42.0, kind == "heading" && level == Some(1), false),
             (ToolAction::H2, "H2", 42.0, kind == "heading" && level == Some(2), false),
             (ToolAction::Body, "Body", 58.0, kind == "paragraph", false),
@@ -990,7 +998,7 @@ impl WordProcessorWidget {
         let bh = 34.0;
         let mut x = tb.x0 + 14.0;
         for (i, (action, label, w, active, bold_label)) in buttons.iter().enumerate() {
-            if i == 3 || i == 7 || i == 10 || i == 13 {
+            if i == 4 || i == 8 || i == 11 || i == 14 {
                 let sep = Rect::new(x + 2.0, cy - 12.0, x + 3.0, cy + 12.0);
                 scene.fill(Fill::NonZero, transform, theme.tokens.colors.border_standard, None, &sep);
                 x += 14.0;
@@ -1008,10 +1016,14 @@ impl WordProcessorWidget {
             } else {
                 tr.draw_text(scene, label, 15.0, color, transform * Affine::translate((lx, ly)), None);
             }
-            // Visual cue: underline the "U" (underline) button's label.
+            // Visual cues: underline the "U" and strike the "S" button labels.
             if *action == ToolAction::Underline {
                 let uy = ly + 18.0;
                 scene.fill(Fill::NonZero, transform, color, None, &Rect::new(lx, uy, lx + lw as f64, uy + 1.5));
+            }
+            if *action == ToolAction::Strike {
+                let sy = ly + 9.0;
+                scene.fill(Fill::NonZero, transform, color, None, &Rect::new(lx, sy, lx + lw as f64, sy + 1.5));
             }
             self.toolbar.push((*action, r));
             x += w + 6.0;
