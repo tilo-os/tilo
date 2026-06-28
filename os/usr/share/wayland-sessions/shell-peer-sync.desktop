@@ -10,6 +10,6 @@
 Name=nirios (peer-sync)
 GenericName=qOS with peer-sync
 Comment=Collaborative session with libp2p peer discovery enabled
-Exec=/usr/bin/shell --enable-peer-sync
+Exec=/usr/bin/shell --backend drm --enable-peer-sync
 Type=Application
 DesktopNames=nirios
