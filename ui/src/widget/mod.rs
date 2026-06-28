@@ -48,6 +48,24 @@ pub trait Widget {
     /// Stable identity used to look up presence and permissions for this widget.
     /// Default: opt-out (no presence tracking).
     fn presence_key(&self) -> Option<PresenceKey> { None }
+    /// Outbound presence this widget wants broadcast while it holds focus
+    /// — typically its text caret or selection, keyed to the sub-element
+    /// (e.g. a block) the caret is in. The App polls the focused widget
+    /// for this after each event and broadcasts the diff so peers can
+    /// render the remote caret/selection. Default: nothing to broadcast.
+    fn presence_payload(
+        &self,
+    ) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
+        None
+    }
+    /// Whether this widget still needs `sync` to run on idle frames even
+    /// without input or collab events — e.g. a collab app that hasn't yet
+    /// seeded or adopted the shared document and is waiting out a grace
+    /// window. The App keeps requesting redraws while this is true (and a
+    /// collab socket is connected). Default: no idle sync needed.
+    fn needs_idle_sync(&self) -> bool {
+        false
+    }
     /// Which permission scope, if any, gates this widget. Default: no gating.
     fn permission_scope(&self) -> Option<PermissionScope> { None }
     fn accepts_drop(&self, _payload: &DragPayload) -> bool { false }
@@ -167,6 +185,12 @@ mod spacer;      pub use spacer::Spacer;
 mod image;       pub use image::{Image, ImageFit, ImageDecodeError};
 mod slider;      pub use slider::Slider;
 mod text_input;  pub use text_input::TextInput;
+pub mod marks; pub use marks::{Mark, MarkSpan};
+pub mod rich_text_line; pub use rich_text_line::{RichTextLine, LineSignal};
+pub mod block_editor;   pub use block_editor::{Block, BlockEditor, BlockKind, CursorPlacement};
+pub mod slash_menu;     pub use slash_menu::SlashMenu;
+pub mod link_popover;   pub use link_popover::{LinkPopover, PageEntry};
+pub mod page_palette;   pub use page_palette::PageJumpPalette;
 pub mod tabs;    pub use tabs::{TabBar, TabDescriptor};
 mod scrollable;  pub use scrollable::{Scrollable, ScrollAxis};
 mod tile_host;   pub use tile_host::{TileHost, TileContent, AppKind};
