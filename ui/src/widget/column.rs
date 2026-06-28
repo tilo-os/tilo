@@ -18,6 +18,26 @@ pub struct Column {
     extra_left_padding: f32,
     extra_bottom_padding: f32,
     no_padding: bool,
+    /// When `Some(px)`, override the column's default top + bottom
+    /// padding with `px`. Left/right keep using the standard
+    /// `padding_standard * 2` (plus `extra_left_padding`) so the
+    /// sidebar gutter math stays intact. Set this when a column
+    /// should hug the viewport's top + bottom edges tightly without
+    /// dropping the horizontal gutters too (the shell's strip Column
+    /// uses 4 px — close enough to the screen edges that windows
+    /// read as filling the workspace, with just enough room for the
+    /// active-tile shadow not to clip).
+    vertical_padding_override: Option<f32>,
+    /// When `Some((left, right))`, override the column's default
+    /// left/right padding (replacing `base + extra_left_padding` on
+    /// the left, `base` on the right). Used by the shell's content
+    /// column so the strip extends all the way to viewport x=0 (the
+    /// wheel disc lives in an overlay layer above the strip and pans
+    /// with the strip's `scroll_x`; the strip itself reserves the
+    /// wheel's width as a `leading_inset` on `GroupRow`). With the
+    /// default standard horizontal padding we'd otherwise leave a
+    /// 24 px wallpaper gap to the left of the wheel disc.
+    horizontal_padding_override: Option<(f32, f32)>,
     intrinsic_height: bool,
     /// Use `flex_grow: 1 + flex_basis: 0` instead of the default
     /// `height: percent(1.0)` outer size. The percent variant claims
@@ -50,6 +70,8 @@ impl Column {
             extra_left_padding: 0.0,
             extra_bottom_padding: 0.0,
             no_padding: false,
+            vertical_padding_override: None,
+            horizontal_padding_override: None,
             intrinsic_height: false,
             fill_remaining_height: false,
             subtree_cache: Scene::new(),
@@ -95,6 +117,29 @@ impl Column {
     /// breathing room for tile cards on smaller viewports.
     pub fn with_extra_bottom_padding(mut self, px: f32) -> Self {
         self.extra_bottom_padding = px;
+        self
+    }
+
+    /// Override the column's top + bottom padding (replaces the
+    /// default `padding_standard * 2`). Left + right padding still
+    /// uses the standard value plus `extra_left_padding`. Use this
+    /// for layouts where the column needs to hug the viewport's
+    /// top/bottom edges (e.g. the shell strip wants its windows
+    /// almost flush against the topbar / screen bottom).
+    pub fn with_vertical_padding(mut self, px: f32) -> Self {
+        self.vertical_padding_override = Some(px);
+        self
+    }
+
+    /// Override the column's left + right padding (replaces
+    /// `base + extra_left_padding` on the left, `base` on the
+    /// right). Use this when the column needs to extend to a
+    /// specific viewport range (e.g. the shell's content column
+    /// drops its left padding to zero so the strip can reach
+    /// viewport x=0 and the wheel disc can pan into and out of
+    /// off-screen-left territory cleanly).
+    pub fn with_horizontal_padding(mut self, left: f32, right: f32) -> Self {
+        self.horizontal_padding_override = Some((left, right));
         self
     }
 
@@ -159,11 +204,15 @@ impl Widget for Column {
                 },
                 padding: {
                     let base = if self.no_padding { 0.0 } else { theme.padding_standard * 2.0 };
+                    let vert = self.vertical_padding_override.unwrap_or(base);
+                    let (left, right) = self
+                        .horizontal_padding_override
+                        .unwrap_or((base + self.extra_left_padding, base));
                     taffy::Rect {
-                        left: length(base + self.extra_left_padding),
-                        right: length(base),
-                        top: length(base),
-                        bottom: length(base + self.extra_bottom_padding),
+                        left: length(left),
+                        right: length(right),
+                        top: length(vert),
+                        bottom: length(vert + self.extra_bottom_padding),
                     }
                 },
                 size: taffy::Size {
