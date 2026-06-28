@@ -1,0 +1,29 @@
+#%PAM-1.0
+# qOS greetd PAM stack — used by greetd (and therefore the graphical
+# qos-greeter) to authenticate the user before StartSession.
+#
+# Fingerprint is offered first as a *sufficient* auth factor: if
+# pam_fprintd.so authenticates the user, the auth phase short-circuits to
+# success; otherwise PAM falls through to the password substack. The
+# leading "-" makes the line a silent no-op when the module is not present
+# in the image (i.e. when the `fprintd-pam` package is absent), so this
+# file is safe to ship whether or not fingerprint support is installed.
+#
+# fprintd drives the conversation by emitting PAM_TEXT_INFO / PAM_ERROR_MSG
+# prompts ("Place your finger on the reader", "swipe didn't match, try
+# again"); greetd relays those as AuthMessage{Info,Error}, which the
+# greeter's conversation loop displays and continues past — the
+# authoritative result is the top-level greetd Success/Error.
+#
+# Everything else defers to the distro's maintained `password-auth` stack
+# (pam_unix for auth/account/password, and pam_systemd/limits/keyinit for
+# the session), which keeps the always-present, VM-testable password login
+# working and registers the started session with logind.
+-auth      sufficient   pam_fprintd.so
+auth       substack     password-auth
+
+account    include      password-auth
+
+password   substack     password-auth
+
+session    include      password-auth

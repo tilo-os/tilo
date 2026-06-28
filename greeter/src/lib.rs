@@ -8,10 +8,12 @@
 //! Modules:
 //! * [`sessions`] — parse `/usr/share/wayland-sessions/*.desktop`.
 //! * [`greetd_client`] — the greetd auth/start exchange over `$GREETD_SOCK`.
+//! * [`auth`] — background auth worker + the UI-facing update protocol.
 //! * [`greeter_app`] — the root [`GreeterApp`] `Widget` (the login card).
 
 pub mod sessions;
 pub mod greetd_client;
+pub mod auth;
 pub mod greeter_app;
 
 pub use greeter_app::GreeterApp;

@@ -1,0 +1,39 @@
+#!/bin/bash
+# qos-power — tiny privileged backend for the qOS graphical installer's
+# Finish screen. The qos-installer UI (a ui::App, run under cage on the
+# live medium) shells out to this to reboot into the freshly-installed
+# system, or to power the machine off:
+#
+#     /usr/libexec/qos-power --reboot      # default
+#     /usr/libexec/qos-power --poweroff
+#
+# Like qos-install it self-escalates via the live-medium-only passwordless
+# sudoers drop-in (installed by qos-installer-setup.service, which only
+# fires when `qos.installer` is on the kernel cmdline). On success the
+# machine goes down and this never returns; a failure exits non-zero and
+# the UI surfaces it.
+set -euo pipefail
+
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+# --- self-escalate -----------------------------------------------------------
+if [ "$(id -u)" -ne 0 ]; then
+  exec sudo -n "$0" "$@"
+fi
+
+# --- parse args --------------------------------------------------------------
+ACTION="reboot"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --reboot) ACTION="reboot"; shift ;;
+    --poweroff) ACTION="poweroff"; shift ;;
+    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+case "$ACTION" in
+  reboot)   printf 'Rebooting…\n';    exec systemctl reboot ;;
+  poweroff) printf 'Powering off…\n'; exec systemctl poweroff ;;
+  *) die "unknown action: $ACTION" ;;
+esac
