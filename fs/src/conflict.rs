@@ -21,10 +21,12 @@ pub struct ContentConflict {
 
 const MARKER: &str = ".sync-conflict-";
 
-/// Deterministic conflict-copy path for a losing version of `path`.
+/// Deterministic conflict-copy path for a losing version of `path`. Uses a
+/// 128-bit (32 hex) prefix of the losing hash — collision-resistant enough that
+/// two distinct losers can't alias, while keeping the file name bounded.
 pub fn conflict_name(path: &str, loser: &Hash) -> String {
     let hex = hex::encode(loser.as_bytes());
-    format!("{path}{MARKER}{}", &hex[..12])
+    format!("{path}{MARKER}{}", &hex[..32])
 }
 
 fn hash_from_hex(s: &str) -> Option<Hash> {
