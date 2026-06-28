@@ -279,22 +279,28 @@ impl TextRenderer {
         transform: Affine,
         color: Color,
     ) {
+        let resolve = |c: Option<cosmic_text::Color>| {
+            c.map(|c| Color::from_rgb8(c.r(), c.g(), c.b())).unwrap_or(color)
+        };
         for run in layout.buffer.layout_runs() {
             let mut face: Option<cosmic_text::fontdb::ID> = None;
+            let mut cur_color: Option<cosmic_text::Color> = None;
             let mut batch: Vec<cosmic_text::LayoutGlyph> = Vec::new();
             let mut size = 16.0f32;
             for g in run.glyphs.iter() {
                 size = g.font_size;
-                if face != Some(g.font_id) && !batch.is_empty() {
-                    self.flush_glyphs(scene, face.unwrap(), &batch, size, color, transform, run.line_y);
+                // Flush when either the face or the per-run colour changes.
+                if (face != Some(g.font_id) || cur_color != g.color_opt) && !batch.is_empty() {
+                    self.flush_glyphs(scene, face.unwrap(), &batch, size, resolve(cur_color), transform, run.line_y);
                     batch.clear();
                 }
                 face = Some(g.font_id);
+                cur_color = g.color_opt;
                 batch.push(g.clone());
             }
             if let Some(f) = face {
                 if !batch.is_empty() {
-                    self.flush_glyphs(scene, f, &batch, size, color, transform, run.line_y);
+                    self.flush_glyphs(scene, f, &batch, size, resolve(cur_color), transform, run.line_y);
                 }
             }
         }
