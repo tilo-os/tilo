@@ -188,6 +188,36 @@ pub trait Widget {
         if presence.should_cull(self.get_rect()) { return; }
         self.draw(scene, transform, text_renderer, theme, presence);
     }
+
+    /// **Top-layer pass.** Called by `App` (and the headless shot
+    /// renderer) once per frame *after* the entire normal
+    /// `draw_with_presence` recursion has finished, so anything emitted
+    /// here composites ABOVE every sibling regardless of tree order.
+    ///
+    /// This is the toolkit's overlay mechanism: a widget whose visual
+    /// extent escapes its layout box — an open [`Dropdown`] list, a
+    /// popover, a menu — paints that floating content here instead of in
+    /// `draw`, so a later-drawn sibling can't occlude it. The default
+    /// recurses through `children_mut` (so the open widget is reached no
+    /// matter how deeply it's nested) and emits nothing itself, leaving
+    /// every existing widget unaffected. There is no spatial culling on
+    /// this pass — overlays are small and anchored on-screen.
+    ///
+    /// Containers therefore need no change: as long as they expose their
+    /// children via `children_mut` (which every container already does
+    /// for focus/commit propagation) the recursion flows through them.
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        for child in self.children_mut() {
+            child.draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+    }
 }
 
 pub type Element = Box<dyn Widget>;
@@ -210,6 +240,7 @@ pub mod block_editor;   pub use block_editor::{Block, BlockEditor, BlockKind, Cu
 pub mod slash_menu;     pub use slash_menu::SlashMenu;
 pub mod link_popover;   pub use link_popover::{LinkPopover, PageEntry};
 pub mod page_palette;   pub use page_palette::PageJumpPalette;
+mod dropdown;    pub use dropdown::Dropdown;
 pub mod tabs;    pub use tabs::{TabBar, TabDescriptor};
 mod scrollable;  pub use scrollable::{Scrollable, ScrollAxis};
 mod tile_host;   pub use tile_host::{TileHost, TileContent, AppKind};
