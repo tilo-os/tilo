@@ -702,10 +702,19 @@ impl Widget for TextInput {
         };
 
         let visible_width = self.rect.width() - padding_x * 2.0;
-        if cursor_x_offset - self.scroll_x < 0.0 {
-            self.scroll_x = cursor_x_offset;
-        } else if cursor_x_offset - self.scroll_x > visible_width {
-            self.scroll_x = cursor_x_offset - visible_width;
+        if self.is_focused {
+            // Follow the caret horizontally while editing.
+            if cursor_x_offset - self.scroll_x < 0.0 {
+                self.scroll_x = cursor_x_offset;
+            } else if cursor_x_offset - self.scroll_x > visible_width {
+                self.scroll_x = cursor_x_offset - visible_width;
+            }
+        } else {
+            // Unfocused: always render from the start. A block-editor cell
+            // parks its caret at the end after load, so caret-following
+            // scroll would push the first letters off-screen — exactly the
+            // "paragraph doesn't start at the first letter" bug.
+            self.scroll_x = 0.0;
         }
 
         scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), 1.0, transform, &shape);
@@ -1130,6 +1139,30 @@ mod tests {
     fn text_input_test_id_default_is_text_input() {
         let ti = TextInput::new(Vec::new());
         assert_eq!(Widget::test_id(&ti), Some("text_input"));
+    }
+
+    /// An unfocused input must render from the start (scroll_x == 0) even
+    /// when its caret is parked at the end of a line wider than the rect —
+    /// otherwise caret-following scroll hides the first characters (the
+    /// "paragraph doesn't start at the first letter" bug).
+    #[test]
+    fn unfocused_input_renders_from_start_not_caret() {
+        let long = "a very long line that easily exceeds a narrow input width so caret-following scroll would otherwise hide the beginning";
+        let mut ti = TextInput::local().with_initial_value(long);
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 120.0, 24.0)); // narrow
+        ti.set_cursor_pos(long.len()); // caret at the very end
+        // Not focused (the default).
+        let theme = Theme::dark();
+        let presence = crate::presence::PresenceCtx::empty();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        Widget::draw(&mut ti, &mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        assert_eq!(ti.scroll_x(), 0.0, "unfocused input must not scroll the start off-screen");
+
+        // Focused: caret-following scroll IS expected for a long line.
+        ti.set_focus(true);
+        Widget::draw(&mut ti, &mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        assert!(ti.scroll_x() > 0.0, "focused input follows the caret on a long line");
     }
 
     #[test]

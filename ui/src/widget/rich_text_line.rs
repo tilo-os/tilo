@@ -529,9 +529,13 @@ impl Widget for RichTextLine {
             // way around would leak the sans `code` tail past the
             // chip's right edge. `max(sans, mono)` handles both.
             if seg.code {
-                let mono_width = chip_mono_width(text_renderer, slice, text_size);
-                let mono_end_x = x + mono_width;
-                let chip_right = sans_end_x.max(mono_end_x);
+                // Inline code is drawn in the document font (see the
+                // `mono = false` below), so its extent matches the
+                // sans layout slot exactly. Sizing the chip to the sans
+                // extent keeps it from bleeding over the following text —
+                // a monospace face would be wider than its measured slot
+                // and overlap the next characters.
+                let chip_right = sans_end_x;
                 let bg_rect = Rect::new(
                     x - 2.0,
                     text_y + 1.0,
@@ -580,7 +584,12 @@ impl Widget for RichTextLine {
 
             let weight = if seg.bold { TextWeight::Bold } else { TextWeight::Regular };
             let italic = seg.italic;
-            let mono = seg.code;
+            // Render inline code in the document font, not a separate
+            // monospace face: char_x_positions (and thus every segment's
+            // x) are measured in that font, so a wider mono glyph run
+            // would overflow its slot and overlap the following text. The
+            // chip background + accent colour keep code visually distinct.
+            let mono = false;
 
             text_renderer.draw_text_styled(
                 scene,
