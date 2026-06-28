@@ -68,6 +68,8 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, doc: &mut DocM
     // Span marks + paragraph-style marks, applied after all text is in (so text
     // appended after a span doesn't expand its mark).
     let mut span_stack: Vec<(Vec<(String, MarkValue)>, usize)> = Vec::new();
+    // Open `text:a` hyperlinks: (href, style-marks from the link's own style, start).
+    let mut link_stack: Vec<(Option<String>, Vec<(String, MarkValue)>, usize)> = Vec::new();
     let mut pending_marks: Vec<(String, usize, usize, String, MarkValue)> = Vec::new();
     // Paragraph-style inline marks for the current block, applied over [0, len].
     let mut cur_para_marks: Vec<(String, MarkValue)> = Vec::new();
@@ -149,6 +151,15 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, doc: &mut DocM
                         }
                     }
                 }
+                b"text:p" if in_text && table_id.is_some() => {
+                    // The paragraph inside a table cell: lift its alignment onto the
+                    // cell block so centred/right-aligned cells round-trip.
+                    if let Some(id) = cur.clone() {
+                        if let Some(a) = attr_val(&e, b"text:style-name").as_deref().and_then(|s| reg.para_align(s)) {
+                            doc.set_attr(&id, "align", a.as_str());
+                        }
+                    }
+                }
                 b"table:table" if in_text => {
                     table_id = Some(attr_val(&e, b"table:name").unwrap_or_else(|| {
                         table_seq += 1;
@@ -168,6 +179,14 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, doc: &mut DocM
                 b"text:span" if in_text => {
                     let marks = attr_val(&e, b"text:style-name").map(|s| reg.text_marks(&s)).unwrap_or_default();
                     span_stack.push((marks, cur_len));
+                }
+                b"text:a" if in_text => {
+                    // A hyperlink: model the href as an inline `link` mark over the
+                    // linked range (so it merges with concurrent text edits), plus
+                    // any text marks the link's own style carries (underline/colour).
+                    let href = attr_val(&e, b"xlink:href");
+                    let marks = attr_val(&e, b"text:style-name").map(|s| reg.text_marks(&s)).unwrap_or_default();
+                    link_stack.push((href, marks, cur_len));
                 }
                 _ if in_text && cur.is_none() && !in_item && table_id.is_none() => {
                     capture = Some((pos_before, 1));
@@ -239,6 +258,18 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, doc: &mut DocM
                 b"text:span" if in_text => {
                     if let Some((marks, start)) = span_stack.pop() {
                         if let Some(b) = cur.as_ref() {
+                            for (name, value) in marks {
+                                pending_marks.push((b.clone(), start, cur_len, name, value));
+                            }
+                        }
+                    }
+                }
+                b"text:a" if in_text => {
+                    if let Some((href, marks, start)) = link_stack.pop() {
+                        if let Some(b) = cur.as_ref() {
+                            if let Some(h) = href {
+                                pending_marks.push((b.clone(), start, cur_len, "link".to_string(), MarkValue::Str(h)));
+                            }
                             for (name, value) in marks {
                                 pending_marks.push((b.clone(), start, cur_len, name, value));
                             }
@@ -410,6 +441,80 @@ mod tests {
         OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let cells2: Vec<_> = d2.materialize().blocks.iter().filter(|b| b.kind == "cell").map(|b| b.text.clone()).collect();
         assert_eq!(cells2, vec!["a", "b", "c", "d"], "table survives export+import");
+    }
+
+    #[test]
+    fn imports_hyperlink_as_link_mark() {
+        use crate::document::MarkValue;
+        // A `text:a` becomes an inline `link` mark carrying the href, so it merges
+        // with concurrent text edits instead of being atomized.
+        let body = r#"<text:p>see <text:a xlink:href="https://qos.dev/x">here</text:a>!</text:p>"#;
+        let odt = minimal_odt(body);
+        let mut d = Document::new();
+        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        let b = &d.materialize().blocks[0];
+        assert_eq!(b.text, "see here!");
+        let link = b.marks.iter().find(|m| m.name == "link").expect("link mark present");
+        assert_eq!((link.start, link.end), (4, 8), "link over 'here': {:?}", b.marks);
+        assert_eq!(link.value, MarkValue::Str("https://qos.dev/x".into()));
+    }
+
+    #[test]
+    fn imports_link_wrapping_styled_span() {
+        use crate::document::MarkValue;
+        // A link whose inner text is also bold: link mark + strong both survive.
+        let styles = r#"<style:style style:name="T1" style:family="text"><style:text-properties fo:font-weight="bold"/></style:style>"#;
+        let body = r#"<text:p><text:a xlink:href="http://x/"><text:span text:style-name="T1">bold</text:span></text:a></text:p>"#;
+        let odt = minimal_odt_styled(styles, body);
+        let mut d = Document::new();
+        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        let b = &d.materialize().blocks[0];
+        assert_eq!(b.text, "bold");
+        assert!(b.marks.iter().any(|m| m.name == "link" && m.value == MarkValue::Str("http://x/".into())), "{:?}", b.marks);
+        assert!(b.marks.iter().any(|m| m.name == "strong"), "{:?}", b.marks);
+    }
+
+    #[test]
+    fn imports_text_color_as_mark() {
+        use crate::document::MarkValue;
+        let styles = r##"<style:style style:name="C1" style:family="text"><style:text-properties fo:color="#FF0000"/></style:style>"##;
+        let body = r#"<text:p>a <text:span text:style-name="C1">red</text:span></text:p>"#;
+        let odt = minimal_odt_styled(styles, body);
+        let mut d = Document::new();
+        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        let b = &d.materialize().blocks[0];
+        assert_eq!(b.text, "a red");
+        assert!(
+            b.marks.iter().any(|m| m.name == "color" && m.start == 2 && m.end == 5 && m.value == MarkValue::Str("#ff0000".into())),
+            "color mark normalized + ranged: {:?}",
+            b.marks
+        );
+    }
+
+    #[test]
+    fn cell_alignment_roundtrips() {
+        // A centred table cell: alignment lives on the inner paragraph in ODF.
+        let styles = r#"<style:style style:name="Pc" style:family="paragraph"><style:paragraph-properties fo:text-align="center"/></style:style>"#;
+        let body = concat!(
+            r#"<table:table table:name="T1"><table:table-row>"#,
+            r#"<table:table-cell><text:p text:style-name="Pc">mid</text:p></table:table-cell>"#,
+            r#"<table:table-cell><text:p>plain</text:p></table:table-cell>"#,
+            r#"</table:table-row></table:table>"#,
+        );
+        let odt = minimal_odt_styled(styles, body);
+        let mut d = Document::new();
+        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        let cells: Vec<_> = d.materialize().blocks.into_iter().filter(|b| b.kind == "cell").collect();
+        assert_eq!(cells.len(), 2);
+        assert_eq!(cells[0].attrs.get("align"), Some(&AttrVal::Str("center".into())), "centred cell: {:?}", cells[0].attrs);
+        assert_eq!(cells[1].attrs.get("align"), None, "plain cell has no align");
+
+        // Round-trip: export then re-import → the centred cell stays centred.
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let aligns: Vec<_> = d2.materialize().blocks.iter().filter(|b| b.kind == "cell").map(|b| b.attrs.get("align").cloned()).collect();
+        assert_eq!(aligns, vec![Some(AttrVal::Str("center".into())), None], "cell alignment round-trips");
     }
 
     #[test]
