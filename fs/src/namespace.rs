@@ -229,6 +229,16 @@ impl Namespace {
         Ok(())
     }
 
+    /// Merge a full remote document snapshot (anti-entropy), then advance the
+    /// local-delta watermark so the merged-in changes aren't re-broadcast as if
+    /// they were local edits.
+    pub fn merge_remote_doc(&mut self, data: &[u8]) -> Result<(), automerge::AutomergeError> {
+        let mut other = AutoCommit::load(data)?;
+        self.doc.merge(&mut other)?;
+        let _ = self.doc.save_incremental();
+        Ok(())
+    }
+
     // ---- internal entry access --------------------------------------------
 
     fn entry_obj(&self, path: &str) -> Option<ObjId> {
@@ -523,6 +533,11 @@ impl Namespace {
         for e in &moving {
             let suffix = &e.path[old_path.len()..];
             let dest = format!("{new_path}{suffix}");
+            // Drop a stale reverse-mapping for any inode previously at dest, so
+            // an overwritten destination doesn't end up aliased to two paths.
+            if let Some(prev) = self.path_to_ino.get(&dest).copied() {
+                self.ino_to_path.remove(&prev);
+            }
             if let Some(ino) = self.path_to_ino.remove(&e.path) {
                 self.path_to_ino.insert(dest.clone(), ino);
                 self.ino_to_path.insert(ino, dest);
