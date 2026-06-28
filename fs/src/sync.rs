@@ -1,0 +1,349 @@
+//! The sync plane: gossip propagation + bootstrap for the namespace CRDT.
+//!
+//! Three protocols ride one iroh endpoint:
+//! - **iroh-gossip** broadcasts Automerge deltas as they happen → live push.
+//! - **`qos-fs-sync/0`** (custom ALPN) serves the full document so a freshly
+//!   joined peer can bootstrap before riding gossip for deltas.
+//! - **iroh-blobs** (wired elsewhere) hydrates content on read.
+//!
+//! Crucially, a joiner must *load the host's document* (so both share the same
+//! Automerge object ids); independently-created docs would fork on merge. The
+//! bootstrap exchange guarantees that shared history.
+
+use std::sync::{Arc, Mutex};
+
+use anyhow::Result;
+use bytes::Bytes;
+use futures_lite::StreamExt;
+use iroh::address_lookup::memory::MemoryLookup;
+use iroh::endpoint::{Connection, Endpoint};
+use iroh::protocol::{AcceptError, ProtocolHandler, Router};
+use iroh_base::EndpointAddr;
+use iroh_gossip::api::{Event, GossipReceiver, GossipSender};
+use iroh_gossip::net::{Gossip, GOSSIP_ALPN};
+use iroh_gossip::proto::TopicId;
+use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
+
+use crate::hydration::Hydrator;
+use crate::namespace::Namespace;
+use crate::store::ContentStore;
+
+/// Custom ALPN for the bootstrap document exchange.
+pub const QOS_FS_SYNC_ALPN: &[u8] = b"qos-fs-sync/0";
+
+/// A shareable invitation to join a workspace: how to reach a peer + which
+/// gossip topic the workspace uses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Ticket {
+    pub node: EndpointAddr,
+    pub workspace: [u8; 32],
+}
+
+impl Ticket {
+    pub fn encode(&self) -> String {
+        hex::encode(postcard::to_allocvec(self).expect("serialize ticket"))
+    }
+
+    pub fn decode(s: &str) -> Result<Self> {
+        let raw = hex::decode(s.trim())?;
+        Ok(postcard::from_bytes(&raw)?)
+    }
+}
+
+/// Bind an endpoint with an in-memory address lookup (so gossip can dial peers
+/// we learn about by id). Returns both so callers can register peer addresses.
+pub async fn bind_endpoint() -> Result<(Endpoint, MemoryLookup)> {
+    let lookup = MemoryLookup::new();
+    let endpoint = Endpoint::builder()
+        .address_lookup(lookup.clone())
+        .bind()
+        .await?;
+    Ok((endpoint, lookup))
+}
+
+/// Fetch the full namespace document from a peer over the bootstrap ALPN.
+pub async fn fetch_remote_doc(endpoint: &Endpoint, host: EndpointAddr) -> Result<Vec<u8>> {
+    let conn = endpoint.connect(host, QOS_FS_SYNC_ALPN).await?;
+    let (mut send, mut recv) = conn.open_bi().await?;
+    send.write_all(b"sync").await?;
+    send.finish()?;
+    // Documents are small (metadata only); 64 MiB is a generous ceiling.
+    let doc = recv.read_to_end(64 * 1024 * 1024).await?;
+    Ok(doc)
+}
+
+/// Serves the current namespace document to bootstrapping peers.
+#[derive(Clone)]
+struct SyncProtocol {
+    namespace: Arc<Mutex<Namespace>>,
+}
+
+impl std::fmt::Debug for SyncProtocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SyncProtocol")
+    }
+}
+
+impl ProtocolHandler for SyncProtocol {
+    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        let (mut send, mut recv) = connection.accept_bi().await?;
+        // Drain the (tiny) request so the remote's send stream terminates.
+        let _req = recv.read_to_end(64).await.map_err(AcceptError::from_err)?;
+        let doc = self.namespace.lock().unwrap().save();
+        send.write_all(&doc).await.map_err(AcceptError::from_err)?;
+        let _ = send.finish();
+        connection.closed().await;
+        Ok(())
+    }
+}
+
+/// Enqueues local Automerge deltas for broadcast over gossip. Cheap to clone.
+#[derive(Clone)]
+pub struct SyncHandle {
+    local_tx: mpsc::UnboundedSender<Bytes>,
+}
+
+impl SyncHandle {
+    /// Queue a freshly-produced local delta for broadcast (no-op if empty).
+    pub fn broadcast_delta(&self, delta: Vec<u8>) {
+        if !delta.is_empty() {
+            let _ = self.local_tx.send(Bytes::from(delta));
+        }
+    }
+}
+
+/// Aborts the pump task when the workspace is dropped.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// A live, replicated workspace: a CRDT namespace kept in sync with peers.
+pub struct Workspace {
+    pub namespace: Arc<Mutex<Namespace>>,
+    pub sync: Arc<SyncHandle>,
+    _router: Router,
+    _pump: AbortOnDrop,
+}
+
+impl Workspace {
+    /// Begin hosting a new workspace. Returns a ticket to share with peers.
+    pub async fn host(
+        endpoint: Endpoint,
+        lookup: MemoryLookup,
+        store: Arc<ContentStore>,
+        hydrator: Arc<Hydrator>,
+        namespace: Arc<Mutex<Namespace>>,
+    ) -> Result<(Workspace, Ticket)> {
+        let topic = *endpoint.id().as_bytes();
+        let ticket = Ticket {
+            node: endpoint.addr(),
+            workspace: topic,
+        };
+        let ws = Self::start(endpoint, lookup, store, hydrator, namespace, topic, vec![]).await?;
+        Ok((ws, ticket))
+    }
+
+    /// Join an existing workspace described by `ticket`. The caller must already
+    /// have bootstrapped `namespace` from the host (see [`fetch_remote_doc`]).
+    pub async fn join(
+        endpoint: Endpoint,
+        lookup: MemoryLookup,
+        store: Arc<ContentStore>,
+        hydrator: Arc<Hydrator>,
+        namespace: Arc<Mutex<Namespace>>,
+        ticket: Ticket,
+    ) -> Result<Workspace> {
+        let topic = ticket.workspace;
+        Self::start(endpoint, lookup, store, hydrator, namespace, topic, vec![ticket.node]).await
+    }
+
+    async fn start(
+        endpoint: Endpoint,
+        lookup: MemoryLookup,
+        store: Arc<ContentStore>,
+        hydrator: Arc<Hydrator>,
+        namespace: Arc<Mutex<Namespace>>,
+        topic_bytes: [u8; 32],
+        bootstrap: Vec<EndpointAddr>,
+    ) -> Result<Workspace> {
+        // After bootstrap/seed, set the delta watermark so future local writes
+        // produce minimal deltas (and the seed isn't re-broadcast).
+        namespace.lock().unwrap().prime_baseline();
+
+        // Register bootstrap peers so gossip can dial them and we can hydrate.
+        let mut boot_ids = Vec::new();
+        for addr in &bootstrap {
+            lookup.add_endpoint_info(addr.clone());
+            hydrator.add_peer(addr.clone());
+            boot_ids.push(addr.id);
+        }
+
+        let gossip = Gossip::builder().spawn(endpoint.clone());
+        let sync_proto = SyncProtocol {
+            namespace: namespace.clone(),
+        };
+        let router = Router::builder(endpoint.clone())
+            .accept(iroh_blobs::ALPN, store.blobs_protocol(None))
+            .accept(GOSSIP_ALPN, gossip.clone())
+            .accept(QOS_FS_SYNC_ALPN, sync_proto)
+            .spawn();
+
+        let topic = TopicId::from_bytes(topic_bytes);
+        let gtopic = if boot_ids.is_empty() {
+            gossip.subscribe(topic, vec![]).await?
+        } else {
+            gossip.subscribe_and_join(topic, boot_ids).await?
+        };
+        let (sender, receiver) = gtopic.split();
+
+        let (local_tx, local_rx) = mpsc::unbounded_channel();
+        let pump = tokio::spawn(pump_loop(
+            receiver,
+            sender,
+            local_rx,
+            namespace.clone(),
+            hydrator.clone(),
+        ));
+
+        Ok(Workspace {
+            namespace,
+            sync: Arc::new(SyncHandle { local_tx }),
+            _router: router,
+            _pump: AbortOnDrop(pump),
+        })
+    }
+}
+
+/// The bidirectional pump: broadcast local deltas, apply remote deltas, and
+/// learn peer addresses for hydration as neighbors come up.
+async fn pump_loop(
+    mut receiver: GossipReceiver,
+    sender: GossipSender,
+    mut local_rx: mpsc::UnboundedReceiver<Bytes>,
+    namespace: Arc<Mutex<Namespace>>,
+    hydrator: Arc<Hydrator>,
+) {
+    loop {
+        tokio::select! {
+            maybe = local_rx.recv() => {
+                match maybe {
+                    Some(delta) => { let _ = sender.broadcast(delta).await; }
+                    None => break, // all SyncHandles dropped
+                }
+            }
+            ev = receiver.next() => {
+                match ev {
+                    Some(Ok(Event::Received(msg))) => {
+                        let mut ns = namespace.lock().unwrap();
+                        let _ = ns.apply_remote(msg.content.as_ref());
+                    }
+                    Some(Ok(Event::NeighborUp(id))) => {
+                        hydrator.add_peer(EndpointAddr::new(id));
+                    }
+                    Some(Ok(_)) => {}
+                    Some(Err(_)) | None => break,
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::namespace::ROOT_INO;
+    use std::time::Duration;
+
+    async fn wait_until(mut cond: impl FnMut() -> bool) -> bool {
+        for _ in 0..100 {
+            if cond() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        cond()
+    }
+
+    #[test]
+    fn ticket_roundtrips() {
+        let id = iroh::SecretKey::from_bytes(&[7u8; 32]).public();
+        let ticket = Ticket {
+            node: EndpointAddr::new(id),
+            workspace: [3u8; 32],
+        };
+        let decoded = Ticket::decode(&ticket.encode()).unwrap();
+        assert_eq!(decoded.node.id, id);
+        assert_eq!(decoded.workspace, [3u8; 32]);
+    }
+
+    /// The crux of Phase D: two real nodes bootstrap, then structural changes
+    /// propagate live over gossip in BOTH directions.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn structural_changes_propagate_both_ways() {
+        // --- host A: seed a dir, then start hosting ---
+        let (ep_a, look_a) = bind_endpoint().await.unwrap();
+        let store_a = Arc::new(ContentStore::memory());
+        let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
+        let ns_a = Arc::new(Mutex::new(Namespace::new("A")));
+        ns_a.lock().unwrap().create_dir(ROOT_INO, "shared", 1).unwrap();
+        let (ws_a, ticket) =
+            Workspace::host(ep_a.clone(), look_a, store_a.clone(), hyd_a.clone(), ns_a.clone())
+                .await
+                .unwrap();
+
+        // --- joiner B: bootstrap the doc, then join ---
+        let (ep_b, look_b) = bind_endpoint().await.unwrap();
+        let store_b = Arc::new(ContentStore::memory());
+        let hyd_b = Arc::new(Hydrator::new(ep_b.clone(), store_b.clone()));
+        let doc = fetch_remote_doc(&ep_b, ticket.node.clone()).await.unwrap();
+        let ns_b = Arc::new(Mutex::new(Namespace::from_bytes("B", &doc).unwrap()));
+        let ws_b = Workspace::join(
+            ep_b.clone(),
+            look_b,
+            store_b.clone(),
+            hyd_b.clone(),
+            ns_b.clone(),
+            ticket,
+        )
+        .await
+        .unwrap();
+
+        // Bootstrap projection: B sees the seeded dir immediately.
+        assert!(
+            ns_b.lock().unwrap().entry_at("shared").is_some(),
+            "joiner must see the host's seeded tree via bootstrap"
+        );
+
+        // A -> B: host creates a file post-sync (simulating a FUSE write).
+        {
+            let delta = {
+                let mut n = ns_a.lock().unwrap();
+                n.create_file(ROOT_INO, "from_a.txt", None, 0, 2).unwrap();
+                n.save_incremental()
+            };
+            ws_a.sync.broadcast_delta(delta);
+        }
+        assert!(
+            wait_until(|| ns_b.lock().unwrap().entry_at("from_a.txt").is_some()).await,
+            "A's change must propagate to B over gossip"
+        );
+
+        // B -> A: joiner creates a file; host must see it.
+        {
+            let delta = {
+                let mut n = ns_b.lock().unwrap();
+                n.create_file(ROOT_INO, "from_b.txt", None, 0, 3).unwrap();
+                n.save_incremental()
+            };
+            ws_b.sync.broadcast_delta(delta);
+        }
+        assert!(
+            wait_until(|| ns_a.lock().unwrap().entry_at("from_b.txt").is_some()).await,
+            "B's change must propagate back to A (bidirectional)"
+        );
+    }
+}
