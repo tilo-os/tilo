@@ -24,7 +24,7 @@ use ui::theme::Theme;
 use ui::widget::Widget;
 use ui::PresenceCtx;
 
-use crate::word_processor::{Caret, WordProcessor};
+use crate::word_processor::{Caret, ClipBlock, WordProcessor};
 use crate::WpFormat;
 
 // Document surface colors (a white page is the familiar word-processor look,
@@ -235,6 +235,9 @@ pub struct WordProcessorWidget {
     blocks: Vec<BlockView>,
     laid: Vec<Laid>,
     toolbar: Vec<(ToolAction, Rect)>,
+    /// Last rich copy: `(plain_text, blocks)`. Paste uses it when the system
+    /// clipboard still holds this exact plain text.
+    rich_clip: Option<(String, Vec<ClipBlock>)>,
 }
 
 impl Default for WordProcessorWidget {
@@ -261,6 +264,7 @@ impl WordProcessorWidget {
             blocks: Vec::new(),
             laid: Vec::new(),
             toolbar: Vec::new(),
+            rich_clip: None,
         }
     }
 
@@ -618,18 +622,20 @@ impl Widget for WordProcessorWidget {
                 }
                 if ctrl {
                     if let Key::Character(s) = logical_key {
-                        match s.as_str() {
+                        match s.to_lowercase().as_str() {
                             "s" => self.save(state),
                             "b" => self.inner.toggle_mark(state, "strong"),
                             "i" => self.inner.toggle_mark(state, "em"),
                             "u" => self.inner.toggle_mark(state, "underline"),
-                            "c" => self.clipboard_copy(),
+                            "c" => self.clipboard_copy(state),
                             "x" => {
-                                self.clipboard_copy();
+                                self.clipboard_copy(state);
                                 self.inner.delete_selection(state);
                             }
+                            // Ctrl+V keeps formatting; Ctrl+Shift+V pastes plain text.
+                            "v" if shift => self.clipboard_paste_plain(state),
                             "v" => self.clipboard_paste(state),
-                            "a" => self.select_all_in_block(state),
+                            "a" => self.inner.select_all(state),
                             // z / y (undo/redo) are handled by the host App.
                             _ => {}
                         }
@@ -935,20 +941,34 @@ impl WordProcessorWidget {
         Some(parts.join("\n"))
     }
 
-    fn clipboard_copy(&self) {
-        if let Some(t) = self.selection_text() {
-            if let Ok(mut cb) = arboard::Clipboard::new() {
-                let _ = cb.set_text(t);
-            }
+    fn clipboard_copy(&mut self, state: &AutoCommit) {
+        if !self.inner.has_selection() {
+            return;
+        }
+        let (plain, blocks) = self.inner.copy_fragment(state);
+        if let Ok(mut cb) = arboard::Clipboard::new() {
+            let _ = cb.set_text(plain.clone());
+        }
+        self.rich_clip = Some((plain, blocks));
+    }
+
+    /// Paste with formatting when the system clipboard still holds our last rich
+    /// copy; otherwise paste the clipboard's plain text (e.g. from another app).
+    fn clipboard_paste(&mut self, state: &mut AutoCommit) {
+        let Some(sys) = arboard::Clipboard::new().ok().and_then(|mut cb| cb.get_text().ok()) else {
+            return;
+        };
+        let rich = self.rich_clip.as_ref().filter(|(plain, _)| plain == &sys).map(|(_, blocks)| blocks.clone());
+        match rich {
+            Some(blocks) => self.inner.insert_rich(state, &blocks),
+            None => self.inner.insert_multiline(state, &sys),
         }
     }
 
-    fn clipboard_paste(&mut self, state: &mut AutoCommit) {
-        if let Ok(mut cb) = arboard::Clipboard::new() {
-            if let Ok(t) = cb.get_text() {
-                // Multi-paragraph paste: newlines split into new paragraphs.
-                self.inner.insert_multiline(state, &t);
-            }
+    /// Paste plain text only (Ctrl+Shift+V), stripping all formatting.
+    fn clipboard_paste_plain(&mut self, state: &mut AutoCommit) {
+        if let Some(t) = arboard::Clipboard::new().ok().and_then(|mut cb| cb.get_text().ok()) {
+            self.inner.insert_multiline(state, &t);
         }
     }
 

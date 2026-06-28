@@ -15,6 +15,18 @@ pub struct Caret {
     pub offset: usize,
 }
 
+/// One block of a copied rich fragment — text plus its formatting (marks +
+/// paragraph attributes), with mark offsets relative to the block's own text.
+#[derive(Clone, Debug)]
+pub struct ClipBlock {
+    pub kind: String,
+    pub text: String,
+    pub marks: Vec<qdoc::document::MarkSpan>,
+    pub level: Option<i64>,
+    pub ordered: Option<bool>,
+    pub align: Option<String>,
+}
+
 /// The editing core. `bind` resolves/initialises the document; the edit ops
 /// mutate the host `AutoCommit` and keep the caret consistent.
 pub struct WordProcessor {
@@ -114,6 +126,96 @@ impl WordProcessor {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Build a rich fragment of the selection: `(plain_text, blocks)`. The plain
+    /// text doubles as a clipboard key so paste knows the system clipboard still
+    /// holds this fragment.
+    pub fn copy_fragment(&self, state: &AutoCommit) -> (String, Vec<ClipBlock>) {
+        let Some(containers) = self.containers.as_ref() else {
+            return (String::new(), vec![]);
+        };
+        let snap = qdoc::model::materialize(state, containers);
+        let mut blocks = Vec::new();
+        let mut plain = Vec::new();
+        for (bid, s, e) in self.selection_blocks(state) {
+            let Some(b) = snap.blocks.iter().find(|b| b.id == bid) else {
+                continue;
+            };
+            let chars: Vec<char> = b.text.chars().collect();
+            let (s, e) = (s.min(chars.len()), e.min(chars.len()));
+            let text: String = chars[s..e].iter().collect();
+            plain.push(text.clone());
+            let marks = b
+                .marks
+                .iter()
+                .filter_map(|m| {
+                    let (ms, me) = (m.start.max(s), m.end.min(e));
+                    (ms < me).then(|| qdoc::document::MarkSpan { start: ms - s, end: me - s, name: m.name.clone(), value: m.value.clone() })
+                })
+                .collect();
+            let int = |k: &str| match b.attrs.get(k) {
+                Some(qdoc::AttrVal::Int(n)) => Some(*n),
+                _ => None,
+            };
+            let bool_ = |k: &str| match b.attrs.get(k) {
+                Some(qdoc::AttrVal::Bool(v)) => Some(*v),
+                _ => None,
+            };
+            let str_ = |k: &str| match b.attrs.get(k) {
+                Some(qdoc::AttrVal::Str(v)) => Some(v.clone()),
+                _ => None,
+            };
+            blocks.push(ClipBlock { kind: b.kind.clone(), text, marks, level: int("level"), ordered: bool_("ordered"), align: str_("align") });
+        }
+        (plain.join("\n"), blocks)
+    }
+
+    /// Insert a rich fragment at the caret (replacing the selection), preserving
+    /// marks + paragraph styles.
+    pub fn insert_rich(&mut self, state: &mut AutoCommit, blocks: &[ClipBlock]) {
+        self.delete_selection(state);
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        for (i, blk) in blocks.iter().enumerate() {
+            if i > 0 {
+                self.enter(state);
+            }
+            let block_id = self.caret.block.clone();
+            let base = self.caret.offset;
+            let was_empty = self.block_len(state, &block_id) == 0;
+            let added = blk.text.chars().count();
+            // Adopt the source block's paragraph style when starting a fresh block
+            // (a new block from Enter, or pasting into an empty one); never turn a
+            // table cell into something else.
+            let adopt_style = (i > 0 || was_empty) && blk.kind != "cell" && blk.kind != "fidelity";
+            if let Some(ids) = self.ids.as_mut() {
+                let mut dm = DocMut { doc: state, c: &containers, ids };
+                dm.splice_text(&block_id, base, 0, &blk.text);
+                for m in &blk.marks {
+                    let (s, e) = (base + m.start, base + m.end);
+                    match &m.value {
+                        qdoc::document::MarkValue::Bool(v) => dm.add_mark(&block_id, s, e, &m.name, *v),
+                        qdoc::document::MarkValue::Int(n) => dm.add_mark(&block_id, s, e, &m.name, *n),
+                        qdoc::document::MarkValue::Str(st) => dm.add_mark(&block_id, s, e, &m.name, st.as_str()),
+                    }
+                }
+                if adopt_style {
+                    dm.set_kind(&block_id, &blk.kind);
+                    if let Some(l) = blk.level {
+                        dm.set_attr(&block_id, "level", l);
+                    }
+                    if let Some(o) = blk.ordered {
+                        dm.set_attr(&block_id, "ordered", o);
+                    }
+                    if let Some(a) = &blk.align {
+                        dm.set_attr(&block_id, "align", a.as_str());
+                    }
+                }
+            }
+            self.caret.offset = base + added;
+        }
     }
 
     fn selected_block_ids(&self, state: &AutoCommit) -> Vec<String> {
@@ -649,6 +751,19 @@ impl WordProcessor {
         self.caret.offset = e;
     }
 
+    /// Select the entire document (Ctrl+A).
+    pub fn select_all(&mut self, state: &AutoCommit) {
+        let blocks = self.ordered_blocks(state);
+        let (Some(first), Some(last)) = (blocks.first().cloned(), blocks.last().cloned()) else {
+            return;
+        };
+        let last_len = self.block_len(state, &last);
+        self.caret = Caret { block: first, offset: 0 };
+        self.clear_anchor();
+        self.set_anchor();
+        self.caret = Caret { block: last, offset: last_len };
+    }
+
     // ---- edit operations ---------------------------------------------------
 
     /// Insert `s` at the caret and advance. Replaces the selection if any.
@@ -1100,6 +1215,36 @@ mod tests {
         for c in &cells {
             assert_eq!(align_of(&wp, &state, c).as_deref(), Some("center"), "cell {c} centered");
         }
+    }
+
+    #[test]
+    fn rich_copy_paste_preserves_formatting() {
+        let (mut wp, mut state) = bound();
+        wp.insert_str(&mut state, "hello world");
+        // bold "hello"
+        wp.caret.offset = 0;
+        wp.set_anchor();
+        wp.caret.offset = 5;
+        wp.toggle_mark(&mut state, "strong");
+
+        // re-select "hello" and copy a rich fragment
+        wp.caret.offset = 0;
+        wp.clear_anchor();
+        wp.set_anchor();
+        wp.caret.offset = 5;
+        let (plain, blocks) = wp.copy_fragment(&state);
+        assert_eq!(plain, "hello");
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].marks.iter().any(|m| m.name == "strong" && m.start == 0 && m.end == 5));
+
+        // paste rich at the end → the pasted run keeps its bold
+        wp.clear_anchor();
+        wp.move_end(&state);
+        wp.insert_rich(&mut state, &blocks);
+        let c = wp.containers.clone().unwrap();
+        let block = wp.caret.block.clone();
+        assert_eq!(wp.current_text(&state), "hello worldhello");
+        assert!(qdoc::model::has_mark_over(&state, &c, &block, 11, 16, "strong"), "pasted bold preserved");
     }
 
     #[test]
