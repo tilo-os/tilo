@@ -156,8 +156,10 @@ fn marks_on(doc: &AutoCommit, block_obj: &ObjId) -> Vec<MarkSpan> {
         })
         .unwrap_or_default();
     // Canonical order so two replicas that merged in different orders produce
-    // byte-identical materializations (mark *set* is order-independent).
-    spans.sort_by(|a, b| (a.start, a.end, &a.name).cmp(&(b.start, b.end, &b.name)));
+    // byte-identical materializations (mark *set* is order-independent). The
+    // value is part of the key so concurrent *valued* marks (fontSize/link/color)
+    // that resolve to distinct spans still sort deterministically.
+    spans.sort_by(|a, b| (a.start, a.end, &a.name, &a.value).cmp(&(b.start, b.end, &b.name, &b.value)));
     spans
 }
 

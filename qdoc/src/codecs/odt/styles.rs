@@ -32,6 +32,18 @@ pub(super) fn generic_font(name: &str) -> String {
     }
 }
 
+/// Canonicalise an ODF `fo:color` (`#RRGGBB`) to lowercase so that the round-trip
+/// is stable and two replicas that imported the same colour converge.
+pub(super) fn normalize_color(v: &str) -> String {
+    let t = v.trim();
+    if let Some(hex) = t.strip_prefix('#') {
+        if hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            return format!("#{}", hex.to_ascii_lowercase());
+        }
+    }
+    t.to_string()
+}
+
 pub(super) fn map_align(v: &str) -> String {
     match v {
         "center" => "center".into(),
@@ -56,6 +68,7 @@ pub(super) fn marks_from_text_props(e: &BytesStart) -> Vec<(String, MarkValue)> 
                 }
             }
             b"style:font-name" | b"fo:font-family" => m.push(("fontFamily".into(), MarkValue::Str(generic_font(&val)))),
+            b"fo:color" => m.push(("color".into(), MarkValue::Str(normalize_color(&val)))),
             _ => {}
         }
     }
