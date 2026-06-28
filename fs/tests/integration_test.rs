@@ -71,3 +71,55 @@ async fn fuse_projects_tree_and_reads_real_content() {
     })
     .await;
 }
+
+// Full read-write round-trip through the kernel: create, write, overwrite,
+// mkdir, rename, unlink.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fuse_write_create_overwrite_rename_unlink() {
+    let _ = timeout(Duration::from_secs(20), async {
+        let mount_dir = tempdir().expect("mount temp dir");
+        let path = mount_dir.path().to_path_buf();
+
+        let endpoint = Endpoint::bind().await.expect("bind endpoint");
+        let store = Arc::new(ContentStore::memory());
+        let namespace = Arc::new(Mutex::new(Namespace::new("rw-peer")));
+        let hydrator = Arc::new(Hydrator::new(endpoint, store));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let fs = QuickFS::new(namespace, hydrator, heuristics);
+
+        let mut config = Config::default();
+        config.mount_options = vec![MountOption::FSName("quickfs_rw".to_string())];
+        let _session =
+            fuser::spawn_mount2(fs, &path, &config).expect("spawn FUSE session");
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+
+        // create + write
+        std::fs::write(path.join("hello.txt"), b"first").expect("write hello");
+        assert_eq!(std::fs::read(path.join("hello.txt")).unwrap(), b"first");
+
+        // overwrite (truncate + rewrite) with a longer body
+        std::fs::write(path.join("hello.txt"), b"second longer content").expect("overwrite");
+        assert_eq!(
+            std::fs::read(path.join("hello.txt")).unwrap(),
+            b"second longer content"
+        );
+
+        // mkdir + nested file
+        std::fs::create_dir(path.join("d")).expect("mkdir");
+        std::fs::write(path.join("d/n.txt"), b"nested").expect("write nested");
+        assert_eq!(std::fs::read(path.join("d/n.txt")).unwrap(), b"nested");
+
+        // rename
+        std::fs::rename(path.join("hello.txt"), path.join("renamed.txt")).expect("rename");
+        assert!(!path.join("hello.txt").exists(), "old name gone");
+        assert_eq!(
+            std::fs::read(path.join("renamed.txt")).unwrap(),
+            b"second longer content"
+        );
+
+        // unlink
+        std::fs::remove_file(path.join("renamed.txt")).expect("unlink");
+        assert!(!path.join("renamed.txt").exists(), "unlinked file gone");
+    })
+    .await;
+}

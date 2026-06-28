@@ -501,6 +501,17 @@ impl Namespace {
                 let _ = self.doc.put(&obj, "deleted", true);
             }
         }
+        // Preserve inode identity: POSIX rename keeps the same inode, and the
+        // kernel will keep using it. Remap each moved path's existing inode to
+        // its destination so getattr/read on the cached inode still resolve.
+        for e in &moving {
+            let suffix = &e.path[old_path.len()..];
+            let dest = format!("{new_path}{suffix}");
+            if let Some(ino) = self.path_to_ino.remove(&e.path) {
+                self.path_to_ino.insert(dest.clone(), ino);
+                self.ino_to_path.insert(ino, dest);
+            }
+        }
         true
     }
 
@@ -629,6 +640,19 @@ mod tests {
         assert!(ns.lookup(ROOT_INO, "old.txt").is_none());
         let moved = ns.lookup(ROOT_INO, "new.txt").expect("renamed file");
         assert_eq!(ns.hash_for(moved.ino.0), Some(h(9)));
+    }
+
+    #[test]
+    fn rename_preserves_inode_identity() {
+        // The kernel keeps the same inode across a rename; getattr/hash on that
+        // inode must resolve to the new path + content after the move.
+        let mut ns = Namespace::new("a");
+        let ino = ns.create_file(ROOT_INO, "old", Some(&h(1)), 1, 1).unwrap();
+        assert!(ns.rename(ROOT_INO, "old", ROOT_INO, "new", 2));
+        let attr = ns.getattr(ino).expect("cached inode still valid after rename");
+        assert_eq!(attr.ino.0, ino);
+        assert_eq!(ns.hash_for(ino), Some(h(1)));
+        assert_eq!(ns.path_for_ino(ino), Some("new"));
     }
 
     #[test]
