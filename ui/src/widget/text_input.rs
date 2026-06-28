@@ -328,6 +328,50 @@ impl TextInput {
         }
     }
 
+    /// `(text_y, line_height)` — the vertical band the text + caret share,
+    /// in this input's local coordinates. The single source of truth for
+    /// caret/selection height + position used by BOTH the focused local
+    /// caret and any remote (peer) caret, so they line up exactly.
+    pub fn text_band(&self) -> (f64, f64) {
+        let text_size = self.font_size_override.unwrap_or(FONT_SIZE);
+        let line_height = (text_size * LINE_HEIGHT_RATIO) as f64;
+        let text_y = self.rect.y0 + (self.rect.height() - line_height) / 2.0;
+        (text_y, line_height)
+    }
+
+    /// Local-coordinate x of the left edge of the caret at byte `byte` —
+    /// the same metric the focused caret uses (per-char layout + padding −
+    /// horizontal scroll). Falls back to the end-of-text x when `byte` is
+    /// past the laid-out range. Requires a prior `draw` to have populated
+    /// `char_x_positions`.
+    fn caret_x(&self, theme: &Theme, byte: usize) -> f64 {
+        let off = self
+            .char_x_positions
+            .get(byte)
+            .copied()
+            .unwrap_or_else(|| self.char_x_positions.last().copied().unwrap_or(0.0));
+        self.rect.x0 + self.text_padding_x(theme) + off - self.scroll_x
+    }
+
+    /// The exact caret rectangle for byte offset `byte`, in local
+    /// coordinates — identical geometry to the focused local caret. Peer
+    /// carets render through this so a remote caret is pixel-identical to
+    /// the local one, only recoloured.
+    pub fn caret_rect(&self, theme: &Theme, byte: usize) -> Rect {
+        let x = self.caret_x(theme, byte);
+        let (text_y, line_height) = self.text_band();
+        Rect::new(x, text_y, x + CARET_WIDTH, text_y + line_height)
+    }
+
+    /// The selection highlight rect for the `[start, end)` byte range, in
+    /// local coordinates — same vertical band as the caret.
+    pub fn selection_rect(&self, theme: &Theme, start: usize, end: usize) -> Rect {
+        let x0 = self.caret_x(theme, start);
+        let x1 = self.caret_x(theme, end);
+        let (text_y, line_height) = self.text_band();
+        Rect::new(x0, text_y, x1, text_y + line_height)
+    }
+
     /// One-shot read of user edits. Returns `Some(text)` if any
     /// user-initiated edit has landed since the last call, else
     /// `None`. The dirty flag is cleared.
@@ -662,16 +706,10 @@ impl Widget for TextInput {
         // same visual axis. `text_y` is the top of the line.
         let text_y = self.rect.y0 + (self.rect.height() - line_height) / 2.0;
 
-        // Selection background — paint before the text so glyphs sit on top.
+        // Selection background — paint before the text so glyphs sit on
+        // top. Same geometry helper peers use, so local + remote match.
         if let Some((sel_start, sel_end)) = self.selection_range() {
-            let x_start = self.char_x_positions[sel_start];
-            let x_end = self.char_x_positions[sel_end];
-            let sel_rect = Rect::new(
-                self.rect.x0 + padding_x + x_start - self.scroll_x,
-                text_y,
-                self.rect.x0 + padding_x + x_end - self.scroll_x,
-                text_y + line_height,
-            );
+            let sel_rect = self.selection_rect(theme, sel_start, sel_end);
             // Translucent accent so the underlying text reads through.
             let sel_color = theme.accent_primary.with_alpha_factor(0.35);
             scene.fill(vello::peniko::Fill::NonZero, transform, sel_color, None, &sel_rect);
@@ -687,13 +725,9 @@ impl Widget for TextInput {
         );
 
         if self.is_focused {
-            let cursor_x = self.rect.x0 + padding_x + cursor_x_offset - self.scroll_x;
-            let cursor_rect = Rect::new(
-                cursor_x,
-                text_y,
-                cursor_x + CARET_WIDTH,
-                text_y + line_height,
-            );
+            // Same caret geometry peers render through `caret_rect`, just
+            // painted in the local accent colour.
+            let cursor_rect = self.caret_rect(theme, cursor_pos);
             scene.fill(vello::peniko::Fill::NonZero, transform, theme.accent_primary, None, &cursor_rect);
         }
 
@@ -1011,28 +1045,31 @@ impl Widget for TextInput {
         self.draw(scene, transform, text_renderer, theme, presence);
 
         if let Some(key) = self.presence_key() {
-            let origin = self.rect.origin();
-            let advance = 8.0_f32;
-
+            // Peer caret + selection use the SAME geometry as this input's
+            // own caret (`caret_rect`/`selection_rect`), so a remote caret
+            // is pixel-identical to the local one — never a re-derived
+            // approximation. `transform` maps the local rect to the scene.
             if let Some(list) = presence.carets.get(&key) {
                 for (user, caret) in list.iter() {
-                    let x = origin.x as f32 + 4.0 + (*caret as f32) * advance;
-                    let y = origin.y as f32 + 4.0;
-                    presence.draw_peer_caret(scene, theme, user, (x, y));
+                    presence.draw_peer_caret(
+                        scene,
+                        theme,
+                        transform,
+                        user,
+                        self.caret_rect(theme, *caret),
+                    );
                 }
             }
 
             if let Some(list) = presence.selections.get(&key) {
                 for (user, range) in list.iter() {
-                    let x_start = origin.x + 4.0 + (range.start as f64) * advance as f64;
-                    let x_end = origin.x + 4.0 + (range.end as f64) * advance as f64;
-                    let rect = Rect::new(
-                        x_start,
-                        origin.y + 2.0,
-                        x_end,
-                        origin.y + 22.0,
+                    presence.draw_peer_selection(
+                        scene,
+                        theme,
+                        transform,
+                        user,
+                        self.selection_rect(theme, range.start, range.end),
                     );
-                    presence.draw_peer_selection(scene, theme, user, range, &[rect]);
                 }
             }
         }
@@ -1077,6 +1114,35 @@ mod tests {
     fn text_input_test_id_default_is_text_input() {
         let ti = TextInput::new(Vec::new());
         assert_eq!(Widget::test_id(&ti), Some("text_input"));
+    }
+
+    /// The peer caret and the local caret are the SAME geometry: a real
+    /// caret rect (full line height, CARET_WIDTH wide, advancing with the
+    /// text via per-char metrics) — NOT a fixed 2px×16px bar at the block
+    /// origin. This is the contract that makes a remote caret look
+    /// identical to the local one, only recoloured.
+    #[test]
+    fn caret_rect_is_real_caret_geometry() {
+        let mut ti = TextInput::local().with_initial_value("hello world");
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 24.0));
+        let theme = Theme::dark();
+        let presence = crate::presence::PresenceCtx::empty();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        // A draw populates char_x_positions that caret_rect reads.
+        Widget::draw(&mut ti, &mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+
+        let r0 = ti.caret_rect(&theme, 0);
+        let r5 = ti.caret_rect(&theme, 5);
+        let (_text_y, line_height) = ti.text_band();
+
+        assert!((r0.width() - 2.0).abs() < 0.01, "caret is CARET_WIDTH wide");
+        assert!(
+            (r0.height() - line_height).abs() < 0.01,
+            "caret spans the full line band, not a fixed 16px"
+        );
+        assert!(line_height > 16.0, "body line height is >16 (so the old fixed 16px was wrong)");
+        assert!(r5.x0 > r0.x0, "caret advances with byte position via real glyph metrics");
     }
 
     /// An unfocused input must render from the start (scroll_x == 0) even
