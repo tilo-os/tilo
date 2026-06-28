@@ -2,7 +2,7 @@
 //! widget construction to this module so the nirios shell can embed a
 //! `TerminalWidget` as an `AppWidget` inside a tile.
 
-pub use crate::inner::{Attr, TerminalBackend, TerminalPerformer, TerminalWidget};
+pub use crate::inner::{Attr, GridPos, Selection, TerminalBackend, TerminalPerformer, TerminalWidget};
 
 // The existing `main.rs` content becomes `inner.rs` in Task 5. For this task
 // we only need the re-export scaffolding. Until Task 5, we temporarily

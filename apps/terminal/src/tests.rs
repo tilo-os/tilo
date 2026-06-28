@@ -1,12 +1,137 @@
 #[cfg(test)]
 mod tests {
-    use crate::{TerminalWidget, TerminalPerformer, Attr};
+    use crate::{TerminalWidget, TerminalPerformer, Attr, GridPos, Selection};
     use ui::State;
     use automerge::{AutoCommit, ROOT, ObjType, ReadDoc, transaction::Transactable};
     use std::io::{Read, Write};
     use std::sync::{Arc, Mutex};
     use portable_pty::{MasterPty, PtySize};
     use vte::Perform;
+    use vello::kurbo::Rect;
+
+    /// Shared mock PTY master used by the selection / clipboard tests.
+    struct MockMasterShared;
+    impl MasterPty for MockMasterShared {
+        fn get_size(&self) -> Result<PtySize, anyhow::Error> { Ok(PtySize::default()) }
+        fn resize(&self, _size: PtySize) -> Result<(), anyhow::Error> { Ok(()) }
+        fn take_writer(&self) -> Result<Box<dyn Write + Send>, anyhow::Error> { Ok(Box::new(std::io::sink())) }
+        fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> { Ok(Box::new(std::io::empty())) }
+        fn process_group_leader(&self) -> Option<i32> { None }
+        fn as_raw_fd(&self) -> Option<i32> { None }
+        fn tty_name(&self) -> Option<std::path::PathBuf> { None }
+    }
+
+    /// `DeviceId::dummy()` is gated behind a winit unstable feature; the
+    /// regular constructor isn't pub. Match what
+    /// `ui/src/widget/date_picker.rs` does: zero-init the value, which
+    /// `handle_event` never inspects for these tests.
+    fn fake_device_id() -> winit::event::DeviceId {
+        unsafe { std::mem::zeroed() }
+    }
+
+    /// Construct a terminal widget with a writer that funnels bytes
+    /// into a channel so tests can assert what was sent to the PTY.
+    fn build_test_widget() -> (TerminalWidget, crossbeam_channel::Receiver<Vec<u8>>) {
+        let (write_tx, write_rx) = crossbeam_channel::unbounded::<Vec<u8>>();
+        struct ChanWriter(crossbeam_channel::Sender<Vec<u8>>);
+        impl Write for ChanWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                let _ = self.0.send(buf.to_vec());
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        let writer: Box<dyn Write + Send> = Box::new(ChanWriter(write_tx));
+        let (_pty_out_tx, pty_out_rx) = crossbeam_channel::unbounded();
+        let widget = TerminalWidget::new(
+            Arc::new(Mutex::new(writer)),
+            Arc::new(Mutex::new(Box::new(MockMasterShared))),
+            pty_out_rx,
+        );
+        (widget, write_rx)
+    }
+
+    fn send_left_press(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
+        use winit::event::{WindowEvent, MouseButton, ElementState, Modifiers};
+        use ui::widget::Widget;
+        let mut handled = false;
+        let mut focus = None;
+        let modifiers = Modifiers::default();
+        let taffy = taffy::TaffyTree::<()>::new();
+        let node = taffy::NodeId::new(0);
+        let ev = WindowEvent::MouseInput {
+            device_id: fake_device_id(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        };
+        widget.handle_event(&ev, 1.0, &modifiers, doc, &automerge::ROOT, &mut handled, &mut focus, node, &taffy);
+    }
+
+    fn send_left_release(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
+        use winit::event::{WindowEvent, MouseButton, ElementState, Modifiers};
+        use ui::widget::Widget;
+        let mut handled = false;
+        let mut focus = None;
+        let modifiers = Modifiers::default();
+        let taffy = taffy::TaffyTree::<()>::new();
+        let node = taffy::NodeId::new(0);
+        let ev = WindowEvent::MouseInput {
+            device_id: fake_device_id(),
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        };
+        widget.handle_event(&ev, 1.0, &modifiers, doc, &automerge::ROOT, &mut handled, &mut focus, node, &taffy);
+    }
+
+    fn send_cursor_move(widget: &mut TerminalWidget, doc: &mut AutoCommit, x: f64, y: f64) {
+        use winit::event::{WindowEvent, Modifiers};
+        use winit::dpi::PhysicalPosition;
+        use ui::widget::Widget;
+        let mut handled = false;
+        let mut focus = None;
+        let modifiers = Modifiers::default();
+        let taffy = taffy::TaffyTree::<()>::new();
+        let node = taffy::NodeId::new(0);
+        let ev = WindowEvent::CursorMoved {
+            device_id: fake_device_id(),
+            position: PhysicalPosition::new(x, y),
+        };
+        widget.handle_event(&ev, 1.0, &modifiers, doc, &automerge::ROOT, &mut handled, &mut focus, node, &taffy);
+    }
+
+    fn send_key(widget: &mut TerminalWidget, doc: &mut AutoCommit, key: winit::keyboard::Key, ctrl: bool, shift: bool) {
+        use winit::event::{WindowEvent, ElementState, KeyEvent, Modifiers};
+        use winit::keyboard::{ModifiersState, PhysicalKey, KeyLocation};
+        use ui::widget::Widget;
+
+        let mut state = ModifiersState::empty();
+        if ctrl { state |= ModifiersState::CONTROL; }
+        if shift { state |= ModifiersState::SHIFT; }
+        let modifiers: Modifiers = state.into();
+
+        let mut handled = false;
+        let mut focus = None;
+        let taffy = taffy::TaffyTree::<()>::new();
+        let node = taffy::NodeId::new(0);
+
+        // Construct over a zeroed buffer because winit's `KeyEventExtra`
+        // is `pub(crate)` — same trick `ui::widget::modal_dialog`'s tests
+        // and `shell/tests/e2e_shell_flows.rs::key_press` use.
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = key;
+        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+
+        let win_ev = WindowEvent::KeyboardInput {
+            device_id: fake_device_id(),
+            event: ev,
+            is_synthetic: false,
+        };
+        widget.handle_event(&win_ev, 1.0, &modifiers, doc, &automerge::ROOT, &mut handled, &mut focus, node, &taffy);
+    }
 
     #[test]
     fn test_terminal_grid_init() {
@@ -221,5 +346,188 @@ mod tests {
             format!("{:?}", default_cursor),
             "cursor must follow the palette's fg_default"
         );
+    }
+
+    // ---------------------------------------------------------------
+    // Selection + clipboard tests (cell-grid flow-selection model).
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn selection_collapsed_after_lone_click_is_none() {
+        // Click without drag: selection must be `None` after release.
+        // A one-cell highlight on idle clicks would be visually noisy
+        // and doesn't match any standard terminal emulator.
+        let (mut widget, _) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 600.0), 10.0, 20.0);
+
+        send_cursor_move(&mut widget, &mut doc, 100.0, 100.0);
+        send_left_press(&mut widget, &mut doc);
+        // Selection exists during drag (anchor == cursor)…
+        assert!(widget.selection().is_some());
+        send_left_release(&mut widget, &mut doc);
+        // …and is cleared once the mouse comes back up with no drag.
+        assert!(widget.selection().is_none(), "lone click must clear selection on release");
+        assert!(!widget.is_dragging());
+    }
+
+    #[test]
+    fn selection_anchor_and_cursor_track_drag() {
+        // Press at (col=5, row=2), drag to (col=20, row=6). Anchor must
+        // stay at the press location while cursor moves with the pointer.
+        let (mut widget, _) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 600.0), 10.0, 20.0);
+
+        // Padding is 4px → col k occupies x ∈ [4 + k*10, 4 + (k+1)*10).
+        // Press at col 5, row 2.
+        send_cursor_move(&mut widget, &mut doc, 4.0 + 5.0 * 10.0 + 1.0, 2.0 * 20.0 + 1.0);
+        send_left_press(&mut widget, &mut doc);
+        let sel0 = widget.selection().expect("selection present after press");
+        assert_eq!(sel0.anchor, GridPos { row: 2, col: 5 });
+        assert_eq!(sel0.cursor, GridPos { row: 2, col: 5 });
+
+        // Drag to col 20, row 6.
+        send_cursor_move(&mut widget, &mut doc, 4.0 + 20.0 * 10.0 + 1.0, 6.0 * 20.0 + 1.0);
+        let sel1 = widget.selection().expect("selection still present mid-drag");
+        assert_eq!(sel1.anchor, GridPos { row: 2, col: 5 }, "anchor must NOT move during drag");
+        assert_eq!(sel1.cursor, GridPos { row: 6, col: 20 });
+
+        // Release: drag ends, but selection survives.
+        send_left_release(&mut widget, &mut doc);
+        let sel2 = widget.selection().expect("selection survives release");
+        assert_eq!(sel2.anchor, GridPos { row: 2, col: 5 });
+        assert_eq!(sel2.cursor, GridPos { row: 6, col: 20 });
+        assert!(!widget.is_dragging());
+    }
+
+    #[test]
+    fn selection_row_spans_single_row_returns_one_span() {
+        // Single-row selection: one span from start_col to end_col.
+        let sel = Selection {
+            anchor: GridPos { row: 3, col: 5 },
+            cursor: GridPos { row: 3, col: 12 },
+        };
+        let spans = crate::inner::selection_row_spans(&sel, 80);
+        assert_eq!(spans, vec![(3, 5, 12)]);
+    }
+
+    #[test]
+    fn selection_row_spans_three_rows_returns_first_full_last() {
+        // Multi-row: first row goes start..cols, middle row 0..cols,
+        // last row 0..end_col.
+        let sel = Selection {
+            anchor: GridPos { row: 2, col: 5 },
+            cursor: GridPos { row: 4, col: 3 },
+        };
+        let spans = crate::inner::selection_row_spans(&sel, 80);
+        assert_eq!(
+            spans,
+            vec![
+                (2, 5, 80),   // first: start..cols
+                (3, 0, 80),   // middle: all cols
+                (4, 0, 3),    // last: 0..end
+            ]
+        );
+    }
+
+    #[test]
+    fn selection_row_spans_anchor_after_cursor_is_normalised() {
+        // Drag-up case: anchor is after cursor in reading order. The
+        // span walker must order them so the lower row is "first".
+        let sel = Selection {
+            anchor: GridPos { row: 5, col: 7 },
+            cursor: GridPos { row: 1, col: 2 },
+        };
+        let spans = crate::inner::selection_row_spans(&sel, 80);
+        assert_eq!(spans.first(), Some(&(1, 2, 80)));
+        assert_eq!(spans.last(), Some(&(5, 0, 7)));
+    }
+
+    #[test]
+    fn selected_text_strips_trailing_whitespace_per_row() {
+        // Standard terminal-copy behaviour: trailing spaces on each
+        // visible row are not copied (they're padding, not content).
+        let (mut widget, _) = build_test_widget();
+        widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+        widget.force_viewport_start(0);
+        widget.force_grid(vec![
+            "hello world                 ".to_string(),
+            "second line trailing space  ".to_string(),
+        ]);
+        widget.force_selection(Some(Selection {
+            anchor: GridPos { row: 0, col: 0 },
+            cursor: GridPos { row: 1, col: 28 },
+        }));
+        let text = widget.test_selected_text().expect("selection produces text");
+        assert_eq!(text, "hello world\nsecond line trailing space");
+    }
+
+    #[test]
+    fn ctrl_c_without_shift_still_sends_etx_to_pty() {
+        // Regression guard: Ctrl+C must keep delivering SIGINT (0x03)
+        // to the PTY even with no selection. The Ctrl+Shift+C path
+        // must not poach the bare Ctrl+C event.
+        use winit::keyboard::{Key, SmolStr};
+        let (mut widget, write_rx) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+
+        send_key(&mut widget, &mut doc, Key::Character(SmolStr::new_static("c")), /*ctrl=*/ true, /*shift=*/ false);
+
+        let bytes = write_rx.try_recv().expect("Ctrl+C must write bytes to PTY");
+        assert_eq!(bytes, vec![0x03], "Ctrl+C must send ETX (0x03) to the PTY");
+    }
+
+    #[test]
+    fn ctrl_c_without_shift_still_sends_etx_even_with_selection() {
+        // A standing selection must not divert bare Ctrl+C into copy
+        // semantics — the user expects SIGINT.
+        use winit::keyboard::{Key, SmolStr};
+        let (mut widget, write_rx) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+        widget.force_grid(vec!["hello".to_string()]);
+        widget.force_selection(Some(Selection {
+            anchor: GridPos { row: 0, col: 0 },
+            cursor: GridPos { row: 0, col: 5 },
+        }));
+
+        send_key(&mut widget, &mut doc, Key::Character(SmolStr::new_static("c")), /*ctrl=*/ true, /*shift=*/ false);
+
+        let bytes = write_rx.try_recv().expect("Ctrl+C must still write to PTY");
+        assert_eq!(bytes, vec![0x03]);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn ctrl_shift_c_copies_selected_text_to_arboard() {
+        // Linux CI typically has no display server, so arboard returns
+        // an error during `Clipboard::new()`. In that case the test
+        // skips with a warning rather than failing — the clipboard
+        // helper is silent on absence by design.
+        use winit::keyboard::{Key, SmolStr};
+        let (mut widget, _write_rx) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+        widget.force_viewport_start(0);
+        widget.force_grid(vec!["coverage one".to_string(), "coverage two".to_string()]);
+        widget.force_selection(Some(Selection {
+            anchor: GridPos { row: 0, col: 0 },
+            cursor: GridPos { row: 1, col: 12 },
+        }));
+
+        // If no display is available, arboard fails to initialise and
+        // the copy is silently skipped. Skip the round-trip in that case.
+        if arboard::Clipboard::new().is_err() {
+            eprintln!("ctrl_shift_c_copies_selected_text_to_arboard: no clipboard backend, skipping round-trip");
+            return;
+        }
+
+        send_key(&mut widget, &mut doc, Key::Character(SmolStr::new_static("C")), /*ctrl=*/ true, /*shift=*/ true);
+
+        let mut cb = arboard::Clipboard::new().expect("clipboard backend");
+        let got = cb.get_text().expect("clipboard contents readable");
+        assert_eq!(got, "coverage one\ncoverage two");
     }
 }
