@@ -9,6 +9,8 @@ members = [
     "apps/file-explorer",
     "apps/terminal",
     "apps/browser",
+    "apps/notes",
+    "apps/collab-broker",
     "apps/settings",
     "greeter",
 ]
