@@ -5,6 +5,7 @@ pub mod widget;
 pub mod text_render;
 pub mod richtext;
 pub mod chrome;
+pub mod gesture;
 pub mod theme;
 pub mod i18n;
 pub mod collaboration;
@@ -29,6 +30,7 @@ pub use widget::command_palette::{CommandEntry, CommandPalette};
 pub use text_render::{TextRenderer, TextWeight};
 pub use richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
 pub use chrome::{LabelCue, ToolbarItem};
+pub use gesture::{DragSelect, Granularity};
 
 // Unified animation primitives (foundation #17).
 pub use animation::{Animated, Curve, Lerp};
