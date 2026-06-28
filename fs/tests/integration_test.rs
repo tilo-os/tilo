@@ -123,3 +123,51 @@ async fn fuse_write_create_overwrite_rename_unlink() {
     })
     .await;
 }
+
+// rmdir must refuse a non-empty directory (no silent rm -rf), and unlink must
+// refuse a directory.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rmdir_rejects_nonempty_and_unlink_rejects_dir() {
+    let _ = timeout(Duration::from_secs(20), async {
+        let mount_dir = tempdir().expect("mount temp dir");
+        let path = mount_dir.path().to_path_buf();
+
+        let endpoint = Endpoint::bind().await.expect("bind endpoint");
+        let store = Arc::new(ContentStore::memory());
+        let namespace = Arc::new(Mutex::new(Namespace::new("rm-peer")));
+        let hydrator = Arc::new(Hydrator::new(endpoint, store));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let fs = QuickFS::new(namespace, hydrator, heuristics);
+
+        let mut config = Config::default();
+        config.mount_options = vec![MountOption::FSName("quickfs_rm".to_string())];
+        let _session = fuser::spawn_mount2(fs, &path, &config).expect("spawn FUSE session");
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+
+        std::fs::create_dir(path.join("dir")).expect("mkdir");
+        std::fs::write(path.join("dir/inner.txt"), b"keepme").expect("write inner");
+
+        // rmdir on a non-empty directory must fail and preserve contents.
+        assert!(
+            std::fs::remove_dir(path.join("dir")).is_err(),
+            "rmdir of a non-empty dir must fail"
+        );
+        assert_eq!(
+            std::fs::read(path.join("dir/inner.txt")).unwrap(),
+            b"keepme",
+            "contents must survive a failed rmdir"
+        );
+
+        // unlink on a directory must fail.
+        assert!(
+            std::fs::remove_file(path.join("dir")).is_err(),
+            "unlink of a directory must fail"
+        );
+
+        // Empty it, then rmdir succeeds.
+        std::fs::remove_file(path.join("dir/inner.txt")).expect("unlink inner");
+        std::fs::remove_dir(path.join("dir")).expect("rmdir empty dir");
+        assert!(!path.join("dir").exists(), "empty dir removed");
+    })
+    .await;
+}

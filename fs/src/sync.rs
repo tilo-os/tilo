@@ -11,6 +11,7 @@
 //! bootstrap exchange guarantees that shared history.
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::Result;
 use bytes::Bytes;
@@ -63,14 +64,19 @@ pub async fn bind_endpoint() -> Result<(Endpoint, MemoryLookup)> {
 }
 
 /// Fetch the full namespace document from a peer over the bootstrap ALPN.
+/// Bounded by a timeout so a stalled/unresponsive host can't hang the caller.
 pub async fn fetch_remote_doc(endpoint: &Endpoint, host: EndpointAddr) -> Result<Vec<u8>> {
-    let conn = endpoint.connect(host, QOS_FS_SYNC_ALPN).await?;
-    let (mut send, mut recv) = conn.open_bi().await?;
-    send.write_all(b"sync").await?;
-    send.finish()?;
-    // Documents are small (metadata only); 64 MiB is a generous ceiling.
-    let doc = recv.read_to_end(64 * 1024 * 1024).await?;
-    Ok(doc)
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let conn = endpoint.connect(host, QOS_FS_SYNC_ALPN).await?;
+        let (mut send, mut recv) = conn.open_bi().await?;
+        send.write_all(b"sync").await?;
+        send.finish()?;
+        // Documents are small (metadata only); 64 MiB is a generous ceiling.
+        let doc = recv.read_to_end(64 * 1024 * 1024).await?;
+        Ok::<_, anyhow::Error>(doc)
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("timed out fetching workspace document"))?
 }
 
 /// Serves the current namespace document to bootstrapping peers.
@@ -88,11 +94,19 @@ impl std::fmt::Debug for SyncProtocol {
 impl ProtocolHandler for SyncProtocol {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         let (mut send, mut recv) = connection.accept_bi().await?;
-        // Drain the (tiny) request so the remote's send stream terminates.
-        let _req = recv.read_to_end(64).await.map_err(AcceptError::from_err)?;
-        let doc = self.namespace.lock().unwrap().save();
-        send.write_all(&doc).await.map_err(AcceptError::from_err)?;
-        let _ = send.finish();
+        // Bound the exchange so a client that opens a stream but never sends
+        // (or never closes) can't leak an accept task / connection forever.
+        let exchange = async {
+            let _req = recv.read_to_end(64).await.map_err(AcceptError::from_err)?;
+            let doc = self.namespace.lock().unwrap().save();
+            send.write_all(&doc).await.map_err(AcceptError::from_err)?;
+            let _ = send.finish();
+            Ok::<(), AcceptError>(())
+        };
+        match tokio::time::timeout(Duration::from_secs(30), exchange).await {
+            Ok(res) => res?,
+            Err(_) => return Ok(()), // timed-out client; just drop the connection
+        }
         connection.closed().await;
         Ok(())
     }
@@ -126,7 +140,7 @@ pub struct Workspace {
     pub namespace: Arc<Mutex<Namespace>>,
     pub sync: Arc<SyncHandle>,
     _router: Router,
-    _pump: AbortOnDrop,
+    _tasks: Vec<AbortOnDrop>,
 }
 
 impl Workspace {
@@ -203,17 +217,26 @@ impl Workspace {
         let (local_tx, local_rx) = mpsc::unbounded_channel();
         let pump = tokio::spawn(pump_loop(
             receiver,
-            sender,
+            sender.clone(),
             local_rx,
             namespace.clone(),
             hydrator.clone(),
+        ));
+        // Anti-entropy backstop: periodically pull+merge peers' full docs and
+        // resolve conflicts, so a missed gossip delta or a mid-join window
+        // can't leave a peer permanently diverged.
+        let reconcile = tokio::spawn(reconcile_loop(
+            endpoint,
+            namespace.clone(),
+            hydrator.clone(),
+            sender,
         ));
 
         Ok(Workspace {
             namespace,
             sync: Arc::new(SyncHandle { local_tx }),
             _router: router,
-            _pump: AbortOnDrop(pump),
+            _tasks: vec![AbortOnDrop(pump), AbortOnDrop(reconcile)],
         })
     }
 }
@@ -246,31 +269,59 @@ async fn pump_loop(
             ev = receiver.next() => {
                 match ev {
                     Some(Ok(Event::Received(msg))) => {
-                        {
-                            let mut ns = namespace.lock().unwrap();
-                            let _ = ns.apply_remote(msg.content.as_ref());
-                        }
-                        // Surface any new content conflicts as conflict copies.
-                        // We hydrate the losing blob so the copy gets a correct
-                        // size (and the bytes are cached locally).
-                        let conflicts = crate::conflict::detect(&namespace.lock().unwrap());
-                        for c in conflicts {
-                            if let Ok(bytes) = hydrator.read(c.loser, 0, u64::MAX).await {
-                                let delta = {
-                                    let mut ns = namespace.lock().unwrap();
-                                    crate::conflict::materialize(&mut ns, &c, bytes.len() as u64, now_ms())
-                                };
-                                if !delta.is_empty() {
-                                    let _ = sender.broadcast(Bytes::from(delta)).await;
-                                }
-                            }
-                        }
+                        // Fast path: just apply the delta. Conflict resolution
+                        // and anti-entropy run in reconcile_loop so a slow
+                        // hydration can never block local delta propagation.
+                        let mut ns = namespace.lock().unwrap();
+                        let _ = ns.apply_remote(msg.content.as_ref());
                     }
                     Some(Ok(Event::NeighborUp(id))) => {
                         hydrator.add_peer(EndpointAddr::new(id));
                     }
                     Some(Ok(_)) => {}
-                    Some(Err(_)) | None => break,
+                    Some(Err(_)) => {
+                        // Transient gossip error: don't kill the pump (that
+                        // would silently dead-sync the workspace) — back off
+                        // briefly and keep going.
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    None => break, // stream genuinely ended
+                }
+            }
+        }
+    }
+}
+
+/// Periodic anti-entropy + conflict resolution. Pulls each known peer's full
+/// document and merges it (recovering from dropped gossip or a mid-join
+/// window), then materializes conflict copies for any concurrent content edits.
+async fn reconcile_loop(
+    endpoint: Endpoint,
+    namespace: Arc<Mutex<Namespace>>,
+    hydrator: Arc<Hydrator>,
+    sender: GossipSender,
+) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        for peer in hydrator.known_peers() {
+            if let Ok(doc) = fetch_remote_doc(&endpoint, peer).await {
+                let _ = namespace.lock().unwrap().merge_remote_doc(&doc);
+            }
+        }
+
+        let conflicts = crate::conflict::detect(&namespace.lock().unwrap());
+        for c in conflicts {
+            // Hydrate the losing blob so the copy has a correct size (and the
+            // bytes are cached locally). Skipped if no peer can serve it yet;
+            // retried on the next pass.
+            if let Ok(bytes) = hydrator.read(c.loser, 0, u64::MAX).await {
+                let delta = {
+                    let mut ns = namespace.lock().unwrap();
+                    crate::conflict::materialize(&mut ns, &c, bytes.len() as u64, now_ms())
+                };
+                if !delta.is_empty() {
+                    let _ = sender.broadcast(Bytes::from(delta)).await;
                 }
             }
         }
