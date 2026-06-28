@@ -218,6 +218,14 @@ impl Workspace {
     }
 }
 
+fn now_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// The bidirectional pump: broadcast local deltas, apply remote deltas, and
 /// learn peer addresses for hydration as neighbors come up.
 async fn pump_loop(
@@ -238,8 +246,25 @@ async fn pump_loop(
             ev = receiver.next() => {
                 match ev {
                     Some(Ok(Event::Received(msg))) => {
-                        let mut ns = namespace.lock().unwrap();
-                        let _ = ns.apply_remote(msg.content.as_ref());
+                        {
+                            let mut ns = namespace.lock().unwrap();
+                            let _ = ns.apply_remote(msg.content.as_ref());
+                        }
+                        // Surface any new content conflicts as conflict copies.
+                        // We hydrate the losing blob so the copy gets a correct
+                        // size (and the bytes are cached locally).
+                        let conflicts = crate::conflict::detect(&namespace.lock().unwrap());
+                        for c in conflicts {
+                            if let Ok(bytes) = hydrator.read(c.loser, 0, u64::MAX).await {
+                                let delta = {
+                                    let mut ns = namespace.lock().unwrap();
+                                    crate::conflict::materialize(&mut ns, &c, bytes.len() as u64, now_ms())
+                                };
+                                if !delta.is_empty() {
+                                    let _ = sender.broadcast(Bytes::from(delta)).await;
+                                }
+                            }
+                        }
                     }
                     Some(Ok(Event::NeighborUp(id))) => {
                         hydrator.add_peer(EndpointAddr::new(id));
