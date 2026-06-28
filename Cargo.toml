@@ -3,10 +3,13 @@ members = [
     "fs",
     "shell",
     "ui",
+    "os-actions",
     "apps/file-explorer",
     "apps/terminal",
     "apps/browser",
     "apps/notes",
     "apps/collab-broker",
+    "apps/settings",
+    "greeter",
 ]
 resolver = "2"
