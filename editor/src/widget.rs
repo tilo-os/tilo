@@ -133,6 +133,34 @@ fn char_font_family(i: usize, marks: &[MarkSpan]) -> Option<FontFamily> {
         .map(parse_family)
 }
 
+/// Link blue used for `link`-marked text.
+const LINK_RGB: [u8; 3] = [0x1a, 0x56, 0xc4];
+
+/// The text colour covering char `i`: a `link` mark → link blue, else a
+/// `color` mark's `#RRGGBB`.
+fn char_color(i: usize, marks: &[MarkSpan]) -> Option<[u8; 3]> {
+    if marks.iter().any(|m| m.name == "link" && i >= m.start && i < m.end) {
+        return Some(LINK_RGB);
+    }
+    marks
+        .iter()
+        .find(|m| m.name == "color" && i >= m.start && i < m.end)
+        .and_then(|m| m.value.as_str())
+        .and_then(parse_hex_rgb)
+}
+
+fn parse_hex_rgb(s: &str) -> Option<[u8; 3]> {
+    let h = s.strip_prefix('#').unwrap_or(s);
+    if h.len() != 6 {
+        return None;
+    }
+    Some([
+        u8::from_str_radix(&h[0..2], 16).ok()?,
+        u8::from_str_radix(&h[2..4], 16).ok()?,
+        u8::from_str_radix(&h[4..6], 16).ok()?,
+    ])
+}
+
 /// Pick a block's horizontal alignment from its `align` attribute.
 fn block_align(b: &BlockView) -> TextAlign {
     match b.attrs.get("align") {
@@ -154,6 +182,7 @@ fn block_runs(b: &BlockView) -> (Vec<RichSpan>, Vec<(usize, usize)>, Vec<(usize,
             char_has(i, &b.marks, "em"),
             char_font_size(i, &b.marks).map(f32::to_bits),
             char_font_family(i, &b.marks),
+            char_color(i, &b.marks),
         )
     };
     let mut runs = Vec::new();
@@ -164,13 +193,14 @@ fn block_runs(b: &BlockView) -> (Vec<RichSpan>, Vec<(usize, usize)>, Vec<(usize,
         while j < n && key(j) == k {
             j += 1;
         }
-        let (bold, italic, size_bits, family) = k;
+        let (bold, italic, size_bits, family, color) = k;
         runs.push(RichSpan {
             text: chars[i..j].iter().collect(),
             bold,
             italic,
             size: size_bits.map(f32::from_bits),
             family,
+            color,
         });
         i = j;
     }
@@ -184,7 +214,10 @@ fn block_runs(b: &BlockView) -> (Vec<RichSpan>, Vec<(usize, usize)>, Vec<(usize,
             .map(|m| (char_to_byte(&b.text, m.start), char_to_byte(&b.text, m.end)))
             .collect::<Vec<_>>()
     };
-    (runs, deco("underline"), deco("strike"))
+    // Links render underlined as well as blue.
+    let mut underlines = deco("underline");
+    underlines.extend(deco("link"));
+    (runs, underlines, deco("strike"))
 }
 
 /// A block laid out for the current frame; kept for click hit-testing.
