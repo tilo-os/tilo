@@ -48,11 +48,13 @@ pub struct RichSpan {
     pub italic: bool,
     pub size: Option<f32>,
     pub family: Option<FontFamily>,
+    /// Per-run text colour (RGB). `None` uses the block's default ink.
+    pub color: Option<[u8; 3]>,
 }
 
 impl RichSpan {
     pub fn new(text: impl Into<String>) -> Self {
-        Self { text: text.into(), bold: false, italic: false, size: None, family: None }
+        Self { text: text.into(), bold: false, italic: false, size: None, family: None, color: None }
     }
     pub fn bold(mut self, b: bool) -> Self {
         self.bold = b;
@@ -60,6 +62,10 @@ impl RichSpan {
     }
     pub fn italic(mut self, i: bool) -> Self {
         self.italic = i;
+        self
+    }
+    pub fn color(mut self, c: Option<[u8; 3]>) -> Self {
+        self.color = c;
         self
     }
 }
@@ -126,6 +132,9 @@ impl RichTextLayout {
                         .metrics(Metrics::new(run_size, run_size * 1.4));
                     if r.italic {
                         a = a.style(Style::Italic);
+                    }
+                    if let Some([cr, cg, cb]) = r.color {
+                        a.color_opt = Some(cosmic_text::Color::rgb(cr, cg, cb));
                     }
                     (r.text.as_str(), a)
                 })
