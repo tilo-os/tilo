@@ -492,6 +492,10 @@ impl Widget for WordProcessorWidget {
         let page = Rect::new(page_x, page_top, page_x + page_w, page_top + page_h);
         chrome::page::draw(scene, transform, page, PAPER, SHADOW);
 
+        // Restore the block cache before pass 2 so selection lookups resolve.
+        self.blocks = blocks;
+        let multi_sel = self.selection_blocks_cached().len() > 1;
+
         // Pass 2: draw cell borders, bullets, selection, text, caret.
         for l in &laid {
             if let Some(bx) = l.cell_box {
@@ -516,9 +520,14 @@ impl Widget for WordProcessorWidget {
             }
 
             if let Some((b0, b1)) = self.selection_bytes_for(&l.id, &l.text) {
-                for (rx0, ry0, rx1, ry1) in l.layout.selection_rects(b0, b1) {
-                    let r = Rect::new(l.text_x + rx0 as f64, l.y_top + ry0 as f64, l.text_x + rx1 as f64, l.y_top + ry1 as f64);
-                    scene.fill(Fill::NonZero, transform, SELECTION, None, &r);
+                if let (Some(bx), true) = (l.cell_box, multi_sel) {
+                    // Multi-cell selection: highlight the whole cell (spreadsheet-style).
+                    scene.fill(Fill::NonZero, transform, SELECTION, None, &bx);
+                } else {
+                    for (rx0, ry0, rx1, ry1) in l.layout.selection_rects(b0, b1) {
+                        let r = Rect::new(l.text_x + rx0 as f64, l.y_top + ry0 as f64, l.text_x + rx1 as f64, l.y_top + ry1 as f64);
+                        scene.fill(Fill::NonZero, transform, SELECTION, None, &r);
+                    }
                 }
             }
 
@@ -533,7 +542,7 @@ impl Widget for WordProcessorWidget {
         }
 
         // Empty-document placeholder.
-        if blocks.len() == 1 && blocks[0].kind == "paragraph" && blocks[0].text.is_empty() {
+        if self.blocks.len() == 1 && self.blocks[0].kind == "paragraph" && self.blocks[0].text.is_empty() {
             if let Some(l) = laid.first() {
                 text_renderer.draw_text(
                     scene,
@@ -546,7 +555,6 @@ impl Widget for WordProcessorWidget {
             }
         }
 
-        self.blocks = blocks;
         self.laid = laid;
 
         let bar = Rect::new(full.x0, status_top, full.x1, full.y1);
