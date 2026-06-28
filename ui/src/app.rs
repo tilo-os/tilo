@@ -2,7 +2,7 @@ use winit::{
     application::ApplicationHandler,
     dpi::PhysicalPosition,
     event::{ElementState, MouseButton, WindowEvent},
-    event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
     window::{Window, WindowId},
 };
 
@@ -229,6 +229,12 @@ impl App {
         // app-side half of the late-join convergence handshake. A `None`
         // scope (teardown / headless) announces nothing.
         if let Some(k) = key {
+            if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
+                eprintln!(
+                    "[app] set scope; collab connected={}; broadcasting Arrived",
+                    self.collab_manager.is_connected()
+                );
+            }
             self.broadcast_presence(
                 k,
                 crate::collaboration::PresencePayload::Arrived,
@@ -273,6 +279,25 @@ impl App {
         }
         self.collab_manager
             .send(CollabRequest::Presence { key, payload });
+    }
+
+    /// Broadcast the document changes made since the last call as an
+    /// incremental CRDT delta, so peers see local edits in near-real-time.
+    /// This is the live-edit path (the late-join handshake still ships a
+    /// full snapshot). Cheap when nothing changed — `save_incremental`
+    /// returns empty and we skip the send.
+    fn broadcast_doc_delta(&mut self) {
+        if !self.collab_manager.is_connected() {
+            return;
+        }
+        let delta = self.state.save_incremental();
+        if !delta.is_empty() {
+            if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
+                eprintln!("[app] broadcast doc delta {}B", delta.len());
+            }
+            self.collab_manager
+                .send(crate::collaboration::CollabRequest::SyncIncremental { data: delta });
+        }
     }
 
     /// Poll the focused widget for its caret/selection presence and
@@ -438,6 +463,12 @@ impl App {
                     // already-synced peer merges it idempotently. (Page
                     // switches use Tab keys and never trigger this.)
                     let data = self.state.save();
+                    if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
+                        eprintln!(
+                            "[app] recv Arrived; replying full state {}B",
+                            data.len()
+                        );
+                    }
                     self.collab_manager
                         .send(crate::collaboration::CollabRequest::SyncCRDT { data });
                 }
@@ -1364,7 +1395,19 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // While collaborating, tick the loop at ~60 Hz so the collab
+        // socket is drained promptly. winit's default `Wait` only wakes on
+        // local input, so a remote peer's edits/presence (which aren't a
+        // winit event source) would otherwise sit unread for seconds until
+        // the local user happens to move the mouse. Non-collab apps keep
+        // the default event-driven `Wait` (no idle wakeups).
+        if self.app.collab_manager.is_connected() {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(
+                Instant::now() + Duration::from_millis(16),
+            ));
+        }
+
         let Some(window) = self.window.as_ref().cloned() else {
             return;
         };
@@ -1417,9 +1460,18 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     // replacing it — a replace would clobber our own
                     // concurrent edits. Merge is the correct CRDT join and
                     // is what makes bidirectional editing converge.
+                    if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
+                        eprintln!("[app] recv CRDTUpdate {}B", data.len());
+                    }
                     if let Ok(mut incoming) = State::load(&data) {
                         let _ = app.state.doc.merge(&mut incoming.doc);
                         app.needs_sync = true;
+                        // A remote change can alter widget structure (e.g.
+                        // a peer added a page / block), so the next frame's
+                        // `sync` may grow the tree. Force a relayout so
+                        // per-row/per-block rects are rebuilt before draw —
+                        // otherwise a stale layout indexes out of bounds.
+                        app.layout_dirty = true;
                         window.request_redraw();
                     }
                 }
@@ -1430,6 +1482,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     // peer can't brick our state.
                     let _ = app.state.load_incremental(&data);
                     app.needs_sync = true;
+                    // See CRDTUpdate above: relayout after a remote change.
+                    app.layout_dirty = true;
                     window.request_redraw();
                 }
                 CollabEvent::RemotePresenceUpdate {
@@ -1455,6 +1509,21 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // post-event broadcast above wouldn't catch. Diffed, so it only
         // sends on an actual change.
         app.broadcast_location_presence();
+
+        // Keep syncing on idle frames while a collab app is still seeding
+        // or adopting the shared document. Without this a first peer with
+        // no input never re-runs `sync` to seed its doc after the grace
+        // window, so a late joiner receives an empty reply and diverges.
+        // Stops as soon as the widget reports it's converged.
+        if app.collab_manager.is_connected() && app.root_widget.needs_idle_sync() {
+            app.needs_sync = true;
+            window.request_redraw();
+        }
+
+        // Broadcast any local document edits (and the initial seed) as an
+        // incremental delta so peers converge in near-real-time. Runs each
+        // ~16ms tick while connected; a no-op when nothing changed.
+        app.broadcast_doc_delta();
 
         // If a widget mutated its child composition between
         // frames (e.g. GroupRow split a tab into a new group
