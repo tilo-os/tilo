@@ -1,42 +1,45 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use fuser::{MountOption, Config};
-use fs::{QuickFS, MetadataStore, Hydrator, Heuristics};
+
+use bytes::Bytes;
+use fs::namespace::ROOT_INO;
+use fs::{ContentStore, Heuristics, Hydrator, Namespace, QuickFS};
+use fuser::{Config, MountOption};
+use iroh::endpoint::Endpoint;
 use tempfile::tempdir;
 use tokio::time::timeout;
-use iroh::endpoint::Endpoint;
-use iroh_blobs::Hash;
 
-#[tokio::test]
-async fn test_fuse_ops() {
-    // Strict timeout for the entire test
-    let test_timeout = Duration::from_secs(15);
-    
-    let _result = timeout(test_timeout, async {
-        // 1. Setup temporary directory for mount
-        let mount_dir = tempdir().expect("Failed to create mount temp dir");
+// Multi-thread runtime: the FUSE read path uses `block_in_place`, which panics
+// on a current-thread runtime.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fuse_projects_tree_and_reads_real_content() {
+    let test_timeout = Duration::from_secs(20);
+
+    let _ = timeout(test_timeout, async {
+        let mount_dir = tempdir().expect("mount temp dir");
         let mount_path = mount_dir.path().to_path_buf();
 
-        // 2. Initialize Iroh Endpoint
-        let endpoint = Endpoint::builder().bind().await.expect("Failed to bind endpoint");
+        let endpoint = Endpoint::bind().await.expect("bind endpoint");
 
-        // 3. Initialize QuickFS components
-        let metadata = Arc::new(Mutex::new(MetadataStore::new()));
-        let hydrator = Arc::new(Hydrator::new(endpoint));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), metadata.clone()));
+        // Ingest real content into the local store and seed the namespace with it.
+        let store = Arc::new(ContentStore::memory());
+        let body = b"hello from the collaborative filesystem";
+        let hash = store.ingest(Bytes::from_static(body)).await.expect("ingest");
 
-        // Populate with specific test data
-        let dummy_hash = Hash::from([0u8; 32]);
+        let namespace = Arc::new(Mutex::new(Namespace::new("test-peer")));
         {
-            let mut store = metadata.lock().unwrap();
-            store.create_file(1, "test_file.txt", 100, dummy_hash);
-            let subdir_ino = store.create_dir(1, "subdir");
-            store.create_file(subdir_ino, "nested.txt", 200, dummy_hash);
+            let mut ns = namespace.lock().unwrap();
+            ns.create_file(ROOT_INO, "test_file.txt", Some(&hash), body.len() as u64, 1)
+                .unwrap();
+            let subdir = ns.create_dir(ROOT_INO, "subdir", 1).unwrap();
+            ns.create_file(subdir, "nested.txt", Some(&hash), body.len() as u64, 1)
+                .unwrap();
         }
 
-        let fs = QuickFS::new(metadata, hydrator, heuristics);
+        let hydrator = Arc::new(Hydrator::new(endpoint, store));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let fs = QuickFS::new(namespace, hydrator, heuristics);
 
-        // 4. Mount in background
         let options = vec![
             MountOption::RO,
             MountOption::FSName("quickfs_test".to_string()),
@@ -44,35 +47,27 @@ async fn test_fuse_ops() {
         let mut config = Config::default();
         config.mount_options = options;
 
-        println!("Spawning FUSE mount at {:?}", mount_path);
-        // Note: spawn_mount2 is non-blocking
-        let _session = fuser::spawn_mount2(fs, &mount_path, &config)
-            .expect("Failed to spawn FUSE session");
-
-        // Give it a moment to actually mount
+        let _session =
+            fuser::spawn_mount2(fs, &mount_path, &config).expect("spawn FUSE session");
         tokio::time::sleep(Duration::from_millis(1000)).await;
 
-        // 5. Test "ls" (read_dir)
+        // Projection: the tree is visible.
         let entries = std::fs::read_dir(&mount_path)
-            .expect("Failed to read_dir")
-            .map(|res| res.map(|e| e.file_name().into_string().unwrap()))
-            .collect::<Result<Vec<_>, _>>()
-            .expect("Error iterating dir");
-
-        println!("Found entries: {:?}", entries);
+            .expect("read_dir")
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect::<Vec<_>>();
         assert!(entries.contains(&"test_file.txt".to_string()));
         assert!(entries.contains(&"subdir".to_string()));
 
-        // 6. Test nested ls
-        let nested_entries = std::fs::read_dir(mount_path.join("subdir"))
-            .expect("Failed to read subdir")
-            .map(|res| res.map(|e| e.file_name().into_string().unwrap()))
-            .collect::<Result<Vec<_>, _>>()
-            .expect("Error iterating subdir");
-        
-        println!("Found nested entries: {:?}", nested_entries);
-        assert!(nested_entries.contains(&"nested.txt".to_string()));
+        let nested = std::fs::read_dir(mount_path.join("subdir"))
+            .expect("read subdir")
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect::<Vec<_>>();
+        assert!(nested.contains(&"nested.txt".to_string()));
 
-        println!("Integration test basic ops passed!");
-    }).await;
+        // Hydration: reading the file returns the real ingested bytes.
+        let read_back = std::fs::read(mount_path.join("test_file.txt")).expect("read file");
+        assert_eq!(read_back, body, "FUSE read must return the real content");
+    })
+    .await;
 }
