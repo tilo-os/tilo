@@ -58,6 +58,14 @@ pub trait Widget {
     ) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
         None
     }
+    /// Whether this widget still needs `sync` to run on idle frames even
+    /// without input or collab events — e.g. a collab app that hasn't yet
+    /// seeded or adopted the shared document and is waiting out a grace
+    /// window. The App keeps requesting redraws while this is true (and a
+    /// collab socket is connected). Default: no idle sync needed.
+    fn needs_idle_sync(&self) -> bool {
+        false
+    }
     /// Which permission scope, if any, gates this widget. Default: no gating.
     fn permission_scope(&self) -> Option<PermissionScope> { None }
     fn accepts_drop(&self, _payload: &DragPayload) -> bool { false }

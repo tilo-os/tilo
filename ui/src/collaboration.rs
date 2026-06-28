@@ -60,6 +60,14 @@ pub struct Collaborator {
 
 pub struct CollaborationManager {
     stream: Option<UnixStream>,
+    /// Persistent read buffer. The socket is non-blocking, so a single
+    /// `poll` can see a frame split across reads (large `SyncCRDT`
+    /// payloads especially) or several frames coalesced. We accumulate
+    /// raw bytes here and only extract *complete* length-prefixed frames,
+    /// leaving any partial tail for the next poll. Reading the body with
+    /// `read_exact` directly (the old approach) dropped split frames and
+    /// desynced the stream.
+    rbuf: Vec<u8>,
 }
 
 impl CollaborationManager {
@@ -70,7 +78,7 @@ impl CollaborationManager {
             None
         };
 
-        let mut manager = Self { stream };
+        let mut manager = Self { stream, rbuf: Vec::new() };
         
         if manager.stream.is_some() {
             let app_id = std::env::var("QUICK_APP_ID").unwrap_or_else(|_| Uuid::new_v4().to_string());
@@ -88,9 +96,24 @@ impl CollaborationManager {
         manager
     }
 
+    /// True when connected to a broker (a `QUICK_COLLAB_SOCK` was set and
+    /// the connection succeeded). The event loop uses this to tick while
+    /// collaborating so the socket is drained promptly instead of only on
+    /// local input.
+    pub fn is_connected(&self) -> bool {
+        self.stream.is_some()
+    }
+
     pub fn send(&mut self, req: CollabRequest) {
         if let Some(ref mut s) = self.stream {
             if let Ok(json) = serde_json::to_vec(&req) {
+                // Block for writes so a large frame (a full-document
+                // `SyncCRDT` snapshot) is sent in full. `poll` flips the
+                // socket to non-blocking for reads; the two alternate on
+                // one thread, so toggling here is safe. Without this a big
+                // `write_all` on a non-blocking socket returns WouldBlock
+                // partway and the frame is truncated.
+                let _ = s.set_nonblocking(false);
                 let len = json.len() as u32;
                 let _ = s.write_all(&len.to_le_bytes());
                 let _ = s.write_all(&json);
@@ -99,21 +122,43 @@ impl CollaborationManager {
     }
 
     pub fn poll(&mut self) -> Vec<CollabEvent> {
-        let mut events = Vec::new();
+        // 1. Drain everything currently available on the socket into the
+        //    persistent buffer. `read` (unlike `read_exact`) returns
+        //    whatever bytes are ready without losing a partially-arrived
+        //    frame.
         if let Some(ref mut s) = self.stream {
             let _ = s.set_nonblocking(true);
+            let mut chunk = [0u8; 8192];
             loop {
-                let mut len_buf = [0u8; 4];
-                if let Err(e) = s.read_exact(&mut len_buf) {
-                    if e.kind() == std::io::ErrorKind::WouldBlock { break; }
-                    break;
+                match s.read(&mut chunk) {
+                    Ok(0) => break, // EOF
+                    Ok(n) => self.rbuf.extend_from_slice(&chunk[..n]),
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(_) => break,
                 }
-                let len = u32::from_le_bytes(len_buf) as usize;
-                let mut buf = vec![0u8; len];
-                if s.read_exact(&mut buf).is_err() { break; }
-                if let Ok(event) = serde_json::from_slice(&buf) {
-                    events.push(event);
-                }
+            }
+        }
+
+        // 2. Extract every *complete* length-prefixed frame from the
+        //    buffer, leaving any partial tail for the next poll.
+        let mut events = Vec::new();
+        loop {
+            if self.rbuf.len() < 4 {
+                break;
+            }
+            let len = u32::from_le_bytes([
+                self.rbuf[0],
+                self.rbuf[1],
+                self.rbuf[2],
+                self.rbuf[3],
+            ]) as usize;
+            if self.rbuf.len() < 4 + len {
+                break; // frame not fully arrived yet
+            }
+            let frame: Vec<u8> = self.rbuf[4..4 + len].to_vec();
+            self.rbuf.drain(..4 + len);
+            if let Ok(event) = serde_json::from_slice(&frame) {
+                events.push(event);
             }
         }
         events
@@ -264,6 +309,20 @@ pub mod broker {
             let Ok(bytes) = serde_json::to_vec(&event) else { continue };
 
             let mut guard = peers.lock().unwrap();
+            let recipients = guard.len().saturating_sub(1);
+            if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
+                let kind = match &event {
+                    CollabEvent::CRDTUpdate { data } => format!("CRDTUpdate({}B)", data.len()),
+                    CollabEvent::CRDTIncremental { data } => {
+                        format!("CRDTIncremental({}B)", data.len())
+                    }
+                    CollabEvent::RemotePresenceUpdate { payload, .. } => {
+                        format!("Presence({payload:?})")
+                    }
+                    other => format!("{other:?}"),
+                };
+                eprintln!("[broker] peer{src_idx} -> {kind} -> {recipients} peer(s)");
+            }
             for (idx, peer) in guard.iter_mut() {
                 if *idx != src_idx {
                     write_frame(&mut peer.write, &bytes);
