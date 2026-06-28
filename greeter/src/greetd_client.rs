@@ -8,37 +8,121 @@
 //!    `PostAuthMessageResponse { response }`:
 //!      * `Secret`  → the password (hidden prompt, e.g. "Password:")
 //!      * `Visible` → the username (shown prompt, some PAM stacks ask)
-//!      * `Info` / `Error` → informational, answered with `None`
-//! 3. on `Success`, `StartSession { cmd, env }` and (on the second
-//!    `Success`) the session is launching — the greeter exits.
-//! 4. on `Error`, `CancelSession` and report the description.
+//!      * `Info`    → an informational line (e.g. fprintd "Place your
+//!                    finger on the reader"); surfaced to the UI and
+//!                    answered with `None` so the conversation advances.
+//!      * `Error`   → a PAM_ERROR_MSG conversation message (e.g. fprintd
+//!                    "swipe didn't match, try again"). This is *not* a
+//!                    terminal failure — the authoritative result is a
+//!                    top-level [`Response::Error`]/[`Response::Success`].
+//!                    We surface it (styled as a warning) and continue.
+//! 3. on [`Response::Success`], `StartSession { cmd, env }` and (on the
+//!    second `Success`) the session is launching — the greeter exits.
+//! 4. on [`Response::Error`], `CancelSession` and report a mapped,
+//!    user-facing [`AuthError`].
 //!
 //! The protocol loop is factored into [`run_exchange`], generic over any
 //! `Read + Write` stream, so it can be exercised with an in-memory socket
-//! pair in tests and — later — lifted into the UI for true multi-prompt
-//! PAM (the loop already handles an arbitrary sequence of auth messages).
+//! pair in tests. Multi-prompt PAM (fingerprint) drops straight out: the
+//! loop already handles an arbitrary sequence of auth messages and reports
+//! each prompt to the caller via the `on_prompt` callback.
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 
 use greetd_ipc::codec::SyncCodec;
-use greetd_ipc::{AuthMessageType, Request, Response};
+use greetd_ipc::{AuthMessageType, ErrorType, Request, Response};
+
+/// Why an authentication attempt did not result in a started session.
+///
+/// The variants exist so the UI can show a clear, non-leaky message
+/// (`user_message`) while still keeping the raw diagnostic available as
+/// secondary `detail`. Crucially, a rejected credential maps to
+/// [`AuthError::BadCredentials`] whose message never reveals *which* field
+/// was wrong.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuthError {
+    /// greetd rejected the credentials (PAM auth failure,
+    /// [`ErrorType::AuthError`]).
+    BadCredentials,
+    /// greetd returned a non-auth error ([`ErrorType::Error`], e.g. a
+    /// session-start failure). The `String` is the raw greetd
+    /// description, surfaced only as small secondary detail.
+    Greetd(String),
+    /// The conversation could not be carried out at all (socket connect /
+    /// read / write / decode failure). The `String` is the raw error.
+    Transport(String),
+}
+
+impl AuthError {
+    /// Primary, user-facing one-liner. Deliberately never a raw PAM
+    /// string — bad credentials always read "Incorrect username or
+    /// password" so we leak nothing about which field failed.
+    pub fn user_message(&self) -> String {
+        match self {
+            AuthError::BadCredentials => "Incorrect username or password".to_string(),
+            AuthError::Greetd(_) => "Could not start the session".to_string(),
+            AuthError::Transport(_) => "Could not reach the login service".to_string(),
+        }
+    }
+
+    /// Optional secondary detail (raw text), shown small/secondary under
+    /// the primary message. `None` for bad credentials (nothing safe to
+    /// add) and for empty descriptions.
+    pub fn detail(&self) -> Option<String> {
+        match self {
+            AuthError::BadCredentials => None,
+            AuthError::Greetd(d) | AuthError::Transport(d) => {
+                let d = d.trim();
+                if d.is_empty() {
+                    None
+                } else {
+                    Some(d.to_string())
+                }
+            }
+        }
+    }
+}
+
+/// A prompt emitted by the PAM conversation that the user should see while
+/// authentication is in progress — e.g. fprintd's "Place your finger on
+/// the reader" (`is_error == false`) or "swipe didn't match, try again"
+/// (`is_error == true`). Delivered to `on_prompt` as the conversation
+/// advances so the greeter can reflect it live.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthPrompt {
+    pub text: String,
+    /// True for PAM_ERROR_MSG-style messages (render as a warning). These
+    /// are informational, not terminal — see the module docs.
+    pub is_error: bool,
+}
+
+/// Map a top-level greetd [`Response::Error`] into an [`AuthError`].
+fn map_error(error_type: ErrorType, description: String) -> AuthError {
+    match error_type {
+        ErrorType::AuthError => AuthError::BadCredentials,
+        ErrorType::Error => AuthError::Greetd(description),
+    }
+}
 
 /// Connect to greetd at `sock_path` and run the full
-/// authenticate-and-start exchange. On success this **never returns** —
-/// it `process::exit(0)`s so greetd takes over the VT. On failure it
-/// returns a human-readable description for the status line.
-pub fn authenticate_and_start(
+/// authenticate-and-start exchange, reporting any PAM conversation prompts
+/// to `on_prompt`. On success this **never returns** — it
+/// `process::exit(0)`s so greetd takes over the VT. On failure it returns
+/// a mapped [`AuthError`] for the status line.
+pub fn authenticate_and_start<F: FnMut(AuthPrompt)>(
     sock_path: &str,
     username: &str,
     password: &str,
     cmd: &[String],
     env: &[String],
-) -> Result<(), String> {
-    let mut stream = UnixStream::connect(sock_path)
-        .map_err(|e| format!("cannot connect to greetd ({sock_path}): {e}"))?;
+    on_prompt: F,
+) -> Result<(), AuthError> {
+    let mut stream = UnixStream::connect(sock_path).map_err(|e| {
+        AuthError::Transport(format!("cannot connect to greetd ({sock_path}): {e}"))
+    })?;
 
-    run_exchange(&mut stream, username, password, cmd, env)?;
+    run_exchange(&mut stream, username, password, cmd, env, on_prompt)?;
 
     // Session accepted — hand the VT to greetd. The greeter must exit so
     // greetd can reparent the started session.
@@ -47,22 +131,26 @@ pub fn authenticate_and_start(
 
 /// The greetd protocol loop, generic over the transport so it is unit
 /// testable against an in-memory `UnixStream` pair. Returns `Ok(())` once
-/// greetd has accepted `StartSession` (the caller then exits the process).
-pub fn run_exchange<S: Read + Write>(
+/// greetd has accepted `StartSession` (the caller then exits the process),
+/// or a mapped [`AuthError`] on failure. Every PAM conversation prompt is
+/// reported to `on_prompt`.
+pub fn run_exchange<S: Read + Write, F: FnMut(AuthPrompt)>(
     stream: &mut S,
     username: &str,
     password: &str,
     cmd: &[String],
     env: &[String],
-) -> Result<(), String> {
+    mut on_prompt: F,
+) -> Result<(), AuthError> {
     Request::CreateSession {
         username: username.to_string(),
     }
     .write_to(stream)
-    .map_err(|e| format!("CreateSession: {e}"))?;
+    .map_err(|e| AuthError::Transport(format!("CreateSession: {e}")))?;
 
     loop {
-        let response = Response::read_from(stream).map_err(|e| format!("read response: {e}"))?;
+        let response = Response::read_from(stream)
+            .map_err(|e| AuthError::Transport(format!("read response: {e}")))?;
         match response {
             Response::AuthMessage {
                 auth_message_type,
@@ -71,17 +159,31 @@ pub fn run_exchange<S: Read + Write>(
                 let reply = match auth_message_type {
                     AuthMessageType::Secret => Some(password.to_string()),
                     AuthMessageType::Visible => Some(username.to_string()),
-                    AuthMessageType::Info | AuthMessageType::Error => {
-                        // Informational only — surface for diagnostics and
-                        // answer with no data so the PAM conversation
-                        // advances.
+                    AuthMessageType::Info => {
+                        on_prompt(AuthPrompt {
+                            text: auth_message.clone(),
+                            is_error: false,
+                        });
                         tracing::info!(prompt = %auth_message, "greetd auth info");
+                        None
+                    }
+                    AuthMessageType::Error => {
+                        // A PAM_ERROR_MSG conversation message. NOT a
+                        // terminal failure (the authoritative outcome is a
+                        // top-level Response::Error/Success) — fprintd
+                        // emits these on a mis-swipe and then re-prompts.
+                        // Surface as a warning and continue.
+                        on_prompt(AuthPrompt {
+                            text: auth_message.clone(),
+                            is_error: true,
+                        });
+                        tracing::warn!(prompt = %auth_message, "greetd auth message (error type)");
                         None
                     }
                 };
                 Request::PostAuthMessageResponse { response: reply }
                     .write_to(stream)
-                    .map_err(|e| format!("PostAuthMessageResponse: {e}"))?;
+                    .map_err(|e| AuthError::Transport(format!("PostAuthMessageResponse: {e}")))?;
             }
             Response::Success => {
                 // Authentication complete — request the session start.
@@ -90,17 +192,24 @@ pub fn run_exchange<S: Read + Write>(
                     env: env.to_vec(),
                 }
                 .write_to(stream)
-                .map_err(|e| format!("StartSession: {e}"))?;
+                .map_err(|e| AuthError::Transport(format!("StartSession: {e}")))?;
 
                 match Response::read_from(stream)
-                    .map_err(|e| format!("read start response: {e}"))?
+                    .map_err(|e| AuthError::Transport(format!("read start response: {e}")))?
                 {
                     Response::Success => return Ok(()),
-                    Response::Error { description, .. } => return Err(description),
+                    Response::Error {
+                        error_type,
+                        description,
+                    } => {
+                        let _ = Request::CancelSession.write_to(stream);
+                        return Err(map_error(error_type, description));
+                    }
                     Response::AuthMessage { auth_message, .. } => {
-                        return Err(format!(
+                        let _ = Request::CancelSession.write_to(stream);
+                        return Err(AuthError::Greetd(format!(
                             "unexpected auth prompt after StartSession: {auth_message}"
-                        ));
+                        )));
                     }
                 }
             }
@@ -112,7 +221,7 @@ pub fn run_exchange<S: Read + Write>(
                 // a stuck half-open session.
                 let _ = Request::CancelSession.write_to(stream);
                 tracing::warn!(?error_type, %description, "greetd auth error");
-                return Err(description);
+                return Err(map_error(error_type, description));
             }
         }
     }
@@ -122,6 +231,10 @@ pub fn run_exchange<S: Read + Write>(
 mod tests {
     use super::*;
     use std::thread;
+
+    /// Convenience: a no-op prompt sink for tests that don't assert on
+    /// prompts.
+    fn ignore_prompts(_: AuthPrompt) {}
 
     /// Drive a successful Secret-prompt exchange against a mock greetd
     /// running on the other end of a `UnixStream` pair. Proves the client
@@ -166,15 +279,100 @@ mod tests {
             "--backend".to_string(),
             "drm".to_string(),
         ];
-        let result = run_exchange(&mut client, "alice", "s3cr3t", &cmd, &[]);
+        let result = run_exchange(&mut client, "alice", "s3cr3t", &cmd, &[], ignore_prompts);
         server_thread.join().unwrap();
         assert_eq!(result, Ok(()));
     }
 
-    /// A bad password yields `Response::Error`; the client cancels and
-    /// returns the description.
+    /// Some PAM stacks ask for the username via a `Visible` prompt. The
+    /// client must answer it with the username (not the password).
     #[test]
-    fn auth_error_is_reported_and_cancelled() {
+    fn visible_prompt_is_answered_with_username() {
+        let (client, mut server) = UnixStream::pair().unwrap();
+
+        let server_thread = thread::spawn(move || {
+            let _ = Request::read_from(&mut server).unwrap(); // CreateSession
+            Response::AuthMessage {
+                auth_message_type: AuthMessageType::Visible,
+                auth_message: "Username:".to_string(),
+            }
+            .write_to(&mut server)
+            .unwrap();
+            let req = Request::read_from(&mut server).unwrap();
+            assert!(
+                matches!(req, Request::PostAuthMessageResponse { response } if response == Some("bob".to_string())),
+                "Visible prompt must be answered with the username"
+            );
+            Response::Success.write_to(&mut server).unwrap();
+            let _ = Request::read_from(&mut server).unwrap(); // StartSession
+            Response::Success.write_to(&mut server).unwrap();
+        });
+
+        let mut client = client;
+        let result = run_exchange(&mut client, "bob", "pw", &[], &[], ignore_prompts);
+        server_thread.join().unwrap();
+        assert_eq!(result, Ok(()));
+    }
+
+    /// A fingerprint-style conversation: an `Info` prompt ("Place your
+    /// finger…"), then an `Error` prompt ("didn't match, try again"), then
+    /// `Success`. Proves these conversation messages are SURFACED to the
+    /// caller and do NOT abort the loop — the authoritative outcome is the
+    /// top-level Success.
+    #[test]
+    fn info_and_error_prompts_are_surfaced_and_do_not_abort() {
+        let (client, mut server) = UnixStream::pair().unwrap();
+
+        let server_thread = thread::spawn(move || {
+            let _ = Request::read_from(&mut server).unwrap(); // CreateSession
+
+            Response::AuthMessage {
+                auth_message_type: AuthMessageType::Info,
+                auth_message: "Place your finger on the reader".to_string(),
+            }
+            .write_to(&mut server)
+            .unwrap();
+            let req = Request::read_from(&mut server).unwrap();
+            assert!(
+                matches!(req, Request::PostAuthMessageResponse { response } if response.is_none()),
+                "Info prompt must be acked with None"
+            );
+
+            Response::AuthMessage {
+                auth_message_type: AuthMessageType::Error,
+                auth_message: "Swipe didn't match, try again".to_string(),
+            }
+            .write_to(&mut server)
+            .unwrap();
+            let req = Request::read_from(&mut server).unwrap();
+            assert!(
+                matches!(req, Request::PostAuthMessageResponse { response } if response.is_none()),
+                "Error-type message must be acked with None and not abort"
+            );
+
+            Response::Success.write_to(&mut server).unwrap();
+            let _ = Request::read_from(&mut server).unwrap(); // StartSession
+            Response::Success.write_to(&mut server).unwrap();
+        });
+
+        let mut client = client;
+        let mut prompts: Vec<AuthPrompt> = Vec::new();
+        let result = run_exchange(&mut client, "alice", "pw", &[], &[], |p| prompts.push(p));
+        server_thread.join().unwrap();
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(prompts.len(), 2, "both conversation prompts surfaced");
+        assert_eq!(prompts[0].text, "Place your finger on the reader");
+        assert!(!prompts[0].is_error, "Info prompt is not a warning");
+        assert_eq!(prompts[1].text, "Swipe didn't match, try again");
+        assert!(prompts[1].is_error, "Error-type prompt is a warning");
+    }
+
+    /// A bad password yields `Response::Error { AuthError }`; the client
+    /// cancels and maps it to [`AuthError::BadCredentials`], whose message
+    /// is the vague, non-leaky string.
+    #[test]
+    fn auth_error_maps_to_bad_credentials_and_cancels() {
         let (client, mut server) = UnixStream::pair().unwrap();
 
         let server_thread = thread::spawn(move || {
@@ -187,8 +385,8 @@ mod tests {
             .unwrap();
             let _ = Request::read_from(&mut server).unwrap(); // PostAuthMessageResponse
             Response::Error {
-                error_type: greetd_ipc::ErrorType::AuthError,
-                description: "Login incorrect".to_string(),
+                error_type: ErrorType::AuthError,
+                description: "Login incorrect (pam_unix)".to_string(),
             }
             .write_to(&mut server)
             .unwrap();
@@ -198,8 +396,93 @@ mod tests {
         });
 
         let mut client = client;
-        let result = run_exchange(&mut client, "alice", "wrong", &[], &[]);
+        let result = run_exchange(&mut client, "alice", "wrong", &[], &[], ignore_prompts);
         server_thread.join().unwrap();
-        assert_eq!(result, Err("Login incorrect".to_string()));
+
+        assert_eq!(result, Err(AuthError::BadCredentials));
+        // The raw PAM string must NOT leak into the user-facing message.
+        let err = result.unwrap_err();
+        assert_eq!(err.user_message(), "Incorrect username or password");
+        assert_eq!(err.detail(), None);
+    }
+
+    /// A non-auth greetd error (`ErrorType::Error`) maps to
+    /// [`AuthError::Greetd`] with the raw description preserved as detail.
+    #[test]
+    fn generic_error_maps_to_greetd_with_detail() {
+        let (client, mut server) = UnixStream::pair().unwrap();
+
+        let server_thread = thread::spawn(move || {
+            let _ = Request::read_from(&mut server).unwrap(); // CreateSession
+            Response::Error {
+                error_type: ErrorType::Error,
+                description: "session slot busy".to_string(),
+            }
+            .write_to(&mut server)
+            .unwrap();
+            let req = Request::read_from(&mut server).unwrap();
+            assert!(matches!(req, Request::CancelSession));
+        });
+
+        let mut client = client;
+        let result = run_exchange(&mut client, "alice", "pw", &[], &[], ignore_prompts);
+        server_thread.join().unwrap();
+
+        assert_eq!(result, Err(AuthError::Greetd("session slot busy".to_string())));
+        let err = result.unwrap_err();
+        assert_eq!(err.user_message(), "Could not start the session");
+        assert_eq!(err.detail(), Some("session slot busy".to_string()));
+    }
+
+    /// A failure during `StartSession` (after a successful auth) is mapped
+    /// too, and the client cancels the half-open session.
+    #[test]
+    fn start_session_failure_is_mapped_and_cancelled() {
+        let (client, mut server) = UnixStream::pair().unwrap();
+
+        let server_thread = thread::spawn(move || {
+            let _ = Request::read_from(&mut server).unwrap(); // CreateSession
+            Response::Success.write_to(&mut server).unwrap(); // auth ok
+            let req = Request::read_from(&mut server).unwrap();
+            assert!(matches!(req, Request::StartSession { .. }));
+            Response::Error {
+                error_type: ErrorType::Error,
+                description: "no such session command".to_string(),
+            }
+            .write_to(&mut server)
+            .unwrap();
+            let req = Request::read_from(&mut server).unwrap();
+            assert!(matches!(req, Request::CancelSession));
+        });
+
+        let mut client = client;
+        let result = run_exchange(&mut client, "alice", "pw", &[], &[], ignore_prompts);
+        server_thread.join().unwrap();
+        assert_eq!(
+            result,
+            Err(AuthError::Greetd("no such session command".to_string()))
+        );
+    }
+
+    /// `AuthError::user_message` / `detail` mapping, checked directly so a
+    /// future refactor can't silently change the user-facing copy.
+    #[test]
+    fn auth_error_message_mapping() {
+        assert_eq!(
+            AuthError::BadCredentials.user_message(),
+            "Incorrect username or password"
+        );
+        assert_eq!(AuthError::BadCredentials.detail(), None);
+
+        let g = AuthError::Greetd("  boom  ".to_string());
+        assert_eq!(g.user_message(), "Could not start the session");
+        assert_eq!(g.detail(), Some("boom".to_string()), "detail is trimmed");
+
+        let t = AuthError::Transport("connection refused".to_string());
+        assert_eq!(t.user_message(), "Could not reach the login service");
+        assert_eq!(t.detail(), Some("connection refused".to_string()));
+
+        // An all-whitespace description collapses to no detail.
+        assert_eq!(AuthError::Greetd("   ".to_string()).detail(), None);
     }
 }

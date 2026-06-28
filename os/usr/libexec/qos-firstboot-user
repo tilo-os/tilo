@@ -1,0 +1,35 @@
+#!/bin/bash
+# qos-firstboot-user — turn the installer-seeded credential file into a real
+# account on the installed system's first boot.
+#
+# The custom installer cannot create users at install time (bootc install
+# makes no users), so it drops `<name>:<sha512-crypt-hash>` into the new
+# deployment's /etc/qos/install-user.conf. On first boot, qos-firstboot-user.service
+# runs this once: it creates the user (in wheel for sudo), sets the
+# pre-hashed password, then SHREDS the file so the hash doesn't linger.
+set -euo pipefail
+
+CONF=/etc/qos/install-user.conf
+[ -f "$CONF" ] || exit 0
+
+line="$(head -n1 "$CONF")"
+user="${line%%:*}"
+hash="${line#*:}"
+
+if [ -z "$user" ] || [ -z "$hash" ] || [ "$user" = "$hash" ]; then
+  echo "qos-firstboot-user: malformed $CONF (expected name:hash)" >&2
+  # Don't leave a bad credential file lying around.
+  shred -u "$CONF" 2>/dev/null || rm -f "$CONF"
+  exit 1
+fi
+
+if ! id "$user" >/dev/null 2>&1; then
+  useradd -m -G wheel "$user"
+fi
+
+printf '%s:%s\n' "$user" "$hash" | chpasswd -e
+
+# Remove the seed file (best-effort shred; fall back to rm).
+shred -u "$CONF" 2>/dev/null || rm -f "$CONF"
+
+echo "qos-firstboot-user: created account '$user'"
