@@ -201,6 +201,14 @@ impl PresenceCtx {
     }
 
     pub fn set_caret(&mut self, key: &PresenceKey, user: UserId, pos: usize) {
+        // A caret is single-location: a peer has at most one. Clear them
+        // from every OTHER key first so moving the caret (and the
+        // caret-driven focus outline) doesn't leave a stale one behind.
+        for (k, list) in self.carets.iter_mut() {
+            if k != key {
+                list.retain(|(u, _)| u != &user);
+            }
+        }
         let list = self.carets.entry(key.clone()).or_default();
         if let Some(entry) = list.iter_mut().find(|(u, _)| *u == user) {
             entry.1 = pos;
@@ -210,6 +218,13 @@ impl PresenceCtx {
     }
 
     pub fn set_selection(&mut self, key: &PresenceKey, user: UserId, range: SelectionRange) {
+        // Single-location, same as the caret: drop this peer's selection
+        // from every other key so a moved selection doesn't persist.
+        for (k, list) in self.selections.iter_mut() {
+            if k != key {
+                list.retain(|(u, _)| u != &user);
+            }
+        }
         let list = self.selections.entry(key.clone()).or_default();
         if let Some(entry) = list.iter_mut().find(|(u, _)| *u == user) {
             entry.1 = range;
