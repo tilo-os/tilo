@@ -1,25 +1,20 @@
 //! Parse the `content.xml` `office:text` body into canonical blocks + marks.
-//! Block structure (Task 2): headings / paragraphs / list items + text.
-//! Inline formatting (Task 3): `office:automatic-styles` is pre-scanned to map
-//! each text style-name to a set of marks, and `text:span` references apply them
-//! over the span's text range. Unknown spans keep their text (preservation of
-//! the span element itself is Task 5).
+//! Styles (named in `styles.xml`, automatic in `content.xml`) are pre-parsed
+//! into a [`StyleRegistry`]; this walk resolves paragraph/heading/list/text
+//! styles against it. Headings are recognised from `text:h` *and* from
+//! paragraphs using a heading paragraph-style; inline spans, alignment, font,
+//! list numbering, tabs/breaks/spaces, and tables all map onto the model.
+//! Unmodeled body elements are captured verbatim as fidelity atoms.
 
+use super::styles::{attr_val, StyleRegistry};
 use crate::document::MarkValue;
 use crate::format::CodecError;
 use crate::model::DocMut;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
-use std::collections::HashMap;
 
 /// Open a fresh top-level block anchored after the previous one.
-fn start_block(
-    doc: &mut DocMut,
-    prev: &mut Option<String>,
-    cur: &mut Option<String>,
-    cur_len: &mut usize,
-    kind: &str,
-) -> String {
+fn start_block(doc: &mut DocMut, prev: &mut Option<String>, cur: &mut Option<String>, cur_len: &mut usize, kind: &str) -> String {
     let id = doc.insert_block(prev.as_deref(), kind);
     *prev = Some(id.clone());
     *cur = Some(id.clone());
@@ -27,120 +22,57 @@ fn start_block(
     id
 }
 
-fn attr_val(e: &BytesStart, key: &[u8]) -> Option<String> {
-    e.attributes()
-        .flatten()
-        .find(|a| a.key.as_ref() == key)
-        .and_then(|a| a.unescape_value().ok().map(|v| v.into_owned()))
-}
-
 fn outline_level(e: &BytesStart) -> Option<i64> {
     attr_val(e, b"text:outline-level").and_then(|v| v.parse::<i64>().ok())
 }
 
-/// Marks (with values) implied by a `style:text-properties` element. Font size
-/// and family become valued inline marks (`fontSize`/`fontFamily`).
-fn marks_from_text_props(e: &BytesStart) -> Vec<(String, MarkValue)> {
-    let mut m = Vec::new();
-    for a in e.attributes().flatten() {
-        let val = a.unescape_value().unwrap_or_default();
-        match a.key.as_ref() {
-            b"fo:font-weight" if val == "bold" => m.push(("strong".into(), MarkValue::Bool(true))),
-            b"fo:font-style" if val == "italic" => m.push(("em".into(), MarkValue::Bool(true))),
-            b"style:text-underline-style" if val != "none" => m.push(("underline".into(), MarkValue::Bool(true))),
-            b"fo:font-size" => {
-                if let Some(n) = parse_pt(&val) {
-                    m.push(("fontSize".into(), MarkValue::Int(n)));
-                }
-            }
-            b"style:font-name" => m.push(("fontFamily".into(), MarkValue::Str(generic_font(&val)))),
-            _ => {}
-        }
-    }
-    m
-}
-
-/// Record the marks for the text style currently being defined.
-fn record_style(e: &BytesStart, cur_style: &Option<String>, styles: &mut HashMap<String, Vec<(String, MarkValue)>>) {
-    if let Some(name) = cur_style {
-        let marks = marks_from_text_props(e);
-        if !marks.is_empty() {
-            styles.insert(name.clone(), marks);
+/// Append literal text (e.g. tab / line-break / spaces) to the current block.
+fn append(doc: &mut DocMut, cur: &Option<String>, cur_len: &mut usize, txt: &str) {
+    if let Some(b) = cur {
+        if !txt.is_empty() {
+            doc.splice_text(b, *cur_len, 0, txt);
+            *cur_len += txt.chars().count();
         }
     }
 }
 
-fn parse_pt(v: &str) -> Option<i64> {
-    v.trim_end_matches("pt").trim().parse::<f64>().ok().map(|f| f.round() as i64)
-}
-
-fn generic_font(name: &str) -> String {
-    let n = name.to_ascii_lowercase();
-    if n.contains("serif") && !n.contains("sans") {
-        "serif".into()
-    } else if n.contains("mono") {
-        "mono".into()
+/// Open a paragraph or heading depending on the referenced paragraph style, set
+/// level/alignment, and return the paragraph-level inline marks to apply over the
+/// whole block (empty for headings — their boldness comes from the heading kind).
+fn open_para(doc: &mut DocMut, prev: &mut Option<String>, cur: &mut Option<String>, cur_len: &mut usize, reg: &StyleRegistry, style: Option<&str>) -> Vec<(String, MarkValue)> {
+    let level = style.and_then(|s| reg.heading_level(s));
+    let id = start_block(doc, prev, cur, cur_len, if level.is_some() { "heading" } else { "paragraph" });
+    if let Some(l) = level {
+        doc.set_attr(&id, "level", l);
+    }
+    if let Some(a) = style.and_then(|s| reg.para_align(s)) {
+        doc.set_attr(&id, "align", a.as_str());
+    }
+    if level.is_some() {
+        Vec::new()
     } else {
-        "sans".into()
+        style.map(|s| reg.para_text_marks(s)).unwrap_or_default()
     }
 }
 
-fn map_align(v: &str) -> String {
-    match v {
-        "center" => "center".into(),
-        "end" | "right" => "right".into(),
-        _ => "left".into(),
-    }
-}
-
-/// Paragraph alignment recovered from a paragraph automatic style. (Font is a
-/// per-run inline mark, handled via `style:text-properties` on text spans.)
-#[derive(Default, Clone)]
-struct ParaProps {
-    align: Option<String>,
-}
-
-/// Record alignment from a paragraph style's `paragraph-properties`.
-fn record_para_align(e: &BytesStart, cur: &Option<String>, fam: &Option<String>, m: &mut HashMap<String, ParaProps>) {
-    if fam.as_deref() != Some("paragraph") {
-        return;
-    }
-    if let (Some(name), Some(al)) = (cur, attr_val(e, b"fo:text-align")) {
-        m.entry(name.clone()).or_default().align = Some(map_align(&al));
-    }
-}
-
-/// Apply a referenced paragraph style's alignment to a block.
-fn apply_para_style(doc: &mut DocMut, id: &str, e: &BytesStart, m: &HashMap<String, ParaProps>) {
-    if let Some(p) = attr_val(e, b"text:style-name").and_then(|s| m.get(&s)) {
-        if let Some(a) = &p.align {
-            doc.set_attr(id, "align", a.as_str());
-        }
-    }
-}
-
-pub(crate) fn parse_body(content_xml: &[u8], doc: &mut DocMut) -> Result<(), CodecError> {
+pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, doc: &mut DocMut) -> Result<(), CodecError> {
     let s = std::str::from_utf8(content_xml).map_err(|e| CodecError::Parse(e.to_string()))?;
     let mut reader = Reader::from_str(s);
 
-    // Block state.
     let mut in_text = false;
     let mut prev: Option<String> = None;
     let mut cur: Option<String> = None;
     let mut cur_len: usize = 0;
     let mut in_item = false;
 
-    // Style state.
-    let mut in_styles = false;
-    let mut cur_style: Option<String> = None; // style being defined
-    let mut cur_family: Option<String> = None; // its style:family
-    let mut styles: HashMap<String, Vec<(String, MarkValue)>> = HashMap::new();
-    let mut para_styles: HashMap<String, ParaProps> = HashMap::new();
+    // Span marks + paragraph-style marks, applied after all text is in (so text
+    // appended after a span doesn't expand its mark).
     let mut span_stack: Vec<(Vec<(String, MarkValue)>, usize)> = Vec::new();
-    // Marks are recorded during the walk and applied *after* all text is in, so
-    // text appended after a span doesn't expand its mark (add_mark expands at the
-    // trailing boundary).
     let mut pending_marks: Vec<(String, usize, usize, String, MarkValue)> = Vec::new();
+    // Paragraph-style inline marks for the current block, applied over [0, len].
+    let mut cur_para_marks: Vec<(String, MarkValue)> = Vec::new();
+    // Nested list ordered-ness, from each list's list-style.
+    let mut list_stack: Vec<bool> = Vec::new();
 
     // Table state: cells become consecutive `cell` blocks tagged table/row/col.
     let mut table_id: Option<String> = None;
@@ -148,15 +80,24 @@ pub(crate) fn parse_body(content_xml: &[u8], doc: &mut DocMut) -> Result<(), Cod
     let mut tcol: usize = 0;
     let mut table_seq: usize = 0;
 
-    // Capture state for unmodeled top-level body elements → fidelity atoms.
-    let mut capture: Option<(usize, i32)> = None; // (start byte, open depth)
+    let mut capture: Option<(usize, i32)> = None; // (start byte, open depth) of a fidelity atom
+
+    // Flush the current block's paragraph-style marks over its full text range.
+    macro_rules! flush_para_marks {
+        () => {
+            if let Some(b) = cur.as_ref() {
+                for (name, value) in cur_para_marks.drain(..) {
+                    pending_marks.push((b.clone(), 0, cur_len, name, value));
+                }
+            }
+            cur_para_marks.clear();
+        };
+    }
 
     loop {
         let pos_before = reader.buffer_position() as usize;
         let ev = reader.read_event().map_err(|e| CodecError::Parse(format!("xml: {e}")))?;
 
-        // While capturing an unmodeled subtree, only track depth; when it closes,
-        // stash the raw XML verbatim as a fidelity-atom block.
         if let Some((start, depth)) = capture.as_mut() {
             match &ev {
                 Event::Start(_) => *depth += 1,
@@ -177,24 +118,36 @@ pub(crate) fn parse_body(content_xml: &[u8], doc: &mut DocMut) -> Result<(), Cod
 
         match ev {
             Event::Start(e) => match e.name().as_ref() {
-                b"office:automatic-styles" => in_styles = true,
-                b"style:style" if in_styles => {
-                    cur_family = attr_val(&e, b"style:family");
-                    cur_style = attr_val(&e, b"style:name");
-                }
-                b"style:text-properties" if in_styles => record_style(&e, &cur_style, &mut styles),
-                b"style:paragraph-properties" if in_styles => {
-                    record_para_align(&e, &cur_style, &cur_family, &mut para_styles);
-                }
                 b"office:text" => in_text = true,
                 b"text:h" if in_text => {
+                    let style = attr_val(&e, b"text:style-name");
+                    let lvl = outline_level(&e).or_else(|| style.as_deref().and_then(|s| reg.heading_level(s))).unwrap_or(1).clamp(1, 6);
                     let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "heading");
-                    doc.set_attr(&id, "level", outline_level(&e).unwrap_or(1));
-                    apply_para_style(doc, &id, &e, &para_styles);
+                    doc.set_attr(&id, "level", lvl);
+                    if let Some(a) = style.as_deref().and_then(|s| reg.para_align(s)) {
+                        doc.set_attr(&id, "align", a.as_str());
+                    }
+                    cur_para_marks.clear();
                 }
                 b"text:p" if in_text && !in_item && table_id.is_none() => {
-                    let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "paragraph");
-                    apply_para_style(doc, &id, &e, &para_styles);
+                    let style = attr_val(&e, b"text:style-name");
+                    cur_para_marks = open_para(doc, &mut prev, &mut cur, &mut cur_len, reg, style.as_deref());
+                }
+                b"text:list" if in_text => {
+                    let ordered = attr_val(&e, b"text:style-name").and_then(|s| reg.list_ordered.get(&s).copied()).unwrap_or(false);
+                    list_stack.push(ordered);
+                }
+                b"text:list-item" if in_text => {
+                    let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "list_item");
+                    doc.set_attr(&id, "ordered", *list_stack.last().unwrap_or(&false));
+                    in_item = true;
+                }
+                b"text:p" if in_text && in_item => {
+                    if let Some(id) = cur.clone() {
+                        if let Some(a) = attr_val(&e, b"text:style-name").as_deref().and_then(|s| reg.para_align(s)) {
+                            doc.set_attr(&id, "align", a.as_str());
+                        }
+                    }
                 }
                 b"table:table" if in_text => {
                     table_id = Some(attr_val(&e, b"table:name").unwrap_or_else(|| {
@@ -212,49 +165,34 @@ pub(crate) fn parse_body(content_xml: &[u8], doc: &mut DocMut) -> Result<(), Cod
                         doc.set_attr(&id, "col", tcol as i64);
                     }
                 }
-                b"text:list-item" if in_text => {
-                    let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "list_item");
-                    doc.set_attr(&id, "ordered", false);
-                    in_item = true;
-                }
-                b"text:p" if in_text && in_item => {
-                    // List-item paragraph carries the item's paragraph style.
-                    if let Some(id) = cur.clone() {
-                        apply_para_style(doc, &id, &e, &para_styles);
-                    }
-                }
                 b"text:span" if in_text => {
-                    let marks = attr_val(&e, b"text:style-name")
-                        .and_then(|s| styles.get(&s).cloned())
-                        .unwrap_or_default();
+                    let marks = attr_val(&e, b"text:style-name").map(|s| reg.text_marks(&s)).unwrap_or_default();
                     span_stack.push((marks, cur_len));
                 }
-                b"text:list" => {} // container; handled via its list items
-                // Any other element directly under office:text is unmodeled →
-                // capture its whole subtree verbatim as a fidelity atom.
                 _ if in_text && cur.is_none() && !in_item && table_id.is_none() => {
                     capture = Some((pos_before, 1));
                 }
                 _ => {}
             },
             Event::Empty(e) => match e.name().as_ref() {
-                b"style:text-properties" if in_styles => record_style(&e, &cur_style, &mut styles),
-                b"style:paragraph-properties" if in_styles => {
-                    record_para_align(&e, &cur_style, &cur_family, &mut para_styles);
-                }
                 b"text:p" if in_text && !in_item && table_id.is_none() => {
-                    let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "paragraph");
-                    apply_para_style(doc, &id, &e, &para_styles);
+                    open_para(doc, &mut prev, &mut cur, &mut cur_len, reg, attr_val(&e, b"text:style-name").as_deref());
                     cur = None;
                 }
                 b"text:h" if in_text => {
+                    let style = attr_val(&e, b"text:style-name");
+                    let lvl = outline_level(&e).or_else(|| style.as_deref().and_then(|s| reg.heading_level(s))).unwrap_or(1).clamp(1, 6);
                     let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "heading");
-                    doc.set_attr(&id, "level", outline_level(&e).unwrap_or(1));
-                    apply_para_style(doc, &id, &e, &para_styles);
+                    doc.set_attr(&id, "level", lvl);
                     cur = None;
                 }
+                b"text:tab" if in_text => append(doc, &cur, &mut cur_len, "\t"),
+                b"text:line-break" if in_text => append(doc, &cur, &mut cur_len, "\n"),
+                b"text:s" if in_text => {
+                    let n = attr_val(&e, b"text:c").and_then(|v| v.parse::<usize>().ok()).unwrap_or(1).min(256);
+                    append(doc, &cur, &mut cur_len, &" ".repeat(n));
+                }
                 b"table:table-cell" if in_text => {
-                    // Self-closing (empty) cell.
                     if let Some(tid) = table_id.clone() {
                         let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "cell");
                         doc.set_attr(&id, "table", tid.as_str());
@@ -264,7 +202,6 @@ pub(crate) fn parse_body(content_xml: &[u8], doc: &mut DocMut) -> Result<(), Cod
                     }
                     tcol += 1;
                 }
-                // Self-closing unmodeled element under office:text → fidelity atom.
                 _ if in_text && cur.is_none() && !in_item && table_id.is_none() => {
                     let raw = s[pos_before..reader.buffer_position() as usize].to_string();
                     let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "fidelity");
@@ -274,14 +211,17 @@ pub(crate) fn parse_body(content_xml: &[u8], doc: &mut DocMut) -> Result<(), Cod
                 _ => {}
             },
             Event::End(e) => match e.name().as_ref() {
-                b"office:automatic-styles" => in_styles = false,
-                b"style:style" => {
-                    cur_style = None;
-                    cur_family = None;
-                }
                 b"office:text" => in_text = false,
-                b"text:h" => cur = None,
-                b"text:p" if !in_item && table_id.is_none() => cur = None,
+                b"text:h" => {
+                    cur = None;
+                }
+                b"text:p" if !in_item && table_id.is_none() => {
+                    flush_para_marks!();
+                    cur = None;
+                }
+                b"text:list" => {
+                    list_stack.pop();
+                }
                 b"table:table" => {
                     table_id = None;
                     cur = None;
@@ -292,6 +232,7 @@ pub(crate) fn parse_body(content_xml: &[u8], doc: &mut DocMut) -> Result<(), Cod
                     tcol += 1;
                 }
                 b"text:list-item" => {
+                    flush_para_marks!();
                     cur = None;
                     in_item = false;
                 }
@@ -322,6 +263,9 @@ pub(crate) fn parse_body(content_xml: &[u8], doc: &mut DocMut) -> Result<(), Cod
 
     // Apply marks now that all text is present (exact ranges, no expansion).
     for (b, start, end, name, value) in pending_marks {
+        if start >= end {
+            continue;
+        }
         match value {
             MarkValue::Bool(v) => doc.add_mark(&b, start, end, &name, v),
             MarkValue::Int(n) => doc.add_mark(&b, start, end, &name, n),
@@ -405,6 +349,38 @@ mod tests {
         assert_eq!(b.attrs.get("align"), Some(&AttrVal::Str("center".into())), "{:?}", b.attrs);
         assert!(b.marks.iter().any(|m| m.name == "fontSize" && m.value == MarkValue::Int(20)), "{:?}", b.marks);
         assert!(b.marks.iter().any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into())), "{:?}", b.marks);
+    }
+
+    #[test]
+    fn imports_named_heading_style_whitespace_and_ordered_list() {
+        // The kind of structure LibreOffice emits: headings via named paragraph
+        // styles, numbered lists via a list-style, explicit breaks/tabs.
+        let styles = concat!(
+            r#"<style:style style:name="Heading_20_1" style:display-name="Heading 1" style:family="paragraph" style:default-outline-level="1"/>"#,
+            r#"<style:style style:name="MySub" style:family="paragraph" style:parent-style-name="Heading_20_1"/>"#,
+            r#"<text:list-style style:name="L1"><text:list-level-style-number text:level="1"/></text:list-style>"#,
+        );
+        let body = concat!(
+            r#"<text:p text:style-name="Heading_20_1">My Title</text:p>"#,
+            r#"<text:p text:style-name="MySub">A Subtitle</text:p>"#,
+            r#"<text:p>Line one<text:line-break/>line two<text:tab/>after a tab and<text:s text:c="3"/>spaces.</text:p>"#,
+            r#"<text:list text:style-name="L1"><text:list-item><text:p>first</text:p></text:list-item><text:list-item><text:p>second</text:p></text:list-item></text:list>"#,
+        );
+        let odt = minimal_odt_styled(styles, body);
+        let mut d = Document::new();
+        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        let snap = d.materialize();
+
+        assert_eq!(snap.blocks[0].kind, "heading", "named paragraph style → heading: {snap:?}");
+        assert_eq!(snap.blocks[0].text, "My Title");
+        assert_eq!(snap.blocks[0].attrs.get("level"), Some(&AttrVal::Int(1)));
+        assert_eq!(snap.blocks[1].kind, "heading", "heading via inherited parent style");
+        assert!(snap.blocks[2].text.contains('\n'), "line-break: {:?}", snap.blocks[2].text);
+        assert!(snap.blocks[2].text.contains('\t'), "tab: {:?}", snap.blocks[2].text);
+        assert!(snap.blocks[2].text.contains("and   spaces"), "text:s spaces: {:?}", snap.blocks[2].text);
+        let items: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "list_item").collect();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].attrs.get("ordered"), Some(&AttrVal::Bool(true)), "numbered list-style → ordered");
     }
 
     #[test]
