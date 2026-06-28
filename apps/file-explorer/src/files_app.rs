@@ -263,6 +263,9 @@ pub fn filter_entries<'a>(entries: &'a [Entry], query: &str) -> Vec<&'a Entry> {
 pub trait CommandRunner {
     /// Spawn `program` with its working directory set to `cwd`.
     fn spawn(&mut self, program: &str, cwd: &std::path::Path) -> std::io::Result<()>;
+    /// Spawn `program` with a single path argument (e.g. open a document),
+    /// working directory `cwd`.
+    fn spawn_arg(&mut self, program: &str, arg: &std::path::Path, cwd: &std::path::Path) -> std::io::Result<()>;
 }
 
 /// Default runner used in production — invokes `std::process::Command`.
@@ -275,6 +278,20 @@ impl CommandRunner for SystemRunner {
             .spawn()
             .map(|_child| ())
     }
+    fn spawn_arg(&mut self, program: &str, arg: &std::path::Path, cwd: &std::path::Path) -> std::io::Result<()> {
+        std::process::Command::new(program)
+            .arg(arg)
+            .current_dir(cwd)
+            .spawn()
+            .map(|_child| ())
+    }
+}
+
+/// The app that opens `path`, by extension. Document formats — per qdoc's codec
+/// registry, the OS-wide source of truth — open in the word processor.
+pub fn app_for_path(path: &std::path::Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_str()?;
+    qdoc::is_supported_ext(ext).then_some("word-processor")
 }
 
 impl FileExplorerWidget {
@@ -283,6 +300,75 @@ impl FileExplorerWidget {
     /// without spawning a real subprocess.
     pub fn open_terminal<R: CommandRunner>(&self, runner: &mut R) -> std::io::Result<()> {
         runner.spawn("terminal", &self.current_path)
+    }
+
+    /// Activate entry `idx`: navigate into a directory, or launch the app
+    /// associated with a document (the word processor). Returns whether an app
+    /// was spawned. The wiring point for a row double-click.
+    pub fn open_entry<R: CommandRunner>(&mut self, idx: usize, runner: &mut R) -> std::io::Result<bool> {
+        let Some(entry) = self.entries.get(idx) else { return Ok(false) };
+        if entry.is_dir {
+            let p = entry.path.clone();
+            self.navigate(p);
+            return Ok(false);
+        }
+        let path = entry.path.clone();
+        let Some(app) = app_for_path(&path) else { return Ok(false) };
+        let cwd = path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| self.current_path.clone());
+        runner.spawn_arg(app, &path, &cwd)?;
+        Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod open_with_tests {
+    use super::*;
+    use crate::model::Entry;
+    use std::path::{Path, PathBuf};
+
+    #[derive(Default)]
+    struct RecRunner {
+        calls: Vec<(String, Option<PathBuf>)>,
+    }
+    impl CommandRunner for RecRunner {
+        fn spawn(&mut self, program: &str, _cwd: &Path) -> std::io::Result<()> {
+            self.calls.push((program.to_string(), None));
+            Ok(())
+        }
+        fn spawn_arg(&mut self, program: &str, arg: &Path, _cwd: &Path) -> std::io::Result<()> {
+            self.calls.push((program.to_string(), Some(arg.to_path_buf())));
+            Ok(())
+        }
+    }
+
+    fn file_entry(name: &str) -> Entry {
+        Entry { name: name.into(), path: PathBuf::from("/docs").join(name), is_dir: false, size: 0, modified: None, mime: String::new() }
+    }
+
+    #[test]
+    fn document_extensions_map_to_word_processor() {
+        for f in ["report.odt", "memo.docx", "notes.md", "readme.markdown"] {
+            assert_eq!(app_for_path(Path::new(f)), Some("word-processor"), "{f}");
+        }
+        assert_eq!(app_for_path(Path::new("photo.png")), None);
+        assert_eq!(app_for_path(Path::new("main.rs")), None);
+    }
+
+    #[test]
+    fn open_entry_launches_word_processor_with_the_file() {
+        let mut w = FileExplorerWidget::new();
+        w.entries = vec![file_entry("report.odt"), file_entry("photo.png")];
+
+        let mut runner = RecRunner::default();
+        assert!(w.open_entry(0, &mut runner).unwrap(), "document spawns an app");
+        assert_eq!(runner.calls, vec![("word-processor".to_string(), Some(PathBuf::from("/docs/report.odt")))]);
+
+        // A non-document does not spawn anything.
+        assert!(!w.open_entry(1, &mut runner).unwrap());
+        assert_eq!(runner.calls.len(), 1);
     }
 }
 
