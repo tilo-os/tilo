@@ -13,6 +13,9 @@ path = "src/main.rs"
 
 [dependencies]
 ui = { path = "../../ui" }
+# Source of truth for which extensions are editable documents (so the file
+# manager and the codecs agree on what opens in the word processor).
+qdoc = { path = "../../qdoc" }
 walkdir = "2.5.0"
 trash = "5.2.6"
 open = "5.3.5"
