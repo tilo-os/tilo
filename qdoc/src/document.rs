@@ -17,8 +17,13 @@ pub enum DocError {
 }
 
 /// The value carried by a mark. Boolean marks (`strong`/`em`/`underline`) carry
-/// `Bool(true)`; valued marks like `fontSize`/`fontFamily` carry `Int`/`Str`.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// `Bool(true)`; valued marks like `fontSize`/`fontFamily`/`link`/`color` carry
+/// `Int`/`Str`.
+///
+/// `Ord` is derived so materialization can canonicalise the mark order *including
+/// the value* — two replicas that merged concurrent valued marks in different
+/// internal orders then sort to a byte-identical span list (convergence).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum MarkValue {
     Bool(bool),
     Int(i64),
