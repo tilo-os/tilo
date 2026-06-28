@@ -1,27 +1,30 @@
-use fuser::*; 
-use libc::{ENOENT, EISDIR, EIO};
+use fuser::*;
+use libc::{EINVAL, EIO, EISDIR, ENOENT};
 use std::ffi::OsStr;
+use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use crate::metadata::{MetadataStore};
-use crate::hydration::Hydrator;
-use crate::smart::Heuristics;
-use std::io;
-use iroh_base::EndpointAddr;
-use iroh::SecretKey;
 
-const TTL: Duration = Duration::from_secs(10); 
+use crate::hydration::Hydrator;
+use crate::namespace::Namespace;
+use crate::smart::Heuristics;
+
+const TTL: Duration = Duration::from_secs(10);
 
 pub struct QuickFS {
-    pub metadata: Arc<Mutex<MetadataStore>>,
+    pub namespace: Arc<Mutex<Namespace>>,
     pub hydrator: Arc<Hydrator>,
     pub heuristics: Arc<Heuristics>,
 }
 
 impl QuickFS {
-    pub fn new(metadata: Arc<Mutex<MetadataStore>>, hydrator: Arc<Hydrator>, heuristics: Arc<Heuristics>) -> Self {
+    pub fn new(
+        namespace: Arc<Mutex<Namespace>>,
+        hydrator: Arc<Hydrator>,
+        heuristics: Arc<Heuristics>,
+    ) -> Self {
         Self {
-            metadata,
+            namespace,
             hydrator,
             heuristics,
         }
@@ -34,27 +37,27 @@ fn to_errno(e: i32) -> Errno {
 
 impl Filesystem for QuickFS {
     fn init(&mut self, _req: &Request, config: &mut KernelConfig) -> Result<(), io::Error> {
-        let _ = config.set_max_readahead(1024 * 1024); 
+        let _ = config.set_max_readahead(1024 * 1024);
         Ok(())
     }
 
     fn lookup(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
-        let name_str = name.to_str().expect("Invalid UTF-8 name");
-        let store = self.metadata.lock().unwrap();
-        
-        if let Some(child) = store.get_child_by_name(parent.0, name_str) {
-            reply.entry(&TTL, &child.to_file_attr(), Generation(0));
-        } else {
-             reply.error(to_errno(ENOENT));
+        let Some(name) = name.to_str() else {
+            reply.error(to_errno(EINVAL));
+            return;
+        };
+        let mut ns = self.namespace.lock().unwrap();
+        match ns.lookup(parent.0, name) {
+            Some(attr) => reply.entry(&TTL, &attr, Generation(0)),
+            None => reply.error(to_errno(ENOENT)),
         }
     }
 
     fn getattr(&self, _req: &Request, ino: INodeNo, _fh: Option<FileHandle>, reply: ReplyAttr) {
-        let store = self.metadata.lock().unwrap();
-        if let Some(node) = store.get_node(ino.0) {
-            reply.attr(&TTL, &node.to_file_attr());
-        } else {
-             reply.error(to_errno(ENOENT));
+        let ns = self.namespace.lock().unwrap();
+        match ns.getattr(ino.0) {
+            Some(attr) => reply.attr(&TTL, &attr),
+            None => reply.error(to_errno(ENOENT)),
         }
     }
 
@@ -63,52 +66,36 @@ impl Filesystem for QuickFS {
         _req: &Request,
         ino: INodeNo,
         _fh: FileHandle,
-        offset: u64, 
+        offset: u64,
         mut reply: ReplyDirectory,
     ) {
-        let store = self.metadata.lock().unwrap();
-        
-        if let Some(node) = store.get_node(ino.0) {
-            if let Some(children) = &node.children {
-                let mut entries = Vec::new();
-                if let Some(current_node) = store.get_node(ino.0) {
-                    entries.push((ino.0, current_node.kind.to_file_type(), "."));
-                }
-                if let Some(parent_node) = store.get_node(node.parent) {
-                     entries.push((node.parent, parent_node.kind.to_file_type(), ".."));
-                }
-
-                for &child_ino in children {
-                    if let Some(child) = store.get_node(child_ino) {
-                         entries.push((child.ino, child.kind.to_file_type(), &child.name));
-                    }
-                }
-
-                for (i, entry) in entries.into_iter().enumerate().skip(offset as usize) {
-                    if reply.add(INodeNo(entry.0), (i + 1) as u64, entry.1, entry.2) {
-                        break;
-                    }
-                }
-                reply.ok();
-
-                drop(store);
-                self.heuristics.on_readdir(ino.0);
-            } else {
-                 reply.error(to_errno(ENOENT));
+        let entries = {
+            let mut ns = self.namespace.lock().unwrap();
+            ns.readdir(ino.0)
+        };
+        let Some(entries) = entries else {
+            reply.error(to_errno(ENOENT));
+            return;
+        };
+        for (i, (e_ino, kind, name)) in entries.into_iter().enumerate().skip(offset as usize) {
+            if reply.add(INodeNo(e_ino), (i + 1) as u64, kind, &name) {
+                break;
             }
-        } else {
-              reply.error(to_errno(ENOENT));
         }
+        reply.ok();
+        self.heuristics.on_readdir(ino.0);
     }
 
     fn open(&self, _req: &Request, ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
-        let store = self.metadata.lock().unwrap();
-        if store.get_node(ino.0).is_some() {
-             reply.opened(FileHandle(0), FopenFlags::empty());
-             drop(store);
-             self.heuristics.on_open(std::path::Path::new(""), 0);
+        let exists = {
+            let ns = self.namespace.lock().unwrap();
+            ns.getattr(ino.0).is_some()
+        };
+        if exists {
+            reply.opened(FileHandle(0), FopenFlags::empty());
+            self.heuristics.on_open(ino.0);
         } else {
-             reply.error(to_errno(ENOENT));
+            reply.error(to_errno(ENOENT));
         }
     }
 
@@ -117,46 +104,42 @@ impl Filesystem for QuickFS {
         _req: &Request,
         ino: INodeNo,
         _fh: FileHandle,
-        offset: u64, 
+        offset: u64,
         size: u32,
-        _flags: OpenFlags, 
+        _flags: OpenFlags,
         _lock_owner: Option<LockOwner>,
         reply: ReplyData,
     ) {
+        // Resolve the inode to a content hash, rejecting dirs / missing inodes.
         let hash = {
-            let store = self.metadata.lock().unwrap();
-            if let Some(node) = store.get_node(ino.0) {
-                if let Some(h) = &node.hash {
-                    *h
-                } else {
+            let ns = self.namespace.lock().unwrap();
+            match ns.getattr(ino.0) {
+                Some(attr) if attr.kind == FileType::RegularFile => ns.hash_for(ino.0),
+                Some(_) => {
                     reply.error(to_errno(EISDIR));
                     return;
                 }
-            } else {
-                reply.error(to_errno(ENOENT));
-                return;
+                None => {
+                    reply.error(to_errno(ENOENT));
+                    return;
+                }
             }
+        };
+        // A file with no content hash is empty.
+        let Some(hash) = hash else {
+            reply.data(&[]);
+            return;
         };
 
         let hydrator = self.hydrator.clone();
         let rt = hydrator.runtime_handle.clone();
-        
-        // Placeholder NodeAddr
-        let node_addr = EndpointAddr::new(SecretKey::from_bytes(&[0u8; 32]).public());
-
-        let content_res = tokio::task::block_in_place(|| {
-             rt.block_on(async move {
-                 hydrator.fetch_range(hash, node_addr, offset, size as u64).await
-             })
+        let res = tokio::task::block_in_place(|| {
+            rt.block_on(async move { hydrator.read(hash, offset, size as u64).await })
         });
 
-        match content_res {
-            Ok(content) => {
-                reply.data(&content);
-            }
-            Err(_) => {
-                reply.error(to_errno(EIO));
-            }
+        match res {
+            Ok(data) => reply.data(&data),
+            Err(_) => reply.error(to_errno(EIO)),
         }
     }
 }
