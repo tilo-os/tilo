@@ -305,6 +305,13 @@ impl TextRenderer {
                 scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &rect);
             }
         }
+        for &(s, e) in &layout.strikes {
+            for (x0, y0, x1, y1) in layout.selection_rects(s, e) {
+                let my = ((y0 + y1) / 2.0) as f64;
+                let rect = vello::kurbo::Rect::new(x0 as f64, my, x1 as f64, my + 1.5);
+                scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &rect);
+            }
+        }
     }
 
     fn flush_glyphs(

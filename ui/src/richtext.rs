@@ -87,6 +87,7 @@ impl TextAlign {
 pub struct RichTextLayout {
     pub(crate) buffer: Buffer,
     pub(crate) underlines: Vec<(usize, usize)>,
+    pub(crate) strikes: Vec<(usize, usize)>,
     line_height: f32,
 }
 
@@ -103,6 +104,7 @@ impl RichTextLayout {
         align: TextAlign,
         family: FontFamily,
         underlines: Vec<(usize, usize)>,
+        strikes: Vec<(usize, usize)>,
     ) -> Self {
         let line_height = size * 1.4;
         let mut buffer = Buffer::new(fs, Metrics::new(size, line_height));
@@ -135,7 +137,7 @@ impl RichTextLayout {
         buffer.set_wrap(Wrap::Word);
         buffer.shape_until_scroll(fs, false);
 
-        Self { buffer, underlines, line_height }
+        Self { buffer, underlines, strikes, line_height }
     }
 
     /// Total laid-out height (at least one line tall).
@@ -210,6 +212,7 @@ mod tests {
             TextAlign::Left,
             FontFamily::Sans,
             vec![],
+            vec![],
         );
         assert!(layout.height() > 0.0);
         let (x0, _, h) = layout.caret_geometry(0);
@@ -225,8 +228,8 @@ mod tests {
     #[test]
     fn center_alignment_offsets_text() {
         let mut fs = FontSystem::new();
-        let left = RichTextLayout::shape(&mut fs, &[RichSpan::new("hi")], false, 16.0, 400.0, TextAlign::Left, FontFamily::Sans, vec![]);
-        let center = RichTextLayout::shape(&mut fs, &[RichSpan::new("hi")], false, 16.0, 400.0, TextAlign::Center, FontFamily::Sans, vec![]);
+        let left = RichTextLayout::shape(&mut fs, &[RichSpan::new("hi")], false, 16.0, 400.0, TextAlign::Left, FontFamily::Sans, vec![], vec![]);
+        let center = RichTextLayout::shape(&mut fs, &[RichSpan::new("hi")], false, 16.0, 400.0, TextAlign::Center, FontFamily::Sans, vec![], vec![]);
         let lx = left.caret_geometry(0).0;
         let cx = center.caret_geometry(0).0;
         assert!(cx > lx + 50.0, "centered text should start further right: left={lx} center={cx}");
@@ -236,8 +239,8 @@ mod tests {
     fn wrapping_produces_multiple_lines() {
         let mut fs = FontSystem::new();
         let long = "word ".repeat(60);
-        let one = RichTextLayout::shape(&mut fs, &[RichSpan::new("word")], false, 16.0, 1000.0, TextAlign::Left, FontFamily::Sans, vec![]);
-        let wrapped = RichTextLayout::shape(&mut fs, &[RichSpan::new(long)], false, 16.0, 120.0, TextAlign::Left, FontFamily::Sans, vec![]);
+        let one = RichTextLayout::shape(&mut fs, &[RichSpan::new("word")], false, 16.0, 1000.0, TextAlign::Left, FontFamily::Sans, vec![], vec![]);
+        let wrapped = RichTextLayout::shape(&mut fs, &[RichSpan::new(long)], false, 16.0, 120.0, TextAlign::Left, FontFamily::Sans, vec![], vec![]);
         assert!(wrapped.height() > one.height() * 3.0);
     }
 }
