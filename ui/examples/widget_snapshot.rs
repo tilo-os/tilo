@@ -18,7 +18,9 @@ use chrono::NaiveDate;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::{Blob, Color, Fill, Format, Image as PenikoImage};
+use vello::peniko::{
+    Blob, Color, Fill, ImageAlphaType, ImageData as PenikoImage, ImageFormat as Format,
+};
 
 use ui::offscreen::OffscreenRenderer;
 use ui::presence::PresenceCtx;
@@ -197,7 +199,13 @@ fn placeholder_image() -> PenikoImage {
             }
         }
     }
-    PenikoImage::new(Blob::new(Arc::new(buf)), Format::Rgba8, 16, 16)
+    PenikoImage {
+        data: Blob::new(Arc::new(buf)),
+        format: Format::Rgba8,
+        alpha_type: ImageAlphaType::Alpha,
+        width: 16,
+        height: 16,
+    }
 }
 
 fn main() {

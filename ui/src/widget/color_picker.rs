@@ -20,6 +20,7 @@ use winit::event::{WindowEvent, MouseButton, ElementState};
 use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use crate::color_compat::ColorCompat;
 use crate::widget::Widget;
+use crate::widget::TextInput;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::ACCENT_PRIMARY_IDX;
@@ -63,11 +64,30 @@ pub struct ColorPicker {
     drag_target: Option<DragTarget>,
     last_cursor: Point,
     is_focused: bool,
+    /// Local-mode TextInput sitting under the preview swatch. Holds
+    /// the canonical hex string; users edit it directly. A parse
+    /// failure leaves `self.color` untouched.
+    hex_input: TextInput,
+    /// Cached rect for the hex input. Computed in `apply_layout` so
+    /// `handle_event` can hit-test mouse events against it.
+    hex_input_rect: Rect,
+    /// Set by `set_hex_text_for_test` so tests can drive a parse
+    /// pass without faking IME keystrokes. Drained inside
+    /// `handle_event`. Gated to test/debug builds — absent from
+    /// release binaries so the test surface doesn't leak into prod.
+    #[cfg(any(test, debug_assertions))]
+    hex_input_force_dirty_for_test: bool,
+    /// Stashed mid-`handle_event` when the embedded hex input asked
+    /// for focus; consumed inside `set_focus(true)` to redirect the
+    /// App's "focus this node" call onto the embedded input.
+    /// Routing focus through the App (instead of taking it locally)
+    /// is the path that blurs whatever sibling held focus before.
+    hex_input_focus_pending: bool,
 }
 
 impl ColorPicker {
     pub fn new(initial: Color) -> Self {
-        Self {
+        let mut s = Self {
             color: initial,
             on_change: None,
             rect: Rect::ZERO,
@@ -80,7 +100,54 @@ impl ColorPicker {
             drag_target: None,
             last_cursor: Point::ZERO,
             is_focused: false,
-        }
+            hex_input: TextInput::local(),
+            hex_input_rect: Rect::ZERO,
+            #[cfg(any(test, debug_assertions))]
+            hex_input_force_dirty_for_test: false,
+            hex_input_focus_pending: false,
+        };
+        let hex = s.hex_string();
+        s.hex_input.set_text(&hex);
+        s
+    }
+
+    /// Read-only access to the embedded hex input rect (set inside
+    /// `apply_layout`). Useful for tests that want to confirm the
+    /// input is positioned under the preview swatch.
+    pub fn hex_input_rect(&self) -> Rect {
+        self.hex_input_rect
+    }
+
+    /// Programmatically set the text content of the embedded hex
+    /// input. Tests use this to bypass character-by-character IME
+    /// driving; production users edit the input themselves. The
+    /// next `handle_event` call will attempt to parse the new text
+    /// and apply it to `self.color`.
+    ///
+    /// Gated to test/debug builds — release binaries don't carry
+    /// the matching dirty-sentinel branch.
+    #[cfg(any(test, debug_assertions))]
+    pub fn set_hex_text_for_test(&mut self, s: &str) {
+        self.hex_input.set_text(s);
+        self.hex_input_force_dirty_for_test = true;
+    }
+
+    /// Test-only accessor confirming the embedded hex input owns
+    /// keyboard focus. Used by the click-then-type regression test
+    /// to prove the picker forwards focus to the input after a
+    /// click inside `hex_input_rect`.
+    #[cfg(any(test, debug_assertions))]
+    pub fn is_hex_input_focused_for_test(&self) -> bool {
+        self.hex_input.is_focused()
+    }
+
+    /// Convenience helper used after the SV square / hue strip /
+    /// any of the RGB sliders mutate `self.color`: re-emits the
+    /// canonical hex string into the embedded input so what the
+    /// user sees matches the underlying colour.
+    fn sync_input(&mut self) {
+        let hex = self.hex_string();
+        self.hex_input.set_text(&hex);
     }
 
     /// Currently displayed colour. Mirrors the SV square / hue strip /
@@ -386,17 +453,31 @@ impl Widget for ColorPicker {
                 y1,
             );
         }
+
+        // Hex input under the preview swatch — at least as wide as
+        // the preview, but expand to ~96px so the full `#RRGGBB`
+        // string fits comfortably. Lives in the right column, above
+        // the slider stack.
+        let text_h = 22.0;
+        self.hex_input_rect = Rect::new(
+            self.preview_rect.x0,
+            self.preview_rect.y1 + COMPONENT_GAP,
+            self.preview_rect.x1.max(self.preview_rect.x0 + 96.0),
+            self.preview_rect.y1 + COMPONENT_GAP + text_h,
+        );
+        self.hex_input.apply_layout_external(self.hex_input_rect);
     }
 
     fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
         let colors = &theme.tokens.colors;
         let radius_sm = theme.tokens.radii.sm as f64;
 
-        // Focus border around the whole picker.
-        if self.is_focused {
-            let shape = RoundedRect::from_rect(self.rect, radius_sm);
-            scene.stroke(&Stroke::new(1.0), transform, theme.border_focus, None, &shape);
-        }
+        // No bounding-box focus border. The picker's rect spans
+        // empty space between the SV square, hue strip, and preview
+        // swatch — a stroke around the whole thing reads as a
+        // "loose box" framing the dead space. Focus is already
+        // communicated by the SV cursor ring, the hue tick, and the
+        // slider knobs; the user finds those cues clearer.
 
         // --- SV square ---
         // Drawn as a single translucent fill of the current colour over
@@ -489,29 +570,20 @@ impl Widget for ColorPicker {
             scene.stroke(&Stroke::new(1.0), transform, colors.border_standard, None, &knob);
         }
 
-        // --- Hex + RGB readouts (right column, below preview) ---
-        // Hex sits directly under the preview swatch; the RGB triple
-        // sits one line below. Both stay inside the same column as the
-        // preview so they don't fight the SV square for horizontal
-        // space. Text size matches the toolbar / breadcrumb body
-        // labels (`typography.scale.sm`).
+        // --- Hex input + RGB readout (right column, below preview) ---
+        // The hex value is editable — it lives in `self.hex_input`,
+        // an embedded local-mode `TextInput`. The picker draws it
+        // here directly because the input isn't in the taffy tree.
+        // The decimal `rgb(r, g, b)` triple sits one line below the
+        // input as a read-only label. Text size matches the
+        // toolbar / breadcrumb body labels (`typography.scale.sm`).
+        self.hex_input.draw(scene, transform, text_renderer, theme, _presence);
+
         let text_size = theme.tokens.typography.scale.sm;
-        let hex_label = self.hex_string();
         let rgb_label = self.rgb_string();
         let label_x = self.preview_rect.x0;
-        // Stack the two lines tightly under the preview, leaving
-        // ~`spacing.s2` between rows so they breathe.
         let row_gap = theme.tokens.spacing.s2 as f64;
-        let hex_y = self.preview_rect.y1 + row_gap;
-        let rgb_y = hex_y + text_size as f64 + row_gap;
-        text_renderer.draw_text(
-            scene,
-            &hex_label,
-            text_size,
-            colors.text_primary,
-            transform * Affine::translate((label_x, hex_y)),
-            None,
-        );
+        let rgb_y = self.hex_input_rect.y1 + row_gap;
         text_renderer.draw_text(
             scene,
             &rgb_label,
@@ -526,33 +598,77 @@ impl Widget for ColorPicker {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _root: &ObjId,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        root: &ObjId,
         handled: &mut bool,
         focus_target: &mut Option<NodeId>,
         node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        taffy: &TaffyTree<()>,
     ) {
+        // Embedded hex input gets the event first — keyboard, IME
+        // commit and click-inside-the-input all need to route there
+        // before the picker considers them for SV/hue/slider drags.
+        //
+        // The embedded input was never registered in the parent's
+        // taffy/node_map, so when it sets `*focus_target = Some(id)`
+        // it's setting *our* node id. App::set_focused_node would
+        // then call `picker.set_focus(true)` — never the input —
+        // and KeyboardInput/Ime would silently no-op behind the
+        // input's `if !self.is_focused` guard.
+        //
+        // Take over: snapshot the proposal before forwarding, and
+        // if the input asked for focus while the cursor was inside
+        // its rect, grant focus locally and undo the proposal.
+        let prev_focus = *focus_target;
+        self.hex_input.handle_event(
+            event, scale_factor, modifiers, state, root,
+            handled, focus_target, node_id, taffy,
+        );
+        if *focus_target != prev_focus && self.hex_input_rect.contains(self.last_cursor) {
+            // The input wants focus. Keep `focus_target = Some(node_id)`
+            // (the input set it on our id, since it's not in node_map)
+            // so the App calls `set_focused_node(picker_id)` — that
+            // path blurs any previously-focused sibling widget. Our
+            // `set_focus(true)` will then see `hex_input_focus_pending`
+            // and redirect the focus onto the embedded input.
+            self.hex_input_focus_pending = true;
+        }
+
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_cursor = p;
                 if self.drag_target.is_some() {
                     self.apply_drag(p);
+                    self.sync_input();
                     *handled = true;
                 }
             }
             WindowEvent::MouseInput { state: el_state, button: MouseButton::Left, .. } => {
                 if *el_state == ElementState::Pressed {
-                    if let Some(target) = self.target_at(self.last_cursor) {
-                        self.drag_target = Some(target);
-                        *focus_target = Some(node_id);
-                        *handled = true;
-                        // Jump-on-press: apply the current cursor position
-                        // immediately so a single click commits the value
-                        // without requiring a follow-up `CursorMoved`.
-                        self.apply_drag(self.last_cursor);
+                    // If the press already landed inside the hex input
+                    // the input has claimed focus + handling — don't
+                    // start an SV/hue/slider drag on top of that.
+                    let in_input = self.hex_input_rect.contains(self.last_cursor);
+                    if !in_input {
+                        // Click outside the hex input — release any
+                        // focus the input was holding so subsequent
+                        // keyboard events don't keep landing in the
+                        // (now invisible) input.
+                        if self.hex_input.is_focused() {
+                            self.hex_input.set_focus(false);
+                        }
+                        if let Some(target) = self.target_at(self.last_cursor) {
+                            self.drag_target = Some(target);
+                            *focus_target = Some(node_id);
+                            *handled = true;
+                            // Jump-on-press: apply the current cursor position
+                            // immediately so a single click commits the value
+                            // without requiring a follow-up `CursorMoved`.
+                            self.apply_drag(self.last_cursor);
+                            self.sync_input();
+                        }
                     }
                 } else if *el_state == ElementState::Released {
                     if self.drag_target.is_some() {
@@ -562,6 +678,30 @@ impl Widget for ColorPicker {
                 }
             }
             _ => {}
+        }
+
+        // Drain the embedded input's dirty flag (or the test
+        // sentinel) and try to apply the new text as a colour.
+        // Invalid text is silently ignored — `self.color` stays as
+        // it was, and the next `sync_input` will overwrite the bad
+        // string when any other control mutates the colour.
+        let dirty = self.hex_input.take_dirty();
+        #[cfg(any(test, debug_assertions))]
+        let dirty = dirty.or_else(|| {
+            if self.hex_input_force_dirty_for_test {
+                self.hex_input_force_dirty_for_test = false;
+                Some(self.hex_input.value().to_string())
+            } else {
+                None
+            }
+        });
+        if let Some(new_text) = dirty {
+            if let Some(parsed) = parse_hex(&new_text) {
+                let r = parsed.r();
+                let g = parsed.g();
+                let b = parsed.b();
+                self.set_rgb(r, g, b);
+            }
         }
     }
 
@@ -576,8 +716,37 @@ impl Widget for ColorPicker {
     fn get_rect(&self) -> Rect { self.rect }
 
     fn is_focusable(&self) -> bool { true }
-    fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
+    fn set_focus(&mut self, focused: bool) {
+        if focused && self.hex_input_focus_pending {
+            // The App is delivering the focus the embedded hex input
+            // asked for. Redirect into the input; keep our own
+            // `is_focused` false so we don't double-claim.
+            self.hex_input_focus_pending = false;
+            self.is_focused = false;
+            self.hex_input.set_focus(true);
+        } else {
+            self.is_focused = focused;
+            if !focused {
+                self.hex_input.set_focus(false);
+            }
+        }
+    }
     fn is_focused(&self) -> bool { self.is_focused }
+}
+
+/// Parse a `#rrggbb` (case-insensitive, leading `#` optional) hex
+/// string into a fully-opaque `Color`. Returns `None` for any input
+/// that doesn't conform — six hex digits exactly, after a single
+/// optional `#`. The picker uses this on every embedded-input edit
+/// and silently ignores parse failures.
+fn parse_hex(s: &str) -> Option<Color> {
+    let s = s.trim().trim_start_matches('#');
+    if !s.is_ascii() { return None; }
+    if s.len() != 6 { return None; }
+    let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+    Some(Color::from_rgba8(r, g, b, 255))
 }
 
 #[cfg(test)]
@@ -800,5 +969,14 @@ mod tests {
     fn rgb_string_formats_decimal_triple() {
         let p = ColorPicker::new(Color::from_rgba8(99, 102, 241, 255));
         assert_eq!(p.rgb_string(), "rgb(99, 102, 241)");
+    }
+
+    #[test]
+    fn parse_hex_rejects_non_ascii_six_byte_input() {
+        // 6 bytes via UTF-8 multi-byte chars; previously panicked on slice
+        assert!(parse_hex("ä♥X").is_none());
+        assert!(parse_hex("##abc12").is_none());  // not 6 hex digits
+        assert!(parse_hex("#ABCDEF").is_some());  // sanity
+        assert!(parse_hex("#abcdef").is_some());  // lowercase
     }
 }
