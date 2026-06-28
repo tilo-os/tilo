@@ -4,6 +4,7 @@ pub mod state;
 pub mod widget;
 pub mod text_render;
 pub mod richtext;
+pub mod chrome;
 pub mod theme;
 pub mod i18n;
 pub mod collaboration;
@@ -27,6 +28,7 @@ pub use widget::{AppCommand, AppKind, AppWidget, IconDescriptor};
 pub use widget::command_palette::{CommandEntry, CommandPalette};
 pub use text_render::{TextRenderer, TextWeight};
 pub use richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
+pub use chrome::{LabelCue, ToolbarItem};
 
 // Unified animation primitives (foundation #17).
 pub use animation::{Animated, Curve, Lerp};
