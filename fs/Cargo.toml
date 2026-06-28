@@ -11,8 +11,10 @@ fuser = "0.17.0"
 iroh = "0.96.1"
 iroh-base = "0.96.1"
 iroh-blobs = "0.98.0"
+iroh-gossip = "0.96.0"
+automerge = "0.8.0"
 libc = "0.2.186"
-moka = "0.12.15"
+moka = { version = "0.12.15", features = ["sync"] }
 serde = "1.0.228"
 tempfile = "3.27.0"
 tokio = { version = "1.52.3", features = ["full"] }

@@ -1,5 +1,6 @@
 pub mod fs;
-pub mod metadata;
+pub mod namespace;
+pub mod store;
 pub mod hydration;
 pub mod smart;
 
@@ -7,6 +8,7 @@ pub mod smart;
 mod tests;
 
 pub use fs::QuickFS;
-pub use metadata::MetadataStore;
+pub use namespace::{Namespace, ROOT_INO};
+pub use store::ContentStore;
 pub use hydration::Hydrator;
 pub use smart::Heuristics;
