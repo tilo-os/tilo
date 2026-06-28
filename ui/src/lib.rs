@@ -6,6 +6,7 @@ pub mod text_render;
 pub mod richtext;
 pub mod chrome;
 pub mod gesture;
+pub mod text_selection;
 pub mod theme;
 pub mod i18n;
 pub mod collaboration;
@@ -31,6 +32,11 @@ pub use text_render::{TextRenderer, TextWeight};
 pub use richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
 pub use chrome::{LabelCue, ToolbarItem};
 pub use gesture::{DragSelect, Granularity};
+pub use text_selection::{
+    Selection, clipboard_copy, clipboard_paste, line_boundaries,
+    next_char_boundary, next_word_boundary, prev_char_boundary,
+    prev_word_boundary, word_boundaries,
+};
 
 // Unified animation primitives (foundation #17).
 pub use animation::{Animated, Curve, Lerp};
