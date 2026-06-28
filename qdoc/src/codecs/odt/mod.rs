@@ -6,6 +6,7 @@
 pub mod container;
 pub mod content;
 pub mod export;
+pub mod styles;
 
 use crate::format::{CodecError, Confidence, FormatProvider};
 use crate::model::{DocMut, DocRef};
@@ -33,7 +34,14 @@ impl FormatProvider for OdtCodec {
             .get("content.xml")
             .ok_or_else(|| CodecError::Parse("odt: missing content.xml".into()))?
             .to_vec();
-        content::parse_body(&content, doc)?;
+        // Build the style registry from styles.xml (named styles) + content.xml
+        // (automatic styles); later styles win, so content overrides styles.xml.
+        let mut reg = styles::StyleRegistry::default();
+        if let Some(styles_xml) = container.get("styles.xml") {
+            styles::parse_styles(styles_xml, &mut reg);
+        }
+        styles::parse_styles(&content, &mut reg);
+        content::parse_body(&content, &reg, doc)?;
         // Preservation layer: stash every part except the (regenerated)
         // content.xml verbatim so export round-trips them losslessly.
         for (name, part) in &container.parts {
