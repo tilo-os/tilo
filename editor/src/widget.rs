@@ -227,6 +227,9 @@ pub struct WordProcessorWidget {
     needs_commit: bool,
     pointer: Point,
     dragging: bool,
+    last_click: Option<std::time::Instant>,
+    last_click_pos: Point,
+    click_count: u8,
     path: Option<PathBuf>,
     format: Option<WpFormat>,
     blocks: Vec<BlockView>,
@@ -250,6 +253,9 @@ impl WordProcessorWidget {
             needs_commit: false,
             pointer: Point::ZERO,
             dragging: false,
+            last_click: None,
+            last_click_pos: Point::ZERO,
+            click_count: 0,
             path: None,
             format: None,
             blocks: Vec::new(),
@@ -573,8 +579,26 @@ impl Widget for WordProcessorWidget {
                     *handled = true;
                     return;
                 }
+                if self.pointer.y > self.rect.y1 - STATUS_H {
+                    return; // status bar — not editable
+                }
                 self.dragging = true;
+
+                // Double-click selects the word, triple-click the paragraph.
+                let now = std::time::Instant::now();
+                let recent = self.last_click.map(|t| now.duration_since(t).as_millis() < 450).unwrap_or(false);
+                let near = self.last_click_pos.distance(self.pointer) < 4.0;
+                self.click_count = if recent && near { (self.click_count + 1).min(3) } else { 1 };
+                self.last_click = Some(now);
+                self.last_click_pos = self.pointer;
+
                 self.caret_from_pointer(self.pointer, shift);
+                match self.click_count {
+                    2 => self.inner.select_word(state),
+                    3 => self.select_all_in_block(state),
+                    _ => {}
+                }
+                self.dirty = true;
                 *handled = true;
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
@@ -654,7 +678,11 @@ impl Widget for WordProcessorWidget {
                         self.inner.move_end(state);
                         motion = true;
                     }
-                    Key::Named(NamedKey::Space) => self.inner.insert_str(state, " "),
+                    Key::Named(NamedKey::Space) => {
+                        if !self.inner.autoformat_on_space(state) {
+                            self.inner.insert_str(state, " ");
+                        }
+                    }
                     _ => {
                         let typed: String = text
                             .as_ref()
