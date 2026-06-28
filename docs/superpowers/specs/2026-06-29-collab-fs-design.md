@@ -200,3 +200,32 @@ correctness, and the conflict semantics) before declaring done.
 - **Whole-file re-ingest on write**: fine for documents; large files want chunked/range dedup later.
 - **FsStore API surface** across iroh-blobs 0.98: if `FsStore` is awkward, `MemStore` + manual
   persistence is the interim fallback (loses cross-restart persistence only).
+
+## Implementation status (2026-06-29)
+
+All six phases landed in `fs/` (commits `49c8258` → `63ab5f0`); `iroh-gossip` pinned to `0.96.0`
+(matches iroh 0.96 — no version-skew fallback needed). Verified by 29 automated tests (namespace
+merge/tombstone/rename + inode-identity, content store, two-node networked hydration, two-node
+bidirectional gossip propagation, end-to-end "write on A → hydrate on B", FUSE RW round-trip,
+rmdir/unlink semantics, conflict-copy, service-command-line regression) **and** a scripted live
+two-process run proving projection, hydration, write-back, and host-edit propagation.
+
+An adversarial three-agent review drove a follow-up data-integrity + robustness pass (`63ab5f0`):
+no error-swallowing on the write path, `rmdir`/`unlink` kind+emptiness checks, single-lock writes,
+buffer-aware `stat`, rename inode-alias cleanup, a periodic **anti-entropy `reconcile_loop`** (pulls
++ merges peers' full docs to recover from dropped gossip or a mid-join window), a pump that survives
+transient gossip errors, and timeouts on the bootstrap exchange.
+
+## Known limitations (deferred, documented from review)
+
+- **Delete-dir vs create-child race:** if one peer removes a directory while another concurrently
+  creates a child inside it, the child can be orphaned (live entry under a tombstoned parent). This
+  is inherent to the path-keyed flat-map model; the proper fix is a move-aware tree CRDT (Kleppmann)
+  — a future schema change, out of scope for this milestone.
+- **Modify/delete race:** the no-loss guarantee covers concurrent *edit/edit* (→ conflict copy). If a
+  *delete* wins over a concurrent *content edit* of the same file, the editor's bytes are not yet
+  surfaced as a conflict copy. Deferred.
+- **Whole-file re-ingest on write** (no chunked/range dedup) — fine for documents, suboptimal for
+  large files.
+- **Anti-entropy is a periodic full-doc pull** (3 s) — fine at metadata scale; Automerge history
+  growth / doc compaction is a later optimization.
