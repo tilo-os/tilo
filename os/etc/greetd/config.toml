@@ -1,19 +1,22 @@
 # greetd display manager — drops the user into nirios's Wayland session.
 #
-# As of compositor Phase 7, `shell` defaults to `--mode native`,
-# which means the binary itself **is** the Wayland server (auto-binding
-# `wayland-N`). The previous `cage -- /usr/bin/shell` wrapping
-# only made sense in `--mode hosted`, where the compositor was just a
-# client of a host Wayland session; under native mode it actively breaks
-# (cage spins up its own Wayland server and tries to host a client).
+# The login prompt is now a GRAPHICAL greeter (`qos-greeter`, built on the
+# qOS `ui` toolkit) instead of the text-mode tuigreet. greetd can't host a
+# GUI itself, so the greeter runs inside `cage` — a single-window kiosk
+# wlroots compositor — which provides the Wayland display the greeter draws
+# into. `cage -s` makes cage exit when its child exits; on successful auth
+# the greeter speaks greetd IPC, calls StartSession, and exits, at which
+# point greetd execs the chosen session (`/usr/bin/shell --backend drm`)
+# from /usr/share/wayland-sessions.
 #
-# tuigreet renders the login prompt on vt1; on successful auth it execs
-# the selected session from /usr/share/wayland-sessions. Our
-# shell.desktop entry there points at /usr/bin/shell
-# directly, so the chain is greetd → tuigreet → shell (native).
+# Note the session compositor (`shell`) runs in `--mode native` and binds
+# the wayland-N socket itself — it is NOT wrapped in cage. Only the greeter
+# needs cage, because greetd has no display for it.
+#
+# Chain: greetd → cage → qos-greeter → (greetd StartSession) → shell.
 [terminal]
 vt = 1
 
 [default_session]
-command = "tuigreet --remember --time --sessions /usr/share/wayland-sessions"
+command = "cage -s -- /usr/bin/qos-greeter"
 user = "greetd"
