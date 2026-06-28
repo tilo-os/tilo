@@ -2,7 +2,7 @@ use winit::{
     application::ApplicationHandler,
     dpi::PhysicalPosition,
     event::{ElementState, MouseButton, WindowEvent},
-    event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
     window::{Window, WindowId},
 };
 
@@ -135,6 +135,14 @@ pub struct App {
     /// [`pointer_broadcast_allowed`] to throttle the wire rate to
     /// ~30 Hz regardless of how fast winit delivers `CursorMoved`.
     last_pointer_broadcast: Option<Instant>,
+    /// Last caret/selection presence broadcast for the focused widget,
+    /// used to avoid re-sending unchanged presence every frame.
+    last_focus_presence:
+        Option<(PresenceKey, crate::collaboration::PresencePayload)>,
+    /// Last location presence (e.g. current tab/page) broadcast for the
+    /// root widget, diffed to avoid re-sending unchanged presence.
+    last_location_presence:
+        Option<(PresenceKey, crate::collaboration::PresencePayload)>,
     /// Optional out-of-band sink invoked alongside the Unix-socket
     /// `broadcast_presence` send. The shell registers a closure here
     /// when peer-sync is enabled so local cursor moves get fanned out
@@ -176,6 +184,8 @@ impl App {
             permission_ctx: PermissionContext::permissive(),
             presence_broadcast_scope: None,
             last_pointer_broadcast: None,
+            last_focus_presence: None,
+            last_location_presence: None,
             presence_broadcast_sink: None,
             frame_tick: None,
         }
@@ -223,10 +233,26 @@ impl App {
     /// attributed to the right scope. Passing `None` disables outbound
     /// pointer broadcast.
     pub fn set_presence_broadcast_scope(&mut self, key: Option<PresenceKey>) {
-        self.presence_broadcast_scope = key;
+        self.presence_broadcast_scope = key.clone();
         // Reset the throttle so a new scope's first pointer move fires
         // immediately rather than waiting on the stale last-send gate.
         self.last_pointer_broadcast = None;
+        // Announce arrival under the new scope so peers already in the
+        // room reply with a full document snapshot — this is the
+        // app-side half of the late-join convergence handshake. A `None`
+        // scope (teardown / headless) announces nothing.
+        if let Some(k) = key {
+            if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
+                eprintln!(
+                    "[app] set scope; collab connected={}; broadcasting Arrived",
+                    self.collab_manager.is_connected()
+                );
+            }
+            self.broadcast_presence(
+                k,
+                crate::collaboration::PresencePayload::Arrived,
+            );
+        }
     }
 
     /// Returns the currently active presence-broadcast scope, if any.
@@ -266,6 +292,57 @@ impl App {
         }
         self.collab_manager
             .send(CollabRequest::Presence { key, payload });
+    }
+
+    /// Broadcast the document changes made since the last call as an
+    /// incremental CRDT delta, so peers see local edits in near-real-time.
+    /// This is the live-edit path (the late-join handshake still ships a
+    /// full snapshot). Cheap when nothing changed — `save_incremental`
+    /// returns empty and we skip the send.
+    fn broadcast_doc_delta(&mut self) {
+        if !self.collab_manager.is_connected() {
+            return;
+        }
+        let delta = self.state.save_incremental();
+        if !delta.is_empty() {
+            if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
+                eprintln!("[app] broadcast doc delta {}B", delta.len());
+            }
+            self.collab_manager
+                .send(crate::collaboration::CollabRequest::SyncIncremental { data: delta });
+        }
+    }
+
+    /// Poll the focused widget for its caret/selection presence and
+    /// broadcast it when it changes since the last send, so peers see the
+    /// local caret/selection move in near-real-time. The focused widget
+    /// supplies both the key (which sub-element the caret is in) and the
+    /// payload via [`Widget::presence_payload`].
+    fn broadcast_focus_presence(&mut self) {
+        let current = self
+            .focused_node
+            .and_then(|id| self.node_map.get(&id).copied())
+            .and_then(|w| unsafe { (*w).presence_payload() });
+        if current != self.last_focus_presence {
+            if let Some((key, payload)) = current.clone() {
+                self.broadcast_presence(key, payload);
+            }
+            self.last_focus_presence = current;
+        }
+    }
+
+    /// Poll the ROOT widget for its location presence (e.g. which page /
+    /// tab it's viewing) and broadcast the diff, so peers can render
+    /// "indicative mist" on the navigational element leading here. Unlike
+    /// focus presence, this is polled on the root regardless of focus.
+    fn broadcast_location_presence(&mut self) {
+        let current = self.root_widget.presence_payload();
+        if current != self.last_location_presence {
+            if let Some((key, payload)) = current.clone() {
+                self.broadcast_presence(key, payload);
+            }
+            self.last_location_presence = current;
+        }
     }
 
     /// Poll the collaboration manager and apply any pending events
@@ -337,14 +414,24 @@ impl App {
                     self.apply_remote_presence(user_id, key, payload);
                 }
                 CollabEvent::CRDTUpdate { data } => {
-                    if let Ok(new_state) = State::load(&data) {
-                        self.state.doc = new_state.doc;
+                    // MERGE incoming full state rather than replacing the
+                    // doc — a replace clobbers our own concurrent edits.
+                    if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
+                        eprintln!("[app] recv CRDTUpdate {}B", data.len());
+                    }
+                    if let Ok(mut incoming) = State::load(&data) {
+                        let _ = self.state.doc.merge(&mut incoming.doc);
                         self.needs_sync = true;
+                        // A remote change can grow the widget tree (new
+                        // page/block), so force a relayout before the next
+                        // draw — else a stale layout indexes out of bounds.
+                        self.layout_dirty = true;
                     }
                 }
                 CollabEvent::CRDTIncremental { data } => {
                     let _ = self.state.load_incremental(&data);
                     self.needs_sync = true;
+                    self.layout_dirty = true;
                 }
             }
         }
@@ -384,8 +471,10 @@ impl App {
                 self.needs_sync = true;
             }
             CollabEvent::CRDTUpdate { data } => {
-                if let Ok(new_state) = crate::state::State::load(&data) {
-                    self.state.doc = new_state.doc;
+                // MERGE (not replace) — see the production handler in
+                // `run`'s about_to_wait loop for the rationale.
+                if let Ok(mut incoming) = crate::state::State::load(&data) {
+                    let _ = self.state.doc.merge(&mut incoming.doc);
                     self.needs_sync = true;
                 }
             }
@@ -428,32 +517,65 @@ impl App {
         use crate::permissions::UserId;
         match payload {
             Pointer { x, y } => {
+                // Populate BOTH presence stores: `pointers` (keyed by
+                // scope, read by the shell's per-workspace overlay and by
+                // `pointer_for`) and the screen-space `remote_cursors` vec
+                // the shared `draw_remote_cursors` helper renders. Only the
+                // latter is painted by the App, so there's no double-draw.
                 let uid = UserId(user_id.clone());
                 self.presence_ctx.set_pointer(&key, uid, (x, y));
-                // ALSO stamp the screen-space overlay vec so the
-                // generic `draw_remote_cursors` helper paints a
-                // triangle + name pill for this peer. The shell's
-                // richer per-workspace overlay reads from
-                // `pointers[key]`; the cross-process per-app case
-                // reads from `remote_cursors`.
                 self.presence_ctx
                     .upsert_remote_cursor(user_id, [x, y], None);
             }
-            Caret { pos } => self
-                .presence_ctx
-                .set_remote_caret(user_id, key, pos),
-            Selection { start, end } => self
-                .presence_ctx
-                .set_remote_selection(user_id, key, start, end),
+            Caret { pos } => {
+                // Feed BOTH presence stores: the in-app BlockEditor reads
+                // `carets` (set_caret); the cross-process overlay reads
+                // the `remote_caret` map (set_remote_caret).
+                let uid = UserId(user_id.clone());
+                self.presence_ctx.set_caret(&key, uid, pos);
+                self.presence_ctx.set_remote_caret(user_id, key, pos);
+            }
+            Selection { start, end } => {
+                let uid = UserId(user_id.clone());
+                self.presence_ctx.set_selection(
+                    &key,
+                    uid,
+                    crate::presence::SelectionRange { start, end },
+                );
+                self.presence_ctx
+                    .set_remote_selection(user_id, key, start, end);
+            }
             Arrived => {
-                self.presence_ctx.register_peer_at(user_id, key);
+                let uid = UserId(user_id.clone());
+                // Register in #280's cross-process peer registry too.
+                self.presence_ctx
+                    .register_peer_at(user_id.clone(), key.clone());
+                // Tab keys move the peer's dot between tabs/pages; non-Tab
+                // (app/workspace) arrivals are (possibly late) joiners, so
+                // reply with our full state to converge. The broker fans
+                // this to all peers; an already-synced peer merges it
+                // idempotently. (Page switches use Tab keys, never this.)
+                if matches!(key, crate::presence::PresenceKey::Tab { .. }) {
+                    self.presence_ctx.set_tab_focus(&key, uid);
+                } else {
+                    self.presence_ctx.register_presence(&key, uid);
+                    let data = self.state.save();
+                    if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
+                        eprintln!(
+                            "[app] recv Arrived; replying full state {}B",
+                            data.len()
+                        );
+                    }
+                    self.collab_manager
+                        .send(crate::collaboration::CollabRequest::SyncCRDT { data });
+                }
             }
             Left => {
-                // `Left` drops the peer everywhere — they're gone, not
-                // just from this one key. The previous implementation
-                // only cleared `here[key]`, which left stale cursors
-                // on screen if the peer had moved their pointer first.
+                // Drop the peer everywhere — they're gone, not just from
+                // one key (a stale pointer would otherwise linger).
+                let uid = UserId(user_id.clone());
                 self.presence_ctx.unregister_peer(user_id);
+                self.presence_ctx.remove_presence(&key, &uid);
             }
         }
     }
@@ -957,15 +1079,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     );
                 }
 
-                // Draw cross-process remote cursors (the new
-                // `PresenceCtx::remote_cursors` overlay vec). Two
-                // `cargo run -p terminal` instances pointing at the
-                // same QUICK_COLLAB_SOCK end up here: each one's
-                // pointer broadcasts populate the peer's overlay
-                // vec, which this pass turns into a triangle + name
-                // pill. Helper lives in `ui::presence::render` so
-                // the same drawing covers the shell and every
-                // non-shell app.
+                // Remote peer cursors (both collab-socket and libp2p
+                // sources land in `remote_cursors`): one shared helper
+                // paints each as a round, color-coded dot + name pill.
+                // `pointers` is kept populated for the shell overlay but
+                // not painted here, so no peer is drawn twice.
                 crate::presence::draw_remote_cursors(
                     &mut scene,
                     transform,
@@ -1322,6 +1440,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     }
                 }
 
+                // Broadcast the focused widget's caret/selection presence
+                // and the root widget's location presence (diffed) so
+                // peers can render the remote caret + indicative mist.
+                // Cheap: no-ops when nothing changed or no socket is bound.
+                app.broadcast_focus_presence();
+                app.broadcast_location_presence();
+
                 if let Some(id) = focus_target {
                     app.set_focused_node(Some(id));
                     handled = true;
@@ -1375,7 +1500,19 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // While collaborating, tick the loop at ~60 Hz so the collab
+        // socket is drained promptly. winit's default `Wait` only wakes on
+        // local input, so a remote peer's edits/presence (which aren't a
+        // winit event source) would otherwise sit unread for seconds until
+        // the local user happens to move the mouse. Non-collab apps keep
+        // the default event-driven `Wait` (no idle wakeups).
+        if self.app.collab_manager.is_connected() {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(
+                Instant::now() + Duration::from_millis(16),
+            ));
+        }
+
         let Some(window) = self.window.as_ref().cloned() else {
             return;
         };
@@ -1394,6 +1531,27 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             app.needs_sync = true;
             window.request_redraw();
         }
+
+        // Re-broadcast location presence here too: the active page can
+        // change during `sync` (e.g. the initial auto-select), which the
+        // post-event broadcast above wouldn't catch. Diffed, so it only
+        // sends on an actual change.
+        app.broadcast_location_presence();
+
+        // Keep syncing on idle frames while a collab app is still seeding
+        // or adopting the shared document. Without this a first peer with
+        // no input never re-runs `sync` to seed its doc after the grace
+        // window, so a late joiner receives an empty reply and diverges.
+        // Stops as soon as the widget reports it's converged.
+        if app.collab_manager.is_connected() && app.root_widget.needs_idle_sync() {
+            app.needs_sync = true;
+            window.request_redraw();
+        }
+
+        // Broadcast any local document edits (and the initial seed) as an
+        // incremental delta so peers converge in near-real-time. Runs each
+        // ~16ms tick while connected; a no-op when nothing changed.
+        app.broadcast_doc_delta();
 
         // If a widget mutated its child composition between
         // frames (e.g. GroupRow split a tab into a new group
@@ -1513,6 +1671,78 @@ mod pointer_broadcast_tests {
         let root = Box::new(crate::widget::Text::new("t"));
         let app = App::new(state, root);
         assert!(app.presence_broadcast_scope().is_none());
+    }
+
+    #[test]
+    fn setting_scope_announces_arrival() {
+        // The app-side half of the late-join handshake: setting a
+        // presence scope must announce `Arrived` so peers already in the
+        // room reply with full state.
+        use std::sync::{Arc, Mutex};
+        let state = State::new();
+        let root = Box::new(crate::widget::Text::new("t"));
+        let mut app = App::new(state, root);
+        let captured: Arc<Mutex<Vec<(PresenceKey, PresencePayload)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let sink_captured = Arc::clone(&captured);
+        app.set_presence_broadcast_sink(move |k, p| {
+            sink_captured.lock().unwrap().push((k.clone(), p.clone()));
+        });
+        let key = PresenceKey::Workspace { id: "home".into() };
+        app.set_presence_broadcast_scope(Some(key.clone()));
+        let observed = captured.lock().unwrap();
+        assert!(
+            observed
+                .iter()
+                .any(|(k, p)| *k == key && matches!(p, PresencePayload::Arrived)),
+            "setting a scope must announce Arrival, got {observed:?}"
+        );
+    }
+
+    #[test]
+    fn crdt_update_merges_not_replaces() {
+        use automerge::transaction::Transactable;
+        use automerge::{ObjType, ReadDoc, ROOT};
+        // Shared base with a map "m" holding "x" — peers share this base
+        // via the late-join handshake, so merge is conflict-free.
+        let mut base = automerge::AutoCommit::new();
+        let m = base.put_object(&ROOT, "m", ObjType::Map).unwrap();
+        base.put(&m, "x", 1).unwrap();
+        let base_bytes = base.save();
+
+        // App from base; add a local edit m["a"].
+        let app_state = State::load(&base_bytes).unwrap();
+        let root = Box::new(crate::widget::Text::new("t"));
+        let mut app = App::new(app_state, root);
+        {
+            let doc = &mut app.state_mut_for_test().doc;
+            let m = match doc.get(&ROOT, "m") {
+                Ok(Some((automerge::Value::Object(ObjType::Map), id))) => id,
+                _ => panic!("m exists"),
+            };
+            doc.put(&m, "a", 10).unwrap();
+        }
+
+        // A remote peer (same base) adds m["b"] and sends full state.
+        let mut peer = automerge::AutoCommit::load(&base_bytes).unwrap();
+        let pm = match peer.get(&ROOT, "m") {
+            Ok(Some((automerge::Value::Object(ObjType::Map), id))) => id,
+            _ => panic!("m exists"),
+        };
+        peer.put(&pm, "b", 20).unwrap();
+        let incoming = peer.save();
+
+        app.apply_collab_event_for_test(CollabEvent::CRDTUpdate { data: incoming });
+
+        // Both edits must survive the merge (a replace would drop "a").
+        let doc = &mut app.state_mut_for_test().doc;
+        let m = match doc.get(&ROOT, "m") {
+            Ok(Some((automerge::Value::Object(ObjType::Map), id))) => id,
+            _ => panic!("m exists"),
+        };
+        assert!(doc.get(&m, "a").unwrap().is_some(), "local edit survives merge");
+        assert!(doc.get(&m, "b").unwrap().is_some(), "remote edit merged in");
+        assert!(doc.get(&m, "x").unwrap().is_some(), "base value present");
     }
 
     #[test]

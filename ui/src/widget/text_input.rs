@@ -37,12 +37,14 @@ use crate::presence::{PathSegment, PresenceKey};
 /// Render-time font size for the input's body text. Kept as a single
 /// constant so the measure-and-draw pair always agrees.
 const FONT_SIZE: f32 = 16.0;
-/// `line_height` follows the same `× 1.25` ratio cosmic-text uses
-/// when shaping (see `text_render.rs::measure_weighted`). The caret
-/// is centered against this band, not against `FONT_SIZE` directly,
-/// so the glyph row that draws *below* the cosmic-text baseline ends
-/// up vertically aligned with the caret.
-const LINE_HEIGHT: f32 = FONT_SIZE * 1.25;
+/// Line-height ratio cosmic-text uses when shaping (see
+/// `text_render.rs::measure_weighted`). The caret is centered
+/// against this band, not against the font size directly, so the
+/// glyph row that draws *below* the cosmic-text baseline ends up
+/// vertically aligned with the caret. Multiplied against the
+/// effective font size (which may be a per-widget override) at
+/// draw time.
+const LINE_HEIGHT_RATIO: f32 = 1.25;
 /// Caret thickness in CSS-like pixels. 2 px reads as a clean ibeam
 /// without becoming an obvious block at smaller font sizes.
 const CARET_WIDTH: f64 = 2.0;
@@ -79,17 +81,51 @@ pub struct TextInput {
     last_click_time: Option<Instant>,
     last_click_pos: Point,
     click_count: u32,
+    /// True when a user edit landed since the last `take_dirty()`.
+    /// Cleared on `take_dirty()` and on `set_text()` (programmatic
+    /// writes by the parent don't count as user edits).
+    dirty: bool,
+    /// `true` in CRDT mode (a path was supplied); `false` in local
+    /// mode. Gates whether the edit helpers attempt to splice into
+    /// `state` (they no-op cleanly when this is false even if a
+    /// path string was set without an actual CRDT object).
+    crdt_bound: bool,
     on_change_path: String,
     last_mouse_pos: Point,
     char_x_positions: Vec<f64>,
     scroll_x: f64,
     last_edit_time: Option<Instant>,
+    /// When `Some`, overrides the default body font size. Set via
+    /// [`with_font_size`] / [`set_font_size`]. Wrapper widgets such as
+    /// `RichTextLine` use this to render heading rows larger than
+    /// paragraph rows without forking the widget.
+    font_size_override: Option<f32>,
+    /// When true, the input renders without the rounded-rect bg /
+    /// border that signals "this is a form field". Used by block-
+    /// editor cells where the surrounding text should read as plain
+    /// document copy, not as a form input.
+    plain: bool,
+    /// When `Some`, the input is bound directly to this Automerge `Text`
+    /// object. This takes precedence over the string-`on_change_path`
+    /// mode and is how a `BlockEditor` binds each block's text — its
+    /// `Text` lives at `pages[id].blocks[i].text`, nested through a List
+    /// index that a flat string key can't address. `sync` reads from it
+    /// and every edit splices into it.
+    bound_text: Option<ObjId>,
+    /// The local user's id, stamped as an authorship mark on every
+    /// inserted run so peers can highlight "what they wrote" in this
+    /// user's color. `None` disables authorship stamping (examples,
+    /// tests, the pre-collab single-user case).
+    local_author: Option<String>,
     /// When true the widget renders / measures a row of bullet glyphs in
     /// place of the real text (password masking). The CRDT-backed
     /// `self.text` stays the *true* value so callers that read the
     /// document (e.g. the greeter's auth path) get the real secret.
     secret: bool,
 }
+
+/// Automerge mark name used to attribute each character's author.
+pub(crate) const AUTHOR_MARK: &str = "author";
 
 impl TextInput {
     /// Construct a text input bound to a presence `path` (used as the
@@ -114,8 +150,253 @@ impl TextInput {
             char_x_positions: Vec::new(),
             scroll_x: 0.0,
             last_edit_time: None,
+            dirty: false,
+            crdt_bound: false,
+            font_size_override: None,
+            plain: false,
+            bound_text: None,
+            local_author: None,
             secret: false,
         }
+    }
+
+    /// Set the local user's id for authorship stamping. Every subsequent
+    /// edit attributes the inserted run to this id. `None` disables it.
+    pub fn set_local_author(&mut self, author: Option<String>) {
+        self.local_author = author;
+    }
+
+    /// Bind this input directly to an Automerge `Text` object. After
+    /// binding, [`sync`] reads its content from `obj` and every edit
+    /// splices into `obj` — regardless of the string-path mode. Used by
+    /// `RichTextLine`/`BlockEditor` to back a block with a per-block
+    /// `Text` nested inside the page's `blocks` List.
+    pub fn bind_text(&mut self, obj: ObjId) {
+        self.bound_text = Some(obj);
+        self.crdt_bound = true;
+    }
+
+    /// The Automerge `Text` this input is bound to, if any. Used by
+    /// `BlockEditor` to match local blocks to doc list elements by
+    /// object identity when reconciling structure.
+    pub fn bound_obj(&self) -> Option<&ObjId> {
+        self.bound_text.as_ref()
+    }
+
+    /// Resolve the Automerge `Text` this input edits, if any. A directly
+    /// bound `ObjId` (via [`bind_text`]) wins over the string-path mode.
+    fn resolve_text_obj(&self, state: &AutoCommit, root: &ObjId) -> Option<ObjId> {
+        if let Some(obj) = &self.bound_text {
+            return Some(obj.clone());
+        }
+        if self.crdt_bound {
+            if let Ok(Some((Value::Object(ObjType::Text), id))) =
+                state.get(root, self.on_change_path.as_str())
+            {
+                return Some(id);
+            }
+        }
+        None
+    }
+
+    /// Builder-style: override the body font size in CSS-like pixels.
+    /// Affects both the rendered glyph height and the row's intrinsic
+    /// vertical centering. Returning `Self` matches the with_*
+    /// pattern across the widget family.
+    pub fn with_font_size(mut self, size: f32) -> Self {
+        self.font_size_override = Some(size);
+        self
+    }
+
+    /// Builder-style: render without the rounded-rect bg + border.
+    /// The caret + selection still paint as usual when focused.
+    /// Used by `RichTextLine` so a block-editor cell reads as
+    /// document copy instead of a form field.
+    pub fn with_plain_chrome(mut self) -> Self {
+        self.plain = true;
+        self
+    }
+
+    /// Mutate the font-size override after construction.
+    pub fn set_font_size(&mut self, size: f32) {
+        self.font_size_override = Some(size);
+    }
+
+    /// Mutate the plain-chrome flag after construction.
+    pub fn set_plain_chrome(&mut self, plain: bool) {
+        self.plain = plain;
+    }
+
+    /// Construct a TextInput that owns its own string with no CRDT
+    /// integration. Use when a parent widget needs a small edit
+    /// field (color-picker hex, in-place rename, etc.) and doesn't
+    /// have a CRDT path to spend on it. Read the live string via
+    /// [`value`] and observe changes with [`take_dirty`].
+    pub fn local() -> Self {
+        let mut s = Self::new(Vec::new());
+        s.crdt_bound = false;
+        s
+    }
+
+    /// Set the initial text. Cursor is parked at the end. The
+    /// dirty flag stays false — this is a programmatic seed, not
+    /// a user edit.
+    pub fn with_initial_value(mut self, s: &str) -> Self {
+        self.text = s.to_string();
+        self.cursor_pos = self.text.len();
+        self.dirty = false;
+        self
+    }
+
+    /// Programmatically replace the text. Clamps the cursor,
+    /// clears the dirty flag — the parent set this, the user
+    /// didn't edit it.
+    pub fn set_text(&mut self, s: &str) {
+        if self.text == s { return; }
+        self.text = s.to_string();
+        self.selection_anchor = None;
+        self.clamp_to_text();
+        self.dirty = false;
+        self.last_edit_time = None;
+    }
+
+    /// Current text content, regardless of CRDT/local mode.
+    pub fn value(&self) -> &str {
+        &self.text
+    }
+
+    /// Current caret position as a byte index into [`value`]. Guaranteed
+    /// to land on a UTF-8 char boundary. Used by wrapper widgets (like
+    /// `RichTextLine`) that need to know where to split / merge / decide
+    /// whether the cursor is at the start or end of the line.
+    pub fn cursor_pos(&self) -> usize {
+        self.cursor_pos
+    }
+
+    /// Move the caret to `pos` bytes. Clamped to the text length and
+    /// to the nearest preceding char boundary. Selection is collapsed.
+    /// Programmatic only — does not count as a user edit (dirty stays
+    /// false). Used by `RichTextLine` after a split to land the caret
+    /// at the start of the new line.
+    pub fn set_cursor_pos(&mut self, pos: usize) {
+        let mut p = pos.min(self.text.len());
+        while p > 0 && !self.text.is_char_boundary(p) {
+            p -= 1;
+        }
+        self.cursor_pos = p;
+        self.selection_anchor = None;
+    }
+
+    /// If a selection is active, return its byte range as
+    /// `Some((min, max))`. Used by `RichTextLine` to apply inline
+    /// marks (`Ctrl-B` / `Ctrl-I` / `Ctrl-E`) to the selected slice.
+    pub fn selection_range_public(&self) -> Option<(usize, usize)> {
+        self.selection_range()
+    }
+
+    /// Per-character left-edge x positions in logical pixels
+    /// (filled by the most-recent draw call). `len()` is
+    /// `text.len() + 1` — the last entry is the right edge of the
+    /// final glyph. Empty until the first draw lands.
+    pub fn char_x_positions(&self) -> &[f64] {
+        &self.char_x_positions
+    }
+
+    /// Current horizontal scroll offset (logical pixels). Used by
+    /// `RichTextLine` overlay drawing to project mark backgrounds
+    /// against the same scroll axis as the underlying text.
+    pub fn scroll_x(&self) -> f64 {
+        self.scroll_x
+    }
+
+    /// True iff the input is currently rendering in plain-chrome mode
+    /// (no rounded background / border). Block-editor cells use this.
+    pub fn is_plain(&self) -> bool {
+        self.plain
+    }
+
+    /// Internal-padding-x the input uses when laying out its text
+    /// against `rect`. In plain-chrome mode this is 0; in the styled
+    /// form-field mode it's `theme.padding_standard`. Exposed so
+    /// wrapper widgets can compute the absolute pixel position of a
+    /// byte offset (caret-precise popover anchoring, link hit-test).
+    pub fn text_padding_x(&self, theme: &Theme) -> f64 {
+        if self.plain {
+            0.0
+        } else {
+            theme.padding_standard as f64
+        }
+    }
+
+    /// `(text_y, line_height)` — the vertical band the text + caret share,
+    /// in this input's local coordinates. The single source of truth for
+    /// caret/selection height + position used by BOTH the focused local
+    /// caret and any remote (peer) caret, so they line up exactly.
+    pub fn text_band(&self) -> (f64, f64) {
+        let text_size = self.font_size_override.unwrap_or(FONT_SIZE);
+        let line_height = (text_size * LINE_HEIGHT_RATIO) as f64;
+        let text_y = self.rect.y0 + (self.rect.height() - line_height) / 2.0;
+        (text_y, line_height)
+    }
+
+    /// Local-coordinate x of the left edge of the caret at byte `byte` —
+    /// the same metric the focused caret uses (per-char layout + padding −
+    /// horizontal scroll). Falls back to the end-of-text x when `byte` is
+    /// past the laid-out range. Requires a prior `draw` to have populated
+    /// `char_x_positions`.
+    fn caret_x(&self, theme: &Theme, byte: usize) -> f64 {
+        let off = self
+            .char_x_positions
+            .get(byte)
+            .copied()
+            .unwrap_or_else(|| self.char_x_positions.last().copied().unwrap_or(0.0));
+        self.rect.x0 + self.text_padding_x(theme) + off - self.scroll_x
+    }
+
+    /// The exact caret rectangle for byte offset `byte`, in local
+    /// coordinates — identical geometry to the focused local caret. Peer
+    /// carets render through this so a remote caret is pixel-identical to
+    /// the local one, only recoloured.
+    pub fn caret_rect(&self, theme: &Theme, byte: usize) -> Rect {
+        let x = self.caret_x(theme, byte);
+        let (text_y, line_height) = self.text_band();
+        Rect::new(x, text_y, x + CARET_WIDTH, text_y + line_height)
+    }
+
+    /// The selection highlight rect for the `[start, end)` byte range, in
+    /// local coordinates — same vertical band as the caret.
+    pub fn selection_rect(&self, theme: &Theme, start: usize, end: usize) -> Rect {
+        let x0 = self.caret_x(theme, start);
+        let x1 = self.caret_x(theme, end);
+        let (text_y, line_height) = self.text_band();
+        Rect::new(x0, text_y, x1, text_y + line_height)
+    }
+
+    /// One-shot read of user edits. Returns `Some(text)` if any
+    /// user-initiated edit has landed since the last call, else
+    /// `None`. The dirty flag is cleared.
+    pub fn take_dirty(&mut self) -> Option<String> {
+        if self.dirty {
+            self.dirty = false;
+            Some(self.text.clone())
+        } else {
+            None
+        }
+    }
+
+    /// External-layout assignment for callers that embed this widget
+    /// outside the taffy tree (the parent owns layout). Pairs with the
+    /// trait method `apply_layout`: a parent calling this is asserting
+    /// it has done what `apply_layout` would normally do. Today the
+    /// only invariant `apply_layout` would establish is `self.rect`; if
+    /// `apply_layout` grows responsibilities in the future, this method
+    /// will need to grow with it.
+    ///
+    /// Embed bypasses `draw_with_presence` too — only safe with
+    /// local-mode TextInputs that have no presence path or permission
+    /// scope.
+    pub fn apply_layout_external(&mut self, rect: Rect) {
+        self.rect = rect;
     }
 
     pub fn with_id(mut self, id: &str) -> Self {
@@ -125,6 +406,7 @@ impl TextInput {
 
     pub fn with_on_change_path(mut self, path: &str) -> Self {
         self.on_change_path = path.to_string();
+        self.crdt_bound = !path.is_empty();
         self
     }
 
@@ -194,8 +476,9 @@ impl TextInput {
     }
 
     /// Delete the current selection from both the local string and
-    /// the CRDT. No-op if there's no selection.
-    fn delete_selection(&mut self, state: &mut AutoCommit, obj_id: &ObjId) {
+    /// the CRDT. No-op if there's no selection. In local mode
+    /// (`obj_id` is `None`), only the local string is updated.
+    fn delete_selection(&mut self, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
         let Some((start, end)) = self.selection_range() else { return; };
         let char_start = self.text[..start].chars().count();
         let char_count = self.text[start..end].chars().count();
@@ -203,26 +486,57 @@ impl TextInput {
         self.cursor_pos = start;
         self.selection_anchor = None;
         self.last_edit_time = Some(Instant::now());
-        let _ = state.splice_text(obj_id, char_start, char_count as isize, "");
+        if let Some(obj_id) = obj_id {
+            let _ = state.splice_text(obj_id, char_start, char_count as isize, "");
+        }
+        self.dirty = true;
     }
 
     /// Insert `s` at the caret, replacing the current selection if
     /// any. The CRDT delta and the local cursor are kept in sync.
-    fn insert_str(&mut self, s: &str, state: &mut AutoCommit, obj_id: &ObjId) {
+    /// In local mode (`obj_id` is `None`), only the local string is
+    /// updated.
+    fn insert_str(&mut self, s: &str, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
+        // Char index where the inserted text lands, captured so we can
+        // stamp an authorship mark over exactly the inserted run.
+        let insert_char_at;
         if let Some((start, end)) = self.selection_range() {
             let char_start = self.text[..start].chars().count();
             let char_count = self.text[start..end].chars().count();
             self.text.replace_range(start..end, s);
             self.cursor_pos = start + s.len();
             self.selection_anchor = None;
-            let _ = state.splice_text(obj_id, char_start, char_count as isize, s);
+            if let Some(obj_id) = obj_id {
+                let _ = state.splice_text(obj_id, char_start, char_count as isize, s);
+            }
+            insert_char_at = char_start;
         } else {
             let char_idx = self.text[..self.cursor_pos].chars().count();
             self.text.insert_str(self.cursor_pos, s);
-            let _ = state.splice_text(obj_id, char_idx, 0, s);
+            if let Some(obj_id) = obj_id {
+                let _ = state.splice_text(obj_id, char_idx, 0, s);
+            }
             self.cursor_pos += s.len();
+            insert_char_at = char_idx;
+        }
+        // Authorship: stamp the inserted run with the local user's id so
+        // peers can highlight "what they wrote" in the author's color.
+        // Latest-wins per position, so a peer typing into another's text
+        // splits the prior author's run correctly.
+        if let (Some(obj_id), Some(author)) = (obj_id, &self.local_author) {
+            let nchars = s.chars().count();
+            if nchars > 0 {
+                let mark = automerge::marks::Mark::new(
+                    AUTHOR_MARK.to_string(),
+                    author.clone(),
+                    insert_char_at,
+                    insert_char_at + nchars,
+                );
+                let _ = state.mark(obj_id, mark, automerge::marks::ExpandMark::None);
+            }
         }
         self.last_edit_time = Some(Instant::now());
+        self.dirty = true;
     }
 
     /// Resolve the cursor byte-position from a logical-space x point
@@ -261,6 +575,16 @@ impl TextInput {
 
 impl Widget for TextInput {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        // Directly-bound Text wins: read its content straight from the
+        // object, ignoring the string-path mode entirely.
+        if let Some(obj_id) = self.bound_text.clone() {
+            if let Ok(text) = state.text(&obj_id) {
+                self.text = text;
+            }
+            self.clamp_to_text();
+            return;
+        }
+        if !self.crdt_bound { return; }
         if let Ok(Some((val, obj_id))) = state.get(root, self.on_change_path.as_str()) {
             match val {
                 Value::Scalar(s) => {
@@ -302,25 +626,38 @@ impl Widget for TextInput {
     }
 
     fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
-        let bg_color = if self.is_focused {
-            theme.bg_active
-        } else {
-            theme.tokens.colors.surfaces.raised
-        };
-
         let shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
-        scene.fill(vello::peniko::Fill::NonZero, transform, bg_color, None, &shape);
+        if !self.plain {
+            let bg_color = if self.is_focused {
+                theme.bg_active
+            } else {
+                theme.tokens.colors.surfaces.raised
+            };
+            scene.fill(vello::peniko::Fill::NonZero, transform, bg_color, None, &shape);
+            let border_color = if self.is_focused {
+                theme.tokens.colors.border_focus
+            } else {
+                theme.tokens.colors.border_standard
+            };
+            scene.stroke(
+                &Stroke::new(if self.is_focused { 2.0 } else { 1.0 }),
+                transform,
+                border_color,
+                None,
+                &shape,
+            );
+        }
 
-        let border_color = if self.is_focused {
-            theme.tokens.colors.border_focus
+        let text_size = self.font_size_override.unwrap_or(FONT_SIZE);
+        let line_height = (text_size * LINE_HEIGHT_RATIO) as f64;
+        let padding_x = if self.plain {
+            // Plain-chrome inputs (block editor cells) don't need the
+            // inset gutter — the parent already adds whatever gutter
+            // the document layout wants. Saves ~10 px per side.
+            0.0
         } else {
-            theme.tokens.colors.border_standard
+            theme.padding_standard as f64
         };
-        scene.stroke(&Stroke::new(if self.is_focused { 2.0 } else { 1.0 }), transform, border_color, None, &shape);
-
-        let text_size = FONT_SIZE;
-        let line_height = LINE_HEIGHT as f64;
-        let padding_x = theme.padding_standard as f64;
 
         // The painted/measured string — bullets when masked, real text
         // otherwise. `char_x_positions` stays keyed by *real-text* byte
@@ -347,10 +684,19 @@ impl Widget for TextInput {
         };
 
         let visible_width = self.rect.width() - padding_x * 2.0;
-        if cursor_x_offset - self.scroll_x < 0.0 {
-            self.scroll_x = cursor_x_offset;
-        } else if cursor_x_offset - self.scroll_x > visible_width {
-            self.scroll_x = cursor_x_offset - visible_width;
+        if self.is_focused {
+            // Follow the caret horizontally while editing.
+            if cursor_x_offset - self.scroll_x < 0.0 {
+                self.scroll_x = cursor_x_offset;
+            } else if cursor_x_offset - self.scroll_x > visible_width {
+                self.scroll_x = cursor_x_offset - visible_width;
+            }
+        } else {
+            // Unfocused: always render from the start. A block-editor cell
+            // parks its caret at the end after load, so caret-following
+            // scroll would push the first letters off-screen — exactly the
+            // "paragraph doesn't start at the first letter" bug.
+            self.scroll_x = 0.0;
         }
 
         scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), 1.0, transform, &shape);
@@ -360,16 +706,10 @@ impl Widget for TextInput {
         // same visual axis. `text_y` is the top of the line.
         let text_y = self.rect.y0 + (self.rect.height() - line_height) / 2.0;
 
-        // Selection background — paint before the text so glyphs sit on top.
+        // Selection background — paint before the text so glyphs sit on
+        // top. Same geometry helper peers use, so local + remote match.
         if let Some((sel_start, sel_end)) = self.selection_range() {
-            let x_start = self.char_x_positions[sel_start];
-            let x_end = self.char_x_positions[sel_end];
-            let sel_rect = Rect::new(
-                self.rect.x0 + padding_x + x_start - self.scroll_x,
-                text_y,
-                self.rect.x0 + padding_x + x_end - self.scroll_x,
-                text_y + line_height,
-            );
+            let sel_rect = self.selection_rect(theme, sel_start, sel_end);
             // Translucent accent so the underlying text reads through.
             let sel_color = theme.accent_primary.with_alpha_factor(0.35);
             scene.fill(vello::peniko::Fill::NonZero, transform, sel_color, None, &sel_rect);
@@ -385,13 +725,9 @@ impl Widget for TextInput {
         );
 
         if self.is_focused {
-            let cursor_x = self.rect.x0 + padding_x + cursor_x_offset - self.scroll_x;
-            let cursor_rect = Rect::new(
-                cursor_x,
-                text_y,
-                cursor_x + CARET_WIDTH,
-                text_y + line_height,
-            );
+            // Same caret geometry peers render through `caret_rect`, just
+            // painted in the local accent colour.
+            let cursor_rect = self.caret_rect(theme, cursor_pos);
             scene.fill(vello::peniko::Fill::NonZero, transform, theme.accent_primary, None, &cursor_rect);
         }
 
@@ -479,8 +815,7 @@ impl Widget for TextInput {
                 if !self.is_focused || *element_state != ElementState::Pressed {
                     return;
                 }
-                let Ok(Some((Value::Object(ObjType::Text), obj_id))) =
-                    state.get(root, self.on_change_path.as_str()) else { return; };
+                let obj_id_opt: Option<ObjId> = self.resolve_text_obj(state, root);
                 let shift = modifiers.state().shift_key();
                 let ctrl = modifiers.state().control_key();
 
@@ -533,7 +868,7 @@ impl Widget for TextInput {
                     }
                     Key::Named(NamedKey::Backspace) => {
                         if self.has_selection() {
-                            self.delete_selection(state, &obj_id);
+                            self.delete_selection(state, obj_id_opt.as_ref());
                         } else if self.cursor_pos > 0 {
                             let start = if ctrl {
                                 prev_word_boundary(&self.text, self.cursor_pos)
@@ -546,13 +881,16 @@ impl Widget for TextInput {
                             self.text.replace_range(start..end, "");
                             self.cursor_pos = start;
                             self.last_edit_time = Some(Instant::now());
-                            let _ = state.splice_text(&obj_id, char_start, char_count as isize, "");
+                            if let Some(obj_id) = obj_id_opt.as_ref() {
+                                let _ = state.splice_text(obj_id, char_start, char_count as isize, "");
+                            }
+                            self.dirty = true;
                         }
                         *handled = true;
                     }
                     Key::Named(NamedKey::Delete) => {
                         if self.has_selection() {
-                            self.delete_selection(state, &obj_id);
+                            self.delete_selection(state, obj_id_opt.as_ref());
                         } else if self.cursor_pos < self.text.len() {
                             let start = self.cursor_pos;
                             let end = if ctrl {
@@ -564,12 +902,15 @@ impl Widget for TextInput {
                             let char_count = self.text[start..end].chars().count();
                             self.text.replace_range(start..end, "");
                             self.last_edit_time = Some(Instant::now());
-                            let _ = state.splice_text(&obj_id, char_start, char_count as isize, "");
+                            if let Some(obj_id) = obj_id_opt.as_ref() {
+                                let _ = state.splice_text(obj_id, char_start, char_count as isize, "");
+                            }
+                            self.dirty = true;
                         }
                         *handled = true;
                     }
                     Key::Named(NamedKey::Space) => {
-                        self.insert_str(" ", state, &obj_id);
+                        self.insert_str(" ", state, obj_id_opt.as_ref());
                         *handled = true;
                     }
                     Key::Character(c) if ctrl => {
@@ -591,7 +932,7 @@ impl Widget for TextInput {
                             "x" => {
                                 if let Some(s) = self.selected_str() {
                                     clipboard_copy(&s.to_string());
-                                    self.delete_selection(state, &obj_id);
+                                    self.delete_selection(state, obj_id_opt.as_ref());
                                 }
                                 *handled = true;
                             }
@@ -603,7 +944,7 @@ impl Widget for TextInput {
                                         .filter(|c| !c.is_control())
                                         .collect();
                                     if !cleaned.is_empty() {
-                                        self.insert_str(&cleaned, state, &obj_id);
+                                        self.insert_str(&cleaned, state, obj_id_opt.as_ref());
                                     }
                                 }
                                 *handled = true;
@@ -614,11 +955,21 @@ impl Widget for TextInput {
                     _ => {
                         if let Some(t) = text {
                             if !t.as_str().chars().all(|c| c.is_control()) {
-                                self.insert_str(t.as_str(), state, &obj_id);
+                                self.insert_str(t.as_str(), state, obj_id_opt.as_ref());
                                 *handled = true;
                             }
                         }
                     }
+                }
+            }
+            WindowEvent::Ime(winit::event::Ime::Commit(t)) => {
+                if !self.is_focused {
+                    return;
+                }
+                let obj_id_opt: Option<ObjId> = self.resolve_text_obj(state, root);
+                if !t.chars().all(|c| c.is_control()) {
+                    self.insert_str(t.as_str(), state, obj_id_opt.as_ref());
+                    *handled = true;
                 }
             }
             _ => {}
@@ -694,28 +1045,31 @@ impl Widget for TextInput {
         self.draw(scene, transform, text_renderer, theme, presence);
 
         if let Some(key) = self.presence_key() {
-            let origin = self.rect.origin();
-            let advance = 8.0_f32;
-
+            // Peer caret + selection use the SAME geometry as this input's
+            // own caret (`caret_rect`/`selection_rect`), so a remote caret
+            // is pixel-identical to the local one — never a re-derived
+            // approximation. `transform` maps the local rect to the scene.
             if let Some(list) = presence.carets.get(&key) {
                 for (user, caret) in list.iter() {
-                    let x = origin.x as f32 + 4.0 + (*caret as f32) * advance;
-                    let y = origin.y as f32 + 4.0;
-                    presence.draw_peer_caret(scene, theme, user, (x, y));
+                    presence.draw_peer_caret(
+                        scene,
+                        theme,
+                        transform,
+                        user,
+                        self.caret_rect(theme, *caret),
+                    );
                 }
             }
 
             if let Some(list) = presence.selections.get(&key) {
                 for (user, range) in list.iter() {
-                    let x_start = origin.x + 4.0 + (range.start as f64) * advance as f64;
-                    let x_end = origin.x + 4.0 + (range.end as f64) * advance as f64;
-                    let rect = Rect::new(
-                        x_start,
-                        origin.y + 2.0,
-                        x_end,
-                        origin.y + 22.0,
+                    presence.draw_peer_selection(
+                        scene,
+                        theme,
+                        transform,
+                        user,
+                        self.selection_rect(theme, range.start, range.end),
                     );
-                    presence.draw_peer_selection(scene, theme, user, range, &[rect]);
                 }
             }
         }
@@ -760,6 +1114,59 @@ mod tests {
     fn text_input_test_id_default_is_text_input() {
         let ti = TextInput::new(Vec::new());
         assert_eq!(Widget::test_id(&ti), Some("text_input"));
+    }
+
+    /// The peer caret and the local caret are the SAME geometry: a real
+    /// caret rect (full line height, CARET_WIDTH wide, advancing with the
+    /// text via per-char metrics) — NOT a fixed 2px×16px bar at the block
+    /// origin. This is the contract that makes a remote caret look
+    /// identical to the local one, only recoloured.
+    #[test]
+    fn caret_rect_is_real_caret_geometry() {
+        let mut ti = TextInput::local().with_initial_value("hello world");
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 24.0));
+        let theme = Theme::dark();
+        let presence = crate::presence::PresenceCtx::empty();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        // A draw populates char_x_positions that caret_rect reads.
+        Widget::draw(&mut ti, &mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+
+        let r0 = ti.caret_rect(&theme, 0);
+        let r5 = ti.caret_rect(&theme, 5);
+        let (_text_y, line_height) = ti.text_band();
+
+        assert!((r0.width() - 2.0).abs() < 0.01, "caret is CARET_WIDTH wide");
+        assert!(
+            (r0.height() - line_height).abs() < 0.01,
+            "caret spans the full line band, not a fixed 16px"
+        );
+        assert!(line_height > 16.0, "body line height is >16 (so the old fixed 16px was wrong)");
+        assert!(r5.x0 > r0.x0, "caret advances with byte position via real glyph metrics");
+    }
+
+    /// An unfocused input must render from the start (scroll_x == 0) even
+    /// when its caret is parked at the end of a line wider than the rect —
+    /// otherwise caret-following scroll hides the first characters (the
+    /// "paragraph doesn't start at the first letter" bug).
+    #[test]
+    fn unfocused_input_renders_from_start_not_caret() {
+        let long = "a very long line that easily exceeds a narrow input width so caret-following scroll would otherwise hide the beginning";
+        let mut ti = TextInput::local().with_initial_value(long);
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 120.0, 24.0)); // narrow
+        ti.set_cursor_pos(long.len()); // caret at the very end
+        // Not focused (the default).
+        let theme = Theme::dark();
+        let presence = crate::presence::PresenceCtx::empty();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        Widget::draw(&mut ti, &mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        assert_eq!(ti.scroll_x(), 0.0, "unfocused input must not scroll the start off-screen");
+
+        // Focused: caret-following scroll IS expected for a long line.
+        ti.set_focus(true);
+        Widget::draw(&mut ti, &mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        assert!(ti.scroll_x() > 0.0, "focused input follows the caret on a long line");
     }
 
     #[test]
@@ -827,7 +1234,7 @@ mod tests {
             .put_object(&automerge::ROOT, "text_1", ObjType::Text)
             .unwrap();
         let _ = doc.splice_text(&obj_id, 0, 0, "hello world");
-        ti.delete_selection(&mut doc, &obj_id);
+        ti.delete_selection(&mut doc, Some(&obj_id));
         assert_eq!(ti.text, "hello ");
         assert_eq!(ti.cursor_pos, 6);
         assert!(!ti.has_selection());
@@ -847,7 +1254,7 @@ mod tests {
             .put_object(&automerge::ROOT, "text_1", ObjType::Text)
             .unwrap();
         let _ = doc.splice_text(&obj_id, 0, 0, "hello world");
-        ti.insert_str("there", &mut doc, &obj_id);
+        ti.insert_str("there", &mut doc, Some(&obj_id));
         assert_eq!(ti.text, "hello there");
         assert_eq!(ti.cursor_pos, "hello there".len());
         assert!(!ti.has_selection());
@@ -887,17 +1294,21 @@ mod tests {
     }
 
     /// The fix for visual-gap "text below center" pins the text top
-    /// against `line_height` (= `FONT_SIZE * 1.25`), *not* against
-    /// `FONT_SIZE` itself. Without this, the cosmic-text baseline
-    /// shifts the glyphs ~3 px below the caret in a 40 px input.
+    /// against `line_height` (= `FONT_SIZE * LINE_HEIGHT_RATIO`),
+    /// *not* against `FONT_SIZE` itself. Without this, the cosmic-
+    /// text baseline shifts the glyphs ~3 px below the caret in a
+    /// 40 px input.
     #[test]
     fn text_baseline_centred_with_caret() {
         let rect_h = 40.0_f32;
-        let text_y_correct = (rect_h - LINE_HEIGHT) / 2.0;
+        let line_height = FONT_SIZE * LINE_HEIGHT_RATIO;
+        let text_y_correct = (rect_h - line_height) / 2.0;
         let text_y_naive = (rect_h - FONT_SIZE) / 2.0;
         // The naive computation lands ~2 px below the correct one for
         // 16 px text → that's the "below center" the user reported.
         assert!(text_y_naive > text_y_correct);
-        assert!((text_y_naive - text_y_correct - (LINE_HEIGHT - FONT_SIZE) / 2.0).abs() < 0.01);
+        assert!(
+            (text_y_naive - text_y_correct - (line_height - FONT_SIZE) / 2.0).abs() < 0.01
+        );
     }
 }

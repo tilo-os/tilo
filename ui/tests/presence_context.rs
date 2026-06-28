@@ -31,6 +31,48 @@ fn selection_range_construction() {
 }
 
 #[test]
+fn caret_is_single_location_per_peer() {
+    // A peer's caret moving from block A to block B must NOT leave a
+    // stale caret (and the caret-driven focus outline) behind on A.
+    let mut ctx = PresenceCtx::empty();
+    let a = PresenceKey::Widget { path: vec![PathSegment::Index(0)] };
+    let b = PresenceKey::Widget { path: vec![PathSegment::Index(1)] };
+    let alice = UserId("alice".into());
+
+    ctx.set_caret(&a, alice.clone(), 2);
+    assert_eq!(ctx.caret_for(&a, &alice), Some(2));
+
+    ctx.set_caret(&b, alice.clone(), 5);
+    assert_eq!(ctx.caret_for(&b, &alice), Some(5));
+    assert_eq!(
+        ctx.caret_for(&a, &alice),
+        None,
+        "the caret must clear from the previous block when it moves"
+    );
+    // A second peer is unaffected.
+    let bob = UserId("bob".into());
+    ctx.set_caret(&a, bob.clone(), 1);
+    ctx.set_caret(&b, alice.clone(), 6);
+    assert_eq!(ctx.caret_for(&a, &bob), Some(1), "other peers keep their caret");
+}
+
+#[test]
+fn selection_is_single_location_per_peer() {
+    let mut ctx = PresenceCtx::empty();
+    let a = PresenceKey::Widget { path: vec![PathSegment::Index(0)] };
+    let b = PresenceKey::Widget { path: vec![PathSegment::Index(1)] };
+    let alice = UserId("alice".into());
+
+    ctx.set_selection(&a, alice.clone(), SelectionRange { start: 0, end: 3 });
+    assert!(ctx.selection_for(&a, &alice).is_some());
+    ctx.set_selection(&b, alice.clone(), SelectionRange { start: 1, end: 2 });
+    assert!(
+        ctx.selection_for(&a, &alice).is_none(),
+        "selection must clear from the previous block when it moves"
+    );
+}
+
+#[test]
 fn peers_on_returns_users_registered_against_key() {
     let mut ctx = PresenceCtx::empty();
     let key = PresenceKey::Tab { id: "tab-1".into() };
@@ -78,7 +120,13 @@ fn draw_peer_caret_emits_scene_content() {
     // A fresh scene is structurally empty; after drawing a caret it must have content.
     assert!(scene.encoding().is_empty(),
         "precondition: scene must start empty");
-    ctx.draw_peer_caret(&mut scene, &theme, &UserId("alice".into()), (100.0, 50.0));
+    ctx.draw_peer_caret(
+        &mut scene,
+        &theme,
+        vello::kurbo::Affine::IDENTITY,
+        &UserId("alice".into()),
+        vello::kurbo::Rect::new(100.0, 50.0, 102.0, 70.0),
+    );
     assert!(!scene.encoding().is_empty(),
         "draw_peer_caret must add geometry to the scene");
 }
@@ -91,9 +139,9 @@ fn draw_peer_selection_emits_scene_content() {
     ctx.draw_peer_selection(
         &mut scene,
         &theme,
+        vello::kurbo::Affine::IDENTITY,
         &UserId("alice".into()),
-        &SelectionRange { start: 0, end: 5 },
-        /* line_rects = */ &[vello::kurbo::Rect::new(10.0, 20.0, 60.0, 40.0)],
+        vello::kurbo::Rect::new(10.0, 20.0, 60.0, 40.0),
     );
     assert!(!scene.encoding().is_empty());
 }
