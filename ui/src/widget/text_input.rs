@@ -15,8 +15,6 @@
 //! the glyphs don't drift below the caret (visual-gap regression
 //! pinned by `text_baseline_centred_with_caret`).
 
-use std::sync::OnceLock;
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId, Value, ReadDoc, transaction::Transactable, ObjType};
@@ -29,6 +27,10 @@ use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use crate::color_compat::ColorCompat;
 use crate::widget::Widget;
 use crate::text_render::TextRenderer;
+use crate::text_selection::{
+    clipboard_copy, clipboard_paste, next_char_boundary, next_word_boundary,
+    prev_char_boundary, prev_word_boundary, word_boundaries,
+};
 use crate::theme::Theme;
 use crate::presence::{PathSegment, PresenceKey};
 
@@ -52,113 +54,6 @@ const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(400);
 /// Pixels of cursor wiggle still allowed between rapid clicks before
 /// they're treated as separate click chains.
 const MULTI_CLICK_RADIUS: f64 = 4.0;
-
-/// Lazy global clipboard handle. `arboard::Clipboard::new()` can be
-/// slow on Wayland the first time (sets up the data-control device),
-/// so we cache one handle process-wide and lock it per access. Kept
-/// behind a `Mutex` because arboard's handle isn't `Sync`.
-fn clipboard() -> Option<&'static Mutex<arboard::Clipboard>> {
-    static CB: OnceLock<Option<Mutex<arboard::Clipboard>>> = OnceLock::new();
-    CB.get_or_init(|| arboard::Clipboard::new().ok().map(Mutex::new)).as_ref()
-}
-
-fn clipboard_copy(text: &str) {
-    if let Some(cb) = clipboard() {
-        if let Ok(mut handle) = cb.lock() {
-            let _ = handle.set_text(text.to_string());
-        }
-    }
-}
-
-fn clipboard_paste() -> Option<String> {
-    let cb = clipboard()?;
-    let mut handle = cb.lock().ok()?;
-    handle.get_text().ok()
-}
-
-/// A character counts as a "word" character if it's a letter, digit,
-/// or underscore — same convention as POSIX `\w` and Vim's `iskeyword`.
-/// Whitespace and punctuation are word boundaries; double-click word
-/// selection and Ctrl+Left/Right use this predicate.
-fn is_word_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
-}
-
-/// Walk back to the previous "word boundary" (start of the word the
-/// cursor sits in, or start of the previous word if already at a
-/// boundary). Returns a byte index that is always on a char boundary.
-fn prev_word_boundary(text: &str, byte_idx: usize) -> usize {
-    if byte_idx == 0 { return 0; }
-    let mut i = byte_idx.min(text.len());
-    while i > 0 && !text.is_char_boundary(i) { i -= 1; }
-    // Skip non-word chars walking left (whitespace + punctuation eaten
-    // before reaching the previous word's body).
-    while i > 0 {
-        let c = text[..i].chars().rev().next().unwrap();
-        if is_word_char(c) { break; }
-        i -= c.len_utf8();
-    }
-    // Skip the word body itself.
-    while i > 0 {
-        let c = text[..i].chars().rev().next().unwrap();
-        if !is_word_char(c) { break; }
-        i -= c.len_utf8();
-    }
-    i
-}
-
-/// Mirror of [`prev_word_boundary`] for the forward direction.
-fn next_word_boundary(text: &str, byte_idx: usize) -> usize {
-    let mut i = byte_idx.min(text.len());
-    while i < text.len() && !text.is_char_boundary(i) { i += 1; }
-    while i < text.len() {
-        let c = text[i..].chars().next().unwrap();
-        if !is_word_char(c) { break; }
-        i += c.len_utf8();
-    }
-    while i < text.len() {
-        let c = text[i..].chars().next().unwrap();
-        if is_word_char(c) { break; }
-        i += c.len_utf8();
-    }
-    i
-}
-
-/// Range of the word containing `byte_idx` (or the next word if
-/// `byte_idx` sits on a boundary). Returns `(start, end)` as byte
-/// indices; used by double-click word selection.
-fn word_range_containing(text: &str, byte_idx: usize) -> (usize, usize) {
-    let mut start = byte_idx.min(text.len());
-    while start > 0 && !text.is_char_boundary(start) { start -= 1; }
-    // Find left edge of current word.
-    while start > 0 {
-        let c = text[..start].chars().rev().next().unwrap();
-        if !is_word_char(c) { break; }
-        start -= c.len_utf8();
-    }
-    // Find right edge.
-    let mut end = start;
-    while end < text.len() {
-        let c = text[end..].chars().next().unwrap();
-        if !is_word_char(c) { break; }
-        end += c.len_utf8();
-    }
-    (start, end)
-}
-
-fn prev_char_boundary(text: &str, byte_idx: usize) -> usize {
-    if byte_idx == 0 { return 0; }
-    let mut i = byte_idx.min(text.len()) - 1;
-    while i > 0 && !text.is_char_boundary(i) { i -= 1; }
-    i
-}
-
-fn next_char_boundary(text: &str, byte_idx: usize) -> usize {
-    if byte_idx >= text.len() { return text.len(); }
-    let mut i = byte_idx + 1;
-    while i < text.len() && !text.is_char_boundary(i) { i += 1; }
-    i
-}
 
 pub struct TextInput {
     _id: String,
@@ -222,6 +117,11 @@ pub struct TextInput {
     /// user's color. `None` disables authorship stamping (examples,
     /// tests, the pre-collab single-user case).
     local_author: Option<String>,
+    /// When true the widget renders / measures a row of bullet glyphs in
+    /// place of the real text (password masking). The CRDT-backed
+    /// `self.text` stays the *true* value so callers that read the
+    /// document (e.g. the greeter's auth path) get the real secret.
+    secret: bool,
 }
 
 /// Automerge mark name used to attribute each character's author.
@@ -256,6 +156,7 @@ impl TextInput {
             plain: false,
             bound_text: None,
             local_author: None,
+            secret: false,
         }
     }
 
@@ -463,6 +364,37 @@ impl TextInput {
         self.on_change_path = path.to_string();
         self.crdt_bound = !path.is_empty();
         self
+    }
+
+    /// Enable password masking: glyphs render as `•` bullets while the
+    /// stored CRDT value remains the real text. No-op visual change for
+    /// the default (`false`) so existing callers are unaffected.
+    pub fn with_secret(mut self, on: bool) -> Self {
+        self.secret = on;
+        self
+    }
+
+    /// The string actually painted / measured. For secret inputs this is
+    /// one bullet per *character* of the real text; otherwise it's the
+    /// real text itself.
+    fn display_text(&self) -> String {
+        if self.secret {
+            "•".repeat(self.text.chars().count())
+        } else {
+            self.text.clone()
+        }
+    }
+
+    /// Display string for the prefix `self.text[..byte_idx]` — used to
+    /// keep `char_x_positions` (which is keyed by real-text byte offsets)
+    /// aligned with the masked glyph run, so caret placement and click
+    /// resolution stay correct under masking.
+    fn display_prefix(&self, byte_idx: usize) -> String {
+        if self.secret {
+            "•".repeat(self.text[..byte_idx].chars().count())
+        } else {
+            self.text[..byte_idx].to_string()
+        }
     }
 
     /// Sorted `(start, end)` byte indices of the live selection, or
@@ -683,14 +615,20 @@ impl Widget for TextInput {
             theme.padding_standard as f64
         };
 
+        // The painted/measured string — bullets when masked, real text
+        // otherwise. `char_x_positions` stays keyed by *real-text* byte
+        // offsets (so the caret/click logic below is unchanged) but the
+        // measured widths come from the masked glyph run.
+        let display = self.display_text();
+
         // Pre-calculate positions for exact caret placement and click resolution.
         self.char_x_positions.clear();
         self.char_x_positions.resize(self.text.len() + 1, 0.0);
         for (byte_idx, _) in self.text.char_indices() {
-            let (w, _) = text_renderer.measure(&self.text[..byte_idx], text_size, None);
+            let (w, _) = text_renderer.measure(&self.display_prefix(byte_idx), text_size, None);
             self.char_x_positions[byte_idx] = w as f64;
         }
-        let (total_w, _) = text_renderer.measure(&self.text, text_size, None);
+        let (total_w, _) = text_renderer.measure(&display, text_size, None);
         self.char_x_positions[self.text.len()] = total_w as f64;
 
         // Caret + scroll math.
@@ -741,7 +679,7 @@ impl Widget for TextInput {
 
         text_renderer.draw_text(
             scene,
-            &self.text,
+            &display,
             text_size,
             theme.text_primary,
             transform * Affine::translate((self.rect.x0 + padding_x - self.scroll_x, text_y)),
@@ -819,7 +757,7 @@ impl Widget for TextInput {
                                 }
                             }
                             2 => {
-                                let (start, end) = word_range_containing(&self.text, pos);
+                                let (start, end) = word_boundaries(&self.text, pos);
                                 self.selection_anchor = Some(start);
                                 self.cursor_pos = end;
                             }
@@ -1200,19 +1138,18 @@ mod tests {
         assert_eq!(next_word_boundary(s, s.len()), s.len());
     }
 
-    /// `word_range_containing` should snap to the word the cursor is
-    /// sitting *inside* — and at a space immediately after a word, to
-    /// the word on the left (matches every native editor's double-
-    /// click-on-trailing-space behaviour). Used by double-click word
-    /// selection.
+    /// `word_boundaries` should snap to the word the cursor is sitting
+    /// *inside* — and at a space immediately after a word, to the word
+    /// on the left (matches every native editor's double-click-on-
+    /// trailing-space behaviour). Used by double-click word selection.
     #[test]
-    fn word_range_containing_snaps_to_word_bounds() {
+    fn word_boundaries_snaps_to_word_bounds() {
         let s = "hello world";
-        assert_eq!(word_range_containing(s, 2), (0, 5));   // mid-word
-        assert_eq!(word_range_containing(s, 0), (0, 5));   // word start
-        assert_eq!(word_range_containing(s, 5), (0, 5));   // space → snap left
-        assert_eq!(word_range_containing(s, 6), (6, 11));  // start of next word
-        assert_eq!(word_range_containing(s, 11), (6, 11)); // end → snap left
+        assert_eq!(word_boundaries(s, 2), (0, 5));   // mid-word
+        assert_eq!(word_boundaries(s, 0), (0, 5));   // word start
+        assert_eq!(word_boundaries(s, 5), (0, 5));   // space → snap left
+        assert_eq!(word_boundaries(s, 6), (6, 11));  // start of next word
+        assert_eq!(word_boundaries(s, 11), (6, 11)); // end → snap left
     }
 
     /// Mock the bare minimum to drive a selection delete through
@@ -1255,6 +1192,39 @@ mod tests {
         assert_eq!(ti.text, "hello there");
         assert_eq!(ti.cursor_pos, "hello there".len());
         assert!(!ti.has_selection());
+    }
+
+    /// Password masking: a `secret` input must render bullets (one per
+    /// character) while the CRDT-backed `text` keeps the *real* value —
+    /// auth code reads `self.text`, the screen shows `•`. Drives a real
+    /// Automerge `Text` object through `sync` to prove the stored secret
+    /// is intact end-to-end.
+    #[test]
+    fn secret_input_masks_glyphs_but_keeps_value() {
+        let mut ti = TextInput::new(Vec::new())
+            .with_on_change_path("password")
+            .with_secret(true);
+
+        let mut doc = AutoCommit::new();
+        let obj_id = doc
+            .put_object(&automerge::ROOT, "password", ObjType::Text)
+            .unwrap();
+        let _ = doc.splice_text(&obj_id, 0, 0, "hunter2");
+
+        // sync pulls the real value out of the CRDT.
+        ti.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(ti.text, "hunter2", "stored value must be the real secret");
+
+        // What gets painted/measured is a bullet per character.
+        assert_eq!(ti.display_text(), "•••••••");
+        // The masked prefix tracks character count, not bytes.
+        assert_eq!(ti.display_prefix(3), "•••");
+
+        // A non-secret input is unaffected (no behaviour change).
+        let mut plain = TextInput::new(Vec::new());
+        plain.text = "hunter2".to_string();
+        assert_eq!(plain.display_text(), "hunter2");
+        assert_eq!(plain.display_prefix(3), "hun");
     }
 
     /// The fix for visual-gap "text below center" pins the text top

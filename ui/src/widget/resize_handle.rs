@@ -287,13 +287,16 @@ impl Widget for ResizeHandle {
             return;
         }
         let colour = if active {
+            // Hover/drag: brighten to accent indigo so the user can
+            // see they've grabbed the rule.
             theme.tokens.colors.accent[5]
         } else {
-            // Dim idle treatment — the rule is visible but not
-            // distracting. Same alpha factor the row's "drop here"
-            // capsule uses so the two affordances read at similar
-            // weights.
-            theme.tokens.colors.accent[5].with_alpha_factor(0.45)
+            // Idle treatment: neutral slate at ~0.35 alpha, matching
+            // the per-group right-edge grip's idle treatment. Earlier
+            // this was `accent[5] @ 0.45 alpha` which read like every
+            // group had an "active outline" — user feedback was that
+            // multiple groups looked simultaneously active.
+            theme.tokens.colors.text_dim.with_alpha_factor(0.35)
         };
         let capsule = RoundedRect::from_rect(
             Rect::new(mid_x - thickness / 2.0, y0, mid_x + thickness / 2.0, y1),
