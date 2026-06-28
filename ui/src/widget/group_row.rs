@@ -16,10 +16,9 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use taffy::{Dimension, Display, FlexDirection, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 
-use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -158,6 +157,25 @@ pub struct GroupRow {
     /// row or hasn't fired yet. The take-pattern accessor leaves the slot
     /// empty so a subsequent harvester call doesn't double-deliver.
     pending_cross_strip_detach: Option<CrossStripDetach>,
+    /// `true` whenever `scroll_x` has changed since the last `draw`.
+    /// The parent Column / Stack caches its subtree scene and only
+    /// rebuilds when a child reports `needs_redraw() == true`. Without
+    /// this flag, a wheel-pan updates `scroll_x` but the cached scene
+    /// keeps painting the old child positions — the user sees no
+    /// movement (exactly the "I scroll and nothing happens" bug from
+    /// 2026-06-02). Cleared in `draw` once the new scene is recorded.
+    scroll_dirty: bool,
+    /// Horizontal canvas-x of the first group. The strip's
+    /// "canvas" goes [0, leading_inset, leading_inset+g0_w, ...].
+    /// When zero (default) the first group sits flush against
+    /// `rect.x0`; the shell sets this to the wheel-disc width so
+    /// the first group leaves room for the overlay-drawn wheel to
+    /// pan into and out of off-screen-left territory in lock-step
+    /// with the strip itself. `apply_layout` translates every
+    /// child's screen-space origin by `rect.x0 + leading_inset -
+    /// scroll_x`, so the leading_inset moves with `scroll_x` just
+    /// like every other point in canvas space.
+    leading_inset: f64,
 }
 
 impl GroupRow {
@@ -177,7 +195,83 @@ impl GroupRow {
             last_wheel_at: None,
             snap_anim: None,
             pending_cross_strip_detach: None,
+            scroll_dirty: false,
+            leading_inset: 0.0,
         }
+    }
+
+    /// Reserve a canvas-x gutter to the left of the first group. The
+    /// strip's content origin shifts right by `px` before any group
+    /// paints, so the leading gutter pans with `scroll_x` the same
+    /// way every group does. The shell sets this to the wheel-disc
+    /// width so the wheel (drawn in the overlay layer above the
+    /// strip) and the first group move as one when the user pans the
+    /// strip horizontally — replacing the old "wheel is fixed,
+    /// content pans underneath" hack with a single canvas that the
+    /// wheel happens to render the leftmost-96 px of.
+    pub fn with_leading_inset(mut self, px: f64) -> Self {
+        self.leading_inset = px;
+        self
+    }
+
+    /// Width of the leading gutter on the strip's canvas. Read by the
+    /// shell so the overlay-layer wheel disc can be positioned at the
+    /// same canvas-x the strip's `apply_layout` reserved.
+    pub fn leading_inset(&self) -> f64 {
+        self.leading_inset
+    }
+
+    /// Update the leading-inset width at runtime. The wheel disc's
+    /// rendered width is viewport-dependent (`sidebar_width_for_
+    /// viewport`); the shell's `ShellOverlayHost::apply_layout` calls
+    /// this once per frame so the strip's canvas always reserves
+    /// exactly the wheel's current width — no overlap when the wheel
+    /// is wide, no wallpaper gap when it's narrow.
+    pub fn set_leading_inset(&mut self, px: f64) {
+        if (self.leading_inset - px).abs() > f64::EPSILON {
+            self.leading_inset = px;
+            // Treat a leading-inset change like a scroll: the parent
+            // Column's subtree cache must rebuild so the new origin
+            // takes effect on the next paint.
+            self.scroll_dirty = true;
+        }
+    }
+
+    /// Ordered list of group ids currently held by the row. Used by
+    /// the shell's `resync_strips_from_tree` (overlay_host) to diff
+    /// against the persisted [`shell::state::Strip::window_groups`]
+    /// after a `chrome.bump()` so newly-added groups can be spliced
+    /// in (or removed groups dropped) without rebuilding the entire
+    /// row — preserves existing groups' host state (scroll positions,
+    /// per-tile selection, etc.) on every revision bump that doesn't
+    /// actually touch them.
+    pub fn group_ids(&self) -> Vec<u64> {
+        self.groups.iter().map(|g| g.id).collect()
+    }
+
+    /// Splice a [`WindowGroup`] into the row at `idx`. Clamps `idx`
+    /// to `groups.len()` so callers don't have to bounds-check.
+    /// Flags `structure_dirty` so the App's next layout pass
+    /// rebuilds the taffy tree with the new child's node id.
+    pub fn insert_group(&mut self, group: WindowGroup, idx: usize) {
+        let clamped = idx.min(self.groups.len());
+        self.groups.insert(clamped, group);
+        self.structure_dirty = true;
+    }
+
+    /// Remove the group with id `id`. No-op if absent. Returns
+    /// `true` if a group was actually removed (so the caller can
+    /// avoid a redundant `structure_dirty` flag set elsewhere).
+    /// Flags `structure_dirty` on success so the taffy tree
+    /// drops the now-orphaned node id.
+    pub fn remove_group_by_id(&mut self, id: u64) -> bool {
+        let before = self.groups.len();
+        self.groups.retain(|g| g.id != id);
+        let removed = self.groups.len() != before;
+        if removed {
+            self.structure_dirty = true;
+        }
+        removed
     }
 
     /// Current horizontal scroll offset in logical pixels. Exposed so
@@ -254,6 +348,13 @@ impl GroupRow {
     /// into `[0, max_scroll_x()]`. Returns `None` if there are no
     /// groups (nothing to snap to) or if the strip can't actually
     /// scroll (max_scroll_x == 0 — content fits).
+    ///
+    /// Candidates are every group's canvas-x left edge PLUS canvas-x
+    /// = 0 ("wheel visible" home position) when `leading_inset > 0`.
+    /// Without the home target a small flick away from 0 would snap
+    /// FORWARD to the first group (canvas-x = leading_inset) instead
+    /// of relaxing back to the wheel-visible rest state — observably
+    /// the strip "bounces away from home" after a tiny wheel flick.
     fn nearest_group_edge(&self) -> Option<f64> {
         if self.group_left_edges.is_empty() {
             return None;
@@ -264,7 +365,11 @@ impl GroupRow {
         }
         let mut best: Option<f64> = None;
         let mut best_dist = f64::MAX;
-        for &edge in &self.group_left_edges {
+        // Walk the explicit per-group edges, then optionally consider
+        // the home position. Using `chain` here keeps the loop body a
+        // single closure-free expression so the compiler can inline it.
+        let home_targets: &[f64] = if self.leading_inset > 0.0 { &[0.0] } else { &[] };
+        for &edge in self.group_left_edges.iter().chain(home_targets.iter()) {
             let candidate = edge.clamp(0.0, max);
             let d = (candidate - self.scroll_x).abs();
             if d < best_dist {
@@ -290,6 +395,7 @@ impl GroupRow {
     ///   has elapsed since the last wheel event, kick off a fresh snap
     ///   targeting the nearest group's left edge.
     pub fn tick_snap_at(&mut self, now: Instant) {
+        let before = self.scroll_x;
         // No snap in flight — should we start one? Only if the user
         // actually wheeled (`last_wheel_at` is set) AND has been quiet
         // for at least the idle threshold AND the current scroll_x is
@@ -339,15 +445,25 @@ impl GroupRow {
                 self.scroll_x = anim.to;
                 self.snap_anim = None;
                 self.last_wheel_at = None;
-                return;
+            } else {
+                let raw = (elapsed.as_secs_f64() / (SNAP_ANIM_MS as f64 / 1000.0))
+                    .clamp(0.0, 1.0);
+                // Cubic-out ease — same shape the spawn animation in
+                // `window_group.rs` uses for its slide-in. Punchy at the
+                // start, gentle settle at the end.
+                let eased = 1.0 - (1.0 - raw).powi(3);
+                self.scroll_x = anim.from + (anim.to - anim.from) * eased;
             }
-            let raw = (elapsed.as_secs_f64() / (SNAP_ANIM_MS as f64 / 1000.0))
-                .clamp(0.0, 1.0);
-            // Cubic-out ease — same shape the spawn animation in
-            // `window_group.rs` uses for its slide-in. Punchy at the
-            // start, gentle settle at the end.
-            let eased = 1.0 - (1.0 - raw).powi(3);
-            self.scroll_x = anim.from + (anim.to - anim.from) * eased;
+        }
+        // Any tick that actually moved scroll_x must invalidate the
+        // parent Column's subtree cache, otherwise the snap curve
+        // updates the value but `needs_redraw()` returns false (no
+        // `scroll_dirty`, no child-leaf dirty bit) and the parent
+        // re-emits its pre-snap cached scene. Symptom: the strip
+        // staggers / freezes mid-snap and only paints intermittently
+        // when an unrelated dirty source forces a rebuild.
+        if (self.scroll_x - before).abs() > f64::EPSILON {
+            self.scroll_dirty = true;
         }
     }
 
@@ -620,6 +736,26 @@ impl Widget for GroupRow {
             .map(|g| g.build_layout(taffy, theme, node_map))
             .collect();
         self.node_ids = group_nodes.clone();
+        // Concept-parity maximize: the moment any child group is
+        // maximized, the row visually collapses to that single group
+        // at the strip's full width and every sibling vanishes.
+        // Mirrors the concept's `WindowFrame.tsx:188-200` behaviour
+        // where the maximized frame is `position: fixed`,
+        // `width: 100vw`, `height: 100vh`, `z-index: 50` — siblings
+        // stay in the DOM but are visually obscured by the fixed
+        // overlay. We model the same outcome via `display: None` on
+        // sibling taffy nodes so they collapse to zero size and don't
+        // paint. Inter-group `ResizeHandle`s are skipped entirely in
+        // the maximize branch — they belong to gaps between visible
+        // siblings, and the strip has no visible siblings while one
+        // group owns the row.
+        //
+        // Edge case: if multiple groups happen to be flagged maximized
+        // simultaneously (e.g. via a persisted-state restore path), the
+        // first one wins; the rest are hidden alongside the non-
+        // maximized siblings. Same observable outcome as the click-
+        // toggle flow where only one is ever true at a time.
+        let maximized_idx = self.groups.iter().position(|g| g.maximized);
         // Resize the handle pool to match the inter-group gap count
         // (`max(0, N-1)`). Handles are structurally tied to gaps
         // between adjacent groups, so a group insert/remove drives
@@ -644,37 +780,60 @@ impl Widget for GroupRow {
         // leading or trailing children. Their declared 8 px width
         // replaces the row's old inter-group gap, so the gap on the
         // flex container drops to 0 below.
+        //
+        // While any group is maximized, handles are omitted from the
+        // child list entirely: the row has no visible inter-group
+        // gaps because every sibling is collapsed to `display: None`.
+        // Skipping the build keeps the handles from claiming non-zero
+        // width inside the maximized layout and matches the concept's
+        // absent resize affordance in fullscreen mode.
         self.handle_node_ids.clear();
         let mut children: Vec<NodeId> = Vec::with_capacity(group_nodes.len() + desired_handles);
-        for (i, gn) in group_nodes.iter().enumerate() {
-            children.push(*gn);
-            if i + 1 < group_nodes.len() {
-                let hn = self.handles[i].build_layout(taffy, theme, node_map);
-                self.handle_node_ids.push(hn);
-                children.push(hn);
+        if maximized_idx.is_some() {
+            for gn in group_nodes.iter() {
+                children.push(*gn);
+            }
+        } else {
+            for (i, gn) in group_nodes.iter().enumerate() {
+                children.push(*gn);
+                if i + 1 < group_nodes.len() {
+                    let hn = self.handles[i].build_layout(taffy, theme, node_map);
+                    self.handle_node_ids.push(hn);
+                    children.push(hn);
+                }
             }
         }
-        // Children may shrink below their declared `WindowWidth` so the
-        // row never overflows the viewport horizontally — a 600 px
-        // Normal group inside a 480 px content area shrinks to 480 px
-        // instead of painting past the right edge of the window. This
-        // reversed the 2026-04 stance ("pin `flex_shrink: 0` so the row
-        // can overflow + scroll for overflowed groups") because user
-        // feedback on 2026-05-25 was that fixed-size groups "draw way
-        // over the window border" — concept-fidelity isn't worth a
-        // visually broken initial paint.
+        // Pin `flex_shrink: 0.0` on every group child so the strip is
+        // Niri-style: placing a new tile NEVER resizes siblings. The
+        // row's intrinsic `content_width` then grows past the
+        // viewport-aligned `rect.width()`; the user pans horizontally
+        // through the wheel handler below, and the visible region is
+        // clipped to `self.rect` in `draw` so off-screen-right groups
+        // don't bleed past the window edge.
         //
-        // Maximized groups keep their `flex_grow: 1e6` (from
-        // `WindowGroup::build_layout`) so they still absorb leftover
-        // space inside the strip; non-maximized siblings sit at their
-        // preferred width with a soft shrink budget when space tightens.
-        // Each group also caps its width at the row's width via the
-        // group-side `max_size` we set in `WindowGroup::build_layout` so
-        // a single Normal group never overflows even with
-        // `flex_shrink: 1.0` defaults.
-        for &node in &group_nodes {
+        // A short-lived 2026-06-01 attempt (`flex_shrink: 1.0`) tried
+        // to make groups shrink-to-fit instead, motivated by "apps draw
+        // way over the window border" feedback. That fix violated the
+        // infinite-strip invariant — siblings silently shrunk whenever
+        // a new tile spawned, and the user immediately rejected it.
+        // The real fix is the clip layer in `draw`, not shrinking
+        // groups; clipping was missing, so overflow bled into the
+        // window's edge / OS chrome.
+        //
+        // Maximize branch (`maximized_idx == Some(i)`): siblings at
+        // index `!= i` get `display: None` so they collapse to zero
+        // and don't paint. The maximized group keeps its own
+        // `flex_grow: 1e6` (set in `WindowGroup::build_layout`),
+        // which absorbs the strip's entire width inside the Flex row
+        // — the concept's `width: 100vw` outcome.
+        for (i, &node) in group_nodes.iter().enumerate() {
             let mut style = taffy.style(node).unwrap().clone();
-            style.flex_shrink = 1.0;
+            style.flex_shrink = 0.0;
+            if let Some(max_i) = maximized_idx {
+                if i != max_i {
+                    style.display = Display::None;
+                }
+            }
             taffy.set_style(node, style).unwrap();
         }
         // The row must fill the remaining vertical space inside the
@@ -740,26 +899,44 @@ impl Widget for GroupRow {
         // wheel-idle snap animation eases `scroll_x` toward. Re-built
         // every layout pass so insertions / removals / reorderings
         // produce the updated set of legal snap stops automatically.
-        let mut content_w = 0.0_f64;
+        // Snap targets and content_w live in CANVAS-x (with the
+        // leading inset baked in), not in taffy-local-x. The wheel
+        // disc's overlay rendering occupies canvas-x [0, leading_inset];
+        // every group sits at canvas-x = leading_inset + taffy.x. The
+        // strip's `scroll_x` is "how far the canvas has panned past the
+        // viewport's left edge", so a snap target at canvas-x = K means
+        // `scroll_x = K - rect.x0` brings that point flush against the
+        // viewport left.
+        let mut content_w = self.leading_inset;
         let mut edges: Vec<f64> = Vec::with_capacity(self.node_ids.len());
         for &cn in &self.node_ids {
             let cl = taffy.layout(cn).unwrap();
-            edges.push(cl.location.x as f64);
-            let right = cl.location.x as f64 + cl.size.width as f64;
+            edges.push(self.leading_inset + cl.location.x as f64);
+            let right = self.leading_inset + cl.location.x as f64 + cl.size.width as f64;
             if right > content_w {
                 content_w = right;
             }
         }
         self.content_w = content_w;
         self.group_left_edges = edges;
-        // Clamp scroll into bounds. A structural mutation that shrinks
-        // the strip (group close, tab merge that prunes) can leave
-        // `scroll_x` past the new max; clamping here keeps the next
-        // frame's draw inside the visible content without requiring the
-        // mutation site to know about scroll state.
-        let max_scroll = self.max_scroll_x();
-        if self.scroll_x > max_scroll {
-            self.scroll_x = max_scroll;
+        // Clamp scroll into bounds — but use the SAME widened upper
+        // bound the wheel handler uses (max_scroll_x OR three
+        // viewports of empty wallpaper past the rightmost group).
+        // A tight clamp to `max_scroll_x` was the bug that silently
+        // reset the strip's scroll position every frame, defeating
+        // the Niri-style "scroll into empty space" affordance the
+        // user expects on a single-group strip.
+        //
+        // The original clamp's structural-mutation purpose (a closed
+        // group can leave scroll_x past the new max) is preserved
+        // by `max_scroll_x` clamping when the strip has real
+        // content overflow; for the no-overflow case the widened
+        // upper bound matches the wheel handler so we don't
+        // perpetually reset whatever scroll the user dialled in.
+        let viewport = self.rect.width().max(1.0);
+        let upper = self.max_scroll_x().max(viewport * 3.0);
+        if self.scroll_x > upper {
+            self.scroll_x = upper;
         }
         if self.scroll_x < 0.0 {
             self.scroll_x = 0.0;
@@ -769,13 +946,20 @@ impl Widget for GroupRow {
         // threshold. Done AFTER the clamp so a structural mutation
         // that snapped scroll_x to max doesn't get re-eased.
         self.tick_snap_at(Instant::now());
-        // Children's origin is shifted left by `scroll_x` so a positive
-        // scroll reveals groups originally laid out off the right edge.
-        // Each child's stored `Rect` is in screen space (post-shift),
-        // so hit-testing against `last_cursor` (also screen space)
-        // remains consistent for `gap_index_for` and the per-tab
-        // sibling-bar matching in the post-dispatch detach sweep.
-        let child_origin = Point::new(self.rect.x0 - self.scroll_x, self.rect.y0);
+        // Children's origin: the strip's canvas starts at canvas-x=0
+        // (wheel disc occupies canvas-x [0, leading_inset]) and the
+        // viewport shows canvas-x [scroll_x, scroll_x + viewport_w].
+        // Translating taffy-local x by `rect.x0 + leading_inset -
+        // scroll_x` gives the correct screen-space position for every
+        // group: at scroll_x=0 the first group sits at
+        // `rect.x0 + leading_inset` (flush against the wheel's right
+        // edge); as scroll_x grows the whole canvas pans left in
+        // lock-step with the wheel-disc's own `-scroll_x` shift in
+        // `ShellOverlayHost::apply_layout`.
+        let child_origin = Point::new(
+            self.rect.x0 + self.leading_inset - self.scroll_x,
+            self.rect.y0,
+        );
         for (g, child_id) in self.groups.iter_mut().zip(self.node_ids.iter()) {
             g.apply_layout(taffy, *child_id, child_origin);
         }
@@ -805,8 +989,53 @@ impl Widget for GroupRow {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        for g in &mut self.groups {
-            g.draw(scene, transform, tr, theme, presence);
+        // Clear the wheel-pan dirty flag now that we're about to
+        // re-record the strip with the new `scroll_x`. The parent
+        // Column's subtree cache picks up the new scene this call
+        // emits.
+        self.scroll_dirty = false;
+        // Clip every painted child to the row's own rect. The strip is
+        // Niri-style infinite: groups stay at their declared width
+        // regardless of how many siblings exist, so the row's
+        // `content_width` routinely exceeds the viewport-aligned
+        // `rect.width()` and post-`scroll_x` off-screen-right groups
+        // would otherwise bleed past the window's right edge. The clip
+        // layer truncates them at the row boundary; horizontal scroll
+        // brings them into view. Padding the clip vertically by 16 px
+        // each side keeps the shadow / glow sprites (ambient_pad=50,
+        // bloom_pad=120 — see `TileHost::draw_steady_state`) intact at
+        // the row's top and bottom edges while still cutting horizontal
+        // overflow at the strip boundary.
+        let clip = Rect::new(
+            self.rect.x0,
+            self.rect.y0 - 16.0,
+            self.rect.x1,
+            self.rect.y1 + 16.0,
+        );
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &clip,
+        );
+        // Concept-parity maximize: when any group is maximized, paint
+        // ONLY that group. The siblings are already collapsed to
+        // `display: None` by `build_layout`, so their stored rects are
+        // degenerate (zero-area), but calling `draw` on them would
+        // still emit chrome (bar pill outlines, shadow sprites) at the
+        // origin — visible as ghost artwork bleeding behind the
+        // maximized tile. Skipping the per-sibling draw keeps the row
+        // looking like the concept's `width: 100vw` fixed overlay.
+        let maximized_idx = self.groups.iter().position(|g| g.maximized);
+        if let Some(max_i) = maximized_idx {
+            if let Some(g) = self.groups.get_mut(max_i) {
+                g.draw(scene, transform, tr, theme, presence);
+            }
+        } else {
+            for g in &mut self.groups {
+                g.draw(scene, transform, tr, theme, presence);
+            }
         }
         // Paint the inter-group resize handles after the groups so
         // the accent rule sits on top of any group-edge artwork.
@@ -814,76 +1043,29 @@ impl Widget for GroupRow {
         // flight: the cross-group drop-zone capsule (drawn below)
         // takes priority during a drag so the user isn't confused
         // by two overlapping affordances on the same gap.
+        //
+        // Handles are also skipped entirely while any group is
+        // maximized — `build_layout` doesn't include the handle nodes
+        // in the maximize branch, so their stored neighbour rects are
+        // stale; painting them anyway would draw ghost rules at the
+        // pre-maximize gap positions.
         let any_drag = self.groups.iter().any(|g| g.drag_in_flight());
-        if !any_drag {
+        if !any_drag && maximized_idx.is_none() {
             for h in &mut self.handles {
                 h.draw(scene, transform, tr, theme, presence);
             }
         }
 
-        // Inter-group drop-zone indicator: while any child has a drag in
-        // flight and the cursor is hovering an inter-group gap, paint a
-        // section-shaped placeholder where the dropped tab will land —
-        // not a 4 px line. Concept ref: `DesktopView.tsx:414` renders a
-        // full-height rectangle with dashed accent border + translucent
-        // accent fill that reads as a "ghost window group" the drop
-        // will materialise into.
-        //
-        // Pre-2026-06-01 this was a 4 px capsule at the gap, which the
-        // user described as a "single strip" — not how a drop preview
-        // should read. Now it's a ~`WIDTH_MIN_PX`-wide rounded section
-        // matching the cards' visual language, so the user can see at a
-        // glance the shape of the future group.
-        let any_drag = self.groups.iter().any(|g| g.drag_in_flight());
-        if any_drag
-            && !self.groups.is_empty()
-            && let Some(idx) = self.hover_gap_idx
-        {
-            // Match the actual card's outer chrome so the placeholder
-            // reads as the same kind of object. `radii.xl` is what
-            // `TileHost::draw_steady_state` uses for the white card.
-            let radius = theme.tokens.radii.xl as f64;
-            let stroke = theme.tokens.colors.accent[5];
-            let fill = theme.tokens.colors.accent[5].with_alpha_factor(0.10);
-            // Preview width: match a Normal group (600 px). On narrow
-            // strips it'd overflow; cap to half the row's width so the
-            // placeholder is always visibly *inside* the strip.
-            let preview_w = (self.rect.width() / 2.0).min(600.0).max(280.0);
-            let mid_x = if idx == 0 {
-                self.groups[0].get_rect().x0 - 4.0
-            } else if idx >= self.groups.len() {
-                self.groups.last().unwrap().get_rect().x1 + 4.0
-            } else {
-                (self.groups[idx - 1].get_rect().x1
-                    + self.groups[idx].get_rect().x0)
-                    / 2.0
-            };
-            // Match the steady-state card's vertical inset — the bar
-            // sits at the top, the content card below. The preview
-            // covers the *whole* group footprint (bar + body) so the
-            // user sees the entire future shape, not just the body.
-            let zone = Rect::new(
-                mid_x - preview_w / 2.0,
-                self.rect.y0,
-                mid_x + preview_w / 2.0,
-                self.rect.y1,
-            );
-            let zone_rect = RoundedRect::from_rect(zone, radius);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                fill,
-                None,
-                &zone_rect,
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(2.0),
-                transform,
-                stroke,
-                None,
-                &zone_rect,
-            );
-        }
+        // No inter-group drop-zone visual: the white line drawn by the
+        // active tab bar already shows the per-pill drop target, and any
+        // release in a sibling group's tile-area edge band (resolved by
+        // the new edge-drop logic in `handle_event`) creates a new group
+        // without needing a strip-level cue. The previous extreme-gap
+        // accent capsule (gap_idx == 0 / groups.len()) was removed
+        // 2026-06-24 per user feedback ("weird purple-ish rectangles as
+        // drop off zones — these will eventually need to be removed").
+        // Close the strip clip layer we pushed at the top of `draw`.
+        scene.pop_layer();
     }
 
     fn handle_event(
@@ -913,6 +1095,26 @@ impl Widget for GroupRow {
             } else {
                 None
             };
+            // Cross-group minimalist drop indicator: while any child's
+            // bar has a drag in flight, push the current cursor into
+            // every sibling bar so the new `hover_drop_idx`-driven
+            // white line paints at the correct inter-pill gap in
+            // whichever bar the cursor is currently over. The source
+            // bar drives its own `hover_drop_idx` from inside the bar's
+            // own `CursorMoved` arm (see `TabBar::handle_event`); for
+            // siblings we have to plumb the cursor through here because
+            // the bars don't see each other's drag state. The setter
+            // is a no-op while a bar has its own drag in flight, so a
+            // fan-out that visits the source bar last (after the bar
+            // itself wrote its target) can't wipe it.
+            let cursor_for_external = if any_drag {
+                Some(self.last_cursor)
+            } else {
+                None
+            };
+            for g in &mut self.groups {
+                g.set_external_drag_hover(cursor_for_external);
+            }
         }
 
         // Drop is resolved on release — the indicator has served its
@@ -941,42 +1143,44 @@ impl Widget for GroupRow {
         // (non-existent) internal scroll. The dispatch loop still runs
         // after, but with `handled = true` the loop early-exits on the
         // first child it visits.
+        // Wheel-over-strip pans `scroll_x` Niri-style. The strip is
+        // an INFINITE canvas — even when the current content fits
+        // inside the viewport, scrolling must reveal "future" empty
+        // strip space where the user can drop new windows. We
+        // therefore don't gate on `max_scroll_x() > 0` and don't
+        // clamp `scroll_x` to that tight bound either; instead the
+        // upper clamp is `max(max_scroll_x, viewport * 3)` so the
+        // user can pan two screenfuls of empty wallpaper past their
+        // rightmost group. Lower clamp stays at 0 — Niri-likely you
+        // can't scroll past the strip's leftmost edge.
+        //
+        // Tab cycling (the 1ccb405 mistake) belongs to a completely
+        // different gesture; the strip pans, period.
         if let WindowEvent::MouseWheel { delta, .. } = event
             && self.rect.contains(self.last_cursor)
-            && self.max_scroll_x() > 0.0
         {
-            // 30 px per LineDelta unit lines up with the `scrollable.rs`
-            // module's per-line factor (it uses 20 px there; we go a
-            // touch wider so a single wheel detent reveals the next
-            // group's leading edge with a 600 px window). PixelDelta is
-            // honoured 1:1 — trackpad gestures already supply pixels.
-            //
-            // Sign convention matches GTK / browser `overflow-x-auto`:
-            // winit gives `delta.y > 0` for wheel-up; rotating the
-            // wheel UP scrolls content LEFT (reveals stuff to the
-            // left, equivalent to decreasing `scroll_x`). So the y
-            // contribution is `-y`. Trackpad horizontal: `delta.x > 0`
-            // means "two-finger swipe right", which reveals content to
-            // the right (increases `scroll_x`), so the x contribution
-            // is `+x`. PixelDelta carries the same axis convention
-            // 1:1.
+            // Sign convention: GTK / browser `overflow-x-auto`
+            // (LineDelta y>0 = wheel-up = reveal content to the
+            // LEFT = decrease scroll_x → contribution `-y`).
+            // Trackpad horizontal: dx>0 = swipe-right = reveal
+            // content to the RIGHT → contribution `+x`. PixelDelta
+            // carries the same axis convention 1:1. 30 px / LineDelta
+            // matches the strip's prior per-line factor.
             let dx = match delta {
-                MouseScrollDelta::LineDelta(x, y) => {
-                    let raw = (*x - *y) as f64;
-                    raw * 30.0
-                }
+                MouseScrollDelta::LineDelta(x, y) => (*x - *y) as f64 * 30.0,
                 MouseScrollDelta::PixelDelta(pp) => pp.x - pp.y,
             };
             if dx != 0.0 {
-                let max = self.max_scroll_x();
-                self.scroll_x = (self.scroll_x + dx).clamp(0.0, max);
-                // Reset the idle gate and cancel any in-flight snap —
-                // a fresh wheel event means the user is actively
-                // panning, so we restart the 200 ms idle countdown
-                // from now and drop whatever snap target the previous
-                // gesture committed to. The next `tick_snap_at` after
-                // the user stops will compute a new target against
-                // the current `scroll_x`.
+                let viewport = self.rect.width().max(1.0);
+                let upper = self.max_scroll_x().max(viewport * 3.0);
+                let before = self.scroll_x;
+                self.scroll_x = (self.scroll_x + dx).clamp(0.0, upper);
+                if (self.scroll_x - before).abs() > f64::EPSILON {
+                    // Force the parent Column's subtree cache to
+                    // rebuild this frame — without it the cache
+                    // keeps painting the pre-pan positions.
+                    self.scroll_dirty = true;
+                }
                 self.last_wheel_at = Some(Instant::now());
                 self.snap_anim = None;
                 *handled = true;
@@ -1242,6 +1446,72 @@ impl Widget for GroupRow {
                 }
                 continue;
             }
+            // Tile-area drops on a sibling group. The release point
+            // falls inside the group's `rect` but below `bar_rect.y1`
+            // (the tab-bar branch already matched and `continue`'d
+            // above). We split the tile horizontally into three bands:
+            //
+            //   1. Left edge band (outermost ~25% of width, capped at
+            //      48 px) → CREATE a new group immediately to the LEFT
+            //      of this sibling. This is the practical solution to
+            //      the 2026-06-24 user complaint that the 8 px inter-
+            //      group gap is impossible to hit, so dragging a tab
+            //      to the area between G(A) and G(B) had nowhere to
+            //      land that produced "new group between A and B".
+            //   2. Right edge band (symmetric) → CREATE a new group
+            //      immediately to the RIGHT of this sibling.
+            //   3. Centre band (everything else) → splice into the
+            //      sibling's existing tab list, left half → prepend
+            //      (idx 0), right half → append (idx = tabs.len()),
+            //      matching the 2026-06-02 user spec.
+            //
+            // Closing groups are excluded throughout: a tab spliced
+            // into a group that's about to be pruned would be lost
+            // alongside the group at fade-end. Drops on closing
+            // groups' tile areas fall through to the gap-based
+            // new-window path below.
+            let tile_target_idx = self
+                .groups
+                .iter()
+                .enumerate()
+                .find(|(i, g)| {
+                    *i != src_idx
+                        && !g.is_closing()
+                        && g.get_rect().contains(release_point)
+                        && !g.bar_rect().contains(release_point)
+                })
+                .map(|(i, _)| i);
+            if let Some(tgt_idx) = tile_target_idx {
+                let tgt_rect = self.groups[tgt_idx].get_rect();
+                let edge_band = (tgt_rect.width() * 0.25).min(48.0);
+                let in_left_band = release_point.x < tgt_rect.x0 + edge_band;
+                let in_right_band = release_point.x > tgt_rect.x1 - edge_band;
+                if in_left_band || in_right_band {
+                    // Edge band → create a new group at the gap to the
+                    // left (or right) of the target sibling. The split
+                    // helper handles detach + source-prune + structure-
+                    // dirty exactly the same as the explicit inter-
+                    // group gap branch below; passing the correct
+                    // gap_idx is what selects "between A and B" vs
+                    // "after B".
+                    let gap_idx = if in_left_band { tgt_idx } else { tgt_idx + 1 };
+                    if self.split_tab_into_new_group(src_idx, tab_id, gap_idx) {
+                        *handled = true;
+                    }
+                    continue;
+                }
+                let drop_idx = if release_point.x < tgt_rect.center().x {
+                    0
+                } else {
+                    self.groups[tgt_idx].tabs().len()
+                };
+                let detached = self.groups[src_idx].detach_tab(tab_id);
+                if let Some((desc, host)) = detached {
+                    self.groups[tgt_idx].insert_detached_tab(drop_idx, desc, host);
+                    *handled = true;
+                }
+                continue;
+            }
             // The release may have landed on a *closing* sibling's bar
             // rect — the filter above treated it as not-there, but the
             // rect still exists geometrically, so `gap_index_for` will
@@ -1332,6 +1602,26 @@ impl Widget for GroupRow {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn needs_redraw(&self) -> bool {
+        // The parent Column / Stack caches its subtree scene via
+        // `draw_with_presence` and only rebuilds when at least one
+        // child reports `needs_redraw() == true`. A wheel-pan changes
+        // `scroll_x` without changing this row's outer rect or any
+        // child's leaf-level dirty bit — so without this override
+        // the cached scene keeps painting the strip at the
+        // pre-scroll positions (user-visible bug: "I scroll and
+        // nothing happens"). The flag is cleared at the top of
+        // `draw` once the new scene records.
+        if self.scroll_dirty {
+            return true;
+        }
+        // Fallback to the default "any descendant dirty" behaviour
+        // so a tab-pill hover or in-tile state change still triggers
+        // a redraw even when scroll_x hasn't moved.
+        self.groups.iter().any(|g| g.needs_redraw())
+            || self.handles.iter().any(|h| h.needs_redraw())
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -2107,6 +2397,99 @@ mod tests {
         );
     }
 
+    /// 2026-06-02 user feedback: a cross-group drag whose release lands
+    /// in the TILE AREA of an existing sibling group (the white card
+    /// below the tab bar) must splice the dragged tab into that group's
+    /// tab list — left half → prepend (idx 0), right half → append
+    /// (idx = tabs().len()). No visual indicator during hover (the
+    /// affordance is invisible/implicit). This test pins both halves
+    /// end-to-end through the post-dispatch detach sweep so a refactor
+    /// that drops the new branch shows up red.
+    #[test]
+    fn drop_in_sibling_tile_area_left_half_prepends_right_half_appends() {
+        use winit::event::WindowEvent;
+
+        // Build a row where group B (idx 1) has tabs [10, 11, 12] so
+        // both prepend (→ [1, 10, 11, 12]) and append (→ [10, 11, 12, 1])
+        // outcomes are distinguishable from a default insert-at-zero.
+        let (mut row, taffy, root) =
+            make_row_with_groups_with_taffy(&[&[1, 2], &[10, 11, 12]]);
+        let b_rect = row.groups[1].get_rect();
+        let b_bar = row.groups[1].bar_rect();
+
+        // Release point inside B's tile area, on the LEFT half:
+        // y below the bar, x left of B's centre.
+        let release_left = Point::new(
+            b_rect.x0 + (b_rect.width() * 0.25),
+            (b_bar.y1 + b_rect.y1) / 2.0,
+        );
+        assert!(b_rect.contains(release_left));
+        assert!(!b_bar.contains(release_left));
+        assert!(release_left.x < b_rect.center().x);
+
+        row.groups[0].bar_mut().pending_detach = Some((1, release_left));
+        let mut doc = AutoCommit::new();
+        let doc_root = automerge::ROOT.clone();
+        let modifiers = Modifiers::default();
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        let release_event = WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        };
+        row.handle_event(
+            &release_event, 1.0, &modifiers, &mut doc, &doc_root,
+            &mut handled, &mut focus, root, &taffy,
+        );
+
+        let b_ids: Vec<u64> =
+            row.groups[1].tabs().iter().map(|t| t.id).collect();
+        assert_eq!(
+            b_ids,
+            vec![1, 10, 11, 12],
+            "left-half tile drop must prepend the dragged tab to the target's tab list",
+        );
+        let a_ids: Vec<u64> =
+            row.groups[0].tabs().iter().map(|t| t.id).collect();
+        assert_eq!(
+            a_ids, vec![2],
+            "source group must lose the dragged tab to the target",
+        );
+        // Dragged tab becomes the target's active tab — `insert_detached_tab`
+        // pins this, mirroring the existing `transfer_tab` test.
+        assert_eq!(row.groups[1].active_tab_id(), 1);
+
+        // Reset for the right-half case using a fresh row.
+        let (mut row, taffy, root) =
+            make_row_with_groups_with_taffy(&[&[1, 2], &[10, 11, 12]]);
+        let b_rect = row.groups[1].get_rect();
+        let b_bar = row.groups[1].bar_rect();
+        let release_right = Point::new(
+            b_rect.x0 + (b_rect.width() * 0.75),
+            (b_bar.y1 + b_rect.y1) / 2.0,
+        );
+        assert!(b_rect.contains(release_right));
+        assert!(!b_bar.contains(release_right));
+        assert!(release_right.x > b_rect.center().x);
+
+        row.groups[0].bar_mut().pending_detach = Some((1, release_right));
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        row.handle_event(
+            &release_event, 1.0, &modifiers, &mut doc, &doc_root,
+            &mut handled, &mut focus, root, &taffy,
+        );
+
+        let b_ids: Vec<u64> =
+            row.groups[1].tabs().iter().map(|t| t.id).collect();
+        assert_eq!(
+            b_ids,
+            vec![10, 11, 12, 1],
+            "right-half tile drop must append the dragged tab to the target's tab list",
+        );
+    }
+
     /// Regression for B-4: a cross-group drop whose release point lands
     /// inside a *closing* sibling's content area (below its bar, but
     /// still inside the group's outer rect) used to fall through every
@@ -2580,15 +2963,23 @@ mod tests {
             root,
             &taffy,
         );
+        // 2026-06-02 design change: the strip is Niri-style infinite,
+        // so wheel-over-strip ALWAYS pans (into empty wallpaper past
+        // the rightmost group when there's no content overflow). The
+        // wheel handler claims the event regardless of overflow; the
+        // sibling StripView's inter-strip pagination has been moved
+        // out of the wheel path (use chord keys / palette commands).
         assert!(
-            !handled,
-            "wheel over a fitting row must not claim the event so StripView \
-             retains its inter-strip pagination"
+            handled,
+            "wheel over the strip must always be claimed (Niri-style infinite pan)"
         );
-        assert_eq!(
-            row.scroll_x(),
-            0.0,
-            "no overflow → scroll_x must remain at 0"
+        // Wheel-down (y < 0) translates to dx = (0 - (-3)) * 30 = 90,
+        // so scroll_x advances by 90 px into the empty-wallpaper
+        // buffer (`viewport * 3` upper clamp).
+        assert!(
+            row.scroll_x() > 0.0,
+            "no-overflow strip must STILL pan into empty wallpaper space; got scroll_x={}",
+            row.scroll_x()
         );
     }
 
@@ -3121,6 +3512,166 @@ mod tests {
         assert!(
             !row.handle_at(0).unwrap().is_hovered(),
             "tab drag in flight must inhibit handle hover (cross-group drop owns the gap)",
+        );
+    }
+
+    /// Concept-parity guard: when ANY group is maximized, every sibling
+    /// must collapse to zero rendered area (matches the concept's
+    /// `position: fixed; width: 100vw` overlay in `WindowFrame.tsx:188`
+    /// where siblings stay in the DOM but are obscured), the maximized
+    /// group must absorb the row's full inner width, and no inter-group
+    /// resize handles must be present.
+    ///
+    /// Pre-fix the row used `flex_grow: 1e6 + flex_basis: 0` to make
+    /// siblings squeeze toward min-content, but siblings remained
+    /// visible at non-zero width. That's not the concept's behaviour —
+    /// the maximized frame fully covers the strip.
+    #[test]
+    fn maximized_group_hides_siblings_and_absorbs_row_width() {
+        // Three groups so we can verify BOTH a left-of-max and a
+        // right-of-max sibling collapse, not just one.
+        let (mut row, taffy, root) =
+            make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+        // Sanity: pre-maximize, every group has positive width and a
+        // resize handle exists between each adjacent pair.
+        assert!(row.groups[0].get_rect().width() > 0.0);
+        assert!(row.groups[1].get_rect().width() > 0.0);
+        assert!(row.groups[2].get_rect().width() > 0.0);
+        assert_eq!(row.handle_count(), 2, "two gaps → two handles pre-maximize");
+
+        // Flip group 1 (the middle one) to maximized and re-run the
+        // full layout pass, mirroring what the App does after
+        // `take_structure_dirty()` reports true on a maximize toggle.
+        row.groups[1].maximized = true;
+        let theme = Theme::dark();
+        let mut taffy_new: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let new_root = row.build_layout(&mut taffy_new, &theme, &mut node_map);
+        use taffy::AvailableSpace;
+        let viewport = taffy_new
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(2000.0),
+                        height: Dimension::length(600.0),
+                    },
+                    ..Default::default()
+                },
+                &[new_root],
+            )
+            .unwrap();
+        taffy_new
+            .compute_layout_with_measure(
+                viewport,
+                taffy::Size {
+                    width: AvailableSpace::Definite(2000.0),
+                    height: AvailableSpace::Definite(600.0),
+                },
+                |_, _, _, _, _| taffy::Size::ZERO,
+            )
+            .expect("taffy compute_layout");
+        row.apply_layout(&taffy_new, new_root, Point::ORIGIN);
+        let _ = taffy; // silence unused-binding lint from the helper.
+        let _ = root;
+
+        // Siblings (indices 0 and 2) must collapse to zero width — the
+        // concept's "obscured behind the fixed overlay" outcome,
+        // modelled here via `display: None` on the taffy nodes.
+        let r0 = row.groups[0].get_rect();
+        let r2 = row.groups[2].get_rect();
+        assert!(
+            r0.width() <= 0.5,
+            "left sibling must collapse to zero width when a peer is maximized; got {}",
+            r0.width(),
+        );
+        assert!(
+            r2.width() <= 0.5,
+            "right sibling must collapse to zero width when a peer is maximized; got {}",
+            r2.width(),
+        );
+
+        // The maximized group must absorb the row's inner width (within
+        // a small fp tolerance for taffy rounding). It paints the
+        // concept's `width: 100vw` fixed overlay.
+        let r1 = row.groups[1].get_rect();
+        let row_w = row.rect.width();
+        assert!(
+            (r1.width() - row_w).abs() < 1.0,
+            "maximized group must absorb the row's full width; got group={} row={}",
+            r1.width(),
+            row_w,
+        );
+
+        // No inter-group resize handle nodes were built in the maximize
+        // branch — they would be visible affordances on collapsed gaps.
+        // The pool itself stays sized to N-1 (the handle_pool always
+        // mirrors the gap count for structural simplicity), but
+        // `handle_node_ids` must be empty so no draw / dispatch runs.
+        assert_eq!(
+            row.handle_node_ids.len(),
+            0,
+            "no handle taffy nodes must be built while a group is maximized",
+        );
+    }
+
+    /// Restoring (un-maximizing) must put the row back to its
+    /// pre-maximize layout: every sibling visible at positive width,
+    /// every inter-group handle re-created. Guards against a one-way
+    /// latch where the maximize branch leaves stale state behind.
+    #[test]
+    fn unmaximize_restores_siblings_and_handles() {
+        let (mut row, _t, _r) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+        // Maximize then immediately un-maximize, re-running layout
+        // after each flip.
+        row.groups[1].maximized = true;
+        let theme = Theme::dark();
+        let mut relayout = |row: &mut GroupRow| -> TaffyTree<()> {
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let root = row.build_layout(&mut taffy, &theme, &mut node_map);
+            use taffy::AvailableSpace;
+            let viewport = taffy
+                .new_with_children(
+                    Style {
+                        size: Size {
+                            width: Dimension::length(2000.0),
+                            height: Dimension::length(600.0),
+                        },
+                        ..Default::default()
+                    },
+                    &[root],
+                )
+                .unwrap();
+            taffy
+                .compute_layout_with_measure(
+                    viewport,
+                    taffy::Size {
+                        width: AvailableSpace::Definite(2000.0),
+                        height: AvailableSpace::Definite(600.0),
+                    },
+                    |_, _, _, _, _| taffy::Size::ZERO,
+                )
+                .expect("taffy compute_layout");
+            row.apply_layout(&taffy, root, Point::ORIGIN);
+            taffy
+        };
+        let _ = relayout(&mut row);
+
+        // Now restore.
+        row.groups[1].maximized = false;
+        let _ = relayout(&mut row);
+
+        for (i, g) in row.groups.iter().enumerate() {
+            assert!(
+                g.get_rect().width() > 0.0,
+                "group {} must regain positive width after un-maximize",
+                i,
+            );
+        }
+        assert_eq!(
+            row.handle_node_ids.len(),
+            2,
+            "handle nodes must be rebuilt on un-maximize (2 gaps → 2 handles)",
         );
     }
 }

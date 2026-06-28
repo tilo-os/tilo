@@ -482,10 +482,48 @@ impl WindowGroup {
     /// (e.g. detaching the active tab must promote a sibling to active).
     pub fn active_tab_id(&self) -> u64 { self.bar.active_id() }
 
+    /// Step the active-tab index by `dir` (sign-extracted; ±1) with
+    /// wrap-around at the tab list's ends. Returns `true` if the
+    /// active tab changed. Used by the strip's wheel handler when
+    /// there's no overflow to pan against — the user's wheel input
+    /// then cycles tabs widget-side, sidestepping the chrome-tree /
+    /// widget-tree sync gap (`WorkspaceTree::set_active_tab` mutates
+    /// the persisted state, but the `Tabs` widget keeps its own
+    /// `active_id` and doesn't re-read from the tree each frame).
+    pub fn cycle_active_tab(&mut self, dir: i32) -> bool {
+        let n = self.bar.tabs().len();
+        if n < 2 || dir.signum() == 0 {
+            return false;
+        }
+        let cur = self.bar.active_id();
+        let Some(idx) = self.bar.tabs().iter().position(|t| t.id == cur) else {
+            return false;
+        };
+        let step = dir.signum();
+        let new_idx = ((idx as i32 + step).rem_euclid(n as i32)) as usize;
+        let new_id = self.bar.tabs()[new_idx].id;
+        self.bar.set_active(new_id);
+        true
+    }
+
     /// True while this group's `TabBar` has a drag in flight. Exposed so
     /// the parent `GroupRow` can paint inter-group drop-zone indicators
     /// while any child is dragging.
     pub fn drag_in_flight(&self) -> bool { self.bar.drag_in_flight() }
+
+    /// Push an external (cross-group) drag's cursor into this group's
+    /// `TabBar` so its minimalist white-line drop indicator
+    /// (`hover_drop_idx`) paints at the correct inter-pill gap. Called
+    /// by `GroupRow::handle_event` for every group while any child has
+    /// a tab drag in flight: `Some(point)` when the cursor is somewhere
+    /// in the row; `None` when no relevant drag is active.
+    ///
+    /// `TabBar::set_external_drag_hover` is a no-op while the bar has
+    /// its own `pending_drag` in flight, so the source bar's own
+    /// indicator stays put even when the parent's fan-out visits it.
+    pub fn set_external_drag_hover(&mut self, cursor: Option<Point>) {
+        self.bar.set_external_drag_hover(cursor);
+    }
 
     /// Test-only mutable accessor for the underlying `TabBar`. Used by
     /// `GroupRow` tests that need to publish a synthetic `pending_detach`
@@ -623,38 +661,21 @@ impl Widget for WindowGroup {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
             size: Size { width: Dimension::length(self.width.pixels() as f32), height: Dimension::percent(1.0) },
-            // Hard cap at the parent's width so a single Normal (600 px)
-            // or Wide (800 px) group never paints past the right edge
-            // when the viewport's content area is narrower than the
-            // declared `WindowWidth`. Pairs with the `flex_shrink: 1.0`
-            // override in `GroupRow::build_layout` to make the group
-            // adapt down rather than overflow.
-            max_size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::auto(),
-            },
-            // …but never below `WIDTH_MIN_PX = 300` px, the readable
-            // minimum. Once the sum of mins exceeds the strip's
-            // viewport, groups stop shrinking and the strip starts to
-            // overflow — the same threshold that engages the strip's
-            // horizontal-pan + snap machinery (see `GroupRow::handle_event`).
-            min_size: Size {
-                width: Dimension::length(WIDTH_MIN_PX as f32),
-                height: Dimension::auto(),
-            },
-            // `flex_grow: 0.0` keeps the group at its declared
-            // `WindowWidth` (Normal=600, Wide=800, …) when there's
-            // viewport slack on the right — the spare space is
-            // wallpaper, *the spatial-OS canvas the user drops things
-            // into*. The earlier `flex_grow: 1.0` made a sole group
-            // fill the viewport so its right edge sat flush against
-            // the screen, which broke "drag a tab past the group's
-            // right edge to detach into a new group" (there was no
-            // such edge left to drag past) and made the user describe
-            // the resulting drop as "single strips" — the drag never
-            // produced the section-shaped sibling it was supposed to.
-            // Maximized groups still override to `flex_grow: 1e6`
-            // (further below) when the user explicitly maximises.
+            // Niri-style infinite strip: groups stay at their declared
+            // `WindowWidth` regardless of how many siblings the strip
+            // already has. Placing a new app *never resizes* siblings —
+            // the strip extends past the viewport and the user scrolls
+            // horizontally to reveal off-screen content. This is the
+            // core spatial-OS invariant; the earlier "shrink to fit"
+            // attempt (flex_shrink: 1 + max_size: 100%) silently
+            // violated it whenever a second tile spawned. GroupRow's
+            // `flex_shrink: 0` override on every child enforces this
+            // at the row level; `flex_grow: 0` keeps the group at its
+            // declared width even when there's strip-internal slack.
+            //
+            // Maximized groups still override to `flex_grow: 1e6` (a
+            // few lines down) so the user's explicit Maximize2 click
+            // expands one group to absorb the strip.
             flex_grow: 0.0,
             gap: taffy::Size { width: length(0.0), height: length(0.0) },
             ..Default::default()
@@ -823,10 +844,38 @@ impl Widget for WindowGroup {
                 scene.pop_layer();
             }
         }
-        // resize handle visualization
-        let handle_rect = Rect::new(self.rect.x1 - RESIZE_HANDLE_PX, self.rect.y0, self.rect.x1, self.rect.y1);
-        let col = if self.hover_resize || self.resize_origin.is_some() { theme.tokens.colors.border_focus } else { theme.tokens.colors.border_standard };
-        scene.fill(vello::peniko::Fill::NonZero, transform, col, None, &handle_rect);
+        // Per-group resize handle. Painted as two short vertical accent
+        // strokes (a "grip" affordance) just inside the group's right
+        // edge — much more legible than the previous full-height
+        // slate-700 stripe, which blended into the white card and the
+        // dark wallpaper. Hover/drag brightens to `border_focus` so
+        // the user can see whether they've grabbed the handle.
+        //
+        // Hit zone is wider (`RESIZE_HANDLE_PX = 6`) than the painted
+        // grip so a mouse-cursor approach catches before the user
+        // notices the visual.
+        let grip_col = if self.hover_resize || self.resize_origin.is_some() {
+            theme.tokens.colors.border_focus
+        } else {
+            theme.tokens.colors.text_dim.with_alpha_factor(0.55)
+        };
+        let group_h = self.rect.height();
+        let grip_h = (group_h * 0.25).clamp(24.0, 80.0);
+        let grip_cx = self.rect.x1 - 3.0;
+        let grip_cy = self.rect.center().y;
+        let bar = |dx: f64| {
+            vello::kurbo::RoundedRect::from_rect(
+                Rect::new(
+                    grip_cx + dx - 1.0,
+                    grip_cy - grip_h / 2.0,
+                    grip_cx + dx + 1.0,
+                    grip_cy + grip_h / 2.0,
+                ),
+                1.0,
+            )
+        };
+        scene.fill(vello::peniko::Fill::NonZero, transform, grip_col, None, &bar(-2.0));
+        scene.fill(vello::peniko::Fill::NonZero, transform, grip_col, None, &bar(2.0));
 
         // Drag-in-flight visual: subtle accent ring around the whole group
         // so the user has a spatial signal the drag is live. Matches the
