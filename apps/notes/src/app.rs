@@ -51,7 +51,7 @@ const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 /// peer's full-state reply (the late-join handshake) time to arrive, so
 /// a second instance adopts the first's workspace instead of creating a
 /// duplicate. A lone instance simply seeds after the window elapses.
-const SEED_GRACE: Duration = Duration::from_millis(800);
+const SEED_GRACE: Duration = Duration::from_millis(1500);
 
 pub struct NotesApp {
     workspace: Workspace,
@@ -85,8 +85,14 @@ pub struct NotesApp {
     /// link marks on mouse click without dragging the click event
     /// through every nested widget.
     last_mouse: Point,
-    /// Wall-clock start, used for the [`SEED_GRACE`] seed window.
+    /// Start of the seed-grace window. Set to the time of the FIRST
+    /// `sync` (when collab is actually live), not spawn — renderer init
+    /// takes seconds, and measuring from spawn would let a late joiner's
+    /// grace lapse before its first sync, making it seed its own welcome
+    /// instead of adopting an existing peer's.
     started: std::time::Instant,
+    /// Whether the first `sync` has run (which (re)bases `started`).
+    synced_once: bool,
     /// True once we've taken on shared document state — either by
     /// adopting a peer's or by seeding our own. Gates the one-time
     /// discard-local-welcome-on-adopt.
@@ -162,6 +168,7 @@ impl NotesApp {
             palette: PageJumpPalette::new(),
             last_mouse: Point::ZERO,
             started: std::time::Instant::now(),
+            synced_once: false,
             adopted: false,
             seeded: false,
             bound_page: None,
@@ -312,12 +319,21 @@ impl NotesApp {
     /// origin, adopts a peer's tree when we join late, and keeps both in
     /// step thereafter. Runs every frame from [`sync`].
     fn sync_workspace_tree(&mut self, state: &mut AutoCommit) {
+        // Base the seed-grace window on the first sync (collab is live by
+        // now), not spawn — see `started`'s doc comment.
+        if !self.synced_once {
+            self.started = std::time::Instant::now();
+            self.synced_once = true;
+        }
         let doc_pages = NotesDoc::list_pages(state);
         if !doc_pages.is_empty() {
             if !self.adopted {
                 // First shared state we've seen — adopt it wholesale,
                 // discarding our locally-seeded welcome so we don't push
                 // a duplicate page tree.
+                if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
+                    eprintln!("[notes] ADOPT {} remote page(s)", doc_pages.len());
+                }
                 self.workspace.data.pages = doc_pages;
                 if let Some(s) = self.workspace.selected() {
                     if self.workspace.get(s).is_none() {
@@ -351,6 +367,13 @@ impl NotesApp {
             }
         } else if !self.seeded && self.started.elapsed() > SEED_GRACE {
             // Doc still empty after the grace window — we're the origin.
+            if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
+                eprintln!(
+                    "[notes] SEED own welcome ({} page(s)) after {:?} empty",
+                    self.workspace.pages().len(),
+                    self.started.elapsed()
+                );
+            }
             for p in self.workspace.pages().to_vec() {
                 NotesDoc::upsert_page_meta(state, &p);
             }
@@ -362,6 +385,14 @@ impl NotesApp {
     /// Ensure a page is selected and the MainPanel editor is bound to
     /// that page's `blocks` List in the shared doc, so its text syncs.
     fn ensure_editor_bound(&mut self, state: &mut AutoCommit) {
+        // Don't touch the doc until we've seeded or adopted the shared
+        // workspace. Binding earlier would `upsert` a page into the doc,
+        // creating an independent `pages` Map before the late-join
+        // handshake establishes a shared base — which makes two peers'
+        // page trees conflict on merge and never converge.
+        if !self.adopted {
+            return;
+        }
         if self.workspace.selected().is_none() {
             if let Some(first) =
                 self.workspace.children_of(None).first().map(|p| p.id)
@@ -381,16 +412,13 @@ impl NotesApp {
         }
     }
 
-    /// Bind the editor to `sel`'s blocks in the doc (creating the page
-    /// in the doc if needed, seeding its blocks from the on-disk body).
+    /// Bind the editor to `sel`'s blocks in the shared doc. The page must
+    /// already exist in the doc (placed there by seeding or adoption) —
+    /// we deliberately do NOT create it here, so binding can never fork
+    /// the `pages` Map ahead of the handshake.
     fn bind_selected_page(&mut self, state: &mut AutoCommit, sel: PageId) {
-        if !NotesDoc::list_pages(state).iter().any(|p| p.id == sel) {
-            if let Some(meta) = self.workspace.get(sel).cloned() {
-                NotesDoc::upsert_page_meta(state, &meta);
-            }
-        }
         let Some(list) = NotesDoc::page_blocks_list(state, sel) else {
-            return;
+            return; // page not in the shared doc yet — wait for sync
         };
         let title = self
             .workspace
@@ -416,6 +444,9 @@ impl NotesApp {
         self.started = std::time::Instant::now()
             .checked_sub(SEED_GRACE + Duration::from_secs(1))
             .unwrap_or_else(std::time::Instant::now);
+        // Mark first-sync as done so `sync` doesn't re-base `started`
+        // back to "now" and undo the bypass.
+        self.synced_once = true;
     }
 
     /// Test hook: the editor's block text joined by newlines.
@@ -729,6 +760,23 @@ impl Widget for NotesApp {
             PresenceKey::Tab { id: sel.to_string() },
             PresencePayload::Arrived,
         ))
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        // Forward the main panel's editor structure-dirty flag so the App
+        // rebuilds the taffy tree when the block count changes (local
+        // split/merge OR a remote peer adding a block via sync). Without
+        // this the new block gets no taffy node and isn't laid out.
+        self.main.take_structure_dirty()
+    }
+
+    fn needs_idle_sync(&self) -> bool {
+        // Until we've seeded or adopted the shared document, keep syncing
+        // on idle frames: seeding happens in `sync` after a grace window,
+        // and a first peer with no input/events would otherwise never run
+        // `sync` again to perform it (leaving its doc empty, so a joiner
+        // gets nothing and seeds a duplicate).
+        !self.adopted
     }
 
     fn build_layout(
