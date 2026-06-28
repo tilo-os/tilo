@@ -12,6 +12,12 @@ use crate::permissions::PermissionScope;
 pub struct Text {
     label: String,
     size: f32,
+    /// Optional explicit colour. `None` (the default) renders with the
+    /// theme's `text_primary`, keeping Text theme-driven; `Some(c)` lets
+    /// callers paint secondary/dim/semantic copy (e.g. the installer's
+    /// per-field helper text in `theme.text_dim`) without hard-coding a
+    /// colour at the call site — they still pass a Theme token.
+    color: Option<vello::peniko::Color>,
     rect: vello::kurbo::Rect,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
@@ -38,6 +44,7 @@ impl Text {
         Self {
             label: label.to_string(),
             size: 16.0,
+            color: None,
             rect: vello::kurbo::Rect::ZERO,
             presence_path: Vec::new(),
             permission_scope: None,
@@ -49,6 +56,15 @@ impl Text {
 
     pub fn with_size(mut self, size: f32) -> Self {
         self.size = size;
+        self
+    }
+
+    /// Render this text in an explicit colour instead of the theme's
+    /// `text_primary`. Pass a Theme token (e.g. `theme.text_dim` or
+    /// `theme.tokens.colors.semantic.danger`) so the choice still tracks
+    /// the active theme.
+    pub fn with_color(mut self, color: vello::peniko::Color) -> Self {
+        self.color = Some(color);
         self
     }
 
@@ -133,11 +149,12 @@ impl Widget for Text {
             self.cached.reset();
             let label = crate::i18n!(&self.label);
             let max_width = self.rect.width() as f32;
+            let color = self.color.unwrap_or(theme.tokens.colors.text_primary);
             text_renderer.draw_text(
                 &mut self.cached,
                 &label,
                 self.size,
-                theme.tokens.colors.text_primary,
+                color,
                 Affine::translate((self.rect.x0, self.rect.y0)),
                 Some(max_width + 1.0),
             );
