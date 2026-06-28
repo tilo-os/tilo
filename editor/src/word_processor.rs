@@ -163,12 +163,19 @@ impl WordProcessor {
         true
     }
 
-    /// Set paragraph style on every block in the selection (or the caret block).
+    /// Set paragraph style on every selected block (or the caret block). Table
+    /// cells are skipped — turning a cell into a heading/list would break the
+    /// table (alignment and font still apply to cells via their own methods).
     pub fn set_paragraph_style(&mut self, state: &mut AutoCommit, kind: &str, level: Option<i64>, ordered: Option<bool>) {
         let Some(containers) = self.containers.clone() else {
             return;
         };
-        let targets = self.selected_block_ids(state);
+        let snap = qdoc::model::materialize(state, &containers);
+        let targets: Vec<String> = self
+            .selected_block_ids(state)
+            .into_iter()
+            .filter(|id| snap.blocks.iter().find(|b| &b.id == id).map(|b| b.kind != "cell").unwrap_or(true))
+            .collect();
         if let Some(ids) = self.ids.as_mut() {
             let mut dm = DocMut { doc: state, c: &containers, ids };
             for block in &targets {
@@ -1050,6 +1057,49 @@ mod tests {
         wp.enter(&mut state); // empty item → exit
         let b = wp.caret.block.clone();
         assert_eq!(wp.block_meta(&state, &b).0, "paragraph", "Enter on empty item exits the list");
+    }
+
+    fn align_of(wp: &WordProcessor, state: &AutoCommit, id: &str) -> Option<String> {
+        let c = wp.containers.as_ref().unwrap();
+        qdoc::model::materialize(state, c).blocks.iter().find(|b| b.id == id).and_then(|b| match b.attrs.get("align") {
+            Some(qdoc::AttrVal::Str(s)) => Some(s.clone()),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn align_applies_across_selected_paragraphs() {
+        let (mut wp, mut state) = bound();
+        wp.insert_str(&mut state, "one");
+        wp.enter(&mut state);
+        wp.insert_str(&mut state, "two");
+        wp.enter(&mut state);
+        wp.insert_str(&mut state, "three");
+        let blocks = wp.ordered_blocks(&state);
+        assert_eq!(blocks.len(), 3);
+        wp.set_caret(Caret { block: blocks[0].clone(), offset: 0 });
+        wp.set_anchor();
+        wp.set_caret(Caret { block: blocks[2].clone(), offset: 5 });
+        wp.set_align(&mut state, "center");
+        for b in &blocks {
+            assert_eq!(align_of(&wp, &state, b).as_deref(), Some("center"), "paragraph {b} centered");
+        }
+    }
+
+    #[test]
+    fn align_applies_across_selected_cells() {
+        let (mut wp, mut state) = bound();
+        wp.insert_table(&mut state, 2, 2);
+        let snap = qdoc::model::materialize(&state, wp.containers.as_ref().unwrap());
+        let cells: Vec<String> = snap.blocks.iter().filter(|b| b.kind == "cell").map(|b| b.id.clone()).collect();
+        assert_eq!(cells.len(), 4);
+        wp.set_caret(Caret { block: cells[0].clone(), offset: 0 });
+        wp.set_anchor();
+        wp.set_caret(Caret { block: cells[3].clone(), offset: 0 });
+        wp.set_align(&mut state, "center");
+        for c in &cells {
+            assert_eq!(align_of(&wp, &state, c).as_deref(), Some("center"), "cell {c} centered");
+        }
     }
 
     #[test]
