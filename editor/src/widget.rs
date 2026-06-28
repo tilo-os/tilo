@@ -17,6 +17,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use qdoc::document::MarkSpan;
 use qdoc::snapshot::{AttrVal, BlockView};
+use ui::chrome::{self, LabelCue, ToolbarItem};
 use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -41,8 +42,8 @@ const PAGE_TOP: f64 = 28.0;
 const MAX_PAGE_W: f64 = 820.0;
 const BLOCK_SPACING: f64 = 8.0;
 const CARET_WIDTH: f64 = 2.0;
-const TOOLBAR_H: f64 = 50.0;
-const STATUS_H: f64 = 28.0;
+const TOOLBAR_H: f64 = ui::chrome::TOOLBAR_HEIGHT;
+const STATUS_H: f64 = ui::chrome::STATUS_BAR_HEIGHT;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ToolAction {
@@ -926,37 +927,20 @@ impl WordProcessorWidget {
     }
 
     fn draw_status_bar(&self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, bar: Rect) {
-        scene.fill(Fill::NonZero, transform, theme.tokens.colors.surfaces.raised, None, &bar);
-        scene.fill(Fill::NonZero, transform, theme.tokens.colors.border_standard, None, &Rect::new(bar.x0, bar.y0, bar.x1, bar.y0 + 1.0));
-
-        let muted = Color::from_rgb8(0x9a, 0x9c, 0xa4);
         let words: usize = self.blocks.iter().map(|b| b.text.split_whitespace().count()).sum();
         let chars: usize = self.blocks.iter().map(|b| b.text.chars().count()).sum();
         let left = format!("{words} words    {chars} characters");
-        let ty = bar.y0 + (STATUS_H - 15.0) / 2.0;
-        tr.draw_text(scene, &left, 13.0, muted, transform * Affine::translate((bar.x0 + 18.0, ty)), None);
-
-        let fname = self
-            .path
-            .as_ref()
-            .and_then(|p| p.file_name())
-            .and_then(|n| n.to_str())
-            .unwrap_or("Untitled");
+        let fname = self.path.as_ref().and_then(|p| p.file_name()).and_then(|n| n.to_str()).unwrap_or("Untitled");
         let kind = match self.format {
             Some(WpFormat::Odt) => "ODF Text",
             Some(WpFormat::Markdown) => "Markdown",
             None => "",
         };
         let right = if kind.is_empty() { fname.to_string() } else { format!("{fname}    ·    {kind}") };
-        let (rw, _) = tr.measure(&right, 13.0, None);
-        tr.draw_text(scene, &right, 13.0, muted, transform * Affine::translate((bar.x1 - 18.0 - rw as f64, ty)), None);
+        chrome::status_bar::draw(scene, transform, tr, theme, bar, &left, &right);
     }
 
     fn draw_toolbar(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, tb: Rect) {
-        scene.fill(Fill::NonZero, transform, theme.tokens.colors.surfaces.raised, None, &tb);
-        let border = Rect::new(tb.x0, tb.y1 - 1.0, tb.x1, tb.y1);
-        scene.fill(Fill::NonZero, transform, theme.tokens.colors.border_standard, None, &border);
-
         let bold_a = self.mark_active_in_selection("strong");
         let italic_a = self.mark_active_in_selection("em");
         let under_a = self.mark_active_in_selection("underline");
@@ -965,69 +949,50 @@ impl WordProcessorWidget {
         let align = self.current_align();
         let font_label = self.current_font().label();
 
-        let white = Color::from_rgb8(0xff, 0xff, 0xff);
-        let mut buttons: Vec<(ToolAction, &str, f64, bool, bool)> = vec![
-            (ToolAction::Bold, "B", 34.0, bold_a, true),
-            (ToolAction::Italic, "I", 30.0, italic_a, false),
-            (ToolAction::Underline, "U", 32.0, under_a, false),
-            (ToolAction::Strike, "S", 30.0, strike_a, false),
-            (ToolAction::H1, "H1", 42.0, kind == "heading" && level == Some(1), false),
-            (ToolAction::H2, "H2", 42.0, kind == "heading" && level == Some(2), false),
-            (ToolAction::Body, "Body", 58.0, kind == "paragraph", false),
-            (ToolAction::Bullet, "• List", 66.0, kind == "list_item", false),
-            (ToolAction::AlignLeft, "L", 30.0, align == "left", false),
-            (ToolAction::AlignCenter, "C", 30.0, align == "center", false),
-            (ToolAction::AlignRight, "R", 30.0, align == "right", false),
-            (ToolAction::FontCycle, font_label, 58.0, false, false),
-            (ToolAction::SizeDown, "A−", 34.0, false, false),
-            (ToolAction::SizeUp, "A+", 34.0, false, false),
-        ];
+        // Build the toolbar spec; the ui::chrome toolbar component owns the look
+        // and hands back each button's clickable rect (zipped to its action).
+        let cue = |a: ToolAction| match a {
+            ToolAction::Bold => LabelCue::Bold,
+            ToolAction::Underline => LabelCue::Underline,
+            ToolAction::Strike => LabelCue::Strike,
+            _ => LabelCue::None,
+        };
+        let group_start = |a: ToolAction| {
+            matches!(a, ToolAction::H1 | ToolAction::AlignLeft | ToolAction::FontCycle | ToolAction::InsertTable | ToolAction::TableRowAdd)
+        };
+        let mut specs: Vec<(ToolAction, ToolbarItem)> = Vec::new();
+        let mut add = |a: ToolAction, label: &str, w: f64, active: bool| {
+            specs.push((a, ToolbarItem::new(label, w).active(active).cue(cue(a)).group_start(group_start(a))));
+        };
+        add(ToolAction::Bold, "B", 34.0, bold_a);
+        add(ToolAction::Italic, "I", 30.0, italic_a);
+        add(ToolAction::Underline, "U", 32.0, under_a);
+        add(ToolAction::Strike, "S", 30.0, strike_a);
+        add(ToolAction::H1, "H1", 42.0, kind == "heading" && level == Some(1));
+        add(ToolAction::H2, "H2", 42.0, kind == "heading" && level == Some(2));
+        add(ToolAction::Body, "Body", 58.0, kind == "paragraph");
+        add(ToolAction::Bullet, "• List", 66.0, kind == "list_item");
+        add(ToolAction::AlignLeft, "L", 30.0, align == "left");
+        add(ToolAction::AlignCenter, "C", 30.0, align == "center");
+        add(ToolAction::AlignRight, "R", 30.0, align == "right");
+        add(ToolAction::FontCycle, font_label, 58.0, false);
+        add(ToolAction::SizeDown, "A−", 34.0, false);
+        add(ToolAction::SizeUp, "A+", 34.0, false);
         // Contextual table section: editing controls inside a cell, else insert.
         if kind == "cell" {
-            buttons.push((ToolAction::TableRowAdd, "+Row", 54.0, false, false));
-            buttons.push((ToolAction::TableRowDel, "−Row", 54.0, false, false));
-            buttons.push((ToolAction::TableColAdd, "+Col", 52.0, false, false));
-            buttons.push((ToolAction::TableColDel, "−Col", 52.0, false, false));
-            buttons.push((ToolAction::TableDelete, "✕", 30.0, false, false));
+            add(ToolAction::TableRowAdd, "+Row", 54.0, false);
+            add(ToolAction::TableRowDel, "−Row", 54.0, false);
+            add(ToolAction::TableColAdd, "+Col", 52.0, false);
+            add(ToolAction::TableColDel, "−Col", 52.0, false);
+            add(ToolAction::TableDelete, "✕", 30.0, false);
         } else {
-            buttons.push((ToolAction::InsertTable, "⊞ Table", 78.0, false, false));
+            add(ToolAction::InsertTable, "⊞ Table", 78.0, false);
         }
+        drop(add);
 
-        self.toolbar.clear();
-        let cy = tb.y0 + TOOLBAR_H / 2.0;
-        let bh = 34.0;
-        let mut x = tb.x0 + 14.0;
-        for (i, (action, label, w, active, bold_label)) in buttons.iter().enumerate() {
-            if i == 4 || i == 8 || i == 11 || i == 14 {
-                let sep = Rect::new(x + 2.0, cy - 12.0, x + 3.0, cy + 12.0);
-                scene.fill(Fill::NonZero, transform, theme.tokens.colors.border_standard, None, &sep);
-                x += 14.0;
-            }
-            let r = Rect::new(x, cy - bh / 2.0, x + w, cy + bh / 2.0);
-            if *active {
-                scene.fill(Fill::NonZero, transform, theme.accent_primary, None, &vello::kurbo::RoundedRect::from_rect(r, 6.0));
-            }
-            let color = if *active { white } else { theme.text_primary };
-            let (lw, _) = tr.measure(label, 15.0, None);
-            let lx = x + (*w - lw as f64) / 2.0;
-            let ly = cy - 9.0;
-            if *bold_label {
-                tr.draw_text_weighted(scene, label, 15.0, color, transform * Affine::translate((lx, ly)), None, ui::text_render::TextWeight::Bold);
-            } else {
-                tr.draw_text(scene, label, 15.0, color, transform * Affine::translate((lx, ly)), None);
-            }
-            // Visual cues: underline the "U" and strike the "S" button labels.
-            if *action == ToolAction::Underline {
-                let uy = ly + 18.0;
-                scene.fill(Fill::NonZero, transform, color, None, &Rect::new(lx, uy, lx + lw as f64, uy + 1.5));
-            }
-            if *action == ToolAction::Strike {
-                let sy = ly + 9.0;
-                scene.fill(Fill::NonZero, transform, color, None, &Rect::new(lx, sy, lx + lw as f64, sy + 1.5));
-            }
-            self.toolbar.push((*action, r));
-            x += w + 6.0;
-        }
+        let items: Vec<ToolbarItem> = specs.iter().map(|(_, item)| item.clone()).collect();
+        let rects = chrome::toolbar::draw(scene, transform, tr, theme, tb, &items);
+        self.toolbar = specs.into_iter().map(|(a, _)| a).zip(rects).collect();
     }
 }
 
