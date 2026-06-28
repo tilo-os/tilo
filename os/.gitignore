@@ -6,6 +6,7 @@
 /terminal
 /browser
 /file-explorer
+/qos-greeter
 # Legacy names from before the qos rename; kept for hygiene during the
 # transition so a stale build doesn't accidentally re-stage them.
 /quick-desktop
