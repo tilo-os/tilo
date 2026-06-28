@@ -4,15 +4,73 @@ use automerge::{AutoCommit, ObjId, Value, transaction::Transactable, ObjType, Re
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, Point};
 use vello::peniko::Color;
-use winit::event::{WindowEvent, ElementState, KeyEvent};
+use winit::event::{WindowEvent, ElementState, KeyEvent, MouseButton};
 use winit::keyboard::{Key, NamedKey};
 use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize, MasterPty};
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use vte::{Parser, Perform};
 use crossbeam_channel::Receiver;
 use unicode_width::UnicodeWidthChar;
+
+/// Cell coordinate within the rendered terminal grid. (row, col) are
+/// indexed relative to the visible viewport (the slice of `grid` that's
+/// currently on screen — see `start_y` in `draw`). The selection model
+/// stores these as viewport-local so highlight rendering can use them
+/// without re-translating through the scrollback offset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct GridPos {
+    pub row: usize,
+    pub col: usize,
+}
+
+/// Flow-selection state, matching xterm / GNOME-Terminal / kitty / alacritty
+/// semantics: `anchor` is where the drag started, `cursor` is where the
+/// pointer currently is, and the selected region walks the buffer in
+/// reading order from `min(anchor, cursor)` to `max(anchor, cursor)`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Selection {
+    pub anchor: GridPos,
+    pub cursor: GridPos,
+}
+
+impl Selection {
+    /// Returns the (start, end) endpoints in reading order.
+    pub fn ordered(&self) -> (GridPos, GridPos) {
+        if self.anchor <= self.cursor {
+            (self.anchor, self.cursor)
+        } else {
+            (self.cursor, self.anchor)
+        }
+    }
+
+    /// True if anchor and cursor coincide — a "collapsed" selection.
+    /// Used after mouse-release to drop selections that were really just
+    /// idle clicks.
+    pub fn is_collapsed(&self) -> bool {
+        self.anchor == self.cursor
+    }
+}
+
+/// Process-wide clipboard handle, lazily initialised on first use. Mirrors
+/// `ui::widget::text_input::clipboard()` — once a parallel subagent extracts
+/// a shared `ui::clipboard_copy` helper, this fallback can be removed.
+fn clipboard_handle() -> Option<&'static Mutex<arboard::Clipboard>> {
+    static CB: OnceLock<Option<Mutex<arboard::Clipboard>>> = OnceLock::new();
+    CB.get_or_init(|| arboard::Clipboard::new().ok().map(Mutex::new))
+        .as_ref()
+}
+
+/// Best-effort clipboard write. Silent on failure — clipboard absence
+/// shouldn't crash the terminal.
+pub(crate) fn clipboard_copy(text: &str) {
+    if let Some(cb) = clipboard_handle() {
+        if let Ok(mut handle) = cb.lock() {
+            let _ = handle.set_text(text.to_string());
+        }
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Attr {
@@ -81,6 +139,24 @@ pub struct TerminalWidget {
     last_fg_default: Color,
     /// Last default-bg color drawn, same rationale as `last_cursor_color`.
     last_bg_default: Color,
+
+    /// Active flow-selection. `None` when nothing is selected (idle, or
+    /// just after a lone click). Coordinates are viewport-local rows /
+    /// grid columns; conversion to grid pixels uses `char_w`/`char_h`
+    /// and `self.rect`.
+    selection: Option<Selection>,
+    /// True between left-mouse-press and left-mouse-release. While set,
+    /// `CursorMoved` events update `selection.cursor` to track the drag.
+    dragging: bool,
+    /// Cursor position cached on every `CursorMoved` so the press arm
+    /// can hit-test without receiving a fresh position. Logical coords
+    /// (post scale-factor divide), matching `text_input`'s convention.
+    last_cursor_pos: Point,
+    /// Viewport scrollback offset captured on the most recent `draw`.
+    /// Stored so `handle_event` can translate logical pixel coordinates
+    /// into viewport-local grid rows (the selection model lives in
+    /// viewport space). Defaults to 0 until the first frame paints.
+    viewport_start_y: usize,
 }
 
 impl TerminalWidget {
@@ -122,12 +198,61 @@ impl TerminalWidget {
             last_cursor_color: Color::from_rgba8(0, 0, 0, 0),
             last_fg_default: Color::from_rgba8(0, 0, 0, 0),
             last_bg_default: Color::from_rgba8(0, 0, 0, 0),
+            selection: None,
+            dragging: false,
+            last_cursor_pos: Point::ZERO,
+            viewport_start_y: 0,
         }
     }
 
     /// Color used for the block cursor on the last `draw`. Test-only accessor
     /// so palette-swap tests can assert the terminal picks up a new theme.
     pub fn last_cursor_color(&self) -> Color { self.last_cursor_color }
+
+    /// Active selection, if any. Test-only — production code reads from
+    /// the widget directly inside `draw` / `handle_event`.
+    pub fn selection(&self) -> Option<Selection> { self.selection }
+    /// True between left-mouse-press and left-mouse-release. Test-only.
+    pub fn is_dragging(&self) -> bool { self.dragging }
+    /// Force the widget into a known geometry for tests. Replicates the
+    /// effect of `apply_layout` without needing a Taffy tree.
+    #[cfg(test)]
+    pub fn force_geometry(&mut self, rect: Rect, char_w: f64, char_h: f64) {
+        self.rect = rect;
+        self.char_w = char_w;
+        self.char_h = char_h;
+    }
+    /// Force a viewport scrollback offset for tests that exercise
+    /// `selected_text` over a `grid` larger than the visible viewport.
+    #[cfg(test)]
+    pub fn force_viewport_start(&mut self, start: usize) {
+        self.viewport_start_y = start;
+    }
+    /// Inject a selection from a test. Avoids needing to simulate a
+    /// full press/drag/release sequence when the test is about
+    /// downstream behaviour (highlight spans, clipboard text).
+    #[cfg(test)]
+    pub fn force_selection(&mut self, sel: Option<Selection>) {
+        self.selection = sel;
+    }
+    /// Replace `grid` from a test. Bypasses the PTY + CRDT path so
+    /// selected-text tests can assert against a known buffer.
+    #[cfg(test)]
+    pub fn force_grid(&mut self, grid: Vec<String>) {
+        self.grid = grid;
+    }
+    /// Compute the per-row spans for the current selection, exposed for
+    /// tests. Returns an empty vec when no selection is active.
+    #[cfg(test)]
+    pub fn current_row_spans(&self) -> Vec<(usize, usize, usize)> {
+        self.selection
+            .as_ref()
+            .map(|sel| selection_row_spans(sel, self.width))
+            .unwrap_or_default()
+    }
+    /// Test-only access to the selected-text helper.
+    #[cfg(test)]
+    pub fn test_selected_text(&self) -> Option<String> { self.selected_text() }
     /// Default-fg color last drawn with (sampled from the theme's terminal
     /// palette). Test-only.
     pub fn last_fg_default(&self) -> Color { self.last_fg_default }
@@ -365,6 +490,29 @@ impl Widget for TerminalWidget {
         let visible_rows = (self.rect.height() / self.char_h).floor() as usize;
         let start_y = if self.grid.len() > visible_rows { self.grid.len() - visible_rows } else { 0 };
 
+        // Cache for `handle_event`: pointer hit-tests translate logical y
+        // into viewport-local rows by subtracting `self.rect.y0` and dividing
+        // by `char_h`. The scrollback offset lives implicitly in `start_y`,
+        // and the selection model already stores viewport-local rows — so
+        // no extra translation is needed, but the selection-rendering
+        // pass below uses the offset directly to find the row in `self.grid`.
+        self.viewport_start_y = start_y;
+
+        // Paint the selection BEFORE the cell text so glyphs read on top
+        // of the highlight. The selection model is viewport-local — row 0
+        // is the first visible row, regardless of scrollback.
+        if let Some(sel) = self.selection {
+            let sel_color = theme.accent_primary.with_alpha_factor(0.30);
+            for (row, start_col, end_col) in selection_row_spans(&sel, self.width) {
+                if row >= visible_rows { continue; }
+                let py = (self.rect.y0 + row as f64 * self.char_h).floor();
+                let x0 = self.rect.x0 + padding_x + start_col as f64 * self.char_w;
+                let x1 = self.rect.x0 + padding_x + end_col as f64 * self.char_w;
+                let band = Rect::new(x0, py, x1, py + self.char_h);
+                scene.fill(vello::peniko::Fill::NonZero, transform, sel_color, None, &band);
+            }
+        }
+
         for (y, line_text) in self.grid.iter().skip(start_y).enumerate() {
             let py = (self.rect.y0 + y as f64 * self.char_h).floor();
             let attrs_idx = y + start_y;
@@ -412,12 +560,75 @@ impl Widget for TerminalWidget {
         scene.fill(vello::peniko::Fill::NonZero, transform, cursor_color, None, &cursor_rect);
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, _scale_factor: f64, modifiers: &winit::event::Modifiers, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, _focus_target: &mut Option<NodeId>, _node_id: NodeId, _taffy: &TaffyTree<()>) {
+    fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, modifiers: &winit::event::Modifiers, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, _focus_target: &mut Option<NodeId>, _node_id: NodeId, _taffy: &TaffyTree<()>) {
         self.init_crdt(state, root);
 
         match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                // Always cache pointer position so the next MouseInput::Pressed
+                // event can hit-test without needing the position from
+                // winit (Pressed arrives without coordinates).
+                let logical = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor_pos = logical;
+                if self.dragging && self.selection.is_some() {
+                    // Compute the new cursor first (only needs `&self`),
+                    // then take a mutable borrow to write it.
+                    let pos = self.pos_from_logical(logical);
+                    let sel = self.selection.as_mut().expect("just checked is_some");
+                    if pos != sel.cursor {
+                        sel.cursor = pos;
+                        *handled = true;
+                    }
+                }
+            }
+            WindowEvent::MouseInput { state: element_state, button: MouseButton::Left, .. } => {
+                // TODO(v2): when the PTY app enables mouse-reporting
+                // (ESC[?1000h family), forward presses to the PTY instead
+                // of starting a selection. v1 always captures for selection.
+                match element_state {
+                    ElementState::Pressed if self.rect.contains(self.last_cursor_pos) => {
+                        let pos = self.pos_from_logical(self.last_cursor_pos);
+                        self.selection = Some(Selection { anchor: pos, cursor: pos });
+                        self.dragging = true;
+                        *handled = true;
+                    }
+                    ElementState::Released => {
+                        if self.dragging {
+                            self.dragging = false;
+                            // Drop collapsed selections (a lone click should
+                            // not paint a one-cell highlight).
+                            if let Some(sel) = self.selection {
+                                if sel.is_collapsed() {
+                                    self.selection = None;
+                                }
+                            }
+                            *handled = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
             WindowEvent::KeyboardInput { event: KeyEvent { logical_key, text, state: element_state, .. }, .. } => {
                 if *element_state == ElementState::Pressed {
+                    let mods = modifiers.state();
+                    // Ctrl+Shift+C → clipboard copy. Must be matched
+                    // BEFORE the regular Ctrl+C → SIGINT path or the user
+                    // would lose the ability to interrupt running
+                    // processes.
+                    if mods.control_key() && mods.shift_key() {
+                        if let Key::Character(c) = logical_key {
+                            if c.as_str().eq_ignore_ascii_case("c") {
+                                if let Some(text) = self.selected_text() {
+                                    if !text.is_empty() {
+                                        clipboard_copy(&text);
+                                    }
+                                }
+                                *handled = true;
+                                return;
+                            }
+                        }
+                    }
+
                     let mut bytes = self.map_key(logical_key, modifiers);
                     if bytes.is_none() {
                         if let Some(t) = text {
@@ -472,6 +683,74 @@ impl TerminalWidget {
         // TODO(plan-4): pass theme.tokens.font_mono.family through draw_text
         // once TextRenderer gains a font-family parameter.
         text_renderer.draw_text(scene, text, font_size, fg, transform * Affine::translate((tx, py)), None);
+    }
+
+    /// Convert a logical pointer position into a viewport-local
+    /// `GridPos`. Coordinates outside the cell grid are clamped to the
+    /// nearest valid cell — this matches xterm's behaviour during a
+    /// drag-select that leaves the terminal area.
+    fn pos_from_logical(&self, p: Point) -> GridPos {
+        // Match the padding used in `draw` so a click on column 0 lands
+        // on column 0 and not -1 due to the leading gutter.
+        let padding_x = self.last_padding_x();
+        let local_x = (p.x - self.rect.x0 - padding_x).max(0.0);
+        let local_y = (p.y - self.rect.y0).max(0.0);
+        let col = (local_x / self.char_w.max(1.0)).floor() as usize;
+        let row = (local_y / self.char_h.max(1.0)).floor() as usize;
+        // `width` is logical grid width; `viewport` height is computed
+        // from `rect.height() / char_h` rather than `self.height` because
+        // resize-clamp may have a stale `self.height` between frames.
+        let visible_rows = (self.rect.height() / self.char_h.max(1.0)).floor() as usize;
+        GridPos {
+            row: row.min(visible_rows.saturating_sub(1)),
+            col: col.min(self.width.saturating_sub(1)),
+        }
+    }
+
+    /// Best-effort recovery of the padding used in the last `draw`. The
+    /// theme isn't available in `handle_event`, so we approximate with
+    /// the same default the OS ships (`spacing.s1` = 4px). If the theme
+    /// changes the value, the worst-case is a one-cell hit-test offset
+    /// at the leftmost column until the next frame syncs the value
+    /// through some shared state — acceptable for v1.
+    fn last_padding_x(&self) -> f64 {
+        4.0
+    }
+
+    /// Walk the selected cells across grid rows and return the joined
+    /// text, with trailing whitespace stripped from each row (standard
+    /// terminal-copy semantics). Returns `None` if there is no selection
+    /// or the selection covers no rows.
+    fn selected_text(&self) -> Option<String> {
+        let sel = self.selection?;
+        let spans = selection_row_spans(&sel, self.width);
+        if spans.is_empty() { return None; }
+
+        let mut out = String::new();
+        for (i, (row, start_col, end_col)) in spans.iter().enumerate() {
+            if i > 0 { out.push('\n'); }
+            // Translate viewport-local row to absolute grid index.
+            let abs_row = self.viewport_start_y + row;
+            let line = self.grid.get(abs_row).map(String::as_str).unwrap_or("");
+
+            // Walk chars and pick out the cells covered by [start_col, end_col).
+            let mut cell_idx = 0usize;
+            let mut row_text = String::new();
+            for c in line.chars() {
+                let w = c.width().unwrap_or(1);
+                if cell_idx >= *end_col { break; }
+                if cell_idx >= *start_col {
+                    row_text.push(c);
+                }
+                cell_idx += w;
+            }
+            // Strip trailing whitespace per row — matches xterm / kitty
+            // / GNOME-Terminal copy semantics so empty cells at the
+            // right edge don't leak into the clipboard.
+            let trimmed = row_text.trim_end();
+            out.push_str(trimmed);
+        }
+        Some(out)
     }
 
     fn map_key(&self, key: &Key, modifiers: &winit::event::Modifiers) -> Option<Vec<u8>> {
@@ -693,6 +972,36 @@ impl<'a> TerminalPerformer<'a> {
         let _ = self.state.put(&self.cursor_id, "x", self.cursor_x as u64);
         let _ = self.state.put(&self.cursor_id, "y", self.absolute_y() as u64);
     }
+}
+
+/// Decompose a flow-selection into per-row pixel spans, in display
+/// order. Each span is `(viewport_row, start_col, end_col)` with
+/// `end_col` exclusive (half-open) so single-row selections of zero
+/// length collapse to nothing.
+///
+/// Layout matches standard terminal-emulator flow semantics:
+/// - Single-row: one span from `start_col` to `end_col`.
+/// - Multi-row: first row goes `start_col..cols`, middle rows go
+///   `0..cols`, last row goes `0..end_col`.
+pub(crate) fn selection_row_spans(sel: &Selection, cols: usize) -> Vec<(usize, usize, usize)> {
+    let (start, end) = sel.ordered();
+    if start == end {
+        // Collapsed selection produces no spans — a lone click clears
+        // the selection on release, but if a `selection_row_spans` call
+        // sneaks in beforehand we should produce nothing.
+        return Vec::new();
+    }
+    let mut spans = Vec::new();
+    if start.row == end.row {
+        spans.push((start.row, start.col, end.col));
+    } else {
+        spans.push((start.row, start.col, cols));
+        for r in (start.row + 1)..end.row {
+            spans.push((r, 0, cols));
+        }
+        spans.push((end.row, 0, end.col));
+    }
+    spans
 }
 
 pub(crate) fn map_ansi_256(code: u8, palette: &ui::tokens::TerminalPalette) -> Color {
