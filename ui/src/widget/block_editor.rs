@@ -1956,6 +1956,37 @@ impl Widget for BlockEditor {
             }
         }
 
+        // Click hit-test: a left-press places the caret in whichever
+        // editable block it lands on — not only the already-focused one.
+        // Focus that block first so the inner TextInput's click handler
+        // (in the routing below) sets the caret at the click position.
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+        {
+            let hit = self.blocks.iter().position(|b| {
+                b.kind.is_editable()
+                    && b.line.get_rect().contains(self.last_mouse_pos)
+            });
+            if let Some(idx) = hit {
+                if self.focused != Some(idx) {
+                    if let Some(prev) = self.focused {
+                        if let Some(b) = self.blocks.get_mut(prev) {
+                            b.line.set_focus(false);
+                        }
+                    }
+                    self.focused = Some(idx);
+                    self.is_focused = true;
+                    if let Some(b) = self.blocks.get_mut(idx) {
+                        b.line.set_focus(true);
+                    }
+                    *focus_target = Some(node_id);
+                }
+            }
+        }
+
         // Route the event to the focused block (if any). Each block
         // re-reads `*handled` so a previously-handled event isn't
         // re-processed.
@@ -2212,6 +2243,60 @@ mod tests {
         ed.set_blocks(vec![Block::paragraph("hi")]);
         // set_blocks leaves the editor unfocused.
         assert!(ed.presence_payload().is_none());
+    }
+
+    #[test]
+    fn click_focuses_the_block_under_the_cursor() {
+        use winit::dpi::PhysicalPosition;
+        use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+
+        let mut e = BlockEditor::new();
+        e.set_blocks(vec![Block::paragraph("first"), Block::paragraph("second")]);
+        // Stack two rows: block 0 at y[0,20], block 1 at y[24,44].
+        e.blocks[0]
+            .line
+            .apply_layout_external(Rect::new(0.0, 0.0, 200.0, 20.0));
+        e.blocks[1]
+            .line
+            .apply_layout_external(Rect::new(0.0, 24.0, 200.0, 44.0));
+        e.focus_block(0, CursorPlacement::End);
+        assert_eq!(e.focused, Some(0));
+
+        let dev: DeviceId = unsafe { std::mem::zeroed() };
+        let moved = WindowEvent::CursorMoved {
+            device_id: dev,
+            position: PhysicalPosition::new(50.0, 30.0), // inside block 1
+        };
+        let click = WindowEvent::MouseInput {
+            device_id: dev,
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        };
+
+        let mut state = AutoCommit::new();
+        let root = automerge::ROOT;
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let mods = Modifiers::default();
+        for ev in [&moved, &click] {
+            let mut handled = false;
+            let mut focus_target = None;
+            e.handle_event(
+                ev,
+                1.0,
+                &mods,
+                &mut state,
+                &root,
+                &mut handled,
+                &mut focus_target,
+                NodeId::new(0),
+                &taffy,
+            );
+        }
+        assert_eq!(
+            e.focused,
+            Some(1),
+            "clicking inside block 1 must move focus (and the caret) there"
+        );
     }
 
     #[test]
