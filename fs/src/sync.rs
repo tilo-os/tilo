@@ -346,4 +346,69 @@ mod tests {
             "B's change must propagate back to A (bidirectional)"
         );
     }
+
+    /// The full collaborative read-write loop: A writes a file with real
+    /// content; B's namespace syncs the entry over gossip; B then hydrates the
+    /// content over iroh-blobs and reads A's actual bytes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn content_written_on_one_peer_hydrates_on_another() {
+        // host A
+        let (ep_a, look_a) = bind_endpoint().await.unwrap();
+        let store_a = Arc::new(ContentStore::memory());
+        let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
+        let ns_a = Arc::new(Mutex::new(Namespace::new("A")));
+        let (ws_a, ticket) =
+            Workspace::host(ep_a.clone(), look_a, store_a.clone(), hyd_a.clone(), ns_a.clone())
+                .await
+                .unwrap();
+
+        // joiner B
+        let (ep_b, look_b) = bind_endpoint().await.unwrap();
+        let store_b = Arc::new(ContentStore::memory());
+        let hyd_b = Arc::new(Hydrator::new(ep_b.clone(), store_b.clone()));
+        let doc = fetch_remote_doc(&ep_b, ticket.node.clone()).await.unwrap();
+        let ns_b = Arc::new(Mutex::new(Namespace::from_bytes("B", &doc).unwrap()));
+        let _ws_b = Workspace::join(
+            ep_b.clone(),
+            look_b,
+            store_b.clone(),
+            hyd_b.clone(),
+            ns_b.clone(),
+            ticket,
+        )
+        .await
+        .unwrap();
+
+        // A writes a file: ingest content into A's store, set the entry, broadcast.
+        let content = b"a shared collaborative document body";
+        let hash = store_a.ingest(Bytes::from_static(content)).await.unwrap();
+        {
+            let delta = {
+                let mut n = ns_a.lock().unwrap();
+                n.create_file(ROOT_INO, "doc.txt", Some(&hash), content.len() as u64, 7)
+                    .unwrap();
+                n.save_incremental()
+            };
+            ws_a.sync.broadcast_delta(delta);
+        }
+
+        // B sees the entry via gossip...
+        assert!(
+            wait_until(|| ns_b.lock().unwrap().entry_at("doc.txt").is_some()).await,
+            "doc entry must sync to B"
+        );
+
+        // ...and hydrates the real bytes from A over iroh-blobs.
+        let bhash = {
+            let mut n = ns_b.lock().unwrap();
+            let attr = n.lookup(ROOT_INO, "doc.txt").unwrap();
+            n.hash_for(attr.ino.0).unwrap()
+        };
+        assert!(!store_b.has(bhash).await, "precondition: B lacks the content");
+        let got = hyd_b
+            .read(bhash, 0, content.len() as u64)
+            .await
+            .expect("B hydrates content from A");
+        assert_eq!(got.as_slice(), content, "B must read A's real bytes");
+    }
 }
