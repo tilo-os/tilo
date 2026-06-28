@@ -573,6 +573,9 @@ impl Widget for WordProcessorWidget {
                 self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
                 if self.dragging {
                     self.caret_from_pointer(self.pointer, true);
+                    // Claim the move so the host App repaints the growing selection
+                    // (its redraw is gated behind `handled`).
+                    *handled = true;
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
@@ -614,7 +617,11 @@ impl Widget for WordProcessorWidget {
                 *handled = true;
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
-                self.dragging = false;
+                if self.dragging {
+                    self.dragging = false;
+                    self.dirty = true;
+                    *handled = true;
+                }
             }
             WindowEvent::KeyboardInput { event: KeyEvent { state: ElementState::Pressed, logical_key, text, .. }, .. } => {
                 if !self.focused {
