@@ -567,6 +567,81 @@ impl WordProcessor {
             .unwrap_or_default()
     }
 
+    /// `(kind, ordered, level)` for a block.
+    fn block_meta(&self, state: &AutoCommit, block: &str) -> (String, bool, Option<i64>) {
+        let Some(c) = self.containers.as_ref() else {
+            return ("paragraph".into(), false, None);
+        };
+        let snap = qdoc::model::materialize(state, c);
+        let b = snap.blocks.iter().find(|b| b.id == block);
+        let kind = b.map(|b| b.kind.clone()).unwrap_or_else(|| "paragraph".into());
+        let ordered = b.map(|b| matches!(b.attrs.get("ordered"), Some(qdoc::AttrVal::Bool(true)))).unwrap_or(false);
+        let level = b.and_then(|b| match b.attrs.get("level") {
+            Some(qdoc::AttrVal::Int(n)) => Some(*n),
+            _ => None,
+        });
+        (kind, ordered, level)
+    }
+
+    /// On a space typed right after a markdown-ish line prefix in a plain
+    /// paragraph, convert the block's style and consume the prefix. Returns true
+    /// if it transformed (caller then skips inserting the space).
+    pub fn autoformat_on_space(&mut self, state: &mut AutoCommit) -> bool {
+        let Some(c) = self.containers.clone() else {
+            return false;
+        };
+        let block = self.caret.block.clone();
+        if self.block_meta(state, &block).0 != "paragraph" {
+            return false;
+        }
+        let text = qdoc::model::block_text(state, &c, &block).unwrap_or_default();
+        let prefix: String = text.chars().take(self.caret.offset).collect();
+        let (kind, level, ordered): (&str, Option<i64>, Option<bool>) = match prefix.as_str() {
+            "-" | "*" | "+" => ("list_item", None, Some(false)),
+            "1." | "1)" => ("list_item", None, Some(true)),
+            "#" => ("heading", Some(1), None),
+            "##" => ("heading", Some(2), None),
+            "###" => ("heading", Some(3), None),
+            _ => return false,
+        };
+        let plen = prefix.chars().count() as isize;
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &c, ids };
+            dm.splice_text(&block, 0, plen, "");
+            dm.set_kind(&block, kind);
+            if let Some(l) = level {
+                dm.set_attr(&block, "level", l);
+            }
+            if let Some(o) = ordered {
+                dm.set_attr(&block, "ordered", o);
+            }
+        }
+        self.caret.offset = 0;
+        true
+    }
+
+    /// Select the whitespace-delimited word under the caret (double-click).
+    pub fn select_word(&mut self, state: &AutoCommit) {
+        let chars: Vec<char> = self.current_text(state).chars().collect();
+        let off = self.caret.offset.min(chars.len());
+        let word = |c: char| !c.is_whitespace();
+        let mut s = off;
+        while s > 0 && word(chars[s - 1]) {
+            s -= 1;
+        }
+        let mut e = off;
+        while e < chars.len() && word(chars[e]) {
+            e += 1;
+        }
+        if s == e {
+            return; // caret is on whitespace
+        }
+        self.caret.offset = s;
+        self.clear_anchor();
+        self.set_anchor();
+        self.caret.offset = e;
+    }
+
     // ---- edit operations ---------------------------------------------------
 
     /// Insert `s` at the caret and advance. Replaces the selection if any.
@@ -584,8 +659,9 @@ impl WordProcessor {
         self.caret.offset = offset + s.chars().count();
     }
 
-    /// Split the current block at the caret into two paragraphs; caret moves to
-    /// the start of the new block.
+    /// Split the current block at the caret. Lists continue (the new block is a
+    /// list item of the same kind); pressing Enter on an *empty* list item exits
+    /// the list (the item becomes a paragraph). Headings split into a paragraph.
     pub fn enter(&mut self, state: &mut AutoCommit) {
         let Some(containers) = self.containers.clone() else {
             return;
@@ -595,13 +671,27 @@ impl WordProcessor {
         let text = qdoc::model::block_text(state, &containers, &block).unwrap_or_default();
         let char_count = text.chars().count();
         let tail: String = text.chars().skip(offset).collect();
+        let (kind, ordered, _level) = self.block_meta(state, &block);
 
+        // Enter on an empty list item exits the list.
+        if kind == "list_item" && char_count == 0 {
+            if let Some(ids) = self.ids.as_mut() {
+                let mut dm = DocMut { doc: state, c: &containers, ids };
+                dm.set_kind(&block, "paragraph");
+            }
+            return;
+        }
+
+        let new_kind = if kind == "list_item" { "list_item" } else { "paragraph" };
         let new_id = if let Some(ids) = self.ids.as_mut() {
             let mut dm = DocMut { doc: state, c: &containers, ids };
             if offset < char_count {
                 dm.splice_text(&block, offset, (char_count - offset) as isize, "");
             }
-            let id = dm.insert_block(Some(&block), "paragraph");
+            let id = dm.insert_block(Some(&block), new_kind);
+            if new_kind == "list_item" {
+                dm.set_attr(&id, "ordered", ordered);
+            }
             if !tail.is_empty() {
                 dm.splice_text(&id, 0, 0, &tail);
             }
@@ -630,6 +720,15 @@ impl WordProcessor {
                 dm.splice_text(&block, offset - 1, 1, "");
             }
             self.caret.offset = offset - 1;
+            return;
+        }
+
+        // Backspace at the start of a list item removes the list style first.
+        if self.block_meta(state, &block).0 == "list_item" {
+            if let Some(ids) = self.ids.as_mut() {
+                let mut dm = DocMut { doc: state, c: &containers, ids };
+                dm.set_kind(&block, "paragraph");
+            }
             return;
         }
 
@@ -909,6 +1008,72 @@ mod tests {
         let (mut wp, mut state) = bound();
         wp.insert_multiline(&mut state, "alpha\nbeta\ngamma");
         assert_eq!(wp.block_texts(&state), vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()]);
+    }
+
+    #[test]
+    fn autoformat_markdown_prefixes() {
+        let (mut wp, mut state) = bound();
+        wp.insert_str(&mut state, "-");
+        assert!(wp.autoformat_on_space(&mut state), "'- ' autoformatted");
+        let b = wp.caret.block.clone();
+        let (kind, ordered, _) = wp.block_meta(&state, &b);
+        assert_eq!(kind, "list_item");
+        assert!(!ordered, "dash → bullet");
+        assert_eq!(wp.current_text(&state), "", "prefix consumed");
+        assert_eq!(wp.caret.offset, 0);
+
+        // "## " → heading 2
+        wp.set_paragraph_style(&mut state, "paragraph", None, None);
+        wp.move_end(&state);
+        wp.insert_str(&mut state, "##");
+        assert!(wp.autoformat_on_space(&mut state));
+        let b = wp.caret.block.clone();
+        let (kind, _, level) = wp.block_meta(&state, &b);
+        assert_eq!(kind, "heading");
+        assert_eq!(level, Some(2));
+
+        // No false positive in the middle of text.
+        let (mut wp2, mut s2) = bound();
+        wp2.insert_str(&mut s2, "a-");
+        assert!(!wp2.autoformat_on_space(&mut s2), "mid-line dash not autoformatted");
+    }
+
+    #[test]
+    fn enter_continues_and_exits_lists() {
+        let (mut wp, mut state) = bound();
+        wp.insert_str(&mut state, "-");
+        wp.autoformat_on_space(&mut state);
+        wp.insert_str(&mut state, "first");
+        wp.enter(&mut state);
+        let b = wp.caret.block.clone();
+        assert_eq!(wp.block_meta(&state, &b).0, "list_item", "Enter continues the list");
+        wp.enter(&mut state); // empty item → exit
+        let b = wp.caret.block.clone();
+        assert_eq!(wp.block_meta(&state, &b).0, "paragraph", "Enter on empty item exits the list");
+    }
+
+    #[test]
+    fn select_word_picks_word_under_caret() {
+        let (mut wp, mut state) = bound();
+        wp.insert_str(&mut state, "hello world foo");
+        wp.caret.offset = 7; // inside "world" (chars 6..11)
+        wp.select_word(&state);
+        let sel = wp.selection_blocks(&state);
+        assert_eq!(sel.len(), 1);
+        assert_eq!((sel[0].1, sel[0].2), (6, 11));
+    }
+
+    #[test]
+    fn backspace_at_list_start_unlists() {
+        let (mut wp, mut state) = bound();
+        wp.insert_str(&mut state, "-");
+        wp.autoformat_on_space(&mut state);
+        wp.insert_str(&mut state, "item");
+        wp.move_home();
+        wp.backspace(&mut state);
+        let b = wp.caret.block.clone();
+        assert_eq!(wp.block_meta(&state, &b).0, "paragraph", "backspace at list start un-lists");
+        assert_eq!(wp.current_text(&state), "item", "text preserved");
     }
 
     #[test]
