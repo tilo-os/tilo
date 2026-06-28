@@ -44,6 +44,25 @@ pub trait Widget {
     fn get_state(&self) -> Option<String> { None }
     fn set_state(&mut self, _state: &str) {}
 
+    /// Deliver an out-of-band string payload injected by the host
+    /// application via [`crate::app::UserEvent::External`]. The default
+    /// is a no-op, so existing widgets are unaffected. Apps that drive a
+    /// worker thread (e.g. the qOS installer streaming `qos-install`
+    /// output back into its status log) override this to fold the
+    /// payload into their state. The App requests a redraw and a re-sync
+    /// after dispatching, so mutating widget/CRDT state here is enough to
+    /// surface the change on the next frame.
+    fn on_external_event(&mut self, _payload: &str, _state: &mut AutoCommit, _root: &ObjId) {}
+
+    /// One-shot signal that the host should move keyboard focus to this
+    /// subtree's first focusable widget after the next structural
+    /// rebuild. Reading the flag MUST clear it (rising-edge semantics).
+    /// Only consulted when [`crate::app::App::autofocus_on_structure_change`]
+    /// is set, so the default (always `false`) leaves the shell / greeter
+    /// untouched. A wizard-style app raises it on step transitions so the
+    /// first field of the new step is typeable without a click.
+    fn take_focus_reset(&mut self) -> bool { false }
+
     // --- Collab / DnD contract extensions ---
     /// Stable identity used to look up presence and permissions for this widget.
     /// Default: opt-out (no presence tracking).

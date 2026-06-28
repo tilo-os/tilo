@@ -34,6 +34,14 @@ pub enum UserEvent {
     /// so an external script can drive strip-pan / overview-scroll /
     /// wheel-disc gestures without a real mouse.
     Wheel { dx: f32, dy: f32 },
+    /// A free-form string payload delivered straight to the root widget's
+    /// [`crate::widget::Widget::on_external_event`]. Unlike the pointer /
+    /// wheel variants this is NOT translated into a `WindowEvent` — it is
+    /// the channel a host app uses to pump out-of-band data (e.g. the qOS
+    /// installer streaming `qos-install` progress lines from a worker
+    /// thread) back into the App for rendering. The App requests a redraw
+    /// + re-sync after dispatch so the new state surfaces next frame.
+    External(String),
 }
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -112,8 +120,18 @@ pub struct App {
     /// user acts". The greeter sets this so the username field is typeable
     /// immediately at the login prompt.
     pub autofocus_first: bool,
+    /// Opt-in: when set, every structural rebuild of the widget tree
+    /// re-establishes keyboard focus. If the root widget raises
+    /// [`crate::widget::Widget::take_focus_reset`] (a wizard advancing to a
+    /// new step) focus jumps to the first focusable of the rebuilt tree;
+    /// otherwise focus is *preserved* by re-selecting the focusable at the
+    /// same ordinal position (so a rebuild triggered by an unrelated state
+    /// change — e.g. a validation message appearing — doesn't silently
+    /// drop the caret). Default `false`: the shell / greeter keep their
+    /// existing rebuild-focus behaviour untouched.
+    pub autofocus_on_structure_change: bool,
     modifiers: winit::event::Modifiers,
-    
+
     // Stable state for Undo/Redo tracking
     last_stable_focus_idx: Option<usize>,
     last_stable_metadata: Option<String>,
@@ -176,6 +194,7 @@ impl App {
             focused_node: None,
             focusable_order: Vec::new(),
             autofocus_first: false,
+            autofocus_on_structure_change: false,
             modifiers: winit::event::Modifiers::default(),
             last_stable_focus_idx: None,
             last_stable_metadata: None,
@@ -792,6 +811,17 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 };
                 self.window_event(event_loop, window_id, ev);
             }
+            UserEvent::External(payload) => {
+                // Out-of-band payload: hand straight to the root widget,
+                // then drive a re-sync + redraw so its mutation paints.
+                // (Used by the qOS installer to stream backend progress
+                // from a worker thread into its status log.)
+                let app = &mut self.app;
+                app.root_widget
+                    .on_external_event(&payload, &mut app.state.doc, &app.state.root);
+                app.needs_sync = true;
+                window.request_redraw();
+            }
         }
     }
 
@@ -945,6 +975,18 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // pass below sees them.
                 app.structure_dirty |= app.root_widget.take_structure_dirty();
                 if app.structure_dirty {
+                    // Opt-in focus continuity across the rebuild (wizard
+                    // apps). Capture the pre-rebuild focus ordinal and the
+                    // root's one-shot reset request BEFORE the tree is torn
+                    // down — the focusable node ids are about to change.
+                    let (prev_focus_idx, focus_reset) = if app.autofocus_on_structure_change {
+                        let idx = app
+                            .focused_node
+                            .and_then(|id| app.focusable_order.iter().position(|&x| x == id));
+                        (idx, app.root_widget.take_focus_reset())
+                    } else {
+                        (None, false)
+                    };
                     app.taffy = TaffyTree::new();
                     app.node_map.clear();
                     app.root_node = Some(app.root_widget.build_layout(
@@ -955,6 +997,27 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     app.structure_dirty = false;
                     app.layout_dirty = true;
                     app.update_focusable_order();
+                    if app.autofocus_on_structure_change {
+                        if focus_reset {
+                            // Step transition: hand focus to the first
+                            // field of the freshly-built step.
+                            if let Some(&first) = app.focusable_order.first() {
+                                app.set_focused_node(Some(first));
+                            }
+                        } else if let Some(idx) = prev_focus_idx {
+                            // Incidental rebuild (e.g. a status line
+                            // appeared): keep focus on the same ordinal so
+                            // the caret doesn't vanish mid-edit.
+                            let target = app
+                                .focusable_order
+                                .get(idx)
+                                .or_else(|| app.focusable_order.last())
+                                .copied();
+                            if let Some(id) = target {
+                                app.set_focused_node(Some(id));
+                            }
+                        }
+                    }
                 }
 
                 // Phase timing (gated). `QUICK_UI_PERF=1` enables a
