@@ -5,13 +5,20 @@
 //   * default — build a `GreeterApp`, hand it to `ui::App`, run the live
 //     winit event loop. Launched at the greetd VT under `cage`:
 //         cage -s -- /usr/bin/qos-greeter
-//   * `--shots <PATH>` — render the login card once into a PNG at
-//     `<PATH>` and exit. No window, no event loop. Headless snapshot for
-//     CI / visual inspection (identical output to the live binary).
+//     The event-loop proxy is captured via `run_with_setup` so the
+//     background auth worker can pump prompts/results back into the UI.
+//   * `--shots <PATH> [--scenario form|error|authenticating|fingerprint]`
+//     — render one login-card state into a PNG at `<PATH>` and exit. No
+//     window, no event loop. Headless snapshot for CI / visual inspection
+//     (identical output to the live binary). `--scenario` defaults to
+//     `form`.
 
 use std::collections::HashMap;
+use std::sync::{Arc, OnceLock};
 
+use greeter::greeter_app::AuthScenario;
 use greeter::GreeterApp;
+use ui::app::UserEvent;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -22,6 +29,7 @@ use taffy::prelude::*;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 use vello::Scene;
+use winit::event_loop::EventLoopProxy;
 
 /// Default offscreen viewport for `--shots`.
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
@@ -31,18 +39,34 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
-        let widget = GreeterApp::new();
-        render_shot_to_png(Box::new(widget), DEFAULT_SHOTS_VIEWPORT, &out)?;
+        let scenario = parse_scenario_arg(&args).unwrap_or(AuthScenario::Form);
+        // Seed sample credentials for every state except the empty form so
+        // the snapshot is representative (live runs start with empty
+        // fields).
+        let seed = !matches!(scenario, AuthScenario::Form);
+        let widget = GreeterApp::for_shot(scenario);
+        render_shot_to_png(Box::new(widget), DEFAULT_SHOTS_VIEWPORT, &out, seed)?;
         return Ok(());
     }
 
-    let widget = GreeterApp::new();
+    // Slot the event loop populates once it starts; the greeter reads it to
+    // spawn the background auth worker.
+    let proxy_slot: Arc<OnceLock<EventLoopProxy<UserEvent>>> = Arc::new(OnceLock::new());
+    let widget = GreeterApp::new().with_proxy_slot(proxy_slot.clone());
     let state = ui::State::new();
     let mut app = ui::App::new(state, Box::new(widget));
     // Hand the keyboard to the username field at startup so the user can
     // type credentials immediately, with no click required.
     app.autofocus_first = true;
-    app.run();
+    // Preserve keyboard focus across the structural rebuilds triggered by
+    // session-cycle, status, and auth-phase changes — without this the
+    // caret/focus is dropped on every status update (deliverable #4). The
+    // greeter never raises `take_focus_reset`, so focus is *preserved* at
+    // the same focusable ordinal rather than reset to the first field.
+    app.autofocus_on_structure_change = true;
+    app.run_with_setup(move |proxy| {
+        let _ = proxy_slot.set(proxy);
+    });
     Ok(())
 }
 
@@ -61,14 +85,45 @@ fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
     None
 }
 
+/// Returns the `--scenario <name>` (or `--scenario=<name>`) login-card
+/// state for a shot, if present and recognised.
+fn parse_scenario_arg(args: &[String]) -> Option<AuthScenario> {
+    let mut iter = args.iter().skip(1);
+    let raw = loop {
+        let arg = iter.next()?;
+        if arg == "--scenario" {
+            break iter.next()?.clone();
+        }
+        if let Some(rest) = arg.strip_prefix("--scenario=") {
+            break rest.to_string();
+        }
+    };
+    match raw.as_str() {
+        "form" => Some(AuthScenario::Form),
+        "error" => Some(AuthScenario::Error),
+        "authenticating" => Some(AuthScenario::Authenticating),
+        "fingerprint" => Some(AuthScenario::Fingerprint),
+        _ => None,
+    }
+}
+
 /// Run one offscreen frame against `widget` at `viewport` and write the
 /// resulting RGBA to `out` as a PNG. Mirrors `ui::App`'s
 /// `sync → build_layout → compute_layout → apply_layout → draw` cycle.
+///
+/// `seed_creds` pre-populates the username/password CRDT objects so the
+/// non-form screens render representative text. Because the composed
+/// children are only created *inside* `build_layout`, we sync a second time
+/// afterwards so those children (the TextInputs) pull their values from the
+/// document — the live App achieves the same via its per-frame sync.
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
     out: &std::path::Path,
+    seed_creds: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    use automerge::{transaction::Transactable, ObjType};
+
     let (w, h) = viewport;
     let theme = Theme::dark();
     let presence = PresenceCtx::empty();
@@ -78,9 +133,25 @@ fn render_shot_to_png(
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
     let mut state = ui::State::new();
+
+    if seed_creds {
+        let uobj = state
+            .doc
+            .put_object(&state.root, "greeter.username", ObjType::Text)?;
+        let _ = state.doc.splice_text(&uobj, 0, 0, "ada");
+        let pobj = state
+            .doc
+            .put_object(&state.root, "greeter.password", ObjType::Text)?;
+        let _ = state.doc.splice_text(&pobj, 0, 0, "hunter2");
+    }
+
     widget.sync(&mut state.doc, &state.root);
 
     let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
+
+    // Second sync so the freshly-composed children pull from the doc.
+    widget.sync(&mut state.doc, &state.root);
+
     let root = taffy.new_with_children(
         Style {
             size: Size {

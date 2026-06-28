@@ -1,0 +1,26 @@
+[package]
+name = "installer"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "installer"
+path = "src/lib.rs"
+
+[[bin]]
+name = "qos-installer"
+path = "src/main.rs"
+
+[dependencies]
+# Mirrors the dep set used by the `ui`-based system apps (greeter /
+# file-explorer): the toolkit plus the trait crates its `Widget` impls
+# reference directly.
+ui = { path = "../ui" }
+automerge = "0.8.0"
+vello = "0.9"
+winit = "0.30.13"
+taffy = "0.10.1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+[dev-dependencies]
