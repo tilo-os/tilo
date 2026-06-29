@@ -18,6 +18,11 @@ pub struct Button {
     is_pressed: bool,
     is_focused: bool,
     on_click_path: Option<String>, // Path in CRDT to mutate
+    /// Optional imperative click handler, fired on release-while-hovered
+    /// *in addition to* any `on_click_path` CRDT mutation. Lets app code
+    /// that isn't modelling its control flow in the CRDT (e.g. the file
+    /// explorer's command sink) react to a press without a message bus.
+    on_click: Option<Box<dyn FnMut()>>,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
     /// Scene cache. Holds the last emitted body / border / label
@@ -45,6 +50,7 @@ impl Button {
             is_pressed: false,
             is_focused: false,
             on_click_path: on_click_path.map(|s| s.to_string()),
+            on_click: None,
             presence_path: Vec::new(),
             permission_scope: None,
             cached: vello::Scene::new(),
@@ -65,6 +71,14 @@ impl Button {
     /// the widget renders dimmed and rejects input.
     pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
         self.permission_scope = Some(scope);
+        self
+    }
+
+    /// Attach an imperative click handler. Fires once per completed
+    /// click (left-button release while the cursor is still over the
+    /// button), in addition to any `on_click_path` CRDT mutation.
+    pub fn on_click<F: FnMut() + 'static>(mut self, f: F) -> Self {
+        self.on_click = Some(Box::new(f));
         self
     }
 }
@@ -232,6 +246,10 @@ impl Widget for Button {
                                     }
                                 }
                             }
+                            // Imperative handler fires alongside the CRDT path.
+                            if let Some(cb) = &mut self.on_click {
+                                cb();
+                            }
                         }
                     }
                 } else if self.is_pressed {
@@ -307,5 +325,50 @@ mod tests {
     fn button_test_id_returns_label() {
         let b = Button::new("id", "Save", None);
         assert_eq!(Widget::test_id(&b), Some("Save"));
+    }
+
+    #[test]
+    fn on_click_callback_fires_on_release_over_button() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        use winit::event::{DeviceId, ElementState, MouseButton};
+
+        let fired = Rc::new(Cell::new(0u32));
+        let mut b = {
+            let fired = fired.clone();
+            Button::new("id", "Go", None).on_click(move || fired.set(fired.get() + 1))
+        };
+
+        // Lay the button out so it has a non-zero hit rect.
+        let mut tree = TaffyTree::<()>::new();
+        let mut node_map = std::collections::HashMap::new();
+        let theme = Theme::dark();
+        let node = b.build_layout(&mut tree, &theme, &mut node_map);
+        tree.compute_layout(
+            node,
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(200.0),
+                height: taffy::AvailableSpace::Definite(60.0),
+            },
+        )
+        .unwrap();
+        b.apply_layout(&tree, node, Point::ZERO);
+
+        let device: DeviceId = unsafe { std::mem::zeroed() };
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mods = winit::event::Modifiers::default();
+        let mut dispatch = |b: &mut Button, ev: WindowEvent| {
+            let mut handled = false;
+            let mut focus = None;
+            b.handle_event(&ev, 1.0, &mods, &mut doc, &root, &mut handled, &mut focus, node, &tree);
+        };
+
+        // Hover, press, release — the callback fires once on release.
+        dispatch(&mut b, WindowEvent::CursorMoved { device_id: device, position: (10.0, 10.0).into() });
+        dispatch(&mut b, WindowEvent::MouseInput { device_id: device, state: ElementState::Pressed, button: MouseButton::Left });
+        assert_eq!(fired.get(), 0, "not fired until release");
+        dispatch(&mut b, WindowEvent::MouseInput { device_id: device, state: ElementState::Released, button: MouseButton::Left });
+        assert_eq!(fired.get(), 1, "fired once on release over the button");
     }
 }
