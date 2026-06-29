@@ -4,6 +4,7 @@ members = [
     "shell",
     "ui",
     "os-actions",
+    "qos-collab-types",
     "apps/file-explorer",
     "apps/terminal",
     "apps/browser",
