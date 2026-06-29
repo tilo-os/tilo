@@ -29,7 +29,7 @@ use iroh_blobs::Hash;
 
 pub const ROOT_INO: u64 = 1;
 /// Sentinel parent for the tree root (not materialized as a node).
-const ROOT_ID: &str = "ROOT";
+pub const ROOT_ID: &str = "ROOT";
 /// Sentinel parent for deleted subtrees (not materialized as a node).
 const TRASH_ID: &str = "TRASH";
 
@@ -510,10 +510,43 @@ impl Namespace {
         if self.node(&id).is_none() || !self.reaches_root(&id) {
             return false;
         }
+        // Record the content at deletion time, so a *concurrent* edit (which
+        // changes `hash` but not `deleted_hash`) can be detected and resurrected.
+        match self.node_hash(&id) {
+            Some(h) => self.set_field(&id, "deleted_hash", hash_to_hex(&h)),
+            None => {
+                if let Some(obj) = self.node(&id) {
+                    let _ = self.doc.delete(&obj, "deleted_hash");
+                }
+            }
+        }
         let cur = self.parent_of(&id).unwrap_or_else(|| ROOT_ID.to_string());
         self.set_field(&id, "prev_parent", cur);
         self.set_field(&id, "parent", TRASH_ID);
         true
+    }
+
+    /// Nodes whose parent is the TRASH sentinel directly (explicitly deleted).
+    pub fn directly_trashed(&self) -> Vec<String> {
+        self.doc
+            .keys(&self.nodes)
+            .filter(|id| self.parent_of(id).as_deref() == Some(TRASH_ID))
+            .collect()
+    }
+
+    /// The content hash a node had when it was deleted (for modify/delete detection).
+    pub fn deleted_hash(&self, id: &str) -> Option<Hash> {
+        read_str(&self.doc, &self.node(id)?, "deleted_hash").and_then(|h| hash_from_hex(&h))
+    }
+
+    /// A node's parent before its most recent move (its pre-deletion location).
+    pub fn prev_parent(&self, id: &str) -> Option<String> {
+        read_str(&self.doc, &self.node(id)?, "prev_parent")
+    }
+
+    /// Whether `id` (or the ROOT sentinel) is reachable from the root.
+    pub fn is_visible(&self, id: &str) -> bool {
+        self.reaches_root(id)
     }
 
     /// Rename / move: a single reparent (the node keeps its id → inode stable).
@@ -543,6 +576,9 @@ impl Namespace {
         // rename replaces the target).
         if let Some(existing) = self.child_named(&new_parent_id, new_name) {
             if existing != id {
+                if let Some(h) = self.node_hash(&existing) {
+                    self.set_field(&existing, "deleted_hash", hash_to_hex(&h));
+                }
                 let ep = self.parent_of(&existing).unwrap_or_else(|| ROOT_ID.to_string());
                 self.set_field(&existing, "prev_parent", ep);
                 self.set_field(&existing, "parent", TRASH_ID);
@@ -837,6 +873,20 @@ mod tests {
             !a.reaches_root(&new_id.unwrap()),
             "but it is not reachable from root (consistently trashed, not orphaned)"
         );
+    }
+
+    #[test]
+    fn tree_survives_save_and_reload() {
+        // Persistence: save() bytes must reconstruct the whole tree + content.
+        let mut a = Namespace::new("a");
+        let dir = a.create_dir(ROOT_INO, "docs", 1).unwrap();
+        a.create_file(dir, "f.txt", Some(&h(5)), 5, 1).unwrap();
+        let bytes = a.save();
+
+        let mut b = Namespace::from_bytes("a", &bytes).unwrap();
+        let d = b.lookup(ROOT_INO, "docs").expect("dir restored");
+        let f = b.lookup(d.ino.0, "f.txt").expect("nested file restored");
+        assert_eq!(b.hash_for(f.ino.0), Some(h(5)));
     }
 
     #[test]
