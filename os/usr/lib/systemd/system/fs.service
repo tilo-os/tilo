@@ -22,7 +22,9 @@ Type=simple
 # where systemd-tmpfiles-setup hasn't run yet.
 ExecStartPre=/usr/bin/mkdir -p /var/workspace
 ExecStartPre=/usr/bin/mkdir -p /var/cache/quick-fs
-ExecStart=/usr/bin/fs --mount-point /var/workspace --cache-dir /var/cache/quick-fs
+# `serve` hosts a fresh collaborative workspace and mounts it; --cache-dir is
+# the persistent iroh-blobs content store (survives reboots under bootc).
+ExecStart=/usr/bin/fs serve --mount-point /var/workspace --cache-dir /var/cache/quick-fs
 # `fusermount -u` is preferable to plain `umount` because it doesn't
 # need CAP_SYS_ADMIN. `-z` makes the unmount lazy so a hung client
 # can't block shutdown.
