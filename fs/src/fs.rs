@@ -25,6 +25,9 @@ pub struct QuickFS {
     sync: Option<Arc<SyncHandle>>,
     /// Per-inode in-flight write buffers (content-addressed on flush/release).
     write_buffers: Mutex<HashMap<u64, Vec<u8>>>,
+    /// Cached serialized form of each document inode, keyed by the doc's heads,
+    /// so a multi-chunk read exports once (and getattr's size stays current).
+    doc_exports: Mutex<HashMap<u64, (Vec<automerge::ChangeHash>, Vec<u8>)>>,
 }
 
 impl QuickFS {
@@ -54,6 +57,7 @@ impl QuickFS {
             registry,
             sync: None,
             write_buffers: Mutex::new(HashMap::new()),
+            doc_exports: Mutex::new(HashMap::new()),
         }
     }
 
@@ -63,20 +67,56 @@ impl QuickFS {
         self.registry.provider_for_ext(ext).map(|_| ext.to_lowercase())
     }
 
+    /// Whether `ino` is a CRDT-backed document (vs. opaque content).
+    fn is_document(&self, ino: u64) -> bool {
+        self.namespace.lock().unwrap().document_codec(ino).is_some()
+    }
+
     /// Commit an in-flight write buffer: import it as a document, or ingest it
     /// as opaque chunked content.
     fn commit_buffer(&self, ino: u64, data: &[u8]) {
-        let is_doc = self.namespace.lock().unwrap().document_codec(ino).is_some();
+        let is_doc = self.is_document(ino);
         if is_doc {
+            // import_document validates before replacing; an invalid input
+            // leaves the previous content intact and returns false.
             let delta = {
                 let mut ns = self.namespace.lock().unwrap();
-                ns.import_document(ino, &self.registry, data, now_ms());
-                ns.save_incremental()
+                if ns.import_document(ino, &self.registry, data, now_ms()) {
+                    ns.save_incremental()
+                } else {
+                    Vec::new()
+                }
             };
-            self.publish(delta);
+            self.doc_exports.lock().unwrap().remove(&ino);
+            if delta.is_empty() {
+                eprintln!("document import rejected (invalid format); previous content kept");
+            } else {
+                self.publish(delta);
+            }
         } else if let Err(e) = self.commit_content(ino, data) {
             eprintln!("commit failed (content preserved): {e}");
         }
+    }
+
+    /// The serialized (on-wire) bytes of a document inode, exported once per
+    /// change and cached so multi-chunk reads and `getattr` are cheap + consistent.
+    fn document_export(&self, ino: u64) -> Option<Vec<u8>> {
+        let heads = self.namespace.lock().unwrap().heads();
+        if let Some((h, bytes)) = self.doc_exports.lock().unwrap().get(&ino) {
+            if *h == heads {
+                return Some(bytes.clone());
+            }
+        }
+        let (heads, bytes) = {
+            let mut ns = self.namespace.lock().unwrap();
+            let bytes = ns.export_document(ino, &self.registry)?;
+            (ns.heads(), bytes)
+        };
+        self.doc_exports
+            .lock()
+            .unwrap()
+            .insert(ino, (heads, bytes.clone()));
+        Some(bytes)
     }
 
     /// Attach a sync handle so write ops propagate to peers.
@@ -109,6 +149,13 @@ impl QuickFS {
     fn read_full_blocking(&self, ino: u64) -> io::Result<Vec<u8>> {
         if let Some(buf) = self.write_buffers.lock().unwrap().get(&ino) {
             return Ok(buf.clone());
+        }
+        // Documents seed from their current serialized form (so a partial /
+        // append write modifies the real content rather than an empty buffer).
+        if self.is_document(ino) {
+            return self
+                .document_export(ino)
+                .ok_or_else(|| io::Error::other("document export failed"));
         }
         let hash = self.namespace.lock().unwrap().hash_for(ino);
         let Some(hash) = hash else {
@@ -219,10 +266,19 @@ impl Filesystem for QuickFS {
             .unwrap()
             .get(&ino.0)
             .map(|b| b.len() as u64);
+        // Documents have no stored byte length — report the current export size
+        // (so a collaboratively-edited document isn't read truncated).
+        let doc_len = if buf_len.is_none()
+            && self.is_document(ino.0)
+        {
+            self.document_export(ino.0).map(|b| b.len() as u64)
+        } else {
+            None
+        };
         let ns = self.namespace.lock().unwrap();
         match ns.getattr(ino.0) {
             Some(mut attr) => {
-                if let Some(len) = buf_len {
+                if let Some(len) = buf_len.or(doc_len) {
                     attr.size = len;
                     attr.blocks = len.div_ceil(512);
                 }
@@ -287,14 +343,9 @@ impl Filesystem for QuickFS {
             return;
         }
 
-        // Documents: serialize the embedded CRDT to its on-wire bytes.
-        if self.namespace.lock().unwrap().document_codec(ino.0).is_some() {
-            let bytes = self
-                .namespace
-                .lock()
-                .unwrap()
-                .export_document(ino.0, &self.registry);
-            match bytes {
+        // Documents: serve the cached serialization (one export per change).
+        if self.is_document(ino.0) {
+            match self.document_export(ino.0) {
                 Some(b) => reply.data(&slice(&b, offset, size)),
                 None => reply.error(to_errno(EIO)),
             }
@@ -385,23 +436,24 @@ impl Filesystem for QuickFS {
         // failure must fail the write, never seed-from-empty and truncate.
         let absent = self.write_buffers.lock().unwrap().get(&ino.0).is_none();
         let seed = if absent {
-            if self.namespace.lock().unwrap().document_codec(ino.0).is_some() {
-                // Documents are rewritten whole (then imported); never seed from
-                // the exported/normalized bytes.
-                Some(Vec::new())
-            } else {
-                match self.read_full_blocking(ino.0) {
-                    Ok(d) => Some(d),
-                    Err(_) => {
-                        reply.error(to_errno(EIO));
-                        return;
-                    }
+            // Seed from current content (export for documents, hydrated bytes
+            // for opaque files) so a partial/append write modifies it correctly.
+            match self.read_full_blocking(ino.0) {
+                Ok(d) => Some(d),
+                Err(_) => {
+                    reply.error(to_errno(EIO));
+                    return;
                 }
             }
         } else {
             None
         };
 
+        let start = offset as usize;
+        let Some(end) = start.checked_add(data.len()) else {
+            reply.error(to_errno(EINVAL));
+            return;
+        };
         {
             let mut bufs = self.write_buffers.lock().unwrap();
             // or_insert keeps any buffer a racing op already created.
@@ -409,8 +461,6 @@ impl Filesystem for QuickFS {
                 Some(d) => bufs.entry(ino.0).or_insert(d),
                 None => bufs.entry(ino.0).or_default(),
             };
-            let start = offset as usize;
-            let end = start + data.len();
             if end > buf.len() {
                 buf.resize(end, 0);
             }
@@ -479,26 +529,23 @@ impl Filesystem for QuickFS {
     ) {
         // Handle truncation/extension; ignore perm/owner/time changes.
         if let Some(new_size) = size {
-            if self.namespace.lock().unwrap().document_codec(ino.0).is_some() {
-                // A document is rewritten whole; truncation just begins a fresh
-                // buffer that the subsequent writes fill and `release` imports.
-                self.write_buffers.lock().unwrap().insert(ino.0, Vec::new());
-            } else {
-                let mut data = match self.read_full_blocking(ino.0) {
-                    Ok(d) => d,
-                    Err(_) => {
-                        reply.error(to_errno(EIO));
-                        return;
-                    }
-                };
-                data.resize(new_size as usize, 0);
-                let open = self.write_buffers.lock().unwrap().contains_key(&ino.0);
-                if open {
-                    self.write_buffers.lock().unwrap().insert(ino.0, data);
-                } else if let Err(_e) = self.commit_content(ino.0, &data) {
+            let is_doc = self.is_document(ino.0);
+            let mut data = match self.read_full_blocking(ino.0) {
+                Ok(d) => d,
+                Err(_) => {
                     reply.error(to_errno(EIO));
                     return;
                 }
+            };
+            data.resize(new_size as usize, 0);
+            let open = self.write_buffers.lock().unwrap().contains_key(&ino.0);
+            // Documents always stage in the buffer (imported as a whole on
+            // release); opaque files commit immediately when not open.
+            if open || is_doc {
+                self.write_buffers.lock().unwrap().insert(ino.0, data);
+            } else if let Err(_e) = self.commit_content(ino.0, &data) {
+                reply.error(to_errno(EIO));
+                return;
             }
         }
 
