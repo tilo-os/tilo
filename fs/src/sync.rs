@@ -415,13 +415,12 @@ async fn reconcile_loop(
 
         let conflicts = crate::conflict::detect(&namespace.lock().unwrap());
         for c in conflicts {
-            // Hydrate the losing blob so the copy has a correct size (and the
-            // bytes are cached locally). Skipped if no peer can serve it yet;
-            // retried on the next pass.
-            if let Ok(bytes) = hydrator.read(c.loser, 0, u64::MAX).await {
+            // Fetch just the loser's manifest for its length (chunks hydrate
+            // lazily on read). Skipped if no peer can serve it yet; retried next pass.
+            if let Ok(len) = hydrator.content_len(c.loser).await {
                 let delta = {
                     let mut ns = namespace.lock().unwrap();
-                    crate::conflict::materialize(&mut ns, &c, bytes.len() as u64, now_ms())
+                    crate::conflict::materialize(&mut ns, &c, len, now_ms())
                 };
                 if !delta.is_empty() {
                     let _ = sender.broadcast(Bytes::from(delta)).await;
@@ -558,9 +557,9 @@ mod tests {
         .await
         .unwrap();
 
-        // A writes a file: ingest content into A's store, set the entry, broadcast.
+        // A writes a file: chunk+ingest content into A's store, set the entry, broadcast.
         let content = b"a shared collaborative document body";
-        let hash = store_a.ingest(Bytes::from_static(content)).await.unwrap();
+        let hash = store_a.write_content(content).await.unwrap().unwrap();
         {
             let delta = {
                 let mut n = ns_a.lock().unwrap();

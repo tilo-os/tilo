@@ -276,11 +276,8 @@ async fn seed_from_dir(
             } else if ft.is_file() {
                 let data = std::fs::read(&path)?;
                 let size = data.len() as u64;
-                let hash = if data.is_empty() {
-                    None
-                } else {
-                    Some(store.ingest(bytes::Bytes::from(data)).await?)
-                };
+                // Chunk + ingest as a manifest (same content model as writes).
+                let hash = store.write_content(&data).await?;
                 namespace
                     .lock()
                     .unwrap()

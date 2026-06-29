@@ -72,6 +72,27 @@ impl ContentStore {
         Ok(tag.hash)
     }
 
+    /// Content-defined-chunk `data`, ingest each chunk (the store dedups
+    /// identical chunks), and ingest a manifest describing them. Returns the
+    /// manifest hash (`None` for empty input). Editing part of a large file
+    /// only stores the chunks that actually changed.
+    pub async fn write_content(&self, data: &[u8]) -> Result<Option<Hash>> {
+        if data.is_empty() {
+            return Ok(None);
+        }
+        let mut chunks = Vec::new();
+        for chunk in crate::content::split(data) {
+            let h = self.ingest(Bytes::copy_from_slice(chunk)).await?;
+            chunks.push(crate::content::ChunkRef {
+                hash: *h.as_bytes(),
+                len: chunk.len() as u32,
+            });
+        }
+        let manifest = crate::content::Manifest { chunks };
+        let mh = self.ingest(Bytes::from(manifest.encode())).await?;
+        Ok(Some(mh))
+    }
+
     /// Locally-available bytes for `hash` (cache → store), or `None` if absent.
     pub async fn local(&self, hash: Hash) -> Option<Bytes> {
         if let Some(b) = self.cache.get(&hash) {
