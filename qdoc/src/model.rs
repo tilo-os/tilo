@@ -14,10 +14,18 @@ use std::collections::BTreeMap;
 /// Resolved object ids for the canonical container maps under a document root.
 #[derive(Clone, Debug)]
 pub struct Containers {
+    /// The document root these containers live under. Needed so the blobs map can
+    /// be created lazily for documents opened before the blobs map existed (the
+    /// root is not always `automerge::ROOT` — a host may nest the model).
+    pub root: ObjId,
     pub blocks: ObjId,
     pub styles: ObjId,
     pub preserved: ObjId,
     pub meta: ObjId,
+    /// Content-addressed binary store (blake3 hex → `Bytes`). `None` for documents
+    /// saved under an older schema that predates the blobs map; created lazily on
+    /// the first [`DocMut::put_blob`].
+    pub blobs: Option<ObjId>,
 }
 
 /// Per-replica, collision-free block id generator: `{actor_hex}.{counter}`.
@@ -65,7 +73,7 @@ pub fn seeded_id_gen(doc: &AutoCommit, c: &Containers) -> IdGen {
     IdGen::with_counter(actor, next)
 }
 
-/// Write schema scalars + create the four container maps under `root`.
+/// Write schema scalars + create the container maps under `root`.
 pub fn init(doc: &mut AutoCommit, root: &ObjId) -> Containers {
     doc.put(root, KEY_SCHEMA, SCHEMA_ID).unwrap();
     doc.put(root, KEY_SCHEMA_VERSION, SCHEMA_VERSION).unwrap();
@@ -73,16 +81,20 @@ pub fn init(doc: &mut AutoCommit, root: &ObjId) -> Containers {
     let styles = doc.put_object(root, KEY_STYLES, ObjType::Map).unwrap();
     let preserved = doc.put_object(root, KEY_PRESERVED, ObjType::Map).unwrap();
     let meta = doc.put_object(root, KEY_META, ObjType::Map).unwrap();
-    Containers { blocks, styles, preserved, meta }
+    let blobs = doc.put_object(root, KEY_BLOBS, ObjType::Map).unwrap();
+    Containers { root: root.clone(), blocks, styles, preserved, meta, blobs: Some(blobs) }
 }
 
-/// Resolve existing containers under `root`.
+/// Resolve existing containers under `root`. The blobs map is optional so
+/// documents written before it existed still open (it is then created lazily).
 pub fn open(doc: &AutoCommit, root: &ObjId) -> Result<Containers, DocError> {
     Ok(Containers {
+        root: root.clone(),
         blocks: map_at(doc, root, KEY_BLOCKS)?,
         styles: map_at(doc, root, KEY_STYLES)?,
         preserved: map_at(doc, root, KEY_PRESERVED)?,
         meta: map_at(doc, root, KEY_META)?,
+        blobs: opt_map_at(doc, root, KEY_BLOBS),
     })
 }
 
@@ -91,6 +103,50 @@ fn map_at(doc: &AutoCommit, root: &ObjId, key: &str) -> Result<ObjId, DocError> 
         Some((Value::Object(ObjType::Map), id)) => Ok(id),
         _ => Err(DocError::Invalid(format!("root.{key} is not a map"))),
     }
+}
+
+/// Resolve an optional map (returns `None` if absent rather than erroring).
+fn opt_map_at(doc: &AutoCommit, root: &ObjId, key: &str) -> Option<ObjId> {
+    match doc.get(root, key) {
+        Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
+        _ => None,
+    }
+}
+
+/// Resolve the blobs map object, preferring the cached id and falling back to a
+/// fresh root lookup (so a lazily-created map is still found via reads).
+fn blobs_obj(doc: &AutoCommit, c: &Containers) -> Option<ObjId> {
+    if let Some(b) = &c.blobs {
+        return Some(b.clone());
+    }
+    opt_map_at(doc, &c.root, KEY_BLOBS)
+}
+
+/// Fetch a content-addressed blob by its blake3 hex hash.
+pub fn blob(doc: &AutoCommit, c: &Containers, hash: &str) -> Option<Vec<u8>> {
+    let blobs = blobs_obj(doc, c)?;
+    match doc.get(&blobs, hash) {
+        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+            ScalarValue::Bytes(b) => Some(b.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// All content-addressed blobs (`blake3_hex` → bytes).
+pub fn blobs(doc: &AutoCommit, c: &Containers) -> BTreeMap<String, Vec<u8>> {
+    let mut out = BTreeMap::new();
+    if let Some(blobs) = blobs_obj(doc, c) {
+        for k in doc.keys(&blobs) {
+            if let Ok(Some((Value::Scalar(s), _))) = doc.get(&blobs, &k) {
+                if let ScalarValue::Bytes(b) = s.as_ref() {
+                    out.insert(k, b.clone());
+                }
+            }
+        }
+    }
+    out
 }
 
 // ---- reads -----------------------------------------------------------------
@@ -225,7 +281,7 @@ pub fn materialize(doc: &AutoCommit, c: &Containers) -> DocSnapshot {
         .into_iter()
         .map(|id| materialize_block(doc, &c.blocks, &id))
         .collect();
-    DocSnapshot { schema: SCHEMA_ID.to_string(), schema_version: SCHEMA_VERSION, blocks }
+    DocSnapshot { schema: SCHEMA_ID.to_string(), schema_version: SCHEMA_VERSION, blocks, blobs: blobs(doc, c) }
 }
 
 fn materialize_block(doc: &AutoCommit, container: &ObjId, id: &str) -> BlockView {
@@ -388,5 +444,19 @@ impl<'a> DocMut<'a> {
     /// part), keyed by `key`. Re-emitted unchanged on export.
     pub fn set_preserved(&mut self, key: &str, bytes: &[u8]) {
         let _ = self.doc.put(&self.c.preserved, key, ScalarValue::Bytes(bytes.to_vec()));
+    }
+
+    /// Store `bytes` in the content-addressed blob store and return its blake3
+    /// hex hash (the key an `image` block's `blob` attr references). Idempotent —
+    /// re-putting identical bytes hashes to the same key. Creates the blobs map
+    /// lazily for documents opened under an older schema.
+    pub fn put_blob(&mut self, bytes: &[u8]) -> String {
+        let hash = blake3::hash(bytes).to_hex().to_string();
+        let blobs = match blobs_obj(self.doc, self.c) {
+            Some(b) => b,
+            None => self.doc.put_object(&self.c.root, KEY_BLOBS, ObjType::Map).unwrap(),
+        };
+        let _ = self.doc.put(&blobs, hash.as_str(), ScalarValue::Bytes(bytes.to_vec()));
+        hash
     }
 }
