@@ -21,6 +21,8 @@ pub struct Button {
     /// before (icon + label) the text. Lets toolbars render crisp lucide
     /// icons without depending on a Nerd Font being installed.
     icon: Option<crate::icons::Icon>,
+    /// Optional fixed (width, height) override; defaults to 120×40.
+    size: Option<(f32, f32)>,
     on_click_path: Option<String>, // Path in CRDT to mutate
     /// Optional imperative click handler, fired on release-while-hovered
     /// *in addition to* any `on_click_path` CRDT mutation. Lets app code
@@ -54,6 +56,7 @@ impl Button {
             is_pressed: false,
             is_focused: false,
             icon: None,
+            size: None,
             on_click_path: on_click_path.map(|s| s.to_string()),
             on_click: None,
             presence_path: Vec::new(),
@@ -94,6 +97,13 @@ impl Button {
         self.icon = Some(icon);
         self
     }
+
+    /// Override the default 120×40 intrinsic size — e.g. a compact 40×36
+    /// square for a toolbar icon button.
+    pub fn with_size(mut self, width: f32, height: f32) -> Self {
+        self.size = Some((width, height));
+        self
+    }
 }
 
 impl Widget for Button {
@@ -102,10 +112,12 @@ impl Widget for Button {
     }
 
     fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
+        let (w, h) = self.size.unwrap_or((120.0, 40.0));
         let node = taffy.new_leaf(Style {
+            flex_shrink: 0.0,
             size: Size {
-                width: Dimension::length(120.0),
-                height: Dimension::length(40.0),
+                width: Dimension::length(w),
+                height: Dimension::length(h),
             },
             ..Default::default()
         }).unwrap();
