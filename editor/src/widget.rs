@@ -114,9 +114,6 @@ impl Edges {
             Side::Left => self.left = v,
         }
     }
-    fn set_all(&mut self, v: f64) {
-        *self = Edges::uniform(v);
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -127,13 +124,34 @@ enum Side {
     Left,
 }
 
-/// An active guide drag: which layout element, which side, and whether Ctrl was
-/// held (drag all four sides together).
+/// How a guide drag distributes to the other sides.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum DragKind {
+    /// Plain: move the grabbed side and its opposite symmetrically.
+    Pair,
+    /// Shift: move only the grabbed side.
+    Single,
+    /// Ctrl: scale all four sides proportionally.
+    Proportional,
+}
+
+/// An active guide drag: which layout element, which side, and how it distributes.
 #[derive(Clone, Copy)]
 struct GuideDrag {
     mode: LayoutMode,
     side: Side,
-    all: bool,
+    kind: DragKind,
+}
+
+impl Side {
+    fn opposite(self) -> Side {
+        match self {
+            Side::Top => Side::Bottom,
+            Side::Bottom => Side::Top,
+            Side::Left => Side::Right,
+            Side::Right => Side::Left,
+        }
+    }
 }
 
 fn char_to_byte(text: &str, char_off: usize) -> usize {
@@ -146,29 +164,6 @@ fn byte_to_char(text: &str, byte_off: usize) -> usize {
 
 /// `(font size, whole-block bold, left indent, optional bullet)`. Size is the
 /// style default; per-run `fontSize` marks override it in `block_runs`.
-fn block_style(b: &BlockView) -> (f32, bool, f64, Option<&'static str>) {
-    match b.kind.as_str() {
-        "heading" => {
-            let level = match b.attrs.get("level") {
-                Some(AttrVal::Int(n)) => *n,
-                _ => 1,
-            };
-            let size = match level {
-                1 => 30.0,
-                2 => 25.0,
-                3 => 21.0,
-                _ => 18.0,
-            };
-            (size, true, 0.0, None)
-        }
-        "list_item" => {
-            let ordered = matches!(b.attrs.get("ordered"), Some(AttrVal::Bool(true)));
-            (16.5, false, 28.0, Some(if ordered { "1." } else { "•" }))
-        }
-        _ => (16.5, false, 0.0, None),
-    }
-}
-
 fn char_has(i: usize, marks: &[MarkSpan], name: &str) -> bool {
     marks.iter().any(|m| m.name == name && i >= m.start && i < m.end)
 }
@@ -228,12 +223,42 @@ fn parse_hex_rgb(s: &str) -> Option<[u8; 3]> {
 }
 
 /// Pick a block's horizontal alignment from its `align` attribute.
-fn block_align(b: &BlockView) -> TextAlign {
+fn block_align(b: &BlockView, default: TextAlign) -> TextAlign {
     match b.attrs.get("align") {
         Some(AttrVal::Str(s)) if s == "center" => TextAlign::Center,
         Some(AttrVal::Str(s)) if s == "right" => TextAlign::Right,
+        Some(AttrVal::Str(s)) if s == "left" => TextAlign::Left,
+        _ => default,
+    }
+}
+
+/// Map a style's font / align strings to the ui enums.
+fn parse_font(name: &str) -> FontFamily {
+    match name {
+        "serif" => FontFamily::Serif,
+        "mono" => FontFamily::Mono,
+        _ => FontFamily::Sans,
+    }
+}
+fn style_align(s: &str) -> TextAlign {
+    match s {
+        "center" => TextAlign::Center,
+        "right" => TextAlign::Right,
         _ => TextAlign::Left,
     }
+}
+
+/// Resolve the style id for a block from its kind / level / explicit `style` attr.
+fn block_style_key(b: &BlockView) -> String {
+    let level = match b.attrs.get("level") {
+        Some(AttrVal::Int(n)) => Some(*n),
+        _ => None,
+    };
+    let explicit = match b.attrs.get("style") {
+        Some(AttrVal::Str(s)) => Some(s.as_str()),
+        _ => None,
+    };
+    crate::styles::style_key_for(&b.kind, level, explicit)
 }
 
 /// Split a block's text into styled runs (bold/italic/size/family) + underline
@@ -298,6 +323,12 @@ struct Laid {
     height: f64,
     layout: RichTextLayout,
     bullet: Option<String>,
+    /// Resolved text colour from the block's style.
+    ink: Color,
+    /// Resolved paragraph border from the block's style.
+    border: Option<crate::styles::BorderProps>,
+    /// Left text indent from the block's style (for the border box).
+    indent: f64,
     /// Full grid-cell rectangle (table cells only) — for borders + precise hit.
     cell_box: Option<Rect>,
     /// Grid row index (table cells only) — for header tint + zebra striping.
@@ -339,9 +370,11 @@ pub struct WordProcessorWidget {
     /// each frame from the laid-out content height.
     scroll_y: f64,
     max_scroll: f64,
+    /// The document's stylesheet (component-instance styles). Authoritative copy
+    /// in the widget; reloaded from the doc when not mid-drag, persisted on edit.
+    sheet: crate::styles::StyleSheet,
     /// Page layout — all fully customizable by dragging guides on the page.
     margins: Edges,
-    para_spacing: f64,
     border_on: bool,
     border: Edges,
     layout_mode: LayoutMode,
@@ -378,8 +411,8 @@ impl WordProcessorWidget {
             rich_clip: None,
             scroll_y: 0.0,
             max_scroll: 0.0,
+            sheet: crate::styles::StyleSheet::default(),
             margins: Edges::uniform(72.0),
-            para_spacing: 8.0,
             border_on: false,
             border: Edges::uniform(28.0),
             layout_mode: LayoutMode::None,
@@ -487,6 +520,28 @@ fn inset_from_pointer(page: Rect, side: Side, p: Point) -> f64 {
     raw.clamp(4.0, max)
 }
 
+/// Apply a guide drag to `e`: Pair = grabbed side + its opposite, Single = just
+/// the grabbed side, Proportional = scale all four by the same factor.
+fn apply_edges(e: &mut Edges, page: Rect, side: Side, p: Point, kind: DragKind) {
+    let v = inset_from_pointer(page, side, p);
+    match kind {
+        DragKind::Single => e.set(side, v),
+        DragKind::Pair => {
+            e.set(side, v);
+            e.set(side.opposite(), v);
+        }
+        DragKind::Proportional => {
+            let f = v / e.get(side).max(1.0);
+            let max_h = (page.width() / 2.0 - 48.0).max(8.0);
+            let max_v = (page.height() / 2.0 - 48.0).max(8.0);
+            e.left = (e.left * f).clamp(4.0, max_h);
+            e.right = (e.right * f).clamp(4.0, max_h);
+            e.top = (e.top * f).clamp(4.0, max_v);
+            e.bottom = (e.bottom * f).clamp(4.0, max_v);
+        }
+    }
+}
+
 impl WordProcessorWidget {
     /// Toggle a layout-edit mode from a chip click. The Border chip cycles
     /// off → on+edit → off so the border can be added and removed in place.
@@ -513,12 +568,23 @@ impl WordProcessorWidget {
         }
     }
 
-    /// `(x-center, y)` of the paragraph-spacing grip — centered in the first
-    /// inter-block gap, from the last frame's laid-out positions.
+    /// The style id of the block under the caret.
+    fn focused_style_key(&self) -> Option<String> {
+        self.blocks.iter().find(|b| b.id == self.inner.caret.block).map(block_style_key)
+    }
+
+    /// The `space_after` of the focused block's style.
+    fn focused_space_after(&self) -> f64 {
+        self.focused_style_key().map(|k| self.sheet.get(&k).space_after as f64).unwrap_or(8.0)
+    }
+
+    /// `(x-center, y)` of the spacing grip — centered in the gap *after the
+    /// focused block*, so dragging it edits that block's style (every block of
+    /// the same style follows).
     fn spacing_handle(&self) -> Option<(f64, f64)> {
-        let a = self.laid.first()?;
+        let l = self.laid.iter().find(|l| l.id == self.inner.caret.block).or_else(|| self.laid.first())?;
         let cx = (self.page_rect.x0 + self.page_rect.x1) / 2.0;
-        Some((cx, a.y_top + a.height + self.para_spacing / 2.0))
+        Some((cx, l.y_top + l.height + self.focused_space_after() / 2.0))
     }
 
     /// Which guide (if any) is under the pointer, for the active layout mode.
@@ -550,19 +616,26 @@ impl WordProcessorWidget {
     fn apply_guide_drag(&mut self, gd: GuideDrag, p: Point) {
         let page = self.page_rect;
         match gd.mode {
-            LayoutMode::Margins => {
-                let v = inset_from_pointer(page, gd.side, p);
-                if gd.all { self.margins.set_all(v) } else { self.margins.set(gd.side, v) }
-            }
+            LayoutMode::Margins => apply_edges(&mut self.margins, page, gd.side, p, gd.kind),
             LayoutMode::Border => {
-                let v = inset_from_pointer(page, gd.side, p);
-                if gd.all { self.border.set_all(v) } else { self.border.set(gd.side, v) }
+                apply_edges(&mut self.border, page, gd.side, p, gd.kind);
                 self.border_on = true;
             }
             LayoutMode::Spacing => {
-                if let Some(a) = self.laid.first() {
-                    let gap_top = a.y_top + a.height;
-                    self.para_spacing = (2.0 * (p.y - gap_top)).clamp(0.0, 56.0);
+                // Edit the focused block's *style* spacing — all blocks of that
+                // style follow (component-instance model).
+                let bottom = self
+                    .laid
+                    .iter()
+                    .find(|l| l.id == self.inner.caret.block)
+                    .or_else(|| self.laid.first())
+                    .map(|l| l.y_top + l.height);
+                let key = self.focused_style_key();
+                if let (Some(bottom), Some(key)) = (bottom, key) {
+                    let after = (2.0 * (p.y - bottom)).clamp(0.0, 80.0) as f32;
+                    if let Some(st) = self.sheet.styles.get_mut(&key) {
+                        st.space_after = after;
+                    }
                 }
             }
             LayoutMode::None => {}
@@ -576,7 +649,13 @@ impl WordProcessorWidget {
             let drag = self.guide_drag;
             for side in [Side::Left, Side::Right, Side::Top, Side::Bottom] {
                 let (vert, c) = guide_axis(page, e, side);
-                let active = drag.map(|g| g.all || g.side == side).unwrap_or(false);
+                let active = drag
+                    .map(|g| match g.kind {
+                        DragKind::Proportional => true,
+                        DragKind::Pair => g.side == side || g.side.opposite() == side,
+                        DragKind::Single => g.side == side,
+                    })
+                    .unwrap_or(false);
                 let col = if active { GUIDE } else { GUIDE_FAINT };
                 let t = if active { 2.0 } else { 1.0 };
                 let line = if vert {
@@ -597,7 +676,7 @@ impl WordProcessorWidget {
             if let Some((hx, hy)) = self.spacing_handle() {
                 let pill = Rect::new(hx - 20.0, hy - 3.0, hx + 20.0, hy + 3.0);
                 scene.fill(Fill::NonZero, transform, GUIDE, None, &vello::kurbo::RoundedRect::from_rect(pill, 3.0));
-                let label = format!("{} px", self.para_spacing.round() as i64);
+                let label = format!("{} px", self.focused_space_after().round() as i64);
                 tr.draw_text(scene, &label, 12.0, GUIDE, transform * Affine::translate((hx + 30.0, hy - 7.0)), None);
             }
         }
@@ -632,7 +711,10 @@ impl WordProcessorWidget {
                 "border  L {}  T {}  R {}  B {}   ·   drag a side · Ctrl-drag = all · click Border to remove",
                 self.border.left.round(), self.border.top.round(), self.border.right.round(), self.border.bottom.round()
             ),
-            LayoutMode::Spacing => format!("paragraph spacing  {} px   ·   drag the handle in the gap", self.para_spacing.round()),
+            LayoutMode::Spacing => {
+                let name = self.focused_style_key().map(|k| self.sheet.get(&k).name).unwrap_or_else(|| "Body".into());
+                format!("{} spacing  {} px   ·   drag the handle — every “{}” block follows", name, self.focused_space_after().round(), name)
+            }
             LayoutMode::None => "Page layout — pick Margins, Border, or Spacing, then drag on the page".to_string(),
         };
         tr.draw_text(scene, &readout, 12.5, Color::from_rgb8(0x9a, 0x9e, 0xa8), transform * Affine::translate((x + 12.0, cy - 8.0)), None);
@@ -643,6 +725,11 @@ impl Widget for WordProcessorWidget {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         self.inner.bind(state, root);
         self.refresh_blocks(state);
+        // Reload the stylesheet from the doc unless we're mid-drag (which holds a
+        // live local edit not yet persisted).
+        if self.guide_drag.is_none() {
+            self.sheet = self.inner.stylesheet(state);
+        }
         self.dirty = true;
     }
 
@@ -678,8 +765,10 @@ impl Widget for WordProcessorWidget {
         scene.fill(Fill::NonZero, transform, CANVAS, None, &canvas);
 
         // Per-side page geometry — every margin is independently customizable.
+        // The page is a FIXED size (it does not resize with the window); the
+        // window just shows more or less of it and centers it.
         let m = self.margins;
-        let page_w = (canvas.width() - 2.0 * PAGE_TOP).clamp(320.0, MAX_PAGE_W);
+        let page_w = MAX_PAGE_W;
         let page_x = canvas.x0 + ((canvas.width() - page_w) / 2.0).max(0.0);
         let page_top = canvas.y0 + PAGE_TOP;
         let content_x = page_x + m.left;
@@ -717,7 +806,7 @@ impl Widget for WordProcessorWidget {
                                 false,
                                 16.0,
                                 (col_w - 2.0 * cell_pad).max(24.0) as f32,
-                                block_align(cell),
+                                block_align(cell, TextAlign::Left),
                                 FontFamily::Sans,
                                 underlines,
                                 strikes,
@@ -740,15 +829,20 @@ impl Widget for WordProcessorWidget {
                             height: layout.height() as f64,
                             layout,
                             bullet: None,
+                            ink: INK,
+                            border: None,
+                            indent: 0.0,
                             cell_box: Some(cbox),
                             cell_row: Some(r),
                         });
                     }
                     y += row_h;
                 }
-                y += self.para_spacing;
+                y += self.sheet.get("body").space_after as f64;
             } else {
-                let (size, base_bold, indent, _bullet) = block_style(b);
+                // Resolve the block's style (component-instance model).
+                let st = self.sheet.get(&block_style_key(b));
+                let (size, base_bold, indent) = (st.size, st.bold, st.indent as f64);
                 let bullet = if b.kind == "list_item" {
                     if matches!(b.attrs.get("ordered"), Some(AttrVal::Bool(true))) {
                         ol_count += 1;
@@ -761,6 +855,7 @@ impl Widget for WordProcessorWidget {
                     ol_count = 0;
                     None
                 };
+                y += st.space_before as f64;
                 let wrap_w = (content_w - indent as f32).max(40.0);
                 let (runs, underlines, strikes) = block_runs(b);
                 let layout = RichTextLayout::shape(
@@ -769,8 +864,8 @@ impl Widget for WordProcessorWidget {
                     base_bold,
                     size,
                     wrap_w,
-                    block_align(b),
-                    FontFamily::Sans,
+                    block_align(b, style_align(&st.align)),
+                    parse_font(&st.font),
                     underlines,
                     strikes,
                 );
@@ -785,14 +880,17 @@ impl Widget for WordProcessorWidget {
                     height: layout.height() as f64,
                     layout,
                     bullet,
+                    ink: Color::from_rgb8(st.color[0], st.color[1], st.color[2]),
+                    border: st.border.clone(),
+                    indent,
                     cell_box: None,
                     cell_row: None,
                 });
-                y += laid.last().unwrap().height + self.para_spacing;
+                y += laid.last().unwrap().height + st.space_after as f64;
                 bi += 1;
             }
         }
-        let content_bottom = y - self.para_spacing + m.bottom;
+        let content_bottom = y + m.bottom;
         let page_h = (content_bottom - page_top).max(canvas.height() - 2.0 * PAGE_TOP);
 
         // Scrolling: clamp the offset to the overflow, then shift the laid-out
@@ -851,7 +949,7 @@ impl Widget for WordProcessorWidget {
             }
 
             if let Some(bul) = &l.bullet {
-                text_renderer.draw_text(scene, bul, l.size, INK, transform * Affine::translate((l.text_x - 24.0, l.y_top)), None);
+                text_renderer.draw_text(scene, bul, l.size, l.ink, transform * Affine::translate((l.text_x - 24.0, l.y_top)), None);
             }
 
             if let Some((b0, b1)) = self.selection_bytes_for(&l.id, &l.text) {
@@ -866,7 +964,23 @@ impl Widget for WordProcessorWidget {
                 }
             }
 
-            text_renderer.draw_rich(scene, &l.layout, transform * Affine::translate((l.text_x, l.y_top)), INK);
+            // Per-style paragraph border (e.g. a Quote's left rule).
+            if let Some(bd) = &l.border {
+                let bx0 = l.text_x - bd.pad as f64;
+                let bx1 = l.text_x + l.width + bd.pad as f64;
+                let by0 = l.y_top - bd.pad as f64 * 0.5;
+                let by1 = l.y_top + l.height + bd.pad as f64 * 0.5;
+                let col = Color::from_rgb8(bd.color[0], bd.color[1], bd.color[2]);
+                let stroke = vello::kurbo::Stroke::new(bd.width as f64);
+                let mut seg = |x0: f64, y0: f64, x1: f64, y1: f64| {
+                    scene.stroke(&stroke, transform, col, None, &vello::kurbo::Line::new((x0, y0), (x1, y1)));
+                };
+                if bd.left { seg(bx0, by0, bx0, by1); }
+                if bd.right { seg(bx1, by0, bx1, by1); }
+                if bd.top { seg(bx0, by0, bx1, by0); }
+                if bd.bottom { seg(bx0, by1, bx1, by1); }
+            }
+            text_renderer.draw_rich(scene, &l.layout, transform * Affine::translate((l.text_x, l.y_top)), l.ink);
 
             if self.focused && l.id == self.inner.caret.block && !self.inner.has_selection() {
                 let byte = char_to_byte(&l.text, self.inner.caret.offset);
@@ -938,6 +1052,7 @@ impl Widget for WordProcessorWidget {
                 if let Some(gd) = self.guide_drag {
                     // Live-drag a layout guide (margin / border / spacing).
                     self.apply_guide_drag(gd, self.pointer);
+                    self.dirty = true; // repaint every move so the preview is live
                     *handled = true;
                 } else if self.drag.drag().is_some() {
                     // Extend the selection: keep the anchor, move the caret.
@@ -980,7 +1095,14 @@ impl Widget for WordProcessorWidget {
                 // a text selection.
                 if self.layout_mode != LayoutMode::None {
                     if let Some(side) = self.hit_guide(self.pointer) {
-                        self.guide_drag = Some(GuideDrag { mode: self.layout_mode, side, all: ctrl });
+                        let kind = if ctrl {
+                            DragKind::Proportional
+                        } else if shift {
+                            DragKind::Single
+                        } else {
+                            DragKind::Pair
+                        };
+                        self.guide_drag = Some(GuideDrag { mode: self.layout_mode, side, kind });
                         self.dirty = true;
                         *handled = true;
                         return;
@@ -999,7 +1121,13 @@ impl Widget for WordProcessorWidget {
                 *handled = true;
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
-                if self.guide_drag.take().is_some() {
+                if let Some(gd) = self.guide_drag.take() {
+                    // A style edit (spacing) persists into the document on release.
+                    if gd.mode == LayoutMode::Spacing {
+                        let sheet = self.sheet.clone();
+                        self.inner.set_stylesheet(state, &sheet);
+                        self.needs_commit = true;
+                    }
                     self.dirty = true;
                     *handled = true;
                 } else if self.drag.release() {
@@ -1298,7 +1426,7 @@ impl WordProcessorWidget {
 
     fn current_size(&self) -> f32 {
         match self.font_probe() {
-            Some((b, pos)) => char_font_size(pos, &b.marks).unwrap_or_else(|| block_style(b).0),
+            Some((b, pos)) => char_font_size(pos, &b.marks).unwrap_or_else(|| self.sheet.get(&block_style_key(b)).size),
             None => 16.5,
         }
     }
