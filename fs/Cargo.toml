@@ -13,6 +13,7 @@ iroh-base = "0.96.1"
 iroh-blobs = "0.98.0"
 iroh-gossip = "0.96.0"
 automerge = "0.8.0"
+qdoc = { path = "../qdoc" }
 libc = "0.2.186"
 moka = { version = "0.12.15", features = ["sync"] }
 serde = "1.0.228"
