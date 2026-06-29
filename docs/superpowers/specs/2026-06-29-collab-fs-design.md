@@ -216,12 +216,22 @@ buffer-aware `stat`, rename inode-alias cleanup, a periodic **anti-entropy `reco
 + merges peers' full docs to recover from dropped gossip or a mid-join window), a pump that survives
 transient gossip errors, and timeouts on the bootstrap exchange.
 
+## Move-tree CRDT (2026-06-29, commit `b86a53d`)
+
+The original path-keyed flat map was replaced with an **id-keyed move-tree CRDT** (Kleppmann
+*"A highly-available move operation for replicated trees"*, realization **B + prev_parent**):
+nodes are keyed by a stable `NodeId` with an explicit `parent` pointer, so rename/move/delete are
+real reparent ops. Delete = move to a `TRASH` sentinel; one `parent` register per node makes
+duplicate-parents impossible; a deterministic `resolve()` (pure function of the converged Automerge
+doc) breaks any move-cycle by reverting the lowest-id node to its `prev_parent`, so all peers
+converge on the same acyclic tree. Wired into the sync pump (apply+resolve, broadcast the repair)
+and the reconcile loop. This **fixes the delete-dir/create-child orphan and the cross-move cycle**
+below; it also makes rename a single reparent (inode preserved for free).
+
 ## Known limitations (deferred, documented from review)
 
-- **Delete-dir vs create-child race:** if one peer removes a directory while another concurrently
-  creates a child inside it, the child can be orphaned (live entry under a tombstoned parent). This
-  is inherent to the path-keyed flat-map model; the proper fix is a move-aware tree CRDT (Kleppmann)
-  — a future schema change, out of scope for this milestone.
+- ~~**Delete-dir vs create-child race** → orphan~~ — **FIXED** by the move-tree above (the child is
+  consistently trashed with its parent on every peer, never dangling).
 - **Modify/delete race:** the no-loss guarantee covers concurrent *edit/edit* (→ conflict copy). If a
   *delete* wins over a concurrent *content edit* of the same file, the editor's bytes are not yet
   surfaced as a conflict copy. Deferred.
