@@ -5,6 +5,7 @@ members = [
     "ui",
     "os-actions",
     "qos-collab-types",
+    "qos-relay",
     "apps/file-explorer",
     "apps/terminal",
     "apps/browser",
