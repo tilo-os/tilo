@@ -106,10 +106,12 @@ case "${1:-test}" in
     mkdir -p "$A_MNT/d"; echo deep > "$A_MNT/d/n.txt"
     wait_content "$B_MNT" "d/n.txt" && check "A mkdir+nested -> B" "$(cat "$B_MNT/d/n.txt")" "deep" || { echo "FAIL mkdir (timeout)"; fail=1; }
 
-    # concurrent edit -> a conflict copy must appear somewhere
-    echo "edit-from-A" > "$A_MNT/README.txt" &
-    echo "edit-from-B" > "$B_MNT/README.txt" &
-    wait
+    # concurrent edit -> a conflict copy must appear somewhere.
+    # NOTE: wait only on these two writers — a bare `wait` would also block on
+    # the long-lived serve/mount background jobs and hang forever.
+    echo "edit-from-A" > "$A_MNT/README.txt" & wa=$!
+    echo "edit-from-B" > "$B_MNT/README.txt" & wb=$!
+    wait "$wa" "$wb"
     sleep 5  # let gossip + the reconcile pass settle
     if ls "$A_MNT"/README.txt.sync-conflict-* "$B_MNT"/README.txt.sync-conflict-* >/dev/null 2>&1; then
         echo "PASS concurrent edit produced a conflict copy"

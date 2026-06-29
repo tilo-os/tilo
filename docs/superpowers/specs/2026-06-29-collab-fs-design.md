@@ -232,10 +232,12 @@ below; it also makes rename a single reparent (inode preserved for free).
 
 - ~~**Delete-dir vs create-child race** → orphan~~ — **FIXED** by the move-tree above (the child is
   consistently trashed with its parent on every peer, never dangling).
-- **Modify/delete race:** the no-loss guarantee covers concurrent *edit/edit* (→ conflict copy). If a
-  *delete* wins over a concurrent *content edit* of the same file, the editor's bytes are not yet
-  surfaced as a conflict copy. Deferred.
+- ~~**Modify/delete race**~~ — **FIXED** (commit `6f12b6a`): `remove()` records the content hash at
+  deletion; a concurrent edit of a deleted file is resurrected as a `*.sync-conflict-*` copy.
+- ~~**Namespace was in-memory only**~~ — **FIXED** (commit `6f12b6a`): the tree is persisted atomically
+  to `<cache-dir>/namespace.bin` and restored on start (serve restores; mount is offline-capable).
+- ~~**Anti-entropy pulled the whole document each pass**~~ — **FIXED** (commit `e6e7750`): reconcile
+  now uses Automerge's incremental sync protocol (only missing changes exchanged). *Still open:*
+  Automerge history growth / doc compaction (drop-history needs causal-stability detection).
 - **Whole-file re-ingest on write** (no chunked/range dedup) — fine for documents, suboptimal for
-  large files.
-- **Anti-entropy is a periodic full-doc pull** (3 s) — fine at metadata scale; Automerge history
-  growth / doc compaction is a later optimization.
+  large files. This is the remaining larger item (content-defined chunking, e.g. FastCDC).
