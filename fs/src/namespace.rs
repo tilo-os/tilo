@@ -1,30 +1,25 @@
-//! The namespace plane: an Automerge-CRDT-backed directory tree.
+//! The namespace plane: an Automerge-backed **move-tree CRDT**.
 //!
-//! This replaces the old in-memory `MetadataStore`. The directory structure and
-//! per-file metadata live in a single Automerge document that is replicated to
-//! every peer, so concurrent structural edits (create / delete / rename) merge
-//! deterministically with no lost operations.
+//! Nodes are keyed by a stable `NodeId` (not by path) and carry an explicit
+//! `parent` pointer, turning rename/move/delete into real *move operations*
+//! (the Kleppmann model). This eliminates the failure modes of a path-keyed
+//! flat map:
 //!
-//! ## Schema (path-keyed flat map)
+//! - **No duplicate parents:** `parent` is one Automerge register → one value.
+//! - **No dangling orphans:** delete = move the node to the `TRASH` sentinel;
+//!   a child created under a concurrently-deleted dir simply ends up *under*
+//!   that dir which is under `TRASH` — consistently deleted on every peer,
+//!   never floating.
+//! - **No cycles:** concurrent "move X→Y" + "move Y→X" can leave a cycle after
+//!   the LWW merge; [`Namespace::resolve`] deterministically breaks it by
+//!   reverting the lowest-id node in the cycle to its `prev_parent` (or `ROOT`).
+//!   Because `resolve` is a pure function of the converged document, every peer
+//!   computes the same repair → convergence.
 //!
-//! ```text
-//! ROOT.entries : Map<String /*path*/, Entry>
-//! Entry        : Map { kind: "file"|"dir", hash: hex?, size: u64,
-//!                      mtime: u64 /*ms*/, author: String, deleted: bool }
-//! ```
-//!
-//! Paths are root-relative with no leading slash (`""` is the root, `"a"`,
-//! `"a/b.txt"`). We key by path rather than by id+parent on purpose: an
-//! id/parent tree CRDT suffers the classic *concurrent-move cycle* (peer A moves
-//! `/x` into `/y` while peer B moves `/y` into `/x`); a flat path map makes that
-//! representationally impossible. Deletes are tombstones (`deleted: true`) rather
-//! than key removal so a concurrent delete+edit merges to "deleted" instead of
-//! resurrecting the file.
-//!
-//! Inode numbers are a *local* concern (each peer assigns its own, stably for the
-//! session) and are intentionally NOT stored in the CRDT.
+//! Inode numbers are a LOCAL `NodeId`↔`u64` index; a rename keeps the node's id,
+//! so the inode is preserved for free.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, UNIX_EPOCH};
 
 use automerge::transaction::Transactable;
@@ -33,6 +28,10 @@ use fuser::{FileAttr, FileType, INodeNo};
 use iroh_blobs::Hash;
 
 pub const ROOT_INO: u64 = 1;
+/// Sentinel parent for the tree root (not materialized as a node).
+const ROOT_ID: &str = "ROOT";
+/// Sentinel parent for deleted subtrees (not materialized as a node).
+const TRASH_ID: &str = "TRASH";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeKind {
@@ -58,56 +57,34 @@ impl NodeKind {
     }
 }
 
-/// A resolved view of a single entry (read out of the CRDT for a path).
+/// A resolved view of one node.
 #[derive(Debug, Clone)]
 pub struct Entry {
-    pub path: String,
+    pub id: String,
+    pub parent: String,
+    pub name: String,
     pub kind: NodeKind,
     pub hash: Option<Hash>,
     pub size: u64,
     pub mtime: u64,
     pub author: String,
-    pub deleted: bool,
 }
 
-/// The CRDT-backed directory tree plus the local path<->inode index.
 pub struct Namespace {
     doc: AutoCommit,
-    entries: ObjId,
-    ino_to_path: HashMap<u64, String>,
-    path_to_ino: HashMap<String, u64>,
+    nodes: ObjId,
+    ino_to_id: HashMap<u64, String>,
+    id_to_ino: HashMap<String, u64>,
     next_ino: u64,
     author: String,
+    next_id: u64,
 }
 
-// ---- path helpers ----------------------------------------------------------
-
-fn parent_of(path: &str) -> &str {
-    match path.rfind('/') {
-        Some(i) => &path[..i],
-        None => "",
-    }
-}
-
-fn basename(path: &str) -> &str {
-    match path.rfind('/') {
-        Some(i) => &path[i + 1..],
-        None => path,
-    }
-}
-
-fn join(parent: &str, name: &str) -> String {
-    if parent.is_empty() {
-        name.to_string()
-    } else {
-        format!("{parent}/{name}")
-    }
-}
+// ---- hash hex helpers ------------------------------------------------------
 
 fn hash_to_hex(h: &Hash) -> String {
     hex::encode(h.as_bytes())
 }
-
 fn hash_from_hex(s: &str) -> Option<Hash> {
     let bytes = hex::decode(s).ok()?;
     let arr: [u8; 32] = bytes.try_into().ok()?;
@@ -125,7 +102,6 @@ fn read_str(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
         _ => None,
     }
 }
-
 fn read_u64(doc: &AutoCommit, obj: &ObjId, key: &str) -> u64 {
     match doc.get(obj, key) {
         Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
@@ -137,52 +113,59 @@ fn read_u64(doc: &AutoCommit, obj: &ObjId, key: &str) -> u64 {
     }
 }
 
-fn read_bool(doc: &AutoCommit, obj: &ObjId, key: &str) -> bool {
-    matches!(
-        doc.get(obj, key),
-        Ok(Some((Value::Scalar(s), _))) if matches!(s.as_ref(), ScalarValue::Boolean(true))
-    )
-}
-
 impl Namespace {
     pub fn new(author: impl Into<String>) -> Self {
         let mut doc = AutoCommit::new();
-        let entries = doc
-            .put_object(&ROOT, "entries", ObjType::Map)
-            .expect("put entries map");
-        let mut ino_to_path = HashMap::new();
-        let mut path_to_ino = HashMap::new();
-        ino_to_path.insert(ROOT_INO, String::new());
-        path_to_ino.insert(String::new(), ROOT_INO);
-        Self {
+        let nodes = doc
+            .put_object(&ROOT, "nodes", ObjType::Map)
+            .expect("put nodes map");
+        let mut ns = Self {
             doc,
-            entries,
-            ino_to_path,
-            path_to_ino,
+            nodes,
+            ino_to_id: HashMap::new(),
+            id_to_ino: HashMap::new(),
             next_ino: ROOT_INO + 1,
             author: author.into(),
-        }
+            next_id: 0,
+        };
+        ns.ino_to_id.insert(ROOT_INO, ROOT_ID.to_string());
+        ns.id_to_ino.insert(ROOT_ID.to_string(), ROOT_INO);
+        ns
     }
 
-    /// Reconstruct from a saved Automerge document (bootstrap / load).
-    pub fn from_bytes(author: impl Into<String>, data: &[u8]) -> Result<Self, automerge::AutomergeError> {
+    pub fn from_bytes(
+        author: impl Into<String>,
+        data: &[u8],
+    ) -> Result<Self, automerge::AutomergeError> {
         let mut doc = AutoCommit::load(data)?;
-        let entries = match doc.get(&ROOT, "entries") {
+        let nodes = match doc.get(&ROOT, "nodes") {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => doc.put_object(&ROOT, "entries", ObjType::Map)?,
+            _ => doc.put_object(&ROOT, "nodes", ObjType::Map)?,
         };
-        let mut ino_to_path = HashMap::new();
-        let mut path_to_ino = HashMap::new();
-        ino_to_path.insert(ROOT_INO, String::new());
-        path_to_ino.insert(String::new(), ROOT_INO);
-        Ok(Self {
+        let author = author.into();
+        // Resume the local id counter past any ids we authored before, so a
+        // restart with the same author can't reuse a node id.
+        let prefix = format!("{author}/");
+        let mut max_local = 0u64;
+        for id in doc.keys(&nodes) {
+            if let Some(n) = id.strip_prefix(&prefix) {
+                if let Ok(v) = n.parse::<u64>() {
+                    max_local = max_local.max(v + 1);
+                }
+            }
+        }
+        let mut ns = Self {
             doc,
-            entries,
-            ino_to_path,
-            path_to_ino,
+            nodes,
+            ino_to_id: HashMap::new(),
+            id_to_ino: HashMap::new(),
             next_ino: ROOT_INO + 1,
-            author: author.into(),
-        })
+            author,
+            next_id: max_local,
+        };
+        ns.ino_to_id.insert(ROOT_INO, ROOT_ID.to_string());
+        ns.id_to_ino.insert(ROOT_ID.to_string(), ROOT_INO);
+        Ok(ns)
     }
 
     pub fn author(&self) -> &str {
@@ -191,105 +174,171 @@ impl Namespace {
 
     // ---- CRDT sync surface -------------------------------------------------
 
-    /// Full snapshot for bootstrapping a freshly-joined peer.
     pub fn save(&mut self) -> Vec<u8> {
         self.doc.save()
     }
-
-    /// Incremental changes since the last call — broadcast these over gossip.
     pub fn save_incremental(&mut self) -> Vec<u8> {
         self.doc.save_incremental()
     }
-
-    /// Apply an incremental change blob received from a peer.
     pub fn apply_incremental(&mut self, data: &[u8]) -> Result<(), automerge::AutomergeError> {
         self.doc.load_incremental(data)?;
         Ok(())
     }
-
-    /// Apply a remote delta, then advance the local-delta watermark so the
-    /// just-applied change is NOT re-emitted by the next [`Self::save_incremental`]
-    /// (prevents a broadcast echo storm on the gossip mesh).
-    pub fn apply_remote(&mut self, data: &[u8]) -> Result<(), automerge::AutomergeError> {
-        self.doc.load_incremental(data)?;
-        let _ = self.doc.save_incremental();
-        Ok(())
-    }
-
-    /// Advance the local-delta watermark past everything currently in the doc,
-    /// discarding the delta. Call after seeding / bootstrap so the first real
-    /// local write produces a clean, minimal delta.
     pub fn prime_baseline(&mut self) {
         let _ = self.doc.save_incremental();
     }
-
-    /// Merge another full document into this one (bootstrap exchange).
     pub fn merge_doc(&mut self, other: &mut Namespace) -> Result<(), automerge::AutomergeError> {
         self.doc.merge(&mut other.doc)?;
         Ok(())
     }
 
-    /// Merge a full remote document snapshot (anti-entropy), then advance the
-    /// local-delta watermark so the merged-in changes aren't re-broadcast as if
-    /// they were local edits.
-    pub fn merge_remote_doc(&mut self, data: &[u8]) -> Result<(), automerge::AutomergeError> {
+    /// Apply a remote delta, advance the watermark, run structural resolution,
+    /// and return the resolution delta to broadcast (empty if nothing changed).
+    pub fn apply_remote_and_resolve(
+        &mut self,
+        data: &[u8],
+    ) -> Result<Vec<u8>, automerge::AutomergeError> {
+        self.doc.load_incremental(data)?;
+        let _ = self.doc.save_incremental(); // discard the remote delta from the watermark
+        self.resolve();
+        Ok(self.doc.save_incremental())
+    }
+
+    /// Merge a full remote snapshot (anti-entropy) + resolve; returns the
+    /// resolution delta to broadcast.
+    pub fn merge_remote_and_resolve(
+        &mut self,
+        data: &[u8],
+    ) -> Result<Vec<u8>, automerge::AutomergeError> {
         let mut other = AutoCommit::load(data)?;
         self.doc.merge(&mut other)?;
         let _ = self.doc.save_incremental();
-        Ok(())
+        self.resolve();
+        Ok(self.doc.save_incremental())
     }
 
-    // ---- internal entry access --------------------------------------------
+    // ---- node field access -------------------------------------------------
 
-    fn entry_obj(&self, path: &str) -> Option<ObjId> {
-        match self.doc.get(&self.entries, path) {
-            Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
+    fn node(&self, id: &str) -> Option<ObjId> {
+        match self.doc.get(&self.nodes, id) {
+            Ok(Some((Value::Object(ObjType::Map), obj))) => Some(obj),
             _ => None,
         }
     }
 
-    /// Read a path's entry, or `None` if it doesn't exist or is tombstoned.
-    pub fn entry_at(&self, path: &str) -> Option<Entry> {
-        let obj = self.entry_obj(path)?;
-        if read_bool(&self.doc, &obj, "deleted") {
-            return None;
+    fn parent_of(&self, id: &str) -> Option<String> {
+        read_str(&self.doc, &self.node(id)?, "parent")
+    }
+    fn name_of(&self, id: &str) -> Option<String> {
+        read_str(&self.doc, &self.node(id)?, "name")
+    }
+    fn kind_of(&self, id: &str) -> NodeKind {
+        self.node(id)
+            .and_then(|o| read_str(&self.doc, &o, "kind"))
+            .map(|k| NodeKind::from_str(&k))
+            .unwrap_or(NodeKind::File)
+    }
+
+    fn set_field(&mut self, id: &str, key: &str, val: impl Into<ScalarValue>) {
+        if let Some(obj) = self.node(id) {
+            let _ = self.doc.put(&obj, key, val);
         }
-        let kind = NodeKind::from_str(&read_str(&self.doc, &obj, "kind").unwrap_or_default());
-        let hash = read_str(&self.doc, &obj, "hash").and_then(|h| hash_from_hex(&h));
+    }
+
+    /// Walk the parent chain: `true` if it reaches ROOT (visible), `false` if it
+    /// hits TRASH, a missing node, or a cycle.
+    fn reaches_root(&self, id: &str) -> bool {
+        let mut cur = id.to_string();
+        let mut seen = HashSet::new();
+        loop {
+            if cur == ROOT_ID {
+                return true;
+            }
+            if cur == TRASH_ID {
+                return false;
+            }
+            if !seen.insert(cur.clone()) {
+                return false; // cycle
+            }
+            match self.parent_of(&cur) {
+                Some(p) => cur = p,
+                None => return false, // missing node
+            }
+        }
+    }
+
+    fn entry(&self, id: &str) -> Option<Entry> {
+        let obj = self.node(id)?;
         Some(Entry {
-            path: path.to_string(),
-            kind,
-            hash,
+            id: id.to_string(),
+            parent: read_str(&self.doc, &obj, "parent").unwrap_or_default(),
+            name: read_str(&self.doc, &obj, "name").unwrap_or_default(),
+            kind: NodeKind::from_str(&read_str(&self.doc, &obj, "kind").unwrap_or_default()),
+            hash: read_str(&self.doc, &obj, "hash").and_then(|h| hash_from_hex(&h)),
             size: read_u64(&self.doc, &obj, "size"),
             mtime: read_u64(&self.doc, &obj, "mtime"),
             author: read_str(&self.doc, &obj, "author").unwrap_or_default(),
-            deleted: false,
         })
     }
 
-    /// All non-tombstoned entry paths (test/debug helper).
-    pub fn live_paths(&self) -> Vec<String> {
+    /// All node ids whose parent is `parent_id`.
+    fn children(&self, parent_id: &str) -> Vec<String> {
         self.doc
-            .keys(&self.entries)
-            .filter(|k| self.entry_at(k).is_some())
+            .keys(&self.nodes)
+            .filter(|id| self.parent_of(id).as_deref() == Some(parent_id))
             .collect()
+    }
+
+    /// The live child of `parent_id` named `name` (smallest id wins on a tie).
+    fn child_named(&self, parent_id: &str, name: &str) -> Option<String> {
+        let mut matches: Vec<String> = self
+            .children(parent_id)
+            .into_iter()
+            .filter(|id| self.name_of(id).as_deref() == Some(name) && self.reaches_root(id))
+            .collect();
+        matches.sort();
+        matches.into_iter().next()
+    }
+
+    /// Is `maybe_ancestor` an ancestor of (or equal to) `id`?
+    fn is_ancestor(&self, maybe_ancestor: &str, id: &str) -> bool {
+        let mut cur = id.to_string();
+        let mut seen = HashSet::new();
+        loop {
+            if cur == maybe_ancestor {
+                return true;
+            }
+            if cur == ROOT_ID || cur == TRASH_ID || !seen.insert(cur.clone()) {
+                return false;
+            }
+            match self.parent_of(&cur) {
+                Some(p) => cur = p,
+                None => return false,
+            }
+        }
     }
 
     // ---- inode index -------------------------------------------------------
 
-    fn ino_for_path(&mut self, path: &str) -> u64 {
-        if let Some(&ino) = self.path_to_ino.get(path) {
+    fn ino_for_id(&mut self, id: &str) -> u64 {
+        if let Some(&ino) = self.id_to_ino.get(id) {
             return ino;
         }
         let ino = self.next_ino;
         self.next_ino += 1;
-        self.path_to_ino.insert(path.to_string(), ino);
-        self.ino_to_path.insert(ino, path.to_string());
+        self.id_to_ino.insert(id.to_string(), ino);
+        self.ino_to_id.insert(ino, id.to_string());
         ino
     }
 
-    pub fn path_for_ino(&self, ino: u64) -> Option<&str> {
-        self.ino_to_path.get(&ino).map(|s| s.as_str())
+    pub fn id_for_ino(&self, ino: u64) -> Option<&str> {
+        self.ino_to_id.get(&ino).map(|s| s.as_str())
+    }
+
+    fn gen_id(&mut self) -> String {
+        let id = format!("{}/{}", self.author, self.next_id);
+        self.next_id += 1;
+        id
     }
 
     fn attr_for(&self, ino: u64, kind: NodeKind, size: u64, mtime_ms: u64) -> FileAttr {
@@ -321,105 +370,97 @@ impl Namespace {
 
     // ---- FUSE-facing reads -------------------------------------------------
 
-    /// `getattr` — resolve an inode to its attributes.
     pub fn getattr(&self, ino: u64) -> Option<FileAttr> {
-        let path = self.ino_to_path.get(&ino)?.clone();
-        if path.is_empty() {
+        let id = self.ino_to_id.get(&ino)?.clone();
+        if id == ROOT_ID {
             return Some(self.attr_for(ROOT_INO, NodeKind::Dir, 0, 0));
         }
-        let e = self.entry_at(&path)?;
+        if !self.reaches_root(&id) {
+            return None;
+        }
+        let e = self.entry(&id)?;
         Some(self.attr_for(ino, e.kind, e.size, e.mtime))
     }
 
-    /// `lookup` — resolve a (parent inode, name) to a child's attributes.
     pub fn lookup(&mut self, parent_ino: u64, name: &str) -> Option<FileAttr> {
-        let parent = self.ino_to_path.get(&parent_ino)?.clone();
-        let path = join(&parent, name);
-        let e = self.entry_at(&path)?;
-        let ino = self.ino_for_path(&path);
+        let parent_id = self.ino_to_id.get(&parent_ino)?.clone();
+        let child = self.child_named(&parent_id, name)?;
+        let e = self.entry(&child)?;
+        let ino = self.ino_for_id(&child);
         Some(self.attr_for(ino, e.kind, e.size, e.mtime))
     }
 
-    /// `readdir` — `(ino, kind, name)` for `.`, `..`, and live children.
     pub fn readdir(&mut self, ino: u64) -> Option<Vec<(u64, FileType, String)>> {
-        let path = self.ino_to_path.get(&ino)?.clone();
-        // Only directories (root, or an entry of kind Dir) are listable.
-        if !path.is_empty() {
-            match self.entry_at(&path) {
-                Some(e) if e.kind == NodeKind::Dir => {}
+        let id = self.ino_to_id.get(&ino)?.clone();
+        if id != ROOT_ID {
+            match self.entry(&id) {
+                Some(e) if e.kind == NodeKind::Dir && self.reaches_root(&id) => {}
                 _ => return None,
             }
         }
-        let parent_path = parent_of(&path).to_string();
-        let parent_ino = self.ino_for_path(&parent_path);
+        let parent_id = if id == ROOT_ID {
+            ROOT_ID.to_string()
+        } else {
+            self.parent_of(&id).unwrap_or_else(|| ROOT_ID.to_string())
+        };
+        let parent_ino = self.ino_for_id(&parent_id);
 
         let mut out = vec![
             (ino, FileType::Directory, ".".to_string()),
             (parent_ino, FileType::Directory, "..".to_string()),
         ];
 
-        let mut children: Vec<(String, NodeKind)> = self
-            .doc
-            .keys(&self.entries)
-            .filter(|k| parent_of(k) == path)
-            .filter_map(|k| self.entry_at(&k).map(|e| (k, e.kind)))
+        let mut kids: Vec<(String, String, NodeKind)> = self
+            .children(&id)
+            .into_iter()
+            .filter(|c| self.reaches_root(c))
+            .filter_map(|c| {
+                let name = self.name_of(&c)?;
+                Some((c.clone(), name, self.kind_of(&c)))
+            })
             .collect();
-        children.sort_by(|a, b| a.0.cmp(&b.0));
-
-        for (child_path, kind) in children {
-            let child_ino = self.ino_for_path(&child_path);
-            out.push((child_ino, kind.to_file_type(), basename(&child_path).to_string()));
+        kids.sort_by(|a, b| a.1.cmp(&b.1));
+        for (cid, name, kind) in kids {
+            let cino = self.ino_for_id(&cid);
+            out.push((cino, kind.to_file_type(), name));
         }
         Some(out)
     }
 
-    /// The blake3 content hash for a file inode, if it has content.
     pub fn hash_for(&self, ino: u64) -> Option<Hash> {
-        let path = self.ino_to_path.get(&ino)?;
-        self.entry_at(path)?.hash
+        let id = self.ino_to_id.get(&ino)?;
+        self.entry(id)?.hash
     }
 
-    // ---- mutations (seeding + FUSE writes) ---------------------------------
+    // ---- mutations ---------------------------------------------------------
 
-    fn write_entry(
+    fn create_node(
         &mut self,
-        path: &str,
+        parent_id: &str,
+        name: &str,
         kind: NodeKind,
         hash: Option<&Hash>,
         size: u64,
         mtime: u64,
-    ) {
-        let obj = match self.entry_obj(path) {
-            Some(o) => o,
-            None => self
-                .doc
-                .put_object(&self.entries, path, ObjType::Map)
-                .expect("put entry object"),
-        };
+    ) -> String {
+        let id = self.gen_id();
+        let obj = self
+            .doc
+            .put_object(&self.nodes, &id, ObjType::Map)
+            .expect("put node");
+        let _ = self.doc.put(&obj, "parent", parent_id);
+        let _ = self.doc.put(&obj, "prev_parent", parent_id);
+        let _ = self.doc.put(&obj, "name", name);
         let _ = self.doc.put(&obj, "kind", kind.as_str());
-        match hash {
-            Some(h) => {
-                let _ = self.doc.put(&obj, "hash", hash_to_hex(h));
-            }
-            None => {
-                let _ = self.doc.delete(&obj, "hash");
-            }
+        if let Some(h) = hash {
+            let _ = self.doc.put(&obj, "hash", hash_to_hex(h));
         }
         let _ = self.doc.put(&obj, "size", size);
         let _ = self.doc.put(&obj, "mtime", mtime);
         let _ = self.doc.put(&obj, "author", self.author.clone());
-        let _ = self.doc.put(&obj, "deleted", false);
+        id
     }
 
-    /// Create/replace a directory entry. Returns its inode.
-    pub fn create_dir(&mut self, parent_ino: u64, name: &str, mtime: u64) -> Option<u64> {
-        let parent = self.ino_to_path.get(&parent_ino)?.clone();
-        let path = join(&parent, name);
-        self.write_entry(&path, NodeKind::Dir, None, 0, mtime);
-        Some(self.ino_for_path(&path))
-    }
-
-    /// Create/replace a file entry with content. Returns its inode.
     pub fn create_file(
         &mut self,
         parent_ino: u64,
@@ -428,64 +469,55 @@ impl Namespace {
         size: u64,
         mtime: u64,
     ) -> Option<u64> {
-        let parent = self.ino_to_path.get(&parent_ino)?.clone();
-        let path = join(&parent, name);
-        self.write_entry(&path, NodeKind::File, hash, size, mtime);
-        Some(self.ino_for_path(&path))
+        let parent_id = self.ino_to_id.get(&parent_ino)?.clone();
+        let id = self.create_node(&parent_id, name, NodeKind::File, hash, size, mtime);
+        Some(self.ino_for_id(&id))
     }
 
-    /// Update an existing file inode's content hash/size after a write.
+    pub fn create_dir(&mut self, parent_ino: u64, name: &str, mtime: u64) -> Option<u64> {
+        let parent_id = self.ino_to_id.get(&parent_ino)?.clone();
+        let id = self.create_node(&parent_id, name, NodeKind::Dir, None, 0, mtime);
+        Some(self.ino_for_id(&id))
+    }
+
     pub fn set_content(&mut self, ino: u64, hash: Option<&Hash>, size: u64, mtime: u64) -> bool {
-        let Some(path) = self.ino_to_path.get(&ino).cloned() else {
+        let Some(id) = self.ino_to_id.get(&ino).cloned() else {
             return false;
         };
-        if self.entry_at(&path).is_none() {
+        if self.node(&id).is_none() {
             return false;
         }
-        self.write_entry(&path, NodeKind::File, hash, size, mtime);
-        true
-    }
-
-    /// Create a conflict-copy file entry at an absolute path, pointing at a
-    /// losing blob. No-op (returns false) if that path already exists.
-    pub fn insert_conflict_copy(
-        &mut self,
-        path: &str,
-        hash: &Hash,
-        size: u64,
-        mtime: u64,
-    ) -> bool {
-        if self.entry_at(path).is_some() {
-            return false;
-        }
-        self.write_entry(path, NodeKind::File, Some(hash), size, mtime);
-        true
-    }
-
-    /// Tombstone an inode (and, for directories, its whole subtree).
-    pub fn remove(&mut self, ino: u64) -> bool {
-        let Some(path) = self.ino_to_path.get(&ino).cloned() else {
-            return false;
-        };
-        if self.entry_at(&path).is_none() {
-            return false;
-        }
-        let prefix = format!("{path}/");
-        let victims: Vec<String> = self
-            .doc
-            .keys(&self.entries)
-            .filter(|k| *k == path || k.starts_with(&prefix))
-            .collect();
-        for v in victims {
-            if let Some(obj) = self.entry_obj(&v) {
-                let _ = self.doc.put(&obj, "deleted", true);
+        match hash {
+            Some(h) => self.set_field(&id, "hash", hash_to_hex(h)),
+            None => {
+                if let Some(obj) = self.node(&id) {
+                    let _ = self.doc.delete(&obj, "hash");
+                }
             }
         }
+        self.set_field(&id, "size", size);
+        self.set_field(&id, "mtime", mtime);
+        let author = self.author.clone();
+        self.set_field(&id, "author", author);
         true
     }
 
-    /// Rename (move) `parent/name` to `newparent/newname`, including any subtree.
-    /// Modelled as tombstone-old + insert-new (the two ops FUSE `rename` gives us).
+    /// Delete = move the node (and its subtree) to TRASH.
+    pub fn remove(&mut self, ino: u64) -> bool {
+        let Some(id) = self.ino_to_id.get(&ino).cloned() else {
+            return false;
+        };
+        if self.node(&id).is_none() || !self.reaches_root(&id) {
+            return false;
+        }
+        let cur = self.parent_of(&id).unwrap_or_else(|| ROOT_ID.to_string());
+        self.set_field(&id, "prev_parent", cur);
+        self.set_field(&id, "parent", TRASH_ID);
+        true
+    }
+
+    /// Rename / move: a single reparent (the node keeps its id → inode stable).
+    /// Rejects moving a directory into its own descendant (would self-cycle).
     pub fn rename(
         &mut self,
         parent_ino: u64,
@@ -494,63 +526,133 @@ impl Namespace {
         new_name: &str,
         mtime: u64,
     ) -> bool {
-        let Some(parent) = self.ino_to_path.get(&parent_ino).cloned() else {
+        let Some(parent_id) = self.ino_to_id.get(&parent_ino).cloned() else {
             return false;
         };
-        let Some(new_parent) = self.ino_to_path.get(&new_parent_ino).cloned() else {
+        let Some(new_parent_id) = self.ino_to_id.get(&new_parent_ino).cloned() else {
             return false;
         };
-        let old_path = join(&parent, name);
-        let new_path = join(&new_parent, new_name);
-        if old_path == new_path || self.entry_at(&old_path).is_none() {
+        let Some(id) = self.child_named(&parent_id, name) else {
+            return false;
+        };
+        // Disallow moving a node into itself or its own subtree.
+        if new_parent_id == id || self.is_ancestor(&id, &new_parent_id) {
             return false;
         }
-
-        // Collect the old subtree (old_path + descendants), snapshot their fields.
-        let old_prefix = format!("{old_path}/");
-        let moving: Vec<Entry> = self
-            .doc
-            .keys(&self.entries)
-            .filter(|k| *k == old_path || k.starts_with(&old_prefix))
-            .filter_map(|k| self.entry_at(&k))
-            .collect();
-
-        for e in &moving {
-            // Rewrite the path prefix old_path -> new_path.
-            let suffix = &e.path[old_path.len()..]; // "" or "/sub/..."
-            let dest = format!("{new_path}{suffix}");
-            self.write_entry(&dest, e.kind, e.hash.as_ref(), e.size, mtime);
-        }
-        // Tombstone the old subtree.
-        for e in &moving {
-            if let Some(obj) = self.entry_obj(&e.path) {
-                let _ = self.doc.put(&obj, "deleted", true);
+        // If a node already occupies the destination name, trash it (POSIX
+        // rename replaces the target).
+        if let Some(existing) = self.child_named(&new_parent_id, new_name) {
+            if existing != id {
+                let ep = self.parent_of(&existing).unwrap_or_else(|| ROOT_ID.to_string());
+                self.set_field(&existing, "prev_parent", ep);
+                self.set_field(&existing, "parent", TRASH_ID);
             }
         }
-        // Preserve inode identity: POSIX rename keeps the same inode, and the
-        // kernel will keep using it. Remap each moved path's existing inode to
-        // its destination so getattr/read on the cached inode still resolve.
-        for e in &moving {
-            let suffix = &e.path[old_path.len()..];
-            let dest = format!("{new_path}{suffix}");
-            // Drop a stale reverse-mapping for any inode previously at dest, so
-            // an overwritten destination doesn't end up aliased to two paths.
-            if let Some(prev) = self.path_to_ino.get(&dest).copied() {
-                self.ino_to_path.remove(&prev);
-            }
-            if let Some(ino) = self.path_to_ino.remove(&e.path) {
-                self.path_to_ino.insert(dest.clone(), ino);
-                self.ino_to_path.insert(ino, dest);
-            }
-        }
+        let cur = self.parent_of(&id).unwrap_or_else(|| ROOT_ID.to_string());
+        self.set_field(&id, "prev_parent", cur);
+        self.set_field(&id, "parent", &*new_parent_id);
+        self.set_field(&id, "name", new_name);
+        self.set_field(&id, "mtime", mtime);
         true
     }
 
-    /// Read raw conflicting `hash` register values at a path (for conflict.rs).
-    /// Returns each conflicting (opid-actor, hash-hex) pair when concurrent
-    /// writers set different content. Single-value (no conflict) → one element.
-    pub fn content_conflicts(&self, path: &str) -> Vec<(String, String)> {
-        let Some(obj) = self.entry_obj(path) else {
+    // ---- structural resolution (cycle breaking) ----------------------------
+
+    /// Find one cycle in the parent graph (a chain that never reaches ROOT or
+    /// TRASH), returned as the list of node ids forming the loop.
+    fn find_cycle(&self) -> Option<Vec<String>> {
+        let ids: Vec<String> = self.doc.keys(&self.nodes).collect();
+        for start in &ids {
+            let mut cur = start.clone();
+            let mut seq: Vec<String> = Vec::new();
+            let mut seen: HashSet<String> = HashSet::new();
+            loop {
+                if cur == ROOT_ID || cur == TRASH_ID {
+                    break;
+                }
+                if let Some(pos) = seq.iter().position(|x| x == &cur) {
+                    return Some(seq[pos..].to_vec());
+                }
+                if !seen.insert(cur.clone()) || self.node(&cur).is_none() {
+                    break;
+                }
+                seq.push(cur.clone());
+                match self.parent_of(&cur) {
+                    Some(p) => cur = p,
+                    None => break,
+                }
+            }
+        }
+        None
+    }
+
+    /// Break every move-cycle deterministically: the lowest-id node in each
+    /// cycle is reverted to its `prev_parent` (or ROOT if that re-cycles).
+    /// Pure function of the converged document → identical on every peer.
+    pub fn resolve(&mut self) -> bool {
+        let mut changed = false;
+        let guard = self.doc.keys(&self.nodes).count() + 2;
+        for _ in 0..guard {
+            let Some(cycle) = self.find_cycle() else {
+                break;
+            };
+            let loser = cycle.iter().min().cloned().unwrap();
+            let pp = self
+                .node(&loser)
+                .and_then(|o| read_str(&self.doc, &o, "prev_parent"))
+                .unwrap_or_else(|| ROOT_ID.to_string());
+            let target = if cycle.contains(&pp)
+                || (pp != ROOT_ID && pp != TRASH_ID && self.node(&pp).is_none())
+            {
+                ROOT_ID.to_string()
+            } else {
+                pp
+            };
+            self.set_field(&loser, "parent", &*target);
+            changed = true;
+        }
+        changed
+    }
+
+    // ---- path + conflict helpers (tests + conflict.rs) ---------------------
+
+    /// Resolve a `/`-style path (root-relative, no leading slash) to a live
+    /// entry.
+    pub fn entry_at(&self, path: &str) -> Option<Entry> {
+        let mut cur = ROOT_ID.to_string();
+        if !path.is_empty() {
+            for seg in path.split('/') {
+                cur = self.child_named(&cur, seg)?;
+            }
+        }
+        if cur == ROOT_ID || !self.reaches_root(&cur) {
+            return None;
+        }
+        self.entry(&cur)
+    }
+
+    pub fn live_node_ids(&self) -> Vec<String> {
+        self.doc
+            .keys(&self.nodes)
+            .filter(|id| self.reaches_root(id))
+            .collect()
+    }
+
+    pub fn node_hash(&self, id: &str) -> Option<Hash> {
+        self.entry(id)?.hash
+    }
+
+    pub fn node_parent_name(&self, id: &str) -> Option<(String, String)> {
+        Some((self.parent_of(id)?, self.name_of(id)?))
+    }
+
+    pub fn child_id_named(&self, parent_id: &str, name: &str) -> Option<String> {
+        self.child_named(parent_id, name)
+    }
+
+    /// Conflicting values of a node's `hash` register (concurrent writers).
+    pub fn content_conflicts(&self, id: &str) -> Vec<(String, String)> {
+        let Some(obj) = self.node(id) else {
             return Vec::new();
         };
         match self.doc.get_all(&obj, "hash") {
@@ -567,6 +669,23 @@ impl Namespace {
             Err(_) => Vec::new(),
         }
     }
+
+    /// Create a conflict-copy sibling node under `parent_id`, unless one with
+    /// `name` already exists.
+    pub fn create_conflict_copy(
+        &mut self,
+        parent_id: &str,
+        name: &str,
+        hash: &Hash,
+        size: u64,
+        mtime: u64,
+    ) -> bool {
+        if self.child_named(parent_id, name).is_some() {
+            return false;
+        }
+        self.create_node(parent_id, name, NodeKind::File, Some(hash), size, mtime);
+        true
+    }
 }
 
 #[cfg(test)]
@@ -580,177 +699,162 @@ mod tests {
     #[test]
     fn root_is_inode_one_and_listable() {
         let mut ns = Namespace::new("a");
-        assert_eq!(ns.path_for_ino(ROOT_INO), Some(""));
-        let attr = ns.getattr(ROOT_INO).expect("root attr");
-        assert_eq!(attr.kind, FileType::Directory);
-        let dir = ns.readdir(ROOT_INO).expect("root readdir");
-        // just "." and ".." in an empty fs
-        assert_eq!(dir.len(), 2);
+        assert_eq!(ns.id_for_ino(ROOT_INO), Some(ROOT_ID));
+        assert_eq!(ns.getattr(ROOT_INO).unwrap().kind, FileType::Directory);
+        assert_eq!(ns.readdir(ROOT_INO).unwrap().len(), 2); // "." ".."
     }
 
     #[test]
-    fn create_and_lookup_file() {
+    fn create_lookup_and_nested_readdir() {
         let mut ns = Namespace::new("a");
-        let ino = ns.create_file(ROOT_INO, "hello.txt", Some(&h(7)), 12, 100).unwrap();
-        assert_ne!(ino, ROOT_INO);
-
-        let attr = ns.lookup(ROOT_INO, "hello.txt").expect("lookup");
+        let ino = ns.create_file(ROOT_INO, "hello.txt", Some(&h(7)), 12, 1).unwrap();
+        let attr = ns.lookup(ROOT_INO, "hello.txt").unwrap();
         assert_eq!(attr.ino, INodeNo(ino));
         assert_eq!(attr.size, 12);
-        assert_eq!(attr.kind, FileType::RegularFile);
         assert_eq!(ns.hash_for(ino), Some(h(7)));
 
-        // inode is stable across repeated lookups
-        let again = ns.lookup(ROOT_INO, "hello.txt").unwrap();
-        assert_eq!(again.ino, INodeNo(ino));
-    }
-
-    #[test]
-    fn nested_dirs_and_readdir() {
-        let mut ns = Namespace::new("a");
         let dir = ns.create_dir(ROOT_INO, "docs", 1).unwrap();
         ns.create_file(dir, "a.txt", Some(&h(1)), 1, 1).unwrap();
-        ns.create_file(dir, "b.txt", Some(&h(2)), 2, 1).unwrap();
-
-        let names: Vec<String> = ns
-            .readdir(dir)
-            .unwrap()
-            .into_iter()
-            .map(|(_, _, n)| n)
-            .collect();
+        let names: Vec<String> = ns.readdir(dir).unwrap().into_iter().map(|(_, _, n)| n).collect();
         assert!(names.contains(&"a.txt".to_string()));
-        assert!(names.contains(&"b.txt".to_string()));
-        assert!(names.contains(&".".to_string()));
-        assert!(names.contains(&"..".to_string()));
-
-        // root only shows the dir, not the nested files
-        let root_names: Vec<String> = ns
-            .readdir(ROOT_INO)
-            .unwrap()
-            .into_iter()
-            .map(|(_, _, n)| n)
-            .filter(|n| n != "." && n != "..")
-            .collect();
-        assert_eq!(root_names, vec!["docs".to_string()]);
+        let dotdot = ns.readdir(dir).unwrap().into_iter().find(|(_, _, n)| n == "..").unwrap();
+        assert_eq!(dotdot.0, ROOT_INO);
     }
 
     #[test]
-    fn dotdot_points_at_parent() {
-        let mut ns = Namespace::new("a");
-        let dir = ns.create_dir(ROOT_INO, "sub", 1).unwrap();
-        let entries = ns.readdir(dir).unwrap();
-        let dotdot = entries.iter().find(|(_, _, n)| n == "..").unwrap();
-        assert_eq!(dotdot.0, ROOT_INO, ".. of a child must be the root inode");
-    }
-
-    #[test]
-    fn remove_tombstones_and_hides() {
-        let mut ns = Namespace::new("a");
-        let ino = ns.create_file(ROOT_INO, "x", Some(&h(1)), 1, 1).unwrap();
-        assert!(ns.lookup(ROOT_INO, "x").is_some());
-        assert!(ns.remove(ino));
-        assert!(ns.lookup(ROOT_INO, "x").is_none(), "removed file must vanish");
-        assert!(ns.getattr(ino).is_none());
-    }
-
-    #[test]
-    fn remove_dir_takes_subtree() {
+    fn remove_moves_subtree_to_trash() {
         let mut ns = Namespace::new("a");
         let dir = ns.create_dir(ROOT_INO, "d", 1).unwrap();
         let child = ns.create_file(dir, "c.txt", Some(&h(1)), 1, 1).unwrap();
         assert!(ns.remove(dir));
-        assert!(ns.getattr(dir).is_none());
-        assert!(ns.getattr(child).is_none(), "subtree must be removed too");
+        assert!(ns.getattr(dir).is_none(), "removed dir not visible");
+        assert!(ns.getattr(child).is_none(), "child follows parent into trash");
+        assert!(ns.lookup(ROOT_INO, "d").is_none());
     }
 
     #[test]
-    fn rename_moves_file() {
+    fn rename_is_a_move_that_preserves_inode() {
         let mut ns = Namespace::new("a");
-        ns.create_file(ROOT_INO, "old.txt", Some(&h(9)), 4, 1).unwrap();
-        assert!(ns.rename(ROOT_INO, "old.txt", ROOT_INO, "new.txt", 2));
-        assert!(ns.lookup(ROOT_INO, "old.txt").is_none());
-        let moved = ns.lookup(ROOT_INO, "new.txt").expect("renamed file");
-        assert_eq!(ns.hash_for(moved.ino.0), Some(h(9)));
+        let ino = ns.create_file(ROOT_INO, "old", Some(&h(9)), 4, 1).unwrap();
+        let dir = ns.create_dir(ROOT_INO, "sub", 1).unwrap();
+        assert!(ns.rename(ROOT_INO, "old", dir, "new", 2));
+        assert!(ns.lookup(ROOT_INO, "old").is_none());
+        let moved = ns.lookup(dir, "new").unwrap();
+        assert_eq!(moved.ino, INodeNo(ino), "inode preserved across move");
+        assert_eq!(ns.hash_for(ino), Some(h(9)));
     }
 
     #[test]
-    fn rename_preserves_inode_identity() {
-        // The kernel keeps the same inode across a rename; getattr/hash on that
-        // inode must resolve to the new path + content after the move.
+    fn rename_rejects_move_into_own_descendant() {
         let mut ns = Namespace::new("a");
-        let ino = ns.create_file(ROOT_INO, "old", Some(&h(1)), 1, 1).unwrap();
-        assert!(ns.rename(ROOT_INO, "old", ROOT_INO, "new", 2));
-        let attr = ns.getattr(ino).expect("cached inode still valid after rename");
-        assert_eq!(attr.ino.0, ino);
-        assert_eq!(ns.hash_for(ino), Some(h(1)));
-        assert_eq!(ns.path_for_ino(ino), Some("new"));
+        let d1 = ns.create_dir(ROOT_INO, "d1", 1).unwrap();
+        let d2 = ns.create_dir(d1, "d2", 1).unwrap();
+        assert!(!ns.rename(ROOT_INO, "d1", d2, "d1", 2), "cannot move d1 under d1/d2");
+        assert!(ns.lookup(ROOT_INO, "d1").is_some());
     }
-
-    #[test]
-    fn rename_moves_subtree() {
-        let mut ns = Namespace::new("a");
-        let d = ns.create_dir(ROOT_INO, "d1", 1).unwrap();
-        ns.create_file(d, "f.txt", Some(&h(3)), 1, 1).unwrap();
-        let d2 = ns.create_dir(ROOT_INO, "d2", 1).unwrap();
-        assert!(ns.rename(ROOT_INO, "d1", d2, "d1moved", 2));
-
-        assert!(ns.lookup(ROOT_INO, "d1").is_none());
-        let inner = ns.lookup(d2, "d1moved").expect("moved dir");
-        let f = ns.lookup(inner.ino.0, "f.txt").expect("moved file");
-        assert_eq!(ns.hash_for(f.ino.0), Some(h(3)));
-    }
-
-    // ---- the CRDT property that justifies all of this: merge ----
 
     #[test]
     fn disjoint_inserts_merge() {
         let mut a = Namespace::new("a");
         let bytes = a.save();
         let mut b = Namespace::from_bytes("b", &bytes).unwrap();
-
-        a.create_file(ROOT_INO, "from_a.txt", Some(&h(1)), 1, 1).unwrap();
-        b.create_file(ROOT_INO, "from_b.txt", Some(&h(2)), 1, 1).unwrap();
-
+        a.create_file(ROOT_INO, "from_a", Some(&h(1)), 1, 1).unwrap();
+        b.create_file(ROOT_INO, "from_b", Some(&h(2)), 1, 1).unwrap();
         a.merge_doc(&mut b).unwrap();
-
-        assert!(a.lookup(ROOT_INO, "from_a.txt").is_some());
-        assert!(a.lookup(ROOT_INO, "from_b.txt").is_some(), "remote insert must appear after merge");
+        assert!(a.lookup(ROOT_INO, "from_a").is_some());
+        assert!(a.lookup(ROOT_INO, "from_b").is_some());
     }
 
+    // ---- the headline properties of the move-tree CRDT ----
+
     #[test]
-    fn concurrent_delete_beats_resurrect() {
-        // a creates x; both sync; a edits x while b deletes x; after merge x stays deleted.
+    fn concurrent_cross_move_resolves_acyclically_and_converges() {
+        // Shared doc with two dirs X and Y.
         let mut a = Namespace::new("a");
-        let ino = a.create_file(ROOT_INO, "x", Some(&h(1)), 1, 1).unwrap();
+        let xino = a.create_dir(ROOT_INO, "X", 1).unwrap();
+        let yino = a.create_dir(ROOT_INO, "Y", 1).unwrap();
         let snap = a.save();
         let mut b = Namespace::from_bytes("b", &snap).unwrap();
 
-        // concurrent ops
-        a.set_content(ino, Some(&h(2)), 2, 5); // a edits
-        let b_ino = b.lookup(ROOT_INO, "x").unwrap().ino.0;
-        b.remove(b_ino); // b deletes
+        // A moves X under Y; B moves Y under X (concurrently).
+        let a_y = a.lookup(ROOT_INO, "Y").unwrap().ino.0;
+        a.rename(ROOT_INO, "X", a_y, "X", 5);
+        let b_x = b.lookup(ROOT_INO, "X").unwrap().ino.0;
+        b.rename(ROOT_INO, "Y", b_x, "Y", 5);
+        let _ = (xino, yino);
 
-        a.merge_doc(&mut b).unwrap();
+        // Merge both ways + resolve on each — must converge to the same acyclic tree.
+        let mut a2 = Namespace::from_bytes("a", &a.save()).unwrap();
+        let mut b2 = Namespace::from_bytes("b", &b.save()).unwrap();
+        let _ = a2.merge_doc(&mut b2.clone_doc()); // a2 = a ∪ b
+        let _ = b2.merge_doc(&mut a.clone_doc()); // b2 = b ∪ a
+        a2.resolve();
+        b2.resolve();
+
+        // No cycle remains anywhere.
+        assert!(a2.find_cycle().is_none(), "a side must be acyclic after resolve");
+        assert!(b2.find_cycle().is_none(), "b side must be acyclic after resolve");
+
+        // Both X and Y remain reachable (no data lost to the trash).
+        let xid = a2.live_node_ids().into_iter().find(|i| a2.name_of(i).as_deref() == Some("X"));
+        let yid = a2.live_node_ids().into_iter().find(|i| a2.name_of(i).as_deref() == Some("Y"));
+        assert!(xid.is_some() && yid.is_some(), "both dirs survive resolution");
+
+        // Convergence: the two peers agree on every node's parent.
+        for id in a2.live_node_ids() {
+            assert_eq!(
+                a2.parent_of(&id),
+                b2.parent_of(&id),
+                "peers must converge on parent of {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn delete_dir_vs_create_child_converges_to_deleted() {
+        // A deletes /d while B creates /d/new concurrently.
+        let mut a = Namespace::new("a");
+        let dino = a.create_dir(ROOT_INO, "d", 1).unwrap();
+        let snap = a.save();
+        let mut b = Namespace::from_bytes("b", &snap).unwrap();
+
+        a.remove(dino);
+        let b_d = b.lookup(ROOT_INO, "d").unwrap().ino.0;
+        b.create_file(b_d, "new.txt", Some(&h(3)), 3, 1).unwrap();
+
+        let _ = a.merge_doc(&mut b);
+        a.resolve();
+
+        // d is deleted, and the concurrently-created child is consistently
+        // deleted with it (in the trash subtree) — NOT a dangling orphan.
+        assert!(a.lookup(ROOT_INO, "d").is_none(), "d stays deleted");
+        let new_id = a
+            .doc
+            .keys(&a.nodes)
+            .find(|i| a.name_of(i).as_deref() == Some("new.txt"));
+        assert!(new_id.is_some(), "the node still exists in the doc (not lost)");
         assert!(
-            a.lookup(ROOT_INO, "x").is_none(),
-            "a tombstone must not be resurrected by a concurrent edit"
+            !a.reaches_root(&new_id.unwrap()),
+            "but it is not reachable from root (consistently trashed, not orphaned)"
         );
     }
 
     #[test]
-    fn incremental_changes_apply() {
+    fn incremental_apply_and_resolve() {
         let mut a = Namespace::new("a");
         let snap = a.save();
         let mut b = Namespace::from_bytes("b", &snap).unwrap();
-        // drain a's incremental baseline so the next call only has the new op
         let _ = a.save_incremental();
-
         a.create_file(ROOT_INO, "delta.txt", Some(&h(4)), 7, 1).unwrap();
         let delta = a.save_incremental();
-        assert!(!delta.is_empty());
+        b.apply_remote_and_resolve(&delta).unwrap();
+        assert_eq!(b.lookup(ROOT_INO, "delta.txt").unwrap().size, 7);
+    }
 
-        b.apply_incremental(&delta).unwrap();
-        let attr = b.lookup(ROOT_INO, "delta.txt").expect("delta applied on b");
-        assert_eq!(attr.size, 7);
+    // test-only helper to merge using a fresh loaded copy
+    impl Namespace {
+        fn clone_doc(&mut self) -> Namespace {
+            Namespace::from_bytes(self.author.clone(), &self.save()).unwrap()
+        }
     }
 }
