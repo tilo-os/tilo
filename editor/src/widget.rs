@@ -454,7 +454,51 @@ fn block_runs(b: &BlockView) -> (Vec<RichSpan>, Vec<(usize, usize)>, Vec<(usize,
     (runs, underlines, deco("strike"))
 }
 
-/// A block laid out for the current frame; kept for click hit-testing.
+/// Hash everything that feeds into `RichTextLayout::shape` into a single `u64`.
+///
+/// This is the cache key for the per-block incremental layout cache: if two
+/// frames produce the same key for a block, `shape` would produce a
+/// byte-identical layout, so the previously-shaped `RichTextLayout` can be
+/// reused verbatim. The inputs mirror `shape`'s arguments exactly — `spans`
+/// (text + per-run bold/italic/size/family/colour), the underline/strike byte
+/// ranges, the block-level bold/size/family/alignment, and the **wrap width**
+/// (so a window or margin resize re-shapes). Block-level ink is intentionally
+/// excluded: it is applied at draw time (`Laid::ink`), not baked into the
+/// buffer, so it can change without invalidating the shaped layout.
+fn shape_key(
+    spans: &[RichSpan],
+    underlines: &[(usize, usize)],
+    strikes: &[(usize, usize)],
+    base_bold: bool,
+    size: f32,
+    wrap_w: f32,
+    align: TextAlign,
+    family: FontFamily,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    spans.len().hash(&mut h);
+    for s in spans {
+        s.text.hash(&mut h);
+        s.bold.hash(&mut h);
+        s.italic.hash(&mut h);
+        s.size.map(f32::to_bits).hash(&mut h);
+        s.family.map(|f| f as u8).hash(&mut h);
+        s.color.hash(&mut h);
+    }
+    underlines.hash(&mut h);
+    strikes.hash(&mut h);
+    base_bold.hash(&mut h);
+    size.to_bits().hash(&mut h);
+    wrap_w.to_bits().hash(&mut h);
+    (align as u8).hash(&mut h);
+    (family as u8).hash(&mut h);
+    h.finish()
+}
+
+/// A block laid out for the current frame; kept for click hit-testing. The
+/// shaped `RichTextLayout` itself lives in `WordProcessorWidget::layout_cache`
+/// (keyed by `id`) so it can be reused across frames; look it up by `id`.
 struct Laid {
     id: String,
     text: String,
@@ -464,7 +508,6 @@ struct Laid {
     text_x: f64,
     width: f64,
     height: f64,
-    layout: RichTextLayout,
     bullet: Option<String>,
     /// Resolved text colour from the block's style.
     ink: Color,
@@ -547,6 +590,16 @@ pub struct WordProcessorWidget {
     hover_tool: Option<Rect>,
     blocks: Vec<BlockView>,
     laid: Vec<Laid>,
+    /// Incremental per-block shaped-text cache: block id → (shape key, shaped
+    /// layout). Reused across frames when the key (text + marks + resolved
+    /// style + wrap width) is unchanged, so only edited/resized blocks pay the
+    /// cosmic-text shaping cost instead of every block every frame. Pruned to
+    /// the live block set each frame (entries for deleted blocks are dropped).
+    layout_cache: HashMap<String, (u64, RichTextLayout)>,
+    /// Diagnostics for the layout cache, recomputed each `draw`: number of
+    /// blocks whose layout was reused (`hits`) vs re-shaped (`misses`).
+    dbg_layout_hits: usize,
+    dbg_layout_misses: usize,
     toolbar: Vec<(ToolAction, Rect)>,
     /// Last rich copy: `(plain_text, blocks)`. Paste uses it when the system
     /// clipboard still holds this exact plain text.
@@ -614,6 +667,9 @@ impl WordProcessorWidget {
             hover_tool: None,
             blocks: Vec::new(),
             laid: Vec::new(),
+            layout_cache: HashMap::new(),
+            dbg_layout_hits: 0,
+            dbg_layout_misses: 0,
             toolbar: Vec::new(),
             rich_clip: None,
             scroll_y: 0.0,
@@ -876,7 +932,11 @@ impl WordProcessorWidget {
                 None => p.y >= l.y_top && p.y < l.y_top + l.height,
             };
             if inside {
-                let byte = l.layout.hit((p.x - l.text_x) as f32, (p.y - l.y_top) as f32);
+                let byte = self
+                    .layout_cache
+                    .get(&l.id)
+                    .map(|(_, lay)| lay.hit((p.x - l.text_x) as f32, (p.y - l.y_top) as f32))
+                    .unwrap_or(0);
                 hit = Some((l.id.clone(), byte_to_char(&l.text, byte)));
                 break;
             }
@@ -890,7 +950,11 @@ impl WordProcessorWidget {
             }
             if hit.is_none() {
                 if let Some(l) = self.laid.last() {
-                    let byte = l.layout.hit((p.x - l.text_x) as f32, (l.height - 1.0) as f32);
+                    let byte = self
+                        .layout_cache
+                        .get(&l.id)
+                        .map(|(_, lay)| lay.hit((p.x - l.text_x) as f32, (l.height - 1.0) as f32))
+                        .unwrap_or(0);
                     hit = Some((l.id.clone(), byte_to_char(&l.text, byte)));
                 }
             }
@@ -1408,6 +1472,14 @@ impl Widget for WordProcessorWidget {
         // sharing a table id lay out as a grid; everything else stacks normally.
         let blocks = std::mem::take(&mut self.blocks);
         let mut laid: Vec<Laid> = Vec::with_capacity(blocks.len());
+        // Incremental layout cache: take last frame's shaped layouts so matching
+        // blocks can be reused, and build this frame's cache afresh. Any entry
+        // left in `old_cache` at the end (a block that no longer exists) is
+        // dropped — this is the per-frame prune that keeps memory bounded.
+        let mut old_cache = std::mem::take(&mut self.layout_cache);
+        let mut new_cache: HashMap<String, (u64, RichTextLayout)> = HashMap::with_capacity(blocks.len());
+        self.dbg_layout_hits = 0;
+        self.dbg_layout_misses = 0;
         let mut y = page_top + m.top;
         // Per-level ordered-list counters (index = nesting level); reset when a
         // non-list block is reached or a shallower level re-enters.
@@ -1427,27 +1499,41 @@ impl Widget for WordProcessorWidget {
                 let nrows = cells.iter().map(|c| cell_rc(c).0).max().unwrap_or(0) + 1;
                 let col_w = content_w as f64 / ncols as f64;
                 for r in 0..nrows {
-                    let mut row_items: Vec<(usize, RichTextLayout, &BlockView)> = Vec::new();
+                    let mut row_items: Vec<(usize, f64, &BlockView)> = Vec::new();
                     let mut row_h = 26.0f64;
                     for c in 0..ncols {
                         if let Some(cell) = cells.iter().find(|cl| cell_rc(cl) == (r, c)) {
                             let (runs, underlines, strikes) = block_runs(cell);
-                            let layout = RichTextLayout::shape(
-                                &mut text_renderer.font_system,
-                                &runs,
-                                false,
-                                16.0,
-                                (col_w - 2.0 * cell_pad).max(24.0) as f32,
-                                block_align(cell, TextAlign::Left),
-                                FontFamily::Sans,
-                                underlines,
-                                strikes,
-                            );
-                            row_h = row_h.max(layout.height() as f64 + 2.0 * cell_pad);
-                            row_items.push((c, layout, cell));
+                            let wrap_w = (col_w - 2.0 * cell_pad).max(24.0) as f32;
+                            let align = block_align(cell, TextAlign::Left);
+                            let key = shape_key(&runs, &underlines, &strikes, false, 16.0, wrap_w, align, FontFamily::Sans);
+                            let layout = match old_cache.remove(&cell.id) {
+                                Some((k, lay)) if k == key => {
+                                    self.dbg_layout_hits += 1;
+                                    lay
+                                }
+                                _ => {
+                                    self.dbg_layout_misses += 1;
+                                    RichTextLayout::shape(
+                                        &mut text_renderer.font_system,
+                                        &runs,
+                                        false,
+                                        16.0,
+                                        wrap_w,
+                                        align,
+                                        FontFamily::Sans,
+                                        underlines,
+                                        strikes,
+                                    )
+                                }
+                            };
+                            let cell_h = layout.height() as f64;
+                            row_h = row_h.max(cell_h + 2.0 * cell_pad);
+                            new_cache.insert(cell.id.clone(), (key, layout));
+                            row_items.push((c, cell_h, cell));
                         }
                     }
-                    for (c, layout, cell) in row_items {
+                    for (c, cell_h, cell) in row_items {
                         let cell_x = content_x + c as f64 * col_w;
                         let cbox = Rect::new(cell_x, y, cell_x + col_w, y + row_h);
                         laid.push(Laid {
@@ -1458,8 +1544,7 @@ impl Widget for WordProcessorWidget {
                             y_top: y + cell_pad,
                             text_x: cell_x + cell_pad,
                             width: col_w - 2.0 * cell_pad,
-                            height: layout.height() as f64,
-                            layout,
+                            height: cell_h,
                             bullet: None,
                             ink: INK,
                             image_hash: None,
@@ -1488,7 +1573,11 @@ impl Widget for WordProcessorWidget {
                     }
                     _ => ((content_w as f64).min(280.0), 90.0),
                 };
+                // Image blocks carry a trivial empty layout (used only so pointer
+                // hit-testing resolves to offset 0); it is cheap, so just re-shape
+                // it every frame rather than caching it incrementally.
                 let empty = RichTextLayout::shape(&mut text_renderer.font_system, &[RichSpan::new("")], false, 16.0, content_w, TextAlign::Left, FontFamily::Sans, vec![], vec![]);
+                new_cache.insert(b.id.clone(), (0, empty));
                 laid.push(Laid {
                     id: b.id.clone(),
                     text: String::new(),
@@ -1498,7 +1587,6 @@ impl Widget for WordProcessorWidget {
                     text_x: content_x,
                     width: draw_w,
                     height: draw_h,
-                    layout: empty,
                     bullet: None,
                     ink: INK,
                     image_hash: intrinsic.map(|_| hash),
@@ -1537,17 +1625,33 @@ impl Widget for WordProcessorWidget {
                 y += st.space_before as f64;
                 let wrap_w = (content_w - indent as f32).max(40.0);
                 let (runs, underlines, strikes) = block_runs(b);
-                let layout = RichTextLayout::shape(
-                    &mut text_renderer.font_system,
-                    &runs,
-                    base_bold,
-                    size,
-                    wrap_w,
-                    block_align(b, style_align(&st.align)),
-                    parse_font(&st.font),
-                    underlines,
-                    strikes,
-                );
+                let align = block_align(b, style_align(&st.align));
+                let family = parse_font(&st.font);
+                let key = shape_key(&runs, &underlines, &strikes, base_bold, size, wrap_w, align, family);
+                // Reuse the shaped layout if nothing affecting shaping changed
+                // (text, marks, resolved style, or wrap width), else re-shape.
+                let layout = match old_cache.remove(&b.id) {
+                    Some((k, lay)) if k == key => {
+                        self.dbg_layout_hits += 1;
+                        lay
+                    }
+                    _ => {
+                        self.dbg_layout_misses += 1;
+                        RichTextLayout::shape(
+                            &mut text_renderer.font_system,
+                            &runs,
+                            base_bold,
+                            size,
+                            wrap_w,
+                            align,
+                            family,
+                            underlines,
+                            strikes,
+                        )
+                    }
+                };
+                let block_h = layout.height() as f64;
+                new_cache.insert(b.id.clone(), (key, layout));
                 laid.push(Laid {
                     id: b.id.clone(),
                     text: b.text.clone(),
@@ -1556,8 +1660,7 @@ impl Widget for WordProcessorWidget {
                     y_top: y,
                     text_x: content_x + indent,
                     width: wrap_w as f64,
-                    height: layout.height() as f64,
-                    layout,
+                    height: block_h,
                     bullet,
                     ink: Color::from_rgb8(st.color[0], st.color[1], st.color[2]),
                     image_hash: None,
@@ -1637,12 +1740,19 @@ impl Widget for WordProcessorWidget {
                 text_renderer.draw_text(scene, bul, l.size, l.ink, transform * Affine::translate((l.text_x - BULLET_GAP, l.y_top)), None);
             }
 
+            // The shaped text lives in the layout cache (built in pass 1), keyed
+            // by block id. Every normal/cell entry was inserted there.
+            let layout = match new_cache.get(&l.id) {
+                Some((_, lay)) => lay,
+                None => continue,
+            };
+
             if let Some((b0, b1)) = self.selection_bytes_for(&l.id, &l.text) {
                 if let (Some(bx), true) = (l.cell_box, multi_sel) {
                     // Multi-cell selection: highlight the whole cell (spreadsheet-style).
                     scene.fill(Fill::NonZero, transform, SELECTION, None, &bx);
                 } else {
-                    for (rx0, ry0, rx1, ry1) in l.layout.selection_rects(b0, b1) {
+                    for (rx0, ry0, rx1, ry1) in layout.selection_rects(b0, b1) {
                         let r = Rect::new(l.text_x + rx0 as f64, l.y_top + ry0 as f64, l.text_x + rx1 as f64, l.y_top + ry1 as f64);
                         scene.fill(Fill::NonZero, transform, SELECTION, None, &r);
                     }
@@ -1655,18 +1765,18 @@ impl Widget for WordProcessorWidget {
                     if bid == &l.id {
                         let bs = char_to_byte(&l.text, *cs);
                         let be = char_to_byte(&l.text, *ce);
-                        for (rx0, ry0, rx1, ry1) in l.layout.selection_rects(bs, be) {
+                        for (rx0, ry0, rx1, ry1) in layout.selection_rects(bs, be) {
                             let r = Rect::new(l.text_x + rx0 as f64, l.y_top + ry0 as f64, l.text_x + rx1 as f64, l.y_top + ry1 as f64);
                             scene.fill(Fill::NonZero, transform, FIND_HL, None, &r);
                         }
                     }
                 }
             }
-            text_renderer.draw_rich(scene, &l.layout, transform * Affine::translate((l.text_x, l.y_top)), l.ink);
+            text_renderer.draw_rich(scene, layout, transform * Affine::translate((l.text_x, l.y_top)), l.ink);
 
             if self.focused && l.id == self.inner.caret.block && !self.inner.has_selection() {
                 let byte = char_to_byte(&l.text, self.inner.caret.offset);
-                let (cx, cy, ch) = l.layout.caret_geometry(byte);
+                let (cx, cy, ch) = layout.caret_geometry(byte);
                 let caret = Rect::new(l.text_x + cx as f64, l.y_top + cy as f64, l.text_x + cx as f64 + CARET_WIDTH, l.y_top + cy as f64 + ch as f64);
                 scene.fill(Fill::NonZero, transform, CARET_COLOR, None, &caret);
             }
@@ -1711,6 +1821,9 @@ impl Widget for WordProcessorWidget {
         }
 
         self.laid = laid;
+        // Adopt this frame's cache (dropping `old_cache`, i.e. pruning entries
+        // for blocks that no longer exist) so the next frame can reuse it.
+        self.layout_cache = new_cache;
 
         // Contextual styles panel on the right (between toolbar and layout bar).
         if self.styles_panel_open {
@@ -2560,6 +2673,43 @@ mod tests {
         wp.model_mut().insert_str(&mut state.doc, "World");
         pipeline_draw(&mut wp, &mut state, 1000, 700);
         assert_eq!(wp.laid.len(), 2, "draw laid out both paragraphs");
+    }
+
+    #[test]
+    fn layout_cache_reuses_unchanged_blocks_and_reshapes_after_edit() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "First paragraph here");
+        wp.model_mut().enter(&mut state.doc);
+        wp.model_mut().insert_str(&mut state.doc, "Second paragraph here");
+
+        // Cold frame: the cache is empty, so every block is shaped (a miss).
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        assert_eq!(wp.dbg_layout_hits, 0, "cold draw cannot reuse anything");
+        assert_eq!(wp.dbg_layout_misses, 2, "both paragraphs shaped on the first frame");
+        assert_eq!(wp.layout_cache.len(), 2, "both blocks cached");
+
+        // Warm frame, no edits: every block's key matches, so all are reused and
+        // nothing is re-shaped — this is the per-frame O(n) shaping we eliminated.
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        assert_eq!(wp.dbg_layout_hits, 2, "unchanged re-draw reuses every cached layout");
+        assert_eq!(wp.dbg_layout_misses, 0, "no re-shaping on an unchanged frame");
+
+        // Edit one block (caret is in the 2nd paragraph): only that block's key
+        // changes, so only it re-shapes; the untouched block is still reused.
+        wp.model_mut().insert_str(&mut state.doc, "!");
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        assert_eq!(wp.dbg_layout_misses, 1, "only the edited block is re-shaped");
+        assert_eq!(wp.dbg_layout_hits, 1, "the untouched block is still reused");
+
+        // A margin change alters the wrap width (the page is fixed-width, so the
+        // window size does not — only the margins do). Wrap width is part of the
+        // key, so every block must re-shape at the new measure.
+        wp.margins = Edges::uniform(140.0);
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        assert_eq!(wp.dbg_layout_misses, 2, "a wrap-width change re-shapes every block");
+        assert_eq!(wp.dbg_layout_hits, 0, "no block can be reused at a new wrap width");
     }
 
     #[test]
