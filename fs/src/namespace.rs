@@ -22,6 +22,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, UNIX_EPOCH};
 
+use automerge::sync::SyncDoc;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, ROOT};
 use fuser::{FileAttr, FileType, INodeNo};
@@ -215,6 +216,33 @@ impl Namespace {
         let _ = self.doc.save_incremental();
         self.resolve();
         Ok(self.doc.save_incremental())
+    }
+
+    // ---- incremental sync protocol (anti-entropy) --------------------------
+
+    /// Produce the next Automerge sync message for `state` (encoded), if any.
+    pub fn sync_generate(&mut self, state: &mut automerge::sync::State) -> Option<Vec<u8>> {
+        self.doc.sync().generate_sync_message(state).map(|m| m.encode())
+    }
+
+    /// Apply a received Automerge sync message.
+    pub fn sync_receive(
+        &mut self,
+        state: &mut automerge::sync::State,
+        data: &[u8],
+    ) -> anyhow::Result<()> {
+        let msg = automerge::sync::Message::decode(data)?;
+        self.doc.sync().receive_sync_message(state, msg)?;
+        Ok(())
+    }
+
+    /// After an incremental sync exchange: discard the pulled changes from the
+    /// local-delta watermark (peers already have them), run structural
+    /// resolution, and return only the resolution delta to broadcast.
+    pub fn post_sync_resolve(&mut self) -> Vec<u8> {
+        let _ = self.doc.save_incremental();
+        self.resolve();
+        self.doc.save_incremental()
     }
 
     // ---- node field access -------------------------------------------------
@@ -899,6 +927,36 @@ mod tests {
         let delta = a.save_incremental();
         b.apply_remote_and_resolve(&delta).unwrap();
         assert_eq!(b.lookup(ROOT_INO, "delta.txt").unwrap().size, 7);
+    }
+
+    #[test]
+    fn sync_protocol_converges_two_namespaces() {
+        // Both share a base doc, then diverge; the incremental sync protocol
+        // (generate/receive ping-pong) must converge them.
+        let mut a = Namespace::new("a");
+        a.create_file(ROOT_INO, "base", Some(&h(1)), 1, 1).unwrap();
+        let mut b = Namespace::from_bytes("b", &a.save()).unwrap();
+
+        a.create_file(ROOT_INO, "from_a", Some(&h(2)), 1, 1).unwrap();
+        b.create_file(ROOT_INO, "from_b", Some(&h(3)), 1, 1).unwrap();
+
+        let mut sa = automerge::sync::State::new();
+        let mut sb = automerge::sync::State::new();
+        for _ in 0..20 {
+            let ma = a.sync_generate(&mut sa);
+            if let Some(m) = &ma {
+                b.sync_receive(&mut sb, m).unwrap();
+            }
+            let mb = b.sync_generate(&mut sb);
+            if let Some(m) = &mb {
+                a.sync_receive(&mut sa, m).unwrap();
+            }
+            if ma.is_none() && mb.is_none() {
+                break;
+            }
+        }
+        assert!(a.lookup(ROOT_INO, "from_b").is_some(), "a got b's change");
+        assert!(b.lookup(ROOT_INO, "from_a").is_some(), "b got a's change");
     }
 
     // test-only helper to merge using a fresh loaded copy

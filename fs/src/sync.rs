@@ -17,7 +17,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use futures_lite::StreamExt;
 use iroh::address_lookup::memory::MemoryLookup;
-use iroh::endpoint::{Connection, Endpoint};
+use iroh::endpoint::{Connection, Endpoint, RecvStream, SendStream};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh_base::EndpointAddr;
 use iroh_gossip::api::{Event, GossipReceiver, GossipSender};
@@ -30,8 +30,40 @@ use crate::hydration::Hydrator;
 use crate::namespace::Namespace;
 use crate::store::ContentStore;
 
-/// Custom ALPN for the bootstrap document exchange.
+/// Custom ALPN for the document exchange (bootstrap + incremental sync).
 pub const QOS_FS_SYNC_ALPN: &[u8] = b"qos-fs-sync/0";
+
+/// Mode byte: transfer the full document (first-join bootstrap).
+const MODE_FULL: u8 = b'F';
+/// Mode byte: incremental Automerge sync-protocol exchange (anti-entropy).
+const MODE_SYNC: u8 = b'S';
+/// Hard cap on a single sync frame (DoS guard).
+const MAX_FRAME: usize = 64 * 1024 * 1024;
+
+async fn write_frame(send: &mut SendStream, data: &[u8]) -> std::io::Result<()> {
+    send.write_all(&(data.len() as u32).to_le_bytes())
+        .await
+        .map_err(std::io::Error::other)?;
+    if !data.is_empty() {
+        send.write_all(data).await.map_err(std::io::Error::other)?;
+    }
+    Ok(())
+}
+
+async fn read_frame(recv: &mut RecvStream) -> std::io::Result<Vec<u8>> {
+    let mut len = [0u8; 4];
+    recv.read_exact(&mut len).await.map_err(std::io::Error::other)?;
+    let n = u32::from_le_bytes(len) as usize;
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+    if n > MAX_FRAME {
+        return Err(std::io::Error::other(format!("sync frame too large: {n}")));
+    }
+    let mut buf = vec![0u8; n];
+    recv.read_exact(&mut buf).await.map_err(std::io::Error::other)?;
+    Ok(buf)
+}
 
 /// A shareable invitation to join a workspace: how to reach a peer + which
 /// gossip topic the workspace uses.
@@ -69,14 +101,46 @@ pub async fn fetch_remote_doc(endpoint: &Endpoint, host: EndpointAddr) -> Result
     tokio::time::timeout(Duration::from_secs(10), async {
         let conn = endpoint.connect(host, QOS_FS_SYNC_ALPN).await?;
         let (mut send, mut recv) = conn.open_bi().await?;
-        send.write_all(b"sync").await?;
+        send.write_all(&[MODE_FULL]).await?;
         send.finish()?;
         // Documents are small (metadata only); 64 MiB is a generous ceiling.
-        let doc = recv.read_to_end(64 * 1024 * 1024).await?;
+        let doc = recv.read_to_end(MAX_FRAME).await?;
         Ok::<_, anyhow::Error>(doc)
     })
     .await
     .map_err(|_| anyhow::anyhow!("timed out fetching workspace document"))?
+}
+
+/// Run the incremental Automerge sync protocol against a peer, applying any
+/// changes each side is missing into `namespace`. Used for periodic anti-entropy
+/// (only the delta is exchanged, not the whole document).
+pub async fn sync_with_peer(
+    endpoint: &Endpoint,
+    peer: EndpointAddr,
+    namespace: &Arc<Mutex<Namespace>>,
+) -> Result<()> {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let conn = endpoint.connect(peer, QOS_FS_SYNC_ALPN).await?;
+        let (mut send, mut recv) = conn.open_bi().await?;
+        send.write_all(&[MODE_SYNC]).await?;
+        let mut state = automerge::sync::State::new();
+        // Initiator: write-then-read each round; the responder mirrors.
+        for _ in 0..200 {
+            let msg = { namespace.lock().unwrap().sync_generate(&mut state) };
+            write_frame(&mut send, msg.as_deref().unwrap_or(&[])).await?;
+            let peer_msg = read_frame(&mut recv).await?;
+            if !peer_msg.is_empty() {
+                let _ = namespace.lock().unwrap().sync_receive(&mut state, &peer_msg);
+            }
+            if msg.is_none() && peer_msg.is_empty() {
+                break;
+            }
+        }
+        let _ = send.finish();
+        Ok::<(), anyhow::Error>(())
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("sync exchange timed out"))?
 }
 
 /// Serves the current namespace document to bootstrapping peers.
@@ -97,10 +161,38 @@ impl ProtocolHandler for SyncProtocol {
         // Bound the exchange so a client that opens a stream but never sends
         // (or never closes) can't leak an accept task / connection forever.
         let exchange = async {
-            let _req = recv.read_to_end(64).await.map_err(AcceptError::from_err)?;
-            let doc = self.namespace.lock().unwrap().save();
-            send.write_all(&doc).await.map_err(AcceptError::from_err)?;
-            let _ = send.finish();
+            let mut mode = [0u8; 1];
+            recv.read_exact(&mut mode).await.map_err(AcceptError::from_err)?;
+            match mode[0] {
+                MODE_FULL => {
+                    let _ = recv.read_to_end(64).await;
+                    let doc = self.namespace.lock().unwrap().save();
+                    send.write_all(&doc).await.map_err(AcceptError::from_err)?;
+                    let _ = send.finish();
+                }
+                MODE_SYNC => {
+                    // Responder: read-then-write each round (mirrors the initiator).
+                    let mut state = automerge::sync::State::new();
+                    for _ in 0..200 {
+                        let peer_msg = read_frame(&mut recv).await.map_err(AcceptError::from_err)?;
+                        if !peer_msg.is_empty() {
+                            let _ = self
+                                .namespace
+                                .lock()
+                                .unwrap()
+                                .sync_receive(&mut state, &peer_msg);
+                        }
+                        let msg = { self.namespace.lock().unwrap().sync_generate(&mut state) };
+                        write_frame(&mut send, msg.as_deref().unwrap_or(&[]))
+                            .await
+                            .map_err(AcceptError::from_err)?;
+                        if peer_msg.is_empty() && msg.is_none() {
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            }
             Ok::<(), AcceptError>(())
         };
         match tokio::time::timeout(Duration::from_secs(30), exchange).await {
@@ -312,14 +404,9 @@ async fn reconcile_loop(
         tokio::time::sleep(Duration::from_secs(3)).await;
 
         for peer in hydrator.known_peers() {
-            if let Ok(doc) = fetch_remote_doc(&endpoint, peer).await {
-                let resolve_delta = {
-                    namespace
-                        .lock()
-                        .unwrap()
-                        .merge_remote_and_resolve(&doc)
-                        .unwrap_or_default()
-                };
+            // Incremental anti-entropy: exchange only the missing changes.
+            if sync_with_peer(&endpoint, peer, &namespace).await.is_ok() {
+                let resolve_delta = { namespace.lock().unwrap().post_sync_resolve() };
                 if !resolve_delta.is_empty() {
                     let _ = sender.broadcast(Bytes::from(resolve_delta)).await;
                 }
