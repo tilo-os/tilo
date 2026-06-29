@@ -7,7 +7,7 @@
 //         cage -s -- /usr/bin/qos-greeter
 //     The event-loop proxy is captured via `run_with_setup` so the
 //     background auth worker can pump prompts/results back into the UI.
-//   * `--shots <PATH> [--scenario form|error|authenticating|fingerprint]`
+//   * `--shots <PATH> [--scenario form|error|authenticating|fingerprint|caps]`
 //     — render one login-card state into a PNG at `<PATH>` and exit. No
 //     window, no event loop. Headless snapshot for CI / visual inspection
 //     (identical output to the live binary). `--scenario` defaults to
@@ -103,6 +103,7 @@ fn parse_scenario_arg(args: &[String]) -> Option<AuthScenario> {
         "error" => Some(AuthScenario::Error),
         "authenticating" => Some(AuthScenario::Authenticating),
         "fingerprint" => Some(AuthScenario::Fingerprint),
+        "caps" | "capslock" | "caps-lock" => Some(AuthScenario::CapsLock),
         _ => None,
     }
 }
