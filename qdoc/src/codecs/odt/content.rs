@@ -6,12 +6,48 @@
 //! list numbering, tabs/breaks/spaces, and tables all map onto the model.
 //! Unmodeled body elements are captured verbatim as fidelity atoms.
 
+use super::container::OdtContainer;
 use super::styles::{attr_val, StyleRegistry};
 use crate::document::MarkValue;
 use crate::format::CodecError;
 use crate::model::DocMut;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
+
+/// Parse an ODF length (`svg:width`/`svg:height`, e.g. `"3cm"`, `"96px"`, `"1in"`)
+/// to an integer pixel count. `px` (and bare numbers) round-trip exactly; other
+/// units convert at 96dpi. Returns `None` for unparseable values.
+pub(super) fn parse_len_px(v: &str) -> Option<i64> {
+    let v = v.trim();
+    let split = v
+        .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+'))
+        .unwrap_or(v.len());
+    let (num, unit) = v.split_at(split);
+    let n: f64 = num.trim().parse().ok()?;
+    let px = match unit.trim() {
+        "px" | "" => n,
+        "cm" => n * 96.0 / 2.54,
+        "mm" => n * 96.0 / 25.4,
+        "in" => n * 96.0,
+        "pt" => n * 96.0 / 72.0,
+        "pc" => n * 16.0,
+        _ => n,
+    };
+    Some(px.round() as i64)
+}
+
+/// In-progress `draw:frame` capture: an image (if its `Pictures/*` part exists)
+/// or a verbatim fidelity atom (fallback) when the picture is missing.
+struct FrameState {
+    raw_start: usize,
+    depth: i32,
+    width: Option<String>,
+    height: Option<String>,
+    href: Option<String>,
+    title: String,
+    desc: String,
+    collecting: Option<bool>, // Some(true)=svg:title, Some(false)=svg:desc
+}
 
 /// Open a fresh top-level block anchored after the previous one.
 fn start_block(doc: &mut DocMut, prev: &mut Option<String>, cur: &mut Option<String>, cur_len: &mut usize, kind: &str) -> String {
@@ -55,7 +91,7 @@ fn open_para(doc: &mut DocMut, prev: &mut Option<String>, cur: &mut Option<Strin
     }
 }
 
-pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, doc: &mut DocMut) -> Result<(), CodecError> {
+pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &OdtContainer, doc: &mut DocMut) -> Result<(), CodecError> {
     let s = std::str::from_utf8(content_xml).map_err(|e| CodecError::Parse(e.to_string()))?;
     let mut reader = Reader::from_str(s);
 
@@ -83,6 +119,7 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, doc: &mut DocM
     let mut table_seq: usize = 0;
 
     let mut capture: Option<(usize, i32)> = None; // (start byte, open depth) of a fidelity atom
+    let mut frame: Option<FrameState> = None; // an in-progress draw:frame (image or fidelity)
 
     // Flush the current block's paragraph-style marks over its full text range.
     macro_rules! flush_para_marks {
@@ -111,6 +148,77 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, doc: &mut DocM
                         doc.set_attr(&id, "xml", raw.as_str());
                         cur = None;
                         capture = None;
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+
+        // Inside a draw:frame: collect the image href (draw:image) + alt
+        // (svg:title/svg:desc), then on the frame's close emit either an `image`
+        // block (if the Pictures part exists) or a verbatim fidelity atom.
+        if let Some(fr) = frame.as_mut() {
+            match &ev {
+                Event::Start(e) => {
+                    fr.depth += 1;
+                    match e.name().as_ref() {
+                        b"draw:image" => {
+                            if fr.href.is_none() {
+                                fr.href = attr_val(e, b"xlink:href");
+                            }
+                        }
+                        b"svg:title" => fr.collecting = Some(true),
+                        b"svg:desc" => fr.collecting = Some(false),
+                        _ => {}
+                    }
+                }
+                Event::Empty(e) => {
+                    if e.name().as_ref() == b"draw:image" && fr.href.is_none() {
+                        fr.href = attr_val(e, b"xlink:href");
+                    }
+                }
+                Event::Text(t) => {
+                    if let Some(is_title) = fr.collecting {
+                        let txt = t.unescape().map_err(|e| CodecError::Parse(format!("text: {e}")))?;
+                        if is_title {
+                            fr.title.push_str(&txt);
+                        } else {
+                            fr.desc.push_str(&txt);
+                        }
+                    }
+                }
+                Event::End(e) => {
+                    fr.depth -= 1;
+                    match e.name().as_ref() {
+                        b"svg:title" | b"svg:desc" => fr.collecting = None,
+                        _ => {}
+                    }
+                    if fr.depth == 0 {
+                        let end = reader.buffer_position() as usize;
+                        let bytes = fr.href.as_deref().and_then(|h| container.get(h).map(|b| b.to_vec()));
+                        if let Some(bytes) = bytes {
+                            let hash = doc.put_blob(&bytes);
+                            let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "image");
+                            doc.set_attr(&id, "blob", hash.as_str());
+                            let alt = if !fr.title.is_empty() { &fr.title } else { &fr.desc };
+                            if !alt.is_empty() {
+                                doc.set_attr(&id, "alt", alt.as_str());
+                            }
+                            if let Some(w) = fr.width.as_deref().and_then(parse_len_px) {
+                                doc.set_attr(&id, "width", w);
+                            }
+                            if let Some(h) = fr.height.as_deref().and_then(parse_len_px) {
+                                doc.set_attr(&id, "height", h);
+                            }
+                        } else {
+                            // Picture missing from the container → preserve verbatim.
+                            let raw = s[fr.raw_start..end].to_string();
+                            let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "fidelity");
+                            doc.set_attr(&id, "xml", raw.as_str());
+                        }
+                        cur = None;
+                        frame = None;
                     }
                 }
                 _ => {}
@@ -187,6 +295,20 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, doc: &mut DocM
                     let href = attr_val(&e, b"xlink:href");
                     let marks = attr_val(&e, b"text:style-name").map(|s| reg.text_marks(&s)).unwrap_or_default();
                     link_stack.push((href, marks, cur_len));
+                }
+                b"draw:frame" if in_text && cur.is_none() && !in_item && table_id.is_none() => {
+                    // A top-level image frame: capture its size now, resolve the
+                    // picture bytes / alt as we descend, finalize on close.
+                    frame = Some(FrameState {
+                        raw_start: pos_before,
+                        depth: 1,
+                        width: attr_val(&e, b"svg:width"),
+                        height: attr_val(&e, b"svg:height"),
+                        href: None,
+                        title: String::new(),
+                        desc: String::new(),
+                        collecting: None,
+                    });
                 }
                 _ if in_text && cur.is_none() && !in_item && table_id.is_none() => {
                     capture = Some((pos_before, 1));

@@ -139,6 +139,19 @@ impl Document {
         self.doc.commit();
     }
 
+    /// Store bytes in the content-addressed blob store; returns the blake3 hex
+    /// hash (used as an `image` block's `blob` attr).
+    pub fn put_blob(&mut self, bytes: &[u8]) -> String {
+        let hash = self.as_mut().put_blob(bytes);
+        self.doc.commit();
+        hash
+    }
+
+    /// Fetch a content-addressed blob by its blake3 hex hash.
+    pub fn blob(&self, hash: &str) -> Option<Vec<u8>> {
+        crate::model::blob(&self.doc, &self.c, hash)
+    }
+
     pub fn blocks_in_order(&self) -> Vec<String> {
         crate::model::blocks_in_order(&self.doc, &self.c)
     }
@@ -217,7 +230,7 @@ mod tests {
         assert_eq!(v.to_str(), Some(SCHEMA_ID));
         let (vv, _) = d.doc.get(&ROOT, KEY_SCHEMA_VERSION).unwrap().unwrap();
         assert_eq!(vv.to_i64(), Some(SCHEMA_VERSION));
-        for k in [KEY_BLOCKS, KEY_STYLES, KEY_PRESERVED, KEY_META] {
+        for k in [KEY_BLOCKS, KEY_STYLES, KEY_PRESERVED, KEY_META, KEY_BLOBS] {
             let got = d.doc.get(&ROOT, k).unwrap();
             assert!(matches!(got, Some((Value::Object(ObjType::Map), _))), "missing map {k}");
         }
