@@ -240,6 +240,20 @@ pub mod image_viewer;     pub use image_viewer::ImageViewer;
 pub mod tree_view;        pub use tree_view::TreeView;
 pub mod toggle_group;     pub use toggle_group::ToggleGroup;
 
+// === Phase 1: Audit timeline + history scrubber =====================
+// Pure widget + types work in `ui/` — no shell wiring yet. See
+// `docs/superpowers/specs/2026-06-29-spaces-channels-and-cryptographic-roles.md`
+// Phase 1 ("Audit timeline + soft-delete + restore-from-history").
+pub mod history;
+pub mod activity_timeline;
+pub mod history_scrubber;
+pub use history::{
+    HistoryAuthor, HistoryEntry, HistoryEntryId, HistoryFilter,
+    format_relative_time, hue_to_rgb, op_class_glyph, op_class_is_revertible,
+};
+pub use activity_timeline::ActivityTimeline;
+pub use history_scrubber::HistoryScrubber;
+
 // =====================================================================
 // Tests
 // =====================================================================
