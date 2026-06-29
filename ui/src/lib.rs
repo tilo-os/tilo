@@ -25,6 +25,16 @@ pub use theme::Theme;
 pub use widget::{Widget, Element};
 pub use widget::{AppCommand, AppKind, AppWidget, IconDescriptor};
 pub use widget::command_palette::{CommandEntry, CommandPalette};
+// Phase 1 (Audit timeline) widgets + their shared types. The
+// `qos_collab_types::OpClass` / `ArtifactKind` re-exports flow through
+// these widgets, so callers can build a `HistoryEntry` without taking
+// a direct dependency on the collab-types crate.
+pub use widget::activity_timeline::ActivityTimeline;
+pub use widget::history::{
+    HistoryAuthor, HistoryEntry, HistoryEntryId, HistoryFilter,
+    format_relative_time, hue_to_rgb, op_class_glyph, op_class_is_revertible,
+};
+pub use widget::history_scrubber::HistoryScrubber;
 pub use text_render::{TextRenderer, TextWeight};
 pub use text_selection::{
     Selection, clipboard_copy, clipboard_paste, line_boundaries,

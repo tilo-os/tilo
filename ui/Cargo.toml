@@ -42,6 +42,11 @@ openh264 = { version = "0.9", features = ["source"] }
 # (kanshi / GNOME / KDE), falling back to the seat-driven protocol
 # otherwise.
 arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
+# Phase 1 (Audit timeline) widgets `widget::activity_timeline` +
+# `widget::history_scrubber` consume `OpClass` / `ArtifactKind` from
+# the shared collaboration-types crate so the visualisation pins to the
+# same permission-table types Phase 3 will enforce on the wire.
+qos-collab-types = { path = "../qos-collab-types" }
 
 [dev-dependencies]
 regex = "1"
