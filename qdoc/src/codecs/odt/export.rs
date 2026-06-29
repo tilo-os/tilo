@@ -301,6 +301,14 @@ fn image_frame_xml(b: &BlockView, snap: &DocSnapshot) -> Option<String> {
     Some(frame)
 }
 
+/// A list item's 0-based nesting level (absent attr → 0).
+fn snap_list_level(b: &BlockView) -> i64 {
+    match b.attrs.get("level") {
+        Some(AttrVal::Int(n)) if *n >= 0 => *n,
+        _ => 0,
+    }
+}
+
 fn snap_cell_table(b: &BlockView) -> Option<String> {
     match b.attrs.get("table") {
         Some(AttrVal::Str(s)) => Some(s.clone()),
@@ -355,17 +363,51 @@ fn build_content_xml(snap: &DocSnapshot) -> String {
                 i += 1;
             }
             "list_item" => {
-                body.push_str("<text:list>");
+                // Emit a run of consecutive list items as (possibly nested) ODF
+                // lists, reconstructing the `text:list`/`text:list-item` nesting
+                // from each item's 0-based `level` so depth round-trips. A nested
+                // list lives inside its parent item, so items stay open until we
+                // know whether the next item is deeper.
+                let mut depth: i64 = 0; // number of <text:list> currently open
+                let mut item_open = false; // a <text:list-item> awaiting its close
                 while i < snap.blocks.len() && snap.blocks[i].kind == "list_item" {
                     let li = &snap.blocks[i];
+                    let target = snap_list_level(li) + 1; // lists that should be open
+                    if target > depth {
+                        // Deeper: open new lists nested inside the current open item.
+                        while depth < target {
+                            body.push_str("<text:list>");
+                            depth += 1;
+                        }
+                    } else {
+                        // Sibling or shallower: close the current item, then unwind
+                        // any deeper lists (each wrapped in its parent item).
+                        if item_open {
+                            body.push_str("</text:list-item>");
+                            item_open = false;
+                        }
+                        while depth > target {
+                            body.push_str("</text:list>");
+                            depth -= 1;
+                            body.push_str("</text:list-item>");
+                        }
+                    }
                     let sa = style_attr(li);
-                    body.push_str(&format!(
-                        r#"<text:list-item><text:p{sa}>{}</text:p></text:list-item>"#,
-                        render_inline(&li.text, &li.marks, &mut used)
-                    ));
+                    body.push_str(&format!(r#"<text:list-item><text:p{sa}>{}</text:p>"#, render_inline(&li.text, &li.marks, &mut used)));
+                    item_open = true;
                     i += 1;
                 }
-                body.push_str("</text:list>");
+                // Close the final item + all remaining open lists.
+                if item_open {
+                    body.push_str("</text:list-item>");
+                }
+                while depth > 0 {
+                    body.push_str("</text:list>");
+                    depth -= 1;
+                    if depth > 0 {
+                        body.push_str("</text:list-item>");
+                    }
+                }
             }
             "image" => {
                 // Emit a top-level `draw:frame` referencing the blob written as a
@@ -676,6 +718,45 @@ mod tests {
         assert_eq!(bytes.as_slice(), &TINY_PNG[..], "image bytes survive the round-trip");
         // And the read-side accessor returns them too.
         assert_eq!(d2.blob(&blob_hash).as_deref(), Some(&TINY_PNG[..]));
+    }
+
+    #[test]
+    fn nested_list_levels_roundtrip_through_odt() {
+        // A list nested as 0,0,1,0 must export as real nested `text:list`s and
+        // re-import with the same per-item levels.
+        let mut d = Document::new();
+        let a = d.insert_block(None, "list_item");
+        d.splice_text(&a, 0, 0, "a");
+        let b = d.insert_block(Some(&a), "list_item");
+        d.splice_text(&b, 0, 0, "b");
+        let nested = d.insert_block(Some(&b), "list_item");
+        d.splice_text(&nested, 0, 0, "nested");
+        d.as_mut().set_attr(&nested, "level", 1_i64);
+        let c = d.insert_block(Some(&nested), "list_item");
+        d.splice_text(&c, 0, 0, "c");
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        // Export reconstructs nesting: the nested list lives inside item "b".
+        let cont = OdtContainer::read(&exported).unwrap();
+        let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
+        assert!(
+            content.contains(r#"<text:list-item><text:p>b</text:p><text:list><text:list-item><text:p>nested</text:p></text:list-item></text:list></text:list-item>"#),
+            "nested list emitted inside its parent item: {content}"
+        );
+
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+        let level = |b: &crate::snapshot::BlockView| match b.attrs.get("level") {
+            Some(AttrVal::Int(n)) => *n,
+            _ => 0i64,
+        };
+        let items: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "list_item").map(|b| (b.text.clone(), level(b))).collect();
+        assert_eq!(
+            items,
+            vec![("a".into(), 0i64), ("b".into(), 0), ("nested".into(), 1), ("c".into(), 0)],
+            "levels round-trip through nested ODF lists"
+        );
     }
 
     #[test]
