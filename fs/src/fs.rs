@@ -6,7 +6,6 @@ use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use bytes::Bytes;
 use iroh_blobs::Hash;
 
 use crate::hydration::Hydrator;
@@ -53,18 +52,14 @@ impl QuickFS {
         }
     }
 
-    /// Synchronously ingest bytes into the content store. `Ok(None)` for empty
-    /// data; `Err` if the ingest itself fails (so callers never persist a
-    /// non-empty file with a missing hash).
-    fn ingest_blocking(&self, data: &[u8]) -> io::Result<Option<Hash>> {
-        if data.is_empty() {
-            return Ok(None);
-        }
+    /// Synchronously content-chunk + ingest bytes, returning the manifest hash.
+    /// `Ok(None)` for empty data; `Err` if ingest fails (so callers never
+    /// persist a non-empty file with a missing hash).
+    fn write_content_blocking(&self, data: &[u8]) -> io::Result<Option<Hash>> {
         let store = self.hydrator.store.clone();
         let rt = self.hydrator.runtime_handle.clone();
-        let bytes = Bytes::copy_from_slice(data);
-        tokio::task::block_in_place(|| rt.block_on(async move { store.ingest(bytes).await }))
-            .map(Some)
+        let data = data.to_vec();
+        tokio::task::block_in_place(|| rt.block_on(async move { store.write_content(&data).await }))
             .map_err(|e| io::Error::other(e.to_string()))
     }
 
@@ -92,7 +87,7 @@ impl QuickFS {
     /// Aborts (returns Err) WITHOUT mutating the entry if the ingest fails, so
     /// a failed write preserves the previously-committed content.
     fn commit_content(&self, ino: u64, data: &[u8]) -> io::Result<()> {
-        let hash = self.ingest_blocking(data)?;
+        let hash = self.write_content_blocking(data)?;
         let delta = {
             let mut ns = self.namespace.lock().unwrap();
             ns.set_content(ino, hash.as_ref(), data.len() as u64, now_ms());

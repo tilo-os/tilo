@@ -1,4 +1,5 @@
 pub mod conflict;
+pub mod content;
 pub mod fs;
 pub mod namespace;
 pub mod store;
