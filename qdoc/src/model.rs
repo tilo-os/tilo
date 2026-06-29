@@ -126,6 +126,14 @@ pub fn blocks_in_order(doc: &AutoCommit, c: &Containers) -> Vec<String> {
     ordered_keys(doc, &c.blocks)
 }
 
+/// Read a document-level meta string (e.g. the serialized stylesheet).
+pub fn meta_str(doc: &AutoCommit, c: &Containers, key: &str) -> Option<String> {
+    match doc.get(&c.meta, key) {
+        Ok(Some((v, _))) => v.to_str().map(|s| s.to_string()),
+        _ => None,
+    }
+}
+
 pub fn block_kind(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
     let obj = block_obj(doc, &c.blocks, id)?;
     match doc.get(&obj, BLOCK_KIND) {
@@ -355,6 +363,11 @@ impl<'a> DocMut<'a> {
             _ => return,
         };
         let _ = self.doc.put(&attrs, key, value);
+    }
+
+    /// Set a document-level meta string (e.g. the serialized stylesheet).
+    pub fn set_meta_str(&mut self, key: &str, value: &str) {
+        let _ = self.doc.put(&self.c.meta, key, value);
     }
 
     /// Change a block's kind (e.g. `paragraph` ↔ `heading` ↔ `list_item`).
