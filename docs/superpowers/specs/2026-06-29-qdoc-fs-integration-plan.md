@@ -140,12 +140,22 @@ the file. **The separate per-file doc + hydrate-on-open design (original P1) is 
 optimization, deferred** — swap the embedded `doc` object for a referenced per-file doc once document
 size/count warrants it; the codec + read/write surface is unchanged.
 
-**Remaining (mostly cross-component):**
-- **P3** — `editor` opens the FS-owned document for fine-grained live editing (needs an FS control
-  socket + editor binding). Today the FS exposes `document_insert_block`/`document_splice` etc.; the
-  app wiring is the open piece. *Whole-file FUSE writes from dumb apps remain coarse (LWW) by design.*
-- **P4** — unify the FS-P2P plane and the `ui` broker presence plane for one document.
-- **P5** — surface `qdoc::Document::versions()` as file history; compaction/GC.
+**P3 — built (FS side).** A Unix-socket **control service** (`control.rs`, `--control-sock`) lets
+apps open a document and apply structural edit ops (insert/remove block, splice text) directly to
+its CRDT, so several apps *and* several peers converge at the text level (not coarse LWW). Each edit
+broadcasts to P2P peers; clients get a change signal to re-render. A reusable `control::Client`
+(open/snapshot/insert_block/splice/remove_block/wait_changed) is provided. *Remaining piece:* the
+`editor` GUI calling the client on user input — a thin app-side wiring left out so as not to disturb
+the actively-developed editor; whole-file FUSE writes from dumb apps remain coarse by design.
+
+**P4 — architecture in place.** The document plane is now the FS control service (durable + P2P);
+the `ui` broker stays the presence plane. The editor uses the control service for the document and
+the broker for cursors — that *is* the unified model; only the editor-side wiring (P3) remains to
+exercise it.
+
+**P5 — deferred (needs the separate-doc design).** Per-document `versions()` requires the document
+to be its own automerge doc; with the embedded design the change graph is shared across the whole
+namespace. Ships with the separate-per-file-doc optimization.
 
 ## Risks & open questions
 
