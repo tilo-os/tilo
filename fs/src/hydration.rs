@@ -6,6 +6,7 @@
 //! iroh-blobs (bao-verified against the hash), persisted, and returned.
 
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use bytes::Bytes;
@@ -70,12 +71,17 @@ impl Hydrator {
     /// `get_blob` streams bao-verified content, so the returned bytes are
     /// guaranteed to hash to `hash`; a corrupt/wrong blob fails the stream.
     pub async fn fetch_from(&self, hash: Hash, peer: EndpointAddr) -> Result<Bytes> {
-        let conn = self.endpoint.connect(peer, iroh_blobs::ALPN).await?;
-        let (bytes, _stats) = iroh_blobs::get::request::get_blob(conn, hash)
-            .bytes_and_stats()
-            .await?;
-        self.store.store_fetched(hash, bytes.clone()).await?;
-        Ok(bytes)
+        // Bounded so an unreachable/stalled peer can't hang a read forever.
+        tokio::time::timeout(Duration::from_secs(20), async {
+            let conn = self.endpoint.connect(peer, iroh_blobs::ALPN).await?;
+            let (bytes, _stats) = iroh_blobs::get::request::get_blob(conn, hash)
+                .bytes_and_stats()
+                .await?;
+            self.store.store_fetched(hash, bytes.clone()).await?;
+            Ok::<_, anyhow::Error>(bytes)
+        })
+        .await
+        .map_err(|_| anyhow!("hydration from peer timed out"))?
     }
 }
 
