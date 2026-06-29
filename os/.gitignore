@@ -7,6 +7,8 @@
 /browser
 /file-explorer
 /qos-greeter
+# Custom installer UI binary, staged by ./dev/build-custom-installer.sh.
+/qos-installer
 # Legacy names from before the qos rename; kept for hygiene during the
 # transition so a stale build doesn't accidentally re-stage them.
 /quick-desktop

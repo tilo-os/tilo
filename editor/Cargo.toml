@@ -1,0 +1,24 @@
+[package]
+name = "editor"
+version = "0.1.0"
+edition = "2021"
+description = "CRDT rich-text word processor: a ui app over qdoc with .odt support."
+
+[lib]
+name = "editor"
+path = "src/lib.rs"
+
+[[bin]]
+name = "word-processor"
+path = "src/main.rs"
+
+[dependencies]
+ui = { path = "../ui" }
+qdoc = { path = "../qdoc" }
+automerge = "0.8.0"
+vello = "0.9"
+taffy = "0.10.1"
+winit = "0.30.13"
+arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

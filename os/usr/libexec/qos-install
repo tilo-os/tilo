@@ -1,0 +1,330 @@
+#!/bin/bash
+# qos-install — the privileged backend for the qOS custom (self-install)
+# installer. The qos-installer UI (a ui::App, run under cage on the live
+# medium) shells out to this with:
+#
+#     /usr/libexec/qos-install --disk <dev> --user <name> --yes
+#
+# and the account password on **stdin** (a single line). Optional flags:
+#
+#     --filesystem <btrfs|ext4|xfs>   root filesystem (default: btrfs)
+#     --hostname <name>               hostname for the installed system (default: qos)
+#     --timezone <Area/City>          IANA time zone (default: system default / UTC)
+#     --keymap <xkb-layout>           keyboard layout, e.g. us, de (default: us)
+#     --keyvariant <xkb-variant>      keyboard variant, e.g. dvorak (default: none)
+#
+# (These are optional so an older UI that omits them still works.) We:
+#
+#   1. copy the currently-booted bootc image into local container storage
+#      (`bootc image copy-to-storage` -> containers-storage:localhost/bootc),
+#   2. run `bootc install to-disk` from that copied image, in a privileged
+#      podman container, onto the target disk (wipes it, --filesystem layout),
+#   3. create the user account: `bootc install` does NOT make users, so we
+#      hash the password and drop `<name>:<hash>` into the freshly-installed
+#      deployment's WRITABLE /etc/qos/install-user.conf, which a baked
+#      first-boot oneshot (qos-firstboot-user.service) turns into a real
+#      account on the installed system's first boot.
+#   4. seed the hostname (/etc/hostname), the time zone (/etc/localtime
+#      symlink + /etc/timezone) and the keyboard layout into the same
+#      writable /etc: XKB_DEFAULT_LAYOUT/VARIANT in /etc/environment (the
+#      qOS Wayland compositor reads these via xkbcommon when its own xkb
+#      config is empty) and KEYMAP in /etc/vconsole.conf for the console.
+#
+# Everything human-readable goes to stdout (the UI tails it line by line);
+# exit 0 == success, non-zero == failure.
+#
+# This is intentionally an OFFLINE, self-install model: the live system
+# installs *itself* onto the disk — no network pull needed for the OS bits.
+# The target image *reference* recorded in the install (so future
+# `bootc upgrade` knows where to pull from) defaults to
+# ghcr.io/nirios/qos:latest and is overridable via $QOS_TARGET_IMGREF.
+set -euo pipefail
+
+# Where the installed system will look for updates (the "origin" imgref
+# baked into the deployment). NOT where the bits come from now — those come
+# from the booted image we copy to storage. Override via the environment;
+# the sudoers drop-in env_keep's this name so it survives the sudo re-exec.
+QOS_TARGET_IMGREF="${QOS_TARGET_IMGREF:-ghcr.io/nirios/qos:latest}"
+
+# The local-storage tag `bootc image copy-to-storage` writes to by default.
+LOCAL_IMG="localhost/bootc"
+
+log()  { printf '%s\n' "$*"; }
+step() { printf '\n==> %s\n' "$*"; }
+die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+# Map an xkb layout (+optional variant) to a Linux console (kbd) keymap
+# name for /etc/vconsole.conf. The console map set doesn't line up 1:1 with
+# xkb, so this is a curated table for the layouts the installer offers;
+# anything unknown falls back to "us" so the TTY is always usable.
+xkb_to_vconsole() {
+  local layout="$1" variant="$2"
+  # Variants first (e.g. us/dvorak → dvorak; us/colemak has no stock kbd
+  # map, so it falls back to us).
+  case "${layout}/${variant}" in
+    us/dvorak) printf 'dvorak'; return ;;
+  esac
+  case "$layout" in
+    us)  printf 'us' ;;
+    gb)  printf 'uk' ;;
+    de)  printf 'de' ;;
+    fr)  printf 'fr' ;;
+    es)  printf 'es' ;;
+    it)  printf 'it' ;;
+    pt)  printf 'pt-latin1' ;;
+    br)  printf 'br-abnt2' ;;
+    ru)  printf 'ru' ;;
+    se)  printf 'se-latin1' ;;
+    no)  printf 'no' ;;
+    dk)  printf 'dk' ;;
+    ch)  printf 'sg' ;;
+    pl)  printf 'pl' ;;
+    *)   printf 'us' ;;
+  esac
+}
+
+# --- self-escalate -----------------------------------------------------------
+# The UI runs as the unprivileged greetd session user; re-exec ourselves as
+# root via passwordless sudo (the live-medium-only sudoers drop-in installed
+# by qos-installer-setup.service permits exactly this command). sudo passes
+# our stdin (the password) straight through to the re-exec'd copy, so we read
+# it only once we are root.
+if [ "$(id -u)" -ne 0 ]; then
+  exec sudo -n "$0" "$@"
+fi
+
+# --- parse args --------------------------------------------------------------
+DISK=""
+USERNAME=""
+ASSUME_YES=0
+# New, optional options (UI passes these; older UIs omit them → defaults).
+FILESYSTEM="btrfs"   # btrfs | ext4 | xfs
+HOSTNAME_VAL="qos"
+TIMEZONE_VAL=""      # empty → leave system default (UTC)
+KEYMAP_VAL="us"      # xkb layout (default us)
+KEYVARIANT_VAL=""    # xkb variant (empty → none)
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --disk) DISK="${2:-}"; shift 2 ;;
+    --user) USERNAME="${2:-}"; shift 2 ;;
+    --filesystem) FILESYSTEM="${2:-}"; shift 2 ;;
+    --hostname) HOSTNAME_VAL="${2:-}"; shift 2 ;;
+    --timezone) TIMEZONE_VAL="${2:-}"; shift 2 ;;
+    --keymap) KEYMAP_VAL="${2:-}"; shift 2 ;;
+    --keyvariant) KEYVARIANT_VAL="${2:-}"; shift 2 ;;
+    --yes|-y) ASSUME_YES=1; shift ;;
+    -h|--help) sed -n '2,52p' "$0"; exit 0 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+[ -n "$DISK" ] || die "missing --disk <device>"
+[ -n "$USERNAME" ] || die "missing --user <name>"
+
+# Validate the filesystem against the set bootc accepts for to-disk.
+case "$FILESYSTEM" in
+  btrfs|ext4|xfs) : ;;
+  *) die "unsupported --filesystem '$FILESYSTEM' (use btrfs, ext4 or xfs)" ;;
+esac
+
+# Validate hostname (RFC-1123 label: letters/digits/hyphens, no edge hyphen).
+[ -n "$HOSTNAME_VAL" ] || die "missing --hostname <name>"
+case "$HOSTNAME_VAL" in
+  -*|*-) die "invalid hostname '$HOSTNAME_VAL'" ;;
+  *[!A-Za-z0-9-]*) die "invalid hostname '$HOSTNAME_VAL' (letters, digits, hyphens only)" ;;
+esac
+
+# Validate timezone shape if provided (defends the symlink target below).
+if [ -n "$TIMEZONE_VAL" ]; then
+  case "$TIMEZONE_VAL" in
+    */../*|/*|*..) die "invalid --timezone '$TIMEZONE_VAL'" ;;
+    *[!A-Za-z0-9_/+-]*) die "invalid --timezone '$TIMEZONE_VAL'" ;;
+  esac
+fi
+
+# Keyboard layout: default to us, validate it's a plain xkb token (these
+# values land verbatim in /etc/environment and /etc/vconsole.conf below).
+[ -n "$KEYMAP_VAL" ] || KEYMAP_VAL="us"
+case "$KEYMAP_VAL" in
+  *[!a-z0-9]*) die "invalid --keymap '$KEYMAP_VAL' (lowercase letters/digits only)" ;;
+esac
+if [ -n "$KEYVARIANT_VAL" ]; then
+  case "$KEYVARIANT_VAL" in
+    *[!a-z0-9_-]*) die "invalid --keyvariant '$KEYVARIANT_VAL'" ;;
+  esac
+fi
+
+# Accept either a bare name (vda) or a full path (/dev/vda).
+case "$DISK" in
+  /dev/*) : ;;
+  *) DISK="/dev/$DISK" ;;
+esac
+
+# --- guards ------------------------------------------------------------------
+# Refuse to do anything unless we are clearly on the qOS installer live medium.
+grep -qw 'qos.installer' /proc/cmdline 2>/dev/null \
+  || grep -q 'qos.installer=1' /proc/cmdline 2>/dev/null \
+  || die "refusing: 'qos.installer' not present on the kernel cmdline (not the installer medium)"
+
+# Non-interactive: the UI must pass --yes. This is a destructive (wipe) op.
+[ "$ASSUME_YES" -eq 1 ] \
+  || die "refusing destructive install without --yes (pass --yes for non-interactive use)"
+
+# Target must be a real, whole-disk block device.
+[ -b "$DISK" ] || die "$DISK is not a block device"
+DTYPE="$(lsblk -dno TYPE "$DISK" 2>/dev/null || true)"
+[ "$DTYPE" = "disk" ] || die "$DISK is not a whole disk (type='$DTYPE'); pass the whole device, not a partition"
+
+# Never target the disk the live medium itself is running from.
+ROOT_SRC="$(findmnt -nro SOURCE / 2>/dev/null | sed 's/\[.*//')"
+LIVE_DISK=""
+if [ -n "$ROOT_SRC" ]; then
+  pk="$(lsblk -nro PKNAME "$ROOT_SRC" 2>/dev/null | head -1 || true)"
+  [ -n "$pk" ] && LIVE_DISK="/dev/$pk"
+fi
+if [ -n "$LIVE_DISK" ] && [ "$DISK" = "$LIVE_DISK" ]; then
+  die "$DISK is the live medium's own disk — refusing to install onto it"
+fi
+
+# Refuse if the target disk (or any of its partitions) is currently mounted.
+if lsblk -nro MOUNTPOINT "$DISK" 2>/dev/null | grep -q .; then
+  die "$DISK (or one of its partitions) is currently mounted — unmount it first"
+fi
+
+# --- read the password (now that we are root) --------------------------------
+IFS= read -r PASSWORD || true
+[ -n "$PASSWORD" ] || die "no password received on stdin"
+
+log "qOS installer"
+log "  target disk : $DISK"
+log "  username    : $USERNAME"
+log "  filesystem  : $FILESYSTEM"
+log "  hostname    : $HOSTNAME_VAL"
+log "  timezone    : ${TIMEZONE_VAL:-<system default>}"
+log "  keymap      : $KEYMAP_VAL${KEYVARIANT_VAL:+ ($KEYVARIANT_VAL)}"
+log "  update ref  : $QOS_TARGET_IMGREF"
+
+# --- 1. copy booted image into local container storage -----------------------
+step "Copying the running qOS image into local container storage"
+bootc image copy-to-storage
+log "  -> $LOCAL_IMG"
+
+# --- 2. bootc install to-disk ------------------------------------------------
+step "Installing qOS onto $DISK (this ERASES the disk)"
+podman run --rm --privileged --pid=host --ipc=host \
+  -v /var/lib/containers:/var/lib/containers \
+  -v /dev:/dev \
+  --security-opt label=type:unconfined_t \
+  "$LOCAL_IMG" \
+  bootc install to-disk \
+    --wipe \
+    --filesystem "$FILESYSTEM" \
+    --target-imgref "$QOS_TARGET_IMGREF" \
+    "$DISK"
+log "  base system installed."
+
+# Make sure the kernel sees the freshly written partition table.
+udevadm settle 2>/dev/null || true
+partprobe "$DISK" 2>/dev/null || true
+udevadm settle 2>/dev/null || true
+
+# --- 3. seed the user account ------------------------------------------------
+step "Preparing the '$USERNAME' account on the installed system"
+
+# SHA-512 crypt the password (no colons in a crypt(3) hash, so the
+# name:hash record below parses unambiguously).
+HASH="$(printf '%s\n' "$PASSWORD" | openssl passwd -6 -stdin)"
+[ -n "$HASH" ] || die "failed to hash password"
+
+# Find the newly-installed root partition by probe-mounting each partition
+# of the target and looking for an ostree deployment. The bootc btrfs layout
+# is ESP(vfat) + /boot(ext4) + root(btrfs, subvol 'root'); the partition
+# *numbers* aren't fixed, so we discover by content, not by index.
+MNT="$(mktemp -d)"
+DEPLOY_ETC=""
+MOUNTED=""
+cleanup() {
+  [ -n "$MOUNTED" ] && umount "$MOUNTED" 2>/dev/null || true
+  [ -d "$MNT" ] && rmdir "$MNT" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+for part in $(lsblk -lnpo NAME,TYPE "$DISK" 2>/dev/null | awk '$2=="part"{print $1}'); do
+  if mount "$part" "$MNT" 2>/dev/null; then
+    MOUNTED="$MNT"
+    # Is this the root fs (contains an ostree/deploy tree)? Works whether the
+    # btrfs top-level (.../root/ostree/deploy) or the 'root' subvol
+    # (.../ostree/deploy) got mounted — the regex below tolerates either.
+    if find "$MNT" -maxdepth 6 -type d -path '*/ostree/deploy' 2>/dev/null | grep -q .; then
+      # The WRITABLE per-deployment /etc — NOT the read-only, hardlinked
+      # <csum>.0/usr/etc (writing there corrupts the shared ostree repo).
+      DEPLOY_ETC="$(find "$MNT" -regextype posix-extended \
+        -regex '.*/ostree/deploy/[^/]+/deploy/[^/]+\.[0-9]+/etc' \
+        -type d 2>/dev/null | head -1)"
+      [ -n "$DEPLOY_ETC" ] && break
+    fi
+    umount "$MNT" 2>/dev/null || true
+    MOUNTED=""
+  fi
+done
+
+[ -n "$DEPLOY_ETC" ] || die "could not locate the installed deployment's writable /etc on $DISK"
+
+install -d -m 0755 "$DEPLOY_ETC/qos"
+CONF="$DEPLOY_ETC/qos/install-user.conf"
+printf '%s:%s\n' "$USERNAME" "$HASH" > "$CONF"
+chmod 0600 "$CONF"
+log "  wrote $CONF (consumed by qos-firstboot-user.service on first boot)"
+
+# --- 4. seed hostname + time zone into the installed deployment's /etc -------
+# Same writable-/etc technique as the user file: write into the per-deployment
+# /etc so the values land on the installed system without touching the
+# read-only, hardlinked usr/etc base.
+step "Setting hostname '$HOSTNAME_VAL' and time zone '${TIMEZONE_VAL:-<system default>}'"
+printf '%s\n' "$HOSTNAME_VAL" > "$DEPLOY_ETC/hostname"
+chmod 0644 "$DEPLOY_ETC/hostname"
+log "  wrote $DEPLOY_ETC/hostname"
+
+if [ -n "$TIMEZONE_VAL" ]; then
+  # /etc/localtime is a relative symlink into zoneinfo; create it pointing at
+  # the requested zone (resolved within the installed system at boot). We use
+  # a relative target so it's valid regardless of the eventual mount layout.
+  ln -sf "../usr/share/zoneinfo/$TIMEZONE_VAL" "$DEPLOY_ETC/localtime"
+  printf '%s\n' "$TIMEZONE_VAL" > "$DEPLOY_ETC/timezone"
+  log "  set time zone to $TIMEZONE_VAL"
+fi
+
+# Keyboard layout. Two consumers on the installed system:
+#   * the qOS Wayland session — the compositor builds its keymap with
+#     smithay's add_keyboard(Default::default()), and xkbcommon honours
+#     XKB_DEFAULT_LAYOUT/VARIANT from the environment when the supplied
+#     config is empty. We append them to /etc/environment (PAM exports it
+#     into every session, greetd's included).
+#   * the text console — /etc/vconsole.conf KEYMAP, set to the kbd map that
+#     best matches the chosen xkb layout.
+step "Setting keyboard layout '$KEYMAP_VAL${KEYVARIANT_VAL:+/$KEYVARIANT_VAL}'"
+ENV_FILE="$DEPLOY_ETC/environment"
+# Drop any prior XKB_DEFAULT_* lines (idempotent on a re-run) then append.
+if [ -f "$ENV_FILE" ]; then
+  grep -v -E '^XKB_DEFAULT_(LAYOUT|VARIANT)=' "$ENV_FILE" > "$ENV_FILE.tmp" 2>/dev/null || true
+  mv "$ENV_FILE.tmp" "$ENV_FILE"
+fi
+printf 'XKB_DEFAULT_LAYOUT=%s\n' "$KEYMAP_VAL" >> "$ENV_FILE"
+if [ -n "$KEYVARIANT_VAL" ]; then
+  printf 'XKB_DEFAULT_VARIANT=%s\n' "$KEYVARIANT_VAL" >> "$ENV_FILE"
+fi
+chmod 0644 "$ENV_FILE"
+log "  wrote XKB_DEFAULT_LAYOUT=$KEYMAP_VAL${KEYVARIANT_VAL:+ / XKB_DEFAULT_VARIANT=$KEYVARIANT_VAL} to $ENV_FILE"
+
+VCONSOLE_KEYMAP="$(xkb_to_vconsole "$KEYMAP_VAL" "$KEYVARIANT_VAL")"
+printf 'KEYMAP=%s\n' "$VCONSOLE_KEYMAP" > "$DEPLOY_ETC/vconsole.conf"
+chmod 0644 "$DEPLOY_ETC/vconsole.conf"
+log "  wrote KEYMAP=$VCONSOLE_KEYMAP to $DEPLOY_ETC/vconsole.conf"
+
+sync
+umount "$MOUNTED" 2>/dev/null || true
+MOUNTED=""
+
+step "Install complete — you can reboot into qOS now."
+log "Remove the installer medium before rebooting."
+exit 0
