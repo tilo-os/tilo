@@ -24,7 +24,9 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
 use vello::Scene;
-use winit::event::WindowEvent;
+use winit::event::{ElementState, MouseButton, WindowEvent};
+
+use crate::command::{push, CommandSink, FileCommand};
 
 /// Presence key for "a peer is focused on this folder in FileExplorer".
 pub fn folder_presence_key(path: &Path) -> PresenceKey {
@@ -65,6 +67,10 @@ pub struct SidebarFolderRow {
     path: PathBuf,
     active: bool,
     rect: Rect,
+    /// Command sink — a click pushes `Navigate(path)`. `None` leaves the
+    /// row inert (the pre-wiring behaviour, kept for tests).
+    sink: Option<CommandSink>,
+    last_cursor: Point,
 }
 
 impl SidebarFolderRow {
@@ -75,11 +81,19 @@ impl SidebarFolderRow {
             path,
             active: false,
             rect: Rect::ZERO,
+            sink: None,
+            last_cursor: Point::ZERO,
         }
     }
 
     pub fn with_active(mut self, active: bool) -> Self {
         self.active = active;
+        self
+    }
+
+    /// Wire clicks on this row to navigate to its folder.
+    pub fn with_sink(mut self, sink: CommandSink) -> Self {
+        self.sink = Some(sink);
         self
     }
 
@@ -189,16 +203,30 @@ impl Widget for SidebarFolderRow {
 
     fn handle_event(
         &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
+        event: &WindowEvent,
+        scale_factor: f64,
         _modifiers: &winit::event::Modifiers,
         _state: &mut automerge::AutoCommit,
         _path: &automerge::ObjId,
-        _handled: &mut bool,
+        handled: &mut bool,
         _focus_target: &mut Option<NodeId>,
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+            }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+                if self.rect.contains(self.last_cursor) {
+                    if let Some(sink) = &self.sink {
+                        push(sink, FileCommand::Navigate(self.path.clone()));
+                        *handled = true;
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     fn name(&self) -> &str {

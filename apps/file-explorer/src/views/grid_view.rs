@@ -1,38 +1,38 @@
-//! Grid-mode content. Flow layout of 120x100 cards, 6 per row, each with a
-//! 48-pt icon glyph above the entry name.
+//! Grid-mode content built on the toolkit's responsive `IconGrid`.
+//!
+//! Replaces the old fixed six-cards-per-row layout: the grid now reflows to
+//! the available width, draws crisp file-type vector glyphs, supports
+//! multi-selection, and reports clicks through the command sink.
 
+use crate::command::{push, CommandSink, FileCommand};
 use crate::model::Entry;
-use ui::widget::{Column, Container, Row, Text, Widget};
+use ui::icons::icon_for_path;
+use ui::widget::{IconGrid, IconGridItem, Widget};
+use ui::SelectionModel;
 
-/// Number of grid cards per row (AUDIT.md M2).
-pub const CARDS_PER_ROW: usize = 6;
-/// Grid card width in logical pixels (AUDIT.md M2).
-pub const CARD_WIDTH_PX: f32 = 120.0;
-/// Grid card height in logical pixels (AUDIT.md M2).
-pub const CARD_HEIGHT_PX: f32 = 100.0;
+/// Default icon-grid cell size (logical px). The grid derives its column
+/// count from this and the available width.
+pub const GRID_CELL_WIDTH: f64 = 104.0;
+pub const GRID_CELL_HEIGHT: f64 = 92.0;
 
-pub fn build_grid(entries: &[Entry], _selected: Option<usize>) -> Box<dyn Widget> {
-    let mut grid = Column::new();
-    let mut current_row = Row::new();
-    let mut in_row = 0usize;
+/// Build the responsive icon grid bound to the live selection + sink.
+pub fn build_grid(entries: &[Entry], selection: &SelectionModel, sink: &CommandSink) -> Box<dyn Widget> {
+    let items: Vec<IconGridItem> = entries
+        .iter()
+        .map(|e| IconGridItem::new(icon_for_path(&e.path, e.is_dir), e.name.clone()))
+        .collect();
 
-    for e in entries.iter() {
-        let icon = Text::new(crate::icons::icon_for(e)).with_size(48.0);
-        let name = Text::new(&e.name).with_size(14.0);
-        let card_inner = Column::new()
-            .push(Box::new(icon))
-            .push(Box::new(name));
-        let card = Container::new().with_child(Box::new(card_inner));
-        current_row = current_row.push(Box::new(card));
-        in_row += 1;
-        if in_row == CARDS_PER_ROW {
-            grid = grid.push(Box::new(current_row));
-            current_row = Row::new();
-            in_row = 0;
-        }
-    }
-    if in_row > 0 {
-        grid = grid.push(Box::new(current_row));
-    }
+    let mut grid = IconGrid::new(items)
+        .with_cell_size(GRID_CELL_WIDTH, GRID_CELL_HEIGHT)
+        .with_selection(selection.clone());
+
+    let click_sink = sink.clone();
+    grid = grid.on_item_click(move |i, ctrl, shift| {
+        push(&click_sink, FileCommand::Click { index: i, ctrl, shift });
+    });
+    let activate_sink = sink.clone();
+    grid = grid.on_activate(move |i| {
+        push(&activate_sink, FileCommand::Activate(i));
+    });
     Box::new(grid)
 }

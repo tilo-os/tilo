@@ -1,6 +1,21 @@
 use chrono::{DateTime, Local};
 use std::path::{Path, PathBuf};
 
+/// The qOS collaborative FUSE mount. Per `fs.service` the daemon mounts
+/// at `/var/workspace` (the older `/workspace` was a bug in this app).
+pub const WORKSPACE_ROOT: &str = "/var/workspace";
+
+/// Filename infix the collaborative FS uses to materialise a conflicting
+/// copy: `<name>.sync-conflict-<first 32 hex of the losing blake3 hash>`.
+/// Conflicts are therefore detectable from a plain `readdir` — no special
+/// fs API needed.
+pub const CONFLICT_MARKER: &str = ".sync-conflict-";
+
+/// Whether `name` is a collaborative-FS conflict copy.
+pub fn is_conflict_name(name: &str) -> bool {
+    name.contains(CONFLICT_MARKER)
+}
+
 #[derive(Clone, Debug)]
 pub struct Entry {
     pub name: String,
@@ -9,6 +24,32 @@ pub struct Entry {
     pub size: u64,
     pub modified: Option<DateTime<Local>>,
     pub mime: String,
+}
+
+impl Entry {
+    /// `true` when this entry is a collaborative-FS conflict copy. Derived
+    /// from the name so no extra field (and no construction-site churn) is
+    /// needed.
+    pub fn is_conflict(&self) -> bool {
+        is_conflict_name(&self.name)
+    }
+}
+
+/// Human-readable byte size (e.g. `4.0 kB`). Directories show "—".
+pub fn human_size(entry: &Entry) -> String {
+    if entry.is_dir {
+        "—".to_string()
+    } else {
+        humansize::format_size(entry.size, humansize::DECIMAL)
+    }
+}
+
+/// Short modified timestamp (`YYYY-MM-DD HH:MM`), or "—" when unknown.
+pub fn format_modified(modified: Option<DateTime<Local>>) -> String {
+    match modified {
+        Some(t) => t.format("%Y-%m-%d %H:%M").to_string(),
+        None => "—".to_string(),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,8 +105,14 @@ pub fn format_path(path: &Path, home: Option<&Path>) -> String {
 }
 
 pub fn initial_path() -> PathBuf {
-    let workspace = PathBuf::from("/workspace");
-    if workspace.exists() { return workspace; }
+    // Prefer the collaborative workspace mount; fall back to the legacy
+    // path, then the user's home, then the cwd, then root.
+    for candidate in [WORKSPACE_ROOT, "/workspace"] {
+        let p = PathBuf::from(candidate);
+        if p.exists() {
+            return p;
+        }
+    }
     if let Some(home) = dirs::home_dir() { return home; }
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
 }
