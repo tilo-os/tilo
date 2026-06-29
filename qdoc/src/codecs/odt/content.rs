@@ -47,6 +47,22 @@ struct FrameState {
     title: String,
     desc: String,
     collecting: Option<bool>, // Some(true)=svg:title, Some(false)=svg:desc
+    /// When the frame is nested *inside* a `text:p`, the id of that paragraph
+    /// block (so an empty image-only paragraph can be dropped after the image is
+    /// emitted as its own block). `None` for a top-level frame.
+    enclosing_para: Option<String>,
+    /// Whether the enclosing paragraph already held text when the frame opened.
+    para_had_text: bool,
+}
+
+/// Whether a raw text node is purely formatting whitespace inserted by a
+/// pretty-printer (LibreOffice/pandoc indent the structural list/table/heading
+/// elements). Such nodes always contain a newline; genuine inline whitespace in
+/// ODF flow content is a plain space (real breaks use `text:line-break`, runs of
+/// spaces use `text:s`). Dropping these keeps list items / headings tight instead
+/// of importing the indentation as empty leading/trailing lines.
+fn is_layout_whitespace(t: &str) -> bool {
+    !t.is_empty() && t.chars().all(|c| c.is_whitespace()) && t.contains(['\n', '\r'])
 }
 
 /// Open a fresh top-level block anchored after the previous one.
@@ -211,6 +227,14 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                             if let Some(h) = fr.height.as_deref().and_then(parse_len_px) {
                                 doc.set_attr(&id, "height", h);
                             }
+                            // An image-only paragraph (the common LibreOffice/pandoc
+                            // "figure" layout) leaves an empty wrapper paragraph — drop
+                            // it so the image isn't preceded by a blank line.
+                            if let Some(pid) = fr.enclosing_para.as_deref() {
+                                if !fr.para_had_text {
+                                    doc.remove_block(pid);
+                                }
+                            }
                         } else {
                             // Picture missing from the container → preserve verbatim.
                             let raw = s[fr.raw_start..end].to_string();
@@ -244,12 +268,24 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                     cur_para_marks = open_para(doc, &mut prev, &mut cur, &mut cur_len, reg, style.as_deref());
                 }
                 b"text:list" if in_text => {
-                    let ordered = attr_val(&e, b"text:style-name").and_then(|s| reg.list_ordered.get(&s).copied()).unwrap_or(false);
+                    // A nested `text:list` often omits its own style-name, continuing
+                    // the parent list's style at the deeper level — so inherit the
+                    // parent's ordered-ness instead of defaulting to bulleted.
+                    let ordered = attr_val(&e, b"text:style-name")
+                        .and_then(|s| reg.list_ordered.get(&s).copied())
+                        .unwrap_or_else(|| *list_stack.last().unwrap_or(&false));
                     list_stack.push(ordered);
                 }
                 b"text:list-item" if in_text => {
                     let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "list_item");
                     doc.set_attr(&id, "ordered", *list_stack.last().unwrap_or(&false));
+                    // 0-based nesting depth (each open `text:list` is one level).
+                    // Match the markdown codec: only emit `level` when nested, so a
+                    // top-level item's attr set stays identical across codecs.
+                    let level = (list_stack.len() as i64 - 1).max(0);
+                    if level > 0 {
+                        doc.set_attr(&id, "level", level);
+                    }
                     in_item = true;
                 }
                 b"text:p" if in_text && in_item => {
@@ -296,9 +332,18 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                     let marks = attr_val(&e, b"text:style-name").map(|s| reg.text_marks(&s)).unwrap_or_default();
                     link_stack.push((href, marks, cur_len));
                 }
-                b"draw:frame" if in_text && cur.is_none() && !in_item && table_id.is_none() => {
-                    // A top-level image frame: capture its size now, resolve the
-                    // picture bytes / alt as we descend, finalize on close.
+                b"draw:frame" if in_text && table_id.is_none() => {
+                    // An image frame — either top-level or nested inside a `text:p`
+                    // (the common LibreOffice/pandoc figure layout). Capture its
+                    // size now, resolve the picture bytes / alt as we descend,
+                    // finalize on close into an `image` block. A frame inside a
+                    // paragraph records that paragraph so an empty image-only
+                    // wrapper can be dropped.
+                    let (enclosing_para, para_had_text) = if cur.is_some() && !in_item {
+                        (cur.clone(), cur_len > 0)
+                    } else {
+                        (None, false)
+                    };
                     frame = Some(FrameState {
                         raw_start: pos_before,
                         depth: 1,
@@ -308,6 +353,8 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                         title: String::new(),
                         desc: String::new(),
                         collecting: None,
+                        enclosing_para,
+                        para_had_text,
                     });
                 }
                 _ if in_text && cur.is_none() && !in_item && table_id.is_none() => {
@@ -403,7 +450,11 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
             Event::Text(t) => {
                 if let Some(b) = cur.as_ref() {
                     let txt = t.unescape().map_err(|e| CodecError::Parse(format!("text: {e}")))?;
-                    if !txt.is_empty() {
+                    // Skip pretty-printer indentation between structural elements
+                    // (e.g. the newlines LibreOffice/pandoc insert around nested
+                    // `text:list-item`s) — otherwise list items / headings import
+                    // with blank leading/trailing lines and huge vertical gaps.
+                    if !txt.is_empty() && !is_layout_whitespace(&txt) {
                         doc.splice_text(b, cur_len, 0, &txt);
                         cur_len += txt.chars().count();
                     }
@@ -637,6 +688,116 @@ mod tests {
         OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let aligns: Vec<_> = d2.materialize().blocks.iter().filter(|b| b.kind == "cell").map(|b| b.attrs.get("align").cloned()).collect();
         assert_eq!(aligns, vec![Some(AttrVal::Str("center".into())), None], "cell alignment round-trips");
+    }
+
+    /// A valid 1x1 truecolor PNG so the in-paragraph image resolves to a real
+    /// `image` block (a missing picture would fall back to a fidelity atom).
+    const TINY_PNG: [u8; 69] = [
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+        0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
+        0x00, 0x03, 0x01, 0x01, 0x00, 0xf7, 0x03, 0x41, 0x43, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
+        0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    #[test]
+    fn imports_image_nested_in_paragraph() {
+        use super::super::container::OdtContainer;
+        // The common LibreOffice/pandoc figure layout: a `draw:frame` wrapped in a
+        // `text:p`. The picture must become an `image` block, and the empty wrapper
+        // paragraph must be dropped (no blank line before the image).
+        let body = concat!(
+            r#"<text:p>before</text:p>"#,
+            r#"<text:p text:style-name="Fig">"#,
+            r#"<draw:frame svg:width="200pt" svg:height="110pt"><draw:image xlink:href="Pictures/0.png"/></draw:frame>"#,
+            r#"</text:p>"#,
+            r#"<text:p>after</text:p>"#,
+        );
+        let base = minimal_odt_styled("", body);
+        let mut c = OdtContainer::read(&base).unwrap();
+        c.set("Pictures/0.png", TINY_PNG.to_vec());
+        let odt = c.write().unwrap();
+
+        let mut d = Document::new();
+        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        let snap = d.materialize();
+
+        assert_eq!(
+            snap.blocks.iter().map(|b| b.kind.as_str()).collect::<Vec<_>>(),
+            vec!["paragraph", "image", "paragraph"],
+            "image-only wrapper paragraph dropped: {snap:?}"
+        );
+        assert_eq!(snap.blocks[0].text, "before");
+        assert_eq!(snap.blocks[2].text, "after");
+        let img = &snap.blocks[1];
+        let hash = match img.attrs.get("blob") {
+            Some(AttrVal::Str(h)) => h.clone(),
+            other => panic!("image missing blob attr: {other:?}"),
+        };
+        assert_eq!(snap.blobs.get(&hash).map(|b| b.as_slice()), Some(&TINY_PNG[..]), "blob bytes stored");
+        // svg:width="200pt" → 200*96/72 ≈ 267px.
+        assert_eq!(img.attrs.get("width"), Some(&AttrVal::Int(267)), "{:?}", img.attrs);
+    }
+
+    #[test]
+    fn keeps_paragraph_text_before_inline_image() {
+        use super::super::container::OdtContainer;
+        // Text preceding an inline image stays as its own paragraph; the image is a
+        // separate block right after it.
+        let body = concat!(
+            r#"<text:p>see <draw:frame><draw:image xlink:href="Pictures/0.png"/></draw:frame></text:p>"#,
+        );
+        let base = minimal_odt_styled("", body);
+        let mut c = OdtContainer::read(&base).unwrap();
+        c.set("Pictures/0.png", TINY_PNG.to_vec());
+        let odt = c.write().unwrap();
+
+        let mut d = Document::new();
+        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        let snap = d.materialize();
+        assert_eq!(snap.blocks[0].kind, "paragraph");
+        assert_eq!(snap.blocks[0].text, "see ", "leading text kept: {snap:?}");
+        assert_eq!(snap.blocks[1].kind, "image");
+    }
+
+    #[test]
+    fn nested_list_items_capture_level() {
+        // Nested `text:list`s give each item a 0-based level; top-level items carry
+        // no `level` attr (matching the markdown codec), nested ones do.
+        let body = concat!(
+            r#"<text:list><text:list-item><text:p>a</text:p></text:list-item>"#,
+            r#"<text:list-item><text:p>b</text:p>"#,
+            r#"<text:list><text:list-item><text:p>nested</text:p></text:list-item></text:list>"#,
+            r#"</text:list-item></text:list>"#,
+        );
+        let odt = minimal_odt(body);
+        let mut d = Document::new();
+        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        let snap = d.materialize();
+        let items: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "list_item").collect();
+        let level = |b: &crate::snapshot::BlockView| match b.attrs.get("level") {
+            Some(AttrVal::Int(n)) => *n,
+            _ => 0,
+        };
+        assert_eq!(
+            items.iter().map(|b| (b.text.clone(), level(b))).collect::<Vec<_>>(),
+            vec![("a".into(), 0i64), ("b".into(), 0), ("nested".into(), 1)],
+            "nesting depth captured: {items:?}"
+        );
+        assert_eq!(items[0].attrs.get("level"), None, "top-level item has no level attr");
+    }
+
+    #[test]
+    fn list_items_import_tight_without_layout_whitespace() {
+        // Pretty-printer indentation (newlines between structural list elements)
+        // must not leak into the item text as blank leading/trailing lines.
+        let body = "<text:list>\n  <text:list-item>\n    <text:p>a</text:p>\n  </text:list-item>\n  <text:list-item>\n    <text:p>b</text:p>\n  </text:list-item>\n</text:list>";
+        let odt = minimal_odt(body);
+        let mut d = Document::new();
+        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        let snap = d.materialize();
+        let items: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "list_item").map(|b| b.text.clone()).collect();
+        assert_eq!(items, vec!["a", "b"], "no indentation whitespace in item text: {items:?}");
     }
 
     #[test]
