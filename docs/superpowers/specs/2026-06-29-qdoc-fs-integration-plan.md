@@ -125,6 +125,28 @@ keeps the existing opaque-file behavior intact for non-document files.
 
 P0–P2 deliver CRDT-merging `.odt`/`.docx` that any app can open, synced across devices.
 
+## Implementation status (2026-06-29)
+
+**Built (FS side, model B):** recognition (entries carry a `codec`), document files store their
+content as a `qdoc` document **embedded in the namespace automerge doc**, transparent FUSE
+`read`=export / `write`=import, and **text-level merge of concurrent edits** (proven by test). Sync,
+persistence, and conflict-resolution come *for free* because the content rides the existing namespace
+doc. Seeding recognizes documents too. Opaque files are unchanged.
+
+**Why embed (vs. separate per-file docs):** embedding reuses the entire namespace sync / merge /
+persistence stack with no new transport — the fastest correct path to model B. The cost is that the
+namespace doc grows with document content + history and syncs to every peer regardless of who opens
+the file. **The separate per-file doc + hydrate-on-open design (original P1) is therefore a scale
+optimization, deferred** — swap the embedded `doc` object for a referenced per-file doc once document
+size/count warrants it; the codec + read/write surface is unchanged.
+
+**Remaining (mostly cross-component):**
+- **P3** — `editor` opens the FS-owned document for fine-grained live editing (needs an FS control
+  socket + editor binding). Today the FS exposes `document_insert_block`/`document_splice` etc.; the
+  app wiring is the open piece. *Whole-file FUSE writes from dumb apps remain coarse (LWW) by design.*
+- **P4** — unify the FS-P2P plane and the `ui` broker presence plane for one document.
+- **P5** — surface `qdoc::Document::versions()` as file history; compaction/GC.
+
 ## Risks & open questions
 
 - **Import/merge fidelity (P2):** whole-file re-import + state-merge is coarse. Mitigate by making
