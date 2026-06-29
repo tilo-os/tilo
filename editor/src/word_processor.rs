@@ -173,6 +173,18 @@ impl WordProcessor {
     }
 
     /// Insert a rich fragment at the caret (replacing the selection), preserving
+    /// Replace the character range `[char_start, char_end)` of `block_id` with
+    /// `text` (used by Find & Replace).
+    pub fn splice_block(&mut self, state: &mut AutoCommit, block_id: &str, char_start: usize, char_end: usize, text: &str) {
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            dm.splice_text(block_id, char_start, char_end.saturating_sub(char_start) as isize, text);
+        }
+    }
+
     /// Load the document's stylesheet from meta (or the defaults if absent).
     pub fn stylesheet(&self, state: &AutoCommit) -> StyleSheet {
         self.containers
