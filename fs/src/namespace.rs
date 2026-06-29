@@ -573,15 +573,22 @@ impl Namespace {
         let Some(id) = self.ino_to_id.get(&ino).cloned() else {
             return false;
         };
-        let Some(codec) = read_str(&self.doc, &self.node(&id).unwrap(), "codec") else {
-            return false;
-        };
-        if registry.provider_for_ext(&codec).is_none() {
-            return false;
-        }
         let Some(node) = self.node(&id) else {
             return false;
         };
+        let Some(codec) = read_str(&self.doc, &node, "codec") else {
+            return false;
+        };
+        let Some(provider) = registry.provider_for_ext(&codec) else {
+            return false;
+        };
+        // Parse into a throwaway document FIRST. A malformed input (bad zip/XML,
+        // invalid UTF-8) must never destroy the existing content.
+        let mut probe = qdoc::Document::new();
+        if provider.import(bytes, &mut probe.as_mut()).is_err() {
+            return false;
+        }
+        // The input is valid — now it's safe to replace the embedded document.
         let _ = self.doc.delete(&node, "doc");
         let root = self
             .doc
@@ -591,20 +598,21 @@ impl Namespace {
         let containers = qdoc::model::open(&self.doc, &root).expect("open");
         let mut ids = qdoc::model::seeded_id_gen(&self.doc, &containers);
         {
-            let provider = registry.provider_for_ext(&codec).unwrap();
             let mut dmut = qdoc::DocMut {
                 doc: &mut self.doc,
                 c: &containers,
                 ids: &mut ids,
             };
-            if provider.import(bytes, &mut dmut).is_err() {
-                return false;
-            }
+            let _ = provider.import(bytes, &mut dmut); // already validated above
         }
-        let size = self.export_document(ino, registry).map(|b| b.len() as u64).unwrap_or(0);
-        self.set_field(&id, "size", size);
         self.set_field(&id, "mtime", mtime);
         true
+    }
+
+    /// Current heads of the underlying document — used as a cheap change token
+    /// (e.g. to invalidate a derived export cache).
+    pub fn heads(&mut self) -> Vec<automerge::ChangeHash> {
+        self.doc.get_heads()
     }
 
     // ---- fine-grained document edits (the path that merges semantically) ----
@@ -1113,6 +1121,24 @@ mod tests {
         let out = ns.export_document(ino, &reg).expect("export");
         let s = String::from_utf8_lossy(&out);
         assert!(s.contains("Title") && s.contains("Hello world"), "round-trip lost content: {s}");
+    }
+
+    #[test]
+    fn failed_import_preserves_existing_document() {
+        // A malformed write must NOT destroy the existing content (validate-first).
+        let reg = qdoc::builtin_registry();
+        let mut ns = Namespace::new("a");
+        let ino = ns.create_document(ROOT_INO, "doc.md", "md", 1).unwrap();
+        assert!(ns.import_document(ino, &reg, b"# Keep\n\nimportant\n", 2));
+        let before = ns.export_document(ino, &reg).unwrap();
+
+        // invalid UTF-8 is rejected by the markdown codec
+        assert!(
+            !ns.import_document(ino, &reg, &[0xff, 0xfe, 0x00], 3),
+            "malformed import must be rejected"
+        );
+        let after = ns.export_document(ino, &reg).unwrap();
+        assert_eq!(before, after, "existing document must survive a rejected import");
     }
 
     #[test]
