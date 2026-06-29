@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 3f6dca8d825610e51f15ba8f01ee9bf4156f1aea21a2ecf40679f0898fa8aeac # shrinks to a_ops = [Type(237, " "), Bold(180), Type(42, "u"), Type(195, " oi "), Bold(106), Type(183, "  "), Bold(223), Type(175, "  e t"), InsertPara(221), Type(43, "phe "), InsertPara(8), InsertPara(97), Bold(162), Type(110, "v  "), Bold(170), Bold(63), Type(210, "  j "), Type(146, "l  ")], b_ops = [Type(59, "")]
+cc 1c4416237c2d344099c49503beaddac8939cf9e05393404b97b48f735aa43ab5 # shrinks to a_ops = [Type(12, "xu e  "), InsertPara(155), Bold(94), InsertPara(159), Type(165, ""), Bold(2), Type(208, "f    v"), Bold(24), Type(113, "oul"), InsertPara(122), Type(127, " bk xv"), Bold(101), Type(146, "c  "), Bold(185), Bold(7), InsertPara(224), InsertPara(70), InsertPara(163), Type(174, "  "), InsertPara(143), Bold(255), Bold(116), InsertPara(116), InsertPara(119), Bold(36), InsertPara(215), Type(104, "juknp"), Bold(78), InsertPara(11), InsertPara(233), Type(68, " b unb"), InsertPara(33), Type(35, "hi  "), Bold(205), Type(232, " du w"), InsertPara(153), InsertPara(226)], b_ops = [Type(67, "")]
