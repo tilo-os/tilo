@@ -254,6 +254,20 @@ pub use history::{
 pub use activity_timeline::ActivityTimeline;
 pub use history_scrubber::HistoryScrubber;
 
+// === Phase 4: Conflict toolkit ======================================
+// Pure widget + types work in `ui/` — no shell wiring yet. See
+// `docs/superpowers/specs/2026-06-29-spaces-channels-and-cryptographic-roles.md`
+// Phase 4 ("Conflict toolkit + reconciliation UI").
+pub mod merge_strategy;
+pub mod conflict_banner;
+pub mod conflict_picker;
+pub use merge_strategy::{
+    Alternative, ConcurrentOp, ConflictKind, ConflictResolver, MergeStrategy,
+    surface_banner,
+};
+pub use conflict_banner::ConflictBanner;
+pub use conflict_picker::{ConflictPicker, PickerOutcome};
+
 // =====================================================================
 // Tests
 // =====================================================================
