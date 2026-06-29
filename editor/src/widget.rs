@@ -1884,6 +1884,11 @@ impl Widget for WordProcessorWidget {
                             "v" if shift => self.clipboard_paste_plain(state),
                             "v" => self.clipboard_paste(state),
                             "a" => self.inner.select_all(state),
+                            // Ctrl+1/2/3 → heading levels, Ctrl+0 → body paragraph.
+                            "1" => self.inner.set_paragraph_style(state, "heading", Some(1), None),
+                            "2" => self.inner.set_paragraph_style(state, "heading", Some(2), None),
+                            "3" => self.inner.set_paragraph_style(state, "heading", Some(3), None),
+                            "0" => self.inner.set_paragraph_style(state, "paragraph", None, None),
                             // z / y (undo/redo) are handled by the host App.
                             _ => {}
                         }
