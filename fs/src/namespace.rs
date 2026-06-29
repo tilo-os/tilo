@@ -508,6 +508,148 @@ impl Namespace {
         Some(self.ino_for_id(&id))
     }
 
+    // ---- rich-text document files (content lives as a CRDT, not opaque bytes) ----
+
+    /// Create a file whose content is a structured rich-text document, stored
+    /// in-tree as a CRDT (so concurrent edits merge instead of conflicting).
+    /// `codec` is the format key (e.g. `odt`, `docx`, `md`).
+    pub fn create_document(
+        &mut self,
+        parent_ino: u64,
+        name: &str,
+        codec: &str,
+        mtime: u64,
+    ) -> Option<u64> {
+        let parent_id = self.ino_to_id.get(&parent_ino)?.clone();
+        let id = self.create_node(&parent_id, name, NodeKind::File, None, 0, mtime);
+        self.set_field(&id, "codec", codec);
+        let node = self.node(&id)?;
+        let root = self
+            .doc
+            .put_object(&node, "doc", ObjType::Map)
+            .expect("put document root");
+        qdoc::model::init(&mut self.doc, &root);
+        Some(self.ino_for_id(&id))
+    }
+
+    /// The format key if `ino` is a document file, else `None`.
+    pub fn document_codec(&self, ino: u64) -> Option<String> {
+        let id = self.ino_to_id.get(&ino)?;
+        read_str(&self.doc, &self.node(id)?, "codec")
+    }
+
+    fn document_root(&self, id: &str) -> Option<ObjId> {
+        match self.doc.get(&self.node(id)?, "doc") {
+            Ok(Some((Value::Object(ObjType::Map), root))) => Some(root),
+            _ => None,
+        }
+    }
+
+    /// Serialize the document at `ino` to its on-wire bytes (e.g. an `.odt`).
+    pub fn export_document(&self, ino: u64, registry: &qdoc::Registry) -> Option<Vec<u8>> {
+        let id = self.ino_to_id.get(&ino)?.clone();
+        let codec = read_str(&self.doc, &self.node(&id)?, "codec")?;
+        let provider = registry.provider_for_ext(&codec)?;
+        let root = self.document_root(&id)?;
+        let containers = qdoc::model::open(&self.doc, &root).ok()?;
+        provider
+            .export(qdoc::DocRef {
+                doc: &self.doc,
+                c: &containers,
+            })
+            .ok()
+    }
+
+    /// Replace a document's content by importing `bytes` (a whole-file write
+    /// from an app). Resets the embedded CRDT — fine-grained merge needs the
+    /// in-place edit ops below, not a whole-file rewrite.
+    pub fn import_document(
+        &mut self,
+        ino: u64,
+        registry: &qdoc::Registry,
+        bytes: &[u8],
+        mtime: u64,
+    ) -> bool {
+        let Some(id) = self.ino_to_id.get(&ino).cloned() else {
+            return false;
+        };
+        let Some(codec) = read_str(&self.doc, &self.node(&id).unwrap(), "codec") else {
+            return false;
+        };
+        if registry.provider_for_ext(&codec).is_none() {
+            return false;
+        }
+        let Some(node) = self.node(&id) else {
+            return false;
+        };
+        let _ = self.doc.delete(&node, "doc");
+        let root = self
+            .doc
+            .put_object(&node, "doc", ObjType::Map)
+            .expect("put document root");
+        qdoc::model::init(&mut self.doc, &root);
+        let containers = qdoc::model::open(&self.doc, &root).expect("open");
+        let mut ids = qdoc::model::seeded_id_gen(&self.doc, &containers);
+        {
+            let provider = registry.provider_for_ext(&codec).unwrap();
+            let mut dmut = qdoc::DocMut {
+                doc: &mut self.doc,
+                c: &containers,
+                ids: &mut ids,
+            };
+            if provider.import(bytes, &mut dmut).is_err() {
+                return false;
+            }
+        }
+        let size = self.export_document(ino, registry).map(|b| b.len() as u64).unwrap_or(0);
+        self.set_field(&id, "size", size);
+        self.set_field(&id, "mtime", mtime);
+        true
+    }
+
+    // ---- fine-grained document edits (the path that merges semantically) ----
+
+    fn with_doc_mut<R>(&mut self, ino: u64, f: impl FnOnce(&mut qdoc::DocMut) -> R) -> Option<R> {
+        let id = self.ino_to_id.get(&ino)?.clone();
+        let root = self.document_root(&id)?;
+        let containers = qdoc::model::open(&self.doc, &root).ok()?;
+        let mut ids = qdoc::model::seeded_id_gen(&self.doc, &containers);
+        let mut dmut = qdoc::DocMut {
+            doc: &mut self.doc,
+            c: &containers,
+            ids: &mut ids,
+        };
+        Some(f(&mut dmut))
+    }
+
+    pub fn document_insert_block(&mut self, ino: u64, after: Option<&str>, kind: &str) -> Option<String> {
+        self.with_doc_mut(ino, |d| d.insert_block(after, kind))
+    }
+
+    pub fn document_splice(&mut self, ino: u64, block_id: &str, idx: usize, del: isize, ins: &str) -> bool {
+        self.with_doc_mut(ino, |d| d.splice_text(block_id, idx, del, ins)).is_some()
+    }
+
+    pub fn document_blocks(&self, ino: u64) -> Vec<String> {
+        let Some(id) = self.ino_to_id.get(&ino) else {
+            return Vec::new();
+        };
+        let Some(root) = self.document_root(id) else {
+            return Vec::new();
+        };
+        match qdoc::model::open(&self.doc, &root) {
+            Ok(c) => qdoc::model::blocks_in_order(&self.doc, &c),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    pub fn document_block_text(&self, ino: u64, block_id: &str) -> Option<String> {
+        let id = self.ino_to_id.get(&ino)?;
+        let root = self.document_root(id)?;
+        let containers = qdoc::model::open(&self.doc, &root).ok()?;
+        qdoc::model::block_text(&self.doc, &containers, block_id)
+    }
+
     pub fn set_content(&mut self, ino: u64, hash: Option<&Hash>, size: u64, mtime: u64) -> bool {
         let Some(id) = self.ino_to_id.get(&ino).cloned() else {
             return false;
@@ -957,6 +1099,43 @@ mod tests {
         }
         assert!(a.lookup(ROOT_INO, "from_b").is_some(), "a got b's change");
         assert!(b.lookup(ROOT_INO, "from_a").is_some(), "b got a's change");
+    }
+
+    #[test]
+    fn document_import_export_roundtrips() {
+        let reg = qdoc::builtin_registry();
+        let mut ns = Namespace::new("a");
+        let ino = ns.create_document(ROOT_INO, "note.md", "md", 1).unwrap();
+        assert_eq!(ns.document_codec(ino).as_deref(), Some("md"));
+
+        let md = b"# Title\n\nHello world\n";
+        assert!(ns.import_document(ino, &reg, md, 2));
+        let out = ns.export_document(ino, &reg).expect("export");
+        let s = String::from_utf8_lossy(&out);
+        assert!(s.contains("Title") && s.contains("Hello world"), "round-trip lost content: {s}");
+    }
+
+    #[test]
+    fn document_concurrent_edits_merge_semantically() {
+        // The whole point of model B: two peers editing the same document merge
+        // at the text level — NOT a conflict copy.
+        let mut a = Namespace::new("a");
+        let ino = a.create_document(ROOT_INO, "doc.md", "md", 1).unwrap();
+        let bid = a.document_insert_block(ino, None, "paragraph").unwrap();
+        a.document_splice(ino, &bid, 0, 0, "Hello world");
+
+        let snap = a.save();
+        let mut b = Namespace::from_bytes("b", &snap).unwrap();
+        let bino = b.lookup(ROOT_INO, "doc.md").unwrap().ino.0;
+
+        // concurrent in-place edits to the same paragraph
+        a.document_splice(ino, &bid, 5, 0, " dear"); // "Hello dear world"
+        b.document_splice(bino, &bid, 11, 0, " (B)"); // append after "world"
+
+        a.merge_doc(&mut b).unwrap();
+        let text = a.document_block_text(ino, &bid).unwrap();
+        assert!(text.contains("dear"), "A's edit must survive: {text}");
+        assert!(text.contains("(B)"), "B's edit must survive (text-level merge): {text}");
     }
 
     // test-only helper to merge using a fresh loaded copy
