@@ -14,6 +14,7 @@ use iroh::endpoint::Endpoint;
 use iroh_base::EndpointAddr;
 use iroh_blobs::Hash;
 
+use crate::content::Manifest;
 use crate::store::ContentStore;
 
 /// Fetches content for the FUSE read path, hydrating from peers as needed.
@@ -47,8 +48,8 @@ impl Hydrator {
         self.peers.read().unwrap().clone()
     }
 
-    /// Read a byte range of `hash`, hydrating from a peer if not already local.
-    pub async fn read(&self, hash: Hash, offset: u64, size: u64) -> Result<Vec<u8>> {
+    /// Read a byte range of a raw blob `hash`, hydrating from a peer if needed.
+    pub async fn read_blob(&self, hash: Hash, offset: u64, size: u64) -> Result<Vec<u8>> {
         if let Some(bytes) = self.store.local(hash).await {
             return Ok(slice(&bytes, offset, size));
         }
@@ -64,6 +65,43 @@ impl Hydrator {
             }
         }
         Err(last_err)
+    }
+
+    /// Read a byte range of a file given its **manifest** hash: fetch the
+    /// manifest, then only the chunks overlapping `[offset, offset+size)`.
+    pub async fn read(&self, manifest_hash: Hash, offset: u64, size: u64) -> Result<Vec<u8>> {
+        let manifest = self.load_manifest(manifest_hash).await?;
+        let end = offset.saturating_add(size);
+        let mut out = Vec::new();
+        let mut pos: u64 = 0;
+        for c in &manifest.chunks {
+            let cstart = pos;
+            let cend = pos + c.len as u64;
+            pos = cend;
+            if cend <= offset {
+                continue; // entirely before the range
+            }
+            if cstart >= end {
+                break; // entirely after the range
+            }
+            let chunk = self.read_blob(Hash::from(c.hash), 0, c.len as u64).await?;
+            let from = offset.saturating_sub(cstart).min(chunk.len() as u64) as usize;
+            let to = (end - cstart).min(chunk.len() as u64) as usize;
+            if from < to {
+                out.extend_from_slice(&chunk[from..to]);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Total byte length of a file from its manifest (fetches only the manifest).
+    pub async fn content_len(&self, manifest_hash: Hash) -> Result<u64> {
+        Ok(self.load_manifest(manifest_hash).await?.total_len())
+    }
+
+    async fn load_manifest(&self, manifest_hash: Hash) -> Result<Manifest> {
+        let bytes = self.read_blob(manifest_hash, 0, u64::MAX).await?;
+        Manifest::decode(&bytes)
     }
 
     /// Fetch a whole blob from a specific peer, verify, persist, and return it.
@@ -100,15 +138,40 @@ mod tests {
     async fn reads_local_content_without_peers() {
         let endpoint = Endpoint::bind().await.unwrap();
         let store = Arc::new(ContentStore::memory());
-        let hash = store.ingest(Bytes::from_static(b"hello local")).await.unwrap();
+        let hash = store.write_content(b"hello local").await.unwrap().unwrap();
 
         let hydrator = Hydrator::new(endpoint, store);
         let got = hydrator.read(hash, 0, 11).await.unwrap();
         assert_eq!(&got, b"hello local");
 
-        // ranged read
+        // ranged read (across the manifest)
         let mid = hydrator.read(hash, 6, 5).await.unwrap();
         assert_eq!(&mid, b"local");
+    }
+
+    #[tokio::test]
+    async fn chunked_large_file_ranged_reads() {
+        let endpoint = Endpoint::bind().await.unwrap();
+        let store = Arc::new(ContentStore::memory());
+        // A multi-chunk buffer (well over MAX_CHUNK).
+        let data: Vec<u8> = (0..300_000u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect();
+        let mh = store.write_content(&data).await.unwrap().unwrap();
+        assert_eq!(store.local(mh).await.is_some(), true, "manifest stored");
+
+        let hyd = Hydrator::new(endpoint, store);
+        assert_eq!(hyd.content_len(mh).await.unwrap(), data.len() as u64);
+
+        // whole file
+        assert_eq!(hyd.read(mh, 0, data.len() as u64).await.unwrap(), data);
+
+        // ranges that cross chunk boundaries
+        for (off, len) in [(0usize, 100usize), (8000, 20000), (150_000, 1), (299_000, 2000)] {
+            let end = (off + len).min(data.len());
+            let got = hyd.read(mh, off as u64, (end - off) as u64).await.unwrap();
+            assert_eq!(got, &data[off..end], "range {off}+{len} mismatch");
+        }
     }
 
     #[tokio::test]
@@ -128,7 +191,7 @@ mod tests {
         let server_ep = Endpoint::bind().await.unwrap();
         let server_store = ContentStore::memory();
         let payload = Bytes::from_static(b"collaborative filesystem payload");
-        let hash = server_store.ingest(payload.clone()).await.unwrap();
+        let hash = server_store.write_content(payload.as_ref()).await.unwrap().unwrap();
         let _router = Router::builder(server_ep.clone())
             .accept(iroh_blobs::ALPN, server_store.blobs_protocol(None))
             .spawn();
