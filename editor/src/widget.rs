@@ -519,6 +519,8 @@ pub struct WordProcessorWidget {
     /// lazily-decoded image cache (`None` = decode failed / unsupported format).
     blobs: std::collections::BTreeMap<String, Vec<u8>>,
     image_cache: std::collections::HashMap<String, Option<ui::widget::Image>>,
+    /// The toolbar button the pointer is currently over (for hover feedback).
+    hover_tool: Option<Rect>,
     blocks: Vec<BlockView>,
     laid: Vec<Laid>,
     toolbar: Vec<(ToolAction, Rect)>,
@@ -585,6 +587,7 @@ impl WordProcessorWidget {
             find_buttons: Vec::new(),
             blobs: std::collections::BTreeMap::new(),
             image_cache: std::collections::HashMap::new(),
+            hover_tool: None,
             blocks: Vec::new(),
             laid: Vec::new(),
             toolbar: Vec::new(),
@@ -1666,6 +1669,17 @@ impl Widget for WordProcessorWidget {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+                // Toolbar hover feedback — repaint only when the hovered button changes.
+                let new_hover = if self.pointer.y < self.rect.y0 + TOOLBAR_H {
+                    self.toolbar.iter().find(|(_, r)| r.contains(self.pointer)).map(|(_, r)| *r)
+                } else {
+                    None
+                };
+                if new_hover != self.hover_tool {
+                    self.hover_tool = new_hover;
+                    self.dirty = true;
+                    *handled = true;
+                }
                 if let Some(sc) = self.scrub {
                     // Drag-to-scrub a numeric style field (live preview for every
                     // block of that style).
@@ -2407,6 +2421,11 @@ impl WordProcessorWidget {
         let items: Vec<ToolbarItem> = specs.iter().map(|(_, item)| item.clone()).collect();
         let rects = chrome::toolbar::draw(scene, transform, tr, theme, tb, &items);
         self.toolbar = specs.into_iter().map(|(a, _)| a).zip(rects).collect();
+        // Subtle hover highlight over the button under the pointer.
+        if let Some(hr) = self.hover_tool {
+            let pad = Rect::new(hr.x0 - 2.0, tb.y0 + 6.0, hr.x1 + 2.0, tb.y1 - 6.0);
+            scene.fill(Fill::NonZero, transform, Color::from_rgba8(0xff, 0xff, 0xff, 0x14), None, &vello::kurbo::RoundedRect::from_rect(pad, 6.0));
+        }
     }
 }
 
