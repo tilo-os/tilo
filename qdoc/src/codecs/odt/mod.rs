@@ -41,7 +41,9 @@ impl FormatProvider for OdtCodec {
             styles::parse_styles(styles_xml, &mut reg);
         }
         styles::parse_styles(&content, &mut reg);
-        content::parse_body(&content, &reg, doc)?;
+        // The container is threaded through so `draw:frame`/`draw:image` can read
+        // the referenced `Pictures/*` bytes and store them as image-block blobs.
+        content::parse_body(&content, &reg, &container, doc)?;
         // Preservation layer: stash every part except the (regenerated)
         // content.xml verbatim so export round-trips them losslessly.
         for (name, part) in &container.parts {

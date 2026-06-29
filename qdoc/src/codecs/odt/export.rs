@@ -41,8 +41,89 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     if !had_manifest {
         c.set("META-INF/manifest.xml", MANIFEST.to_vec());
     }
+
+    // Write each image block's blob into the zip as `Pictures/<hash>.<ext>` and
+    // collect manifest entries (the `draw:image` hrefs in content.xml match).
+    let mut pic_entries: Vec<(String, &'static str)> = Vec::new();
+    for b in &snap.blocks {
+        if b.kind != "image" {
+            continue;
+        }
+        if let Some(AttrVal::Str(hash)) = b.attrs.get("blob") {
+            if let Some(bytes) = snap.blobs.get(hash) {
+                let (ext, media) = image_ext_and_media(bytes);
+                let path = format!("Pictures/{hash}.{ext}");
+                c.set(&path, bytes.clone());
+                if !pic_entries.iter().any(|(p, _)| p == &path) {
+                    pic_entries.push((path, media));
+                }
+            }
+        }
+    }
+    if !pic_entries.is_empty() {
+        let manifest = c.get("META-INF/manifest.xml").map(|b| b.to_vec()).unwrap_or_else(|| MANIFEST.to_vec());
+        c.set("META-INF/manifest.xml", inject_manifest_entries(&manifest, &pic_entries));
+    }
+
     c.set("content.xml", content.into_bytes());
     c.write()
+}
+
+/// Detect an image's file extension + ODF media type from its magic bytes.
+/// Unknown payloads fall back to a generic binary stream.
+fn image_ext_and_media(bytes: &[u8]) -> (&'static str, &'static str) {
+    if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
+        ("png", "image/png")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        ("jpg", "image/jpeg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        ("gif", "image/gif")
+    } else {
+        ("bin", "application/octet-stream")
+    }
+}
+
+/// The `Pictures/<hash>.<ext>` href an image block's blob is written under.
+fn picture_href(hash: &str, bytes: &[u8]) -> String {
+    let (ext, _) = image_ext_and_media(bytes);
+    format!("Pictures/{hash}.{ext}")
+}
+
+/// Insert `manifest:file-entry` rows for `entries` (path, media-type) not already
+/// present, just before the closing `</manifest:manifest>`.
+fn inject_manifest_entries(manifest: &[u8], entries: &[(String, &'static str)]) -> Vec<u8> {
+    let s = String::from_utf8_lossy(manifest);
+    let mut inserts = String::new();
+    for (path, media) in entries {
+        if s.contains(&format!(r#"manifest:full-path="{path}""#)) {
+            continue;
+        }
+        inserts.push_str(&format!(
+            r#"<manifest:file-entry manifest:full-path="{path}" manifest:media-type="{media}"/>"#
+        ));
+    }
+    if inserts.is_empty() {
+        return manifest.to_vec();
+    }
+    match s.rfind("</manifest:manifest>") {
+        Some(pos) => {
+            let mut out = String::with_capacity(s.len() + inserts.len());
+            out.push_str(&s[..pos]);
+            out.push_str(&inserts);
+            out.push_str(&s[pos..]);
+            out.into_bytes()
+        }
+        None => manifest.to_vec(),
+    }
+}
+
+/// Escape text for XML element content (`svg:title` / `svg:desc`).
+fn escape_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        push_escaped(&mut out, c);
+    }
+    out
 }
 
 /// Codec-authored automatic *text* style for a mark: `(style name, properties)`.
@@ -187,6 +268,39 @@ fn para_props(b: &BlockView) -> Option<(String, String)> {
     }
 }
 
+/// Build the `draw:frame` XML for an `image` block, or `None` if its blob is
+/// absent from the document. The `xlink:href` matches the `Pictures/<hash>.<ext>`
+/// part `export()` writes for the same blob.
+fn image_frame_xml(b: &BlockView, snap: &DocSnapshot) -> Option<String> {
+    let hash = match b.attrs.get("blob") {
+        Some(AttrVal::Str(h)) => h,
+        _ => return None,
+    };
+    let bytes = snap.blobs.get(hash)?;
+    let href = picture_href(hash, bytes);
+    let mut frame = String::from("<draw:frame");
+    frame.push_str(&format!(r#" draw:name="{}""#, escape_attr(&b.id)));
+    if let Some(AttrVal::Int(w)) = b.attrs.get("width") {
+        if *w > 0 {
+            frame.push_str(&format!(r#" svg:width="{w}px""#));
+        }
+    }
+    if let Some(AttrVal::Int(h)) = b.attrs.get("height") {
+        if *h > 0 {
+            frame.push_str(&format!(r#" svg:height="{h}px""#));
+        }
+    }
+    frame.push('>');
+    frame.push_str(&format!(r#"<draw:image xlink:href="{}"/>"#, escape_attr(&href)));
+    if let Some(AttrVal::Str(alt)) = b.attrs.get("alt") {
+        if !alt.is_empty() {
+            frame.push_str(&format!("<svg:title>{}</svg:title>", escape_text(alt)));
+        }
+    }
+    frame.push_str("</draw:frame>");
+    Some(frame)
+}
+
 fn snap_cell_table(b: &BlockView) -> Option<String> {
     match b.attrs.get("table") {
         Some(AttrVal::Str(s)) => Some(s.clone()),
@@ -252,6 +366,15 @@ fn build_content_xml(snap: &DocSnapshot) -> String {
                     i += 1;
                 }
                 body.push_str("</text:list>");
+            }
+            "image" => {
+                // Emit a top-level `draw:frame` referencing the blob written as a
+                // `Pictures/<hash>.<ext>` part. Size (svg:width/height in px) and
+                // alt (svg:title) round-trip when present.
+                if let Some(frame) = image_frame_xml(b, snap) {
+                    body.push_str(&frame);
+                }
+                i += 1;
             }
             "fidelity" => {
                 // Re-emit the preserved unmodeled element verbatim, in place.
@@ -479,6 +602,80 @@ mod tests {
             assert!(b.marks.iter().any(|m| m.name == name && m.start == 0 && m.end == 5), "{name} survives: {:?}", b.marks);
         }
         assert_eq!(b.marks.iter().find(|m| m.name == "link").unwrap().value, MarkValue::Str("http://q/".into()));
+    }
+
+    /// A genuinely valid 1x1 truecolor-RGB PNG (signature + IHDR + IDAT + IEND),
+    /// embedded so the image round-trip is self-contained.
+    const TINY_PNG: [u8; 69] = [
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+        0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
+        0x00, 0x03, 0x01, 0x01, 0x00, 0xf7, 0x03, 0x41, 0x43, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
+        0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    #[test]
+    fn image_block_roundtrips_through_odt() {
+        // Build: paragraph, image (with blob + alt + size), paragraph.
+        let mut d = Document::new();
+        let p1 = d.insert_block(None, "paragraph");
+        d.splice_text(&p1, 0, 0, "before");
+        let img = d.insert_block(Some(&p1), "image");
+        let p3 = d.insert_block(Some(&img), "paragraph");
+        d.splice_text(&p3, 0, 0, "after");
+        let hash = d.put_blob(&TINY_PNG);
+        {
+            let mut dm = d.as_mut();
+            dm.set_attr(&img, "blob", hash.as_str());
+            dm.set_attr(&img, "alt", "a tiny red dot");
+            dm.set_attr(&img, "width", 64_i64);
+            dm.set_attr(&img, "height", 48_i64);
+        }
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+
+        // The zip carries the picture + a manifest entry for it.
+        let cont = OdtContainer::read(&exported).unwrap();
+        let pic = cont
+            .parts
+            .iter()
+            .find(|(n, _)| n.starts_with("Pictures/") && n.ends_with(".png"))
+            .expect("Pictures/<hash>.png written");
+        assert_eq!(pic.1, &TINY_PNG[..], "picture bytes written verbatim");
+        let manifest = std::str::from_utf8(cont.get("META-INF/manifest.xml").unwrap()).unwrap();
+        assert!(
+            manifest.contains(&pic.0) && manifest.contains("image/png"),
+            "picture registered in manifest: {manifest}"
+        );
+        let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
+        assert!(content.contains("<draw:frame"), "draw:frame emitted: {content}");
+        assert!(content.contains(&format!(r#"xlink:href="{}""#, pic.0)), "image href matches part: {content}");
+
+        // Re-import: order preserved, image survives with bytes + alt + size.
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+        assert_eq!(snap.blocks.len(), 3, "block count preserved: {snap:?}");
+        assert_eq!(snap.blocks[0].kind, "paragraph");
+        assert_eq!(snap.blocks[0].text, "before");
+        assert_eq!(snap.blocks[1].kind, "image", "middle block is the image");
+        assert_eq!(snap.blocks[2].kind, "paragraph");
+        assert_eq!(snap.blocks[2].text, "after");
+
+        let im = &snap.blocks[1];
+        let blob_hash = match im.attrs.get("blob") {
+            Some(AttrVal::Str(h)) => h.clone(),
+            other => panic!("image block missing blob attr: {other:?}"),
+        };
+        assert_eq!(blob_hash, hash, "blake3 hash stable across round-trip");
+        assert_eq!(im.attrs.get("alt"), Some(&AttrVal::Str("a tiny red dot".into())));
+        assert_eq!(im.attrs.get("width"), Some(&AttrVal::Int(64)), "{:?}", im.attrs);
+        assert_eq!(im.attrs.get("height"), Some(&AttrVal::Int(48)), "{:?}", im.attrs);
+
+        let bytes = snap.blobs.get(&blob_hash).expect("blob bytes present after round-trip");
+        assert_eq!(bytes.as_slice(), &TINY_PNG[..], "image bytes survive the round-trip");
+        // And the read-side accessor returns them too.
+        assert_eq!(d2.blob(&blob_hash).as_deref(), Some(&TINY_PNG[..]));
     }
 
     #[test]

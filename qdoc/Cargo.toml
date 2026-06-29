@@ -6,6 +6,7 @@ description = "CRDT-native canonical document model and format-provider API for 
 
 [dependencies]
 automerge = "0.8.0"
+blake3 = "1"
 pulldown-cmark = { version = "0.12", default-features = false }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 quick-xml = "0.36"
