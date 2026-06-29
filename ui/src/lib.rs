@@ -8,6 +8,7 @@ pub mod chrome;
 pub mod gesture;
 pub mod text_selection;
 pub mod theme;
+pub mod caps_lock;
 pub mod i18n;
 pub mod collaboration;
 pub mod tokens;
@@ -24,6 +25,7 @@ pub use app::App;
 pub use color_compat::ColorCompat;
 pub use state::{State, UndoEntry};
 pub use theme::Theme;
+pub use caps_lock::CapsLockEstimate;
 
 pub use widget::{Widget, Element};
 pub use widget::{AppCommand, AppKind, AppWidget, IconDescriptor};

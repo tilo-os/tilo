@@ -122,6 +122,12 @@ pub struct TextInput {
     /// `self.text` stays the *true* value so callers that read the
     /// document (e.g. the greeter's auth path) get the real secret.
     secret: bool,
+    /// When true the input is inert: it is dropped from the focus order
+    /// (`is_focusable() == false`), ignores all key / pointer input, and
+    /// renders dimmed (sunken background + dim text, no caret). Mirrors the
+    /// installer's `ActionButton::disabled`. Default `false`, so existing
+    /// callers are unaffected.
+    disabled: bool,
 }
 
 /// Automerge mark name used to attribute each character's author.
@@ -157,6 +163,7 @@ impl TextInput {
             bound_text: None,
             local_author: None,
             secret: false,
+            disabled: false,
         }
     }
 
@@ -418,6 +425,31 @@ impl TextInput {
         self
     }
 
+    /// Builder-style: mark the input disabled. A disabled input is inert —
+    /// not focusable, ignores key / pointer input, and renders dimmed. The
+    /// default (`false`) leaves the input fully interactive, so existing
+    /// callers are unaffected.
+    pub fn disabled(mut self, on: bool) -> Self {
+        self.disabled = on;
+        self
+    }
+
+    /// Mutate the disabled flag after construction. When transitioning to
+    /// disabled, any in-progress drag selection is dropped so the widget
+    /// doesn't hold pointer capture while inert.
+    pub fn set_disabled(&mut self, on: bool) {
+        self.disabled = on;
+        if on {
+            self.is_dragging = false;
+            self.is_hovered = false;
+        }
+    }
+
+    /// Whether the input is currently disabled (inert).
+    pub fn is_disabled(&self) -> bool {
+        self.disabled
+    }
+
     /// The string actually painted / measured. For secret inputs this is
     /// one bullet per *character* of the real text; otherwise it's the
     /// real text itself.
@@ -628,19 +660,25 @@ impl Widget for TextInput {
     fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
         let shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
         if !self.plain {
-            let bg_color = if self.is_focused {
+            let bg_color = if self.disabled {
+                // Sunken surface reads as "inert" — one step darker than the
+                // raised form-field fill.
+                theme.tokens.colors.surfaces.base
+            } else if self.is_focused {
                 theme.bg_active
             } else {
                 theme.tokens.colors.surfaces.raised
             };
             scene.fill(vello::peniko::Fill::NonZero, transform, bg_color, None, &shape);
-            let border_color = if self.is_focused {
+            let border_color = if self.disabled {
+                theme.tokens.colors.border_standard
+            } else if self.is_focused {
                 theme.tokens.colors.border_focus
             } else {
                 theme.tokens.colors.border_standard
             };
             scene.stroke(
-                &Stroke::new(if self.is_focused { 2.0 } else { 1.0 }),
+                &Stroke::new(if self.is_focused && !self.disabled { 2.0 } else { 1.0 }),
                 transform,
                 border_color,
                 None,
@@ -715,16 +753,21 @@ impl Widget for TextInput {
             scene.fill(vello::peniko::Fill::NonZero, transform, sel_color, None, &sel_rect);
         }
 
+        let text_color = if self.disabled {
+            theme.text_dim
+        } else {
+            theme.text_primary
+        };
         text_renderer.draw_text(
             scene,
             &display,
             text_size,
-            theme.text_primary,
+            text_color,
             transform * Affine::translate((self.rect.x0 + padding_x - self.scroll_x, text_y)),
             None,
         );
 
-        if self.is_focused {
+        if self.is_focused && !self.disabled {
             // Same caret geometry peers render through `caret_rect`, just
             // painted in the local accent colour.
             let cursor_rect = self.caret_rect(theme, cursor_pos);
@@ -735,6 +778,12 @@ impl Widget for TextInput {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, modifiers: &Modifiers, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, _taffy: &TaffyTree<()>) {
+        // A disabled input is inert: swallow nothing, mutate nothing, never
+        // grab focus. Bailing here is the single guard that makes both
+        // pointer and keyboard input no-ops.
+        if self.disabled {
+            return;
+        }
         self.clamp_to_text();
 
         match event {
@@ -990,7 +1039,7 @@ impl Widget for TextInput {
         self.rect
     }
 
-    fn is_focusable(&self) -> bool { true }
+    fn is_focusable(&self) -> bool { !self.disabled }
     fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
     fn is_focused(&self) -> bool { self.is_focused }
 
@@ -1167,6 +1216,125 @@ mod tests {
         ti.set_focus(true);
         Widget::draw(&mut ti, &mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
         assert!(ti.scroll_x() > 0.0, "focused input follows the caret on a long line");
+    }
+
+    /// A disabled input must drop out of the focus order so keyboard nav
+    /// (Tab / arrows) skips it — mirrors `ActionButton::disabled`.
+    #[test]
+    fn disabled_input_is_not_focusable() {
+        let enabled = TextInput::new(Vec::new());
+        assert!(Widget::is_focusable(&enabled), "default input is focusable");
+
+        let off = TextInput::new(Vec::new()).disabled(true);
+        assert!(!Widget::is_focusable(&off), "disabled input must not be focusable");
+
+        // The setter path agrees with the builder.
+        let mut later = TextInput::new(Vec::new());
+        later.set_disabled(true);
+        assert!(!Widget::is_focusable(&later));
+        assert!(later.is_disabled());
+    }
+
+    /// Build a printable-character `KeyboardInput`. `KeyEvent` has a
+    /// `pub(crate)` platform field so it can't be struct-literalled from a
+    /// test; the all-zero pattern + field overwrite is the same approach
+    /// `modal_dialog::tests::key_press_event` uses.
+    fn char_key_event(s: &str) -> WindowEvent {
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Character(winit::keyboard::SmolStr::new(s));
+        ev.physical_key =
+            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = Some(winit::keyboard::SmolStr::new(s));
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+
+    /// A disabled input must ignore keyboard input entirely — no text is
+    /// spliced and the dirty flag stays clear (so the parent never sees a
+    /// phantom edit).
+    #[test]
+    fn disabled_input_ignores_keyboard_input() {
+        let mut ti = TextInput::local().disabled(true);
+        ti.set_focus(true); // even if somehow focused, the input is inert
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
+
+        let mut doc = AutoCommit::new();
+        let mut handled = false;
+        let mut focus_target = None;
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let event = char_key_event("x");
+        ti.handle_event(
+            &event,
+            1.0,
+            &Modifiers::default(),
+            &mut doc,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &taffy,
+        );
+        assert!(!handled, "disabled input must not consume the keypress");
+        assert_eq!(ti.value(), "", "disabled input must not insert text");
+        assert!(ti.take_dirty().is_none(), "no edit should be recorded");
+
+        // Sanity: the SAME event DOES edit an enabled, focused input — proves
+        // the bail-out (not some unrelated wiring) is what suppressed it.
+        let mut on = TextInput::local();
+        on.set_focus(true);
+        on.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
+        let mut handled = false;
+        on.handle_event(
+            &char_key_event("x"),
+            1.0,
+            &Modifiers::default(),
+            &mut doc,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &taffy,
+        );
+        assert!(handled);
+        assert_eq!(on.value(), "x");
+    }
+
+    /// A disabled input must ignore pointer input: a click over it does not
+    /// request focus (no `focus_target`) and does not consume the event.
+    #[test]
+    fn disabled_input_ignores_pointer_input() {
+        use winit::dpi::PhysicalPosition;
+        use winit::event::MouseButton;
+
+        let mut ti = TextInput::local().disabled(true);
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
+        let mut doc = AutoCommit::new();
+        let mut handled = false;
+        let mut focus_target = None;
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+
+        let moved = WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: PhysicalPosition::new(20.0, 20.0),
+        };
+        ti.handle_event(&moved, 1.0, &Modifiers::default(), &mut doc, &automerge::ROOT, &mut handled, &mut focus_target, node, &taffy);
+        let press = WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        };
+        ti.handle_event(&press, 1.0, &Modifiers::default(), &mut doc, &automerge::ROOT, &mut handled, &mut focus_target, node, &taffy);
+
+        assert!(!handled, "disabled input must not consume the click");
+        assert!(focus_target.is_none(), "disabled input must not request focus");
     }
 
     #[test]
