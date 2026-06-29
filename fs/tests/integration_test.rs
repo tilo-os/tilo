@@ -1,7 +1,6 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use bytes::Bytes;
 use fs::namespace::ROOT_INO;
 use fs::{ContentStore, Heuristics, Hydrator, Namespace, QuickFS};
 use fuser::{Config, MountOption};
@@ -24,7 +23,11 @@ async fn fuse_projects_tree_and_reads_real_content() {
         // Ingest real content into the local store and seed the namespace with it.
         let store = Arc::new(ContentStore::memory());
         let body = b"hello from the collaborative filesystem";
-        let hash = store.ingest(Bytes::from_static(body)).await.expect("ingest");
+        let hash = store
+            .write_content(body)
+            .await
+            .expect("write_content")
+            .expect("non-empty");
 
         let namespace = Arc::new(Mutex::new(Namespace::new("test-peer")));
         {
