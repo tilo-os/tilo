@@ -36,10 +36,11 @@ use winit::event_loop::EventLoopProxy;
 use winit::keyboard::{Key, NamedKey};
 
 use ui::app::UserEvent;
+use ui::caps_lock::CapsLockEstimate;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{Button, Spinner, Text, TextInput, Widget};
+use ui::widget::{Button, Row, Spinner, Text, TextInput, Widget};
 
 use crate::auth::{spawn_auth, AuthUpdate};
 use crate::sessions::{read_sessions, Session, DEFAULT_SESSIONS_DIR};
@@ -48,6 +49,12 @@ const USERNAME_PATH: &str = "greeter.username";
 const PASSWORD_PATH: &str = "greeter.password";
 const SUBMIT_PATH: &str = "greeter.submit";
 const CYCLE_PATH: &str = "greeter.cycle";
+/// Rising-edge boolean flags raised by the secondary power-action buttons.
+/// Consumed in [`GreeterApp::sync`], which routes them through logind via
+/// `systemctl reboot` / `systemctl poweroff` (authorised for the `greetd`
+/// user by os/etc/polkit-1/rules.d/49-qos-greeter-power.rules).
+const REBOOT_PATH: &str = "greeter.reboot";
+const POWEROFF_PATH: &str = "greeter.poweroff";
 
 /// Card geometry (logical px).
 const CARD_WIDTH: f32 = 360.0;
@@ -260,6 +267,14 @@ pub enum AuthPhase {
     Authenticating,
 }
 
+/// A machine power action the greeter can request before login. Routed to
+/// logind via `systemctl` — see [`GreeterApp::run_power`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PowerAction {
+    Reboot,
+    PowerOff,
+}
+
 /// Pre-canned visual states for the headless `--shots` render path so each
 /// distinct screen can be snapshot-verified. Live runs never use these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -269,10 +284,13 @@ pub enum AuthScenario {
     /// The form after a failed attempt — error status shown, password
     /// cleared, username retained.
     Error,
-    /// Mid-authentication: spinner + "Authenticating…".
+    /// Mid-authentication: spinner + "Authenticating…" with the username +
+    /// password inputs disabled (dimmed, inert).
     Authenticating,
     /// Mid-authentication with a fingerprint prompt surfaced.
     Fingerprint,
+    /// The form with the Caps-Lock warning shown under the password field.
+    CapsLock,
 }
 
 pub struct GreeterApp {
@@ -292,6 +310,21 @@ pub struct GreeterApp {
     /// text, or auth phase changed). Drained by `take_structure_dirty`,
     /// which the App polls to trigger a fresh `build_layout`.
     dirty_structure: bool,
+    /// Heuristic Caps-Lock state inferred from typed letters (winit can't
+    /// report the lock directly). Drives the warning under the password
+    /// field. See [`ui::caps_lock`].
+    caps_lock: CapsLockEstimate,
+    /// One-shot request that the App re-seat keyboard focus on the first
+    /// focusable widget after the next rebuild (drained by
+    /// [`Widget::take_focus_reset`]). Raised on auth-phase transitions,
+    /// which enable/disable the inputs and therefore change *which* widgets
+    /// are focusable — preserving the old ordinal would land focus on the
+    /// wrong control. Plain status/caps rebuilds leave it `false` so focus +
+    /// caret are preserved in place.
+    focus_reset_pending: bool,
+    /// The most recent power action requested, recorded for test
+    /// observability (the actual `systemctl` invocation is a side effect).
+    last_power_action: Option<PowerAction>,
     rect: Rect,
     /// The composed card subtree, rebuilt each `build_layout`.
     composed: Option<Box<dyn Widget>>,
@@ -328,6 +361,9 @@ impl GreeterApp {
             phase: AuthPhase::Idle,
             bootstrap_done: false,
             dirty_structure: false,
+            caps_lock: CapsLockEstimate::new(),
+            focus_reset_pending: false,
+            last_power_action: None,
             rect: Rect::ZERO,
             composed: None,
             proxy: Arc::new(OnceLock::new()),
@@ -362,6 +398,10 @@ impl GreeterApp {
             AuthScenario::Fingerprint => {
                 app.phase = AuthPhase::Authenticating;
                 app.prompt = "Place your finger on the reader".to_string();
+            }
+            AuthScenario::CapsLock => {
+                // Force the heuristic "on" so the warning renders.
+                app.caps_lock.observe('A', false);
             }
         }
         app
@@ -400,43 +440,59 @@ impl GreeterApp {
 
     /// Build the composed card subtree from current state.
     ///
-    /// The first five children (title, username, password, session button,
-    /// login button) are present in EVERY phase and in the same order, so
-    /// the App's focusable ordinal — and therefore keyboard focus — stays
-    /// glued to the same field across rebuilds (see `main.rs`'s
-    /// `autofocus_on_structure_change`). Feedback widgets (spinner, status,
-    /// detail) are non-focusable and appended last, so they never shift the
-    /// focusable order.
+    /// Focus continuity contract: the two text inputs (username, password)
+    /// and the two main buttons (session, login) are the *focusable* set on
+    /// the form, in that order. Non-focusable widgets (title, the Caps-Lock
+    /// warning, spinner, status/detail) never change the focusable ordinal,
+    /// so an incidental rebuild (status text, caps toggle, session cycle)
+    /// keeps keyboard focus AND the caret glued in place — see `main.rs`'s
+    /// `autofocus_on_structure_change` and the App's `rebuild_structure`.
+    ///
+    /// While authenticating the inputs are **disabled** (dimmed + dropped
+    /// from the focus order), which deliberately changes the focusable set;
+    /// the phase transition raises `take_focus_reset` so the App re-seats
+    /// focus rather than preserving a now-invalid ordinal.
     fn build_composition(&self) -> Box<dyn Widget> {
-        let mut children: Vec<Box<dyn Widget>> = vec![
-            Box::new(Text::new("qOS").with_size(34.0)),
-            Box::new(
-                TextInput::new(Vec::new())
-                    .with_id("greeter.username")
-                    .with_on_change_path(USERNAME_PATH),
-            ),
-            Box::new(
-                TextInput::new(Vec::new())
-                    .with_id("greeter.password")
-                    .with_on_change_path(PASSWORD_PATH)
-                    .with_secret(true),
-            ),
-            Box::new(Button::new(
-                "greeter.session",
-                &self.session_label(),
-                Some(CYCLE_PATH),
-            )),
-            Box::new(Button::new(
-                "greeter.login",
-                self.login_label(),
-                Some(SUBMIT_PATH),
-            )),
-        ];
+        let authenticating = self.phase == AuthPhase::Authenticating;
+
+        let mut children: Vec<Box<dyn Widget>> = Vec::new();
+        children.push(Box::new(Text::new("qOS").with_size(34.0)));
+        children.push(Box::new(
+            TextInput::new(Vec::new())
+                .with_id("greeter.username")
+                .with_on_change_path(USERNAME_PATH)
+                .disabled(authenticating),
+        ));
+        children.push(Box::new(
+            TextInput::new(Vec::new())
+                .with_id("greeter.password")
+                .with_on_change_path(PASSWORD_PATH)
+                .with_secret(true)
+                .disabled(authenticating),
+        ));
+
+        // Caps-Lock warning sits directly under the password field. It's a
+        // non-focusable Text, so toggling it never shifts the focusable
+        // ordinal. Only meaningful on the live form (not mid-auth).
+        if !authenticating && self.caps_lock.on() {
+            children.push(Box::new(Text::new("⇪ Caps Lock is on").with_size(13.0)));
+        }
+
+        children.push(Box::new(Button::new(
+            "greeter.session",
+            &self.session_label(),
+            Some(CYCLE_PATH),
+        )));
+        children.push(Box::new(Button::new(
+            "greeter.login",
+            self.login_label(),
+            Some(SUBMIT_PATH),
+        )));
 
         // While authenticating, a spinner gives live feedback that the
         // request is in flight (and the "Authenticating…" button label +
         // the submit guard in `sync` prevent double-submits).
-        if self.phase == AuthPhase::Authenticating {
+        if authenticating {
             children.push(Box::new(Spinner::new()));
         }
 
@@ -448,6 +504,23 @@ impl GreeterApp {
         if self.phase == AuthPhase::Idle && !self.detail.is_empty() {
             children.push(Box::new(Text::new(&self.detail).with_size(11.0)));
         }
+
+        // Secondary power-actions row at the bottom of the card. Quiet
+        // neutral buttons (ui::Button), always present, so they sit at a
+        // stable trailing focusable ordinal across rebuilds.
+        children.push(Box::new(
+            Row::new()
+                .push(Box::new(Button::new(
+                    "greeter.reboot",
+                    "Reboot",
+                    Some(REBOOT_PATH),
+                )))
+                .push(Box::new(Button::new(
+                    "greeter.poweroff",
+                    "Shut down",
+                    Some(POWEROFF_PATH),
+                ))),
+        ));
 
         Box::new(Card::new(children))
     }
@@ -464,6 +537,49 @@ impl GreeterApp {
         }
         if state.get(root, CYCLE_PATH).ok().flatten().is_none() {
             let _ = state.put(root, CYCLE_PATH, false);
+        }
+        if state.get(root, REBOOT_PATH).ok().flatten().is_none() {
+            let _ = state.put(root, REBOOT_PATH, false);
+        }
+        if state.get(root, POWEROFF_PATH).ok().flatten().is_none() {
+            let _ = state.put(root, POWEROFF_PATH, false);
+        }
+    }
+
+    /// Record + execute a power action. Splitting the record (always) from
+    /// the side-effecting `systemctl` invocation keeps the rising-edge
+    /// wiring unit-testable: tests observe [`last_power_action`] without ever
+    /// powering off the host.
+    ///
+    /// [`last_power_action`]: GreeterApp::last_power_action
+    fn request_power(&mut self, action: PowerAction) {
+        self.last_power_action = Some(action);
+        Self::run_power(action);
+    }
+
+    /// Invoke logind for `action` via `systemctl`. `systemctl reboot` /
+    /// `systemctl poweroff` issue `org.freedesktop.login1.Manager.{Reboot,
+    /// PowerOff}` over D-Bus; polkit authorises these for the `greetd` user
+    /// through os/etc/polkit-1/rules.d/49-qos-greeter-power.rules (logind
+    /// also permits an *active* local session by default, but the greeter's
+    /// session class is "greeter" and may not register as active, so the
+    /// explicit rule makes it deterministic). Compiled out under `cfg(test)`
+    /// so the test suite can never reboot the build host.
+    fn run_power(action: PowerAction) {
+        let arg = match action {
+            PowerAction::Reboot => "reboot",
+            PowerAction::PowerOff => "poweroff",
+        };
+        #[cfg(not(test))]
+        {
+            match std::process::Command::new("systemctl").arg(arg).spawn() {
+                Ok(_) => {}
+                Err(e) => tracing::error!("greeter: `systemctl {arg}` failed: {e}"),
+            }
+        }
+        #[cfg(test)]
+        {
+            let _ = arg; // never power off the test host
         }
     }
 
@@ -553,13 +669,16 @@ impl GreeterApp {
     }
 
     /// Enter the authenticating phase: clear any stale status/detail and
-    /// show the spinner. Triggers a rebuild.
+    /// show the spinner. Triggers a rebuild. The inputs become disabled
+    /// (dropped from the focus order), so re-seat focus rather than keep a
+    /// now-invalid ordinal.
     fn begin_authenticating(&mut self) {
         self.phase = AuthPhase::Authenticating;
         self.prompt.clear();
         self.status.clear();
         self.detail.clear();
         self.dirty_structure = true;
+        self.focus_reset_pending = true;
     }
 
     /// Return to the form after a failed attempt: surface the (already
@@ -579,6 +698,9 @@ impl GreeterApp {
         self.detail = detail.unwrap_or_default();
         Self::clear_password(state, root);
         self.dirty_structure = true;
+        // Inputs are re-enabled (back in the focus order) — re-seat focus on
+        // the rebuilt form rather than a stale auth-phase ordinal.
+        self.focus_reset_pending = true;
     }
 
     /// Empty the password CRDT Text object so the field clears on the next
@@ -624,6 +746,17 @@ impl Widget for GreeterApp {
         if Self::read_flag(state, root, SUBMIT_PATH) {
             let _ = state.put(root, SUBMIT_PATH, false);
             self.attempt_login(state, root);
+        }
+
+        // Power-action rising edges. Reset the flag first so a single click
+        // fires exactly one request.
+        if Self::read_flag(state, root, REBOOT_PATH) {
+            let _ = state.put(root, REBOOT_PATH, false);
+            self.request_power(PowerAction::Reboot);
+        }
+        if Self::read_flag(state, root, POWEROFF_PATH) {
+            let _ = state.put(root, POWEROFF_PATH, false);
+            self.request_power(PowerAction::PowerOff);
         }
 
         if let Some(c) = &mut self.composed {
@@ -707,6 +840,29 @@ impl Widget for GreeterApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        // Track Caps Lock from typed letters (winit's Modifiers can't report
+        // the lock directly — see `ui::caps_lock`). A flip in the estimate
+        // triggers a rebuild so the warning under the password field
+        // appears/disappears. Focus + caret survive that rebuild via the
+        // App's `rebuild_structure` continuity path.
+        if let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    text: Some(t),
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        {
+            let before = self.caps_lock.on();
+            self.caps_lock
+                .observe_text(t.as_str(), modifiers.state().shift_key());
+            if self.caps_lock.on() != before {
+                self.dirty_structure = true;
+            }
+        }
+
         // Enter submits from anywhere in the form. We mark the event
         // handled so the App runs its post-event `sync` (which detects
         // the rising edge and runs auth).
@@ -772,6 +928,21 @@ impl Widget for GreeterApp {
             .composed
             .as_mut()
             .map(|c| c.take_structure_dirty())
+            .unwrap_or(false);
+        mine || child
+    }
+
+    /// Rising-edge one-shot consumed by the App's `rebuild_structure`. We
+    /// raise the flag only on auth-phase transitions (which enable/disable
+    /// the inputs and so change the focusable set); plain status / caps /
+    /// session-cycle rebuilds leave it `false` so focus + caret are preserved
+    /// in place.
+    fn take_focus_reset(&mut self) -> bool {
+        let mine = std::mem::take(&mut self.focus_reset_pending);
+        let child = self
+            .composed
+            .as_mut()
+            .map(|c| c.take_focus_reset())
             .unwrap_or(false);
         mine || child
     }
@@ -914,12 +1085,14 @@ mod tests {
         assert_eq!(app.children().len(), 1);
         assert_eq!(taffy.children(root).unwrap().len(), 1);
 
-        // The card exposes the six fields, matching its taffy children.
+        // The card exposes seven children in the default form: title,
+        // username, password, session button, login button, feedback line,
+        // and the power-actions row.
         let card_node = taffy.children(root).unwrap()[0];
         let card = app.children()[0];
         let fields = card.children();
-        assert_eq!(fields.len(), 6);
-        assert_eq!(taffy.children(card_node).unwrap().len(), 6);
+        assert_eq!(fields.len(), 7);
+        assert_eq!(taffy.children(card_node).unwrap().len(), 7);
 
         // The username (idx 1) and password (idx 2) text inputs must be
         // focusable — this is what `App::update_focusable_order` needs to
@@ -927,10 +1100,12 @@ mod tests {
         assert!(fields[1].is_focusable(), "username must be focusable");
         assert!(fields[2].is_focusable(), "password must be focusable");
 
-        // Four widgets are focusable in tree order: username, password,
-        // session button, login button (the two Texts are not).
+        // Four DIRECT card children are focusable in tree order: username,
+        // password, session button, login button. The power-actions row is a
+        // non-focusable `Row` container (its two buttons are focusable but
+        // nested one level deeper, reached by the App's recursive walk).
         let focusable = fields.iter().filter(|c| c.is_focusable()).count();
-        assert_eq!(focusable, 4, "2 inputs + 2 buttons are focusable");
+        assert_eq!(focusable, 4, "2 inputs + 2 buttons are direct focusable children");
     }
 
     // --- auth lifecycle ------------------------------------------------
@@ -1090,12 +1265,12 @@ mod tests {
         assert_eq!(GreeterApp::read_text(&doc, &root, PASSWORD_PATH).as_deref(), Some("pw"));
     }
 
-    /// Deliverable #4: the focusable order must NOT shift when the session
-    /// is cycled, an error is shown, or auth is in progress — that is the
-    /// precondition for the App's `autofocus_on_structure_change` to keep
-    /// keyboard focus glued to the same field across the rebuild.
+    /// Deliverable #4: on the *form* (Idle), the focusable order must NOT
+    /// shift when the session is cycled or an error/detail is shown — that is
+    /// the precondition for the App's `autofocus_on_structure_change` to keep
+    /// keyboard focus + caret glued to the same field across the rebuild.
     #[test]
-    fn focusable_order_is_stable_across_state_changes() {
+    fn focusable_order_is_stable_across_idle_state_changes() {
         let mut app = GreeterApp::with_sessions(test_sessions());
         let base = focusable_indices(&app);
         assert_eq!(base, vec![1, 2, 3, 4], "username, password, session, login");
@@ -1106,10 +1281,100 @@ mod tests {
         app.status = "Incorrect username or password".to_string();
         app.detail = "boom".to_string();
         assert_eq!(focusable_indices(&app), base, "error + detail keep order");
+    }
 
-        app.status.clear();
-        app.detail.clear();
-        app.phase = AuthPhase::Authenticating; // spinner inserted (non-focusable)
-        assert_eq!(focusable_indices(&app), base, "auth phase keeps order");
+    /// The Caps-Lock warning is a non-focusable child inserted under the
+    /// password field, so it must NOT shift the focusable order (caret +
+    /// focus continuity depend on that).
+    #[test]
+    fn caps_lock_warning_does_not_shift_focusable_order() {
+        let mut app = GreeterApp::with_sessions(test_sessions());
+        assert_eq!(focusable_indices(&app), vec![1, 2, 3, 4]);
+        app.caps_lock.observe('A', false); // force "on"
+        // A non-focusable Text is inserted at idx 3, shifting later children
+        // by one — but the *focusable* indices among them are unchanged.
+        assert_eq!(
+            focusable_indices(&app),
+            vec![1, 2, 4, 5],
+            "warning inserts a non-focusable child but keeps the same focusable widgets"
+        );
+        // Idle form has two Texts (title + feedback line); the warning adds a
+        // third when caps is on.
+        let off = GreeterApp::with_sessions(test_sessions()).build_composition();
+        let texts_off = off.children().iter().filter(|c| c.name() == "Text").count();
+        let on = app.build_composition();
+        let texts_on = on.children().iter().filter(|c| c.name() == "Text").count();
+        assert_eq!(texts_on, texts_off + 1, "caps-lock warning adds one Text");
+    }
+
+    /// During Authenticating the username + password inputs are disabled, so
+    /// they drop out of the focusable set — and entering the phase raises a
+    /// one-shot `take_focus_reset` so the App re-seats focus instead of
+    /// pasting a now-invalid ordinal.
+    #[test]
+    fn authenticating_disables_inputs_and_requests_focus_reset() {
+        let mut app = GreeterApp::with_sessions(test_sessions());
+        // Idle: username + password focusable.
+        assert_eq!(focusable_indices(&app), vec![1, 2, 3, 4]);
+
+        app.begin_authenticating();
+
+        // The two inputs are no longer focusable — only the session + login
+        // buttons (and the nested power buttons) remain.
+        let card = app.build_composition();
+        let fields = card.children();
+        assert!(!fields[1].is_focusable(), "username disabled during auth");
+        assert!(!fields[2].is_focusable(), "password disabled during auth");
+
+        // The phase transition queued a focus reset (drained once).
+        assert!(
+            Widget::take_focus_reset(&mut app),
+            "entering auth must request a focus reset"
+        );
+        assert!(
+            !Widget::take_focus_reset(&mut app),
+            "focus reset is one-shot"
+        );
+    }
+
+    /// Power-action buttons raise a boolean rising edge that `sync` consumes:
+    /// the flag is reset and the action is recorded (the real `systemctl`
+    /// call is compiled out under `cfg(test)`).
+    #[test]
+    fn power_flag_rising_edge_resets_and_records_action() {
+        let mut app = GreeterApp::with_sessions(test_sessions());
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root); // bootstrap flags
+
+        // Reboot.
+        let _ = doc.put(&root, REBOOT_PATH, true);
+        app.sync(&mut doc, &root);
+        assert_eq!(app.last_power_action, Some(PowerAction::Reboot));
+        assert!(!GreeterApp::read_flag(&doc, &root, REBOOT_PATH), "reboot flag reset");
+
+        // Power off.
+        let _ = doc.put(&root, POWEROFF_PATH, true);
+        app.sync(&mut doc, &root);
+        assert_eq!(app.last_power_action, Some(PowerAction::PowerOff));
+        assert!(!GreeterApp::read_flag(&doc, &root, POWEROFF_PATH), "poweroff flag reset");
+    }
+
+    /// A failed attempt returns to the form (inputs re-enabled) and also
+    /// raises a focus reset, since the focusable set changes back.
+    #[test]
+    fn failure_requests_focus_reset() {
+        let mut app = GreeterApp::with_sessions(test_sessions());
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+        app.begin_authenticating();
+        let _ = Widget::take_focus_reset(&mut app); // drain the enter-auth reset
+
+        app.finish_failure("nope", None, &mut doc, &root);
+        assert!(
+            Widget::take_focus_reset(&mut app),
+            "returning to the form must request a focus reset"
+        );
     }
 }
