@@ -475,8 +475,10 @@ impl<Row: 'static> Widget for DataTable<Row> {
         let height = HEADER_HEIGHT + ROW_HEIGHT * self.view.len().max(1) as f64;
         let node = taffy
             .new_leaf(Style {
+                // Fill the parent's width (a bare `auto` leaf with no
+                // measure collapses to zero under compute_layout_with_measure).
                 size: Size {
-                    width: Dimension::auto(),
+                    width: Dimension::percent(1.0),
                     height: Dimension::length(height as f32),
                 },
                 ..Default::default()

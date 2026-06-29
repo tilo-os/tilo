@@ -15,6 +15,9 @@ pub struct Container {
     rect: Rect,
     has_background: bool,
     fill_height: bool,
+    /// Fixed pixel width override (e.g. a 180px sidebar). `None` keeps the
+    /// default `percent(1.0)` fill-parent width.
+    fixed_width: Option<f32>,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
     no_padding: bool,
@@ -27,10 +30,19 @@ impl Container {
             rect: Rect::ZERO,
             has_background: false,
             fill_height: false,
+            fixed_width: None,
             presence_path: Vec::new(),
             permission_scope: None,
             no_padding: false,
         }
+    }
+
+    /// Constrain the container to a fixed pixel width (it no longer fills
+    /// the parent horizontally). Used for the file explorer's 180px
+    /// sidebar so the content pane gets the remaining width.
+    pub fn with_width(mut self, px: f32) -> Self {
+        self.fixed_width = Some(px);
+        self
     }
 
     /// Skip the default `padding_standard` on all sides. Used by the
@@ -93,7 +105,10 @@ impl Widget for Container {
                 bottom: length(pad),
             },
             size: taffy::Size {
-                width: percent(1.0),
+                width: match self.fixed_width {
+                    Some(px) => length(px),
+                    None => percent(1.0),
+                },
                 height: if self.fill_height { percent(1.0) } else { taffy::Dimension::auto() },
             },
             ..Default::default()
