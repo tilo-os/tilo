@@ -1,5 +1,7 @@
 [workspace]
 members = [
+    "qdoc",
+    "editor",
     "fs",
     "shell",
     "ui",
@@ -14,5 +16,6 @@ members = [
     "apps/collab-broker",
     "apps/settings",
     "greeter",
+    "installer",
 ]
 resolver = "2"

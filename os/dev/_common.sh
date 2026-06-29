@@ -25,6 +25,13 @@ QOS_DISK="${QOS_DISK:-$QOS_OUTPUT/qcow2/disk.qcow2}"
 QOS_ISO="${QOS_ISO:-}"   # resolved at boot-iso time (find *.iso under output)
 QOS_BIB="${QOS_BIB:-quay.io/centos-bootc/bootc-image-builder:latest}"
 
+# Custom (self-install) installer: a bootable live qcow2 that runs the qOS
+# graphical installer (installer/, binary qos-installer). Built by
+# os/dev/build-custom-installer.sh; booted by vm.sh boot-installer.
+QOS_INSTALLER_IMAGE="${QOS_INSTALLER_IMAGE:-localhost/qos-installer:latest}"
+QOS_INSTALLER_OUTPUT="${QOS_INSTALLER_OUTPUT:-$QOS_OUTPUT/installer}"   # distinct subdir
+QOS_INSTALLER_DISK="${QOS_INSTALLER_DISK:-$QOS_INSTALLER_OUTPUT/qcow2/disk.qcow2}"
+
 # Runtime/scratch dir for the VM. MUST be short: AF_UNIX socket paths are capped
 # at 108 bytes, and a deep scratch path overflows it. /tmp/qos-vm is safe.
 QOS_RUN="${QOS_RUN:-/tmp/qos-vm}"
@@ -32,6 +39,12 @@ QOS_MON="$QOS_RUN/mon.sock"
 QOS_SERIAL="$QOS_RUN/serial.log"
 QOS_QEMU_LOG="$QOS_RUN/qemu.log"
 QOS_PIDFILE="$QOS_RUN/qemu.pid"
+
+# The blank disk the custom installer writes onto (becomes the installed
+# system), attached as a SECOND virtio disk (/dev/vdb) by vm.sh boot-installer
+# and booted on its own by vm.sh boot-target.
+QOS_TARGET_DISK="${QOS_TARGET_DISK:-$QOS_RUN/target.qcow2}"
+QOS_TARGET_SIZE="${QOS_TARGET_SIZE:-20G}"
 
 # Guest login (from os/config.toml — the bootc-image-builder user).
 QOS_USER="${QOS_USER:-tester}"
