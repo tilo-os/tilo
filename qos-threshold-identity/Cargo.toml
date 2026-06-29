@@ -16,22 +16,6 @@ path = "src/lib.rs"
 # `qos-collab-types::verify_event` does not need to know about
 # threshold-ness.
 #
-# Standalone workspace block: the orchestrating worktree may have
-# unpopulated submodules (shell/, fs/, ui/, apps/) that the root
-# Cargo.toml still lists as workspace members, which makes any
-# `cargo build` from the root fail with a manifest-load error before
-# Cargo ever gets to *this* crate. The `[workspace]` block below
-# isolates this crate as its own single-member workspace so it builds
-# and tests cleanly in worktrees where the broader workspace is broken.
-#
-# IMPORTANT: when this crate is merged back into the main workspace,
-# the orchestrator must STRIP the `[workspace]` block and add
-# `qos-threshold-identity` to the root `Cargo.toml`'s
-# `[workspace] members = [...]` array. The pattern matches
-# `qos-collab-types`'s integration; see the precedent in that crate.
-[workspace]
-members = ["."]
-
 [dependencies]
 # Sibling crate — interop target for verify_event compatibility.
 qos-collab-types = { path = "../qos-collab-types" }
