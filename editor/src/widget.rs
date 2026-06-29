@@ -40,10 +40,16 @@ const SELECTION: Color = Color::from_rgba8(0x46, 0x78, 0xe6, 0x4d);
 
 const PAGE_TOP: f64 = 28.0;
 const MAX_PAGE_W: f64 = 820.0;
-const BLOCK_SPACING: f64 = 8.0;
 const CARET_WIDTH: f64 = 2.0;
 const TOOLBAR_H: f64 = ui::chrome::TOOLBAR_HEIGHT;
 const STATUS_H: f64 = ui::chrome::STATUS_BAR_HEIGHT;
+const LAYOUT_BAR_H: f64 = 32.0;
+/// Accent for active layout guides + handles.
+const GUIDE: Color = Color::from_rgb8(0x46, 0x78, 0xe6);
+/// Inactive guide line (semi-transparent accent).
+const GUIDE_FAINT: Color = Color::from_rgba8(0x46, 0x78, 0xe6, 0x70);
+/// How close (px) the pointer must be to a guide line to grab it.
+const GUIDE_GRAB: f64 = 7.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ToolAction {
@@ -67,40 +73,67 @@ enum ToolAction {
     TableColAdd,
     TableColDel,
     TableDelete,
-    MarginsCycle,
-    ToggleBorder,
 }
 
-/// Page margin (padding) preset — the inset of the text from the page edge.
+/// Which layout element the bottom bar is editing. Each mode shows draggable
+/// guides on the page with live preview.
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum MarginPreset {
-    Narrow,
-    Normal,
-    Wide,
+enum LayoutMode {
+    None,
+    Margins,
+    Border,
+    Spacing,
 }
 
-impl MarginPreset {
-    fn px(self) -> f64 {
-        match self {
-            MarginPreset::Narrow => 40.0,
-            MarginPreset::Normal => 72.0,
-            MarginPreset::Wide => 112.0,
+/// A per-side measurement (page margins / border insets), in px.
+#[derive(Clone, Copy, Debug)]
+struct Edges {
+    top: f64,
+    right: f64,
+    bottom: f64,
+    left: f64,
+}
+
+impl Edges {
+    fn uniform(v: f64) -> Self {
+        Self { top: v, right: v, bottom: v, left: v }
+    }
+    fn get(&self, s: Side) -> f64 {
+        match s {
+            Side::Top => self.top,
+            Side::Right => self.right,
+            Side::Bottom => self.bottom,
+            Side::Left => self.left,
         }
     }
-    fn label(self) -> &'static str {
-        match self {
-            MarginPreset::Narrow => "⤢ Narrow",
-            MarginPreset::Normal => "⤢ Normal",
-            MarginPreset::Wide => "⤢ Wide",
+    fn set(&mut self, s: Side, v: f64) {
+        match s {
+            Side::Top => self.top = v,
+            Side::Right => self.right = v,
+            Side::Bottom => self.bottom = v,
+            Side::Left => self.left = v,
         }
     }
-    fn next(self) -> Self {
-        match self {
-            MarginPreset::Narrow => MarginPreset::Normal,
-            MarginPreset::Normal => MarginPreset::Wide,
-            MarginPreset::Wide => MarginPreset::Narrow,
-        }
+    fn set_all(&mut self, v: f64) {
+        *self = Edges::uniform(v);
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Side {
+    Top,
+    Right,
+    Bottom,
+    Left,
+}
+
+/// An active guide drag: which layout element, which side, and whether Ctrl was
+/// held (drag all four sides together).
+#[derive(Clone, Copy)]
+struct GuideDrag {
+    mode: LayoutMode,
+    side: Side,
+    all: bool,
 }
 
 fn char_to_byte(text: &str, char_off: usize) -> usize {
@@ -306,9 +339,19 @@ pub struct WordProcessorWidget {
     /// each frame from the laid-out content height.
     scroll_y: f64,
     max_scroll: f64,
-    /// Page layout: margin (padding) preset + whether to draw a page border.
-    margins: MarginPreset,
-    page_border: bool,
+    /// Page layout — all fully customizable by dragging guides on the page.
+    margins: Edges,
+    para_spacing: f64,
+    border_on: bool,
+    border: Edges,
+    layout_mode: LayoutMode,
+    /// Active guide drag (the side being dragged), if any.
+    guide_drag: Option<GuideDrag>,
+    /// The page rect in screen space (post-scroll), cached each frame so the
+    /// event handler can hit-test layout guides against it.
+    page_rect: Rect,
+    /// The bottom layout bar's clickable chips: `(mode, rect)`.
+    layout_chips: Vec<(LayoutMode, Rect)>,
 }
 
 impl Default for WordProcessorWidget {
@@ -335,8 +378,14 @@ impl WordProcessorWidget {
             rich_clip: None,
             scroll_y: 0.0,
             max_scroll: 0.0,
-            margins: MarginPreset::Normal,
-            page_border: false,
+            margins: Edges::uniform(72.0),
+            para_spacing: 8.0,
+            border_on: false,
+            border: Edges::uniform(28.0),
+            layout_mode: LayoutMode::None,
+            guide_drag: None,
+            page_rect: Rect::ZERO,
+            layout_chips: Vec::new(),
         }
     }
 
@@ -412,6 +461,184 @@ impl WordProcessorWidget {
     }
 }
 
+/// Screen axis of a margin/border guide for `side`: `(is_vertical, coordinate)`.
+fn guide_axis(page: Rect, e: Edges, side: Side) -> (bool, f64) {
+    match side {
+        Side::Left => (true, page.x0 + e.left),
+        Side::Right => (true, page.x1 - e.right),
+        Side::Top => (false, page.y0 + e.top),
+        Side::Bottom => (false, page.y1 - e.bottom),
+    }
+}
+
+/// New inset for `side` from a pointer position, clamped to a sane range so a
+/// margin/border can never invert or swallow the whole page.
+fn inset_from_pointer(page: Rect, side: Side, p: Point) -> f64 {
+    let raw = match side {
+        Side::Left => p.x - page.x0,
+        Side::Right => page.x1 - p.x,
+        Side::Top => p.y - page.y0,
+        Side::Bottom => page.y1 - p.y,
+    };
+    let max = match side {
+        Side::Left | Side::Right => (page.width() / 2.0 - 48.0).max(8.0),
+        Side::Top | Side::Bottom => (page.height() / 2.0 - 48.0).max(8.0),
+    };
+    raw.clamp(4.0, max)
+}
+
+impl WordProcessorWidget {
+    /// Toggle a layout-edit mode from a chip click. The Border chip cycles
+    /// off → on+edit → off so the border can be added and removed in place.
+    fn toggle_layout_mode(&mut self, mode: LayoutMode) {
+        if mode == LayoutMode::Border {
+            if self.layout_mode == LayoutMode::Border {
+                self.border_on = false;
+                self.layout_mode = LayoutMode::None;
+            } else {
+                self.border_on = true;
+                self.layout_mode = LayoutMode::Border;
+            }
+            return;
+        }
+        self.layout_mode = if self.layout_mode == mode { LayoutMode::None } else { mode };
+    }
+
+    /// The per-side measurement the active mode edits (margins or border).
+    fn active_edges(&self) -> Option<Edges> {
+        match self.layout_mode {
+            LayoutMode::Margins => Some(self.margins),
+            LayoutMode::Border => Some(self.border),
+            _ => None,
+        }
+    }
+
+    /// `(x-center, y)` of the paragraph-spacing grip — centered in the first
+    /// inter-block gap, from the last frame's laid-out positions.
+    fn spacing_handle(&self) -> Option<(f64, f64)> {
+        let a = self.laid.first()?;
+        let cx = (self.page_rect.x0 + self.page_rect.x1) / 2.0;
+        Some((cx, a.y_top + a.height + self.para_spacing / 2.0))
+    }
+
+    /// Which guide (if any) is under the pointer, for the active layout mode.
+    fn hit_guide(&self, p: Point) -> Option<Side> {
+        let page = self.page_rect;
+        if let Some(e) = self.active_edges() {
+            let mut best: Option<(Side, f64)> = None;
+            for side in [Side::Left, Side::Right, Side::Top, Side::Bottom] {
+                let (vert, c) = guide_axis(page, e, side);
+                let along = if vert { p.y >= page.y0 && p.y <= page.y1 } else { p.x >= page.x0 && p.x <= page.x1 };
+                let d = if vert { (p.x - c).abs() } else { (p.y - c).abs() };
+                if along && d <= GUIDE_GRAB && best.map(|(_, bd)| d < bd).unwrap_or(true) {
+                    best = Some((side, d));
+                }
+            }
+            return best.map(|(s, _)| s);
+        }
+        if self.layout_mode == LayoutMode::Spacing {
+            if let Some((_, hy)) = self.spacing_handle() {
+                if (p.y - hy).abs() <= GUIDE_GRAB + 4.0 && p.x >= page.x0 && p.x <= page.x1 {
+                    return Some(Side::Bottom); // side unused for spacing
+                }
+            }
+        }
+        None
+    }
+
+    /// Apply a live guide drag to the relevant layout value.
+    fn apply_guide_drag(&mut self, gd: GuideDrag, p: Point) {
+        let page = self.page_rect;
+        match gd.mode {
+            LayoutMode::Margins => {
+                let v = inset_from_pointer(page, gd.side, p);
+                if gd.all { self.margins.set_all(v) } else { self.margins.set(gd.side, v) }
+            }
+            LayoutMode::Border => {
+                let v = inset_from_pointer(page, gd.side, p);
+                if gd.all { self.border.set_all(v) } else { self.border.set(gd.side, v) }
+                self.border_on = true;
+            }
+            LayoutMode::Spacing => {
+                if let Some(a) = self.laid.first() {
+                    let gap_top = a.y_top + a.height;
+                    self.para_spacing = (2.0 * (p.y - gap_top)).clamp(0.0, 56.0);
+                }
+            }
+            LayoutMode::None => {}
+        }
+    }
+
+    /// Draggable guides + live value labels for the active layout mode, drawn
+    /// over the page content.
+    fn draw_layout_overlay(&self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, page: Rect) {
+        if let Some(e) = self.active_edges() {
+            let drag = self.guide_drag;
+            for side in [Side::Left, Side::Right, Side::Top, Side::Bottom] {
+                let (vert, c) = guide_axis(page, e, side);
+                let active = drag.map(|g| g.all || g.side == side).unwrap_or(false);
+                let col = if active { GUIDE } else { GUIDE_FAINT };
+                let t = if active { 2.0 } else { 1.0 };
+                let line = if vert {
+                    Rect::new(c - t / 2.0, page.y0, c + t / 2.0, page.y1)
+                } else {
+                    Rect::new(page.x0, c - t / 2.0, page.x1, c + t / 2.0)
+                };
+                scene.fill(Fill::NonZero, transform, col, None, &line);
+                // grip dot at the line's midpoint
+                let (gx, gy) = if vert { (c, (page.y0 + page.y1) / 2.0) } else { ((page.x0 + page.x1) / 2.0, c) };
+                scene.fill(Fill::NonZero, transform, GUIDE, None, &vello::kurbo::Circle::new((gx, gy), 4.0));
+                // value label, offset inside the page
+                let label = format!("{}", e.get(side).round() as i64);
+                let (lx, ly) = if vert { (c + 6.0, page.y0 + 16.0) } else { (page.x0 + 10.0, c + 5.0) };
+                tr.draw_text(scene, &label, 12.0, GUIDE, transform * Affine::translate((lx, ly)), None);
+            }
+        } else if self.layout_mode == LayoutMode::Spacing {
+            if let Some((hx, hy)) = self.spacing_handle() {
+                let pill = Rect::new(hx - 20.0, hy - 3.0, hx + 20.0, hy + 3.0);
+                scene.fill(Fill::NonZero, transform, GUIDE, None, &vello::kurbo::RoundedRect::from_rect(pill, 3.0));
+                let label = format!("{} px", self.para_spacing.round() as i64);
+                tr.draw_text(scene, &label, 12.0, GUIDE, transform * Affine::translate((hx + 30.0, hy - 7.0)), None);
+            }
+        }
+    }
+
+    /// The bottom layout bar: mode chips + a live readout / hint.
+    fn draw_layout_bar(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, _theme: &Theme, bar: Rect) {
+        scene.fill(Fill::NonZero, transform, Color::from_rgb8(0x20, 0x22, 0x28), None, &bar);
+        scene.fill(Fill::NonZero, transform, Color::from_rgb8(0x32, 0x35, 0x3e), None, &Rect::new(bar.x0, bar.y0, bar.x1, bar.y0 + 1.0));
+
+        let cy = (bar.y0 + bar.y1) / 2.0;
+        let mut x = bar.x0 + 12.0;
+        self.layout_chips.clear();
+        for (mode, label) in [(LayoutMode::Margins, "Margins"), (LayoutMode::Border, "Border"), (LayoutMode::Spacing, "Spacing")] {
+            let w = 16.0 + label.chars().count() as f64 * 7.6;
+            let r = Rect::new(x, bar.y0 + 5.0, x + w, bar.y1 - 5.0);
+            let active = self.layout_mode == mode;
+            let bg = if active { GUIDE } else { Color::from_rgb8(0x2c, 0x2f, 0x38) };
+            let fg = if active { Color::from_rgb8(0xff, 0xff, 0xff) } else { Color::from_rgb8(0xc6, 0xca, 0xd2) };
+            scene.fill(Fill::NonZero, transform, bg, None, &vello::kurbo::RoundedRect::from_rect(r, 6.0));
+            tr.draw_text(scene, label, 13.0, fg, transform * Affine::translate((x + 8.0, cy - 8.0)), None);
+            self.layout_chips.push((mode, r));
+            x += w + 8.0;
+        }
+
+        let readout = match self.layout_mode {
+            LayoutMode::Margins => format!(
+                "L {}  T {}  R {}  B {}   ·   drag a guide · Ctrl-drag = all sides",
+                self.margins.left.round(), self.margins.top.round(), self.margins.right.round(), self.margins.bottom.round()
+            ),
+            LayoutMode::Border => format!(
+                "border  L {}  T {}  R {}  B {}   ·   drag a side · Ctrl-drag = all · click Border to remove",
+                self.border.left.round(), self.border.top.round(), self.border.right.round(), self.border.bottom.round()
+            ),
+            LayoutMode::Spacing => format!("paragraph spacing  {} px   ·   drag the handle in the gap", self.para_spacing.round()),
+            LayoutMode::None => "Page layout — pick Margins, Border, or Spacing, then drag on the page".to_string(),
+        };
+        tr.draw_text(scene, &readout, 12.5, Color::from_rgb8(0x9a, 0x9e, 0xa8), transform * Affine::translate((x + 12.0, cy - 8.0)), None);
+    }
+}
+
 impl Widget for WordProcessorWidget {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         self.inner.bind(state, root);
@@ -446,20 +673,23 @@ impl Widget for WordProcessorWidget {
         self.draw_toolbar(scene, transform, text_renderer, theme, tb);
 
         let status_top = (full.y1 - STATUS_H).max(full.y0 + TOOLBAR_H);
-        let canvas = Rect::new(full.x0, full.y0 + TOOLBAR_H, full.x1, status_top);
+        let layout_bar_top = (status_top - LAYOUT_BAR_H).max(full.y0 + TOOLBAR_H);
+        let canvas = Rect::new(full.x0, full.y0 + TOOLBAR_H, full.x1, layout_bar_top);
         scene.fill(Fill::NonZero, transform, CANVAS, None, &canvas);
 
-        let pm = self.margins.px();
-        let geo = chrome::page::geometry(canvas, MAX_PAGE_W, PAGE_TOP, pm);
-        let (page_x, page_top, page_w) = (geo.page_x, geo.page_top, geo.page_width);
-        let content_x = geo.content_x;
-        let content_w = geo.content_width as f32;
+        // Per-side page geometry — every margin is independently customizable.
+        let m = self.margins;
+        let page_w = (canvas.width() - 2.0 * PAGE_TOP).clamp(320.0, MAX_PAGE_W);
+        let page_x = canvas.x0 + ((canvas.width() - page_w) / 2.0).max(0.0);
+        let page_top = canvas.y0 + PAGE_TOP;
+        let content_x = page_x + m.left;
+        let content_w = (page_w - m.left - m.right).max(80.0) as f32;
 
         // Pass 1: shape blocks top-to-bottom. Runs of consecutive `cell` blocks
         // sharing a table id lay out as a grid; everything else stacks normally.
         let blocks = std::mem::take(&mut self.blocks);
         let mut laid: Vec<Laid> = Vec::with_capacity(blocks.len());
-        let mut y = page_top + pm;
+        let mut y = page_top + m.top;
         let mut ol_count = 0u32;
         let cell_pad = 8.0f64;
         let mut bi = 0;
@@ -516,7 +746,7 @@ impl Widget for WordProcessorWidget {
                     }
                     y += row_h;
                 }
-                y += BLOCK_SPACING;
+                y += self.para_spacing;
             } else {
                 let (size, base_bold, indent, _bullet) = block_style(b);
                 let bullet = if b.kind == "list_item" {
@@ -558,11 +788,11 @@ impl Widget for WordProcessorWidget {
                     cell_box: None,
                     cell_row: None,
                 });
-                y += laid.last().unwrap().height + BLOCK_SPACING;
+                y += laid.last().unwrap().height + self.para_spacing;
                 bi += 1;
             }
         }
-        let content_bottom = y - BLOCK_SPACING + pm;
+        let content_bottom = y - self.para_spacing + m.bottom;
         let page_h = (content_bottom - page_top).max(canvas.height() - 2.0 * PAGE_TOP);
 
         // Scrolling: clamp the offset to the overflow, then shift the laid-out
@@ -586,19 +816,15 @@ impl Widget for WordProcessorWidget {
         // Page shadow + paper (the document surface).
         let page = Rect::new(page_x, page_top - sy, page_x + page_w, page_top + page_h - sy);
         chrome::page::draw(scene, transform, page, PAPER, SHADOW);
+        self.page_rect = page;
 
-        // Optional page border — a clean frame inset from the page edge, sitting
-        // just outside the text margin so it never collides with content.
-        if self.page_border {
-            let inset = (pm * 0.45).clamp(16.0, 40.0);
-            let frame = Rect::new(page.x0 + inset, page.y0 + inset, page.x1 - inset, page.y1 - inset);
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.25),
-                transform,
-                Color::from_rgb8(0xb6, 0xb9, 0xc2),
-                None,
-                &vello::kurbo::RoundedRect::from_rect(frame, 2.0),
-            );
+        // Page border (per-side inset). Drawn when enabled, or previewed live in
+        // accent while it's being edited.
+        if self.border_on || self.layout_mode == LayoutMode::Border {
+            let b = self.border;
+            let frame = Rect::new(page.x0 + b.left, page.y0 + b.top, page.x1 - b.right, page.y1 - b.bottom);
+            let col = if self.layout_mode == LayoutMode::Border { GUIDE } else { Color::from_rgb8(0xb6, 0xb9, 0xc2) };
+            scene.stroke(&vello::kurbo::Stroke::new(1.4), transform, col, None, &vello::kurbo::RoundedRect::from_rect(frame, 2.0));
         }
 
         // Restore the block cache before pass 2 so selection lookups resolve.
@@ -618,7 +844,7 @@ impl Widget for WordProcessorWidget {
             }
 
             if l.kind == "fidelity" {
-                let box_rect = Rect::new(l.text_x, l.y_top + 2.0, (page_x + page_w - pm).min(l.text_x + 360.0), l.y_top + l.height - 2.0);
+                let box_rect = Rect::new(l.text_x, l.y_top + 2.0, (page_x + page_w - m.right).min(l.text_x + 360.0), l.y_top + l.height - 2.0);
                 scene.fill(Fill::NonZero, transform, Color::from_rgb8(0xee, 0xee, 0xf2), None, &vello::kurbo::RoundedRect::from_rect(box_rect, 4.0));
                 text_renderer.draw_text(scene, "⟦ embedded content ⟧", 14.0, MUTED, transform * Affine::translate((l.text_x + 10.0, l.y_top + 6.0)), None);
                 continue;
@@ -664,6 +890,12 @@ impl Widget for WordProcessorWidget {
             }
         }
 
+        // Layout-edit overlay: draggable guides + live value labels for the
+        // active mode (drawn over the content, still inside the page clip).
+        if self.layout_mode != LayoutMode::None {
+            self.draw_layout_overlay(scene, transform, text_renderer, page);
+        }
+
         scene.pop_layer();
 
         // Scrollbar thumb (right edge) when the content overflows the canvas.
@@ -677,6 +909,9 @@ impl Widget for WordProcessorWidget {
         }
 
         self.laid = laid;
+
+        let lbar = Rect::new(full.x0, layout_bar_top, full.x1, status_top);
+        self.draw_layout_bar(scene, transform, text_renderer, theme, lbar);
 
         let bar = Rect::new(full.x0, status_top, full.x1, full.y1);
         self.draw_status_bar(scene, transform, text_renderer, theme, bar);
@@ -700,7 +935,11 @@ impl Widget for WordProcessorWidget {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
-                if self.drag.drag().is_some() {
+                if let Some(gd) = self.guide_drag {
+                    // Live-drag a layout guide (margin / border / spacing).
+                    self.apply_guide_drag(gd, self.pointer);
+                    *handled = true;
+                } else if self.drag.drag().is_some() {
                     // Extend the selection: keep the anchor, move the caret.
                     self.caret_from_pointer(self.pointer, true);
                     // Claim the move so the host App repaints (its redraw is gated
@@ -727,6 +966,26 @@ impl Widget for WordProcessorWidget {
                 if self.pointer.y > self.rect.y1 - STATUS_H {
                     return; // status bar — not editable
                 }
+                // Bottom layout bar (mode chips), just above the status bar.
+                let lbar_top = self.rect.y1 - STATUS_H - LAYOUT_BAR_H;
+                if self.pointer.y >= lbar_top {
+                    if let Some(mode) = self.layout_chips.iter().find(|(_, r)| r.contains(self.pointer)).map(|(m, _)| *m) {
+                        self.toggle_layout_mode(mode);
+                    }
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
+                // In a layout-edit mode, grabbing a guide starts a drag instead of
+                // a text selection.
+                if self.layout_mode != LayoutMode::None {
+                    if let Some(side) = self.hit_guide(self.pointer) {
+                        self.guide_drag = Some(GuideDrag { mode: self.layout_mode, side, all: ctrl });
+                        self.dirty = true;
+                        *handled = true;
+                        return;
+                    }
+                }
                 // Selection gesture (ui::DragSelect): shift extends; double/triple
                 // click select word/paragraph; a plain press starts a fresh drag.
                 let intent = self.drag.press(self.pointer, shift);
@@ -740,7 +999,10 @@ impl Widget for WordProcessorWidget {
                 *handled = true;
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
-                if self.drag.release() {
+                if self.guide_drag.take().is_some() {
+                    self.dirty = true;
+                    *handled = true;
+                } else if self.drag.release() {
                     self.dirty = true;
                     *handled = true;
                 }
@@ -1005,8 +1267,6 @@ impl WordProcessorWidget {
             ToolAction::TableColAdd => self.inner.table_add_col(state),
             ToolAction::TableColDel => self.inner.table_del_col(state),
             ToolAction::TableDelete => self.inner.table_delete(state),
-            ToolAction::MarginsCycle => self.margins = self.margins.next(),
-            ToolAction::ToggleBorder => self.page_border = !self.page_border,
         }
     }
 
@@ -1124,7 +1384,7 @@ impl WordProcessorWidget {
             _ => LabelCue::None,
         };
         let group_start = |a: ToolAction| {
-            matches!(a, ToolAction::H1 | ToolAction::AlignLeft | ToolAction::FontCycle | ToolAction::InsertTable | ToolAction::TableRowAdd | ToolAction::MarginsCycle)
+            matches!(a, ToolAction::H1 | ToolAction::AlignLeft | ToolAction::FontCycle | ToolAction::InsertTable | ToolAction::TableRowAdd)
         };
         let mut specs: Vec<(ToolAction, ToolbarItem)> = Vec::new();
         let mut add = |a: ToolAction, label: &str, w: f64, active: bool| {
@@ -1154,9 +1414,6 @@ impl WordProcessorWidget {
         } else {
             add(ToolAction::InsertTable, "⊞ Table", 78.0, false);
         }
-        // Page layout group: margin (padding) preset + page border toggle.
-        add(ToolAction::MarginsCycle, self.margins.label(), 86.0, false);
-        add(ToolAction::ToggleBorder, "Border", 62.0, self.page_border);
         drop(add);
 
         let items: Vec<ToolbarItem> = specs.iter().map(|(_, item)| item.clone()).collect();
