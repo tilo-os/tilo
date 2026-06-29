@@ -5,6 +5,7 @@
 //! mutations of the canonical document. Rendering + the `ui::Widget` impl live
 //! in `widget.rs`; click-to-caret needs layout and is wired there.
 
+use crate::styles::StyleSheet;
 use automerge::{AutoCommit, ObjId};
 use qdoc::{Containers, DocMut, IdGen};
 
@@ -172,6 +173,46 @@ impl WordProcessor {
     }
 
     /// Insert a rich fragment at the caret (replacing the selection), preserving
+    /// Load the document's stylesheet from meta (or the defaults if absent).
+    pub fn stylesheet(&self, state: &AutoCommit) -> StyleSheet {
+        self.containers
+            .as_ref()
+            .and_then(|c| qdoc::model::meta_str(state, c, "stylesheet"))
+            .and_then(|j| StyleSheet::from_json(&j))
+            .unwrap_or_default()
+    }
+
+    /// Persist the stylesheet into the document meta.
+    pub fn set_stylesheet(&mut self, state: &mut AutoCommit, sheet: &StyleSheet) {
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            dm.set_meta_str("stylesheet", &sheet.to_json());
+        }
+    }
+
+    /// Assign a style id to every block in the selection (or the caret's block).
+    /// Empty clears it, reverting to the kind-derived default style.
+    pub fn set_block_style(&mut self, state: &mut AutoCommit, style_id: &str) {
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        let targets = self
+            .selection_blocks(state)
+            .into_iter()
+            .map(|(id, _, _)| id)
+            .collect::<Vec<_>>();
+        let targets = if targets.is_empty() { vec![self.caret.block.clone()] } else { targets };
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            for id in targets {
+                dm.set_attr(&id, "style", style_id);
+            }
+        }
+    }
+
     /// marks + paragraph styles.
     pub fn insert_rich(&mut self, state: &mut AutoCommit, blocks: &[ClipBlock]) {
         self.delete_selection(state);

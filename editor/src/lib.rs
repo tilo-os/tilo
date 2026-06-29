@@ -8,8 +8,10 @@
 //! (undo, two-peer convergence, timeline, codec round-trip) against the real
 //! `ui::State` via tests.
 
+pub mod styles;
 pub mod widget;
 pub mod word_processor;
+pub use styles::{StyleProps, StyleSheet};
 pub use widget::WordProcessorWidget;
 pub use word_processor::WordProcessor;
 
