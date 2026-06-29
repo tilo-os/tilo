@@ -34,6 +34,14 @@ pub enum UserEvent {
     /// so an external script can drive strip-pan / overview-scroll /
     /// wheel-disc gestures without a real mouse.
     Wheel { dx: f32, dy: f32 },
+    /// A free-form string payload delivered straight to the root widget's
+    /// [`crate::widget::Widget::on_external_event`]. Unlike the pointer /
+    /// wheel variants this is NOT translated into a `WindowEvent` — it is
+    /// the channel a host app uses to pump out-of-band data (e.g. the qOS
+    /// installer streaming `qos-install` progress lines from a worker
+    /// thread) back into the App for rendering. The App requests a redraw
+    /// + re-sync after dispatch so the new state surfaces next frame.
+    External(String),
 }
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -112,8 +120,18 @@ pub struct App {
     /// user acts". The greeter sets this so the username field is typeable
     /// immediately at the login prompt.
     pub autofocus_first: bool,
+    /// Opt-in: when set, every structural rebuild of the widget tree
+    /// re-establishes keyboard focus. If the root widget raises
+    /// [`crate::widget::Widget::take_focus_reset`] (a wizard advancing to a
+    /// new step) focus jumps to the first focusable of the rebuilt tree;
+    /// otherwise focus is *preserved* by re-selecting the focusable at the
+    /// same ordinal position (so a rebuild triggered by an unrelated state
+    /// change — e.g. a validation message appearing — doesn't silently
+    /// drop the caret). Default `false`: the shell / greeter keep their
+    /// existing rebuild-focus behaviour untouched.
+    pub autofocus_on_structure_change: bool,
     modifiers: winit::event::Modifiers,
-    
+
     // Stable state for Undo/Redo tracking
     last_stable_focus_idx: Option<usize>,
     last_stable_metadata: Option<String>,
@@ -176,6 +194,7 @@ impl App {
             focused_node: None,
             focusable_order: Vec::new(),
             autofocus_first: false,
+            autofocus_on_structure_change: false,
             modifiers: winit::event::Modifiers::default(),
             last_stable_focus_idx: None,
             last_stable_metadata: None,
@@ -662,6 +681,132 @@ impl App {
         if let Some(new_id) = best_candidate { self.set_focused_node(Some(new_id)); }
     }
 
+    /// Build the initial taffy tree, seed the focus order, and (when
+    /// [`Self::autofocus_first`] is set) hand the keyboard to the first
+    /// focusable widget. Factored out of [`Self::run_with_setup`] so the
+    /// headless tests can stand the App up without spinning a winit loop.
+    #[doc(hidden)]
+    pub fn init_layout(&mut self) {
+        self.node_map.clear();
+        self.root_node = Some(self.root_widget.build_layout(
+            &mut self.taffy,
+            &self.theme,
+            &mut self.node_map,
+        ));
+        self.update_focusable_order();
+        // Opt-in startup focus: hand the keyboard to the first focusable
+        // widget so the app is typeable without a click (used by the
+        // greeter so the username field is ready at the login prompt).
+        if self.autofocus_first && self.focused_node.is_none() {
+            if let Some(&first) = self.focusable_order.first() {
+                self.set_focused_node(Some(first));
+            }
+        }
+        self.last_stable_focus_idx = self
+            .focused_node
+            .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
+        self.last_stable_metadata = self.focused_node.and_then(|id| {
+            self.node_map
+                .get(&id)
+                .and_then(|&w_ptr| unsafe { (*w_ptr).get_state() })
+        });
+    }
+
+    /// Rebuild the taffy tree from the current widget tree after a
+    /// structural mutation, re-establishing keyboard focus.
+    ///
+    /// When [`Self::autofocus_on_structure_change`] is set this *also*
+    /// preserves the focused widget's **ephemeral** caret / selection state
+    /// across the rebuild. The previously-focused widget's [`Widget::get_state`]
+    /// is captured BEFORE the tree is torn down; after the rebuild, provided
+    /// focus lands back on the SAME focusable ordinal (so we never paste a
+    /// caret onto a different field), [`Widget::set_state`] restores it on the
+    /// new focused widget. This mirrors the undo path
+    /// ([`Self::apply_undo_entry`]), which already round-trips widget metadata
+    /// — without it a rebuild triggered by an unrelated state change (a
+    /// validation line appearing, a sibling status row) silently snaps the
+    /// caret back to offset 0.
+    ///
+    /// If the root raised [`Widget::take_focus_reset`] (a wizard advancing to
+    /// a new step, or — in the greeter — an auth-phase transition that changes
+    /// which fields are focusable) focus jumps to the first focusable of the
+    /// rebuilt tree and no caret is restored, because the focused field
+    /// legitimately changed.
+    ///
+    /// Exposed (doc-hidden) so the headless tests can exercise focus + caret
+    /// continuity without a real event loop.
+    #[doc(hidden)]
+    pub fn rebuild_structure(&mut self) {
+        // Capture pre-rebuild focus ordinal, the focused widget's ephemeral
+        // state, and the root's one-shot focus-reset request BEFORE the tree
+        // is torn down — the focusable node ids are about to be invalidated.
+        let (prev_focus_idx, prev_focus_state, focus_reset) =
+            if self.autofocus_on_structure_change {
+                let idx = self
+                    .focused_node
+                    .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
+                let state = self
+                    .focused_node
+                    .and_then(|id| self.node_map.get(&id).copied())
+                    .and_then(|w| unsafe { (*w).get_state() });
+                (idx, state, self.root_widget.take_focus_reset())
+            } else {
+                (None, None, false)
+            };
+
+        self.taffy = TaffyTree::new();
+        self.node_map.clear();
+        self.root_node = Some(self.root_widget.build_layout(
+            &mut self.taffy,
+            &self.theme,
+            &mut self.node_map,
+        ));
+        self.structure_dirty = false;
+        self.layout_dirty = true;
+        self.update_focusable_order();
+
+        if self.autofocus_on_structure_change {
+            if focus_reset {
+                // Step / phase transition: hand focus to the first field of
+                // the freshly-built tree. No caret restore — the focused
+                // field deliberately changed.
+                if let Some(&first) = self.focusable_order.first() {
+                    self.set_focused_node(Some(first));
+                }
+            } else if let Some(idx) = prev_focus_idx {
+                // Incidental rebuild (e.g. a status line appeared): keep focus
+                // on the same ordinal so the caret doesn't vanish mid-edit.
+                // We only restore the caret/selection when the SAME ordinal
+                // still exists in the rebuilt tree — a shifted ordinal means
+                // the focusable set changed and we can't prove it's the same
+                // logical field, so we clamp focus but skip the caret paste.
+                let exact = self.focusable_order.get(idx).copied();
+                let target = exact.or_else(|| self.focusable_order.last().copied());
+                if let Some(id) = target {
+                    self.set_focused_node(Some(id));
+                    if exact.is_some() {
+                        if let Some(state) = prev_focus_state.as_deref() {
+                            if let Some(&w) = self.node_map.get(&id) {
+                                unsafe { (*w).set_state(state); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // The widgets built above are *fresh* instances (apps that rebuild
+        // their composition — the greeter, the installer wizard — recreate
+        // their children in `build_layout`). The frame's `sync` ran against
+        // the OLD tree, so without this the new widgets would draw blank
+        // until the next event. Re-sync now so they pull their CRDT state
+        // this frame; this also clamps any caret restored just above against
+        // the now-populated text. Cheap, and a no-op for widgets that don't
+        // read state in `sync`.
+        self.root_widget.sync(&mut self.state.doc, &self.state.root);
+        self.needs_sync = false;
+    }
+
     pub fn run(self) {
         self.run_with_setup(|_| {});
     }
@@ -688,29 +833,7 @@ impl App {
         // Build the taffy tree up-front so widgets that don't depend on a
         // live window (focus order, undo bookkeeping) are wired before the
         // first `resumed` callback.
-        self.node_map.clear();
-        self.root_node = Some(self.root_widget.build_layout(
-            &mut self.taffy,
-            &self.theme,
-            &mut self.node_map,
-        ));
-        self.update_focusable_order();
-        // Opt-in startup focus: hand the keyboard to the first focusable
-        // widget so the app is typeable without a click (used by the
-        // greeter so the username field is ready at the login prompt).
-        if self.autofocus_first && self.focused_node.is_none() {
-            if let Some(&first) = self.focusable_order.first() {
-                self.set_focused_node(Some(first));
-            }
-        }
-        self.last_stable_focus_idx = self
-            .focused_node
-            .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
-        self.last_stable_metadata = self.focused_node.and_then(|id| {
-            self.node_map
-                .get(&id)
-                .and_then(|&w_ptr| unsafe { (*w_ptr).get_state() })
-        });
+        self.init_layout();
 
         let mut handler = AppHandler {
             app: self,
@@ -791,6 +914,17 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     phase: winit::event::TouchPhase::Moved,
                 };
                 self.window_event(event_loop, window_id, ev);
+            }
+            UserEvent::External(payload) => {
+                // Out-of-band payload: hand straight to the root widget,
+                // then drive a re-sync + redraw so its mutation paints.
+                // (Used by the qOS installer to stream backend progress
+                // from a worker thread into its status log.)
+                let app = &mut self.app;
+                app.root_widget
+                    .on_external_event(&payload, &mut app.state.doc, &app.state.root);
+                app.needs_sync = true;
+                window.request_redraw();
             }
         }
     }
@@ -945,16 +1079,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // pass below sees them.
                 app.structure_dirty |= app.root_widget.take_structure_dirty();
                 if app.structure_dirty {
-                    app.taffy = TaffyTree::new();
-                    app.node_map.clear();
-                    app.root_node = Some(app.root_widget.build_layout(
-                        &mut app.taffy,
-                        &app.theme,
-                        &mut app.node_map,
-                    ));
-                    app.structure_dirty = false;
-                    app.layout_dirty = true;
-                    app.update_focusable_order();
+                    // Rebuild the taffy tree, re-establishing keyboard focus
+                    // AND (for `autofocus_on_structure_change` apps) the
+                    // focused widget's caret/selection across the rebuild.
+                    app.rebuild_structure();
                 }
 
                 // Phase timing (gated). `QUICK_UI_PERF=1` enables a
@@ -1039,6 +1167,20 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // them. Without this the incremental gate is a no-op:
                 // widgets stay "dirty" forever.
                 app.root_widget.mark_drawn();
+
+                // Top-layer overlay pass: widgets whose visual extent
+                // escapes their layout box (an open `Dropdown` list, a
+                // popover) paint here so they composite ABOVE every
+                // later-drawn sibling instead of being occluded by it.
+                // Default is a no-op recursion, so this is free for the
+                // shell / greeter and every widget that doesn't opt in.
+                app.root_widget.draw_overlay(
+                    &mut scene,
+                    transform,
+                    &mut app.text_renderer,
+                    &app.theme,
+                    &app.presence_ctx,
+                );
                 let t_draw_us = t_draw_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
 
                 // Draw Remote Cursors (legacy path — `state.collab.cursors`
@@ -1799,6 +1941,212 @@ mod pointer_broadcast_tests {
             PresencePayload::Arrived,
         );
         assert_eq!(*count.lock().unwrap(), 1, "sink fires before clear, never after");
+    }
+}
+
+#[cfg(test)]
+mod rebuild_focus_tests {
+    use super::*;
+    use crate::widget::{Text, TextInput};
+    use automerge::{AutoCommit, ObjId};
+    use vello::kurbo::Rect;
+
+    /// A minimal container that *recreates* its children on every
+    /// `build_layout` — exactly like the greeter's `build_composition` and
+    /// the installer's wizard steps. The recreation is what makes caret
+    /// continuity non-trivial: the focused `TextInput` is a brand-new
+    /// instance after a rebuild, so its caret would reset to the new
+    /// instance's default unless the App restores it via `get_state` /
+    /// `set_state`.
+    struct RebuildHarness {
+        show_status: bool,
+        request_reset: bool,
+        children: Vec<Box<dyn Widget>>,
+        rect: Rect,
+    }
+
+    impl RebuildHarness {
+        fn new() -> Self {
+            Self {
+                show_status: false,
+                request_reset: false,
+                children: Vec::new(),
+                rect: Rect::ZERO,
+            }
+        }
+
+        fn rebuild_children(&mut self) {
+            let mut kids: Vec<Box<dyn Widget>> = Vec::new();
+            // Fresh focusable input each rebuild. `with_initial_value` parks
+            // the caret at the END ("hello" -> 5), so a restored caret of 3
+            // is distinguishable from both the reset-to-0 bug and the new
+            // instance's own default.
+            kids.push(Box::new(TextInput::local().with_initial_value("hello")));
+            if self.show_status {
+                // Non-focusable sibling appears — the rebuild trigger, and a
+                // child the focus order must ignore.
+                kids.push(Box::new(Text::new("status")));
+            }
+            self.children = kids;
+        }
+    }
+
+    impl Widget for RebuildHarness {
+        fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+            for c in &mut self.children {
+                c.sync(state, path);
+            }
+        }
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            theme: &Theme,
+            node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            self.rebuild_children();
+            let child_nodes: Vec<NodeId> = self
+                .children
+                .iter_mut()
+                .map(|c| c.build_layout(taffy, theme, node_map))
+                .collect();
+            let node = taffy
+                .new_with_children(taffy::Style::default(), &child_nodes)
+                .unwrap();
+            node_map.insert(node, self as *mut dyn Widget);
+            node
+        }
+        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+            let layout = taffy.layout(node).unwrap();
+            self.rect = Rect::new(
+                origin.x + layout.location.x as f64,
+                origin.y + layout.location.y as f64,
+                origin.x + layout.location.x as f64 + layout.size.width as f64,
+                origin.y + layout.location.y as f64 + layout.size.height as f64,
+            );
+            if let Ok(child_nodes) = taffy.children(node) {
+                for (c, &cn) in self.children.iter_mut().zip(child_nodes.iter()) {
+                    c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
+                }
+            }
+        }
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _tr: &mut TextRenderer,
+            _theme: &Theme,
+            _p: &PresenceCtx,
+        ) {
+        }
+        fn handle_event(
+            &mut self,
+            _e: &WindowEvent,
+            _sf: f64,
+            _m: &winit::event::Modifiers,
+            _s: &mut AutoCommit,
+            _r: &ObjId,
+            _h: &mut bool,
+            _ft: &mut Option<NodeId>,
+            _n: NodeId,
+            _t: &TaffyTree<()>,
+        ) {
+        }
+        fn children(&self) -> Vec<&dyn Widget> {
+            self.children.iter().map(|c| c.as_ref()).collect()
+        }
+        fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+            self.children
+                .iter_mut()
+                .map(|c| c.as_mut() as &mut (dyn Widget + '_))
+                .collect()
+        }
+        fn on_external_event(&mut self, payload: &str, _s: &mut AutoCommit, _r: &ObjId) {
+            match payload {
+                "show_status" => self.show_status = true,
+                "reset" => self.request_reset = true,
+                _ => {}
+            }
+        }
+        fn take_focus_reset(&mut self) -> bool {
+            std::mem::take(&mut self.request_reset)
+        }
+        fn name(&self) -> &str {
+            "RebuildHarness"
+        }
+        fn get_rect(&self) -> Rect {
+            self.rect
+        }
+    }
+
+    fn caret(app: &App) -> Option<String> {
+        let id = app.focused_node?;
+        let w = *app.node_map.get(&id)?;
+        unsafe { (*w).get_state() }
+    }
+
+    /// The core fix: typing into a field, then a sibling status line appears
+    /// (a structural rebuild), must NOT snap the caret back to 0 — the App
+    /// restores the focused widget's ephemeral state across the rebuild.
+    #[test]
+    fn caret_preserved_across_structure_rebuild() {
+        let mut app = App::new(State::new(), Box::new(RebuildHarness::new()));
+        app.autofocus_first = true;
+        app.autofocus_on_structure_change = true;
+        app.init_layout();
+
+        // Startup auto-focus landed on the (sole) input. Park the caret at 3.
+        let id = app.focused_node.expect("input focused at startup");
+        unsafe { (*(*app.node_map.get(&id).unwrap())).set_state("3"); }
+        assert_eq!(caret(&app).as_deref(), Some("3"));
+
+        // A sibling status line appears -> structural rebuild (recreates the
+        // input as a fresh instance whose own caret default is 5).
+        let mut tmp = AutoCommit::new();
+        app.root_widget
+            .on_external_event("show_status", &mut tmp, &automerge::ROOT);
+        app.rebuild_structure();
+
+        // Focus stayed on the recreated input, caret restored to 3 (not 0,
+        // not the new instance's end-of-text default 5).
+        assert!(app.focused_node.is_some(), "focus preserved across rebuild");
+        assert_eq!(
+            caret(&app).as_deref(),
+            Some("3"),
+            "caret offset must be preserved across the rebuild"
+        );
+        // Prove a real rebuild happened with a new sibling, and that the
+        // non-focusable sibling did not change the focusable count (which is
+        // what makes the same-ordinal guard hold).
+        assert_eq!(app.root_widget.children().len(), 2, "status sibling appeared");
+        assert_eq!(app.focusable_order.len(), 1, "status is non-focusable");
+    }
+
+    /// The guard's other half: when the root raises `take_focus_reset` (a
+    /// wizard step / auth-phase transition), focus jumps to the first
+    /// focusable and the old caret is deliberately NOT pasted — the focused
+    /// field changed.
+    #[test]
+    fn focus_reset_does_not_restore_caret() {
+        let mut app = App::new(State::new(), Box::new(RebuildHarness::new()));
+        app.autofocus_first = true;
+        app.autofocus_on_structure_change = true;
+        app.init_layout();
+
+        let id = app.focused_node.unwrap();
+        unsafe { (*(*app.node_map.get(&id).unwrap())).set_state("3"); }
+
+        let mut tmp = AutoCommit::new();
+        app.root_widget
+            .on_external_event("reset", &mut tmp, &automerge::ROOT);
+        app.rebuild_structure();
+
+        // Reset path: focus on the first focusable, caret is the new
+        // instance's own default (end of "hello" = 5), NOT the preserved 3.
+        assert_eq!(
+            caret(&app).as_deref(),
+            Some("5"),
+            "focus_reset must not paste the old caret onto the new field"
+        );
     }
 }
 
