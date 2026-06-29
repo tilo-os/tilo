@@ -21,10 +21,19 @@ RUN dnf install -y \
     gstreamer1-plugins-good \
     && dnf clean all
 
-# Display manager
+# Display manager + fingerprint auth (pam_fprintd for the greeter; the
+# greeter's PAM stack references it via a tolerant `-auth` line).
+#
+# `polkit` is required so the greeter's Reboot / Shut down buttons can drive
+# logind: `systemctl reboot` / `poweroff` issue the
+# `org.freedesktop.login1.{reboot,power-off}` actions, which polkit authorises
+# for the `greetd` user via etc/polkit-1/rules.d/49-qos-greeter-power.rules.
 RUN dnf install -y \
     greetd \
     greetd-tuigreet \
+    fprintd \
+    fprintd-pam \
+    polkit \
     && dnf clean all
 
 # System utilities
@@ -104,6 +113,15 @@ COPY etc/qos/desktop.toml /etc/qos/desktop.toml
 
 # greetd display manager config
 COPY etc/greetd/config.toml /etc/greetd/config.toml
+
+# PAM stack for the greetd auth service (adds tolerant pam_fprintd so a
+# fingerprint can satisfy login; falls back to password-auth).
+COPY etc/pam.d/greetd /etc/pam.d/greetd
+
+# polkit rule authorising the greeter's Reboot / Shut down buttons. Lets the
+# `greetd` user issue org.freedesktop.login1.{reboot,power-off} via logind
+# from the pre-login screen (see the rule's header for the rationale).
+COPY etc/polkit-1/rules.d/49-qos-greeter-power.rules /etc/polkit-1/rules.d/49-qos-greeter-power.rules
 
 # First-boot setup service
 COPY usr/lib/systemd/system/shell-firstboot.service /usr/lib/systemd/system/shell-firstboot.service

@@ -1,0 +1,21 @@
+# greetd config for the qOS INSTALLER live medium.
+#
+# Identical in spirit to etc/greetd/config.toml, but the default session runs
+# /usr/libexec/qos-session-select instead of the greeter directly. That script
+# inspects the kernel cmdline and execs either the qOS graphical installer
+# (qos-installer, when qos.installer is present — which it is on this medium)
+# or the normal greeter — both wrapped in `cage`, since greetd has no display
+# of its own.
+#
+# qos-session-select sets WLR_NO_HARDWARE_CURSORS=1 itself (software cursor;
+# the virtio-gpu HW cursor renders Y-flipped/offset under qemu GL — see
+# config.toml for the full rationale), so the command here is the bare script.
+#
+# The Containerfile.installer overwrites /etc/greetd/config.toml with THIS
+# file, so the live image's greetd uses the session selector.
+[terminal]
+vt = 1
+
+[default_session]
+command = "/usr/libexec/qos-session-select"
+user = "greetd"
