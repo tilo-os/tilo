@@ -61,6 +61,7 @@ use std::path::Path;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WpFormat {
     Odt,
+    Docx,
     Markdown,
 }
 
@@ -69,6 +70,7 @@ impl WpFormat {
     pub fn from_path(path: &Path) -> Self {
         match path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
             Some("odt") => WpFormat::Odt,
+            Some("docx") => WpFormat::Docx,
             _ => WpFormat::Markdown,
         }
     }
@@ -77,6 +79,7 @@ impl WpFormat {
         use qdoc::FormatProvider;
         match self {
             WpFormat::Odt => qdoc::OdtCodec.import(bytes, dm),
+            WpFormat::Docx => qdoc::DocxCodec.import(bytes, dm),
             WpFormat::Markdown => qdoc::MarkdownCodec.import(bytes, dm),
         }
     }
@@ -85,6 +88,7 @@ impl WpFormat {
         use qdoc::FormatProvider;
         match self {
             WpFormat::Odt => qdoc::OdtCodec.export(dr),
+            WpFormat::Docx => qdoc::DocxCodec.export(dr),
             WpFormat::Markdown => qdoc::MarkdownCodec.export(dr),
         }
     }
