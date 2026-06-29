@@ -127,6 +127,44 @@ async fn fuse_write_create_overwrite_rename_unlink() {
     .await;
 }
 
+// A recognized document format is stored as a CRDT and round-trips through the
+// mount, while unknown formats stay opaque bytes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fuse_document_roundtrip_and_opaque_still_works() {
+    let _ = timeout(Duration::from_secs(20), async {
+        let mount_dir = tempdir().expect("mount temp dir");
+        let path = mount_dir.path().to_path_buf();
+
+        let endpoint = Endpoint::bind().await.expect("bind endpoint");
+        let store = Arc::new(ContentStore::memory());
+        let namespace = Arc::new(Mutex::new(Namespace::new("doc-peer")));
+        let hydrator = Arc::new(Hydrator::new(endpoint, store));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let fs = QuickFS::new(namespace, hydrator, heuristics);
+
+        let mut config = Config::default();
+        config.mount_options = vec![MountOption::FSName("quickfs_doc".to_string())];
+        let _session = fuser::spawn_mount2(fs, &path, &config).expect("spawn FUSE session");
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+
+        // A markdown document: recognized, stored as a CRDT, round-trips.
+        std::fs::write(path.join("note.md"), b"# Title\n\nHello world\n").expect("write md");
+        let back = std::fs::read_to_string(path.join("note.md")).expect("read md");
+        assert!(
+            back.contains("Title") && back.contains("Hello world"),
+            "document round-trip lost content: {back:?}"
+        );
+
+        // An unknown format stays opaque bytes (exact round-trip).
+        std::fs::write(path.join("data.bin"), b"\x00\x01raw-bytes\xff").expect("write bin");
+        assert_eq!(
+            std::fs::read(path.join("data.bin")).unwrap(),
+            b"\x00\x01raw-bytes\xff"
+        );
+    })
+    .await;
+}
+
 // rmdir must refuse a non-empty directory (no silent rm -rf), and unlink must
 // refuse a directory.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
