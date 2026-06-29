@@ -122,6 +122,34 @@ impl ContextMenu {
     /// if desired. Returns `None` before the menu has ever been opened.
     pub fn position(&self) -> Option<[f32; 2]> { self.position }
 
+    /// The item index under a logical `point`, if the menu is open and the
+    /// point lands on an action row. Lets a consumer route a left-click to
+    /// [`click_item`](Self::click_item) without re-deriving the row layout.
+    pub fn item_at(&self, point: [f64; 2]) -> Option<usize> {
+        if !self.open {
+            return None;
+        }
+        let [px, py] = point;
+        if px < self.rect.x0 || px > self.rect.x1 || py < self.rect.y0 || py > self.rect.y1 {
+            return None;
+        }
+        let mut y = self.rect.y0 + PADDING;
+        for (idx, item) in self.items.iter().enumerate() {
+            let h = item_height(item);
+            if matches!(item, MenuItem::Action { .. }) && py >= y && py < y + h {
+                return Some(idx);
+            }
+            y += h;
+        }
+        None
+    }
+
+    /// Whether `point` is inside the open menu's rect (for dismiss-on-
+    /// click-outside routing).
+    pub fn contains(&self, point: [f64; 2]) -> bool {
+        self.open && self.rect.contains(vello::kurbo::Point::new(point[0], point[1]))
+    }
+
     /// Invoke the action for the item at `idx` (no-op for separators /
     /// out-of-range indices). Action items close the menu after firing.
     pub fn click_item(&mut self, idx: usize) {
