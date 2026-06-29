@@ -237,7 +237,10 @@ below; it also makes rename a single reparent (inode preserved for free).
 - ~~**Namespace was in-memory only**~~ — **FIXED** (commit `6f12b6a`): the tree is persisted atomically
   to `<cache-dir>/namespace.bin` and restored on start (serve restores; mount is offline-capable).
 - ~~**Anti-entropy pulled the whole document each pass**~~ — **FIXED** (commit `e6e7750`): reconcile
-  now uses Automerge's incremental sync protocol (only missing changes exchanged). *Still open:*
-  Automerge history growth / doc compaction (drop-history needs causal-stability detection).
-- **Whole-file re-ingest on write** (no chunked/range dedup) — fine for documents, suboptimal for
-  large files. This is the remaining larger item (content-defined chunking, e.g. FastCDC).
+  now uses Automerge's incremental sync protocol (only missing changes exchanged).
+- ~~**Whole-file re-ingest on write**~~ — **FIXED** (commit `3dff1b5`): content-defined chunking
+  (gear-hash CDC) + manifests; edits re-store/re-transfer only the changed chunks, reads fetch only
+  the overlapping chunks.
+- *Still open (single remaining item):* **Automerge history growth / doc compaction** — the CRDT
+  retains change history; dropping it safely needs causal-stability detection across peers. Also
+  blob GC for superseded chunks. Both are scale optimizations, not correctness.
