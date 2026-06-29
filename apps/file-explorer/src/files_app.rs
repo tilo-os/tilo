@@ -1,23 +1,27 @@
-//! `FileExplorerWidget` — the nirios-shell file explorer's `AppWidget`.
+//! `FileExplorerWidget` — the qOS file explorer's `AppWidget`.
 //!
-//! Task 10 lands the struct shape, the `AppWidget` metadata, the navigation
-//! helpers, and a no-op `draw` pass; Tasks 11–13 build out the concrete
-//! sidebar/toolbar/views composition, the selection/double-click behaviour,
-//! and the real drawing.
+//! The widget owns all app state (current dir, entries, multi-selection,
+//! sort, view mode, navigation history) and rebuilds its child widget tree
+//! from that state. Interactive children can't borrow the app back, so they
+//! push [`FileCommand`]s into a shared [`CommandSink`]; `handle_event`
+//! drains the sink after each event and applies the commands, marking the
+//! tree structurally dirty so the App rebuilds the composition on the next
+//! frame. See [`crate::command`].
 
+use crate::command::{new_sink, CommandSink, FileCommand};
 use crate::model::{initial_path, read_dir_sync, sort_entries, Entry, SortBy, SortOrder, ViewMode};
-use ui::widget::{
-    Button, Column, Container, Row, ScrollAxis, Scrollable, Spacer, Text, TextInput, Widget,
-};
-use ui::{AppKind, AppWidget, IconDescriptor};
+use crate::fileops;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
+use ui::widget::{Column, Container, Row, ScrollAxis, Scrollable, Spacer, Text, TextInput, Widget};
+use ui::{AppKind, AppWidget, IconDescriptor, SelectionModel};
 
 pub struct FileExplorerWidget {
     current_path: PathBuf,
     home_path: Option<PathBuf>,
     entries: Vec<Entry>,
-    selected_index: Option<usize>,
+    /// Multi-selection over the *displayed* (filtered) entry list.
+    selection: SelectionModel,
     search_query: String,
     error: Option<String>,
     is_loading: bool,
@@ -25,16 +29,27 @@ pub struct FileExplorerWidget {
     sort_by: SortBy,
     sort_order: SortOrder,
     view_mode: ViewMode,
+    /// Back/forward navigation history (paths only).
+    history: Vec<PathBuf>,
+    forward: Vec<PathBuf>,
+    /// Clipboard for cut/copy → paste. `true` = cut (move on paste).
+    clipboard: Vec<PathBuf>,
+    clipboard_cut: bool,
+    /// Transient status line (operation results), shown in the footer.
+    status: Option<String>,
     rect: vello::kurbo::Rect,
-    /// Composed child widget tree, built on the first `build_layout` call
-    /// from the toolbar/breadcrumbs/sidebar/view/footer builders. The five
-    /// trait passes (`sync`, `build_layout`, `apply_layout`, `draw`,
-    /// `handle_event`) delegate into this subtree.
     composed: Option<Box<dyn Widget>>,
+    /// Command queue the interactive children push into.
+    cmds: CommandSink,
+    /// Set when applying a command changed structure; consumed by
+    /// `take_structure_dirty` so the App rebuilds the composition.
+    structure_dirty: bool,
 }
 
 impl Default for FileExplorerWidget {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl FileExplorerWidget {
@@ -47,7 +62,7 @@ impl FileExplorerWidget {
             current_path: cwd,
             home_path: home,
             entries,
-            selected_index: None,
+            selection: SelectionModel::new(),
             search_query: String::new(),
             error: None,
             is_loading: false,
@@ -55,79 +70,98 @@ impl FileExplorerWidget {
             sort_by: SortBy::Name,
             sort_order: SortOrder::Ascending,
             view_mode: ViewMode::List,
+            history: Vec::new(),
+            forward: Vec::new(),
+            clipboard: Vec::new(),
+            clipboard_cut: false,
+            status: None,
             rect: vello::kurbo::Rect::ZERO,
             composed: None,
+            cmds: new_sink(),
+            structure_dirty: false,
         }
     }
 
-    /// Builds the full composed widget tree — toolbar, breadcrumbs, sidebar,
-    /// the active (list/grid) view wrapped in a `Scrollable`, and the footer.
-    /// Used by `Widget::build_layout` and — critically — by any caller that
-    /// needs to rebuild the tree after model-state changes (future work).
+    /// The entries actually shown — `entries` filtered by the search query.
+    pub fn displayed_entries(&self) -> Vec<Entry> {
+        if self.search_query.trim().is_empty() {
+            self.entries.clone()
+        } else {
+            let q = self.search_query.to_lowercase();
+            self.entries
+                .iter()
+                .filter(|e| e.name.to_lowercase().contains(&q))
+                .cloned()
+                .collect()
+        }
+    }
+
+    /// Build the full composed widget tree, wiring every interactive child
+    /// to the command sink.
     fn build_composition(&self) -> Box<dyn Widget> {
-        // Toolbar (search box + back/refresh/view/sort/terminal buttons).
+        let displayed = self.displayed_entries();
+
+        // Toolbar (nav + view + sort + search + terminal).
         let toolbar = crate::toolbar::build_toolbar(
             crate::toolbar::ToolbarSnapshot {
                 search_query: &self.search_query,
                 view_mode: self.view_mode,
-                sort_by: self.sort_by,
                 sort_order: self.sort_order,
+                can_back: !self.history.is_empty(),
+                can_forward: !self.forward.is_empty(),
+                can_up: self.current_path.parent().is_some(),
             },
-            Box::new(|| {}),
-            Box::new(|| {}),
-            Box::new(|_| {}),
-            Box::new(|_| {}),
-            Box::new(|_| {}),
-            Box::new(|| {}),
-            Box::new(|| {}),
+            &self.cmds,
         );
 
-        // Breadcrumbs — one button per component.
+        // Breadcrumb — one button per path component, wired to Navigate.
         let crumbs = crate::breadcrumbs::breadcrumb_components(
             &self.current_path,
             self.home_path.as_deref(),
         );
         let mut breadcrumb_row = Row::new();
-        for (i, (label, _target)) in crumbs.iter().enumerate() {
-            let id = format!("files.crumb.{}", i);
-            breadcrumb_row = breadcrumb_row.push(Box::new(Button::new(&id, label, None)));
+        for (i, (label, target)) in crumbs.iter().enumerate() {
+            let id = format!("files.crumb.{i}");
+            let sink = self.cmds.clone();
+            let target = target.clone();
+            breadcrumb_row = breadcrumb_row.push(Box::new(
+                ui::widget::Button::new(&id, label, None)
+                    .on_click(move || crate::command::push(&sink, FileCommand::Navigate(target.clone()))),
+            ));
+            if i + 1 < crumbs.len() {
+                breadcrumb_row = breadcrumb_row.push(Box::new(Text::new("›")));
+            }
         }
 
-        // Sidebar — fixed 180 px Column laid out as tiered groups
-        // (Favorites / System) matching `nirios-concept`. Each tier
-        // renders an uppercase label above its rows; `files.sidebar.<i>`
-        // ids stay sequential across tiers so the flat `build_shortcuts`
-        // index matches the rendered button order.
+        // Sidebar — tiered shortcuts, each wired to Navigate.
         let tiers = crate::sidebar::build_tiers(self.home_path.as_deref());
         let mut sidebar_col = Column::new();
         let mut flat_index = 0usize;
         for tier in &tiers {
             sidebar_col = sidebar_col.push(Box::new(Text::new(tier.title)));
             for (label, target) in &tier.entries {
-                let id = format!("files.sidebar.{}", flat_index);
+                let id = format!("files.sidebar.{flat_index}");
                 let is_active = *target == self.current_path;
                 sidebar_col = sidebar_col.push(Box::new(
                     crate::sidebar_row::SidebarFolderRow::new(&id, label, target.clone())
-                        .with_active(is_active),
+                        .with_active(is_active)
+                        .with_sink(self.cmds.clone()),
                 ));
                 flat_index += 1;
             }
         }
-        let sidebar: Box<dyn Widget> =
-            Box::new(Container::new().with_child(Box::new(sidebar_col)));
+        let sidebar: Box<dyn Widget> = Box::new(
+            Container::new()
+                .with_width(crate::sidebar::SIDEBAR_WIDTH_PX as f32)
+                .with_child(Box::new(sidebar_col)),
+        );
 
-        // Main view: list or grid (plus optional error banner/TextInput for
-        // the search field is covered by the toolbar).
+        // Main view: list or grid, bound to the displayed entries + selection.
         let view_child: Box<dyn Widget> = match self.view_mode {
-            ViewMode::List => {
-                crate::views::list_view::build_list(&self.entries, self.selected_index)
-            }
-            ViewMode::Grid => {
-                crate::views::grid_view::build_grid(&self.entries, self.selected_index)
-            }
+            ViewMode::List => crate::views::list_view::build_list(&displayed, &self.selection, &self.cmds),
+            ViewMode::Grid => crate::views::grid_view::build_grid(&displayed, &self.selection, &self.cmds),
         };
-        // Optional error banner surfaced above the view.
-        let mut view_col = Column::new();
+        let mut view_col = Column::new().with_fill_remaining_height();
         if let Some(err) = self.error.as_deref() {
             view_col = view_col.push(Box::new(Text::new(err)));
         }
@@ -135,21 +169,26 @@ impl FileExplorerWidget {
             Scrollable::new(ScrollAxis::Vertical).with_child(view_child),
         ));
 
-        // Body: sidebar | active view.
+        // Body fills the remaining height; sidebar is fixed-width, the view
+        // pane takes the rest.
         let body = Row::new()
+            .with_fill_remaining_height()
             .push(sidebar)
-            .push(Box::new(Column::new().push(Box::new(view_col))));
+            .push(Box::new(Column::new().with_fill_remaining_height().push(Box::new(view_col))));
 
-        // Footer: item count + path summary.
+        // Footer: status (if any) else item count + path summary.
         let (count, path_str) = self.footer_text();
+        let left = self
+            .status
+            .clone()
+            .unwrap_or_else(|| format!("{count} items"));
         let footer = Row::new()
-            .push(Box::new(Text::new(&format!("{} items", count))))
+            .push(Box::new(Text::new(&left)))
             .push(Box::new(Spacer::new()))
             .push(Box::new(Text::new(&path_str)));
 
-        // Also keep the search-query visible in a dedicated TextInput so the
-        // CRDT path is reachable (the toolbar already has one; this anchor
-        // lets tests/future wiring bind to a stable CRDT path).
+        // Hidden search anchor binding the CRDT path the toolbar's search
+        // field writes to, so `sync` can pick the query back up.
         let search_anchor = TextInput::new(vec![])
             .with_id("files.search_anchor")
             .with_on_change_path("files.search_query");
@@ -164,59 +203,129 @@ impl FileExplorerWidget {
         )
     }
 
-    pub fn current_path(&self) -> PathBuf { self.current_path.clone() }
-    pub fn home_path(&self) -> Option<&std::path::Path> { self.home_path.as_deref() }
-    pub fn entries(&self) -> &[Entry] { &self.entries }
-    pub fn selected_index(&self) -> Option<usize> { self.selected_index }
-    pub fn search_query(&self) -> &str { &self.search_query }
-    pub fn error(&self) -> Option<&str> { self.error.as_deref() }
-    pub fn is_loading(&self) -> bool { self.is_loading }
-    pub fn sort_by(&self) -> SortBy { self.sort_by }
-    pub fn sort_order(&self) -> SortOrder { self.sort_order }
-    pub fn view_mode(&self) -> ViewMode { self.view_mode }
+    pub fn current_path(&self) -> PathBuf {
+        self.current_path.clone()
+    }
+    pub fn home_path(&self) -> Option<&std::path::Path> {
+        self.home_path.as_deref()
+    }
+    pub fn entries(&self) -> &[Entry] {
+        &self.entries
+    }
+    pub fn selected_index(&self) -> Option<usize> {
+        self.selection.primary().filter(|&i| self.selection.is_selected(i))
+    }
+    /// All currently-selected displayed-entry indices.
+    pub fn selected_indices(&self) -> Vec<usize> {
+        self.selection.selected()
+    }
+    pub fn search_query(&self) -> &str {
+        &self.search_query
+    }
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+    pub fn is_loading(&self) -> bool {
+        self.is_loading
+    }
+    pub fn sort_by(&self) -> SortBy {
+        self.sort_by
+    }
+    pub fn sort_order(&self) -> SortOrder {
+        self.sort_order
+    }
+    pub fn view_mode(&self) -> ViewMode {
+        self.view_mode
+    }
 
+    /// Navigate to `path`, pushing the current path onto the back-history.
     pub fn navigate(&mut self, path: PathBuf) {
+        if path != self.current_path {
+            self.history.push(self.current_path.clone());
+            self.forward.clear();
+        }
+        self.load(path);
+    }
+
+    /// Re-read `path` into the view without touching history (shared by
+    /// navigate/back/forward/refresh).
+    fn load(&mut self, path: PathBuf) {
         self.is_loading = true;
-        self.selected_index = None;
+        self.selection.clear();
         self.error = None;
         self.last_click = None;
+        self.status = None;
         match read_dir_sync(&path) {
             Ok(mut entries) => {
                 sort_entries(self.sort_by, self.sort_order, &mut entries);
                 self.entries = entries;
                 self.current_path = path;
             }
-            Err(e) => { self.error = Some(e); }
+            Err(e) => {
+                self.error = Some(e);
+            }
         }
         self.is_loading = false;
     }
 
+    /// Go to the parent directory (history-aware).
     pub fn back(&mut self) {
         if let Some(parent) = self.current_path.parent() {
             self.navigate(parent.to_path_buf());
         }
     }
 
-    pub fn refresh(&mut self) { self.navigate(self.current_path.clone()); }
+    /// Go up to the parent directory (alias of [`back`] kept explicit for
+    /// the toolbar's distinct Up affordance).
+    pub fn go_up(&mut self) {
+        self.back();
+    }
 
-    /// Returns the path to open on a double-click (i.e. second click within
-    /// 500 ms on the same row). Single clicks update `selected_index` and
-    /// return `None`.
+    /// Pop the back-history.
+    pub fn history_back(&mut self) {
+        if let Some(prev) = self.history.pop() {
+            self.forward.push(self.current_path.clone());
+            self.load(prev);
+        }
+    }
+
+    /// Pop the forward-history.
+    pub fn history_forward(&mut self) {
+        if let Some(next) = self.forward.pop() {
+            self.history.push(self.current_path.clone());
+            self.load(next);
+        }
+    }
+
+    pub fn refresh(&mut self) {
+        self.load(self.current_path.clone());
+    }
+
+    /// Single/double click handler retained for tests + the command path.
+    /// A second click within 500 ms on the same row returns its path.
     pub fn select(&mut self, idx: Option<usize>) -> Option<PathBuf> {
         let now = Instant::now();
         if let (Some(i), Some((pi, pt))) = (idx, self.last_click) {
             if i == pi && now.duration_since(pt) < Duration::from_millis(500) {
-                let path = self.entries[i].path.clone();
-                self.last_click = None;
-                return Some(path);
+                let disp = self.displayed_entries();
+                if let Some(e) = disp.get(i) {
+                    let path = e.path.clone();
+                    self.last_click = None;
+                    return Some(path);
+                }
             }
         }
-        self.selected_index = idx;
+        match idx {
+            Some(i) => self.selection.select_only(i),
+            None => self.selection.clear(),
+        }
         self.last_click = idx.map(|i| (i, now));
         None
     }
 
-    pub fn set_search_query(&mut self, q: String) { self.search_query = q; }
+    pub fn set_search_query(&mut self, q: String) {
+        self.search_query = q;
+    }
     pub fn set_sort_by(&mut self, s: SortBy) {
         self.sort_by = s;
         sort_entries(self.sort_by, self.sort_order, &mut self.entries);
@@ -228,25 +337,212 @@ impl FileExplorerWidget {
         };
         sort_entries(self.sort_by, self.sort_order, &mut self.entries);
     }
-    pub fn set_view_mode(&mut self, m: ViewMode) { self.view_mode = m; }
+    pub fn set_view_mode(&mut self, m: ViewMode) {
+        self.view_mode = m;
+    }
 
-    /// Returns a borrow of the currently loaded directory entries, in their
-    /// current sort order. Used by the Task 11 parity tests (and the Task 13
-    /// `draw` pass) to inspect widget state without cloning.
-    pub fn entries_snapshot(&self) -> &[Entry] { &self.entries }
+    pub fn entries_snapshot(&self) -> &[Entry] {
+        &self.entries
+    }
 
-    /// Returns the current error message, if any. Distinct from `error()`
-    /// (which is also kept for symmetry) only in naming — the Task 11 plan
-    /// spells it `error_message`.
-    pub fn error_message(&self) -> Option<&str> { self.error.as_deref() }
+    pub fn error_message(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
 
-    /// Footer summary — the number of entries plus the home-substituted path
-    /// string that the footer displays.
     pub fn footer_text(&self) -> (usize, String) {
         (
             self.entries.len(),
             crate::model::format_path(&self.current_path, self.home_path.as_deref()),
         )
+    }
+
+    // --- Command application ------------------------------------------
+
+    /// Apply one queued command, returning whether it changed the widget
+    /// tree structure (and thus needs a rebuild).
+    fn apply_command(&mut self, cmd: FileCommand) -> bool {
+        match cmd {
+            FileCommand::Navigate(p) => {
+                self.navigate(p);
+                true
+            }
+            FileCommand::Up => {
+                self.go_up();
+                true
+            }
+            FileCommand::Back => {
+                self.history_back();
+                true
+            }
+            FileCommand::Forward => {
+                self.history_forward();
+                true
+            }
+            FileCommand::Refresh => {
+                self.refresh();
+                true
+            }
+            FileCommand::Click { index, ctrl, shift } => {
+                if ctrl || shift {
+                    self.selection.apply_click(index, ctrl, shift);
+                    self.last_click = None;
+                } else if let Some(path) = self.select(Some(index)) {
+                    // Double-click → open / enter.
+                    self.open_path(path);
+                }
+                true
+            }
+            FileCommand::Activate(index) => {
+                let disp = self.displayed_entries();
+                if let Some(e) = disp.get(index) {
+                    self.open_path(e.path.clone());
+                }
+                true
+            }
+            FileCommand::SortColumn(col) => {
+                let by = match col {
+                    1 => SortBy::Name,
+                    2 => SortBy::Size,
+                    3 => SortBy::Modified,
+                    _ => return false,
+                };
+                if self.sort_by == by {
+                    self.toggle_sort_order();
+                } else {
+                    self.set_sort_by(by);
+                }
+                true
+            }
+            FileCommand::SetView(m) => {
+                self.set_view_mode(m);
+                true
+            }
+            FileCommand::ToggleSortOrder => {
+                self.toggle_sort_order();
+                true
+            }
+            FileCommand::SelectAll => {
+                self.selection.select_all(self.displayed_entries().len());
+                true
+            }
+            FileCommand::OpenTerminal => {
+                let _ = self.open_terminal(&mut SystemRunner);
+                false
+            }
+            FileCommand::NewFolder => {
+                match fileops::new_folder(&self.current_path, "New Folder") {
+                    Ok(_) => {
+                        self.refresh();
+                        self.status = Some("Created folder".to_string());
+                    }
+                    Err(e) => self.status = Some(format!("New folder failed: {e}")),
+                }
+                true
+            }
+            FileCommand::Rename => {
+                // A full inline-rename editor is a follow-up; for now the
+                // command appends " (renamed)" so the wiring is real and
+                // testable. The interactive editor lands with the context
+                // menu's text field.
+                if let Some(p) = self.primary_path() {
+                    if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                        let new = format!("{name} (renamed)");
+                        match fileops::rename(&p, &new) {
+                            Ok(_) => {
+                                self.refresh();
+                                self.status = Some("Renamed".to_string());
+                            }
+                            Err(e) => self.status = Some(format!("Rename failed: {e}")),
+                        }
+                    }
+                }
+                true
+            }
+            FileCommand::Delete => {
+                let paths = self.selected_paths();
+                if !paths.is_empty() {
+                    match fileops::delete_to_trash(&paths) {
+                        Ok(()) => {
+                            self.refresh();
+                            self.status = Some(format!("Moved {} to Trash", paths.len()));
+                        }
+                        Err(e) => self.status = Some(format!("Delete failed: {e}")),
+                    }
+                }
+                true
+            }
+            FileCommand::Copy => {
+                self.clipboard = self.selected_paths();
+                self.clipboard_cut = false;
+                self.status = Some(format!("Copied {}", self.clipboard.len()));
+                true
+            }
+            FileCommand::Cut => {
+                self.clipboard = self.selected_paths();
+                self.clipboard_cut = true;
+                self.status = Some(format!("Cut {}", self.clipboard.len()));
+                true
+            }
+            FileCommand::Paste => {
+                self.paste();
+                true
+            }
+        }
+    }
+
+    fn primary_path(&self) -> Option<PathBuf> {
+        let disp = self.displayed_entries();
+        self.selection
+            .primary()
+            .and_then(|i| disp.get(i).map(|e| e.path.clone()))
+    }
+
+    fn selected_paths(&self) -> Vec<PathBuf> {
+        let disp = self.displayed_entries();
+        self.selection
+            .selected()
+            .into_iter()
+            .filter_map(|i| disp.get(i).map(|e| e.path.clone()))
+            .collect()
+    }
+
+    fn paste(&mut self) {
+        if self.clipboard.is_empty() {
+            return;
+        }
+        let dest = self.current_path.clone();
+        let cut = self.clipboard_cut;
+        let items = self.clipboard.clone();
+        let mut errors = 0usize;
+        for src in &items {
+            let res = if cut {
+                fileops::move_into(src, &dest)
+            } else {
+                fileops::copy_into(src, &dest)
+            };
+            if res.is_err() {
+                errors += 1;
+            }
+        }
+        if cut {
+            self.clipboard.clear();
+        }
+        self.refresh();
+        self.status = Some(if errors == 0 {
+            format!("Pasted {}", items.len())
+        } else {
+            format!("Pasted {} ({errors} failed)", items.len() - errors)
+        });
+    }
+
+    /// Open a path: navigate into directories, else launch its app.
+    fn open_path(&mut self, path: PathBuf) {
+        if path.is_dir() {
+            self.navigate(path);
+        } else if let Some(app) = app_for_path(&path) {
+            let cwd = path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| self.current_path.clone());
+            let _ = SystemRunner.spawn_arg(app, &path, &cwd);
+        }
     }
 }
 
@@ -257,56 +553,40 @@ pub fn filter_entries<'a>(entries: &'a [Entry], query: &str) -> Vec<&'a Entry> {
     entries.iter().filter(|e| e.name.to_lowercase().contains(&q)).collect()
 }
 
-/// Thin mockable wrapper around `std::process::Command::spawn` so the
-/// "Open Terminal" button (AUDIT.md T7) can be exercised under test without
-/// actually spawning the terminal binary.
+/// Thin mockable wrapper around `std::process::Command::spawn`.
 pub trait CommandRunner {
-    /// Spawn `program` with its working directory set to `cwd`.
     fn spawn(&mut self, program: &str, cwd: &std::path::Path) -> std::io::Result<()>;
-    /// Spawn `program` with a single path argument (e.g. open a document),
-    /// working directory `cwd`.
     fn spawn_arg(&mut self, program: &str, arg: &std::path::Path, cwd: &std::path::Path) -> std::io::Result<()>;
 }
 
-/// Default runner used in production — invokes `std::process::Command`.
 pub struct SystemRunner;
 
 impl CommandRunner for SystemRunner {
     fn spawn(&mut self, program: &str, cwd: &std::path::Path) -> std::io::Result<()> {
-        std::process::Command::new(program)
-            .current_dir(cwd)
-            .spawn()
-            .map(|_child| ())
+        std::process::Command::new(program).current_dir(cwd).spawn().map(|_c| ())
     }
     fn spawn_arg(&mut self, program: &str, arg: &std::path::Path, cwd: &std::path::Path) -> std::io::Result<()> {
-        std::process::Command::new(program)
-            .arg(arg)
-            .current_dir(cwd)
-            .spawn()
-            .map(|_child| ())
+        std::process::Command::new(program).arg(arg).current_dir(cwd).spawn().map(|_c| ())
     }
 }
 
-/// The app that opens `path`, by extension. Document formats — per qdoc's codec
-/// registry, the OS-wide source of truth — open in the word processor.
+/// The app that opens `path`, by extension. Document formats — per qdoc's
+/// codec registry — open in the word processor.
 pub fn app_for_path(path: &std::path::Path) -> Option<&'static str> {
     let ext = path.extension()?.to_str()?;
     qdoc::is_supported_ext(ext).then_some("word-processor")
 }
 
 impl FileExplorerWidget {
-    /// Launch a terminal rooted at the currently displayed directory. Uses
-    /// the supplied `runner` so tests can assert the intended invocation
-    /// without spawning a real subprocess.
     pub fn open_terminal<R: CommandRunner>(&self, runner: &mut R) -> std::io::Result<()> {
         runner.spawn("terminal", &self.current_path)
     }
 
-    /// Activate entry `idx`: navigate into a directory, or launch the app
-    /// associated with a document (the word processor). Returns whether an app
-    /// was spawned. The wiring point for a row double-click.
+    /// Activate entry `idx` (by displayed index): navigate into a directory
+    /// or launch the associated app.
     pub fn open_entry<R: CommandRunner>(&mut self, idx: usize, runner: &mut R) -> std::io::Result<bool> {
-        let Some(entry) = self.entries.get(idx) else { return Ok(false) };
+        let disp = self.displayed_entries();
+        let Some(entry) = disp.get(idx) else { return Ok(false) };
         if entry.is_dir {
             let p = entry.path.clone();
             self.navigate(p);
@@ -314,12 +594,241 @@ impl FileExplorerWidget {
         }
         let path = entry.path.clone();
         let Some(app) = app_for_path(&path) else { return Ok(false) };
-        let cwd = path
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| self.current_path.clone());
+        let cwd = path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| self.current_path.clone());
         runner.spawn_arg(app, &path, &cwd)?;
         Ok(true)
+    }
+
+    /// Drain and apply all queued commands. Returns whether any command
+    /// changed the structure.
+    fn drain_commands(&mut self) -> bool {
+        let queued: Vec<FileCommand> = self.cmds.borrow_mut().drain(..).collect();
+        let mut dirty = false;
+        for cmd in queued {
+            dirty |= self.apply_command(cmd);
+        }
+        dirty
+    }
+
+    /// App-level keyboard navigation, applied when a key isn't consumed by
+    /// a focused child (search field, etc.). Returns whether it acted.
+    fn handle_app_key(&mut self, ke: &winit::event::KeyEvent, modifiers: &winit::event::Modifiers) -> bool {
+        use winit::keyboard::{Key, NamedKey};
+        if ke.state != winit::event::ElementState::Pressed {
+            return false;
+        }
+        let shift = modifiers.state().shift_key();
+        let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
+        let len = self.displayed_entries().len();
+        match &ke.logical_key {
+            Key::Named(NamedKey::ArrowDown) if len > 0 => {
+                let next = self.selection.primary().map(|i| (i + 1).min(len - 1)).unwrap_or(0);
+                self.selection.move_to(next, shift);
+                true
+            }
+            Key::Named(NamedKey::ArrowUp) if len > 0 => {
+                let next = self.selection.primary().map(|i| i.saturating_sub(1)).unwrap_or(0);
+                self.selection.move_to(next, shift);
+                true
+            }
+            Key::Named(NamedKey::Enter) => {
+                if let Some(p) = self.primary_path() {
+                    self.open_path(p);
+                }
+                true
+            }
+            Key::Named(NamedKey::Backspace) => {
+                self.go_up();
+                true
+            }
+            Key::Named(NamedKey::Delete) => {
+                self.apply_command(FileCommand::Delete);
+                true
+            }
+            Key::Character(s) if (s == "a" || s == "A") && ctrl => {
+                self.selection.select_all(len);
+                true
+            }
+            Key::Character(s) if (s == "c" || s == "C") && ctrl => {
+                self.apply_command(FileCommand::Copy);
+                true
+            }
+            Key::Character(s) if (s == "x" || s == "X") && ctrl => {
+                self.apply_command(FileCommand::Cut);
+                true
+            }
+            Key::Character(s) if (s == "v" || s == "V") && ctrl => {
+                self.apply_command(FileCommand::Paste);
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Widget for FileExplorerWidget {
+    fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+        if let Some(c) = &mut self.composed {
+            c.sync(state, path);
+        }
+        // Pull the search query back out of the CRDT (the toolbar's search
+        // field + hidden anchor write it there). A change re-filters the
+        // displayed list, which is a structural change.
+        use automerge::ReadDoc;
+        if let Ok(Some((automerge::Value::Scalar(s), _))) =
+            state.get(path, "files.search_query")
+        {
+            if let automerge::ScalarValue::Str(text) = s.as_ref() {
+                if text.as_str() != self.search_query {
+                    self.search_query = text.to_string();
+                    self.selection.clear();
+                    self.structure_dirty = true;
+                }
+            }
+        }
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut taffy::TaffyTree<()>,
+        theme: &ui::Theme,
+        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+    ) -> taffy::NodeId {
+        let mut composed = self.build_composition();
+        let child_node = composed.build_layout(taffy, theme, node_map);
+        self.composed = Some(composed);
+
+        let style = taffy::Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Column,
+            size: taffy::Size {
+                width: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        let node = taffy.new_with_children(style, &[child_node]).unwrap();
+        node_map.insert(node, self as *mut dyn Widget);
+        node
+    }
+
+    fn apply_layout(
+        &mut self,
+        taffy: &taffy::TaffyTree<()>,
+        node: taffy::NodeId,
+        origin: vello::kurbo::Point,
+    ) {
+        let l = taffy.layout(node).unwrap();
+        self.rect = vello::kurbo::Rect::new(
+            origin.x + l.location.x as f64,
+            origin.y + l.location.y as f64,
+            origin.x + l.location.x as f64 + l.size.width as f64,
+            origin.y + l.location.y as f64 + l.size.height as f64,
+        );
+        if let Some(c) = &mut self.composed {
+            if let Ok(children) = taffy.children(node) {
+                if let Some(&child_node) = children.first() {
+                    c.apply_layout(taffy, child_node, vello::kurbo::Point::new(self.rect.x0, self.rect.y0));
+                }
+            }
+        }
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut ui::text_render::TextRenderer,
+        theme: &ui::Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) {
+        // Paint the app background so the explorer is self-contained (light
+        // text reads on it, and it looks right over any compositor surface).
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.base,
+            None,
+            &self.rect,
+        );
+        if let Some(c) = &mut self.composed {
+            c.draw(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut automerge::AutoCommit,
+        path: &automerge::ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<taffy::NodeId>,
+        node_id: taffy::NodeId,
+        taffy: &taffy::TaffyTree<()>,
+    ) {
+        // Deliver to the composed tree first (buttons, views, search field).
+        if let Some(c) = &mut self.composed {
+            if let Ok(children) = taffy.children(node_id) {
+                if let Some(&child_node) = children.first() {
+                    c.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, child_node, taffy);
+                }
+            }
+        }
+
+        // App-level keyboard nav for keys the children didn't consume.
+        if !*handled {
+            if let winit::event::WindowEvent::KeyboardInput { event: ke, .. } = event {
+                if self.handle_app_key(ke, modifiers) {
+                    *handled = true;
+                    self.structure_dirty = true;
+                }
+            }
+        }
+
+        // Apply any commands the children queued during this event.
+        if self.drain_commands() {
+            self.structure_dirty = true;
+        }
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        let mut d = std::mem::take(&mut self.structure_dirty);
+        if let Some(c) = &mut self.composed {
+            d |= c.take_structure_dirty();
+        }
+        d
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.composed.as_ref().map(|c| c.as_ref() as &dyn Widget).into_iter().collect()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.composed.as_mut().map(|c| c.as_mut() as &mut (dyn Widget + '_)).into_iter().collect()
+    }
+
+    fn name(&self) -> &str {
+        "FileExplorerWidget"
+    }
+    fn get_rect(&self) -> vello::kurbo::Rect {
+        self.rect
+    }
+}
+
+impl AppWidget for FileExplorerWidget {
+    fn app_kind(&self) -> AppKind {
+        AppKind::Files
+    }
+    fn app_title(&self) -> &str {
+        "Files"
+    }
+    fn app_icon(&self) -> IconDescriptor {
+        IconDescriptor::Glyph("󰉋")
+    }
+    fn permission_hint(&self) -> Option<AppKind> {
+        Some(AppKind::Files)
     }
 }
 
@@ -366,140 +875,7 @@ mod open_with_tests {
         assert!(w.open_entry(0, &mut runner).unwrap(), "document spawns an app");
         assert_eq!(runner.calls, vec![("word-processor".to_string(), Some(PathBuf::from("/docs/report.odt")))]);
 
-        // A non-document does not spawn anything.
         assert!(!w.open_entry(1, &mut runner).unwrap());
         assert_eq!(runner.calls.len(), 1);
     }
-}
-
-impl Widget for FileExplorerWidget {
-    fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
-        if let Some(c) = &mut self.composed {
-            c.sync(state, path);
-        }
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut taffy::TaffyTree<()>,
-        theme: &ui::Theme,
-        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
-    ) -> taffy::NodeId {
-        // Build (or rebuild) the composed child tree so subsequent passes
-        // operate on a fresh snapshot of the model.
-        let mut composed = self.build_composition();
-        let child_node = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
-
-        // Wrap the child in a percent-sized container node so the five-pass
-        // pipeline has a stable root owned by this widget.
-        let style = taffy::Style {
-            display: taffy::Display::Flex,
-            flex_direction: taffy::FlexDirection::Column,
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
-            },
-            ..Default::default()
-        };
-        let node = taffy.new_with_children(style, &[child_node]).unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
-        node
-    }
-
-    fn apply_layout(
-        &mut self,
-        taffy: &taffy::TaffyTree<()>,
-        node: taffy::NodeId,
-        origin: vello::kurbo::Point,
-    ) {
-        let l = taffy.layout(node).unwrap();
-        self.rect = vello::kurbo::Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
-        );
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(&child_node) = children.first() {
-                    c.apply_layout(
-                        taffy,
-                        child_node,
-                        vello::kurbo::Point::new(self.rect.x0, self.rect.y0),
-                    );
-                }
-            }
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &ui::Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        if let Some(c) = &mut self.composed {
-            c.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn handle_event(
-        &mut self,
-        event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<taffy::NodeId>,
-        node_id: taffy::NodeId,
-        taffy: &taffy::TaffyTree<()>,
-    ) {
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&child_node) = children.first() {
-                    c.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        child_node,
-                        taffy,
-                    );
-                }
-            }
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
-    }
-
-    fn name(&self) -> &str { "FileExplorerWidget" }
-    fn get_rect(&self) -> vello::kurbo::Rect { self.rect }
-}
-
-impl AppWidget for FileExplorerWidget {
-    fn app_kind(&self) -> AppKind { AppKind::Files }
-    fn app_title(&self) -> &str { "Files" }
-    fn app_icon(&self) -> IconDescriptor { IconDescriptor::Glyph("󰉋") }
-    fn permission_hint(&self) -> Option<AppKind> { Some(AppKind::Files) }
 }
