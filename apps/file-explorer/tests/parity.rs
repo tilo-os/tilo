@@ -354,6 +354,10 @@ fn open_terminal_button_spawns_quick_terminal_subprocess() {
             self.calls.push((program.to_string(), cwd.to_path_buf()));
             Ok(())
         }
+        fn spawn_arg(&mut self, program: &str, _arg: &std::path::Path, cwd: &std::path::Path) -> std::io::Result<()> {
+            self.calls.push((program.to_string(), cwd.to_path_buf()));
+            Ok(())
+        }
     }
 
     let w = FileExplorerWidget::new();
@@ -379,14 +383,37 @@ fn list_mode_row_has_icon_name_size_modified_columns() {
 }
 
 #[test]
-fn grid_mode_wraps_six_per_row() {
-    assert_eq!(file_explorer::views::grid_view::CARDS_PER_ROW, 6);
+fn grid_mode_uses_responsive_icon_grid() {
+    // The fixed six-per-row grid was replaced by the toolkit's responsive
+    // IconGrid: the column count now reflows to the available width rather
+    // than being hard-coded. build_grid must yield an IconGrid widget.
+    use file_explorer::command::new_sink;
+    use file_explorer::model::Entry;
+    use file_explorer::views::grid_view::{build_grid, GRID_CELL_HEIGHT, GRID_CELL_WIDTH};
+    use std::path::PathBuf;
+    use ui::SelectionModel;
+
+    assert!(GRID_CELL_WIDTH > 0.0 && GRID_CELL_HEIGHT > 0.0, "cell metrics are sane");
+    let entries = vec![Entry {
+        name: "a.txt".into(),
+        path: PathBuf::from("/a.txt"),
+        is_dir: false,
+        size: 0,
+        modified: None,
+        mime: String::new(),
+    }];
+    let sel = SelectionModel::new();
+    let sink = new_sink();
+    let w = build_grid(&entries, &sel, &sink);
+    assert_eq!(ui::widget::Widget::name(&*w), "IconGrid");
 }
 
 #[test]
-fn grid_mode_card_is_120x100() {
-    assert_eq!(file_explorer::views::grid_view::CARD_WIDTH_PX, 120.0);
-    assert_eq!(file_explorer::views::grid_view::CARD_HEIGHT_PX, 100.0);
+fn grid_cell_metrics_are_documented_values() {
+    // Pins the default icon-grid cell size so a regression in the grid
+    // builder is caught (the grid derives its column count from these).
+    assert_eq!(file_explorer::views::grid_view::GRID_CELL_WIDTH, 104.0);
+    assert_eq!(file_explorer::views::grid_view::GRID_CELL_HEIGHT, 92.0);
 }
 
 #[test]
