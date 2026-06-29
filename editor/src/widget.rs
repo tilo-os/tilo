@@ -1429,6 +1429,7 @@ impl WordProcessorWidget {
         let fname = self.path.as_ref().and_then(|p| p.file_name()).and_then(|n| n.to_str()).unwrap_or("Untitled");
         let kind = match self.format {
             Some(WpFormat::Odt) => "ODF Text",
+            Some(WpFormat::Docx) => "Word Document",
             Some(WpFormat::Markdown) => "Markdown",
             None => "",
         };
