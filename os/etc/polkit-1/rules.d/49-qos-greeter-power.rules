@@ -1,0 +1,34 @@
+// Allow the qOS graphical greeter to reboot / power off from the pre-login
+// screen.
+//
+// The greeter (`qos-greeter`) runs as the `greetd` user inside `cage` at the
+// login VT. Its Reboot / Shut down buttons call `systemctl reboot` /
+// `systemctl poweroff`, which issue the logind D-Bus actions
+// `org.freedesktop.login1.{reboot,power-off}` (and the `-multiple-sessions`
+// variants when another session is present). polkit gates those actions.
+//
+// logind's default policy already allows these for an *active* local session
+// (`allow_active = yes`), and greetd's greeter session is normally the
+// foreground session on seat0 — so on many setups this would work without a
+// rule. But the greeter's session class is "greeter" and is not guaranteed to
+// register as active (e.g. headless / nested / early-boot races), in which
+// case the default falls back to `auth_admin_keep`, which has no one to
+// authenticate at a *login* screen. This rule makes the power actions
+// deterministic for the greeter user regardless of seat-active detection.
+//
+// Scope is intentionally narrow: only the `greetd` user, only the four
+// reboot/power-off action ids. It does NOT grant suspend/hibernate or any
+// other privileged action.
+polkit.addRule(function (action, subject) {
+    if (subject.user !== "greetd") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    switch (action.id) {
+        case "org.freedesktop.login1.reboot":
+        case "org.freedesktop.login1.reboot-multiple-sessions":
+        case "org.freedesktop.login1.power-off":
+        case "org.freedesktop.login1.power-off-multiple-sessions":
+            return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

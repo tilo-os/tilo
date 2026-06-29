@@ -1,0 +1,46 @@
+# qOS CUSTOM installer image.
+#
+# Layered on top of the already-built qOS desktop image (localhost/qos:latest),
+# this adds the qOS-branded graphical installer and the OS plumbing that makes a
+# live medium self-install the booted image to a target disk. It is a SEPARATE
+# path from the Anaconda ISO (installer.toml / build-installer.sh) — that one
+# stays as-is.
+#
+# Build context is the os/ dir (see os/dev/build-custom-installer.sh):
+#     podman build -t localhost/qos-installer:latest -f os/Containerfile.installer os/
+FROM localhost/qos:latest
+
+# The graphical installer UI (a ui::App; staged into os/ by
+# build-custom-installer.sh — either the real release binary or a --stub-ui
+# placeholder for testing OS plumbing without the toolkit).
+COPY qos-installer /usr/bin/qos-installer
+RUN chmod 755 /usr/bin/qos-installer
+
+# Privileged install + power backends + greetd session selector + first-boot
+# user setup.
+COPY usr/libexec/qos-install /usr/libexec/qos-install
+COPY usr/libexec/qos-power /usr/libexec/qos-power
+COPY usr/libexec/qos-session-select /usr/libexec/qos-session-select
+COPY usr/libexec/qos-firstboot-user /usr/libexec/qos-firstboot-user
+RUN chmod 755 /usr/libexec/qos-install \
+              /usr/libexec/qos-power \
+              /usr/libexec/qos-session-select \
+              /usr/libexec/qos-firstboot-user
+
+# systemd units: first-boot user creation (runs on the INSTALLED system) and
+# live-medium sudoers setup (runs only when qos.installer is on the cmdline).
+COPY usr/lib/systemd/system/qos-firstboot-user.service /usr/lib/systemd/system/qos-firstboot-user.service
+COPY usr/lib/systemd/system/qos-installer-setup.service /usr/lib/systemd/system/qos-installer-setup.service
+
+# Inactive-until-runtime sudoers rule (qos-installer-setup.service installs it).
+COPY usr/share/qos/installer-sudoers /usr/share/qos/installer-sudoers
+
+# Point greetd at the session selector (installer-vs-greeter by cmdline).
+COPY etc/greetd/config.installer.toml /etc/greetd/config.toml
+
+# Enable the two new units. greetd / graphical.target are already enabled by
+# the base qOS image.
+RUN systemctl enable qos-firstboot-user.service qos-installer-setup.service
+
+# Validate the layered image.
+RUN bootc container lint
