@@ -35,6 +35,10 @@ pub use widget::history::{
     format_relative_time, hue_to_rgb, op_class_glyph, op_class_is_revertible,
 };
 pub use widget::history_scrubber::HistoryScrubber;
+// Phase 5 (Channel browser) — see `widget/channel_browser.rs` module
+// doc-comment for the design intent. Source-agnostic; consumes
+// `Vec<ChannelEntry>` from chrome state.
+pub use widget::channel_browser::{ChannelBrowser, ChannelEntry};
 // Phase 4 (Conflict toolkit) — see `widget/merge_strategy.rs` module
 // doc-comment for the design intent and convention for declaring a
 // merge strategy on a CRDT-bound widget.
