@@ -378,6 +378,57 @@ impl TextRenderer {
         }
     }
 
+    /// Draw a [`crate::richtext::RichTextLayout`] (attributed, wrapped text) in a
+    /// single `color`, including its underline decorations. The companion of
+    /// [`Self::draw_text`] for rich, hit-testable text.
+    pub fn draw_rich(
+        &mut self,
+        scene: &mut Scene,
+        layout: &crate::richtext::RichTextLayout,
+        transform: Affine,
+        color: Color,
+    ) {
+        let resolve = |c: Option<cosmic_text::Color>| {
+            c.map(|c| Color::from_rgb8(c.r(), c.g(), c.b())).unwrap_or(color)
+        };
+        for run in layout.buffer.layout_runs() {
+            let mut face: Option<cosmic_text::fontdb::ID> = None;
+            let mut cur_color: Option<cosmic_text::Color> = None;
+            let mut batch: Vec<cosmic_text::LayoutGlyph> = Vec::new();
+            let mut size = 16.0f32;
+            for g in run.glyphs.iter() {
+                size = g.font_size;
+                // Flush when either the face or the per-run colour changes.
+                if (face != Some(g.font_id) || cur_color != g.color_opt) && !batch.is_empty() {
+                    self.flush_glyphs(scene, face.unwrap(), &batch, size, resolve(cur_color), transform, run.line_y);
+                    batch.clear();
+                }
+                face = Some(g.font_id);
+                cur_color = g.color_opt;
+                batch.push(g.clone());
+            }
+            if let Some(f) = face {
+                if !batch.is_empty() {
+                    self.flush_glyphs(scene, f, &batch, size, resolve(cur_color), transform, run.line_y);
+                }
+            }
+        }
+        for &(s, e) in &layout.underlines {
+            for (x0, _y0, x1, y1) in layout.selection_rects(s, e) {
+                let uy = (y1 - 2.0) as f64;
+                let rect = vello::kurbo::Rect::new(x0 as f64, uy, x1 as f64, uy + 1.5);
+                scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &rect);
+            }
+        }
+        for &(s, e) in &layout.strikes {
+            for (x0, y0, x1, y1) in layout.selection_rects(s, e) {
+                let my = ((y0 + y1) / 2.0) as f64;
+                let rect = vello::kurbo::Rect::new(x0 as f64, my, x1 as f64, my + 1.5);
+                scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &rect);
+            }
+        }
+    }
+
     fn flush_glyphs(
         &mut self,
         scene: &mut Scene,

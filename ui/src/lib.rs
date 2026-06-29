@@ -3,8 +3,12 @@ pub mod color_compat;
 pub mod state;
 pub mod widget;
 pub mod text_render;
+pub mod richtext;
+pub mod chrome;
+pub mod gesture;
 pub mod text_selection;
 pub mod theme;
+pub mod caps_lock;
 pub mod i18n;
 pub mod collaboration;
 pub mod tokens;
@@ -21,6 +25,7 @@ pub use app::App;
 pub use color_compat::ColorCompat;
 pub use state::{State, UndoEntry};
 pub use theme::Theme;
+pub use caps_lock::CapsLockEstimate;
 
 pub use widget::{Widget, Element};
 pub use widget::{AppCommand, AppKind, AppWidget, IconDescriptor};
@@ -49,6 +54,9 @@ pub use widget::merge_strategy::{
 pub use widget::conflict_banner::ConflictBanner;
 pub use widget::conflict_picker::{ConflictPicker, PickerOutcome};
 pub use text_render::{TextRenderer, TextWeight};
+pub use richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
+pub use chrome::{LabelCue, ToolbarItem};
+pub use gesture::{DragSelect, Granularity};
 pub use text_selection::{
     Selection, clipboard_copy, clipboard_paste, line_boundaries,
     next_char_boundary, next_word_boundary, prev_char_boundary,
