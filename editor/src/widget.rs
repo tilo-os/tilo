@@ -46,6 +46,9 @@ const STATUS_H: f64 = ui::chrome::STATUS_BAR_HEIGHT;
 const LAYOUT_BAR_H: f64 = 32.0;
 /// Width of the contextual styles panel reserved on the right of the canvas.
 const STYLES_PANEL_W: f64 = 250.0;
+const FIND_BAR_H: f64 = 42.0;
+/// Find-match highlight (amber, semi-transparent).
+const FIND_HL: Color = Color::from_rgba8(0xff, 0xc8, 0x4a, 0x80);
 /// Panel chrome colors (consistent with the bottom layout bar).
 const PANEL_BG: Color = Color::from_rgb8(0x20, 0x22, 0x28);
 const PANEL_EDGE: Color = Color::from_rgb8(0x32, 0x35, 0x3e);
@@ -93,6 +96,34 @@ enum ToolAction {
     TableColDel,
     TableDelete,
     ToggleStyles,
+}
+
+/// A clickable control in the Find & Replace bar.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum FindAction {
+    FocusFind,
+    FocusReplace,
+    Prev,
+    Next,
+    Replace,
+    ReplaceAll,
+    Close,
+}
+
+/// Draw a text-input box (Find/Replace fields). A trailing `_` marks the focused
+/// field's caret; an empty field shows the placeholder.
+fn draw_field_box(scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, r: Rect, text: &str, placeholder: &str, focused: bool) {
+    let border = if focused { GUIDE } else { Color::from_rgb8(0x44, 0x47, 0x52) };
+    scene.fill(Fill::NonZero, transform, Color::from_rgb8(0x16, 0x18, 0x1e), None, &vello::kurbo::RoundedRect::from_rect(r, 5.0));
+    scene.stroke(&vello::kurbo::Stroke::new(if focused { 1.5 } else { 1.0 }), transform, border, None, &vello::kurbo::RoundedRect::from_rect(r, 5.0));
+    let (shown, col) = if text.is_empty() && !focused {
+        (placeholder.to_string(), MUTED)
+    } else if focused {
+        (format!("{text}_"), Color::from_rgb8(0xee, 0xef, 0xf2))
+    } else {
+        (text.to_string(), Color::from_rgb8(0xee, 0xef, 0xf2))
+    };
+    tr.draw_text(scene, &shown, 13.0, col, transform * Affine::translate((r.x0 + 8.0, (r.y0 + r.y1) / 2.0 - 8.0)), None);
 }
 
 /// Which layout element the bottom bar is editing. Each mode shows draggable
@@ -470,6 +501,18 @@ pub struct WordProcessorWidget {
     format: Option<WpFormat>,
     /// Unsaved changes since the last save (drives the status-bar `●` indicator).
     modified: bool,
+    /// Find & Replace bar state.
+    find_open: bool,
+    find_query: String,
+    replace_query: String,
+    /// Which find-bar field has keyboard focus (`false` = find, `true` = replace).
+    find_on_replace: bool,
+    /// All current matches as `(block_id, char_start, char_end)`.
+    find_matches: Vec<(String, usize, usize)>,
+    /// Index of the active match within `find_matches`.
+    find_idx: usize,
+    /// Clickable find-bar controls: `(action, rect)`.
+    find_buttons: Vec<(FindAction, Rect)>,
     blocks: Vec<BlockView>,
     laid: Vec<Laid>,
     toolbar: Vec<(ToolAction, Rect)>,
@@ -527,6 +570,13 @@ impl WordProcessorWidget {
             path: None,
             format: None,
             modified: false,
+            find_open: false,
+            find_query: String::new(),
+            replace_query: String::new(),
+            find_on_replace: false,
+            find_matches: Vec::new(),
+            find_idx: 0,
+            find_buttons: Vec::new(),
             blocks: Vec::new(),
             laid: Vec::new(),
             toolbar: Vec::new(),
@@ -581,6 +631,194 @@ impl WordProcessorWidget {
                 }
             }
         }
+    }
+
+    // ---- Find & Replace -----------------------------------------------------
+
+    fn open_find(&mut self, state: &AutoCommit) {
+        self.find_open = true;
+        self.find_on_replace = false;
+        // Seed the query from a single-line selection, if any.
+        if let Some((bid, s, e)) = self.selection_blocks_cached().first().cloned() {
+            if let Some(b) = self.blocks.iter().find(|b| b.id == bid) {
+                let sel: String = b.text.chars().skip(s).take(e.saturating_sub(s)).collect();
+                if !sel.is_empty() && !sel.contains('\n') {
+                    self.find_query = sel;
+                }
+            }
+        }
+        self.find_recompute(state);
+    }
+
+    fn close_find(&mut self) {
+        self.find_open = false;
+        self.find_matches.clear();
+    }
+
+    /// Recompute all (case-insensitive) matches for the current query.
+    fn find_recompute(&mut self, state: &AutoCommit) {
+        self.find_matches.clear();
+        let q: Vec<char> = self.find_query.to_lowercase().chars().collect();
+        if !q.is_empty() {
+            for b in &self.blocks {
+                let hay: Vec<char> = b.text.to_lowercase().chars().collect();
+                if q.len() > hay.len() {
+                    continue;
+                }
+                let mut i = 0;
+                while i + q.len() <= hay.len() {
+                    if hay[i..i + q.len()] == q[..] {
+                        self.find_matches.push((b.id.clone(), i, i + q.len()));
+                        i += q.len();
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+        }
+        if self.find_idx >= self.find_matches.len() {
+            self.find_idx = 0;
+        }
+        self.select_current_match(state);
+    }
+
+    /// Select (so it highlights) + scroll to the active match.
+    fn select_current_match(&mut self, _state: &AutoCommit) {
+        if let Some((bid, s, e)) = self.find_matches.get(self.find_idx).cloned() {
+            self.inner.clear_anchor();
+            self.inner.set_caret(Caret { block: bid.clone(), offset: s });
+            self.inner.set_anchor();
+            self.inner.set_caret(Caret { block: bid.clone(), offset: e });
+            self.scroll_to_block(&bid);
+        }
+    }
+
+    fn scroll_to_block(&mut self, bid: &str) {
+        if let Some(l) = self.laid.iter().find(|l| l.id == bid) {
+            // l.y_top is screen-space (post-scroll); recover content space.
+            let content_y = l.y_top + self.scroll_y;
+            self.scroll_y = (content_y - 180.0).clamp(0.0, self.max_scroll);
+        }
+    }
+
+    fn find_jump(&mut self, delta: i32, state: &AutoCommit) {
+        if self.find_matches.is_empty() {
+            return;
+        }
+        let n = self.find_matches.len() as i32;
+        self.find_idx = (((self.find_idx as i32 + delta) % n + n) % n) as usize;
+        self.select_current_match(state);
+    }
+
+    fn replace_current(&mut self, state: &mut AutoCommit) {
+        if let Some((bid, s, e)) = self.find_matches.get(self.find_idx).cloned() {
+            let rep = self.replace_query.clone();
+            self.inner.splice_block(state, &bid, s, e, &rep);
+            self.refresh_blocks(state);
+            self.needs_commit = true;
+            self.find_recompute(state);
+        }
+    }
+
+    fn replace_all(&mut self, state: &mut AutoCommit) {
+        let rep = self.replace_query.clone();
+        let mut matches = self.find_matches.clone();
+        // Replace from the highest char offset down so earlier offsets stay valid.
+        matches.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
+        for (bid, s, e) in matches.into_iter().rev() {
+            self.inner.splice_block(state, &bid, s, e, &rep);
+        }
+        self.refresh_blocks(state);
+        self.needs_commit = true;
+        self.find_recompute(state);
+    }
+
+    fn find_action(&mut self, state: &mut AutoCommit, action: FindAction) {
+        match action {
+            FindAction::FocusFind => self.find_on_replace = false,
+            FindAction::FocusReplace => self.find_on_replace = true,
+            FindAction::Prev => self.find_jump(-1, state),
+            FindAction::Next => self.find_jump(1, state),
+            FindAction::Replace => self.replace_current(state),
+            FindAction::ReplaceAll => self.replace_all(state),
+            FindAction::Close => self.close_find(),
+        }
+    }
+
+    fn draw_find_bar(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, _theme: &Theme, bar: Rect) {
+        self.find_buttons.clear();
+        scene.fill(Fill::NonZero, transform, Color::from_rgb8(0x24, 0x26, 0x2d), None, &bar);
+        scene.fill(Fill::NonZero, transform, Color::from_rgb8(0x33, 0x36, 0x40), None, &Rect::new(bar.x0, bar.y1 - 1.0, bar.x1, bar.y1));
+        let cy = (bar.y0 + bar.y1) / 2.0;
+        let fy0 = cy - 13.0;
+        let mut x = bar.x0 + 12.0;
+
+        let fr = Rect::new(x, fy0, x + 188.0, fy0 + 26.0);
+        draw_field_box(scene, transform, tr, fr, &self.find_query, "Find", !self.find_on_replace);
+        self.find_buttons.push((FindAction::FocusFind, fr));
+        x += 196.0;
+
+        let rr = Rect::new(x, fy0, x + 188.0, fy0 + 26.0);
+        draw_field_box(scene, transform, tr, rr, &self.replace_query, "Replace with", self.find_on_replace);
+        self.find_buttons.push((FindAction::FocusReplace, rr));
+        x += 196.0;
+
+        let count = if self.find_query.is_empty() {
+            String::new()
+        } else if self.find_matches.is_empty() {
+            "No results".to_string()
+        } else {
+            format!("{} / {}", self.find_idx + 1, self.find_matches.len())
+        };
+        tr.draw_text(scene, &count, 12.5, MUTED, transform * Affine::translate((x, cy - 7.0)), None);
+        x += 78.0;
+
+        for (action, label, w) in [
+            (FindAction::Prev, "↑", 28.0),
+            (FindAction::Next, "↓", 28.0),
+            (FindAction::Replace, "Replace", 72.0),
+            (FindAction::ReplaceAll, "All", 40.0),
+            (FindAction::Close, "✕", 28.0),
+        ] {
+            let r = Rect::new(x, fy0, x + w, fy0 + 26.0);
+            scene.fill(Fill::NonZero, transform, Color::from_rgb8(0x2e, 0x31, 0x3a), None, &vello::kurbo::RoundedRect::from_rect(r, 5.0));
+            let tx = r.x0 + (w - label.chars().count() as f64 * 7.2).max(6.0) / 2.0;
+            tr.draw_text(scene, label, 13.0, Color::from_rgb8(0xd2, 0xd5, 0xdc), transform * Affine::translate((tx, cy - 8.0)), None);
+            self.find_buttons.push((action, r));
+            x += w + 6.0;
+        }
+    }
+
+    /// Handle a keypress while the Find bar is open. Returns whether it was
+    /// consumed (so the document editor doesn't also see it).
+    fn find_key(&mut self, state: &mut AutoCommit, key: &Key, typed: Option<&str>, shift: bool) -> bool {
+        match key {
+            Key::Named(NamedKey::Escape) => self.close_find(),
+            Key::Named(NamedKey::Enter) => self.find_jump(if shift { -1 } else { 1 }, state),
+            Key::Named(NamedKey::Tab) => self.find_on_replace = !self.find_on_replace,
+            Key::Named(NamedKey::Backspace) => {
+                let buf = if self.find_on_replace { &mut self.replace_query } else { &mut self.find_query };
+                buf.pop();
+                if !self.find_on_replace {
+                    self.find_recompute(state);
+                }
+            }
+            _ => {
+                if let Some(t) = typed {
+                    if !t.is_empty() && !t.chars().any(|c| c.is_control()) {
+                        if self.find_on_replace {
+                            self.replace_query.push_str(t);
+                        } else {
+                            self.find_query.push_str(t);
+                            self.find_recompute(state);
+                        }
+                    }
+                }
+                // Consume all other keys while the bar is open (don't leak arrow
+                // keys etc. to the document editor).
+            }
+        }
+        true
     }
 
     fn refresh_blocks(&mut self, state: &AutoCommit) {
@@ -1074,7 +1312,15 @@ impl Widget for WordProcessorWidget {
         } else {
             full.x1
         };
-        let canvas = Rect::new(full.x0, full.y0 + TOOLBAR_H, canvas_right, layout_bar_top);
+        // Reserve the Find bar (when open) out of the canvas top.
+        let find_h = if self.find_open { FIND_BAR_H } else { 0.0 };
+        if find_h > 0.0 {
+            let fbar = Rect::new(full.x0, full.y0 + TOOLBAR_H, canvas_right, full.y0 + TOOLBAR_H + find_h);
+            self.draw_find_bar(scene, transform, text_renderer, theme, fbar);
+        } else {
+            self.find_buttons.clear();
+        }
+        let canvas = Rect::new(full.x0, full.y0 + TOOLBAR_H + find_h, canvas_right, layout_bar_top);
         scene.fill(Fill::NonZero, transform, CANVAS, None, &canvas);
 
         // Per-side page geometry — every margin is independently customizable.
@@ -1264,6 +1510,19 @@ impl Widget for WordProcessorWidget {
                 }
             }
 
+            // Find-match highlights (under the text).
+            if self.find_open {
+                for (bid, cs, ce) in &self.find_matches {
+                    if bid == &l.id {
+                        let bs = char_to_byte(&l.text, *cs);
+                        let be = char_to_byte(&l.text, *ce);
+                        for (rx0, ry0, rx1, ry1) in l.layout.selection_rects(bs, be) {
+                            let r = Rect::new(l.text_x + rx0 as f64, l.y_top + ry0 as f64, l.text_x + rx1 as f64, l.y_top + ry1 as f64);
+                            scene.fill(Fill::NonZero, transform, FIND_HL, None, &r);
+                        }
+                    }
+                }
+            }
             text_renderer.draw_rich(scene, &l.layout, transform * Affine::translate((l.text_x, l.y_top)), l.ink);
 
             if self.focused && l.id == self.inner.caret.block && !self.inner.has_selection() {
@@ -1390,6 +1649,18 @@ impl Widget for WordProcessorWidget {
                     *handled = true;
                     return;
                 }
+                // Find bar (when open): dispatch clicks on its fields + controls.
+                if self.find_open {
+                    let fbar_bot = self.rect.y0 + TOOLBAR_H + FIND_BAR_H;
+                    if self.pointer.y >= self.rect.y0 + TOOLBAR_H && self.pointer.y < fbar_bot {
+                        if let Some(action) = self.find_buttons.iter().find(|(_, r)| r.contains(self.pointer)).map(|(a, _)| *a) {
+                            self.find_action(state, action);
+                        }
+                        self.dirty = true;
+                        *handled = true;
+                        return;
+                    }
+                }
                 if self.pointer.y < self.rect.y0 + TOOLBAR_H {
                     let clicked = self.toolbar.iter().find(|(_, r)| r.contains(self.pointer)).map(|(a, _)| *a);
                     if let Some(action) = clicked {
@@ -1506,12 +1777,31 @@ impl Widget for WordProcessorWidget {
                     *handled = true;
                     return;
                 }
+                // While the Find bar is open, non-Ctrl keys edit its fields.
+                if self.find_open && !ctrl {
+                    let typed = text.as_deref();
+                    if self.find_key(state, &logical_key, typed, shift) {
+                        self.dirty = true;
+                        *handled = true;
+                        return;
+                    }
+                }
                 if ctrl {
                     if let Key::Character(s) = logical_key {
                         // Save is not an editing action — don't mark the doc
                         // modified again after writing it.
                         if s.eq_ignore_ascii_case("s") {
                             self.save(state);
+                            self.dirty = true;
+                            *handled = true;
+                            return;
+                        }
+                        if s.eq_ignore_ascii_case("f") {
+                            if self.find_open {
+                                self.close_find();
+                            } else {
+                                self.open_find(state);
+                            }
                             self.dirty = true;
                             *handled = true;
                             return;
@@ -2104,6 +2394,25 @@ mod tests {
         wp.model_mut().insert_str(&mut state.doc, "World");
         pipeline_draw(&mut wp, &mut state, 1000, 700);
         assert_eq!(wp.laid.len(), 2, "draw laid out both paragraphs");
+    }
+
+    #[test]
+    fn find_and_replace_all_works() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "hello world hello there");
+        wp.refresh_blocks(&state.doc);
+
+        wp.find_query = "hello".to_string();
+        wp.find_recompute(&state.doc);
+        assert_eq!(wp.find_matches.len(), 2, "case-insensitive search finds both");
+
+        wp.replace_query = "hi".to_string();
+        wp.replace_all(&mut state.doc);
+        wp.refresh_blocks(&state.doc);
+        assert_eq!(wp.blocks[0].text, "hi world hi there");
+        assert!(wp.find_matches.is_empty(), "no matches remain after replace-all");
     }
 
     #[test]
