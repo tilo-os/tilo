@@ -1,0 +1,45 @@
+# bootc-image-builder config for the qOS CUSTOM installer LIVE medium
+# (--type qcow2). This is NOT an Anaconda ISO — it produces a bootable disk
+# that runs the qOS graphical installer (qos-installer) on boot and
+# self-installs the booted image onto a target disk.
+#
+# Build:  ./os/dev/build-custom-installer.sh -> os/output/installer/qcow2/disk.qcow2
+# Test:   ./os/dev/vm.sh boot-installer        (boots it against a blank /dev/vdb)
+#
+# The single thing that distinguishes the live medium from a normal install is
+# the kernel cmdline arg `qos.installer=1`:
+#   * qos-session-select sees it and launches the installer (not the greeter).
+#   * qos-install refuses to run unless it is present (a safety guard).
+#   * qos-installer-setup.service (ConditionKernelCommandLine=qos.installer)
+#     drops in the passwordless sudoers rule only here.
+# The INSTALLED system has no such arg, so it boots straight to the desktop.
+[customizations.kernel]
+# qos.installer=1 — drives installer-vs-greeter session selection + the safety
+#   guards (see below).
+# enforcing=0 — boot the live medium SELinux-permissive. The installer UI runs
+#   under cage in the greetd session (the `xdm_t` domain), and `xdm_t` is denied
+#   the privileged container/install operations (`bootc image copy-to-storage`
+#   fails "Permission denied (os error 13)" under enforcing — confirmed via an
+#   enforcing-vs-permissive A/B). Permissive is appropriate for an ephemeral
+#   installer doing whole-disk ops; the INSTALLED system has neither arg, so it
+#   boots fully enforcing. (Follow-up: a targeted SELinux policy or running the
+#   backend as a transient system unit would let the live medium stay enforcing.)
+append = "qos.installer=1 enforcing=0"
+
+# The self-install model copies the booted image into the live medium's
+# /var/lib/containers (bootc image copy-to-storage) before `bootc install`.
+# That needs ~2x the image size free, so size the live root generously — a
+# default ~10G root runs out mid-copy ("no space left on device"). 30 GiB
+# leaves ample headroom; the qcow2 stays sparse so the file is still small.
+[[customizations.filesystem]]
+mountpoint = "/"
+minsize = "30 GiB"
+
+# A login account on the LIVE medium — purely for SSH/console debugging of the
+# installer itself (vm.sh boot-installer forwards :22). It has nothing to do
+# with the account the installer creates on the TARGET disk; that one comes
+# from the user typed into the installer UI.
+[[customizations.user]]
+name = "tester"
+password = "quickdesktop"
+groups = ["wheel"]
