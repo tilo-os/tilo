@@ -254,6 +254,14 @@ pub use history::{
 pub use activity_timeline::ActivityTimeline;
 pub use history_scrubber::HistoryScrubber;
 
+// === Phase 5: Channel browser =======================================
+// Pure widget work in `ui/` — wheel-disc spoke overflow integration
+// lives in `shell` and is blocked on shell ABI drift. See
+// `docs/superpowers/specs/2026-06-29-spaces-channels-and-cryptographic-roles.md`
+// Phase 5 ("Channel browser + wheel-disc overflow").
+pub mod channel_browser;
+pub use channel_browser::{ChannelBrowser, ChannelEntry};
+
 // === Phase 4: Conflict toolkit ======================================
 // Pure widget + types work in `ui/` — no shell wiring yet. See
 // `docs/superpowers/specs/2026-06-29-spaces-channels-and-cryptographic-roles.md`
