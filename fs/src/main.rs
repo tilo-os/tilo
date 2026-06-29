@@ -28,6 +28,10 @@ enum Command {
         /// Seed the workspace from this directory's current contents.
         #[arg(short, long)]
         seed: Option<PathBuf>,
+        /// Serve the document control socket here (apps fine-grained-edit
+        /// documents collaboratively).
+        #[arg(long)]
+        control_sock: Option<PathBuf>,
     },
     /// Join a workspace shared by a peer (via its ticket) and mount it.
     Mount {
@@ -40,6 +44,9 @@ enum Command {
         /// Persistent content cache directory (the iroh-blobs store root).
         #[arg(short, long)]
         cache_dir: Option<PathBuf>,
+        /// Serve the document control socket here.
+        #[arg(long)]
+        control_sock: Option<PathBuf>,
     },
 }
 
@@ -51,12 +58,33 @@ async fn main() -> Result<()> {
             mount_point,
             cache_dir,
             seed,
-        } => serve(mount_point, cache_dir, seed).await,
+            control_sock,
+        } => serve(mount_point, cache_dir, seed, control_sock).await,
         Command::Mount {
             mount_point,
             ticket,
             cache_dir,
-        } => mount(mount_point, ticket, cache_dir).await,
+            control_sock,
+        } => mount(mount_point, ticket, cache_dir, control_sock).await,
+    }
+}
+
+/// Bind and serve the document control socket (best-effort).
+fn spawn_control(
+    sock: PathBuf,
+    namespace: Arc<Mutex<Namespace>>,
+    sync: Arc<SyncHandle>,
+) -> tokio::task::JoinHandle<()> {
+    let _ = std::fs::remove_file(&sock); // clear a stale socket
+    match tokio::net::UnixListener::bind(&sock) {
+        Ok(listener) => {
+            println!("Document control socket at {sock:?}");
+            tokio::spawn(fs::control::serve(listener, namespace, Some(sync)))
+        }
+        Err(e) => {
+            eprintln!("could not bind control socket {sock:?}: {e}");
+            tokio::spawn(async {})
+        }
     }
 }
 
@@ -67,7 +95,12 @@ async fn open_store(cache_dir: Option<PathBuf>) -> Result<ContentStore> {
     }
 }
 
-async fn serve(mount_point: PathBuf, cache_dir: Option<PathBuf>, seed: Option<PathBuf>) -> Result<()> {
+async fn serve(
+    mount_point: PathBuf,
+    cache_dir: Option<PathBuf>,
+    seed: Option<PathBuf>,
+    control_sock: Option<PathBuf>,
+) -> Result<()> {
     let np = namespace_path(&cache_dir);
     let (endpoint, lookup) = sync::bind_endpoint().await?;
     let store = Arc::new(open_store(cache_dir).await?);
@@ -102,6 +135,8 @@ async fn serve(mount_point: PathBuf, cache_dir: Option<PathBuf>, seed: Option<Pa
     println!("Iroh NodeID: {}", endpoint.id());
     println!("Hosting workspace — share this ticket to invite peers:\n{}", ticket.encode());
 
+    let _control =
+        control_sock.map(|s| spawn_control(s, namespace.clone(), workspace.sync.clone()));
     let persist = np.clone().map(|p| spawn_persist(namespace.clone(), p));
     run_mount(mount_point, namespace.clone(), hydrator, workspace.sync.clone()).await?;
     if let Some(p) = &np {
@@ -114,7 +149,12 @@ async fn serve(mount_point: PathBuf, cache_dir: Option<PathBuf>, seed: Option<Pa
     Ok(())
 }
 
-async fn mount(mount_point: PathBuf, ticket: String, cache_dir: Option<PathBuf>) -> Result<()> {
+async fn mount(
+    mount_point: PathBuf,
+    ticket: String,
+    cache_dir: Option<PathBuf>,
+    control_sock: Option<PathBuf>,
+) -> Result<()> {
     let ticket = Ticket::decode(&ticket)?;
     let np = namespace_path(&cache_dir);
     let (endpoint, lookup) = sync::bind_endpoint().await?;
@@ -138,6 +178,8 @@ async fn mount(mount_point: PathBuf, ticket: String, cache_dir: Option<PathBuf>)
     println!("Iroh NodeID: {}", endpoint.id());
     println!("Joined workspace.");
 
+    let _control =
+        control_sock.map(|s| spawn_control(s, namespace.clone(), workspace.sync.clone()));
     let persist = np.clone().map(|p| spawn_persist(namespace.clone(), p));
     run_mount(mount_point, namespace.clone(), hydrator, workspace.sync.clone()).await?;
     if let Some(p) = &np {
@@ -326,6 +368,7 @@ mod tests {
                 mount_point,
                 cache_dir,
                 seed,
+                ..
             } => {
                 assert_eq!(mount_point, PathBuf::from("/var/workspace"));
                 assert_eq!(cache_dir, Some(PathBuf::from("/var/cache/quick-fs")));

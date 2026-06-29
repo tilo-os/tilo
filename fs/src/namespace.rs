@@ -658,6 +658,24 @@ impl Namespace {
         qdoc::model::block_text(&self.doc, &containers, block_id)
     }
 
+    pub fn document_remove_block(&mut self, ino: u64, block_id: &str) -> bool {
+        self.with_doc_mut(ino, |d| d.remove_block(block_id)).is_some()
+    }
+
+    /// A rendered snapshot of the document for an app to display.
+    pub fn document_snapshot(&self, ino: u64) -> Option<qdoc::DocSnapshot> {
+        let id = self.ino_to_id.get(&ino)?;
+        let root = self.document_root(id)?;
+        let containers = qdoc::model::open(&self.doc, &root).ok()?;
+        Some(
+            qdoc::DocRef {
+                doc: &self.doc,
+                c: &containers,
+            }
+            .materialize(),
+        )
+    }
+
     pub fn set_content(&mut self, ino: u64, hash: Option<&Hash>, size: u64, mtime: u64) -> bool {
         let Some(id) = self.ino_to_id.get(&ino).cloned() else {
             return false;
@@ -843,6 +861,15 @@ impl Namespace {
             return None;
         }
         self.entry(&cur)
+    }
+
+    /// Resolve a `/`-style path to an inode (allocating one if needed).
+    pub fn resolve_path_ino(&mut self, path: &str) -> Option<u64> {
+        let mut cur = ROOT_ID.to_string();
+        for seg in path.split('/').filter(|s| !s.is_empty()) {
+            cur = self.child_named(&cur, seg)?;
+        }
+        Some(self.ino_for_id(&cur))
     }
 
     pub fn live_node_ids(&self) -> Vec<String> {
