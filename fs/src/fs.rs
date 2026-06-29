@@ -72,6 +72,17 @@ impl QuickFS {
         self.namespace.lock().unwrap().document_codec(ino).is_some()
     }
 
+    /// Attribute/entry TTL: zero for documents (their size is computed live from
+    /// the CRDT and changes as peers edit, so the kernel must not cache a stale
+    /// `i_size` and truncate reads), the normal TTL otherwise.
+    fn ttl_for(&self, is_doc: bool) -> Duration {
+        if is_doc {
+            Duration::ZERO
+        } else {
+            TTL
+        }
+    }
+
     /// Commit an in-flight write buffer: import it as a document, or ingest it
     /// as opaque chunked content.
     fn commit_buffer(&self, ino: u64, data: &[u8]) {
@@ -253,7 +264,10 @@ impl Filesystem for QuickFS {
         };
         let mut ns = self.namespace.lock().unwrap();
         match ns.lookup(parent.0, name) {
-            Some(attr) => reply.entry(&TTL, &attr, Generation(0)),
+            Some(attr) => {
+                let is_doc = ns.document_codec(attr.ino.0).is_some();
+                reply.entry(&self.ttl_for(is_doc), &attr, Generation(0));
+            }
             None => reply.error(to_errno(ENOENT)),
         }
     }
@@ -268,9 +282,8 @@ impl Filesystem for QuickFS {
             .map(|b| b.len() as u64);
         // Documents have no stored byte length — report the current export size
         // (so a collaboratively-edited document isn't read truncated).
-        let doc_len = if buf_len.is_none()
-            && self.is_document(ino.0)
-        {
+        let is_doc = self.is_document(ino.0);
+        let doc_len = if buf_len.is_none() && is_doc {
             self.document_export(ino.0).map(|b| b.len() as u64)
         } else {
             None
@@ -282,7 +295,7 @@ impl Filesystem for QuickFS {
                     attr.size = len;
                     attr.blocks = len.div_ceil(512);
                 }
-                reply.attr(&TTL, &attr);
+                reply.attr(&self.ttl_for(is_doc), &attr);
             }
             None => reply.error(to_errno(ENOENT)),
         }
@@ -416,7 +429,13 @@ impl Filesystem for QuickFS {
         // Start a fresh empty buffer so subsequent writes accumulate.
         self.write_buffers.lock().unwrap().insert(attr.ino.0, Vec::new());
         self.publish(delta);
-        reply.created(&TTL, &attr, Generation(0), FileHandle(0), FopenFlags::empty());
+        reply.created(
+            &self.ttl_for(codec.is_some()),
+            &attr,
+            Generation(0),
+            FileHandle(0),
+            FopenFlags::empty(),
+        );
     }
 
     fn write(
