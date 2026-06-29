@@ -1,0 +1,20 @@
+[Unit]
+Description=qOS installer live-medium setup (privileged-backend sudoers)
+# ONLY on the installer live medium — the kernel cmdline carries qos.installer.
+# The INSTALLED system never has this arg, so this unit never fires there and
+# the passwordless sudoers rule is never present on installed machines.
+ConditionKernelCommandLine=qos.installer
+After=local-fs.target
+# In place before the greeter starts the installer UI.
+Before=greetd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Drop in the live-medium-only sudoers rule that lets the greetd session user
+# run /usr/libexec/qos-install via `sudo -n`. install(1) copies + chmods 0440
+# (sudo refuses world/group-writable drop-ins) in one shot.
+ExecStart=/usr/bin/install -D -m 0440 /usr/share/qos/installer-sudoers /etc/sudoers.d/qos-installer
+
+[Install]
+WantedBy=multi-user.target
