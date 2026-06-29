@@ -468,6 +468,8 @@ struct Laid {
     bullet: Option<String>,
     /// Resolved text colour from the block's style.
     ink: Color,
+    /// For `image` blocks: the blob hash to paint into this block's rect.
+    image_hash: Option<String>,
     /// Full grid-cell rectangle (table cells only) — for borders + precise hit.
     cell_box: Option<Rect>,
     /// Grid row index (table cells only) — for header tint + zebra striping.
@@ -513,6 +515,10 @@ pub struct WordProcessorWidget {
     find_idx: usize,
     /// Clickable find-bar controls: `(action, rect)`.
     find_buttons: Vec<(FindAction, Rect)>,
+    /// Image blobs (blake3 hash → bytes), refreshed from the document, plus a
+    /// lazily-decoded image cache (`None` = decode failed / unsupported format).
+    blobs: std::collections::BTreeMap<String, Vec<u8>>,
+    image_cache: std::collections::HashMap<String, Option<ui::widget::Image>>,
     blocks: Vec<BlockView>,
     laid: Vec<Laid>,
     toolbar: Vec<(ToolAction, Rect)>,
@@ -577,6 +583,8 @@ impl WordProcessorWidget {
             find_matches: Vec::new(),
             find_idx: 0,
             find_buttons: Vec::new(),
+            blobs: std::collections::BTreeMap::new(),
+            image_cache: std::collections::HashMap::new(),
             blocks: Vec::new(),
             laid: Vec::new(),
             toolbar: Vec::new(),
@@ -823,7 +831,9 @@ impl WordProcessorWidget {
 
     fn refresh_blocks(&mut self, state: &AutoCommit) {
         if let Some(c) = self.inner.containers.as_ref() {
-            self.blocks = qdoc::model::materialize(state, c).blocks;
+            let snap = qdoc::model::materialize(state, c);
+            self.blocks = snap.blocks;
+            self.blobs = snap.blobs;
         }
     }
 
@@ -1389,6 +1399,7 @@ impl Widget for WordProcessorWidget {
                             layout,
                             bullet: None,
                             ink: INK,
+                            image_hash: None,
                             cell_box: Some(cbox),
                             cell_row: Some(r),
                         });
@@ -1396,6 +1407,43 @@ impl Widget for WordProcessorWidget {
                     y += row_h;
                 }
                 y += self.sheet.get("body").space_after as f64;
+            } else if b.kind == "image" {
+                ol_count = 0;
+                let hash = match b.attrs.get("blob") {
+                    Some(AttrVal::Str(s)) => s.clone(),
+                    _ => String::new(),
+                };
+                if !hash.is_empty() && !self.image_cache.contains_key(&hash) {
+                    let decoded = self.blobs.get(&hash).and_then(|bytes| ui::widget::Image::from_encoded(bytes).ok());
+                    self.image_cache.insert(hash.clone(), decoded);
+                }
+                let intrinsic = self.image_cache.get(&hash).and_then(|o| o.as_ref()).map(|im| im.intrinsic_size());
+                let (draw_w, draw_h) = match intrinsic {
+                    Some((iw, ih)) if iw > 0 && ih > 0 => {
+                        let w = (iw as f64).min(content_w as f64);
+                        (w, (ih as f64 * (w / iw as f64)).max(8.0))
+                    }
+                    _ => ((content_w as f64).min(280.0), 90.0),
+                };
+                let empty = RichTextLayout::shape(&mut text_renderer.font_system, &[RichSpan::new("")], false, 16.0, content_w, TextAlign::Left, FontFamily::Sans, vec![], vec![]);
+                laid.push(Laid {
+                    id: b.id.clone(),
+                    text: String::new(),
+                    kind: "image".into(),
+                    size: 16.0,
+                    y_top: y,
+                    text_x: content_x,
+                    width: draw_w,
+                    height: draw_h,
+                    layout: empty,
+                    bullet: None,
+                    ink: INK,
+                    image_hash: intrinsic.map(|_| hash),
+                    cell_box: None,
+                    cell_row: None,
+                });
+                y += draw_h + self.sheet.get("body").space_after as f64;
+                bi += 1;
             } else {
                 // Resolve the block's style (component-instance model).
                 let st = self.sheet.get(&block_style_key(b));
@@ -1438,6 +1486,7 @@ impl Widget for WordProcessorWidget {
                     layout,
                     bullet,
                     ink: Color::from_rgb8(st.color[0], st.color[1], st.color[2]),
+                    image_hash: None,
                     cell_box: None,
                     cell_row: None,
                 });
@@ -1477,6 +1526,22 @@ impl Widget for WordProcessorWidget {
 
         // Pass 2: draw cell borders, bullets, selection, text, caret.
         for l in &laid {
+            if l.kind == "image" {
+                let rect = Rect::new(l.text_x, l.y_top, l.text_x + l.width, l.y_top + l.height);
+                if let Some(hash) = &l.image_hash {
+                    if let Some(slot) = self.image_cache.get_mut(hash) {
+                        if let Some(img) = slot {
+                            img.paint_at(scene, transform, rect);
+                        }
+                    }
+                } else {
+                    // Missing or undecodable (e.g. non-PNG) image — placeholder.
+                    scene.fill(Fill::NonZero, transform, Color::from_rgb8(0xee, 0xee, 0xf2), None, &vello::kurbo::RoundedRect::from_rect(rect, 6.0));
+                    scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, Color::from_rgb8(0xcc, 0xce, 0xd6), None, &vello::kurbo::RoundedRect::from_rect(rect, 6.0));
+                    text_renderer.draw_text(scene, "🖼  image", 14.0, MUTED, transform * Affine::translate((rect.x0 + 12.0, rect.y0 + rect.height() / 2.0 - 8.0)), None);
+                }
+                continue;
+            }
             if let Some(bx) = l.cell_box {
                 let fill = match l.cell_row {
                     Some(0) => Color::from_rgb8(0xec, 0xee, 0xf3), // header row tint
