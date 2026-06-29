@@ -1,0 +1,46 @@
+[Unit]
+Description=qOS collaboration relay (libp2p gossipsub forwarder)
+Documentation=https://github.com/qwolff/quickdesktop/tree/main/qos-relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=qos-relay
+Group=qos-relay
+ExecStart=/usr/local/bin/qos-relay --config /etc/qos-relay/config.toml
+Restart=on-failure
+RestartSec=5s
+
+# /var/lib/qos-relay holds the persistent ed25519 identity (mode 0600).
+StateDirectory=qos-relay
+StateDirectoryMode=0700
+LogsDirectory=qos-relay
+ConfigurationDirectory=qos-relay
+ConfigurationDirectoryMode=0750
+
+# Hardening — the relay never needs filesystem writes outside its state
+# dir and never escalates.
+ProtectSystem=strict
+ProtectHome=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+ReadWritePaths=/var/lib/qos-relay
+
+# Resource hints — a relay's gossipsub state is bounded by the topic
+# count + subscribers; 256MB is plenty for low-to-mid scale.
+MemoryMax=512M
+TasksMax=256
+
+[Install]
+WantedBy=multi-user.target

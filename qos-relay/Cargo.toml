@@ -1,0 +1,54 @@
+[package]
+name = "qos-relay"
+version = "0.1.0"
+edition = "2024"
+description = "Standalone libp2p gossipsub relay for the qOS collaboration mesh."
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "qos_relay"
+path = "src/lib.rs"
+
+[[bin]]
+name = "qos-relay"
+path = "src/main.rs"
+
+# Phase 9 of `docs/superpowers/specs/2026-06-29-spaces-channels-and-cryptographic-roles.md`.
+#
+# Wire-format compatibility with the in-shell network actor is non-
+# negotiable, so the libp2p version + transport features (tcp, noise,
+# yamux, gossipsub, mdns) are pinned to the **exact same** versions the
+# shell uses (`shell/Cargo.toml`). The relay additionally enables
+# `kad` (DHT bootstrap), `quic` (QUIC transport), `identify`, `ping`
+# and `metrics` (Prometheus counters) — features the shell doesn't
+# need but that the public-facing relay does.
+[dependencies]
+libp2p = { version = "0.56", features = [
+    "tcp",
+    "dns",
+    "websocket",
+    "noise",
+    "yamux",
+    "mdns",
+    "gossipsub",
+    "tokio",
+    "macros",
+    "kad",
+    "identify",
+    "ping",
+    "quic",
+    "metrics",
+] }
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+globset = "0.4"
+prometheus-client = "0.22"
+
+[dev-dependencies]
+tempfile = "3"
+serde_json = "1"
