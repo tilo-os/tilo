@@ -153,15 +153,6 @@ impl IconGrid {
         (((width + self.gap) / stride).floor() as usize).max(1)
     }
 
-    /// Row count for the current item count + column count.
-    fn row_count(&self) -> usize {
-        if self.items.is_empty() {
-            0
-        } else {
-            self.items.len().div_ceil(self.columns)
-        }
-    }
-
     /// Total content height for `columns` columns of the current items.
     fn content_height(&self, columns: usize) -> f64 {
         let rows = if self.items.is_empty() {
