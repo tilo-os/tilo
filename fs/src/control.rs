@@ -94,12 +94,16 @@ fn apply(req: Req, namespace: &Arc<Mutex<Namespace>>) -> (Resp, Vec<u8>) {
             (resp, delta)
         }
         Req::RemoveBlock { ino, block } => {
-            ns.document_remove_block(ino, &block);
-            (Resp::Ok, ns.save_incremental())
+            let ok = ns.document_remove_block(ino, &block);
+            let delta = ns.save_incremental();
+            let resp = if ok { Resp::Ok } else { Resp::Err("not a document".into()) };
+            (resp, delta)
         }
         Req::Splice { ino, block, idx, del, ins } => {
-            ns.document_splice(ino, &block, idx as usize, del as isize, &ins);
-            (Resp::Ok, ns.save_incremental())
+            let ok = ns.document_splice(ino, &block, idx as usize, del as isize, &ins);
+            let delta = ns.save_incremental();
+            let resp = if ok { Resp::Ok } else { Resp::Err("not a document".into()) };
+            (resp, delta)
         }
     }
 }
@@ -110,7 +114,9 @@ async fn handle_conn(
     sync: Option<Arc<SyncHandle>>,
 ) {
     let (mut rd, mut wr) = stream.into_split();
-    let (tx, mut rx) = mpsc::unbounded_channel::<Resp>();
+    // Bounded so a client that stops reading its socket can't make the response
+    // + change-notification queue grow without bound (daemon OOM).
+    let (tx, mut rx) = mpsc::channel::<Resp>(64);
 
     // Single writer for the socket (responses + pushes go through the channel).
     let writer = tokio::spawn(async move {
@@ -131,7 +137,11 @@ async fn handle_conn(
             let now = poll_ns.lock().unwrap().heads();
             if now != last {
                 last = now;
-                if push_tx.send(Resp::Changed).is_err() {
+                // Coalesce: drop the signal if the client is backed up (it will
+                // re-read the latest state on the next one); stop if it's gone.
+                if let Err(mpsc::error::TrySendError::Closed(_)) =
+                    push_tx.try_send(Resp::Changed)
+                {
                     break;
                 }
             }
@@ -149,7 +159,8 @@ async fn handle_conn(
                 s.broadcast_delta(delta); // propagate the edit to P2P peers
             }
         }
-        if tx.send(resp).is_err() {
+        // Backpressure: awaits if the client is slow (bounds memory).
+        if tx.send(resp).await.is_err() {
             break;
         }
     }
@@ -157,17 +168,30 @@ async fn handle_conn(
     writer.abort();
 }
 
+/// Max concurrent app connections — bounds per-connection tasks/polling and the
+/// frame buffers a flood of half-open connections could pin.
+const MAX_CONNECTIONS: usize = 128;
+
 /// Serve the document control protocol on `listener` until it closes.
 pub async fn serve(
     listener: UnixListener,
     namespace: Arc<Mutex<Namespace>>,
     sync: Option<Arc<SyncHandle>>,
 ) {
+    let slots = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
     loop {
+        // Acquire a slot first, so we stop accepting past the cap.
+        let Ok(permit) = slots.clone().acquire_owned().await else {
+            break;
+        };
         let Ok((stream, _)) = listener.accept().await else {
             break;
         };
-        tokio::spawn(handle_conn(stream, namespace.clone(), sync.clone()));
+        let (ns, sync) = (namespace.clone(), sync.clone());
+        tokio::spawn(async move {
+            let _permit = permit; // released when the connection ends
+            handle_conn(stream, ns, sync).await;
+        });
     }
 }
 

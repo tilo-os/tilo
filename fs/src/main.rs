@@ -78,6 +78,9 @@ fn spawn_control(
     let _ = std::fs::remove_file(&sock); // clear a stale socket
     match tokio::net::UnixListener::bind(&sock) {
         Ok(listener) => {
+            // The socket can read and edit every document — restrict to the owner.
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600));
             println!("Document control socket at {sock:?}");
             tokio::spawn(fs::control::serve(listener, namespace, Some(sync)))
         }
