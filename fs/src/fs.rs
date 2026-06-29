@@ -19,6 +19,8 @@ pub struct QuickFS {
     pub namespace: Arc<Mutex<Namespace>>,
     pub hydrator: Arc<Hydrator>,
     pub heuristics: Arc<Heuristics>,
+    /// Codecs for recognized rich-text formats (odt/docx/md).
+    registry: Arc<qdoc::Registry>,
     /// Broadcasts local CRDT deltas to peers (None when running standalone).
     sync: Option<Arc<SyncHandle>>,
     /// Per-inode in-flight write buffers (content-addressed on flush/release).
@@ -31,12 +33,49 @@ impl QuickFS {
         hydrator: Arc<Hydrator>,
         heuristics: Arc<Heuristics>,
     ) -> Self {
+        Self::with_registry(
+            namespace,
+            hydrator,
+            heuristics,
+            Arc::new(qdoc::builtin_registry()),
+        )
+    }
+
+    pub fn with_registry(
+        namespace: Arc<Mutex<Namespace>>,
+        hydrator: Arc<Hydrator>,
+        heuristics: Arc<Heuristics>,
+        registry: Arc<qdoc::Registry>,
+    ) -> Self {
         Self {
             namespace,
             hydrator,
             heuristics,
+            registry,
             sync: None,
             write_buffers: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The codec key for `name`'s extension if it's a recognized document.
+    fn document_codec_for(&self, name: &str) -> Option<String> {
+        let ext = name.rsplit('.').next().filter(|e| *e != name)?;
+        self.registry.provider_for_ext(ext).map(|_| ext.to_lowercase())
+    }
+
+    /// Commit an in-flight write buffer: import it as a document, or ingest it
+    /// as opaque chunked content.
+    fn commit_buffer(&self, ino: u64, data: &[u8]) {
+        let is_doc = self.namespace.lock().unwrap().document_codec(ino).is_some();
+        if is_doc {
+            let delta = {
+                let mut ns = self.namespace.lock().unwrap();
+                ns.import_document(ino, &self.registry, data, now_ms());
+                ns.save_incremental()
+            };
+            self.publish(delta);
+        } else if let Err(e) = self.commit_content(ino, data) {
+            eprintln!("commit failed (content preserved): {e}");
         }
     }
 
@@ -248,6 +287,20 @@ impl Filesystem for QuickFS {
             return;
         }
 
+        // Documents: serialize the embedded CRDT to its on-wire bytes.
+        if self.namespace.lock().unwrap().document_codec(ino.0).is_some() {
+            let bytes = self
+                .namespace
+                .lock()
+                .unwrap()
+                .export_document(ino.0, &self.registry);
+            match bytes {
+                Some(b) => reply.data(&slice(&b, offset, size)),
+                None => reply.error(to_errno(EIO)),
+            }
+            return;
+        }
+
         let hash = {
             let ns = self.namespace.lock().unwrap();
             match ns.getattr(ino.0) {
@@ -292,9 +345,14 @@ impl Filesystem for QuickFS {
             reply.error(to_errno(EINVAL));
             return;
         };
+        let codec = self.document_codec_for(name);
         let (attr, delta) = {
             let mut ns = self.namespace.lock().unwrap();
-            let Some(ino) = ns.create_file(parent.0, name, None, 0, now_ms()) else {
+            let ino = match &codec {
+                Some(c) => ns.create_document(parent.0, name, c, now_ms()),
+                None => ns.create_file(parent.0, name, None, 0, now_ms()),
+            };
+            let Some(ino) = ino else {
                 reply.error(to_errno(ENOENT));
                 return;
             };
@@ -327,11 +385,17 @@ impl Filesystem for QuickFS {
         // failure must fail the write, never seed-from-empty and truncate.
         let absent = self.write_buffers.lock().unwrap().get(&ino.0).is_none();
         let seed = if absent {
-            match self.read_full_blocking(ino.0) {
-                Ok(d) => Some(d),
-                Err(_) => {
-                    reply.error(to_errno(EIO));
-                    return;
+            if self.namespace.lock().unwrap().document_codec(ino.0).is_some() {
+                // Documents are rewritten whole (then imported); never seed from
+                // the exported/normalized bytes.
+                Some(Vec::new())
+            } else {
+                match self.read_full_blocking(ino.0) {
+                    Ok(d) => Some(d),
+                    Err(_) => {
+                        reply.error(to_errno(EIO));
+                        return;
+                    }
                 }
             }
         } else {
@@ -365,9 +429,7 @@ impl Filesystem for QuickFS {
     ) {
         let buffered = self.write_buffers.lock().unwrap().get(&ino.0).cloned();
         if let Some(data) = buffered {
-            if let Err(e) = self.commit_content(ino.0, &data) {
-                eprintln!("flush: commit failed (content preserved): {e}");
-            }
+            self.commit_buffer(ino.0, &data);
         }
         reply.ok();
     }
@@ -375,9 +437,7 @@ impl Filesystem for QuickFS {
     fn fsync(&self, _req: &Request, ino: INodeNo, _fh: FileHandle, _datasync: bool, reply: ReplyEmpty) {
         let buffered = self.write_buffers.lock().unwrap().get(&ino.0).cloned();
         if let Some(data) = buffered {
-            if let Err(e) = self.commit_content(ino.0, &data) {
-                eprintln!("fsync: commit failed (content preserved): {e}");
-            }
+            self.commit_buffer(ino.0, &data);
         }
         reply.ok();
     }
@@ -394,9 +454,7 @@ impl Filesystem for QuickFS {
     ) {
         let buffered = self.write_buffers.lock().unwrap().remove(&ino.0);
         if let Some(data) = buffered {
-            if let Err(e) = self.commit_content(ino.0, &data) {
-                eprintln!("release: commit failed (content preserved): {e}");
-            }
+            self.commit_buffer(ino.0, &data);
         }
         reply.ok();
     }
@@ -421,20 +479,26 @@ impl Filesystem for QuickFS {
     ) {
         // Handle truncation/extension; ignore perm/owner/time changes.
         if let Some(new_size) = size {
-            let mut data = match self.read_full_blocking(ino.0) {
-                Ok(d) => d,
-                Err(_) => {
+            if self.namespace.lock().unwrap().document_codec(ino.0).is_some() {
+                // A document is rewritten whole; truncation just begins a fresh
+                // buffer that the subsequent writes fill and `release` imports.
+                self.write_buffers.lock().unwrap().insert(ino.0, Vec::new());
+            } else {
+                let mut data = match self.read_full_blocking(ino.0) {
+                    Ok(d) => d,
+                    Err(_) => {
+                        reply.error(to_errno(EIO));
+                        return;
+                    }
+                };
+                data.resize(new_size as usize, 0);
+                let open = self.write_buffers.lock().unwrap().contains_key(&ino.0);
+                if open {
+                    self.write_buffers.lock().unwrap().insert(ino.0, data);
+                } else if let Err(_e) = self.commit_content(ino.0, &data) {
                     reply.error(to_errno(EIO));
                     return;
                 }
-            };
-            data.resize(new_size as usize, 0);
-            let open = self.write_buffers.lock().unwrap().contains_key(&ino.0);
-            if open {
-                self.write_buffers.lock().unwrap().insert(ino.0, data);
-            } else if let Err(_e) = self.commit_content(ino.0, &data) {
-                reply.error(to_errno(EIO));
-                return;
             }
         }
 

@@ -259,6 +259,7 @@ async fn seed_from_dir(
     store: &Arc<ContentStore>,
     root: &Path,
 ) -> Result<()> {
+    let registry = qdoc::builtin_registry();
     let mut stack = vec![(ROOT_INO, root.to_path_buf())];
     while let Some((parent_ino, dir)) = stack.pop() {
         for entry in std::fs::read_dir(&dir)? {
@@ -275,13 +276,28 @@ async fn seed_from_dir(
                 stack.push((ino, path));
             } else if ft.is_file() {
                 let data = std::fs::read(&path)?;
-                let size = data.len() as u64;
-                // Chunk + ingest as a manifest (same content model as writes).
-                let hash = store.write_content(&data).await?;
-                namespace
-                    .lock()
-                    .unwrap()
-                    .create_file(parent_ino, &name, hash.as_ref(), size, now_ms());
+                let codec = name
+                    .rsplit('.')
+                    .next()
+                    .filter(|e| *e != name)
+                    .and_then(|e| registry.provider_for_ext(e).map(|_| e.to_lowercase()));
+                match codec {
+                    Some(c) => {
+                        // Recognized rich-text format → seed as a CRDT document.
+                        let mut ns = namespace.lock().unwrap();
+                        if let Some(ino) = ns.create_document(parent_ino, &name, &c, now_ms()) {
+                            ns.import_document(ino, &registry, &data, now_ms());
+                        }
+                    }
+                    None => {
+                        let size = data.len() as u64;
+                        let hash = store.write_content(&data).await?;
+                        namespace
+                            .lock()
+                            .unwrap()
+                            .create_file(parent_ino, &name, hash.as_ref(), size, now_ms());
+                    }
+                }
             }
         }
     }
