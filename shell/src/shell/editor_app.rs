@@ -539,7 +539,13 @@ impl Widget for EditorApp {
                 let (prefix_w, _) = tr.measure(prefix, TEXT_SIZE, None);
                 let x = content_x + prefix_w as f64;
                 let y = body_top + (row as f64) * LINE_HEIGHT as f64 + 2.0;
-                presence.draw_peer_caret(scene, theme, user, (x as f32, y as f32));
+                // `ui::PresenceCtx::draw_peer_caret` takes the caret
+                // geometry as a `Rect` plus the scene transform — match
+                // the widget-side carets in `TextInput` / `RichTextLine`
+                // (2 px wide, full line height) so a peer caret is
+                // visually identical to the local user's.
+                let caret_rect = Rect::new(x, y, x + 2.0, y + LINE_HEIGHT as f64);
+                presence.draw_peer_caret(scene, theme, transform, user, caret_rect);
             }
         }
 
@@ -580,8 +586,12 @@ impl Widget for EditorApp {
                         break;
                     }
                 }
-                if !line_rects.is_empty() {
-                    presence.draw_peer_selection(scene, theme, user, range, &line_rects);
+                // `ui::PresenceCtx::draw_peer_selection` paints a single
+                // `Rect` per call; emit one call per visual line so multi-
+                // line selections render as a band per row (matching how
+                // selection highlights are drawn elsewhere in the toolkit).
+                for line_rect in &line_rects {
+                    presence.draw_peer_selection(scene, theme, transform, user, *line_rect);
                 }
             }
         }
