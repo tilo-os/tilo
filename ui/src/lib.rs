@@ -35,6 +35,15 @@ pub use widget::history::{
     format_relative_time, hue_to_rgb, op_class_glyph, op_class_is_revertible,
 };
 pub use widget::history_scrubber::HistoryScrubber;
+// Phase 4 (Conflict toolkit) — see `widget/merge_strategy.rs` module
+// doc-comment for the design intent and convention for declaring a
+// merge strategy on a CRDT-bound widget.
+pub use widget::merge_strategy::{
+    Alternative, ConcurrentOp, ConflictKind, ConflictResolver, MergeStrategy,
+    surface_banner,
+};
+pub use widget::conflict_banner::ConflictBanner;
+pub use widget::conflict_picker::{ConflictPicker, PickerOutcome};
 pub use text_render::{TextRenderer, TextWeight};
 pub use text_selection::{
     Selection, clipboard_copy, clipboard_paste, line_boundaries,
