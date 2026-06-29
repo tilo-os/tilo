@@ -44,6 +44,25 @@ const CARET_WIDTH: f64 = 2.0;
 const TOOLBAR_H: f64 = ui::chrome::TOOLBAR_HEIGHT;
 const STATUS_H: f64 = ui::chrome::STATUS_BAR_HEIGHT;
 const LAYOUT_BAR_H: f64 = 32.0;
+/// Width of the contextual styles panel reserved on the right of the canvas.
+const STYLES_PANEL_W: f64 = 250.0;
+/// Panel chrome colors (consistent with the bottom layout bar).
+const PANEL_BG: Color = Color::from_rgb8(0x20, 0x22, 0x28);
+const PANEL_EDGE: Color = Color::from_rgb8(0x32, 0x35, 0x3e);
+const PANEL_CHIP: Color = Color::from_rgb8(0x2c, 0x2f, 0x38);
+const PANEL_FG: Color = Color::from_rgb8(0xc6, 0xca, 0xd2);
+const PANEL_MUTED: Color = Color::from_rgb8(0x80, 0x84, 0x90);
+const PANEL_FIELD: Color = Color::from_rgb8(0x16, 0x18, 0x1c);
+/// A small color palette for the style-colour picker.
+const STYLE_PALETTE: [[u8; 3]; 7] = [
+    [0x1c, 0x1c, 0x20], // ink
+    [0x55, 0x57, 0x60], // muted grey
+    [0xb0, 0x3a, 0x2e], // red
+    [0x1a, 0x56, 0xc4], // blue
+    [0x2e, 0x7d, 0x46], // green
+    [0xb5, 0x7e, 0x10], // amber
+    [0x7a, 0x3a, 0xa0], // purple
+];
 /// Accent for active layout guides + handles.
 const GUIDE: Color = Color::from_rgb8(0x46, 0x78, 0xe6);
 /// Inactive guide line (semi-transparent accent).
@@ -73,6 +92,7 @@ enum ToolAction {
     TableColAdd,
     TableColDel,
     TableDelete,
+    ToggleStyles,
 }
 
 /// Which layout element the bottom bar is editing. Each mode shows draggable
@@ -150,6 +170,99 @@ impl Side {
             Side::Left => Side::Right,
             Side::Right => Side::Left,
         }
+    }
+}
+
+/// A numeric property of a style the panel can scrub or type into.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum NumField {
+    Size,
+    SpaceBefore,
+    SpaceAfter,
+    Indent,
+}
+
+impl NumField {
+    fn get(self, s: &crate::styles::StyleProps) -> f32 {
+        match self {
+            NumField::Size => s.size,
+            NumField::SpaceBefore => s.space_before,
+            NumField::SpaceAfter => s.space_after,
+            NumField::Indent => s.indent,
+        }
+    }
+    fn clamp(self, v: f32) -> f32 {
+        match self {
+            NumField::Size => v.clamp(6.0, 200.0),
+            _ => v.clamp(0.0, 200.0),
+        }
+    }
+    fn set(self, s: &mut crate::styles::StyleProps, v: f32) {
+        let v = self.clamp(v);
+        match self {
+            NumField::Size => s.size = v,
+            NumField::SpaceBefore => s.space_before = v,
+            NumField::SpaceAfter => s.space_after = v,
+            NumField::Indent => s.indent = v,
+        }
+    }
+    /// Style value units per pixel of horizontal drag.
+    fn scrub_factor(self) -> f32 {
+        match self {
+            NumField::Size => 0.1,
+            _ => 0.25,
+        }
+    }
+    /// Stepper (+/-) increment.
+    fn step(self) -> f32 {
+        match self {
+            NumField::Size => 1.0,
+            _ => 2.0,
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            NumField::Size => "Size",
+            NumField::SpaceBefore => "Space before",
+            NumField::SpaceAfter => "Space after",
+            NumField::Indent => "Indent",
+        }
+    }
+}
+
+/// A clickable target inside the styles panel, resolved on press.
+#[derive(Clone, Debug)]
+enum PanelHit {
+    /// Apply this style id to the selection / caret block.
+    Pick(String),
+    CycleFont,
+    ToggleBold,
+    ToggleItalic,
+    SetAlign(&'static str),
+    SetColor([u8; 3]),
+    /// The value box of a numeric field — click to type, drag to scrub.
+    Num(NumField),
+    /// A +/- stepper on a numeric field.
+    NumDelta(NumField, f32),
+    /// Duplicate the current style under a fresh id and apply it.
+    NewStyle,
+}
+
+/// An in-progress drag-to-scrub on a numeric field.
+#[derive(Clone, Copy)]
+struct ScrubState {
+    field: NumField,
+    start_x: f64,
+    start_val: f32,
+    moved: bool,
+}
+
+/// Format a style value: integer when whole, else one decimal.
+fn fmt_num(v: f32) -> String {
+    if (v - v.round()).abs() < 0.05 {
+        format!("{}", v.round() as i64)
+    } else {
+        format!("{v:.1}")
     }
 }
 
@@ -378,6 +491,19 @@ pub struct WordProcessorWidget {
     page_rect: Rect,
     /// The bottom layout bar's clickable chips: `(mode, rect)`.
     layout_chips: Vec<(LayoutMode, Rect)>,
+    /// Whether the contextual styles panel is shown (dismissable via the toolbar
+    /// "Styles" toggle).
+    styles_panel_open: bool,
+    /// The styles panel rect in screen space, cached each frame for hit-testing.
+    panel_rect: Rect,
+    /// Clickable targets inside the styles panel, rebuilt each draw.
+    panel_hits: Vec<(Rect, PanelHit)>,
+    /// The numeric field currently being typed into (click-to-type), if any.
+    editing_field: Option<NumField>,
+    /// Text buffer for the field being typed into.
+    edit_buf: String,
+    /// An active drag-to-scrub on a numeric field, if any.
+    scrub: Option<ScrubState>,
 }
 
 impl Default for WordProcessorWidget {
@@ -410,6 +536,14 @@ impl WordProcessorWidget {
             guide_drag: None,
             page_rect: Rect::ZERO,
             layout_chips: Vec::new(),
+            // Default the panel open: it is the primary surface for the
+            // component-instance style model. Dismissable via the toolbar toggle.
+            styles_panel_open: true,
+            panel_rect: Rect::ZERO,
+            panel_hits: Vec::new(),
+            editing_field: None,
+            edit_buf: String::new(),
+            scrub: None,
         }
     }
 
@@ -690,15 +824,203 @@ impl WordProcessorWidget {
         };
         tr.draw_text(scene, &readout, 12.5, Color::from_rgb8(0x9a, 0x9e, 0xa8), transform * Affine::translate((x + 12.0, cy - 8.0)), None);
     }
+
+    /// The contextual styles panel: the focused block's style name, a style
+    /// picker (apply any style to the selection), and editable property rows that
+    /// mutate the *style* — every block of that style updates live.
+    fn draw_styles_panel(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, panel: Rect) {
+        self.panel_rect = panel;
+        self.panel_hits.clear();
+        // Background + left border.
+        scene.fill(Fill::NonZero, transform, PANEL_BG, None, &panel);
+        scene.fill(Fill::NonZero, transform, PANEL_EDGE, None, &Rect::new(panel.x0, panel.y0, panel.x0 + 1.0, panel.y1));
+        // Clip content to the panel so nothing bleeds into the bars.
+        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &panel);
+
+        let pad = 14.0;
+        let x0 = panel.x0 + pad;
+        let right = panel.x1 - pad;
+        let inner_w = right - x0;
+        let mut y = panel.y0 + 14.0;
+
+        tr.draw_text(scene, "STYLE", 10.5, PANEL_MUTED, transform * Affine::translate((x0, y)), None);
+        y += 16.0;
+
+        let Some(key) = self.focused_style_key() else {
+            tr.draw_text(scene, "Place the caret in a paragraph", 12.5, PANEL_MUTED, transform * Affine::translate((x0, y)), Some(inner_w as f32));
+            scene.pop_layer();
+            return;
+        };
+        // Snapshot the focused style for drawing (read-only copy).
+        let st = self.sheet.get(&key);
+
+        tr.draw_text(scene, &st.name, 18.0, PANEL_FG, transform * Affine::translate((x0, y)), Some(inner_w as f32));
+        y += 28.0;
+        panel_divider(scene, transform, x0, right, y);
+        y += 12.0;
+
+        // ---- Style picker -------------------------------------------------
+        tr.draw_text(scene, "PARAGRAPH STYLES", 10.5, PANEL_MUTED, transform * Affine::translate((x0, y)), None);
+        y += 16.0;
+        let order = self.sheet.order();
+        let gap = 6.0;
+        let col_w = (inner_w - gap) / 2.0;
+        let chip_h = 24.0;
+        for (i, id) in order.iter().enumerate() {
+            let col = (i % 2) as f64;
+            let row = (i / 2) as f64;
+            let cx = x0 + col * (col_w + gap);
+            let cy = y + row * (chip_h + gap);
+            let r = Rect::new(cx, cy, cx + col_w, cy + chip_h);
+            let name = self.sheet.get(id).name;
+            draw_btn(scene, transform, tr, r, &name, id == &key, false);
+            self.panel_hits.push((r, PanelHit::Pick(id.clone())));
+        }
+        let rows = order.len().div_ceil(2) as f64;
+        y += rows * (chip_h + gap) + 6.0;
+        panel_divider(scene, transform, x0, right, y);
+        y += 12.0;
+
+        // ---- Editable style properties ------------------------------------
+        tr.draw_text(scene, "STYLE PROPERTIES", 10.5, PANEL_MUTED, transform * Affine::translate((x0, y)), None);
+        y += 18.0;
+
+        // Font (cycles sans → serif → mono).
+        {
+            tr.draw_text(scene, "Font", 12.5, PANEL_FG, transform * Affine::translate((x0, y + 5.0)), None);
+            let fl = match st.font.as_str() {
+                "serif" => "Serif",
+                "mono" => "Mono",
+                _ => "Sans",
+            };
+            let r = Rect::new(right - 96.0, y, right, y + 24.0);
+            draw_btn(scene, transform, tr, r, fl, false, true);
+            self.panel_hits.push((r, PanelHit::CycleFont));
+            y += 30.0;
+        }
+
+        // Weight: Bold / Italic toggles.
+        {
+            tr.draw_text(scene, "Weight", 12.5, PANEL_FG, transform * Affine::translate((x0, y + 5.0)), None);
+            let bw = 60.0;
+            let rb = Rect::new(right - bw * 2.0 - 6.0, y, right - bw - 6.0, y + 24.0);
+            let ri = Rect::new(right - bw, y, right, y + 24.0);
+            draw_btn(scene, transform, tr, rb, "Bold", st.bold, true);
+            draw_btn(scene, transform, tr, ri, "Italic", st.italic, true);
+            self.panel_hits.push((rb, PanelHit::ToggleBold));
+            self.panel_hits.push((ri, PanelHit::ToggleItalic));
+            y += 30.0;
+        }
+
+        // Colour: a palette of swatches.
+        {
+            tr.draw_text(scene, "Colour", 12.5, PANEL_FG, transform * Affine::translate((x0, y + 5.0)), None);
+            let n = STYLE_PALETTE.len();
+            let sw_gap = 5.0;
+            // Leave room on the left for the "Colour" label.
+            let strip_w = (inner_w - 54.0).clamp(120.0, 196.0);
+            let sw = (strip_w - sw_gap * (n as f64 - 1.0)) / n as f64;
+            let sx0 = right - strip_w;
+            for (i, c) in STYLE_PALETTE.iter().enumerate() {
+                let sx = sx0 + i as f64 * (sw + sw_gap);
+                let r = Rect::new(sx, y, sx + sw, y + 22.0);
+                let col = Color::from_rgb8(c[0], c[1], c[2]);
+                scene.fill(Fill::NonZero, transform, col, None, &vello::kurbo::RoundedRect::from_rect(r, 4.0));
+                if *c == st.color {
+                    scene.stroke(&vello::kurbo::Stroke::new(2.0), transform, Color::WHITE, None, &vello::kurbo::RoundedRect::from_rect(r, 4.0));
+                }
+                self.panel_hits.push((r, PanelHit::SetColor(*c)));
+            }
+            y += 30.0;
+        }
+
+        // Alignment: L / C / R.
+        {
+            tr.draw_text(scene, "Align", 12.5, PANEL_FG, transform * Affine::translate((x0, y + 5.0)), None);
+            let bw = 40.0;
+            let gap = 6.0;
+            for (i, (label, val)) in [("L", "left"), ("C", "center"), ("R", "right")].iter().enumerate() {
+                let rx = right - (3.0 - i as f64) * bw - (2.0 - i as f64) * gap;
+                let r = Rect::new(rx, y, rx + bw, y + 24.0);
+                draw_btn(scene, transform, tr, r, label, st.align == *val, true);
+                self.panel_hits.push((r, PanelHit::SetAlign(val)));
+            }
+            y += 30.0;
+        }
+
+        // Numeric rows.
+        for field in [NumField::Size, NumField::SpaceBefore, NumField::SpaceAfter, NumField::Indent] {
+            self.draw_num_row(scene, transform, tr, field, field.get(&st), x0, right, y);
+            y += 30.0;
+        }
+
+        panel_divider(scene, transform, x0, right, y);
+        y += 12.0;
+
+        // New style from this.
+        {
+            let r = Rect::new(x0, y, right, y + 26.0);
+            draw_btn(scene, transform, tr, r, "+ New style from this", false, true);
+            self.panel_hits.push((r, PanelHit::NewStyle));
+        }
+
+        scene.pop_layer();
+    }
+
+    /// One numeric property row: `Label    [−] [ value ] [+]`. The value box is
+    /// click-to-type / drag-to-scrub; the steppers nudge by `field.step()`.
+    fn draw_num_row(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, field: NumField, value: f32, x0: f64, right: f64, y: f64) {
+        tr.draw_text(scene, field.label(), 12.5, PANEL_FG, transform * Affine::translate((x0, y + 5.0)), None);
+        let plus = Rect::new(right - 24.0, y, right, y + 24.0);
+        let vb = Rect::new(plus.x0 - 60.0, y, plus.x0 - 2.0, y + 24.0);
+        let minus = Rect::new(vb.x0 - 26.0, y, vb.x0 - 2.0, y + 24.0);
+        draw_btn(scene, transform, tr, minus, "−", false, true);
+        draw_btn(scene, transform, tr, plus, "+", false, true);
+        // Value box.
+        let editing = self.editing_field == Some(field);
+        let scrubbing = self.scrub.map(|s| s.field == field).unwrap_or(false);
+        let border = if editing || scrubbing { GUIDE } else { PANEL_EDGE };
+        scene.fill(Fill::NonZero, transform, PANEL_FIELD, None, &vello::kurbo::RoundedRect::from_rect(vb, 5.0));
+        scene.stroke(&vello::kurbo::Stroke::new(if editing || scrubbing { 1.5 } else { 1.0 }), transform, border, None, &vello::kurbo::RoundedRect::from_rect(vb, 5.0));
+        let text = if editing {
+            format!("{}_", self.edit_buf)
+        } else {
+            fmt_num(value)
+        };
+        let approx = text.chars().count() as f64 * 7.0;
+        let tx = (vb.x0 + vb.x1) / 2.0 - approx / 2.0;
+        tr.draw_text(scene, &text, 12.5, PANEL_FG, transform * Affine::translate((tx, (vb.y0 + vb.y1) / 2.0 - 8.0)), None);
+        self.panel_hits.push((vb, PanelHit::Num(field)));
+        self.panel_hits.push((minus, PanelHit::NumDelta(field, -field.step())));
+        self.panel_hits.push((plus, PanelHit::NumDelta(field, field.step())));
+    }
+}
+
+/// A horizontal 1px divider line inside the panel.
+fn panel_divider(scene: &mut Scene, transform: Affine, x0: f64, x1: f64, y: f64) {
+    scene.fill(Fill::NonZero, transform, PANEL_EDGE, None, &Rect::new(x0, y, x1, y + 1.0));
+}
+
+/// A panel chip / button: rounded rect + label. `center` centers the label
+/// (approximate), else left-pads it.
+fn draw_btn(scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, r: Rect, label: &str, active: bool, center: bool) {
+    let bg = if active { GUIDE } else { PANEL_CHIP };
+    let fg = if active { Color::WHITE } else { PANEL_FG };
+    scene.fill(Fill::NonZero, transform, bg, None, &vello::kurbo::RoundedRect::from_rect(r, 6.0));
+    let approx = label.chars().count() as f64 * 6.6;
+    let tx = if center { ((r.x0 + r.x1) / 2.0 - approx / 2.0).max(r.x0 + 4.0) } else { r.x0 + 8.0 };
+    let ty = (r.y0 + r.y1) / 2.0 - 8.0;
+    tr.draw_text(scene, label, 12.5, fg, transform * Affine::translate((tx, ty)), Some((r.width() - 6.0) as f32));
 }
 
 impl Widget for WordProcessorWidget {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         self.inner.bind(state, root);
         self.refresh_blocks(state);
-        // Reload the stylesheet from the doc unless we're mid-drag (which holds a
-        // live local edit not yet persisted).
-        if self.guide_drag.is_none() {
+        // Reload the stylesheet from the doc unless a live, not-yet-persisted
+        // local edit is in progress (a guide drag, a numeric scrub, or typing
+        // into a panel field) — reloading would discard the live preview.
+        if self.guide_drag.is_none() && self.scrub.is_none() && self.editing_field.is_none() {
             self.sheet = self.inner.stylesheet(state);
         }
         self.dirty = true;
@@ -732,7 +1054,14 @@ impl Widget for WordProcessorWidget {
 
         let status_top = (full.y1 - STATUS_H).max(full.y0 + TOOLBAR_H);
         let layout_bar_top = (status_top - LAYOUT_BAR_H).max(full.y0 + TOOLBAR_H);
-        let canvas = Rect::new(full.x0, full.y0 + TOOLBAR_H, full.x1, layout_bar_top);
+        // Reserve the styles panel out of the canvas so the page re-centers in the
+        // remaining width (and scrolled content never paints under the panel).
+        let canvas_right = if self.styles_panel_open {
+            (full.x1 - STYLES_PANEL_W).max(full.x0 + 1.0)
+        } else {
+            full.x1
+        };
+        let canvas = Rect::new(full.x0, full.y0 + TOOLBAR_H, canvas_right, layout_bar_top);
         scene.fill(Fill::NonZero, transform, CANVAS, None, &canvas);
 
         // Per-side page geometry — every margin is independently customizable.
@@ -966,6 +1295,15 @@ impl Widget for WordProcessorWidget {
 
         self.laid = laid;
 
+        // Contextual styles panel on the right (between toolbar and layout bar).
+        if self.styles_panel_open {
+            let panel = Rect::new(canvas_right, full.y0 + TOOLBAR_H, full.x1, layout_bar_top);
+            self.draw_styles_panel(scene, transform, text_renderer, panel);
+        } else {
+            self.panel_rect = Rect::ZERO;
+            self.panel_hits.clear();
+        }
+
         let lbar = Rect::new(full.x0, layout_bar_top, full.x1, status_top);
         self.draw_layout_bar(scene, transform, text_renderer, theme, lbar);
 
@@ -991,7 +1329,24 @@ impl Widget for WordProcessorWidget {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
-                if let Some(gd) = self.guide_drag {
+                if let Some(sc) = self.scrub {
+                    // Drag-to-scrub a numeric style field (live preview for every
+                    // block of that style).
+                    let dx = self.pointer.x - sc.start_x;
+                    if dx.abs() > 3.0 {
+                        if let Some(s) = self.scrub.as_mut() {
+                            s.moved = true;
+                        }
+                        let v = sc.field.clamp(sc.start_val + dx as f32 * sc.field.scrub_factor());
+                        if let Some(key) = self.focused_style_key() {
+                            if let Some(st) = self.sheet.styles.get_mut(&key) {
+                                sc.field.set(st, v);
+                            }
+                        }
+                        self.dirty = true;
+                    }
+                    *handled = true;
+                } else if let Some(gd) = self.guide_drag {
                     // Live-drag a layout guide (margin / border / spacing).
                     self.apply_guide_drag(gd, self.pointer);
                     self.dirty = true; // repaint every move so the preview is live
@@ -1009,13 +1364,28 @@ impl Widget for WordProcessorWidget {
                     return;
                 }
                 self.focused = true;
+                // A press anywhere commits a pending typed numeric edit.
+                if self.editing_field.is_some() {
+                    self.commit_num_edit(state);
+                }
+                // Styles panel (right side): dispatch a click on its controls.
+                if self.styles_panel_open && self.panel_rect.contains(self.pointer) {
+                    if let Some(hit) = self.panel_hits.iter().rev().find(|(r, _)| r.contains(self.pointer)).map(|(_, h)| h.clone()) {
+                        self.apply_panel_hit(state, hit);
+                    }
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
                 if self.pointer.y < self.rect.y0 + TOOLBAR_H {
                     let clicked = self.toolbar.iter().find(|(_, r)| r.contains(self.pointer)).map(|(a, _)| *a);
                     if let Some(action) = clicked {
                         self.apply_tool(state, action);
                         self.refresh_blocks(state);
                         self.dirty = true;
-                        self.needs_commit = true;
+                        if action != ToolAction::ToggleStyles {
+                            self.needs_commit = true;
+                        }
                     }
                     *handled = true;
                     return;
@@ -1063,7 +1433,21 @@ impl Widget for WordProcessorWidget {
                 *handled = true;
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
-                if let Some(gd) = self.guide_drag.take() {
+                if let Some(sc) = self.scrub.take() {
+                    if sc.moved {
+                        // A scrub persists the style edit (every instance follows).
+                        let sheet = self.sheet.clone();
+                        self.inner.set_stylesheet(state, &sheet);
+                        self.needs_commit = true;
+                    } else {
+                        // A plain click (no drag) focuses the field for typing.
+                        self.editing_field = Some(sc.field);
+                        let cur = self.focused_style_key().map(|k| sc.field.get(&self.sheet.get(&k))).unwrap_or(0.0);
+                        self.edit_buf = fmt_num(cur);
+                    }
+                    self.dirty = true;
+                    *handled = true;
+                } else if let Some(gd) = self.guide_drag.take() {
                     // A style edit (spacing) persists into the document on release.
                     if gd.mode == LayoutMode::Spacing {
                         let sheet = self.sheet.clone();
@@ -1079,6 +1463,34 @@ impl Widget for WordProcessorWidget {
             }
             WindowEvent::KeyboardInput { event: KeyEvent { state: ElementState::Pressed, logical_key, text, .. }, .. } => {
                 if !self.focused {
+                    return;
+                }
+                // While typing into a numeric style field, capture digits + editing
+                // keys (Enter commits, Esc cancels, Backspace deletes).
+                if self.editing_field.is_some() {
+                    match logical_key {
+                        Key::Named(NamedKey::Enter) => self.commit_num_edit(state),
+                        Key::Named(NamedKey::Escape) => {
+                            self.editing_field = None;
+                            self.edit_buf.clear();
+                        }
+                        Key::Named(NamedKey::Backspace) => {
+                            self.edit_buf.pop();
+                            self.apply_edit_buf_live();
+                        }
+                        _ => {
+                            let typed: String = text.as_ref().map(|t| t.chars().filter(|c| c.is_ascii_digit() || *c == '.').collect()).unwrap_or_default();
+                            for ch in typed.chars() {
+                                if ch == '.' && self.edit_buf.contains('.') {
+                                    continue;
+                                }
+                                self.edit_buf.push(ch);
+                            }
+                            self.apply_edit_buf_live();
+                        }
+                    }
+                    self.dirty = true;
+                    *handled = true;
                     return;
                 }
                 if ctrl {
@@ -1199,6 +1611,13 @@ impl Widget for WordProcessorWidget {
     }
     fn set_focus(&mut self, focused: bool) {
         self.focused = focused;
+        if !focused {
+            // Blur any in-progress numeric edit; the next sync reloads the
+            // persisted style values.
+            self.editing_field = None;
+            self.edit_buf.clear();
+            self.scrub = None;
+        }
         self.dirty = true;
     }
     fn is_focused(&self) -> bool {
@@ -1337,6 +1756,116 @@ impl WordProcessorWidget {
             ToolAction::TableColAdd => self.inner.table_add_col(state),
             ToolAction::TableColDel => self.inner.table_del_col(state),
             ToolAction::TableDelete => self.inner.table_delete(state),
+            ToolAction::ToggleStyles => self.styles_panel_open = !self.styles_panel_open,
+        }
+    }
+
+    /// Mutate the focused block's style in the live widget sheet (component-
+    /// instance preview), then optionally persist it to the document.
+    fn edit_focused_style(&mut self, state: &mut AutoCommit, persist: bool, f: impl FnOnce(&mut crate::styles::StyleProps)) {
+        let Some(key) = self.focused_style_key() else {
+            return;
+        };
+        if let Some(st) = self.sheet.styles.get_mut(&key) {
+            f(st);
+        }
+        self.dirty = true;
+        if persist {
+            let sheet = self.sheet.clone();
+            self.inner.set_stylesheet(state, &sheet);
+            self.needs_commit = true;
+        }
+    }
+
+    /// Apply the typed buffer to the editing field as a live preview (no persist).
+    fn apply_edit_buf_live(&mut self) {
+        let Some(field) = self.editing_field else {
+            return;
+        };
+        let v = field.clamp(self.edit_buf.parse::<f32>().unwrap_or(0.0));
+        let Some(key) = self.focused_style_key() else {
+            return;
+        };
+        if let Some(st) = self.sheet.styles.get_mut(&key) {
+            field.set(st, v);
+        }
+        self.dirty = true;
+    }
+
+    /// Commit the typed numeric edit to the document and blur the field.
+    fn commit_num_edit(&mut self, state: &mut AutoCommit) {
+        if self.editing_field.is_none() {
+            return;
+        }
+        self.apply_edit_buf_live();
+        let sheet = self.sheet.clone();
+        self.inner.set_stylesheet(state, &sheet);
+        self.needs_commit = true;
+        self.editing_field = None;
+        self.edit_buf.clear();
+        self.dirty = true;
+    }
+
+    /// Dispatch a click on a styles-panel target.
+    fn apply_panel_hit(&mut self, state: &mut AutoCommit, hit: PanelHit) {
+        match hit {
+            PanelHit::Pick(id) => {
+                self.inner.set_block_style(state, &id);
+                self.refresh_blocks(state);
+                self.needs_commit = true;
+                self.dirty = true;
+            }
+            PanelHit::CycleFont => {
+                self.edit_focused_style(state, true, |st| {
+                    st.font = match st.font.as_str() {
+                        "sans" => "serif",
+                        "serif" => "mono",
+                        _ => "sans",
+                    }
+                    .into();
+                });
+            }
+            PanelHit::ToggleBold => self.edit_focused_style(state, true, |st| st.bold = !st.bold),
+            PanelHit::ToggleItalic => self.edit_focused_style(state, true, |st| st.italic = !st.italic),
+            PanelHit::SetAlign(a) => self.edit_focused_style(state, true, |st| st.align = a.into()),
+            PanelHit::SetColor(c) => self.edit_focused_style(state, true, |st| st.color = c),
+            PanelHit::NumDelta(field, d) => {
+                self.edit_focused_style(state, true, |st| {
+                    let nv = field.clamp(field.get(st) + d);
+                    field.set(st, nv);
+                });
+            }
+            PanelHit::Num(field) => {
+                // Start a scrub candidate: a drag scrubs the value, a plain click
+                // (no movement) focuses the field for typing (handled on release).
+                let start_val = self.focused_style_key().map(|k| field.get(&self.sheet.get(&k))).unwrap_or(0.0);
+                self.editing_field = None;
+                self.scrub = Some(ScrubState { field, start_x: self.pointer.x, start_val, moved: false });
+                self.dirty = true;
+            }
+            PanelHit::NewStyle => {
+                let Some(key) = self.focused_style_key() else {
+                    return;
+                };
+                let base = self.sheet.get(&key);
+                let mut n = 1;
+                let new_id = loop {
+                    let cand = format!("custom{n}");
+                    if !self.sheet.styles.contains_key(&cand) {
+                        break cand;
+                    }
+                    n += 1;
+                };
+                let mut props = base.clone();
+                props.name = format!("{} copy", base.name);
+                self.sheet.styles.insert(new_id.clone(), props);
+                let sheet = self.sheet.clone();
+                self.inner.set_stylesheet(state, &sheet);
+                self.inner.set_block_style(state, &new_id);
+                self.refresh_blocks(state);
+                self.needs_commit = true;
+                self.dirty = true;
+            }
         }
     }
 
@@ -1455,8 +1984,9 @@ impl WordProcessorWidget {
             _ => LabelCue::None,
         };
         let group_start = |a: ToolAction| {
-            matches!(a, ToolAction::H1 | ToolAction::AlignLeft | ToolAction::FontCycle | ToolAction::InsertTable | ToolAction::TableRowAdd)
+            matches!(a, ToolAction::H1 | ToolAction::AlignLeft | ToolAction::FontCycle | ToolAction::InsertTable | ToolAction::TableRowAdd | ToolAction::ToggleStyles)
         };
+        let panel_open = self.styles_panel_open;
         let mut specs: Vec<(ToolAction, ToolbarItem)> = Vec::new();
         let mut add = |a: ToolAction, label: &str, w: f64, active: bool| {
             specs.push((a, ToolbarItem::new(label, w).active(active).cue(cue(a)).group_start(group_start(a))));
@@ -1485,6 +2015,7 @@ impl WordProcessorWidget {
         } else {
             add(ToolAction::InsertTable, "⊞ Table", 78.0, false);
         }
+        add(ToolAction::ToggleStyles, "Styles", 64.0, panel_open);
         drop(add);
 
         let items: Vec<ToolbarItem> = specs.iter().map(|(_, item)| item.clone()).collect();
@@ -1547,6 +2078,92 @@ mod tests {
         wp.model_mut().insert_str(&mut state.doc, "World");
         pipeline_draw(&mut wp, &mut state, 1000, 700);
         assert_eq!(wp.laid.len(), 2, "draw laid out both paragraphs");
+    }
+
+    #[test]
+    fn styles_panel_renders_hits_and_picks_a_style() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "A paragraph");
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+
+        // The panel is open by default and renders clickable targets.
+        assert!(wp.styles_panel_open);
+        assert!(!wp.panel_hits.is_empty(), "panel rendered clickable targets");
+        assert_eq!(wp.focused_style_key().as_deref(), Some("body"));
+
+        // Picking the Quote style makes the caret block adopt it (component-instance).
+        wp.apply_panel_hit(&mut state.doc, PanelHit::Pick("quote".into()));
+        wp.refresh_blocks(&state.doc);
+        assert_eq!(wp.focused_style_key().as_deref(), Some("quote"), "block adopted the picked style");
+    }
+
+    #[test]
+    fn editing_a_style_updates_every_instance() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "first");
+        wp.model_mut().enter(&mut state.doc);
+        wp.model_mut().insert_str(&mut state.doc, "second");
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+
+        let before = wp.model().stylesheet(&state.doc).get("body").size;
+        // Bump the body style's size via the panel stepper.
+        wp.apply_panel_hit(&mut state.doc, PanelHit::NumDelta(NumField::Size, 5.0));
+        let after = wp.model().stylesheet(&state.doc).get("body").size;
+        assert_eq!(after, before + 5.0, "edited style size persisted to the document");
+
+        // Both paragraphs are Body, so both re-render at the new size.
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        assert_eq!(wp.laid.len(), 2);
+        assert!(wp.laid.iter().all(|l| (l.size - after).abs() < 0.01), "every Body block follows the style edit");
+    }
+
+    #[test]
+    fn typing_into_a_numeric_field_commits() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "x");
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+
+        // Click-to-type: focus the Size field, type "40".
+        wp.editing_field = Some(NumField::Size);
+        wp.edit_buf = "40".into();
+        wp.apply_edit_buf_live();
+        // Live preview mutated the widget sheet (not yet the document).
+        assert_eq!(wp.sheet.get("body").size, 40.0);
+        wp.commit_num_edit(&mut state.doc);
+        assert!(wp.editing_field.is_none(), "Enter blurs the field");
+        assert_eq!(wp.model().stylesheet(&state.doc).get("body").size, 40.0, "typed value persisted");
+    }
+
+    #[test]
+    fn new_style_from_this_duplicates_and_applies() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "para");
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+
+        let n_before = wp.sheet.order().len();
+        wp.apply_panel_hit(&mut state.doc, PanelHit::NewStyle);
+        let sheet = wp.model().stylesheet(&state.doc);
+        assert_eq!(sheet.order().len(), n_before + 1, "a new style id was added");
+        wp.refresh_blocks(&state.doc);
+        let key = wp.focused_style_key().unwrap();
+        assert!(key.starts_with("custom"), "block adopted the duplicated style, got {key}");
+    }
+
+    #[test]
+    fn styles_panel_toggles_off() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        assert!(wp.styles_panel_open, "panel defaults open");
+        wp.apply_tool(&mut state.doc, ToolAction::ToggleStyles);
+        assert!(!wp.styles_panel_open, "toolbar toggle dismisses the panel");
     }
 
     #[test]
