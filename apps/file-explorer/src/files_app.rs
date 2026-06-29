@@ -13,8 +13,10 @@ use crate::model::{initial_path, read_dir_sync, sort_entries, Entry, SortBy, Sor
 use crate::fileops;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
+use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{Column, Container, Row, ScrollAxis, Scrollable, Spacer, Text, TextInput, Widget};
 use ui::{AppKind, AppWidget, IconDescriptor, SelectionModel};
+use vello::kurbo::Point;
 
 pub struct FileExplorerWidget {
     current_path: PathBuf,
@@ -44,6 +46,14 @@ pub struct FileExplorerWidget {
     /// Set when applying a command changed structure; consumed by
     /// `take_structure_dirty` so the App rebuilds the composition.
     structure_dirty: bool,
+    /// Right-click menu, owned here (not in the rebuilt composition) so it
+    /// stays open across frames. `menu_commands[i]` is the command to run
+    /// for menu item `i` (None for separators).
+    context_menu: ContextMenu,
+    menu_commands: Vec<Option<FileCommand>>,
+    /// Last cursor position in logical coords (for menu placement + the
+    /// context-menu hit-test).
+    last_cursor: Point,
 }
 
 impl Default for FileExplorerWidget {
@@ -79,6 +89,9 @@ impl FileExplorerWidget {
             composed: None,
             cmds: new_sink(),
             structure_dirty: false,
+            context_menu: ContextMenu::new(),
+            menu_commands: Vec::new(),
+            last_cursor: Point::ZERO,
         }
     }
 
@@ -599,6 +612,88 @@ impl FileExplorerWidget {
         Ok(true)
     }
 
+    /// Build + open the right-click menu at `at`, with items appropriate to
+    /// the current selection and clipboard.
+    fn open_context_menu(&mut self, at: Point) {
+        let has_sel = !self.selection.is_empty();
+        let can_paste = !self.clipboard.is_empty();
+        // (label, command) pairs; `None` command = separator.
+        let mut spec: Vec<(&str, Option<FileCommand>)> = Vec::new();
+        if has_sel {
+            spec.push(("Open", self.selection.primary().map(FileCommand::Activate)));
+            spec.push(("Rename", Some(FileCommand::Rename)));
+            spec.push(("", None));
+            spec.push(("Cut", Some(FileCommand::Cut)));
+            spec.push(("Copy", Some(FileCommand::Copy)));
+        }
+        if can_paste {
+            spec.push(("Paste", Some(FileCommand::Paste)));
+        }
+        spec.push(("New Folder", Some(FileCommand::NewFolder)));
+        if has_sel {
+            spec.push(("", None));
+            spec.push(("Move to Trash", Some(FileCommand::Delete)));
+        }
+        spec.push(("", None));
+        spec.push(("Open Terminal Here", Some(FileCommand::OpenTerminal)));
+
+        let mut menu = ContextMenu::new();
+        let mut cmds = Vec::with_capacity(spec.len());
+        for (label, cmd) in spec {
+            if cmd.is_none() && label.is_empty() {
+                menu.push(MenuItem::separator());
+                cmds.push(None);
+            } else {
+                // No-op action — the app maps the clicked index to a command
+                // itself (the sink is !Send, so it can't live in the action).
+                menu.push(MenuItem::action(label, || {}));
+                cmds.push(cmd);
+            }
+        }
+        menu.open_at([at.x as f32, at.y as f32]);
+        self.context_menu = menu;
+        self.menu_commands = cmds;
+        self.layout_menu();
+    }
+
+    /// Resolve the context menu's rect from its anchor (it isn't part of the
+    /// App's taffy tree, so drive a throwaway layout pass).
+    fn layout_menu(&mut self) {
+        if !self.context_menu.is_open() {
+            return;
+        }
+        let mut taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
+        let mut node_map: std::collections::HashMap<taffy::NodeId, *mut dyn Widget> = std::collections::HashMap::new();
+        let theme = ui::Theme::dark();
+        let node = self.context_menu.build_layout(&mut taffy, &theme, &mut node_map);
+        let _ = taffy.compute_layout(
+            node,
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(400.0),
+                height: taffy::AvailableSpace::Definite(800.0),
+            },
+        );
+        self.context_menu.apply_layout(&taffy, node, Point::ZERO);
+    }
+
+    /// If the context menu is open, route a left-press to it. Returns true
+    /// when the press was consumed (item fired or menu dismissed).
+    fn route_menu_click(&mut self, p: Point) -> bool {
+        if !self.context_menu.is_open() {
+            return false;
+        }
+        if let Some(idx) = self.context_menu.item_at([p.x, p.y]) {
+            self.context_menu.close();
+            if let Some(Some(cmd)) = self.menu_commands.get(idx).cloned() {
+                self.apply_command(cmd);
+            }
+            return true;
+        }
+        // Click outside the open menu dismisses it.
+        self.context_menu.close();
+        true
+    }
+
     /// Drain and apply all queued commands. Returns whether any command
     /// changed the structure.
     fn drain_commands(&mut self) -> bool {
@@ -756,6 +851,25 @@ impl Widget for FileExplorerWidget {
         }
     }
 
+    fn draw_overlay(
+        &mut self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut ui::text_render::TextRenderer,
+        theme: &ui::Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) {
+        // Composed overlays (dropdowns/popovers) first, then our top-layer
+        // context menu so it composites above everything.
+        if let Some(c) = &mut self.composed {
+            c.draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+        if self.context_menu.is_open() {
+            self.layout_menu();
+            self.context_menu.draw(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
@@ -768,6 +882,45 @@ impl Widget for FileExplorerWidget {
         node_id: taffy::NodeId,
         taffy: &taffy::TaffyTree<()>,
     ) {
+        use winit::event::{ElementState, MouseButton, WindowEvent};
+        // Track the cursor for menu placement + hit-testing.
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+        }
+
+        // The open context menu gets first dibs on clicks + Escape.
+        if self.context_menu.is_open() {
+            match event {
+                WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+                    if self.route_menu_click(self.last_cursor) {
+                        *handled = true;
+                        self.structure_dirty = true;
+                        let _ = self.drain_commands();
+                        return;
+                    }
+                }
+                WindowEvent::KeyboardInput { event: ke, .. }
+                    if ke.state == ElementState::Pressed
+                        && matches!(ke.logical_key, winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)) =>
+                {
+                    self.context_menu.close();
+                    *handled = true;
+                    self.structure_dirty = true;
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        // Right-click opens the context menu (selecting the row under the
+        // cursor first if the press landed on one).
+        if let WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } = event {
+            self.open_context_menu(self.last_cursor);
+            *handled = true;
+            self.structure_dirty = true;
+            return;
+        }
+
         // Deliver to the composed tree first (buttons, views, search field).
         if let Some(c) = &mut self.composed {
             if let Ok(children) = taffy.children(node_id) {
@@ -877,5 +1030,61 @@ mod open_with_tests {
 
         assert!(!w.open_entry(1, &mut runner).unwrap());
         assert_eq!(runner.calls.len(), 1);
+    }
+
+    #[test]
+    fn context_menu_opens_with_selection_aware_items() {
+        let mut w = FileExplorerWidget::new();
+        w.entries = vec![file_entry("a.txt"), file_entry("b.txt")];
+        w.selection.select_only(0);
+        w.open_context_menu(Point::new(40.0, 40.0));
+        assert!(w.context_menu.is_open());
+        let labels: Vec<String> = w
+            .context_menu
+            .items()
+            .iter()
+            .filter_map(|i| i.label().map(|s| s.to_string()))
+            .collect();
+        // Selection-aware actions are present.
+        for expected in ["Open", "Rename", "Cut", "Copy", "Move to Trash", "New Folder"] {
+            assert!(labels.contains(&expected.to_string()), "menu missing {expected}: {labels:?}");
+        }
+        // No clipboard yet → no Paste.
+        assert!(!labels.contains(&"Paste".to_string()));
+    }
+
+    #[test]
+    fn empty_selection_menu_omits_item_actions() {
+        let mut w = FileExplorerWidget::new();
+        w.entries = vec![file_entry("a.txt")];
+        // No selection.
+        w.open_context_menu(Point::new(10.0, 10.0));
+        let labels: Vec<String> = w
+            .context_menu
+            .items()
+            .iter()
+            .filter_map(|i| i.label().map(|s| s.to_string()))
+            .collect();
+        assert!(!labels.contains(&"Move to Trash".to_string()));
+        assert!(labels.contains(&"New Folder".to_string()));
+        assert!(labels.contains(&"Open Terminal Here".to_string()));
+    }
+
+    #[test]
+    fn copy_then_paste_menu_includes_paste() {
+        let mut w = FileExplorerWidget::new();
+        w.entries = vec![file_entry("a.txt")];
+        w.selection.select_only(0);
+        // Simulate a copy populating the clipboard.
+        w.apply_command(crate::command::FileCommand::Copy);
+        assert_eq!(w.clipboard.len(), 1);
+        w.open_context_menu(Point::new(10.0, 10.0));
+        let labels: Vec<String> = w
+            .context_menu
+            .items()
+            .iter()
+            .filter_map(|i| i.label().map(|s| s.to_string()))
+            .collect();
+        assert!(labels.contains(&"Paste".to_string()));
     }
 }
