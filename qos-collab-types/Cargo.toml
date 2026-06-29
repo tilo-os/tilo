@@ -1,0 +1,25 @@
+[package]
+name = "qos-collab-types"
+version = "0.1.0"
+edition = "2024"
+[lib]
+name = "qos_collab_types"
+path = "src/lib.rs"
+
+# Cryptographic foundation for qOS Spaces and Channels:
+# Identity, Attestation, Role/OpClass permission tables, SignedOp
+# envelope, ChannelEvent governance log, deterministic
+# canonical-bytes serialisation, Ed25519 signing primitives, and the
+# inbound-op validator. Pure types + pure functions — no I/O, no async,
+# no compositor dependency. Built as the foundation for Phase 3 wire
+# enforcement and beyond. See `src/lib.rs` and the
+# `2026-06-29-spaces-channels-and-cryptographic-roles.md` spec.
+
+[dependencies]
+ed25519-dalek = { version = "2", features = ["serde", "rand_core"] }
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_bytes = "0.11"
+postcard = { version = "1", features = ["alloc"] }
+thiserror = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
