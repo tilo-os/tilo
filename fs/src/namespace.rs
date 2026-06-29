@@ -178,6 +178,15 @@ impl Namespace {
     pub fn save(&mut self) -> Vec<u8> {
         self.doc.save()
     }
+    /// Changes since the last `save_incremental`/load/merge, advancing the shared
+    /// automerge watermark.
+    ///
+    /// INVARIANT: pair every mutation with the `save_incremental` that broadcasts
+    /// it inside the **same** `Namespace` lock scope. The watermark is one shared
+    /// cursor, and a concurrent remote-apply discards whatever the next
+    /// `save_incremental` returns (the resolve paths below rely on that). A
+    /// mutation whose `save_incremental` runs in a *separate* lock acquisition can
+    /// therefore have its delta silently swallowed. Keep mutate + save atomic.
     pub fn save_incremental(&mut self) -> Vec<u8> {
         self.doc.save_incremental()
     }
