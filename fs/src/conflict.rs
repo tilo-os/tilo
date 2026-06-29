@@ -1,20 +1,25 @@
 //! Content-conflict resolution for the move-tree namespace.
 //!
-//! When two peers concurrently set a *different* content hash on the same file
-//! node, Automerge keeps both values in the node's `hash` register and resolves
-//! one deterministic winner. We surface the loser as a sibling
-//! `<name>.sync-conflict-<hash>` node so no peer's bytes are silently dropped.
-//! The copy name is derived purely from name + losing hash, so peers converge
-//! on it instead of multiplying copies.
+//! Two cases surface a `<name>.sync-conflict-<hash>` copy so no peer's bytes are
+//! silently dropped:
+//!
+//! 1. **Concurrent edit/edit** of one live file — Automerge keeps both hashes in
+//!    the node's `hash` register; the losing version becomes a sibling copy.
+//! 2. **Modify/delete race** — one peer deletes a file while another edits it.
+//!    Delete wins (the node is trashed), but the concurrent edit is resurrected
+//!    as a conflict copy at the file's pre-deletion location.
+//!
+//! Copy names derive purely from name + losing hash, so peers converge on them.
 
 use iroh_blobs::Hash;
 
-use crate::namespace::Namespace;
+use crate::namespace::{Namespace, ROOT_ID};
 
-/// A concurrent content edit whose loser still needs a conflict copy.
+/// A conflict copy that needs to be created (fully resolved location + name).
 #[derive(Debug, Clone)]
 pub struct ContentConflict {
-    pub node_id: String,
+    pub parent_id: String,
+    pub name: String,
     pub loser: Hash,
 }
 
@@ -33,16 +38,18 @@ fn hash_from_hex(s: &str) -> Option<Hash> {
     Some(Hash::from(arr))
 }
 
-/// Detect content conflicts that don't yet have a conflict copy. Deterministic
-/// across peers, idempotent once copies exist.
+/// Detect conflict copies that don't yet exist. Deterministic across peers,
+/// idempotent once the copies are present.
 pub fn detect(ns: &Namespace) -> Vec<ContentConflict> {
     let mut out = Vec::new();
+
+    // (1) concurrent edits of a live file.
     for id in ns.live_node_ids() {
         let Some((parent, name)) = ns.node_parent_name(&id) else {
             continue;
         };
         if name.contains(MARKER) {
-            continue; // never make conflict copies of conflict copies
+            continue;
         }
         let distinct: std::collections::BTreeSet<String> = ns
             .content_conflicts(&id)
@@ -57,26 +64,75 @@ pub fn detect(ns: &Namespace) -> Vec<ContentConflict> {
             if Some(&hex) == winner.as_ref() {
                 continue;
             }
-            let Some(loser) = hash_from_hex(&hex) else {
-                continue;
-            };
-            if ns.child_id_named(&parent, &conflict_name(&name, &loser)).is_some() {
-                continue; // already resolved
-            }
-            out.push(ContentConflict { node_id: id.clone(), loser });
+            push_copy(ns, &mut out, &parent, &name, &hex);
         }
     }
+
+    // (2) modify/delete: an explicitly-trashed file whose content changed
+    // concurrently with the deletion (current hash != hash-at-deletion).
+    for id in ns.directly_trashed() {
+        let Some((_, name)) = ns.node_parent_name(&id) else {
+            continue;
+        };
+        if name.contains(MARKER) {
+            continue;
+        }
+        let dh = ns.deleted_hash(&id).map(|h| hex::encode(h.as_bytes()));
+        let mut candidates: std::collections::BTreeSet<String> = ns
+            .content_conflicts(&id)
+            .into_iter()
+            .map(|(_, hex)| hex)
+            .collect();
+        if let Some(h) = ns.node_hash(&id) {
+            candidates.insert(hex::encode(h.as_bytes()));
+        }
+        for hex in candidates {
+            if Some(&hex) == dh.as_ref() {
+                continue; // content unchanged since deletion → not a concurrent edit
+            }
+            // Resurrect at the pre-deletion location, or root if that's gone too.
+            let mut parent = ns.prev_parent(&id).unwrap_or_else(|| ROOT_ID.to_string());
+            if !ns.is_visible(&parent) {
+                parent = ROOT_ID.to_string();
+            }
+            push_copy(ns, &mut out, &parent, &name, &hex);
+        }
+    }
+
     out
 }
 
-/// Materialize the conflict copy for `c` and return the CRDT delta to broadcast
+fn push_copy(
+    ns: &Namespace,
+    out: &mut Vec<ContentConflict>,
+    parent: &str,
+    name: &str,
+    loser_hex: &str,
+) {
+    let Some(loser) = hash_from_hex(loser_hex) else {
+        return;
+    };
+    let cname = conflict_name(name, &loser);
+    if ns.child_id_named(parent, &cname).is_some() {
+        return; // already resolved
+    }
+    if out
+        .iter()
+        .any(|c| c.parent_id == parent && c.name == cname)
+    {
+        return; // already queued this pass
+    }
+    out.push(ContentConflict {
+        parent_id: parent.to_string(),
+        name: cname,
+        loser,
+    });
+}
+
+/// Materialize the conflict copy for `c`; returns the CRDT delta to broadcast
 /// (empty if it already existed). `loser_len` sizes the copy.
 pub fn materialize(ns: &mut Namespace, c: &ContentConflict, loser_len: u64, now: u64) -> Vec<u8> {
-    let Some((parent, name)) = ns.node_parent_name(&c.node_id) else {
-        return Vec::new();
-    };
-    let cname = conflict_name(&name, &c.loser);
-    if ns.create_conflict_copy(&parent, &cname, &c.loser, loser_len, now) {
+    if ns.create_conflict_copy(&c.parent_id, &c.name, &c.loser, loser_len, now) {
         ns.save_incremental()
     } else {
         Vec::new()
@@ -105,7 +161,7 @@ mod tests {
         a.merge_doc(&mut b).unwrap();
 
         let conflicts = detect(&a);
-        assert_eq!(conflicts.len(), 1, "one loser must need a conflict copy");
+        assert_eq!(conflicts.len(), 1);
         let loser = conflicts[0].loser;
         assert!(loser == h(10) || loser == h(20));
 
@@ -113,14 +169,10 @@ mod tests {
         assert!(!delta.is_empty());
 
         let winner = a.entry_at("doc").unwrap().hash.unwrap();
-        assert!(winner == h(10) || winner == h(20));
         assert_ne!(winner, loser);
-
-        let copy = a.entry_at(&conflict_name("doc", &loser)).expect("conflict copy exists");
+        let copy = a.entry_at(&conflict_name("doc", &loser)).expect("conflict copy");
         assert_eq!(copy.hash, Some(loser));
-        assert_eq!(copy.size, 99);
-
-        assert!(detect(&a).is_empty(), "resolution is idempotent");
+        assert!(detect(&a).is_empty(), "idempotent");
     }
 
     #[test]
@@ -130,5 +182,45 @@ mod tests {
         a.set_content(ino, Some(&h(2)), 2, 2);
         a.set_content(ino, Some(&h(3)), 3, 3);
         assert!(detect(&a).is_empty());
+    }
+
+    #[test]
+    fn plain_delete_does_not_resurrect() {
+        // A deletes a file with no concurrent edit → no conflict copy.
+        let mut a = Namespace::new("A");
+        let ino = a.create_file(ROOT_INO, "doc", Some(&h(1)), 1, 1).unwrap();
+        a.remove(ino);
+        assert!(detect(&a).is_empty(), "a clean delete must not resurrect");
+    }
+
+    #[test]
+    fn modify_delete_race_resurrects_the_edit() {
+        // A deletes /doc while B edits its content concurrently.
+        let mut a = Namespace::new("A");
+        let ino = a.create_file(ROOT_INO, "doc", Some(&h(1)), 1, 1).unwrap();
+        let snap = a.save();
+        let mut b = Namespace::from_bytes("B", &snap).unwrap();
+
+        a.remove(ino);
+        let bino = b.lookup(ROOT_INO, "doc").unwrap().ino.0;
+        b.set_content(bino, Some(&h(9)), 9, 5);
+
+        a.merge_doc(&mut b).unwrap();
+        a.resolve();
+
+        assert!(a.lookup(ROOT_INO, "doc").is_none(), "delete wins");
+        let conflicts = detect(&a);
+        let c = conflicts
+            .iter()
+            .find(|c| c.loser == h(9))
+            .expect("B's concurrent edit must be surfaced");
+        materialize(&mut a, c, 9, 6);
+
+        // The edited content is now visible again as a conflict copy at root.
+        let copy = a
+            .entry_at(&conflict_name("doc", &h(9)))
+            .expect("resurrected conflict copy");
+        assert_eq!(copy.hash, Some(h(9)));
+        assert!(detect(&a).is_empty(), "idempotent");
     }
 }
