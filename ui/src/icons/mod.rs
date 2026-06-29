@@ -69,6 +69,35 @@ pub enum Icon {
     Home,
     Camera,
     Power,
+    // --- File-manager set (file types) ---
+    Folder,
+    FolderOpen,
+    File,
+    Image,
+    Music,
+    Film,
+    Archive,
+    FileCode,
+    // --- File-manager set (actions / chrome) ---
+    ArrowLeft,
+    ArrowRight,
+    ArrowUp,
+    ChevronRight,
+    RotateCw,
+    Copy,
+    Scissors,
+    ClipboardPaste,
+    Trash2,
+    Pencil,
+    FolderPlus,
+    FilePlus,
+    List,
+    Star,
+    HardDrive,
+    Check,
+    Info,
+    CloudDownload,
+    ArrowUpDown,
 }
 
 /// Lucide's fixed viewBox. Every stored path assumes this coordinate
@@ -270,6 +299,207 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("M12 2v10"),
             path_from_d("M18.4 6.6a9 9 0 1 1-12.77.04"),
         ],
+        // --- File-manager set (file types) — lucide v0.546.0 ---
+        // Folder: single tabbed-folder outline.
+        Icon::Folder => vec![path_from_d(
+            "M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z",
+        )],
+        // Folder-open: angled open-lid folder.
+        Icon::FolderOpen => vec![path_from_d(
+            "m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2",
+        )],
+        // File: page outline + folded corner.
+        Icon::File => vec![
+            path_from_d("M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"),
+            path_from_d("M14 2v4a2 2 0 0 0 2 2h4"),
+        ],
+        // Image: frame rect + lens dot + mountain diagonal.
+        Icon::Image => vec![
+            rect_path(3.0, 3.0, 18.0, 18.0, 2.0),
+            circle_path(9.0, 9.0, 2.0),
+            path_from_d("m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"),
+        ],
+        // Music: eighth-note stem + two note heads.
+        Icon::Music => vec![
+            path_from_d("M9 18V5l12-2v13"),
+            circle_path(6.0, 18.0, 3.0),
+            circle_path(18.0, 16.0, 3.0),
+        ],
+        // Film: sprocketed filmstrip — frame + interior rails.
+        Icon::Film => vec![
+            rect_path(3.0, 3.0, 18.0, 18.0, 2.0),
+            path_from_d("M7 3v18"),
+            path_from_d("M3 7.5h4"),
+            path_from_d("M3 12h18"),
+            path_from_d("M3 16.5h4"),
+            path_from_d("M17 3v18"),
+            path_from_d("M17 7.5h4"),
+            path_from_d("M17 16.5h4"),
+        ],
+        // Archive: lid rect + body + handle slot.
+        Icon::Archive => vec![
+            rect_path(2.0, 3.0, 20.0, 5.0, 1.0),
+            path_from_d("M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"),
+            path_from_d("M10 12h4"),
+        ],
+        // File-code: page + folded corner + two angle brackets.
+        Icon::FileCode => vec![
+            path_from_d("M10 12.5 8 15l2 2.5"),
+            path_from_d("m14 12.5 2 2.5-2 2.5"),
+            path_from_d("M14 2v4a2 2 0 0 0 2 2h4"),
+            path_from_d("M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z"),
+        ],
+        // --- File-manager set (actions / chrome) — lucide v0.546.0 ---
+        Icon::ArrowLeft => vec![
+            path_from_d("m12 19-7-7 7-7"),
+            path_from_d("M19 12H5"),
+        ],
+        Icon::ArrowRight => vec![
+            path_from_d("M5 12h14"),
+            path_from_d("m12 5 7 7-7 7"),
+        ],
+        Icon::ArrowUp => vec![
+            path_from_d("m5 12 7-7 7 7"),
+            path_from_d("M12 19V5"),
+        ],
+        Icon::ChevronRight => vec![path_from_d("m9 18 6-6-6-6")],
+        // Rotate-cw: clockwise arc + arrowhead tick.
+        Icon::RotateCw => vec![
+            path_from_d("M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"),
+            path_from_d("M21 3v5h-5"),
+        ],
+        // Copy: foreground sheet rect + background sheet outline.
+        Icon::Copy => vec![
+            rect_path(8.0, 8.0, 14.0, 14.0, 2.0),
+            path_from_d("M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"),
+        ],
+        // Scissors: two finger rings + the crossed blades.
+        Icon::Scissors => vec![
+            circle_path(6.0, 6.0, 3.0),
+            path_from_d("M8.12 8.12 12 12"),
+            path_from_d("M20 4 8.12 15.88"),
+            circle_path(6.0, 18.0, 3.0),
+            path_from_d("M14.8 14.8 20 20"),
+        ],
+        // Clipboard-paste: board + clip + out-arrow.
+        Icon::ClipboardPaste => vec![
+            path_from_d("M11 14h10"),
+            path_from_d("M16 4h2a2 2 0 0 1 2 2v1.344"),
+            path_from_d("m17 18 4-4-4-4"),
+            path_from_d("M8 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 1.793-1.113"),
+            rect_path(8.0, 2.0, 8.0, 4.0, 1.0),
+        ],
+        // Trash-2: two tine lines + can body + lid line + handle.
+        Icon::Trash2 => vec![
+            path_from_d("M10 11v6"),
+            path_from_d("M14 11v6"),
+            path_from_d("M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"),
+            path_from_d("M3 6h18"),
+            path_from_d("M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"),
+        ],
+        // Pencil: body + nib tick.
+        Icon::Pencil => vec![
+            path_from_d("M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"),
+            path_from_d("m15 5 4 4"),
+        ],
+        // Folder-plus: plus strokes over a folder body.
+        Icon::FolderPlus => vec![
+            path_from_d("M12 10v6"),
+            path_from_d("M9 13h6"),
+            path_from_d("M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"),
+        ],
+        // File-plus: page + folded corner + plus strokes.
+        Icon::FilePlus => vec![
+            path_from_d("M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"),
+            path_from_d("M14 2v4a2 2 0 0 0 2 2h4"),
+            path_from_d("M9 15h6"),
+            path_from_d("M12 18v-6"),
+        ],
+        // List: three bullet ticks + three rules.
+        Icon::List => vec![
+            path_from_d("M3 5h.01"),
+            path_from_d("M3 12h.01"),
+            path_from_d("M3 19h.01"),
+            path_from_d("M8 5h13"),
+            path_from_d("M8 12h13"),
+            path_from_d("M8 19h13"),
+        ],
+        // Star: single five-point star outline.
+        Icon::Star => vec![path_from_d(
+            "M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z",
+        )],
+        // Hard-drive: divider line + body + two indicator dots.
+        Icon::HardDrive => vec![
+            line_path(22.0, 12.0, 2.0, 12.0),
+            path_from_d("M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"),
+            line_path(6.0, 16.0, 6.01, 16.0),
+            line_path(10.0, 16.0, 10.01, 16.0),
+        ],
+        // Check: single tick stroke.
+        Icon::Check => vec![path_from_d("M20 6 9 17l-5-5")],
+        // Info: ring + stem + dot.
+        Icon::Info => vec![
+            circle_path(12.0, 12.0, 10.0),
+            path_from_d("M12 16v-4"),
+            path_from_d("M12 8h.01"),
+        ],
+        // Cloud-download: down-arrow stem + arrowhead + cloud.
+        Icon::CloudDownload => vec![
+            path_from_d("M12 13v8l-4-4"),
+            path_from_d("m12 21 4-4"),
+            path_from_d("M4.393 15.269A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.436 8.284"),
+        ],
+        // Arrow-up-down: opposed arrows for sort direction.
+        Icon::ArrowUpDown => vec![
+            path_from_d("m21 16-4 4-4-4"),
+            path_from_d("M17 20V4"),
+            path_from_d("m3 8 4-4 4 4"),
+            path_from_d("M7 4v16"),
+        ],
+    }
+}
+
+/// Map a filesystem entry to the most appropriate [`Icon`].
+///
+/// Directories always resolve to [`Icon::Folder`]. Files are classified
+/// by their (lower-cased) extension into the broad media families the
+/// file-manager surfaces: images, audio, video, archives, source code,
+/// and documents. Anything unrecognised falls back to [`Icon::File`].
+///
+/// This is the single source of truth for "what glyph represents this
+/// path" across the toolkit (the file-picker, list/grid views, …) so
+/// every consumer renders a consistent set without re-deriving the map.
+pub fn icon_for_path(path: &std::path::Path, is_dir: bool) -> Icon {
+    if is_dir {
+        return Icon::Folder;
+    }
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some(
+            "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "svg" | "ico" | "tif" | "tiff"
+            | "avif" | "heic",
+        ) => Icon::Image,
+        Some("mp3" | "wav" | "flac" | "ogg" | "oga" | "m4a" | "aac" | "opus" | "wma") => {
+            Icon::Music
+        }
+        Some("mp4" | "mkv" | "webm" | "mov" | "avi" | "wmv" | "flv" | "m4v" | "mpeg" | "mpg") => {
+            Icon::Film
+        }
+        Some(
+            "zip" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "zst" | "7z" | "rar" | "lz" | "lzma",
+        ) => Icon::Archive,
+        Some(
+            "rs" | "py" | "js" | "ts" | "tsx" | "jsx" | "c" | "h" | "cpp" | "hpp" | "cc" | "go"
+            | "java" | "kt" | "rb" | "php" | "swift" | "sh" | "bash" | "fish" | "zsh" | "lua"
+            | "toml" | "json" | "yaml" | "yml" | "xml" | "html" | "htm" | "css" | "scss" | "sql",
+        ) => Icon::FileCode,
+        Some("txt" | "md" | "markdown" | "rst" | "doc" | "docx" | "odt" | "rtf" | "pdf" | "tex") => {
+            Icon::FileText
+        }
+        _ => Icon::File,
     }
 }
 
@@ -498,5 +728,79 @@ mod tests {
                 assert!(element_count(&p) > 0, "{icon:?} subpath empty");
             }
         }
+    }
+
+    /// Every file-manager glyph must transcribe into non-empty subpaths
+    /// so the picker / list / grid never ship a blank square.
+    #[test]
+    fn file_manager_icons_produce_non_empty_subpaths() {
+        for icon in [
+            Icon::Folder,
+            Icon::FolderOpen,
+            Icon::File,
+            Icon::Image,
+            Icon::Music,
+            Icon::Film,
+            Icon::Archive,
+            Icon::FileCode,
+            Icon::ArrowLeft,
+            Icon::ArrowRight,
+            Icon::ArrowUp,
+            Icon::ChevronRight,
+            Icon::RotateCw,
+            Icon::Copy,
+            Icon::Scissors,
+            Icon::ClipboardPaste,
+            Icon::Trash2,
+            Icon::Pencil,
+            Icon::FolderPlus,
+            Icon::FilePlus,
+            Icon::List,
+            Icon::Star,
+            Icon::HardDrive,
+            Icon::Check,
+            Icon::Info,
+            Icon::CloudDownload,
+            Icon::ArrowUpDown,
+        ] {
+            let sub = icon_subpaths(icon);
+            assert!(!sub.is_empty(), "{icon:?} produced no subpaths");
+            for p in &sub {
+                assert!(element_count(p) > 0, "{icon:?} emitted empty subpath");
+            }
+        }
+    }
+
+    /// Spot-check the exact subpath counts of the more complex new
+    /// glyphs so an upstream lucide restructure is caught at test time.
+    #[test]
+    fn file_manager_icon_subpath_counts() {
+        assert_eq!(icon_subpaths(Icon::Folder).len(), 1);
+        assert_eq!(icon_subpaths(Icon::File).len(), 2, "file = page + corner");
+        assert_eq!(icon_subpaths(Icon::Image).len(), 3, "image = frame + lens + ridge");
+        assert_eq!(icon_subpaths(Icon::Film).len(), 8, "film = frame + 7 rails");
+        assert_eq!(icon_subpaths(Icon::Scissors).len(), 5, "scissors = 2 rings + 3 strokes");
+        assert_eq!(icon_subpaths(Icon::Trash2).len(), 5, "trash = 2 tines + body + lid + handle");
+        assert_eq!(icon_subpaths(Icon::HardDrive).len(), 4, "hard-drive = divider + body + 2 dots");
+        assert_eq!(icon_subpaths(Icon::List).len(), 6, "list = 3 bullets + 3 rules");
+    }
+
+    #[test]
+    fn icon_for_path_classifies_by_extension() {
+        use std::path::Path;
+        // Directories always fold to the folder glyph regardless of name.
+        assert_eq!(icon_for_path(Path::new("/home/user/Pictures"), true), Icon::Folder);
+        assert_eq!(icon_for_path(Path::new("/x/archive.zip"), true), Icon::Folder);
+        // Media families.
+        assert_eq!(icon_for_path(Path::new("a/photo.PNG"), false), Icon::Image, "case-insensitive");
+        assert_eq!(icon_for_path(Path::new("song.flac"), false), Icon::Music);
+        assert_eq!(icon_for_path(Path::new("clip.mkv"), false), Icon::Film);
+        assert_eq!(icon_for_path(Path::new("bundle.tar.gz"), false), Icon::Archive);
+        assert_eq!(icon_for_path(Path::new("main.rs"), false), Icon::FileCode);
+        assert_eq!(icon_for_path(Path::new("notes.md"), false), Icon::FileText);
+        assert_eq!(icon_for_path(Path::new("report.docx"), false), Icon::FileText);
+        // Unknown / extension-less → generic file.
+        assert_eq!(icon_for_path(Path::new("Makefile"), false), Icon::File);
+        assert_eq!(icon_for_path(Path::new("blob.qwerty"), false), Icon::File);
     }
 }
