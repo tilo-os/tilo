@@ -38,7 +38,6 @@ const MUTED: Color = Color::from_rgb8(0x8a, 0x8a, 0x92);
 const CARET_COLOR: Color = Color::from_rgb8(0x28, 0x5a, 0xc8);
 const SELECTION: Color = Color::from_rgba8(0x46, 0x78, 0xe6, 0x4d);
 
-const PAGE_MARGIN: f64 = 64.0;
 const PAGE_TOP: f64 = 28.0;
 const MAX_PAGE_W: f64 = 820.0;
 const BLOCK_SPACING: f64 = 8.0;
@@ -68,6 +67,40 @@ enum ToolAction {
     TableColAdd,
     TableColDel,
     TableDelete,
+    MarginsCycle,
+    ToggleBorder,
+}
+
+/// Page margin (padding) preset — the inset of the text from the page edge.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum MarginPreset {
+    Narrow,
+    Normal,
+    Wide,
+}
+
+impl MarginPreset {
+    fn px(self) -> f64 {
+        match self {
+            MarginPreset::Narrow => 40.0,
+            MarginPreset::Normal => 72.0,
+            MarginPreset::Wide => 112.0,
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            MarginPreset::Narrow => "⤢ Narrow",
+            MarginPreset::Normal => "⤢ Normal",
+            MarginPreset::Wide => "⤢ Wide",
+        }
+    }
+    fn next(self) -> Self {
+        match self {
+            MarginPreset::Narrow => MarginPreset::Normal,
+            MarginPreset::Normal => MarginPreset::Wide,
+            MarginPreset::Wide => MarginPreset::Narrow,
+        }
+    }
 }
 
 fn char_to_byte(text: &str, char_off: usize) -> usize {
@@ -273,6 +306,9 @@ pub struct WordProcessorWidget {
     /// each frame from the laid-out content height.
     scroll_y: f64,
     max_scroll: f64,
+    /// Page layout: margin (padding) preset + whether to draw a page border.
+    margins: MarginPreset,
+    page_border: bool,
 }
 
 impl Default for WordProcessorWidget {
@@ -299,6 +335,8 @@ impl WordProcessorWidget {
             rich_clip: None,
             scroll_y: 0.0,
             max_scroll: 0.0,
+            margins: MarginPreset::Normal,
+            page_border: false,
         }
     }
 
@@ -411,7 +449,8 @@ impl Widget for WordProcessorWidget {
         let canvas = Rect::new(full.x0, full.y0 + TOOLBAR_H, full.x1, status_top);
         scene.fill(Fill::NonZero, transform, CANVAS, None, &canvas);
 
-        let geo = chrome::page::geometry(canvas, MAX_PAGE_W, PAGE_TOP, PAGE_MARGIN);
+        let pm = self.margins.px();
+        let geo = chrome::page::geometry(canvas, MAX_PAGE_W, PAGE_TOP, pm);
         let (page_x, page_top, page_w) = (geo.page_x, geo.page_top, geo.page_width);
         let content_x = geo.content_x;
         let content_w = geo.content_width as f32;
@@ -420,7 +459,7 @@ impl Widget for WordProcessorWidget {
         // sharing a table id lay out as a grid; everything else stacks normally.
         let blocks = std::mem::take(&mut self.blocks);
         let mut laid: Vec<Laid> = Vec::with_capacity(blocks.len());
-        let mut y = page_top + PAGE_MARGIN;
+        let mut y = page_top + pm;
         let mut ol_count = 0u32;
         let cell_pad = 8.0f64;
         let mut bi = 0;
@@ -523,7 +562,7 @@ impl Widget for WordProcessorWidget {
                 bi += 1;
             }
         }
-        let content_bottom = y - BLOCK_SPACING + PAGE_MARGIN;
+        let content_bottom = y - BLOCK_SPACING + pm;
         let page_h = (content_bottom - page_top).max(canvas.height() - 2.0 * PAGE_TOP);
 
         // Scrolling: clamp the offset to the overflow, then shift the laid-out
@@ -548,6 +587,20 @@ impl Widget for WordProcessorWidget {
         let page = Rect::new(page_x, page_top - sy, page_x + page_w, page_top + page_h - sy);
         chrome::page::draw(scene, transform, page, PAPER, SHADOW);
 
+        // Optional page border — a clean frame inset from the page edge, sitting
+        // just outside the text margin so it never collides with content.
+        if self.page_border {
+            let inset = (pm * 0.45).clamp(16.0, 40.0);
+            let frame = Rect::new(page.x0 + inset, page.y0 + inset, page.x1 - inset, page.y1 - inset);
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.25),
+                transform,
+                Color::from_rgb8(0xb6, 0xb9, 0xc2),
+                None,
+                &vello::kurbo::RoundedRect::from_rect(frame, 2.0),
+            );
+        }
+
         // Restore the block cache before pass 2 so selection lookups resolve.
         self.blocks = blocks;
         let multi_sel = self.selection_blocks_cached().len() > 1;
@@ -565,7 +618,7 @@ impl Widget for WordProcessorWidget {
             }
 
             if l.kind == "fidelity" {
-                let box_rect = Rect::new(l.text_x, l.y_top + 2.0, (page_x + page_w - PAGE_MARGIN).min(l.text_x + 360.0), l.y_top + l.height - 2.0);
+                let box_rect = Rect::new(l.text_x, l.y_top + 2.0, (page_x + page_w - pm).min(l.text_x + 360.0), l.y_top + l.height - 2.0);
                 scene.fill(Fill::NonZero, transform, Color::from_rgb8(0xee, 0xee, 0xf2), None, &vello::kurbo::RoundedRect::from_rect(box_rect, 4.0));
                 text_renderer.draw_text(scene, "⟦ embedded content ⟧", 14.0, MUTED, transform * Affine::translate((l.text_x + 10.0, l.y_top + 6.0)), None);
                 continue;
@@ -952,6 +1005,8 @@ impl WordProcessorWidget {
             ToolAction::TableColAdd => self.inner.table_add_col(state),
             ToolAction::TableColDel => self.inner.table_del_col(state),
             ToolAction::TableDelete => self.inner.table_delete(state),
+            ToolAction::MarginsCycle => self.margins = self.margins.next(),
+            ToolAction::ToggleBorder => self.page_border = !self.page_border,
         }
     }
 
@@ -1069,7 +1124,7 @@ impl WordProcessorWidget {
             _ => LabelCue::None,
         };
         let group_start = |a: ToolAction| {
-            matches!(a, ToolAction::H1 | ToolAction::AlignLeft | ToolAction::FontCycle | ToolAction::InsertTable | ToolAction::TableRowAdd)
+            matches!(a, ToolAction::H1 | ToolAction::AlignLeft | ToolAction::FontCycle | ToolAction::InsertTable | ToolAction::TableRowAdd | ToolAction::MarginsCycle)
         };
         let mut specs: Vec<(ToolAction, ToolbarItem)> = Vec::new();
         let mut add = |a: ToolAction, label: &str, w: f64, active: bool| {
@@ -1099,6 +1154,9 @@ impl WordProcessorWidget {
         } else {
             add(ToolAction::InsertTable, "⊞ Table", 78.0, false);
         }
+        // Page layout group: margin (padding) preset + page border toggle.
+        add(ToolAction::MarginsCycle, self.margins.label(), 86.0, false);
+        add(ToolAction::ToggleBorder, "Border", 62.0, self.page_border);
         drop(add);
 
         let items: Vec<ToolbarItem> = specs.iter().map(|(_, item)| item.clone()).collect();
