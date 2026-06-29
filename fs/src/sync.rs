@@ -269,11 +269,18 @@ async fn pump_loop(
             ev = receiver.next() => {
                 match ev {
                     Some(Ok(Event::Received(msg))) => {
-                        // Fast path: just apply the delta. Conflict resolution
-                        // and anti-entropy run in reconcile_loop so a slow
-                        // hydration can never block local delta propagation.
-                        let mut ns = namespace.lock().unwrap();
-                        let _ = ns.apply_remote(msg.content.as_ref());
+                        // Apply the delta + break any move-cycle it introduced
+                        // (cheap, pure-CPU). Content-conflict resolution and
+                        // anti-entropy run in reconcile_loop so a slow hydration
+                        // never blocks local delta propagation.
+                        let resolve_delta = {
+                            let mut ns = namespace.lock().unwrap();
+                            ns.apply_remote_and_resolve(msg.content.as_ref())
+                                .unwrap_or_default()
+                        };
+                        if !resolve_delta.is_empty() {
+                            let _ = sender.broadcast(Bytes::from(resolve_delta)).await;
+                        }
                     }
                     Some(Ok(Event::NeighborUp(id))) => {
                         hydrator.add_peer(EndpointAddr::new(id));
@@ -306,7 +313,16 @@ async fn reconcile_loop(
 
         for peer in hydrator.known_peers() {
             if let Ok(doc) = fetch_remote_doc(&endpoint, peer).await {
-                let _ = namespace.lock().unwrap().merge_remote_doc(&doc);
+                let resolve_delta = {
+                    namespace
+                        .lock()
+                        .unwrap()
+                        .merge_remote_and_resolve(&doc)
+                        .unwrap_or_default()
+                };
+                if !resolve_delta.is_empty() {
+                    let _ = sender.broadcast(Bytes::from(resolve_delta)).await;
+                }
             }
         }
 
