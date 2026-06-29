@@ -6,7 +6,7 @@ use fs::{ContentStore, Heuristics, Hydrator, Namespace, QuickFS, Ticket, Workspa
 use fuser::*;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "qOS collaborative filesystem", long_about = None)]
@@ -68,14 +68,26 @@ async fn open_store(cache_dir: Option<PathBuf>) -> Result<ContentStore> {
 }
 
 async fn serve(mount_point: PathBuf, cache_dir: Option<PathBuf>, seed: Option<PathBuf>) -> Result<()> {
+    let np = namespace_path(&cache_dir);
     let (endpoint, lookup) = sync::bind_endpoint().await?;
     let store = Arc::new(open_store(cache_dir).await?);
-    let namespace = Arc::new(Mutex::new(Namespace::new(endpoint.id().to_string())));
+    let author = endpoint.id().to_string();
+
+    // Restore a previously-persisted workspace, or start fresh (+ optional seed).
+    let (ns_value, fresh) = match np.as_ref().filter(|p| p.exists()) {
+        Some(p) => (Namespace::from_bytes(author.clone(), &std::fs::read(p)?)?, false),
+        None => (Namespace::new(author.clone()), true),
+    };
+    let namespace = Arc::new(Mutex::new(ns_value));
     let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
 
-    if let Some(seed) = seed {
-        seed_from_dir(&namespace, &store, &seed).await?;
-        println!("Seeded workspace from {seed:?}");
+    if fresh {
+        if let Some(seed) = seed {
+            seed_from_dir(&namespace, &store, &seed).await?;
+            println!("Seeded workspace from {seed:?}");
+        }
+    } else {
+        println!("Restored workspace from {:?}", np.as_ref().unwrap());
     }
 
     let (workspace, ticket) = Workspace::host(
@@ -90,23 +102,28 @@ async fn serve(mount_point: PathBuf, cache_dir: Option<PathBuf>, seed: Option<Pa
     println!("Iroh NodeID: {}", endpoint.id());
     println!("Hosting workspace — share this ticket to invite peers:\n{}", ticket.encode());
 
-    run_mount(mount_point, namespace, hydrator, workspace.sync.clone()).await?;
-    drop(workspace); // keep the sync tasks alive until we unmount
+    let persist = np.clone().map(|p| spawn_persist(namespace.clone(), p));
+    run_mount(mount_point, namespace.clone(), hydrator, workspace.sync.clone()).await?;
+    if let Some(p) = &np {
+        persist_now(&namespace, p); // final flush
+    }
+    if let Some(h) = persist {
+        h.abort();
+    }
+    drop(workspace);
     Ok(())
 }
 
 async fn mount(mount_point: PathBuf, ticket: String, cache_dir: Option<PathBuf>) -> Result<()> {
     let ticket = Ticket::decode(&ticket)?;
+    let np = namespace_path(&cache_dir);
     let (endpoint, lookup) = sync::bind_endpoint().await?;
     let store = Arc::new(open_store(cache_dir).await?);
     let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
+    let author = endpoint.id().to_string();
 
-    // Bootstrap the shared document from the host before joining.
-    let doc = sync::fetch_remote_doc(&endpoint, ticket.node.clone()).await?;
-    let namespace = Arc::new(Mutex::new(Namespace::from_bytes(
-        endpoint.id().to_string(),
-        &doc,
-    )?));
+    let ns_value = open_namespace_mount(author, &np, &endpoint, ticket.node.clone()).await?;
+    let namespace = Arc::new(Mutex::new(ns_value));
 
     let workspace = Workspace::join(
         endpoint.clone(),
@@ -121,9 +138,74 @@ async fn mount(mount_point: PathBuf, ticket: String, cache_dir: Option<PathBuf>)
     println!("Iroh NodeID: {}", endpoint.id());
     println!("Joined workspace.");
 
-    run_mount(mount_point, namespace, hydrator, workspace.sync.clone()).await?;
+    let persist = np.clone().map(|p| spawn_persist(namespace.clone(), p));
+    run_mount(mount_point, namespace.clone(), hydrator, workspace.sync.clone()).await?;
+    if let Some(p) = &np {
+        persist_now(&namespace, p);
+    }
+    if let Some(h) = persist {
+        h.abort();
+    }
     drop(workspace);
     Ok(())
+}
+
+fn namespace_path(cache_dir: &Option<PathBuf>) -> Option<PathBuf> {
+    cache_dir.as_ref().map(|d| d.join("namespace.bin"))
+}
+
+/// Atomically persist the namespace document to `path` (write-temp + rename).
+fn persist_now(namespace: &Arc<Mutex<Namespace>>, path: &Path) {
+    let bytes = {
+        namespace.lock().unwrap().save()
+    };
+    let tmp = path.with_extension("tmp");
+    if std::fs::write(&tmp, &bytes).is_ok() {
+        let _ = std::fs::rename(&tmp, path);
+    }
+}
+
+/// Persist the namespace to disk every few seconds.
+fn spawn_persist(namespace: Arc<Mutex<Namespace>>, path: PathBuf) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            persist_now(&namespace, &path);
+        }
+    })
+}
+
+/// Open a joiner's namespace: load any persisted copy (offline-capable), then
+/// merge the host's current document if reachable. Fails only if there's
+/// neither a persisted copy nor a reachable host.
+async fn open_namespace_mount(
+    author: String,
+    np: &Option<PathBuf>,
+    endpoint: &iroh::endpoint::Endpoint,
+    host: iroh_base::EndpointAddr,
+) -> Result<Namespace> {
+    let persisted = np
+        .as_ref()
+        .filter(|p| p.exists())
+        .and_then(|p| std::fs::read(p).ok());
+
+    match sync::fetch_remote_doc(endpoint, host).await {
+        Ok(doc) => match persisted {
+            Some(bytes) => {
+                let mut ns = Namespace::from_bytes(author, &bytes)?;
+                ns.merge_remote_and_resolve(&doc)?;
+                Ok(ns)
+            }
+            None => Ok(Namespace::from_bytes(author, &doc)?),
+        },
+        Err(e) => match persisted {
+            Some(bytes) => {
+                eprintln!("host unreachable ({e}); starting from persisted workspace");
+                Ok(Namespace::from_bytes(author, &bytes)?)
+            }
+            None => Err(e),
+        },
+    }
 }
 
 /// Mount the FUSE filesystem and run until interrupted (or the mount exits).
