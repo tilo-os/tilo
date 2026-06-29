@@ -301,4 +301,77 @@ mod tests {
         assert!(text.contains(" A"), "A's edit visible to B: {text}");
         assert!(text.contains(" B"), "B's edit visible: {text}");
     }
+
+    /// The full story: an editor on peer A edits a document through the control
+    /// socket; the edit propagates over P2P; an editor on peer B sees it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn edit_via_control_reaches_a_remote_editor() {
+        use crate::sync::{bind_endpoint, fetch_remote_doc, Workspace};
+        use crate::{ContentStore, Hydrator};
+        use std::time::Duration;
+
+        // peer A: a document with a paragraph, then host the workspace
+        let (ep_a, look_a) = bind_endpoint().await.unwrap();
+        let store_a = Arc::new(ContentStore::memory());
+        let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
+        let ns_a = Arc::new(Mutex::new(Namespace::new("A")));
+        let bid = {
+            let mut n = ns_a.lock().unwrap();
+            let ino = n.create_document(ROOT_INO, "doc.md", "md", 1).unwrap();
+            let b = n.document_insert_block(ino, None, "paragraph").unwrap();
+            n.document_splice(ino, &b, 0, 0, "base");
+            b
+        };
+        let (ws_a, ticket) =
+            Workspace::host(ep_a.clone(), look_a, store_a.clone(), hyd_a.clone(), ns_a.clone())
+                .await
+                .unwrap();
+
+        // peer B: bootstrap the doc + join
+        let (ep_b, look_b) = bind_endpoint().await.unwrap();
+        let store_b = Arc::new(ContentStore::memory());
+        let hyd_b = Arc::new(Hydrator::new(ep_b.clone(), store_b.clone()));
+        let doc = fetch_remote_doc(&ep_b, ticket.node.clone()).await.unwrap();
+        let ns_b = Arc::new(Mutex::new(Namespace::from_bytes("B", &doc).unwrap()));
+        let ws_b =
+            Workspace::join(ep_b.clone(), look_b, store_b.clone(), hyd_b.clone(), ns_b.clone(), ticket)
+                .await
+                .unwrap();
+
+        // a control socket (editor endpoint) on each peer
+        let dir = tempfile::tempdir().unwrap();
+        let sock_a = dir.path().join("a.sock");
+        let sock_b = dir.path().join("b.sock");
+        tokio::spawn(serve(
+            UnixListener::bind(&sock_a).unwrap(),
+            ns_a.clone(),
+            Some(ws_a.sync.clone()),
+        ));
+        tokio::spawn(serve(
+            UnixListener::bind(&sock_b).unwrap(),
+            ns_b.clone(),
+            Some(ws_b.sync.clone()),
+        ));
+
+        // editor on A edits through the socket
+        let mut ed_a = Client::connect(&sock_a).await.unwrap();
+        let ino_a = ed_a.open("doc.md").await.unwrap().unwrap();
+        ed_a.splice(ino_a, &bid, 4, 0, " +A").await.unwrap(); // "base +A"
+
+        // editor on B must see it after P2P propagation
+        let mut ed_b = Client::connect(&sock_b).await.unwrap();
+        let ino_b = ed_b.open("doc.md").await.unwrap().unwrap();
+        let mut seen = false;
+        for _ in 0..50 {
+            let snap = ed_b.snapshot(ino_b).await.unwrap().unwrap();
+            let text: String = snap.blocks.iter().map(|b| b.text.clone()).collect();
+            if text.contains("+A") {
+                seen = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(seen, "A's control-socket edit must reach B's editor over P2P");
+        let _ = (ws_a, ws_b); // keep the workspaces alive
+    }
 }
