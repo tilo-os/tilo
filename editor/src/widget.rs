@@ -468,6 +468,8 @@ pub struct WordProcessorWidget {
     drag: DragSelect,
     path: Option<PathBuf>,
     format: Option<WpFormat>,
+    /// Unsaved changes since the last save (drives the status-bar `●` indicator).
+    modified: bool,
     blocks: Vec<BlockView>,
     laid: Vec<Laid>,
     toolbar: Vec<(ToolAction, Rect)>,
@@ -524,6 +526,7 @@ impl WordProcessorWidget {
             drag: DragSelect::new(),
             path: None,
             format: None,
+            modified: false,
             blocks: Vec::new(),
             laid: Vec::new(),
             toolbar: Vec::new(),
@@ -559,13 +562,23 @@ impl WordProcessorWidget {
         self.format = Some(format);
     }
 
-    fn save(&self, state: &AutoCommit) {
+    fn save(&mut self, state: &AutoCommit) {
+        // A brand-new (untitled) document has no path yet — fall back to
+        // `~/Untitled.md` so Ctrl+S always saves *something* and the filename
+        // then shows in the status bar (a proper Save-As dialog is a follow-up).
+        if self.path.is_none() {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            self.path = Some(std::path::PathBuf::from(home).join("Untitled.md"));
+            self.format = Some(WpFormat::Markdown);
+        }
         if let (Some(path), Some(format), Some(c)) =
             (self.path.as_ref(), self.format, self.inner.containers.as_ref())
         {
             let dr = qdoc::DocRef { doc: state, c };
             if let Ok(bytes) = format.export(dr) {
-                let _ = std::fs::write(path, bytes);
+                if std::fs::write(path, bytes).is_ok() {
+                    self.modified = false;
+                }
             }
         }
     }
@@ -1495,8 +1508,15 @@ impl Widget for WordProcessorWidget {
                 }
                 if ctrl {
                     if let Key::Character(s) = logical_key {
+                        // Save is not an editing action — don't mark the doc
+                        // modified again after writing it.
+                        if s.eq_ignore_ascii_case("s") {
+                            self.save(state);
+                            self.dirty = true;
+                            *handled = true;
+                            return;
+                        }
                         match s.to_lowercase().as_str() {
-                            "s" => self.save(state),
                             "b" => self.inner.toggle_mark(state, "strong"),
                             "i" => self.inner.toggle_mark(state, "em"),
                             "u" => self.inner.toggle_mark(state, "underline"),
@@ -1628,6 +1648,7 @@ impl Widget for WordProcessorWidget {
     }
     fn on_commit(&mut self) {
         self.needs_commit = false;
+        self.modified = true;
     }
     fn needs_redraw(&self) -> bool {
         self.dirty
@@ -1962,7 +1983,12 @@ impl WordProcessorWidget {
             Some(WpFormat::Markdown) => "Markdown",
             None => "",
         };
-        let right = if kind.is_empty() { fname.to_string() } else { format!("{fname}    ·    {kind}") };
+        let dot = if self.modified { "●  " } else { "" };
+        let right = if kind.is_empty() {
+            format!("{dot}{fname}")
+        } else {
+            format!("{dot}{fname}    ·    {kind}")
+        };
         chrome::status_bar::draw(scene, transform, tr, theme, bar, &left, &right);
     }
 
