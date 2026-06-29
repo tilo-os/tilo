@@ -81,7 +81,6 @@ enum ToolAction {
 enum LayoutMode {
     None,
     Margins,
-    Border,
     Spacing,
 }
 
@@ -325,10 +324,6 @@ struct Laid {
     bullet: Option<String>,
     /// Resolved text colour from the block's style.
     ink: Color,
-    /// Resolved paragraph border from the block's style.
-    border: Option<crate::styles::BorderProps>,
-    /// Left text indent from the block's style (for the border box).
-    indent: f64,
     /// Full grid-cell rectangle (table cells only) — for borders + precise hit.
     cell_box: Option<Rect>,
     /// Grid row index (table cells only) — for header tint + zebra striping.
@@ -373,10 +368,8 @@ pub struct WordProcessorWidget {
     /// The document's stylesheet (component-instance styles). Authoritative copy
     /// in the widget; reloaded from the doc when not mid-drag, persisted on edit.
     sheet: crate::styles::StyleSheet,
-    /// Page layout — all fully customizable by dragging guides on the page.
+    /// Page margins — fully customizable by dragging guides on the page.
     margins: Edges,
-    border_on: bool,
-    border: Edges,
     layout_mode: LayoutMode,
     /// Active guide drag (the side being dragged), if any.
     guide_drag: Option<GuideDrag>,
@@ -413,8 +406,6 @@ impl WordProcessorWidget {
             max_scroll: 0.0,
             sheet: crate::styles::StyleSheet::default(),
             margins: Edges::uniform(72.0),
-            border_on: false,
-            border: Edges::uniform(28.0),
             layout_mode: LayoutMode::None,
             guide_drag: None,
             page_rect: Rect::ZERO,
@@ -543,27 +534,15 @@ fn apply_edges(e: &mut Edges, page: Rect, side: Side, p: Point, kind: DragKind) 
 }
 
 impl WordProcessorWidget {
-    /// Toggle a layout-edit mode from a chip click. The Border chip cycles
-    /// off → on+edit → off so the border can be added and removed in place.
+    /// Toggle a layout-edit mode from a chip click.
     fn toggle_layout_mode(&mut self, mode: LayoutMode) {
-        if mode == LayoutMode::Border {
-            if self.layout_mode == LayoutMode::Border {
-                self.border_on = false;
-                self.layout_mode = LayoutMode::None;
-            } else {
-                self.border_on = true;
-                self.layout_mode = LayoutMode::Border;
-            }
-            return;
-        }
         self.layout_mode = if self.layout_mode == mode { LayoutMode::None } else { mode };
     }
 
-    /// The per-side measurement the active mode edits (margins or border).
+    /// The per-side measurement the active mode edits (the page margins).
     fn active_edges(&self) -> Option<Edges> {
         match self.layout_mode {
             LayoutMode::Margins => Some(self.margins),
-            LayoutMode::Border => Some(self.border),
             _ => None,
         }
     }
@@ -617,10 +596,6 @@ impl WordProcessorWidget {
         let page = self.page_rect;
         match gd.mode {
             LayoutMode::Margins => apply_edges(&mut self.margins, page, gd.side, p, gd.kind),
-            LayoutMode::Border => {
-                apply_edges(&mut self.border, page, gd.side, p, gd.kind);
-                self.border_on = true;
-            }
             LayoutMode::Spacing => {
                 // Edit the focused block's *style* spacing — all blocks of that
                 // style follow (component-instance model).
@@ -690,7 +665,7 @@ impl WordProcessorWidget {
         let cy = (bar.y0 + bar.y1) / 2.0;
         let mut x = bar.x0 + 12.0;
         self.layout_chips.clear();
-        for (mode, label) in [(LayoutMode::Margins, "Margins"), (LayoutMode::Border, "Border"), (LayoutMode::Spacing, "Spacing")] {
+        for (mode, label) in [(LayoutMode::Margins, "Margins"), (LayoutMode::Spacing, "Spacing")] {
             let w = 16.0 + label.chars().count() as f64 * 7.6;
             let r = Rect::new(x, bar.y0 + 5.0, x + w, bar.y1 - 5.0);
             let active = self.layout_mode == mode;
@@ -704,18 +679,14 @@ impl WordProcessorWidget {
 
         let readout = match self.layout_mode {
             LayoutMode::Margins => format!(
-                "L {}  T {}  R {}  B {}   ·   drag a guide · Ctrl-drag = all sides",
+                "margins  L {}  T {}  R {}  B {}   ·   drag = opposite pair · Shift = one side · Ctrl = all proportional",
                 self.margins.left.round(), self.margins.top.round(), self.margins.right.round(), self.margins.bottom.round()
-            ),
-            LayoutMode::Border => format!(
-                "border  L {}  T {}  R {}  B {}   ·   drag a side · Ctrl-drag = all · click Border to remove",
-                self.border.left.round(), self.border.top.round(), self.border.right.round(), self.border.bottom.round()
             ),
             LayoutMode::Spacing => {
                 let name = self.focused_style_key().map(|k| self.sheet.get(&k).name).unwrap_or_else(|| "Body".into());
                 format!("{} spacing  {} px   ·   drag the handle — every “{}” block follows", name, self.focused_space_after().round(), name)
             }
-            LayoutMode::None => "Page layout — pick Margins, Border, or Spacing, then drag on the page".to_string(),
+            LayoutMode::None => "Page layout — pick Margins or Spacing, then drag on the page".to_string(),
         };
         tr.draw_text(scene, &readout, 12.5, Color::from_rgb8(0x9a, 0x9e, 0xa8), transform * Affine::translate((x + 12.0, cy - 8.0)), None);
     }
@@ -830,8 +801,6 @@ impl Widget for WordProcessorWidget {
                             layout,
                             bullet: None,
                             ink: INK,
-                            border: None,
-                            indent: 0.0,
                             cell_box: Some(cbox),
                             cell_row: Some(r),
                         });
@@ -881,8 +850,6 @@ impl Widget for WordProcessorWidget {
                     layout,
                     bullet,
                     ink: Color::from_rgb8(st.color[0], st.color[1], st.color[2]),
-                    border: st.border.clone(),
-                    indent,
                     cell_box: None,
                     cell_row: None,
                 });
@@ -915,15 +882,6 @@ impl Widget for WordProcessorWidget {
         let page = Rect::new(page_x, page_top - sy, page_x + page_w, page_top + page_h - sy);
         chrome::page::draw(scene, transform, page, PAPER, SHADOW);
         self.page_rect = page;
-
-        // Page border (per-side inset). Drawn when enabled, or previewed live in
-        // accent while it's being edited.
-        if self.border_on || self.layout_mode == LayoutMode::Border {
-            let b = self.border;
-            let frame = Rect::new(page.x0 + b.left, page.y0 + b.top, page.x1 - b.right, page.y1 - b.bottom);
-            let col = if self.layout_mode == LayoutMode::Border { GUIDE } else { Color::from_rgb8(0xb6, 0xb9, 0xc2) };
-            scene.stroke(&vello::kurbo::Stroke::new(1.4), transform, col, None, &vello::kurbo::RoundedRect::from_rect(frame, 2.0));
-        }
 
         // Restore the block cache before pass 2 so selection lookups resolve.
         self.blocks = blocks;
@@ -964,22 +922,6 @@ impl Widget for WordProcessorWidget {
                 }
             }
 
-            // Per-style paragraph border (e.g. a Quote's left rule).
-            if let Some(bd) = &l.border {
-                let bx0 = l.text_x - bd.pad as f64;
-                let bx1 = l.text_x + l.width + bd.pad as f64;
-                let by0 = l.y_top - bd.pad as f64 * 0.5;
-                let by1 = l.y_top + l.height + bd.pad as f64 * 0.5;
-                let col = Color::from_rgb8(bd.color[0], bd.color[1], bd.color[2]);
-                let stroke = vello::kurbo::Stroke::new(bd.width as f64);
-                let mut seg = |x0: f64, y0: f64, x1: f64, y1: f64| {
-                    scene.stroke(&stroke, transform, col, None, &vello::kurbo::Line::new((x0, y0), (x1, y1)));
-                };
-                if bd.left { seg(bx0, by0, bx0, by1); }
-                if bd.right { seg(bx1, by0, bx1, by1); }
-                if bd.top { seg(bx0, by0, bx1, by0); }
-                if bd.bottom { seg(bx0, by1, bx1, by1); }
-            }
             text_renderer.draw_rich(scene, &l.layout, transform * Affine::translate((l.text_x, l.y_top)), l.ink);
 
             if self.focused && l.id == self.inner.caret.block && !self.inner.has_selection() {

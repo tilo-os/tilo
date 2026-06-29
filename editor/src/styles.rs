@@ -7,19 +7,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// A paragraph border drawn around blocks of a style (e.g. a Quote's left rule).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
-pub struct BorderProps {
-    pub width: f32,
-    pub color: [u8; 3],
-    /// Padding between the text and the border box, px.
-    pub pad: f32,
-    pub top: bool,
-    pub right: bool,
-    pub bottom: bool,
-    pub left: bool,
-}
-
 /// Every visual property of a style.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub struct StyleProps {
@@ -36,8 +23,6 @@ pub struct StyleProps {
     pub space_after: f32,
     /// Left text indent, px.
     pub indent: f32,
-    #[serde(default)]
-    pub border: Option<BorderProps>,
 }
 
 /// The document's full set of styles.
@@ -60,7 +45,6 @@ fn base(name: &str, font: &str, size: f32, bold: bool, color: [u8; 3], after: f3
         space_before: 0.0,
         space_after: after,
         indent,
-        border: None,
     }
 }
 
@@ -74,7 +58,6 @@ impl Default for StyleSheet {
         s.insert("list".into(), base("List Item", "sans", 16.5, false, INK, 4.0, 28.0));
         let mut quote = base("Quote", "serif", 17.0, false, [0x55, 0x57, 0x60], 10.0, 22.0);
         quote.italic = true;
-        quote.border = Some(BorderProps { width: 3.0, color: [0xb6, 0xbc, 0xcc], pad: 12.0, top: false, right: false, bottom: false, left: true });
         s.insert("quote".into(), quote);
         StyleSheet { styles: s }
     }
@@ -147,6 +130,6 @@ mod tests {
         let sheet = StyleSheet::default();
         let back = StyleSheet::from_json(&sheet.to_json()).unwrap();
         assert_eq!(back.get("body"), sheet.get("body"));
-        assert_eq!(back.get("quote").border, sheet.get("quote").border);
+        assert_eq!(back.get("quote").italic, sheet.get("quote").italic);
     }
 }
