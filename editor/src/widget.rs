@@ -476,6 +476,30 @@ struct Laid {
     cell_row: Option<usize>,
 }
 
+/// A list item's 0-based nesting level (absent attr → 0).
+fn list_level(b: &BlockView) -> usize {
+    match b.attrs.get("level") {
+        Some(AttrVal::Int(n)) if *n > 0 => *n as usize,
+        _ => 0,
+    }
+}
+
+/// Per-nesting-level extra indent (px) added on top of the list style's indent.
+const LIST_INDENT_STEP: f64 = 24.0;
+/// Horizontal offset from the text's left edge to the bullet / number glyph.
+const BULLET_GAP: f64 = 20.0;
+/// US-Letter page height in inches (width is 8.5in → `MAX_PAGE_W` px).
+const LETTER_RATIO: f64 = 11.0 / 8.5;
+
+/// The bullet glyph for an unordered item at `level` (cycles by depth).
+fn bullet_glyph(level: usize) -> &'static str {
+    match level % 3 {
+        0 => "•",
+        1 => "◦",
+        _ => "▪",
+    }
+}
+
 fn cell_table(b: &BlockView) -> Option<String> {
     match b.attrs.get("table") {
         Some(AttrVal::Str(s)) => Some(s.clone()),
@@ -1260,6 +1284,40 @@ impl WordProcessorWidget {
     }
 }
 
+/// Draw page-end markers down the (continuous) page sheet: a hairline at every
+/// US-Letter-height boundary plus a "Page N" pill tucked into the left margin so
+/// it never sits on top of body text (and stays visible even when the page is
+/// wider than the canvas). `page` is in screen space (already scroll-shifted);
+/// `left_margin` is the page's left inset in px.
+fn draw_page_breaks(scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, page: Rect, letter_h: f64, left_margin: f64) {
+    if letter_h < 2.0 {
+        return;
+    }
+    // Boundary colour: a soft slate that reads on white without fighting the text.
+    let line_col = Color::from_rgb8(0xc2, 0xc6, 0xce);
+    let mut k = 1usize;
+    loop {
+        let y = page.y0 + k as f64 * letter_h;
+        if y >= page.y1 - 2.0 {
+            break;
+        }
+        // Hairline across the page width (inset a touch from the paper edges).
+        let line = Rect::new(page.x0 + 6.0, y - 0.75, page.x1 - 6.0, y + 0.75);
+        scene.fill(Fill::NonZero, transform, line_col, None, &line);
+        // "Page N" pill in the left margin (the page below the break is page k+1).
+        let pw = 60.0_f64.min((left_margin - 10.0).max(40.0));
+        let ph = 18.0;
+        let px0 = page.x0 + 8.0;
+        let pill = Rect::new(px0, y - ph / 2.0, px0 + pw, y + ph / 2.0);
+        scene.fill(Fill::NonZero, transform, CANVAS, None, &vello::kurbo::RoundedRect::from_rect(pill, 9.0));
+        tr.draw_text(scene, &format!("Page {}", k + 1), 11.0, Color::from_rgb8(0xc6, 0xca, 0xd2), transform * Affine::translate((px0 + 9.0, y - 7.0)), None);
+        k += 1;
+        if k > 500 {
+            break;
+        }
+    }
+}
+
 /// A horizontal 1px divider line inside the panel.
 fn panel_divider(scene: &mut Scene, transform: Affine, x0: f64, x1: f64, y: f64) {
     scene.fill(Fill::NonZero, transform, PANEL_EDGE, None, &Rect::new(x0, y, x1, y + 1.0));
@@ -1351,13 +1409,15 @@ impl Widget for WordProcessorWidget {
         let blocks = std::mem::take(&mut self.blocks);
         let mut laid: Vec<Laid> = Vec::with_capacity(blocks.len());
         let mut y = page_top + m.top;
-        let mut ol_count = 0u32;
+        // Per-level ordered-list counters (index = nesting level); reset when a
+        // non-list block is reached or a shallower level re-enters.
+        let mut ol_counts: Vec<u32> = Vec::new();
         let cell_pad = 8.0f64;
         let mut bi = 0;
         while bi < blocks.len() {
             let b = &blocks[bi];
             if let Some(tid) = cell_table(b) {
-                ol_count = 0;
+                ol_counts.clear();
                 let start = bi;
                 while bi < blocks.len() && cell_table(&blocks[bi]).as_deref() == Some(tid.as_str()) {
                     bi += 1;
@@ -1411,7 +1471,7 @@ impl Widget for WordProcessorWidget {
                 }
                 y += self.sheet.get("body").space_after as f64;
             } else if b.kind == "image" {
-                ol_count = 0;
+                ol_counts.clear();
                 let hash = match b.attrs.get("blob") {
                     Some(AttrVal::Str(s)) => s.clone(),
                     _ => String::new(),
@@ -1450,18 +1510,29 @@ impl Widget for WordProcessorWidget {
             } else {
                 // Resolve the block's style (component-instance model).
                 let st = self.sheet.get(&block_style_key(b));
-                let (size, base_bold, indent) = (st.size, st.bold, st.indent as f64);
-                let bullet = if b.kind == "list_item" {
-                    if matches!(b.attrs.get("ordered"), Some(AttrVal::Bool(true))) {
-                        ol_count += 1;
-                        Some(format!("{ol_count}."))
-                    } else {
-                        ol_count = 0;
-                        Some("•".to_string())
+                let (size, base_bold) = (st.size, st.bold);
+                // List items indent by nesting level; the bullet/number sits just
+                // left of the text. Ordered items number per level.
+                let (indent, bullet) = if b.kind == "list_item" {
+                    let level = list_level(b);
+                    let indent = st.indent as f64 + level as f64 * LIST_INDENT_STEP;
+                    // Keep the ordered counters sized to the current depth; entering
+                    // a shallower level drops the deeper counters so they restart.
+                    ol_counts.truncate(level + 1);
+                    if ol_counts.len() <= level {
+                        ol_counts.resize(level + 1, 0);
                     }
+                    let bullet = if matches!(b.attrs.get("ordered"), Some(AttrVal::Bool(true))) {
+                        ol_counts[level] += 1;
+                        format!("{}.", ol_counts[level])
+                    } else {
+                        ol_counts[level] = 0; // a bullet item resets this level's number
+                        bullet_glyph(level).to_string()
+                    };
+                    (indent, Some(bullet))
                 } else {
-                    ol_count = 0;
-                    None
+                    ol_counts.clear();
+                    (st.indent as f64, None)
                 };
                 y += st.space_before as f64;
                 let wrap_w = (content_w - indent as f32).max(40.0);
@@ -1563,7 +1634,7 @@ impl Widget for WordProcessorWidget {
             }
 
             if let Some(bul) = &l.bullet {
-                text_renderer.draw_text(scene, bul, l.size, l.ink, transform * Affine::translate((l.text_x - 24.0, l.y_top)), None);
+                text_renderer.draw_text(scene, bul, l.size, l.ink, transform * Affine::translate((l.text_x - BULLET_GAP, l.y_top)), None);
             }
 
             if let Some((b0, b1)) = self.selection_bytes_for(&l.id, &l.text) {
@@ -1614,6 +1685,12 @@ impl Widget for WordProcessorWidget {
                 );
             }
         }
+
+        // Page-end markers (Google-Docs-style): a hairline + "Page N" label where
+        // each US-Letter-height page would break. Indicative only — content is not
+        // reflowed across pages. Uses the same px scale as the page width.
+        let letter_h = page_w * LETTER_RATIO;
+        draw_page_breaks(scene, transform, text_renderer, page, letter_h, m.left);
 
         // Layout-edit overlay: draggable guides + live value labels for the
         // active mode (drawn over the content, still inside the page clip).
@@ -2605,5 +2682,66 @@ mod tests {
         assert!(wp.laid.len() >= 2);
         assert!(wp.blocks.iter().any(|b| b.kind == "heading"));
         assert!(wp.blocks.iter().any(|b| b.marks.iter().any(|m| m.name == "strong")));
+    }
+
+    /// Build a doc directly in `state` from a closure over a `DocMut`.
+    fn with_doc(state: &mut ui::State, f: impl FnOnce(&mut qdoc::DocMut)) {
+        let c = qdoc::model::init(&mut state.doc, &state.root);
+        let mut ids = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
+        let mut dm = qdoc::DocMut { doc: &mut state.doc, c: &c, ids: &mut ids };
+        f(&mut dm);
+    }
+
+    #[test]
+    fn nested_list_items_indent_and_pick_glyph_by_level() {
+        let mut state = ui::State::new();
+        with_doc(&mut state, |dm| {
+            let a = dm.insert_block(None, "list_item");
+            dm.splice_text(&a, 0, 0, "a");
+            let b = dm.insert_block(Some(&a), "list_item");
+            dm.splice_text(&b, 0, 0, "b");
+            dm.set_attr(&b, "level", 1_i64);
+            let cc = dm.insert_block(Some(&b), "list_item");
+            dm.splice_text(&cc, 0, 0, "c");
+            dm.set_attr(&cc, "level", 2_i64);
+        });
+        let mut wp = WordProcessorWidget::new();
+        pipeline_draw(&mut wp, &mut state, 1000, 900);
+
+        let la = wp.laid.iter().find(|l| l.text == "a").unwrap();
+        let lb = wp.laid.iter().find(|l| l.text == "b").unwrap();
+        let lc = wp.laid.iter().find(|l| l.text == "c").unwrap();
+        assert!(lb.text_x > la.text_x && lc.text_x > lb.text_x, "deeper levels indent further");
+        // Unordered glyphs cycle • ◦ ▪ by depth.
+        assert_eq!(la.bullet.as_deref(), Some("•"));
+        assert_eq!(lb.bullet.as_deref(), Some("◦"));
+        assert_eq!(lc.bullet.as_deref(), Some("▪"));
+    }
+
+    #[test]
+    fn ordered_list_items_number_per_level() {
+        let mut state = ui::State::new();
+        with_doc(&mut state, |dm| {
+            let mut prev: Option<String> = None;
+            for (txt, lvl) in [("one", 0i64), ("two", 0), ("two-a", 1), ("two-b", 1), ("three", 0)] {
+                let id = dm.insert_block(prev.as_deref(), "list_item");
+                dm.splice_text(&id, 0, 0, txt);
+                dm.set_attr(&id, "ordered", true);
+                if lvl > 0 {
+                    dm.set_attr(&id, "level", lvl);
+                }
+                prev = Some(id);
+            }
+        });
+        let mut wp = WordProcessorWidget::new();
+        pipeline_draw(&mut wp, &mut state, 1000, 900);
+        let num = |t: &str| wp.laid.iter().find(|l| l.text == t).and_then(|l| l.bullet.clone());
+        assert_eq!(num("one").as_deref(), Some("1."));
+        assert_eq!(num("two").as_deref(), Some("2."));
+        // The nested ordered level restarts its own counter.
+        assert_eq!(num("two-a").as_deref(), Some("1."));
+        assert_eq!(num("two-b").as_deref(), Some("2."));
+        // Returning to level 0 continues the outer numbering.
+        assert_eq!(num("three").as_deref(), Some("3."));
     }
 }
