@@ -17,6 +17,10 @@ pub struct Button {
     is_hovered: bool,
     is_pressed: bool,
     is_focused: bool,
+    /// Optional leading vector glyph drawn instead of (icon-only) or
+    /// before (icon + label) the text. Lets toolbars render crisp lucide
+    /// icons without depending on a Nerd Font being installed.
+    icon: Option<crate::icons::Icon>,
     on_click_path: Option<String>, // Path in CRDT to mutate
     /// Optional imperative click handler, fired on release-while-hovered
     /// *in addition to* any `on_click_path` CRDT mutation. Lets app code
@@ -49,6 +53,7 @@ impl Button {
             is_hovered: false,
             is_pressed: false,
             is_focused: false,
+            icon: None,
             on_click_path: on_click_path.map(|s| s.to_string()),
             on_click: None,
             presence_path: Vec::new(),
@@ -79,6 +84,14 @@ impl Button {
     /// button), in addition to any `on_click_path` CRDT mutation.
     pub fn on_click<F: FnMut() + 'static>(mut self, f: F) -> Self {
         self.on_click = Some(Box::new(f));
+        self
+    }
+
+    /// Draw `icon` as a leading vector glyph. With an empty label the
+    /// icon is centred (icon-only button); with a label it sits to its
+    /// left.
+    pub fn with_icon(mut self, icon: crate::icons::Icon) -> Self {
+        self.icon = Some(icon);
         self
     }
 }
@@ -167,18 +180,51 @@ impl Widget for Button {
 
         let text_size = 14.0;
         let label = i18n!(&self.label);
-        let (text_width, _text_height) = text_renderer.measure(&label, text_size as f32, None);
-        let text_x = self.rect.center().x - (text_width as f64 / 2.0);
-        let text_y = self.rect.y0 + (self.rect.height() - text_size as f64) / 2.0;
-
-        text_renderer.draw_text(
-            scene,
-            &label,
-            text_size as f32,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((text_x, text_y)),
-            None,
-        );
+        let icon_px = (self.rect.height() - 14.0).clamp(12.0, 22.0);
+        match (self.icon, label.is_empty()) {
+            (Some(icon), true) => {
+                // Icon-only button — centre the glyph.
+                let ix = self.rect.center().x - icon_px / 2.0;
+                let iy = self.rect.center().y - icon_px / 2.0;
+                crate::icons::draw_icon(
+                    scene,
+                    transform,
+                    Rect::new(ix, iy, ix + icon_px, iy + icon_px),
+                    icon,
+                    theme.tokens.colors.text_primary,
+                    crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                );
+            }
+            (icon, _) => {
+                // Optional leading icon + centred label cluster.
+                let (text_width, _) = text_renderer.measure(&label, text_size as f32, None);
+                let gap = if icon.is_some() { 6.0 } else { 0.0 };
+                let icon_w = if icon.is_some() { icon_px } else { 0.0 };
+                let cluster_w = icon_w + gap + text_width as f64;
+                let start_x = self.rect.center().x - cluster_w / 2.0;
+                if let Some(icon) = icon {
+                    let iy = self.rect.center().y - icon_px / 2.0;
+                    crate::icons::draw_icon(
+                        scene,
+                        transform,
+                        Rect::new(start_x, iy, start_x + icon_px, iy + icon_px),
+                        icon,
+                        theme.tokens.colors.text_primary,
+                        crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                    );
+                }
+                let text_x = start_x + icon_w + gap;
+                let text_y = self.rect.y0 + (self.rect.height() - text_size as f64) / 2.0;
+                text_renderer.draw_text(
+                    scene,
+                    &label,
+                    text_size as f32,
+                    theme.tokens.colors.text_primary,
+                    transform * Affine::translate((text_x, text_y)),
+                    None,
+                );
+            }
+        }
         // End of cache build — splice the freshly-emitted local
         // scene into the outer App scene with the host transform.
         // delta = 0 here since cache_rect was just set to self.rect.
