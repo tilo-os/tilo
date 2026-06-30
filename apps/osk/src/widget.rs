@@ -157,10 +157,14 @@ pub struct OskWidget {
     /// `take_structure_dirty`.
     structure_dirty: bool,
 
-    /// Whether the keyboard is on screen. The default is `true` (the keyboard
-    /// is always visible). In the auto-show input-method mode the host sets
-    /// this `false` until a text field is focused; when hidden the widget
-    /// collapses to zero height and draws nothing, so no window space is taken.
+    /// Whether the keyboard is on screen. This is not the keyboard's own
+    /// choice — visibility belongs to the compositor, which shows the keyboard
+    /// while a text input is focused and hides it otherwise, and relays that
+    /// decision to the keyboard (and only the keyboard) over the input method.
+    /// The keyboard is the one surface the OS floats and hides this way; an
+    /// ordinary app has no equivalent. The default is `true` for the
+    /// always-visible fallback used when no input method drives auto-show.
+    /// When hidden the widget paints nothing.
     visible: bool,
 }
 
@@ -328,16 +332,18 @@ impl OskWidget {
     }
 
     /// Start hidden (builder). Used by the auto-show input-method mode, where
-    /// the keyboard only appears once a text field is focused.
+    /// the compositor only reveals the keyboard once a text field is focused.
     pub fn hidden(mut self) -> Self {
         self.visible = false;
         self
     }
 
-    /// Show or hide the keyboard at runtime. Raises `structure_dirty` on a
-    /// change so the host rebuilds the taffy node — a hidden keyboard collapses
-    /// to zero height and gives its space back. A no-op when already in the
-    /// requested state (so it doesn't churn relayout on repeated activations).
+    /// Apply the compositor's show/hide decision at runtime. This is set from
+    /// the input-method activate/deactivate the compositor sends only to the
+    /// keyboard, never from the keyboard's own logic. Raises `structure_dirty`
+    /// on a change so the host rebuilds the taffy node. A no-op when already in
+    /// the requested state (so it doesn't churn relayout on repeated
+    /// activations).
     pub fn set_visible(&mut self, visible: bool) {
         if self.visible != visible {
             self.visible = visible;
@@ -869,8 +875,10 @@ impl Widget for OskWidget {
         let rows = self.current_layout().row_count();
         // Toolbar + suggestion bar + key rows. The suggestion bar is always
         // reserved (it shows next-word predictions even before any swipe), so
-        // the keyboard height is stable as suggestions come and go. A hidden
-        // keyboard takes zero height so it gives its space back entirely.
+        // the keyboard height is stable as suggestions come and go. When the
+        // compositor has hidden the keyboard it requests no height and paints
+        // nothing — the real overlay surface is mapped/unmapped by the
+        // compositor, so a hidden keyboard occupies no surface either way.
         let total_h = if self.visible {
             self.toolbar_height + self.suggestion_height + rows as f32 * self.target_key_height
         } else {
@@ -1161,10 +1169,12 @@ impl Widget for OskWidget {
 
     /// Out-of-band commands from the host's input-method thread, which runs on
     /// its own Wayland connection and can't touch this widget directly. The
-    /// host forwards focus changes here as short text commands so the keyboard
+    /// compositor decides when the keyboard is shown (a text input is focused)
+    /// and relays that decision — only to the keyboard — over the input method;
+    /// the host forwards it here as short text commands so the keyboard
     /// shows/hides and re-layouts in step with the focused field:
     ///
-    /// * `osk:show` / `osk:hide` — toggle visibility (auto-show on text focus).
+    /// * `osk:show` / `osk:hide` — apply the compositor's show/hide decision.
     /// * `osk:purpose:<name>` — switch to the layout for an [`InputPurpose`]
     ///   (`text`, `number`, `decimal`, `phone`, `url`, `email`, `pin`,
     ///   `password`, `date`, `time`). An unknown name is ignored.
@@ -1759,8 +1769,8 @@ mod tests {
 
     #[test]
     fn hidden_keyboard_takes_zero_height() {
-        // A visible keyboard occupies its intrinsic height; a hidden one
-        // collapses to zero so the surface behind it gets its space back.
+        // A visible keyboard occupies its intrinsic height; when the compositor
+        // has hidden it the widget requests no height and paints nothing.
         let mut visible = OskWidget::new();
         lay_out(&mut visible, 720.0, 360.0);
         assert!(visible.get_rect().height() > 0.0);
@@ -1783,6 +1793,14 @@ mod tests {
         osk.set_visible(false);
         assert!(!osk.is_visible());
         assert!(osk.take_structure_dirty(), "hiding relays out");
+    }
+
+    #[test]
+    fn keyboard_app_id_is_the_well_known_id() {
+        // The compositor recognises the keyboard by this exact app-id to keep
+        // it out of the tile layout and own its visibility. If this drifts, the
+        // keyboard would be treated as an ordinary window — so pin the value.
+        assert_eq!(crate::KEYBOARD_APP_ID, "org.qos.Keyboard");
     }
 
     #[test]
