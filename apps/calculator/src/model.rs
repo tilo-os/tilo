@@ -124,6 +124,15 @@ impl CalcModel {
     pub fn seeded() -> Self {
         let mut m = CalcModel::default();
         m.mode = Mode::Graph2d;
+        // The headless screenshot picks which tab it captures via this hook;
+        // unset (the live default) keeps the lived-in Graph 2D launch view.
+        if let Some(want) = std::env::var_os("QOS_CALC_MODE") {
+            m.mode = match want.to_string_lossy().as_ref() {
+                "calc" | "calculator" => Mode::Calc,
+                "graph3d" | "3d" => Mode::Graph3d,
+                _ => Mode::Graph2d,
+            };
+        }
         m.expr = "sin(0.5)+cos(0.5)".to_string();
         m.ans = 1.0;
         m.history = vec![
@@ -292,27 +301,99 @@ pub enum KeyRole {
     Warm,
 }
 
-/// The 6-column scientific keypad. Row-major; `None` marks an empty cell.
+/// The full 6-column scientific keypad. Kept for back-compat and used by the
+/// [`KeypadLayout::Scientific`] variant. Row-major; cells are dense.
 pub const KEYPAD_COLS: usize = 6;
 
 pub fn keypad() -> Vec<Key> {
-    use Key::*;
-    vec![
-        // Row 1
-        Clear, Backspace, Ins("("), Ins(")"), Ins("mod("), Ins("!"),
-        // Row 2
-        Ins("sin("), Ins("cos("), Ins("tan("), Ins("pi"), Ins("e"), Percent,
-        // Row 3
-        Ins("asin("), Ins("acos("), Ins("atan("), Ins("^"), Ins("sqrt("), Ins("/"),
-        // Row 4
-        Ins("ln("), Ins("log10("), Digit('7'), Digit('8'), Digit('9'), Ins("*"),
-        // Row 5
-        Ins("exp("), Ins("1/("), Digit('4'), Digit('5'), Digit('6'), Ins("-"),
-        // Row 6
-        Wrap("(", ")^2"), ToggleSign, Digit('1'), Digit('2'), Digit('3'), Ins("+"),
-        // Row 7
-        DoubleZero, Ans, Digit('0'), Dot, Ins(","), Equals,
-    ]
+    KeypadLayout::Scientific.keys()
+}
+
+/// How dense the on-screen keypad is, chosen from the available body area so
+/// the calculator stays usable from a phone-narrow strip up to a wide window.
+///
+/// The layouts are strictly nested supersets — every key on a smaller layout
+/// is also present (in the same relative place) on a larger one — so the pad
+/// grows extra columns/rows of functions outward as the window widens without
+/// the core number pad ever jumping around. A "quick calculation" user always
+/// sees the digits, the four basic operators, `=`, `AC` and `⌫` in the same
+/// spot regardless of size, so responsiveness never gets in the way.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum KeypadLayout {
+    /// Phone-narrow: a 4-column essentials pad (digits, `+ − × ÷`, `=`, a few
+    /// staples). No scientific column.
+    Compact,
+    /// Default desktop: 5 columns — essentials plus the common scientific keys
+    /// (trig, powers, roots, π/e).
+    Standard,
+    /// Wide window: the full 6-column scientific pad with every function key.
+    Scientific,
+}
+
+impl KeypadLayout {
+    /// Choose a layout from the available keypad area `width` (in logical px).
+    /// The breakpoints are by width because the pad grows horizontally; the
+    /// thresholds bake in the per-column width the keys need to stay tappable.
+    ///
+    /// * `< 460 px`  → [`Compact`](Self::Compact)
+    /// * `< 680 px`  → [`Standard`](Self::Standard)
+    /// * `>= 680 px` → [`Scientific`](Self::Scientific)
+    pub fn for_width(width: f64) -> Self {
+        if width < 460.0 {
+            KeypadLayout::Compact
+        } else if width < 680.0 {
+            KeypadLayout::Standard
+        } else {
+            KeypadLayout::Scientific
+        }
+    }
+
+    /// Columns in this layout's grid.
+    pub fn cols(self) -> usize {
+        match self {
+            KeypadLayout::Compact => 4,
+            KeypadLayout::Standard => 5,
+            KeypadLayout::Scientific => 6,
+        }
+    }
+
+    /// The row-major key list for this layout. Each layout is a dense grid of
+    /// `cols()` columns.
+    pub fn keys(self) -> Vec<Key> {
+        use Key::*;
+        match self {
+            // 4 cols × 6 rows — the everyday essentials.
+            KeypadLayout::Compact => vec![
+                Clear,       Backspace,   Ins("("),    Ins(")"),
+                Ins("sin("), Ins("cos("), Ins("^"),    Ins("sqrt("),
+                Digit('7'),  Digit('8'),  Digit('9'),  Ins("/"),
+                Digit('4'),  Digit('5'),  Digit('6'),  Ins("*"),
+                Digit('1'),  Digit('2'),  Digit('3'),  Ins("-"),
+                Digit('0'),  Dot,         Equals,      Ins("+"),
+            ],
+            // 5 cols × 7 rows — essentials + common scientific keys.
+            KeypadLayout::Standard => vec![
+                Clear,        Backspace,   Ins("("),    Ins(")"),    Ins("!"),
+                Ins("sin("),  Ins("cos("), Ins("tan("), Ins("pi"),   Ins("e"),
+                Ins("ln("),   Ins("^"),    Ins("sqrt("), Percent,    Ins("/"),
+                Wrap("(", ")^2"), Ins("1/("), Digit('7'), Digit('8'), Digit('9')
+                ,
+                Ins("*"),     ToggleSign,  Digit('4'),  Digit('5'),  Digit('6'),
+                Ins("-"),     Ans,         Digit('1'),  Digit('2'),  Digit('3'),
+                Ins("+"),     DoubleZero,  Digit('0'),  Dot,         Equals,
+            ],
+            // 6 cols × 7 rows — the full scientific pad.
+            KeypadLayout::Scientific => vec![
+                Clear, Backspace, Ins("("), Ins(")"), Ins("mod("), Ins("!"),
+                Ins("sin("), Ins("cos("), Ins("tan("), Ins("pi"), Ins("e"), Percent,
+                Ins("asin("), Ins("acos("), Ins("atan("), Ins("^"), Ins("sqrt("), Ins("/"),
+                Ins("ln("), Ins("log10("), Digit('7'), Digit('8'), Digit('9'), Ins("*"),
+                Ins("exp("), Ins("1/("), Digit('4'), Digit('5'), Digit('6'), Ins("-"),
+                Wrap("(", ")^2"), ToggleSign, Digit('1'), Digit('2'), Digit('3'), Ins("+"),
+                DoubleZero, Ans, Digit('0'), Dot, Ins(","), Equals,
+            ],
+        }
+    }
 }
 
 /// Apply a key press to the model (calculator mode).
@@ -486,5 +567,58 @@ mod tests {
     #[test]
     fn keypad_is_full_grid() {
         assert_eq!(keypad().len() % KEYPAD_COLS, 0);
+    }
+
+    #[test]
+    fn every_keypad_layout_is_a_dense_grid() {
+        for layout in [
+            KeypadLayout::Compact,
+            KeypadLayout::Standard,
+            KeypadLayout::Scientific,
+        ] {
+            assert_eq!(
+                layout.keys().len() % layout.cols(),
+                0,
+                "{layout:?} keys must tile its column count exactly"
+            );
+        }
+    }
+
+    #[test]
+    fn keypad_breakpoints_pick_expected_layout() {
+        assert_eq!(KeypadLayout::for_width(380.0), KeypadLayout::Compact);
+        assert_eq!(KeypadLayout::for_width(560.0), KeypadLayout::Standard);
+        assert_eq!(KeypadLayout::for_width(900.0), KeypadLayout::Scientific);
+        // wider layouts have at least as many columns
+        assert!(KeypadLayout::Compact.cols() < KeypadLayout::Standard.cols());
+        assert!(KeypadLayout::Standard.cols() < KeypadLayout::Scientific.cols());
+    }
+
+    #[test]
+    fn every_layout_keeps_the_quick_calc_essentials() {
+        // A "quick calculation" user must always find the digits, the four
+        // basic operators and `=` regardless of breakpoint.
+        for layout in [
+            KeypadLayout::Compact,
+            KeypadLayout::Standard,
+            KeypadLayout::Scientific,
+        ] {
+            let keys = layout.keys();
+            for d in '0'..='9' {
+                assert!(
+                    keys.iter().any(|k| matches!(k, Key::Digit(c) if *c == d)),
+                    "{layout:?} missing digit {d}"
+                );
+            }
+            for op in ["+", "-", "*", "/"] {
+                assert!(
+                    keys.iter().any(|k| matches!(k, Key::Ins(s) if *s == op)),
+                    "{layout:?} missing operator {op}"
+                );
+            }
+            assert!(keys.iter().any(|k| matches!(k, Key::Equals)), "{layout:?} missing =");
+            assert!(keys.iter().any(|k| matches!(k, Key::Clear)), "{layout:?} missing AC");
+            assert!(keys.iter().any(|k| matches!(k, Key::Backspace)), "{layout:?} missing ⌫");
+        }
     }
 }

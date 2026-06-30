@@ -37,6 +37,10 @@ pub struct Graph2dScreen {
     pub hovered_row: Option<usize>,
     /// One real math editor per function row, kept in sync with `model.funcs`.
     fields: Vec<MathField>,
+    /// Sampled curve geometry, rebuilt only when the functions, view, domain,
+    /// or canvas size change — never on a theme or tab switch (colour is
+    /// resolved from the theme at paint time from the cached series index).
+    curve_cache: CurveCache,
 }
 
 impl Default for Graph2dScreen {
@@ -50,6 +54,59 @@ impl Default for Graph2dScreen {
             add_rect: Rect::ZERO,
             hovered_row: None,
             fields: Vec::new(),
+            curve_cache: CurveCache::default(),
+        }
+    }
+}
+
+/// A single sampled curve: the polyline (already in screen space) plus the
+/// series index so the colour can be re-resolved from the live theme without
+/// touching the geometry.
+struct CurvePath {
+    series: usize,
+    path: BezPath,
+}
+
+/// Identity of the inputs that affect 2D plot geometry. When this is
+/// unchanged between frames the cached polylines are replayed as-is; a theme
+/// or tab switch does NOT change it, so neither triggers a re-sample.
+#[derive(Clone, PartialEq, Default)]
+struct CurveKey {
+    /// `(expr, visible)` for every function, in order.
+    funcs: Vec<(String, bool)>,
+    deg: bool,
+    cx: u64,
+    cy: u64,
+    scale: u64,
+    canvas: (u64, u64, u64, u64),
+}
+
+#[derive(Default)]
+struct CurveCache {
+    key: Option<CurveKey>,
+    paths: Vec<CurvePath>,
+    /// Counts actual (re)samples; lets a test prove a theme/tab switch reuses
+    /// the cache instead of re-evaluating every function.
+    rebuilds: u32,
+}
+
+fn bits(x: f64) -> u64 {
+    x.to_bits()
+}
+
+impl CurveKey {
+    fn build(model: &CalcModel, canvas: Rect) -> Self {
+        CurveKey {
+            funcs: model
+                .funcs
+                .iter()
+                .map(|f| (f.expr.clone(), f.visible))
+                .collect(),
+            deg: model.deg,
+            cx: bits(model.view2d.cx),
+            cy: bits(model.view2d.cy),
+            scale: bits(model.view2d.scale),
+            canvas: (bits(canvas.x0), bits(canvas.y0), bits(canvas.x1), bits(canvas.y1)),
         }
     }
 }
@@ -310,12 +367,31 @@ impl Graph2dScreen {
         scene.pop_layer();
     }
 
-    fn draw_curves(&self, scene: &mut Scene, t: Affine, theme: &Theme, model: &CalcModel) {
+    fn draw_curves(&mut self, scene: &mut Scene, t: Affine, theme: &Theme, model: &CalcModel) {
+        self.ensure_curves(model);
         scene.push_layer(vello::peniko::Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, t, &self.canvas);
+        let stroke = vello::kurbo::Stroke::new(2.0);
+        for cp in &self.curve_cache.paths {
+            let col = series_color(theme, cp.series);
+            scene.stroke(&stroke, t, col, None, &cp.path);
+        }
+        scene.pop_layer();
+    }
+
+    /// Re-sample every visible function into screen-space polylines, but only
+    /// when the cache key (functions / view / domain / canvas) has changed.
+    /// This is the heavy per-pixel-column sampling; gating it here is what
+    /// keeps a theme switch, tab switch, or hover from re-evaluating the
+    /// expressions. Colour is deliberately NOT part of the cached geometry.
+    fn ensure_curves(&mut self, model: &CalcModel) {
+        let key = CurveKey::build(model, self.canvas);
+        if self.curve_cache.key.as_ref() == Some(&key) {
+            return;
+        }
         let v = &model.view2d;
         let world_h = self.canvas.height() / v.scale;
         let break_thresh = world_h * 3.0;
-        let stroke = vello::kurbo::Stroke::new(2.0);
+        let mut paths = Vec::new();
         for (i, f) in model.funcs.iter().enumerate() {
             if !f.visible || f.expr.trim().is_empty() {
                 continue;
@@ -324,7 +400,6 @@ impl Graph2dScreen {
                 Ok(c) => c,
                 Err(_) => continue,
             };
-            let col = series_color(theme, i);
             let mut path = BezPath::new();
             let mut pen_down = false;
             let mut prev_wy = f64::NAN;
@@ -356,9 +431,11 @@ impl Graph2dScreen {
                 prev_wy = wy;
                 sx += 1.5;
             }
-            scene.stroke(&stroke, t, col, None, &path);
+            paths.push(CurvePath { series: i, path });
         }
-        scene.pop_layer();
+        self.curve_cache.key = Some(key);
+        self.curve_cache.paths = paths;
+        self.curve_cache.rebuilds = self.curve_cache.rebuilds.wrapping_add(1);
     }
 
     fn draw_trace(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, model: &CalcModel, p: Point) {
@@ -462,5 +539,83 @@ fn fmt_tick(v: f64, step: f64) -> String {
         s
     } else {
         s.trim_end_matches('0').trim_end_matches('.').to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{CalcModel, Mode};
+
+    fn screen_with_canvas() -> (Graph2dScreen, Rect) {
+        let mut s = Graph2dScreen::default();
+        let canvas = Rect::new(360.0, 60.0, 1280.0, 800.0);
+        s.canvas = canvas;
+        (s, canvas)
+    }
+
+    #[test]
+    fn first_draw_samples_visible_functions() {
+        let (mut s, _) = screen_with_canvas();
+        let m = CalcModel::seeded();
+        s.ensure_curves(&m);
+        // seeded model has 4 visible functions → 4 sampled polylines.
+        let visible = m.funcs.iter().filter(|f| f.visible).count();
+        assert_eq!(s.curve_cache.paths.len(), visible);
+        assert_eq!(s.curve_cache.rebuilds, 1);
+    }
+
+    #[test]
+    fn theme_or_tab_switch_does_not_resample() {
+        let (mut s, _) = screen_with_canvas();
+        let mut m = CalcModel::seeded();
+        s.ensure_curves(&m);
+        assert_eq!(s.curve_cache.rebuilds, 1);
+        // A theme switch is invisible to geometry: nothing about the model that
+        // ensure_curves keys on changes, so re-calling it must NOT resample.
+        s.ensure_curves(&m);
+        s.ensure_curves(&m);
+        assert_eq!(s.curve_cache.rebuilds, 1, "re-sampled with no geometry change");
+        // Switching tabs and back leaves funcs/view/canvas identical.
+        m.mode = Mode::Calc;
+        s.ensure_curves(&m);
+        m.mode = Mode::Graph2d;
+        s.ensure_curves(&m);
+        assert_eq!(s.curve_cache.rebuilds, 1, "tab switch triggered a resample");
+    }
+
+    #[test]
+    fn editing_a_function_resamples() {
+        let (mut s, _) = screen_with_canvas();
+        let mut m = CalcModel::seeded();
+        s.ensure_curves(&m);
+        assert_eq!(s.curve_cache.rebuilds, 1);
+        m.funcs[0].expr = "x^3".into();
+        s.ensure_curves(&m);
+        assert_eq!(s.curve_cache.rebuilds, 2);
+    }
+
+    #[test]
+    fn panning_the_view_resamples() {
+        let (mut s, _) = screen_with_canvas();
+        let mut m = CalcModel::seeded();
+        s.ensure_curves(&m);
+        m.view2d.cx += 1.5;
+        s.ensure_curves(&m);
+        assert_eq!(s.curve_cache.rebuilds, 2);
+        m.view2d.scale *= 1.2;
+        s.ensure_curves(&m);
+        assert_eq!(s.curve_cache.rebuilds, 3);
+    }
+
+    #[test]
+    fn toggling_visibility_off_drops_the_curve() {
+        let (mut s, _) = screen_with_canvas();
+        let mut m = CalcModel::seeded();
+        s.ensure_curves(&m);
+        let before = s.curve_cache.paths.len();
+        m.funcs[0].visible = false;
+        s.ensure_curves(&m);
+        assert_eq!(s.curve_cache.paths.len(), before - 1);
     }
 }
