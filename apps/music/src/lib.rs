@@ -70,6 +70,8 @@ pub fn app_root() -> Box<dyn Widget> {
 ///   to capture the docked-collapse affordance.
 /// * `"context"` — a track right-click context menu opened over the library.
 /// * `"new-playlist"` — the inline create-playlist name prompt open.
+/// * `"search-focus"` — the header search pill focused with an empty query, so
+///   the caret sits at the field start (not at the end of the placeholder).
 pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
     let mut app = MusicApp::new();
     match scenario {
@@ -77,6 +79,7 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
         "collapsed" => app.snap_sidebar(false),
         "context" => app.snap_track_menu(),
         "new-playlist" => app.snap_new_playlist_prompt(),
+        "search-focus" => app.snap_search_focus(),
         _ => {}
     }
     Box::new(app)
