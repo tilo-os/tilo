@@ -589,6 +589,101 @@ impl WordProcessor {
         }
     }
 
+    /// Set the highlight (background) colour (`#rrggbb`) over the selection
+    /// (per-run), or the caret block. Stored as a `highlight` Str run mark; the
+    /// widget maps it to a `RichSpan.background` band behind the glyphs.
+    pub fn set_highlight(&mut self, state: &mut AutoCommit, hex: &str) {
+        self.set_mark_value(state, "highlight", qdoc::document::MarkValue::Str(hex.to_string()));
+    }
+
+    /// Whether a named boolean run mark covers the whole of `ranges`.
+    fn mark_over_ranges(&self, state: &AutoCommit, ranges: &[(String, usize, usize)], name: &str) -> bool {
+        let Some(containers) = self.containers.as_ref() else {
+            return false;
+        };
+        let active: Vec<_> = ranges.iter().filter(|(_, s, e)| s < e).collect();
+        if active.is_empty() {
+            return false;
+        }
+        active
+            .iter()
+            .all(|(b, s, e)| qdoc::model::has_mark_over(state, containers, b, *s, *e, name))
+    }
+
+    /// Toggle a boolean run mark over the selection (per-run), or — with no
+    /// selection — the whole caret block. `clears` is a sibling mark removed
+    /// whenever this one is turned on, so a pair like `super`/`sub` stays mutually
+    /// exclusive. Returns nothing; reads/writes happen in document order.
+    fn toggle_exclusive_run_mark(&mut self, state: &mut AutoCommit, name: &str, clears: &str) {
+        let ranges = self.font_ranges(state);
+        let on = self.mark_over_ranges(state, &ranges, name);
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            for (b, s, e) in &ranges {
+                if s >= e {
+                    continue;
+                }
+                if on {
+                    dm.remove_mark(b, *s, *e, name);
+                } else {
+                    // Turning this on: drop the sibling so the pair is exclusive.
+                    dm.remove_mark(b, *s, *e, clears);
+                    dm.add_mark(b, *s, *e, name, true);
+                }
+            }
+        }
+    }
+
+    /// Toggle the `super` (superscript) run mark over the selection / caret block,
+    /// clearing any `sub` mark on the same range (the pair is mutually exclusive).
+    pub fn toggle_super(&mut self, state: &mut AutoCommit) {
+        self.toggle_exclusive_run_mark(state, "super", "sub");
+    }
+
+    /// Toggle the `sub` (subscript) run mark over the selection / caret block,
+    /// clearing any `super` mark on the same range (mutually exclusive).
+    pub fn toggle_sub(&mut self, state: &mut AutoCommit) {
+        self.toggle_exclusive_run_mark(state, "sub", "super");
+    }
+
+    /// Set the paragraph line-spacing multiplier (1.0 = single) on every block in
+    /// the selection (or the caret block). Stored as the `line_spacing` Float
+    /// block attr; the layout pass feeds it to `RichTextLayout::shape` as the
+    /// `line_height_mult`. A multiplier of `1.0` clears the attr (the default).
+    pub fn set_line_spacing(&mut self, state: &mut AutoCommit, mult: f64) {
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        let targets = self.selected_block_ids(state);
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            for block in &targets {
+                dm.set_attr(block, "line_spacing", mult);
+            }
+        }
+    }
+
+    /// The line-spacing multiplier on the caret's block (the `line_spacing` Float
+    /// attr), or `1.0` when unset. Drives the toolbar's cycling control.
+    pub fn caret_line_spacing(&self, state: &AutoCommit) -> f64 {
+        let Some(c) = self.containers.as_ref() else {
+            return 1.0;
+        };
+        let snap = qdoc::model::materialize(state, c);
+        snap.blocks
+            .iter()
+            .find(|b| b.id == self.caret.block)
+            .map(|b| match b.attrs.get("line_spacing") {
+                Some(qdoc::AttrVal::Float(f)) => *f,
+                Some(qdoc::AttrVal::Int(n)) => *n as f64,
+                _ => 1.0,
+            })
+            .unwrap_or(1.0)
+    }
+
     /// Insert a `rows`×`cols` table after the caret block. Cells are modeled as
     /// consecutive top-level `cell` blocks tagged with `table`/`row`/`col`, so
     /// they edit/select/collaborate through the normal block machinery; the
@@ -1600,6 +1695,78 @@ mod tests {
             Some(MarkValue::Str(s)) => assert_eq!(s, "serif"),
             _ => panic!("font mark missing over selection"),
         }
+    }
+
+    #[test]
+    fn highlight_mark_applies_to_selection() {
+        use qdoc::document::MarkValue;
+        let (mut wp, mut state) = bound();
+        wp.insert_str(&mut state, "hello world");
+        wp.caret.offset = 0;
+        wp.set_anchor();
+        wp.caret.offset = 5;
+        wp.set_highlight(&mut state, "#fff35c");
+        let c = wp.containers.as_ref().unwrap();
+        let snap = qdoc::model::materialize(&state, c);
+        let blk = &snap.blocks[0];
+        match blk.marks.iter().find(|m| m.name == "highlight" && m.start == 0 && m.end == 5).map(|m| m.value.clone()) {
+            Some(MarkValue::Str(s)) => assert_eq!(s, "#fff35c"),
+            _ => panic!("highlight mark missing over selection"),
+        }
+        // Clearing removes it.
+        wp.caret.offset = 0;
+        wp.set_anchor();
+        wp.caret.offset = 5;
+        wp.clear_mark(&mut state, "highlight");
+        let snap = qdoc::model::materialize(&state, wp.containers.as_ref().unwrap());
+        assert!(
+            !snap.blocks[0].marks.iter().any(|m| m.name == "highlight"),
+            "highlight cleared"
+        );
+    }
+
+    #[test]
+    fn super_and_sub_are_mutually_exclusive() {
+        let (mut wp, mut state) = bound();
+        wp.insert_str(&mut state, "x2");
+        // Select "2".
+        wp.caret.offset = 1;
+        wp.set_anchor();
+        wp.caret.offset = 2;
+        wp.toggle_super(&mut state);
+        let c = wp.containers.clone().unwrap();
+        assert!(qdoc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "super"), "super applied");
+        assert!(!qdoc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "sub"), "no sub yet");
+
+        // Re-select and toggle sub: it must clear super (mutual exclusion).
+        wp.caret.offset = 1;
+        wp.set_anchor();
+        wp.caret.offset = 2;
+        wp.toggle_sub(&mut state);
+        assert!(qdoc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "sub"), "sub applied");
+        assert!(!qdoc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "super"), "super cleared");
+
+        // Toggling sub again removes it (off).
+        wp.caret.offset = 1;
+        wp.set_anchor();
+        wp.caret.offset = 2;
+        wp.toggle_sub(&mut state);
+        assert!(!qdoc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "sub"), "sub toggled off");
+    }
+
+    #[test]
+    fn line_spacing_writes_block_attr_and_reads_back() {
+        let (mut wp, mut state) = bound();
+        wp.insert_str(&mut state, "a paragraph");
+        assert!((wp.caret_line_spacing(&state) - 1.0).abs() < 1e-9, "default 1.0 when unset");
+        wp.set_line_spacing(&mut state, 2.0);
+        let c = wp.containers.as_ref().unwrap();
+        let snap = qdoc::model::materialize(&state, c);
+        match snap.blocks[0].attrs.get("line_spacing") {
+            Some(qdoc::AttrVal::Float(f)) => assert!((f - 2.0).abs() < 1e-9, "line_spacing=2.0 stored"),
+            other => panic!("expected line_spacing Float attr, got {other:?}"),
+        }
+        assert!((wp.caret_line_spacing(&state) - 2.0).abs() < 1e-9, "caret reads 2.0 back");
     }
 
     #[test]
