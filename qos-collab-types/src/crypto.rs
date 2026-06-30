@@ -161,7 +161,7 @@ mod serde_bytes_64 {
 /// logs. Validator-level errors (replay, missing attestation, etc.)
 /// live in [`crate::validator::ValidationError`]; this type covers
 /// only the *cryptographic* outcome of verifying one signature.
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum VerifyError {
     /// The public-key bytes do not decode to a valid Ed25519 point.
     /// Caused by a corrupted or maliciously-crafted key.
