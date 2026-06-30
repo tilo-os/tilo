@@ -8,9 +8,15 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::permissions::PermissionScope;
+use crate::i18n::ArgValue;
 
 pub struct Text {
     label: String,
+    /// Named variables interpolated into the label's Fluent placeables. Held
+    /// owned so a localized string like `counter = Count is { $count }` resolves
+    /// to `Count is 5` (not the literal `{$count}`) every frame, even though the
+    /// widget caches its rendered scene. Empty for plain, variable-free labels.
+    args: Vec<(String, ArgValue)>,
     size: f32,
     /// Optional explicit colour. `None` (the default) renders with the
     /// theme's `text_primary`, keeping Text theme-driven; `Some(c)` lets
@@ -43,6 +49,7 @@ impl Text {
     pub fn new(label: &str) -> Self {
         Self {
             label: label.to_string(),
+            args: Vec::new(),
             size: 16.0,
             color: None,
             rect: vello::kurbo::Rect::ZERO,
@@ -51,6 +58,35 @@ impl Text {
             cached: Scene::new(),
             dirty: true,
             cache_rect: vello::kurbo::Rect::ZERO,
+        }
+    }
+
+    /// Construct text from a key whose Fluent message takes variables, e.g.
+    /// `Text::with_args("counter", &[("count", 5.into())])` resolving
+    /// `counter = Count is { $count }` to `Count is 5`.
+    pub fn with_args(key: &str, args: &[(&str, ArgValue)]) -> Self {
+        let mut text = Self::new(key);
+        text.args = args.iter().map(|(n, v)| (n.to_string(), v.clone())).collect();
+        text
+    }
+
+    /// Supply one Fluent variable for the label's placeables. Chainable, so
+    /// multiple variables can be set: `Text::new("greeting").with_arg("name",
+    /// "Ada").with_arg("count", 3)`. Accepts numbers and strings.
+    pub fn with_arg(mut self, name: &str, value: impl Into<ArgValue>) -> Self {
+        self.args.push((name.to_string(), value.into()));
+        self
+    }
+
+    /// Resolve the label through the i18n layer, interpolating any variables
+    /// supplied via [`with_arg`](Self::with_arg) / [`with_args`](Self::with_args).
+    fn resolved_label(&self) -> String {
+        if self.args.is_empty() {
+            crate::i18n!(&self.label)
+        } else {
+            let args: Vec<(&str, ArgValue)> =
+                self.args.iter().map(|(n, v)| (n.as_str(), v.clone())).collect();
+            crate::i18n::I18nManager::format(&self.label, &args)
         }
     }
 
@@ -101,7 +137,7 @@ impl Widget for Text {
     }
 
     fn measure(&mut self, known_dimensions: taffy::Size<Option<f32>>, available_space: taffy::Size<taffy::AvailableSpace>, text_renderer: &mut TextRenderer) -> taffy::Size<f32> {
-        let label = crate::i18n!(&self.label);
+        let label = self.resolved_label();
         
         // 1. Determine the maximum width we are allowed to have
         let max_w = if let Some(w) = known_dimensions.width {
@@ -147,7 +183,7 @@ impl Widget for Text {
     fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
         if self.dirty || self.cache_rect == vello::kurbo::Rect::ZERO {
             self.cached.reset();
-            let label = crate::i18n!(&self.label);
+            let label = self.resolved_label();
             let max_width = self.rect.width() as f32;
             let color = self.color.unwrap_or(theme.tokens.colors.text_primary);
             text_renderer.draw_text(
@@ -206,7 +242,7 @@ impl Widget for Text {
         use crate::a11y::{AccessNode, Role};
         // The FTL-resolved text *is* the accessible name. Empty text carries no
         // meaning, so it stays presentational (collapses out of the tree).
-        let label = crate::i18n!(&self.label);
+        let label = self.resolved_label();
         if label.is_empty() {
             return None;
         }
@@ -276,5 +312,57 @@ mod tests {
             Widget::accessibility(&t).is_none(),
             "empty text collapses out of the a11y tree",
         );
+    }
+
+    use crate::i18n::I18nManager;
+
+    // The i18n manager is a thread-local, so these tests are isolated per test
+    // thread; each re-inits a fresh bundle and asserts only on its own keys.
+
+    #[test]
+    fn with_arg_interpolates_fluent_variable() {
+        I18nManager::init("en-US");
+        I18nManager::add_resource("en-US", "counter = Count is { $count }".to_string());
+
+        let t = Text::new("counter").with_arg("count", 5);
+        let node = Widget::accessibility(&t).expect("non-empty text is not presentational");
+        // The placeholder must be replaced, not echoed literally.
+        assert_eq!(node.name.as_deref(), Some("Count is 5"));
+        assert!(!node.name.unwrap().contains("$count"));
+    }
+
+    #[test]
+    fn with_args_accepts_strings_and_numbers() {
+        I18nManager::init("en-US");
+        I18nManager::add_resource(
+            "en-US",
+            "greeting = Hi { $name }, you have { $count } messages".to_string(),
+        );
+
+        let t = Text::with_args("greeting", &[("name", "Ada".into()), ("count", 3.into())]);
+        let node = Widget::accessibility(&t).expect("resolved");
+        assert_eq!(node.name.as_deref(), Some("Hi Ada, you have 3 messages"));
+    }
+
+    #[test]
+    fn missing_arg_degrades_without_panic() {
+        I18nManager::init("en-US");
+        I18nManager::add_resource("en-US", "counter = Count is { $count }".to_string());
+
+        // No `count` supplied — must not panic; the formatter renders a
+        // best-effort placeholder rather than crashing.
+        let t = Text::new("counter");
+        let node = Widget::accessibility(&t).expect("resolved");
+        let name = node.name.unwrap();
+        assert!(name.contains("Count is"), "got {name:?}");
+    }
+
+    #[test]
+    fn unknown_key_falls_back_to_key() {
+        I18nManager::init("en-US");
+        // No resource for this key at all.
+        let t = Text::new("totally-unknown-key").with_arg("x", 1);
+        let node = Widget::accessibility(&t).expect("resolved");
+        assert_eq!(node.name.as_deref(), Some("totally-unknown-key"));
     }
 }
