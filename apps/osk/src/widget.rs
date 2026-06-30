@@ -53,7 +53,23 @@ use ui::widget::Widget;
 use crate::layout::{Key, KeyAction, KeyId, KeyboardLayout, ShiftState, key_rects};
 use crate::predict::Predictor;
 use crate::suggest::{Suggestion, suggestion_rects};
+use crate::futo::FutoSwipeModel;
 use crate::swipe::{GeometricSwipeModel, SwipeModel};
+
+/// The default swipe decoder: the real FUTO ExecuTorch model when its libs
+/// and model assets are available, else the geometric SHARK²-style decoder.
+pub fn default_swipe_model() -> Box<dyn SwipeModel> {
+    match FutoSwipeModel::default_load() {
+        Some(m) => {
+            tracing::info!("osk: using FUTO ExecuTorch swipe decoder");
+            Box::new(m)
+        }
+        None => {
+            tracing::info!("osk: FUTO unavailable — using geometric swipe decoder");
+            Box::new(GeometricSwipeModel::english())
+        }
+    }
+}
 use crate::toolbar::{OskToolbarAction, OskToolbarItem, toolbar_rects};
 
 /// Default target height of a single key row, in logical px. Responsive
@@ -67,7 +83,7 @@ pub const DEFAULT_TOOLBAR_HEIGHT: f32 = 48.0;
 /// Default suggestion-bar row height (the candidate / next-word chips).
 pub const DEFAULT_SUGGESTION_HEIGHT: f32 = 40.0;
 /// How many suggestion chips to show at once.
-const MAX_SUGGESTIONS: usize = 5;
+pub(crate) const MAX_SUGGESTIONS: usize = 5;
 
 /// The on-screen keyboard widget.
 pub struct OskWidget {
@@ -176,7 +192,9 @@ impl OskWidget {
             pressed_tool: None,
             hovered_sugg: None,
             pressed_sugg: None,
-            swipe_model: Box::new(GeometricSwipeModel::english()),
+            // Prefer the real FUTO ExecuTorch decoder when its libs +
+            // models are present; otherwise fall back to the geometric one.
+            swipe_model: default_swipe_model(),
             predictor: Predictor::english(),
             suggestions: Vec::new(),
             current_word: String::new(),
