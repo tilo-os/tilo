@@ -256,6 +256,12 @@ pub use nav_split::{
     NavSplit, FlapState, SplitMode, SplitLayout, PushPane,
     DEFAULT_BREAKPOINT, DEFAULT_SIDEBAR_WIDTH,
 };
+mod document_viewport;
+pub use document_viewport::{
+    ContentDraw, DocumentViewport, SmallContentAlign, ViewportState,
+    DEFAULT_MAX_ZOOM, DEFAULT_MIN_ZOOM, DEFAULT_PADDING, DEFAULT_PAN_STEP,
+    PAN_SLOP,
+};
 mod floating_window;
 pub use floating_window::FloatingWindow;
 mod segmented;
