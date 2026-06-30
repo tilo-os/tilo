@@ -25,7 +25,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
-        render_shot_to_png(maps::app_root(), DEFAULT_SHOTS_VIEWPORT, &out)?;
+        // Headless: no event loop and no network — use the offline root so the
+        // tile worker is never spawned and nothing blocks on I/O.
+        render_shot_to_png(maps::app_root_offline(), DEFAULT_SHOTS_VIEWPORT, &out)?;
         return Ok(());
     }
 
