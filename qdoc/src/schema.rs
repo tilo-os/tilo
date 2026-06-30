@@ -9,7 +9,26 @@ pub const KEY_SCHEMA: &str = "schema";
 pub const KEY_SCHEMA_VERSION: &str = "schema_version";
 pub const KEY_BLOCKS: &str = "blocks"; // Map<block_id, block>
 pub const KEY_STYLES: &str = "styles"; // Map<style_id, style def>
-pub const KEY_PRESERVED: &str = "preserved"; // Map<part_name, Bytes>  (preservation layer)
+// Preservation layer (the lossless fidelity store for content a codec doesn't
+// model). `preserved` is a `Map<part_name, part>`. A part is stored in one of two
+// equivalent forms:
+//   * **legacy**: a single `Bytes` scalar holding the whole part verbatim;
+//   * **segmented (Tier-4, CRDT-merge-friendly)**: a `Map<segment_id, segment>`
+//     where each `segment` is a sub-map `{ord: Bytes (fractional key), bytes:
+//     Bytes (the atom's verbatim bytes)}`. Concatenating the segments in `ord`
+//     order reproduces the part byte-for-byte. Each segment is an independent
+//     automerge object keyed by a STABLE id (structural-index + content-hash), so
+//     the same atom on two replicas maps to ONE object (it converges) and two
+//     replicas editing DIFFERENT atoms of the same part merge cleanly instead of
+//     clobbering the whole part. Same-atom concurrent edits stay last-writer-wins.
+pub const KEY_PRESERVED: &str = "preserved"; // Map<part_name, part>  (preservation layer)
+/// A preserved part's per-atom segment's fractional order key (`Bytes`), under the
+/// segment sub-map. Segments sort by this to reconstruct the part in source order.
+pub const PRESERVED_SEG_ORD: &str = "ord";
+/// A preserved part's per-atom segment's verbatim bytes (`Bytes`), under the
+/// segment sub-map. The concatenation of all segments' bytes (in `ord` order) is
+/// the original part byte-for-byte.
+pub const PRESERVED_SEG_BYTES: &str = "bytes";
 pub const KEY_META: &str = "meta"; // Map (actor->user, etc.)
 pub const KEY_BLOBS: &str = "blobs"; // Map<blake3_hex, Bytes>  (content-addressed image/binary store)
 // Page header / footer regions. Each is a `Map<block_id, block>` with the exact
@@ -87,6 +106,34 @@ pub const MARK_INS: &str = "ins"; // Str — the anchored (insertion) change id
 /// range. Covers the deleted range `[start, end)`; its value is the change id (a `Str`).
 pub const MARK_DEL: &str = "del"; // Str — the anchored (deletion) change id
 
+// Multi-column section layout. A document-wide column count (and optional gap)
+// stored directly under `meta` as scalar registers, so two replicas changing the
+// column count field-level merge rather than clobbering each other. `columns` is a
+// `Uint` (the number of newspaper-style columns the body text flows across);
+// `column_gap` is an optional `F64` (the gutter between columns, in px). Absent →
+// a single column (the default). This is the shared contract between the qdoc model
+// and the `.odt` page-layout `style:columns` / `.docx` `w:sectPr`→`w:cols` markup.
+pub const META_COLUMNS: &str = "columns"; // Uint (under meta) — body column count
+pub const META_COLUMN_GAP: &str = "column_gap"; // F64 (under meta) — inter-column gap (px)
+/// The default body column count when `meta.columns` is unset (a single column).
+pub const DEFAULT_COLUMNS: u32 = 1;
+
+// Document default language. A BCP-47 language tag (`en-US`, `de-DE`, `fr`) stored
+// directly under `meta` as a `Str` register, so two replicas changing the document
+// language field-level merge rather than clobbering each other. Absent → the
+// consumer's locale default (no language declared). This is the shared contract
+// between the qdoc model and the `.odt` default-paragraph-style
+// `fo:language`/`fo:country` / `.docx` `docDefaults`→`w:rPrDefault`→`w:lang` markup.
+// Surfaced on the snapshot as `DocSnapshot.language`. Supports spell-check locale
+// selection and accessibility/screen-reader language.
+pub const META_LANGUAGE: &str = "language"; // Str (under meta) — document default BCP-47 tag
+/// The inline mark naming a per-run language override (a span in another language).
+/// Its value is a BCP-47 language tag (a `Str`, e.g. `fr` or `de-DE`). Round-trips
+/// through the `.odt` automatic-text-style `fo:language`/`fo:country` and the `.docx`
+/// `w:rPr`→`w:lang` markup. Mirrors the other valued run marks (`color`/`fontFamily`/
+/// `fontSize`). Supports per-span spell-check locale and screen-reader language.
+pub const MARK_LANG: &str = "lang"; // Str — a per-run BCP-47 language override
+
 // Document properties / metadata. A `props` sub-map under `meta` holding the
 // well-known document-level fields (title/author/…) as plain strings. Isolated
 // from other `meta` keys (page margins, stylesheet) and created lazily so
@@ -105,6 +152,36 @@ pub const PROP_GENERATOR: &str = "generator"; // Str — meta:generator / app.xm
 /// The canonical well-known document-property names, in a stable order.
 pub const DOC_PROP_KEYS: [&str; 7] =
     [PROP_TITLE, PROP_AUTHOR, PROP_SUBJECT, PROP_KEYWORDS, PROP_CREATED, PROP_MODIFIED, PROP_GENERATOR];
+
+// Bookmarks (named anchors) + cross-references (internal links). A **bookmark** is a
+// named anchor over a body text range (or a point), modeled as an inline `bookmark`
+// mark whose value is the bookmark name, covering the range `[start, end)`. Like
+// `comment`, it spans real text rather than a placeholder character (a point bookmark
+// is widened to one character on import so the mark has somewhere to live; an
+// end-of-block point bookmark sits over the last character). The mark merges with
+// concurrent text edits and round-trips through the codecs (`text:bookmark-start`/
+// `text:bookmark-end` — or `text:bookmark` for a point — in `.odt`; `w:bookmarkStart
+// w:name`/`w:bookmarkEnd` in `.docx`). The mark is the source of truth; the snapshot
+// exposes a derived `bookmarks` registry (name → range) for convenience.
+//
+// A **cross-reference** is an *internal* link: a run pointing at a bookmark or a
+// heading. It reuses the external-hyperlink `link` mark, with the value taking the
+// fragment form `#<target>` (a leading `#` distinguishes an internal reference from an
+// external URL). The target is a bookmark name or a heading's derived id (see
+// `HEADING_REF_PREFIX`). Cross-refs round-trip through `text:a xlink:href="#name"` in
+// `.odt` and a `w:hyperlink w:anchor="name"` in `.docx`.
+pub const MARK_BOOKMARK: &str = "bookmark"; // Str — the bookmark name
+/// The inline `link` mark (external hyperlinks *and* internal cross-references). A
+/// value starting with `#` is an internal cross-reference; anything else is an
+/// external URL. Shared with the `.md`/`.html` codecs (which call it `link`).
+pub const MARK_LINK: &str = "link"; // Str — an href (external URL) or `#target` (internal ref)
+/// The leading character of an internal cross-reference `link` value (`#bookmarkName`).
+pub const CROSS_REF_PREFIX: char = '#';
+/// The prefix of a heading's auto/derived reference id (`_heading_<block_id>`), so a
+/// cross-reference can target a heading that carries no explicit bookmark. The block id
+/// is appended verbatim. Distinct from a user bookmark name (which never starts with
+/// this prefix in practice).
+pub const HEADING_REF_PREFIX: &str = "_heading_";
 
 // Inline field markers. A "field" is an inline placeholder whose rendered text is
 // computed at layout time (e.g. the current page number). It is modeled as a

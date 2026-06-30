@@ -14,12 +14,12 @@ pub mod order;
 pub mod schema;
 pub mod snapshot;
 
-pub use codecs::{builtin_registry, is_supported_ext, supported_extensions, DocxCodec, MarkdownCodec, OdtCodec};
+pub use codecs::{builtin_registry, is_supported_ext, supported_extensions, DocxCodec, HtmlCodec, MarkdownCodec, OdtCodec, RtfCodec};
 pub use document::{DocError, Document, MarkSpan};
 pub use format::{CodecError, Confidence, FormatProvider, ProviderTier, Registry};
 pub use history::VersionMeta;
 pub use model::{Containers, DocMut, DocRef, IdGen, NoteKind, Region};
-pub use snapshot::{AttrVal, BlockView, ChangeKind, ChangeView, CommentView, DocSnapshot, NoteView};
+pub use snapshot::{AttrVal, BlockView, BookmarkView, ChangeKind, ChangeView, CommentView, DocSnapshot, NoteView};
 
 #[cfg(test)]
 mod smoke {

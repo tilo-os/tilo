@@ -449,6 +449,35 @@ pub fn materialize_comments(doc: &AutoCommit, c: &Containers) -> Vec<crate::snap
         .collect()
 }
 
+// ---- bookmarks / cross-references ------------------------------------------
+
+/// Every bookmark in the body, recovered from the `bookmark` marks (each a named
+/// anchor over a range). Sorted by `(name, block, start)` so two replicas that merged
+/// in different orders materialize byte-identically. A name may appear more than once
+/// only if duplicated by the source document; each occurrence is its own entry.
+pub fn bookmarks(doc: &AutoCommit, c: &Containers) -> Vec<crate::snapshot::BookmarkView> {
+    let mut out: Vec<crate::snapshot::BookmarkView> = Vec::new();
+    for bid in blocks_in_order(doc, c) {
+        for m in marks(doc, c, &bid) {
+            if m.name == MARK_BOOKMARK {
+                if let crate::document::MarkValue::Str(name) = &m.value {
+                    out.push(crate::snapshot::BookmarkView { name: name.clone(), range: (bid.clone(), m.start, m.end) });
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| (&a.name, &a.range.0, a.range.1, a.range.2).cmp(&(&b.name, &b.range.0, b.range.1, b.range.2)));
+    out
+}
+
+/// The auto/derived reference id of a heading block (so a cross-reference can target a
+/// heading that carries no explicit bookmark): the [`HEADING_REF_PREFIX`] followed by
+/// the block id. Stable across save/load (block ids are stable) and distinct from any
+/// user bookmark name.
+pub fn heading_ref_id(block_id: &str) -> String {
+    format!("{HEADING_REF_PREFIX}{block_id}")
+}
+
 // ---- tracked changes / revision marks --------------------------------------
 
 /// Resolve the changes container object, preferring the cached id and falling back to a
@@ -621,6 +650,45 @@ pub fn meta_str(doc: &AutoCommit, c: &Containers, key: &str) -> Option<String> {
     }
 }
 
+/// The document-wide multi-column layout: `(column_count, optional_gap_px)`.
+/// Reads the `meta.columns` / `meta.column_gap` registers, defaulting to a single
+/// column ([`DEFAULT_COLUMNS`]) with no gap when unset — so documents authored
+/// before this setting existed read as single-column. A stored count of zero is
+/// clamped up to one (a body always has at least one column).
+pub fn columns(doc: &AutoCommit, c: &Containers) -> (u32, Option<f64>) {
+    let count = match doc.get(&c.meta, META_COLUMNS) {
+        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+            ScalarValue::Uint(u) => *u as u32,
+            ScalarValue::Int(i) if *i > 0 => *i as u32,
+            _ => DEFAULT_COLUMNS,
+        },
+        _ => DEFAULT_COLUMNS,
+    }
+    .max(1);
+    let gap = match doc.get(&c.meta, META_COLUMN_GAP) {
+        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+            ScalarValue::F64(f) => Some(*f),
+            ScalarValue::Int(i) => Some(*i as f64),
+            ScalarValue::Uint(u) => Some(*u as f64),
+            _ => None,
+        },
+        _ => None,
+    };
+    (count, gap)
+}
+
+/// The document default language as a BCP-47 tag (`en-US`, `de-DE`, `fr`), read from
+/// the `meta.language` register. `None` for documents that declare no default language
+/// (authored before this setting existed, or never set) — the consumer then falls back
+/// to its own locale default. Round-trips through the `.odt` default-paragraph-style
+/// `fo:language`/`fo:country` and the `.docx` `docDefaults` `w:lang`.
+pub fn language(doc: &AutoCommit, c: &Containers) -> Option<String> {
+    match doc.get(&c.meta, META_LANGUAGE) {
+        Ok(Some((v, _))) => v.to_str().filter(|s| !s.is_empty()).map(|s| s.to_string()),
+        _ => None,
+    }
+}
+
 /// Resolve the document-properties sub-map under `meta` (`meta.props`), if it
 /// exists. Created lazily on the first [`DocMut::set_doc_prop`], so documents
 /// authored before the props map existed simply read as having no properties.
@@ -708,18 +776,243 @@ pub fn has_mark_over(doc: &AutoCommit, c: &Containers, id: &str, start: usize, e
         .any(|m| m.name == name && m.start <= start && m.end >= end)
 }
 
-/// All preserved blobs (the lossless preservation layer — verbatim bytes a codec
-/// stashed for content it doesn't model), as `(key, bytes)`.
+/// All preserved parts (the lossless preservation layer — verbatim bytes a codec
+/// stashed for content it doesn't model), as `(key, bytes)`. The bytes are
+/// reconstructed exactly (byte-for-byte) from however the part is stored — either
+/// the legacy single-`Bytes` scalar form, or the per-atom segmented `Map` form
+/// (see [`PRESERVED_SEGMENTS`]) that splits a part into independently-mergeable
+/// atoms. Reconstruction concatenates the segments in their stored order, so a
+/// part round-trips identically regardless of its storage granularity.
 pub fn preserved_parts(doc: &AutoCommit, c: &Containers) -> Vec<(String, Vec<u8>)> {
     doc.keys(&c.preserved)
-        .filter_map(|k| match doc.get(&c.preserved, &k) {
-            Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                ScalarValue::Bytes(b) => Some((k, b.clone())),
-                _ => None,
-            },
-            _ => None,
-        })
+        .filter_map(|k| preserved_part(doc, c, &k).map(|b| (k, b)))
         .collect()
+}
+
+/// Reconstruct one preserved part's verbatim bytes by key, transparently handling
+/// both the legacy `Bytes`-scalar form and the per-atom segmented `Map` form.
+/// Concatenating the ordered segments reproduces the original part byte-for-byte.
+pub fn preserved_part(doc: &AutoCommit, c: &Containers, key: &str) -> Option<Vec<u8>> {
+    match doc.get(&c.preserved, key) {
+        // Per-atom segmented form: a `Map<segment_id, {ord: Bytes, bytes: Bytes}>`.
+        // Segments sort by their `ord` fractional key, then concatenate. This is
+        // the CRDT-merge-friendly form: each segment is an independent automerge
+        // object, so two replicas editing DIFFERENT atoms of the same part merge
+        // (only same-atom edits remain last-writer-wins).
+        Ok(Some((Value::Object(ObjType::Map), part_obj))) => {
+            let mut segs: Vec<(Vec<u8>, String, Vec<u8>)> = doc
+                .keys(&part_obj)
+                .filter_map(|sid| {
+                    let seg_obj = match doc.get(&part_obj, &sid) {
+                        Ok(Some((Value::Object(ObjType::Map), o))) => o,
+                        _ => return None,
+                    };
+                    let ord = match doc.get(&seg_obj, PRESERVED_SEG_ORD) {
+                        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+                            ScalarValue::Bytes(b) => b.clone(),
+                            _ => Vec::new(),
+                        },
+                        _ => Vec::new(),
+                    };
+                    let bytes = match doc.get(&seg_obj, PRESERVED_SEG_BYTES) {
+                        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+                            ScalarValue::Bytes(b) => b.clone(),
+                            _ => return None,
+                        },
+                        _ => return None,
+                    };
+                    Some((ord, sid, bytes))
+                })
+                .collect();
+            // Sort by fractional order key, then by segment id as a deterministic
+            // tiebreaker (so two segments that somehow share an order key still
+            // produce a stable, replica-independent concatenation).
+            segs.sort_by(|a, b| crate::order::cmp_keys(&a.0, &b.0).then(a.1.cmp(&b.1)));
+            Some(segs.into_iter().flat_map(|(_, _, b)| b).collect())
+        }
+        // Legacy single-blob form: the whole part as one `Bytes` scalar.
+        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+            ScalarValue::Bytes(b) => Some(b.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The per-atom segment ids of a preserved part, in source order, paired with each
+/// atom's verbatim bytes. Empty for a part stored in the legacy single-blob form
+/// (it has no addressable atoms — call [`preserved_part`] for its whole bytes).
+/// Lets a codec or test address an individual atom by its stable id.
+pub fn preserved_atoms(doc: &AutoCommit, c: &Containers, key: &str) -> Vec<(String, Vec<u8>)> {
+    let part_obj = match doc.get(&c.preserved, key) {
+        Ok(Some((Value::Object(ObjType::Map), o))) => o,
+        _ => return Vec::new(),
+    };
+    let mut segs: Vec<(Vec<u8>, String, Vec<u8>)> = doc
+        .keys(&part_obj)
+        .filter_map(|sid| {
+            let seg_obj = match doc.get(&part_obj, &sid) {
+                Ok(Some((Value::Object(ObjType::Map), o))) => o,
+                _ => return None,
+            };
+            let ord = match doc.get(&seg_obj, PRESERVED_SEG_ORD) {
+                Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+                    ScalarValue::Bytes(b) => b.clone(),
+                    _ => Vec::new(),
+                },
+                _ => Vec::new(),
+            };
+            let bytes = match doc.get(&seg_obj, PRESERVED_SEG_BYTES) {
+                Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+                    ScalarValue::Bytes(b) => b.clone(),
+                    _ => return None,
+                },
+                _ => return None,
+            };
+            Some((ord, sid, bytes))
+        })
+        .collect();
+    segs.sort_by(|a, b| crate::order::cmp_keys(&a.0, &b.0).then(a.1.cmp(&b.1)));
+    segs.into_iter().map(|(_, sid, b)| (sid, b)).collect()
+}
+
+/// A stable, replica-independent id for a preserved atom: its source-order index
+/// plus a short content hash. The index disambiguates two byte-identical atoms
+/// (so a part with repeated identical fragments keeps one segment per occurrence);
+/// the content hash keeps the id meaningful and stable across re-imports of the
+/// same source. The same source bytes split into the same ids on every replica,
+/// so the same atom maps to ONE automerge object and converges.
+fn preserved_atom_id(idx: usize, atom: &[u8]) -> String {
+    let h = blake3::hash(atom).to_hex();
+    format!("{idx:06}-{}", &h.as_str()[..16])
+}
+
+/// Split a preserved part into independently-mergeable atoms whose concatenation
+/// is the original bytes verbatim. For an XML part this is the sequence of
+/// top-level fragments — each top-level child *element* (a `<style:style …>…`, an
+/// `<office:automatic-styles>…`, etc.) is its own atom, and the inter-element text
+/// (the XML declaration, whitespace, the root open/close tags) rides on adjacent
+/// atoms — so two replicas modeling/modifying different top-level elements touch
+/// different atoms. A non-XML or unparseable part stays a single whole-part atom
+/// (still byte-faithful, just coarse-grained). The split NEVER changes the bytes:
+/// the atoms always concatenate back to `bytes` exactly.
+pub fn split_preserved_atoms(bytes: &[u8]) -> Vec<Vec<u8>> {
+    // Only XML parts (`<?xml` prologue or a leading `<` tag) get split; everything
+    // else (images, the mimetype literal, binary settings) is one atom.
+    let looks_xml = {
+        let head: &[u8] = &bytes[..bytes.len().min(64)];
+        let trimmed = head.iter().position(|b| !b.is_ascii_whitespace()).map(|p| &head[p..]).unwrap_or(head);
+        trimmed.starts_with(b"<?xml") || trimmed.starts_with(b"<")
+    };
+    if !looks_xml {
+        return vec![bytes.to_vec()];
+    }
+    match split_xml_top_level(bytes) {
+        Some(atoms) if atoms.len() > 1 => atoms,
+        _ => vec![bytes.to_vec()],
+    }
+}
+
+/// One parsed XML element span: its nesting `depth` (root = 0) and the byte offset
+/// `start` of its opening `<`. (The end offset isn't needed for boundary slicing.)
+struct ElemSpan {
+    depth: usize,
+    start: usize,
+}
+
+/// Parse the depth + start offset of every element in `bytes`. Returns `None` on
+/// any parse error or imbalance (caller then keeps the part as a single atom —
+/// never corrupts it).
+fn parse_elem_spans(bytes: &[u8]) -> Option<Vec<ElemSpan>> {
+    use quick_xml::events::Event;
+    use quick_xml::Reader;
+    let s = std::str::from_utf8(bytes).ok()?;
+    // quick-xml 0.36 defaults `expand_empty_elements` to false, so a self-closing
+    // `<x/>` arrives as one `Event::Empty` rather than a Start+End pair.
+    let mut reader = Reader::from_str(s);
+    let mut depth: usize = 0;
+    let mut spans: Vec<ElemSpan> = Vec::new();
+    loop {
+        let before = reader.buffer_position() as usize;
+        match reader.read_event() {
+            Ok(Event::Eof) => break,
+            Ok(Event::Start(_)) => {
+                spans.push(ElemSpan { depth, start: before });
+                depth += 1;
+            }
+            Ok(Event::Empty(_)) => {
+                spans.push(ElemSpan { depth, start: before });
+            }
+            Ok(Event::End(_)) => {
+                depth = depth.checked_sub(1)?;
+            }
+            Ok(_) => {}
+            Err(_) => return None,
+        }
+    }
+    if depth != 0 {
+        return None; // unbalanced
+    }
+    Some(spans)
+}
+
+/// Split XML bytes into per-element atoms, descending through single-child wrapper
+/// layers so the split lands at the depth where the document actually *branches*
+/// (the first element with 2+ element children). E.g. for
+/// `<doc><styles><a/><b/></styles></doc>` the atoms are the prologue+`<doc><styles>`
+/// open, `<a/>`, then `<b/></styles></doc>` — so `a` and `b` (the independent
+/// unmodeled atoms) live in separate, independently-mergeable segments. Atoms
+/// always concatenate back to `bytes` byte-for-byte; returns `None` if no useful
+/// branch point exists or on any parse error (caller keeps the part whole).
+fn split_xml_top_level(bytes: &[u8]) -> Option<Vec<Vec<u8>>> {
+    let spans = parse_elem_spans(bytes)?;
+    if spans.is_empty() {
+        return None;
+    }
+    // Find the shallowest depth that branches into 2+ sibling elements *under a
+    // single shared parent* — that's where the independent unmodeled atoms live.
+    // We descend single-child wrapper layers transparently: a depth is only a valid
+    // split point if its parent depth held exactly one element (so all the siblings
+    // we'd split share that one parent — a clean, predictable boundary). Depth 0 is
+    // special-cased: its "parent" is the (single, implicit) document root.
+    let max_depth = spans.iter().map(|s| s.depth).max().unwrap_or(0);
+    for d in 0..=max_depth {
+        // Require a single shared parent: exactly one element at the parent depth.
+        if d > 0 && spans.iter().filter(|s| s.depth == d - 1).count() != 1 {
+            break; // the tree already branched above this depth — stop descending
+        }
+        // Elements at this depth, in source order.
+        let mut at_d: Vec<&ElemSpan> = spans.iter().filter(|s| s.depth == d).collect();
+        at_d.sort_by_key(|s| s.start);
+        if at_d.len() < 2 {
+            continue; // single wrapper (or none) at this depth — descend further
+        }
+        // Split at the boundaries between these sibling elements. The leading atom
+        // is everything before the first sibling (prologue + ancestor open tags);
+        // each subsequent sibling's start is a boundary; the final atom runs to EOF
+        // (last sibling + ancestor close tags + trailing text).
+        let mut boundaries: Vec<usize> = Vec::new();
+        for s in at_d.iter().skip(1) {
+            boundaries.push(s.start);
+        }
+        if boundaries.is_empty() {
+            continue;
+        }
+        let mut atoms: Vec<Vec<u8>> = Vec::with_capacity(boundaries.len() + 1);
+        let mut prev = 0usize;
+        for &b in &boundaries {
+            atoms.push(bytes[prev..b].to_vec());
+            prev = b;
+        }
+        atoms.push(bytes[prev..].to_vec());
+        // Byte-fidelity guard: atoms MUST concatenate back to the source exactly.
+        let total: usize = atoms.iter().map(|a| a.len()).sum();
+        if total != bytes.len() {
+            return None;
+        }
+        return Some(atoms);
+    }
+    None
 }
 
 fn read_attrs(doc: &AutoCommit, block_obj: &ObjId) -> BTreeMap<String, AttrVal> {
@@ -749,6 +1042,7 @@ pub fn materialize(doc: &AutoCommit, c: &Containers) -> DocSnapshot {
         .into_iter()
         .map(|id| materialize_block(doc, &c.blocks, &id))
         .collect();
+    let (columns, column_gap) = columns(doc, c);
     DocSnapshot {
         schema: SCHEMA_ID.to_string(),
         schema_version: SCHEMA_VERSION,
@@ -761,6 +1055,10 @@ pub fn materialize(doc: &AutoCommit, c: &Containers) -> DocSnapshot {
         notes: materialize_notes(doc, c),
         comments: materialize_comments(doc, c),
         changes: materialize_changes(doc, c),
+        bookmarks: bookmarks(doc, c),
+        columns,
+        column_gap: column_gap.map(|g| g as f32),
+        language: language(doc, c),
     }
 }
 
@@ -1298,6 +1596,49 @@ impl<'a> DocMut<'a> {
         }
     }
 
+    // ---- bookmarks / cross-references -------------------------------------
+
+    /// Anchor a **bookmark** (named anchor) over the body range `[start, end)` of
+    /// `block_id`: cover it with a `bookmark` mark valued with `name`. The mark merges
+    /// with concurrent text edits and round-trips through the codecs. A zero-width
+    /// (point) bookmark is widened to one character when the block has text after the
+    /// anchor (a mark needs a non-empty range to live on); an end-of-block point sits
+    /// over the last character.
+    pub fn add_bookmark(&mut self, block_id: &str, start: usize, end: usize, name: &str) {
+        let (mut s, mut e) = (start, end);
+        if e <= s {
+            // Widen a point bookmark to one character so the mark has somewhere to live.
+            let blen = crate::model::block_text(self.doc, self.c, block_id).map(|t| t.chars().count()).unwrap_or(0);
+            if s < blen {
+                e = s + 1;
+            } else if blen > 0 {
+                // End-of-block point: sit over the last character.
+                s = blen - 1;
+                e = blen;
+            }
+        }
+        if e > s {
+            self.add_mark(block_id, s, e, MARK_BOOKMARK, name);
+        }
+    }
+
+    /// Anchor a **cross-reference** (internal link) over the body range `[start, end)`
+    /// of `block_id`: cover it with a `link` mark valued `#<target>`, where `target` is
+    /// a bookmark name or a heading's derived id (see [`heading_ref_id`]). The leading
+    /// `#` distinguishes an internal reference from an external URL. A bare target that
+    /// already begins with `#` is used verbatim. Round-trips through the codecs.
+    pub fn add_cross_ref(&mut self, block_id: &str, start: usize, end: usize, target: &str) {
+        if end <= start {
+            return;
+        }
+        let value = if target.starts_with(CROSS_REF_PREFIX) {
+            target.to_string()
+        } else {
+            format!("{CROSS_REF_PREFIX}{target}")
+        };
+        self.add_mark(block_id, start, end, MARK_LINK, value.as_str());
+    }
+
     /// Remove every block from a region (clearing a header/footer).
     pub fn clear_region(&mut self, region: Region) {
         let Some(container) = region_obj(self.doc, self.c, region) else { return };
@@ -1374,6 +1715,42 @@ impl<'a> DocMut<'a> {
         let _ = self.doc.put(&self.c.meta, key, value);
     }
 
+    /// Set the document-wide multi-column layout: `count` newspaper-style columns
+    /// for the body, with an optional `gap` (px) between them. Each is its own
+    /// scalar register under `meta`, so two replicas changing different aspects
+    /// field-level merge. A `count` of one with no gap clears the setting (the
+    /// document reads as single-column). Round-trips through `.odt`/`.docx`.
+    pub fn set_columns(&mut self, count: u32, gap: Option<f64>) {
+        let count = count.max(1);
+        if count <= 1 {
+            let _ = self.doc.delete(&self.c.meta, META_COLUMNS);
+        } else {
+            let _ = self.doc.put(&self.c.meta, META_COLUMNS, count as u64);
+        }
+        match gap {
+            Some(g) => {
+                let _ = self.doc.put(&self.c.meta, META_COLUMN_GAP, g);
+            }
+            None => {
+                let _ = self.doc.delete(&self.c.meta, META_COLUMN_GAP);
+            }
+        }
+    }
+
+    /// Set the document default language as a BCP-47 tag (`en-US`, `de-DE`, `fr`).
+    /// Stored as a single `Str` register under `meta`, so two replicas changing the
+    /// document language field-level merge rather than clobbering each other. An empty
+    /// `code` clears the setting (the document then declares no default language).
+    /// Round-trips through `.odt`/`.docx`. Supports spell-check locale selection and
+    /// accessibility/screen-reader language.
+    pub fn set_language(&mut self, code: &str) {
+        if code.is_empty() {
+            let _ = self.doc.delete(&self.c.meta, META_LANGUAGE);
+        } else {
+            let _ = self.doc.put(&self.c.meta, META_LANGUAGE, code);
+        }
+    }
+
     /// Resolve-or-create the `meta.props` document-properties sub-map. Created
     /// lazily so documents authored before it existed migrate transparently.
     fn props_map(&mut self) -> ObjId {
@@ -1433,8 +1810,50 @@ impl<'a> DocMut<'a> {
 
     /// Stash a verbatim blob in the preservation layer (e.g. an unmodeled ODF
     /// part), keyed by `key`. Re-emitted unchanged on export.
+    ///
+    /// This is the *segmented* (Tier-4, CRDT-merge-friendly) entry point: `bytes`
+    /// is split into independently-mergeable atoms (top-level XML child elements
+    /// for an XML part, otherwise a single whole-part atom) and stored as a
+    /// `Map<segment_id, {ord, bytes}>`. The same source part splits into the same
+    /// stable ids on every replica, so two replicas that each modify a DIFFERENT
+    /// unmodeled atom of the same part now merge cleanly instead of clobbering the
+    /// whole part. Reconstruction via [`preserved_part`] reproduces `bytes`
+    /// byte-for-byte. Same-atom concurrent edits remain last-writer-wins.
     pub fn set_preserved(&mut self, key: &str, bytes: &[u8]) {
-        let _ = self.doc.put(&self.c.preserved, key, ScalarValue::Bytes(bytes.to_vec()));
+        self.set_preserved_atoms(key, split_preserved_atoms(bytes));
+    }
+
+    /// Stash a preserved part already split into ordered atoms (verbatim byte
+    /// slices that concatenate back to the whole part). Each atom becomes an
+    /// independent automerge object keyed by a stable structural-index +
+    /// content-hash id, so distinct atoms merge across replicas. Replaces any
+    /// existing part under `key`.
+    pub fn set_preserved_atoms(&mut self, key: &str, atoms: Vec<Vec<u8>>) {
+        // Replace the part wholesale: a fresh map keyed by per-atom stable ids.
+        let part = self.doc.put_object(&self.c.preserved, key, ObjType::Map).unwrap();
+        for (idx, atom) in atoms.iter().enumerate() {
+            let id = preserved_atom_id(idx, atom);
+            let seg = self.doc.put_object(&part, id.as_str(), ObjType::Map).unwrap();
+            // Order key: the atom's source position, big-endian, so segments sort
+            // back into source order deterministically and replica-independently.
+            let ord = (idx as u32).to_be_bytes().to_vec();
+            let _ = self.doc.put(&seg, PRESERVED_SEG_ORD, ScalarValue::Bytes(ord));
+            let _ = self.doc.put(&seg, PRESERVED_SEG_BYTES, ScalarValue::Bytes(atom.clone()));
+        }
+    }
+
+    /// Overwrite a single preserved atom's verbatim bytes in-place, identified by
+    /// its stable segment id, without disturbing the part's other atoms. Used by a
+    /// codec that re-models one unmodeled region while leaving the rest untouched.
+    /// No-op if the part isn't segmented or the segment id is absent.
+    pub fn set_preserved_atom_bytes(&mut self, key: &str, segment_id: &str, bytes: &[u8]) {
+        let part = match self.doc.get(&self.c.preserved, key) {
+            Ok(Some((Value::Object(ObjType::Map), o))) => o,
+            _ => return,
+        };
+        if let Ok(Some((Value::Object(ObjType::Map), seg))) = self.doc.get(&part, segment_id) {
+            let _ = self.doc.put(&seg, PRESERVED_SEG_BYTES, ScalarValue::Bytes(bytes.to_vec()));
+        }
     }
 
     /// Store `bytes` in the content-addressed blob store and return its blake3
@@ -1939,6 +2358,79 @@ mod region_tests {
     }
 
     #[test]
+    fn bookmark_anchor_cross_ref_and_snapshot() {
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        let mut ids = IdGen::new(doc.get_actor().to_hex_string());
+        let (target, src);
+        {
+            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            target = dm.insert_block(None, "paragraph");
+            dm.splice_text(&target, 0, 0, "the intro section");
+            dm.add_bookmark(&target, 4, 9, "intro"); // over "intro"
+            src = dm.insert_block(Some(&target), "paragraph");
+            dm.splice_text(&src, 0, 0, "see above");
+            dm.add_cross_ref(&src, 4, 9, "intro"); // "above" → #intro
+        }
+        // The bookmarked block carries a `bookmark` mark valued with the name.
+        let tb = materialize_block(&doc, &c.blocks, &target);
+        let bm = tb.marks.iter().find(|m| m.name == MARK_BOOKMARK).expect("bookmark mark present");
+        assert_eq!((bm.start, bm.end), (4, 9));
+        assert_eq!(bm.value, crate::document::MarkValue::Str("intro".into()));
+        // The cross-ref is a `link` mark valued `#intro`.
+        let sb = materialize_block(&doc, &c.blocks, &src);
+        let link = sb.marks.iter().find(|m| m.name == MARK_LINK).expect("cross-ref link mark present");
+        assert_eq!((link.start, link.end), (4, 9));
+        assert_eq!(link.value, crate::document::MarkValue::Str("#intro".into()));
+        // The snapshot surfaces the bookmark registry.
+        let snap = materialize(&doc, &c);
+        assert_eq!(snap.bookmarks.len(), 1);
+        assert_eq!(snap.bookmarks[0].name, "intro");
+        assert_eq!(snap.bookmarks[0].range, (target.clone(), 4, 9));
+    }
+
+    #[test]
+    fn point_bookmark_is_widened_and_heading_ref_id_targets_heading() {
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        let mut ids = IdGen::new(doc.get_actor().to_hex_string());
+        let (h, p);
+        {
+            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            h = dm.insert_block(None, "heading");
+            dm.set_attr(&h, "level", 1i64);
+            dm.splice_text(&h, 0, 0, "Title");
+            p = dm.insert_block(Some(&h), "paragraph");
+            dm.splice_text(&p, 0, 0, "abc");
+            // A point bookmark at idx 1 (start == end) widens to one character.
+            dm.add_bookmark(&p, 1, 1, "pt");
+            // A cross-reference targeting the heading's derived id.
+            dm.add_cross_ref(&p, 0, 3, &heading_ref_id(&h));
+        }
+        let snap = materialize(&doc, &c);
+        let pt = snap.bookmarks.iter().find(|b| b.name == "pt").expect("point bookmark present");
+        assert_eq!((pt.range.1, pt.range.2), (1, 2), "point bookmark widened to one char");
+        let link = snap.blocks.iter().find(|b| b.text == "abc").unwrap().marks.iter().find(|m| m.name == MARK_LINK).unwrap().clone();
+        assert_eq!(link.value, crate::document::MarkValue::Str(format!("#{}{}", HEADING_REF_PREFIX, h)));
+    }
+
+    #[test]
+    fn bookmarks_converge_across_replicas() {
+        // Two replicas each add a bookmark to the same document; after merge both
+        // converge with both bookmarks present (CRDT-native — the mark is the source).
+        let mut a = crate::Document::new();
+        let p = a.insert_block(None, "paragraph");
+        a.splice_text(&p, 0, 0, "shared base text");
+        let mut b = a.fork();
+        a.add_bookmark(&p, 0, 6, "first"); // "shared"
+        b.add_bookmark(&p, 7, 11, "second"); // "base"
+        a.merge(&mut b);
+        b.merge(&mut a);
+        assert_eq!(a.materialize(), b.materialize(), "replicas converge with bookmarks");
+        assert_eq!(a.materialize().bookmarks.len(), 2, "both bookmarks present after merge");
+    }
+
+    #[test]
     fn clear_region_empties_it() {
         let mut doc = AutoCommit::new();
         let c = init(&mut doc, &ROOT);
@@ -1950,5 +2442,180 @@ mod region_tests {
             dm.clear_region(Region::Header);
         }
         assert!(materialize_region(&doc, &c, Region::Header).is_empty(), "header cleared");
+    }
+}
+
+#[cfg(test)]
+mod preserved_tests {
+    use super::*;
+    use automerge::{AutoCommit, ROOT};
+
+    fn new_doc() -> (AutoCommit, Containers, IdGen) {
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        let ids = IdGen::new(doc.get_actor().to_hex_string());
+        (doc, c, ids)
+    }
+
+    /// A `styles.xml`-shaped part with two independent top-level style atoms — the
+    /// canonical "two unmodeled regions in one part" shape that used to clobber.
+    const TWO_STYLE_PART: &[u8] = br#"<?xml version="1.0"?>
+<office:styles xmlns:office="o" xmlns:style="s">
+<style:style style:name="A">alpha</style:style>
+<style:style style:name="B">bravo</style:style>
+</office:styles>"#;
+
+    #[test]
+    fn split_concatenates_back_verbatim() {
+        let atoms = split_preserved_atoms(TWO_STYLE_PART);
+        // Two depth-1 siblings → two atoms: [prologue + root-open + style A],
+        // [style B + root-close]. (The first sibling rides with the leading
+        // material; each *subsequent* sibling opens a new atom.)
+        assert_eq!(atoms.len(), 2, "two style atoms: {atoms:?}");
+        let joined: Vec<u8> = atoms.iter().flatten().copied().collect();
+        assert_eq!(joined, TWO_STYLE_PART, "atoms must concatenate to the source byte-for-byte");
+        // The two style elements live in distinct atoms.
+        let has_a = atoms.iter().any(|a| a.windows(5).any(|w| w == b"alpha"));
+        let has_b = atoms.iter().any(|a| a.windows(5).any(|w| w == b"bravo"));
+        assert!(has_a && has_b, "both style atoms present in the split");
+        let same_atom = atoms
+            .iter()
+            .any(|a| a.windows(5).any(|w| w == b"alpha") && a.windows(5).any(|w| w == b"bravo"));
+        assert!(!same_atom, "the two styles must be in SEPARATE atoms");
+    }
+
+    #[test]
+    fn non_xml_part_stays_single_atom() {
+        let png = &[0x89u8, b'P', b'N', b'G', 0, 1, 2, 3][..];
+        let atoms = split_preserved_atoms(png);
+        assert_eq!(atoms, vec![png.to_vec()], "binary part is one opaque atom");
+    }
+
+    #[test]
+    fn segmented_part_round_trips_verbatim() {
+        let (mut doc, c, mut ids) = new_doc();
+        {
+            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            dm.set_preserved("odt/part/styles.xml", TWO_STYLE_PART);
+        }
+        // Stored as a segmented Map, yet reconstructs byte-for-byte.
+        let got = preserved_part(&doc, &c, "odt/part/styles.xml").unwrap();
+        assert_eq!(got, TWO_STYLE_PART, "segmented part re-emits verbatim");
+        // And via the bulk accessor the export paths use.
+        let parts = preserved_parts(&doc, &c);
+        let p = parts.iter().find(|(k, _)| k == "odt/part/styles.xml").unwrap();
+        assert_eq!(p.1, TWO_STYLE_PART);
+        // It really is segmented (more than one addressable atom).
+        assert!(preserved_atoms(&doc, &c, "odt/part/styles.xml").len() >= 2);
+    }
+
+    #[test]
+    fn legacy_blob_form_still_reconstructs() {
+        // Simulate a document written under the old single-`Bytes`-scalar schema.
+        let (mut doc, c, _ids) = new_doc();
+        doc.put(&c.preserved, "odt/part/settings.xml", ScalarValue::Bytes(TWO_STYLE_PART.to_vec()))
+            .unwrap();
+        let got = preserved_part(&doc, &c, "odt/part/settings.xml").unwrap();
+        assert_eq!(got, TWO_STYLE_PART, "legacy blob still re-emits verbatim");
+        // Legacy form exposes no addressable atoms (it's one opaque blob).
+        assert!(preserved_atoms(&doc, &c, "odt/part/settings.xml").is_empty());
+    }
+
+    /// THE core win: two replicas import the same part, each rewrites a DIFFERENT
+    /// unmodeled atom of it, then merge — and BOTH edits survive. Under the old
+    /// whole-part `Bytes` scalar this was last-writer-wins (one edit clobbered the
+    /// other); per-atom storage makes the two edits independent automerge objects.
+    #[test]
+    fn different_atom_edits_merge_not_clobber() {
+        // Base replica with the two-style part preserved.
+        let (mut doc, c, mut ids) = new_doc();
+        {
+            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            dm.set_preserved("odt/part/styles.xml", TWO_STYLE_PART);
+        }
+        doc.commit();
+
+        // Fork into replica B (distinct actor); A and B share the same per-atom
+        // object ids because they were created in the common ancestor.
+        let mut doc_b = AutoCommit::load(&doc.save()).unwrap();
+        doc_b.set_actor(automerge::ActorId::random());
+        let c_b = open(&doc_b, &ROOT).unwrap();
+
+        // Identify the two style atoms by their stable ids (same on both replicas).
+        let atoms_a = preserved_atoms(&doc, &c, "odt/part/styles.xml");
+        let id_alpha = atoms_a
+            .iter()
+            .find(|(_, b)| b.windows(5).any(|w| w == b"alpha"))
+            .map(|(id, _)| id.clone())
+            .unwrap();
+        let id_bravo = atoms_a
+            .iter()
+            .find(|(_, b)| b.windows(5).any(|w| w == b"bravo"))
+            .map(|(id, _)| id.clone())
+            .unwrap();
+        let atoms_b = preserved_atoms(&doc_b, &c_b, "odt/part/styles.xml");
+        assert!(
+            atoms_b.iter().any(|(id, _)| id == &id_alpha) && atoms_b.iter().any(|(id, _)| id == &id_bravo),
+            "fork shares the same stable atom ids: A={atoms_a:?} B={atoms_b:?}"
+        );
+
+        // Replica A rewrites ONLY the alpha atom; replica B rewrites ONLY bravo.
+        // Read-modify-write the atom (a targeted edit that keeps the atom's
+        // framing — prologue/root-open on the first atom, close tags on the last),
+        // mirroring how a codec would re-model one region in place.
+        let edit_atom = |bytes: &[u8], from: &str, to: &str| -> Vec<u8> {
+            String::from_utf8_lossy(bytes).replace(from, to).into_bytes()
+        };
+        let cur_alpha = atoms_a.iter().find(|(id, _)| id == &id_alpha).unwrap().1.clone();
+        let new_alpha = edit_atom(&cur_alpha, "alpha", "ALPHA-EDITED");
+        let cur_bravo = atoms_a.iter().find(|(id, _)| id == &id_bravo).unwrap().1.clone();
+        let new_bravo = edit_atom(&cur_bravo, "bravo", "BRAVO-EDITED");
+        {
+            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            dm.set_preserved_atom_bytes("odt/part/styles.xml", &id_alpha, &new_alpha);
+        }
+        doc.commit();
+        {
+            let mut ids_b = IdGen::new(doc_b.get_actor().to_hex_string());
+            let mut dm_b = DocMut { doc: &mut doc_b, c: &c_b, ids: &mut ids_b };
+            dm_b.set_preserved_atom_bytes("odt/part/styles.xml", &id_bravo, &new_bravo);
+        }
+        doc_b.commit();
+
+        // Merge both directions via the low-level Automerge (mirroring
+        // `Document::merge`, which sidesteps an automerge-0.8 AutoCommit::merge
+        // patch-log panic). Reload each side from the merged bytes.
+        let merge_into = |dst: &mut AutoCommit, src: &mut AutoCommit| -> AutoCommit {
+            let mut a = automerge::Automerge::load(&dst.save()).unwrap();
+            let mut b = automerge::Automerge::load(&src.save()).unwrap();
+            let _ = a.merge(&mut b);
+            AutoCommit::load(&a.save()).unwrap()
+        };
+        let merged_a = merge_into(&mut doc, &mut doc_b);
+        let merged_b = merge_into(&mut doc_b, &mut doc);
+        doc = merged_a;
+        doc_b = merged_b;
+        let c = open(&doc, &ROOT).unwrap();
+        let c_b = open(&doc_b, &ROOT).unwrap();
+
+        // BOTH edits survive on BOTH replicas — this is what clobbered before.
+        for (d, cc, who) in [(&doc, &c, "A"), (&doc_b, &c_b, "B")] {
+            let merged = preserved_part(d, cc, "odt/part/styles.xml").unwrap();
+            let txt = String::from_utf8_lossy(&merged);
+            assert!(txt.contains("ALPHA-EDITED"), "replica {who} kept A's edit: {txt}");
+            assert!(txt.contains("BRAVO-EDITED"), "replica {who} kept B's edit: {txt}");
+            // Source order is preserved (alpha before bravo) and the leading
+            // declaration/root-open atom survives untouched.
+            let ai = txt.find("ALPHA-EDITED").unwrap();
+            let bi = txt.find("BRAVO-EDITED").unwrap();
+            assert!(ai < bi, "replica {who} kept atom order");
+            assert!(txt.contains("<office:styles"), "replica {who} kept the root open tag");
+        }
+        // Convergence: both replicas reconstruct identical bytes.
+        assert_eq!(
+            preserved_part(&doc, &c, "odt/part/styles.xml"),
+            preserved_part(&doc_b, &c_b, "odt/part/styles.xml"),
+            "replicas converge on identical reconstructed bytes"
+        );
     }
 }
