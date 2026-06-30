@@ -1,5 +1,6 @@
 pub mod a11y;
 pub mod accesskit_bridge;
+pub mod screen_reader;
 pub mod app;
 pub mod color_compat;
 pub mod state;
@@ -35,6 +36,11 @@ pub use selection::SelectionModel;
 // through the module path to avoid clashing with `permissions::{Role}` /
 // `permissions::Op`, which are already re-exported at the crate root.
 pub use a11y::{A11ySettings, AccessNode, AccessState};
+
+// Built-in screen reader (W6): the first-party narrator over the a11y tree +
+// qos-tts. `describe` is the pure phrase-builder; `ScreenReader` the imperative
+// narrator the `App` holds when `A11ySettings.screen_reader` is on.
+pub use screen_reader::{ScreenReader, describe, flatten_reading_order};
 
 pub use widget::{Widget, Element};
 pub use widget::{AppCommand, AppKind, AppWidget, IconDescriptor};
