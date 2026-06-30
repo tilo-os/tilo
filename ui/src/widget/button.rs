@@ -13,6 +13,11 @@ use crate::i18n;
 pub struct Button {
     _id: String,
     label: String,
+    /// Accessible name for a button whose visible label is empty (an
+    /// icon-only button). Without this the icon carries no meaning for a
+    /// screen reader. When the button does show a label, the label is the
+    /// accessible name and this is left unset.
+    accessible_name: Option<String>,
     rect: Rect,
     is_hovered: bool,
     is_pressed: bool,
@@ -55,6 +60,7 @@ impl Button {
         Self {
             _id: id.to_string(),
             label: label.to_string(),
+            accessible_name: None,
             rect: Rect::ZERO,
             is_hovered: false,
             is_pressed: false,
@@ -100,6 +106,16 @@ impl Button {
     /// left.
     pub fn with_icon(mut self, icon: crate::icons::Icon) -> Self {
         self.icon = Some(icon);
+        self
+    }
+
+    /// Give an icon-only button a spoken name. The text isn't painted —
+    /// it's what a screen reader announces in place of the empty visible
+    /// label. Use it for every icon-only toolbar control ("Close",
+    /// "Bold", "Add row") so the glyph isn't silent. A button that shows
+    /// a label doesn't need this; the label is its accessible name.
+    pub fn with_accessible_name(mut self, name: &str) -> Self {
+        self.accessible_name = Some(name.to_string());
         self
     }
 
@@ -420,10 +436,18 @@ impl Widget for Button {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        // FTL-resolved label is the accessible name; an icon-only button with
-        // an empty label has no name here (a tooltip would supply one later).
+        // The visible label is the accessible name. When it's empty (an
+        // icon-only button) fall back to the explicit accessible name set
+        // via `with_accessible_name`, so the icon isn't silent.
         let label = i18n!(&self.label);
-        let name = (!label.is_empty()).then_some(label);
+        let name = if !label.is_empty() {
+            Some(label)
+        } else {
+            self.accessible_name
+                .as_ref()
+                .map(|n| i18n!(n))
+                .filter(|n| !n.is_empty())
+        };
         Some(
             AccessNode::new(Role::Button)
                 .with_optional_name(name)
@@ -595,10 +619,32 @@ mod tests {
     }
 
     #[test]
-    fn accessibility_icon_only_button_has_no_name() {
+    fn accessibility_icon_only_button_without_name_is_silent() {
+        // An icon-only button with no explicit accessible name still has
+        // none — the glyph alone carries no spoken meaning.
         let b = Button::new("id", "", None).with_icon(crate::icons::Icon::Check);
         let node = Widget::accessibility(&b).unwrap();
-        assert_eq!(node.name, None, "icon-only button has no accessible name yet");
+        assert_eq!(node.name, None);
+    }
+
+    #[test]
+    fn accessibility_icon_only_button_uses_accessible_name() {
+        // `with_accessible_name` supplies the spoken name for an icon-only
+        // button so a screen reader announces "Confirm" instead of nothing.
+        let b = Button::new("id", "", None)
+            .with_icon(crate::icons::Icon::Check)
+            .with_accessible_name("Confirm");
+        let node = Widget::accessibility(&b).unwrap();
+        assert_eq!(node.name.as_deref(), Some("Confirm"));
+    }
+
+    #[test]
+    fn accessibility_visible_label_wins_over_accessible_name() {
+        // When a button shows a label, that label is the accessible name —
+        // an accessible-name override is only the icon-only fallback.
+        let b = Button::new("id", "Save", None).with_accessible_name("Persist");
+        let node = Widget::accessibility(&b).unwrap();
+        assert_eq!(node.name.as_deref(), Some("Save"));
     }
 
     #[test]
