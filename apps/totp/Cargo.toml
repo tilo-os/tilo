@@ -38,3 +38,20 @@ hmac = "0.12"
 sha1 = "0.10"
 sha2 = "0.10"
 base32 = "0.5"
+
+# --- QR import (decode an otpauth:// URI out of a screenshot/photo) ----
+# Pure-Rust QR detection (the `quirc` algorithm) over an image-decoded
+# greyscale buffer — no camera, no native libs, works offline today. Both
+# crates are already resolved in the shared workspace lockfile (rqrr's only
+# extra deps are g2p + lru, both present), so this needs no registry fetch
+# and keeps the fleet build green. `image` is pinned to the formats a
+# saved authenticator code actually arrives in (PNG screenshots, JPEG
+# photos); the default codec zoo is disabled to keep the build lean.
+rqrr = "0.10"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
+[dev-dependencies]
+# Render known otpauth QR codes in tests so the decoder is exercised on the
+# real rqrr detect+decode path, not a mock. Already in the lockfile.
+qrcode = { version = "0.14", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

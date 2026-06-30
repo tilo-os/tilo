@@ -1,24 +1,33 @@
 //! The "Add account" modal — the app's second screen.
 //!
-//! Two ways in, both landing in the same [`crate::model::Account`]:
+//! The flow is built around how people actually add a 2FA account, easiest
+//! path first:
 //!
-//!  * **Paste an `otpauth://` URI** (the string a QR code encodes) into
-//!    the top field and press *Parse* — every parameter (secret, issuer,
-//!    label, algorithm, digits, period) is decoded and fills the form.
-//!  * **Manual entry** — issuer, account label, base32 secret, plus
-//!    segmented selectors for the algorithm (SHA1/256/512) and digit
-//!    count (6/8), and a period field.
+//!  1. **Scan a QR code** — the primary, obvious affordance. Live-camera
+//!     capture is pending a shared OS capture pipeline, so the button
+//!     reaches a clean hook ([`crate::qr::scan_with_camera`]) that explains
+//!     the limitation rather than failing silently.
+//!  2. **Import from image** — decode the QR out of a screenshot or photo
+//!     file. This works today, fully offline, via [`crate::qr`].
+//!  3. **Paste a setup link** — drop an `otpauth://` URI in and every field
+//!     auto-fills.
+//!
+//! Only when none of those fit does the user reach for **manual entry**:
+//! issuer + account label + secret — the three fields almost everyone
+//! needs. The fiddly cryptographic parameters (algorithm, digit count,
+//! rotation period) live behind a collapsed **Advanced options** disclosure
+//! so the default screen reads as calm, not as a form dump.
 //!
 //! The panel is driven imperatively by [`crate::app::AuthenticatorApp`]
-//! (laid out by hand, not via taffy) because it is a transient overlay.
-//! It owns its [`ui::widget::TextInput`] fields in local mode and manages
-//! focus among them itself, forwarding key/pointer events to the focused
-//! field. Results surface as an [`AddPanelEvent`] drained by the app.
+//! (laid out by hand, not via taffy) because it is a transient overlay. It
+//! owns its [`ui::widget::TextInput`] fields in local mode and manages focus
+//! among them itself, forwarding key/pointer events to the focused field.
+//! Results surface as an [`AddPanelEvent`] drained by the app.
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
 use uuid::Uuid;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 use vello::Scene;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -37,8 +46,14 @@ use crate::model::{self, Account, Algorithm};
 pub enum AddPanelEvent {
     Cancel,
     Save(Account),
+    /// The user asked to import a QR code from an image file. The app owns
+    /// the file picker (it needs the cluster's file-access capability), runs
+    /// the decode, and calls [`AddAccountPanel::apply_uri`] with the result.
+    PickImageForQr,
 }
 
+/// Which text field currently has the caret. Ordered for Tab cycling; the
+/// advanced fields only participate while the section is expanded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Field {
     Uri,
@@ -48,31 +63,31 @@ enum Field {
     Period,
 }
 
-const FIELD_ORDER: [Field; 5] = [
-    Field::Uri,
-    Field::Issuer,
-    Field::Label,
-    Field::Secret,
-    Field::Period,
-];
-
-const MODAL_W: f64 = 520.0;
-const MODAL_H: f64 = 560.0;
-const INPUT_H: f64 = 40.0;
+const MODAL_W: f64 = 460.0;
+const INPUT_H: f64 = 42.0;
+const PAD: f64 = 28.0;
 
 pub struct AddAccountPanel {
     open: bool,
     window: Rect,
     modal: Rect,
 
+    // Easy-path entry.
     uri: TextInput,
+    /// The paste-a-link row is itself disclosed: collapsed to a single
+    /// tappable method until the user chooses it.
+    uri_expanded: bool,
+
+    // Manual fields (the three most accounts need).
     issuer: TextInput,
     label: TextInput,
     secret: TextInput,
-    period: TextInput,
 
+    // Advanced parameters, hidden until disclosed.
+    advanced_open: bool,
     algorithm: Algorithm,
     digits: u8,
+    period: TextInput,
 
     focused: Option<Field>,
     last_mouse: Point,
@@ -80,14 +95,18 @@ pub struct AddAccountPanel {
     event: Option<AddPanelEvent>,
 
     // Laid-out hit rects, recomputed in `layout`.
+    qr_card_rect: Rect,
+    image_card_rect: Rect,
+    link_card_rect: Rect,
     uri_rect: Rect,
     parse_rect: Rect,
     issuer_rect: Rect,
     label_rect: Rect,
     secret_rect: Rect,
-    period_rect: Rect,
+    advanced_header_rect: Rect,
     alg_rects: [Rect; 3],
     digit_rects: [Rect; 2],
+    period_rect: Rect,
     cancel_rect: Rect,
     save_rect: Rect,
 }
@@ -105,24 +124,30 @@ impl AddAccountPanel {
             window: Rect::ZERO,
             modal: Rect::ZERO,
             uri: TextInput::local(),
+            uri_expanded: false,
             issuer: TextInput::local(),
             label: TextInput::local(),
             secret: TextInput::local(),
-            period: TextInput::local().with_initial_value("30"),
+            advanced_open: false,
             algorithm: Algorithm::Sha1,
             digits: 6,
+            period: TextInput::local().with_initial_value("30"),
             focused: None,
             last_mouse: Point::ZERO,
             error: String::new(),
             event: None,
+            qr_card_rect: Rect::ZERO,
+            image_card_rect: Rect::ZERO,
+            link_card_rect: Rect::ZERO,
             uri_rect: Rect::ZERO,
             parse_rect: Rect::ZERO,
             issuer_rect: Rect::ZERO,
             label_rect: Rect::ZERO,
             secret_rect: Rect::ZERO,
-            period_rect: Rect::ZERO,
+            advanced_header_rect: Rect::ZERO,
             alg_rects: [Rect::ZERO; 3],
             digit_rects: [Rect::ZERO; 2],
+            period_rect: Rect::ZERO,
             cancel_rect: Rect::ZERO,
             save_rect: Rect::ZERO,
         }
@@ -132,18 +157,21 @@ impl AddAccountPanel {
         self.open
     }
 
-    /// Open the panel, resetting every field to defaults.
+    /// Open the panel, resetting every field to defaults and collapsing the
+    /// disclosures so each visit starts from the calm default state.
     pub fn open(&mut self) {
         self.open = true;
         self.error.clear();
         self.uri.set_text("");
+        self.uri_expanded = false;
         self.issuer.set_text("");
         self.label.set_text("");
         self.secret.set_text("");
-        self.period.set_text("30");
+        self.advanced_open = false;
         self.algorithm = Algorithm::Sha1;
         self.digits = 6;
-        self.set_focus(Some(Field::Issuer));
+        self.period.set_text("30");
+        self.set_focus(None);
     }
 
     pub fn close(&mut self) {
@@ -153,6 +181,23 @@ impl AddAccountPanel {
 
     pub fn take_event(&mut self) -> Option<AddPanelEvent> {
         self.event.take()
+    }
+
+    /// Order text fields participate in Tab cycling, given the current
+    /// disclosure state. The URI field joins only when the paste row is
+    /// expanded; the period field only when Advanced is open.
+    fn field_order(&self) -> Vec<Field> {
+        let mut order = Vec::with_capacity(5);
+        if self.uri_expanded {
+            order.push(Field::Uri);
+        }
+        order.push(Field::Issuer);
+        order.push(Field::Label);
+        order.push(Field::Secret);
+        if self.advanced_open {
+            order.push(Field::Period);
+        }
+        order
     }
 
     fn field_mut(&mut self, f: Field) -> &mut TextInput {
@@ -166,7 +211,7 @@ impl AddAccountPanel {
     }
 
     fn set_focus(&mut self, f: Option<Field>) {
-        for field in FIELD_ORDER {
+        for field in [Field::Uri, Field::Issuer, Field::Label, Field::Secret, Field::Period] {
             let on = Some(field) == f;
             self.field_mut(field).set_focus(on);
         }
@@ -174,73 +219,141 @@ impl AddAccountPanel {
     }
 
     fn focus_next(&mut self, backward: bool) {
+        let order = self.field_order();
+        if order.is_empty() {
+            return;
+        }
         let cur = self
             .focused
-            .and_then(|f| FIELD_ORDER.iter().position(|x| *x == f))
+            .and_then(|f| order.iter().position(|x| *x == f))
             .unwrap_or(0);
-        let n = FIELD_ORDER.len();
-        let next = if backward {
-            (cur + n - 1) % n
-        } else {
-            (cur + 1) % n
-        };
-        self.set_focus(Some(FIELD_ORDER[next]));
+        let n = order.len();
+        let next = if backward { (cur + n - 1) % n } else { (cur + 1) % n };
+        self.set_focus(Some(order[next]));
     }
 
-    /// Recompute the modal + every field rect for the given window.
+    /// Reveal the paste-a-link row and focus its field.
+    fn expand_uri(&mut self) {
+        self.uri_expanded = true;
+        self.error.clear();
+        self.set_focus(Some(Field::Uri));
+    }
+
+    fn toggle_advanced(&mut self) {
+        self.advanced_open = !self.advanced_open;
+        if !self.advanced_open && self.focused == Some(Field::Period) {
+            self.set_focus(None);
+        }
+    }
+
+    // ---- layout ------------------------------------------------------
+
+    /// Recompute the modal + every field rect for the given window. The
+    /// modal height grows as disclosures open so nothing overlaps.
     pub fn layout(&mut self, window: Rect) {
         self.window = window;
         let w = MODAL_W.min(window.width() - 48.0);
-        let h = MODAL_H.min(window.height() - 48.0);
+
+        // Build the content vertically, accumulating height, then centre the
+        // card on the final height.
+        let left_pad = PAD;
+        let content_w = w - left_pad * 2.0;
+
+        // Method cards: three full-width rows.
+        let card_h = 60.0;
+        let card_gap = 12.0;
+
+        // Estimate total height first so we can place y0.
+        let mut h = 72.0; // title block
+        h += card_h * 3.0 + card_gap * 2.0; // three method cards
+        if self.uri_expanded {
+            h += 20.0 + INPUT_H + 14.0; // gap + uri row
+        }
+        h += 30.0; // "Or enter details" divider
+        h += (18.0 + INPUT_H + 16.0) * 3.0; // issuer/label/secret (label+field+gap)
+        h += 18.0 + 28.0; // advanced header
+        if self.advanced_open {
+            h += 14.0 + 18.0 + INPUT_H + 8.0; // alg row (label+chips)
+            h += 18.0 + 18.0 + INPUT_H; // digits+period row
+        }
+        h += 24.0 + 48.0 + PAD; // error gap + footer + bottom pad
+        let h = h.min(window.height() - 32.0).max(360.0);
+
         let x0 = window.center().x - w / 2.0;
-        let y0 = window.center().y - h / 2.0;
+        let y0 = (window.center().y - h / 2.0).max(window.y0 + 16.0);
         self.modal = Rect::new(x0, y0, x0 + w, y0 + h);
 
-        let pad = 24.0;
-        let left = x0 + pad;
-        let right = x0 + w - pad;
-        let full_w = right - left;
-        let mut y = y0 + 64.0; // below title
+        let left = x0 + left_pad;
+        let right = x0 + w - left_pad;
+        let mut y = y0 + 64.0; // below title block
 
-        // URI row: field + Parse button.
-        let parse_w = 96.0;
-        self.uri_rect = Rect::new(left, y, right - parse_w - 8.0, y + INPUT_H);
-        self.parse_rect = Rect::new(right - parse_w, y, right, y + INPUT_H);
-        y += INPUT_H + 28.0; // gap for "or enter manually" divider
+        // Three method cards.
+        self.qr_card_rect = Rect::new(left, y, right, y + card_h);
+        y += card_h + card_gap;
+        self.image_card_rect = Rect::new(left, y, right, y + card_h);
+        y += card_h + card_gap;
+        self.link_card_rect = Rect::new(left, y, right, y + card_h);
+        y += card_h;
 
+        // Paste-link field, only when expanded.
+        if self.uri_expanded {
+            y += 20.0;
+            let parse_w = 84.0;
+            self.uri_rect = Rect::new(left, y, right - parse_w - 8.0, y + INPUT_H);
+            self.parse_rect = Rect::new(right - parse_w, y, right, y + INPUT_H);
+            y += INPUT_H + 14.0;
+        } else {
+            self.uri_rect = Rect::ZERO;
+            self.parse_rect = Rect::ZERO;
+        }
+
+        // "Or enter details" divider.
+        y += 30.0;
+
+        // Manual fields: label above field, generous gaps.
         let label_gap = 18.0;
-        let row_gap = 14.0;
-
+        let row_gap = 16.0;
         self.issuer_rect = Rect::new(left, y + label_gap, right, y + label_gap + INPUT_H);
         y += label_gap + INPUT_H + row_gap;
-
         self.label_rect = Rect::new(left, y + label_gap, right, y + label_gap + INPUT_H);
         y += label_gap + INPUT_H + row_gap;
-
         self.secret_rect = Rect::new(left, y + label_gap, right, y + label_gap + INPUT_H);
         y += label_gap + INPUT_H + row_gap;
 
-        // Algorithm chips (left), digits chips (mid), period (right).
-        let chip_y = y + label_gap;
-        let alg_w = 64.0;
-        for i in 0..3 {
-            let cx = left + i as f64 * (alg_w + 6.0);
-            self.alg_rects[i] = Rect::new(cx, chip_y, cx + alg_w, chip_y + INPUT_H);
-        }
-        let dig_w = 52.0;
-        let dig_x = left + full_w * 0.56;
-        for i in 0..2 {
-            let cx = dig_x + i as f64 * (dig_w + 6.0);
-            self.digit_rects[i] = Rect::new(cx, chip_y, cx + dig_w, chip_y + INPUT_H);
-        }
-        let period_x = right - 84.0;
-        self.period_rect = Rect::new(period_x, chip_y, right, chip_y + INPUT_H);
-        // (chip row is the last laid-out content row before the footer)
+        // Advanced disclosure header (always present; full-width hit row).
+        self.advanced_header_rect = Rect::new(left, y, right, y + 28.0);
+        y += 28.0;
 
-        // Footer buttons.
-        let btn_w = 120.0;
-        let btn_h = 42.0;
-        let by = y0 + h - pad - btn_h;
+        if self.advanced_open {
+            y += 14.0;
+            // Algorithm chip row.
+            let chip_y = y + 18.0;
+            let alg_w = (content_w - 12.0) / 3.0;
+            for i in 0..3 {
+                let cx = left + i as f64 * (alg_w + 6.0);
+                self.alg_rects[i] = Rect::new(cx, chip_y, cx + alg_w, chip_y + INPUT_H);
+            }
+            y = chip_y + INPUT_H + 18.0;
+            // Digits chips (left) + period field (right) on one row.
+            let row_y = y + 18.0;
+            let dig_w = 56.0;
+            for i in 0..2 {
+                let cx = left + i as f64 * (dig_w + 6.0);
+                self.digit_rects[i] = Rect::new(cx, row_y, cx + dig_w, row_y + INPUT_H);
+            }
+            let period_w = 88.0;
+            let period_x = right - period_w;
+            self.period_rect = Rect::new(period_x, row_y, right, row_y + INPUT_H);
+        } else {
+            self.alg_rects = [Rect::ZERO; 3];
+            self.digit_rects = [Rect::ZERO; 2];
+            self.period_rect = Rect::ZERO;
+        }
+
+        // Footer pinned to the bottom of the card.
+        let btn_w = 128.0;
+        let btn_h = 44.0;
+        let by = y0 + h - PAD - btn_h;
         self.save_rect = Rect::new(right - btn_w, by, right, by + btn_h);
         self.cancel_rect = Rect::new(right - btn_w * 2.0 - 12.0, by, right - btn_w - 12.0, by + btn_h);
 
@@ -252,24 +365,24 @@ impl AddAccountPanel {
         self.period.apply_layout_external(self.period_rect);
     }
 
-    /// Build an account from the current field values, or an error
-    /// string describing why it can't be saved.
+    // ---- account building / actions ----------------------------------
+
+    /// Build an account from the current field values, or an error string
+    /// describing why it can't be saved.
     fn build_account(&self) -> Result<Account, String> {
         let secret = model::normalise_secret(self.secret.value());
         if secret.is_empty() {
-            return Err("Enter a base32 secret".to_string());
+            return Err("Enter a secret key".to_string());
         }
         if crate::totp::decode_secret(&secret).map(|b| b.is_empty()).unwrap_or(true) {
-            return Err("Secret is not valid base32".to_string());
+            return Err("That secret isn\u{2019}t valid base32".to_string());
         }
         let issuer = self.issuer.value().trim().to_string();
         let label = self.label.value().trim().to_string();
         if issuer.is_empty() && label.is_empty() {
-            return Err("Enter an issuer or account name".to_string());
+            return Err("Add an issuer or account name".to_string());
         }
         let period = self.period.value().trim().parse::<u32>().unwrap_or(30).clamp(5, 300);
-        // Pick a colour slot from the issuer so new accounts get a stable
-        // distinct hue; the app may override.
         let color = (issuer.len().wrapping_add(label.len()) % 7) as u8;
         Ok(Account {
             id: Uuid::new_v4(),
@@ -284,14 +397,12 @@ impl AddAccountPanel {
         })
     }
 
-    /// Parse the URI field into the manual fields.
-    fn parse_uri(&mut self) {
-        let uri = self.uri.value().to_string();
-        if uri.trim().is_empty() {
-            self.error = "Paste an otpauth:// URI first".to_string();
-            return;
-        }
-        match model::parse_otpauth_uri(&uri, Uuid::new_v4()) {
+    /// Apply a decoded `otpauth://` URI (from paste, QR image import, or a
+    /// future camera scan) into the manual fields. On success the manual
+    /// section shows the filled values so the user can review before saving;
+    /// on failure the reason surfaces inline.
+    pub fn apply_uri(&mut self, uri: &str) {
+        match model::parse_otpauth_uri(uri, Uuid::new_v4()) {
             Ok(acc) => {
                 self.issuer.set_text(&acc.issuer);
                 self.label.set_text(&acc.label);
@@ -299,10 +410,35 @@ impl AddAccountPanel {
                 self.period.set_text(&acc.period.to_string());
                 self.algorithm = acc.algorithm;
                 self.digits = acc.digits;
+                // Surface non-default crypto params so a reviewing user can
+                // see what the code carried.
+                if acc.algorithm != Algorithm::Sha1 || acc.digits != 6 || acc.period != 30 {
+                    self.advanced_open = true;
+                }
                 self.error.clear();
                 self.set_focus(Some(Field::Issuer));
             }
             Err(e) => self.error = e,
+        }
+    }
+
+    /// Parse whatever is currently in the URI field.
+    fn parse_uri_field(&mut self) {
+        let uri = self.uri.value().to_string();
+        if uri.trim().is_empty() {
+            self.error = "Paste an otpauth:// link first".to_string();
+            return;
+        }
+        self.apply_uri(&uri);
+    }
+
+    /// Begin a live-camera scan. Today the shared capture pipeline doesn't
+    /// exist, so this surfaces the hook's explanation inline rather than
+    /// failing silently. See [`crate::qr::scan_with_camera`].
+    fn start_camera_scan(&mut self) {
+        match crate::qr::scan_with_camera() {
+            Ok(uri) => self.apply_uri(&uri),
+            Err(reason) => self.error = reason.message().to_string(),
         }
     }
 
@@ -341,76 +477,221 @@ impl AddAccountPanel {
         let card = RoundedRect::from_rect(self.modal, theme.tokens.radii.xl as f64);
         scene.fill(Fill::NonZero, transform, theme.tokens.colors.surfaces.raised, None, &card);
         scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
+            &Stroke::new(1.0),
             transform,
             theme.tokens.colors.border_standard,
             None,
             &card,
         );
 
-        let left = self.modal.x0 + 24.0;
-        // Title.
+        let left = self.modal.x0 + PAD;
+        // Title + calm subtitle.
         text_renderer.draw_text_weighted(
             scene,
             "Add account",
             22.0,
             theme.tokens.colors.text_primary,
-            transform * Affine::translate((left, self.modal.y0 + 22.0)),
+            transform * Affine::translate((left, self.modal.y0 + 24.0)),
             None,
             TextWeight::Bold,
         );
+        text_renderer.draw_text(
+            scene,
+            "Scan, import, or enter a 2FA account",
+            13.0,
+            theme.tokens.colors.text_dim,
+            transform * Affine::translate((left, self.modal.y0 + 50.0)),
+            None,
+        );
 
-        // URI field + Parse button.
-        self.draw_field_label(scene, transform, text_renderer, theme, "Scan / paste otpauth:// URI", self.uri_rect, false);
-        if self.uri.value().is_empty() {
-            self.draw_placeholder(scene, transform, text_renderer, theme, self.uri_rect, "otpauth://totp/Issuer:account?secret=…");
+        // --- Method cards (easy paths, leading) ---
+        let qr_hover = self.qr_card_rect.contains(self.last_mouse);
+        self.draw_method_card(
+            scene, transform, text_renderer, theme, self.qr_card_rect,
+            Glyph::Qr, "Scan QR code", "Point your camera at the setup code", qr_hover, true,
+        );
+        let img_hover = self.image_card_rect.contains(self.last_mouse);
+        self.draw_method_card(
+            scene, transform, text_renderer, theme, self.image_card_rect,
+            Glyph::Image, "Import from image", "Read a QR from a screenshot or photo", img_hover, false,
+        );
+        let link_hover = self.link_card_rect.contains(self.last_mouse);
+        self.draw_method_card(
+            scene, transform, text_renderer, theme, self.link_card_rect,
+            Glyph::Link, "Paste a setup link", "Fill everything from an otpauth:// link", link_hover, false,
+        );
+
+        // Paste-link field (disclosed).
+        if self.uri_expanded {
+            if self.uri.value().is_empty() {
+                self.draw_placeholder(scene, transform, text_renderer, theme, self.uri_rect, "otpauth://totp/Issuer:account?secret=\u{2026}");
+            }
+            self.uri.draw(scene, transform, text_renderer, theme, &presence);
+            let parse_hover = self.parse_rect.contains(self.last_mouse);
+            self.draw_button(scene, transform, text_renderer, theme, self.parse_rect, "Fill", parse_hover, true);
         }
-        self.uri.draw(scene, transform, text_renderer, theme, &presence);
-        self.draw_button(scene, transform, text_renderer, theme, self.parse_rect, "Parse", false, true);
 
-        // "or enter manually" divider.
-        let div_y = (self.uri_rect.y1 + self.issuer_rect.y0) / 2.0 - 2.0;
-        self.draw_divider(scene, transform, text_renderer, theme, div_y, "or enter manually");
+        // "Or enter details" divider.
+        let div_y = self.issuer_rect.y0 - 18.0 - 14.0;
+        self.draw_divider(scene, transform, text_renderer, theme, div_y, "or enter details");
 
         // Manual fields.
         self.draw_text_field(scene, transform, text_renderer, theme, "Issuer", Field::Issuer, "GitHub");
         self.draw_text_field(scene, transform, text_renderer, theme, "Account name", Field::Label, "ada@example.com");
-        self.draw_text_field(scene, transform, text_renderer, theme, "Secret (base32)", Field::Secret, "JBSWY3DPEHPK3PXP");
+        self.draw_text_field(scene, transform, text_renderer, theme, "Secret key", Field::Secret, "JBSWY3DPEHPK3PXP");
 
-        // Algorithm + digits + period row labels.
-        self.draw_field_label(scene, transform, text_renderer, theme, "Algorithm", self.alg_rects[0], false);
-        for (i, alg) in Algorithm::ALL.iter().enumerate() {
-            let selected = *alg == self.algorithm;
-            let hovered = self.alg_rects[i].contains(self.last_mouse);
-            self.draw_chip(scene, transform, text_renderer, theme, self.alg_rects[i], alg.as_str(), selected, hovered);
+        // --- Advanced options disclosure ---
+        self.draw_advanced_header(scene, transform, text_renderer, theme);
+        if self.advanced_open {
+            self.draw_field_label(scene, transform, text_renderer, theme, "Algorithm", self.alg_rects[0]);
+            for (i, alg) in Algorithm::ALL.iter().enumerate() {
+                let selected = *alg == self.algorithm;
+                let hovered = self.alg_rects[i].contains(self.last_mouse);
+                self.draw_chip(scene, transform, text_renderer, theme, self.alg_rects[i], alg.as_str(), selected, hovered);
+            }
+            self.draw_field_label(scene, transform, text_renderer, theme, "Digits", self.digit_rects[0]);
+            for (i, d) in [6u8, 8u8].iter().enumerate() {
+                let selected = *d == self.digits;
+                let hovered = self.digit_rects[i].contains(self.last_mouse);
+                self.draw_chip(scene, transform, text_renderer, theme, self.digit_rects[i], &d.to_string(), selected, hovered);
+            }
+            self.draw_field_label(scene, transform, text_renderer, theme, "Period (s)", self.period_rect);
+            self.period.draw(scene, transform, text_renderer, theme, &presence);
         }
-        self.draw_field_label(scene, transform, text_renderer, theme, "Digits", self.digit_rects[0], false);
-        for (i, d) in [6u8, 8u8].iter().enumerate() {
-            let selected = *d == self.digits;
-            let hovered = self.digit_rects[i].contains(self.last_mouse);
-            self.draw_chip(scene, transform, text_renderer, theme, self.digit_rects[i], &d.to_string(), selected, hovered);
-        }
-        self.draw_field_label(scene, transform, text_renderer, theme, "Period", self.period_rect, false);
-        self.period.draw(scene, transform, text_renderer, theme, &presence);
 
-        // Error line.
+        // Error line, just above the footer.
         if !self.error.is_empty() {
             text_renderer.draw_text(
                 scene,
                 &self.error,
                 12.0,
                 theme.tokens.colors.semantic.danger,
-                transform * Affine::translate((left, self.cancel_rect.y0 - 22.0)),
-                None,
+                transform * Affine::translate((left, self.cancel_rect.y0 - 20.0)),
+                Some((self.modal.width() - PAD * 2.0) as f32),
             );
         }
 
-        // Footer buttons.
+        // Footer.
         let can_save = !self.secret.value().trim().is_empty();
         let cancel_hover = self.cancel_rect.contains(self.last_mouse);
         let save_hover = self.save_rect.contains(self.last_mouse);
         self.draw_button(scene, transform, text_renderer, theme, self.cancel_rect, "Cancel", cancel_hover, true);
         self.draw_primary_button(scene, transform, text_renderer, theme, self.save_rect, "Add account", save_hover, can_save);
+    }
+
+    /// One big, tappable method row: an icon tile, a bold title, and a calm
+    /// one-line description. The primary card (QR) gets the accent tint so
+    /// the recommended path reads first.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_method_card(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        glyph: Glyph,
+        title: &str,
+        subtitle: &str,
+        hovered: bool,
+        primary: bool,
+    ) {
+        let shape = RoundedRect::from_rect(rect, theme.tokens.radii.lg as f64);
+        let bg = if primary {
+            if hovered { theme.accent_hover } else { theme.accent_primary }
+        } else if hovered {
+            theme.tokens.colors.surface_white_10
+        } else {
+            theme.tokens.colors.surfaces.base
+        };
+        scene.fill(Fill::NonZero, transform, bg, None, &shape);
+        if !primary {
+            scene.stroke(&Stroke::new(1.0), transform, theme.tokens.colors.border_standard, None, &shape);
+        }
+
+        let on_primary = primary;
+        let title_color = if on_primary { Color::WHITE } else { theme.tokens.colors.text_primary };
+        let sub_color = if on_primary {
+            Color::WHITE.with_alpha_factor(0.82)
+        } else {
+            theme.tokens.colors.text_dim
+        };
+        let icon_color = if on_primary { Color::WHITE } else { theme.accent_primary };
+
+        // Icon tile on the left.
+        let tile = Rect::new(rect.x0 + 14.0, rect.center().y - 16.0, rect.x0 + 14.0 + 32.0, rect.center().y + 16.0);
+        let tile_bg = if on_primary {
+            Color::WHITE.with_alpha_factor(0.18)
+        } else {
+            theme.accent_primary.with_alpha_factor(0.14)
+        };
+        scene.fill(Fill::NonZero, transform, tile_bg, None, &RoundedRect::from_rect(tile, theme.tokens.radii.md as f64));
+        draw_glyph(scene, transform, tile, glyph, icon_color);
+
+        let text_x = tile.x1 + 14.0;
+        text_renderer.draw_text_weighted(
+            scene,
+            title,
+            15.0,
+            title_color,
+            transform * Affine::translate((text_x, rect.center().y - 16.0)),
+            None,
+            TextWeight::Semibold,
+        );
+        text_renderer.draw_text(
+            scene,
+            subtitle,
+            12.0,
+            sub_color,
+            transform * Affine::translate((text_x, rect.center().y + 3.0)),
+            Some((rect.x1 - text_x - 28.0) as f32),
+        );
+
+        // Chevron affordance on the right.
+        let cx = rect.x1 - 22.0;
+        let cy = rect.center().y;
+        let mut chev = BezPath::new();
+        chev.move_to((cx - 4.0, cy - 6.0));
+        chev.line_to((cx + 4.0, cy));
+        chev.line_to((cx - 4.0, cy + 6.0));
+        let chev_color = if on_primary { Color::WHITE.with_alpha_factor(0.8) } else { theme.tokens.colors.text_dim };
+        scene.stroke(&Stroke::new(2.0), transform, chev_color, None, &chev);
+    }
+
+    fn draw_advanced_header(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let r = self.advanced_header_rect;
+        let hovered = r.contains(self.last_mouse);
+        // Disclosure triangle.
+        let tx = r.x0;
+        let ty = r.center().y;
+        let mut tri = BezPath::new();
+        if self.advanced_open {
+            tri.move_to((tx, ty - 4.0));
+            tri.line_to((tx + 10.0, ty - 4.0));
+            tri.line_to((tx + 5.0, ty + 4.0));
+        } else {
+            tri.move_to((tx + 1.0, ty - 5.0));
+            tri.line_to((tx + 9.0, ty));
+            tri.line_to((tx + 1.0, ty + 5.0));
+        }
+        tri.close_path();
+        let color = if hovered { theme.tokens.colors.text_primary } else { theme.tokens.colors.text_dim };
+        scene.fill(Fill::NonZero, transform, color, None, &tri);
+        text_renderer.draw_text_weighted(
+            scene,
+            "Advanced options",
+            13.0,
+            color,
+            transform * Affine::translate((r.x0 + 18.0, r.center().y - 8.0)),
+            None,
+            TextWeight::Medium,
+        );
     }
 
     fn draw_field_label(
@@ -421,7 +702,6 @@ impl AddAccountPanel {
         theme: &Theme,
         label: &str,
         field_rect: Rect,
-        _focused: bool,
     ) {
         text_renderer.draw_text_weighted(
             scene,
@@ -451,7 +731,7 @@ impl AddAccountPanel {
             Field::Secret => self.secret_rect,
             _ => return,
         };
-        self.draw_field_label(scene, transform, text_renderer, theme, label, rect, false);
+        self.draw_field_label(scene, transform, text_renderer, theme, label, rect);
         let empty = self.field_mut(field).value().is_empty();
         if empty {
             self.draw_placeholder(scene, transform, text_renderer, theme, rect, placeholder);
@@ -488,8 +768,8 @@ impl AddAccountPanel {
         y: f64,
         text: &str,
     ) {
-        let left = self.modal.x0 + 24.0;
-        let right = self.modal.x1 - 24.0;
+        let left = self.modal.x0 + PAD;
+        let right = self.modal.x1 - PAD;
         let (tw, _) = text_renderer.measure(text, 11.0, None);
         let cx = (left + right) / 2.0;
         let line = theme.tokens.colors.border_standard.with_alpha_factor(0.6);
@@ -528,13 +808,7 @@ impl AddAccountPanel {
         };
         scene.fill(Fill::NonZero, transform, bg, None, &shape);
         if !selected {
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                theme.tokens.colors.border_standard,
-                None,
-                &shape,
-            );
+            scene.stroke(&Stroke::new(1.0), transform, theme.tokens.colors.border_standard, None, &shape);
         }
         let color = if selected { Color::WHITE } else { theme.tokens.colors.text_primary };
         let (tw, th) = text_renderer.measure_weighted(label, 13.0, None, TextWeight::Medium);
@@ -561,24 +835,10 @@ impl AddAccountPanel {
         enabled: bool,
     ) {
         let shape = RoundedRect::from_rect(rect, theme.tokens.radii.md as f64);
-        let bg = if hovered && enabled {
-            theme.bg_hover
-        } else {
-            theme.tokens.colors.surfaces.base
-        };
+        let bg = if hovered && enabled { theme.bg_hover } else { theme.tokens.colors.surfaces.base };
         scene.fill(Fill::NonZero, transform, bg, None, &shape);
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &shape,
-        );
-        let color = if enabled {
-            theme.tokens.colors.text_primary
-        } else {
-            theme.tokens.colors.text_dim
-        };
+        scene.stroke(&Stroke::new(1.0), transform, theme.tokens.colors.border_standard, None, &shape);
+        let color = if enabled { theme.tokens.colors.text_primary } else { theme.tokens.colors.text_dim };
         let (tw, th) = text_renderer.measure_weighted(label, 14.0, None, TextWeight::Medium);
         text_renderer.draw_text_weighted(
             scene,
@@ -643,13 +903,11 @@ impl AddAccountPanel {
         // The modal is fully blocking — every event is consumed.
         *handled = true;
 
-        // Pointer moves drive hover state for buttons/chips (via
-        // `last_mouse`, read in `draw`) and must reach every text field so
-        // their `is_hovered` is set before a click lands — TextInput only
-        // places its caret on a press while hovered.
+        // Pointer moves drive hover state (read in `draw`) and must reach
+        // every text field so their `is_hovered` is set before a click lands.
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
-            for field in FIELD_ORDER {
+            for field in [Field::Uri, Field::Issuer, Field::Label, Field::Secret, Field::Period] {
                 let mut throwaway = None;
                 self.field_mut(field).handle_event(
                     event, scale_factor, modifiers, state, path, handled, &mut throwaway, node_id, taffy,
@@ -682,7 +940,7 @@ impl AddAccountPanel {
             }
         }
 
-        // Mouse press: chips / buttons / focus switching.
+        // Mouse press: cards / disclosures / chips / buttons / focus.
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: MouseButton::Left,
@@ -690,10 +948,31 @@ impl AddAccountPanel {
         } = event
         {
             let p = self.last_mouse;
-            if self.parse_rect.contains(p) {
-                self.parse_uri();
+
+            // Method cards.
+            if self.qr_card_rect.contains(p) {
+                self.start_camera_scan();
                 return;
             }
+            if self.image_card_rect.contains(p) {
+                // The app owns the file picker + decode (file-access cap).
+                self.event = Some(AddPanelEvent::PickImageForQr);
+                return;
+            }
+            if self.link_card_rect.contains(p) {
+                self.expand_uri();
+                return;
+            }
+            if self.uri_expanded && self.parse_rect.contains(p) {
+                self.parse_uri_field();
+                return;
+            }
+            // Advanced disclosure header.
+            if self.advanced_header_rect.contains(p) {
+                self.toggle_advanced();
+                return;
+            }
+            // Footer.
             if self.cancel_rect.contains(p) {
                 self.event = Some(AddPanelEvent::Cancel);
                 self.open = false;
@@ -703,36 +982,38 @@ impl AddAccountPanel {
                 self.try_save();
                 return;
             }
-            for (i, alg) in Algorithm::ALL.iter().enumerate() {
-                if self.alg_rects[i].contains(p) {
-                    self.algorithm = *alg;
-                    return;
+            // Advanced chips (only hittable when open — rects are ZERO otherwise).
+            if self.advanced_open {
+                for (i, alg) in Algorithm::ALL.iter().enumerate() {
+                    if self.alg_rects[i].contains(p) {
+                        self.algorithm = *alg;
+                        return;
+                    }
                 }
-            }
-            for (i, d) in [6u8, 8u8].iter().enumerate() {
-                if self.digit_rects[i].contains(p) {
-                    self.digits = *d;
-                    return;
+                for (i, d) in [6u8, 8u8].iter().enumerate() {
+                    if self.digit_rects[i].contains(p) {
+                        self.digits = *d;
+                        return;
+                    }
                 }
             }
             // Focus a text field if clicked.
-            for field in FIELD_ORDER {
+            for field in self.field_order() {
                 let r = self.field_rect(field);
                 if r.contains(p) {
                     self.set_focus(Some(field));
-                    // Forward so the field positions its caret.
                     self.field_mut(field).handle_event(
                         event, scale_factor, modifiers, state, path, handled, &mut None, node_id, taffy,
                     );
                     return;
                 }
             }
-            // Click outside any field — clear text focus but keep modal.
+            // Click elsewhere — drop text focus, keep modal open.
             self.set_focus(None);
             return;
         }
 
-        // Forward remaining events (key chars, drag) to the focused field.
+        // Forward remaining events (chars, drag) to the focused field.
         if let Some(f) = self.focused {
             let mut throwaway = None;
             self.field_mut(f).handle_event(
@@ -752,6 +1033,65 @@ impl AddAccountPanel {
     }
 }
 
+/// The small set of glyphs the method cards draw, rendered as vector paths
+/// (no font/icon dependency) so they track the accent colour the theme
+/// hands us.
+#[derive(Clone, Copy)]
+enum Glyph {
+    Qr,
+    Image,
+    Link,
+}
+
+/// Draw a method-card glyph centred in `tile`, in `color`.
+fn draw_glyph(scene: &mut Scene, transform: Affine, tile: Rect, glyph: Glyph, color: Color) {
+    let c = tile.center();
+    match glyph {
+        Glyph::Qr => {
+            // Three rounded finder squares + a couple of data cells.
+            let m = 5.0;
+            let s = 6.0;
+            let finder = |x: f64, y: f64| RoundedRect::new(x, y, x + s, y + s, 1.5);
+            let outline = Stroke::new(1.6);
+            for (fx, fy) in [(-m - s / 2.0, -m - s / 2.0), (m - s / 2.0, -m - s / 2.0), (-m - s / 2.0, m - s / 2.0)] {
+                scene.stroke(&outline, transform, color, None, &finder(c.x + fx, c.y + fy));
+            }
+            let dot = Rect::new(c.x + m - 1.5, c.y + m - 1.5, c.x + m + 1.5, c.y + m + 1.5);
+            scene.fill(Fill::NonZero, transform, color, None, &dot);
+            let dot2 = Rect::new(c.x + m + 2.5, c.y + m + 2.5, c.x + m + 5.0, c.y + m + 5.0);
+            scene.fill(Fill::NonZero, transform, color, None, &dot2);
+        }
+        Glyph::Image => {
+            // Picture frame + sun + mountain.
+            let frame = RoundedRect::new(c.x - 8.0, c.y - 7.0, c.x + 8.0, c.y + 7.0, 2.0);
+            scene.stroke(&Stroke::new(1.6), transform, color, None, &frame);
+            let sun = vello::kurbo::Circle::new((c.x - 3.0, c.y - 2.5), 1.8);
+            scene.fill(Fill::NonZero, transform, color, None, &sun);
+            let mut mtn = BezPath::new();
+            mtn.move_to((c.x - 7.0, c.y + 6.0));
+            mtn.line_to((c.x - 1.0, c.y - 0.5));
+            mtn.line_to((c.x + 2.5, c.y + 3.0));
+            mtn.line_to((c.x + 5.0, c.y + 0.5));
+            mtn.line_to((c.x + 7.0, c.y + 6.0));
+            scene.stroke(&Stroke::new(1.6), transform, color, None, &mtn);
+        }
+        Glyph::Link => {
+            // Two interlocking link halves.
+            let stroke = Stroke::new(1.8);
+            let mut a = BezPath::new();
+            a.move_to((c.x - 1.0, c.y - 5.0));
+            a.curve_to((c.x - 8.0, c.y - 5.0), (c.x - 8.0, c.y + 1.0), (c.x - 1.0, c.y + 1.0));
+            scene.stroke(&stroke, transform, color, None, &a);
+            let mut b = BezPath::new();
+            b.move_to((c.x + 1.0, c.y + 5.0));
+            b.curve_to((c.x + 8.0, c.y + 5.0), (c.x + 8.0, c.y - 1.0), (c.x + 1.0, c.y - 1.0));
+            scene.stroke(&stroke, transform, color, None, &b);
+            let bar = Rect::new(c.x - 3.0, c.y - 1.0, c.x + 3.0, c.y + 1.0);
+            scene.fill(Fill::NonZero, transform, color, None, &bar);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -764,16 +1104,62 @@ mod tests {
     }
 
     #[test]
-    fn parse_uri_fills_fields() {
+    fn advanced_is_collapsed_by_default() {
+        let p = opened();
+        assert!(!p.advanced_open, "advanced options must start hidden");
+        // Advanced rects are not laid out while collapsed.
+        assert_eq!(p.period_rect, Rect::ZERO);
+        assert_eq!(p.alg_rects[0], Rect::ZERO);
+    }
+
+    #[test]
+    fn paste_link_is_collapsed_until_chosen() {
         let mut p = opened();
-        p.uri.set_text("otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP&algorithm=SHA256&digits=8&period=45");
-        p.parse_uri();
+        assert!(!p.uri_expanded);
+        assert_eq!(p.uri_rect, Rect::ZERO);
+        p.expand_uri();
+        p.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+        assert!(p.uri_expanded);
+        assert_ne!(p.uri_rect, Rect::ZERO, "uri field lays out once disclosed");
+    }
+
+    #[test]
+    fn toggling_advanced_lays_out_the_fields() {
+        let mut p = opened();
+        p.toggle_advanced();
+        p.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+        assert!(p.advanced_open);
+        assert_ne!(p.period_rect, Rect::ZERO);
+        assert_ne!(p.alg_rects[0], Rect::ZERO);
+    }
+
+    #[test]
+    fn apply_uri_fills_fields_and_reveals_nondefault_params() {
+        let mut p = opened();
+        p.apply_uri("otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP&algorithm=SHA256&digits=8&period=45");
         assert_eq!(p.issuer.value(), "Acme");
         assert_eq!(p.label.value(), "bob");
         assert_eq!(p.secret.value(), "JBSWY3DPEHPK3PXP");
         assert_eq!(p.algorithm, Algorithm::Sha256);
         assert_eq!(p.digits, 8);
         assert_eq!(p.period.value(), "45");
+        // Non-default crypto params should auto-reveal Advanced for review.
+        assert!(p.advanced_open, "non-default params reveal advanced");
+    }
+
+    #[test]
+    fn apply_uri_keeps_advanced_collapsed_for_plain_accounts() {
+        let mut p = opened();
+        p.apply_uri("otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP");
+        assert!(!p.advanced_open, "spec-default account stays calm");
+    }
+
+    #[test]
+    fn camera_scan_surfaces_the_unavailable_hook_message() {
+        let mut p = opened();
+        p.start_camera_scan();
+        assert!(!p.error.is_empty());
+        assert!(p.error.contains("camera"), "explains the camera gap: {}", p.error);
     }
 
     #[test]
@@ -794,5 +1180,18 @@ mod tests {
         p.try_save();
         assert!(!p.is_open());
         assert!(matches!(p.take_event(), Some(AddPanelEvent::Save(_))));
+    }
+
+    #[test]
+    fn field_order_tracks_disclosure_state() {
+        let mut p = opened();
+        // Collapsed: just the three manual fields.
+        assert_eq!(p.field_order(), vec![Field::Issuer, Field::Label, Field::Secret]);
+        p.expand_uri();
+        p.toggle_advanced();
+        assert_eq!(
+            p.field_order(),
+            vec![Field::Uri, Field::Issuer, Field::Label, Field::Secret, Field::Period]
+        );
     }
 }

@@ -4,6 +4,8 @@
 //!   * default        — run the live winit event loop via `ui::App`.
 //!   * `--shots PATH` — render one offscreen frame to a PNG and exit
 //!                       (headless screenshot; identical passes to the live app).
+//!   * `--screen add` — pair with `--shots` to capture the Add-account
+//!                       screen instead of the list.
 
 use std::collections::HashMap;
 
@@ -25,7 +27,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
-        render_shot_to_png(totp::app_root(), DEFAULT_SHOTS_VIEWPORT, &out)?;
+        let widget = if parse_screen_arg(&args).as_deref() == Some("add") {
+            totp::app_root_add_screen()
+        } else {
+            totp::app_root()
+        };
+        render_shot_to_png(widget, DEFAULT_SHOTS_VIEWPORT, &out)?;
         return Ok(());
     }
 
@@ -33,6 +40,20 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = ui::App::new(state, totp::app_root());
     app.run();
     Ok(())
+}
+
+/// Read the `--screen <name>` flag (e.g. `--screen add`), if present.
+fn parse_screen_arg(args: &[String]) -> Option<String> {
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == "--screen" {
+            return iter.next().cloned();
+        }
+        if let Some(rest) = arg.strip_prefix("--screen=") {
+            return Some(rest.to_string());
+        }
+    }
+    None
 }
 
 fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
