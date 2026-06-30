@@ -11,6 +11,7 @@
 //! - [`model`]      — pure data: rolling histories, process rows, formatting.
 //! - [`sampler`]    — live `sysinfo` readings folded into the model.
 //! - [`charts`]     — custom Vello primitives (area charts, ring/bar gauges).
+//! - [`tree`]       — pure parent→child process tree + subtree-sum roll-ups.
 //! - [`prefs`]      — durable preferences persisted in the Automerge document.
 //! - [`responsive`] — width-driven rail flap + Processes push navigation.
 //! - [`app`]        — the root [`app::MonitorApp`] widget.
@@ -25,6 +26,7 @@ pub mod model;
 pub mod prefs;
 pub mod responsive;
 pub mod sampler;
+pub mod tree;
 
 pub use app::MonitorApp;
 

@@ -78,6 +78,10 @@ impl Ring {
 #[derive(Clone, Debug)]
 pub struct ProcessInfo {
     pub pid: u32,
+    /// Parent process id, when known. `None` for the synthetic forest roots
+    /// (pid 0/1 or a process whose parent isn't in the sampled set). Drives
+    /// the parent→child tree in [`crate::tree`].
+    pub ppid: Option<u32>,
     pub name: String,
     pub user: String,
     /// CPU usage as a percentage of a single core (so > 100 on a busy
@@ -280,63 +284,92 @@ impl MonitorModel {
 }
 
 /// A believable process table. Values are hand-tuned so the sort columns
-/// and the CPU/MEM ranking read realistically in the screenshot.
+/// and the CPU/MEM ranking read realistically in the screenshot. The
+/// `parent` column names each row's parent process (by name) so the tree
+/// view ([`crate::tree`]) reads as a real session hierarchy: `systemd`
+/// roots the system services, `shell` roots the user session, and the heavy
+/// apps (`browser`, `code`) fan out into the children that account for most
+/// of "what they're doing" — exactly the subtree-sum story.
 fn sample_processes() -> Vec<ProcessInfo> {
-    // (name, user, cpu, mem_MiB, threads, status, kernel)
-    let rows: &[(&str, &str, f32, u64, usize, &str, bool)] = &[
-        ("shell", "ada", 14.6, 412, 24, "Running", false),
-        ("browser", "ada", 92.3, 1843, 38, "Running", false),
-        ("firefox", "ada", 47.1, 2210, 51, "Running", false),
-        ("Web Content", "ada", 31.8, 988, 22, "Running", false),
-        ("code", "ada", 26.4, 1320, 33, "Sleeping", false),
-        ("rust-analyzer", "ada", 63.9, 2680, 12, "Running", false),
-        ("cargo", "ada", 71.2, 540, 9, "Running", false),
-        ("rustc", "ada", 88.7, 760, 1, "Running", false),
-        ("terminal", "ada", 3.2, 142, 6, "Sleeping", false),
-        ("fish", "ada", 0.4, 28, 1, "Sleeping", false),
-        ("monitor", "ada", 5.7, 96, 5, "Running", false),
-        ("file-explorer", "ada", 1.1, 188, 8, "Sleeping", false),
-        ("qos-fs", "root", 8.9, 224, 14, "Running", false),
-        ("pipewire", "ada", 2.4, 64, 4, "Sleeping", false),
-        ("wireplumber", "ada", 1.3, 52, 4, "Sleeping", false),
-        ("pulseaudio", "ada", 0.9, 41, 3, "Sleeping", false),
-        ("systemd", "root", 0.2, 18, 1, "Sleeping", false),
-        ("systemd-journald", "root", 1.7, 96, 1, "Sleeping", false),
-        ("systemd-logind", "root", 0.1, 12, 1, "Sleeping", false),
-        ("systemd-resolved", "systemd+", 0.3, 22, 2, "Sleeping", false),
-        ("NetworkManager", "root", 0.6, 38, 3, "Sleeping", false),
-        ("dbus-broker", "dbus", 0.8, 16, 1, "Running", false),
-        ("greetd", "root", 0.0, 8, 1, "Sleeping", false),
-        ("chronyd", "chrony", 0.1, 6, 1, "Sleeping", false),
-        ("sshd", "root", 0.0, 11, 1, "Sleeping", false),
-        ("avahi-daemon", "avahi", 0.2, 9, 2, "Sleeping", false),
-        ("iroh-node", "ada", 6.1, 310, 16, "Running", false),
-        ("gossipsub", "ada", 2.2, 88, 6, "Running", false),
-        ("podman", "ada", 0.5, 64, 7, "Sleeping", false),
-        ("conmon", "ada", 0.1, 14, 1, "Sleeping", false),
-        ("Xwayland", "ada", 4.3, 176, 5, "Running", false),
-        ("swaybg", "ada", 0.2, 44, 2, "Sleeping", false),
-        ("gnome-keyring-d", "ada", 0.1, 19, 3, "Sleeping", false),
-        ("upowerd", "root", 0.1, 10, 1, "Sleeping", false),
-        ("bluetoothd", "root", 0.2, 13, 1, "Sleeping", false),
-        ("cupsd", "root", 0.0, 15, 1, "Sleeping", false),
-        ("kworker/0:1", "root", 1.4, 0, 1, "Idle", true),
-        ("kworker/u32:3", "root", 2.1, 0, 1, "Idle", true),
-        ("ksoftirqd/4", "root", 0.6, 0, 1, "Idle", true),
-        ("kcompactd0", "root", 0.0, 0, 1, "Idle", true),
-        ("kswapd0", "root", 0.3, 0, 1, "Idle", true),
-        ("migration/2", "root", 0.0, 0, 1, "Idle", true),
-        ("jbd2/nvme0n1p3", "root", 0.5, 0, 1, "Idle", true),
-        ("irq/142-nvme0", "root", 0.1, 0, 1, "Idle", true),
+    // (name, parent, user, cpu, mem_MiB, threads, status, kernel)
+    //
+    // `parent` is "" for a forest root. Multi-instance names (e.g. two
+    // "Web Content") attach to the *first* matching parent, which is what
+    // a real renderer fan-out looks like.
+    let rows: &[(&str, &str, &str, f32, u64, usize, &str, bool)] = &[
+        // ---- the user session, rooted at the compositor ----------------
+        ("shell", "", "ada", 14.6, 412, 24, "Running", false),
+        ("browser", "shell", "ada", 12.3, 643, 14, "Running", false),
+        ("Web Content", "browser", "ada", 31.8, 988, 22, "Running", false),
+        ("Web Content", "browser", "ada", 48.1, 1210, 19, "Running", false),
+        ("GPU Process", "browser", "ada", 9.4, 512, 8, "Running", false),
+        ("code", "shell", "ada", 6.4, 420, 18, "Sleeping", false),
+        ("rust-analyzer", "code", "ada", 63.9, 2680, 12, "Running", false),
+        ("cargo", "code", "ada", 11.2, 140, 4, "Running", false),
+        ("rustc", "cargo", "ada", 88.7, 760, 1, "Running", false),
+        ("firefox", "shell", "ada", 47.1, 2210, 51, "Running", false),
+        ("terminal", "shell", "ada", 3.2, 142, 6, "Sleeping", false),
+        ("fish", "terminal", "ada", 0.4, 28, 1, "Sleeping", false),
+        ("monitor", "shell", "ada", 5.7, 96, 5, "Running", false),
+        ("file-explorer", "shell", "ada", 1.1, 188, 8, "Sleeping", false),
+        ("Xwayland", "shell", "ada", 4.3, 176, 5, "Running", false),
+        // ---- the system service tree, rooted at systemd ----------------
+        ("systemd", "", "root", 0.2, 18, 1, "Sleeping", false),
+        ("qos-fs", "systemd", "root", 8.9, 224, 14, "Running", false),
+        ("iroh-node", "qos-fs", "ada", 6.1, 310, 16, "Running", false),
+        ("gossipsub", "iroh-node", "ada", 2.2, 88, 6, "Running", false),
+        ("systemd-journald", "systemd", "root", 1.7, 96, 1, "Sleeping", false),
+        ("systemd-logind", "systemd", "root", 0.1, 12, 1, "Sleeping", false),
+        ("systemd-resolved", "systemd", "systemd+", 0.3, 22, 2, "Sleeping", false),
+        ("NetworkManager", "systemd", "root", 0.6, 38, 3, "Sleeping", false),
+        ("dbus-broker", "systemd", "dbus", 0.8, 16, 1, "Running", false),
+        ("greetd", "systemd", "root", 0.0, 8, 1, "Sleeping", false),
+        ("chronyd", "systemd", "chrony", 0.1, 6, 1, "Sleeping", false),
+        ("sshd", "systemd", "root", 0.0, 11, 1, "Sleeping", false),
+        ("avahi-daemon", "systemd", "avahi", 0.2, 9, 2, "Sleeping", false),
+        ("pipewire", "systemd", "ada", 2.4, 64, 4, "Sleeping", false),
+        ("wireplumber", "pipewire", "ada", 1.3, 52, 4, "Sleeping", false),
+        ("pulseaudio", "systemd", "ada", 0.9, 41, 3, "Sleeping", false),
+        ("podman", "systemd", "ada", 0.5, 64, 7, "Sleeping", false),
+        ("conmon", "podman", "ada", 0.1, 14, 1, "Sleeping", false),
+        ("swaybg", "shell", "ada", 0.2, 44, 2, "Sleeping", false),
+        ("gnome-keyring-d", "systemd", "ada", 0.1, 19, 3, "Sleeping", false),
+        ("upowerd", "systemd", "root", 0.1, 10, 1, "Sleeping", false),
+        ("bluetoothd", "systemd", "root", 0.2, 13, 1, "Sleeping", false),
+        ("cupsd", "systemd", "root", 0.0, 15, 1, "Sleeping", false),
+        // ---- kernel worker threads (own forest; hidden by default) -----
+        ("kworker/0:1", "", "root", 1.4, 0, 1, "Idle", true),
+        ("kworker/u32:3", "", "root", 2.1, 0, 1, "Idle", true),
+        ("ksoftirqd/4", "", "root", 0.6, 0, 1, "Idle", true),
+        ("kcompactd0", "", "root", 0.0, 0, 1, "Idle", true),
+        ("kswapd0", "", "root", 0.3, 0, 1, "Idle", true),
+        ("migration/2", "", "root", 0.0, 0, 1, "Idle", true),
+        ("jbd2/nvme0n1p3", "", "root", 0.5, 0, 1, "Idle", true),
+        ("irq/142-nvme0", "", "root", 0.1, 0, 1, "Idle", true),
     ];
 
-    // Spread synthetic but stable PIDs.
+    // Spread synthetic but stable PIDs, then resolve each row's parent name
+    // to the first matching pid (rows above it in the table).
     let mut pid: u32 = 1;
+    let mut pids: Vec<u32> = Vec::with_capacity(rows.len());
+    for (name, ..) in rows {
+        pid += 37 + (name.len() as u32 * 11) % 113;
+        pids.push(pid);
+    }
     rows.iter()
-        .map(|(name, user, cpu, mem_mib, threads, status, kernel)| {
-            pid += 37 + (name.len() as u32 * 11) % 113;
+        .enumerate()
+        .map(|(i, (name, parent, user, cpu, mem_mib, threads, status, kernel))| {
+            let ppid = if parent.is_empty() {
+                None
+            } else {
+                rows
+                    .iter()
+                    .position(|r| r.0 == *parent)
+                    .map(|j| pids[j])
+            };
             ProcessInfo {
-                pid,
+                pid: pids[i],
+                ppid,
                 name: (*name).to_string(),
                 user: (*user).to_string(),
                 cpu: *cpu,
