@@ -5,10 +5,9 @@
 //! register it on the widget (see [`crate::widget::OskWidget::with_layout`]).
 //! Nothing about rendering, sizing, or input is layout-specific.
 //!
-//! The accessibility design (`docs/superpowers/specs/2026-06-30-accessibility-design.md`
-//! §3.5) calls for the *same* normalized key positions to double as the FUTO
+//! The *same* normalized key positions double as the FUTO
 //! swipe `load_layout_json()` geometry — one source of truth for rendering and
-//! (later, W9a) swipe decoding. [`key_rects`] is that single geometry pass;
+//! (later) swipe decoding. [`key_rects`] is that single geometry pass;
 //! a swipe decoder can normalise its output rects into 0..1 space.
 
 use vello::kurbo::Rect;

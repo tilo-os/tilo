@@ -1,4 +1,4 @@
-//! The suggestion bar — a row of tappable word chips above the keys (W9).
+//! The suggestion bar — a row of tappable word chips above the keys.
 //!
 //! After a swipe it shows the ranked decode candidates; after a word commits
 //! it shows next-word predictions. The top chip is the "auto" pick (the one
