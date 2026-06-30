@@ -2,9 +2,9 @@
 //!
 //! Constructs `SettingsApp`, runs `build_layout` + `apply_layout` at a
 //! wide size (so the two-pane layout with the full sidebar is built), then
-//! walks the widget tree counting the sidebar buttons. Sidebar buttons are
-//! addressable by their `settings.sidebar.<slug>` test id, so the count is
-//! exact even though the content pane also contains buttons.
+//! walks the widget tree counting the sidebar rows. Each sidebar row is a
+//! `SidebarRow` addressable by its category's display label via `test_id`,
+//! so the count is exact (the content pane contains no `SidebarRow`s).
 
 use settings::categories::Category;
 use settings::SettingsApp;
@@ -43,37 +43,33 @@ fn sidebar_has_one_entry_per_category() {
         .unwrap();
     app.apply_layout(&taffy, node, vello::kurbo::Point::ORIGIN);
 
-    // `ui` Buttons expose their *label* as `test_id`. Every sidebar entry
-    // is a Button whose label ends with its category's display label
-    // (the label is "<marker> <glyph>  <Category::label()>"), so we count
-    // a sidebar button for each category whose label appears as a Button
-    // label exactly once.
+    // Each sidebar entry is a `SidebarRow` exposing its category's full
+    // display label as `test_id`. Collect those labels and assert exactly one
+    // row per category, with the *complete* (untruncated) label.
     let mut labels: Vec<String> = Vec::new();
     walk(&app, &mut |w| {
-        if w.name() == "Button" {
+        if w.name() == "SidebarRow" {
             if let Some(l) = w.test_id() {
                 labels.push(l.to_string());
             }
         }
     });
 
-    let mut matched = 0usize;
-    for category in Category::ALL {
-        let found = labels.iter().filter(|l| l.ends_with(category.label())).count();
-        assert!(
-            found >= 1,
-            "expected a sidebar button for {:?} (label {:?})",
-            category,
-            category.label()
-        );
-        matched += 1;
-    }
-
     assert_eq!(
-        matched,
+        labels.len(),
         Category::ALL.len(),
-        "expected one sidebar button per category"
+        "expected exactly one sidebar row per category"
     );
+
+    for category in Category::ALL {
+        let found = labels.iter().filter(|l| l.as_str() == category.label()).count();
+        assert_eq!(
+            found, 1,
+            "expected one sidebar row carrying the full label {:?} for {:?}",
+            category.label(),
+            category
+        );
+    }
 }
 
 fn walk<F: FnMut(&dyn Widget)>(w: &dyn Widget, f: &mut F) {

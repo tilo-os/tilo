@@ -69,10 +69,16 @@ impl Scenario {
     /// The app pre-configured for this scenario.
     pub fn app(self) -> SettingsApp {
         match self {
+            // Wide: docked sidebar with a NON-default category (External
+            // Accounts) active — the state the nav reaches after a click — so
+            // the still proves selection drives the content pane.
             Scenario::Wide => SettingsApp::with_selected(Category::ExternalAccounts)
                 .with_width_hint(DEFAULT_SHOTS_VIEWPORT.0 as f32),
+            // Narrow: the overlay flap, forced open so the responsive sidebar
+            // is visible over the Region & Formats content behind its scrim.
             Scenario::Narrow => SettingsApp::with_selected(Category::RegionFormats)
-                .with_width_hint(NARROW_SHOTS_VIEWPORT.0 as f32),
+                .with_width_hint(NARROW_SHOTS_VIEWPORT.0 as f32)
+                .with_sidebar_open_shot(),
         }
     }
 }
@@ -170,14 +176,15 @@ mod tests {
     }
 
     #[test]
-    fn narrow_app_is_narrow_and_drilled_in() {
-        let app = Scenario::Narrow.app();
-        assert!(app.is_narrow());
-        assert!(app.drilled_in());
+    fn narrow_app_selects_region_formats() {
+        // The width hint + shot flag are applied; the resolved
+        // narrow/overlay layout is asserted in the layout-driven tests once a
+        // frame is laid out (see settings_app tests).
+        assert_eq!(Scenario::Narrow.app().selected(), Category::RegionFormats);
     }
 
     #[test]
-    fn wide_app_is_not_narrow() {
-        assert!(!Scenario::Wide.app().is_narrow());
+    fn wide_app_selects_external_accounts() {
+        assert_eq!(Scenario::Wide.app().selected(), Category::ExternalAccounts);
     }
 }
