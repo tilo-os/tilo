@@ -12,6 +12,7 @@ use vello::peniko::Color;
 
 use crate::draw::{self, Align};
 use crate::engine;
+use crate::mathfield::MathField;
 use crate::model::CalcModel;
 
 /// Half-width of the sampled domain in x and y.
@@ -23,11 +24,18 @@ pub struct Graph3dScreen {
     pub panel: Rect,
     pub canvas: Rect,
     expr_rect: Rect,
+    /// The 2D math editor for the `z = f(x, y)` surface expression.
+    field: MathField,
 }
 
 impl Default for Graph3dScreen {
     fn default() -> Self {
-        Self { panel: Rect::ZERO, canvas: Rect::ZERO, expr_rect: Rect::ZERO }
+        Self {
+            panel: Rect::ZERO,
+            canvas: Rect::ZERO,
+            expr_rect: Rect::ZERO,
+            field: MathField::new("").with_size(20.0),
+        }
     }
 }
 
@@ -37,6 +45,21 @@ impl Graph3dScreen {
         self.panel = Rect::new(area.x0, area.y0, area.x0 + panel_w, area.y1);
         self.canvas = Rect::new(self.panel.x1, area.y0, area.x1, area.y1);
         self.expr_rect = Rect::new(self.panel.x0 + 16.0, self.panel.y0 + 60.0, self.panel.x1 - 16.0, self.panel.y0 + 96.0);
+    }
+
+    /// Feed the surface expression into the editor (no-op when unchanged).
+    pub fn sync_field(&mut self, model: &CalcModel) {
+        self.field.set_source(&model.surface);
+    }
+
+    /// The surface math editor.
+    pub fn field_mut(&mut self) -> &mut MathField {
+        &mut self.field
+    }
+
+    /// Whether `p` is inside the surface editor box.
+    pub fn expr_contains(&self, p: Point) -> bool {
+        self.expr_rect.contains(p)
     }
 
     pub fn draw(
@@ -64,14 +87,18 @@ impl Graph3dScreen {
         let sub = Rect::new(self.panel.x0 + 16.0, self.panel.y0 + 34.0, self.panel.x1 - 16.0, self.panel.y0 + 54.0);
         draw::text_in(scene, tr, t, sub, "z = f(x, y)", 12.0, c.text_dim, Align::Left, TextWeight::Regular);
 
-        // expression box (always the edit target in 3D mode)
+        // expression box (always the edit target in 3D mode): a real 2D math
+        // editor for z = f(x, y).
+        self.sync_field(model);
         draw::fill_rrect(scene, t, self.expr_rect, 8.0, c.neutral[1]);
         draw::stroke_rrect(scene, t, self.expr_rect, 8.0, c.accent[5], 1.0);
-        let inner = Rect::new(self.expr_rect.x0 + 12.0, self.expr_rect.y0, self.expr_rect.x1 - 12.0, self.expr_rect.y1);
-        let shown = format!("z = {}|", engine::prettify(&model.surface));
         let valid = engine::compile(&model.surface, model.deg, true).is_ok();
         let col = if valid { c.text_primary } else { c.semantic.danger };
-        draw::text_in(scene, tr, t, inner, &shown, 14.0, col, Align::Left, TextWeight::Medium);
+        let prefix = Rect::new(self.expr_rect.x0 + 12.0, self.expr_rect.y0, self.expr_rect.x0 + 40.0, self.expr_rect.y1);
+        draw::text_in(scene, tr, t, prefix, "z =", 14.0, col, Align::Left, TextWeight::Medium);
+        let edit = Rect::new(self.expr_rect.x0 + 40.0, self.expr_rect.y0 + 2.0, self.expr_rect.x1 - 8.0, self.expr_rect.y1 - 2.0);
+        self.field.set_rect(edit, tr);
+        self.field.draw(scene, t, tr, theme, col, true);
 
         // controls readout
         let v = &model.view3d;
