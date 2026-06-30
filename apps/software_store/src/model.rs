@@ -70,6 +70,10 @@ pub enum Source {
     Flatpak,
     /// An OCI container image pulled with podman.
     Oci,
+    /// A qOS-native app — distributed as a cached, strongly-sandboxed
+    /// bundle rather than a permanent install. Drives the bespoke
+    /// "Open directly" / "Add" affordances (see [`QosAppModel`]).
+    QosNative,
 }
 
 impl Source {
@@ -77,6 +81,48 @@ impl Source {
         match self {
             Source::Flatpak => "Flatpak · Flathub",
             Source::Oci => "OCI · podman",
+            Source::QosNative => "qOS app · cached bundle",
+        }
+    }
+}
+
+/// The two bespoke affordances qOS offers for its own native apps, in place
+/// of the permanent Flatpak install. **Rendered fully in the UI; the
+/// backend behaviour is a documented stub for now** (see the worker's
+/// `QosOpenDirect` / `QosAdd` request handling).
+///
+/// * [`QosAppModel::OpenDirect`] — run the app *now* from a cached,
+///   web-app-style bundle inside a strong per-launch sandbox, without a
+///   permanent install. Think "open this once" rather than "keep it".
+/// * [`QosAppModel::Add`] — keep the cached bundle and *prioritise* it in
+///   background auto-updates and global search, the closest thing to a
+///   permanent install in the qOS model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QosAppModel {
+    OpenDirect,
+    Add,
+}
+
+impl QosAppModel {
+    pub fn label(self) -> &'static str {
+        match self {
+            QosAppModel::OpenDirect => "Open directly",
+            QosAppModel::Add => "Add",
+        }
+    }
+
+    /// The explanatory tooltip shown on hover, surfacing the qOS semantics
+    /// so the affordance isn't mistaken for a normal install.
+    pub fn tooltip(self) -> &'static str {
+        match self {
+            QosAppModel::OpenDirect => {
+                "Run this app right now from a cached, sandboxed bundle — \
+                 like a web app. Nothing is permanently installed."
+            }
+            QosAppModel::Add => {
+                "Keep this app cached and prioritise it in auto-updates and \
+                 global search. The qOS equivalent of installing."
+            }
         }
     }
 }
@@ -92,6 +138,42 @@ pub struct Shot {
     /// Index into the theme neutral ramp for the secondary fill.
     pub tone_b: usize,
     pub caption: String,
+}
+
+/// A short textual review with a star rating, shown on the detail page.
+/// Flathub exposes no reviews API, so these are only carried by the
+/// bundled sample catalog (live entries show download counts instead).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Review {
+    pub author: String,
+    pub stars: f32,
+    pub body: String,
+}
+
+impl Review {
+    pub fn new(author: &str, stars: f32, body: &str) -> Self {
+        Self { author: author.into(), stars, body: body.into() }
+    }
+}
+
+/// A compatibility notice surfaced on cards / detail pages: a short,
+/// human-readable caveat about running the app on qOS (e.g. "Requests host
+/// command execution — runs outside the cluster sandbox").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Compat {
+    pub label: String,
+    /// `true` → a hard incompatibility / strong warning (red); `false` → an
+    /// informational notice (neutral).
+    pub blocking: bool,
+}
+
+impl Compat {
+    pub fn info(label: &str) -> Self {
+        Self { label: label.into(), blocking: false }
+    }
+    pub fn warn(label: &str) -> Self {
+        Self { label: label.into(), blocking: true }
+    }
 }
 
 /// One immutable catalog entry.
@@ -128,9 +210,74 @@ pub struct AppEntry {
     pub icon_tone: usize,
     /// One- or two-character monogram drawn on the icon tile.
     pub monogram: String,
+    /// Textual reviews (sample catalog only — see [`Review`]).
+    pub reviews: Vec<Review>,
+    /// Compatibility notices for this app on qOS.
+    pub compat: Vec<Compat>,
+    /// Lifetime / monthly download count from Flathub stats, when known
+    /// (live entries). Surfaced as social proof alongside the rating.
+    pub download_count: Option<u64>,
+    /// The remote this entry installs from (e.g. `flathub`). Drives the
+    /// gated install command; defaults to `flathub`.
+    pub remote: String,
 }
 
 impl AppEntry {
+    /// A minimal Flathub-sourced entry built from a search hit / AppStream
+    /// record, with neutral defaults the caller fills in. Used by the
+    /// async worker (`flatpak.rs`) to construct live catalog entries.
+    pub fn flathub_stub(
+        id: &str,
+        name: &str,
+        developer: &str,
+        summary: &str,
+        category: Category,
+    ) -> Self {
+        // Derive a stable icon tone from the id so the tile colour is
+        // deterministic per app without a real icon bitmap.
+        let tone = (id.bytes().map(|b| b as usize).sum::<usize>() % 9) + 2;
+        Self {
+            id: id.into(),
+            name: name.into(),
+            developer: developer.into(),
+            summary: summary.into(),
+            description: summary.into(),
+            category,
+            source: Source::Flatpak,
+            latest_version: String::new(),
+            size_mib: 0.0,
+            rating: 4.0,
+            rating_count: 0,
+            permissions: Vec::new(),
+            shots: Vec::new(),
+            featured: false,
+            icon_tone: tone,
+            monogram: name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default(),
+            reviews: Vec::new(),
+            compat: Vec::new(),
+            download_count: None,
+            remote: "flathub".into(),
+        }
+    }
+
+    /// `true` for a qOS-native app, which uses the bespoke
+    /// "Open directly" / "Add" affordances instead of a permanent install.
+    pub fn is_qos_native(&self) -> bool {
+        self.source == Source::QosNative
+    }
+
+    /// `1.2M downloads` / `840k downloads` style count, when known.
+    pub fn download_label(&self) -> Option<String> {
+        let n = self.download_count?;
+        Some(if n >= 1_000_000 {
+            format!("{:.1}M downloads", n as f64 / 1_000_000.0)
+        } else if n >= 1_000 {
+            format!("{:.0}k downloads", n as f64 / 1_000.0)
+        } else {
+            format!("{n} downloads")
+        })
+    }
+
     /// A compact `1.2 GiB` / `412 MiB` size string.
     pub fn size_label(&self) -> String {
         if self.size_mib >= 1024.0 {
@@ -313,6 +460,10 @@ mod tests {
             featured: false,
             icon_tone: 5,
             monogram: "X".into(),
+            reviews: vec![],
+            compat: vec![],
+            download_count: None,
+            remote: "flathub".into(),
         }
     }
 

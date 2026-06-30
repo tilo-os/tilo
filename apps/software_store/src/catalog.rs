@@ -7,14 +7,15 @@
 //! permissions) is always this curated set, because we have no offline
 //! AppStream mirror.
 
-use crate::model::{AppEntry, Category, Permission, Shot, Source};
+use crate::model::{AppEntry, Category, Compat, Permission, Review, Shot, Source};
 
 fn shot(tone_a: usize, tone_b: usize, caption: &str) -> Shot {
     Shot { tone_a, tone_b, caption: caption.into() }
 }
 
 /// Build one catalog entry with sensible defaults; callers override the
-/// interesting fields.
+/// interesting fields. `reviews` and `compat` default empty; the one
+/// fully-fleshed detail app (GIMP) passes them explicitly.
 #[allow(clippy::too_many_arguments)]
 fn app(
     id: &str,
@@ -51,7 +52,29 @@ fn app(
         featured,
         icon_tone,
         monogram: monogram.into(),
+        reviews: Vec::new(),
+        compat: Vec::new(),
+        download_count: None,
+        remote: if source == Source::Oci { "podman".into() } else { "flathub".into() },
     }
+}
+
+/// Attach reviews to an entry (builder-style).
+fn with_reviews(mut e: AppEntry, reviews: Vec<Review>) -> AppEntry {
+    e.reviews = reviews;
+    e
+}
+
+/// Attach compatibility notices to an entry (builder-style).
+fn with_compat(mut e: AppEntry, compat: Vec<Compat>) -> AppEntry {
+    e.compat = compat;
+    e
+}
+
+/// Attach a download count (builder-style).
+fn with_downloads(mut e: AppEntry, n: u64) -> AppEntry {
+    e.download_count = Some(n);
+    e
 }
 
 /// The curated sample catalog — a dozen-plus apps across every category,
@@ -60,36 +83,70 @@ fn app(
 pub fn sample_catalog() -> Vec<AppEntry> {
     vec![
         // ---- Graphics ----
-        app(
-            "org.gimp.GIMP",
-            "GIMP",
-            "The GIMP Team",
-            "Powerful image editing and compositing",
-            "GIMP is a free, cross-platform image editor with layers, masks, \
-             scriptable filters and a deep brush engine. It handles photo \
-             retouching, illustration and batch processing, and reads almost \
-             every raster format you can name.\n\nThe 3.x series adds non-destructive \
-             editing, a refreshed dark theme and a GEGL-backed pipeline for \
-             higher bit-depth work.",
-            Category::Graphics,
-            Source::Flatpak,
-            "3.0.2",
-            612.0,
-            4.6,
-            12480,
-            true,
-            6,
-            "G",
-            vec![
-                Permission::normal("Read and write your Pictures folder"),
-                Permission::normal("Wayland windowing"),
-                Permission::sensitive("Full home filesystem access"),
-            ],
-            vec![
-                shot(5, 2, "Single-window mode"),
-                shot(7, 3, "Filter gallery"),
-                shot(4, 1, "Layers & masks"),
-            ],
+        // GIMP is the one fully-fleshed detail app: screenshots + reviews +
+        // compatibility notices, so the `detail:org.gimp.GIMP` shot is a
+        // complete, populated detail page offline.
+        with_downloads(
+            with_compat(
+                with_reviews(
+                    app(
+                        "org.gimp.GIMP",
+                        "GIMP",
+                        "The GIMP Team",
+                        "Powerful image editing and compositing",
+                        "GIMP is a free, cross-platform image editor with layers, masks, \
+                         scriptable filters and a deep brush engine. It handles photo \
+                         retouching, illustration and batch processing, and reads almost \
+                         every raster format you can name.\n\nThe 3.x series adds non-destructive \
+                         editing, a refreshed dark theme and a GEGL-backed pipeline for \
+                         higher bit-depth work.",
+                        Category::Graphics,
+                        Source::Flatpak,
+                        "3.0.2",
+                        612.0,
+                        4.6,
+                        12480,
+                        true,
+                        6,
+                        "G",
+                        vec![
+                            Permission::normal("Read and write your Pictures folder"),
+                            Permission::normal("Wayland windowing"),
+                            Permission::sensitive("Full home filesystem access"),
+                        ],
+                        vec![
+                            shot(5, 2, "Single-window mode"),
+                            shot(7, 3, "Filter gallery"),
+                            shot(4, 1, "Layers & masks"),
+                        ],
+                    ),
+                    vec![
+                        Review::new(
+                            "marta_k",
+                            5.0,
+                            "The 3.0 non-destructive workflow finally clicked for me — \
+                             this is the only raster editor I keep installed.",
+                        ),
+                        Review::new(
+                            "devnull",
+                            4.0,
+                            "Script-fu plus the new GEGL pipeline is unbeatable for batch \
+                             work. UI still takes a day to learn but worth it.",
+                        ),
+                        Review::new(
+                            "pix_el",
+                            5.0,
+                            "Runs perfectly sandboxed on qOS. Granted it the Pictures \
+                             folder and never had to widen access.",
+                        ),
+                    ],
+                ),
+                vec![
+                    Compat::info("Runs fully inside the cluster sandbox"),
+                    Compat::info("Requests broad filesystem access — review before granting"),
+                ],
+            ),
+            41_200_000,
         ),
         app(
             "org.inkscape.Inkscape",
@@ -217,33 +274,39 @@ pub fn sample_catalog() -> Vec<AppEntry> {
             vec![shot(6, 2, "Month view")],
         ),
         // ---- Development ----
-        app(
-            "com.visualstudio.code",
-            "VS Code",
-            "Microsoft",
-            "Code editing, redefined",
-            "Visual Studio Code is a lightweight but powerful source editor with \
-             built-in Git, debugging, an integrated terminal and a vast \
-             extension marketplace. IntelliSense, remote development and a tuned \
-             Electron shell make it the default editor for millions.",
-            Category::Development,
-            Source::Flatpak,
-            "1.92.0",
-            340.0,
-            4.6,
-            44120,
-            true,
-            5,
-            "VS",
+        with_compat(
+            app(
+                "com.visualstudio.code",
+                "VS Code",
+                "Microsoft",
+                "Code editing, redefined",
+                "Visual Studio Code is a lightweight but powerful source editor with \
+                 built-in Git, debugging, an integrated terminal and a vast \
+                 extension marketplace. IntelliSense, remote development and a tuned \
+                 Electron shell make it the default editor for millions.",
+                Category::Development,
+                Source::Flatpak,
+                "1.92.0",
+                340.0,
+                4.6,
+                44120,
+                true,
+                5,
+                "VS",
+                vec![
+                    Permission::sensitive("Network access"),
+                    Permission::sensitive("Full home filesystem access"),
+                    Permission::normal("Run host commands (sandbox escape)"),
+                ],
+                vec![
+                    shot(5, 2, "Editor + terminal"),
+                    shot(7, 3, "Debugger"),
+                    shot(4, 1, "Source control"),
+                ],
+            ),
             vec![
-                Permission::sensitive("Network access"),
-                Permission::sensitive("Full home filesystem access"),
-                Permission::normal("Run host commands (sandbox escape)"),
-            ],
-            vec![
-                shot(5, 2, "Editor + terminal"),
-                shot(7, 3, "Debugger"),
-                shot(4, 1, "Source control"),
+                Compat::warn("Requests host command execution — runs outside the cluster sandbox"),
+                Compat::info("Proprietary build; an open-source 'Code - OSS' variant is also available"),
             ],
         ),
         app(
@@ -436,6 +499,64 @@ pub fn sample_catalog() -> Vec<AppEntry> {
             "Z",
             vec![Permission::normal("Read and write your Documents folder")],
             vec![shot(6, 2, "Docset browser")],
+        ),
+        // ---- qOS-native apps ----
+        // These use the bespoke "Open directly" / "Add" model instead of a
+        // permanent Flatpak install. The affordances render in the UI with
+        // explanatory tooltips; the install backend is a documented stub.
+        with_compat(
+            app(
+                "os.qos.Whiteboard",
+                "qOS Whiteboard",
+                "qOS Project",
+                "Collaborative infinite canvas, runs without installing",
+                "A qOS-native collaborative whiteboard built on the CRDT toolkit. \
+                 Because it's a qOS app, you can open it directly from a cached, \
+                 strongly-sandboxed bundle — like a web app — without a permanent \
+                 install, or add it to keep it cached and prioritised in search \
+                 and auto-updates.",
+                Category::Productivity,
+                Source::QosNative,
+                "0.9.0",
+                12.0,
+                4.7,
+                640,
+                true,
+                4,
+                "Wb",
+                vec![
+                    Permission::normal("Collaborate within this cluster"),
+                    Permission::normal("Read and write your Boards folder"),
+                ],
+                vec![shot(4, 2, "Infinite canvas"), shot(6, 3, "Live cursors")],
+            ),
+            vec![
+                Compat::info("Runs from a cached bundle in a strong per-launch sandbox"),
+                Compat::info("No permanent install — 'Open directly' or 'Add' to keep it"),
+            ],
+        ),
+        with_compat(
+            app(
+                "os.qos.Snap",
+                "qOS Snap",
+                "qOS Project",
+                "Lightweight screenshot + annotate, web-app style",
+                "A qOS-native capture-and-annotate tool. Open it directly when you \
+                 just need a quick screenshot, or add it so it stays cached and \
+                 ready in global search.",
+                Category::Graphics,
+                Source::QosNative,
+                "0.4.1",
+                6.0,
+                4.5,
+                210,
+                false,
+                8,
+                "Sn",
+                vec![Permission::normal("Capture the screen within this cluster")],
+                vec![shot(8, 2, "Annotate")],
+            ),
+            vec![Compat::info("qOS app — cached, sandboxed, no permanent install")],
         ),
     ]
 }
