@@ -32,6 +32,7 @@ fn entry(id: u8, author: &str, hue: f32, op: OpClass, summary: &str, secs_ago: u
         timestamp: SystemTime::now() - Duration::from_secs(secs_ago),
         summary: summary.into(),
         diff_payload: None,
+        redaction: None,
     }
 }
 

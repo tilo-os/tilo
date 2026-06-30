@@ -38,7 +38,7 @@ pub use widget::command_palette::{CommandEntry, CommandPalette};
 // a direct dependency on the collab-types crate.
 pub use widget::activity_timeline::ActivityTimeline;
 pub use widget::history::{
-    HistoryAuthor, HistoryEntry, HistoryEntryId, HistoryFilter,
+    HistoryAuthor, HistoryEntry, HistoryEntryId, HistoryFilter, RedactionDisplay,
     format_relative_time, hue_to_rgb, op_class_glyph, op_class_is_revertible,
 };
 pub use widget::history_scrubber::HistoryScrubber;
