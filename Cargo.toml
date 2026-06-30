@@ -2,6 +2,7 @@
 members = [
     "qos-tts",
     "qdoc",
+    "spellcheck",
     "docpdf",
     "dochtml",
     "docrtf",
