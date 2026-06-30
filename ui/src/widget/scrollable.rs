@@ -24,6 +24,24 @@ pub struct Scrollable {
     vy: f32,
     decay: f32,
     sticky_header_height: f32,
+    /// When set, pin the Scrollable's outer viewport height to an exact
+    /// logical-pixel value instead of `percent(1.0)`. A window-hosted
+    /// list/settings pane whose parent doesn't supply a definite height
+    /// (e.g. an intrinsic-height column, or a standalone app root) would
+    /// otherwise resolve `percent(1.0)` against an indefinite parent and
+    /// collapse to a zero-height viewport — nothing scrolls. Setting this
+    /// (or [`Scrollable::fill_parent_height`]) gives the viewport a real
+    /// extent so `content_h > viewport_h` can be reached.
+    fixed_height: Option<f32>,
+    /// When set, absorb the parent's *remaining* flex height
+    /// (`flex_grow: 1 + flex_basis: 0`) rather than claiming
+    /// `percent(1.0)`. This is the correct sizing for the common
+    /// "scrollable list below a fixed-height header" layout inside a flex
+    /// Column: percent(1.0) would claim 100% of the parent on top of the
+    /// header and overflow, whereas grow-from-zero takes exactly what's
+    /// left. Mutually exclusive with [`Scrollable::fixed_height`]
+    /// (an explicit pin wins).
+    fill_parent_height: bool,
     child: Option<Element>,
     rect: Rect,
     /// Flipped to true whenever `scroll_by` (or the momentum
@@ -51,6 +69,8 @@ impl Scrollable {
             vy: 0.0,
             decay: 0.92,
             sticky_header_height: 0.0,
+            fixed_height: None,
+            fill_parent_height: false,
             child: None,
             rect: Rect::ZERO,
             scroll_dirty: false,
@@ -60,6 +80,25 @@ impl Scrollable {
     pub fn new_horizontal() -> Self { Self::new(ScrollAxis::Horizontal) }
     pub fn with_child(mut self, c: Element) -> Self { self.child = Some(c); self }
     pub fn with_sticky_header(mut self, h: f32) -> Self { self.sticky_header_height = h; self }
+
+    /// Pin the scroll viewport to an exact logical-pixel height. Use this
+    /// when the Scrollable is hosted somewhere that doesn't supply a
+    /// definite height (an intrinsic-height column, a standalone window
+    /// root) so the viewport doesn't collapse to zero and the pane can
+    /// actually scroll. See [`Scrollable::fixed_height`].
+    pub fn with_height(mut self, px: f32) -> Self {
+        self.fixed_height = Some(px);
+        self
+    }
+
+    /// Make the scroll viewport absorb the parent flex container's
+    /// *remaining* height (grow-from-zero) instead of claiming 100%.
+    /// Correct for "scrollable list below a fixed header" inside a flex
+    /// Column. See [`Scrollable::fill_parent_height`].
+    pub fn fill_parent_height(mut self) -> Self {
+        self.fill_parent_height = true;
+        self
+    }
 
     pub fn set_content_size(&mut self, w: f32, h: f32) { self.content_w = w; self.content_h = h; self.clamp(); }
     pub fn set_viewport_size(&mut self, w: f32, h: f32) { self.viewport_w = w; self.viewport_h = h; self.clamp(); }
@@ -140,8 +179,18 @@ impl Widget for Scrollable {
 
     fn build_layout(&mut self, taffy: &mut TaffyTree<()>, theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
         let child_node = self.child.as_mut().map(|c| c.build_layout(taffy, theme, node_map));
+        // Resolve the outer height. Default (`percent(1.0)`) is preserved
+        // for the overwhelmingly-common "fills a definite-height parent"
+        // case. An explicit pin or `fill_parent_height` opt-in rescues the
+        // zero-viewport collapse when the parent height is indefinite.
+        let height = match self.fixed_height {
+            Some(px) => Dimension::length(px),
+            None if self.fill_parent_height => Dimension::length(0.0),
+            None => Dimension::percent(1.0),
+        };
         let style = Style {
-            size: Size { width: Dimension::percent(1.0), height: Dimension::percent(1.0) },
+            size: Size { width: Dimension::percent(1.0), height },
+            flex_grow: if self.fill_parent_height { 1.0 } else { 0.0 },
             overflow: taffy::Point { x: taffy::Overflow::Hidden, y: taffy::Overflow::Hidden },
             ..Default::default()
         };
@@ -306,5 +355,137 @@ impl Widget for Scrollable {
             .as_mut()
             .map(|c| c.take_structure_dirty())
             .unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widget::{Column, Text};
+    use std::collections::HashMap;
+    use taffy::prelude::TaffyMaxContent;
+
+    /// Lay out `root` inside a parent that supplies NO definite height
+    /// (max-content) — the pathological host for a Scrollable. Returns the
+    /// scrollable's resolved viewport height via `get_rect`.
+    fn viewport_height_under_indefinite_parent(mut scroll: Scrollable) -> f64 {
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let mut tr = TextRenderer::new();
+        let scroll_node = scroll.build_layout(&mut taffy, &theme, &mut node_map);
+        // An auto-height block parent => the child's percent(1.0) height has
+        // nothing to resolve against (the classic zero-viewport trap).
+        let parent = taffy
+            .new_with_children(
+                Style {
+                    display: taffy::Display::Block,
+                    size: Size {
+                        width: Dimension::length(400.0),
+                        height: Dimension::auto(),
+                    },
+                    ..Default::default()
+                },
+                &[scroll_node],
+            )
+            .unwrap();
+        taffy
+            .compute_layout_with_measure(parent, Size::max_content(), |known, available, node_id, _, _| {
+                if let Some(&ptr) = node_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, available, &mut tr) }
+                } else {
+                    Size::ZERO
+                }
+            })
+            .unwrap();
+        scroll.apply_layout(&taffy, scroll_node, Point::ZERO);
+        scroll.get_rect().height()
+    }
+
+    fn tall_child() -> Element {
+        let mut col = Column::new().with_intrinsic_height();
+        for i in 0..40 {
+            col = col.push(Box::new(Text::new(&format!("row {i}"))));
+        }
+        Box::new(col)
+    }
+
+    /// Drive a full layout under an indefinite parent, then probe whether
+    /// the resulting Scrollable can actually scroll (i.e. its content
+    /// exceeds its viewport so `scroll_by` moves the offset).
+    fn can_scroll_under_indefinite_parent(mut scroll: Scrollable) -> (f64, bool) {
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let mut tr = TextRenderer::new();
+        let scroll_node = scroll.build_layout(&mut taffy, &theme, &mut node_map);
+        let parent = taffy
+            .new_with_children(
+                Style {
+                    display: taffy::Display::Block,
+                    size: Size {
+                        width: Dimension::length(400.0),
+                        height: Dimension::auto(),
+                    },
+                    ..Default::default()
+                },
+                &[scroll_node],
+            )
+            .unwrap();
+        taffy
+            .compute_layout_with_measure(parent, Size::max_content(), |known, available, node_id, _, _| {
+                if let Some(&ptr) = node_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, available, &mut tr) }
+                } else {
+                    Size::ZERO
+                }
+            })
+            .unwrap();
+        scroll.apply_layout(&taffy, scroll_node, Point::ZERO);
+        let vh = scroll.get_rect().height();
+        scroll.scroll_by(0.0, 200.0);
+        (vh, scroll.offset_y() > 0.0)
+    }
+
+    #[test]
+    fn with_height_pins_viewport_under_indefinite_parent() {
+        let h = viewport_height_under_indefinite_parent(
+            Scrollable::new_vertical().with_child(tall_child()).with_height(300.0),
+        );
+        assert!(
+            (h - 300.0).abs() < 0.5,
+            "with_height must pin the viewport to 300 even under an \
+             indefinite-height parent; got {h}"
+        );
+    }
+
+    #[test]
+    fn pinned_height_makes_pane_scrollable_under_indefinite_parent() {
+        // The fix's payoff: a pinned viewport is SHORTER than the content,
+        // so the pane can scroll.
+        let (vh, scrolled) = can_scroll_under_indefinite_parent(
+            Scrollable::new_vertical().with_child(tall_child()).with_height(300.0),
+        );
+        assert!((vh - 300.0).abs() < 0.5, "viewport pinned to 300, got {vh}");
+        assert!(scrolled, "a pinned-viewport pane with tall content must scroll");
+    }
+
+    #[test]
+    fn default_scrollable_cannot_scroll_under_indefinite_parent() {
+        // Documents the trap the new builders rescue: with the legacy
+        // percent(1.0) default and no definite parent height, the
+        // viewport expands to the full content extent (via apply_layout's
+        // content-size walk), so viewport == content and `scroll_by` has
+        // nowhere to go. The pane silently can't scroll. Pinning the
+        // height (above) is the fix.
+        let (_vh, scrolled) = can_scroll_under_indefinite_parent(
+            Scrollable::new_vertical().with_child(tall_child()),
+        );
+        assert!(
+            !scrolled,
+            "legacy default is expected to be unscrollable under an \
+             indefinite parent; the fix is opt-in via with_height / \
+             fill_parent_height"
+        );
     }
 }
