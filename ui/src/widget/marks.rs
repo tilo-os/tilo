@@ -44,6 +44,10 @@ pub enum Mark {
     Italic,
     /// `Inline code` — renders in monospace, accent-coloured.
     Code,
+    /// <u>Underline</u> — renders a rule along the text baseline.
+    Underline,
+    /// ~~Strikethrough~~ — renders a rule through the text mid-line.
+    Strikethrough,
     /// `[[Page Title]]` — renders accent-coloured + underlined.
     /// Clicking navigates to the page identified by the embedded id.
     Link(PageId),
@@ -59,6 +63,8 @@ impl Mark {
             (Mark::Bold, Mark::Bold)
                 | (Mark::Italic, Mark::Italic)
                 | (Mark::Code, Mark::Code)
+                | (Mark::Underline, Mark::Underline)
+                | (Mark::Strikethrough, Mark::Strikethrough)
                 | (Mark::Link(_), Mark::Link(_))
         )
     }
@@ -298,6 +304,8 @@ pub struct MarkSegment {
     pub bold: bool,
     pub italic: bool,
     pub code: bool,
+    pub underline: bool,
+    pub strikethrough: bool,
     pub link: Option<PageId>,
 }
 
@@ -308,6 +316,8 @@ impl MarkSegment {
             bold: false,
             italic: false,
             code: false,
+            underline: false,
+            strikethrough: false,
             link: None,
         }
     }
@@ -348,6 +358,8 @@ pub fn segments_for(text_len: usize, spans: &[MarkSpan]) -> Vec<MarkSegment> {
                     Mark::Bold => seg.bold = true,
                     Mark::Italic => seg.italic = true,
                     Mark::Code => seg.code = true,
+                    Mark::Underline => seg.underline = true,
+                    Mark::Strikethrough => seg.strikethrough = true,
                     Mark::Link(id) => seg.link = Some(*id),
                 }
             }
@@ -529,5 +541,30 @@ mod tests {
         assert_eq!(segs.len(), 1);
         assert_eq!(segs[0].range, 0..7);
         assert!(!segs[0].bold);
+        assert!(!segs[0].underline);
+        assert!(!segs[0].strikethrough);
+    }
+
+    #[test]
+    fn underline_and_strikethrough_segments_carry_their_flags() {
+        let spans = vec![
+            MarkSpan::new(0..4, Mark::Underline),
+            MarkSpan::new(2..6, Mark::Strikethrough),
+        ];
+        let segs = segments_for(8, &spans);
+        // Byte 0..2: underline only. 2..4: both. 4..6: strike only. 6..8: none.
+        let at = |b: usize| segs.iter().find(|s| s.range.contains(&b)).unwrap();
+        assert!(at(0).underline && !at(0).strikethrough);
+        assert!(at(2).underline && at(2).strikethrough);
+        assert!(!at(5).underline && at(5).strikethrough);
+        assert!(!at(7).underline && !at(7).strikethrough);
+    }
+
+    #[test]
+    fn underline_strikethrough_same_kind() {
+        assert!(Mark::Underline.same_kind(&Mark::Underline));
+        assert!(Mark::Strikethrough.same_kind(&Mark::Strikethrough));
+        assert!(!Mark::Underline.same_kind(&Mark::Strikethrough));
+        assert!(!Mark::Underline.same_kind(&Mark::Bold));
     }
 }
