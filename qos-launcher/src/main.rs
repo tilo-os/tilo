@@ -1,15 +1,10 @@
 //! qos-launcher binary entry.
-//!
-//! Initial commit lands the CLI skeleton — `run` only parses the
-//! manifest and prints a summary so we can verify the manifest shim
-//! end-to-end. Sandbox/Landlock/seccomp/services wiring lands in
-//! subsequent commits.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use qos_launcher::manifest::read_manifest;
+use qos_launcher::run::{RunError, RunOptions, run};
 
 #[derive(Debug, Parser)]
 #[command(name = "qos-launcher", about = "Launch a qOS application package in a sandbox.")]
@@ -58,19 +53,22 @@ fn main() -> ExitCode {
             runtime,
             no_services,
         } => {
-            let _ = (payload_root, runtime, no_services);
-            match read_manifest(&manifest) {
-                Ok(m) => {
-                    eprintln!(
-                        "qos-launcher: parsed manifest for `{}` (entrypoint: {})",
-                        m.package_id, m.entrypoint.bin
-                    );
-                    eprintln!("qos-launcher: sandbox/run wiring not yet landed on this commit");
-                    ExitCode::from(0)
+            let opts = RunOptions {
+                no_services,
+                runtime_root: runtime,
+                bwrap_bin: None,
+            };
+            match run(&manifest, &payload_root, &opts) {
+                Ok(status) => {
+                    if let Some(code) = status.code() {
+                        ExitCode::from(code as u8)
+                    } else {
+                        ExitCode::from(1)
+                    }
                 }
                 Err(e) => {
                     eprintln!("qos-launcher: {e}");
-                    ExitCode::from(1)
+                    ExitCode::from(e.to_exit_code() as u8)
                 }
             }
         }
@@ -92,3 +90,7 @@ fn init_tracing() {
         .with_target(false)
         .try_init();
 }
+
+// Expose RunError so the binary can use #[derive] paths cleanly.
+#[allow(dead_code)]
+fn _link_run_error(_: &RunError) {}
