@@ -16,7 +16,7 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDe
 use winit::keyboard::{Key, NamedKey};
 
 use qdoc::document::MarkSpan;
-use qdoc::snapshot::{AttrVal, BlockView, NoteView};
+use qdoc::snapshot::{AttrVal, BlockView, ChangeView, CommentView, NoteView};
 use ui::chrome::{self, LabelCue, ToolbarItem};
 use ui::gesture::{DragSelect, Granularity};
 use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
@@ -87,6 +87,31 @@ const NOTE_INK: Color = Color::from_rgb8(0x3a, 0x3a, 0x40);
 /// Footnote text size (smaller than body) and the gap above the separator.
 const NOTE_FONT: f32 = 11.0;
 const NOTE_AREA_GAP: f64 = 10.0;
+
+// --- Markup (comments + tracked changes) rendering ------------------------
+/// Pale-yellow band drawn behind a `comment`-marked body range (semi-transparent
+/// so the text reads clearly through it).
+const COMMENT_HL: Color = Color::from_rgba8(0xff, 0xe5, 0x7a, 0x66);
+/// The little comment indicator tab drawn in the right margin at a comment's
+/// start line, and the annotation card's accent.
+const COMMENT_TAB: Color = Color::from_rgb8(0xe0, 0xa8, 0x10);
+/// Background of the right-margin comment annotation card.
+const COMMENT_CARD_BG: Color = Color::from_rgb8(0xff, 0xf8, 0xdc);
+/// Border of the right-margin comment annotation card.
+const COMMENT_CARD_EDGE: Color = Color::from_rgb8(0xe6, 0xcf, 0x7a);
+/// Author-line text colour in the comment annotation card.
+const COMMENT_AUTHOR_INK: Color = Color::from_rgb8(0x6a, 0x52, 0x00);
+/// Body-text colour in the comment annotation card.
+const COMMENT_BODY_INK: Color = Color::from_rgb8(0x3a, 0x32, 0x14);
+/// Review colour for tracked **insertions** (a green; rendered coloured +
+/// underlined, the standard tracked-insertion style).
+const TRACK_INS: Color = Color::from_rgb8(0x1d, 0x7a, 0x3a);
+/// Review colour for tracked **deletions** (a red; rendered coloured + struck).
+const TRACK_DEL: Color = Color::from_rgb8(0xbf, 0x29, 0x29);
+/// Width of the comment indicator tab in the right margin.
+const COMMENT_TAB_W: f64 = 4.0;
+/// Width of the right-margin annotation card.
+const COMMENT_CARD_W: f64 = 150.0;
 /// Panel chrome colors (consistent with the bottom layout bar).
 const PANEL_BG: Color = Color::from_rgb8(0x20, 0x22, 0x28);
 const PANEL_EDGE: Color = Color::from_rgb8(0x32, 0x35, 0x3e);
@@ -577,6 +602,118 @@ fn block_runs(b: &BlockView) -> (Vec<RichSpan>, Vec<(usize, usize)>, Vec<(usize,
     (runs, underlines, deco("strike"))
 }
 
+/// RGB of the tracked-insertion review colour (mirrors [`TRACK_INS`]).
+const TRACK_INS_RGB: [u8; 3] = [0x1d, 0x7a, 0x3a];
+/// RGB of the tracked-deletion review colour (mirrors [`TRACK_DEL`]).
+const TRACK_DEL_RGB: [u8; 3] = [0xbf, 0x29, 0x29];
+
+/// Whether char `i` of a block is covered by a mark named `name` (an `ins`/`del`
+/// tracked-change mark, or a `comment` annotation mark).
+fn char_in_mark(i: usize, marks: &[MarkSpan], name: &str) -> bool {
+    marks.iter().any(|m| m.name == name && i >= m.start && i < m.end)
+}
+
+/// Split a block's text into styled runs like [`block_runs`], but additionally
+/// tint any `ins`/`del` tracked-change run with the review colour so the glyphs
+/// themselves read as proposed-added (green) / proposed-removed (red). The
+/// underline/strike decorations for those ranges are drawn separately (in the
+/// body pass, in the matching review colour). When `show_markup` is false this
+/// is identical to [`block_runs`] — markup is hidden, text shows as plain.
+fn block_runs_markup(b: &BlockView, show_markup: bool) -> (Vec<RichSpan>, Vec<(usize, usize)>, Vec<(usize, usize)>) {
+    if !show_markup {
+        return block_runs(b);
+    }
+    let chars: Vec<char> = b.text.chars().collect();
+    let n = chars.len();
+    // The run key now also folds in the tracked-change review colour: an `ins`
+    // run becomes green, a `del` run red. This overrides any explicit `color`
+    // mark over the same range (review colour wins for legibility).
+    let track_color = |i: usize| -> Option<[u8; 3]> {
+        if char_in_mark(i, &b.marks, qdoc::schema::MARK_INS) {
+            Some(TRACK_INS_RGB)
+        } else if char_in_mark(i, &b.marks, qdoc::schema::MARK_DEL) {
+            Some(TRACK_DEL_RGB)
+        } else {
+            None
+        }
+    };
+    let key = |i: usize| {
+        (
+            char_has(i, &b.marks, "strong"),
+            char_has(i, &b.marks, "em"),
+            char_font_size(i, &b.marks).map(f32::to_bits),
+            char_font_family(i, &b.marks),
+            track_color(i).or_else(|| char_color(i, &b.marks)),
+        )
+    };
+    let mut runs = Vec::new();
+    let mut i = 0;
+    while i < n {
+        let k = key(i);
+        let mut j = i;
+        while j < n && key(j) == k {
+            j += 1;
+        }
+        let (bold, italic, size_bits, family, color) = k;
+        runs.push(RichSpan {
+            text: chars[i..j].iter().collect(),
+            bold,
+            italic,
+            size: size_bits.map(f32::from_bits),
+            family,
+            color,
+        });
+        i = j;
+    }
+    if runs.is_empty() {
+        runs.push(RichSpan::new(""));
+    }
+    let deco = |name: &str| {
+        b.marks
+            .iter()
+            .filter(|m| m.name == name)
+            .map(|m| (char_to_byte(&b.text, m.start), char_to_byte(&b.text, m.end)))
+            .collect::<Vec<_>>()
+    };
+    let mut underlines = deco("underline");
+    underlines.extend(deco("link"));
+    let strikes = deco("strike");
+    // NOTE: the `ins`/`del` review decorations (underline for ins, strike for
+    // del) are *not* added here — they are drawn in the body pass in the review
+    // colour (`draw_rich` paints these decorations in the block ink, which would
+    // mismatch the coloured glyphs). Keeping them out of the shaped layout also
+    // keeps `block_runs`'s underline/strike contract unchanged.
+    (runs, underlines, strikes)
+}
+
+/// The `(byte_start, byte_end)` ranges in a block covered by an `ins` tracked-
+/// insertion mark and a `del` tracked-deletion mark respectively. Used by the
+/// body draw pass to paint the review underline (ins) / strike (del).
+fn block_change_decos(b: &BlockView) -> (Vec<(usize, usize)>, Vec<(usize, usize)>) {
+    let collect = |name: &str| {
+        b.marks
+            .iter()
+            .filter(|m| m.name == name && m.end > m.start)
+            .map(|m| (char_to_byte(&b.text, m.start), char_to_byte(&b.text, m.end)))
+            .collect::<Vec<_>>()
+    };
+    (collect(qdoc::schema::MARK_INS), collect(qdoc::schema::MARK_DEL))
+}
+
+/// Every `comment` annotation anchored in a block, as `(byte_start, byte_end,
+/// comment_id)` in source order. The body pass paints a pale highlight band over
+/// the range and a margin indicator at the start.
+fn block_comment_ranges(b: &BlockView) -> Vec<(usize, usize, String)> {
+    b.marks
+        .iter()
+        .filter(|m| m.name == qdoc::schema::MARK_COMMENT && m.end > m.start)
+        .filter_map(|m| {
+            let id = m.value.as_str()?.to_string();
+            Some((char_to_byte(&b.text, m.start), char_to_byte(&b.text, m.end), id))
+        })
+        .collect()
+}
+
 /// Whether char `i` of `b` is a `page-number` field placeholder (a U+FFFC
 /// covered by a `field` mark valued `page-number`).
 fn char_is_page_number_field(i: usize, marks: &[MarkSpan]) -> bool {
@@ -948,6 +1085,17 @@ pub struct WordProcessorWidget {
     /// Per-row action parallel to `context_menu`'s items (separators map to
     /// `None`). A left-click on a row dispatches by index through this list.
     context_actions: Vec<Option<CtxAction>>,
+    /// Comments / annotations (materialized from the doc each refresh). Each is
+    /// anchored to a body range via a `comment` mark; rendered as a pale highlight
+    /// band + a right-margin indicator/card. Empty when the doc has no comments.
+    comments: Vec<CommentView>,
+    /// Tracked changes / revision marks (materialized from the doc each refresh).
+    /// Each is anchored to a body range via an `ins`/`del` mark; insertions render
+    /// coloured + underlined, deletions coloured + struck. Empty when none.
+    changes: Vec<ChangeView>,
+    /// Whether comment + tracked-change markup is drawn (default ON, like
+    /// spell-check). View-only — never mutates the document.
+    show_markup: bool,
 }
 
 /// One process-wide built-in dictionary, shared across every word-processor
@@ -1026,6 +1174,9 @@ impl WordProcessorWidget {
             spell_cache: HashMap::new(),
             context_menu: ContextMenu::new(),
             context_actions: Vec::new(),
+            comments: Vec::new(),
+            changes: Vec::new(),
+            show_markup: true,
         }
     }
 
@@ -1065,6 +1216,23 @@ impl WordProcessorWidget {
     /// Whether the spell-check squiggles are currently enabled.
     pub fn spellcheck_enabled(&self) -> bool {
         self.spellcheck_on
+    }
+
+    /// Toggle comment + tracked-change markup on/off (default ON). View-only;
+    /// forces a redraw and never mutates the document. When off, commented text
+    /// shows without its highlight band/indicator and tracked-change runs render
+    /// as plain text (no review colour / underline / strike).
+    pub fn toggle_markup(&mut self) {
+        self.show_markup = !self.show_markup;
+        // Re-shaping depends on `show_markup` (it changes the per-run colours), so
+        // invalidate the layout cache to force every block to re-shape next frame.
+        self.layout_cache.clear();
+        self.dirty = true;
+    }
+
+    /// Whether comment + tracked-change markup is currently drawn.
+    pub fn markup_enabled(&self) -> bool {
+        self.show_markup
     }
 
     pub fn model(&self) -> &WordProcessor {
@@ -1464,6 +1632,8 @@ impl WordProcessorWidget {
             self.header = snap.header;
             self.footer = snap.footer;
             self.notes = snap.notes;
+            self.comments = snap.comments;
+            self.changes = snap.changes;
             // Drop spell-cache entries for blocks that no longer exist so the cache
             // stays bounded; surviving blocks keep their (text-keyed) spans.
             let live: std::collections::HashSet<&str> = self.blocks.iter().map(|b| b.id.as_str()).collect();
@@ -2123,7 +2293,7 @@ impl Widget for WordProcessorWidget {
                     let mut row_h = 26.0f64;
                     for c in 0..ncols {
                         if let Some(cell) = cells.iter().find(|cl| cell_rc(cl) == (r, c)) {
-                            let (runs, underlines, strikes) = block_runs(cell);
+                            let (runs, underlines, strikes) = block_runs_markup(cell, self.show_markup);
                             let wrap_w = (col_w - 2.0 * cell_pad).max(24.0) as f32;
                             let align = block_align(cell, TextAlign::Left);
                             let key = shape_key(&runs, &underlines, &strikes, false, 16.0, wrap_w, align, FontFamily::Sans);
@@ -2270,7 +2440,7 @@ impl Widget for WordProcessorWidget {
                     (st.indent as f64, None)
                 };
                 let wrap_w = (content_w - indent as f32).max(40.0);
-                let (runs, underlines, strikes) = block_runs(b);
+                let (runs, underlines, strikes) = block_runs_markup(b, self.show_markup);
                 let align = block_align(b, style_align(&st.align));
                 let family = parse_font(&st.font);
                 let key = shape_key(&runs, &underlines, &strikes, base_bold, size, wrap_w, align, family);
@@ -2443,6 +2613,14 @@ impl Widget for WordProcessorWidget {
         // on that page, collected during pass 2 and rendered after it.
         let mut page_notes: HashMap<usize, Vec<usize>> = HashMap::new();
 
+        // Comment-marker collection: `(comment_id, start_line_top_y,
+        // range_right_x)` for each comment range encountered in pass 2. Rendered
+        // after the loop as an inline indicator tab (at the range's right edge) +
+        // an annotation card stacked at the right edge of the visible canvas (so
+        // it is never clipped by the page width or hidden behind the styles
+        // panel). Only populated when markup is shown.
+        let mut comment_markers: Vec<(String, f64, f64)> = Vec::new();
+
         // Pass 2: draw cell borders, bullets, selection, text, caret. Everything
         // here renders through `ctf` (the zoom transform) so page content scales
         // while the surrounding chrome stays at 100%.
@@ -2516,7 +2694,56 @@ impl Widget for WordProcessorWidget {
                     }
                 }
             }
+            // Comment highlight bands (under the text): a pale-yellow band over
+            // each `comment`-marked range. Mapped to on-screen rects via the same
+            // `selection_rects` geometry as the selection highlight, so it tracks
+            // wrapping. The comment's start line is recorded for the right-margin
+            // indicator/card rendered after the loop. Only when markup is shown.
+            if self.show_markup {
+                if let Some(b) = self.blocks.iter().find(|b| b.id == l.id) {
+                    for (bs, be, cid) in block_comment_ranges(b) {
+                        let rects = layout.selection_rects(bs, be);
+                        for &(rx0, ry0, rx1, ry1) in &rects {
+                            let r = Rect::new(l.text_x + rx0 as f64, l.y_top + ry0 as f64, l.text_x + rx1 as f64, l.y_top + ry1 as f64);
+                            scene.fill(Fill::NonZero, ctf, COMMENT_HL, None, &r);
+                        }
+                        // Anchor the marker at the start line's top, and remember
+                        // the range's right edge (max rect x1) for the inline tab.
+                        if let Some(&(_, ry0, _, _)) = rects.first() {
+                            let right_x = rects.iter().map(|r| r.2).fold(f32::MIN, f32::max);
+                            comment_markers.push((cid, l.y_top + ry0 as f64, l.text_x + right_x as f64));
+                        }
+                    }
+                }
+            }
+
             text_renderer.draw_rich(scene, layout, ctf * Affine::translate((l.text_x, l.y_top)), l.ink);
+
+            // Tracked-change decorations (over the text): an `ins` range gets a
+            // green underline (the glyphs are already tinted green by
+            // `block_runs_markup`); a `del` range gets a red strike-through. Drawn
+            // here — rather than via the shaped layout's underline/strike lists —
+            // so the decoration colour matches the review-tinted glyphs (the
+            // toolkit paints shaped decorations in the block ink). Only when shown.
+            if self.show_markup {
+                if let Some(b) = self.blocks.iter().find(|b| b.id == l.id) {
+                    let (ins_ranges, del_ranges) = block_change_decos(b);
+                    for &(b0, b1) in &ins_ranges {
+                        for (rx0, _ry0, rx1, ry1) in layout.selection_rects(b0, b1) {
+                            let uy = l.y_top + ry1 as f64 - 2.0;
+                            let line = Rect::new(l.text_x + rx0 as f64, uy, l.text_x + rx1 as f64, uy + 1.5);
+                            scene.fill(Fill::NonZero, ctf, TRACK_INS, None, &line);
+                        }
+                    }
+                    for &(b0, b1) in &del_ranges {
+                        for (rx0, ry0, rx1, ry1) in layout.selection_rects(b0, b1) {
+                            let my = l.y_top + ((ry0 + ry1) / 2.0) as f64;
+                            let line = Rect::new(l.text_x + rx0 as f64, my, l.text_x + rx1 as f64, my + 1.5);
+                            scene.fill(Fill::NonZero, ctf, TRACK_DEL, None, &line);
+                        }
+                    }
+                }
+            }
 
             // Spell-check squiggles: a wavy red underline under each misspelled
             // span. The byte span maps to one-or-more on-screen rects via the same
@@ -2579,6 +2806,60 @@ impl Widget for WordProcessorWidget {
                 let (cx, cy, ch) = layout.caret_geometry(byte);
                 let caret = Rect::new(l.text_x + cx as f64, l.y_top + cy as f64, l.text_x + cx as f64 + CARET_WIDTH, l.y_top + cy as f64 + ch as f64);
                 scene.fill(Fill::NonZero, ctf, CARET_COLOR, None, &caret);
+            }
+        }
+
+        // Comment indicators + annotation cards. For each comment whose start line
+        // was laid this frame, draw a small accent tab just after the commented
+        // text (the range's right edge), and an always-visible annotation card
+        // (author + content) stacked along the right edge of the visible canvas.
+        // Anchoring the card to the *canvas* (not the page) keeps it on-screen even
+        // when the page is wider than the canvas or the styles panel is open. Cards
+        // stack top-to-bottom (sorted by anchor y) and never overlap. Inside the
+        // page clip so they scroll with the content.
+        if self.show_markup && !comment_markers.is_empty() {
+            comment_markers.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            // The card column hugs the right edge of the visible canvas.
+            let card_x = canvas.x1 - COMMENT_CARD_W - 6.0;
+            let mut next_card_y = f64::MIN;
+            for (cid, anchor_y, range_right) in &comment_markers {
+                let Some(cv) = self.comments.iter().find(|c| &c.id == cid) else { continue };
+                // The little accent tab sits just after the commented text, on its
+                // start line — an always-visible inline indicator.
+                let tab_x = (range_right + 2.0).min(card_x - COMMENT_TAB_W - 2.0);
+                let tab = Rect::new(tab_x, anchor_y + 1.0, tab_x + COMMENT_TAB_W, anchor_y + 18.0);
+                scene.fill(Fill::NonZero, ctf, COMMENT_TAB, None, &vello::kurbo::RoundedRect::from_rect(tab, 1.5));
+
+                // Author + content (comment bodies are a small block sequence).
+                let author = if cv.author.is_empty() { "Comment" } else { cv.author.as_str() };
+                let body: String = {
+                    let parts: Vec<&str> = cv.blocks.iter().map(|b| b.text.as_str()).filter(|t| !t.is_empty()).collect();
+                    parts.join(" ")
+                };
+                let inner_w = (COMMENT_CARD_W - 16.0) as f32;
+                let body_layout = RichTextLayout::shape(
+                    &mut text_renderer.font_system,
+                    &[RichSpan::new(&body)],
+                    false,
+                    11.0,
+                    inner_w,
+                    TextAlign::Left,
+                    FontFamily::Sans,
+                    vec![],
+                    vec![],
+                );
+                let body_h = body_layout.height() as f64;
+                let card_top = anchor_y.max(next_card_y);
+                let card_h = 22.0 + body_h + 8.0;
+                let card = Rect::new(card_x, card_top, card_x + COMMENT_CARD_W, card_top + card_h);
+                scene.fill(Fill::NonZero, ctf, COMMENT_CARD_BG, None, &vello::kurbo::RoundedRect::from_rect(card, 5.0));
+                scene.stroke(&vello::kurbo::Stroke::new(1.0), ctf, COMMENT_CARD_EDGE, None, &vello::kurbo::RoundedRect::from_rect(card, 5.0));
+                // Accent stripe down the card's left edge (ties it to the tab).
+                let stripe = Rect::new(card_x, card_top, card_x + 3.0, card_top + card_h);
+                scene.fill(Fill::NonZero, ctf, COMMENT_TAB, None, &stripe);
+                text_renderer.draw_text(scene, author, 11.5, COMMENT_AUTHOR_INK, ctf * Affine::translate((card_x + 9.0, card_top + 5.0)), None);
+                text_renderer.draw_rich(scene, &body_layout, ctf * Affine::translate((card_x + 9.0, card_top + 20.0)), COMMENT_BODY_INK);
+                next_card_y = card_top + card_h + 6.0;
             }
         }
 
@@ -3017,6 +3298,13 @@ impl Widget for WordProcessorWidget {
                         // default ON). Never mutates the document.
                         if shift && s.eq_ignore_ascii_case("l") {
                             self.toggle_spellcheck();
+                            *handled = true;
+                            return;
+                        }
+                        // Ctrl+Shift+M toggles comment + tracked-change markup
+                        // (view-only, default ON). Never mutates the document.
+                        if shift && s.eq_ignore_ascii_case("m") {
+                            self.toggle_markup();
                             *handled = true;
                             return;
                         }
@@ -4894,5 +5182,138 @@ mod tests {
         let nums = note_numbering(&wp.blocks);
         assert_eq!(nums.get(n_first.as_str()), Some(&1), "the earlier marker is #1 by document order");
         assert_eq!(nums.get(n_second.as_str()), Some(&2), "the later marker is #2");
+    }
+
+    /// Build a single-paragraph document with `text`, returning the drawn widget
+    /// plus its `ui::State` and the paragraph's block id. The caller mutates the
+    /// doc (adding comments/changes) via a `DocMut`, then re-draws and inspects.
+    fn doc_with_paragraph(text: &str) -> (WordProcessorWidget, ui::State, qdoc::Containers, qdoc::IdGen, String) {
+        let mut state = ui::State::new();
+        let c = qdoc::model::init(&mut state.doc, &state.root);
+        let mut ids = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
+        let bid;
+        {
+            let mut dm = qdoc::DocMut { doc: &mut state.doc, c: &c, ids: &mut ids };
+            bid = dm.insert_block(None, "paragraph");
+            dm.splice_text(&bid, 0, 0, text);
+        }
+        state.doc.commit();
+        let wp = WordProcessorWidget::new();
+        (wp, state, c, ids, bid)
+    }
+
+    #[test]
+    fn comment_range_computes_a_highlight_rect() {
+        // "hello world" with a comment over the word "world" (chars 6..11).
+        let (mut wp, mut state, c, mut ids, bid) = doc_with_paragraph("hello world");
+        {
+            let mut dm = qdoc::DocMut { doc: &mut state.doc, c: &c, ids: &mut ids };
+            dm.add_comment(&bid, 6, 11, "Ada", "Reword this");
+        }
+        state.doc.commit();
+        pipeline_draw(&mut wp, &mut state, 1000, 900);
+
+        // The comment is materialized and anchored to the body range.
+        assert_eq!(wp.comments.len(), 1, "the comment is materialized into the widget");
+        assert_eq!(wp.comments[0].author, "Ada");
+
+        // The production helper recovers the commented byte range from the block's
+        // `comment` mark (this is exactly what the draw pass calls).
+        let b = wp.blocks.iter().find(|b| b.id == bid).expect("block present");
+        let ranges = block_comment_ranges(b);
+        assert_eq!(ranges.len(), 1, "one comment range over the block");
+        let (bs, be, cid) = &ranges[0];
+        assert_eq!((*bs, *be), (6, 11), "byte range covers 'world'");
+        assert_eq!(cid, &wp.comments[0].id, "range carries the comment id");
+
+        // The draw pass maps that byte range → on-screen highlight rects via the
+        // shaped layout's `selection_rects`. Assert a non-empty rect with width.
+        let (_, lay) = wp.layout_cache.get(&bid).expect("shaped layout cached");
+        let rects = lay.selection_rects(*bs, *be);
+        assert!(!rects.is_empty(), "the commented range computes a highlight rect");
+        assert!(rects[0].2 > rects[0].0, "the highlight rect has positive width");
+    }
+
+    #[test]
+    fn tracked_insert_underlines_colored_and_delete_strikes() {
+        // "keep gone": flag "keep" (0..4) as a tracked insertion and "gone" (5..9)
+        // as a tracked deletion, via the production tracked-change helpers.
+        let (mut wp, mut state, c, mut ids, bid) = doc_with_paragraph("keep gone");
+        let (ins_id, del_id);
+        {
+            let mut dm = qdoc::DocMut { doc: &mut state.doc, c: &c, ids: &mut ids };
+            // "keep" is already in the block; mark it as a tracked insertion.
+            ins_id = dm.insert_change(qdoc::ChangeKind::Ins, "Ada", "");
+            dm.add_change_mark(qdoc::ChangeKind::Ins, &bid, 0, 4, &ins_id);
+            // "gone" stays in the doc but is flagged for deletion.
+            del_id = dm.track_delete(&bid, 5, 9, "Ada", "");
+        }
+        state.doc.commit();
+        pipeline_draw(&mut wp, &mut state, 1000, 900);
+
+        // Both changes materialize with their kinds.
+        assert_eq!(wp.changes.len(), 2, "both tracked changes materialized");
+        let ins = wp.changes.iter().find(|ch| ch.id == ins_id).expect("ins change");
+        let del = wp.changes.iter().find(|ch| ch.id == del_id).expect("del change");
+        assert_eq!(ins.kind, qdoc::ChangeKind::Ins);
+        assert_eq!(del.kind, qdoc::ChangeKind::Del);
+
+        let b = wp.blocks.iter().find(|b| b.id == bid).expect("block present");
+
+        // Decoration ranges (the production draw path): ins → underline, del → strike.
+        let (ins_ranges, del_ranges) = block_change_decos(b);
+        assert_eq!(ins_ranges, vec![(0, 4)], "the insertion range underlines 'keep'");
+        assert_eq!(del_ranges, vec![(5, 9)], "the deletion range strikes 'gone'");
+
+        // Both decoration ranges resolve to real on-screen rects via the layout.
+        let (_, lay) = wp.layout_cache.get(&bid).expect("shaped layout cached");
+        assert!(!lay.selection_rects(0, 4).is_empty(), "insertion underline has geometry");
+        assert!(!lay.selection_rects(5, 9).is_empty(), "deletion strike has geometry");
+
+        // Glyph tinting: `block_runs_markup` colours the ins run green and the del
+        // run red (the standard review styling). With markup OFF those runs are
+        // plain (no review colour).
+        let (runs_on, _, _) = block_runs_markup(b, true);
+        assert!(
+            runs_on.iter().any(|r| r.text.contains("keep") && r.color == Some(TRACK_INS_RGB)),
+            "the inserted run is tinted with the insertion review colour"
+        );
+        assert!(
+            runs_on.iter().any(|r| r.text.contains("gone") && r.color == Some(TRACK_DEL_RGB)),
+            "the deleted run is tinted with the deletion review colour"
+        );
+        let (runs_off, _, _) = block_runs_markup(b, false);
+        assert!(
+            runs_off.iter().all(|r| r.color != Some(TRACK_INS_RGB) && r.color != Some(TRACK_DEL_RGB)),
+            "with markup hidden, tracked-change runs render as plain text"
+        );
+    }
+
+    #[test]
+    fn markup_toggle_hides_comment_ranges_and_changes() {
+        let (mut wp, mut state, c, mut ids, bid) = doc_with_paragraph("hello world");
+        {
+            let mut dm = qdoc::DocMut { doc: &mut state.doc, c: &c, ids: &mut ids };
+            dm.add_comment(&bid, 0, 5, "Ada", "note");
+            let ci = dm.insert_change(qdoc::ChangeKind::Ins, "Ada", "");
+            dm.add_change_mark(qdoc::ChangeKind::Ins, &bid, 6, 11, &ci);
+        }
+        state.doc.commit();
+
+        // Default ON: a comment marker is collected for the right-margin card.
+        assert!(wp.markup_enabled(), "markup defaults ON");
+        pipeline_draw(&mut wp, &mut state, 1000, 900);
+        let b = wp.blocks.iter().find(|b| b.id == bid).unwrap().clone();
+        assert_eq!(block_comment_ranges(&b).len(), 1, "comment range present in the data");
+
+        // Toggle OFF: the markup-gated runs lose their review colour, proving the
+        // draw path suppresses tracked-change styling.
+        wp.toggle_markup();
+        assert!(!wp.markup_enabled(), "toggle flips the flag");
+        let (runs_off, _, _) = block_runs_markup(&b, wp.show_markup);
+        assert!(
+            runs_off.iter().all(|r| r.color != Some(TRACK_INS_RGB)),
+            "no review colour is applied while markup is hidden"
+        );
     }
 }
