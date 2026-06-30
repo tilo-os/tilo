@@ -3,7 +3,7 @@ use winit::{
     dpi::PhysicalPosition,
     event::{ElementState, MouseButton, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
-    window::{Window, WindowId},
+    window::{CursorIcon, Window, WindowId},
 };
 
 /// Synthetic input events that can be injected into a running `App` via
@@ -175,6 +175,13 @@ pub struct App {
     /// know about libp2p. The closure receives `&mut PresenceCtx` so
     /// it can write directly to the overlay surface.
     frame_tick: Option<Box<dyn FnMut(&mut PresenceCtx) + Send + Sync>>,
+
+    /// Last OS cursor shape pushed to the window via `Window::set_cursor`.
+    /// `CursorMoved` re-resolves the desired shape from the widget under
+    /// the pointer every move, but only calls into winit when this
+    /// changes — keeping the hot pointer path cheap and not perturbing
+    /// the incremental-render gate.
+    current_cursor: CursorIcon,
 }
 
 impl App {
@@ -207,7 +214,42 @@ impl App {
             last_location_presence: None,
             presence_broadcast_sink: None,
             frame_tick: None,
+            current_cursor: CursorIcon::Default,
         }
+    }
+
+    /// Hit-test the widget tree at `point` (logical coords) and return the
+    /// OS cursor shape the most-specific widget under the pointer wants, or
+    /// `None` if nothing claims one.
+    ///
+    /// Cheap: a single pass over `node_map` with an `O(1)`
+    /// [`Widget::cursor_shape`] per widget (the default returns `None`;
+    /// only opted-in leaves do real work). The smallest-area matching rect
+    /// wins, so a deeply-nested child (a text field, a resize handle) beats
+    /// its enclosing container. This deliberately works off `node_map`
+    /// rather than walking `children` so it still reaches interactive
+    /// widgets nested under containers that keep private child storage
+    /// (e.g. the shell's `GroupRow` / `WindowGroup`).
+    fn resolve_cursor(&self, point: Point) -> Option<CursorIcon> {
+        let mut best: Option<(f64, CursorIcon)> = None;
+        for &w_ptr in self.node_map.values() {
+            // SAFETY: same invariant the rest of `App` relies on — the
+            // `node_map` pointers are valid for the duration of an event
+            // dispatch (the tree is only rebuilt between frames, never
+            // mid-`window_event`). This mirrors the existing `node_map`
+            // dereferences in `navigate_focus` / focus handling.
+            let w = unsafe { &*w_ptr };
+            let rect = w.get_rect();
+            if rect.contains(point) {
+                if let Some(icon) = w.cursor_shape(point) {
+                    let area = (rect.width() * rect.height()).max(0.0);
+                    if best.is_none_or(|(a, _)| area < a) {
+                        best = Some((area, icon));
+                    }
+                }
+            }
+        }
+        best.map(|(_, icon)| icon)
     }
 
     /// Register a per-frame callback invoked from `AboutToWait`. The
@@ -1637,6 +1679,28 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     }
                     if !is_pointer_move || app.root_widget.needs_redraw() {
                         window.request_redraw();
+                    }
+                }
+
+                // OS cursor shape. After dispatching the move, hit-test the
+                // widget tree at the pointer and adopt the cursor the most-
+                // specific widget under it asks for — an I-beam over a text
+                // field, an east-west / north-south arrow over a split or
+                // resize handle, a pointer over a button. Resolved on every
+                // `CursorMoved` (not just `handled` ones, so the shape stays
+                // correct when the pointer crosses into a widget that doesn't
+                // flip its own hover), but we only call winit's `set_cursor`
+                // when the shape actually changes so the per-move path stays
+                // cheap and the incremental-render gate is left untouched.
+                if let WindowEvent::CursorMoved { position, .. } = &event {
+                    let scale = window.scale_factor();
+                    let logical = Point::new(position.x / scale, position.y / scale);
+                    let desired = app
+                        .resolve_cursor(logical)
+                        .unwrap_or(CursorIcon::Default);
+                    if app.current_cursor != desired {
+                        app.current_cursor = desired;
+                        window.set_cursor(desired);
                     }
                 }
             }
