@@ -56,7 +56,7 @@ enum Mode {
 }
 
 /// Identifies which draft field an embedded [`TextInput`] maps to.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Slot {
     First,
     Last,
@@ -73,6 +73,43 @@ enum Slot {
     AddrRegion(usize),
     AddrPostal(usize),
     AddrCountry(usize),
+}
+
+/// The global-search seam: `true` for Ctrl/Cmd + K (or `/`), the chord the
+/// forthcoming shared global-search framework will claim. `handle_key` returns
+/// without setting `handled` when this matches, so the event bubbles to the
+/// host. Kept as a standalone function so it is the single decision point the
+/// production path and the seam test both exercise.
+fn is_global_search_chord(ctrl: bool, key: &Key) -> bool {
+    if !ctrl {
+        return false;
+    }
+    matches!(key, Key::Character(s) if matches!(s.as_str(), "k" | "K" | "/"))
+}
+
+/// Placeholder hint shown in an empty, unfocused form field. The `ui`
+/// `TextInput` in this toolkit build has no `with_placeholder` builder, so —
+/// matching the convention used by the search box, dropdown, and command
+/// palette — the parent draws the dim hint itself when the field is empty
+/// and unfocused. Centralised here so every field gets one.
+fn placeholder_for(slot: Slot) -> &'static str {
+    match slot {
+        Slot::First => "First name",
+        Slot::Last => "Last name",
+        Slot::Org => "Company or organization",
+        Slot::Title => "Job title",
+        Slot::Website => "https://example.com",
+        Slot::Birthday => "YYYY-MM-DD",
+        Slot::Notes => "Add a note…",
+        Slot::Groups => "Work, Friends, Family…",
+        Slot::Phone(_) => "Phone number",
+        Slot::Email(_) => "name@example.com",
+        Slot::AddrStreet(_) => "Street address",
+        Slot::AddrCity(_) => "City",
+        Slot::AddrRegion(_) => "State / region",
+        Slot::AddrPostal(_) => "Postal code",
+        Slot::AddrCountry(_) => "Country",
+    }
 }
 
 struct FieldInput {
@@ -184,11 +221,14 @@ enum Popup {
     TypeMenu { target: TypeTarget, anchor: Rect },
     /// Group filter selector in the list header.
     GroupFilter { anchor: Rect },
-    /// vCard version chooser when exporting.
-    ExportVersion { anchor: Rect },
     /// Birthday calendar.
     Calendar { year: i32, month: u32, anchor: Rect },
+    /// Right-click menu on a contact row (Edit / Export / Delete).
+    ContextMenu { target: ContactId, anchor: Rect },
 }
+
+/// Actions offered in the per-contact right-click context menu.
+const CONTEXT_ACTIONS: &[&str] = &["Edit", "Export", "Delete"];
 
 #[derive(Clone, Copy)]
 enum TypeTarget {
@@ -239,6 +279,15 @@ pub struct ContactsApp {
     toast: Option<(String, Instant)>,
     confirm_delete: Option<ContactId>,
 
+    /// Open export-selection dialog: the set of contact ids currently ticked
+    /// for export. `Some` ⇒ the modal is showing.
+    export_sel: Option<std::collections::HashSet<ContactId>>,
+    /// Scroll offset of the export dialog's contact list.
+    export_scroll: f64,
+    /// When switching to another contact would lose unsaved edits, the
+    /// target id parks here while the "Save changes?" modal is shown.
+    pending_switch: Option<ContactId>,
+
     // geometry
     rect: Rect,
     split_pos: f64,
@@ -253,6 +302,12 @@ pub struct ContactsApp {
     list_rows: Vec<(ContactId, Rect)>,
     hit: Hit,
     detail_content_h: f64,
+    /// View-mode detail field value hit rects, recomputed every `draw_detail`.
+    /// Double-clicking one jumps straight into editing that field.
+    detail_field_hits: Vec<(Slot, Rect)>,
+    /// Time + position of the last left-press in the detail pane, for
+    /// double-click detection on field values.
+    last_detail_click: Option<(Instant, Point)>,
 
     // Responsiveness: single-pane master-detail push below the breakpoint.
     push: PushNav,
@@ -278,6 +333,9 @@ impl ContactsApp {
             popup: None,
             toast: None,
             confirm_delete: None,
+            export_sel: None,
+            export_scroll: 0.0,
+            pending_switch: None,
             rect: Rect::ZERO,
             split_pos: 0.34,
             list_scroll: 0.0,
@@ -290,6 +348,8 @@ impl ContactsApp {
             list_rows: Vec::new(),
             hit: Hit::default(),
             detail_content_h: 0.0,
+            detail_field_hits: Vec::new(),
+            last_detail_click: None,
             push: PushNav::default(),
             narrow: false,
             last_mouse: Point::ZERO,
@@ -305,6 +365,75 @@ impl ContactsApp {
     /// detail rather than one mid-transition.
     pub fn shots_show_detail(&mut self) {
         self.push.snap(Pane::Detail);
+    }
+
+    /// Snap into the New Contact form for `--shots` (placeholders + the
+    /// repeated phone/email rows visible). Mirrors the `+ New` click. The
+    /// form lives in the detail pane, so we also snap the responsive push to
+    /// the detail pane — harmless on a wide viewport (the push is inert when
+    /// docked side by side), and on a narrow viewport it captures the pushed
+    /// form rather than the list.
+    pub fn shots_new_contact(&mut self) {
+        let mut c = Contact::new();
+        c.phones.push(Labeled::new("mobile", ""));
+        c.emails.push(Labeled::new("home", ""));
+        self.begin_edit(c, true);
+        self.push.snap(Pane::Detail);
+    }
+
+    /// Snap the export-selection dialog open for `--shots`.
+    pub fn shots_show_export(&mut self) {
+        self.open_export_dialog();
+    }
+
+    /// Snap the unsaved-changes modal open for `--shots`: enter edit on the
+    /// selected contact, dirty a field, then attempt to switch to another
+    /// contact so the guard fires.
+    pub fn shots_show_unsaved(&mut self) {
+        if let Some(c) = self.selected.and_then(|id| self.store.get(id)).cloned() {
+            self.begin_edit(c, false);
+            if let Some(form) = &mut self.form {
+                // Simulate an unsaved edit to the title field.
+                form.draft.title = format!("{} (edited)", form.draft.title);
+                if let Some(fi) = form.inputs.iter_mut().find(|f| f.slot == Slot::Title) {
+                    fi.ti.set_text(&form.draft.title);
+                }
+            }
+            // Pick a *different* visible contact as the pending switch target.
+            let target = self
+                .visible_ids()
+                .into_iter()
+                .find(|id| Some(*id) != self.selected);
+            self.pending_switch = target;
+        }
+    }
+
+    /// Snap the delete-confirmation modal open on the selected contact for
+    /// `--shots`.
+    pub fn shots_show_confirm_delete(&mut self) {
+        self.confirm_delete = self.selected;
+    }
+
+    /// Snap a right-click context menu open on the selected contact row for
+    /// `--shots`.
+    pub fn shots_show_context_menu(&mut self) {
+        if let Some(id) = self.selected {
+            // Anchor the menu near the selected row in the list.
+            let anchor = self
+                .list_rows
+                .iter()
+                .find(|(rid, _)| *rid == id)
+                .map(|(_, r)| Rect::new(r.x0 + 40.0, r.center().y, r.x0 + 40.0, r.center().y))
+                .unwrap_or_else(|| {
+                    Rect::new(
+                        self.list_rect.x0 + 60.0,
+                        self.list_rect.y0 + 200.0,
+                        self.list_rect.x0 + 60.0,
+                        self.list_rect.y0 + 200.0,
+                    )
+                });
+            self.popup = Some(Popup::ContextMenu { target: id, anchor });
+        }
     }
 
     /// Ids currently visible after search + group filter, in sort order.
@@ -355,6 +484,76 @@ impl ContactsApp {
         }
         self.mode = Mode::View;
         self.popup = None;
+        self.relayout = true;
+        self.dirty = true;
+    }
+
+    /// Whether the open edit form holds changes not yet written to the
+    /// store. Collects the live input values into a throwaway draft and
+    /// compares against the stored record (or, for a brand-new contact,
+    /// reports dirty when any field has content). Drives the
+    /// "Save changes?" guard when the user tries to switch contacts.
+    fn form_is_dirty(&self) -> bool {
+        let Some(form) = &self.form else { return false };
+        // Fold the live input values into a candidate draft without mutating
+        // the real form.
+        let mut candidate = EditForm {
+            draft: form.draft.clone(),
+            is_new: form.is_new,
+            inputs: form
+                .inputs
+                .iter()
+                .map(|f| FieldInput {
+                    slot: f.slot,
+                    ti: TextInput::local().with_initial_value(f.ti.value()),
+                })
+                .collect(),
+        };
+        candidate.collect();
+        let draft = candidate.draft;
+        if form.is_new {
+            // A fresh contact is "dirty" once it has any meaningful content
+            // (the two seeded empty phone/email rows don't count).
+            return !draft.first.trim().is_empty()
+                || !draft.last.trim().is_empty()
+                || !draft.org.trim().is_empty()
+                || !draft.title.trim().is_empty()
+                || !draft.website.trim().is_empty()
+                || !draft.birthday.trim().is_empty()
+                || !draft.notes.trim().is_empty()
+                || !draft.groups.is_empty()
+                || draft.phones.iter().any(|p| !p.value.trim().is_empty())
+                || draft.emails.iter().any(|e| !e.value.trim().is_empty())
+                || draft.addresses.iter().any(|a| !a.is_empty());
+        }
+        match self.store.get(draft.id) {
+            Some(stored) => *stored != draft,
+            None => true,
+        }
+    }
+
+    /// Switch the selected contact to `id`. If an edit form is open with
+    /// unsaved changes, park the target in `pending_switch` and pop the
+    /// "Save changes?" modal instead of switching directly.
+    fn request_select(&mut self, id: ContactId) {
+        if self.mode == Mode::Edit && self.form_is_dirty() {
+            self.pending_switch = Some(id);
+            self.dirty = true;
+            return;
+        }
+        self.commit_select(id);
+    }
+
+    /// Unconditionally switch selection to `id` (leaving any edit form).
+    fn commit_select(&mut self, id: ContactId) {
+        self.form = None;
+        self.mode = Mode::View;
+        self.selected = Some(id);
+        self.detail_scroll = 0.0;
+        self.search.set_focus(false);
+        if self.narrow {
+            self.push.show_detail();
+        }
         self.relayout = true;
         self.dirty = true;
     }
@@ -410,11 +609,26 @@ impl ContactsApp {
         self.relayout = true;
     }
 
-    fn export_selected(&mut self, version: VCardVersion) {
-        let contacts: Vec<Contact> = match self.selected.and_then(|id| self.store.get(id)) {
-            Some(c) => vec![c.clone()],
-            None => self.store.contacts.clone(),
-        };
+    /// Open the export-selection dialog, pre-ticking every contact currently
+    /// visible in the list (search + group filtered) so the common "export
+    /// what I'm looking at" case is one click; the user can then prune or
+    /// add via the per-row checkboxes / Select all / Select none.
+    fn open_export_dialog(&mut self) {
+        let pre: std::collections::HashSet<ContactId> = self.visible_ids().into_iter().collect();
+        self.export_sel = Some(pre);
+        self.export_scroll = 0.0;
+        self.popup = None;
+        self.dirty = true;
+    }
+
+    /// Write the explicitly-chosen `ids` out as a `.vcf` of the given version.
+    fn export_ids(&mut self, ids: &[ContactId], version: VCardVersion) {
+        let contacts: Vec<Contact> =
+            ids.iter().filter_map(|id| self.store.get(*id).cloned()).collect();
+        if contacts.is_empty() {
+            self.show_toast("Select at least one contact to export");
+            return;
+        }
         let body = vcard::to_vcards(&contacts, version);
         let path = std::env::temp_dir().join("contacts-export.vcf");
         match std::fs::write(&path, body) {
@@ -784,6 +998,12 @@ impl ContactsApp {
         if let Some(popup) = &self.popup {
             self.draw_popup(scene, transform, tr, theme, popup);
         }
+        if self.export_sel.is_some() {
+            self.draw_export_dialog(scene, transform, tr, theme);
+        }
+        if self.pending_switch.is_some() {
+            self.draw_unsaved_modal(scene, transform, tr, theme);
+        }
         if let Some(id) = self.confirm_delete {
             self.draw_confirm(scene, transform, tr, theme, id);
         }
@@ -1111,35 +1331,53 @@ impl ContactsApp {
 
         y += 96.0;
 
+        // Record field value hit rects so a double-click can jump straight
+        // into editing the clicked field (see `handle_detail_double_click`).
+        self.detail_field_hits.clear();
+        let mut hits: Vec<(Slot, Rect)> = Vec::new();
+
         // Sections (free helpers avoid closures double-borrowing scene/tr).
         if !contact.phones.is_empty() {
             detail_section(scene, t, tr, theme, x0, &mut y, "PHONE");
-            for p in &contact.phones {
+            for (i, p) in contact.phones.iter().enumerate() {
+                let y0 = y;
                 detail_field(scene, t, tr, theme, x0, x1, &mut y, &p.label, &p.value);
+                hits.push((Slot::Phone(i), Rect::new(x0, y0 - 4.0, x1, y)));
             }
         }
         if !contact.emails.is_empty() {
             detail_section(scene, t, tr, theme, x0, &mut y, "EMAIL");
-            for e in &contact.emails {
+            for (i, e) in contact.emails.iter().enumerate() {
+                let y0 = y;
                 detail_field(scene, t, tr, theme, x0, x1, &mut y, &e.label, &e.value);
+                hits.push((Slot::Email(i), Rect::new(x0, y0 - 4.0, x1, y)));
             }
         }
         if !contact.addresses.is_empty() {
             detail_section(scene, t, tr, theme, x0, &mut y, "ADDRESS");
-            for a in &contact.addresses {
+            for (i, a) in contact.addresses.iter().enumerate() {
+                let y0 = y;
                 detail_field(scene, t, tr, theme, x0, x1, &mut y, &a.label, &a.one_line());
+                // The address is one logical block; double-clicking it edits
+                // its street line (the first address input).
+                hits.push((Slot::AddrStreet(i), Rect::new(x0, y0 - 4.0, x1, y)));
             }
         }
         if !contact.birthday.is_empty() {
             detail_section(scene, t, tr, theme, x0, &mut y, "BIRTHDAY");
+            let y0 = y;
             detail_field(scene, t, tr, theme, x0, x1, &mut y, "date", &date::pretty(&contact.birthday));
+            hits.push((Slot::Birthday, Rect::new(x0, y0 - 4.0, x1, y)));
         }
         if !contact.website.is_empty() {
             detail_section(scene, t, tr, theme, x0, &mut y, "WEBSITE");
+            let y0 = y;
             detail_field(scene, t, tr, theme, x0, x1, &mut y, "url", &contact.website);
+            hits.push((Slot::Website, Rect::new(x0, y0 - 4.0, x1, y)));
         }
         if !contact.notes.is_empty() {
             detail_section(scene, t, tr, theme, x0, &mut y, "NOTES");
+            let y0 = y;
             let h = tr.measure(&contact.notes, 14.0, Some((x1 - x0) as f32)).1 as f64;
             tr.draw_text(
                 scene,
@@ -1150,8 +1388,13 @@ impl ContactsApp {
                 Some((x1 - x0) as f32),
             );
             y += h + 8.0;
+            hits.push((Slot::Notes, Rect::new(x0, y0 - 4.0, x1, y)));
         }
 
+        // Header double-click: the name band edits the first/last name.
+        hits.push((Slot::First, Rect::new(av.x1 + 18.0, top, x1, top + 40.0)));
+
+        self.detail_field_hits = hits;
         self.detail_content_h = (y + self.detail_scroll) - top + 24.0;
         scene.pop_layer();
     }
@@ -1232,10 +1475,18 @@ impl ContactsApp {
         if let Some(r) = find(Slot::Org) {
             label(scene, tr, "ORGANIZATION", r);
         }
-        // Phone / email / address section headers anchored to add buttons.
-        label(scene, tr, "PHONE", self.hit.add_phone);
-        label(scene, tr, "EMAIL", self.hit.add_email);
-        label(scene, tr, "ADDRESS", self.hit.add_address);
+        // Phone / email / address section headers anchored ABOVE the first
+        // field row of each group (falling back to the group's "+ Add" button
+        // when the group is empty). Previously these anchored to the add
+        // button — which sits at the BOTTOM of the group — so the label was
+        // painted on the row *above* the button, bleeding through behind that
+        // row's type chip. Anchoring to the first row fixes that overlap.
+        let section_anchor = |slot: Slot, add_btn: Rect| -> Rect {
+            find(slot).unwrap_or(add_btn)
+        };
+        label(scene, tr, "PHONE", section_anchor(Slot::Phone(0), self.hit.add_phone));
+        label(scene, tr, "EMAIL", section_anchor(Slot::Email(0), self.hit.add_email));
+        label(scene, tr, "ADDRESS", section_anchor(Slot::AddrStreet(0), self.hit.add_address));
         if let Some(r) = find(Slot::Birthday) {
             label(scene, tr, "BIRTHDAY", r);
         }
@@ -1249,9 +1500,29 @@ impl ContactsApp {
             label(scene, tr, "GROUPS (comma separated)", r);
         }
 
-        // Draw the embedded inputs.
+        // Draw the embedded inputs, each followed by its dim placeholder hint
+        // when empty + unfocused. The input paints its own opaque rounded-rect
+        // field background first (TextInput::draw), so the placeholder — drawn
+        // *after* the input, clipped to the field — sits cleanly on top of that
+        // fill and nothing from a neighbouring row can bleed through behind it.
         for f in self.form.as_mut().unwrap().inputs.iter_mut() {
             f.ti.draw(scene, t, tr, theme, presence);
+            if f.ti.value().is_empty() && !f.ti.is_focused() {
+                let r = f.ti.get_rect();
+                if r.width() > 0.0 {
+                    let shape = RoundedRect::from_rect(r, theme.tokens.radii.md as f64);
+                    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &shape);
+                    tr.draw_text(
+                        scene,
+                        placeholder_for(f.slot),
+                        14.0,
+                        c.text_dim,
+                        t * Affine::translate((r.x0 + 12.0, r.center().y - 9.0)),
+                        Some((r.width() - 20.0) as f32),
+                    );
+                    scene.pop_layer();
+                }
+            }
         }
 
         // Draw type chips + remove buttons.
@@ -1320,15 +1591,6 @@ impl ContactsApp {
                     menu_item(scene, t, tr, theme, *r, &opts[i], hov, sel);
                 }
             }
-            Popup::ExportVersion { anchor } => {
-                let opts = ["vCard 3.0", "vCard 4.0"];
-                let (panel, rows) = self.popup_menu_geometry(*anchor, opts.len(), 150.0);
-                menu_panel(scene, t, theme, panel);
-                for (i, r) in rows.iter().enumerate() {
-                    let hov = r.contains(self.last_mouse);
-                    menu_item(scene, t, tr, theme, *r, opts[i], hov, false);
-                }
-            }
             Popup::Calendar { year, month, anchor } => {
                 let (panel, prev, next, cells) = self.calendar_geometry(*anchor, *year, *month);
                 menu_panel(scene, t, theme, panel);
@@ -1389,7 +1651,120 @@ impl ContactsApp {
                     );
                 }
             }
+            Popup::ContextMenu { anchor, .. } => {
+                let (panel, rows) = self.popup_menu_geometry(*anchor, CONTEXT_ACTIONS.len(), 160.0);
+                menu_panel(scene, t, theme, panel);
+                for (i, r) in rows.iter().enumerate() {
+                    let hov = r.contains(self.last_mouse);
+                    // The destructive "Delete" item reads in the danger color
+                    // when not hovered (hover inverts to white-on-accent).
+                    let label = CONTEXT_ACTIONS[i];
+                    if label == "Delete" && !hov {
+                        menu_item_colored(scene, t, tr, theme, *r, label, c.semantic.danger);
+                    } else {
+                        menu_item(scene, t, tr, theme, *r, label, hov, false);
+                    }
+                }
+            }
         }
+    }
+
+    /// The export-selection dialog: a centered modal listing every contact
+    /// with a per-row checkbox, Select all / Select none, and the two vCard
+    /// version export actions. The user exports exactly the ticked set.
+    fn draw_export_dialog(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let c = &theme.tokens.colors;
+        let sel = self.export_sel.clone().unwrap_or_default();
+        // Scrim.
+        scene.fill(Fill::NonZero, t, c.surfaces.overlay, None, &self.rect);
+        let g = self.export_geometry();
+        menu_panel(scene, t, theme, g.panel);
+        // Title + count.
+        tr.draw_text_weighted(
+            scene,
+            "Export contacts",
+            16.0,
+            c.text_primary,
+            t * Affine::translate((g.panel.x0 + 18.0, g.panel.y0 + 18.0)),
+            None,
+            TextWeight::Bold,
+        );
+        tr.draw_text(
+            scene,
+            &format!("{} selected", sel.len()),
+            12.0,
+            c.text_dim,
+            t * Affine::translate((g.panel.x0 + 18.0, g.panel.y0 + 40.0)),
+            None,
+        );
+        // Select all / none chips.
+        chip(scene, t, tr, theme, g.select_all, "Select all", false);
+        chip(scene, t, tr, theme, g.select_none, "Select none", false);
+
+        // Scrollable contact list with checkboxes.
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &g.list_body);
+        for (id, row, cb) in &g.rows {
+            if row.y1 < g.list_body.y0 || row.y0 > g.list_body.y1 {
+                continue;
+            }
+            let Some(contact) = self.store.get(*id) else { continue };
+            let checked = sel.contains(id);
+            let hov = row.contains(self.last_mouse);
+            if hov {
+                let bg = RoundedRect::from_rect(*row, theme.tokens.radii.md as f64);
+                scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &bg);
+            }
+            draw_checkbox(scene, t, theme, *cb, checked);
+            tr.draw_text(
+                scene,
+                &contact.display_name(),
+                14.0,
+                c.text_primary,
+                t * Affine::translate((cb.x1 + 12.0, row.center().y - 9.0)),
+                Some((row.x1 - cb.x1 - 20.0) as f32),
+            );
+        }
+        scene.pop_layer();
+
+        // Footer buttons.
+        toolbar_button(scene, t, tr, theme, g.cancel, "Cancel", false);
+        toolbar_button(scene, t, tr, theme, g.export_v3, "Export 3.0", false);
+        toolbar_button(scene, t, tr, theme, g.export_v4, "Export 4.0", true);
+        let _ = g.content_h;
+    }
+
+    /// The "Save changes?" guard modal shown when the user tries to switch
+    /// contacts while an edit form holds unsaved changes.
+    fn draw_unsaved_modal(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let c = &theme.tokens.colors;
+        scene.fill(Fill::NonZero, t, c.surfaces.overlay, None, &self.rect);
+        let g = self.unsaved_geometry();
+        menu_panel(scene, t, theme, g.panel);
+        tr.draw_text_weighted(
+            scene,
+            "Save changes?",
+            16.0,
+            c.text_primary,
+            t * Affine::translate((g.panel.x0 + 20.0, g.panel.y0 + 20.0)),
+            None,
+            TextWeight::Bold,
+        );
+        let name = self
+            .form
+            .as_ref()
+            .map(|f| f.draft.display_name())
+            .unwrap_or_default();
+        tr.draw_text(
+            scene,
+            &format!("You have unsaved changes to \u{201C}{name}\u{201D}."),
+            13.0,
+            c.text_dim,
+            t * Affine::translate((g.panel.x0 + 20.0, g.panel.y0 + 48.0)),
+            Some((g.panel.width() - 40.0) as f32),
+        );
+        toolbar_button(scene, t, tr, theme, g.cancel, "Cancel", false);
+        toolbar_button(scene, t, tr, theme, g.discard, "Discard", false);
+        toolbar_button(scene, t, tr, theme, g.save, "Save", true);
     }
 
     fn draw_confirm(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, id: ContactId) {
@@ -1442,6 +1817,101 @@ impl ContactsApp {
         let del = Rect::new(panel.x1 - 20.0 - 96.0, by, panel.x1 - 20.0, by + 32.0);
         let cancel = Rect::new(del.x0 - 8.0 - 88.0, by, del.x0 - 8.0, by + 32.0);
         (panel, del, cancel)
+    }
+}
+
+/// Geometry of the export-selection dialog. Grouped so draw + hit-test share
+/// one source of truth.
+struct ExportGeom {
+    panel: Rect,
+    select_all: Rect,
+    select_none: Rect,
+    list_body: Rect,
+    /// `(contact id, full row rect, checkbox rect)` for every contact.
+    rows: Vec<(ContactId, Rect, Rect)>,
+    export_v3: Rect,
+    export_v4: Rect,
+    cancel: Rect,
+    /// Total scrollable content height (for clamping `export_scroll`).
+    content_h: f64,
+}
+
+/// Geometry of the unsaved-changes ("Save changes?") modal.
+struct UnsavedGeom {
+    panel: Rect,
+    save: Rect,
+    discard: Rect,
+    cancel: Rect,
+}
+
+impl ContactsApp {
+    fn export_geometry(&self) -> ExportGeom {
+        let w = 460.0_f64;
+        let h = (self.rect.height() * 0.8).clamp(320.0, 560.0).min(self.rect.height() - 40.0);
+        let cx = self.rect.center().x;
+        let cy = self.rect.center().y;
+        let panel = Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0);
+        // Header band: title + Select all / none on the right.
+        let head_y = panel.y0 + 18.0;
+        let select_none =
+            Rect::new(panel.x1 - 16.0 - 96.0, head_y, panel.x1 - 16.0, head_y + 28.0);
+        let select_all = Rect::new(
+            select_none.x0 - 8.0 - 96.0,
+            head_y,
+            select_none.x0 - 8.0,
+            head_y + 28.0,
+        );
+        // Scrollable list region between header and footer.
+        let list_top = panel.y0 + 64.0;
+        let footer_top = panel.y1 - 56.0;
+        let list_body = Rect::new(panel.x0 + 16.0, list_top, panel.x1 - 16.0, footer_top - 8.0);
+        let ids = self.visible_export_ids();
+        let row_h = 40.0;
+        let mut rows = Vec::new();
+        let mut ry = list_body.y0 - self.export_scroll;
+        for id in &ids {
+            let row = Rect::new(list_body.x0, ry, list_body.x1, ry + row_h);
+            let cb = Rect::new(row.x0 + 4.0, row.center().y - 10.0, row.x0 + 24.0, row.center().y + 10.0);
+            rows.push((*id, row, cb));
+            ry += row_h;
+        }
+        let content_h = ids.len() as f64 * row_h;
+        // Footer buttons.
+        let by = panel.y1 - 44.0;
+        let export_v4 = Rect::new(panel.x1 - 16.0 - 120.0, by, panel.x1 - 16.0, by + 32.0);
+        let export_v3 = Rect::new(export_v4.x0 - 8.0 - 120.0, by, export_v4.x0 - 8.0, by + 32.0);
+        let cancel = Rect::new(panel.x0 + 16.0, by, panel.x0 + 16.0 + 88.0, by + 32.0);
+        ExportGeom {
+            panel,
+            select_all,
+            select_none,
+            list_body,
+            rows,
+            export_v3,
+            export_v4,
+            cancel,
+            content_h,
+        }
+    }
+
+    /// Contacts offered in the export dialog: the whole address book in the
+    /// current sort order (export is not limited to the active filter — the
+    /// dialog lets you pick from everyone).
+    fn visible_export_ids(&self) -> Vec<ContactId> {
+        self.store.filtered_sorted("", None, self.sort)
+    }
+
+    fn unsaved_geometry(&self) -> UnsavedGeom {
+        let w = 420.0;
+        let h = 156.0;
+        let cx = self.rect.center().x;
+        let cy = self.rect.center().y;
+        let panel = Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0);
+        let by = panel.y1 - 48.0;
+        let save = Rect::new(panel.x1 - 16.0 - 96.0, by, panel.x1 - 16.0, by + 32.0);
+        let discard = Rect::new(save.x0 - 8.0 - 96.0, by, save.x0 - 8.0, by + 32.0);
+        let cancel = Rect::new(panel.x0 + 16.0, by, panel.x0 + 16.0 + 88.0, by + 32.0);
+        UnsavedGeom { panel, save, discard, cancel }
     }
 }
 
@@ -1630,6 +2100,61 @@ fn menu_item(
         t * Affine::translate((rect.x0 + 12.0, rect.center().y - 8.0)),
         Some((rect.width() - 20.0) as f32),
     );
+}
+
+/// A non-hovered menu row that paints its label in `color` (used for the
+/// destructive "Delete" action in the context menu). The hovered state is
+/// drawn by the caller via the regular [`menu_item`] (white-on-accent).
+fn menu_item_colored(
+    scene: &mut Scene,
+    t: Affine,
+    tr: &mut TextRenderer,
+    _theme: &Theme,
+    rect: Rect,
+    label: &str,
+    color: Color,
+) {
+    tr.draw_text(
+        scene,
+        label,
+        13.0,
+        color,
+        t * Affine::translate((rect.x0 + 12.0, rect.center().y - 8.0)),
+        Some((rect.width() - 20.0) as f32),
+    );
+}
+
+/// Draw a checkbox in the export-selection list. Matches the look of the
+/// `ui` Checkbox widget (which can't be reused here — it requires a CRDT
+/// boolean path with no imperative checked-state API): accent fill + white
+/// tick when checked, otherwise a bordered empty box.
+fn draw_checkbox(scene: &mut Scene, t: Affine, theme: &Theme, rect: Rect, checked: bool) {
+    let c = &theme.tokens.colors;
+    let shape = RoundedRect::from_rect(rect, theme.tokens.radii.md as f64);
+    if checked {
+        scene.fill(Fill::NonZero, t, theme.accent_primary, None, &shape);
+    } else {
+        scene.fill(Fill::NonZero, t, c.surfaces.base, None, &shape);
+        scene.stroke(&Stroke::new(1.4), t, c.border_standard, None, &shape);
+    }
+    if checked {
+        // White check polyline, proportional to the box.
+        let x0 = rect.x0;
+        let y0 = rect.y0;
+        let w = rect.width();
+        let h = rect.height();
+        let mut p = BezPath::new();
+        p.move_to((x0 + w * 0.26, y0 + h * 0.52));
+        p.line_to((x0 + w * 0.44, y0 + h * 0.70));
+        p.line_to((x0 + w * 0.76, y0 + h * 0.30));
+        scene.stroke(
+            &Stroke::new(2.0).with_caps(vello::kurbo::Cap::Round),
+            t,
+            Color::WHITE,
+            None,
+            &p,
+        );
+    }
 }
 
 fn draw_avatar(scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, rect: Rect, initials: &str) {
@@ -1828,6 +2353,14 @@ impl Widget for ContactsApp {
         }
 
         // Modal layers consume input first.
+        if self.export_sel.is_some() {
+            self.handle_export(event, handled);
+            return;
+        }
+        if self.pending_switch.is_some() {
+            self.handle_unsaved(event, state, handled);
+            return;
+        }
         if self.confirm_delete.is_some() {
             self.handle_confirm(event, state, handled);
             return;
@@ -1866,6 +2399,17 @@ impl Widget for ContactsApp {
                     return;
                 }
                 self.handle_click(state, handled, node_id, taffy, modifiers, path);
+                return;
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } => {
+                // Right-click a contact row → per-contact context menu
+                // (Edit / Export / Delete). `MouseInput` carries no position,
+                // so we use the cursor cached on `CursorMoved`.
+                self.handle_right_click(self.last_mouse, handled);
                 return;
             }
             WindowEvent::MouseInput {
@@ -2037,7 +2581,7 @@ impl ContactsApp {
             return;
         }
         if self.hit.export.contains(p) {
-            self.popup = Some(Popup::ExportVersion { anchor: self.hit.export });
+            self.open_export_dialog();
             *handled = true;
             self.dirty = true;
             return;
@@ -2072,27 +2616,26 @@ impl ContactsApp {
         // Search field click → focus it.
         if self.hit.search.contains(p) {
             self.set_only_focus_search();
-        } else if self.mode == Mode::View {
-            // List row click.
-            if self.list_body.contains(p) {
-                if let Some((id, _)) = self.list_rows.iter().find(|(_, r)| r.contains(p)) {
-                    self.selected = Some(*id);
-                    self.detail_scroll = 0.0;
-                    self.dirty = true;
-                    self.relayout = true;
-                    self.search.set_focus(false);
-                    // On a narrow window, selecting a contact pushes the
-                    // detail pane in (single-pane master-detail navigation).
-                    if self.narrow {
-                        self.push.show_detail();
-                    }
-                    *handled = true;
-                    return;
-                }
+        } else if self.list_body.contains(p) {
+            // List row click. Routed through `request_select` so switching
+            // away from an edit form with unsaved changes pops the guard
+            // modal instead of silently discarding edits.
+            if let Some((id, _)) = self.list_rows.iter().find(|(_, r)| r.contains(p)).copied() {
+                self.request_select(id);
+                *handled = true;
+                return;
             }
         }
 
         if self.mode == Mode::View {
+            // Double-click a detail field value → edit, focused on that field.
+            if self.selected.is_some()
+                && self.detail_rect.contains(p)
+                && self.try_detail_double_click(p)
+            {
+                *handled = true;
+                return;
+            }
             // Detail actions.
             if self.selected.is_some() {
                 if self.hit.fav.contains(p) {
@@ -2202,6 +2745,55 @@ impl ContactsApp {
         if let Some(form) = &mut self.form {
             form.clear_focus();
         }
+    }
+
+    /// Handle a left-press in the detail pane that may be the *second* click
+    /// of a double-click on a field value. Returns `true` when it resolved a
+    /// double-click and entered edit mode focused on that field.
+    fn try_detail_double_click(&mut self, p: Point) -> bool {
+        const DOUBLE_CLICK_MS: u128 = 400;
+        const DOUBLE_CLICK_RADIUS: f64 = 6.0;
+        let now = Instant::now();
+        let is_double = self
+            .last_detail_click
+            .map(|(t0, p0)| {
+                now.duration_since(t0).as_millis() <= DOUBLE_CLICK_MS
+                    && p.distance(p0) <= DOUBLE_CLICK_RADIUS
+            })
+            .unwrap_or(false);
+        // Record this click for the next press regardless.
+        self.last_detail_click = Some((now, p));
+        if !is_double {
+            return false;
+        }
+        // Find the field value under the cursor.
+        let slot = self
+            .detail_field_hits
+            .iter()
+            .find(|(_, r)| r.contains(p))
+            .map(|(s, _)| *s);
+        let Some(slot) = slot else { return false };
+        let Some(c) = self.selected.and_then(|id| self.store.get(id)).cloned() else {
+            return false;
+        };
+        self.begin_edit(c, false);
+        self.focus_form_slot(slot);
+        self.last_detail_click = None;
+        true
+    }
+
+    /// Focus the form input mapped to `slot` (and clear focus elsewhere).
+    /// Used after a double-click-to-edit jump so the caret lands in the
+    /// field the user double-clicked.
+    fn focus_form_slot(&mut self, slot: Slot) {
+        self.search.set_focus(false);
+        if let Some(form) = &mut self.form {
+            form.clear_focus();
+            if let Some(f) = form.inputs.iter_mut().find(|f| f.slot == slot) {
+                f.ti.set_focus(true);
+            }
+        }
+        self.dirty = true;
     }
 
     fn focus_input_at(&mut self, p: Point) {
@@ -2357,11 +2949,30 @@ impl ContactsApp {
                 }
                 self.relayout = true;
             }
-            Popup::ExportVersion { anchor } => {
-                let opts = [VCardVersion::V3, VCardVersion::V4];
-                let (_panel, rows) = self.popup_menu_geometry(anchor, opts.len(), 150.0);
+            Popup::ContextMenu { target, anchor } => {
+                let (_panel, rows) = self.popup_menu_geometry(anchor, CONTEXT_ACTIONS.len(), 160.0);
                 if let Some(i) = rows.iter().position(|r| r.contains(p)) {
-                    self.export_selected(opts[i]);
+                    match CONTEXT_ACTIONS[i] {
+                        "Edit" => {
+                            if let Some(c) = self.store.get(target).cloned() {
+                                self.selected = Some(target);
+                                self.begin_edit(c, false);
+                            }
+                        }
+                        "Export" => {
+                            // Open the export dialog pre-ticked with just this
+                            // contact.
+                            let mut set = std::collections::HashSet::new();
+                            set.insert(target);
+                            self.export_sel = Some(set);
+                            self.export_scroll = 0.0;
+                        }
+                        "Delete" => {
+                            self.selected = Some(target);
+                            self.confirm_delete = Some(target);
+                        }
+                        _ => {}
+                    }
                 }
             }
             Popup::Calendar { year, month, anchor } => {
@@ -2418,6 +3029,124 @@ impl ContactsApp {
         let _ = cancel;
     }
 
+    /// Open the per-contact right-click context menu if `p` lands on a row.
+    fn handle_right_click(&mut self, p: Point, handled: &mut bool) {
+        // Only the list rows carry a context menu.
+        if let Some((id, _)) = self.list_rows.iter().find(|(_, r)| r.contains(p)).copied() {
+            self.selected = Some(id);
+            let anchor = Rect::new(p.x, p.y, p.x, p.y);
+            self.popup = Some(Popup::ContextMenu { target: id, anchor });
+            self.relayout = true;
+            self.dirty = true;
+            *handled = true;
+        }
+    }
+
+    /// Drive the export-selection dialog: checkbox toggles, Select all/none,
+    /// scroll, the two export actions, and dismissal.
+    fn handle_export(&mut self, event: &WindowEvent, handled: &mut bool) {
+        if matches!(event, WindowEvent::CursorMoved { .. }) {
+            self.dirty = true; // hover highlight
+        }
+        if let WindowEvent::MouseWheel { delta, .. } = event {
+            let dy = match delta {
+                MouseScrollDelta::LineDelta(_, y) => (-y * 48.0) as f64,
+                MouseScrollDelta::PixelDelta(p) => -p.y,
+            };
+            let g = self.export_geometry();
+            let max = (g.content_h - g.list_body.height()).max(0.0);
+            self.export_scroll = (self.export_scroll + dy).clamp(0.0, max);
+            self.dirty = true;
+            *handled = true;
+            return;
+        }
+        let press = matches!(
+            event,
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. }
+        );
+        if !press {
+            return;
+        }
+        *handled = true;
+        self.dirty = true;
+        let p = self.last_mouse;
+        let g = self.export_geometry();
+
+        if g.select_all.contains(p) {
+            let all: std::collections::HashSet<ContactId> =
+                self.visible_export_ids().into_iter().collect();
+            self.export_sel = Some(all);
+            return;
+        }
+        if g.select_none.contains(p) {
+            self.export_sel = Some(std::collections::HashSet::new());
+            return;
+        }
+        // Row checkbox toggle (whole row is clickable).
+        if g.list_body.contains(p) {
+            if let Some((id, _, _)) = g.rows.iter().find(|(_, r, _)| r.contains(p)) {
+                if let Some(set) = &mut self.export_sel {
+                    if set.contains(id) {
+                        set.remove(id);
+                    } else {
+                        set.insert(*id);
+                    }
+                }
+            }
+            return;
+        }
+        if g.cancel.contains(p) {
+            self.export_sel = None;
+            return;
+        }
+        if g.export_v3.contains(p) || g.export_v4.contains(p) {
+            let version = if g.export_v4.contains(p) { VCardVersion::V4 } else { VCardVersion::V3 };
+            let ids: Vec<ContactId> = self
+                .visible_export_ids()
+                .into_iter()
+                .filter(|id| self.export_sel.as_ref().map(|s| s.contains(id)).unwrap_or(false))
+                .collect();
+            self.export_ids(&ids, version);
+            self.export_sel = None;
+            return;
+        }
+        // Click on the scrim (outside the panel) dismisses.
+        if !g.panel.contains(p) {
+            self.export_sel = None;
+        }
+    }
+
+    /// Drive the "Save changes?" unsaved-changes guard modal: Save commits and
+    /// switches, Discard drops edits and switches, Cancel keeps editing.
+    fn handle_unsaved(&mut self, event: &WindowEvent, state: &mut AutoCommit, handled: &mut bool) {
+        if matches!(event, WindowEvent::CursorMoved { .. }) {
+            self.dirty = true;
+        }
+        let press = matches!(
+            event,
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. }
+        );
+        if !press {
+            return;
+        }
+        *handled = true;
+        self.dirty = true;
+        let p = self.last_mouse;
+        let g = self.unsaved_geometry();
+        let Some(target) = self.pending_switch else { return };
+        if g.save.contains(p) {
+            self.save_edit(state);
+            self.pending_switch = None;
+            self.commit_select(target);
+        } else if g.discard.contains(p) {
+            self.pending_switch = None;
+            self.commit_select(target);
+        } else if g.cancel.contains(p) || !g.panel.contains(p) {
+            // Cancel / scrim: stay in the edit form, drop the pending switch.
+            self.pending_switch = None;
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn handle_key(
         &mut self,
@@ -2438,10 +3167,24 @@ impl ContactsApp {
         }
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
 
-        // Escape closes popups / cancels edit / returns from a narrow pushed
-        // detail to the list / clears search focus.
+        // Global-search seam: leave Ctrl+K (and Ctrl+/) untouched so the
+        // forthcoming shared global-search framework can claim the chord.
+        // Returning here without setting `handled` lets the event propagate
+        // to the host/compositor — do NOT build a bespoke palette.
+        if is_global_search_chord(ctrl, &ke.logical_key) {
+            return; // handled stays false → event propagates
+        }
+
+        // Escape closes popups / dialogs / cancels edit / returns from a
+        // narrow pushed detail to the list / clears search focus.
         if matches!(ke.logical_key, Key::Named(NamedKey::Escape)) {
-            if self.popup.is_some() {
+            if self.export_sel.is_some() {
+                self.export_sel = None;
+            } else if self.pending_switch.is_some() {
+                self.pending_switch = None;
+            } else if self.confirm_delete.is_some() {
+                self.confirm_delete = None;
+            } else if self.popup.is_some() {
                 self.popup = None;
             } else if self.mode == Mode::Edit {
                 self.cancel_edit();
@@ -2704,5 +3447,456 @@ mod tests {
         let stored = ContactsDoc::list_contacts(&doc);
         let r = stored.iter().find(|x| x.id == id).unwrap();
         assert_eq!(r.title, "Edited Title");
+    }
+
+    // =================================================================
+    // Interaction harness — drives real winit events through the
+    // production `handle_event` path (not test-only shortcuts), so the
+    // assertions prove the shipped behaviour.
+    // =================================================================
+
+    use winit::dpi::PhysicalPosition;
+    use winit::event::{DeviceId, ElementState, Modifiers, MouseButton, WindowEvent};
+    use winit::keyboard::{Key, NamedKey, SmolStr};
+
+    fn device_id() -> DeviceId {
+        // winit gives no public DeviceId constructor; the production code
+        // does exactly this for synthesised presses (see
+        // `forward_press_to_focused_input`).
+        unsafe { std::mem::zeroed() }
+    }
+
+    /// Owns a laid-out app + its taffy tree so tests can pump events through
+    /// the production `Widget::handle_event`.
+    struct Harness {
+        app: ContactsApp,
+        doc: AutoCommit,
+        taffy: TaffyTree<()>,
+        node: NodeId,
+        w: u32,
+        h: u32,
+    }
+
+    impl Harness {
+        fn new(w: u32, h: u32) -> Self {
+            let mut app = ContactsApp::new();
+            let mut doc = AutoCommit::new();
+            app.sync(&mut doc, &ROOT);
+            let mut h = Harness {
+                app,
+                doc,
+                taffy: TaffyTree::new(),
+                node: NodeId::new(0),
+                w,
+                h,
+            };
+            h.relayout();
+            h
+        }
+
+        /// Re-run build/compute/apply layout (after the model changed).
+        fn relayout(&mut self) {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            self.taffy = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let child = self.app.build_layout(&mut self.taffy, &theme, &mut node_map);
+            self.node = child;
+            let root = self
+                .taffy
+                .new_with_children(
+                    Style {
+                        size: Size {
+                            width: Dimension::length(self.w as f32),
+                            height: Dimension::length(self.h as f32),
+                        },
+                        ..Default::default()
+                    },
+                    &[child],
+                )
+                .unwrap();
+            {
+                let measure_map = node_map.clone();
+                let trr = &mut tr;
+                self.taffy
+                    .compute_layout_with_measure(
+                        root,
+                        Size {
+                            width: AvailableSpace::Definite(self.w as f32),
+                            height: AvailableSpace::Definite(self.h as f32),
+                        },
+                        |known, avail, node_id, _, _| {
+                            if let Some(&ptr) = measure_map.get(&node_id) {
+                                unsafe { (*ptr).measure(known, avail, trr) }
+                            } else {
+                                taffy::Size::ZERO
+                            }
+                        },
+                    )
+                    .unwrap();
+            }
+            self.app.apply_layout(&self.taffy, child, Point::ORIGIN);
+            // A draw pass populates draw-time hit rects (e.g.
+            // `detail_field_hits` for double-click-to-edit), exactly as the
+            // live renderer does each frame.
+            let presence = PresenceCtx::empty();
+            let permission = PermissionContext::permissive();
+            let mut scene = Scene::new();
+            self.app.draw_with_presence(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &presence,
+                &permission,
+            );
+        }
+
+        fn dispatch(&mut self, event: &WindowEvent) -> bool {
+            let mods = Modifiers::default();
+            let mut handled = false;
+            let mut focus = None;
+            self.app.handle_event(
+                event,
+                1.0,
+                &mods,
+                &mut self.doc,
+                &ROOT,
+                &mut handled,
+                &mut focus,
+                self.node,
+                &self.taffy,
+            );
+            handled
+        }
+
+        fn move_to(&mut self, p: Point) {
+            self.dispatch(&WindowEvent::CursorMoved {
+                device_id: device_id(),
+                position: PhysicalPosition::new(p.x, p.y),
+            });
+        }
+
+        fn press_left(&mut self, p: Point) -> bool {
+            self.move_to(p);
+            self.dispatch(&WindowEvent::MouseInput {
+                device_id: device_id(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            })
+        }
+
+        fn press_right(&mut self, p: Point) -> bool {
+            self.move_to(p);
+            self.dispatch(&WindowEvent::MouseInput {
+                device_id: device_id(),
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+            })
+        }
+
+        /// A double click: two left presses at the same point in quick
+        /// succession (the production double-click window is 400ms).
+        fn double_click(&mut self, p: Point) {
+            self.press_left(p);
+            self.press_left(p);
+        }
+
+        /// First visible list row's center point.
+        fn row_center(&self, index: usize) -> Point {
+            self.app.list_rows[index].1.center()
+        }
+
+        fn row_id(&self, index: usize) -> ContactId {
+            self.app.list_rows[index].0
+        }
+    }
+
+    #[test]
+    fn narrow_row_press_pushes_detail_then_back_returns_to_list() {
+        let mut h = Harness::new(460, 880);
+        assert!(h.app.narrow);
+        assert_eq!(h.app.push.pane(), Pane::List);
+        // Press a list row → the detail pane is pushed in.
+        let row = h.row_center(1);
+        assert!(h.press_left(row));
+        assert_eq!(h.app.push.pane(), Pane::Detail, "selecting pushes the detail in");
+        h.relayout();
+        assert!(h.app.hit.back.width() > 0.0, "the Back affordance is laid out");
+        // Press Back → return to the list.
+        let back = h.app.hit.back.center();
+        assert!(h.press_left(back));
+        assert_eq!(h.app.push.pane(), Pane::List, "Back returns to the full-width list");
+    }
+
+    #[test]
+    fn double_click_detail_field_enters_edit_focused_on_that_field() {
+        let mut h = Harness::new(1280, 800);
+        assert_eq!(h.app.mode, Mode::View);
+        // Find the WEBSITE field value rect (the selected seed has a website).
+        let (slot, rect) = h
+            .app
+            .detail_field_hits
+            .iter()
+            .find(|(s, _)| *s == Slot::Website)
+            .copied()
+            .expect("selected contact shows a website field");
+        assert_eq!(slot, Slot::Website);
+        h.double_click(rect.center());
+        assert_eq!(h.app.mode, Mode::Edit, "double-click enters edit mode");
+        // The website input must be the focused one.
+        let form = h.app.form.as_ref().unwrap();
+        let website_focused = form
+            .inputs
+            .iter()
+            .find(|f| f.slot == Slot::Website)
+            .map(|f| f.ti.is_focused())
+            .unwrap_or(false);
+        assert!(website_focused, "the double-clicked field is focused for editing");
+    }
+
+    #[test]
+    fn single_click_detail_field_does_not_enter_edit() {
+        let mut h = Harness::new(1280, 800);
+        let rect = h
+            .app
+            .detail_field_hits
+            .iter()
+            .find(|(s, _)| *s == Slot::Website)
+            .map(|(_, r)| *r)
+            .expect("website field present");
+        h.press_left(rect.center());
+        assert_eq!(h.app.mode, Mode::View, "a single click must not enter edit mode");
+    }
+
+    #[test]
+    fn right_click_row_opens_context_menu_then_delete_opens_confirm() {
+        let mut h = Harness::new(1280, 800);
+        let row = h.row_center(0);
+        let id = h.row_id(0);
+        assert!(h.press_right(row));
+        match &h.app.popup {
+            Some(Popup::ContextMenu { target, .. }) => assert_eq!(*target, id),
+            other => panic!("right-click should open the context menu, got {:?}", other.is_some()),
+        }
+        // Click the "Delete" row in the menu → the delete-confirm modal opens.
+        let Some(Popup::ContextMenu { anchor, .. }) = h.app.popup else { unreachable!() };
+        let (_panel, rows) = h.app.popup_menu_geometry(anchor, CONTEXT_ACTIONS.len(), 160.0);
+        let delete_idx = CONTEXT_ACTIONS.iter().position(|a| *a == "Delete").unwrap();
+        h.press_left(rows[delete_idx].center());
+        assert_eq!(
+            h.app.confirm_delete,
+            Some(id),
+            "context-menu Delete routes through the confirmation modal"
+        );
+        assert!(h.app.popup.is_none(), "the context menu closes when an item is chosen");
+    }
+
+    #[test]
+    fn confirm_modal_delete_removes_contact_from_doc() {
+        let mut h = Harness::new(1280, 800);
+        let id = h.row_id(0);
+        h.app.confirm_delete = Some(id);
+        let before = ContactsDoc::list_contacts(&h.doc).len();
+        let (_panel, del, _cancel) = h.app.confirm_geometry();
+        h.press_left(del.center());
+        assert!(h.app.confirm_delete.is_none(), "the modal closes after confirming");
+        let after = ContactsDoc::list_contacts(&h.doc).len();
+        assert_eq!(after, before - 1, "Delete removes the contact from the CRDT doc");
+        assert!(
+            !ContactsDoc::list_contacts(&h.doc).iter().any(|c| c.id == id),
+            "the deleted contact is gone from the document"
+        );
+    }
+
+    #[test]
+    fn switching_while_editing_dirty_pops_save_modal_then_save_commits() {
+        let mut h = Harness::new(1280, 800);
+        // Enter edit on the selected contact and dirty a field.
+        let cur = h.app.selected.unwrap();
+        let c = h.app.store.get(cur).cloned().unwrap();
+        h.app.begin_edit(c, false);
+        if let Some(form) = h.app.form.as_mut() {
+            if let Some(fi) = form.inputs.iter_mut().find(|f| f.slot == Slot::Title) {
+                fi.ti.set_text("Brand New Title");
+            }
+        }
+        h.relayout();
+        assert!(h.app.form_is_dirty(), "the edited form is dirty");
+        // Click a different list row → the guard modal pops, no switch yet.
+        let other_idx = (0..h.app.list_rows.len())
+            .find(|i| h.app.list_rows[*i].0 != cur)
+            .unwrap();
+        let other_id = h.row_id(other_idx);
+        let other_row = h.row_center(other_idx);
+        h.press_left(other_row);
+        assert_eq!(h.app.pending_switch, Some(other_id), "switch is deferred behind the modal");
+        assert_eq!(h.app.mode, Mode::Edit, "still editing while the modal is up");
+        // Press Save → commits the edit AND switches to the target.
+        let g = h.app.unsaved_geometry();
+        h.press_left(g.save.center());
+        assert!(h.app.pending_switch.is_none());
+        assert_eq!(h.app.mode, Mode::View, "saved and left the form");
+        assert_eq!(h.app.selected, Some(other_id), "switched to the clicked contact");
+        let stored = ContactsDoc::list_contacts(&h.doc);
+        let edited = stored.iter().find(|x| x.id == cur).unwrap();
+        assert_eq!(edited.title, "Brand New Title", "the edit was saved to the doc");
+    }
+
+    #[test]
+    fn switching_while_editing_discard_drops_edits_and_switches() {
+        let mut h = Harness::new(1280, 800);
+        let cur = h.app.selected.unwrap();
+        let original_title = h.app.store.get(cur).unwrap().title.clone();
+        let c = h.app.store.get(cur).cloned().unwrap();
+        h.app.begin_edit(c, false);
+        if let Some(form) = h.app.form.as_mut() {
+            if let Some(fi) = form.inputs.iter_mut().find(|f| f.slot == Slot::Title) {
+                fi.ti.set_text("Throwaway Title");
+            }
+        }
+        h.relayout();
+        let other_idx = (0..h.app.list_rows.len())
+            .find(|i| h.app.list_rows[*i].0 != cur)
+            .unwrap();
+        let other_id = h.row_id(other_idx);
+        let other_row = h.row_center(other_idx);
+        h.press_left(other_row);
+        assert_eq!(h.app.pending_switch, Some(other_id));
+        // Press Discard → drop edits, switch.
+        let g = h.app.unsaved_geometry();
+        h.press_left(g.discard.center());
+        assert_eq!(h.app.selected, Some(other_id));
+        let stored = ContactsDoc::list_contacts(&h.doc);
+        let unchanged = stored.iter().find(|x| x.id == cur).unwrap();
+        assert_eq!(unchanged.title, original_title, "discard left the doc unchanged");
+    }
+
+    #[test]
+    fn switching_with_no_changes_switches_directly_no_modal() {
+        let mut h = Harness::new(1280, 800);
+        let cur = h.app.selected.unwrap();
+        let c = h.app.store.get(cur).cloned().unwrap();
+        h.app.begin_edit(c, false);
+        h.relayout();
+        assert!(!h.app.form_is_dirty(), "no edits ⇒ not dirty");
+        let other_idx = (0..h.app.list_rows.len())
+            .find(|i| h.app.list_rows[*i].0 != cur)
+            .unwrap();
+        let other_id = h.row_id(other_idx);
+        let other_row = h.row_center(other_idx);
+        h.press_left(other_row);
+        assert!(h.app.pending_switch.is_none(), "no modal when there are no unsaved changes");
+        assert_eq!(h.app.selected, Some(other_id), "switched directly");
+        assert_eq!(h.app.mode, Mode::View);
+    }
+
+    #[test]
+    fn export_dialog_select_none_then_toggle_then_export_writes_selection() {
+        let mut h = Harness::new(1280, 800);
+        // Open the export dialog via the toolbar Export button.
+        h.press_left(h.app.hit.export.center());
+        assert!(h.app.export_sel.is_some(), "Export opens the selection dialog");
+        // Pre-ticked with all visible contacts.
+        let total = h.app.visible_export_ids().len();
+        assert_eq!(h.app.export_sel.as_ref().unwrap().len(), total, "all pre-selected");
+        // Select none.
+        let g = h.app.export_geometry();
+        h.press_left(g.select_none.center());
+        assert_eq!(h.app.export_sel.as_ref().unwrap().len(), 0, "Select none clears the set");
+        // Tick exactly one row.
+        let g = h.app.export_geometry();
+        let (first_id, _row, cb) = g.rows[0];
+        h.press_left(cb.center());
+        assert_eq!(h.app.export_sel.as_ref().unwrap().len(), 1);
+        assert!(h.app.export_sel.as_ref().unwrap().contains(&first_id));
+        // Export 3.0 → writes the file and closes the dialog.
+        let g = h.app.export_geometry();
+        h.press_left(g.export_v3.center());
+        assert!(h.app.export_sel.is_none(), "exporting closes the dialog");
+        // The export wrote exactly the one chosen contact.
+        let body = std::fs::read_to_string(std::env::temp_dir().join("contacts-export.vcf"))
+            .expect("export wrote a vcf");
+        let cards = body.matches("BEGIN:VCARD").count();
+        assert_eq!(cards, 1, "exported exactly the single ticked contact");
+    }
+
+    #[test]
+    fn export_select_all_round_trips_every_contact() {
+        let mut h = Harness::new(1280, 800);
+        h.app.open_export_dialog();
+        let g = h.app.export_geometry();
+        h.press_left(g.select_none.center());
+        let g = h.app.export_geometry();
+        h.press_left(g.select_all.center());
+        let total = h.app.visible_export_ids().len();
+        assert_eq!(h.app.export_sel.as_ref().unwrap().len(), total, "Select all ticks everyone");
+        let g = h.app.export_geometry();
+        h.press_left(g.export_v4.center());
+        let body = std::fs::read_to_string(std::env::temp_dir().join("contacts-export.vcf")).unwrap();
+        assert_eq!(body.matches("BEGIN:VCARD").count(), total);
+        assert!(body.contains("VERSION:4.0"), "Export 4.0 emits a v4 card");
+    }
+
+    #[test]
+    fn ctrl_k_is_left_unhandled_for_global_search() {
+        // The Ctrl+K (and Ctrl+/) chord must bubble to the host so the
+        // forthcoming shared global-search framework claims it. `handle_key`
+        // returns without setting `handled` exactly when this is true, so
+        // asserting on the production decision function proves the seam.
+        assert!(is_global_search_chord(true, &Key::Character(SmolStr::new("k"))));
+        assert!(is_global_search_chord(true, &Key::Character(SmolStr::new("K"))));
+        assert!(is_global_search_chord(true, &Key::Character(SmolStr::new("/"))));
+        // Not the seam: same keys without ctrl, or other ctrl chords.
+        assert!(!is_global_search_chord(false, &Key::Character(SmolStr::new("k"))));
+        assert!(!is_global_search_chord(true, &Key::Character(SmolStr::new("s"))));
+        assert!(!is_global_search_chord(true, &Key::Named(NamedKey::Escape)));
+    }
+
+    #[test]
+    fn placeholders_cover_every_form_slot() {
+        // Every editable slot must have a non-empty placeholder so the New
+        // Contact form never shows a blank, unlabelled field.
+        for slot in [
+            Slot::First,
+            Slot::Last,
+            Slot::Org,
+            Slot::Title,
+            Slot::Website,
+            Slot::Birthday,
+            Slot::Notes,
+            Slot::Groups,
+            Slot::Phone(0),
+            Slot::Email(0),
+            Slot::AddrStreet(0),
+            Slot::AddrCity(0),
+            Slot::AddrRegion(0),
+            Slot::AddrPostal(0),
+            Slot::AddrCountry(0),
+        ] {
+            assert!(
+                !placeholder_for(slot).is_empty(),
+                "slot is missing a placeholder hint"
+            );
+        }
+    }
+
+    #[test]
+    fn new_contact_form_is_not_dirty_until_a_field_is_filled() {
+        // A freshly-opened New Contact form (with the two empty seeded
+        // phone/email rows) must not be considered dirty — otherwise the
+        // unsaved guard would fire on the very first contact switch.
+        let mut app = ContactsApp::new();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &ROOT);
+        app.shots_new_contact();
+        assert!(!app.form_is_dirty(), "an untouched New Contact form is clean");
+        if let Some(form) = app.form.as_mut() {
+            form.draft.first = "Jane".into();
+            if let Some(fi) = form.inputs.iter_mut().find(|f| f.slot == Slot::First) {
+                fi.ti.set_text("Jane");
+            }
+        }
+        assert!(app.form_is_dirty(), "typing a name makes the form dirty");
     }
 }
