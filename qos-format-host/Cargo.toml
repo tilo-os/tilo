@@ -36,6 +36,7 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 dirs = "5"
 parking_lot = "0.12"
+notify = "6"
 anyhow = "1"
 thiserror = "1"
 tracing = "0.1"
