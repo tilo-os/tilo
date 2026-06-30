@@ -26,6 +26,12 @@ pub struct Graph3dScreen {
     expr_rect: Rect,
     /// The 2D math editor for the `z = f(x, y)` surface expression.
     field: MathField,
+    /// Projected + depth-sorted surface geometry, rebuilt only when the
+    /// surface expression, orbit/zoom, domain, or canvas size change — never
+    /// on a theme or tab switch. Cell colour is resolved from the live theme
+    /// at paint time from the cached height fraction + shade, so re-theming is
+    /// a recolour, not a re-sample / re-project / re-sort.
+    surface_cache: SurfaceCache,
 }
 
 impl Default for Graph3dScreen {
@@ -35,6 +41,60 @@ impl Default for Graph3dScreen {
             canvas: Rect::ZERO,
             expr_rect: Rect::ZERO,
             field: MathField::new("").with_size(20.0),
+            surface_cache: SurfaceCache::default(),
+        }
+    }
+}
+
+/// One painted quad of the surface. `height_f` is the 0..1 height fraction
+/// (drives the theme gradient) and `shade` is the Lambert factor; both are
+/// theme-independent, so the live colour is `scale_rgb(height_color(theme,
+/// height_f), shade)` computed fresh each frame from cached geometry.
+struct SurfaceCell {
+    path: BezPath,
+    height_f: f64,
+    shade: f64,
+}
+
+/// Identity of the inputs that affect 3D surface geometry. Excludes the theme
+/// so a re-theme replays the cached cells without re-sampling.
+#[derive(Clone, PartialEq, Default)]
+struct SurfaceKey {
+    surface: String,
+    deg: bool,
+    yaw: u64,
+    pitch: u64,
+    zoom: u64,
+    canvas: (u64, u64, u64, u64),
+}
+
+#[derive(Default)]
+struct SurfaceCache {
+    key: Option<SurfaceKey>,
+    cells: Vec<SurfaceCell>,
+    /// Cached orientation tripod endpoints (origin, +x tip, +y tip) so the
+    /// axes redraw without re-projecting.
+    axes: Option<(Point, Point, Point)>,
+    zmin: f64,
+    zmax: f64,
+    /// Counts actual (re)samples; lets a test prove a theme/tab switch reuses
+    /// the cached surface instead of re-sampling + re-projecting + re-sorting.
+    rebuilds: u32,
+}
+
+fn bits(x: f64) -> u64 {
+    x.to_bits()
+}
+
+impl SurfaceKey {
+    fn build(model: &CalcModel, canvas: Rect) -> Self {
+        SurfaceKey {
+            surface: model.surface.clone(),
+            deg: model.deg,
+            yaw: bits(model.view3d.yaw),
+            pitch: bits(model.view3d.pitch),
+            zoom: bits(model.view3d.zoom),
+            canvas: (bits(canvas.x0), bits(canvas.y0), bits(canvas.x1), bits(canvas.y1)),
         }
     }
 }
@@ -134,10 +194,53 @@ impl Graph3dScreen {
     }
 
     /// Returns (zmin, zmax) actually sampled.
-    fn draw_surface(&self, scene: &mut Scene, t: Affine, theme: &Theme, model: &CalcModel) -> (f64, f64) {
+    fn draw_surface(&mut self, scene: &mut Scene, t: Affine, theme: &Theme, model: &CalcModel) -> (f64, f64) {
+        self.ensure_surface(model);
+
+        scene.push_layer(vello::peniko::Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, t, &self.canvas);
+        let wire = draw::with_alpha(theme.tokens.colors.neutral[0], 90);
+        let wire_stroke = vello::kurbo::Stroke::new(0.6);
+        // Re-colour each cached cell from the live theme; geometry is untouched.
+        for cell in &self.surface_cache.cells {
+            let color = scale_rgb(height_color(theme, cell.height_f), cell.shade);
+            scene.fill(vello::peniko::Fill::NonZero, t, color, None, &cell.path);
+            scene.stroke(&wire_stroke, t, wire, None, &cell.path);
+        }
+        // orientation tripod (cached endpoints, re-coloured from the theme)
+        if let Some((o, xa, ya)) = self.surface_cache.axes {
+            let c = &theme.tokens.colors;
+            draw::line(scene, t, o, xa, draw::with_alpha(c.semantic.danger, 180), 1.2);
+            draw::line(scene, t, o, ya, draw::with_alpha(c.semantic.success, 180), 1.2);
+        }
+        scene.pop_layer();
+
+        (self.surface_cache.zmin, self.surface_cache.zmax)
+    }
+
+    /// Sample `z = f(x, y)` on the grid, project + depth-sort every quad, and
+    /// store the theme-independent geometry. Only runs when the surface
+    /// expression, orbit/zoom, domain, or canvas size change — so a theme or
+    /// tab switch never pays for the (1681-eval + project + sort) rebuild.
+    fn ensure_surface(&mut self, model: &CalcModel) {
+        let key = SurfaceKey::build(model, self.canvas);
+        if self.surface_cache.key.as_ref() == Some(&key) {
+            return;
+        }
+
+        let rebuilds = self.surface_cache.rebuilds.wrapping_add(1);
         let comp = match engine::compile(&model.surface, model.deg, true) {
             Ok(c) => c,
-            Err(_) => return (0.0, 0.0),
+            Err(_) => {
+                self.surface_cache = SurfaceCache {
+                    key: Some(key),
+                    cells: Vec::new(),
+                    axes: None,
+                    zmin: 0.0,
+                    zmax: 0.0,
+                    rebuilds,
+                };
+                return;
+            }
         };
 
         // sample grid
@@ -184,8 +287,7 @@ impl Graph3dScreen {
 
         struct Cell {
             depth: f64,
-            path: BezPath,
-            color: Color,
+            cell: SurfaceCell,
         }
         let mut cells: Vec<Cell> = Vec::with_capacity(N * N);
         let light = normalize3(-0.4, -0.7, 0.8);
@@ -214,10 +316,9 @@ impl Graph3dScreen {
                 path.line_to(p01);
                 path.close_path();
 
-                // height-based base colour
+                // height fraction (drives the theme gradient at paint time)
                 let zavg = 0.25 * (z00 + z10 + z11 + z01);
-                let f = ((zavg - zmin) / zspan).clamp(0.0, 1.0);
-                let base = height_color(theme, f);
+                let height_f = ((zavg - zmin) / zspan).clamp(0.0, 1.0);
                 // lambert shade from the cell normal (model space)
                 let nx = (x1 - x0).max(1e-6);
                 let ny = (y1 - y0).max(1e-6);
@@ -226,35 +327,25 @@ impl Graph3dScreen {
                 let shade = 0.55 + 0.45 * lambert;
                 cells.push(Cell {
                     depth: 0.25 * (d00 + d10 + d11 + d01),
-                    path,
-                    color: scale_rgb(base, shade),
+                    cell: SurfaceCell { path, height_f, shade },
                 });
             }
         }
         // painter's algorithm: far (large depth) first
         cells.sort_by(|a, b| b.depth.partial_cmp(&a.depth).unwrap_or(std::cmp::Ordering::Equal));
 
-        scene.push_layer(vello::peniko::Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, t, &self.canvas);
-        let wire = draw::with_alpha(theme.tokens.colors.neutral[0], 90);
-        let wire_stroke = vello::kurbo::Stroke::new(0.6);
-        for cell in &cells {
-            scene.fill(vello::peniko::Fill::NonZero, t, cell.color, None, &cell.path);
-            scene.stroke(&wire_stroke, t, wire, None, &cell.path);
-        }
-        // orientation tripod at the model origin
-        self.draw_axes(scene, t, theme, &project);
-        scene.pop_layer();
-
-        (zmin, zmax)
-    }
-
-    fn draw_axes(&self, scene: &mut Scene, t: Affine, theme: &Theme, project: &impl Fn(f64, f64, f64) -> (Point, f64)) {
-        let c = &theme.tokens.colors;
         let (o, _) = project(0.0, 0.0, 0.0);
         let (xa, _) = project(DOM * 1.05, 0.0, 0.0);
         let (ya, _) = project(0.0, DOM * 1.05, 0.0);
-        draw::line(scene, t, o, xa, draw::with_alpha(c.semantic.danger, 180), 1.2);
-        draw::line(scene, t, o, ya, draw::with_alpha(c.semantic.success, 180), 1.2);
+
+        self.surface_cache = SurfaceCache {
+            key: Some(key),
+            cells: cells.into_iter().map(|c| c.cell).collect(),
+            axes: Some((o, xa, ya)),
+            zmin,
+            zmax,
+            rebuilds,
+        };
     }
 
     pub fn canvas_contains(&self, p: Point) -> bool {
@@ -288,4 +379,71 @@ fn normalize3(x: f64, y: f64, z: f64) -> (f64, f64, f64) {
 
 fn dot3(a: (f64, f64, f64), b: (f64, f64, f64)) -> f64 {
     a.0 * b.0 + a.1 * b.1 + a.2 * b.2
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{CalcModel, Mode};
+
+    fn screen() -> Graph3dScreen {
+        let mut s = Graph3dScreen::default();
+        s.canvas = Rect::new(360.0, 60.0, 1280.0, 800.0);
+        s
+    }
+
+    #[test]
+    fn first_draw_samples_the_surface() {
+        let mut s = screen();
+        let m = CalcModel::seeded(); // surface = sin(sqrt(x^2+y^2))
+        s.ensure_surface(&m);
+        assert_eq!(s.surface_cache.rebuilds, 1);
+        assert!(!s.surface_cache.cells.is_empty(), "expected a sampled grid");
+    }
+
+    #[test]
+    fn theme_or_tab_switch_does_not_rebuild_surface() {
+        let mut s = screen();
+        let mut m = CalcModel::seeded();
+        s.ensure_surface(&m);
+        assert_eq!(s.surface_cache.rebuilds, 1);
+        // Re-call with an unchanged model (what a theme switch does): no rebuild.
+        s.ensure_surface(&m);
+        s.ensure_surface(&m);
+        assert_eq!(s.surface_cache.rebuilds, 1, "theme switch re-sampled the surface");
+        // Tab away and back: still identical surface/view/canvas.
+        m.mode = Mode::Calc;
+        s.ensure_surface(&m);
+        m.mode = Mode::Graph3d;
+        s.ensure_surface(&m);
+        assert_eq!(s.surface_cache.rebuilds, 1, "tab switch re-sampled the surface");
+    }
+
+    #[test]
+    fn editing_surface_or_orbiting_rebuilds() {
+        let mut s = screen();
+        let mut m = CalcModel::seeded();
+        s.ensure_surface(&m);
+        assert_eq!(s.surface_cache.rebuilds, 1);
+        m.surface = "x*y".into();
+        s.ensure_surface(&m);
+        assert_eq!(s.surface_cache.rebuilds, 2);
+        m.view3d.yaw += 0.2;
+        s.ensure_surface(&m);
+        assert_eq!(s.surface_cache.rebuilds, 3);
+        m.view3d.zoom *= 1.3;
+        s.ensure_surface(&m);
+        assert_eq!(s.surface_cache.rebuilds, 4);
+    }
+
+    #[test]
+    fn cached_cells_carry_theme_independent_shading() {
+        let mut s = screen();
+        let m = CalcModel::seeded();
+        s.ensure_surface(&m);
+        for cell in &s.surface_cache.cells {
+            assert!((0.0..=1.0).contains(&cell.height_f));
+            assert!(cell.shade >= 0.55 && cell.shade <= 1.0);
+        }
+    }
 }
