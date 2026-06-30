@@ -51,6 +51,8 @@ fn button_uses_token_radius() {
         radius_standard: t.radii.md as f64,
         padding_standard: t.spacing.s3,
         gap_standard: t.spacing.s3,
+        reduce_motion: false,
+        text_scale: 1.0,
         tokens: t,
     };
     // A scene is required to draw; for this unit, just assert the legacy shortcut

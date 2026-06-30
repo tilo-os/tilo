@@ -313,11 +313,27 @@ pub struct App {
     /// when the trap goes away (the modal closes), so the keyboard lands back
     /// where the user was. `None` when no trap is active or nothing was focused.
     focus_before_trap: Option<NodeId>,
+
+    /// The base (non-high-contrast) colour theme. Kept separate from the live
+    /// [`Self::theme`] so toggling high contrast off restores the user's
+    /// original colours rather than a hard-coded default. Text scale and the
+    /// reduced-motion flag are re-applied on top of this whenever either
+    /// preference changes.
+    base_theme: Theme,
+    /// Low-vision preferences (high contrast + reduced motion) the active
+    /// theme is derived from. The screen-reader flag is mirrored separately by
+    /// [`Self::screen_reader`]; this struct's `screen_reader` field is kept in
+    /// sync so a single value can be handed back to callers.
+    a11y: crate::a11y::A11ySettings,
+    /// Global text-size multiplier (`1.0` = default). Folded into the active
+    /// theme so every widget that reads its font size from the theme scales
+    /// together; layout grows to fit so nothing clips.
+    text_scale: f32,
 }
 
 impl App {
     pub fn new(state: State, root_widget: Box<dyn Widget>) -> Self {
-        Self {
+        let mut app = Self {
             state,
             root_widget,
             text_renderer: TextRenderer::new(),
@@ -327,6 +343,9 @@ impl App {
             layout_dirty: true,
             structure_dirty: false,
             needs_sync: true,
+            // Theme is finalised right after this struct literal — the env-
+            // driven low-vision preferences are folded in once all the
+            // fields they depend on (base_theme, a11y, text_scale) exist.
             theme: Theme::dark(),
             debug_mode: std::env::var("QUICK_UI_DEBUG").is_ok(),
             focused_node: None,
@@ -358,7 +377,28 @@ impl App {
             live_region_last: std::collections::HashMap::new(),
             focus_trap_active: false,
             focus_before_trap: None,
-        }
+            base_theme: Theme::dark(),
+            a11y: crate::a11y::A11ySettings::default(),
+            text_scale: 1.0,
+        };
+
+        // Seed the low-vision preferences from the environment so a sandbox
+        // the shell launched with `QOS_A11Y_*` set comes up already themed —
+        // matching how the screen reader auto-enables above.
+        app.a11y.high_contrast = Self::high_contrast_env_enabled();
+        app.a11y.reduce_motion = Self::reduce_motion_env_enabled();
+        app.a11y.screen_reader = app.screen_reader.is_some();
+        app.text_scale = Self::text_scale_env().unwrap_or(1.0);
+        app.rebuild_theme();
+        app
+    }
+
+    /// Re-derive the live [`Self::theme`] from the base colour theme, the
+    /// current low-vision settings, and the text-scale factor. Called whenever
+    /// any of those inputs change so widgets always draw against a theme that
+    /// reflects every active preference.
+    fn rebuild_theme(&mut self) {
+        self.theme = self.base_theme.clone().with_a11y(&self.a11y, self.text_scale);
     }
 
     /// Whether the environment opts the screen reader on at startup. Reads
@@ -375,6 +415,128 @@ impl App {
             }
         }
         false
+    }
+
+    /// Whether a `QOS_A11Y_*` env var (and its short alias) is set to a
+    /// truthy value: non-empty, not `"0"`, not `"false"` (case-insensitive).
+    /// The single gate the boolean low-vision env flags share.
+    fn bool_env(keys: &[&str]) -> bool {
+        for key in keys {
+            if let Ok(v) = std::env::var(key) {
+                let v = v.trim();
+                if !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false") {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Whether the environment opts high contrast on at startup
+    /// (`QOS_A11Y_HIGH_CONTRAST` / `QOS_HIGH_CONTRAST`).
+    fn high_contrast_env_enabled() -> bool {
+        Self::bool_env(&["QOS_A11Y_HIGH_CONTRAST", "QOS_HIGH_CONTRAST"])
+    }
+
+    /// Whether the environment opts reduced motion on at startup
+    /// (`QOS_A11Y_REDUCE_MOTION` / `QOS_REDUCE_MOTION`).
+    fn reduce_motion_env_enabled() -> bool {
+        Self::bool_env(&["QOS_A11Y_REDUCE_MOTION", "QOS_REDUCE_MOTION"])
+    }
+
+    /// Text-scale factor from the environment (`QOS_A11Y_TEXT_SCALE` /
+    /// `QOS_TEXT_SCALE`), or `None` if unset / unparseable. A bad value is
+    /// ignored rather than crashing the app at startup.
+    fn text_scale_env() -> Option<f32> {
+        for key in ["QOS_A11Y_TEXT_SCALE", "QOS_TEXT_SCALE"] {
+            if let Ok(v) = std::env::var(key) {
+                if let Ok(f) = v.trim().parse::<f32>() {
+                    if f.is_finite() && f > 0.0 {
+                        return Some(f);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// The active low-vision preferences (high contrast + reduced motion +
+    /// screen reader). The screen-reader flag tracks
+    /// [`Self::screen_reader_enabled`].
+    pub fn a11y_settings(&self) -> crate::a11y::A11ySettings {
+        let mut s = self.a11y;
+        s.screen_reader = self.screen_reader.is_some();
+        s
+    }
+
+    /// The global text-size multiplier currently in effect (`1.0` = default).
+    pub fn text_scale(&self) -> f32 {
+        self.text_scale
+    }
+
+    /// Set the global text-size multiplier and re-theme. Every widget that
+    /// reads its font size from the theme scales together on the next frame,
+    /// and layout grows to fit so text never clips. The value is clamped to a
+    /// sane range by the theme. Used by the shell when the user changes the
+    /// text-size preference, and by examples/tests via `QOS_A11Y_TEXT_SCALE`.
+    pub fn set_text_scale(&mut self, factor: f32) {
+        self.text_scale = factor;
+        self.rebuild_theme();
+        self.layout_dirty = true;
+        self.structure_dirty = true;
+    }
+
+    /// Whether the high-contrast colour track is currently active.
+    pub fn high_contrast(&self) -> bool {
+        self.a11y.high_contrast
+    }
+
+    /// Turn the high-contrast colour track on or off at runtime and re-theme.
+    /// Off restores the user's original colours (the base theme captured at
+    /// construction / via [`Self::set_theme`]), not a hard-coded default. The
+    /// text-scale factor and reduced-motion flag are preserved across the swap.
+    pub fn set_high_contrast(&mut self, on: bool) {
+        if self.a11y.high_contrast == on {
+            return;
+        }
+        self.a11y.high_contrast = on;
+        self.rebuild_theme();
+        self.layout_dirty = true;
+        self.structure_dirty = true;
+    }
+
+    /// Flip the high-contrast colour track and return the new state.
+    pub fn toggle_high_contrast(&mut self) -> bool {
+        self.set_high_contrast(!self.a11y.high_contrast);
+        self.a11y.high_contrast
+    }
+
+    /// Whether reduced motion is currently in effect.
+    pub fn reduce_motion(&self) -> bool {
+        self.a11y.reduce_motion
+    }
+
+    /// Turn reduced motion on or off at runtime and re-theme. Animated
+    /// widgets consult the theme's reduced-motion flag and snap to their
+    /// resting state when it is set; the App also stops pumping the perpetual
+    /// animation-frame loop.
+    pub fn set_reduce_motion(&mut self, on: bool) {
+        if self.a11y.reduce_motion == on {
+            return;
+        }
+        self.a11y.reduce_motion = on;
+        self.rebuild_theme();
+    }
+
+    /// Replace the base colour theme (the shell sets this when the user picks
+    /// a theme). The high-contrast track, text scale, and reduced-motion flag
+    /// are re-applied on top, so changing the base theme doesn't discard the
+    /// user's low-vision preferences.
+    pub fn set_theme(&mut self, theme: Theme) {
+        self.base_theme = theme;
+        self.rebuild_theme();
+        self.layout_dirty = true;
+        self.structure_dirty = true;
     }
 
     /// Enable or disable the built-in screen reader at runtime. The shell calls
@@ -2778,7 +2940,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // a single post-click redraw renders the first eased
         // frame at t≈0 and then stalls — the overview would
         // appear to "not work" because the fade never plays.
-        if app.root_widget.needs_animation_frame() {
+        //
+        // Reduced motion stops the perpetual pump: widgets already paint
+        // their resting state (a still spinner, a static bar), so there is
+        // nothing left to animate and we let the loop go idle.
+        if !app.theme.reduce_motion && app.root_widget.needs_animation_frame() {
             window.request_redraw();
         }
 
@@ -3937,5 +4103,96 @@ mod focus_trap_tests {
         assert_eq!(node.name.as_deref(), Some("Delete file?"));
         assert!(node.state.modal, "an open modal traps focus → modal flag");
         assert!(!node.state.hidden);
+    }
+}
+
+#[cfg(test)]
+mod low_vision_tests {
+    use super::*;
+    use crate::a11y::contrast_ratio;
+
+    fn app() -> App {
+        App::new(State::new(), Box::new(crate::widget::Text::new("t")))
+    }
+
+    #[test]
+    fn defaults_are_off() {
+        let a = app();
+        assert!(!a.high_contrast());
+        assert!(!a.reduce_motion());
+        assert_eq!(a.text_scale(), 1.0);
+        // The live theme starts on the plain (non-high-contrast) track.
+        assert!(!a.theme.reduce_motion);
+        assert_eq!(a.theme.text_scale, 1.0);
+    }
+
+    #[test]
+    fn toggle_high_contrast_swaps_the_theme() {
+        let mut a = app();
+        let plain_ratio = contrast_ratio(a.theme.text_primary, a.theme.bg_app);
+
+        let now_on = a.toggle_high_contrast();
+        assert!(now_on);
+        assert!(a.high_contrast());
+        let hc_ratio = contrast_ratio(a.theme.text_primary, a.theme.bg_app);
+        assert!(
+            hc_ratio > plain_ratio,
+            "high contrast must raise fg/bg contrast ({hc_ratio:.1} vs {plain_ratio:.1})",
+        );
+        assert_eq!(a.theme.name, "High Contrast");
+
+        // Toggling back restores the original colours.
+        let now_off = a.toggle_high_contrast();
+        assert!(!now_off);
+        assert!(!a.high_contrast());
+        let restored = contrast_ratio(a.theme.text_primary, a.theme.bg_app);
+        assert!((restored - plain_ratio).abs() < 1e-6, "off restores base colours");
+    }
+
+    #[test]
+    fn text_scale_setter_scales_the_theme_type_size() {
+        let mut a = app();
+        let base = a.theme.tokens.typography.scale.base;
+        a.set_text_scale(2.0);
+        assert_eq!(a.text_scale(), 2.0);
+        assert!((a.theme.tokens.typography.scale.base - base * 2.0).abs() < 1e-3);
+        // A scale change must re-run layout so the larger text doesn't clip.
+        assert!(a.layout_dirty);
+    }
+
+    #[test]
+    fn text_scale_survives_a_high_contrast_toggle() {
+        let mut a = app();
+        a.set_text_scale(1.5);
+        let hc_base = Theme::high_contrast().tokens.typography.scale.base;
+        a.set_high_contrast(true);
+        assert_eq!(a.text_scale(), 1.5, "scale preference is preserved across the swap");
+        assert!((a.theme.tokens.typography.scale.base - hc_base * 1.5).abs() < 1e-3);
+        assert_eq!(a.theme.name, "High Contrast");
+    }
+
+    #[test]
+    fn reduce_motion_setter_threads_onto_the_theme() {
+        let mut a = app();
+        assert!(!a.theme.reduce_motion);
+        a.set_reduce_motion(true);
+        assert!(a.reduce_motion());
+        assert!(a.theme.reduce_motion, "the flag reaches the theme widgets draw against");
+        a.set_reduce_motion(false);
+        assert!(!a.theme.reduce_motion);
+    }
+
+    #[test]
+    fn set_theme_keeps_low_vision_preferences() {
+        let mut a = app();
+        a.set_text_scale(1.25);
+        a.set_reduce_motion(true);
+        a.set_high_contrast(true);
+        // Swap the *base* theme — the a11y layer must re-apply on top.
+        a.set_theme(Theme::light());
+        assert!(a.theme.reduce_motion);
+        assert_eq!(a.text_scale(), 1.25);
+        // High contrast still wins over the freshly-set light base.
+        assert_eq!(a.theme.name, "High Contrast");
     }
 }

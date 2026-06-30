@@ -93,6 +93,14 @@ impl Spinner {
     pub(crate) fn size(&self) -> f32 {
         self.size
     }
+
+    /// Test-only: backdate the rotation anchor so the orbit is at a
+    /// non-zero phase. Lets a test prove reduced motion freezes the chain
+    /// without sleeping in the test body.
+    #[cfg(test)]
+    pub(crate) fn set_started_for_test(&mut self, at: Instant) {
+        self.start = at;
+    }
 }
 
 impl Default for Spinner {
@@ -150,8 +158,16 @@ impl Widget for Spinner {
         // rather than seconds so the modulo stays stable for very long-
         // lived spinners (Instant elapsed is u128-nanosecond precise;
         // ms keeps the divisor small).
-        let elapsed_ms = self.start.elapsed().as_secs_f64() * 1000.0;
-        let phase = (elapsed_ms / ROTATION_PERIOD_MS).fract();
+        //
+        // With reduced motion the chain holds still at its starting angle:
+        // the four fading dots still read as a busy indicator, but nothing
+        // spins for users who find motion uncomfortable.
+        let phase = if theme.reduce_motion {
+            0.0
+        } else {
+            let elapsed_ms = self.start.elapsed().as_secs_f64() * 1000.0;
+            (elapsed_ms / ROTATION_PERIOD_MS).fract()
+        };
 
         let accent = theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX];
 
@@ -339,6 +355,58 @@ mod tests {
         assert_eq!(
             colour_fills, DOT_COUNT,
             "Spinner must emit exactly {DOT_COUNT} colour fills — one per orbiting dot (got {colour_fills})"
+        );
+    }
+
+    /// Lay out a spinner and return the geometry (`path_data`) of one draw.
+    fn draw_path_data(s: &mut Spinner, reduce_motion: bool) -> Vec<u32> {
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = s.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        let root = taffy.new_with_children(Style::default(), &[node]).unwrap();
+        taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
+        s.apply_layout(&taffy, node, Point::ZERO);
+
+        let theme = Theme::dark().with_reduce_motion(reduce_motion);
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        let mut scene = Scene::new();
+        s.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        scene.encoding().path_data.clone()
+    }
+
+    /// With reduced motion the chain freezes at its starting angle: a
+    /// spinner backdated half a rotation paints the *same* dot geometry as a
+    /// fresh phase-zero spinner, because `draw` ignores elapsed time. With
+    /// motion on, the backdated spinner is at a different phase, so its
+    /// geometry differs — proving the freeze is the reduced-motion path and
+    /// not a no-op.
+    #[test]
+    fn reduce_motion_freezes_the_orbit_at_phase_zero() {
+        use std::time::Duration;
+        let half_period = Duration::from_secs_f64(ROTATION_PERIOD_MS / 1000.0 / 2.0);
+        let backdate = Instant::now() - half_period;
+
+        let mut fresh = Spinner::new();
+        let fresh_geo = draw_path_data(&mut fresh, true);
+
+        let mut aged = Spinner::new();
+        aged.set_started_for_test(backdate);
+        let aged_reduced = draw_path_data(&mut aged, true);
+
+        assert_eq!(
+            fresh_geo, aged_reduced,
+            "reduced motion must paint the resting orbit regardless of elapsed time",
+        );
+
+        // Sanity: with motion ON the backdated spinner sits at a different
+        // phase, so its geometry must differ from the resting orbit.
+        let mut aged2 = Spinner::new();
+        aged2.set_started_for_test(backdate);
+        let aged_moving = draw_path_data(&mut aged2, false);
+        assert_ne!(
+            fresh_geo, aged_moving,
+            "with motion on, a backdated spinner is at a different phase",
         );
     }
 }
