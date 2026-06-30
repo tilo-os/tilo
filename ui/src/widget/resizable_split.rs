@@ -11,9 +11,10 @@
 //! The divider paints as a 4 px strip at `border_standard`; while the
 //! cursor sits inside it the strip widens by [`DIVIDER_HOVER_EXTRA_PX`]
 //! and switches to the theme's primary accent so the hit target reads
-//! clearly. Cursor-shape changes are out of scope here — `App` owns the
-//! winit cursor — but the colour swap is enough to confirm hover even
-//! in a headless capture.
+//! clearly. The OS resize cursor (`EwResize` / `NsResize` per
+//! orientation) is surfaced via [`Widget::cursor_shape`], which `App`
+//! hit-tests on every pointer move; the colour swap additionally
+//! confirms hover even in a headless capture.
 //!
 //! State lives on the widget rather than the CRDT: `split_position`
 //! is a per-instance visual tuning, not a piece of replicated content.
@@ -479,6 +480,23 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         self.rect
     }
 
+    /// Resize cursor over the divider strip — east-west for a horizontal
+    /// split (vertical divider), north-south for a vertical split. While
+    /// dragging keep it regardless of where the cursor strays. Off the
+    /// divider we defer to `None`: the host's `node_map` sweep finds
+    /// whichever pane child is under the point and lets *it* claim its
+    /// own cursor (an I-beam, a pointer…). `point` is in `self.rect`'s
+    /// logical space.
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if self.divider_drag.is_some() || self.divider_rect.contains(point) {
+            return Some(match self.orientation {
+                SplitOrientation::Horizontal => winit::window::CursorIcon::EwResize,
+                SplitOrientation::Vertical => winit::window::CursorIcon::NsResize,
+            });
+        }
+        None
+    }
+
     fn name(&self) -> &str {
         "ResizableSplit"
     }
@@ -754,6 +772,32 @@ mod tests {
         assert!(
             (pos - 0.25).abs() < 1e-3,
             "split_position should be ~0.25 after drag; got {pos}",
+        );
+    }
+
+    #[test]
+    fn cursor_shape_over_divider_is_resize_per_orientation() {
+        // Horizontal split → vertical divider → east-west resize cursor.
+        // Rect is 400 wide; default 50% divider is centred at x = 200.
+        let s = split_at(0.0, 0.0, 400.0, 300.0, SplitOrientation::Horizontal);
+        assert_eq!(
+            Widget::cursor_shape(&s, Point::new(200.0, 150.0)),
+            Some(winit::window::CursorIcon::EwResize),
+            "pointer over a horizontal split's divider requests EwResize",
+        );
+        assert_eq!(
+            Widget::cursor_shape(&s, Point::new(50.0, 150.0)),
+            None,
+            "off the divider the split defers to its panes (no claim here)",
+        );
+
+        // Vertical split → horizontal divider → north-south resize cursor.
+        // Rect is 300 tall; default 50% divider is centred at y = 150.
+        let s = split_at(0.0, 0.0, 400.0, 300.0, SplitOrientation::Vertical);
+        assert_eq!(
+            Widget::cursor_shape(&s, Point::new(200.0, 150.0)),
+            Some(winit::window::CursorIcon::NsResize),
+            "pointer over a vertical split's divider requests NsResize",
         );
     }
 

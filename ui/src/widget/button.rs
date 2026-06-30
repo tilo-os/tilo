@@ -329,6 +329,16 @@ impl Widget for Button {
         self.rect
     }
 
+    /// A button is a clickable affordance, so the pointer-finger cursor
+    /// while hovered. `_point` is in the same logical space as `rect`.
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if self.rect.contains(point) {
+            Some(winit::window::CursorIcon::Pointer)
+        } else {
+            None
+        }
+    }
+
     fn is_focusable(&self) -> bool { true }
     fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
     fn is_focused(&self) -> bool { self.is_focused }
@@ -383,6 +393,37 @@ mod tests {
     fn button_test_id_returns_label() {
         let b = Button::new("id", "Save", None);
         assert_eq!(Widget::test_id(&b), Some("Save"));
+    }
+
+    #[test]
+    fn cursor_shape_is_pointer_over_button() {
+        // Lay the button out so it has a non-zero hit rect, then assert the
+        // pointer-finger cursor is claimed over it and deferred elsewhere.
+        let mut b = Button::new("id", "Go", None);
+        let mut tree = TaffyTree::<()>::new();
+        let mut node_map = std::collections::HashMap::new();
+        let theme = Theme::dark();
+        let node = b.build_layout(&mut tree, &theme, &mut node_map);
+        tree.compute_layout(
+            node,
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(200.0),
+                height: taffy::AvailableSpace::Definite(60.0),
+            },
+        )
+        .unwrap();
+        b.apply_layout(&tree, node, Point::ZERO);
+
+        assert_eq!(
+            Widget::cursor_shape(&b, Point::new(10.0, 10.0)),
+            Some(winit::window::CursorIcon::Pointer),
+            "pointer over the button requests the pointing-hand cursor",
+        );
+        assert_eq!(
+            Widget::cursor_shape(&b, Point::new(500.0, 500.0)),
+            None,
+            "pointer well outside the button defers (no cursor claim)",
+        );
     }
 
     #[test]
