@@ -3990,6 +3990,7 @@ impl WordProcessorWidget {
             Some(WpFormat::Pdf) => "PDF",
             Some(WpFormat::Html) => "HTML",
             Some(WpFormat::Rtf) => "Rich Text",
+            Some(WpFormat::Epub) => "EPUB",
             None => "",
         };
         let dot = if self.modified { "●  " } else { "" };
