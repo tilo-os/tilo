@@ -16,7 +16,7 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDe
 use winit::keyboard::{Key, NamedKey};
 
 use qdoc::document::MarkSpan;
-use qdoc::snapshot::{AttrVal, BlockView};
+use qdoc::snapshot::{AttrVal, BlockView, NoteView};
 use ui::chrome::{self, LabelCue, ToolbarItem};
 use ui::gesture::{DragSelect, Granularity};
 use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
@@ -52,6 +52,19 @@ const STYLES_PANEL_W: f64 = 250.0;
 const FIND_BAR_H: f64 = 42.0;
 /// Find-match highlight (amber, semi-transparent).
 const FIND_HL: Color = Color::from_rgba8(0xff, 0xc8, 0x4a, 0x80);
+/// Spell-check squiggle colour (a familiar red).
+const SQUIGGLE: Color = Color::from_rgb8(0xd0, 0x32, 0x2a);
+/// Amplitude (px) of the wavy spell-check underline.
+const SQUIGGLE_AMP: f64 = 1.6;
+/// Horizontal period (px) of one full wave of the spell-check underline.
+const SQUIGGLE_PERIOD: f64 = 4.0;
+/// Thin separator above the footnote area at the bottom of a page.
+const NOTE_SEP: Color = Color::from_rgb8(0xb8, 0xb8, 0xbe);
+/// Footnote body text colour (slightly muted vs. body ink).
+const NOTE_INK: Color = Color::from_rgb8(0x3a, 0x3a, 0x40);
+/// Footnote text size (smaller than body) and the gap above the separator.
+const NOTE_FONT: f32 = 11.0;
+const NOTE_AREA_GAP: f64 = 10.0;
 /// Panel chrome colors (consistent with the bottom layout bar).
 const PANEL_BG: Color = Color::from_rgb8(0x20, 0x22, 0x28);
 const PANEL_EDGE: Color = Color::from_rgb8(0x32, 0x35, 0x3e);
@@ -605,6 +618,81 @@ fn running_head_runs(b: &BlockView, page_no: usize) -> Vec<RichSpan> {
     runs
 }
 
+/// The note ids referenced by char `i` of `b` via a `note-ref` mark (covering
+/// exactly the placeholder char), in source order. Usually 0 or 1 per char.
+fn char_note_ref(i: usize, marks: &[MarkSpan]) -> Option<&str> {
+    marks
+        .iter()
+        .find(|m| m.name == qdoc::schema::MARK_NOTE_REF && i >= m.start && i < m.end)
+        .and_then(|m| m.value.as_str())
+}
+
+/// Every `note-ref` marker in a block, as `(char_index, note_id)` in source
+/// order. The char index is the placeholder char (U+FFFC) the marker covers.
+fn block_note_refs(b: &BlockView) -> Vec<(usize, String)> {
+    let n = b.text.chars().count();
+    (0..n)
+        .filter_map(|i| char_note_ref(i, &b.marks).map(|id| (i, id.to_string())))
+        .collect()
+}
+
+/// Assign citation numbers (1, 2, 3, …) to notes in *document order* — i.e. the
+/// order their `note-ref` markers first appear across the body blocks. The
+/// snapshot's `notes` are sorted by id, so this is the authoritative ordering for
+/// rendering both the in-text superscript and the bottom-of-page list. Returns a
+/// map `note_id → number`.
+fn note_numbering(blocks: &[BlockView]) -> HashMap<String, usize> {
+    let mut map = HashMap::new();
+    let mut next = 1usize;
+    for b in blocks {
+        for (_, id) in block_note_refs(b) {
+            map.entry(id).or_insert_with(|| {
+                let n = next;
+                next += 1;
+                n
+            });
+        }
+    }
+    map
+}
+
+/// Concatenate a note's body blocks into one display string (paragraphs joined by
+/// a space). Footnotes are usually a single short paragraph.
+fn note_text(note: &NoteView) -> String {
+    let mut parts: Vec<&str> = note.blocks.iter().map(|b| b.text.as_str()).filter(|t| !t.is_empty()).collect();
+    if parts.is_empty() {
+        parts.push("");
+    }
+    parts.join(" ")
+}
+
+/// Draw a wavy red spell-check underline from `x0` to `x1` at baseline `y`, in the
+/// given (already zoom-adjusted) transform. Approximated by short line segments
+/// tracing a sine so it reads as a squiggle without per-glyph curve math.
+fn draw_squiggle(scene: &mut Scene, transform: Affine, x0: f64, x1: f64, y: f64) {
+    if x1 <= x0 {
+        return;
+    }
+    let mut path = vello::kurbo::BezPath::new();
+    let mut x = x0;
+    let mut up = false;
+    path.move_to((x0, y));
+    // Step in half-periods, alternating the peak above/below the baseline.
+    while x < x1 {
+        x = (x + SQUIGGLE_PERIOD / 2.0).min(x1);
+        let dy = if up { -SQUIGGLE_AMP } else { SQUIGGLE_AMP };
+        path.line_to((x, y + dy));
+        up = !up;
+    }
+    scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, SQUIGGLE, None, &path);
+}
+
+/// Run the spell-checker over a block's text, returning the misspelled byte spans
+/// `(start, end)`. Skips the U+FFFC field/note placeholders (they are not words).
+fn spell_spans(dict: &spellcheck::Dictionary, text: &str) -> Vec<(usize, usize)> {
+    spellcheck::check(dict, text).into_iter().map(|m| (m.start, m.end)).collect()
+}
+
 /// Hash everything that feeds into `RichTextLayout::shape` into a single `u64`.
 ///
 /// This is the cache key for the per-block incremental layout cache: if two
@@ -668,6 +756,9 @@ struct Laid {
     cell_box: Option<Rect>,
     /// Grid row index (table cells only) — for header tint + zebra striping.
     cell_row: Option<usize>,
+    /// The page index this item was laid onto (0-based). Used to assign footnotes
+    /// to the page where their reference marker falls.
+    page: usize,
 }
 
 /// A list item's 0-based nesting level (absent attr → 0).
@@ -812,6 +903,27 @@ pub struct WordProcessorWidget {
     /// Number of toolbar rows the controls wrapped into this frame (>=1). Drives
     /// the canvas top offset so no control is ever clipped.
     toolbar_rows: usize,
+    /// Footnotes / endnotes (materialized from the doc), sorted by note id; the
+    /// in-text numbering is derived from `note-ref` document order, not this order.
+    notes: Vec<NoteView>,
+    /// The built-in English dictionary, loaded lazily on first spell-check pass
+    /// (it is ~75k words, so building it eagerly would slow every cold start). A
+    /// process-wide shared copy avoids re-parsing the word list per widget.
+    dict: Option<std::sync::Arc<spellcheck::Dictionary>>,
+    /// Whether spell-checking (the red squiggles) is enabled. Default ON.
+    spellcheck_on: bool,
+    /// Per-block spell-check cache: block id → (text, misspelled byte spans). Keyed
+    /// by the block's text so an edit (which changes the text) invalidates the
+    /// entry and re-checks; an unchanged block reuses the spans for free.
+    spell_cache: HashMap<String, (String, Vec<(usize, usize)>)>,
+}
+
+/// One process-wide built-in dictionary, shared across every word-processor
+/// widget so the ~75k-word list is parsed at most once per process.
+fn shared_dictionary() -> std::sync::Arc<spellcheck::Dictionary> {
+    use std::sync::OnceLock;
+    static DICT: OnceLock<std::sync::Arc<spellcheck::Dictionary>> = OnceLock::new();
+    DICT.get_or_init(|| std::sync::Arc::new(spellcheck::Dictionary::builtin())).clone()
 }
 
 impl Default for WordProcessorWidget {
@@ -876,7 +988,42 @@ impl WordProcessorWidget {
             find_regex_error: false,
             status_buttons: Vec::new(),
             toolbar_rows: 1,
+            notes: Vec::new(),
+            dict: None,
+            spellcheck_on: true,
+            spell_cache: HashMap::new(),
         }
+    }
+
+    /// Lazily build (once) and return the shared spell-check dictionary.
+    fn dictionary(&mut self) -> std::sync::Arc<spellcheck::Dictionary> {
+        self.dict.get_or_insert_with(shared_dictionary).clone()
+    }
+
+    /// Misspelled byte spans for a body block, using `spell_cache` (keyed by the
+    /// block's text so an edit re-checks and an unchanged block is free).
+    fn block_spell_spans(&mut self, id: &str, text: &str) -> Vec<(usize, usize)> {
+        if let Some((cached_text, spans)) = self.spell_cache.get(id) {
+            if cached_text == text {
+                return spans.clone();
+            }
+        }
+        let dict = self.dictionary();
+        let spans = spell_spans(&dict, text);
+        self.spell_cache.insert(id.to_string(), (text.to_string(), spans.clone()));
+        spans
+    }
+
+    /// Toggle the spell-check squiggles on/off (default ON). View-only; forces a
+    /// redraw.
+    pub fn toggle_spellcheck(&mut self) {
+        self.spellcheck_on = !self.spellcheck_on;
+        self.dirty = true;
+    }
+
+    /// Whether the spell-check squiggles are currently enabled.
+    pub fn spellcheck_enabled(&self) -> bool {
+        self.spellcheck_on
     }
 
     pub fn model(&self) -> &WordProcessor {
@@ -1275,6 +1422,11 @@ impl WordProcessorWidget {
             self.blobs = snap.blobs;
             self.header = snap.header;
             self.footer = snap.footer;
+            self.notes = snap.notes;
+            // Drop spell-cache entries for blocks that no longer exist so the cache
+            // stays bounded; surviving blocks keep their (text-keyed) spans.
+            let live: std::collections::HashSet<&str> = self.blocks.iter().map(|b| b.id.as_str()).collect();
+            self.spell_cache.retain(|id, _| live.contains(id.as_str()));
         }
     }
 
@@ -1992,6 +2144,7 @@ impl Widget for WordProcessorWidget {
                             image_hash: None,
                             cell_box: Some(cbox),
                             cell_row: Some(r),
+                            page: cur_page,
                         });
                     }
                     ry += row_h;
@@ -2044,6 +2197,7 @@ impl Widget for WordProcessorWidget {
                     image_hash: intrinsic.map(|_| hash),
                     cell_box: None,
                     cell_row: None,
+                    page: cur_page,
                 });
                 y = item_top + draw_h + self.sheet.get("body").space_after as f64;
                 bi += 1;
@@ -2132,6 +2286,7 @@ impl Widget for WordProcessorWidget {
                     image_hash: None,
                     cell_box: None,
                     cell_row: None,
+                    page: cur_page,
                 });
                 y = item_top + block_h + st.space_after as f64;
                 bi += 1;
@@ -2203,6 +2358,49 @@ impl Widget for WordProcessorWidget {
         // Restore the block cache before pass 2 so selection lookups resolve.
         self.blocks = blocks;
         let multi_sel = self.selection_blocks_cached().len() > 1;
+
+        // Footnote numbering: assign citation numbers (1,2,3…) to notes in the
+        // order their `note-ref` markers first appear in the body. This drives
+        // both the in-text superscript and the bottom-of-page footnote list.
+        let note_nums = note_numbering(&self.blocks);
+
+        // Spell-check (squiggles): precompute the misspelled byte spans for every
+        // body block *near the viewport* before pass 2, so the read-only pass-2
+        // loop (which borrows `self` immutably) can look them up without a `&mut`
+        // borrow conflict. Cheap: cached per block keyed by text (an edit
+        // re-checks), and culled to a band around the visible canvas.
+        let mut spell_by_block: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
+        if self.spellcheck_on {
+            // A generous band around the canvas (one screenful above/below) so a
+            // block scrolling into view is already checked; everything else is
+            // skipped to keep the pass cheap on long documents.
+            let cull_lo = canvas.y0 - canvas.height();
+            let cull_hi = canvas.y1 + canvas.height();
+            // Collect the (id, text) of in-band, spellable body blocks first to end
+            // the immutable borrow of `laid`/`self.blocks` before the `&mut self`
+            // dictionary/cache calls below.
+            let targets: Vec<(String, String)> = laid
+                .iter()
+                .filter(|l| {
+                    !l.text.is_empty()
+                        && l.kind != "image"
+                        && l.kind != "fidelity"
+                        && l.y_top + l.height >= cull_lo
+                        && l.y_top <= cull_hi
+                })
+                .map(|l| (l.id.clone(), l.text.clone()))
+                .collect();
+            for (id, text) in targets {
+                let spans = self.block_spell_spans(&id, &text);
+                if !spans.is_empty() {
+                    spell_by_block.insert(id, spans);
+                }
+            }
+        }
+
+        // Per-page footnote bucket: page index → note numbers whose marker lands
+        // on that page, collected during pass 2 and rendered after it.
+        let mut page_notes: HashMap<usize, Vec<usize>> = HashMap::new();
 
         // Pass 2: draw cell borders, bullets, selection, text, caret. Everything
         // here renders through `ctf` (the zoom transform) so page content scales
@@ -2279,11 +2477,113 @@ impl Widget for WordProcessorWidget {
             }
             text_renderer.draw_rich(scene, layout, ctf * Affine::translate((l.text_x, l.y_top)), l.ink);
 
+            // Spell-check squiggles: a wavy red underline under each misspelled
+            // span. The byte span maps to one-or-more on-screen rects via the same
+            // `selection_rects` geometry the selection highlight uses (so it tracks
+            // wrapping). The squiggle hugs just under each rect's bottom.
+            if let Some(spans) = spell_by_block.get(&l.id) {
+                for &(b0, b1) in spans {
+                    for (rx0, _ry0, rx1, ry1) in layout.selection_rects(b0, b1) {
+                        let y = l.y_top + ry1 as f64 - 1.0;
+                        draw_squiggle(scene, ctf, l.text_x + rx0 as f64, l.text_x + rx1 as f64, y);
+                    }
+                }
+            }
+
+            // Note-reference superscripts: each `note-ref` placeholder in this
+            // block renders as a small superscript citation number, positioned at
+            // the placeholder glyph's location (it occupies one U+FFFC char, which
+            // the body run shapes as near-zero-width). The number is taken from the
+            // document-order numbering; the page is recorded so the footnote text
+            // renders at the bottom of this page.
+            if !note_nums.is_empty() {
+                if let Some(b) = self.blocks.iter().find(|b| b.id == l.id) {
+                    for (ci, note_id) in block_note_refs(b) {
+                        let Some(&num) = note_nums.get(&note_id) else { continue };
+                        let bs = char_to_byte(&l.text, ci);
+                        let be = char_to_byte(&l.text, ci + 1);
+                        // Anchor at the placeholder's left edge; fall back to the
+                        // caret geometry if the glyph produced no selection rect.
+                        let placeholder_rect = layout.selection_rects(bs, be).into_iter().next();
+                        let (mx, my) = placeholder_rect
+                            .map(|(rx0, ry0, _, _)| (rx0, ry0))
+                            .unwrap_or_else(|| {
+                                let (cx, cy, _) = layout.caret_geometry(bs);
+                                (cx, cy)
+                            });
+                        // Mask the U+FFFC object-replacement glyph (a box in some
+                        // fonts) with paper so only the superscript number shows.
+                        if let Some((rx0, ry0, rx1, ry1)) = placeholder_rect {
+                            let mask = Rect::new(l.text_x + rx0 as f64, l.y_top + ry0 as f64, l.text_x + rx1 as f64, l.y_top + ry1 as f64);
+                            scene.fill(Fill::NonZero, ctf, PAPER, None, &mask);
+                        }
+                        let label = num.to_string();
+                        // Superscript: smaller font, raised toward the line's top.
+                        let sup_size = (l.size * 0.7).max(8.0);
+                        text_renderer.draw_text(
+                            scene,
+                            &label,
+                            sup_size,
+                            l.ink,
+                            ctf * Affine::translate((l.text_x + mx as f64, l.y_top + my as f64 - 1.0)),
+                            None,
+                        );
+                        page_notes.entry(l.page).or_default().push(num);
+                    }
+                }
+            }
+
             if self.focused && l.id == self.inner.caret.block && !self.inner.has_selection() {
                 let byte = char_to_byte(&l.text, self.inner.caret.offset);
                 let (cx, cy, ch) = layout.caret_geometry(byte);
                 let caret = Rect::new(l.text_x + cx as f64, l.y_top + cy as f64, l.text_x + cx as f64 + CARET_WIDTH, l.y_top + cy as f64 + ch as f64);
                 scene.fill(Fill::NonZero, ctf, CARET_COLOR, None, &caret);
+            }
+        }
+
+        // Footnote areas: for every page that carries a footnote marker, draw a
+        // thin separator + the footnotes (numbered, in a smaller font) stacked at
+        // the bottom of that page's text band, above the footer margin. Page
+        // assignment is approximate — a footnote renders on the page where its
+        // marker was laid. Rendered inside the page clip so it scrolls with the
+        // content and never paints over the toolbar/status bar.
+        if !page_notes.is_empty() {
+            // number → footnote text, resolved once. Endnotes are skipped here
+            // (they belong at the document end, not per page).
+            let mut num_to_note: HashMap<usize, String> = HashMap::new();
+            for n in &self.notes {
+                if n.kind == qdoc::schema::NOTE_KIND_FOOTNOTE {
+                    if let Some(&num) = note_nums.get(&n.id) {
+                        num_to_note.insert(num, note_text(n));
+                    }
+                }
+            }
+            for (page, nums) in &page_notes {
+                // Distinct, ascending footnote numbers on this page.
+                let mut nums: Vec<usize> = nums.iter().copied().filter(|n| num_to_note.contains_key(n)).collect();
+                nums.sort_unstable();
+                nums.dedup();
+                if nums.is_empty() {
+                    continue;
+                }
+                let line_h = (NOTE_FONT as f64 * 1.4).ceil();
+                let area_h = nums.len() as f64 * line_h;
+                // Bottom of the text band on this page (above the footer margin).
+                let band_bottom = page_top + *page as f64 * page_pitch + letter_h - m.bottom - sy;
+                let sep_y = band_bottom - area_h - NOTE_AREA_GAP;
+                let left = page_x + m.left;
+                let right = page_x + page_w - m.right;
+                // Thin separator (about a third of the text width, like Word).
+                let sep = vello::kurbo::Line::new((left, sep_y), (left + (right - left) * 0.33, sep_y));
+                scene.stroke(&vello::kurbo::Stroke::new(0.75), ctf, NOTE_SEP, None, &sep);
+                let mut ny = sep_y + NOTE_AREA_GAP * 0.6;
+                for num in nums {
+                    if let Some(text) = num_to_note.get(&num) {
+                        let line = format!("{num}. {text}");
+                        text_renderer.draw_text(scene, &line, NOTE_FONT, NOTE_INK, ctf * Affine::translate((left, ny)), None);
+                        ny += line_h;
+                    }
+                }
             }
         }
 
@@ -2627,6 +2927,13 @@ impl Widget for WordProcessorWidget {
                                 self.open_find(state);
                             }
                             self.dirty = true;
+                            *handled = true;
+                            return;
+                        }
+                        // Ctrl+Shift+L toggles the spell-check squiggles (view-only,
+                        // default ON). Never mutates the document.
+                        if shift && s.eq_ignore_ascii_case("l") {
+                            self.toggle_spellcheck();
                             *handled = true;
                             return;
                         }
@@ -4060,5 +4367,152 @@ mod tests {
         assert!((wide - TOOLBAR_H).abs() < 1e-9, "a wide window keeps a single-row toolbar");
         assert_eq!(narrow % TOOLBAR_H, 0.0, "the toolbar height is a whole number of rows");
         assert!(narrow >= 2.0 * TOOLBAR_H, "760px wraps to at least two rows");
+    }
+
+    // ---- spell-check squiggles --------------------------------------------
+
+    #[test]
+    fn misspelled_word_yields_a_squiggle_span_at_its_x_range() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        // "teh" is a classic misspelling flagged by the builtin dictionary; the
+        // surrounding words are valid, so exactly one span is expected.
+        wp.model_mut().insert_str(&mut state.doc, "teh quick brown fox");
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+
+        let l = wp.laid.iter().find(|l| l.text == "teh quick brown fox").expect("paragraph laid out");
+        let id = l.id.clone();
+        let text = l.text.clone();
+
+        // The production spell path computes the misspelled byte spans for this
+        // block (the same call `draw` makes to feed `draw_squiggle`).
+        let spans = wp.block_spell_spans(&id, &text);
+        assert_eq!(spans, vec![(0usize, 3usize)], "exactly ‘teh’ at bytes [0,3) is flagged");
+
+        // The span maps to a concrete, positive on-screen x-range via the cached
+        // shaped layout — exactly the geometry `draw` passes to `draw_squiggle`.
+        let (_, layout) = wp.layout_cache.get(&id).expect("block layout cached after draw");
+        let rects = layout.selection_rects(0, 3);
+        assert!(!rects.is_empty(), "the misspelled span resolves to at least one rect");
+        let (x0, _, x1, _) = rects[0];
+        assert!(x1 > x0, "the squiggle covers a non-empty width: x0={x0} x1={x1}");
+        // ‘teh’ sits at the very start of the line, so its rect hugs the left edge.
+        assert!(x0 < 4.0, "the first word's squiggle starts at the line's left edge: x0={x0}");
+    }
+
+    #[test]
+    fn spellcheck_toggle_off_suppresses_the_squiggle_pass() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "teh");
+        assert!(wp.spellcheck_enabled(), "spell-check defaults ON");
+        wp.toggle_spellcheck();
+        assert!(!wp.spellcheck_enabled(), "toggle turns it OFF");
+        // With the toggle off, a draw must not even build the dictionary (the lazy
+        // OnceLock stays untouched for this widget — the per-widget handle is None).
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        assert!(wp.dict.is_none(), "spell-check off skips dictionary construction");
+    }
+
+    #[test]
+    fn spell_cache_reuses_unchanged_blocks_and_rechecks_after_edit() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "wrold");
+        let id = wp.blocks[0].id.clone();
+
+        // First check flags ‘wrold’.
+        let spans = wp.block_spell_spans(&id, "wrold");
+        assert_eq!(spans, vec![(0, 5)], "‘wrold’ flagged");
+        // A second check with identical text reuses the cache (same result).
+        assert_eq!(wp.block_spell_spans(&id, "wrold"), vec![(0, 5)]);
+        // Correcting the text re-checks (the key is the text) → no misspelling.
+        assert!(wp.block_spell_spans(&id, "world").is_empty(), "the corrected text re-checks clean");
+    }
+
+    // ---- footnote rendering -----------------------------------------------
+
+    /// Author a doc with one body paragraph that references a single footnote
+    /// (placeholder + `note-ref` mark), whose content is `note_body`. Returns the
+    /// constructed `ui::State`.
+    fn author_doc_with_footnote(body: &str, ref_idx: usize, note_body: &str) -> ui::State {
+        let mut state = ui::State::new();
+        let c = qdoc::model::init(&mut state.doc, &state.root);
+        let mut ids = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
+        {
+            let mut dm = qdoc::DocMut { doc: &mut state.doc, c: &c, ids: &mut ids };
+            let p = dm.insert_block(None, "paragraph");
+            dm.splice_text(&p, 0, 0, body);
+            // Place a footnote reference marker at `ref_idx` and fill the note body.
+            let note_id = dm.insert_footnote(&p, ref_idx);
+            let nb = dm.insert_note_block(&note_id, None, "paragraph").expect("note block");
+            dm.splice_note_text(&note_id, &nb, 0, 0, note_body);
+        }
+        state.doc.commit();
+        state
+    }
+
+    #[test]
+    fn footnote_renders_superscript_marker_and_note_text_in_page_area() {
+        // Body "Hello world" with a footnote reference after "Hello" (idx 5).
+        let mut state = author_doc_with_footnote("Hello world", 5, "A clarifying footnote.");
+        let mut wp = WordProcessorWidget::new();
+        pipeline_draw(&mut wp, &mut state, 1000, 900);
+
+        // The note materialized into the widget as a footnote.
+        assert_eq!(wp.notes.len(), 1, "one note materialized");
+        assert_eq!(wp.notes[0].kind, qdoc::schema::NOTE_KIND_FOOTNOTE, "it is a footnote");
+
+        // The body block carries exactly one note-ref marker (the production scan
+        // `draw` uses to place the superscript), and document-order numbering
+        // assigns it citation number 1.
+        let body = wp.blocks.iter().find(|b| b.text.contains("Hello")).expect("body block");
+        let refs = block_note_refs(body);
+        assert_eq!(refs.len(), 1, "one note-ref marker in the body");
+        let (ref_ci, note_id) = &refs[0];
+        assert_eq!(*ref_ci, 5, "marker sits at the reference index (the placeholder char)");
+        let nums = note_numbering(&wp.blocks);
+        assert_eq!(nums.get(note_id.as_str()), Some(&1), "first-referenced note is numbered 1");
+
+        // The footnote text that the page note-area renders ("N. <text>") is laid
+        // — assert the note text is present (not the rendered pixels).
+        let text = note_text(&wp.notes[0]);
+        assert_eq!(text, "A clarifying footnote.", "the footnote body text is materialized");
+        let rendered_line = format!("{}. {}", nums[note_id.as_str()], text);
+        assert_eq!(rendered_line, "1. A clarifying footnote.", "the page note-area line is well-formed");
+    }
+
+    #[test]
+    fn note_numbering_follows_document_order_not_note_id() {
+        // Two footnote references in one paragraph; the FIRST reference (by source
+        // position) must be number 1 regardless of the notes' id sort order.
+        let mut state = ui::State::new();
+        let c = qdoc::model::init(&mut state.doc, &state.root);
+        let mut ids = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
+        let (n_first, n_second);
+        {
+            let mut dm = qdoc::DocMut { doc: &mut state.doc, c: &c, ids: &mut ids };
+            let p = dm.insert_block(None, "paragraph");
+            dm.splice_text(&p, 0, 0, "alpha beta");
+            // Insert the LATER reference first (at idx 10, end) then the EARLIER one
+            // (at idx 5), so document order != insertion order.
+            n_second = dm.insert_footnote(&p, 10);
+            n_first = dm.insert_footnote(&p, 5);
+            let b2 = dm.insert_note_block(&n_second, None, "paragraph").unwrap();
+            dm.splice_note_text(&n_second, &b2, 0, 0, "second");
+            let b1 = dm.insert_note_block(&n_first, None, "paragraph").unwrap();
+            dm.splice_note_text(&n_first, &b1, 0, 0, "first");
+        }
+        state.doc.commit();
+
+        let mut wp = WordProcessorWidget::new();
+        pipeline_draw(&mut wp, &mut state, 1000, 900);
+
+        let nums = note_numbering(&wp.blocks);
+        assert_eq!(nums.get(n_first.as_str()), Some(&1), "the earlier marker is #1 by document order");
+        assert_eq!(nums.get(n_second.as_str()), Some(&2), "the later marker is #2");
     }
 }
