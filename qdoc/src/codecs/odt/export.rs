@@ -15,6 +15,11 @@ use crate::snapshot::{AttrVal, DocSnapshot};
 use std::collections::{BTreeMap, BTreeSet};
 
 const MIMETYPE: &[u8] = b"application/vnd.oasis.opendocument.text";
+/// A minimal `styles.xml` skeleton (automatic-styles + master-styles wired to a
+/// `pm1` page-layout) used as the splice target when a multi-column document had no
+/// `styles.xml` of its own. Mirrors the namespaces the column splice needs.
+const MINIMAL_STYLES: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"><office:automatic-styles><style:page-layout style:name="pm1"><style:page-layout-properties/></style:page-layout></office:automatic-styles><office:master-styles><style:master-page style:name="Standard" style:page-layout-name="pm1"/></office:master-styles></office:document-styles>"#;
 const MANIFEST: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
 <manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0">
 <manifest:file-entry manifest:full-path="/" manifest:media-type="application/vnd.oasis.opendocument.text"/>
@@ -69,6 +74,26 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
         c.set("styles.xml", styles_xml);
         if is_new {
             had_styles = true;
+        }
+    }
+    // Multi-column section layout → `styles.xml` page-layout: splice the document's
+    // `style:columns` (count + gap) into the first page-layout properties, preserving
+    // the rest of the page-layout. Operates on whatever `styles.xml` exists at this
+    // point (the preserved original or the header/footer-augmented copy above), or a
+    // synthesised minimal one when the document is multi-column but had no styles.xml.
+    // Only runs when the document has more than one column, so a single-column doc
+    // leaves `styles.xml` untouched (or absent).
+    {
+        let base = c
+            .get("styles.xml")
+            .map(|b| b.to_vec())
+            .unwrap_or_else(|| MINIMAL_STYLES.to_vec());
+        if let Some(styles_xml) = super::columns::export_page_layout_columns(&doc, &base) {
+            let is_new = !had_styles;
+            c.set("styles.xml", styles_xml);
+            if is_new {
+                had_styles = true;
+            }
         }
     }
     // Document properties → `meta.xml`: regenerate the part from the canonical
@@ -1810,5 +1835,81 @@ mod tests {
         );
         assert_eq!(out.parts[0].0, "mimetype", "mimetype still first");
         assert!(out.get("content.xml").is_some(), "content regenerated");
+    }
+
+    #[test]
+    fn columns_roundtrip_synthesised_styles() {
+        // A freshly-authored 2-column document (no styles.xml) must synthesise one
+        // carrying the page-layout `style:columns`, and re-import the count + gap.
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "flows across columns");
+        d.set_columns(2, Some(48.0)); // 48 px ≈ 1.27 cm
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let out = OdtContainer::read(&exported).unwrap();
+        let styles = std::str::from_utf8(out.get("styles.xml").expect("styles.xml synthesised")).unwrap();
+        assert!(styles.contains(r#"style:column-count="2""#), "column-count in page-layout: {styles}");
+        assert!(styles.contains("style:column-gap="), "column-gap emitted: {styles}");
+
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let (count, gap) = d2.columns();
+        assert_eq!(count, 2, "column count survives .odt round-trip");
+        // The gap round-trips through px → cm → px; allow a small unit-conversion epsilon.
+        let gap = gap.expect("gap present");
+        assert!((gap - 48.0).abs() < 0.5, "column gap ≈ 48 px after round-trip, got {gap}");
+        assert_eq!(d2.materialize().columns, 2, "snapshot surfaces the column count");
+    }
+
+    #[test]
+    fn columns_preserve_existing_page_layout() {
+        // An imported styles.xml whose page-layout carries page-size/margins must
+        // keep them when `style:columns` is injected; only the columns change.
+        let styles_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0"><office:automatic-styles><style:page-layout style:name="pm1"><style:page-layout-properties fo:page-width="21cm" fo:margin-left="2cm"/></style:page-layout></office:automatic-styles></office:document-styles>"#;
+        let base = minimal_odt_styled("", "<text:p>hi</text:p>");
+        let mut c = OdtContainer::read(&base).unwrap();
+        c.set("styles.xml", styles_xml.as_bytes().to_vec());
+        let odt = c.write().unwrap();
+
+        let mut d = Document::new();
+        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        assert_eq!(d.columns(), (1, None), "no columns initially");
+        d.set_columns(3, None);
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let out = OdtContainer::read(&exported).unwrap();
+        let styles_out = std::str::from_utf8(out.get("styles.xml").unwrap()).unwrap();
+        assert!(styles_out.contains(r#"fo:page-width="21cm""#), "page size preserved: {styles_out}");
+        assert!(styles_out.contains(r#"fo:margin-left="2cm""#), "margin preserved: {styles_out}");
+        assert!(styles_out.contains(r#"style:column-count="3""#), "columns injected: {styles_out}");
+
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        assert_eq!(d2.columns().0, 3, "column count survives alongside the page-layout");
+    }
+
+    #[test]
+    fn columns_replace_existing_style_columns() {
+        // A page-layout that already declares a `style:columns` must have it replaced
+        // (not duplicated) by the document's setting.
+        let styles_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0"><office:automatic-styles><style:page-layout style:name="pm1"><style:page-layout-properties><style:columns style:column-count="4"/></style:page-layout-properties></style:page-layout></office:automatic-styles></office:document-styles>"#;
+        let base = minimal_odt_styled("", "<text:p>hi</text:p>");
+        let mut c = OdtContainer::read(&base).unwrap();
+        c.set("styles.xml", styles_xml.as_bytes().to_vec());
+        let odt = c.write().unwrap();
+
+        let mut d = Document::new();
+        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        assert_eq!(d.columns().0, 4, "imported 4 columns");
+        d.set_columns(2, None);
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let out = OdtContainer::read(&exported).unwrap();
+        let styles_out = std::str::from_utf8(out.get("styles.xml").unwrap()).unwrap();
+        assert_eq!(styles_out.matches("<style:columns").count(), 1, "exactly one style:columns: {styles_out}");
+        assert!(styles_out.contains(r#"style:column-count="2""#), "count updated to 2: {styles_out}");
     }
 }
