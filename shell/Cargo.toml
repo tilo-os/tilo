@@ -89,6 +89,11 @@ seccompiler = "0.5"
 # the deny-list filter without going through seccompiler's re-export. ui
 # already pulls libc transitively, so Cargo collapses to one copy in the lock.
 libc = "0.2.186"
+# Landlock per-capability in-kernel FS/net enforcement (`plan/security.md`
+# §7.1). Applied by the `__sandbox-exec` launcher shim AFTER bwrap sets up
+# the namespace, so it layers on top of bwrap + seccomp + netns. Linux-only;
+# best-effort at runtime (degrades silently on kernels without Landlock).
+landlock = "0.4"
 # Phase 3 Task 3.3 of `docs/superpowers/plans/2026-05-02-peer-sync-end-to-end.md`:
 # `network::invite` encodes / decodes signed peer-invite tokens as base64-url
 # wrapped JSON, with the owner's libp2p PeerId rendered as base58. Both crates
