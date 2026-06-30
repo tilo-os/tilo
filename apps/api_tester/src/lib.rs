@@ -1,0 +1,28 @@
+//! API Tester — a Postman/Insomnia-class HTTP client for qOS.
+//!
+//! Build requests (method, URL, params, headers, auth, body), send them
+//! with `reqwest`, and inspect the response: status, timing, size, headers,
+//! and a pretty/raw/preview body with syntax-highlighted, collapsible JSON.
+//! Saved requests live in collections; `{{variable}}` placeholders resolve
+//! against the active environment. Collections, environments, the active
+//! request, and history are CRDT-backed, so a workspace can be edited
+//! collaboratively.
+//!
+//! `app_root()` is the single integration point used by both the live
+//! event loop and the `--shots` offscreen renderer.
+
+use ui::widget::Widget;
+
+mod app;
+mod doc;
+mod http;
+mod model;
+mod seed;
+mod vars;
+
+pub use app::ApiTesterApp;
+
+/// Build and return the app's root widget tree.
+pub fn app_root() -> Box<dyn Widget> {
+    Box::new(ApiTesterApp::new())
+}

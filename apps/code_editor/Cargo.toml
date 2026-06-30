@@ -1,0 +1,33 @@
+[package]
+name = "code_editor"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "code_editor"
+path = "src/lib.rs"
+
+[[bin]]
+name = "code_editor"
+path = "src/main.rs"
+
+[dependencies]
+ui = { path = "../../ui" }
+automerge = "0.8.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.23.1", features = ["v4", "serde"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+vello = "0.9"
+winit = "0.30.13"
+taffy = "0.10.1"
+anyhow = "1.0"
+# Syntax highlighting. We use syntect purely as a tokenizer: its Sublime
+# syntax definitions classify each span into a scope stack, which we map to
+# a small set of OS-theme-derived colors (see `highlight.rs`). The
+# `default-fancy` feature selects the pure-Rust `fancy-regex` backend so no
+# C toolchain / oniguruma is required at build time.
+syntect = { version = "5.3", default-features = false, features = [
+    "default-fancy",
+] }
