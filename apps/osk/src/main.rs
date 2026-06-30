@@ -9,7 +9,7 @@
 //!
 //! ## Integration seams
 //!
-//! * **W7 — text injection (client half, WIRED HERE):** the live path builds a
+//! * **Text injection (client half, WIRED HERE):** the live path builds a
 //!   [`TextInjector`] (real `virtual-keyboard-v1` backend, else a no-op
 //!   [`NullInjector`]) and sets it as the widget's `on_key` callback, so every
 //!   committed [`osk::KeyAction`] is typed into the focused surface as the user
@@ -18,13 +18,13 @@
 //!   [`osk::inject`] for the keymap-generation details and the manual-test
 //!   recipe.
 //!
-//! * **W7 — layer-shell (server half, still a seam):** in production the OSK
+//! * **Layer-shell (server half, still a seam):** in production the OSK
 //!   runs as a `wlr-layer-shell` surface (overlay layer, bottom-anchored,
 //!   exclusive zone). `ui::App` does not yet create a layer-shell surface, so
 //!   today this binary opens a normal window; swap the surface role in here
 //!   when that lands — the widget and the injector are unchanged.
 //!
-//! * **W9 — FUTO swipe + prediction:** a swipe decoder will consume the
+//! * **FUTO swipe + prediction:** a swipe decoder will consume the
 //!   pointer path during a press-drag, normalise it against
 //!   [`OskWidget::key_geometry`] (the same geometry used to render), and feed
 //!   candidate words into the toolbar's candidate ribbon. The decoder lives
@@ -61,7 +61,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // --- W7: build the text injector and wire it to the widget's per-key
+    // --- build the text injector and wire it to the widget's per-key
     // callback. `default_injector` returns the real virtual-keyboard-v1 backend
     // when the compositor supports it, else a no-op NullInjector — so the OSK
     // runs everywhere and types into the focused app where it can. ---
