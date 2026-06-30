@@ -1,5 +1,4 @@
-//! Built-in screen reader — workstream **W6** of the a11y design
-//! (`docs/superpowers/specs/2026-06-30-accessibility-design.md`).
+//! Built-in screen reader.
 //!
 //! This is the first-party, spatially-aware reader that makes qOS narrate
 //! itself. It sits on top of two already-shipped layers:
@@ -56,8 +55,8 @@
 //! populated with FTL resources at runtime; until a `screen-reader.ftl` ships,
 //! routing these tiny words through `i18n!` would just echo the key back. The
 //! constants are centralized (see the `phrase` submodule) precisely so a future
-//! FTL migration is a single localized swap. This matches the spec's guidance
-//! ("Use FTL/i18n where the toolkit does … otherwise clear English constants").
+//! FTL migration is a single localized swap: FTL keys where the toolkit
+//! already wires them, otherwise clear English constants.
 
 use qos_tts::{NullSpeaker, Priority, Speaker, SpeechQueue, Utterance, default_speaker};
 
@@ -195,18 +194,9 @@ pub fn describe(node: &AccessNode) -> String {
         }
     }
 
-    // 2. Value — never for protected fields (the secret must not be spoken).
-    //    A protected field instead surfaces the word "protected" so the user
-    //    knows a value exists without hearing it.
-    if node.state.protected {
-        parts.push(phrase::PROTECTED.to_string());
-    } else if let Some(value) = node.value.as_deref() {
-        if !value.is_empty() {
-            parts.push(value.to_string());
-        }
-    }
-
-    // 3. Role word. Headings carry a level; everything else uses the table.
+    // 2. Role word, right after the name — screen readers announce a control
+    //    as "name, role, value" (e.g. "Volume, slider, 50 percent"). Headings
+    //    carry a level; everything else uses the table.
     match node.role {
         Role::Heading { level } => parts.push(phrase::heading_word(level)),
         other => {
@@ -217,9 +207,38 @@ pub fn describe(node: &AccessNode) -> String {
         }
     }
 
+    // 3. Value — after the role. Never for protected fields (the secret must
+    //    not be spoken); a protected field instead surfaces the word
+    //    "protected" so the user knows a value exists without hearing it.
+    if node.state.protected {
+        parts.push(phrase::PROTECTED.to_string());
+    } else if let Some(value) = node.value.as_deref() {
+        if !value.is_empty() {
+            parts.push(value.to_string());
+        }
+    }
+
     // 4. States, in spoken priority order.
     push_state_words(node, &mut parts);
 
+    parts.join(", ")
+}
+
+/// Concise spoken summary of a node's *current value + state* — without its
+/// name or role. Used to announce the **result of activating or adjusting** a
+/// focused control (e.g. "checked", "on", "75 percent") so the reader confirms
+/// the change without re-reading the whole label every time. Returns an empty
+/// string when the node carries no value or state worth speaking.
+pub fn describe_state(node: &AccessNode) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if node.state.protected {
+        parts.push(phrase::PROTECTED.to_string());
+    } else if let Some(value) = node.value.as_deref() {
+        if !value.is_empty() {
+            parts.push(value.to_string());
+        }
+    }
+    push_state_words(node, &mut parts);
     parts.join(", ")
 }
 
@@ -643,13 +662,13 @@ mod tests {
     #[test]
     fn describe_slider_with_value() {
         let node = n(Role::Slider).with_name("Volume").with_value("50%");
-        assert_eq!(describe(&node), "Volume, 50%, slider");
+        assert_eq!(describe(&node), "Volume, slider, 50%");
     }
 
     #[test]
     fn describe_text_input_with_value() {
         let node = n(Role::TextInput).with_name("Name").with_value("Ada");
-        assert_eq!(describe(&node), "Name, Ada, edit text");
+        assert_eq!(describe(&node), "Name, edit text, Ada");
     }
 
     #[test]
@@ -663,7 +682,7 @@ mod tests {
             !phrase.contains("hunter2"),
             "protected value must never be spoken, got {phrase:?}"
         );
-        assert_eq!(phrase, "Password, protected, edit text");
+        assert_eq!(phrase, "Password, edit text, protected");
     }
 
     #[test]
@@ -766,7 +785,7 @@ mod tests {
             .with_name("Loading")
             .with_value("40%")
             .with_state(AccessState::new().busy(true));
-        assert_eq!(describe(&node), "Loading, 40%, progress bar, busy");
+        assert_eq!(describe(&node), "Loading, progress bar, 40%, busy");
     }
 
     #[test]
@@ -862,8 +881,8 @@ mod tests {
     fn focus_storm_coalesces_to_latest() {
         // Rapid navigation: each focus interrupts the previous. Because the
         // reader drains immediately, every focus is recorded, BUT each
-        // interrupting push first issues a stop() — the contract the spec
-        // demands ("new focus replaces pending"). We assert both: the queue
+        // interrupting push first issues a stop() so a new focus replaces any
+        // pending utterance. We assert both: the queue
         // never backs up (one stop per focus after the first speak) and the
         // LAST thing said is the final control.
         let (mut r, rec) = recording_reader();
