@@ -20,13 +20,22 @@ pub mod geo;
 pub mod model;
 pub mod net;
 pub mod sample;
+pub mod tiles;
 
 pub use app::MapsApp;
 pub use model::{Category, LatLon, MapModel, Panel, Place, Route, TransitJourney, TravelMode};
 
 use ui::widget::Widget;
 
-/// Build and return the app's root widget tree.
+/// Build and return the app's root widget tree (live: spawns the background
+/// tile worker so OSM raster tiles fetch + decode off the UI thread).
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(MapsApp::new())
+}
+
+/// Build the root widget for headless `--shots` and tests: no tile worker, no
+/// network. The stylised vector basemap stands in for raster imagery so the
+/// screenshot is fully populated offline.
+pub fn app_root_offline() -> Box<dyn Widget> {
+    Box::new(MapsApp::offline())
 }
