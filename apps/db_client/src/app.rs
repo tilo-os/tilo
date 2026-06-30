@@ -8,8 +8,17 @@
 //! leaf node is handed to Taffy and every sub-rect is computed from it. Event
 //! routing dispatches to the schema tree, the tab bar, the editor and the
 //! results grid by hit-testing their rects.
+//!
+//! The connections + schema sidebar is responsive. On a wide window it stays
+//! docked beside the main panel (the desktop layout above). When the window
+//! is narrower than [`BREAKPOINT`] the sidebar collapses into an overlay flap
+//! that slides over the main panel behind a dimming scrim — closed by default
+//! and summoned with the hamburger toggle in the tab bar. The eased slide and
+//! the breakpoint default-reconciliation are handled by the toolkit's shared
+//! [`FlapState`] kernel rather than hand-rolled here.
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::prelude::*;
@@ -22,7 +31,7 @@ use winit::keyboard::{Key, NamedKey};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{FlapState, SplitLayout, Widget};
 
 use crate::connect_modal::ConnectModal;
 use crate::doc::EditorDoc;
@@ -37,6 +46,13 @@ const SIDEBAR_W: f64 = 268.0;
 const STATUS_H: f64 = 28.0;
 const TABBAR_H: f64 = 38.0;
 const TOOLBAR_H: f64 = 40.0;
+/// Below this allocated width (logical px) the sidebar stops being a docked
+/// pane and becomes an overlay flap. Chosen so the 268px sidebar plus a
+/// usable editor/results column stop fitting comfortably side by side.
+const BREAKPOINT: f64 = 820.0;
+/// Hamburger toggle box drawn at the left of the tab bar when the sidebar is
+/// not fully docked-open, so a collapsed sidebar can be summoned.
+const TOGGLE_SIZE: f64 = 26.0;
 
 pub struct DbClientApp {
     session: Session,
@@ -55,6 +71,18 @@ pub struct DbClientApp {
     /// Cached sub-rects, recomputed each `apply_layout`.
     sidebar_rect: Rect,
     main_rect: Rect,
+    /// Adaptive sidebar flap: docked beside the content on a wide window,
+    /// an overlay flap over a scrim on a narrow one. Drives the eased slide
+    /// and the breakpoint default-reconciliation.
+    flap: FlapState,
+    /// Wall-clock of the last animation tick, for frame-rate-independent
+    /// easing of the flap reveal.
+    last_tick: Instant,
+    /// Full-content scrim rect while the overlay flap is open (else `ZERO`).
+    scrim_rect: Rect,
+    /// Hamburger toggle box (summons / dismisses the sidebar); `ZERO` when
+    /// the sidebar is fully docked-open and the toggle is hidden.
+    toggle_btn: Rect,
     /// Hovered "Run" button.
     run_hover: bool,
     /// Toolbar snippet-dropdown open?
@@ -108,6 +136,10 @@ impl DbClientApp {
             cursor: Point::ZERO,
             sidebar_rect: Rect::ZERO,
             main_rect: Rect::ZERO,
+            flap: FlapState::open_when_docked(),
+            last_tick: Instant::now(),
+            scrim_rect: Rect::ZERO,
+            toggle_btn: Rect::ZERO,
             run_hover: false,
             snippets_open: false,
             conn_hover: None,
@@ -138,11 +170,57 @@ impl DbClientApp {
         self.dirty = true;
     }
 
-    /// Recompute every region rect from the root rect.
+    /// Resolve the sidebar layout (docked vs overlay) from the *allocated*
+    /// width against the breakpoint.
+    fn split_layout(&self) -> SplitLayout {
+        SplitLayout::from_width(self.rect.width(), BREAKPOINT)
+    }
+
+    /// Snap the sidebar flap to the layout default for a given width, with NO
+    /// animation. Used by the `--shots` offscreen renderer so a single frame
+    /// is deterministic: wide ⇒ docked + open, narrow ⇒ overlay + collapsed.
+    pub fn snap_flap_for_width(&mut self, width: f64) {
+        match SplitLayout::from_width(width, BREAKPOINT) {
+            SplitLayout::Docked => self.flap.snap(true),
+            SplitLayout::Overlay => self.flap.snap(false),
+        }
+    }
+
+    /// Recompute every region rect from the root rect, honouring the flap's
+    /// resolved layout and eased reveal.
+    ///
+    /// * Docked (wide): the sidebar occupies a left column whose width is the
+    ///   sidebar width scaled by the reveal, and the main panel is inset by
+    ///   the same amount — so collapsing/expanding the sidebar slides the
+    ///   split without overlap.
+    /// * Overlay (narrow): the main panel spans the full width; the sidebar
+    ///   slides in from the left edge over a scrim by the eased reveal.
     fn relayout(&mut self) {
         let r = self.rect;
-        self.sidebar_rect = Rect::new(r.x0, r.y0, r.x0 + SIDEBAR_W, r.y1 - STATUS_H);
-        self.main_rect = Rect::new(r.x0 + SIDEBAR_W, r.y0, r.x1, r.y1 - STATUS_H);
+        let body_bottom = r.y1 - STATUS_H;
+        let layout = self.split_layout();
+        let sw = SIDEBAR_W.min(r.width());
+
+        match layout {
+            SplitLayout::Docked => {
+                let inset = sw * self.flap.reveal();
+                self.sidebar_rect = Rect::new(r.x0, r.y0, r.x0 + inset, body_bottom);
+                self.main_rect = Rect::new(r.x0 + inset, r.y0, r.x1, body_bottom);
+                self.scrim_rect = Rect::ZERO;
+            }
+            SplitLayout::Overlay => {
+                // Main panel spans the whole body; sidebar floats over it.
+                self.main_rect = Rect::new(r.x0, r.y0, r.x1, body_bottom);
+                let slide = self.flap.slide();
+                let x0 = r.x0 - sw * (1.0 - slide);
+                self.sidebar_rect = Rect::new(x0, r.y0, x0 + sw, body_bottom);
+                self.scrim_rect = if self.flap.reveal() > 0.001 {
+                    Rect::new(r.x0, r.y0, r.x1, body_bottom)
+                } else {
+                    Rect::ZERO
+                };
+            }
+        }
 
         // Schema tree fills the lower portion of the sidebar; the
         // connections list takes the top.
@@ -199,6 +277,24 @@ impl DbClientApp {
         // 16px gap before the schema browser begins.
         let rows = self.session.connections.len() as f64;
         56.0 + rows * 44.0 + 30.0 + 16.0
+    }
+
+    /// Whether the sidebar pane should be painted this frame. Once the overlay
+    /// flap has fully collapsed it contributes nothing and is skipped.
+    fn sidebar_visible(&self) -> bool {
+        self.flap.reveal() > 0.001
+    }
+
+    /// Whether the hamburger toggle is shown: any time the sidebar is not
+    /// fully docked-open (overlay at any reveal, or a collapsing docked pane).
+    fn show_toggle(&self) -> bool {
+        self.split_layout() == SplitLayout::Overlay || self.flap.reveal() < 0.999
+    }
+
+    /// `true` while the flap reveal hasn't settled on its target, so the host
+    /// keeps pumping frames for the slide.
+    fn flap_animating(&self) -> bool {
+        self.flap.is_animating(self.split_layout())
     }
 }
 
@@ -260,6 +356,15 @@ impl Widget for DbClientApp {
             origin.x + layout.location.x as f64 + layout.size.width as f64,
             origin.y + layout.location.y as f64 + layout.size.height as f64,
         );
+        // Drop a stale user preference when the window crosses the breakpoint
+        // (a resize returns the sidebar to the new layout's default), then
+        // advance the eased reveal toward the resolved open/closed target.
+        let split = self.split_layout();
+        self.flap.reconcile(split);
+        let now = Instant::now();
+        let dt = (now - self.last_tick).as_secs_f64();
+        self.last_tick = now;
+        self.flap.tick(split, dt);
         self.relayout();
     }
 
@@ -289,8 +394,25 @@ impl Widget for DbClientApp {
             self.bound_data_gen = self.data_gen;
         }
 
-        self.draw_sidebar(scene, transform, tr, theme);
+        // Main panel first (it sits behind the overlay flap), then the scrim
+        // and the sidebar on top. In docked mode the sidebar occupies its own
+        // column and the scrim is empty, so the order is harmless there.
         self.draw_main(scene, transform, tr, theme);
+
+        if self.scrim_rect.width() > 0.0 {
+            // Scrim opacity tracks the reveal so it fades in with the flap.
+            let alpha = (self.flap.reveal() * 128.0).round().clamp(0.0, 255.0) as u8;
+            let scrim = Color::from_rgba8(0, 0, 0, alpha);
+            scene.fill(Fill::NonZero, transform, scrim, None, &self.scrim_rect);
+        }
+        if self.sidebar_visible() {
+            self.draw_sidebar(scene, transform, tr, theme);
+        }
+
+        // Hamburger toggle over the tab bar whenever the sidebar isn't fully
+        // docked-open (collapsed-docked or overlay), so it can be summoned.
+        self.draw_sidebar_toggle(scene, transform, tr, theme);
+
         self.draw_status(scene, transform, tr, theme);
 
         // Modal overlay drawn last (top layer).
@@ -408,10 +530,19 @@ impl Widget for DbClientApp {
                         }
                     }
                 }
-                // Esc closes the snippet menu.
+                // Esc closes the snippet menu, then dismisses an open overlay
+                // flap (in docked mode Esc leaves the sidebar untouched).
                 if let Key::Named(NamedKey::Escape) = logical_key {
                     if self.snippets_open {
                         self.snippets_open = false;
+                        *handled = true;
+                        return;
+                    }
+                    if self.split_layout() == SplitLayout::Overlay
+                        && self.flap.is_open(SplitLayout::Overlay)
+                    {
+                        self.flap.close();
+                        self.dirty = true;
                         *handled = true;
                         return;
                     }
@@ -421,7 +552,10 @@ impl Widget for DbClientApp {
         }
 
         // Route remaining events to the editor (it checks focus internally).
-        if self.session.tab == MainTab::Query {
+        // Skip anything the app already consumed — e.g. a sidebar / scrim /
+        // toggle click, or an Esc that dismissed the overlay flap — so an open
+        // sidebar doesn't leak clicks into the editor behind it.
+        if self.session.tab == MainTab::Query && !*handled {
             self.editor
                 .handle_event(event, scale_factor, modifiers, state, handled);
             if self.editor.take_run() {
@@ -452,26 +586,65 @@ impl Widget for DbClientApp {
     fn is_layout_dirty(&self) -> bool {
         true
     }
+
+    fn needs_animation_frame(&self) -> bool {
+        // Keep frames coming while the sidebar flap is sliding.
+        self.flap_animating()
+    }
 }
 
 impl DbClientApp {
+    /// Whether sidebar widgets (connection rows, schema tree, new-connection
+    /// button) should accept clicks: always when docked, only while the flap
+    /// is open when it's an overlay (so taps fall through to the content
+    /// behind a closed/collapsed flap).
+    fn sidebar_interactive(&self) -> bool {
+        match self.split_layout() {
+            SplitLayout::Docked => self.flap.reveal() > 0.5,
+            SplitLayout::Overlay => self.flap.is_open(SplitLayout::Overlay),
+        }
+    }
+
     fn on_click(&mut self, state: &mut AutoCommit, handled: &mut bool) {
         let c = self.cursor;
 
-        // "New connection" button.
-        if self.new_conn_btn.contains(c) {
-            self.modal.open_new();
+        // Hamburger toggle (summon / dismiss the sidebar).
+        if self.show_toggle() && self.toggle_btn.contains(c) {
+            self.flap.toggle(self.split_layout());
+            self.dirty = true;
             *handled = true;
             return;
         }
 
-        // Connection rows.
-        for (idx, r) in self.conn_rects.clone() {
-            if r.contains(c) {
-                self.session.select_connection(idx);
-                self.dirty = true;
+        // Scrim click while the overlay flap is open dismisses it (the click
+        // is consumed so it doesn't also fall through to the content).
+        if self.scrim_rect.width() > 0.0
+            && self.scrim_rect.contains(c)
+            && !self.sidebar_rect.contains(c)
+        {
+            self.flap.close();
+            self.dirty = true;
+            *handled = true;
+            return;
+        }
+
+        // Sidebar widgets only when the sidebar is interactive.
+        if self.sidebar_interactive() {
+            // "New connection" button.
+            if self.new_conn_btn.contains(c) {
+                self.modal.open_new();
                 *handled = true;
                 return;
+            }
+
+            // Connection rows.
+            for (idx, r) in self.conn_rects.clone() {
+                if r.contains(c) {
+                    self.session.select_connection(idx);
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
             }
         }
 
@@ -540,27 +713,34 @@ impl DbClientApp {
             }
         }
 
-        // Schema tree.
-        if let Some(click) = self.tree.hit(c) {
-            match click {
-                TreeClick::ToggleTable(name) => {
-                    self.tree.toggle(&name);
-                }
-                TreeClick::SelectTable(name) => {
-                    self.session.select_table(&name);
-                    self.data_gen += 1;
-                    // Auto-switch to Data when picking a table from the tree.
-                    if self.session.tab == MainTab::Structure {
-                        // keep structure
+        // Schema tree (a sidebar widget — gated like the rest of the sidebar).
+        if self.sidebar_interactive() {
+            if let Some(click) = self.tree.hit(c) {
+                match click {
+                    TreeClick::ToggleTable(name) => {
+                        self.tree.toggle(&name);
                     }
-                    self.tree.set_selected(&name);
+                    TreeClick::SelectTable(name) => {
+                        self.session.select_table(&name);
+                        self.data_gen += 1;
+                        // Auto-switch to Data when picking a table from the tree.
+                        if self.session.tab == MainTab::Structure {
+                            // keep structure
+                        }
+                        self.tree.set_selected(&name);
+                        // On a narrow window the sidebar is an overlay; pick a
+                        // table and the flap steps aside to reveal its rows.
+                        if self.split_layout() == SplitLayout::Overlay {
+                            self.flap.close();
+                        }
+                    }
+                    TreeClick::ToggleSchema(name) => self.tree.toggle_schema(&name),
                 }
-                TreeClick::ToggleSchema(name) => self.tree.toggle_schema(&name),
+                self.relayout();
+                self.dirty = true;
+                *handled = true;
+                return;
             }
-            self.relayout();
-            self.dirty = true;
-            *handled = true;
-            return;
         }
 
         // Click into the editor body focuses it (editor handles caret).
@@ -708,7 +888,10 @@ impl DbClientApp {
         );
 
         self.tab_rects.clear();
-        let mut x = bar.x0 + 8.0;
+        // Reserve space for the hamburger toggle at the left of the tab bar
+        // whenever the sidebar isn't fully docked-open.
+        let toggle_inset = if self.show_toggle() { TOGGLE_SIZE + 14.0 } else { 0.0 };
+        let mut x = bar.x0 + 8.0 + toggle_inset;
         for tab in MainTab::all() {
             let label = tab.label();
             let (lw, _) = tr.measure(label, 13.0, None);
@@ -751,6 +934,48 @@ impl DbClientApp {
             MainTab::Query => self.draw_query_tab(scene, t, tr, theme),
             MainTab::Data => self.draw_data_tab(scene, t, tr, theme),
             MainTab::Structure => self.draw_structure_tab(scene, t, tr, theme),
+        }
+    }
+
+    /// Hamburger / close toggle at the left of the tab bar. Shown whenever the
+    /// sidebar isn't fully docked-open, so a collapsed sidebar can be summoned
+    /// and an overlay sidebar dismissed. Drawn over everything (after the
+    /// sidebar) so it stays reachable while the flap is open. Records its rect
+    /// in `toggle_btn` for hit-testing; clears it (to `ZERO`) when hidden.
+    fn draw_sidebar_toggle(&mut self, scene: &mut Scene, t: Affine, _tr: &mut TextRenderer, theme: &Theme) {
+        if !self.show_toggle() {
+            self.toggle_btn = Rect::ZERO;
+            return;
+        }
+        let p = theme.db();
+        let bar_y0 = self.main_rect.y0;
+        let bx = self.main_rect.x0 + 10.0;
+        let by = bar_y0 + (TABBAR_H - TOGGLE_SIZE) / 2.0;
+        let btn = Rect::new(bx, by, bx + TOGGLE_SIZE, by + TOGGLE_SIZE);
+        self.toggle_btn = btn;
+
+        let bg = if btn.contains(self.cursor) { p.hover } else { p.header_bg };
+        scene.fill(Fill::NonZero, t, bg, None, &btn.to_rounded_rect(6.0));
+        scene.stroke(&Stroke::new(1.0), t, theme.border_standard, None, &btn.to_rounded_rect(6.0));
+
+        let cx = btn.x0 + TOGGLE_SIZE / 2.0;
+        let cy = btn.y0 + TOGGLE_SIZE / 2.0;
+        let open = self.flap.reveal() > 0.5;
+        if open {
+            // Close "X" while the sidebar is showing.
+            let r = 5.0;
+            scene.stroke(&Stroke::new(1.6), t, theme.text_primary, None,
+                &Line::new(Point::new(cx - r, cy - r), Point::new(cx + r, cy + r)));
+            scene.stroke(&Stroke::new(1.6), t, theme.text_primary, None,
+                &Line::new(Point::new(cx + r, cy - r), Point::new(cx - r, cy + r)));
+        } else {
+            // Three-line hamburger when collapsed.
+            let half = 6.0;
+            for i in 0..3 {
+                let ly = cy - 5.0 + i as f64 * 5.0;
+                scene.stroke(&Stroke::new(1.6), t, theme.text_primary, None,
+                    &Line::new(Point::new(cx - half, ly), Point::new(cx + half, ly)));
+            }
         }
     }
 
@@ -985,5 +1210,100 @@ fn engine_color(engine: Engine, theme: &Theme) -> Color {
         Engine::Sqlite => sem.info,
         Engine::Postgres => theme.accent_primary,
         Engine::MySql => sem.warning,
+    }
+}
+
+#[cfg(test)]
+mod responsive_tests {
+    use super::*;
+
+    /// Drive the real layout passes (build_layout → compute_layout →
+    /// apply_layout) so assertions exercise the production geometry path, not
+    /// a hand-recomputed copy.
+    fn lay_out(app: &mut DbClientApp, w: f64, h: f64) {
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = app.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: AvailableSpace::Definite(w as f32),
+                    height: AvailableSpace::Definite(h as f32),
+                },
+            )
+            .unwrap();
+        app.apply_layout(&taffy, node, Point::ZERO);
+    }
+
+    #[test]
+    fn breakpoint_resolves_from_allocated_width() {
+        assert_eq!(SplitLayout::from_width(BREAKPOINT, BREAKPOINT), SplitLayout::Docked);
+        assert_eq!(SplitLayout::from_width(BREAKPOINT - 1.0, BREAKPOINT), SplitLayout::Overlay);
+    }
+
+    #[test]
+    fn wide_window_docks_the_sidebar_beside_inset_content() {
+        let mut app = DbClientApp::new();
+        lay_out(&mut app, 1280.0, 800.0);
+        assert_eq!(app.split_layout(), SplitLayout::Docked);
+        // Sidebar is docked at full width; the main panel is inset past it.
+        assert!(app.sidebar_rect.width() > SIDEBAR_W - 1.0, "docked sidebar is full width");
+        assert!(
+            app.main_rect.x0 > app.rect.x0 + SIDEBAR_W - 1.0,
+            "docked main panel is inset past the sidebar"
+        );
+        // No scrim while docked.
+        assert_eq!(app.scrim_rect.width(), 0.0, "docked layout paints no scrim");
+    }
+
+    #[test]
+    fn narrow_window_collapses_sidebar_to_a_closed_overlay() {
+        let mut app = DbClientApp::new();
+        app.snap_flap_for_width(720.0); // shots/live default for narrow
+        lay_out(&mut app, 720.0, 900.0);
+        assert_eq!(app.split_layout(), SplitLayout::Overlay);
+        assert!(!app.flap.is_open(SplitLayout::Overlay), "narrow sidebar is closed by default");
+        // Main panel spans the full width; sidebar is slid off-screen left.
+        assert!(
+            (app.main_rect.width() - app.rect.width()).abs() < 1.0,
+            "overlay content spans full width while the flap is closed"
+        );
+        assert!(app.sidebar_rect.x1 <= app.rect.x0 + 1.0, "closed overlay sidebar is off-screen");
+        assert_eq!(app.scrim_rect.width(), 0.0, "closed overlay paints no scrim");
+        // The hamburger toggle is offered so the sidebar can be summoned.
+        assert!(app.show_toggle(), "narrow layout offers the summon toggle");
+    }
+
+    #[test]
+    fn opening_the_overlay_flap_slides_it_flush_behind_a_scrim() {
+        let mut app = DbClientApp::new();
+        lay_out(&mut app, 720.0, 900.0);
+        // Summon the sidebar (as the hamburger does) and settle deterministically.
+        app.flap.snap(true);
+        lay_out(&mut app, 720.0, 900.0);
+        assert!(app.flap.is_open(SplitLayout::Overlay));
+        // Fully-revealed overlay sidebar sits flush at the left edge.
+        assert!(
+            (app.sidebar_rect.x0 - app.rect.x0).abs() < 1.0,
+            "revealed overlay sidebar is flush at the left edge"
+        );
+        // A scrim now covers the content body.
+        assert!(app.scrim_rect.width() > 0.0, "open overlay flap dims the content with a scrim");
+    }
+
+    #[test]
+    fn widening_past_the_breakpoint_restores_the_docked_sidebar() {
+        let mut app = DbClientApp::new();
+        // Start narrow + closed, then widen past the breakpoint.
+        lay_out(&mut app, 720.0, 900.0);
+        assert_eq!(app.split_layout(), SplitLayout::Overlay);
+        lay_out(&mut app, 1280.0, 800.0);
+        app.flap.snap(true); // settle the reconciled docked-open default
+        lay_out(&mut app, 1280.0, 800.0);
+        assert_eq!(app.split_layout(), SplitLayout::Docked);
+        assert!(app.flap.is_open(SplitLayout::Docked), "widening returns to the docked-open default");
+        assert!(app.main_rect.x0 > app.rect.x0 + 1.0, "docked content is inset by the restored sidebar");
     }
 }

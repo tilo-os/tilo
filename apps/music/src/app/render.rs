@@ -156,6 +156,13 @@ impl Widget for MusicApp {
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+                // Hamburger toggle wins over everything (it sits above the
+                // scrim hit that otherwise covers the whole content in overlay).
+                if self.show_hamburger() && self.hamburger_rect.contains(self.mouse) {
+                    self.dispatch(Action::ToggleSidebar, state);
+                    *handled = true;
+                    return;
+                }
                 // Transport bars get drag priority.
                 if self.scrubber_rect.contains(self.mouse) {
                     self.drag = Some(Drag::Scrubber);
@@ -286,6 +293,13 @@ impl MusicApp {
         }
 
         match key {
+            Key::Named(NamedKey::Escape) => {
+                // Dismiss an open overlay sidebar.
+                if self.sidebar_layout() == SplitLayout::Overlay && self.flap.is_open(self.sidebar_layout()) {
+                    self.dispatch(Action::CloseSidebar, state);
+                    *handled = true;
+                }
+            }
             Key::Named(NamedKey::Space) => {
                 self.dispatch(Action::TogglePlay, state);
                 *handled = true;
@@ -351,16 +365,37 @@ impl MusicApp {
             }
         }
 
+        // Advance the adaptive sidebar: reconcile a stale preference across a
+        // breakpoint crossing, then ease the reveal toward its target.
+        let layout = self.sidebar_layout();
+        self.flap.reconcile(layout);
+        if !self.flap_primed {
+            // First frame: the layout is only now known. Snap the reveal to the
+            // resolved openness so a cold start into a narrow window opens
+            // closed (and a `--shots` frame is settled), rather than animating
+            // in from the wide default. Honours an explicit scenario snap.
+            let open = self.flap.is_open(layout);
+            self.flap.snap(open);
+            self.flap_primed = true;
+        }
+        let now = Instant::now();
+        let dt = now.duration_since(self.flap_tick).as_secs_f64();
+        self.flap_tick = now;
+        self.flap.tick(layout, dt);
+
         let c = Palette::from(theme);
         let r = self.rect;
 
         // App background.
         scene.fill(Fill::NonZero, t, c.bg, None, &r);
 
-        let sidebar = Rect::new(r.x0, r.y0, r.x0 + SIDEBAR_W, r.y1 - NOWPLAYING_H);
-        let content_x0 = r.x0 + SIDEBAR_W;
+        // Content column begins after the docked sidebar inset (0 in overlay,
+        // where the content uses the full width and the sidebar floats over).
+        let content_x0 = r.x0 + self.content_inset();
         let header = Rect::new(content_x0, r.y0, r.x1, r.y0 + HEADER_H);
         let body = Rect::new(content_x0, r.y0 + HEADER_H, r.x1, r.y1 - NOWPLAYING_H);
+        // The now-playing transport is persistent chrome spanning the full
+        // window width along the bottom (the sidebar sits above it).
         let nowplaying = Rect::new(r.x0, r.y1 - NOWPLAYING_H, r.x1, r.y1);
         self.body_rect = body;
 
@@ -376,9 +411,64 @@ impl MusicApp {
         }
 
         self.draw_header(scene, t, tr, &c, header);
-        self.draw_sidebar(scene, t, tr, &c, sidebar);
         self.draw_nowplaying(scene, t, tr, &c, nowplaying);
+
+        // Overlay flap: dim the content behind a scrim that fades with the
+        // reveal, then float the sidebar above it. A click on the scrim
+        // dismisses the flap (registered as a hit so the press handler closes
+        // it without matching a content target).
+        let reveal = self.flap.reveal();
+        if layout == SplitLayout::Overlay && reveal > 0.001 {
+            let scrim = c.scrim.multiply_alpha((reveal * 0.55) as f32);
+            scene.fill(Fill::NonZero, t, scrim, None, &r);
+            self.push_hit(r, Action::CloseSidebar);
+        }
+
+        // Sidebar (docked beside the content, or floating in overlay). Skip the
+        // draw entirely when fully collapsed so its hits don't shadow content.
+        let side = self.sidebar_rect();
+        if side.width() > 0.5 {
+            self.draw_sidebar(scene, t, tr, &c, side);
+        }
+
+        // Hamburger / close toggle over the content's top-left corner,
+        // whenever the sidebar isn't fully docked-open.
+        if self.show_hamburger() {
+            self.draw_hamburger(scene, t, &c, header);
+        }
+
         self.draw_toast(scene, t, tr, &c);
+    }
+
+    /// The hamburger (or close-chevron) toggle that summons / dismisses the
+    /// overlay sidebar. Sits in the header's top-left, left of the title.
+    fn draw_hamburger(&mut self, scene: &mut Scene, t: Affine, c: &Palette, header: Rect) {
+        let size = 34.0;
+        let x0 = header.x0 + 14.0;
+        let y0 = header.y0 + (HEADER_H - size) / 2.0;
+        let btn = Rect::new(x0, y0, x0 + size, y0 + size);
+        self.hamburger_rect = btn;
+        let hover = btn.contains(self.mouse);
+        fill_rrect(scene, t, btn, 10.0, if hover { c.white10 } else { c.white5 });
+        let cx = btn.center();
+        let open = self.flap.reveal() > 0.5;
+        if open && self.sidebar_layout() == SplitLayout::Overlay {
+            // Close affordance: a left chevron.
+            icon::draw(scene, t, Icon::ChevronLeft, cx, 18.0, c.text);
+        } else {
+            // Three-line hamburger.
+            let lw = 15.0;
+            for i in 0..3 {
+                let ly = cx.y - 5.0 + i as f64 * 5.0;
+                fill_rrect(
+                    scene,
+                    t,
+                    Rect::new(cx.x - lw / 2.0, ly - 1.0, cx.x + lw / 2.0, ly + 1.0),
+                    1.0,
+                    c.text,
+                );
+            }
+        }
     }
 
     // ---- sidebar ----------------------------------------------------------
@@ -485,7 +575,9 @@ impl MusicApp {
 
     fn draw_header(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, r: Rect) {
         scene.fill(Fill::NonZero, t, c.bg, None, &r);
-        let mut x = r.x0 + 24.0;
+        // Leave room for the hamburger toggle in the corner when it's shown.
+        let lead = if self.show_hamburger() { 56.0 } else { 24.0 };
+        let mut x = r.x0 + lead;
 
         if !self.nav_back.is_empty() {
             let bz = Rect::new(x, r.y0 + 20.0, x + 32.0, r.y0 + 52.0);
@@ -1324,6 +1416,7 @@ struct Palette {
     white5: Color,
     white10: Color,
     toast_bg: Color,
+    scrim: Color,
 }
 
 impl Palette {
@@ -1344,6 +1437,7 @@ impl Palette {
             white5: col.surface_white_5,
             white10: col.surface_white_10,
             toast_bg: col.surfaces.raised,
+            scrim: col.surfaces.overlay,
         }
     }
 }

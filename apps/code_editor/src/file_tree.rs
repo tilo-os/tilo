@@ -102,6 +102,22 @@ impl FileTree {
         }
     }
 
+    /// Override the tree's rect directly, bypassing the taffy-derived one.
+    ///
+    /// In the narrow/overlay responsive layout the sidebar escapes normal
+    /// flow — it slides in over the content rather than occupying a column.
+    /// The app computes that off-flow rect each frame from the flap's eased
+    /// reveal and hands it here so both `draw` and hit-testing operate on the
+    /// overlay position (the tree draws and hit-tests purely from `self.rect`).
+    pub fn place_at(&mut self, rect: Rect) {
+        self.rect = rect;
+    }
+
+    /// The tree's current rect (the overlay position, in narrow mode).
+    pub fn rect(&self) -> Rect {
+        self.rect
+    }
+
     pub fn take_events(&mut self) -> Vec<TreeEvent> {
         std::mem::take(&mut self.pending)
     }

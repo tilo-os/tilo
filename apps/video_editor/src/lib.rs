@@ -28,3 +28,11 @@ use ui::widget::Widget;
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(VideoEditorApp::new())
 }
+
+/// Root tree configured for a deterministic narrow-window `--shots` capture:
+/// the media bin is snapped to its open overlay state so a single offscreen
+/// frame shows the collapsed sidebar revealed over the editor behind its
+/// scrim (the animation never runs in a one-shot render).
+pub fn app_root_narrow() -> Box<dyn Widget> {
+    Box::new(VideoEditorApp::new_with_bin_open())
+}

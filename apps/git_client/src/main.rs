@@ -1,9 +1,14 @@
 //! Git — thin binary entry point. All logic lives in the library.
 //!
 //! Modes:
-//!   * default        — run the live winit event loop via `ui::App`.
-//!   * `--shots PATH` — render one offscreen frame to a PNG and exit
-//!                       (headless screenshot; identical passes to the live app).
+//!   * default               — run the live winit event loop via `ui::App`.
+//!   * `--shots PATH`        — render one offscreen frame at the wide viewport
+//!                              to a PNG and exit (the docked side-by-side
+//!                              layout). Identical passes to the live app.
+//!   * `--shots-narrow PATH` — render one offscreen frame at a narrow viewport
+//!                              with the primary list column revealed as an
+//!                              overlay flap over its scrim, exercising the
+//!                              responsive collapse.
 
 use std::collections::HashMap;
 
@@ -19,19 +24,35 @@ use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
+/// Below the breakpoint the primary list column collapses into an overlay
+/// flap. Sized so the narrow capture is unambiguously below `NARROW_BREAKPOINT`
+/// and tall enough to show the diff detail behind the flap.
+const NARROW_SHOTS_VIEWPORT: (u32, u32) = (680, 860);
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
     let args: Vec<String> = std::env::args().collect();
-    if let Some(out) = parse_shots_arg(&args) {
+    let wide = parse_flag_value(&args, "--shots");
+    let narrow = parse_flag_value(&args, "--shots-narrow");
+    if wide.is_some() || narrow.is_some() {
         // The headless capture should render a deterministic, fully
         // populated state, not whatever repository happens to surround the
         // working directory — force the bundled sample fixture.
         unsafe {
             std::env::set_var("GIT_CLIENT_SAMPLE", "1");
         }
-        render_shot_to_png(git_client::app_root(), DEFAULT_SHOTS_VIEWPORT, &out)?;
+        if let Some(out) = wide {
+            render_shot_to_png(git_client::app_root(), DEFAULT_SHOTS_VIEWPORT, &out)?;
+        }
+        if let Some(out) = narrow {
+            // Reveal the overlay flap so the single frame shows the collapsed
+            // sidebar floating over its scrim rather than the closed default.
+            unsafe {
+                std::env::set_var("GIT_CLIENT_FLAP_OPEN", "1");
+            }
+            render_shot_to_png(git_client::app_root(), NARROW_SHOTS_VIEWPORT, &out)?;
+        }
         return Ok(());
     }
 
@@ -41,13 +62,15 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
+/// Parse `--flag VALUE` or `--flag=VALUE` for the given flag name.
+fn parse_flag_value(args: &[String], flag: &str) -> Option<std::path::PathBuf> {
+    let eq_prefix = format!("{flag}=");
     let mut iter = args.iter().skip(1);
     while let Some(arg) = iter.next() {
-        if arg == "--shots" {
+        if arg == flag {
             return iter.next().map(std::path::PathBuf::from);
         }
-        if let Some(rest) = arg.strip_prefix("--shots=") {
+        if let Some(rest) = arg.strip_prefix(&eq_prefix) {
             return Some(std::path::PathBuf::from(rest));
         }
     }

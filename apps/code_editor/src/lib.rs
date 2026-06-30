@@ -24,6 +24,8 @@ mod tab_bar;
 
 use ui::widget::Widget;
 
+pub use app::CodeApp;
+
 /// Build and return the app's root widget tree.
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(app::CodeApp::new())

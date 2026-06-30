@@ -26,7 +26,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{FlapState, SplitLayout, Widget};
 
 use crate::doc::VideoDoc;
 use crate::export::{
@@ -48,6 +48,10 @@ const VIDEO_LANE_H: f64 = 62.0;
 const AUDIO_LANE_H: f64 = 46.0;
 const TRIM_HIT: f64 = 8.0;
 const PAD: f64 = 14.0;
+/// Below this allocated width the media bin stops being a docked pane and
+/// collapses into an overlay flap summoned by the topbar hamburger. Above it
+/// the bin is docked beside the editor (the wide desktop layout).
+const BIN_BREAKPOINT: f64 = 900.0;
 
 /// Computed region rectangles for one frame, derived purely from the root
 /// rect. Recomputed in both `draw` and `handle_event` so the two never
@@ -55,6 +59,9 @@ const PAD: f64 = 14.0;
 #[derive(Clone, Copy, Default)]
 struct Regions {
     topbar: Rect,
+    /// Hamburger toggle in the topbar. Zero-sized (and skipped) while the bin
+    /// is docked; present only in the narrow overlay layout.
+    menu_btn: Rect,
     export_btn: Rect,
     split_btn: Rect,
     bin: Rect,
@@ -66,6 +73,11 @@ struct Regions {
     ruler: Rect,
     gutter: Rect,
     lanes: Rect,
+    /// Full-bounds dimming scrim drawn under the open overlay bin. Zero-sized
+    /// while docked or while the flap is fully closed.
+    scrim: Rect,
+    /// `true` when the bin is collapsed to an overlay flap (narrow window).
+    bin_overlay: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -109,6 +121,18 @@ pub struct VideoEditorApp {
     initialised_selection: bool,
     last_tick: Instant,
     rect: Rect,
+    /// `false` until the first laid-out frame resolves the bin flap to the
+    /// width's natural state — so a cold launch into a narrow window starts
+    /// with the bin already collapsed instead of flashing it open.
+    flap_settled: bool,
+    // --- responsive media-bin flap (shared toolkit kernel) ---
+    /// Drives the media bin's docked-vs-overlay reveal. The bin is the
+    /// primary sidebar: docked beside the editor on a wide window, an
+    /// eased overlay flap behind a scrim on a narrow one. `open_when_docked`
+    /// keeps the wide layout pixel-identical to before.
+    bin_flap: FlapState,
+    /// Real-time clock for the flap's frame-rate-independent eased slide.
+    flap_tick: Instant,
 }
 
 impl Default for VideoEditorApp {
@@ -141,22 +165,71 @@ impl VideoEditorApp {
             initialised_selection: false,
             last_tick: Instant::now(),
             rect: Rect::ZERO,
+            flap_settled: false,
+            bin_flap: FlapState::open_when_docked(),
+            flap_tick: Instant::now(),
         }
+    }
+
+    /// Like [`Self::new`] but with the media bin flap snapped fully open, for
+    /// a deterministic narrow-window `--shots` capture that shows the overlay
+    /// sidebar revealed in a single frame.
+    pub fn new_with_bin_open() -> Self {
+        let mut app = Self::new();
+        app.bin_flap.snap(true);
+        // Pre-settled: the explicit open snap is authoritative, so the first
+        // laid-out frame must not re-snap it to the width's default.
+        app.flap_settled = true;
+        app
+    }
+
+    /// Resolve the bin's docked-vs-overlay layout purely from the allocated
+    /// width against the breakpoint. The shared `SplitLayout` is the single
+    /// source of truth so the kernel's reconcile/animation agree with our
+    /// geometry.
+    fn bin_layout(&self) -> SplitLayout {
+        SplitLayout::from_width(self.rect.width(), BIN_BREAKPOINT)
     }
 
     // ---- region geometry -------------------------------------------------
     fn regions(&self) -> Regions {
         let r = self.rect;
+        let layout = self.bin_layout();
+        let overlay = layout == SplitLayout::Overlay;
         let topbar = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOPBAR_H);
         let export_btn = Rect::new(r.x1 - 124.0, r.y0 + 9.0, r.x1 - 14.0, r.y0 + 39.0);
         let split_btn = Rect::new(r.x1 - 244.0, r.y0 + 9.0, r.x1 - 134.0, r.y0 + 39.0);
+        // The hamburger replaces the static app glyph slot when the bin is an
+        // overlay, so the user can summon the collapsed bin.
+        let menu_btn = if overlay {
+            Rect::new(r.x0 + 12.0, r.y0 + 10.0, r.x0 + 40.0, r.y0 + 38.0)
+        } else {
+            Rect::ZERO
+        };
         let timeline_top = (r.y1 - TIMELINE_H).max(topbar.y1 + 80.0);
         let timeline = Rect::new(r.x0, timeline_top, r.x1, r.y1);
         let mid_top = topbar.y1;
         let mid_bot = timeline.y0;
-        let bin = Rect::new(r.x0, mid_top, r.x0 + BIN_W, mid_bot);
         let inspector = Rect::new(r.x1 - INSPECTOR_W, mid_top, r.x1, mid_bot);
-        let preview = Rect::new(bin.x1, mid_top, inspector.x0, mid_bot);
+        // Docked: the bin occupies its column and the preview starts after it.
+        // Overlay: the preview reclaims the bin's column (full editor width)
+        // and the bin slides in from the left over a scrim by the eased
+        // reveal — exactly the flap kernel's overlay geometry.
+        let (bin, preview_x0, scrim) = if overlay {
+            let slide = self.bin_flap.slide();
+            let bin_x0 = r.x0 - BIN_W * (1.0 - slide);
+            let bin = Rect::new(bin_x0, mid_top, bin_x0 + BIN_W, r.y1);
+            let scrim = if self.bin_flap.reveal() > 0.001 {
+                Rect::new(r.x0, mid_top, r.x1, r.y1)
+            } else {
+                Rect::ZERO
+            };
+            (bin, r.x0, scrim)
+        } else {
+            let bin = Rect::new(r.x0, mid_top, r.x0 + BIN_W, mid_bot);
+            (bin, bin.x1, Rect::ZERO)
+        };
+        let preview = Rect::new(preview_x0, mid_top, inspector.x0, mid_bot);
         let transport = Rect::new(preview.x0, preview.y1 - TRANSPORT_H, preview.x1, preview.y1);
         let canvas_area = Rect::new(preview.x0 + 10.0, preview.y0 + 10.0, preview.x1 - 10.0, transport.y0 - 8.0);
         let canvas = fit_aspect(canvas_area, self.project.width.max(16) as f64, self.project.height.max(9) as f64);
@@ -164,8 +237,8 @@ impl VideoEditorApp {
         let gutter = Rect::new(timeline.x0, timeline.y0 + RULER_H, timeline.x0 + GUTTER_W, timeline.y1);
         let lanes = Rect::new(timeline.x0 + GUTTER_W, timeline.y0 + RULER_H, timeline.x1, timeline.y1);
         Regions {
-            topbar, export_btn, split_btn, bin, preview, canvas, transport,
-            inspector, timeline, ruler, gutter, lanes,
+            topbar, menu_btn, export_btn, split_btn, bin, preview, canvas, transport,
+            inspector, timeline, ruler, gutter, lanes, scrim, bin_overlay: overlay,
         }
     }
 
@@ -253,6 +326,34 @@ impl VideoEditorApp {
                 self.playing = false;
             }
         }
+    }
+
+    /// Reconcile the bin flap with the current width and advance its eased
+    /// reveal using real elapsed time. Called once at the top of `draw`.
+    fn advance_flap(&mut self) {
+        let layout = self.bin_layout();
+        self.bin_flap.reconcile(layout);
+        // First settled frame: snap to the width's natural state so a cold
+        // narrow launch starts collapsed (no open→closed flash) and a cold
+        // wide launch starts docked-open.
+        if !self.flap_settled {
+            self.bin_flap.snap(layout == SplitLayout::Docked);
+            self.flap_settled = true;
+        }
+        let now = Instant::now();
+        let dt = now.duration_since(self.flap_tick).as_secs_f64();
+        self.flap_tick = now;
+        self.bin_flap.tick(layout, dt);
+    }
+
+    /// Toggle the media bin flap (the topbar hamburger / `B` shortcut).
+    fn toggle_bin(&mut self) {
+        self.bin_flap.toggle(self.bin_layout());
+    }
+
+    /// Whether the bin flap is animating and the host should keep painting.
+    fn flap_animating(&self) -> bool {
+        self.bin_flap.is_animating(self.bin_layout())
     }
 
     fn toggle_play(&mut self) {
@@ -502,7 +603,7 @@ impl Widget for VideoEditorApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.playing
+        self.playing || self.flap_animating()
     }
 
     fn build_layout(
@@ -543,13 +644,29 @@ impl Widget for VideoEditorApp {
         _presence: &PresenceCtx,
     ) {
         self.advance_playback();
+        self.advance_flap();
         let r = self.regions();
         self.draw_chrome(scene, transform, tr, theme, &r);
-        self.draw_bin(scene, transform, tr, theme, &r);
+        // Editor body. When the bin is docked it draws in its column; when
+        // it's an overlay flap it is drawn LAST so it floats over the body
+        // behind a scrim.
+        if !r.bin_overlay {
+            self.draw_bin(scene, transform, tr, theme, &r);
+        }
         self.draw_preview(scene, transform, tr, theme, &r);
         self.draw_transport(scene, transform, tr, theme, &r);
         self.draw_inspector(scene, transform, tr, theme, &r);
         self.draw_timeline(scene, transform, tr, theme, &r);
+        if r.bin_overlay {
+            // Dimming scrim, then the bin sliding in on top of it.
+            if r.scrim.width() > 0.0 {
+                let a = self.bin_flap.reveal() * 0.5;
+                fill_rect(scene, transform, with_alpha(Color::BLACK, a), r.scrim);
+            }
+            if self.bin_flap.reveal() > 0.001 {
+                self.draw_bin(scene, transform, tr, theme, &r);
+            }
+        }
         if self.show_export {
             self.draw_export_modal(scene, transform, tr, theme, &r);
         }
@@ -690,6 +807,12 @@ impl VideoEditorApp {
                 self.split_selected(state);
                 true
             }
+            // Toggle the media bin flap. Useful on narrow windows where the
+            // bin is an overlay; harmless (collapses the docked bin) on wide.
+            Key::Character(c) if c.eq_ignore_ascii_case("b") && !ctrl => {
+                self.toggle_bin();
+                true
+            }
             Key::Character(c) if c.as_str() == "+" || c.as_str() == "=" => {
                 self.zoom_by(1.25);
                 true
@@ -699,7 +822,15 @@ impl VideoEditorApp {
                 true
             }
             Key::Named(NamedKey::Escape) => {
-                self.selected = None;
+                // Esc dismisses an open overlay bin first, then clears the
+                // selection — matching the flap kernel's Esc-to-close.
+                if self.bin_layout() == SplitLayout::Overlay
+                    && self.bin_flap.is_open(SplitLayout::Overlay)
+                {
+                    self.bin_flap.close();
+                } else {
+                    self.selected = None;
+                }
                 true
             }
             _ => false,
@@ -714,6 +845,11 @@ impl VideoEditorApp {
             self.press_export(state, r, p);
             return;
         }
+        // Hamburger toggle (overlay layout only).
+        if r.bin_overlay && r.menu_btn.contains(p) {
+            self.toggle_bin();
+            return;
+        }
         // Top bar buttons.
         if r.export_btn.contains(p) {
             self.show_export = true;
@@ -723,18 +859,28 @@ impl VideoEditorApp {
             self.split_selected(state);
             return;
         }
-        // Media bin.
-        for (mid, rect) in self.bin_item_rects(r) {
-            if rect.contains(p) {
-                self.selected_media = Some(mid);
-                let dbl = matches!(self.last_click_media, Some((m, t)) if m == mid && t.elapsed().as_millis() < 400);
-                if dbl {
-                    self.add_media_to_timeline(state, mid);
-                    self.last_click_media = None;
-                } else {
-                    self.last_click_media = Some((mid, Instant::now()));
+        // While the bin is an open overlay, a click on the scrim (anywhere
+        // outside the flap and the topbar toggle) dismisses it — matching the
+        // flap kernel's scrim/Esc behaviour.
+        let bin_visible = !r.bin_overlay || self.bin_flap.is_open(self.bin_layout());
+        if r.bin_overlay && bin_visible && !r.bin.contains(p) && !r.menu_btn.contains(p) {
+            self.bin_flap.close();
+            return;
+        }
+        // Media bin (only when it's on-screen: docked, or overlay open).
+        if bin_visible {
+            for (mid, rect) in self.bin_item_rects(r) {
+                if rect.contains(p) {
+                    self.selected_media = Some(mid);
+                    let dbl = matches!(self.last_click_media, Some((m, t)) if m == mid && t.elapsed().as_millis() < 400);
+                    if dbl {
+                        self.add_media_to_timeline(state, mid);
+                        self.last_click_media = None;
+                    } else {
+                        self.last_click_media = Some((mid, Instant::now()));
+                    }
+                    return;
                 }
-                return;
             }
         }
         // Inspector controls.
@@ -952,7 +1098,12 @@ impl VideoEditorApp {
 
     fn update_hover(&mut self, r: &Regions) {
         let p = self.last_mouse;
-        self.hover_media = self.bin_item_rects(r).into_iter().find(|(_, rect)| rect.contains(p)).map(|(m, _)| m);
+        let bin_visible = !r.bin_overlay || self.bin_flap.is_open(self.bin_layout());
+        self.hover_media = if bin_visible {
+            self.bin_item_rects(r).into_iter().find(|(_, rect)| rect.contains(p)).map(|(m, _)| m)
+        } else {
+            None
+        };
         self.hover_clip = None;
         if r.lanes.contains(p) {
             for (tid, _k, lane) in self.lane_rects(r) {
@@ -980,12 +1131,19 @@ impl VideoEditorApp {
         // Top bar.
         fill_rect(scene, tf, c.surfaces.raised, r.topbar);
         stroke_line(scene, tf, c.border_standard, r.topbar.x0, r.topbar.y1, r.topbar.x1, r.topbar.y1, 1.0);
-        // Accent app glyph.
-        let glyph = RoundedRect::new(r.topbar.x0 + 14.0, r.topbar.y0 + 12.0, r.topbar.x0 + 38.0, r.topbar.y0 + 36.0, 6.0);
-        scene.fill(Fill::NonZero, tf, c.accent[5], None, &glyph);
-        let tri = triangle(r.topbar.x0 + 21.0, r.topbar.y0 + 18.0, 12.0);
-        scene.fill(Fill::NonZero, tf, Color::WHITE, None, &tri);
-        text_w(scene, tr, tf, "Video Editor", 16.0, c.text_primary, r.topbar.x0 + 48.0, r.topbar.y0 + 15.0, TextWeight::Semibold);
+        // Leading slot: the accent app glyph when the bin is docked, or a
+        // hamburger toggle when the bin is collapsed to an overlay flap.
+        let title_x = if r.bin_overlay {
+            self.draw_hamburger(scene, tf, theme, r.menu_btn);
+            r.menu_btn.x1 + 12.0
+        } else {
+            let glyph = RoundedRect::new(r.topbar.x0 + 14.0, r.topbar.y0 + 12.0, r.topbar.x0 + 38.0, r.topbar.y0 + 36.0, 6.0);
+            scene.fill(Fill::NonZero, tf, c.accent[5], None, &glyph);
+            let tri = triangle(r.topbar.x0 + 21.0, r.topbar.y0 + 18.0, 12.0);
+            scene.fill(Fill::NonZero, tf, Color::WHITE, None, &tri);
+            r.topbar.x0 + 48.0
+        };
+        text_w(scene, tr, tf, "Video Editor", 16.0, c.text_primary, title_x, r.topbar.y0 + 15.0, TextWeight::Semibold);
         // Project meta, centered-ish.
         let meta = format!(
             "{}   ·   {}×{}   ·   {:.0} fps   ·   {}",
@@ -1000,6 +1158,32 @@ impl VideoEditorApp {
         // Buttons.
         draw_button(scene, tf, tr, theme, r.split_btn, "Split  (S)", false);
         draw_button(scene, tf, tr, theme, r.export_btn, "Export…", true);
+    }
+
+    /// Three-bar hamburger that summons the collapsed media bin. Highlights
+    /// while the flap is open so it reads as a pressed toggle.
+    fn draw_hamburger(&self, scene: &mut Scene, tf: Affine, theme: &Theme, rect: Rect) {
+        if rect.width() <= 0.0 {
+            return;
+        }
+        let c = &theme.tokens.colors;
+        let open = self.bin_flap.is_open(self.bin_layout());
+        let hovered = rect.contains(self.last_mouse);
+        let bg = if open {
+            c.accent[5]
+        } else if hovered {
+            c.surface_white_10
+        } else {
+            c.neutral[3]
+        };
+        fill_rrect(scene, tf, bg, rect, 7.0);
+        let bar = if open { Color::WHITE } else { c.text_primary };
+        let bx0 = rect.x0 + 7.0;
+        let bx1 = rect.x1 - 7.0;
+        for i in 0..3 {
+            let by = rect.center().y - 5.0 + i as f64 * 5.0;
+            fill_rrect(scene, tf, bar, Rect::new(bx0, by - 1.0, bx1, by + 1.0), 1.0);
+        }
     }
 
     fn draw_bin(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
@@ -1693,5 +1877,68 @@ mod tests {
         let r = app.regions();
         let aspect = r.canvas.width() / r.canvas.height();
         assert!((aspect - 16.0 / 9.0).abs() < 0.05, "canvas aspect {aspect}");
+    }
+
+    #[test]
+    fn wide_window_docks_the_bin_beside_the_preview() {
+        let app = app_with_sample(); // 1280 wide ≥ breakpoint
+        assert_eq!(app.bin_layout(), SplitLayout::Docked);
+        let r = app.regions();
+        assert!(!r.bin_overlay, "wide window keeps the bin docked");
+        // The preview starts after the docked bin, never overlapping it.
+        assert!(
+            r.preview.x0 >= r.bin.x1 - 0.5,
+            "docked preview begins at the bin's right edge"
+        );
+        assert!(r.menu_btn.width() == 0.0, "no hamburger while docked");
+        assert!(r.scrim.width() == 0.0, "no scrim while docked");
+    }
+
+    #[test]
+    fn narrow_window_collapses_bin_to_overlay_with_hamburger() {
+        let mut app = app_with_sample();
+        app.rect = Rect::new(0.0, 0.0, 720.0, 820.0); // < breakpoint
+        app.advance_flap(); // first frame settles the bin to the width default
+        assert_eq!(app.bin_layout(), SplitLayout::Overlay);
+        let r = app.regions();
+        assert!(r.bin_overlay, "narrow window collapses the bin to an overlay");
+        assert!(r.menu_btn.width() > 0.0, "narrow window shows the hamburger");
+        // Closed by default: the bin sits fully off the left edge and the
+        // preview reclaims the full editor width.
+        assert!(r.bin.x1 <= app.rect.x0 + 0.5, "closed overlay bin is off-screen left");
+        assert!(
+            (r.preview.x0 - app.rect.x0).abs() < 0.5,
+            "narrow preview reclaims the bin's column"
+        );
+        assert!(r.scrim.width() == 0.0, "closed overlay paints no scrim");
+    }
+
+    #[test]
+    fn opening_narrow_bin_reveals_it_over_a_scrim() {
+        let mut app = app_with_sample();
+        app.rect = Rect::new(0.0, 0.0, 720.0, 820.0);
+        app.toggle_bin(); // user summons the bin
+        app.bin_flap.snap(true); // settle the slide deterministically
+        let r = app.regions();
+        assert!(app.bin_flap.is_open(SplitLayout::Overlay));
+        assert!(r.scrim.width() > 0.0, "open overlay bin dims the editor with a scrim");
+        // Fully revealed: the bin sits flush at the left edge.
+        assert!((r.bin.x0 - app.rect.x0).abs() < 0.5, "revealed bin is flush left");
+    }
+
+    #[test]
+    fn crossing_breakpoint_returns_to_docked_default() {
+        let mut app = app_with_sample();
+        // Narrow + summon the overlay bin.
+        app.rect = Rect::new(0.0, 0.0, 720.0, 820.0);
+        app.advance_flap();
+        app.toggle_bin();
+        assert!(app.bin_flap.is_open(SplitLayout::Overlay));
+        // Widen past the breakpoint: reconcile drops the stale preference and
+        // the bin returns to its docked-open default.
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.advance_flap();
+        assert_eq!(app.bin_layout(), SplitLayout::Docked);
+        assert!(app.bin_flap.is_open(SplitLayout::Docked), "widening re-docks the open bin");
     }
 }

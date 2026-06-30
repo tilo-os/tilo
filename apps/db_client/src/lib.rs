@@ -43,3 +43,13 @@ use ui::widget::Widget;
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(DbClientApp::new())
 }
+
+/// Build the root widget for an offscreen `--shots` frame at a given width,
+/// with the responsive sidebar flap pre-snapped to that width's layout
+/// default (wide ⇒ docked+open, narrow ⇒ overlay+collapsed). This makes the
+/// single offscreen frame deterministic without waiting for the eased slide.
+pub fn app_root_for_shot(width: f64) -> Box<dyn Widget> {
+    let mut app = DbClientApp::new();
+    app.snap_flap_for_width(width);
+    Box::new(app)
+}
