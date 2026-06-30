@@ -7,6 +7,7 @@
 //! headless screenshot is fully populated offline.
 //!
 //! Layers:
+//! - [`layout`]     — pure geometry: card heights, per-core grid, table columns.
 //! - [`model`]      — pure data: rolling histories, process rows, formatting.
 //! - [`sampler`]    — live `sysinfo` readings folded into the model.
 //! - [`charts`]     — custom Vello primitives (area charts, ring/bar gauges).
@@ -19,6 +20,7 @@
 
 pub mod app;
 pub mod charts;
+pub mod layout;
 pub mod model;
 pub mod prefs;
 pub mod responsive;
