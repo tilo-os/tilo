@@ -11,7 +11,7 @@
 //! fall back to its geometric decoder. This keeps `cargo build` working on
 //! machines that haven't built the FUTO stack.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 fn main() {
     println!("cargo:rerun-if-env-changed=QOS_SWIPE_LIB");

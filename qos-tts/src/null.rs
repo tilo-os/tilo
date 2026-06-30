@@ -6,8 +6,8 @@ use crate::speaker::{Speaker, Utterance};
 ///
 /// Two roles:
 /// * **Test double** — assert exactly what the reader *would* have said, and in
-///   what order, without any audio or daemon (per the design doc's testing
-///   strategy: "assert the utterance text produced … no audio needed").
+///   what order, without any audio or daemon: assert the utterance text
+///   produced, no audio needed.
 /// * **Headless / no-TTS fallback** — the terminal member of
 ///   [`crate::default_speaker`]'s chain, so the engine never panics when no
 ///   speech stack is installed.
