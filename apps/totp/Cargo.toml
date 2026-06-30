@@ -1,0 +1,40 @@
+[package]
+name = "totp"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "totp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "totp"
+path = "src/main.rs"
+
+[dependencies]
+ui = { path = "../../ui" }
+automerge = "0.8.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.23.1", features = ["v4", "serde"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+vello = "0.9"
+winit = "0.30.13"
+taffy = "0.10.1"
+anyhow = "1.0"
+
+# --- TOTP / 2FA code generation ---------------------------------------
+# RFC 6238 (TOTP) is implemented in-crate (src/totp.rs) directly on the
+# audited RustCrypto HMAC/SHA primitives below + RFC 4648 base32 secret
+# decoding. These four crates are already resolved in the workspace
+# lockfile (pulled transitively by the iroh/fs stack), so adding them as
+# direct dependencies needs no network fetch and keeps the shared build
+# green. `totp-rs` was evaluated, but it is NOT in the lock and would
+# force a registry fetch; building the ~30-line RFC 6238 core on top of
+# these primitives is the lighter, build-safe choice and gives full
+# control over the otpauth:// param surface the UI exposes.
+hmac = "0.12"
+sha1 = "0.10"
+sha2 = "0.10"
+base32 = "0.5"
