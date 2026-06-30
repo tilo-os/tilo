@@ -3129,6 +3129,219 @@ fn draw_btn(scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, cc: &Ch
     tr.draw_text(scene, label, 12.5, fg, transform * Affine::translate((tx, ty)), Some((r.width() - 6.0) as f32));
 }
 
+/// One node of the word processor's accessibility tree: a [`ui::a11y::AccessNode`]
+/// plus its accessible children.
+///
+/// The `ui` toolkit's [`Widget::accessibility`] returns a single *local*
+/// [`AccessNode`](ui::a11y::AccessNode) and the host normally assembles the
+/// global tree from [`Widget::children`]. The word processor renders its blocks
+/// directly (they are materialized [`BlockView`]s, not child widgets), so it has
+/// no child widgets to walk. Instead it builds the whole document + chrome node
+/// tree itself via [`WordProcessorWidget::accessibility_tree`], with this struct
+/// as the carrier. The trait [`Widget::accessibility`] returns this tree's root
+/// node so the standard host path still sees a focusable `Document`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct A11yTreeNode {
+    /// The local semantics of this element.
+    pub node: ui::a11y::AccessNode,
+    /// This element's accessible children, in reading order.
+    pub children: Vec<A11yTreeNode>,
+}
+
+impl A11yTreeNode {
+    fn leaf(node: ui::a11y::AccessNode) -> Self {
+        Self { node, children: Vec::new() }
+    }
+}
+
+/// A human-readable accessible name for a toolbar [`ToolAction`]. The visible
+/// toolbar labels are terse glyphs ("B", "H1", "🖼 Image") tuned for sighted
+/// users; a screen reader needs the spelled-out verb instead.
+fn tool_action_a11y_label(a: ToolAction) -> String {
+    let s = match a {
+        ToolAction::Bold => "Bold",
+        ToolAction::Italic => "Italic",
+        ToolAction::Underline => "Underline",
+        ToolAction::Strike => "Strikethrough",
+        ToolAction::Super => "Superscript",
+        ToolAction::Sub => "Subscript",
+        ToolAction::H1 => "Heading 1",
+        ToolAction::H2 => "Heading 2",
+        ToolAction::Body => "Body text",
+        ToolAction::Bullet => "Bulleted list",
+        ToolAction::AlignLeft => "Align left",
+        ToolAction::AlignCenter => "Align center",
+        ToolAction::AlignRight => "Align right",
+        ToolAction::AlignJustify => "Justify",
+        ToolAction::LineSpacing => "Line spacing",
+        ToolAction::FontCycle => "Font",
+        ToolAction::SizeUp => "Increase font size",
+        ToolAction::SizeDown => "Decrease font size",
+        ToolAction::SizeShow => "Font size",
+        ToolAction::InsertImage => "Insert image",
+        ToolAction::InsertTable => "Insert table",
+        ToolAction::TableRowAdd => "Add table row",
+        ToolAction::TableRowDel => "Delete table row",
+        ToolAction::TableColAdd => "Add table column",
+        ToolAction::TableColDel => "Delete table column",
+        ToolAction::TableDelete => "Delete table",
+        ToolAction::ToggleStyles => "Styles panel",
+        ToolAction::ToggleRuler => "Ruler",
+        ToolAction::ToggleOutline => "Document outline",
+        ToolAction::InsertToc => "Insert table of contents",
+        ToolAction::NewMenu => "New from template",
+        ToolAction::TextColor(c) => {
+            return match c {
+                Some(rgb) => format!("Text color #{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]),
+                None => "Default text color".to_string(),
+            };
+        }
+        ToolAction::Highlight(c) => {
+            return match c {
+                Some(rgb) => format!("Highlight #{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]),
+                None => "Clear highlight".to_string(),
+            };
+        }
+    };
+    s.to_string()
+}
+
+impl WordProcessorWidget {
+    /// The 1-based heading level for a heading block (defaults to 1 when the
+    /// `level` attr is absent or non-positive).
+    fn block_heading_level(b: &BlockView) -> u8 {
+        match b.attrs.get("level") {
+            Some(AttrVal::Int(n)) if *n >= 1 => (*n).min(255) as u8,
+            _ => 1,
+        }
+    }
+
+    /// The accessible name for an image block: its explicit `alt` attr (set by
+    /// the ODT/DOCX importers, round-tripped through `svg:desc`), falling back to
+    /// the block's own text (a caption), or `None` when neither is present (a
+    /// decorative / unlabelled image).
+    fn image_alt(b: &BlockView) -> Option<String> {
+        if let Some(AttrVal::Str(alt)) = b.attrs.get("alt") {
+            let alt = alt.trim();
+            if !alt.is_empty() {
+                return Some(alt.to_string());
+            }
+        }
+        let text = b.text.trim();
+        if text.is_empty() { None } else { Some(text.to_string()) }
+    }
+
+    /// The accessibility node for a single document block, or `None` for a block
+    /// kind that carries no standalone semantics here (table cells are emitted as
+    /// children of their table node, not at the top level).
+    fn block_access_node(b: &BlockView) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, Role};
+        let node = match b.kind.as_str() {
+            "heading" => AccessNode::new(Role::Heading { level: Self::block_heading_level(b) })
+                .with_name(b.text.clone()),
+            "paragraph" => AccessNode::new(Role::Paragraph).with_value(b.text.clone()),
+            "list_item" => AccessNode::new(Role::ListItem).with_value(b.text.clone()),
+            "image" => {
+                AccessNode::new(Role::Image).with_optional_name(Self::image_alt(b))
+            }
+            // Cells are surfaced under their table; standalone they have no role.
+            "cell" => return None,
+            // Unknown / future block kinds degrade to non-editable static text so
+            // their content is still announced rather than dropped.
+            _ => AccessNode::new(Role::StaticText).with_value(b.text.clone()),
+        };
+        Some(node)
+    }
+
+    /// Build the toolbar group node + a button node per visible toolbar control.
+    /// Returns `None` when the toolbar has not been laid out yet (no frame drawn),
+    /// so the document tree never carries an empty toolbar group.
+    fn toolbar_access_node(&self) -> Option<A11yTreeNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        if self.toolbar.is_empty() {
+            return None;
+        }
+        let buttons: Vec<A11yTreeNode> = self
+            .toolbar
+            .iter()
+            .map(|(action, _rect)| {
+                // The size-value chip is display-only; everything else is a button.
+                let role = if matches!(action, ToolAction::SizeShow) {
+                    Role::StaticText
+                } else {
+                    Role::Button
+                };
+                let node = AccessNode::new(role)
+                    .with_name(tool_action_a11y_label(*action))
+                    .with_state(AccessState { focusable: matches!(role, Role::Button), ..Default::default() });
+                A11yTreeNode::leaf(node)
+            })
+            .collect();
+        Some(A11yTreeNode {
+            node: AccessNode::new(Role::Toolbar).with_name("Formatting"),
+            children: buttons,
+        })
+    }
+
+    /// Assemble the full accessibility node tree for the word processor: a
+    /// [`Role::Document`] root holding one node per document block (headings with
+    /// their level, paragraphs / list items carrying their text, images with
+    /// their alt text, tables as a [`Role::Table`] with [`Role::Cell`] children),
+    /// followed by a [`Role::Toolbar`] group of formatting buttons.
+    ///
+    /// This is the production path consumed by the future a11y export (W4) and
+    /// the built-in screen reader; [`Widget::accessibility`] returns this tree's
+    /// root so the host's standard per-widget path still surfaces the document.
+    pub fn accessibility_tree(&self) -> A11yTreeNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let mut children: Vec<A11yTreeNode> = Vec::new();
+        let mut i = 0usize;
+        while i < self.blocks.len() {
+            let b = &self.blocks[i];
+            if b.kind == "cell" {
+                // Coalesce a run of consecutive cells sharing a `table` id into a
+                // single Table node with the cells as Cell children.
+                let table_id = cell_table(b);
+                let mut cells: Vec<A11yTreeNode> = Vec::new();
+                while i < self.blocks.len()
+                    && self.blocks[i].kind == "cell"
+                    && cell_table(&self.blocks[i]) == table_id
+                {
+                    let c = &self.blocks[i];
+                    cells.push(A11yTreeNode::leaf(
+                        AccessNode::new(Role::Cell).with_value(c.text.clone()),
+                    ));
+                    i += 1;
+                }
+                children.push(A11yTreeNode {
+                    node: AccessNode::new(Role::Table),
+                    children: cells,
+                });
+                continue;
+            }
+            if let Some(node) = Self::block_access_node(b) {
+                children.push(A11yTreeNode::leaf(node));
+            }
+            i += 1;
+        }
+
+        if let Some(toolbar) = self.toolbar_access_node() {
+            children.push(toolbar);
+        }
+
+        A11yTreeNode {
+            node: AccessNode::new(Role::Document).with_state(AccessState {
+                focusable: true,
+                focused: self.focused,
+                multiline: true,
+                ..Default::default()
+            }),
+            children,
+        }
+    }
+}
+
 impl Widget for WordProcessorWidget {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         self.inner.bind(state, root);
@@ -4667,6 +4880,18 @@ impl Widget for WordProcessorWidget {
     fn name(&self) -> &str {
         "WordProcessor"
     }
+
+    /// The word processor's local accessibility semantics: the editable
+    /// [`Role::Document`] root. The blocks are rendered directly (they are
+    /// materialized [`BlockView`]s, not child widgets), so the full per-block /
+    /// toolbar subtree is exposed via the inherent
+    /// [`WordProcessorWidget::accessibility_tree`] rather than `children()`; this
+    /// trait method returns that tree's root so the standard host path still sees
+    /// a focusable, multiline document.
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        Some(self.accessibility_tree().node)
+    }
+
     fn test_id(&self) -> Option<&str> {
         Some("word_processor")
     }
@@ -7826,5 +8051,187 @@ mod tests {
         assert!(wp.ruler_drag.map(|d| d.drop_off).unwrap_or(false), "dragging below the band flags drop-off");
         wp.ruler_drag_release(&mut state.doc);
         assert!(wp.model().block_tab_stops(&state.doc, &block).is_empty(), "the tab stop was removed");
+    }
+
+    // ---- Accessibility ------------------------------------------------------
+
+    /// A 2×3 RGB PNG fixture (shared with the image-layout test).
+    const A11Y_TINY_PNG: &[u8] = &[
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 3, 8, 2,
+        0, 0, 0, 54, 136, 73, 214, 0, 0, 0, 17, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 240,
+        159, 1, 140, 17, 20, 0, 68, 208, 5, 251, 176, 88, 73, 172, 0, 0, 0, 0, 73, 69, 78, 68, 174,
+        66, 96, 130,
+    ];
+
+    /// The accessibility tree's root is a focusable, multiline [`Role::Document`].
+    #[test]
+    fn accessibility_root_is_a_multiline_document() {
+        use ui::a11y::Role;
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+
+        let tree = wp.accessibility_tree();
+        assert_eq!(tree.node.role, Role::Document);
+        assert!(tree.node.state.multiline, "the document is multiline");
+        assert!(tree.node.state.focusable, "the document is focusable");
+
+        // The document's `focused` flag is derived from the widget's focus state,
+        // not stored separately, so it tracks `set_focus`.
+        Widget::set_focus(&mut wp, false);
+        assert!(!wp.accessibility_tree().node.state.focused, "blurred editor → not focused");
+        Widget::set_focus(&mut wp, true);
+        assert!(wp.accessibility_tree().node.state.focused, "focused editor → focused");
+
+        // The trait method returns the same root, so the host path agrees.
+        let trait_root = Widget::accessibility(&wp).expect("editor exposes a document node");
+        assert_eq!(trait_root, wp.accessibility_tree().node, "Widget::accessibility() returns the tree root");
+    }
+
+    /// A heading + a paragraph yield a heading node (correct level + text) and a
+    /// paragraph node carrying the paragraph text, under the document root.
+    #[test]
+    fn accessibility_tree_has_heading_and_paragraph_nodes() {
+        use ui::a11y::Role;
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+
+        // First block: a level-1 heading "Title".
+        wp.model_mut().insert_str(&mut state.doc, "Title");
+        wp.model_mut().set_paragraph_style(&mut state.doc, "heading", Some(1), None);
+        wp.model_mut().enter(&mut state.doc);
+        // Second block: a body paragraph.
+        wp.model_mut().set_paragraph_style(&mut state.doc, "paragraph", None, None);
+        wp.model_mut().insert_str(&mut state.doc, "Body text here");
+        wp.sync(&mut state.doc, &state.root);
+
+        let tree = wp.accessibility_tree();
+
+        let heading = tree
+            .children
+            .iter()
+            .find(|c| matches!(c.node.role, Role::Heading { .. }))
+            .expect("a heading node is present");
+        assert_eq!(heading.node.role, Role::Heading { level: 1 }, "level-1 heading");
+        assert_eq!(heading.node.name.as_deref(), Some("Title"), "heading carries its text");
+
+        let paragraph = tree
+            .children
+            .iter()
+            .find(|c| c.node.role == Role::Paragraph)
+            .expect("a paragraph node is present");
+        assert_eq!(
+            paragraph.node.value.as_deref(),
+            Some("Body text here"),
+            "paragraph carries its text",
+        );
+    }
+
+    /// An image block whose `alt` attr is set (as the ODT/DOCX importers do)
+    /// yields a [`Role::Image`] node carrying that alt text. Asserted on the
+    /// production node-builder (`block_access_node`) with a directly-built
+    /// [`BlockView`], since setting an arbitrary block attr is not on the model's
+    /// public surface.
+    #[test]
+    fn accessibility_image_node_carries_alt() {
+        use qdoc::snapshot::{AttrVal, BlockView};
+        use std::collections::BTreeMap;
+        use ui::a11y::Role;
+
+        let mut attrs = BTreeMap::new();
+        attrs.insert("blob".to_string(), AttrVal::Str("deadbeef".into()));
+        attrs.insert("alt".to_string(), AttrVal::Str("a tiny dot".into()));
+        let img = BlockView {
+            id: "img1".into(),
+            kind: "image".into(),
+            text: String::new(),
+            marks: Vec::new(),
+            attrs,
+            children: Vec::new(),
+        };
+
+        let node = WordProcessorWidget::block_access_node(&img).expect("image yields a node");
+        assert_eq!(node.role, Role::Image);
+        assert_eq!(node.name.as_deref(), Some("a tiny dot"), "image node carries its alt text");
+
+        // With no `alt` attr the block's own text (a caption) is the fallback name.
+        let mut captioned = img.clone();
+        captioned.attrs.remove("alt");
+        captioned.text = "Figure 1".into();
+        let cap_node = WordProcessorWidget::block_access_node(&captioned).unwrap();
+        assert_eq!(cap_node.name.as_deref(), Some("Figure 1"), "caption text is the alt fallback");
+
+        // And a genuinely-inserted image surfaces as an Image node in the full tree.
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "before");
+        wp.model_mut().insert_image_bytes(&mut state.doc, A11Y_TINY_PNG);
+        wp.sync(&mut state.doc, &state.root);
+        let tree = wp.accessibility_tree();
+        assert!(
+            tree.children.iter().any(|c| c.node.role == Role::Image),
+            "an inserted image appears as an image node in the document tree",
+        );
+    }
+
+    /// A table's cells are surfaced as [`Role::Cell`] children of a single
+    /// [`Role::Table`] node (not as loose top-level blocks).
+    #[test]
+    fn accessibility_tree_groups_table_cells_under_a_table() {
+        use ui::a11y::Role;
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_table(&mut state.doc, 2, 2);
+        wp.sync(&mut state.doc, &state.root);
+
+        let tree = wp.accessibility_tree();
+        let table = tree
+            .children
+            .iter()
+            .find(|c| c.node.role == Role::Table)
+            .expect("a table node is present");
+        assert_eq!(table.children.len(), 4, "the 2×2 table has four cell nodes");
+        assert!(
+            table.children.iter().all(|c| c.node.role == Role::Cell),
+            "every table child is a cell",
+        );
+        // No loose cell nodes leaked to the document root.
+        assert!(
+            !tree.children.iter().any(|c| c.node.role == Role::Cell),
+            "cells are not top-level document children",
+        );
+    }
+
+    /// Once a frame has been drawn (the toolbar is laid out), the tree carries a
+    /// [`Role::Toolbar`] group of button nodes with spelled-out accessible names.
+    #[test]
+    fn accessibility_tree_exposes_toolbar_buttons() {
+        use ui::a11y::Role;
+        let (mut state, mut wp) = populated();
+        pipeline_draw(&mut wp, &mut state, 1100, 760);
+        // Re-sync so the tree reflects the drawn toolbar.
+        wp.sync(&mut state.doc, &state.root);
+
+        let tree = wp.accessibility_tree();
+        let toolbar = tree
+            .children
+            .iter()
+            .find(|c| c.node.role == Role::Toolbar)
+            .expect("a toolbar group is present after a draw");
+        assert!(!toolbar.children.is_empty(), "the toolbar has button nodes");
+        // The buttons read with human names, not the terse visible glyphs.
+        let names: Vec<&str> = toolbar
+            .children
+            .iter()
+            .filter_map(|c| c.node.name.as_deref())
+            .collect();
+        assert!(names.contains(&"Bold"), "the Bold button is named for a screen reader");
+        assert!(
+            toolbar.children.iter().any(|c| c.node.role == Role::Button),
+            "the toolbar contains button nodes",
+        );
     }
 }
