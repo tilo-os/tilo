@@ -755,6 +755,27 @@ impl Widget for HistoryScrubber {
         "HistoryScrubber"
     }
 
+    /// Accessibility (W3): a scrubber over the document's revision history
+    /// behaves like a slider — `Role::Slider` whose value is the selected
+    /// tick's position ("revision N of M"). Reusing the slider role means an
+    /// AT offers the same increment/decrement affordance the scrubber's drag
+    /// provides.
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        let total = self.entries.len();
+        let value = if total == 0 {
+            "empty".to_string()
+        } else {
+            format!("revision {} of {}", self.current_tick + 1, total)
+        };
+        Some(
+            AccessNode::new(Role::Slider)
+                .with_name("History scrubber")
+                .with_value(value)
+                .with_state(AccessState::new().focusable(true)),
+        )
+    }
+
     fn test_id(&self) -> Option<&str> {
         Some("history_scrubber")
     }
@@ -807,6 +828,24 @@ mod tests {
         s.rect = rect;
         s.set_now_for_test(SystemTime::UNIX_EPOCH + Duration::from_secs(3600));
         s
+    }
+
+    #[test]
+    fn accessibility_reports_slider_role_and_revision_value() {
+        use crate::a11y::Role;
+        let mut s = scrubber_at(Rect::new(0.0, 0.0, 400.0, 40.0), 5);
+        let node = Widget::accessibility(&s).expect("scrubber is not presentational");
+        assert_eq!(node.role, Role::Slider);
+        assert_eq!(node.name.as_deref(), Some("History scrubber"));
+        // 5 ticks; the scrubber starts pinned at the newest revision (tick 4)
+        // → "revision 5 of 5". The value is `current_tick + 1` of total.
+        assert_eq!(node.value.as_deref(), Some("revision 5 of 5"));
+        assert!(node.state.focusable);
+
+        // Empty scrubber reports an "empty" value rather than a bogus revision.
+        s = scrubber_at(Rect::new(0.0, 0.0, 400.0, 40.0), 0);
+        let node = Widget::accessibility(&s).unwrap();
+        assert_eq!(node.value.as_deref(), Some("empty"));
     }
 
     fn cursor_moved(x: f64, y: f64) -> WindowEvent {

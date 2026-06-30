@@ -357,6 +357,21 @@ impl Widget for ToastStack {
     fn name(&self) -> &str { "ToastStack" }
 
     fn get_rect(&self) -> Rect { self.rect }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        // The stack is a live region of transient notifications. Expose it as a
+        // named group; mark it busy while any toast is on screen so an AT can
+        // announce that activity is in progress.
+        Some(
+            AccessNode::new(Role::Group)
+                .with_name("Notifications")
+                .with_state(AccessState {
+                    busy: !self.toasts.is_empty(),
+                    ..Default::default()
+                }),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -404,6 +419,23 @@ mod tests {
         feed(&mut s, WindowEvent::MouseInput { device_id: device(), state: ElementState::Pressed, button: MouseButton::Left });
         assert_eq!(s.len(), 1);
         assert_eq!(s.iter().next().unwrap().text, "first");
+    }
+
+    #[test]
+    fn accessibility_reports_group_role_and_busy_when_active() {
+        use crate::a11y::Role;
+        // Empty stack: a named group that is not busy.
+        let s = ToastStack::new();
+        let node = Widget::accessibility(&s).expect("toast stack is not presentational");
+        assert_eq!(node.role, Role::Group);
+        assert_eq!(node.name.as_deref(), Some("Notifications"));
+        assert!(!node.state.busy, "an empty stack is not busy");
+
+        // With a live toast the stack reports busy.
+        let mut s = ToastStack::new();
+        s.push("hello", ToastKind::Info);
+        let node = Widget::accessibility(&s).unwrap();
+        assert!(node.state.busy, "a stack with active toasts is busy");
     }
 
     #[test]

@@ -732,6 +732,23 @@ impl Widget for ColorPicker {
         }
     }
     fn is_focused(&self) -> bool { self.is_focused }
+
+    /// The colour picker reports [`Role::ComboBox`] — a selector whose
+    /// value is the chosen colour as its canonical `#RRGGBB` hex string.
+    /// The SV square, hue strip and channel sliders render inline (there is
+    /// no separate open/closed state), so `expanded` is left unset.
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        Some(
+            AccessNode::new(Role::ComboBox)
+                .with_value(self.hex_string())
+                .with_state(AccessState {
+                    focusable: self.is_focusable(),
+                    focused: self.is_focused(),
+                    ..Default::default()
+                }),
+        )
+    }
 }
 
 /// Parse a `#rrggbb` (case-insensitive, leading `#` optional) hex
@@ -969,6 +986,26 @@ mod tests {
     fn rgb_string_formats_decimal_triple() {
         let p = ColorPicker::new(Color::from_rgba8(99, 102, 241, 255));
         assert_eq!(p.rgb_string(), "rgb(99, 102, 241)");
+    }
+
+    #[test]
+    fn accessibility_reports_combobox_role_and_hex_value() {
+        use crate::a11y::Role;
+        let p = ColorPicker::new(Color::from_rgba8(0x12, 0x34, 0x56, 0xff));
+        let node = Widget::accessibility(&p).expect("color picker is a selector");
+        assert_eq!(node.role, Role::ComboBox);
+        assert_eq!(node.value.as_deref(), Some("#123456"));
+        assert!(node.state.focusable);
+        assert!(!node.state.focused);
+        assert_eq!(node.state.expanded, None, "the picker renders inline");
+    }
+
+    #[test]
+    fn accessibility_value_tracks_color_change() {
+        let mut p = ColorPicker::new(Color::from_rgba8(0, 0, 0, 0xff));
+        p.set_rgb(0x0a, 0x00, 0xff);
+        let node = Widget::accessibility(&p).unwrap();
+        assert_eq!(node.value.as_deref(), Some("#0A00FF"));
     }
 
     #[test]

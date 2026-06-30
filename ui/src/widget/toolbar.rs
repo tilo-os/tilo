@@ -560,6 +560,15 @@ impl Widget for Toolbar {
         "Toolbar"
     }
 
+    /// The toolbar reports [`Role::Toolbar`] — a strip of controls. Its
+    /// items are drawn directly (not child widgets), so they don't flow
+    /// through `children()`; the container itself stands in for the strip.
+    /// It carries no name of its own (a labelling host would supply one).
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Role};
+        Some(AccessNode::new(Role::Toolbar))
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -645,6 +654,15 @@ mod tests {
             .iter()
             .filter(|t| **t == DrawTag::COLOR)
             .count()
+    }
+
+    #[test]
+    fn accessibility_reports_toolbar_role() {
+        use crate::a11y::Role;
+        let tb = n_button_toolbar(3);
+        let node = Widget::accessibility(&tb).expect("toolbar is a semantic strip");
+        assert_eq!(node.role, Role::Toolbar);
+        assert_eq!(node.name, None, "toolbar carries no name of its own");
     }
 
     /// Three buttons + ample width must lay out three non-empty rects

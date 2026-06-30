@@ -1069,6 +1069,24 @@ impl Widget for CommandPalette {
     fn is_focusable(&self) -> bool { true }
     fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
     fn is_focused(&self) -> bool { self.is_focused }
+
+    /// The palette is a modal command launcher: it reports
+    /// [`Role::Dialog`] with `modal` set so an AT announces it as a focus-
+    /// trapping overlay. The query string is the user's transient input,
+    /// not a stable value, so it is not surfaced in `value`.
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        Some(
+            AccessNode::new(Role::Dialog)
+                .with_name("Command palette")
+                .with_state(AccessState {
+                    focusable: self.is_focusable(),
+                    focused: self.is_focused(),
+                    modal: true,
+                    ..Default::default()
+                }),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -1432,6 +1450,27 @@ mod tests {
         );
         assert_eq!(p.query_selection.anchor, 0);
         assert_eq!(p.query_selection.cursor, 5);
+    }
+
+    #[test]
+    fn accessibility_reports_modal_dialog_role() {
+        use crate::a11y::Role;
+        let p = CommandPalette::new();
+        let node = Widget::accessibility(&p).expect("palette is a modal dialog");
+        assert_eq!(node.role, Role::Dialog);
+        assert_eq!(node.name.as_deref(), Some("Command palette"));
+        assert!(node.state.modal, "the palette traps focus while open");
+        assert!(node.state.focusable);
+        assert!(!node.state.focused, "fresh palette is not focused");
+        assert_eq!(node.value, None, "the query is not surfaced as a value");
+    }
+
+    #[test]
+    fn accessibility_focus_tracks_focus_state() {
+        let mut p = CommandPalette::new();
+        p.set_focus(true);
+        let node = Widget::accessibility(&p).unwrap();
+        assert!(node.state.focused);
     }
 
     /// Typing into a query with an active selection replaces the

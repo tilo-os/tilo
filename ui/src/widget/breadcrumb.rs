@@ -425,6 +425,22 @@ impl Widget for Breadcrumb {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        // The trail of clickable path segments is a list of links; the
+        // segments are drawn (not child widgets), so the container carries
+        // the semantics. The rightmost segment is the current/active page —
+        // surface it as the value. The breadcrumb is inert (default focus
+        // state) so no focus flags are set.
+        let value = self.segments.last().cloned();
+        Some(
+            AccessNode::new(Role::List)
+                .with_name("Breadcrumb")
+                .with_optional_value(value)
+                .with_state(AccessState::default()),
+        )
+    }
 }
 
 // =====================================================================
@@ -585,5 +601,30 @@ mod tests {
             ],
             "long path must collapse to first + ellipsis + last two segments"
         );
+    }
+
+    #[test]
+    fn accessibility_reports_list_role_name_and_current_segment() {
+        use crate::a11y::Role;
+        let bc = Breadcrumb::new(vec![
+            "home".to_string(),
+            "docs".to_string(),
+            "readme.md".to_string(),
+        ]);
+        let node = Widget::accessibility(&bc).expect("breadcrumb is not presentational");
+        assert_eq!(node.role, Role::List);
+        assert_eq!(node.name.as_deref(), Some("Breadcrumb"));
+        assert_eq!(
+            node.value.as_deref(),
+            Some("readme.md"),
+            "the rightmost segment is the current page"
+        );
+    }
+
+    #[test]
+    fn accessibility_empty_trail_has_no_value() {
+        let bc = Breadcrumb::new(Vec::new());
+        let node = Widget::accessibility(&bc).unwrap();
+        assert_eq!(node.value, None, "empty trail → no current segment");
     }
 }
