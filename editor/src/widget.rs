@@ -446,6 +446,13 @@ fn parse_hex_rgb(s: &str) -> Option<[u8; 3]> {
     ])
 }
 
+/// Whether a block forces a page break before it (the `page_break_before`
+/// block attr). Honoured by the pagination cursor so the block starts a fresh
+/// page even when it would otherwise fit on the current one.
+fn block_page_break_before(b: &BlockView) -> bool {
+    matches!(b.attrs.get("page_break_before"), Some(AttrVal::Bool(true)))
+}
+
 /// Pick a block's horizontal alignment from its `align` attribute.
 fn block_align(b: &BlockView, default: TextAlign) -> TextAlign {
     match b.attrs.get("align") {
@@ -533,6 +540,69 @@ fn block_runs(b: &BlockView) -> (Vec<RichSpan>, Vec<(usize, usize)>, Vec<(usize,
     let mut underlines = deco("underline");
     underlines.extend(deco("link"));
     (runs, underlines, deco("strike"))
+}
+
+/// Whether char `i` of `b` is a `page-number` field placeholder (a U+FFFC
+/// covered by a `field` mark valued `page-number`).
+fn char_is_page_number_field(i: usize, marks: &[MarkSpan]) -> bool {
+    marks.iter().any(|m| {
+        m.name == qdoc::schema::MARK_FIELD
+            && i >= m.start
+            && i < m.end
+            && m.value.as_str() == Some(qdoc::schema::FIELD_PAGE_NUMBER)
+    })
+}
+
+/// Build the `RichSpan`s for a header/footer block with every `page-number`
+/// field placeholder substituted by `page_no` (the digits inherit the field
+/// char's run formatting). Underline/strike are dropped — running heads keep it
+/// simple — but bold/italic/size/family/colour per-run are preserved.
+fn running_head_runs(b: &BlockView, page_no: usize) -> Vec<RichSpan> {
+    let chars: Vec<char> = b.text.chars().collect();
+    let n = chars.len();
+    let key = |i: usize| {
+        (
+            char_has(i, &b.marks, "strong"),
+            char_has(i, &b.marks, "em"),
+            char_font_size(i, &b.marks).map(f32::to_bits),
+            char_font_family(i, &b.marks),
+            char_color(i, &b.marks),
+        )
+    };
+    // Coalesce runs by (formatting key, is-field): a field char always sits in
+    // its own run so the page number inherits exactly that char's formatting and
+    // never merges with adjacent literal text.
+    let run_key = |i: usize| (key(i), char_is_page_number_field(i, &b.marks));
+    let mut runs: Vec<RichSpan> = Vec::new();
+    let mut i = 0;
+    while i < n {
+        let rk = run_key(i);
+        let mut j = i;
+        while j < n && run_key(j) == rk {
+            j += 1;
+        }
+        let ((bold, italic, size_bits, family, color), is_field) = rk;
+        let text: String = if is_field {
+            // One run per field char (each is its own placeholder); emit the page
+            // number once per placeholder char so a literal repeat still works.
+            page_no.to_string().repeat(j - i)
+        } else {
+            chars[i..j].iter().collect()
+        };
+        runs.push(RichSpan {
+            text,
+            bold,
+            italic,
+            size: size_bits.map(f32::from_bits),
+            family,
+            color,
+        });
+        i = j;
+    }
+    if runs.is_empty() {
+        runs.push(RichSpan::new(""));
+    }
+    runs
 }
 
 /// Hash everything that feeds into `RichTextLayout::shape` into a single `u64`.
@@ -670,6 +740,12 @@ pub struct WordProcessorWidget {
     /// The toolbar button the pointer is currently over (for hover feedback).
     hover_tool: Option<Rect>,
     blocks: Vec<BlockView>,
+    /// Page-header block sequence (drawn in every page's top-margin band). A
+    /// `page-number` field marker is substituted with the page number per page.
+    header: Vec<BlockView>,
+    /// Page-footer block sequence (drawn in every page's bottom-margin band).
+    /// Mirrors `header`. When empty, a subtle default "Page N" indicator is drawn.
+    footer: Vec<BlockView>,
     laid: Vec<Laid>,
     /// Incremental per-block shaped-text cache: block id → (shape key, shaped
     /// layout). Reused across frames when the key (text + marks + resolved
@@ -768,6 +844,8 @@ impl WordProcessorWidget {
             image_cache: std::collections::HashMap::new(),
             hover_tool: None,
             blocks: Vec::new(),
+            header: Vec::new(),
+            footer: Vec::new(),
             laid: Vec::new(),
             layout_cache: HashMap::new(),
             dbg_layout_hits: 0,
@@ -1195,6 +1273,8 @@ impl WordProcessorWidget {
             let snap = qdoc::model::materialize(state, c);
             self.blocks = snap.blocks;
             self.blobs = snap.blobs;
+            self.header = snap.header;
+            self.footer = snap.footer;
         }
     }
 
@@ -1307,6 +1387,64 @@ impl WordProcessorWidget {
     /// document so it survives save/reopen). Called on margin-guide drag release.
     fn persist_margins(&mut self, state: &mut AutoCommit) {
         self.inner.set_page_margins(state, [self.margins.top, self.margins.right, self.margins.bottom, self.margins.left]);
+    }
+
+    /// Draw the page header (or footer) blocks for one page sheet inside the
+    /// given margin band. `blocks` is the materialized header/footer; `page_no`
+    /// is this sheet's 1-based page number (substituted for page-number fields).
+    /// `is_footer` anchors the stack to the band's bottom (footers) vs. its top
+    /// (headers). Drawn through `ctf` so it magnifies with the page content.
+    ///
+    /// Returns whether anything was drawn (so the caller can fall back to the
+    /// default page indicator only when no footer exists).
+    #[allow(clippy::too_many_arguments)]
+    fn draw_running_band(
+        &self,
+        scene: &mut Scene,
+        ctf: Affine,
+        tr: &mut TextRenderer,
+        blocks: &[BlockView],
+        page_no: usize,
+        band: Rect,
+        is_footer: bool,
+    ) -> bool {
+        if blocks.is_empty() || band.height() <= 2.0 {
+            return false;
+        }
+        let wrap_w = band.width().max(40.0) as f32;
+        // Header/footer run text is a touch smaller and muted, so it reads as
+        // chrome rather than body copy (LibreOffice-style running heads).
+        let size = 12.0f32;
+        // Shape every block first so footers can be bottom-anchored.
+        let mut shaped: Vec<RichTextLayout> = Vec::with_capacity(blocks.len());
+        let mut total_h = 0.0f64;
+        for b in blocks {
+            let runs = running_head_runs(b, page_no);
+            let align = block_align(b, TextAlign::Left);
+            let layout = RichTextLayout::shape(
+                &mut tr.font_system,
+                &runs,
+                false,
+                size,
+                wrap_w,
+                align,
+                FontFamily::Sans,
+                vec![],
+                vec![],
+            );
+            total_h += layout.height() as f64;
+            shaped.push(layout);
+        }
+        // Stack from the top of the band (headers) or just enough above the band
+        // bottom to fit the footer's content (footers).
+        let mut y = if is_footer { (band.y1 - total_h).max(band.y0) } else { band.y0 };
+        let mut drew = false;
+        for layout in &shaped {
+            tr.draw_rich(scene, layout, ctf * Affine::translate((band.x0, y)), MUTED);
+            y += layout.height() as f64;
+            drew = true;
+        }
+        drew
     }
 
     /// The per-side measurement the active mode edits (the page margins).
@@ -1825,8 +1963,10 @@ impl Widget for WordProcessorWidget {
                     rows.push((row_h, row_items));
                 }
                 let table_h: f64 = rows.iter().map(|(h, _)| *h).sum();
-                // Break to the next page if the whole table would not fit.
-                let item_top = if placed_on_page && y + table_h > page_content_bottom(cur_page) + 0.5 {
+                // Break to the next page if a manual page break is set on the
+                // first cell, or the whole table would not fit.
+                let force_break = cells.first().map(block_page_break_before).unwrap_or(false);
+                let item_top = if placed_on_page && (force_break || y + table_h > page_content_bottom(cur_page) + 0.5) {
                     cur_page += 1;
                     page_content_top(cur_page)
                 } else {
@@ -1880,8 +2020,10 @@ impl Widget for WordProcessorWidget {
                 // it every frame rather than caching it incrementally.
                 let empty = RichTextLayout::shape(&mut text_renderer.font_system, &[RichSpan::new("")], false, 16.0, content_w, TextAlign::Left, FontFamily::Sans, vec![], vec![]);
                 new_cache.insert(b.id.clone(), (0, empty));
-                // Break to the next page if the image would not fit.
-                let item_top = if placed_on_page && y + draw_h > page_content_bottom(cur_page) + 0.5 {
+                // Break to the next page on a manual page break, or if the image
+                // would not fit.
+                let force_break = block_page_break_before(b);
+                let item_top = if placed_on_page && (force_break || y + draw_h > page_content_bottom(cur_page) + 0.5) {
                     cur_page += 1;
                     page_content_top(cur_page)
                 } else {
@@ -1966,7 +2108,10 @@ impl Widget for WordProcessorWidget {
                 // bottom text margin (the lead is dropped at the top of a fresh
                 // page so the first paragraph hugs the top margin).
                 let top_candidate = y + st.space_before as f64;
-                let item_top = if placed_on_page && top_candidate + block_h > page_content_bottom(cur_page) + 0.5 {
+                // A manual page break forces a fresh page; otherwise break only
+                // when the whole block would overflow the bottom text margin.
+                let force_break = block_page_break_before(b);
+                let item_top = if placed_on_page && (force_break || top_candidate + block_h > page_content_bottom(cur_page) + 0.5) {
                     cur_page += 1;
                     page_content_top(cur_page)
                 } else {
@@ -2020,19 +2165,36 @@ impl Widget for WordProcessorWidget {
         // the toolbar / status bar.
         scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &canvas);
 
-        // Discrete page sheets (shadow + paper) stacked with `PAGE_GAP`, each with
-        // a "Page N" label centered in the gap just below the sheet. Drawn through
+        // Discrete page sheets (shadow + paper) stacked with `PAGE_GAP`. Each
+        // sheet draws the page header inside its top-margin band and the footer
+        // inside its bottom-margin band (page-number fields resolved to this
+        // page's number). A subtle "Page N" indicator lives in the gap below the
+        // sheet only when the document has no footer of its own. All through
         // `ctf` (the zoom transform) so the page magnifies with the content.
+        let header = std::mem::take(&mut self.header);
+        let footer = std::mem::take(&mut self.footer);
         for i in 0..num_pages {
             let ptop = page_top + i as f64 * page_pitch - sy;
             let sheet = Rect::new(page_x, ptop, page_x + page_w, ptop + letter_h);
             chrome::page::draw(scene, ctf, sheet, PAPER, SHADOW);
-            let label = format!("Page {}", i + 1);
-            let approx = label.chars().count() as f64 * 6.4;
-            let lx = (sheet.x0 + sheet.x1) / 2.0 - approx / 2.0;
-            let ly = sheet.y1 + PAGE_GAP / 2.0 - 6.0;
-            text_renderer.draw_text(scene, &label, 11.0, Color::from_rgb8(0x9a, 0x9e, 0xa8), ctf * Affine::translate((lx, ly)), None);
+            let page_no = i + 1;
+            // Header band: the top margin, inset by the L/R text margins.
+            let head_band = Rect::new(sheet.x0 + m.left, sheet.y0, sheet.x1 - m.right, sheet.y0 + m.top);
+            self.draw_running_band(scene, ctf, text_renderer, &header, page_no, head_band, false);
+            // Footer band: the bottom margin, inset by the L/R text margins.
+            let foot_band = Rect::new(sheet.x0 + m.left, sheet.y1 - m.bottom, sheet.x1 - m.right, sheet.y1);
+            let drew_footer = self.draw_running_band(scene, ctf, text_renderer, &footer, page_no, foot_band, true);
+            // Default page indicator in the gap — only when no footer was drawn.
+            if !drew_footer {
+                let label = format!("Page {page_no}");
+                let approx = label.chars().count() as f64 * 6.4;
+                let lx = (sheet.x0 + sheet.x1) / 2.0 - approx / 2.0;
+                let ly = sheet.y1 + PAGE_GAP / 2.0 - 6.0;
+                text_renderer.draw_text(scene, &label, 11.0, Color::from_rgb8(0x9a, 0x9e, 0xa8), ctf * Affine::translate((lx, ly)), None);
+            }
         }
+        self.header = header;
+        self.footer = footer;
         // The first page is the reference rect for the margin-guide overlay
         // (margins apply to every page identically).
         let page = Rect::new(page_x, page_top - sy, page_x + page_w, page_top + letter_h - sy);
@@ -2436,6 +2598,17 @@ impl Widget for WordProcessorWidget {
                         *handled = true;
                         return;
                     }
+                }
+                // Ctrl+Enter inserts a manual page break: the caret block splits
+                // and the new block is marked to start on a fresh page. (Handled
+                // here because `NamedKey::Enter` is not a `Key::Character`.)
+                if ctrl && matches!(logical_key, Key::Named(NamedKey::Enter)) {
+                    self.inner.insert_page_break(state);
+                    self.refresh_blocks(state);
+                    self.dirty = true;
+                    self.needs_commit = true;
+                    *handled = true;
+                    return;
                 }
                 if ctrl {
                     if let Key::Character(s) = logical_key {
@@ -3531,6 +3704,79 @@ mod tests {
         assert!(idx > 0, "page 2 is preceded by page-1 content");
         assert!((wp.laid[idx].y_top - pct(1)).abs() < 1.0, "the first page-2 block hugs the page-2 top margin");
         assert_eq!(page_of(wp.laid[idx - 1].y_top), 0, "the block before it is on page 1");
+    }
+
+    #[test]
+    fn footer_page_number_field_resolves_per_page() {
+        // A footer "Page <field>" must render "Page 1" on page 1 and "Page 2" on
+        // page 2 — the field placeholder substitutes the rendered page number.
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        // Build a footer with a page-number field via the production model API.
+        let c = wp.model().containers.clone().unwrap();
+        let mut ids = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
+        {
+            let mut dm = qdoc::DocMut { doc: &mut state.doc, c: &c, ids: &mut ids };
+            let f = dm.insert_block_in(qdoc::model::Region::Footer, None, "paragraph");
+            dm.splice_text_in(qdoc::model::Region::Footer, &f, 0, 0, "Page ");
+            dm.insert_page_number_field(qdoc::model::Region::Footer, &f, 5);
+        }
+        // Body long enough to span two pages.
+        for i in 0..120 {
+            wp.model_mut().insert_str(&mut state.doc, &format!("Paragraph number {i} carries enough words to fill a line."));
+            wp.model_mut().enter(&mut state.doc);
+        }
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+
+        // The footer is loaded from the snapshot and spans >1 page.
+        assert_eq!(wp.footer.len(), 1, "the footer block is materialized into the widget");
+        let max_page = wp.laid.iter().map(|l| ((l.y_top + wp.scroll_y - (wp.toolbar_height(1000.0) + PAGE_TOP)) / (MAX_PAGE_W * LETTER_RATIO + PAGE_GAP)).floor() as i64).max().unwrap();
+        assert!(max_page >= 1, "the document spans more than one page (got {max_page})");
+
+        // The production substitution path renders the page number per page: the
+        // joined run text for the footer block is "Page 1" on page 1, "Page 2" on
+        // page 2 — the placeholder is gone and the digits are present.
+        let join = |page_no: usize| running_head_runs(&wp.footer[0], page_no).iter().map(|r| r.text.clone()).collect::<String>();
+        assert_eq!(join(1), "Page 1", "page 1 footer resolves to 'Page 1'");
+        assert_eq!(join(2), "Page 2", "page 2 footer resolves to 'Page 2'");
+        assert!(!join(2).contains(qdoc::schema::FIELD_PLACEHOLDER), "the field placeholder is substituted, not rendered literally");
+    }
+
+    #[test]
+    fn manual_page_break_starts_block_on_a_fresh_page() {
+        // Geometry mirrors `draw` (default 72px margins, find bar closed).
+        let mar = 72.0;
+        let letter_h = MAX_PAGE_W * LETTER_RATIO;
+        let page_pitch = letter_h + PAGE_GAP;
+
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        // Two short paragraphs that both fit on page 1, then force a break so the
+        // third starts on a fresh page even though it would otherwise fit.
+        wp.model_mut().insert_str(&mut state.doc, "First paragraph on page one.");
+        wp.model_mut().enter(&mut state.doc);
+        wp.model_mut().insert_str(&mut state.doc, "Second paragraph still on page one.");
+        // Ctrl+Enter behaviour: split + mark the new block to break before.
+        wp.model_mut().insert_page_break(&mut state.doc);
+        wp.model_mut().insert_str(&mut state.doc, "This paragraph is forced onto page two.");
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+
+        let page_top = wp.toolbar_height(1000.0) + PAGE_TOP;
+        let pct = |i: usize| page_top + i as f64 * page_pitch + mar; // page content top
+        let page_of = |y: f64| ((y - page_top) / page_pitch).floor() as i64;
+
+        let broken = wp.laid.iter().find(|l| l.text.starts_with("This paragraph is forced")).expect("the broken block is laid out");
+        assert_eq!(page_of(broken.y_top), 1, "the page-break block lands on page 2");
+        assert!((broken.y_top - pct(1)).abs() < 1.0, "it hugs the page-2 top margin (laid at a page top)");
+
+        // The two earlier paragraphs are still on page 1 (the break was manual, not
+        // an overflow): proving the attr — not a full page of text — caused it.
+        let first = wp.laid.iter().find(|l| l.text.starts_with("First paragraph")).unwrap();
+        let second = wp.laid.iter().find(|l| l.text.starts_with("Second paragraph")).unwrap();
+        assert_eq!(page_of(first.y_top), 0, "the first paragraph stays on page 1");
+        assert_eq!(page_of(second.y_top), 0, "the second paragraph stays on page 1");
     }
 
     #[test]
