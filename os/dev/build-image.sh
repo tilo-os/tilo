@@ -35,8 +35,19 @@ for a in "$@"; do
   esac
 done
 
-msg "1/3 podman build $QOS_IMAGE (rootless, in-image cargo compile — first run is slow)"
-podman build -f "$QOS_OS_DIR/Containerfile" -t "$QOS_IMAGE" "$QOS_REPO"
+# Reproducible builds: derive a deterministic SOURCE_DATE_EPOCH from the HEAD
+# commit time (same commit -> same value), pass it through to the build, and
+# clamp layer + image timestamps to it. With the base pinned by digest and the
+# Rust resolve pinned (os/Cargo.lock.pinned), two builds of the same commit
+# yield the same image (modulo dnf package drift over time — see
+# docs/supply-chain.md). Override via $SOURCE_DATE_EPOCH.
+SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$QOS_REPO" log -1 --format=%ct 2>/dev/null || echo 0)}"
+export SOURCE_DATE_EPOCH
+msg "1/3 podman build $QOS_IMAGE (rootless, in-image cargo compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH)"
+podman build -f "$QOS_OS_DIR/Containerfile" -t "$QOS_IMAGE" \
+  --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
+  --source-date-epoch "$SOURCE_DATE_EPOCH" --rewrite-timestamp \
+  "$QOS_REPO"
 
 msg "2/3 transfer image to root storage"
 podman save "$QOS_IMAGE" | sudo podman load
