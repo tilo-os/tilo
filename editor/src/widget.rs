@@ -51,6 +51,17 @@ enum CtxAction {
         end: usize,
         replacement: String,
     },
+    /// Accept the tracked change with this id (right-clicked inside its range, or
+    /// chosen from a margin card's ✓ affordance).
+    AcceptChange(String),
+    /// Reject the tracked change with this id.
+    RejectChange(String),
+    /// Accept every tracked change in the document.
+    AcceptAllChanges,
+    /// Reject every tracked change in the document.
+    RejectAllChanges,
+    /// Resolve / delete the comment with this id (remove it + its anchoring mark).
+    ResolveComment(String),
 }
 
 // --- Paper-context colors (the document sheet) ----------------------------
@@ -218,6 +229,24 @@ const TRACK_DEL: Color = Color::from_rgb8(0xbf, 0x29, 0x29);
 const COMMENT_TAB_W: f64 = 4.0;
 /// Width of the right-margin annotation card.
 const COMMENT_CARD_W: f64 = 150.0;
+/// Background of a tracked-change review card in the right margin.
+const CHANGE_CARD_BG: Color = Color::from_rgb8(0xf3, 0xf4, 0xf7);
+/// Border of a tracked-change review card.
+const CHANGE_CARD_EDGE: Color = Color::from_rgb8(0xcf, 0xd2, 0xda);
+/// Author/label ink in a tracked-change review card.
+const CHANGE_LABEL_INK: Color = Color::from_rgb8(0x44, 0x46, 0x50);
+/// Accept (✓) affordance button fill — a soft green wash.
+const REVIEW_ACCEPT_BG: Color = Color::from_rgb8(0xe2, 0xf3, 0xe6);
+/// Accept (✓) affordance glyph ink (green).
+const REVIEW_ACCEPT_INK: Color = Color::from_rgb8(0x18, 0x6a, 0x32);
+/// Reject (✗) affordance button fill — a soft red wash.
+const REVIEW_REJECT_BG: Color = Color::from_rgb8(0xf7, 0xe4, 0xe4);
+/// Reject (✗) affordance glyph ink (red).
+const REVIEW_REJECT_INK: Color = Color::from_rgb8(0xa8, 0x24, 0x24);
+/// Side length of a square review affordance button (✓ / ✗ / resolve).
+const REVIEW_BTN: f64 = 18.0;
+/// Width of a tracked-change review card in the right margin.
+const CHANGE_CARD_W: f64 = 132.0;
 // Panel + guide chrome colours are theme-driven — see `ChromeColors`. The side
 // panels read `chrome.bar`/`chrome.border`/`chrome.chip`/`chrome.text`/
 // `chrome.text_dim`/`chrome.field`; layout guides read `chrome.accent`.
@@ -888,6 +917,21 @@ fn block_change_decos(b: &BlockView) -> (Vec<(usize, usize)>, Vec<(usize, usize)
     (collect(qdoc::schema::MARK_INS), collect(qdoc::schema::MARK_DEL))
 }
 
+/// Every tracked change anchored in a block, as `(byte_start, byte_end,
+/// change_id)` in source order — for both `ins` and `del` marks. The change id
+/// comes from the mark value (the key the `changes` container uses). Drives the
+/// right-margin Accept/Reject review cards (which need the id to act on).
+fn block_change_ranges(b: &BlockView) -> Vec<(usize, usize, String)> {
+    b.marks
+        .iter()
+        .filter(|m| (m.name == qdoc::schema::MARK_INS || m.name == qdoc::schema::MARK_DEL) && m.end > m.start)
+        .filter_map(|m| {
+            let id = m.value.as_str()?.to_string();
+            Some((char_to_byte(&b.text, m.start), char_to_byte(&b.text, m.end), id))
+        })
+        .collect()
+}
+
 /// Every `comment` annotation anchored in a block, as `(byte_start, byte_end,
 /// comment_id)` in source order. The body pass paints a pale highlight band over
 /// the range and a margin indicator at the start.
@@ -1281,6 +1325,11 @@ pub struct WordProcessorWidget {
     /// Per-row action parallel to `context_menu`'s items (separators map to
     /// `None`). A left-click on a row dispatches by index through this list.
     context_actions: Vec<Option<CtxAction>>,
+    /// Clickable review affordances rendered into the right-margin cards this
+    /// frame: `(screen_rect, action)`. Populated by the comment + tracked-change
+    /// card pass; a left-click that lands on one dispatches the action (accept /
+    /// reject a change, resolve a comment). Cleared + rebuilt every draw.
+    review_hits: Vec<(Rect, CtxAction)>,
     /// Comments / annotations (materialized from the doc each refresh). Each is
     /// anchored to a body range via a `comment` mark; rendered as a pale highlight
     /// band + a right-margin indicator/card. Empty when the doc has no comments.
@@ -1384,6 +1433,7 @@ impl WordProcessorWidget {
             spell_cache: HashMap::new(),
             context_menu: ContextMenu::new(),
             context_actions: Vec::new(),
+            review_hits: Vec::new(),
             comments: Vec::new(),
             changes: Vec::new(),
             show_markup: true,
@@ -2987,6 +3037,13 @@ impl Widget for WordProcessorWidget {
         // panel). Only populated when markup is shown.
         let mut comment_markers: Vec<(String, f64, f64)> = Vec::new();
 
+        // Tracked-change-marker collection: `(change_id, start_line_top_y,
+        // range_right_x)` for each `ins`/`del` range encountered in pass 2. Used
+        // after the loop to stack a small Accept/Reject review card next to each
+        // change. The change id is recovered from the mark value (the same id the
+        // `changes` container keys on). Only populated when markup is shown.
+        let mut change_markers: Vec<(String, f64, f64)> = Vec::new();
+
         // Pass 2: draw cell borders, bullets, selection, text, caret. Everything
         // here renders through `ctf` (the zoom transform) so page content scales
         // while the surrounding chrome stays at 100%.
@@ -3108,6 +3165,15 @@ impl Widget for WordProcessorWidget {
                             scene.fill(Fill::NonZero, ctf, TRACK_DEL, None, &line);
                         }
                     }
+                    // Collect a review-card marker per change range (carrying the
+                    // change id so the card's Accept/Reject can act on it).
+                    for (bs, be, cid) in block_change_ranges(b) {
+                        let rects = layout.selection_rects(bs, be);
+                        if let Some(&(_, ry0, _, _)) = rects.first() {
+                            let right_x = rects.iter().map(|r| r.2).fold(f32::MIN, f32::max);
+                            change_markers.push((cid, l.y_top + ry0 as f64, l.text_x + right_x as f64));
+                        }
+                    }
                 }
             }
 
@@ -3175,6 +3241,12 @@ impl Widget for WordProcessorWidget {
             }
         }
 
+        // Review affordances (comment Resolve + tracked-change Accept/Reject
+        // buttons) live in the right-margin cards; rebuilt fresh each frame. Hit
+        // rects are stored in *content* space (the same space `pointer_to_content`
+        // maps a pointer into) since the cards draw through `ctf`.
+        self.review_hits.clear();
+
         // Comment indicators + annotation cards. For each comment whose start line
         // was laid this frame, draw a small accent tab just after the commented
         // text (the range's right edge), and an always-visible annotation card
@@ -3216,7 +3288,8 @@ impl Widget for WordProcessorWidget {
                 );
                 let body_h = body_layout.height() as f64;
                 let card_top = anchor_y.max(next_card_y);
-                let card_h = 22.0 + body_h + 8.0;
+                // Header (author) + body + a footer row carrying the Resolve button.
+                let card_h = 22.0 + body_h + 8.0 + REVIEW_BTN + 6.0;
                 let card = Rect::new(card_x, card_top, card_x + COMMENT_CARD_W, card_top + card_h);
                 scene.fill(Fill::NonZero, ctf, COMMENT_CARD_BG, None, &vello::kurbo::RoundedRect::from_rect(card, 5.0));
                 scene.stroke(&vello::kurbo::Stroke::new(1.0), ctf, COMMENT_CARD_EDGE, None, &vello::kurbo::RoundedRect::from_rect(card, 5.0));
@@ -3225,6 +3298,53 @@ impl Widget for WordProcessorWidget {
                 scene.fill(Fill::NonZero, ctf, COMMENT_TAB, None, &stripe);
                 text_renderer.draw_text(scene, author, 11.5, COMMENT_AUTHOR_INK, ctf * Affine::translate((card_x + 9.0, card_top + 5.0)), None);
                 text_renderer.draw_rich(scene, &body_layout, ctf * Affine::translate((card_x + 9.0, card_top + 20.0)), COMMENT_BODY_INK);
+                // Footer: a single "Resolve" pill that removes the comment + its mark.
+                let btn_y = card_top + card_h - REVIEW_BTN - 4.0;
+                let resolve = Rect::new(card_x + COMMENT_CARD_W - 64.0, btn_y, card_x + COMMENT_CARD_W - 8.0, btn_y + REVIEW_BTN);
+                scene.fill(Fill::NonZero, ctf, REVIEW_ACCEPT_BG, None, &vello::kurbo::RoundedRect::from_rect(resolve, 4.0));
+                scene.stroke(&vello::kurbo::Stroke::new(1.0), ctf, COMMENT_CARD_EDGE, None, &vello::kurbo::RoundedRect::from_rect(resolve, 4.0));
+                text_renderer.draw_text(scene, "✓ Resolve", 10.5, REVIEW_ACCEPT_INK, ctf * Affine::translate((resolve.x0 + 5.0, resolve.y0 + 2.5)), None);
+                self.review_hits.push((resolve, CtxAction::ResolveComment(cid.clone())));
+                next_card_y = card_top + card_h + 6.0;
+            }
+        }
+
+        // Tracked-change review cards. For each `ins`/`del` range laid this frame,
+        // stack a compact card (a kind/author label + Accept ✓ / Reject ✗ buttons)
+        // in a column to the LEFT of the comment column so the two don't collide.
+        // Each button registers a content-space hit rect in `review_hits`.
+        if self.show_markup && !change_markers.is_empty() {
+            change_markers.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            // The change column sits just left of the comment column.
+            let card_x = canvas.x1 - COMMENT_CARD_W - 6.0 - CHANGE_CARD_W - 6.0;
+            let mut next_card_y = f64::MIN;
+            for (cid, anchor_y, _range_right) in &change_markers {
+                let Some(cv) = self.changes.iter().find(|c| &c.id == cid) else { continue };
+                let (label, kind_color) = match cv.kind {
+                    qdoc::snapshot::ChangeKind::Ins => ("Insertion", TRACK_INS),
+                    qdoc::snapshot::ChangeKind::Del => ("Deletion", TRACK_DEL),
+                };
+                let author = if cv.author.is_empty() { String::new() } else { format!(" · {}", cv.author) };
+                let heading = format!("{label}{author}");
+                let card_top = anchor_y.max(next_card_y);
+                let card_h = 22.0 + REVIEW_BTN + 6.0;
+                let card = Rect::new(card_x, card_top, card_x + CHANGE_CARD_W, card_top + card_h);
+                scene.fill(Fill::NonZero, ctf, CHANGE_CARD_BG, None, &vello::kurbo::RoundedRect::from_rect(card, 5.0));
+                scene.stroke(&vello::kurbo::Stroke::new(1.0), ctf, CHANGE_CARD_EDGE, None, &vello::kurbo::RoundedRect::from_rect(card, 5.0));
+                // Accent stripe in the change's review colour (green ins / red del).
+                let stripe = Rect::new(card_x, card_top, card_x + 3.0, card_top + card_h);
+                scene.fill(Fill::NonZero, ctf, kind_color, None, &stripe);
+                text_renderer.draw_text(scene, &heading, 10.5, CHANGE_LABEL_INK, ctf * Affine::translate((card_x + 9.0, card_top + 5.0)), None);
+                // Accept ✓ / Reject ✗ buttons on the footer row.
+                let btn_y = card_top + card_h - REVIEW_BTN - 4.0;
+                let accept = Rect::new(card_x + 9.0, btn_y, card_x + 9.0 + REVIEW_BTN, btn_y + REVIEW_BTN);
+                let reject = Rect::new(accept.x1 + 6.0, btn_y, accept.x1 + 6.0 + REVIEW_BTN, btn_y + REVIEW_BTN);
+                scene.fill(Fill::NonZero, ctf, REVIEW_ACCEPT_BG, None, &vello::kurbo::RoundedRect::from_rect(accept, 4.0));
+                scene.fill(Fill::NonZero, ctf, REVIEW_REJECT_BG, None, &vello::kurbo::RoundedRect::from_rect(reject, 4.0));
+                text_renderer.draw_text(scene, "✓", 12.0, REVIEW_ACCEPT_INK, ctf * Affine::translate((accept.x0 + 4.0, accept.y0 + 1.5)), None);
+                text_renderer.draw_text(scene, "✗", 12.0, REVIEW_REJECT_INK, ctf * Affine::translate((reject.x0 + 4.0, reject.y0 + 1.5)), None);
+                self.review_hits.push((accept, CtxAction::AcceptChange(cid.clone())));
+                self.review_hits.push((reject, CtxAction::RejectChange(cid.clone())));
                 next_card_y = card_top + card_h + 6.0;
             }
         }
@@ -3537,6 +3657,16 @@ impl Widget for WordProcessorWidget {
                 // Page-content hit-tests work in unscaled content space; map the
                 // pointer through the inverse zoom transform once here.
                 let cp = self.pointer_to_content(self.pointer);
+                // Right-margin review affordances (comment Resolve, change
+                // Accept/Reject) are drawn through the zoom transform, so they
+                // hit-test in content space too. A hit dispatches + consumes the
+                // click before it can start a text selection.
+                if let Some(action) = self.review_hits.iter().rev().find(|(r, _)| r.contains(cp)).map(|(_, a)| a.clone()) {
+                    self.dispatch_review_action(action, state);
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
                 // In a layout-edit mode, grabbing a guide starts a drag instead of
                 // a text selection.
                 if self.layout_mode != LayoutMode::None {
@@ -4277,6 +4407,9 @@ impl WordProcessorWidget {
         // selection so Cut/Copy act on something.
         let had_selection = self.inner.has_selection();
         self.caret_from_pointer(content_pt, false);
+        // Raw click char offset (before `select_word` snaps the caret to the word
+        // end) — used to test which tracked-change / comment range was clicked.
+        let raw_click_off = self.inner.caret.offset;
         if !had_selection {
             self.inner.select_word(state);
         }
@@ -4290,6 +4423,54 @@ impl WordProcessorWidget {
 
         let mut menu = ContextMenu::new();
         let mut actions: Vec<Option<CtxAction>> = Vec::new();
+
+        // Review rows: when the click lands inside a tracked-change range, offer
+        // Accept/Reject for that change; inside a comment range, offer Resolve.
+        // The clicked char offset is `click_off` in `block`; match it against the
+        // block's `ins`/`del`/`comment` marks (char offsets). Always offer
+        // Accept All / Reject All when the document has any tracked change.
+        if self.show_markup {
+            let mut review_rows = false;
+            if let Some(b) = self.blocks.iter().find(|b| b.id == block) {
+                for m in &b.marks {
+                    // The clicked word span `[wstart, wend)` must overlap the mark
+                    // (covers a click anywhere in the range, robust to the
+                    // word-snap). Fall back to the raw click point for whitespace.
+                    let overlaps = if wstart < wend {
+                        wstart < m.end && m.start < wend
+                    } else {
+                        raw_click_off >= m.start && raw_click_off < m.end
+                    };
+                    if !overlaps {
+                        continue;
+                    }
+                    let Some(id) = m.value.as_str().map(|s| s.to_string()) else { continue };
+                    if m.name == qdoc::schema::MARK_INS || m.name == qdoc::schema::MARK_DEL {
+                        let kind = if m.name == qdoc::schema::MARK_INS { "insertion" } else { "deletion" };
+                        menu.push(MenuItem::action(format!("Accept {kind}"), || {}));
+                        actions.push(Some(CtxAction::AcceptChange(id.clone())));
+                        menu.push(MenuItem::action(format!("Reject {kind}"), || {}));
+                        actions.push(Some(CtxAction::RejectChange(id.clone())));
+                        review_rows = true;
+                    } else if m.name == qdoc::schema::MARK_COMMENT {
+                        menu.push(MenuItem::action("Resolve comment", || {}));
+                        actions.push(Some(CtxAction::ResolveComment(id.clone())));
+                        review_rows = true;
+                    }
+                }
+            }
+            if !self.changes.is_empty() {
+                menu.push(MenuItem::action("Accept all changes", || {}));
+                actions.push(Some(CtxAction::AcceptAllChanges));
+                menu.push(MenuItem::action("Reject all changes", || {}));
+                actions.push(Some(CtxAction::RejectAllChanges));
+                review_rows = true;
+            }
+            if review_rows {
+                menu.push(MenuItem::separator());
+                actions.push(None);
+            }
+        }
 
         // Spell-check rows: only when the clicked word is currently flagged.
         if self.spellcheck_on {
@@ -4374,10 +4555,41 @@ impl WordProcessorWidget {
                 self.spell_cache.remove(&block);
                 self.needs_commit = true;
             }
+            action @ (CtxAction::AcceptChange(_)
+            | CtxAction::RejectChange(_)
+            | CtxAction::AcceptAllChanges
+            | CtxAction::RejectAllChanges
+            | CtxAction::ResolveComment(_)) => {
+                self.dispatch_review_action(action, state);
+            }
         }
         self.context_menu.close();
         self.dirty = true;
         true
+    }
+
+    /// Act on a tracked-change / comment review affordance (from a margin-card
+    /// button or a context-menu row): accept/reject a change, accept/reject all,
+    /// or resolve (delete) a comment. Refreshes the materialized blocks +
+    /// comments/changes so the acted-on item disappears, and flags an undo point.
+    fn dispatch_review_action(&mut self, action: CtxAction, state: &mut AutoCommit) {
+        match action {
+            CtxAction::AcceptChange(id) => self.inner.accept_change(state, &id),
+            CtxAction::RejectChange(id) => self.inner.reject_change(state, &id),
+            CtxAction::AcceptAllChanges => self.inner.accept_all_changes(state),
+            CtxAction::RejectAllChanges => self.inner.reject_all_changes(state),
+            CtxAction::ResolveComment(id) => self.inner.delete_comment(state, &id),
+            // Non-review actions are dispatched by `dispatch_context_action`.
+            _ => return,
+        }
+        self.refresh_blocks(state);
+        // Accepting/rejecting can change body text (an accepted deletion removes
+        // glyphs, a rejected insertion removes them); the spell cache is keyed by
+        // text so affected blocks re-check on the next draw — clear it wholesale
+        // (cheap, and these are infrequent review actions).
+        self.spell_cache.clear();
+        self.needs_commit = true;
+        self.dirty = true;
     }
 
     /// Test-visible labels of the currently-open context menu's rows
@@ -5948,6 +6160,182 @@ mod tests {
             runs_off.iter().all(|r| r.color != Some(TRACK_INS_RGB) && r.color != Some(TRACK_DEL_RGB)),
             "with markup hidden, tracked-change runs render as plain text"
         );
+    }
+
+    /// Re-materialize the document straight from the CRDT (the production
+    /// snapshot path) so a test asserts on what every reader sees — not on the
+    /// widget's cached copy.
+    fn snapshot(state: &ui::State, c: &qdoc::Containers) -> qdoc::snapshot::DocSnapshot {
+        qdoc::model::materialize(&state.doc, c)
+    }
+
+    #[test]
+    fn accepting_tracked_insertion_clears_its_ins_mark() {
+        // "keep gone": flag "keep" (0..4) as a tracked insertion.
+        let (mut wp, mut state, c, mut ids, bid) = doc_with_paragraph("keep gone");
+        let ins_id = {
+            let mut dm = qdoc::DocMut { doc: &mut state.doc, c: &c, ids: &mut ids };
+            let id = dm.insert_change(qdoc::ChangeKind::Ins, "Ada", "");
+            dm.add_change_mark(qdoc::ChangeKind::Ins, &bid, 0, 4, &id);
+            id
+        };
+        state.doc.commit();
+        pipeline_draw(&mut wp, &mut state, 1000, 900);
+
+        // Before: the change is reported in the materialized snapshot, and the
+        // block carries a decoration range over "keep".
+        let before = snapshot(&state, &c);
+        assert!(before.changes.iter().any(|ch| ch.id == ins_id), "the insertion is a tracked change before accept");
+        let b = before.blocks.iter().find(|b| b.id == bid).unwrap();
+        assert_eq!(block_change_decos(b).0, vec![(0, 4)], "the insertion underlines 'keep' before accept");
+
+        // Accept via the production review-dispatch path (the same call the
+        // margin ✓ button + context menu use).
+        wp.dispatch_review_action(CtxAction::AcceptChange(ins_id.clone()), &mut state.doc);
+
+        // After: the text is kept, but the `ins` mark + change record are gone —
+        // the run is no longer reported as a tracked change anywhere.
+        let after = snapshot(&state, &c);
+        let b = after.blocks.iter().find(|b| b.id == bid).unwrap();
+        assert_eq!(b.text, "keep gone", "accepting an insertion keeps the inserted text");
+        assert!(!after.changes.iter().any(|ch| ch.id == ins_id), "the change record is dropped after accept");
+        assert!(block_change_decos(b).0.is_empty(), "no `ins` decoration remains after accept");
+        assert!(
+            !b.marks.iter().any(|m| m.name == qdoc::schema::MARK_INS),
+            "the `ins` mark is cleared from the block after accept"
+        );
+    }
+
+    #[test]
+    fn accepting_tracked_deletion_removes_the_struck_text() {
+        // "keep gone": flag "gone" (5..9) as a tracked deletion (retained-but-struck).
+        // qdoc semantics: ACCEPTING a deletion applies it (removes the struck text);
+        // REJECTING keeps the text and drops the `del` mark. We assert both arms
+        // on the materialized snapshot (the production read path).
+        let (mut wp, mut state, c, mut ids, bid) = doc_with_paragraph("keep gone");
+        let del_id = {
+            let mut dm = qdoc::DocMut { doc: &mut state.doc, c: &c, ids: &mut ids };
+            dm.track_delete(&bid, 5, 9, "Ada", "")
+        };
+        state.doc.commit();
+        pipeline_draw(&mut wp, &mut state, 1000, 900);
+
+        // Before: the struck text is still present + reported as a change.
+        let before = snapshot(&state, &c);
+        assert!(before.changes.iter().any(|ch| ch.id == del_id), "the deletion is a tracked change before accept");
+        assert_eq!(before.blocks.iter().find(|b| b.id == bid).unwrap().text, "keep gone");
+
+        // Accept the deletion: the struck text is removed.
+        wp.dispatch_review_action(CtxAction::AcceptChange(del_id.clone()), &mut state.doc);
+
+        let after = snapshot(&state, &c);
+        let b = after.blocks.iter().find(|b| b.id == bid).unwrap();
+        assert_eq!(b.text, "keep ", "accepting a deletion removes the struck text");
+        assert!(!after.changes.iter().any(|ch| ch.id == del_id), "the change record is dropped after accept");
+        assert!(
+            block_change_decos(b).1.is_empty(),
+            "no `del` strike decoration remains after accept"
+        );
+    }
+
+    #[test]
+    fn rejecting_tracked_deletion_keeps_the_text_and_drops_the_mark() {
+        // The inverse arm: rejecting a tracked deletion keeps the text (the author
+        // chose NOT to delete) and clears the `del` strike.
+        let (mut wp, mut state, c, mut ids, bid) = doc_with_paragraph("keep gone");
+        let del_id = {
+            let mut dm = qdoc::DocMut { doc: &mut state.doc, c: &c, ids: &mut ids };
+            dm.track_delete(&bid, 5, 9, "Ada", "")
+        };
+        state.doc.commit();
+        pipeline_draw(&mut wp, &mut state, 1000, 900);
+
+        wp.dispatch_review_action(CtxAction::RejectChange(del_id.clone()), &mut state.doc);
+
+        let after = snapshot(&state, &c);
+        let b = after.blocks.iter().find(|b| b.id == bid).unwrap();
+        assert_eq!(b.text, "keep gone", "rejecting a deletion keeps the text");
+        assert!(!after.changes.iter().any(|ch| ch.id == del_id), "the change record is dropped after reject");
+        assert!(
+            block_change_decos(b).1.is_empty(),
+            "the `del` strike decoration is cleared after reject"
+        );
+    }
+
+    #[test]
+    fn deleting_comment_removes_it_and_clears_the_highlight() {
+        // "hello world" with a comment over "world" (chars 6..11).
+        let (mut wp, mut state, c, mut ids, bid) = doc_with_paragraph("hello world");
+        let cid = {
+            let mut dm = qdoc::DocMut { doc: &mut state.doc, c: &c, ids: &mut ids };
+            dm.add_comment(&bid, 6, 11, "Ada", "Reword this")
+        };
+        state.doc.commit();
+        pipeline_draw(&mut wp, &mut state, 1000, 900);
+
+        // Before: the comment is in the snapshot and its highlight range is present.
+        let before = snapshot(&state, &c);
+        assert!(before.comments.iter().any(|cm| cm.id == cid), "the comment exists before resolve");
+        let b = before.blocks.iter().find(|b| b.id == bid).unwrap();
+        assert_eq!(block_comment_ranges(b).len(), 1, "the highlight range exists before resolve");
+
+        // Resolve (delete) via the production review-dispatch path.
+        wp.dispatch_review_action(CtxAction::ResolveComment(cid.clone()), &mut state.doc);
+
+        // After: gone from `comments`, and the anchoring `comment` mark (the
+        // highlight band) is cleared from the block. Body text is untouched.
+        let after = snapshot(&state, &c);
+        let b = after.blocks.iter().find(|b| b.id == bid).unwrap();
+        assert!(!after.comments.iter().any(|cm| cm.id == cid), "the comment is removed from the snapshot after resolve");
+        assert!(block_comment_ranges(b).is_empty(), "the comment highlight is cleared after resolve");
+        assert_eq!(b.text, "hello world", "resolving a comment leaves the commented text intact");
+    }
+
+    #[test]
+    fn accept_all_clears_every_tracked_change() {
+        // Two changes: an insertion over "keep" and a deletion over "gone".
+        let (mut wp, mut state, c, mut ids, bid) = doc_with_paragraph("keep gone");
+        {
+            let mut dm = qdoc::DocMut { doc: &mut state.doc, c: &c, ids: &mut ids };
+            let ins = dm.insert_change(qdoc::ChangeKind::Ins, "Ada", "");
+            dm.add_change_mark(qdoc::ChangeKind::Ins, &bid, 0, 4, &ins);
+            dm.track_delete(&bid, 5, 9, "Ada", "");
+        }
+        state.doc.commit();
+        pipeline_draw(&mut wp, &mut state, 1000, 900);
+        assert_eq!(snapshot(&state, &c).changes.len(), 2, "two tracked changes before Accept All");
+
+        wp.dispatch_review_action(CtxAction::AcceptAllChanges, &mut state.doc);
+
+        // Every change is gone; accepting the insertion kept "keep" and accepting
+        // the deletion removed "gone".
+        let after = snapshot(&state, &c);
+        assert!(after.changes.is_empty(), "no tracked changes remain after Accept All");
+        let b = after.blocks.iter().find(|b| b.id == bid).unwrap();
+        assert_eq!(b.text, "keep ", "Accept All keeps insertions and applies deletions");
+        assert!(b.marks.iter().all(|m| m.name != qdoc::schema::MARK_INS && m.name != qdoc::schema::MARK_DEL));
+    }
+
+    #[test]
+    fn margin_card_buttons_register_review_hits() {
+        // A drawn frame with one comment + one tracked change populates clickable
+        // affordances in `review_hits` (the production hit list the left-click
+        // handler dispatches through).
+        let (mut wp, mut state, c, mut ids, bid) = doc_with_paragraph("keep gone");
+        let (cid, ins_id);
+        {
+            let mut dm = qdoc::DocMut { doc: &mut state.doc, c: &c, ids: &mut ids };
+            cid = dm.add_comment(&bid, 0, 4, "Ada", "look");
+            ins_id = dm.insert_change(qdoc::ChangeKind::Ins, "Ada", "");
+            dm.add_change_mark(qdoc::ChangeKind::Ins, &bid, 5, 9, &ins_id);
+        }
+        state.doc.commit();
+        pipeline_draw(&mut wp, &mut state, 1200, 900);
+
+        let has = |pred: &dyn Fn(&CtxAction) -> bool| wp.review_hits.iter().any(|(r, a)| pred(a) && r.width() > 0.0 && r.height() > 0.0);
+        assert!(has(&|a| matches!(a, CtxAction::ResolveComment(id) if id == &cid)), "a Resolve affordance for the comment");
+        assert!(has(&|a| matches!(a, CtxAction::AcceptChange(id) if id == &ins_id)), "an Accept ✓ affordance for the change");
+        assert!(has(&|a| matches!(a, CtxAction::RejectChange(id) if id == &ins_id)), "a Reject ✗ affordance for the change");
     }
 
     #[test]

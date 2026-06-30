@@ -6,6 +6,7 @@
 //! in `widget.rs`; click-to-caret needs layout and is wired there.
 
 use crate::styles::{StyleProps, StyleSheet};
+use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId};
 use qdoc::{Containers, DocMut, IdGen};
 
@@ -631,6 +632,115 @@ impl WordProcessor {
     /// widget maps it to a `RichSpan.background` band behind the glyphs.
     pub fn set_highlight(&mut self, state: &mut AutoCommit, hex: &str) {
         self.set_mark_value(state, "highlight", qdoc::document::MarkValue::Str(hex.to_string()));
+    }
+
+    // ---- tracked changes / comments review --------------------------------
+
+    /// Accept a tracked change by id (insertion: keep the text, drop its `ins`
+    /// mark; deletion: remove the struck text). The change record is removed from
+    /// the `changes` container, so it stops being reported in the materialized
+    /// snapshot. No-op for an unknown id or an unbound document.
+    pub fn accept_change(&mut self, state: &mut AutoCommit, change_id: &str) {
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            dm.accept_change(change_id);
+        }
+    }
+
+    /// Reject a tracked change by id (insertion: remove the inserted text;
+    /// deletion: keep the text, drop its `del` mark) — the inverse of
+    /// [`Self::accept_change`]. The change record is removed either way. No-op
+    /// for an unknown id or an unbound document.
+    pub fn reject_change(&mut self, state: &mut AutoCommit, change_id: &str) {
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            dm.reject_change(change_id);
+        }
+    }
+
+    /// Accept every tracked change in the document. Processed in reverse
+    /// document order so an accepted deletion's text removal never shifts the
+    /// anchored range of an earlier-but-not-yet-processed change.
+    pub fn accept_all_changes(&mut self, state: &mut AutoCommit) {
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        let mut ids_in_order = self.changes_in_doc_order(state);
+        ids_in_order.reverse();
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            for cid in &ids_in_order {
+                dm.accept_change(cid);
+            }
+        }
+    }
+
+    /// Reject every tracked change in the document (see [`Self::accept_all_changes`]
+    /// for the ordering rationale).
+    pub fn reject_all_changes(&mut self, state: &mut AutoCommit) {
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        let mut ids_in_order = self.changes_in_doc_order(state);
+        ids_in_order.reverse();
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            for cid in &ids_in_order {
+                dm.reject_change(cid);
+            }
+        }
+    }
+
+    /// The tracked-change ids present in the document, sorted by their anchored
+    /// `(block-order, start)` body position (earliest first). Falls back to the
+    /// canonical id order for changes whose anchoring mark is gone.
+    fn changes_in_doc_order(&self, state: &AutoCommit) -> Vec<String> {
+        let Some(c) = self.containers.as_ref() else {
+            return Vec::new();
+        };
+        let block_order = self.ordered_blocks(state);
+        let pos = |bid: &str| block_order.iter().position(|b| b == bid).unwrap_or(usize::MAX);
+        let mut ids = qdoc::model::change_ids(state, c);
+        ids.sort_by_key(|id| {
+            qdoc::model::change_range(state, c, id)
+                .map(|(b, s, _)| (pos(&b), s))
+                .unwrap_or((usize::MAX, usize::MAX))
+        });
+        ids
+    }
+
+    /// Delete a comment by id: remove its anchoring `comment` mark over the body
+    /// range it covers, then drop the comment entry from the `comments`
+    /// container. After this the comment no longer appears in the materialized
+    /// snapshot and its highlight band disappears. No-op for an unknown id or an
+    /// unbound document.
+    pub fn delete_comment(&mut self, state: &mut AutoCommit, comment_id: &str) {
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        // The anchored range (recovered from the `comment` mark), if still present.
+        let range = qdoc::model::comment_range(state, &containers, comment_id);
+        let comments_obj = containers.comments.clone();
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            // 1. Clear the anchoring mark over its range so the highlight clears.
+            if let Some((b, s, e)) = &range {
+                if e > s {
+                    dm.remove_mark(b, *s, *e, qdoc::schema::MARK_COMMENT);
+                }
+            }
+            // 2. Drop the comment entry from the comments container. `dm.doc` is
+            //    the host `AutoCommit`; the container id comes from `Containers`.
+            if let Some(obj) = comments_obj.as_ref() {
+                let _ = dm.doc.delete(obj, comment_id);
+            }
+        }
     }
 
     /// Whether a named boolean run mark covers the whole of `ranges`.
