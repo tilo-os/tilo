@@ -51,6 +51,18 @@ pub enum ColumnWidth {
 pub type CellRender<Row> =
     Box<dyn Fn(&Row, &mut Scene, &Theme) + Send + Sync>;
 
+/// Richer cell renderer with everything needed to paint *text* — the
+/// `TextRenderer`, the resolved cell [`Rect`] (already positioned for the
+/// row), and whether the row is selected (so the closure can flip the
+/// text colour for contrast on the selection fill).
+///
+/// The original [`CellRender`] couldn't draw text because it never
+/// received a `TextRenderer` or a cell rect; columns that need text (the
+/// file-explorer list mode, …) register one of these via
+/// [`ColumnDef::with_text_render`] and the draw pass prefers it.
+pub type CellTextRender<Row> =
+    Box<dyn Fn(&Row, &mut Scene, &mut TextRenderer, Rect, &Theme, bool) + Send + Sync>;
+
 /// Definition of a single column.
 pub struct ColumnDef<Row> {
     pub key: String,
@@ -58,6 +70,9 @@ pub struct ColumnDef<Row> {
     pub width: ColumnWidth,
     pub sortable: bool,
     pub render_cell: CellRender<Row>,
+    /// Preferred text-capable renderer. When set, the draw pass uses this
+    /// instead of [`render_cell`](ColumnDef::render_cell).
+    pub text_render: Option<CellTextRender<Row>>,
     /// Width in px of the right-edge resize hit area. Used by T5.
     #[allow(dead_code)]
     pub(crate) resize_handle_px: f32,
@@ -75,6 +90,7 @@ impl<Row> ColumnDef<Row> {
             width,
             sortable: false,
             render_cell: Box::new(|_, _, _| {}),
+            text_render: None,
             resize_handle_px: 6.0,
         }
     }
@@ -86,6 +102,13 @@ impl<Row> ColumnDef<Row> {
 
     pub fn with_render(mut self, f: CellRender<Row>) -> Self {
         self.render_cell = f;
+        self
+    }
+
+    /// Register a text-capable cell renderer. Preferred over
+    /// [`with_render`](ColumnDef::with_render) when set.
+    pub fn with_text_render(mut self, f: CellTextRender<Row>) -> Self {
+        self.text_render = Some(f);
         self
     }
 }
@@ -135,6 +158,27 @@ pub struct DataTable<Row> {
     row_height: f32,
     /// Virtualization: current vertical scroll offset in px.
     scroll_y: f32,
+    /// When `true`, body rows are selectable: clicks update [`selection`],
+    /// rows render a selection fill, and keyboard Up/Down/Enter/Ctrl-A are
+    /// honoured while focused. Off by default so existing read-only tables
+    /// (e.g. the shell's permission tables) are unaffected.
+    selectable: bool,
+    /// Display-index selection state (indices into `view`). Seeded by the
+    /// owner each frame for stateless hosts; mutated in place on click.
+    selection: crate::selection::SelectionModel,
+    /// Fired on every body-row press with `(display_index, ctrl, shift)`
+    /// so a stateless host (rebuilt each frame) can own the selection.
+    on_row_click: Option<Box<dyn FnMut(usize, bool, bool)>>,
+    /// Fired when a row is activated (double-click or Enter) with its
+    /// display index.
+    on_activate: Option<Box<dyn FnMut(usize)>>,
+    /// Fired when a sortable header is clicked, with the column index.
+    /// When set it *replaces* the internal `toggle_sort` so the host can
+    /// own sort order (the file explorer sorts its own model).
+    on_header_click: Option<Box<dyn FnMut(usize)>>,
+    /// Last body-row press for internal double-click detection (used only
+    /// when `on_activate` is set and the table is long-lived).
+    last_click_row: Option<(usize, std::time::Instant)>,
 }
 
 impl<Row> DataTable<Row> {
@@ -163,7 +207,80 @@ impl<Row> DataTable<Row> {
             viewport_h: 0.0,
             row_height: ROW_HEIGHT as f32,
             scroll_y: 0.0,
+            selectable: false,
+            selection: crate::selection::SelectionModel::new(),
+            on_row_click: None,
+            on_activate: None,
+            on_header_click: None,
+            last_click_row: None,
         }
+    }
+
+    /// Enable row selection + selection rendering + keyboard navigation.
+    pub fn selectable(mut self, v: bool) -> Self {
+        self.selectable = v;
+        self
+    }
+
+    /// Seed the selection (display indices). Stateless hosts call this each
+    /// frame from their own [`SelectionModel`](crate::selection::SelectionModel).
+    pub fn set_selection(&mut self, sel: crate::selection::SelectionModel) {
+        self.selection = sel;
+    }
+
+    /// Borrow the current selection.
+    pub fn selection(&self) -> &crate::selection::SelectionModel {
+        &self.selection
+    }
+
+    /// Mutable access to the selection.
+    pub fn selection_mut(&mut self) -> &mut crate::selection::SelectionModel {
+        &mut self.selection
+    }
+
+    /// Builder form of [`set_selection`](DataTable::set_selection).
+    pub fn with_selection(mut self, sel: crate::selection::SelectionModel) -> Self {
+        self.selection = sel;
+        self
+    }
+
+    /// Set the per-click handler `(display_index, ctrl, shift)`.
+    pub fn on_row_click<F: FnMut(usize, bool, bool) + 'static>(mut self, f: F) -> Self {
+        self.on_row_click = Some(Box::new(f));
+        self
+    }
+
+    /// Set the activation handler (double-click / Enter), given the row's
+    /// display index.
+    pub fn on_activate<F: FnMut(usize) + 'static>(mut self, f: F) -> Self {
+        self.on_activate = Some(Box::new(f));
+        self
+    }
+
+    /// Set the header-click handler (column index). Replaces the internal
+    /// sort toggle so the host can own sort order.
+    pub fn on_header_click<F: FnMut(usize) + 'static>(mut self, f: F) -> Self {
+        self.on_header_click = Some(Box::new(f));
+        self
+    }
+
+    /// Map a logical cursor point to a body-row display index, accounting
+    /// for the header band and the current scroll offset. Returns `None`
+    /// for points in the header or below the last row.
+    fn row_at(&self, pt: Point) -> Option<usize> {
+        if pt.x < self.rect.x0 || pt.x > self.rect.x1 {
+            return None;
+        }
+        let body_top = self.rect.y0 + HEADER_HEIGHT;
+        if pt.y < body_top {
+            return None;
+        }
+        let rel = pt.y - body_top + self.scroll_y as f64;
+        if rel < 0.0 {
+            return None;
+        }
+        let idx = (rel / ROW_HEIGHT) as usize;
+        if idx < self.view.len() { Some(idx) } else { None }
     }
 
     pub fn set_rows(&mut self, rows: Vec<Row>) {
@@ -358,8 +475,10 @@ impl<Row: 'static> Widget for DataTable<Row> {
         let height = HEADER_HEIGHT + ROW_HEIGHT * self.view.len().max(1) as f64;
         let node = taffy
             .new_leaf(Style {
+                // Fill the parent's width (a bare `auto` leaf with no
+                // measure collapses to zero under compute_layout_with_measure).
                 size: Size {
-                    width: Dimension::auto(),
+                    width: Dimension::percent(1.0),
                     height: Dimension::length(height as f32),
                 },
                 ..Default::default()
@@ -465,10 +584,19 @@ impl<Row: 'static> Widget for DataTable<Row> {
             let y0 = self.rect.y0 + HEADER_HEIGHT + (ri as f64) * ROW_HEIGHT;
             let y1 = y0 + ROW_HEIGHT;
             if y0 >= self.rect.y1 { break; }
-            // Alternate row striping using the neutral ramp.
-            if ri % 2 == 1 {
-                let row_rect =
-                    Rect::new(self.rect.x0, y0, self.rect.x1, y1.min(self.rect.y1));
+            let selected = self.selectable && self.selection.is_selected(ri);
+            let row_rect = Rect::new(self.rect.x0, y0, self.rect.x1, y1.min(self.rect.y1));
+            // Selection fill takes precedence over the zebra stripe.
+            if selected {
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    tokens.colors.accent.stops[crate::tokens::colors::ACCENT_PRIMARY_IDX],
+                    None,
+                    &row_rect,
+                );
+            } else if ri % 2 == 1 {
+                // Alternate row striping using the neutral ramp.
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
@@ -477,11 +605,17 @@ impl<Row: 'static> Widget for DataTable<Row> {
                     &row_rect,
                 );
             }
-            // Per-column cell render — the caller's `with_render` closure
-            // paints into the scene. Transform/theme are already applied at
-            // the table level; the cell closure sees the raw scene/theme.
-            for (_i, col) in self.columns.iter().enumerate() {
-                (col.render_cell)(&self.rows[row_idx], scene, theme);
+            // Per-column cell render. Prefer the text-capable closure
+            // (gets the TextRenderer + cell rect + selected flag); fall
+            // back to the legacy scene-only renderer otherwise.
+            for (i, col) in self.columns.iter().enumerate() {
+                if let Some(tr) = &col.text_render {
+                    let cell_x = self.col_rects.get(i).map(|c| (c.x0, c.x1)).unwrap_or((self.rect.x0, self.rect.x1));
+                    let cell_rect = Rect::new(cell_x.0, y0, cell_x.1, y1);
+                    tr(&self.rows[row_idx], scene, text_renderer, cell_rect, theme, selected);
+                } else {
+                    (col.render_cell)(&self.rows[row_idx], scene, theme);
+                }
             }
         }
     }
@@ -490,12 +624,12 @@ impl<Row: 'static> Widget for DataTable<Row> {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
+        modifiers: &winit::event::Modifiers,
         _state: &mut AutoCommit,
         _path: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
         match event {
@@ -513,6 +647,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 ..
             } => {
                 let Some(pt) = self.last_cursor else { return };
+                // 1. Column resize handles win over everything.
                 for i in 0..self.columns.len() {
                     if let Some(handle) = self.resize_handle_rect_for(i) {
                         if handle.contains(pt) {
@@ -523,6 +658,52 @@ impl<Row: 'static> Widget for DataTable<Row> {
                         }
                     }
                 }
+                // 2. Header click → sort (host-owned via on_header_click,
+                //    else internal toggle).
+                let in_header = pt.y >= self.rect.y0
+                    && pt.y < self.rect.y0 + HEADER_HEIGHT
+                    && pt.x >= self.rect.x0
+                    && pt.x <= self.rect.x1;
+                if in_header {
+                    if let Some(i) = self.col_rects.iter().position(|c| pt.x >= c.x0 && pt.x < c.x1) {
+                        if self.columns.get(i).map(|c| c.sortable).unwrap_or(false) {
+                            if let Some(cb) = &mut self.on_header_click {
+                                cb(i);
+                            } else {
+                                self.toggle_sort(i);
+                            }
+                            *handled = true;
+                        }
+                    }
+                    return;
+                }
+                // 3. Body-row selection.
+                if self.selectable {
+                    if let Some(ri) = self.row_at(pt) {
+                        let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
+                        let shift = modifiers.state().shift_key();
+                        self.selection.apply_click(ri, ctrl, shift);
+                        *focus_target = Some(node_id);
+                        if let Some(cb) = &mut self.on_row_click {
+                            cb(ri, ctrl, shift);
+                        }
+                        // Internal double-click → activate (long-lived hosts).
+                        let now = std::time::Instant::now();
+                        let is_double = matches!(
+                            self.last_click_row,
+                            Some((pri, t)) if pri == ri && now.duration_since(t) < std::time::Duration::from_millis(500)
+                        );
+                        if is_double {
+                            self.last_click_row = None;
+                            if let Some(cb) = &mut self.on_activate {
+                                cb(ri);
+                            }
+                        } else {
+                            self.last_click_row = Some((ri, now));
+                        }
+                        *handled = true;
+                    }
+                }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -531,6 +712,42 @@ impl<Row: 'static> Widget for DataTable<Row> {
             } if self.resize.is_some() => {
                 self.end_resize();
                 *handled = true;
+            }
+            WindowEvent::KeyboardInput { event: ke, .. }
+                if self.selectable && self.is_focused && ke.state == ElementState::Pressed =>
+            {
+                use winit::keyboard::{Key, NamedKey};
+                let shift = modifiers.state().shift_key();
+                let len = self.view.len();
+                if len == 0 {
+                    return;
+                }
+                let cur = self.selection.primary();
+                match &ke.logical_key {
+                    Key::Named(NamedKey::ArrowDown) => {
+                        let next = cur.map(|c| (c + 1).min(len - 1)).unwrap_or(0);
+                        self.selection.move_to(next, shift);
+                        *handled = true;
+                    }
+                    Key::Named(NamedKey::ArrowUp) => {
+                        let next = cur.map(|c| c.saturating_sub(1)).unwrap_or(0);
+                        self.selection.move_to(next, shift);
+                        *handled = true;
+                    }
+                    Key::Named(NamedKey::Enter) => {
+                        if let Some(c) = cur {
+                            if let Some(cb) = &mut self.on_activate {
+                                cb(c);
+                            }
+                        }
+                        *handled = true;
+                    }
+                    Key::Character(s) if (s == "a" || s == "A") && modifiers.state().control_key() => {
+                        self.selection.select_all(len);
+                        *handled = true;
+                    }
+                    _ => {}
+                }
             }
             _ => {}
         }
@@ -648,5 +865,155 @@ mod tests {
     fn data_table_test_id_returns_data_table() {
         let t = DataTable::<R>::new(sample_cols());
         assert_eq!(Widget::test_id(&t), Some("data_table"));
+    }
+
+    // --- Selection / interaction tests --------------------------------
+
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use winit::event::{DeviceId, ElementState, MouseButton};
+
+    /// Lay a table out inside a 300×400 flex-column root so its auto
+    /// width stretches to 300 and rows get real hit rects, then return
+    /// the taffy tree + the table's node for event dispatch.
+    fn lay_out(table: &mut DataTable<R>) -> (TaffyTree<()>, NodeId) {
+        let mut tree = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let theme = Theme::dark();
+        let tnode = table.build_layout(&mut tree, &theme, &mut node_map);
+        let root = tree
+            .new_with_children(
+                Style {
+                    display: taffy::Display::Flex,
+                    flex_direction: taffy::FlexDirection::Column,
+                    size: Size {
+                        width: Dimension::length(300.0),
+                        height: Dimension::length(400.0),
+                    },
+                    ..Default::default()
+                },
+                &[tnode],
+            )
+            .unwrap();
+        tree.compute_layout(
+            root,
+            Size {
+                width: taffy::AvailableSpace::Definite(300.0),
+                height: taffy::AvailableSpace::Definite(400.0),
+            },
+        )
+        .unwrap();
+        table.apply_layout(&tree, tnode, Point::ZERO);
+        (tree, tnode)
+    }
+
+    fn rows4() -> Vec<R> {
+        vec![
+            R { name: "a".into() },
+            R { name: "b".into() },
+            R { name: "c".into() },
+            R { name: "d".into() },
+        ]
+    }
+
+    fn dispatch(
+        t: &mut DataTable<R>,
+        tree: &TaffyTree<()>,
+        node: NodeId,
+        ev: WindowEvent,
+        mods: &winit::event::Modifiers,
+    ) {
+        let mut handled = false;
+        let mut focus = None;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        t.handle_event(&ev, 1.0, mods, &mut doc, &root, &mut handled, &mut focus, node, tree);
+    }
+
+    fn device() -> DeviceId {
+        unsafe { std::mem::zeroed() }
+    }
+
+    #[test]
+    fn click_selects_row_and_fires_callback() {
+        let clicks = Rc::new(RefCell::new(Vec::<(usize, bool, bool)>::new()));
+        let mut t = {
+            let clicks = clicks.clone();
+            DataTable::<R>::new(sample_cols())
+                .selectable(true)
+                .on_row_click(move |i, c, s| clicks.borrow_mut().push((i, c, s)))
+        };
+        t.set_rows(rows4());
+        let (tree, node) = lay_out(&mut t);
+        let mods = winit::event::Modifiers::default();
+
+        // Row 2 spans y ∈ [28 + 2*24, +24) = [76, 100). Click at (50, 85).
+        dispatch(&mut t, &tree, node, WindowEvent::CursorMoved { device_id: device(), position: (50.0, 85.0).into() }, &mods);
+        dispatch(&mut t, &tree, node, WindowEvent::MouseInput { device_id: device(), state: ElementState::Pressed, button: MouseButton::Left }, &mods);
+
+        assert!(t.selection().is_selected(2), "row 2 selected");
+        assert_eq!(t.selection().primary(), Some(2));
+        assert_eq!(*clicks.borrow(), vec![(2, false, false)]);
+    }
+
+    #[test]
+    fn header_click_fires_on_header_click_instead_of_toggle() {
+        let hits = Rc::new(RefCell::new(Vec::<usize>::new()));
+        let mut t = {
+            let hits = hits.clone();
+            DataTable::<R>::new(sample_cols()).on_header_click(move |i| hits.borrow_mut().push(i))
+        };
+        t.set_rows(rows4());
+        // Install a comparator so a fallback toggle *would* have sorted —
+        // proving the callback path takes precedence (rows stay put).
+        t.sort_by_with(|a, b| a.name.cmp(&b.name), "name", true);
+        let (tree, node) = lay_out(&mut t);
+        let mods = winit::event::Modifiers::default();
+
+        // Header band is y ∈ [0, 28). Name column starts at x=0. Click (20, 10).
+        dispatch(&mut t, &tree, node, WindowEvent::CursorMoved { device_id: device(), position: (20.0, 10.0).into() }, &mods);
+        dispatch(&mut t, &tree, node, WindowEvent::MouseInput { device_id: device(), state: ElementState::Pressed, button: MouseButton::Left }, &mods);
+
+        assert_eq!(*hits.borrow(), vec![0], "header click reported column 0");
+        // Sort direction unchanged because the callback replaced toggle.
+        assert_eq!(t.sort_state(), Some(("name", true)));
+    }
+
+    #[test]
+    fn non_selectable_table_ignores_body_clicks() {
+        let mut t = DataTable::<R>::new(sample_cols()); // selectable defaults false
+        t.set_rows(rows4());
+        let (tree, node) = lay_out(&mut t);
+        let mods = winit::event::Modifiers::default();
+        dispatch(&mut t, &tree, node, WindowEvent::CursorMoved { device_id: device(), position: (50.0, 85.0).into() }, &mods);
+        dispatch(&mut t, &tree, node, WindowEvent::MouseInput { device_id: device(), state: ElementState::Pressed, button: MouseButton::Left }, &mods);
+        assert!(t.selection().is_empty(), "read-only table keeps empty selection");
+    }
+
+    #[test]
+    fn keyboard_arrows_move_selection_when_focused() {
+        let mut t = DataTable::<R>::new(sample_cols()).selectable(true);
+        t.set_rows(rows4());
+        t.set_focus(true);
+        let (tree, node) = lay_out(&mut t);
+        let mods = winit::event::Modifiers::default();
+        // winit keeps `KeyEvent`'s extra field `pub(crate)`; the suite-wide
+        // workaround is to zero-init and set the fields we care about.
+        let key = |named| {
+            let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+            ev.logical_key = winit::keyboard::Key::Named(named);
+            ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+                winit::keyboard::NativeKeyCode::Unidentified,
+            );
+            ev.location = winit::keyboard::KeyLocation::Standard;
+            ev.state = ElementState::Pressed;
+            ev.repeat = false;
+            WindowEvent::KeyboardInput { device_id: device(), event: ev, is_synthetic: false }
+        };
+        use winit::keyboard::NamedKey;
+        dispatch(&mut t, &tree, node, key(NamedKey::ArrowDown), &mods); // → 0
+        dispatch(&mut t, &tree, node, key(NamedKey::ArrowDown), &mods); // → 1
+        assert_eq!(t.selection().primary(), Some(1));
+        assert!(t.selection().is_selected(1));
     }
 }

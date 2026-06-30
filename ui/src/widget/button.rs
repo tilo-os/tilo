@@ -17,7 +17,18 @@ pub struct Button {
     is_hovered: bool,
     is_pressed: bool,
     is_focused: bool,
+    /// Optional leading vector glyph drawn instead of (icon-only) or
+    /// before (icon + label) the text. Lets toolbars render crisp lucide
+    /// icons without depending on a Nerd Font being installed.
+    icon: Option<crate::icons::Icon>,
+    /// Optional fixed (width, height) override; defaults to 120×40.
+    size: Option<(f32, f32)>,
     on_click_path: Option<String>, // Path in CRDT to mutate
+    /// Optional imperative click handler, fired on release-while-hovered
+    /// *in addition to* any `on_click_path` CRDT mutation. Lets app code
+    /// that isn't modelling its control flow in the CRDT (e.g. the file
+    /// explorer's command sink) react to a press without a message bus.
+    on_click: Option<Box<dyn FnMut()>>,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
     /// Scene cache. Holds the last emitted body / border / label
@@ -44,7 +55,10 @@ impl Button {
             is_hovered: false,
             is_pressed: false,
             is_focused: false,
+            icon: None,
+            size: None,
             on_click_path: on_click_path.map(|s| s.to_string()),
+            on_click: None,
             presence_path: Vec::new(),
             permission_scope: None,
             cached: vello::Scene::new(),
@@ -67,6 +81,29 @@ impl Button {
         self.permission_scope = Some(scope);
         self
     }
+
+    /// Attach an imperative click handler. Fires once per completed
+    /// click (left-button release while the cursor is still over the
+    /// button), in addition to any `on_click_path` CRDT mutation.
+    pub fn on_click<F: FnMut() + 'static>(mut self, f: F) -> Self {
+        self.on_click = Some(Box::new(f));
+        self
+    }
+
+    /// Draw `icon` as a leading vector glyph. With an empty label the
+    /// icon is centred (icon-only button); with a label it sits to its
+    /// left.
+    pub fn with_icon(mut self, icon: crate::icons::Icon) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+
+    /// Override the default 120×40 intrinsic size — e.g. a compact 40×36
+    /// square for a toolbar icon button.
+    pub fn with_size(mut self, width: f32, height: f32) -> Self {
+        self.size = Some((width, height));
+        self
+    }
 }
 
 impl Widget for Button {
@@ -75,10 +112,12 @@ impl Widget for Button {
     }
 
     fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
+        let (w, h) = self.size.unwrap_or((120.0, 40.0));
         let node = taffy.new_leaf(Style {
+            flex_shrink: 0.0,
             size: Size {
-                width: Dimension::length(120.0),
-                height: Dimension::length(40.0),
+                width: Dimension::length(w),
+                height: Dimension::length(h),
             },
             ..Default::default()
         }).unwrap();
@@ -153,18 +192,51 @@ impl Widget for Button {
 
         let text_size = 14.0;
         let label = i18n!(&self.label);
-        let (text_width, _text_height) = text_renderer.measure(&label, text_size as f32, None);
-        let text_x = self.rect.center().x - (text_width as f64 / 2.0);
-        let text_y = self.rect.y0 + (self.rect.height() - text_size as f64) / 2.0;
-
-        text_renderer.draw_text(
-            scene,
-            &label,
-            text_size as f32,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((text_x, text_y)),
-            None,
-        );
+        let icon_px = (self.rect.height() - 14.0).clamp(12.0, 22.0);
+        match (self.icon, label.is_empty()) {
+            (Some(icon), true) => {
+                // Icon-only button — centre the glyph.
+                let ix = self.rect.center().x - icon_px / 2.0;
+                let iy = self.rect.center().y - icon_px / 2.0;
+                crate::icons::draw_icon(
+                    scene,
+                    transform,
+                    Rect::new(ix, iy, ix + icon_px, iy + icon_px),
+                    icon,
+                    theme.tokens.colors.text_primary,
+                    crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                );
+            }
+            (icon, _) => {
+                // Optional leading icon + centred label cluster.
+                let (text_width, _) = text_renderer.measure(&label, text_size as f32, None);
+                let gap = if icon.is_some() { 6.0 } else { 0.0 };
+                let icon_w = if icon.is_some() { icon_px } else { 0.0 };
+                let cluster_w = icon_w + gap + text_width as f64;
+                let start_x = self.rect.center().x - cluster_w / 2.0;
+                if let Some(icon) = icon {
+                    let iy = self.rect.center().y - icon_px / 2.0;
+                    crate::icons::draw_icon(
+                        scene,
+                        transform,
+                        Rect::new(start_x, iy, start_x + icon_px, iy + icon_px),
+                        icon,
+                        theme.tokens.colors.text_primary,
+                        crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                    );
+                }
+                let text_x = start_x + icon_w + gap;
+                let text_y = self.rect.y0 + (self.rect.height() - text_size as f64) / 2.0;
+                text_renderer.draw_text(
+                    scene,
+                    &label,
+                    text_size as f32,
+                    theme.tokens.colors.text_primary,
+                    transform * Affine::translate((text_x, text_y)),
+                    None,
+                );
+            }
+        }
         // End of cache build — splice the freshly-emitted local
         // scene into the outer App scene with the host transform.
         // delta = 0 here since cache_rect was just set to self.rect.
@@ -231,6 +303,10 @@ impl Widget for Button {
                                         let _ = state.put(root, path.as_str(), true);
                                     }
                                 }
+                            }
+                            // Imperative handler fires alongside the CRDT path.
+                            if let Some(cb) = &mut self.on_click {
+                                cb();
                             }
                         }
                     }
@@ -307,5 +383,50 @@ mod tests {
     fn button_test_id_returns_label() {
         let b = Button::new("id", "Save", None);
         assert_eq!(Widget::test_id(&b), Some("Save"));
+    }
+
+    #[test]
+    fn on_click_callback_fires_on_release_over_button() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        use winit::event::{DeviceId, ElementState, MouseButton};
+
+        let fired = Rc::new(Cell::new(0u32));
+        let mut b = {
+            let fired = fired.clone();
+            Button::new("id", "Go", None).on_click(move || fired.set(fired.get() + 1))
+        };
+
+        // Lay the button out so it has a non-zero hit rect.
+        let mut tree = TaffyTree::<()>::new();
+        let mut node_map = std::collections::HashMap::new();
+        let theme = Theme::dark();
+        let node = b.build_layout(&mut tree, &theme, &mut node_map);
+        tree.compute_layout(
+            node,
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(200.0),
+                height: taffy::AvailableSpace::Definite(60.0),
+            },
+        )
+        .unwrap();
+        b.apply_layout(&tree, node, Point::ZERO);
+
+        let device: DeviceId = unsafe { std::mem::zeroed() };
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mods = winit::event::Modifiers::default();
+        let mut dispatch = |b: &mut Button, ev: WindowEvent| {
+            let mut handled = false;
+            let mut focus = None;
+            b.handle_event(&ev, 1.0, &mods, &mut doc, &root, &mut handled, &mut focus, node, &tree);
+        };
+
+        // Hover, press, release — the callback fires once on release.
+        dispatch(&mut b, WindowEvent::CursorMoved { device_id: device, position: (10.0, 10.0).into() });
+        dispatch(&mut b, WindowEvent::MouseInput { device_id: device, state: ElementState::Pressed, button: MouseButton::Left });
+        assert_eq!(fired.get(), 0, "not fired until release");
+        dispatch(&mut b, WindowEvent::MouseInput { device_id: device, state: ElementState::Released, button: MouseButton::Left });
+        assert_eq!(fired.get(), 1, "fired once on release over the button");
     }
 }
