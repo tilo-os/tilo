@@ -4,6 +4,13 @@
 //!   * default        — run the live winit event loop via `ui::App`.
 //!   * `--shots PATH` — render one offscreen frame to a PNG and exit
 //!                       (headless screenshot; identical passes to the live app).
+//!
+//! Optional flags for `--shots` (capture responsive states the single-frame
+//! headless renderer can't reach through live input):
+//!   * `--scenario NAME` — stage a frame (`narrow`, `detail`); see
+//!                          [`snippets::app_root_for_shot`].
+//!   * `--viewport WxH`  — render at a custom size (e.g. `--viewport 720x900`
+//!                          to exercise the narrow-window overlay flap).
 
 use std::collections::HashMap;
 
@@ -25,7 +32,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
-        render_shot_to_png(snippets::app_root(), DEFAULT_SHOTS_VIEWPORT, &out)?;
+        let scenario = parse_value_arg(&args, "--scenario").unwrap_or_default();
+        let viewport = parse_value_arg(&args, "--viewport")
+            .and_then(|s| parse_viewport(&s))
+            .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+        render_shot_to_png(snippets::app_root_for_shot(&scenario), viewport, &out)?;
         return Ok(());
     }
 
@@ -46,6 +57,27 @@ fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
         }
     }
     None
+}
+
+/// Parse `--flag VALUE` or `--flag=VALUE` out of the argv.
+fn parse_value_arg(args: &[String], flag: &str) -> Option<String> {
+    let mut iter = args.iter().skip(1);
+    let eq = format!("{flag}=");
+    while let Some(arg) = iter.next() {
+        if arg == flag {
+            return iter.next().cloned();
+        }
+        if let Some(rest) = arg.strip_prefix(&eq) {
+            return Some(rest.to_string());
+        }
+    }
+    None
+}
+
+/// Parse a `WIDTHxHEIGHT` viewport spec.
+fn parse_viewport(s: &str) -> Option<(u32, u32)> {
+    let (w, h) = s.split_once(['x', 'X'])?;
+    Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
 }
 
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.

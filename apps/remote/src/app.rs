@@ -29,6 +29,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::{FlapState, SplitLayout};
 
 use crate::doc::RemoteDoc;
 use crate::model::{
@@ -46,6 +47,15 @@ const HEADER_H: f64 = 64.0;
 const ROW_H: f64 = 72.0;
 /// Session toolbar height.
 const TOOLBAR_H: f64 = 48.0;
+
+/// Below this allocated width (logical px) the navigation rail stops being a
+/// permanent docked column and becomes an overlay flap summoned by the
+/// hamburger toggle. Chosen so a connection row's name + address + last-used +
+/// Edit/Connect buttons (or the form card) keep breathing room once the 64px
+/// rail is reclaimed for content.
+const RAIL_BREAKPOINT: f64 = 720.0;
+/// Size of the square hamburger toggle that summons the rail in overlay mode.
+const HAMBURGER: f64 = 40.0;
 
 /// A clickable region captured during `draw`, hit-tested on the next
 /// pointer press. Keeping the action with the rect means `handle_event`
@@ -94,6 +104,8 @@ enum Action {
     Disconnect,
     /// Pick one of the discovered qOS devices into the form.
     PickQosDevice(usize),
+    /// Open/close the navigation rail (hamburger toggle in overlay mode).
+    ToggleRail,
 }
 
 /// Editable text fields. The search box lives on the list screen; the
@@ -152,6 +164,22 @@ pub struct RemoteApp {
     dirty: bool,
     /// True once the in-memory workspace has been mirrored into the CRDT.
     seeded: bool,
+
+    /// Eased open/closed state of the primary navigation rail. On a wide
+    /// window the rail is docked and open; on a narrow window it collapses
+    /// into an overlay flap (closed by default, summoned by the hamburger).
+    /// This is the shared toolkit kernel — the same easing weather + chat use.
+    rail: FlapState,
+    /// Resolved docked-vs-overlay layout for the rail, recomputed each frame
+    /// from the allocated width against [`RAIL_BREAKPOINT`].
+    rail_layout: SplitLayout,
+    /// When set, the next layout snaps the rail to this open state with no
+    /// animation. Used by the single-frame `--shots` renderer so a narrow
+    /// capture shows a settled (collapsed) flap rather than one mid-slide.
+    rail_snap: Option<bool>,
+    /// Wall-clock of the last rail animation advance, so the eased slide is
+    /// frame-rate independent regardless of how often the host repaints.
+    last_tick: std::time::Instant,
 }
 
 impl RemoteApp {
@@ -180,6 +208,24 @@ impl RemoteApp {
             pointer: Point::ZERO,
             dirty: true,
             seeded: false,
+            rail: FlapState::open_when_docked(),
+            rail_layout: SplitLayout::Docked,
+            rail_snap: None,
+            last_tick: std::time::Instant::now(),
+        }
+    }
+
+    /// Stage a deterministic state for the single-frame `--shots` renderer.
+    /// `"narrow"` collapses the rail into its closed overlay flap so a small
+    /// viewport captures the responsive layout without animating in.
+    #[doc(hidden)]
+    pub fn dev_shot_scenario(&mut self, scenario: &str) {
+        match scenario {
+            "narrow" => self.rail_snap = Some(false),
+            // The summoned overlay rail (flap open over the dimming scrim) —
+            // proves the narrow open state for visual verification.
+            "narrow-open" => self.rail_snap = Some(true),
+            _ => {}
         }
     }
 
@@ -235,11 +281,13 @@ impl RemoteApp {
             Action::GoList | Action::Back => {
                 self.screen = Screen::List;
                 self.focus = None;
+                self.dismiss_overlay_rail();
             }
             Action::NewConnection => {
                 self.draft = ConnectionDraft::default();
                 self.screen = Screen::Form { editing: None };
                 self.focus = Some(Field::Name);
+                self.dismiss_overlay_rail();
             }
             Action::EditConnection(id) => {
                 if let Some(c) = self.workspace.get(id) {
@@ -313,6 +361,22 @@ impl RemoteApp {
                     self.focus = Some(Field::Name);
                 }
             }
+            Action::ToggleRail => {
+                self.rail.toggle(self.rail_layout);
+            }
+        }
+    }
+
+    /// `true` while the rail is (resolved) open at the current layout.
+    fn rail_open(&self) -> bool {
+        self.rail.is_open(self.rail_layout)
+    }
+
+    /// Collapse the rail if it's an open overlay — a nav action chosen from
+    /// the flap should hand the screen back to the content beneath it.
+    fn dismiss_overlay_rail(&mut self) {
+        if self.rail_layout == SplitLayout::Overlay && self.rail_open() {
+            self.rail.close();
         }
     }
 
@@ -638,6 +702,15 @@ impl Widget for RemoteApp {
             origin.x + layout.location.x as f64 + layout.size.width as f64,
             origin.y + layout.location.y as f64 + layout.size.height as f64,
         );
+        // Drive the rail's docked-vs-overlay choice from our *allocated*
+        // width, then reconcile so a window resize across the breakpoint
+        // returns the rail to that mode's default. A pending `--shots` snap
+        // settles the flap deterministically for a single offscreen frame.
+        self.rail_layout = SplitLayout::from_width(self.rect.width(), RAIL_BREAKPOINT);
+        if let Some(open) = self.rail_snap.take() {
+            self.rail.snap(open);
+        }
+        self.rail.reconcile(self.rail_layout);
     }
 
     fn draw(
@@ -651,20 +724,39 @@ impl Widget for RemoteApp {
         self.hits.clear();
         let tokens = &theme.tokens;
 
+        // Advance the rail's eased slide for this frame. While it's still
+        // settling, keep the repaint gate open so the host pumps the next
+        // frame; the dt is real elapsed time so the slide is frame-rate
+        // independent.
+        let now = std::time::Instant::now();
+        let dt = (now - self.last_tick).as_secs_f64().min(0.1);
+        self.last_tick = now;
+        if self.rail.tick(self.rail_layout, dt) {
+            self.dirty = true;
+        }
+
         // Whole-window background.
         scene.fill(Fill::NonZero, transform, tokens.colors.surfaces.base, None, &self.rect);
 
         // Fullscreen session hides the rail + header for an immersive view.
         let immersive = matches!(self.screen, Screen::Session { .. }) && self.fullscreen;
 
-        if !immersive {
-            self.draw_rail(scene, transform, text_renderer, theme);
-        }
+        let overlay = self.rail_layout == SplitLayout::Overlay;
+        let reveal = self.rail.reveal();
 
+        // Content area. Docked: inset by the eased rail width so the rail
+        // reveals/collapses without overlapping. Overlay: content spans full
+        // width and the rail floats over it. Immersive sessions are full-bleed.
         let content = if immersive {
             self.rect
+        } else if overlay {
+            // Reserve room at the content's top-left for the floating
+            // hamburger so the header title / search box don't sit under it.
+            let inset = 12.0 + HAMBURGER + 12.0;
+            Rect::new(self.rect.x0 + inset, self.rect.y0, self.rect.x1, self.rect.y1)
         } else {
-            Rect::new(self.rect.x0 + RAIL_W, self.rect.y0, self.rect.x1, self.rect.y1)
+            let inset = RAIL_W * reveal;
+            Rect::new(self.rect.x0 + inset, self.rect.y0, self.rect.x1, self.rect.y1)
         };
 
         match self.screen.clone() {
@@ -675,6 +767,30 @@ impl Widget for RemoteApp {
             Screen::Session { id } => {
                 self.draw_session(scene, transform, text_renderer, theme, content, id, immersive)
             }
+        }
+
+        if immersive {
+            return;
+        }
+
+        // In overlay mode a dimming scrim sits between the content and the
+        // sliding rail; tapping it dismisses the rail. A hamburger floats at
+        // the top-left of the content to summon the rail.
+        if overlay {
+            if reveal > 0.001 {
+                let scrim = Color::from_rgba8(0, 0, 0, 255).at_alpha((reveal * 0.5) as f32);
+                scene.fill(Fill::NonZero, transform, scrim, None, &self.rect);
+            }
+            self.draw_hamburger(scene, transform, text_renderer, theme);
+        }
+
+        // The rail itself, drawn last so it sits above the content + scrim.
+        // Docked: slides in from the left edge as it reveals. Overlay: slides
+        // over the content. Hidden entirely once fully collapsed.
+        if reveal > 0.001 {
+            let slide = self.rail.slide();
+            let rail_x0 = self.rect.x0 - RAIL_W * (1.0 - slide);
+            self.draw_rail(scene, transform, text_renderer, theme, rail_x0);
         }
     }
 
@@ -703,8 +819,34 @@ impl Widget for RemoteApp {
                 button: MouseButton::Left,
                 ..
             } => {
-                // Hit-test the regions captured on the previous frame.
                 let p = self.pointer;
+
+                // Scrim dismissal: when the rail is an open overlay, a press
+                // on the dimmed content (outside the rail itself, and not on
+                // the hamburger) closes the rail and is consumed — matching the
+                // toolkit flap's scrim-click behaviour.
+                if self.rail_layout == SplitLayout::Overlay && self.rail_open() {
+                    let rail_rect = Rect::new(
+                        self.rect.x0,
+                        self.rect.y0,
+                        self.rect.x0 + RAIL_W,
+                        self.rect.y1,
+                    );
+                    let hamburger = Rect::new(
+                        self.rect.x0 + 12.0,
+                        self.rect.y0 + 12.0,
+                        self.rect.x0 + 12.0 + HAMBURGER,
+                        self.rect.y0 + 12.0 + HAMBURGER,
+                    );
+                    if !rail_rect.contains(p) && !hamburger.contains(p) {
+                        self.rail.close();
+                        self.dirty = true;
+                        *handled = true;
+                        return;
+                    }
+                }
+
+                // Hit-test the regions captured on the previous frame.
                 if let Some(action) = self
                     .hits
                     .iter()
@@ -746,6 +888,12 @@ impl Widget for RemoteApp {
 
     fn needs_redraw(&self) -> bool {
         self.dirty
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        // While the rail's overlay/dock slide is mid-flight, keep the host
+        // pumping frames so the eased transition plays smoothly.
+        self.rail.is_animating(self.rail_layout)
     }
 
     fn mark_drawn(&mut self) {
@@ -809,6 +957,13 @@ impl RemoteApp {
 
         match key {
             Key::Named(NamedKey::Escape) => {
+                // An open overlay rail is dismissed first (toolkit flap parity).
+                if self.rail_layout == SplitLayout::Overlay && self.rail_open() {
+                    self.rail.close();
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
                 match self.screen {
                     Screen::List => {
                         if self.focus == Some(Field::Search) {
@@ -908,16 +1063,19 @@ impl RemoteApp {
 
     // -- Drawing helpers ----------------------------------------------------
 
-    /// Left navigation rail: app glyph + new-connection + back/home.
+    /// Left navigation rail: app glyph + new-connection + back/home. `x0` is
+    /// the rail's left edge, which the caller slides off-screen while the rail
+    /// is collapsing (docked) or animating in over the content (overlay).
     fn draw_rail(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
+        x0: f64,
     ) {
         let tokens = &theme.tokens;
-        let rail = Rect::new(self.rect.x0, self.rect.y0, self.rect.x0 + RAIL_W, self.rect.y1);
+        let rail = Rect::new(x0, self.rect.y0, x0 + RAIL_W, self.rect.y1);
         scene.fill(Fill::NonZero, transform, tokens.colors.neutral[1], None, &rail);
         // Right hairline.
         let seam = Rect::new(rail.x1 - 1.0, rail.y0, rail.x1, rail.y1);
@@ -946,6 +1104,70 @@ impl RemoteApp {
             scene, transform, text_renderer, theme, rail, 1, "+", "Add", false,
         );
         self.push_hit(new_btn, Action::NewConnection);
+    }
+
+    /// Draw the hamburger toggle that summons the rail in overlay mode. It
+    /// floats at the top-left of the content; clicking it opens or closes the
+    /// overlay rail. The glyph flips to a back-chevron once the rail is open.
+    fn draw_hamburger(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let tokens = &theme.tokens;
+        let open = self.rail_open();
+        // Anchored to the root's top-left (the content is inset to clear it).
+        let btn = Rect::new(
+            self.rect.x0 + 12.0,
+            self.rect.y0 + 12.0,
+            self.rect.x0 + 12.0 + HAMBURGER,
+            self.rect.y0 + 12.0 + HAMBURGER,
+        );
+        let hovered = btn.contains(self.pointer);
+        let rr = RoundedRect::from_rect(btn, 8.0);
+        let bg = if hovered {
+            tokens.colors.surfaces.raised
+        } else {
+            tokens.colors.neutral[1]
+        };
+        scene.fill(Fill::NonZero, transform, bg, None, &rr);
+        scene.stroke(&Stroke::new(1.0), transform, tokens.colors.border_standard, None, &rr);
+
+        // Three stacked bars (or a chevron when open) in the dim text colour.
+        let color = tokens.colors.text_primary;
+        if open {
+            // Back chevron «.
+            let glyph = "‹";
+            let (gw, _) = text_renderer.measure_weighted(glyph, 22.0, None, TextWeight::Bold);
+            text_renderer.draw_text_weighted(
+                scene,
+                glyph,
+                22.0,
+                color,
+                transform
+                    * Affine::translate((btn.center().x - gw as f64 / 2.0, btn.y0 + 6.0)),
+                None,
+                TextWeight::Bold,
+            );
+        } else {
+            let bar_w = 18.0;
+            let bar_h = 2.0;
+            let cx = btn.center().x - bar_w / 2.0;
+            for i in 0..3 {
+                let by = btn.center().y - 6.0 + i as f64 * 6.0;
+                let bar = Rect::new(cx, by, cx + bar_w, by + bar_h);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    color,
+                    None,
+                    &RoundedRect::from_rect(bar, 1.0),
+                );
+            }
+        }
+        self.push_hit(btn, Action::ToggleRail);
     }
 
     fn draw_rail_button(
@@ -1975,6 +2197,93 @@ mod tests {
 
     fn doc() -> AutoCommit {
         AutoCommit::new()
+    }
+
+    /// Drive the real layout passes (`build_layout` → taffy → `apply_layout`)
+    /// at a given allocation, exactly as the host does, so responsive tests
+    /// assert on the production path rather than a tautological helper.
+    fn lay_out(app: &mut RemoteApp, w: f64, h: f64) {
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = app.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(w as f32),
+                    height: taffy::AvailableSpace::Definite(h as f32),
+                },
+            )
+            .unwrap();
+        app.apply_layout(&taffy, node, Point::ZERO);
+    }
+
+    #[test]
+    fn wide_window_docks_rail_open() {
+        let mut app = RemoteApp::new();
+        lay_out(&mut app, 1280.0, 800.0);
+        assert_eq!(app.rail_layout, SplitLayout::Docked);
+        assert!(app.rail_open(), "a wide window keeps the rail docked + open");
+    }
+
+    #[test]
+    fn narrow_window_collapses_rail_to_closed_overlay() {
+        let mut app = RemoteApp::new();
+        lay_out(&mut app, 640.0, 900.0);
+        assert_eq!(app.rail_layout, SplitLayout::Overlay);
+        assert!(
+            !app.rail_open(),
+            "a narrow window collapses the rail into a closed overlay flap"
+        );
+    }
+
+    #[test]
+    fn breakpoint_boundary_is_inclusive_docked() {
+        let mut app = RemoteApp::new();
+        lay_out(&mut app, RAIL_BREAKPOINT, 800.0);
+        assert_eq!(app.rail_layout, SplitLayout::Docked, "at the breakpoint we dock");
+        let mut app2 = RemoteApp::new();
+        lay_out(&mut app2, RAIL_BREAKPOINT - 1.0, 800.0);
+        assert_eq!(app2.rail_layout, SplitLayout::Overlay, "just below we overlay");
+    }
+
+    #[test]
+    fn toggle_opens_overlay_rail_then_esc_dismisses() {
+        let mut app = RemoteApp::new();
+        lay_out(&mut app, 640.0, 900.0);
+        assert!(!app.rail_open());
+        // Hamburger summons the overlay rail.
+        app.apply(Action::ToggleRail, &mut doc());
+        assert!(app.rail_open(), "toggle opens the overlay flap");
+        // Esc dismisses it (production key path).
+        let mut handled = false;
+        app.handle_key(
+            &Key::Named(NamedKey::Escape),
+            None,
+            ModifiersState::empty(),
+            &mut doc(),
+            &mut handled,
+        );
+        assert!(handled, "Esc on an open overlay flap is consumed");
+        assert!(!app.rail_open(), "Esc closes the overlay flap");
+    }
+
+    #[test]
+    fn crossing_breakpoint_returns_rail_to_mode_default() {
+        let mut app = RemoteApp::new();
+        // Start docked, user hides the rail.
+        lay_out(&mut app, 1280.0, 800.0);
+        app.apply(Action::ToggleRail, &mut doc());
+        assert!(!app.rail_open(), "user hid the docked rail");
+        // Narrow past the breakpoint, then widen again: the stale preference
+        // is dropped and the rail returns to the docked default (open).
+        lay_out(&mut app, 640.0, 900.0);
+        lay_out(&mut app, 1280.0, 800.0);
+        assert!(
+            app.rail_open(),
+            "crossing the breakpoint clears the stale preference"
+        );
     }
 
     #[test]

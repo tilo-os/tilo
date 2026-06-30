@@ -32,6 +32,7 @@ use ui::presence::PresenceCtx;
 use ui::permissions::PermissionContext;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::{FlapState, SplitLayout};
 
 use crate::catalog::sample_catalog;
 use crate::doc::StoreDoc;
@@ -50,6 +51,17 @@ const HEADER_H: f64 = 64.0;
 const BODY_PAD_X: f64 = 28.0;
 const BODY_PAD_TOP: f64 = 20.0;
 const GAP: f64 = 16.0;
+
+/// Below this allocated width (logical px) the header's inline nav tabs no
+/// longer fit beside the wordmark + search, so navigation collapses into an
+/// overlay drawer summoned by a hamburger. Chosen so the three nav tabs +
+/// the 280px search pill + the wordmark stop fitting comfortably side by
+/// side.
+const NAV_BREAKPOINT: f64 = 760.0;
+/// Width of the navigation drawer when fully revealed in overlay mode.
+const NAV_DRAWER_W: f64 = 264.0;
+/// Size of the hamburger / close toggle shown in the header on narrow.
+const NAV_TOGGLE_SZ: f64 = 36.0;
 
 /// Which top-level screen the body shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,6 +93,13 @@ enum Action {
     Remove(String),
     Open(String),
     UpdateAll,
+    /// Narrow-mode only: open/close the navigation drawer.
+    ToggleNav,
+    /// Narrow-mode only: dismiss the open drawer (scrim tap).
+    DismissNav,
+    /// Narrow-mode only: absorb a click on empty drawer-panel space so it
+    /// neither falls through to the scrim (dismiss) nor the body behind.
+    NavAbsorb,
 }
 
 /// Visual style for a pill button.
@@ -121,6 +140,15 @@ pub struct SoftwareStore {
     probe: Option<ProbeResult>,
     probe_merged: bool,
 
+    /// Adaptive navigation flap. On wide windows the nav tabs sit inline in
+    /// the header (this stays closed and unused); on narrow windows the tabs
+    /// collapse into an overlay drawer summoned by the header hamburger,
+    /// behind a dimming scrim. Closed by default at every width.
+    nav_flap: FlapState,
+    /// Wall-clock of the last flap animation tick, for frame-rate-independent
+    /// easing of the drawer slide.
+    last_tick: Instant,
+
     rect: Rect,
     node: Option<NodeId>,
     mouse: Point,
@@ -147,6 +175,8 @@ impl SoftwareStore {
             toast: None,
             probe,
             probe_merged: false,
+            nav_flap: FlapState::closed_by_default(),
+            last_tick: Instant::now(),
             rect: Rect::ZERO,
             node: None,
             mouse: Point::ZERO,
@@ -158,7 +188,8 @@ impl SoftwareStore {
     /// Apply an initial-view override from the `SOFTWARE_STORE_SHOT_VIEW`
     /// environment variable. Used only by the `--shots` path to capture
     /// screens other than Browse for visual review. Accepted forms:
-    /// `installed`, `updates`, `search:<query>`, `detail:<app-id>`.
+    /// `installed`, `updates`, `search:<query>`, `detail:<app-id>`, and
+    /// `menu` (snaps the narrow-window navigation drawer open over a scrim).
     pub fn apply_shot_view_env(&mut self) {
         let Ok(spec) = std::env::var("SOFTWARE_STORE_SHOT_VIEW") else { return };
         let spec = spec.trim();
@@ -166,6 +197,12 @@ impl SoftwareStore {
             self.tab = Tab::Installed;
         } else if spec == "updates" {
             self.tab = Tab::Updates;
+        } else if spec == "menu" {
+            // Snap the navigation drawer fully open with no animation so a
+            // single offscreen frame captures the settled overlay + scrim.
+            // The drawer only renders when the layout resolves to overlay,
+            // i.e. at a narrow viewport.
+            self.nav_flap.snap(true);
         } else if let Some(q) = spec.strip_prefix("search:") {
             self.search_query = q.to_string();
             self.tab = Tab::Browse;
@@ -176,6 +213,43 @@ impl SoftwareStore {
 
     fn body_rect(&self) -> Rect {
         Rect::new(self.rect.x0, self.rect.y0 + HEADER_H, self.rect.x1, self.rect.y1)
+    }
+
+    /// Resolve the navigation layout from the *allocated* width. At or above
+    /// the breakpoint the nav tabs dock inline in the header; below it they
+    /// collapse into an overlay drawer.
+    fn nav_layout(&self) -> SplitLayout {
+        SplitLayout::from_width(self.rect.width(), NAV_BREAKPOINT)
+    }
+
+    /// True when the window is narrow enough that nav lives in the overlay
+    /// drawer rather than inline header tabs.
+    fn is_narrow(&self) -> bool {
+        self.nav_layout() == SplitLayout::Overlay
+    }
+
+    /// The hamburger / close toggle rect in the header (narrow mode only).
+    fn nav_toggle_rect(&self) -> Rect {
+        let cy = self.rect.y0 + HEADER_H / 2.0;
+        let x0 = self.rect.x0 + BODY_PAD_X;
+        Rect::new(x0, cy - NAV_TOGGLE_SZ / 2.0, x0 + NAV_TOGGLE_SZ, cy + NAV_TOGGLE_SZ / 2.0)
+    }
+
+    /// The navigation drawer's current on-screen rect. Slides in from the
+    /// left edge by the eased reveal; fully off-screen at reveal 0.
+    fn nav_drawer_rect(&self) -> Rect {
+        let slide = self.nav_flap.slide();
+        let x0 = self.rect.x0 - NAV_DRAWER_W * (1.0 - slide);
+        Rect::new(x0, self.rect.y0, x0 + NAV_DRAWER_W, self.rect.y1)
+    }
+
+    /// Advance the drawer's reveal animation using real elapsed time, so the
+    /// slide + scrim fade are frame-rate independent.
+    fn tick_nav(&mut self) -> bool {
+        let now = Instant::now();
+        let dt = (now - self.last_tick).as_secs_f64().min(0.1);
+        self.last_tick = now;
+        self.nav_flap.tick(self.nav_layout(), dt)
     }
 
     fn max_scroll(&self) -> f64 {
@@ -259,6 +333,8 @@ impl SoftwareStore {
                     self.detail = None;
                     self.reset_scroll();
                 }
+                // Selecting a destination dismisses the overlay drawer.
+                self.nav_flap.close();
             }
             Action::SetCategory(c) => {
                 self.active_category = c;
@@ -292,6 +368,11 @@ impl SoftwareStore {
                     self.start_install(state, &id);
                 }
             }
+            Action::ToggleNav => self.nav_flap.toggle(self.nav_layout()),
+            Action::DismissNav => self.nav_flap.close(),
+            // Click inside the open drawer panel but not on a row: keep the
+            // drawer open, just consume the event.
+            Action::NavAbsorb => {}
         }
         self.dirty = true;
     }
@@ -335,6 +416,15 @@ impl SoftwareStore {
 
         let cy = header.center().y;
         let mut x = header.x0 + BODY_PAD_X;
+        let narrow = self.is_narrow();
+
+        // Narrow: a hamburger summons the navigation drawer in place of the
+        // inline tabs. The Back chevron, when in detail, takes precedence —
+        // detail is the single-pane "push" view, so its Back affordance leads.
+        if narrow && self.detail.is_none() {
+            self.draw_nav_toggle(scene, t, theme, targets);
+            x = self.nav_toggle_rect().x1 + 14.0;
+        }
 
         // Back chevron when in detail view.
         if self.detail.is_some() {
@@ -353,62 +443,69 @@ impl SoftwareStore {
         let name_x = tile.x1 + 10.0;
         draw::text_w(scene, tr, t, "Software", theme.tokens.typography.scale.lg, TextWeight::Bold, c.text_primary, name_x, cy - 11.0, None);
 
-        // Right cluster: nav tabs, then search pill.
+        // Right cluster: nav tabs (wide only), then search pill.
         let pad_r = header.x1 - BODY_PAD_X;
+        let tsize = theme.tokens.typography.scale.sm;
+        let up_count = self.catalog.updatable(&self.snapshot).len();
 
         // Tabs anchored at the right edge: measure widths, then lay out
-        // left-to-right from a computed origin.
-        let up_count = self.catalog.updatable(&self.snapshot).len();
-        let inst_count = self.catalog.installed(&self.snapshot).len();
-        let tabs: [(Tab, String); 3] = [
-            (Tab::Browse, "Browse".into()),
-            (Tab::Installed, format!("Installed · {inst_count}")),
-            (Tab::Updates, "Updates".into()),
-        ];
-        let tsize = theme.tokens.typography.scale.sm;
-        let mut widths = Vec::new();
-        for (tab, label) in &tabs {
-            let mut w = draw::measure(tr, label, tsize).0 + 28.0;
-            if *tab == Tab::Updates && up_count > 0 {
-                w += 22.0;
+        // left-to-right from a computed origin. Narrow windows hide the
+        // inline tabs entirely — navigation lives in the overlay drawer — so
+        // the search pill anchors straight to the right edge.
+        let tabs_origin = if narrow {
+            pad_r
+        } else {
+            let inst_count = self.catalog.installed(&self.snapshot).len();
+            let tabs: [(Tab, String); 3] = [
+                (Tab::Browse, "Browse".into()),
+                (Tab::Installed, format!("Installed · {inst_count}")),
+                (Tab::Updates, "Updates".into()),
+            ];
+            let mut widths = Vec::new();
+            for (tab, label) in &tabs {
+                let mut w = draw::measure(tr, label, tsize).0 + 28.0;
+                if *tab == Tab::Updates && up_count > 0 {
+                    w += 22.0;
+                }
+                widths.push(w);
             }
-            widths.push(w);
-        }
-        let total_tabs: f64 = widths.iter().sum();
-        let tabs_origin = pad_r - total_tabs;
-        let mut tab_x = tabs_origin;
-        for (i, (tab, label)) in tabs.iter().enumerate() {
-            let w = widths[i];
-            let r = Rect::new(tab_x, cy - 16.0, tab_x + w, cy + 16.0);
-            let active = self.detail.is_none() && self.tab == *tab && self.search_query.is_empty();
-            let hov = r.contains(self.mouse);
-            let bg = if active {
-                c.accent[5]
-            } else if hov {
-                c.surface_white_10
-            } else {
-                Color::TRANSPARENT
-            };
-            if bg != Color::TRANSPARENT {
-                draw::fill_round(scene, t, r, theme.tokens.radii.full, bg);
+            let total_tabs: f64 = widths.iter().sum();
+            let origin = pad_r - total_tabs;
+            let mut tab_x = origin;
+            for (i, (tab, label)) in tabs.iter().enumerate() {
+                let w = widths[i];
+                let r = Rect::new(tab_x, cy - 16.0, tab_x + w, cy + 16.0);
+                let active = self.detail.is_none() && self.tab == *tab && self.search_query.is_empty();
+                let hov = r.contains(self.mouse);
+                let bg = if active {
+                    c.accent[5]
+                } else if hov {
+                    c.surface_white_10
+                } else {
+                    Color::TRANSPARENT
+                };
+                if bg != Color::TRANSPARENT {
+                    draw::fill_round(scene, t, r, theme.tokens.radii.full, bg);
+                }
+                let fg = if active { Color::WHITE } else { c.text_dim };
+                draw::text_w(scene, tr, t, label, tsize, TextWeight::Medium, fg, r.x0 + 14.0, cy - 8.0, None);
+                // Updates badge.
+                if *tab == Tab::Updates && up_count > 0 {
+                    let bw = draw::measure(tr, label, tsize).0;
+                    let badge_c = Point::new(r.x0 + 14.0 + bw + 12.0, cy);
+                    let bg_badge = if active { Color::WHITE } else { c.semantic.warning };
+                    let badge = Circle::new(badge_c, 9.0);
+                    scene.fill(vello::peniko::Fill::NonZero, t, bg_badge, None, &badge);
+                    let txt = up_count.to_string();
+                    let (nw, nh) = draw::measure(tr, &txt, theme.tokens.typography.scale.xs);
+                    let nfg = if active { c.accent[5] } else { Color::WHITE };
+                    draw::text_w(scene, tr, t, &txt, theme.tokens.typography.scale.xs, TextWeight::Bold, nfg, badge_c.x - nw / 2.0, badge_c.y - nh / 2.0, None);
+                }
+                targets.push(HitTarget { rect: r, action: Action::SetTab(*tab) });
+                tab_x += w;
             }
-            let fg = if active { Color::WHITE } else { c.text_dim };
-            draw::text_w(scene, tr, t, label, tsize, TextWeight::Medium, fg, r.x0 + 14.0, cy - 8.0, None);
-            // Updates badge.
-            if *tab == Tab::Updates && up_count > 0 {
-                let bw = draw::measure(tr, label, tsize).0;
-                let badge_c = Point::new(r.x0 + 14.0 + bw + 12.0, cy);
-                let bg_badge = if active { Color::WHITE } else { c.semantic.warning };
-                let badge = Circle::new(badge_c, 9.0);
-                scene.fill(vello::peniko::Fill::NonZero, t, bg_badge, None, &badge);
-                let txt = up_count.to_string();
-                let (nw, nh) = draw::measure(tr, &txt, theme.tokens.typography.scale.xs);
-                let nfg = if active { c.accent[5] } else { Color::WHITE };
-                draw::text_w(scene, tr, t, &txt, theme.tokens.typography.scale.xs, TextWeight::Bold, nfg, badge_c.x - nw / 2.0, badge_c.y - nh / 2.0, None);
-            }
-            targets.push(HitTarget { rect: r, action: Action::SetTab(*tab) });
-            tab_x += w;
-        }
+            origin
+        };
 
         // Search pill, to the left of the tabs.
         let search_w = 280.0_f64;
@@ -439,6 +536,128 @@ impl SoftwareStore {
                 }
             }
             targets.push(HitTarget { rect: search_r, action: Action::FocusSearch });
+        }
+    }
+
+    /// The hamburger / close toggle shown in the header on narrow windows.
+    /// Renders a hamburger when the drawer is closed and an X when it's open,
+    /// and records a `ToggleNav` hit target.
+    fn draw_nav_toggle(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        theme: &Theme,
+        targets: &mut Vec<HitTarget>,
+    ) {
+        let c = &theme.tokens.colors;
+        let btn = self.nav_toggle_rect();
+        let hov = btn.contains(self.mouse);
+        draw::fill_round(scene, t, btn, theme.tokens.radii.md, if hov { c.surface_white_10 } else { c.surfaces.raised });
+        draw::stroke_round(scene, t, btn, theme.tokens.radii.md, c.border_standard, 1.0);
+
+        let cx = btn.center().x;
+        let cyc = btn.center().y;
+        let open = self.nav_flap.reveal() > 0.5;
+        if open {
+            // Close (X) affordance while the drawer is showing.
+            let r = 6.0;
+            let line = vello::kurbo::Line::new(Point::new(cx - r, cyc - r), Point::new(cx + r, cyc + r));
+            scene.stroke(&vello::kurbo::Stroke::new(1.8), t, c.text_primary, None, &line);
+            let line2 = vello::kurbo::Line::new(Point::new(cx + r, cyc - r), Point::new(cx - r, cyc + r));
+            scene.stroke(&vello::kurbo::Stroke::new(1.8), t, c.text_primary, None, &line2);
+        } else {
+            // Three-line hamburger.
+            let line_w = 15.0;
+            for i in 0..3 {
+                let ly = cyc - 6.0 + i as f64 * 6.0;
+                let line = vello::kurbo::Line::new(Point::new(cx - line_w / 2.0, ly), Point::new(cx + line_w / 2.0, ly));
+                scene.stroke(&vello::kurbo::Stroke::new(1.8), t, c.text_primary, None, &line);
+            }
+        }
+        targets.push(HitTarget { rect: btn, action: Action::ToggleNav });
+    }
+
+    /// Draw the overlay navigation drawer (narrow mode). Dims the content
+    /// behind a scrim that fades with the reveal, then floats a panel holding
+    /// the wordmark and a vertical list of the three nav destinations. A
+    /// no-op while fully collapsed.
+    fn draw_nav_drawer(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        targets: &mut Vec<HitTarget>,
+    ) {
+        let reveal = self.nav_flap.reveal();
+        if reveal <= 0.001 {
+            return; // fully collapsed — nothing to paint
+        }
+        let c = &theme.tokens.colors;
+        let ty = &theme.tokens.typography.scale;
+
+        // Scrim over the whole window; tapping it dismisses the drawer.
+        let scrim = alpha(Color::from_rgba8(0, 0, 0, 255), reveal * 0.5);
+        draw::fill_rect(scene, t, self.rect, scrim);
+        targets.push(HitTarget { rect: self.rect, action: Action::DismissNav });
+
+        // Drawer panel — opaque raised surface sliding in from the left.
+        let drawer = self.nav_drawer_rect();
+        draw::fill_rect(scene, t, drawer, c.surfaces.base);
+        draw::fill_rect(scene, t, Rect::new(drawer.x1 - 1.0, drawer.y0, drawer.x1, drawer.y1), c.border_standard);
+        // Absorb clicks on the panel (registered after the scrim, before the
+        // rows) so empty drawer space doesn't dismiss via the scrim below.
+        targets.push(HitTarget { rect: drawer, action: Action::NavAbsorb });
+
+        let pad = 18.0;
+        let x = drawer.x0 + pad;
+        let w = NAV_DRAWER_W - pad * 2.0;
+
+        // Wordmark at the top of the drawer.
+        let tile = Rect::new(x, drawer.y0 + 22.0, x + 30.0, drawer.y0 + 52.0);
+        draw::fill_round(scene, t, tile, 8.0, c.accent[5]);
+        draw::text_w(scene, tr, t, "◍", 17.0, TextWeight::Bold, Color::WHITE, tile.center().x - 6.0, tile.center().y - 9.0, None);
+        draw::text_w(scene, tr, t, "Software", ty.lg, TextWeight::Bold, c.text_primary, tile.x1 + 12.0, tile.center().y - 11.0, None);
+
+        // Vertical nav rows.
+        let up_count = self.catalog.updatable(&self.snapshot).len();
+        let inst_count = self.catalog.installed(&self.snapshot).len();
+        let rows: [(Tab, String); 3] = [
+            (Tab::Browse, "Browse".into()),
+            (Tab::Installed, format!("Installed · {inst_count}")),
+            (Tab::Updates, "Updates".into()),
+        ];
+        let row_h = 44.0;
+        let mut ry = drawer.y0 + 80.0;
+        for (tab, label) in &rows {
+            let r = Rect::new(x, ry, x + w, ry + row_h);
+            let active = self.detail.is_none() && self.tab == *tab && self.search_query.is_empty();
+            let hov = r.contains(self.mouse);
+            let bg = if active {
+                c.accent[5]
+            } else if hov {
+                c.surface_white_10
+            } else {
+                Color::TRANSPARENT
+            };
+            if bg != Color::TRANSPARENT {
+                draw::fill_round(scene, t, r, theme.tokens.radii.md, bg);
+            }
+            let fg = if active { Color::WHITE } else { c.text_primary };
+            draw::text_w(scene, tr, t, label, ty.base, TextWeight::Medium, fg, r.x0 + 14.0, r.center().y - ty.base as f64 / 2.0 - 1.0, None);
+            // Updates count badge on the right of the row.
+            if *tab == Tab::Updates && up_count > 0 {
+                let badge_c = Point::new(r.x1 - 20.0, r.center().y);
+                let bg_badge = if active { Color::WHITE } else { c.semantic.warning };
+                let badge = Circle::new(badge_c, 10.0);
+                scene.fill(vello::peniko::Fill::NonZero, t, bg_badge, None, &badge);
+                let txt = up_count.to_string();
+                let (nw, nh) = draw::measure(tr, &txt, ty.xs);
+                let nfg = if active { c.accent[5] } else { Color::WHITE };
+                draw::text_w(scene, tr, t, &txt, ty.xs, TextWeight::Bold, nfg, badge_c.x - nw / 2.0, badge_c.y - nh / 2.0, None);
+            }
+            targets.push(HitTarget { rect: r, action: Action::SetTab(*tab) });
+            ry += row_h + 6.0;
         }
     }
 
@@ -1211,6 +1430,9 @@ impl Widget for SoftwareStore {
             origin.x + l.location.x as f64 + l.size.width as f64,
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
+        // On a breakpoint crossing (window resize), drop any stale drawer
+        // preference so the nav returns to the new layout's default.
+        self.nav_flap.reconcile(self.nav_layout());
     }
 
     fn draw(
@@ -1273,10 +1495,22 @@ impl Widget for SoftwareStore {
         }
         self.content_height = content_height;
 
-        // Header paints last so it occludes any scrolled-up body content.
+        // Header paints over any scrolled-up body content.
         self.draw_header(scene, tr, t, theme, &mut targets);
 
         self.draw_scrollbar(scene, t, theme);
+
+        // Advance the drawer reveal, then paint the overlay drawer + scrim on
+        // top of the body + header (narrow mode only). Keep frames coming
+        // while the slide is settling.
+        if self.tick_nav() {
+            self.dirty = true;
+        }
+        if self.is_narrow() {
+            self.draw_nav_drawer(scene, tr, t, theme, &mut targets);
+        }
+
+        // Toast sits above everything, including the drawer scrim.
         self.draw_toast(scene, tr, t, theme);
 
         self.hit_targets = targets;
@@ -1343,7 +1577,10 @@ impl Widget for SoftwareStore {
                 let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
                 match &key_event.logical_key {
                     Key::Named(NamedKey::Escape) => {
-                        if self.detail.is_some() {
+                        if self.is_narrow() && self.nav_flap.is_open(self.nav_layout()) {
+                            // Esc dismisses the open overlay drawer first.
+                            self.nav_flap.close();
+                        } else if self.detail.is_some() {
                             self.detail = None;
                             self.reset_scroll();
                         } else if !self.search_query.is_empty() {
@@ -1438,7 +1675,10 @@ impl Widget for SoftwareStore {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || !self.install_start.is_empty() || self.toast.is_some()
+        self.dirty
+            || !self.install_start.is_empty()
+            || self.toast.is_some()
+            || self.nav_flap.is_animating(self.nav_layout())
     }
 
     fn mark_drawn(&mut self) {
@@ -1446,7 +1686,9 @@ impl Widget for SoftwareStore {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        !self.install_start.is_empty() || self.toast.is_some()
+        !self.install_start.is_empty()
+            || self.toast.is_some()
+            || self.nav_flap.is_animating(self.nav_layout())
     }
 
     fn needs_commit(&self) -> bool {
@@ -1550,5 +1792,81 @@ mod tests {
         s.sync(&mut doc, &automerge::ROOT);
         // Every previously-updatable app is now in flight.
         assert_eq!(s.install_start.len(), before);
+    }
+
+    /// Place the store at a known viewport so width-driven layout resolves
+    /// deterministically (mirrors the `apply_layout` rect capture).
+    fn at_width(w: f64) -> SoftwareStore {
+        let mut s = store();
+        s.rect = Rect::new(0.0, 0.0, w, 800.0);
+        // Mirror apply_layout's reconcile so the flap tracks the layout.
+        s.nav_flap.reconcile(s.nav_layout());
+        s
+    }
+
+    #[test]
+    fn nav_layout_is_width_driven() {
+        // At/above the breakpoint the nav tabs dock inline; below it they
+        // collapse to the overlay drawer.
+        let wide = at_width(1280.0);
+        assert_eq!(wide.nav_layout(), SplitLayout::Docked);
+        assert!(!wide.is_narrow());
+
+        let narrow = at_width(720.0);
+        assert_eq!(narrow.nav_layout(), SplitLayout::Overlay);
+        assert!(narrow.is_narrow());
+
+        // Boundary is inclusive → docked.
+        assert_eq!(at_width(NAV_BREAKPOINT).nav_layout(), SplitLayout::Docked);
+        assert_eq!(at_width(NAV_BREAKPOINT - 1.0).nav_layout(), SplitLayout::Overlay);
+    }
+
+    #[test]
+    fn narrow_drawer_closed_by_default_then_toggles() {
+        let mut s = at_width(720.0);
+        let mut doc = AutoCommit::new();
+        s.sync(&mut doc, &automerge::ROOT);
+        // Closed by default on a narrow window.
+        assert!(!s.nav_flap.is_open(s.nav_layout()), "narrow drawer starts closed");
+        // Hamburger toggles it open.
+        s.apply(Action::ToggleNav, &mut doc);
+        assert!(s.nav_flap.is_open(s.nav_layout()), "ToggleNav opens the drawer");
+        // Scrim tap / DismissNav closes it.
+        s.apply(Action::DismissNav, &mut doc);
+        assert!(!s.nav_flap.is_open(s.nav_layout()), "DismissNav closes the drawer");
+    }
+
+    #[test]
+    fn selecting_a_nav_destination_dismisses_the_drawer() {
+        let mut s = at_width(720.0);
+        let mut doc = AutoCommit::new();
+        s.sync(&mut doc, &automerge::ROOT);
+        s.apply(Action::ToggleNav, &mut doc);
+        assert!(s.nav_flap.is_open(s.nav_layout()));
+        // Choosing a tab from the drawer navigates AND closes it.
+        s.apply(Action::SetTab(Tab::Updates), &mut doc);
+        assert_eq!(s.tab, Tab::Updates);
+        assert!(!s.nav_flap.is_open(s.nav_layout()), "selection dismisses the overlay drawer");
+    }
+
+    #[test]
+    fn wide_window_keeps_drawer_irrelevant() {
+        // On a wide window the inline tabs are used; the flap default stays
+        // closed and `is_narrow()` is false, so the overlay never paints.
+        let mut s = at_width(1280.0);
+        let mut doc = AutoCommit::new();
+        s.sync(&mut doc, &automerge::ROOT);
+        assert!(!s.is_narrow());
+        assert!(!s.nav_flap.is_open(s.nav_layout()));
+    }
+
+    #[test]
+    fn shot_menu_env_snaps_drawer_open() {
+        // The `--shots` menu hook snaps the drawer fully open so a single
+        // offscreen frame at a narrow viewport captures the overlay + scrim.
+        let mut s = at_width(720.0);
+        s.nav_flap.snap(true);
+        assert!(s.nav_flap.is_open(s.nav_layout()));
+        assert!(s.nav_flap.reveal() >= 0.999, "snap settles reveal to fully open");
     }
 }

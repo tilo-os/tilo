@@ -45,3 +45,15 @@ use ui::widget::Widget;
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(app::RemoteApp::new())
 }
+
+/// Like [`app_root`] but staged with a named scenario for a headless
+/// screenshot. An empty/unknown name yields the default frame.
+///
+/// Recognised scenarios:
+/// * `"narrow"` — collapse the navigation rail into its closed overlay flap,
+///   for the responsive small-viewport capture.
+pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
+    let mut app = app::RemoteApp::new();
+    app.dev_shot_scenario(scenario);
+    Box::new(app)
+}

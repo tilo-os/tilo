@@ -17,6 +17,7 @@ mod app;
 mod doc;
 mod http;
 mod model;
+mod responsive;
 mod seed;
 mod vars;
 

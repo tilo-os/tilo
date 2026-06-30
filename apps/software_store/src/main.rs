@@ -4,6 +4,11 @@
 //!   * default        — run the live winit event loop via `ui::App`.
 //!   * `--shots PATH` — render one offscreen frame to a PNG and exit
 //!                       (headless screenshot; identical passes to the live app).
+//!
+//! `--shots` flags:
+//!   * `--viewport WxH` — render at a custom size (e.g. `--viewport 720x900`
+//!                        to exercise the narrow-window navigation drawer).
+//!                        Defaults to the wide desktop viewport.
 
 use std::collections::HashMap;
 
@@ -25,7 +30,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
-        render_shot_to_png(software_store::app_root(), DEFAULT_SHOTS_VIEWPORT, &out)?;
+        let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+        render_shot_to_png(software_store::app_root(), viewport, &out)?;
         return Ok(());
     }
 
@@ -46,6 +52,26 @@ fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
         }
     }
     None
+}
+
+/// Parse an optional `--viewport WxH` (or `--viewport=WxH`) flag.
+fn parse_viewport_arg(args: &[String]) -> Option<(u32, u32)> {
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == "--viewport" {
+            return iter.next().and_then(|s| parse_viewport(s));
+        }
+        if let Some(rest) = arg.strip_prefix("--viewport=") {
+            return parse_viewport(rest);
+        }
+    }
+    None
+}
+
+/// Parse a `WIDTHxHEIGHT` viewport spec (e.g. `720x900`).
+fn parse_viewport(s: &str) -> Option<(u32, u32)> {
+    let (w, h) = s.split_once(['x', 'X'])?;
+    Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
 }
 
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
