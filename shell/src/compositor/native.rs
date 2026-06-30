@@ -23,7 +23,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
 use smithay::reexports::calloop::EventLoop;
@@ -39,6 +39,8 @@ use crate::compositor::backend::{
     headless, Backend, BackendEvent, DrmBackend, HeadlessBackend, OutputId, WinitBackend,
 };
 use crate::compositor::frame::FrameBuilder;
+use crate::compositor::idle::{IdleConfig, SessionManager, SessionTransition};
+use crate::compositor::lock_screen;
 use crate::compositor::state::{ClientState, State};
 use crate::compositor::test_control::{
     self, ControlState, KeyTag, NamedKeyTag, PlannedAction, parse_command, serialise_response,
@@ -613,6 +615,54 @@ fn pump_test_control_conn(
     }
 }
 
+/// Track D2: turn a [`SessionTransition`] into a real backend effect.
+///
+/// `Blanked` / `Woke` drive the backend's DPMS (no-op on winit /
+/// headless); `Locked` / `Unlocked` are pure state the paint path reads
+/// via `SessionManager::is_locked`, so they need no backend call here.
+fn apply_session_transition(transition: SessionTransition, backend: &mut dyn Backend) {
+    match transition {
+        SessionTransition::Blanked => backend.set_dpms(false),
+        SessionTransition::Woke => backend.set_dpms(true),
+        SessionTransition::Locked | SessionTransition::Unlocked => {}
+    }
+}
+
+/// Track D2: is `event` the Super+L lock chord (on key *press*)?
+///
+/// The modifier mask comes from the loop's running `Modifiers` snapshot
+/// (the same one `dispatch_event` uses), not the key event, because
+/// winit reports modifiers via a separate `ModifiersChanged` event.
+fn is_lock_chord(event: &WindowEvent, modifiers: &Modifiers) -> bool {
+    if let WindowEvent::KeyboardInput { event, .. } = event {
+        if event.state == ElementState::Pressed && modifiers.state().super_key() {
+            if let Key::Character(s) = &event.logical_key {
+                return s.eq_ignore_ascii_case("l");
+            }
+        }
+    }
+    false
+}
+
+/// Track D2: is `event` the explicit unlock action (Enter or Escape on
+/// key *press*)?
+///
+/// This is the minimum "explicit unlock action" the D2 spec requires for
+/// this pass; wiring real PAM authentication behind it is a documented
+/// follow-up. Only key presses count so an auto-repeat release can't
+/// race the transition.
+fn is_unlock_input(event: &WindowEvent) -> bool {
+    if let WindowEvent::KeyboardInput { event, .. } = event {
+        if event.state == ElementState::Pressed {
+            return matches!(
+                event.logical_key,
+                Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Escape)
+            );
+        }
+    }
+    false
+}
+
 /// Entry point for the smithay-on-Wayland compositor.
 ///
 /// Diverges (`-> !`) so the caller in `main` can use it next to
@@ -767,50 +817,97 @@ pub fn run() -> ! {
     // is the next follow-up); the host window therefore stays blank.
     // The scene is still produced every frame so smoke tests can
     // confirm the layout pipeline runs without a GPU surface.
+    // Track D2: idle / DPMS-blank / session-lock state machine. Pure
+    // logic (see `compositor::idle`); the loop below turns its
+    // transitions into `backend.set_dpms` calls and lock-overlay paints.
+    // Config comes from `QOS_IDLE_BLANK_SECS` / `QOS_IDLE_LOCK_SECS`
+    // (defaults: blank after 5 min, no auto-lock).
+    let mut session = SessionManager::new(IdleConfig::from_env(), Instant::now());
+
     let mut close_requested = false;
     let frame_period = Duration::from_millis(16);
+    // Reused per-iteration scratch so backend events can be processed
+    // *after* `poll_events` returns — the input arm needs `&mut backend`
+    // (for `set_dpms`) which can't be borrowed inside the poll closure.
+    let mut pending_events: Vec<BackendEvent> = Vec::new();
     while !close_requested {
-        backend.poll_events(&mut |event| match event {
-            BackendEvent::CloseRequested => {
-                close_requested = true;
-            }
-            BackendEvent::OutputResized { id: _, size, scale: _ } => {
-                if size.0 > 0 && size.1 > 0 {
-                    frame_builder.set_viewport(size);
+        backend.poll_events(&mut |event| pending_events.push(event));
+        for event in pending_events.drain(..) {
+            match event {
+                BackendEvent::CloseRequested => {
+                    close_requested = true;
+                }
+                BackendEvent::OutputResized { id: _, size, scale: _ } => {
+                    if size.0 > 0 && size.1 > 0 {
+                        frame_builder.set_viewport(size);
+                    }
+                }
+                BackendEvent::Input(wev) => {
+                    // Track D2: any input is activity — reset the idle
+                    // timer and wake the display if it was blanked.
+                    for t in session.note_activity(Instant::now()) {
+                        apply_session_transition(t, backend.as_mut());
+                    }
+
+                    if session.is_locked() {
+                        // Locked: input is captured. Only the explicit
+                        // unlock action (Enter / Escape) is honoured;
+                        // every other event is swallowed so app/chrome
+                        // content stays hidden and inert behind the
+                        // overlay. This is the lock's security boundary
+                        // in lieu of an `ext-session-lock-v1` client.
+                        if is_unlock_input(&wev) {
+                            for t in session.request_unlock(Instant::now()) {
+                                apply_session_transition(t, backend.as_mut());
+                            }
+                        }
+                    } else if is_lock_chord(&wev, &test_control_ctx.modifiers) {
+                        // Super+L locks immediately.
+                        for t in session.request_lock(Instant::now()) {
+                            apply_session_transition(t, backend.as_mut());
+                        }
+                    } else {
+                        // Dispatch real input through the same wire the
+                        // headless `execute_planned_action` path uses.
+                        frame_builder.dispatch_event(
+                            &wev,
+                            &test_control_ctx.modifiers,
+                            &mut test_control_ctx.doc,
+                            &test_control_ctx.root_obj,
+                            &mut test_control_ctx.focus,
+                        );
+                    }
+                }
+                BackendEvent::ModifiersChanged(modifiers) => {
+                    // Carry the modifier mask forward so the next event
+                    // dispatched into `FrameBuilder::dispatch_event` (or
+                    // the lock-chord check above) sees the right
+                    // Ctrl/Shift/Alt/Super state.
+                    test_control_ctx.modifiers = modifiers;
+                }
+                BackendEvent::Redraw | BackendEvent::Focus(_) => {
+                    // Redraw is implicit because we re-paint every tick;
+                    // Focus changes don't gate input dispatch here.
                 }
             }
-            BackendEvent::Input(wev) => {
-                // Dispatch real winit input through the same wire the
-                // headless `execute_planned_action` path uses. Without
-                // this, every hardware click on the live window was
-                // silently dropped (the previous marker-variant arm
-                // did nothing) — that was the root cause of "no
-                // interaction works in the hosted window" since
-                // wgpu/vello 29 / 0.9 landed, where the bug surfaced
-                // visibly because the perf-profile redraw gate had
-                // already hidden the (still-broken-prior) drop.
-                frame_builder.dispatch_event(
-                    &wev,
-                    &test_control_ctx.modifiers,
-                    &mut test_control_ctx.doc,
-                    &test_control_ctx.root_obj,
-                    &mut test_control_ctx.focus,
-                );
-            }
-            BackendEvent::ModifiersChanged(modifiers) => {
-                // Carry the modifier mask forward so the next event
-                // dispatched into `FrameBuilder::dispatch_event` sees
-                // the right Ctrl/Shift/Alt state.
-                test_control_ctx.modifiers = modifiers;
-            }
-            BackendEvent::Redraw | BackendEvent::Focus(_) => {
-                // Redraw is implicit because we re-paint every tick;
-                // Focus changes don't gate input dispatch here.
-            }
-        });
+        }
+
+        // Track D2: advance the idle timers and apply any timeout-driven
+        // transitions (blank, auto-lock) for this tick.
+        for t in session.tick(Instant::now()) {
+            apply_session_transition(t, backend.as_mut());
+        }
 
         frame_builder.relayout();
-        let scene = frame_builder.paint();
+        // When locked, paint the compositor-owned lock overlay instead
+        // of the chrome — app content is never submitted while locked.
+        let scene = if session.is_locked() {
+            let theme = frame_builder.theme().clone();
+            let viewport = frame_builder.viewport();
+            lock_screen::draw_lock_scene(viewport, &theme, frame_builder.text_renderer_mut())
+        } else {
+            frame_builder.paint()
+        };
         backend.submit_frame(&scene, OutputId(0));
 
         // Real-input e2e Phase 1b: accept any new test-control
@@ -1328,5 +1425,110 @@ mod tests {
         }
     }
 
+    // ===================================================================
+    // Track D2 — session lock chord / unlock detection
+    // ===================================================================
+
+    fn mods_with_super(on: bool) -> Modifiers {
+        let mut mask = ModifiersState::empty();
+        if on {
+            mask |= ModifiersState::SUPER;
+        }
+        Modifiers::from(mask)
+    }
+
+    /// Super+L on key press is the lock chord.
+    #[test]
+    fn super_l_press_is_lock_chord() {
+        let ev = keyboard_input_event(Key::Character(SmolStr::new("l")), true);
+        assert!(is_lock_chord(&ev, &mods_with_super(true)));
+        // Upper-case 'L' (Shift+Super+L) also counts.
+        let ev_upper = keyboard_input_event(Key::Character(SmolStr::new("L")), true);
+        assert!(is_lock_chord(&ev_upper, &mods_with_super(true)));
+    }
+
+    /// Without Super held, plain `l` is not the lock chord (it types).
+    #[test]
+    fn l_without_super_is_not_lock_chord() {
+        let ev = keyboard_input_event(Key::Character(SmolStr::new("l")), true);
+        assert!(!is_lock_chord(&ev, &mods_with_super(false)));
+    }
+
+    /// The lock chord only fires on press, not release — otherwise the
+    /// key-up would re-trigger and toggle twice per keystroke.
+    #[test]
+    fn super_l_release_is_not_lock_chord() {
+        let ev = keyboard_input_event(Key::Character(SmolStr::new("l")), false);
+        assert!(!is_lock_chord(&ev, &mods_with_super(true)));
+    }
+
+    /// A non-keyboard event (cursor move) is never the lock chord even
+    /// with Super held.
+    #[test]
+    fn cursor_move_is_not_lock_chord() {
+        let ev = WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: PhysicalPosition::new(10.0, 10.0),
+        };
+        assert!(!is_lock_chord(&ev, &mods_with_super(true)));
+    }
+
+    /// Enter and Escape on press are the explicit unlock action.
+    #[test]
+    fn enter_and_escape_press_are_unlock_actions() {
+        let enter = keyboard_input_event(Key::Named(NamedKey::Enter), true);
+        let escape = keyboard_input_event(Key::Named(NamedKey::Escape), true);
+        assert!(is_unlock_input(&enter));
+        assert!(is_unlock_input(&escape));
+    }
+
+    /// A plain character keypress does not unlock — only the deliberate
+    /// Enter/Escape gesture does.
+    #[test]
+    fn char_key_is_not_unlock_action() {
+        let ev = keyboard_input_event(Key::Character(SmolStr::new("a")), true);
+        assert!(!is_unlock_input(&ev));
+    }
+
+    /// Enter on *release* is not an unlock action — press is the gesture.
+    #[test]
+    fn enter_release_is_not_unlock_action() {
+        let ev = keyboard_input_event(Key::Named(NamedKey::Enter), false);
+        assert!(!is_unlock_input(&ev));
+    }
+
+    /// `apply_session_transition` maps Blanked/Woke to the backend's
+    /// `set_dpms`; Locked/Unlocked are pure state and touch no backend.
+    /// We assert via a spy backend that records `set_dpms` calls.
+    #[test]
+    fn apply_transition_drives_backend_dpms() {
+        use crate::compositor::backend::{Backend, BackendEvent, Output};
+        use vello::Scene;
+
+        #[derive(Default)]
+        struct SpyBackend {
+            dpms_calls: Vec<bool>,
+            outputs: Vec<Output>,
+        }
+        impl Backend for SpyBackend {
+            fn submit_frame(&mut self, _scene: &Scene, _output: OutputId) {}
+            fn poll_events(&mut self, _cb: &mut dyn FnMut(BackendEvent)) {}
+            fn outputs(&self) -> &[Output] {
+                &self.outputs
+            }
+            fn set_dpms(&mut self, on: bool) {
+                self.dpms_calls.push(on);
+            }
+        }
+
+        let mut backend = SpyBackend::default();
+        apply_session_transition(SessionTransition::Blanked, &mut backend);
+        apply_session_transition(SessionTransition::Woke, &mut backend);
+        apply_session_transition(SessionTransition::Locked, &mut backend);
+        apply_session_transition(SessionTransition::Unlocked, &mut backend);
+        // Blanked → set_dpms(false), Woke → set_dpms(true); Locked /
+        // Unlocked produce no backend calls.
+        assert_eq!(backend.dpms_calls, vec![false, true]);
+    }
 }
 
