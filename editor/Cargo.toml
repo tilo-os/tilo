@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 ui = { path = "../ui" }
 qdoc = { path = "../qdoc" }
+spellcheck = { path = "../spellcheck" }
 docpdf = { path = "../docpdf" }
 dochtml = { path = "../dochtml" }
 docrtf = { path = "../docrtf" }
