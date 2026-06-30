@@ -893,11 +893,27 @@ impl App {
                 }
             }
             Left => {
-                // Drop the peer everywhere — they're gone, not just from
-                // one key (a stale pointer would otherwise linger).
+                // `Left` is broadcast on `WindowEvent::CursorLeft` —
+                // the peer's mouse pointer left their window viewport,
+                // not the peer themselves. Their caret + selection
+                // should KEEP rendering because they're still editing,
+                // they've just moved their mouse elsewhere. Wiping
+                // them via `unregister_peer` here was the
+                // "remote caret disappears a few seconds after it was
+                // placed" bug — any mouse-leave on the publisher side
+                // tore down the entire presence record on every
+                // subscriber.
+                //
+                // True peer disconnect arrives via the socket close
+                // path (broker drops the peer from its fan-out
+                // table); subscribers only need to clear pointer-
+                // related state here.
                 let uid = UserId(user_id.clone());
-                self.presence_ctx.unregister_peer(user_id);
-                self.presence_ctx.remove_presence(&key, &uid);
+                for list in self.presence_ctx.pointers.values_mut() {
+                    list.retain(|(u, _)| u != &uid);
+                }
+                self.presence_ctx.remove_remote_cursor(&user_id);
+                let _ = key;
             }
         }
     }

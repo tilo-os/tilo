@@ -3,24 +3,34 @@
 //! Run with:
 //!
 //! ```bash
+//! # Volatile demo, in-memory only:
 //! cargo run -p ui --example identity_flow_demo
+//!
+//! # Persist to a directory (the demo writes identity.json on success):
+//! cargo run -p ui --example identity_flow_demo -- --persist /tmp/qos-alice
+//!
+//! # Jump to a specific screen pre-seeded with sample data:
 //! cargo run -p ui --example identity_flow_demo -- --screen recovery_share
-//! cargo run -p ui --example identity_flow_demo -- --screen invite_mint
 //! ```
 //!
-//! Without `--screen` the example boots on screen 1 (`create_identity`)
-//! and the state machine advances through 2 / 2b on submit. With
-//! `--screen <name>` the example jumps straight to a specific screen
-//! pre-populated with sample data — useful for inspecting the
-//! recovery-share grid or the invite-mint URL without walking the
-//! ceremony from the top.
+//! With `--persist <DIR>` the demo saves the created identity to
+//! `<DIR>/identity.json` (mode 0600). A second instance of the demo
+//! pointed at a different `--persist` path creates a distinct identity
+//! the same way — two windows side-by-side simulates the "I'm Alice
+//! on this laptop, you're Bob on yours" first-boot story.
 
-use std::sync::Arc;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 use ui::widget::identity_flow::{
-    IdentityFlow, IdentityFlowScreen, IdentityStore, InviteEnvelope, MemoryIdentityStore,
-    mint_invite,
+    IdentityFlow, IdentityFlowError, IdentityFlowScreen, IdentityRecord, IdentityStore,
+    InviteEnvelope, MemoryIdentityStore, mint_invite,
 };
 use ui::{App, State};
 use qos_collab_types::{ChannelId, Role, generate_keypair};
@@ -40,35 +50,109 @@ fn parse_screen_arg(name: &str) -> Option<IdentityFlowScreen> {
     })
 }
 
+/// Disk-backed `IdentityStore` for the demo. Writes JSON at the
+/// given path with mode 0600. Mirrors `shell::identity_provisioning::
+/// DiskIdentityStore` minus the XDG dir-resolution boilerplate.
+pub struct DemoFileStore {
+    path: PathBuf,
+    cached: Mutex<Option<IdentityRecord>>,
+}
+
+impl DemoFileStore {
+    pub fn at(path: PathBuf) -> io::Result<Self> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+            #[cfg(unix)]
+            {
+                let mut perm = fs::metadata(parent)?.permissions();
+                perm.set_mode(0o700);
+                let _ = fs::set_permissions(parent, perm);
+            }
+        }
+        let cached = if path.exists() {
+            let bytes = fs::read(&path)?;
+            match IdentityRecord::from_json_bytes(&bytes) {
+                Ok(rec) => Some(rec),
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+        Ok(Self {
+            path,
+            cached: Mutex::new(cached),
+        })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl IdentityStore for DemoFileStore {
+    fn load(&self) -> Result<Option<IdentityRecord>, IdentityFlowError> {
+        Ok(self.cached.lock().unwrap().clone())
+    }
+    fn save(&self, record: &IdentityRecord) -> Result<(), IdentityFlowError> {
+        let bytes = record.to_json_bytes()?;
+        let tmp = self.path.with_extension("json.tmp");
+        fs::write(&tmp, &bytes).map_err(IdentityFlowError::Io)?;
+        #[cfg(unix)]
+        {
+            let mut perm = fs::metadata(&tmp).map_err(IdentityFlowError::Io)?.permissions();
+            perm.set_mode(0o600);
+            fs::set_permissions(&tmp, perm).map_err(IdentityFlowError::Io)?;
+        }
+        fs::rename(&tmp, &self.path).map_err(IdentityFlowError::Io)?;
+        *self.cached.lock().unwrap() = Some(record.clone());
+        eprintln!(
+            "identity_flow_demo: wrote identity to {} (0600)",
+            self.path.display()
+        );
+        Ok(())
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    // Parse `--screen <name>`; default to CreateIdentity.
     let screen = args
         .windows(2)
         .find(|w| w[0] == "--screen")
         .and_then(|w| parse_screen_arg(&w[1]))
         .unwrap_or(IdentityFlowScreen::CreateIdentity);
 
-    let store: Arc<dyn IdentityStore> = Arc::new(MemoryIdentityStore::new());
+    let persist_dir = args
+        .windows(2)
+        .find(|w| w[0] == "--persist")
+        .map(|w| PathBuf::from(&w[1]));
+
+    let store: Arc<dyn IdentityStore> = match persist_dir {
+        Some(dir) => {
+            let path = dir.join("identity.json");
+            eprintln!("identity_flow_demo: persisting to {}", path.display());
+            Arc::new(DemoFileStore::at(path).expect("init DemoFileStore"))
+        }
+        None => {
+            eprintln!("identity_flow_demo: in-memory only (no --persist)");
+            Arc::new(MemoryIdentityStore::new())
+        }
+    };
+
     let mut flow = IdentityFlow::new(store.clone());
     flow.set_screen(screen);
 
-    // Seed sample data so each screen has something to render in
-    // isolation.
     let mut rng = OsRng;
     let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-    let record = ui::widget::identity_flow::IdentityRecord::from_threshold_identity(
+    let record = IdentityRecord::from_threshold_identity(
         &id,
         "alice",
         [248, 113, 113],
         SystemTime::now(),
     )
     .unwrap();
-    // Recovery seed.
     flow.recovery_share.seed_from_record(&record);
     let mnemonic = flow.recovery_share.mnemonic().to_string();
     flow.recovery_verify.seed_mnemonic(mnemonic);
-    // Add-device host screen.
     {
         let (sess, r1) = {
             let mut id_local = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
@@ -78,9 +162,7 @@ fn main() {
             .add_device_host
             .begin(r1, sess, *id.group_public_key());
     }
-    // Invite-mint screen.
     flow.invite_mint.set_channel(ChannelId::new(), "engineering");
-    // Invite-accept screen.
     let (owner_sk, owner_pk) = generate_keypair();
     let env: InviteEnvelope = mint_invite(
         ChannelId::new(),
