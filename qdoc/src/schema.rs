@@ -87,6 +87,18 @@ pub const MARK_INS: &str = "ins"; // Str — the anchored (insertion) change id
 /// range. Covers the deleted range `[start, end)`; its value is the change id (a `Str`).
 pub const MARK_DEL: &str = "del"; // Str — the anchored (deletion) change id
 
+// Multi-column section layout. A document-wide column count (and optional gap)
+// stored directly under `meta` as scalar registers, so two replicas changing the
+// column count field-level merge rather than clobbering each other. `columns` is a
+// `Uint` (the number of newspaper-style columns the body text flows across);
+// `column_gap` is an optional `F64` (the gutter between columns, in px). Absent →
+// a single column (the default). This is the shared contract between the qdoc model
+// and the `.odt` page-layout `style:columns` / `.docx` `w:sectPr`→`w:cols` markup.
+pub const META_COLUMNS: &str = "columns"; // Uint (under meta) — body column count
+pub const META_COLUMN_GAP: &str = "column_gap"; // F64 (under meta) — inter-column gap (px)
+/// The default body column count when `meta.columns` is unset (a single column).
+pub const DEFAULT_COLUMNS: u32 = 1;
+
 // Document properties / metadata. A `props` sub-map under `meta` holding the
 // well-known document-level fields (title/author/…) as plain strings. Isolated
 // from other `meta` keys (page margins, stylesheet) and created lazily so

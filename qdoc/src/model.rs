@@ -621,6 +621,33 @@ pub fn meta_str(doc: &AutoCommit, c: &Containers, key: &str) -> Option<String> {
     }
 }
 
+/// The document-wide multi-column layout: `(column_count, optional_gap_px)`.
+/// Reads the `meta.columns` / `meta.column_gap` registers, defaulting to a single
+/// column ([`DEFAULT_COLUMNS`]) with no gap when unset — so documents authored
+/// before this setting existed read as single-column. A stored count of zero is
+/// clamped up to one (a body always has at least one column).
+pub fn columns(doc: &AutoCommit, c: &Containers) -> (u32, Option<f64>) {
+    let count = match doc.get(&c.meta, META_COLUMNS) {
+        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+            ScalarValue::Uint(u) => *u as u32,
+            ScalarValue::Int(i) if *i > 0 => *i as u32,
+            _ => DEFAULT_COLUMNS,
+        },
+        _ => DEFAULT_COLUMNS,
+    }
+    .max(1);
+    let gap = match doc.get(&c.meta, META_COLUMN_GAP) {
+        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+            ScalarValue::F64(f) => Some(*f),
+            ScalarValue::Int(i) => Some(*i as f64),
+            ScalarValue::Uint(u) => Some(*u as f64),
+            _ => None,
+        },
+        _ => None,
+    };
+    (count, gap)
+}
+
 /// Resolve the document-properties sub-map under `meta` (`meta.props`), if it
 /// exists. Created lazily on the first [`DocMut::set_doc_prop`], so documents
 /// authored before the props map existed simply read as having no properties.
@@ -749,6 +776,7 @@ pub fn materialize(doc: &AutoCommit, c: &Containers) -> DocSnapshot {
         .into_iter()
         .map(|id| materialize_block(doc, &c.blocks, &id))
         .collect();
+    let (columns, column_gap) = columns(doc, c);
     DocSnapshot {
         schema: SCHEMA_ID.to_string(),
         schema_version: SCHEMA_VERSION,
@@ -761,6 +789,8 @@ pub fn materialize(doc: &AutoCommit, c: &Containers) -> DocSnapshot {
         notes: materialize_notes(doc, c),
         comments: materialize_comments(doc, c),
         changes: materialize_changes(doc, c),
+        columns,
+        column_gap: column_gap.map(|g| g as f32),
     }
 }
 
@@ -1372,6 +1402,28 @@ impl<'a> DocMut<'a> {
     /// Set a document-level meta string (e.g. the serialized stylesheet).
     pub fn set_meta_str(&mut self, key: &str, value: &str) {
         let _ = self.doc.put(&self.c.meta, key, value);
+    }
+
+    /// Set the document-wide multi-column layout: `count` newspaper-style columns
+    /// for the body, with an optional `gap` (px) between them. Each is its own
+    /// scalar register under `meta`, so two replicas changing different aspects
+    /// field-level merge. A `count` of one with no gap clears the setting (the
+    /// document reads as single-column). Round-trips through `.odt`/`.docx`.
+    pub fn set_columns(&mut self, count: u32, gap: Option<f64>) {
+        let count = count.max(1);
+        if count <= 1 {
+            let _ = self.doc.delete(&self.c.meta, META_COLUMNS);
+        } else {
+            let _ = self.doc.put(&self.c.meta, META_COLUMNS, count as u64);
+        }
+        match gap {
+            Some(g) => {
+                let _ = self.doc.put(&self.c.meta, META_COLUMN_GAP, g);
+            }
+            None => {
+                let _ = self.doc.delete(&self.c.meta, META_COLUMN_GAP);
+            }
+        }
     }
 
     /// Resolve-or-create the `meta.props` document-properties sub-map. Created

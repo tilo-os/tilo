@@ -3,6 +3,7 @@
 //! onto the canonical model. Mirrors the `.odt` codec: container → styles →
 //! body parse → spans → export → preservation.
 
+pub mod columns;
 pub mod comments;
 pub mod container;
 pub mod content;
@@ -89,6 +90,9 @@ impl FormatProvider for DocxCodec {
                 headers::import_region(xml, crate::model::Region::Footer, doc);
             }
         }
+        // Multi-column section layout: parse the body `w:sectPr`'s `w:cols` num/space
+        // into the document-wide column setting.
+        columns::import_section_columns(&document, doc);
         // Preservation layer: stash every part except the (regenerated)
         // word/document.xml verbatim so export round-trips them losslessly. The
         // docProps parts are preserved too so their unmodeled fields survive
