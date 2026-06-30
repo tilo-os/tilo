@@ -66,8 +66,8 @@ pub enum WpFormat {
     /// PDF — **export only** (rendered via the `docpdf` crate). Importing PDF is
     /// not supported and returns a clear error.
     Pdf,
-    /// HTML — **export only** (rendered via the `dochtml` crate). Importing HTML
-    /// is not supported and returns a clear error.
+    /// HTML — export via the `dochtml` crate; **import** via `qdoc::HtmlCodec` (so
+    /// `.html`/`.htm` files can be opened as well as saved).
     Html,
     /// RTF — export via the `docrtf` crate; **import** via `qdoc::RtfCodec` (so
     /// `.rtf` files can be opened as well as saved).
@@ -100,9 +100,9 @@ impl WpFormat {
             WpFormat::Pdf => Err(qdoc::CodecError::Unsupported(
                 "opening PDF documents is not supported (PDF is export-only)".to_string(),
             )),
-            WpFormat::Html => Err(qdoc::CodecError::Unsupported(
-                "opening HTML documents is not supported (HTML is export-only)".to_string(),
-            )),
+            // HTML import is handled by the `qdoc::HtmlCodec` codec (export still
+            // routes through `dochtml` below).
+            WpFormat::Html => qdoc::HtmlCodec.import(bytes, dm),
             // RTF import is handled by the `qdoc::RtfCodec` codec (export still
             // routes through `docrtf` below).
             WpFormat::Rtf => qdoc::RtfCodec.import(bytes, dm),
@@ -469,16 +469,23 @@ mod tests {
         assert_eq!(WpFormat::from_path(Path::new("doc.EPUB")), WpFormat::Epub, "case-insensitive");
     }
 
-    /// HTML import is unsupported and surfaces a clear error. (RTF import is now
-    /// supported — see `rtf_import_opens_a_paragraph` and the round-trip test.)
+    /// `WpFormat::Html.import` of a small HTML document produces the expected
+    /// first heading (HTML import is now wired to `qdoc::HtmlCodec`).
     #[test]
-    fn html_import_is_unsupported() {
+    fn html_import_opens_first_heading() {
         let mut s = ui::State::new();
         let containers = qdoc::model::init(&mut s.doc, &s.root);
         let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
-        let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &containers, ids: &mut ids };
-        let html_err = WpFormat::Html.import(b"<html></html>", &mut dm).unwrap_err();
-        assert!(matches!(html_err, qdoc::CodecError::Unsupported(_)), "got {html_err:?}");
+        {
+            let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &containers, ids: &mut ids };
+            WpFormat::Html
+                .import(b"<h1>Opened from HTML</h1><p>body</p>", &mut dm)
+                .expect("html import succeeds");
+        }
+        let snap = qdoc::model::materialize(&s.doc, &containers);
+        let first = snap.blocks.first().expect("html import yields at least one block");
+        assert_eq!(first.kind, "heading", "first block is a heading: {snap:?}");
+        assert_eq!(first.text, "Opened from HTML", "first heading text: {snap:?}");
     }
 
     /// `WpFormat::Rtf.import` of a small `.rtf` document produces the expected
