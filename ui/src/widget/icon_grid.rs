@@ -309,6 +309,25 @@ impl Widget for IconGrid {
             };
             text_renderer.draw_text(scene, &label, label_size, label_color, transform * Affine::translate((tx, ty)), None);
         }
+
+        // Keyboard-focus ring: when the grid holds focus, draw the shared
+        // focus border around the active (primary) cell so arrow-key
+        // navigation is visible without relying on the selection fill alone.
+        if self.is_focused {
+            if let Some(i) = self.selection.primary() {
+                let cell = self.cell_rect(i);
+                if !presence.should_cull(cell) {
+                    let ring = RoundedRect::from_rect(cell, tokens.radii.md as f64);
+                    scene.stroke(
+                        &vello::kurbo::Stroke::new(2.0),
+                        transform,
+                        theme.border_focus,
+                        None,
+                        &ring,
+                    );
+                }
+            }
+        }
     }
 
     fn handle_event(
@@ -472,6 +491,7 @@ fn truncate_to_width(tr: &mut TextRenderer, text: &str, size: f32, max_w: f64) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use taffy::prelude::TaffyMaxContent;
 
     fn items(n: usize) -> Vec<IconGridItem> {
         (0..n).map(|i| IconGridItem::new(Icon::File, format!("f{i}"))).collect()
@@ -554,5 +574,53 @@ mod tests {
         g.selection.select_only(4);
         let node = Widget::accessibility(&g).unwrap();
         assert_eq!(node.value.as_deref(), Some("f4"));
+    }
+
+    /// Lay the grid out, render against `theme`, and count COLOR draw-tags.
+    fn color_fill_count(g: &mut IconGrid, theme: &Theme) -> usize {
+        use vello::Scene;
+        use vello_encoding::DrawTag;
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
+            std::collections::HashMap::new();
+        let node = g.build_layout(&mut taffy, theme, &mut node_map);
+        let root = taffy.new_with_children(Style::default(), &[node]).unwrap();
+        taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
+        g.apply_layout(&taffy, node, Point::ZERO);
+
+        let mut tr = TextRenderer::new();
+        let presence = crate::presence::PresenceCtx::default();
+        let mut scene = Scene::new();
+        g.draw(&mut scene, vello::kurbo::Affine::IDENTITY, &mut tr, theme, &presence);
+        scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|t| **t == DrawTag::COLOR)
+            .count()
+    }
+
+    /// A focused grid with a primary cell must paint a focus ring — one extra
+    /// stroke — that an unfocused grid does not. Asserts on the production
+    /// `draw` path via the scene encoding.
+    #[test]
+    fn focused_grid_paints_a_focus_ring() {
+        let theme = Theme::dark();
+
+        let mut unfocused = IconGrid::new(items(6));
+        unfocused.selection.select_only(2);
+        unfocused.set_focus(false);
+        let without = color_fill_count(&mut unfocused, &theme);
+
+        let mut focused = IconGrid::new(items(6));
+        focused.selection.select_only(2);
+        focused.set_focus(true);
+        let with = color_fill_count(&mut focused, &theme);
+
+        assert_eq!(
+            with,
+            without + 1,
+            "a focused grid must add exactly one focus-ring stroke ({with} vs {without})",
+        );
     }
 }

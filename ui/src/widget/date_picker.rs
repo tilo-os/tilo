@@ -47,6 +47,9 @@ pub struct DatePicker {
     prev_button_rect: Rect,
     next_button_rect: Rect,
     last_cursor: Point,
+    /// Whether the picker holds keyboard focus. Drives a focus ring around
+    /// the whole calendar so the control reads as focused.
+    is_focused: bool,
 }
 
 impl DatePicker {
@@ -60,6 +63,7 @@ impl DatePicker {
             prev_button_rect: Rect::ZERO,
             next_button_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
+            is_focused: false,
         }
     }
 
@@ -210,6 +214,18 @@ impl Widget for DatePicker {
             None,
             &self.rect,
         );
+
+        // Keyboard-focus ring around the whole calendar so arrow-key day
+        // navigation reads as a focused control.
+        if self.is_focused {
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                tokens.colors.border_focus,
+                None,
+                &RoundedRect::from_rect(self.rect, tokens.radii.md as f64),
+            );
+        }
 
         // Header label: "Month YYYY".
         let (y, m) = self.month_view;
@@ -408,6 +424,8 @@ impl Widget for DatePicker {
     fn test_id(&self) -> Option<&str> { Some("date_picker") }
     fn get_rect(&self) -> Rect { self.rect }
     fn is_focusable(&self) -> bool { true }
+    fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
+    fn is_focused(&self) -> bool { self.is_focused }
 
     /// The date picker reports [`Role::ComboBox`] — a selector whose value
     /// is the currently-chosen date in ISO `YYYY-MM-DD` form. The grid is
@@ -588,5 +606,44 @@ mod tests {
         let dp = DatePicker::new(NaiveDate::from_ymd_opt(2024, 1, 1).unwrap());
         let first_col: usize = dp.first_visible_col();
         assert_eq!(first_col, 0_usize);
+    }
+
+    fn picker_color_fills(focused: bool) -> usize {
+        use vello::Scene;
+        use vello_encoding::DrawTag;
+        let mut dp = DatePicker::new(NaiveDate::from_ymd_opt(2024, 6, 15).unwrap());
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
+            std::collections::HashMap::new();
+        let node = dp.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy.compute_layout(node, taffy::Size::MAX_CONTENT).unwrap();
+        dp.apply_layout(&taffy, node, Point::ZERO);
+        dp.set_focus(focused);
+
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        let mut scene = Scene::new();
+        dp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|t| **t == DrawTag::COLOR)
+            .count()
+    }
+
+    /// A focused date picker paints a focus ring around the calendar — one
+    /// extra stroke over the unfocused render. Asserts on the production
+    /// `draw` path via the scene encoding.
+    #[test]
+    fn focused_date_picker_paints_a_focus_ring() {
+        let without = picker_color_fills(false);
+        let with = picker_color_fills(true);
+        assert_eq!(
+            with,
+            without + 1,
+            "a focused date picker must add exactly one focus-ring stroke ({with} vs {without})",
+        );
     }
 }

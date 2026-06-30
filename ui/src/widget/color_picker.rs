@@ -490,7 +490,17 @@ impl Widget for ColorPicker {
         // gives a faint hint that the square responds to clicks.
         let sv_fill = Color::from_rgba8(self.color.r(), self.color.g(), self.color.b(), 96);
         scene.fill(vello::peniko::Fill::NonZero, transform, sv_fill, None, &sv_shape);
-        scene.stroke(&Stroke::new(1.0), transform, colors.border_standard, None, &sv_shape);
+        // The SV square carries the keyboard-focus ring for the whole picker
+        // (its rect spans dead space, so a box around everything would frame
+        // emptiness). While focused the square's border becomes the prominent
+        // focus colour at 2px, consistent with the other focusable controls;
+        // otherwise it's the plain standard border.
+        let (sv_border_w, sv_border_c) = if self.is_focused {
+            (2.0, colors.border_focus)
+        } else {
+            (1.0, colors.border_standard)
+        };
+        scene.stroke(&Stroke::new(sv_border_w), transform, sv_border_c, None, &sv_shape);
 
         // SV cursor — a small ring at the (saturation, 1 - value) coordinate.
         let (_, sat, val) = self.current_hsv();
