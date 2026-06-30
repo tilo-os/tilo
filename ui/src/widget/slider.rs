@@ -354,6 +354,46 @@ impl Widget for Slider {
         )
     }
 
+    /// Accessibility (W4): an AT can step the slider with
+    /// [`Action::Increment`]/[`Action::Decrement`] (5% per step) or jump it to
+    /// an absolute value with [`Action::SetValue`] (accepting either a `0..1`
+    /// fraction or a `0..100` percentage). All mutations go through the same
+    /// `commit_value` path real drag input uses, so the CRDT write is
+    /// identical. Disabled sliders reject every action.
+    ///
+    /// [`Action::Increment`]: crate::a11y::Action::Increment
+    /// [`Action::Decrement`]: crate::a11y::Action::Decrement
+    /// [`Action::SetValue`]: crate::a11y::Action::SetValue
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        use crate::a11y::Action;
+        if !self.enabled {
+            return false;
+        }
+        const STEP: f64 = 0.05;
+        match action {
+            Action::Increment => {
+                self.commit_value((self.value + STEP).clamp(0.0, 1.0), state, path)
+            }
+            Action::Decrement => {
+                self.commit_value((self.value - STEP).clamp(0.0, 1.0), state, path)
+            }
+            Action::SetValue(v) => {
+                let Ok(parsed) = v.trim().trim_end_matches('%').parse::<f64>() else {
+                    return false;
+                };
+                // Accept either a 0..1 fraction or a 0..100 percentage.
+                let frac = if parsed > 1.0 { parsed / 100.0 } else { parsed };
+                self.commit_value(frac.clamp(0.0, 1.0), state, path)
+            }
+            _ => false,
+        }
+    }
+
     fn presence_key(&self) -> Option<PresenceKey> {
         if self.presence_path.is_empty() {
             None
@@ -567,6 +607,48 @@ mod tests {
         let node = Widget::accessibility(&s).unwrap();
         assert_eq!(node.value.as_deref(), Some("25%"));
         assert!(node.state.disabled);
+    }
+
+    #[test]
+    fn perform_action_increments_decrements_and_sets_value() {
+        use crate::a11y::Action;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut s = Slider::new("any", "value"); // default 0.5
+
+        assert!(Widget::perform_action(&mut s, &Action::Increment, &mut doc, &root));
+        assert!((s.value - 0.55).abs() < 1e-9, "increment steps +5%");
+        assert!(Widget::perform_action(&mut s, &Action::Decrement, &mut doc, &root));
+        assert!((s.value - 0.50).abs() < 1e-9, "decrement steps -5%");
+
+        // SetValue accepts a 0..100 percentage.
+        assert!(Widget::perform_action(
+            &mut s,
+            &Action::SetValue("80%".into()),
+            &mut doc,
+            &root
+        ));
+        assert!((s.value - 0.80).abs() < 1e-9);
+
+        // SetValue also accepts a 0..1 fraction.
+        assert!(Widget::perform_action(
+            &mut s,
+            &Action::SetValue("0.2".into()),
+            &mut doc,
+            &root
+        ));
+        assert!((s.value - 0.20).abs() < 1e-9);
+    }
+
+    #[test]
+    fn disabled_slider_rejects_perform_action() {
+        use crate::a11y::Action;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut s = Slider::new("any", "value").with_enabled(false);
+        let before = s.value;
+        assert!(!Widget::perform_action(&mut s, &Action::Increment, &mut doc, &root));
+        assert_eq!(s.value, before, "a disabled slider must not change value");
     }
 
     #[test]

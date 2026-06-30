@@ -494,6 +494,35 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
     fn name(&self) -> &str { "ModalDialog" }
 
     fn get_rect(&self) -> Rect { self.rect }
+
+    /// Expose the inner content so the accessibility tree builder can
+    /// descend into the dialog body. Additive — the default is an empty
+    /// vec, so this does not affect any other pass.
+    fn children(&self) -> Vec<&dyn Widget> {
+        vec![&self.content]
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        vec![&mut self.content]
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        // A dialog with a backdrop is modal by definition. The title is the
+        // accessible name (FTL-resolved — falls back to the literal when no
+        // translation exists). A closed dialog is hidden from the tree.
+        let title = crate::i18n!(&self.title);
+        let name = (!title.is_empty()).then_some(title);
+        Some(
+            AccessNode::new(Role::Dialog)
+                .with_optional_name(name)
+                .with_state(AccessState {
+                    modal: true,
+                    hidden: !self.open,
+                    ..Default::default()
+                }),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -739,6 +768,34 @@ mod tests {
         assert_eq!(
             closed_fills, 0,
             "a closed dialog must emit zero COLOR fills; got {closed_fills}",
+        );
+    }
+
+    #[test]
+    fn accessibility_reports_dialog_role_modal_and_title() {
+        use crate::a11y::Role;
+        let d = ModalDialog::new("Confirm delete", TestContent).open(true);
+        let node = Widget::accessibility(&d).expect("dialog is not presentational");
+        assert_eq!(node.role, Role::Dialog);
+        assert_eq!(node.name.as_deref(), Some("Confirm delete"));
+        assert!(node.state.modal, "a backdrop dialog is modal");
+        assert!(!node.state.hidden, "an open dialog is visible");
+    }
+
+    #[test]
+    fn accessibility_closed_dialog_is_hidden() {
+        let d = ModalDialog::new("Confirm delete", TestContent).open(false);
+        let node = Widget::accessibility(&d).unwrap();
+        assert!(node.state.hidden, "a closed dialog is hidden from the tree");
+    }
+
+    #[test]
+    fn children_exposes_dialog_content() {
+        let d = ModalDialog::new("Title", TestContent).open(true);
+        assert_eq!(
+            Widget::children(&d).len(),
+            1,
+            "the dialog body must be reachable as a child for the a11y tree",
         );
     }
 }
