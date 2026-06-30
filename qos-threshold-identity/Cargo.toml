@@ -1,0 +1,73 @@
+[package]
+name = "qos-threshold-identity"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "qos_threshold_identity"
+path = "src/lib.rs"
+
+# FROST-based threshold-shared Ed25519 identity for qOS.
+#
+# Phase 8 of the `2026-06-29-spaces-channels-and-cryptographic-roles.md`
+# spec: a single Ed25519 keypair representing a human, whose secret half
+# is split across the user's devices via FROST-Ed25519. Threshold-produced
+# signatures are byte-compatible with standard Ed25519 verification so
+# `qos-collab-types::verify_event` does not need to know about
+# threshold-ness.
+#
+[dependencies]
+# Sibling crate — interop target for verify_event compatibility.
+qos-collab-types = { path = "../qos-collab-types" }
+
+# FROST-Ed25519 (RFC 9591 ciphersuite). The `serialization` feature
+# brings in `Signature::serialize`/`deserialize`, `VerifyingKey::serialize`,
+# `KeyPackage::serialize`/`deserialize`, etc. — needed for both the
+# wire types (round-1 / round-2 messages traveling over libp2p) and
+# the recovery-share encoder. `serialization` implies `serde`.
+frost-ed25519 = { version = "3", features = ["serialization"] }
+
+# RNG primitives. `rand` 0.8 because frost-ed25519 3.0 still consumes
+# `rand_core` 0.6. `rand_chacha` provides a deterministic ChaCha RNG
+# used in the tests' fixed-seed setup.
+rand = "0.8"
+rand_chacha = "0.3"
+rand_core = "0.6"
+
+# Standard wire-serialisation stack (mirrors qos-collab-types).
+serde = { version = "1", features = ["derive"] }
+serde_bytes = "0.11"
+postcard = { version = "1", features = ["alloc"] }
+
+# Error plumbing.
+thiserror = "1"
+
+# Defence-in-depth: explicit zeroize on secret-material drop. The
+# `frost-core::SigningKey`/`SecretShare` types already implement
+# `ZeroizeOnDrop`, but we add a `Drop` for the public wrapper so the
+# whole `SecretShare` newtype is wiped even if the consumer somehow
+# memcpys it.
+zeroize = { version = "1", features = ["derive"] }
+
+# BIP39 mnemonic encoder/decoder for the paper recovery share. Default
+# wordlist is English (2048 words, 11 bits/word; 24 words → 256 bits
+# of entropy + 8-bit checksum). Fixed at 2.x to avoid breaking changes.
+bip39 = "2"
+
+# Hex encoding for the public-metadata part of the recovery share
+# card. Tiny dep; pinned to a stable major.
+hex = "0.4"
+
+# SHA-512 for the pairing-transcript hash (matches the hash
+# function used in FROST(Ed25519, SHA-512), which is already a
+# transitive dep via frost-ed25519).
+sha2 = "0.10"
+
+[dev-dependencies]
+# Used in the interop test to confirm that a threshold-produced
+# signature on canonical bytes is accepted by standard Ed25519
+# verification via `qos_collab_types::verify_event`.
+ed25519-dalek = { version = "2", features = ["serde"] }
+# Same dep that qos-collab-types uses for ArtifactId / ChannelId /
+# SpaceId UUIDs; we mint a few in the SignedOp interop test.
+uuid = { version = "1", features = ["v4", "serde"] }
