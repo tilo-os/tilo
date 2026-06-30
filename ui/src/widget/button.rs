@@ -383,6 +383,41 @@ impl Widget for Button {
     fn is_focused(&self) -> bool { self.is_focused }
     fn is_enabled(&self) -> bool { self.enabled }
 
+    /// Keyboard / AT activation: Enter, Space, or an AccessKit `Activate`
+    /// performs the same CRDT mutation + imperative callback as a mouse click.
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        state: &mut AutoCommit,
+        root: &ObjId,
+    ) -> bool {
+        use crate::a11y::Action;
+        if !self.enabled {
+            return false;
+        }
+        match action {
+            Action::Activate => {
+                if let Some(path) = &self.on_click_path {
+                    match state.get(root, path.as_str()) {
+                        Ok(Some((Value::Scalar(s), _)))
+                            if matches!(s.as_ref(), automerge::ScalarValue::Counter(_)) =>
+                        {
+                            let _ = state.increment(root, path.as_str(), 1);
+                        }
+                        _ => {
+                            let _ = state.put(root, path.as_str(), true);
+                        }
+                    }
+                }
+                if let Some(cb) = &mut self.on_click {
+                    cb();
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         // FTL-resolved label is the accessible name; an icon-only button with

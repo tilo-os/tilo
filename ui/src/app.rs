@@ -203,12 +203,12 @@ pub struct App {
     /// the incremental-render gate.
     current_cursor: CursorIcon,
 
-    /// Built-in screen reader (W6). `Some` when
+    /// Built-in screen reader. `Some` when
     /// [`A11ySettings::screen_reader`](crate::a11y::A11ySettings::screen_reader)
     /// is on (toggled via [`Self::set_screen_reader_enabled`], or auto-enabled
     /// at construction when `QOS_A11Y_SCREEN_READER`/`QOS_SCREEN_READER` is set
-    /// in the environment — the env var the shell mirrors into sandboxes per
-    /// W2). When `None`, every narration call site short-circuits, so a build
+    /// in the environment — the env var the shell mirrors into sandboxes).
+    /// When `None`, every narration call site short-circuits, so a build
     /// with the reader off pays nothing and is byte-for-byte unaffected.
     ///
     /// The reader owns a `qos_tts` speaker (default backend, falling back to a
@@ -259,7 +259,7 @@ impl App {
             current_cursor: CursorIcon::Default,
             // Auto-enable the screen reader if the environment opts in (the
             // shell mirrors A11ySettings.screen_reader into spawned sandboxes
-            // via QOS_A11Y_* env vars — W2). Either var, non-empty, turns it on.
+            // via QOS_A11Y_* env vars). Either var, non-empty, turns it on.
             screen_reader: if Self::screen_reader_env_enabled() {
                 Some(crate::screen_reader::ScreenReader::new())
             } else {
@@ -270,7 +270,7 @@ impl App {
     }
 
     /// Whether the environment opts the screen reader on at startup. Reads
-    /// `QOS_A11Y_SCREEN_READER` (the W2 sandbox-mirrored var) and the shorter
+    /// `QOS_A11Y_SCREEN_READER` (the sandbox-mirrored var) and the shorter
     /// `QOS_SCREEN_READER` alias; either, non-empty and not `"0"`/`"false"`,
     /// enables it.
     fn screen_reader_env_enabled() -> bool {
@@ -963,7 +963,7 @@ impl App {
             if let Some(id) = new_id {
                 if let Some(&w_ptr) = self.node_map.get(&id) {
                     unsafe { (*w_ptr).set_focus(true); }
-                    // Screen-reader focus narration (W6). Pull the newly-focused
+                    // Screen-reader focus narration. Pull the newly-focused
                     // widget's semantics and speak it, INTERRUPTING the previous
                     // utterance so rapid arrow/Tab navigation stays responsive
                     // (the reader's queue coalesces a focus storm to the latest).
@@ -981,6 +981,45 @@ impl App {
             }
             self.layout_dirty = true;
             self.needs_sync = true;
+        }
+    }
+
+    /// Snapshot the focused widget's concise value+state string. Captured
+    /// *before* an event is dispatched so [`announce_state_change`] can detect
+    /// whether the same control's state changed (mouse click, Space/Enter, a
+    /// slider step) and speak the new state. Cheap no-op when the reader is off.
+    fn focused_state_snapshot(&self) -> Option<(NodeId, String)> {
+        self.screen_reader.as_ref()?;
+        let id = self.focused_node?;
+        let &w_ptr = self.node_map.get(&id)?;
+        let node = unsafe { (*w_ptr).accessibility() }?;
+        Some((id, crate::screen_reader::describe_state(&node)))
+    }
+
+    /// If the focused control's state changed since `pre` (and focus did NOT
+    /// move — a focus move is already narrated by [`set_focused_node`]), speak
+    /// just the new state ("checked", "on", "75 percent"). Covers both mouse
+    /// and keyboard activation, so the reader always confirms the result.
+    fn announce_state_change(&mut self, pre: Option<(NodeId, String)>) {
+        let Some((pre_id, pre_state)) = pre else { return };
+        if self.focused_node != Some(pre_id) {
+            return;
+        }
+        if self.screen_reader.is_none() {
+            return;
+        }
+        let now = match self.node_map.get(&pre_id) {
+            Some(&w_ptr) => match unsafe { (*w_ptr).accessibility() } {
+                Some(node) => crate::screen_reader::describe_state(&node),
+                None => return,
+            },
+            None => return,
+        };
+        if now.is_empty() || now == pre_state {
+            return;
+        }
+        if let Some(sr) = self.screen_reader.as_mut() {
+            sr.announce_value_change(now);
         }
     }
 
@@ -1280,7 +1319,7 @@ struct AppHandler {
     /// the worker is joined so its surface is dropped BEFORE the
     /// `Window` arc goes away.
     render: Option<RenderThreadHandle>,
-    /// AccessKit ↔ winit adapter (W4). `None` until `resumed` creates the
+    /// AccessKit ↔ winit adapter. `None` until `resumed` creates the
     /// window (the adapter must be created while the window is hidden, then the
     /// window is shown). On Linux this pulls in `accesskit_unix`, which
     /// publishes our exported tree over AT-SPI2 so Orca / braille work. The
@@ -1427,7 +1466,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             .with_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0));
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 
-        // Accessibility (W4): wire the AccessKit winit adapter so the exported
+        // Accessibility: wire the AccessKit winit adapter so the exported
         // tree reaches AT-SPI2 (Orca, braille). Events (initial-tree request,
         // action requests, deactivation) are delivered back through our event
         // loop proxy as `UserEvent::AccessKit`. This is intentionally created
@@ -1794,7 +1833,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     );
                 }
 
-                // Accessibility (W4): push the freshly-laid-out tree to the
+                // Accessibility: push the freshly-laid-out tree to the
                 // AccessKit adapter. `update_if_active` only builds + sends the
                 // `TreeUpdate` when an AT is actually attached, so this is free
                 // (a single bool check) on the common no-screen-reader path.
@@ -1910,7 +1949,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 let mut focus_target = None;
                 let mut is_undo_redo = false;
 
-                // Screen-reader command layer (W6): `Insert + <key>` drives the
+                // Screen-reader command layer: `Insert + <key>` drives the
                 // reading cursor / say-all / stop without colliding with normal
                 // navigation. Runs FIRST so it wins over Tab/arrow handling, and
                 // is a no-op (returns false) when the reader is disabled. When
@@ -1921,6 +1960,22 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     handled = true;
                     is_undo_redo = true; // suppress an undo commit for a read cmd
                 }
+
+                // snapshot the focused control's state BEFORE dispatch, so
+                // we can announce a resulting change (checked / on / value) —
+                // whether it came from a mouse click or keyboard activation.
+                let state_pre = if matches!(
+                    event,
+                    WindowEvent::KeyboardInput { .. }
+                        | WindowEvent::MouseInput {
+                            state: winit::event::ElementState::Pressed,
+                            ..
+                        }
+                ) {
+                    app.focused_state_snapshot()
+                } else {
+                    None
+                };
 
                 if !handled {
                 if let WindowEvent::KeyboardInput {
@@ -2086,6 +2141,105 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     }
                 }
 
+                // Keyboard activation: if no widget consumed Enter/Space (text
+                // inputs do, so they keep typing), activate the focused control
+                // via its `Activate` action — the same mutation a mouse click
+                // performs. Buttons fire, checkboxes/switches flip. The state
+                // change is spoken below by `announce_state_change`.
+                if !handled {
+                    if let WindowEvent::KeyboardInput {
+                        event:
+                            winit::event::KeyEvent {
+                                logical_key:
+                                    winit::keyboard::Key::Named(
+                                        winit::keyboard::NamedKey::Enter
+                                        | winit::keyboard::NamedKey::Space,
+                                    ),
+                                state: winit::event::ElementState::Pressed,
+                                ..
+                            },
+                        ..
+                    } = event
+                    {
+                        if let Some(fid) = app.focused_node {
+                            if let Some(&w_ptr) = app.node_map.get(&fid) {
+                                let did = unsafe {
+                                    (*w_ptr).perform_action(
+                                        &crate::a11y::Action::Activate,
+                                        &mut app.state.doc,
+                                        &app.state.root,
+                                    )
+                                };
+                                if did {
+                                    handled = true;
+                                    app.needs_sync = true;
+                                    app.layout_dirty = true;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // A focused range control (e.g. a slider) consumes Left/Right
+                // to adjust its value; Up/Down and Tab still move focus, so you
+                // can always navigate away. Modifiers scale the step:
+                //   plain  → one step       Shift → four steps (coarse)
+                //   Ctrl   → jump to min/max (Left = min, Right = max)
+                // Other widgets ignore the action, so their Left/Right falls
+                // through to directional navigation below. The resulting value
+                // is spoken by `announce_state_change`.
+                if !handled {
+                    if let WindowEvent::KeyboardInput {
+                        event:
+                            winit::event::KeyEvent {
+                                logical_key: winit::keyboard::Key::Named(named),
+                                state: winit::event::ElementState::Pressed,
+                                ..
+                            },
+                        ..
+                    } = event
+                    {
+                        use crate::a11y::Action;
+                        let ctrl = app.modifiers.state().control_key();
+                        let shift = app.modifiers.state().shift_key();
+                        // (action to repeat, how many times)
+                        let (action, times) = match named {
+                            winit::keyboard::NamedKey::ArrowLeft if ctrl => {
+                                (Some(Action::SetValue("0".into())), 1)
+                            }
+                            winit::keyboard::NamedKey::ArrowRight if ctrl => {
+                                (Some(Action::SetValue("100".into())), 1)
+                            }
+                            winit::keyboard::NamedKey::ArrowLeft => {
+                                (Some(Action::Decrement), if shift { 4 } else { 1 })
+                            }
+                            winit::keyboard::NamedKey::ArrowRight => {
+                                (Some(Action::Increment), if shift { 4 } else { 1 })
+                            }
+                            _ => (None, 0),
+                        };
+                        if let (Some(act), Some(fid)) = (action, app.focused_node) {
+                            if let Some(&w_ptr) = app.node_map.get(&fid) {
+                                let mut any = false;
+                                for _ in 0..times {
+                                    any |= unsafe {
+                                        (*w_ptr).perform_action(
+                                            &act,
+                                            &mut app.state.doc,
+                                            &app.state.root,
+                                        )
+                                    };
+                                }
+                                if any {
+                                    handled = true;
+                                    app.needs_sync = true;
+                                    app.layout_dirty = true;
+                                }
+                            }
+                        }
+                    }
+                }
+
                 if !handled {
                     if let WindowEvent::KeyboardInput {
                         event:
@@ -2122,6 +2276,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     app.set_focused_node(Some(id));
                     handled = true;
                 }
+
+                // if the dispatch changed the *still-focused* control's
+                // state (a checkbox the mouse toggled, a switch flipped by
+                // Space), speak the new state. When focus moved instead,
+                // `set_focused_node` already narrated it, and this is a no-op.
+                app.announce_state_change(state_pre);
 
                 if handled {
                     let mut should_commit = !is_undo_redo;
@@ -2715,7 +2875,7 @@ pub fn dispatch_gated_event<W: crate::widget::Widget + ?Sized>(
     true
 }
 
-/// W6 — App ↔ screen-reader wiring. Proves the App narrates focus changes
+/// App ↔ screen-reader wiring. Proves the App narrates focus changes
 /// through an injected reader (over a recording speaker), toggles the reader
 /// on/off, and that a reader-off App is unaffected. The focus-narration path
 /// (`set_focused_node`) is private, so these tests drive it through the public

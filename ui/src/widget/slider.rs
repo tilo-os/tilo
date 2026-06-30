@@ -354,7 +354,7 @@ impl Widget for Slider {
         )
     }
 
-    /// Accessibility (W4): an AT can step the slider with
+    /// Accessibility: an AT can step the slider with
     /// [`Action::Increment`]/[`Action::Decrement`] (5% per step) or jump it to
     /// an absolute value with [`Action::SetValue`] (accepting either a `0..1`
     /// fraction or a `0..100` percentage). All mutations go through the same
