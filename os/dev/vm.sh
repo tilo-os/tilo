@@ -53,6 +53,7 @@ cmd_boot() {
   local mode=2d disk="$QOS_DISK"
   while [ $# -gt 0 ]; do case "$1" in
     --gl) mode=gl;; --2d) mode=2d;; --window) mode=window;; --disk) disk="$2"; shift;;
+    --tpm) QOS_TPM=1;; --no-tpm) QOS_TPM=0;;
     *) die "boot: unknown arg $1";; esac; shift; done
   [ -f "$disk" ] || die "disk not found: $disk (run os/dev/build-image.sh)"
   vm_running && die "VM already running (pid $(cat "$QOS_PIDFILE")); stop it first"
@@ -86,7 +87,8 @@ cmd_boot() {
     $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$QOS_SSH_PORT-:22 -usb -device usb-tablet \
     -monitor unix:$QOS_MON,server,nowait -serial file:$QOS_SERIAL \
     -pidfile $QOS_PIDFILE -name qos"
-  inenv "setsid nohup qemu-system-x86_64 $args >'$QOS_QEMU_LOG' 2>&1 & disown"
+  swtpm_start
+  inenv "setsid nohup qemu-system-x86_64 $args $(tpm_qemu_args) >'$QOS_QEMU_LOG' 2>&1 & disown"
   sleep 1
   inenv "test -S '$QOS_MON'" || { warn "monitor socket not up; qemu.log:"; cat "$QOS_QEMU_LOG" >&2; die "boot failed"; }
   msg "up. monitor=$QOS_MON serial=$QOS_SERIAL"
@@ -140,6 +142,7 @@ cmd_boot_installer() {
   local mode=2d
   while [ $# -gt 0 ]; do case "$1" in
     --gl) mode=gl;; --2d) mode=2d;; --window) mode=window;;
+    --tpm) QOS_TPM=1;; --no-tpm) QOS_TPM=0;;
     *) die "boot-installer: unknown arg $1";; esac; shift; done
   local disk="$QOS_INSTALLER_DISK"
   [ -f "$disk" ] || die "installer disk not found: $disk (run ./os/dev/build-custom-installer.sh)"
@@ -166,7 +169,8 @@ cmd_boot_installer() {
     $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$QOS_SSH_PORT-:22 -usb -device usb-tablet \
     -monitor unix:$QOS_MON,server,nowait -serial file:$QOS_SERIAL \
     -pidfile $QOS_PIDFILE -name qos-custom-installer"
-  inenv "setsid nohup qemu-system-x86_64 $args >'$QOS_QEMU_LOG' 2>&1 & disown"
+  swtpm_start
+  inenv "setsid nohup qemu-system-x86_64 $args $(tpm_qemu_args) >'$QOS_QEMU_LOG' 2>&1 & disown"
   sleep 1
   inenv "test -S '$QOS_MON'" || { warn "monitor not up; qemu.log:"; cat "$QOS_QEMU_LOG" >&2; die "boot-installer failed"; }
   msg "installer up. monitor=$QOS_MON serial=$QOS_SERIAL  (installs onto $target as /dev/vdb)"
@@ -178,6 +182,7 @@ cmd_boot_target() {
   local mode=2d disk="$QOS_TARGET_DISK"
   while [ $# -gt 0 ]; do case "$1" in
     --gl) mode=gl;; --2d) mode=2d;; --window) mode=window;; --disk) disk="$2"; shift;;
+    --tpm) QOS_TPM=1;; --no-tpm) QOS_TPM=0;;
     *) die "boot-target: unknown arg $1";; esac; shift; done
   [ -f "$disk" ] || die "target disk not found: $disk (run vm.sh boot-installer and install first)"
   vm_running && die "VM already running; stop it first"
@@ -199,7 +204,8 @@ cmd_boot_target() {
     $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$QOS_SSH_PORT-:22 -usb -device usb-tablet \
     -monitor unix:$QOS_MON,server,nowait -serial file:$QOS_SERIAL \
     -pidfile $QOS_PIDFILE -name qos-target"
-  inenv "setsid nohup qemu-system-x86_64 $args >'$QOS_QEMU_LOG' 2>&1 & disown"
+  swtpm_start
+  inenv "setsid nohup qemu-system-x86_64 $args $(tpm_qemu_args) >'$QOS_QEMU_LOG' 2>&1 & disown"
   sleep 1
   inenv "test -S '$QOS_MON'" || { warn "monitor not up; qemu.log:"; cat "$QOS_QEMU_LOG" >&2; die "boot-target failed"; }
   msg "target up. monitor=$QOS_MON serial=$QOS_SERIAL"
@@ -259,7 +265,9 @@ cmd_status() { if vm_running; then echo "running (pid $(cat "$QOS_PIDFILE"))"; e
 cmd_stop() {
   if vm_running; then hmp "quit" >/dev/null 2>&1 || true; sleep 1; fi
   if vm_running; then inenv "kill \$(cat '$QOS_PIDFILE') 2>/dev/null" || true; fi
-  rm -f "$QOS_PIDFILE"; msg "stopped"
+  rm -f "$QOS_PIDFILE"
+  swtpm_stop
+  msg "stopped"
 }
 
 # Offline journal extraction via qemu-nbd. The VM must be stopped. General

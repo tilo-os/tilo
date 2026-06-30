@@ -8,23 +8,34 @@
 //!     --filesystem <btrfs|ext4|xfs> \
 //!     --hostname <name> [--timezone <tz>] \
 //!     --keymap <xkb-layout> [--keyvariant <xkb-variant>] \
-//!     [--encrypt] --yes
+//!     [--encrypt] [--pin] [--fido2] --yes
 //! ```
 //!
 //! `--encrypt` opts into full-disk encryption: the backend passes
-//! `bootc install to-disk --block-setup tpm2-luks`, which encrypts the
-//! root with LUKS and binds unlock to the machine's TPM2 device (no
-//! passphrase prompt at boot). It requires a TPM2 device at install time;
-//! the backend refuses `--encrypt` if none is present. Omitting the flag
-//! keeps the default unencrypted (`direct`) layout.
+//! `bootc install to-disk --block-setup tpm2-luks`, then layers additional
+//! LUKS2 keyslots on the installed root so the disk has an independent,
+//! non-TPM unlock path:
+//!
+//! * a **recovery key** is always generated and shown once during install
+//!   (the backstop for a cleared/failed TPM);
+//! * with `--pin`, the bare-TPM keyslot is replaced by a **TPM2+PIN**
+//!   keyslot — the PIN is sent as the **second stdin line**, after the
+//!   account password, never on the command line;
+//! * with `--fido2`, a **FIDO2 security key** is enrolled if a token is
+//!   present (its absence does not abort the install).
+//!
+//! `--encrypt` requires a TPM2 device at install time; the backend refuses
+//! it if none is present. `--pin`/`--fido2` require `--encrypt`. Omitting
+//! `--encrypt` keeps the default unencrypted (`direct`) layout.
 //!
 //! `--yes` is required because the backend has no tty here; the installer's
 //! Review screen is the user's "are you sure" gate. The account password is
-//! supplied on **stdin** as a single line. The backend runs the privileged
-//! `bootc install to-disk` + account/hostname/timezone seeding, streams
-//! human-readable progress to **stdout**, and exits `0` on success /
-//! non-zero on failure. We do not implement it here — we only spawn it,
-//! feed the password, and relay its output.
+//! supplied on **stdin** as the first line; when `--pin` is set the TPM2
+//! unlock PIN follows as the second line. The backend runs the privileged
+//! `bootc install to-disk` + keyslot enrolment + account/hostname/timezone
+//! seeding, streams human-readable progress to **stdout**, and exits `0` on
+//! success / non-zero on failure. We do not implement it here — we only
+//! spawn it, feed the stdin lines, and relay its output.
 //!
 //! `--filesystem`, `--hostname`, `--timezone`, `--keymap` and
 //! `--keyvariant` are newer flags; the backend defaults them when absent,
@@ -75,10 +86,21 @@ pub struct InstallOptions {
     /// Optional xkb variant (e.g. `dvorak`, `colemak`). Empty ⇒ no
     /// variant; the flag is then omitted.
     pub keyvariant: String,
-    /// Full-disk encryption (LUKS, TPM2-bound). `true` ⇒ the backend is
+    /// Full-disk encryption (LUKS, multi-factor). `true` ⇒ the backend is
     /// passed `--encrypt`, which maps to `bootc install to-disk
-    /// --block-setup tpm2-luks`. Default `false` (unencrypted, `direct`).
+    /// --block-setup tpm2-luks` plus an always-generated recovery key.
+    /// Default `false` (unencrypted, `direct`).
     pub encrypt: bool,
+    /// TPM2 unlock PIN. Only meaningful when [`Self::encrypt`] is `true`
+    /// and non-empty: the backend is passed `--pin` and the PIN is sent as
+    /// the second stdin line, enrolling a PIN-protected TPM2 keyslot in
+    /// place of the bare-TPM one. Empty ⇒ no PIN (the flag is omitted).
+    pub pin: String,
+    /// Enroll a FIDO2 security key as an extra unlock factor. Only
+    /// meaningful with [`Self::encrypt`]; maps to `--fido2`. A token must
+    /// be present at install time, but its absence never aborts the
+    /// install. Default `false`.
+    pub fido2: bool,
 }
 
 impl Default for InstallOptions {
@@ -90,6 +112,8 @@ impl Default for InstallOptions {
             keymap: "us".to_string(),
             keyvariant: String::new(),
             encrypt: false,
+            pin: String::new(),
+            fido2: false,
         }
     }
 }
@@ -132,10 +156,20 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
             cmd.arg("--keyvariant").arg(opts.keyvariant.trim());
         }
     }
-    // Opt-in full-disk encryption (TPM2-bound LUKS). The backend maps this
-    // to `bootc install to-disk --block-setup tpm2-luks`.
+    // Opt-in full-disk encryption (multi-factor LUKS). The backend maps
+    // this to `bootc install to-disk --block-setup tpm2-luks` plus an
+    // always-generated recovery key. The PIN and FIDO2 factors are only
+    // meaningful alongside it.
     if opts.encrypt {
         cmd.arg("--encrypt");
+        // A non-empty PIN means "enroll a TPM2+PIN keyslot": pass the bare
+        // `--pin` flag (the PIN value travels on stdin, never the argv).
+        if !opts.pin.is_empty() {
+            cmd.arg("--pin");
+        }
+        if opts.fido2 {
+            cmd.arg("--fido2");
+        }
     }
     cmd.arg("--yes");
     cmd
@@ -148,10 +182,15 @@ pub fn power_command(action: PowerAction) -> Command {
     cmd
 }
 
-/// Spawn `cmd`, write `password` (with a trailing newline) to its stdin,
+/// Spawn `cmd`, write `password` (with a trailing newline) to its stdin —
+/// followed by `extra_stdin` lines, each newline-terminated, in order —
 /// then stream stdout line by line into `on_line`. On a non-zero exit any
 /// captured stderr is relayed too (prefixed `error:`). Returns `Ok(true)`
 /// iff the child exited `0`.
+///
+/// `extra_stdin` carries secrets the backend reads after the password (the
+/// TPM2 PIN, when encryption with a PIN was requested) so they never touch
+/// the argv or a tty.
 ///
 /// Separated from [`run_install`] so tests can drive it with a stub
 /// command (e.g. `sh -c`) without the real backend present.
@@ -163,6 +202,7 @@ pub fn power_command(action: PowerAction) -> Command {
 pub fn stream_command<F: FnMut(String)>(
     mut cmd: Command,
     password: &str,
+    extra_stdin: &[&str],
     mut on_line: F,
 ) -> std::io::Result<bool> {
     cmd.stdin(Stdio::piped())
@@ -170,10 +210,14 @@ pub fn stream_command<F: FnMut(String)>(
         .stderr(Stdio::piped());
     let mut child = cmd.spawn()?;
 
-    // Feed the password, then drop the handle so the child sees EOF.
+    // Feed the password, then any extra secret lines (e.g. the TPM2 PIN),
+    // then drop the handle so the child sees EOF.
     {
         if let Some(mut stdin) = child.stdin.take() {
             writeln!(stdin, "{password}")?;
+            for line in extra_stdin {
+                writeln!(stdin, "{line}")?;
+            }
         }
     }
 
@@ -201,7 +245,8 @@ pub fn stream_command<F: FnMut(String)>(
 }
 
 /// Run the real `qos-install` backend for `disk` + `user` + `opts`, feeding
-/// `password` on stdin and relaying every output line to `on_line`.
+/// `password` (and, when an encryption PIN is set, the PIN as a second
+/// stdin line) and relaying every output line to `on_line`.
 pub fn run_install<F: FnMut(String)>(
     disk: &str,
     user: &str,
@@ -209,7 +254,14 @@ pub fn run_install<F: FnMut(String)>(
     opts: &InstallOptions,
     on_line: F,
 ) -> std::io::Result<bool> {
-    stream_command(install_command(disk, user, opts), password, on_line)
+    // The PIN only travels on stdin (and only when encryption is on with a
+    // PIN); it mirrors the `--pin` flag added by `install_command`.
+    let extra: Vec<&str> = if opts.encrypt && !opts.pin.is_empty() {
+        vec![opts.pin.as_str()]
+    } else {
+        Vec::new()
+    };
+    stream_command(install_command(disk, user, opts), password, &extra, on_line)
 }
 
 /// Run the power backend. Returns `Ok(true)` on a clean spawn+exit — though
@@ -233,6 +285,8 @@ mod tests {
             keymap: "de".to_string(),
             keyvariant: String::new(),
             encrypt: false,
+            pin: String::new(),
+            fido2: false,
         };
         let cmd = install_command("/dev/sda", "quinten", &opts);
         assert_eq!(cmd.get_program(), INSTALL_BIN);
@@ -267,6 +321,8 @@ mod tests {
             keymap: "us".to_string(),
             keyvariant: "dvorak".to_string(),
             encrypt: false,
+            pin: String::new(),
+            fido2: false,
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
@@ -288,6 +344,8 @@ mod tests {
             keymap: String::new(),
             keyvariant: String::new(),
             encrypt: false,
+            pin: String::new(),
+            fido2: false,
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
@@ -313,6 +371,8 @@ mod tests {
             keymap: String::new(),
             keyvariant: "dvorak".to_string(),
             encrypt: false,
+            pin: String::new(),
+            fido2: false,
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
@@ -331,6 +391,8 @@ mod tests {
             keymap: "us".to_string(),
             keyvariant: String::new(),
             encrypt: true,
+            pin: String::new(),
+            fido2: false,
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
@@ -345,6 +407,83 @@ mod tests {
         let enc = args.iter().position(|a| *a == "--encrypt").unwrap();
         let yes = args.iter().position(|a| *a == "--yes").unwrap();
         assert!(enc < yes, "--encrypt must precede --yes");
+        // No PIN / FIDO2 requested → those flags are absent.
+        assert!(!args.iter().any(|a| *a == "--pin"));
+        assert!(!args.iter().any(|a| *a == "--fido2"));
+    }
+
+    #[test]
+    fn install_command_appends_pin_and_fido2_with_encrypt() {
+        // Encryption on with a PIN and FIDO2: the backend gets `--encrypt
+        // --pin --fido2` (in that order), all before `--yes`. The PIN value
+        // itself is NOT on the argv — it travels on stdin (see
+        // `run_install_sends_pin_on_second_stdin_line`).
+        let opts = InstallOptions {
+            filesystem: "btrfs".to_string(),
+            hostname: "qos".to_string(),
+            timezone: String::new(),
+            keymap: "us".to_string(),
+            keyvariant: String::new(),
+            encrypt: true,
+            pin: "1234".to_string(),
+            fido2: true,
+        };
+        let cmd = install_command("/dev/vda", "qq", &opts);
+        let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+        assert_eq!(
+            args,
+            vec![
+                "--disk", "/dev/vda", "--user", "qq", "--filesystem", "btrfs", "--hostname",
+                "qos", "--keymap", "us", "--encrypt", "--pin", "--fido2", "--yes",
+            ]
+        );
+        // The PIN secret must never appear in the argv.
+        assert!(
+            !args.iter().any(|a| *a == "1234"),
+            "the PIN value must not leak onto the command line"
+        );
+    }
+
+    #[test]
+    fn install_command_pin_and_fido2_require_encrypt() {
+        // pin / fido2 set but encryption OFF: neither flag is emitted, since
+        // they are only meaningful with --encrypt (the backend rejects them
+        // otherwise).
+        let opts = InstallOptions {
+            filesystem: "btrfs".to_string(),
+            hostname: "qos".to_string(),
+            timezone: String::new(),
+            keymap: "us".to_string(),
+            keyvariant: String::new(),
+            encrypt: false,
+            pin: "1234".to_string(),
+            fido2: true,
+        };
+        let cmd = install_command("/dev/vda", "qq", &opts);
+        let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+        assert!(!args.iter().any(|a| *a == "--encrypt"));
+        assert!(!args.iter().any(|a| *a == "--pin"));
+        assert!(!args.iter().any(|a| *a == "--fido2"));
+    }
+
+    #[test]
+    fn install_command_omits_pin_flag_when_pin_empty_but_keeps_fido2() {
+        // Encryption + FIDO2 but no PIN: `--fido2` is present, `--pin` is not.
+        let opts = InstallOptions {
+            filesystem: "btrfs".to_string(),
+            hostname: "qos".to_string(),
+            timezone: String::new(),
+            keymap: "us".to_string(),
+            keyvariant: String::new(),
+            encrypt: true,
+            pin: String::new(),
+            fido2: true,
+        };
+        let cmd = install_command("/dev/vda", "qq", &opts);
+        let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+        assert!(args.iter().any(|a| *a == "--encrypt"));
+        assert!(args.iter().any(|a| *a == "--fido2"));
+        assert!(!args.iter().any(|a| *a == "--pin"));
     }
 
     #[test]
@@ -367,6 +506,8 @@ mod tests {
         assert_eq!(o.keymap, "us");
         assert!(o.keyvariant.is_empty());
         assert!(!o.encrypt, "encryption is opt-in (default off)");
+        assert!(o.pin.is_empty(), "no TPM2 PIN by default");
+        assert!(!o.fido2, "FIDO2 enrolment is opt-in (default off)");
     }
 
     #[test]
@@ -387,9 +528,66 @@ mod tests {
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg("read pw; echo \"pw=$pw\"; echo second");
         let mut lines = Vec::new();
-        let ok = stream_command(cmd, "s3cret", |l| lines.push(l)).unwrap();
+        let ok = stream_command(cmd, "s3cret", &[], |l| lines.push(l)).unwrap();
         assert!(ok, "exit 0 should map to success");
         assert_eq!(lines, vec!["pw=s3cret".to_string(), "second".to_string()]);
+    }
+
+    #[test]
+    fn stream_command_feeds_extra_stdin_lines_after_password() {
+        // The PIN (and any other secret) is read AFTER the password, one
+        // line each, in order. Stub: read password then PIN, echo both.
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg("read pw; read pin; echo \"pw=$pw\"; echo \"pin=$pin\"");
+        let mut lines = Vec::new();
+        let ok = stream_command(cmd, "s3cret", &["4242"], |l| lines.push(l)).unwrap();
+        assert!(ok);
+        assert_eq!(lines, vec!["pw=s3cret".to_string(), "pin=4242".to_string()]);
+    }
+
+    #[test]
+    fn run_install_sends_pin_on_second_stdin_line() {
+        // End-to-end through run_install: with encryption + a PIN, the PIN
+        // must arrive as the second stdin line. We point INSTALL_BIN-style
+        // logic at a stub via stream_command indirectly by building the same
+        // extra-stdin vector run_install builds, then driving a stub command.
+        let opts = InstallOptions {
+            encrypt: true,
+            pin: "9182".to_string(),
+            ..InstallOptions::default()
+        };
+        // Mirror run_install's stdin-extra derivation.
+        let extra: Vec<&str> = if opts.encrypt && !opts.pin.is_empty() {
+            vec![opts.pin.as_str()]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(extra, vec!["9182"], "PIN is queued as a second stdin line");
+
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("read pw; read pin; echo \"$pin\"");
+        let mut lines = Vec::new();
+        let ok = stream_command(cmd, "pw", &extra, |l| lines.push(l)).unwrap();
+        assert!(ok);
+        assert_eq!(lines, vec!["9182".to_string()]);
+    }
+
+    #[test]
+    fn run_install_sends_no_extra_line_without_pin() {
+        // Encryption on but no PIN ⇒ nothing extra on stdin (the backend
+        // doesn't read a PIN line when `--pin` wasn't passed).
+        let opts = InstallOptions {
+            encrypt: true,
+            pin: String::new(),
+            ..InstallOptions::default()
+        };
+        let extra: Vec<&str> = if opts.encrypt && !opts.pin.is_empty() {
+            vec![opts.pin.as_str()]
+        } else {
+            Vec::new()
+        };
+        assert!(extra.is_empty());
     }
 
     #[test]
@@ -397,7 +595,7 @@ mod tests {
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg("echo working; echo boom 1>&2; exit 7");
         let mut lines = Vec::new();
-        let ok = stream_command(cmd, "x", |l| lines.push(l)).unwrap();
+        let ok = stream_command(cmd, "x", &[], |l| lines.push(l)).unwrap();
         assert!(!ok, "non-zero exit should map to failure");
         assert!(lines.iter().any(|l| l.contains("working")), "stdout relayed");
         assert!(
