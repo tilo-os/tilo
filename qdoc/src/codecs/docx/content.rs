@@ -78,6 +78,14 @@ pub(crate) fn parse_body(
     // (block, start, end, comment id) anchor marks, applied after all text is in.
     let mut comment_ranges: Vec<(String, usize, usize, String)> = Vec::new();
 
+    // In-progress tracked change `<w:ins>`/`<w:del>` wrapper: its qdoc change id, kind,
+    // anchor block, and the char index at which the changed range begins. The runs
+    // inside splice text normally; the `ins`/`del` mark is applied at the close. Deleted
+    // runs carry `<w:delText>` instead of `<w:t>` (treated identically on import).
+    let mut change: Option<(String, crate::snapshot::ChangeKind, Option<String>, usize)> = None;
+    // (block, start, end, kind, change id) anchor marks, applied after all text is in.
+    let mut change_ranges: Vec<(String, usize, usize, crate::snapshot::ChangeKind, String)> = Vec::new();
+
     // Table state: cells become consecutive `cell` blocks tagged table/row/col.
     let mut table_id: Option<String> = None;
     let mut trow: usize = 0;
@@ -211,6 +219,21 @@ pub(crate) fn parse_body(
                 }
                 b"w:pPr" if table_id.is_none() => in_ppr = true,
                 b"w:numPr" if in_ppr => in_numpr = true,
+                // A tracked-change wrapper around the runs it covers. Create the change
+                // record now (author/date from attrs) and remember the start char index;
+                // the runs inside splice text, and the `ins`/`del` mark is applied over
+                // `[start, cur_len)` at the close.
+                b"w:ins" | b"w:del" if in_body && cur.is_some() => {
+                    let kind = if e.name().as_ref() == b"w:ins" {
+                        crate::snapshot::ChangeKind::Ins
+                    } else {
+                        crate::snapshot::ChangeKind::Del
+                    };
+                    let author = attr_val(&e, b"w:author").unwrap_or_default();
+                    let date = attr_val(&e, b"w:date").unwrap_or_default();
+                    let cid = doc.insert_change(kind, &author, &date);
+                    change = Some((cid, kind, cur.clone(), cur_len));
+                }
                 b"w:r" if in_body => {
                     in_run = true;
                     run_start = cur_len;
@@ -218,6 +241,9 @@ pub(crate) fn parse_body(
                 }
                 b"w:rPr" if in_run => in_rpr = true,
                 b"w:t" if in_run => in_t = true,
+                // Deleted text inside a `<w:del>` run uses `<w:delText>`; treat it like
+                // `<w:t>` so the retained-but-struck content lands in the model.
+                b"w:delText" if in_run => in_t = true,
                 b"w:tbl" if in_body => {
                     table_seq += 1;
                     table_id = Some(format!("t{table_seq}"));
@@ -318,6 +344,16 @@ pub(crate) fn parse_body(
                 b"w:numPr" => in_numpr = false,
                 b"w:rPr" => in_rpr = false,
                 b"w:t" => in_t = false,
+                b"w:delText" => in_t = false,
+                b"w:ins" | b"w:del" => {
+                    // Close the tracked-change wrapper: anchor an `ins`/`del` mark over
+                    // `[start, cur_len)` for the change (applied after all text is in).
+                    if let Some((cid, kind, block, start)) = change.take() {
+                        if let Some(b) = block {
+                            change_ranges.push((b, start, cur_len, kind, cid));
+                        }
+                    }
+                }
                 b"w:r" => {
                     in_run = false;
                     if let Some(b) = cur.as_ref() {
@@ -389,6 +425,13 @@ pub(crate) fn parse_body(
         }
         if end > start {
             doc.add_mark(&b, start, end, MARK_COMMENT, cid.as_str());
+        }
+    }
+    // Tracked-change anchor marks: cover each changed range with the `ins`/`del` mark
+    // matching the change's kind, valued with the change id.
+    for (b, start, end, kind, cid) in change_ranges {
+        if end > start {
+            doc.add_change_mark(kind, &b, start, end, &cid);
         }
     }
     Ok(())

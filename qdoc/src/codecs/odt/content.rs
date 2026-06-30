@@ -12,6 +12,7 @@ use crate::document::MarkValue;
 use crate::format::CodecError;
 use crate::model::DocMut;
 use crate::schema::{FIELD_PLACEHOLDER, MARK_COMMENT, MARK_NOTE_REF};
+use crate::snapshot::ChangeKind;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 use std::collections::BTreeMap;
@@ -177,6 +178,19 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
     // (block, start, end, comment id) anchor marks, applied after all text is in.
     let mut comment_ranges: Vec<(String, usize, usize, String)> = Vec::new();
 
+    // An in-progress `text:tracked-changes` declaration block: its raw-XML start byte +
+    // open depth. Captured whole, then parsed into change records on close.
+    let mut tracked: Option<(usize, i32)> = None;
+    // ODF `xml:id` → (qdoc change id, kind), from the parsed tracked-changes block. The
+    // body's `text:change-start`/`-end`/`text:change` markers reference changes by this
+    // id; the `ins`/`del` mark is applied over the marked range.
+    let mut change_decls: BTreeMap<String, (String, ChangeKind)> = BTreeMap::new();
+    // Open tracked-change ranges keyed by ODF `xml:id`: `xml:id → (change id, kind,
+    // block, start char index)`, awaiting their matching `text:change-end`.
+    let mut open_changes: BTreeMap<String, (String, ChangeKind, String, usize)> = BTreeMap::new();
+    // (block, start, end, kind, change id) anchor marks, applied after all text is in.
+    let mut change_ranges: Vec<(String, usize, usize, ChangeKind, String)> = Vec::new();
+
     // Flush the current block's paragraph-style marks over its full text range.
     macro_rules! flush_para_marks {
         () => {
@@ -341,6 +355,28 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
             continue;
         }
 
+        // Inside the `text:tracked-changes` declaration block: capture its raw XML until
+        // it closes, then parse the changed-region declarations into change records and
+        // record an `xml:id → (change id, kind)` map for the body markers.
+        if let Some((start, depth)) = tracked.as_mut() {
+            match &ev {
+                Event::Start(_) => *depth += 1,
+                Event::End(_) => {
+                    *depth -= 1;
+                    if *depth == 0 {
+                        let raw = s[*start..reader.buffer_position() as usize].to_string();
+                        for decl in super::changes::import_tracked_changes(&raw) {
+                            let cid = doc.insert_change(decl.kind, &decl.author, &decl.date);
+                            change_decls.insert(decl.xml_id, (cid, decl.kind));
+                        }
+                        tracked = None;
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+
         match ev {
             Event::Start(e) => match e.name().as_ref() {
                 b"text:note" if in_text && cur.is_some() => {
@@ -359,6 +395,11 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                     // index; the matching `office:annotation-end` records the range end.
                     let idx = cur_len;
                     annotation = Some((pos_before, 1, cur.clone(), idx));
+                }
+                b"text:tracked-changes" if in_text => {
+                    // The up-front tracked-change declaration block: capture it whole and
+                    // parse it into change records (see the capture handler above).
+                    tracked = Some((pos_before, 1));
                 }
                 b"office:text" => in_text = true,
                 b"text:h" if in_text => {
@@ -535,6 +576,34 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                         }
                     }
                 }
+                b"text:change-start" if in_text && cur.is_some() => {
+                    // Opens a tracked-change range: remember the current char index; the
+                    // matching `text:change-end` records the end.
+                    if let Some(id) = super::changes::marker_change_id(&e) {
+                        if let (Some((cid, kind)), Some(b)) = (change_decls.get(&id).cloned(), cur.clone()) {
+                            open_changes.insert(id, (cid, kind, b, cur_len));
+                        }
+                    }
+                }
+                b"text:change-end" if in_text => {
+                    // Closes a tracked-change range: anchor an `ins`/`del` mark over
+                    // `[start, cur_len)` for the matching change id.
+                    if let Some(id) = super::changes::marker_change_id(&e) {
+                        if let Some((cid, kind, b, start)) = open_changes.remove(&id) {
+                            change_ranges.push((b, start, cur_len, kind, cid));
+                        }
+                    }
+                }
+                b"text:change" if in_text && cur.is_some() => {
+                    // A point change marker (a deletion with no retained body text, or a
+                    // collapsed insertion). Anchor a 1-char range if there's a character
+                    // after it (widened on apply), else a zero-width range that drops.
+                    if let Some(id) = super::changes::marker_change_id(&e) {
+                        if let (Some((cid, kind)), Some(b)) = (change_decls.get(&id).cloned(), cur.clone()) {
+                            change_ranges.push((b, cur_len, cur_len, kind, cid));
+                        }
+                    }
+                }
                 b"text:tab" if in_text => append(doc, &cur, &mut cur_len, "\t"),
                 b"text:line-break" if in_text => append(doc, &cur, &mut cur_len, "\n"),
                 b"text:s" if in_text => {
@@ -661,6 +730,25 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
         }
         if end > start {
             doc.add_mark(&b, start, end, MARK_COMMENT, cid.as_str());
+        }
+    }
+    // Any tracked change whose `text:change-end` never arrived still anchors at its
+    // start, extending to the block's end so it has a non-empty range when content
+    // follows.
+    for (_id, (cid, kind, b, start)) in std::mem::take(&mut open_changes) {
+        let end = doc_block_len(doc, &b).max(start);
+        change_ranges.push((b, start, end, kind, cid));
+    }
+    // Tracked-change anchor marks: cover each changed range with the `ins`/`del` mark
+    // matching the change's kind, valued with the change id. A zero-width range can't
+    // carry a mark, so widen it to one character when the block has text after it.
+    for (b, start, mut end, kind, cid) in change_ranges {
+        if end <= start {
+            let blen = doc_block_len(doc, &b);
+            end = (start + 1).min(blen);
+        }
+        if end > start {
+            doc.add_change_mark(kind, &b, start, end, &cid);
         }
     }
     Ok(())

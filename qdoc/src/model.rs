@@ -42,6 +42,11 @@ pub struct Containers {
     /// `None` only for documents authored before the comments map existed (created
     /// lazily on the first comment insert so they migrate transparently).
     pub comments: Option<ObjId>,
+    /// Tracked-changes container (`Map<change_id, change>`). Eager-initialised like
+    /// `comments` (so concurrent change tracking converges on one shared object);
+    /// `None` only for documents authored before the changes map existed (created
+    /// lazily on the first tracked change so they migrate transparently).
+    pub changes: Option<ObjId>,
 }
 
 /// Which page region a block container refers to. The body is the canonical
@@ -142,6 +147,11 @@ pub fn next_counter_for(doc: &AutoCommit, c: &Containers, actor_hex: &str) -> u6
             bump(&bid);
         }
     }
+    // Tracked-change ids draw from the same generator, so a seeded generator must skip
+    // them too (otherwise it could re-mint an existing change).
+    for chid in change_ids(doc, c) {
+        bump(&chid);
+    }
     next
 }
 
@@ -173,9 +183,14 @@ pub fn init(doc: &mut AutoCommit, root: &ObjId) -> Containers {
     // object. Documents authored before it existed still open (`opt_map_at` reads it
     // as `None`, and `comments_container` creates it lazily on first write).
     let comments = doc.put_object(root, KEY_COMMENTS, ObjType::Map).unwrap();
+    // The changes container is created eagerly for the same convergence reason as
+    // `comments`: two replicas concurrently tracking a change must share ONE container
+    // object. Documents authored before it existed still open (`opt_map_at` reads it as
+    // `None`, and `changes_container` creates it lazily on first write).
+    let changes = doc.put_object(root, KEY_CHANGES, ObjType::Map).unwrap();
     // Header/footer regions are created lazily on first write (a fresh document has
     // neither), so they stay `None` here.
-    Containers { root: root.clone(), blocks, styles, preserved, meta, blobs: Some(blobs), header: None, footer: None, notes: Some(notes), comments: Some(comments) }
+    Containers { root: root.clone(), blocks, styles, preserved, meta, blobs: Some(blobs), header: None, footer: None, notes: Some(notes), comments: Some(comments), changes: Some(changes) }
 }
 
 /// Resolve existing containers under `root`. The blobs map is optional so
@@ -192,6 +207,7 @@ pub fn open(doc: &AutoCommit, root: &ObjId) -> Result<Containers, DocError> {
         footer: opt_map_at(doc, root, KEY_FOOTER),
         notes: opt_map_at(doc, root, KEY_NOTES),
         comments: opt_map_at(doc, root, KEY_COMMENTS),
+        changes: opt_map_at(doc, root, KEY_CHANGES),
     })
 }
 
@@ -433,6 +449,110 @@ pub fn materialize_comments(doc: &AutoCommit, c: &Containers) -> Vec<crate::snap
         .collect()
 }
 
+// ---- tracked changes / revision marks --------------------------------------
+
+/// Resolve the changes container object, preferring the cached id and falling back to a
+/// fresh root lookup (so a lazily-created changes map is still found via reads).
+fn changes_obj(doc: &AutoCommit, c: &Containers) -> Option<ObjId> {
+    c.changes.clone().or_else(|| opt_map_at(doc, &c.root, KEY_CHANGES))
+}
+
+/// Resolve a single change's sub-map object by id.
+fn change_obj(doc: &AutoCommit, c: &Containers, id: &str) -> Option<ObjId> {
+    let changes = changes_obj(doc, c)?;
+    match doc.get(&changes, id) {
+        Ok(Some((Value::Object(ObjType::Map), oid))) => Some(oid),
+        _ => None,
+    }
+}
+
+/// The change ids present in the document, in a stable (sorted) order. Canonical so two
+/// replicas that merged in different orders materialize byte-identically; the anchored
+/// ranges are recovered separately from the body `ins`/`del` marks.
+pub fn change_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
+    match changes_obj(doc, c) {
+        Some(changes) => {
+            let mut ids: Vec<String> = doc
+                .keys(&changes)
+                .filter(|id| matches!(doc.get(&changes, id), Ok(Some((Value::Object(ObjType::Map), _)))))
+                .collect();
+            ids.sort();
+            ids
+        }
+        None => Vec::new(),
+    }
+}
+
+/// A change's author display name (empty if unset / unknown id).
+pub fn change_author(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
+    let change = change_obj(doc, c, id)?;
+    match doc.get(&change, CHANGE_AUTHOR) {
+        Ok(Some((v, _))) => v.to_str().map(|s| s.to_string()),
+        _ => None,
+    }
+}
+
+/// A change's date / timestamp string (empty if unset / unknown id).
+pub fn change_date(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
+    let change = change_obj(doc, c, id)?;
+    match doc.get(&change, CHANGE_DATE) {
+        Ok(Some((v, _))) => v.to_str().map(|s| s.to_string()),
+        _ => None,
+    }
+}
+
+/// A change's kind (`Ins`/`Del`), or `None` if the id is unknown.
+pub fn change_kind(doc: &AutoCommit, c: &Containers, id: &str) -> Option<crate::snapshot::ChangeKind> {
+    let change = change_obj(doc, c, id)?;
+    match doc.get(&change, CHANGE_KIND) {
+        Ok(Some((v, _))) => v.to_str().map(crate::snapshot::ChangeKind::from_str),
+        _ => None,
+    }
+}
+
+/// The mark name a change of `kind` anchors with (`ins`/`del`).
+fn change_mark_name(kind: crate::snapshot::ChangeKind) -> &'static str {
+    match kind {
+        crate::snapshot::ChangeKind::Ins => MARK_INS,
+        crate::snapshot::ChangeKind::Del => MARK_DEL,
+    }
+}
+
+/// The anchored body range `(block_id, start, end)` of a change, recovered from the
+/// `ins`/`del` mark (matching the change's kind) covering text whose value is the change
+/// id. `None` if no such mark is present (e.g. the change was accepted/rejected). Scans
+/// only the body container.
+pub fn change_range(doc: &AutoCommit, c: &Containers, id: &str) -> Option<(String, usize, usize)> {
+    let kind = change_kind(doc, c, id)?;
+    let name = change_mark_name(kind);
+    for bid in blocks_in_order(doc, c) {
+        for m in marks(doc, c, &bid) {
+            if m.name == name && m.value == crate::document::MarkValue::Str(id.to_string()) {
+                return Some((bid, m.start, m.end));
+            }
+        }
+    }
+    None
+}
+
+/// Materialize every tracked change into a [`crate::snapshot::ChangeView`] (sorted by
+/// id), recovering each change's anchored body range from the `ins`/`del` marks.
+pub fn materialize_changes(doc: &AutoCommit, c: &Containers) -> Vec<crate::snapshot::ChangeView> {
+    change_ids(doc, c)
+        .into_iter()
+        .map(|id| {
+            let kind = change_kind(doc, c, &id).unwrap_or(crate::snapshot::ChangeKind::Ins);
+            crate::snapshot::ChangeView {
+                kind,
+                author: change_author(doc, c, &id).unwrap_or_default(),
+                date: change_date(doc, c, &id).unwrap_or_default(),
+                range: change_range(doc, c, &id),
+                id,
+            }
+        })
+        .collect()
+}
+
 /// Fetch a content-addressed blob by its blake3 hex hash.
 pub fn blob(doc: &AutoCommit, c: &Containers, hash: &str) -> Option<Vec<u8>> {
     let blobs = blobs_obj(doc, c)?;
@@ -640,6 +760,7 @@ pub fn materialize(doc: &AutoCommit, c: &Containers) -> DocSnapshot {
         footer: materialize_region(doc, c, Region::Footer),
         notes: materialize_notes(doc, c),
         comments: materialize_comments(doc, c),
+        changes: materialize_changes(doc, c),
     }
 }
 
@@ -1047,6 +1168,133 @@ impl<'a> DocMut<'a> {
     pub fn splice_comment_text(&mut self, comment_id: &str, block_id: &str, idx: usize, del: isize, ins: &str) {
         if let Some(tid) = self.comment_text_obj(comment_id, block_id) {
             let _ = self.doc.splice_text(&tid, idx, del, ins);
+        }
+    }
+
+    // ---- tracked changes / revision marks ---------------------------------
+
+    /// Resolve-or-create the `changes` root container (created lazily on the first
+    /// tracked change so older documents migrate transparently).
+    fn changes_container(&mut self) -> ObjId {
+        if let Some(obj) = self.c.changes.clone() {
+            return obj;
+        }
+        if let Some(obj) = opt_map_at(self.doc, &self.c.root, KEY_CHANGES) {
+            return obj;
+        }
+        self.doc.put_object(&self.c.root, KEY_CHANGES, ObjType::Map).unwrap()
+    }
+
+    /// Create a tracked-change record of `kind` with an `author` + `date`; returns its
+    /// freshly-minted id. The id is minted from the same per-replica generator as
+    /// body/region/note/comment ids, so it never collides. The body anchor is placed
+    /// separately (via [`Self::add_change_mark`]) — callers usually go through the
+    /// [`Self::track_insert`]/[`Self::track_delete`] convenience methods.
+    pub fn insert_change(&mut self, kind: crate::snapshot::ChangeKind, author: &str, date: &str) -> String {
+        let changes = self.changes_container();
+        let id = self.ids.mint();
+        let change = self.doc.put_object(&changes, id.as_str(), ObjType::Map).unwrap();
+        self.doc.put(&change, CHANGE_KIND, kind.as_str()).unwrap();
+        self.doc.put(&change, CHANGE_AUTHOR, author).unwrap();
+        self.doc.put(&change, CHANGE_DATE, date).unwrap();
+        id
+    }
+
+    /// Anchor a tracked change to the body range `[start, end)` of `block_id`: cover it
+    /// with the `ins`/`del` mark matching the change's kind, valued with the change id.
+    /// The mark merges with concurrent text edits and round-trips through the codecs.
+    pub fn add_change_mark(&mut self, kind: crate::snapshot::ChangeKind, block_id: &str, start: usize, end: usize, change_id: &str) {
+        self.add_mark(block_id, start, end, change_mark_name(kind), change_id);
+    }
+
+    /// Track a **insertion**: splice `text` into `block_id` at `char_idx`, then flag the
+    /// inserted range with an `ins` mark valued with a fresh change id (author/date in
+    /// the `changes` container). Returns the new change id. The text is real content —
+    /// accept keeps it (dropping the mark), reject removes it.
+    pub fn track_insert(&mut self, block_id: &str, char_idx: usize, text: &str, author: &str, date: &str) -> String {
+        let id = self.insert_change(crate::snapshot::ChangeKind::Ins, author, date);
+        let n = text.chars().count();
+        self.splice_text(block_id, char_idx, 0, text);
+        if n > 0 {
+            self.add_change_mark(crate::snapshot::ChangeKind::Ins, block_id, char_idx, char_idx + n, &id);
+        }
+        id
+    }
+
+    /// Track a **deletion**: flag the existing body range `[start, end)` of `block_id`
+    /// with a `del` mark valued with a fresh change id (author/date in the `changes`
+    /// container). The text is *retained* (struck, not removed) so reviewers can see it;
+    /// accept removes it, reject keeps it (dropping the mark). Returns the new change id.
+    pub fn track_delete(&mut self, block_id: &str, start: usize, end: usize, author: &str, date: &str) -> String {
+        let id = self.insert_change(crate::snapshot::ChangeKind::Del, author, date);
+        if end > start {
+            self.add_change_mark(crate::snapshot::ChangeKind::Del, block_id, start, end, &id);
+        }
+        id
+    }
+
+    /// Accept a tracked change, applying it permanently:
+    ///   * an **insertion** keeps the inserted text and drops its `ins` mark;
+    ///   * a **deletion** removes the struck text (and, with it, its `del` mark).
+    /// The change record is removed from the `changes` container either way. A no-op for
+    /// an unknown id.
+    pub fn accept_change(&mut self, change_id: &str) {
+        let Some(kind) = change_kind(self.doc, self.c, change_id) else { return };
+        let range = change_range(self.doc, self.c, change_id);
+        match kind {
+            crate::snapshot::ChangeKind::Ins => {
+                // Keep the text; just remove the revision mark over its range.
+                if let Some((b, start, end)) = range {
+                    if end > start {
+                        self.remove_mark(&b, start, end, MARK_INS);
+                    }
+                }
+            }
+            crate::snapshot::ChangeKind::Del => {
+                // Remove the struck text (the `del` mark goes with it).
+                if let Some((b, start, end)) = range {
+                    if end > start {
+                        self.splice_text(&b, start, (end - start) as isize, "");
+                    }
+                }
+            }
+        }
+        self.remove_change_record(change_id);
+    }
+
+    /// Reject a tracked change, reverting it (the inverse of [`Self::accept_change`]):
+    ///   * an **insertion** removes the inserted text (and its `ins` mark);
+    ///   * a **deletion** keeps the struck text and drops its `del` mark.
+    /// The change record is removed from the `changes` container either way. A no-op for
+    /// an unknown id.
+    pub fn reject_change(&mut self, change_id: &str) {
+        let Some(kind) = change_kind(self.doc, self.c, change_id) else { return };
+        let range = change_range(self.doc, self.c, change_id);
+        match kind {
+            crate::snapshot::ChangeKind::Ins => {
+                // Undo the insertion: delete the inserted text.
+                if let Some((b, start, end)) = range {
+                    if end > start {
+                        self.splice_text(&b, start, (end - start) as isize, "");
+                    }
+                }
+            }
+            crate::snapshot::ChangeKind::Del => {
+                // Keep the text; just drop the deletion mark over its range.
+                if let Some((b, start, end)) = range {
+                    if end > start {
+                        self.remove_mark(&b, start, end, MARK_DEL);
+                    }
+                }
+            }
+        }
+        self.remove_change_record(change_id);
+    }
+
+    /// Delete a change's record from the `changes` container (no-op if absent).
+    fn remove_change_record(&mut self, change_id: &str) {
+        if let Some(changes) = changes_obj(self.doc, self.c) {
+            let _ = self.doc.delete(&changes, change_id);
         }
     }
 
@@ -1535,6 +1783,159 @@ mod region_tests {
         assert_ne!(cid, cid2, "second comment id must not collide with the first");
         let snap = materialize(&doc, &c);
         assert_eq!(snap.comments.len(), 2, "both comments survive (no overwrite): {:?}", snap.comments);
+    }
+
+    #[test]
+    fn changes_container_is_empty_on_fresh_doc_and_backward_compatible() {
+        use automerge::transaction::Transactable;
+        // A fresh doc has an (empty) changes container — created eagerly so concurrent
+        // change tracking converges on one shared object.
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        assert!(c.changes.is_some(), "changes container present on a fresh doc");
+        assert!(change_ids(&doc, &c).is_empty(), "but empty");
+        assert!(materialize_changes(&doc, &c).is_empty());
+
+        // Backward-compat: a document authored before the changes map existed (no
+        // root.changes) must still open and read as having no changes.
+        let mut old = AutoCommit::new();
+        let oc = init(&mut old, &ROOT);
+        let _ = oc;
+        old.delete(&ROOT, KEY_CHANGES).unwrap();
+        let bytes = old.save();
+        let reloaded = AutoCommit::load(&bytes).unwrap();
+        let c2 = open(&reloaded, &ROOT).unwrap();
+        assert!(c2.changes.is_none(), "old-schema doc opens with no changes container");
+        assert!(change_ids(&reloaded, &c2).is_empty());
+    }
+
+    #[test]
+    fn tracked_insert_and_delete_anchor_and_metadata() {
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        let mut ids = IdGen::new(doc.get_actor().to_hex_string());
+        let (pid, ins_id, del_id);
+        {
+            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            pid = dm.insert_block(None, "paragraph");
+            dm.splice_text(&pid, 0, 0, "hello world");
+            // Track an insertion of " there" after "hello" (idx 5).
+            ins_id = dm.track_insert(&pid, 5, " there", "Ada", "2021-01-02");
+            // Track a deletion of "world" (now at the end). After the insert the text is
+            // "hello there world"; "world" is chars 12..17.
+            del_id = dm.track_delete(&pid, 12, 17, "Bob", "2021-03-04");
+        }
+        let p = materialize_block(&doc, &c.blocks, &pid);
+        assert_eq!(p.text, "hello there world", "inserted text is real content, deletion retained");
+        // The body carries an `ins` mark over the inserted range valued with the id.
+        let im = p.marks.iter().find(|m| m.name == MARK_INS).expect("ins mark present");
+        assert_eq!((im.start, im.end), (5, 11), "ins covers ' there'");
+        assert_eq!(im.value, crate::document::MarkValue::Str(ins_id.clone()));
+        // And a `del` mark over the retained-but-struck range.
+        let dmrk = p.marks.iter().find(|m| m.name == MARK_DEL).expect("del mark present");
+        assert_eq!((dmrk.start, dmrk.end), (12, 17), "del covers 'world'");
+        assert_eq!(dmrk.value, crate::document::MarkValue::Str(del_id.clone()));
+        // Change records carry kind + author + date.
+        assert_eq!(change_kind(&doc, &c, &ins_id), Some(crate::snapshot::ChangeKind::Ins));
+        assert_eq!(change_kind(&doc, &c, &del_id), Some(crate::snapshot::ChangeKind::Del));
+        assert_eq!(change_author(&doc, &c, &ins_id).as_deref(), Some("Ada"));
+        assert_eq!(change_author(&doc, &c, &del_id).as_deref(), Some("Bob"));
+        assert_eq!(change_date(&doc, &c, &del_id).as_deref(), Some("2021-03-04"));
+        // The snapshot surfaces both with their anchored ranges.
+        let snap = materialize(&doc, &c);
+        assert_eq!(snap.changes.len(), 2);
+        let ins = snap.changes.iter().find(|ch| ch.id == ins_id).unwrap();
+        assert_eq!(ins.kind, crate::snapshot::ChangeKind::Ins);
+        assert_eq!(ins.range, Some((pid.clone(), 5, 11)));
+        let del = snap.changes.iter().find(|ch| ch.id == del_id).unwrap();
+        assert_eq!(del.kind, crate::snapshot::ChangeKind::Del);
+        assert_eq!(del.range, Some((pid.clone(), 12, 17)));
+    }
+
+    #[test]
+    fn accept_insertion_clears_mark_keeps_text() {
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        let mut ids = IdGen::new(doc.get_actor().to_hex_string());
+        let pid;
+        {
+            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            pid = dm.insert_block(None, "paragraph");
+            dm.splice_text(&pid, 0, 0, "ab");
+            let id = dm.track_insert(&pid, 2, "cd", "A", "");
+            dm.accept_change(&id);
+        }
+        let p = materialize_block(&doc, &c.blocks, &pid);
+        assert_eq!(p.text, "abcd", "accepted insertion keeps the text");
+        assert!(p.marks.iter().all(|m| m.name != MARK_INS), "ins mark dropped on accept");
+        assert!(materialize_changes(&doc, &c).is_empty(), "change record removed on accept");
+    }
+
+    #[test]
+    fn accept_deletion_removes_text() {
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        let mut ids = IdGen::new(doc.get_actor().to_hex_string());
+        let pid;
+        {
+            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            pid = dm.insert_block(None, "paragraph");
+            dm.splice_text(&pid, 0, 0, "keep DROP end");
+            let id = dm.track_delete(&pid, 5, 9, "A", ""); // "DROP"
+            dm.accept_change(&id);
+        }
+        let p = materialize_block(&doc, &c.blocks, &pid);
+        assert_eq!(p.text, "keep  end", "accepted deletion removes the struck text");
+        assert!(p.marks.iter().all(|m| m.name != MARK_DEL), "del mark gone with the text");
+        assert!(materialize_changes(&doc, &c).is_empty(), "change record removed on accept");
+    }
+
+    #[test]
+    fn reject_inverts_accept() {
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        let mut ids = IdGen::new(doc.get_actor().to_hex_string());
+        let pid;
+        {
+            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            pid = dm.insert_block(None, "paragraph");
+            dm.splice_text(&pid, 0, 0, "abYZ");
+            // Reject an insertion → text removed.
+            let ins = dm.track_insert(&pid, 4, "QQ", "A", "");
+            dm.reject_change(&ins);
+            // Reject a deletion → text kept, mark dropped.
+            let del = dm.track_delete(&pid, 2, 4, "A", ""); // "YZ"
+            dm.reject_change(&del);
+        }
+        let p = materialize_block(&doc, &c.blocks, &pid);
+        assert_eq!(p.text, "abYZ", "reject-ins removed inserted text; reject-del kept struck text");
+        assert!(p.marks.iter().all(|m| m.name != MARK_INS && m.name != MARK_DEL), "both marks dropped");
+        assert!(materialize_changes(&doc, &c).is_empty(), "both records removed");
+    }
+
+    #[test]
+    fn seeded_id_gen_does_not_remint_change_ids() {
+        // A generator seeded over a reloaded doc must skip past change ids, otherwise it
+        // would re-mint (and overwrite) an existing change.
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        let mut ids = IdGen::new(doc.get_actor().to_hex_string());
+        let (pid, chid);
+        {
+            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            pid = dm.insert_block(None, "paragraph");
+            dm.splice_text(&pid, 0, 0, "abcdef");
+            chid = dm.track_delete(&pid, 0, 3, "A", "");
+        }
+        let mut ids2 = seeded_id_gen(&doc, &c);
+        let chid2;
+        {
+            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids2 };
+            chid2 = dm.track_delete(&pid, 3, 6, "B", "");
+        }
+        assert_ne!(chid, chid2, "second change id must not collide with the first");
+        let snap = materialize(&doc, &c);
+        assert_eq!(snap.changes.len(), 2, "both changes survive (no overwrite): {:?}", snap.changes);
     }
 
     #[test]

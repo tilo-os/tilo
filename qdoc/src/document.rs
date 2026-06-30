@@ -388,6 +388,69 @@ impl Document {
         self.doc.commit();
     }
 
+    // ---- tracked changes / revision marks ---------------------------------
+
+    /// The tracked-change ids present in the document (sorted, canonical order).
+    pub fn change_ids(&self) -> Vec<String> {
+        crate::model::change_ids(&self.doc, &self.c)
+    }
+
+    /// A change's kind (`Ins`/`Del`), or `None` if the id is unknown.
+    pub fn change_kind(&self, id: &str) -> Option<crate::snapshot::ChangeKind> {
+        crate::model::change_kind(&self.doc, &self.c, id)
+    }
+
+    /// A change's author display name, or `None` if the id is unknown.
+    pub fn change_author(&self, id: &str) -> Option<String> {
+        crate::model::change_author(&self.doc, &self.c, id)
+    }
+
+    /// A change's date / timestamp string, or `None` if the id is unknown.
+    pub fn change_date(&self, id: &str) -> Option<String> {
+        crate::model::change_date(&self.doc, &self.c, id)
+    }
+
+    /// The anchored body range `(block_id, start, end)` of a change, or `None` if its
+    /// anchoring `ins`/`del` mark is absent.
+    pub fn change_range(&self, id: &str) -> Option<(String, usize, usize)> {
+        crate::model::change_range(&self.doc, &self.c, id)
+    }
+
+    /// Materialize every tracked change into a [`crate::snapshot::ChangeView`].
+    pub fn changes(&self) -> Vec<crate::snapshot::ChangeView> {
+        crate::model::materialize_changes(&self.doc, &self.c)
+    }
+
+    /// Track a **insertion**: splice `text` into `block_id` at `char_idx`, flagging the
+    /// inserted range as a tracked insertion authored by `author` (dated `date`).
+    /// Returns the new change id.
+    pub fn track_insert(&mut self, block_id: &str, char_idx: usize, text: &str, author: &str, date: &str) -> String {
+        let id = self.as_mut().track_insert(block_id, char_idx, text, author, date);
+        self.doc.commit();
+        id
+    }
+
+    /// Track a **deletion**: flag the existing body range `[start, end)` of `block_id` as
+    /// a tracked deletion (retained-but-struck) authored by `author` (dated `date`).
+    /// Returns the new change id.
+    pub fn track_delete(&mut self, block_id: &str, start: usize, end: usize, author: &str, date: &str) -> String {
+        let id = self.as_mut().track_delete(block_id, start, end, author, date);
+        self.doc.commit();
+        id
+    }
+
+    /// Accept a tracked change (insertion: keep text, drop mark; deletion: remove text).
+    pub fn accept_change(&mut self, change_id: &str) {
+        self.as_mut().accept_change(change_id);
+        self.doc.commit();
+    }
+
+    /// Reject a tracked change (insertion: remove text; deletion: keep text, drop mark).
+    pub fn reject_change(&mut self, change_id: &str) {
+        self.as_mut().reject_change(change_id);
+        self.doc.commit();
+    }
+
     /// Timeline of authored changes (oldest first).
     pub fn versions(&mut self) -> Vec<crate::history::VersionMeta> {
         crate::history::versions(&mut self.doc)
@@ -650,6 +713,51 @@ mod tests {
         b.merge(&mut a);
         assert_eq!(a.materialize(), b.materialize(), "replicas converge with comments");
         assert_eq!(a.materialize().comments.len(), 2, "both comments present after merge");
+    }
+
+    #[test]
+    fn tracked_change_accessors_and_save_load() {
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "the quick fox");
+        // Track an insertion of "brown " before "fox" (idx 10).
+        let ins = d.track_insert(&p, 10, "brown ", "Grace", "2021-05-06");
+        // Track a deletion of "quick " (chars 4..10).
+        let del = d.track_delete(&p, 4, 10, "Hopper", "2021-07-08");
+
+        // Accessors agree.
+        let mut want = vec![ins.clone(), del.clone()];
+        want.sort();
+        assert_eq!(d.change_ids(), want);
+        assert_eq!(d.change_kind(&ins), Some(crate::snapshot::ChangeKind::Ins));
+        assert_eq!(d.change_kind(&del), Some(crate::snapshot::ChangeKind::Del));
+        assert_eq!(d.change_author(&ins).as_deref(), Some("Grace"));
+        assert_eq!(d.change_date(&del).as_deref(), Some("2021-07-08"));
+        assert!(d.materialize().changes.len() == 2);
+
+        // Marks + records survive a save/load round-trip (seeded id gen).
+        let bytes = d.save();
+        let d2 = Document::load(&bytes).unwrap();
+        let snap = d2.materialize();
+        assert_eq!(snap.changes.len(), 2, "changes survive save/load");
+        assert!(snap.blocks[0].marks.iter().any(|m| m.name == crate::schema::MARK_INS));
+        assert!(snap.blocks[0].marks.iter().any(|m| m.name == crate::schema::MARK_DEL));
+    }
+
+    #[test]
+    fn tracked_changes_converge_across_replicas() {
+        // Two replicas each track a change on the same document; after merge both
+        // converge with both changes present (CRDT-native).
+        let mut a = Document::new();
+        let p = a.insert_block(None, "paragraph");
+        a.splice_text(&p, 0, 0, "shared base text");
+        let mut b = a.fork();
+        a.track_delete(&p, 0, 6, "A", ""); // "shared"
+        b.track_insert(&p, 16, "!", "B", "");
+        a.merge(&mut b);
+        b.merge(&mut a);
+        assert_eq!(a.materialize(), b.materialize(), "replicas converge with tracked changes");
+        assert_eq!(a.materialize().changes.len(), 2, "both changes present after merge");
     }
 
     #[test]

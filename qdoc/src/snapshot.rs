@@ -64,6 +64,60 @@ pub struct DocSnapshot {
     /// in snapshots authored before this field existed).
     #[serde(default)]
     pub comments: Vec<CommentView>,
+    /// Tracked changes / revision marks, each anchored to a body text range (recovered
+    /// from the `ins`/`del` mark — see `schema::MARK_INS`/`schema::MARK_DEL`) carrying
+    /// the change id, with the author / date / kind held in the `changes` container
+    /// keyed by that id. A tracked **insertion** flags real inserted text; a tracked
+    /// **deletion** flags retained-but-struck text. Round-trips through
+    /// `text:tracked-changes`(+`text:changed-region`) + inline change markers in `.odt`
+    /// and `<w:ins>`/`<w:del>` run wrappers in `.docx`. Empty for documents with no
+    /// tracked changes (and absent in snapshots authored before this field existed).
+    #[serde(default)]
+    pub changes: Vec<ChangeView>,
+}
+
+/// Whether a tracked change is an insertion (proposed-added text) or a deletion
+/// (retained-but-struck text). Stored as the change's `kind` scalar and round-tripped
+/// through the codecs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChangeKind {
+    Ins,
+    Del,
+}
+
+impl ChangeKind {
+    /// The canonical schema string (`"ins"`/`"del"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ChangeKind::Ins => "ins",
+            ChangeKind::Del => "del",
+        }
+    }
+    /// Parse a schema string back into a [`ChangeKind`] (`del` → `Del`, anything else
+    /// → `Ins`, the default).
+    pub fn from_str(s: &str) -> Self {
+        if s == "del" {
+            ChangeKind::Del
+        } else {
+            ChangeKind::Ins
+        }
+    }
+}
+
+/// One tracked change / revision mark: its id, kind (insertion/deletion), author, date
+/// string, and the anchored body range `[start, end)` it covers (recovered from the
+/// `ins`/`del` mark; `None` if the anchoring mark is absent). The body text references
+/// it by an `ins`/`del` mark valued with this `id`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChangeView {
+    pub id: String,
+    pub kind: ChangeKind,
+    pub author: String,
+    pub date: String,
+    /// `(block_id, start, end)` of the anchored range in the body, or `None` if the
+    /// anchoring mark is absent.
+    #[serde(default)]
+    pub range: Option<(String, usize, usize)>,
 }
 
 /// One comment / annotation: its id, author, date string, the block sequence forming
