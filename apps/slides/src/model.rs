@@ -1,0 +1,759 @@
+//! Pure data model for a Slides deck.
+//!
+//! The on-wire source of truth lives in the Automerge document (see
+//! [`crate::doc`]); this module is the in-memory mirror plus the pure
+//! logic the editor needs (geometry, palette resolution, the seed deck).
+//! Nothing here touches the CRDT, the renderer, or winit — it is unit
+//! testable in isolation.
+
+use ui::ColorCompat;
+use uuid::Uuid;
+use vello::peniko::Color;
+
+/// The slide's intrinsic coordinate space. Every element's `x/y/w/h` and
+/// `font_size` is expressed in these units; the renderer scales the whole
+/// space to whatever destination rect it is painting into (canvas,
+/// thumbnail, or full-screen present). 16:9.
+pub const SLIDE_W: f64 = 1280.0;
+pub const SLIDE_H: f64 = 720.0;
+
+pub type Id = String;
+
+pub fn new_id() -> Id {
+    Uuid::new_v4().to_string()
+}
+
+// ===========================================================================
+// Elements
+// ===========================================================================
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ElementKind {
+    Text,
+    Rect,
+    Ellipse,
+    Line,
+    Image,
+}
+
+impl ElementKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ElementKind::Text => "text",
+            ElementKind::Rect => "rect",
+            ElementKind::Ellipse => "ellipse",
+            ElementKind::Line => "line",
+            ElementKind::Image => "image",
+        }
+    }
+    pub fn from_str(s: &str) -> ElementKind {
+        match s {
+            "rect" => ElementKind::Rect,
+            "ellipse" => ElementKind::Ellipse,
+            "line" => ElementKind::Line,
+            "image" => ElementKind::Image,
+            _ => ElementKind::Text,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            ElementKind::Text => "Text",
+            ElementKind::Rect => "Rectangle",
+            ElementKind::Ellipse => "Ellipse",
+            ElementKind::Line => "Line",
+            ElementKind::Image => "Image",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextAlign {
+    Left,
+    Center,
+    Right,
+}
+
+impl TextAlign {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TextAlign::Left => "left",
+            TextAlign::Center => "center",
+            TextAlign::Right => "right",
+        }
+    }
+    pub fn from_str(s: &str) -> TextAlign {
+        match s {
+            "center" => TextAlign::Center,
+            "right" => TextAlign::Right,
+            _ => TextAlign::Left,
+        }
+    }
+    pub fn next(self) -> TextAlign {
+        match self {
+            TextAlign::Left => TextAlign::Center,
+            TextAlign::Center => TextAlign::Right,
+            TextAlign::Right => TextAlign::Left,
+        }
+    }
+    pub fn glyph(self) -> &'static str {
+        match self {
+            TextAlign::Left => "Left",
+            TextAlign::Center => "Center",
+            TextAlign::Right => "Right",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Element {
+    pub id: Id,
+    pub kind: ElementKind,
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    /// Text body (text elements). May contain `\n` for explicit line
+    /// breaks; each line is aligned independently.
+    pub text: String,
+    /// Colour *role* (see [`Palette::resolve`]) for the fill. `"none"`
+    /// means no fill (shapes become outline-only).
+    pub fill: String,
+    /// Colour role for the stroke / outline. `"none"` disables it.
+    pub stroke: String,
+    pub stroke_width: f64,
+    pub font_size: f64,
+    pub align: TextAlign,
+    pub bold: bool,
+    pub italic: bool,
+    /// Corner radius (rect elements), in slide units.
+    pub radius: f64,
+    pub z: i64,
+}
+
+impl Element {
+    pub fn text(text: &str, x: f64, y: f64, w: f64, h: f64, font_size: f64) -> Element {
+        Element {
+            id: new_id(),
+            kind: ElementKind::Text,
+            x,
+            y,
+            w,
+            h,
+            text: text.to_string(),
+            fill: "text".into(),
+            stroke: "none".into(),
+            stroke_width: 0.0,
+            font_size,
+            align: TextAlign::Left,
+            bold: false,
+            italic: false,
+            radius: 0.0,
+            z: 0,
+        }
+    }
+
+    pub fn shape(kind: ElementKind, x: f64, y: f64, w: f64, h: f64) -> Element {
+        Element {
+            id: new_id(),
+            kind,
+            x,
+            y,
+            w,
+            h,
+            text: String::new(),
+            fill: if kind == ElementKind::Line { "none".into() } else { "accent".into() },
+            stroke: if kind == ElementKind::Line { "accent".into() } else { "none".into() },
+            stroke_width: if kind == ElementKind::Line { 6.0 } else { 0.0 },
+            font_size: 32.0,
+            align: TextAlign::Left,
+            bold: false,
+            italic: false,
+            radius: if kind == ElementKind::Rect { 16.0 } else { 0.0 },
+            z: 0,
+        }
+    }
+
+    pub fn with(mut self, f: impl FnOnce(&mut Element)) -> Element {
+        f(&mut self);
+        self
+    }
+
+    pub fn center_x(mut self) -> Element {
+        self.align = TextAlign::Center;
+        self
+    }
+}
+
+// ===========================================================================
+// Slides + layouts
+// ===========================================================================
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Layout {
+    Title,
+    TitleContent,
+    TwoColumn,
+    Section,
+    Blank,
+}
+
+impl Layout {
+    pub const ALL: [Layout; 5] = [
+        Layout::Title,
+        Layout::TitleContent,
+        Layout::TwoColumn,
+        Layout::Section,
+        Layout::Blank,
+    ];
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Layout::Title => "title",
+            Layout::TitleContent => "title-content",
+            Layout::TwoColumn => "two-column",
+            Layout::Section => "section",
+            Layout::Blank => "blank",
+        }
+    }
+    pub fn from_str(s: &str) -> Layout {
+        match s {
+            "title" => Layout::Title,
+            "two-column" => Layout::TwoColumn,
+            "section" => Layout::Section,
+            "blank" => Layout::Blank,
+            _ => Layout::TitleContent,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Layout::Title => "Title",
+            Layout::TitleContent => "Title + Body",
+            Layout::TwoColumn => "Two Column",
+            Layout::Section => "Section",
+            Layout::Blank => "Blank",
+        }
+    }
+    /// Whether the slide paints a full-bleed accent background (section &
+    /// title cover slides) versus a neutral content surface.
+    pub fn is_cover(self) -> bool {
+        matches!(self, Layout::Section | Layout::Title)
+    }
+}
+
+/// Per-slide background treatment, resolved against the palette at draw
+/// time. Keeps slides theme-driven while still allowing variety.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Background {
+    /// Neutral content surface (raised panel).
+    Surface,
+    /// Full accent wash — used for section / cover slides.
+    Accent,
+    /// Deep, near-black accent tint.
+    Deep,
+}
+
+impl Background {
+    pub const ALL: [Background; 3] = [Background::Surface, Background::Accent, Background::Deep];
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Background::Surface => "surface",
+            Background::Accent => "accent",
+            Background::Deep => "deep",
+        }
+    }
+    pub fn from_str(s: &str) -> Background {
+        match s {
+            "accent" => Background::Accent,
+            "deep" => Background::Deep,
+            _ => Background::Surface,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Background::Surface => "Surface",
+            Background::Accent => "Accent",
+            Background::Deep => "Deep",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Slide {
+    pub id: Id,
+    pub layout: Layout,
+    pub background: Background,
+    pub notes: String,
+    pub elements: Vec<Element>,
+}
+
+impl Slide {
+    pub fn new(layout: Layout) -> Slide {
+        Slide {
+            id: new_id(),
+            layout,
+            background: if layout.is_cover() { Background::Accent } else { Background::Surface },
+            notes: String::new(),
+            elements: Vec::new(),
+        }
+    }
+
+    /// Next z value for a newly added element (one above the current top).
+    pub fn next_z(&self) -> i64 {
+        self.elements.iter().map(|e| e.z).max().unwrap_or(0) + 1
+    }
+
+    pub fn add(&mut self, mut el: Element) -> Id {
+        el.z = self.next_z();
+        let id = el.id.clone();
+        self.elements.push(el);
+        id
+    }
+
+    pub fn element(&self, id: &str) -> Option<&Element> {
+        self.elements.iter().find(|e| e.id == id)
+    }
+    pub fn element_mut(&mut self, id: &str) -> Option<&mut Element> {
+        self.elements.iter_mut().find(|e| e.id == id)
+    }
+
+    /// Elements ordered back-to-front for painting.
+    pub fn z_sorted(&self) -> Vec<&Element> {
+        let mut v: Vec<&Element> = self.elements.iter().collect();
+        v.sort_by_key(|e| e.z);
+        v
+    }
+}
+
+// ===========================================================================
+// Deck + palette
+// ===========================================================================
+
+/// Named accent palettes a deck can adopt. Every colour is still pulled
+/// from the OS [`Theme`](ui::theme::Theme) so the deck respects the
+/// system look — the palette only chooses *which* token drives the accent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaletteKind {
+    Indigo,
+    Emerald,
+    Amber,
+    Rose,
+    Sky,
+}
+
+impl PaletteKind {
+    pub const ALL: [PaletteKind; 5] = [
+        PaletteKind::Indigo,
+        PaletteKind::Emerald,
+        PaletteKind::Amber,
+        PaletteKind::Rose,
+        PaletteKind::Sky,
+    ];
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PaletteKind::Indigo => "indigo",
+            PaletteKind::Emerald => "emerald",
+            PaletteKind::Amber => "amber",
+            PaletteKind::Rose => "rose",
+            PaletteKind::Sky => "sky",
+        }
+    }
+    pub fn from_str(s: &str) -> PaletteKind {
+        match s {
+            "emerald" => PaletteKind::Emerald,
+            "amber" => PaletteKind::Amber,
+            "rose" => PaletteKind::Rose,
+            "sky" => PaletteKind::Sky,
+            _ => PaletteKind::Indigo,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            PaletteKind::Indigo => "Indigo",
+            PaletteKind::Emerald => "Emerald",
+            PaletteKind::Amber => "Amber",
+            PaletteKind::Rose => "Rose",
+            PaletteKind::Sky => "Sky",
+        }
+    }
+    pub fn next(self) -> PaletteKind {
+        let all = PaletteKind::ALL;
+        let i = all.iter().position(|p| *p == self).unwrap_or(0);
+        all[(i + 1) % all.len()]
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Deck {
+    pub title: String,
+    pub palette: PaletteKind,
+    pub slides: Vec<Slide>,
+}
+
+impl Deck {
+    pub fn slide(&self, idx: usize) -> Option<&Slide> {
+        self.slides.get(idx)
+    }
+    pub fn slide_mut(&mut self, idx: usize) -> Option<&mut Slide> {
+        self.slides.get_mut(idx)
+    }
+    pub fn index_of(&self, id: &str) -> Option<usize> {
+        self.slides.iter().position(|s| s.id == id)
+    }
+}
+
+/// A palette resolved against the live [`Theme`](ui::theme::Theme). Holds
+/// concrete colours so the renderer never re-derives them per element.
+#[derive(Clone, Copy, Debug)]
+pub struct Palette {
+    pub accent: Color,
+    pub accent_soft: Color,
+    pub accent_deep: Color,
+    pub surface: Color,
+    pub surface_dim: Color,
+    pub deep: Color,
+    pub text: Color,
+    pub text_dim: Color,
+    pub on_accent: Color,
+    pub success: Color,
+    pub warning: Color,
+    pub danger: Color,
+    pub info: Color,
+}
+
+impl Palette {
+    /// Build the resolved palette for `kind` against `theme`.
+    pub fn resolve(kind: PaletteKind, theme: &ui::theme::Theme) -> Palette {
+        let c = &theme.tokens.colors;
+        let accent = match kind {
+            PaletteKind::Indigo => theme.accent_primary,
+            PaletteKind::Emerald => c.semantic.success,
+            PaletteKind::Amber => c.semantic.warning,
+            PaletteKind::Rose => c.semantic.danger,
+            PaletteKind::Sky => c.semantic.info,
+        };
+        Palette {
+            accent,
+            accent_soft: with_alpha(accent, 56),
+            accent_deep: mix(accent, c.surfaces.base, 0.62),
+            surface: c.surfaces.raised,
+            surface_dim: mix(c.surfaces.raised, c.surfaces.base, 0.5),
+            deep: c.neutral[1],
+            text: c.text_primary,
+            text_dim: c.text_dim,
+            on_accent: Color::WHITE,
+            success: c.semantic.success,
+            warning: c.semantic.warning,
+            danger: c.semantic.danger,
+            info: c.semantic.info,
+        }
+    }
+
+    /// Resolve a colour *role* string to a concrete colour. Returns `None`
+    /// for `"none"` so callers can skip the fill/stroke entirely.
+    pub fn resolve_role(&self, role: &str) -> Option<Color> {
+        Some(match role {
+            "none" => return None,
+            "accent" => self.accent,
+            "accent-soft" => self.accent_soft,
+            "accent-deep" => self.accent_deep,
+            "surface" => self.surface,
+            "surface-dim" => self.surface_dim,
+            "deep" => self.deep,
+            "text" => self.text,
+            "text-dim" => self.text_dim,
+            "on-accent" => self.on_accent,
+            "white" => Color::WHITE,
+            "success" => self.success,
+            "warning" => self.warning,
+            "danger" => self.danger,
+            "info" => self.info,
+            _ => self.accent,
+        })
+    }
+
+    /// Background colour for a slide given its layout + treatment.
+    pub fn slide_bg(&self, bg: Background) -> Color {
+        match bg {
+            Background::Surface => self.surface,
+            Background::Accent => self.accent,
+            Background::Deep => self.deep,
+        }
+    }
+
+    /// Default body / heading text colour for a slide background — white
+    /// reads on accent & deep; the theme text colour on surface.
+    pub fn on_bg(&self, bg: Background) -> Color {
+        match bg {
+            Background::Surface => self.text,
+            Background::Accent | Background::Deep => Color::WHITE,
+        }
+    }
+}
+
+/// The fill/stroke roles offered in the inspector swatch row.
+pub const FILL_ROLES: [&str; 8] = [
+    "accent",
+    "accent-soft",
+    "surface",
+    "deep",
+    "success",
+    "warning",
+    "danger",
+    "info",
+];
+pub const STROKE_ROLES: [&str; 6] = ["none", "accent", "text", "white", "deep", "danger"];
+
+fn with_alpha(c: Color, a: u8) -> Color {
+    Color::from_rgba8(c.r(), c.g(), c.b(), a)
+}
+
+/// Linear blend `a*(1-t) + b*t` in straight RGB.
+fn mix(a: Color, b: Color, t: f64) -> Color {
+    let l = |x: u8, y: u8| (x as f64 * (1.0 - t) + y as f64 * t).round().clamp(0.0, 255.0) as u8;
+    Color::from_rgba8(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()), 255)
+}
+
+// ===========================================================================
+// Seed deck — a designed, multi-slide deck shown on first launch / --shots.
+// ===========================================================================
+
+pub fn seed_deck() -> Deck {
+    let mut slides = Vec::new();
+
+    // --- Slide 1: cover -----------------------------------------------------
+    {
+        let mut s = Slide::new(Layout::Section);
+        s.background = Background::Accent;
+        s.notes = "Welcome — set the tone. This deck is itself a Slides deck, \
+                   authored live in the qOS editor. Mention CRDT-native + spatial."
+            .into();
+        s.add(Element::text("SLIDES", 110.0, 250.0, 700.0, 70.0, 30.0).with(|e| {
+            e.fill = "on-accent".into();
+            e.bold = true;
+            e.font_size = 28.0;
+        }));
+        s.add(Element::text("Spatial presentations,\nbuilt on a live CRDT", 105.0, 300.0, 900.0, 200.0, 72.0).with(|e| {
+            e.fill = "white".into();
+            e.bold = true;
+        }));
+        s.add(Element::text("A native qOS app  ·  every edit converges across peers", 110.0, 470.0, 900.0, 60.0, 30.0).with(|e| {
+            e.fill = "on-accent".into();
+        }));
+        s.add(Element::shape(ElementKind::Rect, 110.0, 232.0, 92.0, 8.0).with(|e| {
+            e.fill = "white".into();
+            e.radius = 4.0;
+        }));
+        slides.push(s);
+    }
+
+    // --- Slide 2: title + body (selected on launch) -------------------------
+    {
+        let mut s = Slide::new(Layout::TitleContent);
+        s.background = Background::Surface;
+        s.notes = "Three pillars. Linger on 'state lives in the CRDT' — undo/redo \
+                   and multi-peer editing fall out of it for free."
+            .into();
+        s.add(Element::text("Why a CRDT-native editor", 96.0, 70.0, 1088.0, 90.0, 56.0).with(|e| {
+            e.bold = true;
+        }));
+        s.add(Element::shape(ElementKind::Rect, 96.0, 168.0, 150.0, 8.0).with(|e| {
+            e.fill = "accent".into();
+            e.radius = 4.0;
+        }));
+        s.add(Element::text(
+            "• Every element is an Automerge object\n\n• Undo, redo & live co-editing for free\n\n• Move, resize and restyle on an infinite canvas\n\n• The deck theme is driven by the OS palette",
+            96.0,
+            210.0,
+            720.0,
+            440.0,
+            34.0,
+        ));
+        // A small decorative diagram block on the right.
+        s.add(Element::shape(ElementKind::Rect, 880.0, 230.0, 300.0, 300.0).with(|e| {
+            e.fill = "accent-soft".into();
+            e.radius = 28.0;
+        }));
+        s.add(Element::shape(ElementKind::Ellipse, 940.0, 290.0, 180.0, 180.0).with(|e| {
+            e.fill = "accent".into();
+        }));
+        s.add(Element::text("⌘Z", 940.0, 345.0, 180.0, 80.0, 54.0).with(|e| {
+            e.fill = "white".into();
+            e.bold = true;
+            e.align = TextAlign::Center;
+        }));
+        slides.push(s);
+    }
+
+    // --- Slide 3: two column ------------------------------------------------
+    {
+        let mut s = Slide::new(Layout::TwoColumn);
+        s.background = Background::Surface;
+        s.notes = "Editor on the left, Present on the right. Demo the arrow-key \
+                   advance and the speaker-notes view (press S)."
+            .into();
+        s.add(Element::text("Two modes, one document", 96.0, 70.0, 1088.0, 90.0, 56.0).with(|e| e.bold = true));
+        s.add(Element::shape(ElementKind::Rect, 96.0, 168.0, 150.0, 8.0).with(|e| {
+            e.fill = "accent".into();
+            e.radius = 4.0;
+        }));
+        s.add(Element::shape(ElementKind::Rect, 96.0, 220.0, 520.0, 400.0).with(|e| {
+            e.fill = "surface-dim".into();
+            e.stroke = "accent".into();
+            e.stroke_width = 3.0;
+            e.radius = 24.0;
+        }));
+        s.add(Element::text("EDIT", 128.0, 250.0, 460.0, 50.0, 28.0).with(|e| {
+            e.fill = "accent".into();
+            e.bold = true;
+        }));
+        s.add(Element::text(
+            "Thumbnail rail, a live canvas and a\ncontextual inspector. Drag, resize\nand restyle every element.",
+            128.0,
+            312.0,
+            460.0,
+            240.0,
+            30.0,
+        ));
+        s.add(Element::shape(ElementKind::Rect, 664.0, 220.0, 520.0, 400.0).with(|e| {
+            e.fill = "accent".into();
+            e.radius = 24.0;
+        }));
+        s.add(Element::text("PRESENT", 696.0, 250.0, 460.0, 50.0, 28.0).with(|e| {
+            e.fill = "white".into();
+            e.bold = true;
+        }));
+        s.add(Element::text(
+            "Full-screen rendering, arrow-key\nnavigation and a private speaker-\nnotes view for the presenter.",
+            696.0,
+            312.0,
+            460.0,
+            240.0,
+            30.0,
+        ).with(|e| e.fill = "on-accent".into()));
+        slides.push(s);
+    }
+
+    // --- Slide 4: a built diagram ------------------------------------------
+    {
+        let mut s = Slide::new(Layout::Blank);
+        s.background = Background::Deep;
+        s.notes = "Shapes & connectors: the canvas is general. Rect, ellipse, line \
+                   and text all compose into freeform diagrams."
+            .into();
+        s.add(Element::text("Compose freely on the canvas", 96.0, 70.0, 1088.0, 90.0, 52.0).with(|e| {
+            e.fill = "white".into();
+            e.bold = true;
+        }));
+        // node A
+        s.add(Element::shape(ElementKind::Ellipse, 150.0, 320.0, 230.0, 230.0).with(|e| {
+            e.fill = "accent".into();
+        }));
+        s.add(Element::text("Peer A", 150.0, 405.0, 230.0, 60.0, 36.0).with(|e| {
+            e.fill = "white".into();
+            e.bold = true;
+            e.align = TextAlign::Center;
+        }));
+        // connector
+        s.add(Element::shape(ElementKind::Line, 380.0, 435.0, 280.0, 0.0).with(|e| {
+            e.stroke = "accent-soft".into();
+            e.stroke_width = 8.0;
+        }));
+        // node B
+        s.add(Element::shape(ElementKind::Ellipse, 660.0, 320.0, 230.0, 230.0).with(|e| {
+            e.fill = "surface".into();
+            e.stroke = "accent".into();
+            e.stroke_width = 4.0;
+        }));
+        s.add(Element::text("Peer B", 660.0, 405.0, 230.0, 60.0, 36.0).with(|e| {
+            e.bold = true;
+            e.align = TextAlign::Center;
+        }));
+        s.add(Element::shape(ElementKind::Line, 890.0, 435.0, 160.0, 0.0).with(|e| {
+            e.stroke = "accent-soft".into();
+            e.stroke_width = 8.0;
+        }));
+        s.add(Element::shape(ElementKind::Rect, 1050.0, 360.0, 150.0, 150.0).with(|e| {
+            e.fill = "accent".into();
+            e.radius = 20.0;
+        }));
+        s.add(Element::text("⇄", 1050.0, 388.0, 150.0, 100.0, 64.0).with(|e| {
+            e.fill = "white".into();
+            e.bold = true;
+            e.align = TextAlign::Center;
+        }));
+        slides.push(s);
+    }
+
+    // --- Slide 5: closing section ------------------------------------------
+    {
+        let mut s = Slide::new(Layout::Section);
+        s.background = Background::Deep;
+        s.notes = "Close. Invite them to open the rail (N), drop in a shape, hit \
+                   Present and walk the deck."
+            .into();
+        s.add(Element::shape(ElementKind::Rect, 110.0, 300.0, 92.0, 8.0).with(|e| {
+            e.fill = "accent".into();
+            e.radius = 4.0;
+        }));
+        s.add(Element::text("Make your first slide", 105.0, 330.0, 1000.0, 110.0, 64.0).with(|e| {
+            e.fill = "white".into();
+            e.bold = true;
+        }));
+        s.add(Element::text("Press  N  for a new slide  ·  P to present  ·  drag anything", 110.0, 450.0, 1000.0, 60.0, 30.0).with(|e| {
+            e.fill = "text-dim".into();
+        }));
+        slides.push(s);
+    }
+
+    Deck {
+        title: "qOS Slides — Product Tour".into(),
+        palette: PaletteKind::Indigo,
+        slides,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn seed_deck_has_designed_slides() {
+        let d = seed_deck();
+        assert_eq!(d.slides.len(), 5);
+        // Every slide has at least one element.
+        for s in &d.slides {
+            assert!(!s.elements.is_empty(), "slide {:?} empty", s.layout);
+        }
+    }
+
+    #[test]
+    fn add_element_increments_z() {
+        let mut s = Slide::new(Layout::Blank);
+        let a = s.add(Element::shape(ElementKind::Rect, 0.0, 0.0, 10.0, 10.0));
+        let b = s.add(Element::shape(ElementKind::Rect, 0.0, 0.0, 10.0, 10.0));
+        assert!(s.element(&a).unwrap().z < s.element(&b).unwrap().z);
+    }
+
+    #[test]
+    fn kind_and_align_round_trip() {
+        for k in [
+            ElementKind::Text,
+            ElementKind::Rect,
+            ElementKind::Ellipse,
+            ElementKind::Line,
+            ElementKind::Image,
+        ] {
+            assert_eq!(ElementKind::from_str(k.as_str()), k);
+        }
+        for a in [TextAlign::Left, TextAlign::Center, TextAlign::Right] {
+            assert_eq!(TextAlign::from_str(a.as_str()), a);
+        }
+    }
+
+    #[test]
+    fn palette_resolves_none_role() {
+        let theme = ui::theme::Theme::dark();
+        let p = Palette::resolve(PaletteKind::Indigo, &theme);
+        assert!(p.resolve_role("none").is_none());
+        assert!(p.resolve_role("accent").is_some());
+    }
+}
