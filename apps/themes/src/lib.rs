@@ -22,3 +22,14 @@ use ui::widget::Widget;
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(ThemesApp::new())
 }
+
+/// Build the root widget tree for a headless `--shots` capture at the given
+/// viewport width. The single-frame renderer has no live first frame to settle
+/// the responsive layout, so the layout class (docked vs. overlay) is seeded
+/// from `width` here and the gallery flap is snapped to its endpoint. A narrow
+/// width therefore captures the collapsed gallery floating over its scrim.
+pub fn app_root_for_shot(width: u32) -> Box<dyn Widget> {
+    let mut app = ThemesApp::new();
+    app.seed_shot_viewport(width as f64);
+    Box::new(app)
+}

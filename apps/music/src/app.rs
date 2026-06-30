@@ -21,7 +21,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{FlapState, SplitLayout, Widget};
 
 use crate::art;
 use crate::audio::AudioEngine;
@@ -34,6 +34,13 @@ use crate::source::Source;
 const SIDEBAR_W: f64 = 236.0;
 const NOWPLAYING_H: f64 = 92.0;
 const HEADER_H: f64 = 72.0;
+
+/// Below this allocated width (logical px) the navigation sidebar stops
+/// sitting permanently beside the content and becomes an overlay flap that
+/// slides in over it behind a dimming scrim. Chosen so the sidebar plus a
+/// readable two-column content area (album/track grids) stop fitting side by
+/// side.
+const SIDEBAR_BREAKPOINT: f64 = 760.0;
 
 /// Which screen is showing.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,6 +79,10 @@ enum Action {
     #[allow(dead_code)]
     AddToQueue(String),
     FocusSearch,
+    /// Toggle the adaptive navigation sidebar (hamburger).
+    ToggleSidebar,
+    /// Dismiss the overlay sidebar (scrim tap / Esc).
+    CloseSidebar,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -113,6 +124,21 @@ pub struct MusicApp {
     scroll: f64,
     content_height: f64,
 
+    /// Adaptive navigation sidebar: docked beside the content on a wide
+    /// window, an overlay flap (with a dimming scrim, closed by default,
+    /// summoned by the hamburger) on a narrow one. The eased reveal kernel is
+    /// the shared [`ui::widget::FlapState`].
+    flap: FlapState,
+    /// Wall-clock of the last flap animation tick.
+    flap_tick: Instant,
+    /// `false` until the first frame has resolved the layout, so a cold start
+    /// directly into a narrow window snaps the sidebar to its closed default
+    /// instead of animating in from the wide (open) initial reveal.
+    flap_primed: bool,
+    /// Hit rect of the hamburger toggle, captured during draw so the event
+    /// handler can route a press to [`FlapState::toggle`].
+    hamburger_rect: Rect,
+
     mouse: Point,
     hits: Vec<Hit>,
     drag: Option<Drag>,
@@ -147,6 +173,10 @@ impl MusicApp {
             body_rect: Rect::ZERO,
             scroll: 0.0,
             content_height: 0.0,
+            flap: FlapState::open_when_docked(),
+            flap_tick: Instant::now(),
+            flap_primed: false,
+            hamburger_rect: Rect::ZERO,
             mouse: Point::ZERO,
             hits: Vec::new(),
             drag: None,
@@ -306,6 +336,11 @@ impl MusicApp {
                 if matches!(self.view, View::Search) {
                     self.search_focused = true;
                 }
+                // Picking a destination dismisses the overlay sidebar so the
+                // chosen screen takes the full width (Adwaita flap behaviour).
+                if self.sidebar_layout() == SplitLayout::Overlay {
+                    self.flap.close();
+                }
             }
             Action::Back => {
                 if let Some(v) = self.nav_back.pop() {
@@ -392,6 +427,12 @@ impl MusicApp {
                 self.view = View::Search;
                 self.search_focused = true;
             }
+            Action::ToggleSidebar => {
+                self.toggle_sidebar();
+            }
+            Action::CloseSidebar => {
+                self.flap.close();
+            }
         }
     }
 
@@ -419,6 +460,61 @@ impl MusicApp {
         let hovered = rect.contains(self.mouse);
         self.hits.push(Hit { rect, action });
         hovered
+    }
+
+    // ---- adaptive sidebar geometry ---------------------------------------
+
+    /// Resolve the sidebar layout (docked vs overlay) from the app's allocated
+    /// width against the breakpoint.
+    fn sidebar_layout(&self) -> SplitLayout {
+        SplitLayout::from_width(self.rect.width(), SIDEBAR_BREAKPOINT)
+    }
+
+    /// The width the content area is inset by on the left for the sidebar.
+    /// Docked: the revealed sidebar width (full width when open, 0 collapsed).
+    /// Overlay: always 0 — the flap floats over the content.
+    fn content_inset(&self) -> f64 {
+        match self.sidebar_layout() {
+            SplitLayout::Docked => SIDEBAR_W * self.flap.reveal(),
+            SplitLayout::Overlay => 0.0,
+        }
+    }
+
+    /// The sidebar's on-screen rect. Docked: pinned to the left, its width
+    /// scaled by the reveal so collapsing slides the content over it. Overlay:
+    /// slides in from the left edge, fully off-screen at reveal 0.
+    fn sidebar_rect(&self) -> Rect {
+        let r = self.rect;
+        let bottom = r.y1 - NOWPLAYING_H;
+        match self.sidebar_layout() {
+            SplitLayout::Docked => {
+                let w = SIDEBAR_W * self.flap.reveal();
+                Rect::new(r.x0, r.y0, r.x0 + w, bottom)
+            }
+            SplitLayout::Overlay => {
+                let slide = self.flap.slide();
+                let x0 = r.x0 - SIDEBAR_W * (1.0 - slide);
+                Rect::new(x0, r.y0, x0 + SIDEBAR_W, bottom)
+            }
+        }
+    }
+
+    /// Whether the hamburger toggle is currently shown — i.e. whenever the
+    /// sidebar is not fully docked-open, so the user can summon it.
+    fn show_hamburger(&self) -> bool {
+        self.sidebar_layout() == SplitLayout::Overlay || self.flap.reveal() < 0.999
+    }
+
+    /// Flip the sidebar open/closed for the current layout.
+    fn toggle_sidebar(&mut self) {
+        self.flap.toggle(self.sidebar_layout());
+        self.dirty = true;
+    }
+
+    /// Stage the sidebar for a deterministic `--shots` frame (no event loop to
+    /// drive the reveal animation). `open` snaps it fully revealed.
+    pub fn snap_sidebar(&mut self, open: bool) {
+        self.flap.snap(open);
     }
 }
 
@@ -566,5 +662,78 @@ mod tests {
         assert_eq!(app.view, View::Album("al_glasslight".into()));
         app.dispatch(Action::Back, &mut doc);
         assert_eq!(app.view, View::Albums);
+    }
+
+    // ---- responsive sidebar -----------------------------------------------
+
+    /// Set the app's allocated width directly (normally done by `apply_layout`).
+    fn sized(app: &mut MusicApp, w: f64) {
+        app.rect = Rect::new(0.0, 0.0, w, 800.0);
+    }
+
+    #[test]
+    fn layout_docks_when_wide_overlays_when_narrow() {
+        let mut app = MusicApp::new();
+        sized(&mut app, 1280.0);
+        assert_eq!(app.sidebar_layout(), SplitLayout::Docked);
+        sized(&mut app, 480.0);
+        assert_eq!(app.sidebar_layout(), SplitLayout::Overlay);
+        // Boundary is inclusive at the breakpoint → docked.
+        sized(&mut app, SIDEBAR_BREAKPOINT);
+        assert_eq!(app.sidebar_layout(), SplitLayout::Docked);
+        sized(&mut app, SIDEBAR_BREAKPOINT - 1.0);
+        assert_eq!(app.sidebar_layout(), SplitLayout::Overlay);
+    }
+
+    #[test]
+    fn sidebar_open_docked_closed_overlay_by_default() {
+        let mut app = MusicApp::new();
+        sized(&mut app, 1280.0);
+        assert!(app.flap.is_open(app.sidebar_layout()), "wide: docked + open");
+        assert!(app.content_inset() > 0.0, "wide content is inset by the sidebar");
+
+        sized(&mut app, 480.0);
+        assert!(!app.flap.is_open(app.sidebar_layout()), "narrow: overlay + closed");
+        assert_eq!(app.content_inset(), 0.0, "narrow content is full-width");
+    }
+
+    #[test]
+    fn hamburger_toggles_overlay_sidebar() {
+        let (mut app, mut doc) = app_with_doc();
+        sized(&mut app, 480.0); // overlay
+        assert!(!app.flap.is_open(SplitLayout::Overlay));
+        app.dispatch(Action::ToggleSidebar, &mut doc);
+        assert!(app.flap.is_open(SplitLayout::Overlay), "hamburger opens the flap");
+        app.dispatch(Action::ToggleSidebar, &mut doc);
+        assert!(!app.flap.is_open(SplitLayout::Overlay), "toggling again closes it");
+    }
+
+    #[test]
+    fn navigating_dismisses_overlay_sidebar() {
+        let (mut app, mut doc) = app_with_doc();
+        sized(&mut app, 480.0); // overlay
+        app.flap.open();
+        assert!(app.flap.is_open(SplitLayout::Overlay));
+        // Selecting a destination from the open flap closes it.
+        app.dispatch(Action::Nav(View::Albums), &mut doc);
+        assert_eq!(app.view, View::Albums);
+        assert!(!app.flap.is_open(SplitLayout::Overlay), "selection dismisses the flap");
+    }
+
+    #[test]
+    fn navigating_keeps_docked_sidebar() {
+        let (mut app, mut doc) = app_with_doc();
+        sized(&mut app, 1280.0); // docked
+        app.dispatch(Action::Nav(View::Albums), &mut doc);
+        assert!(app.flap.is_open(SplitLayout::Docked), "docked sidebar persists across nav");
+    }
+
+    #[test]
+    fn close_action_dismisses_sidebar() {
+        let (mut app, mut doc) = app_with_doc();
+        sized(&mut app, 480.0);
+        app.flap.open();
+        app.dispatch(Action::CloseSidebar, &mut doc);
+        assert!(!app.flap.is_open(SplitLayout::Overlay));
     }
 }
