@@ -37,10 +37,14 @@ use ui::widget::{FlapState, SplitLayout};
 use crate::catalog::sample_catalog;
 use crate::doc::StoreDoc;
 use crate::draw::{self, alpha, mix};
+use crate::flatpak::Remote;
+use crate::flatpakref::FlatpakRef;
 use crate::model::{
-    AppEntry, Category, Catalog, InstallSnapshot, InstallState, Permission, Source,
+    AppEntry, Category, Catalog, Compat, InstallSnapshot, InstallState, Permission, QosAppModel,
+    Review, Source,
 };
 use crate::probe::ProbeResult;
+use crate::worker::{ActionKind, Request, Worker, WorkerMsg};
 
 /// How long a simulated install / update takes to fill its progress bar.
 const INSTALL_DURATION: Duration = Duration::from_millis(2600);
@@ -69,6 +73,7 @@ pub enum Tab {
     Browse,
     Installed,
     Updates,
+    Remotes,
 }
 
 /// One interactive region, rebuilt every `draw` and tested in
@@ -100,6 +105,20 @@ enum Action {
     /// Narrow-mode only: absorb a click on empty drawer-panel space so it
     /// neither falls through to the scrim (dismiss) nor the body behind.
     NavAbsorb,
+    /// qOS-native app: run from a cached sandboxed bundle (stubbed backend).
+    QosOpenDirect(String),
+    /// qOS-native app: keep cached + prioritise (stubbed backend).
+    QosAdd(String),
+    /// Remotes screen: remove a configured Flatpak remote (gated).
+    RemoteRemove(String),
+    /// Remotes screen: add the Flathub remote (one-tap convenience).
+    RemoteAddFlathub,
+    /// `.flatpakref` confirm sheet: confirm the gated install.
+    ConfirmRefInstall,
+    /// `.flatpakref` confirm sheet: dismiss without installing.
+    DismissRef,
+    /// Hover a target carrying a tooltip (qOS affordances).
+    HoverTooltip(String),
 }
 
 /// Visual style for a pill button.
@@ -140,6 +159,33 @@ pub struct SoftwareStore {
     probe: Option<ProbeResult>,
     probe_merged: bool,
 
+    /// Background worker: all flatpak/Flathub I/O runs here, off the UI
+    /// thread. `offline()` in `--shots` / tests.
+    worker: Worker,
+    /// `true` once the first round of background refreshes (installed set,
+    /// remotes, the popular collection) has been kicked off.
+    initial_kicked: bool,
+    /// Configured Flatpak remotes, refreshed by the worker. Drives the
+    /// Remotes screen; empty until the first refresh lands (or always in
+    /// `--shots`, where the sample remotes below stand in).
+    remotes: Vec<Remote>,
+    /// Live catalog entries merged in from the Flathub API (search +
+    /// collections + detail fetches), keyed by app-id. The bundled sample
+    /// catalog is the floor; these augment it for the live app.
+    live_apps: HashMap<String, AppEntry>,
+    /// The search query the worker last fetched results for, plus the time
+    /// the current query last changed — used to debounce live search so we
+    /// don't fire a request on every keystroke.
+    search_dispatched: String,
+    search_changed_at: Option<Instant>,
+    /// A pending `.flatpakref` awaiting the user's install confirmation.
+    /// When `Some`, a modal confirm sheet renders over the body.
+    pending_ref: Option<FlatpakRef>,
+    /// The most recent gated-action error, shown as a toast / inline note.
+    action_error: Option<(String, Instant)>,
+    /// The tooltip currently hovered (text), rendered near the cursor.
+    tooltip: Option<String>,
+
     /// Adaptive navigation flap. On wide windows the nav tabs sit inline in
     /// the header (this stays closed and unused); on narrow windows the tabs
     /// collapse into an overlay drawer summoned by the header hamburger,
@@ -157,9 +203,15 @@ pub struct SoftwareStore {
 }
 
 impl SoftwareStore {
-    /// Construct the store with the bundled sample catalog. `probe`
-    /// carries optional live system data (live app only).
+    /// Construct the store with the bundled sample catalog and an offline
+    /// worker. `probe` carries optional live system data (live app only).
+    /// Tests use this; the live app uses [`SoftwareStore::with_worker`].
     pub fn new(probe: Option<ProbeResult>) -> Self {
+        Self::with_worker(probe, Worker::offline())
+    }
+
+    /// Construct the store with an explicit [`Worker`] (live or offline).
+    pub fn with_worker(probe: Option<ProbeResult>, worker: Worker) -> Self {
         Self {
             catalog: Catalog::new(sample_catalog()),
             snapshot: InstallSnapshot::default(),
@@ -175,6 +227,15 @@ impl SoftwareStore {
             toast: None,
             probe,
             probe_merged: false,
+            worker,
+            initial_kicked: false,
+            remotes: Vec::new(),
+            live_apps: HashMap::new(),
+            search_dispatched: String::new(),
+            search_changed_at: None,
+            pending_ref: None,
+            action_error: None,
+            tooltip: None,
             nav_flap: FlapState::closed_by_default(),
             last_tick: Instant::now(),
             rect: Rect::ZERO,
@@ -183,6 +244,14 @@ impl SoftwareStore {
             hit_targets: Vec::new(),
             dirty: true,
         }
+    }
+
+    /// Open the store directly into the `.flatpakref` install-confirmation
+    /// flow. Called when the process was launched with a `.flatpakref`
+    /// path (the store is the registered handler for that file type).
+    pub fn open_flatpakref(&mut self, r: FlatpakRef) {
+        self.pending_ref = Some(r);
+        self.dirty = true;
     }
 
     /// Apply an initial-view override from the `SOFTWARE_STORE_SHOT_VIEW`
@@ -197,6 +266,19 @@ impl SoftwareStore {
             self.tab = Tab::Installed;
         } else if spec == "updates" {
             self.tab = Tab::Updates;
+        } else if spec == "remotes" {
+            self.tab = Tab::Remotes;
+        } else if spec == "flatpakref" {
+            // Snap the install-confirmation sheet open over the browse home,
+            // using a representative ref so the modal is fully populated.
+            self.pending_ref = Some(FlatpakRef {
+                app_id: "org.gimp.GIMP".into(),
+                title: "GIMP".into(),
+                comment: "Create images and edit photographs".into(),
+                url: "https://dl.flathub.org/repo/".into(),
+                branch: "stable".into(),
+                source_path: "/tmp/GIMP.flatpakref".into(),
+            });
         } else if spec == "menu" {
             // Snap the navigation drawer fully open with no animation so a
             // single offscreen frame captures the settled overlay + scrim.
@@ -271,14 +353,35 @@ impl SoftwareStore {
     }
 
     /// Begin a (simulated) install / update of `id`.
+    ///
+    /// The visible progress bar is always driven by a local wall-clock
+    /// animation (deterministic, never blocks the frame). When a live
+    /// worker is present the *real* `flatpak install/update` is dispatched
+    /// to it in parallel; its outcome arrives later via the worker channel
+    /// and only surfaces if it fails (the simulated bar is the source of
+    /// truth for the visual). This keeps the UX identical online and off.
     fn start_install(&mut self, state: &mut AutoCommit, id: &str) {
         StoreDoc::set_installing(state, id, 0.0);
         self.install_start.insert(id.to_string(), Instant::now());
         self.snapshot = StoreDoc::read_snapshot(state);
-        // Optional real install action, gated behind an env opt-in so the
-        // default UX is the safe simulated progress.
-        if std::env::var("SOFTWARE_STORE_REAL_INSTALL").is_ok() {
-            self.spawn_real_install(id);
+        if self.worker.is_live() {
+            let app = self.app_by_id(id);
+            let already_installed = self.snapshot.installed.contains_key(id);
+            match app.as_ref().map(|a| (a.source, a.remote.clone())) {
+                Some((Source::QosNative, _)) => {} // qOS apps don't flatpak-install
+                Some((_, _)) if already_installed => {
+                    self.worker.request(Request::Update(id.to_string()));
+                }
+                Some((_, remote)) => {
+                    self.worker.request(Request::Install { remote, app_id: id.to_string() });
+                }
+                None => {
+                    self.worker.request(Request::Install {
+                        remote: "flathub".into(),
+                        app_id: id.to_string(),
+                    });
+                }
+            }
         }
         self.dirty = true;
     }
@@ -291,25 +394,6 @@ impl SoftwareStore {
         self.dirty = true;
     }
 
-    /// Gated, best-effort real install via flatpak/podman in a detached
-    /// thread. Never blocks the UI; failures are silent (the simulated
-    /// progress is the source of truth for the bar).
-    fn spawn_real_install(&self, id: &str) {
-        let Some(app) = self.catalog.get(id) else { return };
-        let id = id.to_string();
-        let source = app.source;
-        std::thread::spawn(move || {
-            let _ = match source {
-                Source::Flatpak => std::process::Command::new("flatpak")
-                    .args(["install", "-y", "--noninteractive", "flathub", &id])
-                    .status(),
-                Source::Oci => std::process::Command::new("podman")
-                    .args(["pull", &id])
-                    .status(),
-            };
-        });
-    }
-
     fn show_toast(&mut self, msg: impl Into<String>) {
         self.toast = Some((msg.into(), Instant::now()));
         self.dirty = true;
@@ -320,6 +404,14 @@ impl SoftwareStore {
     fn apply(&mut self, action: Action, state: &mut AutoCommit) {
         match action {
             Action::OpenDetail(id) => {
+                // Lazily fetch full AppStream detail for a live (non-curated)
+                // entry the first time it's opened, if not already cached.
+                if self.worker.is_live()
+                    && self.catalog.get(&id).is_none()
+                    && !self.worker.caches.detail.contains(&id)
+                {
+                    self.worker.request(Request::Detail(id.clone()));
+                }
                 self.detail = Some(id);
                 self.reset_scroll();
             }
@@ -351,16 +443,15 @@ impl SoftwareStore {
                 StoreDoc::remove_installed(state, &id);
                 self.install_start.remove(&id);
                 self.snapshot = StoreDoc::read_snapshot(state);
+                if self.worker.is_live() {
+                    self.worker.request(Request::Remove(id.clone()));
+                }
             }
             Action::Open(id) => {
-                let name = self
-                    .catalog
-                    .get(&id)
-                    .map(|a| a.name.clone())
-                    .unwrap_or(id.clone());
+                let name = self.app_by_id(&id).map(|a| a.name).unwrap_or(id.clone());
                 self.show_toast(format!("Opening {name}…"));
-                if std::env::var("SOFTWARE_STORE_REAL_INSTALL").is_ok() {
-                    let _ = std::process::Command::new("flatpak").args(["run", &id]).spawn();
+                if self.worker.is_live() {
+                    self.worker.request(Request::Launch(id));
                 }
             }
             Action::UpdateAll => {
@@ -373,6 +464,60 @@ impl SoftwareStore {
             // Click inside the open drawer panel but not on a row: keep the
             // drawer open, just consume the event.
             Action::NavAbsorb => {}
+            Action::QosOpenDirect(id) => {
+                // VISUAL-ONLY (documented stub): in the real qOS model this
+                // would hydrate a cached bundle and launch it in a strong
+                // per-launch sandbox without a permanent install. For now we
+                // surface the intent and toast it.
+                let name = self.app_by_id(&id).map(|a| a.name).unwrap_or(id);
+                self.show_toast(format!("Opening {name} directly (cached, sandboxed)…"));
+            }
+            Action::QosAdd(id) => {
+                // VISUAL-ONLY (documented stub): would keep the bundle cached
+                // and prioritise it in auto-updates + global search. We
+                // record it as installed locally so the affordance reads as
+                // "added", but no real packaging action runs.
+                if let Some(app) = self.app_by_id(&id) {
+                    StoreDoc::set_installed(state, &id, &app.latest_version);
+                    self.snapshot = StoreDoc::read_snapshot(state);
+                    self.show_toast(format!("Added {} — cached & prioritised", app.name));
+                }
+            }
+            Action::RemoteRemove(name) => {
+                // Optimistically drop it from the list; the worker confirms.
+                self.remotes.retain(|r| r.name != name);
+                if self.worker.is_live() {
+                    self.worker.request(Request::RemoteDelete(name));
+                } else {
+                    self.show_toast("Remote removed");
+                }
+            }
+            Action::RemoteAddFlathub => {
+                let exists = self.remotes.iter().any(|r| r.name == "flathub");
+                if !exists {
+                    self.remotes.push(Remote {
+                        name: "flathub".into(),
+                        title: "Flathub".into(),
+                        url: "https://dl.flathub.org/repo/".into(),
+                        disabled: false,
+                    });
+                }
+                if self.worker.is_live() {
+                    self.worker.request(Request::RemoteAdd {
+                        name: "flathub".into(),
+                        url: "https://flathub.org/repo/flathub.flatpakrepo".into(),
+                    });
+                } else {
+                    self.show_toast("Added Flathub remote");
+                }
+            }
+            Action::ConfirmRefInstall => self.confirm_pending_ref(state),
+            Action::DismissRef => {
+                self.pending_ref = None;
+            }
+            Action::HoverTooltip(text) => {
+                self.tooltip = Some(text);
+            }
         }
         self.dirty = true;
     }
@@ -386,6 +531,230 @@ impl SoftwareStore {
             return InstallState::Installing(p);
         }
         self.catalog.state_of(app, &self.snapshot)
+    }
+
+    /// Kick off the first round of background refreshes once we know we're
+    /// a live worker: read the installed set + remotes, and warm the
+    /// "popular" collection for the browse home. All async — none of these
+    /// block the first frame.
+    fn kick_initial(&mut self) {
+        if self.initial_kicked || !self.worker.is_live() {
+            return;
+        }
+        self.initial_kicked = true;
+        self.worker.request(Request::RefreshInstalled);
+        self.worker.request(Request::RefreshRemotes);
+        self.worker.request(Request::Collection("popular".into()));
+    }
+
+    /// Drain finished worker messages into the model. Non-blocking — runs
+    /// once per `sync`. Returns whether anything changed (so we repaint).
+    fn drain_worker(&mut self, state: &mut AutoCommit) -> bool {
+        // Collect applied effects out of the closure (which only borrows
+        // shared state) and apply the &mut-self ones afterward.
+        let mut new_remotes: Option<Vec<Remote>> = None;
+        let mut new_live: Vec<AppEntry> = Vec::new();
+        let mut installed_updates: Vec<(String, String)> = Vec::new();
+        let mut removed: Vec<String> = Vec::new();
+        let mut errors: Vec<String> = Vec::new();
+        let mut finished_actions: Vec<(String, ActionKind)> = Vec::new();
+
+        let drained = self.worker.drain(|msg| match msg {
+            WorkerMsg::Installed(map) => {
+                for (id, ver) in map {
+                    installed_updates.push((id.clone(), ver.clone()));
+                }
+            }
+            WorkerMsg::Remotes(rs) => new_remotes = Some(rs.clone()),
+            WorkerMsg::Collection { apps, .. } => new_live.extend(apps.iter().cloned()),
+            WorkerMsg::SearchResults { apps, .. } => new_live.extend(apps.iter().cloned()),
+            WorkerMsg::Detail(app) => new_live.push((**app).clone()),
+            WorkerMsg::ActionDone { target, kind, outcome } => {
+                finished_actions.push((target.clone(), *kind));
+                if let crate::flatpak::ActionOutcome::Failed(e) = outcome {
+                    errors.push(format!("{}: {e}", short_target(target)));
+                } else if matches!(kind, ActionKind::Remove) {
+                    removed.push(target.clone());
+                }
+            }
+        });
+
+        if drained == 0 {
+            return false;
+        }
+
+        if let Some(rs) = new_remotes {
+            self.remotes = rs;
+        }
+        for app in new_live {
+            // Merge live entries that aren't already in the curated catalog
+            // (the sample catalog stays the floor; live data augments it).
+            if self.catalog.get(&app.id).is_none() {
+                self.live_apps.insert(app.id.clone(), app);
+            } else if let Some(slot) = self.live_apps.get_mut(&app.id) {
+                *slot = app;
+            } else {
+                self.live_apps.insert(app.id.clone(), app);
+            }
+        }
+        // Reflect the real installed set into the CRDT (live app only).
+        for (id, ver) in installed_updates {
+            if self.catalog.get(&id).is_some() || self.live_apps.contains_key(&id) {
+                let v = if ver.is_empty() {
+                    self.catalog.get(&id).map(|a| a.latest_version.clone()).unwrap_or_default()
+                } else {
+                    ver
+                };
+                StoreDoc::set_installed(state, &id, &v);
+            }
+        }
+        for id in removed {
+            StoreDoc::remove_installed(state, &id);
+            self.install_start.remove(&id);
+        }
+        // Clear local in-flight markers for finished real actions.
+        for (target, kind) in finished_actions {
+            if matches!(kind, ActionKind::Install | ActionKind::Update) {
+                // The real action finished; the simulated progress bar
+                // finalises on its own timer, so nothing else to do here.
+                let _ = target;
+            }
+            if matches!(kind, ActionKind::RemoteAdd | ActionKind::RemoteDelete) {
+                self.worker.request(Request::RefreshRemotes);
+            }
+        }
+        if let Some(e) = errors.into_iter().next() {
+            self.action_error = Some((e, Instant::now()));
+        }
+        self.snapshot = StoreDoc::read_snapshot(state);
+        true
+    }
+
+    /// Debounced live search: when the query has been stable for a short
+    /// window and differs from what we last fetched, fire one async search.
+    /// Never blocks — results stream back via the worker channel.
+    fn maybe_dispatch_search(&mut self) {
+        if !self.worker.is_live() {
+            return;
+        }
+        let q = self.search_query.trim().to_string();
+        if q.len() < 2 || q == self.search_dispatched {
+            return;
+        }
+        let Some(changed) = self.search_changed_at else { return };
+        // 220ms debounce — long enough to coalesce a burst of keystrokes,
+        // short enough to feel instant.
+        if changed.elapsed() < Duration::from_millis(220) {
+            return;
+        }
+        // Serve from cache instantly if we have it; otherwise issue async.
+        if self.worker.caches.search.contains(&q) {
+            self.search_dispatched = q;
+            return;
+        }
+        if self.worker.request(Request::Search(q.clone())) {
+            self.search_dispatched = q;
+        }
+    }
+
+    /// `true` while a live search query has changed but not yet been
+    /// dispatched (debounce window still open) — keeps the loop awake so
+    /// `maybe_dispatch_search` runs at the right moment.
+    fn search_pending(&self) -> bool {
+        if !self.worker.is_live() {
+            return false;
+        }
+        let q = self.search_query.trim().to_string();
+        q.len() >= 2 && q != self.search_dispatched && self.search_changed_at.is_some()
+    }
+
+    /// All catalog entries (curated + live) matching the current search /
+    /// category, used by the Browse search results. Live entries from the
+    /// Flathub worker are appended after the curated matches.
+    fn search_results(&self) -> Vec<AppEntry> {
+        let q = self.search_query.to_lowercase();
+        let mut out: Vec<AppEntry> = self
+            .catalog
+            .search(&q, self.active_category)
+            .into_iter()
+            .cloned()
+            .collect();
+        let curated: std::collections::HashSet<&str> =
+            self.catalog.apps.iter().map(|a| a.id.as_str()).collect();
+        // Prefer cached worker results for this exact query; else any live
+        // apps already merged that match.
+        if let Some(hits) = self.worker.caches.search.get(&self.search_query.trim().to_string()) {
+            for a in hits {
+                if !curated.contains(a.id.as_str()) && a.matches(&q) {
+                    out.push(a.clone());
+                }
+            }
+        } else {
+            for a in self.live_apps.values() {
+                if !curated.contains(a.id.as_str()) && a.matches(&q) {
+                    out.push(a.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// Look up an app by id across the curated catalog and live entries.
+    fn app_by_id(&self, id: &str) -> Option<AppEntry> {
+        self.catalog
+            .get(id)
+            .cloned()
+            .or_else(|| self.live_apps.get(id).cloned())
+    }
+
+    /// Confirm the pending `.flatpakref` install: dispatch the gated action
+    /// to the worker, start the local progress animation, and dismiss the
+    /// sheet.
+    fn confirm_pending_ref(&mut self, state: &mut AutoCommit) {
+        let Some(r) = self.pending_ref.take() else { return };
+        // Drive the visible progress bar via the same simulated-install path.
+        self.start_install(state, &r.app_id);
+        if self.worker.is_live() {
+            self.worker.request(Request::InstallRef(r.source_path.clone()));
+        }
+        self.tab = Tab::Browse;
+        self.detail = Some(r.app_id.clone());
+        self.show_toast(format!("Installing {}…", r.title));
+        self.dirty = true;
+    }
+}
+
+/// The remotes shown on the Remotes screen in `--shots` / before the first
+/// live refresh lands, so the screen is always populated for screenshots.
+fn sample_remotes() -> Vec<Remote> {
+    vec![
+        Remote {
+            name: "flathub".into(),
+            title: "Flathub".into(),
+            url: "https://dl.flathub.org/repo/".into(),
+            disabled: false,
+        },
+        Remote {
+            name: "flathub-beta".into(),
+            title: "Flathub Beta".into(),
+            url: "https://dl.flathub.org/beta-repo/".into(),
+            disabled: true,
+        },
+        Remote {
+            name: "fedora".into(),
+            title: "Fedora Flatpaks".into(),
+            url: "oci+https://registry.fedoraproject.org".into(),
+            disabled: false,
+        },
+    ]
+}
+
+/// Shorten a target (app-id / remote name / path) for an error toast.
+fn short_target(t: &str) -> String {
+    if let Some((_, last)) = t.rsplit_once('/') {
+        last.to_string()
+    } else {
+        t.rsplit('.').next().unwrap_or(t).to_string()
     }
 }
 
@@ -456,10 +825,11 @@ impl SoftwareStore {
             pad_r
         } else {
             let inst_count = self.catalog.installed(&self.snapshot).len();
-            let tabs: [(Tab, String); 3] = [
+            let tabs: [(Tab, String); 4] = [
                 (Tab::Browse, "Browse".into()),
                 (Tab::Installed, format!("Installed · {inst_count}")),
                 (Tab::Updates, "Updates".into()),
+                (Tab::Remotes, "Remotes".into()),
             ];
             let mut widths = Vec::new();
             for (tab, label) in &tabs {
@@ -622,10 +992,11 @@ impl SoftwareStore {
         // Vertical nav rows.
         let up_count = self.catalog.updatable(&self.snapshot).len();
         let inst_count = self.catalog.installed(&self.snapshot).len();
-        let rows: [(Tab, String); 3] = [
+        let rows: [(Tab, String); 4] = [
             (Tab::Browse, "Browse".into()),
             (Tab::Installed, format!("Installed · {inst_count}")),
             (Tab::Updates, "Updates".into()),
+            (Tab::Remotes, "Remotes".into()),
         ];
         let row_h = 44.0;
         let mut ry = drawer.y0 + 80.0;
@@ -994,13 +1365,25 @@ impl SoftwareStore {
 
         // Searching → results grid only.
         if !self.search_query.is_empty() {
-            let results = self.catalog.search(&self.search_query, self.active_category);
-            let header = format!("{} result{} for \u{201c}{}\u{201d}", results.len(), if results.len() == 1 { "" } else { "s" }, self.search_query);
+            let results = self.search_results();
+            let result_refs: Vec<&AppEntry> = results.iter().collect();
+            let searching = self.worker.is_live()
+                && self.worker.inflight().contains(&format!("search:{}", self.search_query.trim()));
+            let header = if searching {
+                format!("Searching Flathub for \u{201c}{}\u{201d}…", self.search_query)
+            } else {
+                format!(
+                    "{} result{} for \u{201c}{}\u{201d}",
+                    results.len(),
+                    if results.len() == 1 { "" } else { "s" },
+                    self.search_query
+                )
+            };
             y = self.section(scene, tr, t, theme, x0, y, &header);
             y += 6.0;
             y = self.draw_chips(scene, tr, t, theme, targets, x0, y);
             y += 16.0;
-            y = self.draw_grid(scene, tr, t, theme, targets, x0, y, width, &results);
+            y = self.draw_grid(scene, tr, t, theme, targets, x0, y, width, &result_refs);
             return y + 24.0 - (body.y0 - self.scroll);
         }
 
@@ -1076,19 +1459,33 @@ impl SoftwareStore {
         draw::text_w(scene, tr, t, &app.rating_label(), ty.sm, TextWeight::Semibold, c.text_primary, info_x + rw + 12.0, top + 78.0, None);
         draw::text(scene, tr, t, &app.rating_count_label(), ty.xs, c.text_dim, info_x + rw + 12.0, top + 95.0, None);
 
-        // Primary action (top-right).
-        let btn_w = 200.0_f64;
+        // Primary action (top-right). qOS-native apps get the bespoke
+        // "Open directly" / "Add" affordances instead of Install.
+        let btn_w = if app.is_qos_native() { 260.0_f64 } else { 200.0_f64 };
         let btn_h = 44.0_f64;
         let btn = Rect::new(body.x1 - BODY_PAD_X - btn_w, top + 4.0, body.x1 - BODY_PAD_X, top + 4.0 + btn_h);
-        self.action_control(scene, tr, t, theme, targets, btn, app, false);
-        // Version + size under the button.
+        if app.is_qos_native() {
+            self.draw_qos_affordances(scene, tr, t, theme, targets, btn, app);
+        } else {
+            self.action_control(scene, tr, t, theme, targets, btn, app, false);
+        }
+        // Right-aligned meta rows, stacked top-down under the button so they
+        // never overlap: version·size, then download count, then any
+        // update-available note (warning-tinted).
+        let mut meta_y = btn.y1 + 8.0;
         let meta = format!("v{}  ·  {}", app.latest_version, app.size_label());
         let mw = draw::measure(tr, &meta, ty.xs).0;
-        draw::text(scene, tr, t, &meta, ty.xs, c.text_dim, btn.x1 - mw, btn.y1 + 8.0, None);
+        draw::text(scene, tr, t, &meta, ty.xs, c.text_dim, btn.x1 - mw, meta_y, None);
+        meta_y += 16.0;
+        if let Some(dl) = app.download_label() {
+            let dw = draw::measure(tr, &dl, ty.xs).0;
+            draw::text(scene, tr, t, &dl, ty.xs, c.text_dim, btn.x1 - dw, meta_y, None);
+            meta_y += 16.0;
+        }
         if let InstallState::UpdateAvailable(from) = self.live_state(app) {
             let upd = format!("Update available: {} → {}", from, app.latest_version);
             let uw = draw::measure(tr, &upd, ty.xs).0;
-            draw::text_w(scene, tr, t, &upd, ty.xs, TextWeight::Medium, c.semantic.warning, btn.x1 - uw, btn.y1 + 24.0, None);
+            draw::text_w(scene, tr, t, &upd, ty.xs, TextWeight::Medium, c.semantic.warning, btn.x1 - uw, meta_y, None);
         }
 
         let mut y = top + icon_sz + 30.0;
@@ -1110,6 +1507,14 @@ impl SoftwareStore {
             y += shot_h + 30.0;
         }
 
+        // ---- Compatibility notices ----
+        if !app.compat.is_empty() {
+            y = self.section(scene, tr, t, theme, x0, y, "Compatibility on qOS");
+            y += 8.0;
+            y = self.draw_compat(scene, tr, t, theme, x0, y, width, &app.compat);
+            y += 14.0;
+        }
+
         // ---- About ----
         y = self.section(scene, tr, t, theme, x0, y, "About");
         y += 4.0;
@@ -1127,6 +1532,17 @@ impl SoftwareStore {
             self.draw_permission_row(scene, tr, t, theme, x0, y, width, perm);
             y += 30.0;
         }
+        y += 14.0;
+
+        // ---- Ratings & reviews ----
+        // Reviews come from the sample catalog; live (Flathub) entries have
+        // none, so we surface the download-count-derived rating note instead.
+        let rating_note = if app.reviews.is_empty() && app.download_count.is_some() {
+            Some("Rating estimated from Flathub download counts — Flathub exposes no written reviews.")
+        } else {
+            None
+        };
+        y = self.draw_reviews(scene, tr, t, theme, x0, y, width, &app.reviews, rating_note);
         y += 14.0;
 
         // ---- Information grid ----
@@ -1313,15 +1729,267 @@ impl SoftwareStore {
     }
 
     fn draw_toast(&self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme) {
-        let Some((msg, _)) = &self.toast else { return };
         let c = &theme.tokens.colors;
         let ty = &theme.tokens.typography.scale;
-        let (tw, _) = draw::measure(tr, msg, ty.sm);
+        // An action error (e.g. a real flatpak install failure) takes
+        // precedence over an informational toast and uses the danger tint.
+        let (msg, bg) = if let Some((err, _)) = &self.action_error {
+            (err.clone(), c.semantic.danger)
+        } else if let Some((m, _)) = &self.toast {
+            (m.clone(), c.accent[5])
+        } else {
+            return;
+        };
+        let (tw, _) = draw::measure(tr, &msg, ty.sm);
         let w = tw + 40.0;
         let h = 40.0;
         let r = Rect::new(self.rect.center().x - w / 2.0, self.rect.y1 - h - 24.0, self.rect.center().x + w / 2.0, self.rect.y1 - 24.0);
-        draw::fill_round(scene, t, r, theme.tokens.radii.full, c.accent[5]);
-        draw::text_w(scene, tr, t, msg, ty.sm, TextWeight::Semibold, Color::WHITE, r.x0 + 20.0, r.center().y - ty.sm as f64 / 2.0 - 1.0, None);
+        draw::fill_round(scene, t, r, theme.tokens.radii.full, bg);
+        draw::text_w(scene, tr, t, &msg, ty.sm, TextWeight::Semibold, Color::WHITE, r.x0 + 20.0, r.center().y - ty.sm as f64 / 2.0 - 1.0, None);
+    }
+
+    /// The Remotes management screen: a header with "Add Flathub", then a
+    /// card per configured remote with its URL and a Remove button. In
+    /// `--shots` (offline) a couple of sample remotes stand in.
+    fn draw_remotes(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        targets: &mut Vec<HitTarget>,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
+        let ty = &theme.tokens.typography.scale;
+        let body = self.body_rect();
+        let x0 = body.x0 + BODY_PAD_X;
+        let width = body.width() - BODY_PAD_X * 2.0;
+        let mut y = body.y0 + BODY_PAD_TOP - self.scroll;
+
+        // Offline / first-frame fallback so the screen is never empty.
+        let fallback;
+        let remotes: &[Remote] = if self.remotes.is_empty() {
+            fallback = sample_remotes();
+            &fallback
+        } else {
+            &self.remotes
+        };
+
+        draw::text_w(scene, tr, t, &format!("Flatpak remotes · {}", remotes.len()), ty.lg, TextWeight::Bold, c.text_primary, x0, y, None);
+        // "Add Flathub" button on the right.
+        let has_flathub = remotes.iter().any(|r| r.name == "flathub");
+        if !has_flathub {
+            let bw = 150.0_f64;
+            let btn = Rect::new(x0 + width - bw, y - 6.0, x0 + width, y + 28.0);
+            Self::pill_button(scene, tr, t, theme, targets, btn, "Add Flathub", BtnStyle::Primary, btn.contains(self.mouse), Action::RemoteAddFlathub);
+        }
+        y += 30.0;
+        draw::text(scene, tr, t, "Remotes are the sources apps install from. Adding one lets you browse and install its apps.", ty.sm, c.text_dim, x0, y, Some(width as f32));
+        y += 30.0;
+
+        let row_h = 78.0;
+        for r in remotes {
+            let rect = Rect::new(x0, y, x0 + width, y + row_h);
+            draw::fill_round(scene, t, rect, theme.tokens.radii.lg, c.surfaces.raised);
+            draw::stroke_round(scene, t, rect, theme.tokens.radii.lg, c.border_standard, 1.0);
+            let pad = 16.0;
+            // Name + disabled tag.
+            draw::text_w(scene, tr, t, &r.title, ty.base, TextWeight::Bold, c.text_primary, rect.x0 + pad, rect.y0 + pad, None);
+            if r.disabled {
+                let tag = "disabled";
+                let tw = draw::measure(tr, tag, ty.xs).0;
+                let tr_rect = Rect::new(rect.x0 + pad + draw::measure(tr, &r.title, ty.base).0 + 12.0, rect.y0 + pad, rect.x0 + pad + draw::measure(tr, &r.title, ty.base).0 + 12.0 + tw + 16.0, rect.y0 + pad + 18.0);
+                draw::fill_round(scene, t, tr_rect, theme.tokens.radii.full, alpha(c.text_dim, 0.2));
+                draw::text(scene, tr, t, tag, ty.xs, c.text_dim, tr_rect.x0 + 8.0, tr_rect.y0 + 1.0, None);
+            }
+            // Name (machine) + URL.
+            draw::text(scene, tr, t, &format!("{}  ·  {}", r.name, r.url), ty.sm, c.text_dim, rect.x0 + pad, rect.center().y + 6.0, Some((width - 160.0) as f32));
+            // Remove button (right).
+            let bw = 110.0_f64;
+            let btn = Rect::new(rect.x1 - pad - bw, rect.center().y - 17.0, rect.x1 - pad, rect.center().y + 17.0);
+            Self::pill_button(scene, tr, t, theme, targets, btn, "Remove", BtnStyle::Danger, btn.contains(self.mouse), Action::RemoteRemove(r.name.clone()));
+            y += row_h + 12.0;
+        }
+        (y + self.scroll) - body.y0 + 12.0
+    }
+
+    /// Render the bespoke qOS-native affordances ("Open directly" + "Add")
+    /// in place of the normal install control, with hover tooltips. VISUAL
+    /// ONLY — the backend is a documented stub. Returns the row's bottom y.
+    fn draw_qos_affordances(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        targets: &mut Vec<HitTarget>,
+        rect: Rect,
+        app: &AppEntry,
+    ) {
+        // Two side-by-side pills: "Open directly" (neutral) + "Add" (primary).
+        let gap = 8.0;
+        let half = (rect.width() - gap) / 2.0;
+        let open_r = Rect::new(rect.x0, rect.y0, rect.x0 + half, rect.y1);
+        let add_r = Rect::new(rect.x1 - half, rect.y0, rect.x1, rect.y1);
+        Self::pill_button(scene, tr, t, theme, targets, open_r, QosAppModel::OpenDirect.label(), BtnStyle::Neutral, open_r.contains(self.mouse), Action::QosOpenDirect(app.id.clone()));
+        Self::pill_button(scene, tr, t, theme, targets, add_r, QosAppModel::Add.label(), BtnStyle::Primary, add_r.contains(self.mouse), Action::QosAdd(app.id.clone()));
+        // Register tooltip hover targets ABOVE the buttons (so they win the
+        // reverse hit-test for hover, but the buttons still take the click —
+        // tooltips are recorded as a separate hover-only action that the
+        // pointer-move handler reads, not the click handler).
+        targets.push(HitTarget { rect: open_r, action: Action::HoverTooltip(QosAppModel::OpenDirect.tooltip().into()) });
+        targets.push(HitTarget { rect: add_r, action: Action::HoverTooltip(QosAppModel::Add.tooltip().into()) });
+    }
+
+    /// Draw the compatibility-notice rows (detail page). Each is a pill with
+    /// an info/warning tint.
+    fn draw_compat(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        x0: f64,
+        mut y: f64,
+        width: f64,
+        compat: &[Compat],
+    ) -> f64 {
+        let c = &theme.tokens.colors;
+        let ty = &theme.tokens.typography.scale;
+        for notice in compat {
+            let (tint, fg) = if notice.blocking {
+                (alpha(c.semantic.danger, 0.14), c.semantic.danger)
+            } else {
+                (alpha(c.semantic.success, 0.12), mix(c.text_primary, c.semantic.success, 0.4))
+            };
+            let h = 30.0;
+            let r = Rect::new(x0, y, x0 + width, y + h);
+            draw::fill_round(scene, t, r, theme.tokens.radii.md, tint);
+            let glyph = if notice.blocking { "▲" } else { "✓" };
+            draw::text_w(scene, tr, t, glyph, ty.sm, TextWeight::Bold, fg, r.x0 + 12.0, r.center().y - ty.sm as f64 / 2.0 - 1.0, None);
+            draw::text(scene, tr, t, &notice.label, ty.sm, fg, r.x0 + 34.0, r.center().y - ty.sm as f64 / 2.0 - 1.0, Some((width - 48.0) as f32));
+            y += h + 8.0;
+        }
+        y
+    }
+
+    /// Draw the reviews section (detail page). Each review is a card with
+    /// author, stars and body text.
+    fn draw_reviews(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        x0: f64,
+        mut y: f64,
+        width: f64,
+        reviews: &[Review],
+        rating_note: Option<&str>,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
+        let ty = &theme.tokens.typography.scale;
+        y = self.section(scene, tr, t, theme, x0, y, "Ratings & reviews");
+        y += 6.0;
+        if let Some(note) = rating_note {
+            draw::text(scene, tr, t, note, ty.xs, c.text_dim, x0, y, Some(width as f32));
+            y += 22.0;
+        }
+        if reviews.is_empty() {
+            draw::text(scene, tr, t, "No written reviews yet.", ty.sm, c.text_dim, x0, y, None);
+            return y + 26.0;
+        }
+        for rv in reviews {
+            // Estimate height from the wrapped body.
+            let (_, bh) = tr.measure(&rv.body, ty.sm, Some((width - 32.0) as f32));
+            let card_h = 30.0 + bh as f64 + 22.0;
+            let r = Rect::new(x0, y, x0 + width, y + card_h);
+            draw::fill_round(scene, t, r, theme.tokens.radii.lg, alpha(c.surfaces.raised, 0.7));
+            draw::stroke_round(scene, t, r, theme.tokens.radii.lg, c.border_standard, 1.0);
+            let pad = 16.0;
+            draw::text_w(scene, tr, t, &rv.author, ty.sm, TextWeight::Semibold, c.text_primary, r.x0 + pad, r.y0 + 12.0, None);
+            draw::rating_stars(scene, t, r.x0 + pad + draw::measure(tr, &rv.author, ty.sm).0 + 14.0, r.y0 + 12.0 + ty.sm as f64 / 2.0, rv.stars, 5.0, 2.0, c.semantic.warning, c.surface_white_20);
+            draw::text(scene, tr, t, &rv.body, ty.sm, mix(c.text_primary, c.text_dim, 0.2), r.x0 + pad, r.y0 + 32.0, Some((width - pad * 2.0) as f32));
+            y += card_h + 12.0;
+        }
+        y
+    }
+
+    /// Modal confirm sheet for a `.flatpakref` install. Dims the body and
+    /// floats a centred card with the app title, source, comment, and
+    /// Install / Cancel. This is the gate: the install only runs on confirm.
+    fn draw_ref_sheet(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        targets: &mut Vec<HitTarget>,
+        r: &FlatpakRef,
+    ) {
+        let c = &theme.tokens.colors;
+        let ty = &theme.tokens.typography.scale;
+        // Scrim.
+        draw::fill_rect(scene, t, self.rect, alpha(Color::from_rgba8(0, 0, 0, 255), 0.55));
+        targets.push(HitTarget { rect: self.rect, action: Action::DismissRef });
+
+        let w = 460.0_f64.min(self.rect.width() - 48.0);
+        let h = 280.0_f64;
+        let card = Rect::new(self.rect.center().x - w / 2.0, self.rect.center().y - h / 2.0, self.rect.center().x + w / 2.0, self.rect.center().y + h / 2.0);
+        draw::fill_round(scene, t, card, theme.tokens.radii.xl, c.surfaces.base);
+        draw::stroke_round(scene, t, card, theme.tokens.radii.xl, c.border_standard, 1.0);
+        // Absorb clicks on the card (so they don't dismiss via the scrim).
+        targets.push(HitTarget { rect: card, action: Action::NavAbsorb });
+
+        let pad = 24.0;
+        draw::text_w(scene, tr, t, "Install this app?", ty.lg, TextWeight::Bold, c.text_primary, card.x0 + pad, card.y0 + pad, None);
+
+        // Icon tile + title.
+        let icon_r = Rect::new(card.x0 + pad, card.y0 + pad + 34.0, card.x0 + pad + 56.0, card.y0 + pad + 90.0);
+        let base = c.accent[5];
+        draw::icon_tile(scene, tr, t, icon_r, base, mix(base, Color::WHITE, 0.5), &r.app_id.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default(), Color::WHITE);
+        let tx = icon_r.x1 + 14.0;
+        draw::text_w(scene, tr, t, &r.title, ty.xl, TextWeight::Bold, c.text_primary, tx, icon_r.y0, None);
+        draw::text(scene, tr, t, &r.app_id, ty.xs, c.text_dim, tx, icon_r.y0 + 26.0, None);
+        let src = format!("from {}", if r.url.is_empty() { "a Flatpak remote".to_string() } else { r.url.clone() });
+        draw::text(scene, tr, t, &src, ty.xs, c.text_dim, tx, icon_r.y0 + 42.0, Some((w - (tx - card.x0) - pad) as f32));
+
+        if !r.comment.is_empty() {
+            draw::text(scene, tr, t, &r.comment, ty.sm, mix(c.text_primary, c.text_dim, 0.2), card.x0 + pad, icon_r.y1 + 16.0, Some((w - pad * 2.0) as f32));
+        }
+
+        // Buttons.
+        let bh = 42.0;
+        let bw = (w - pad * 2.0 - 12.0) / 2.0;
+        let cancel = Rect::new(card.x0 + pad, card.y1 - pad - bh, card.x0 + pad + bw, card.y1 - pad);
+        let install = Rect::new(card.x1 - pad - bw, card.y1 - pad - bh, card.x1 - pad, card.y1 - pad);
+        Self::pill_button(scene, tr, t, theme, targets, cancel, "Cancel", BtnStyle::Neutral, cancel.contains(self.mouse), Action::DismissRef);
+        Self::pill_button(scene, tr, t, theme, targets, install, "Install", BtnStyle::Primary, install.contains(self.mouse), Action::ConfirmRefInstall);
+    }
+
+    /// Draw the hovered tooltip near the cursor (qOS affordances).
+    fn draw_tooltip(&self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme) {
+        let Some(text) = &self.tooltip else { return };
+        let c = &theme.tokens.colors;
+        let ty = &theme.tokens.typography.scale;
+        let max_w = 260.0_f64;
+        let (_, th) = tr.measure(text, ty.xs, Some(max_w as f32));
+        let pad = 10.0;
+        let w = max_w + pad * 2.0;
+        let h = th as f64 + pad * 2.0;
+        // Position above-right of cursor, clamped into the window.
+        let mut x = self.mouse.x + 14.0;
+        let mut yt = self.mouse.y - h - 8.0;
+        if x + w > self.rect.x1 {
+            x = self.rect.x1 - w - 6.0;
+        }
+        if yt < self.rect.y0 {
+            yt = self.mouse.y + 18.0;
+        }
+        let r = Rect::new(x, yt, x + w, yt + h);
+        draw::fill_round(scene, t, r, theme.tokens.radii.md, c.surfaces.overlay);
+        draw::stroke_round(scene, t, r, theme.tokens.radii.md, c.border_standard, 1.0);
+        draw::text(scene, tr, t, text, ty.xs, c.text_primary, r.x0 + pad, r.y0 + pad, Some(max_w as f32));
     }
 
     /// Vertical scrollbar indicator on the right edge of the body.
@@ -1348,6 +2016,16 @@ impl SoftwareStore {
 
 impl Widget for SoftwareStore {
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+        // --- Async plumbing, FIRST: never block the frame. ---
+        // Kick off the first round of background refreshes (live only).
+        self.kick_initial();
+        // Drain any finished worker results into the model.
+        if self.drain_worker(state) {
+            self.dirty = true;
+        }
+        // Fire a debounced live search if the query settled.
+        self.maybe_dispatch_search();
+
         // One-time default seed so a fresh document (and the --shots
         // path) is populated: a few installed apps, two a version behind
         // (Updates tab), and one mid-install (progress bar visible).
@@ -1443,10 +2121,15 @@ impl Widget for SoftwareStore {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // Expire the toast.
+        // Expire the toast + any action error (errors linger a bit longer).
         if let Some((_, at)) = &self.toast {
             if at.elapsed() > TOAST_DURATION {
                 self.toast = None;
+            }
+        }
+        if let Some((_, at)) = &self.action_error {
+            if at.elapsed() > TOAST_DURATION * 2 {
+                self.action_error = None;
             }
         }
 
@@ -1480,8 +2163,19 @@ impl Widget for SoftwareStore {
             }
 
             content_height = if let Some(id) = self.detail.clone() {
-                if let Some(app) = self.catalog.get(&id) {
-                    self.draw_detail(scene, tr, t, theme, &mut targets, app)
+                // Prefer the curated catalog; fall back to a live/cached
+                // Flathub entry so detail pages opened from search work too.
+                let live = self.worker.caches.detail.get(&id).cloned();
+                let app = self
+                    .catalog
+                    .get(&id)
+                    .cloned()
+                    .or(live)
+                    .or_else(|| self.live_apps.get(&id).cloned());
+                if let Some(app) = app {
+                    // Kick a lazy detail fetch the first time we open a live
+                    // entry that we only have summary data for.
+                    self.draw_detail(scene, tr, t, theme, &mut targets, &app)
                 } else {
                     0.0
                 }
@@ -1490,6 +2184,7 @@ impl Widget for SoftwareStore {
                     Tab::Browse => self.draw_browse(scene, tr, t, theme, &mut targets),
                     Tab::Installed => self.draw_installed(scene, tr, t, theme, &mut targets),
                     Tab::Updates => self.draw_updates(scene, tr, t, theme, &mut targets),
+                    Tab::Remotes => self.draw_remotes(scene, tr, t, theme, &mut targets),
                 }
             };
         }
@@ -1513,6 +2208,14 @@ impl Widget for SoftwareStore {
         // Toast sits above everything, including the drawer scrim.
         self.draw_toast(scene, tr, t, theme);
 
+        // The `.flatpakref` confirm sheet is a modal over everything.
+        if let Some(r) = self.pending_ref.clone() {
+            self.draw_ref_sheet(scene, tr, t, theme, &mut targets, &r);
+        }
+
+        // Tooltip last, so it sits over the affordances it describes.
+        self.draw_tooltip(scene, tr, t, theme);
+
         self.hit_targets = targets;
         self.finalize_pending = any_complete;
         self.dirty = false;
@@ -1535,16 +2238,29 @@ impl Widget for SoftwareStore {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+                // Resolve a hover tooltip: the topmost HoverTooltip target
+                // under the cursor wins (qOS affordance explainers).
+                self.tooltip = self
+                    .hit_targets
+                    .iter()
+                    .rev()
+                    .find(|h| matches!(h.action, Action::HoverTooltip(_)) && h.rect.contains(self.mouse))
+                    .and_then(|h| match &h.action {
+                        Action::HoverTooltip(s) => Some(s.clone()),
+                        _ => None,
+                    });
                 // Repaint so hover states track the pointer.
                 self.dirty = true;
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
                 // Reverse iterate so later-drawn (topmost) targets win.
+                // HoverTooltip targets are hover-only — never clickable — so
+                // the click falls through to the affordance button beneath.
                 let hit = self
                     .hit_targets
                     .iter()
                     .rev()
-                    .find(|h| h.rect.contains(self.mouse))
+                    .find(|h| !matches!(h.action, Action::HoverTooltip(_)) && h.rect.contains(self.mouse))
                     .map(|h| h.action.clone());
                 if let Some(action) = hit {
                     // Clicking anywhere that isn't the search box unfocuses it.
@@ -1593,6 +2309,7 @@ impl Widget for SoftwareStore {
                     }
                     Key::Named(NamedKey::Backspace) if self.search_focused => {
                         self.search_query.pop();
+                        self.search_changed_at = Some(Instant::now());
                         self.reset_scroll();
                         self.dirty = true;
                         *handled = true;
@@ -1650,6 +2367,7 @@ impl Widget for SoftwareStore {
                                     self.search_query.push(ch);
                                 }
                             }
+                            self.search_changed_at = Some(Instant::now());
                             self.reset_scroll();
                             self.dirty = true;
                             *handled = true;
@@ -1678,6 +2396,8 @@ impl Widget for SoftwareStore {
         self.dirty
             || !self.install_start.is_empty()
             || self.toast.is_some()
+            || self.worker.has_inflight()
+            || self.search_pending()
             || self.nav_flap.is_animating(self.nav_layout())
     }
 
@@ -1686,9 +2406,22 @@ impl Widget for SoftwareStore {
     }
 
     fn needs_animation_frame(&self) -> bool {
+        // Keep the redraw loop alive while ANY async work is outstanding —
+        // this is the maps-tile-worker contract: the loop self-perpetuates
+        // `request_redraw()` until `has_inflight()` empties, draining the
+        // worker channel each frame until results paint. Without this, an
+        // async result that lands between frames would never be shown.
         !self.install_start.is_empty()
             || self.toast.is_some()
+            || self.worker.has_inflight()
+            || self.search_pending()
             || self.nav_flap.is_animating(self.nav_layout())
+    }
+
+    fn needs_idle_sync(&self) -> bool {
+        // While the loop is otherwise idle, keep syncing so a debounced
+        // search dispatch + worker drain still run between user input.
+        self.worker.has_inflight() || self.search_pending()
     }
 
     fn needs_commit(&self) -> bool {
