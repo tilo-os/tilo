@@ -79,6 +79,14 @@ pub struct ShellNetwork {
     /// connected app via [`super::collab_broker::BrokerHandle::fanout_event`].
     /// See [`Self::inbound_app_crdt_handle`].
     inbound_app_crdt: Arc<Mutex<Vec<InboundAppCrdt>>>,
+    /// Phase 3 buffer of inbound *signed* app-CRDT envelopes pushed
+    /// by [`Self::tick`] when a
+    /// `NeighbourMsg::AppCrdtIncrementalSigned` arrives. The
+    /// `collab_broker` drainer pulls envelopes out of here, runs them
+    /// through `validate_inbound_op`, and only then fans the payload
+    /// to locally-connected apps. See
+    /// [`Self::inbound_app_crdt_signed_handle`].
+    inbound_app_crdt_signed: Arc<Mutex<Vec<InboundAppCrdtSigned>>>,
 }
 
 /// One received app-CRDT incremental update, queued by
@@ -98,6 +106,21 @@ pub struct InboundAppCrdt {
     /// the receiving app's `CollaborationManager` as a
     /// `CollabEvent::CRDTIncremental`.
     pub data: Vec<u8>,
+}
+
+/// One received *signed* app-CRDT envelope, queued by
+/// [`ShellNetwork::tick`] for the `collab_broker` drainer to
+/// validate-and-fan. Distinct from [`InboundAppCrdt`] so the broker
+/// can keep the two streams separate — a malformed envelope should
+/// never poison the legacy fan-out path, and vice versa.
+#[derive(Debug, Clone)]
+pub struct InboundAppCrdtSigned {
+    /// Hashed libp2p peer id of the publisher.
+    pub peer: u64,
+    /// The signed envelope. Wrapped in `Box` to mirror the wire shape
+    /// and keep the queue entry size bounded — `SignedOp` is large
+    /// (32-byte pubkey + 64-byte sig + variable payload + UUIDs).
+    pub envelope: Box<qos_collab_types::SignedOp>,
 }
 
 /// One received cursor-presence update, queued by [`ShellNetwork::tick`]
@@ -187,6 +210,7 @@ impl ShellNetwork {
             local_peer_hash,
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_app_crdt: Arc::new(Mutex::new(Vec::new())),
+            inbound_app_crdt_signed: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -311,6 +335,54 @@ impl ShellNetwork {
         }
     }
 
+    /// Shared handle to the inbound-signed-app-CRDT buffer.
+    /// Mirror of [`Self::inbound_app_crdt_handle`] for the Phase 3
+    /// signed-envelope path. The broker drainer pulls envelopes off
+    /// this buffer, validates them, and fans the payload out as
+    /// `CollabEvent::SignedCRDTIncremental`.
+    pub fn inbound_app_crdt_signed_handle(
+        &self,
+    ) -> Arc<Mutex<Vec<InboundAppCrdtSigned>>> {
+        Arc::clone(&self.inbound_app_crdt_signed)
+    }
+
+    /// Publish a `NeighbourMsg::AppCrdtIncrementalSigned` to the
+    /// default workspace topic. Called by the broker for every
+    /// validated `CollabRequest::SignedSyncIncremental` so two
+    /// laptops sharing the topic exchange signed CRDT envelopes.
+    /// `try_send` failures are intentionally swallowed; the next
+    /// successful send will republish.
+    pub fn publish_app_crdt_signed(
+        &self,
+        envelope: qos_collab_types::SignedOp,
+    ) {
+        let msg = NeighbourMsg::AppCrdtIncrementalSigned {
+            peer: self.local_peer_id_hash(),
+            envelope: Box::new(envelope),
+        };
+        let _ = self.cmd_tx.try_send(NetCmd::Publish {
+            ws: self.active_ws_for_publish(),
+            msg,
+        });
+    }
+
+    /// Adapter: queue a received `AppCrdtIncrementalSigned` into the
+    /// inbound buffer. Public so integration tests can inject
+    /// messages without going through gossipsub. Mirrors
+    /// [`Self::handle_app_crdt_message`] for the signed path.
+    pub fn handle_app_crdt_signed_message(
+        &self,
+        peer: u64,
+        envelope: qos_collab_types::SignedOp,
+    ) {
+        if let Ok(mut buf) = self.inbound_app_crdt_signed.lock() {
+            buf.push(InboundAppCrdtSigned {
+                peer,
+                envelope: Box::new(envelope),
+            });
+        }
+    }
+
     /// Subscribe the actor to the default workspace topic, registering
     /// our `event_tx` as the per-workspace event sink. v1 uses a
     /// single topic ([`DEFAULT_WS_TOPIC`]); per-workspace routing
@@ -382,6 +454,23 @@ impl ShellNetwork {
                     }
                     continue;
                 }
+                // Phase 3 signed path. Mirrors the legacy
+                // `AppCrdtIncremental` routing: skip self-publishes,
+                // then push onto the signed-inbound queue for the
+                // broker drainer to validate + fan.
+                if let NeighbourMsg::AppCrdtIncrementalSigned {
+                    peer: peer_hash,
+                    ref envelope,
+                } = msg
+                {
+                    if peer_hash != self.local_peer_hash {
+                        self.handle_app_crdt_signed_message(
+                            peer_hash,
+                            (**envelope).clone(),
+                        );
+                    }
+                    continue;
+                }
                 let mut rep = self.replica.lock().unwrap();
                 rep.handle(peer_id_to_u64(peer), &msg);
                 let outgoing = rep.drain_outgoing();
@@ -443,6 +532,7 @@ fn shell_network_for_test(
         local_peer_hash,
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_app_crdt: Arc::new(Mutex::new(Vec::new())),
+        inbound_app_crdt_signed: Arc::new(Mutex::new(Vec::new())),
     };
     (net, cmd_rx)
 }
@@ -599,6 +689,72 @@ mod tests {
     /// harness (`tests/peer_sync_test.rs` follow-up) once that
     /// harness supports app-level CRDT injection. The two unit
     /// tests above are the contract for now.
+    fn make_envelope(seq: u64) -> qos_collab_types::SignedOp {
+        use qos_collab_types::{
+            ArtifactId, AttestationId, Ed25519PublicKey, OpClass, SignedOp,
+        };
+        use std::time::SystemTime;
+        SignedOp::new_unsigned(
+            vec![0xAA, 0xBB],
+            ArtifactId::new(),
+            Ed25519PublicKey::from_bytes([1u8; 32]),
+            AttestationId::new(),
+            OpClass::Splice,
+            SystemTime::UNIX_EPOCH,
+            seq,
+        )
+    }
+
+    #[test]
+    fn publish_app_crdt_signed_emits_a_publish_command() {
+        // Phase 3 outbound bridge: the broker forwards a validated
+        // `SignedSyncIncremental` as a
+        // `NeighbourMsg::AppCrdtIncrementalSigned`. Verify the wrapping
+        // is correct (peer id stamped, envelope round-trips verbatim,
+        // default workspace topic) without spinning up libp2p.
+        let tree = WorkspaceTree::bootstrap_default().shared();
+        let (net, mut cmd_rx) = shell_network_for_test(tree, 0xFEED_u64);
+        let envelope = make_envelope(7);
+        net.publish_app_crdt_signed(envelope.clone());
+        let cmd = cmd_rx
+            .try_recv()
+            .expect("publish_app_crdt_signed must enqueue a NetCmd");
+        match cmd {
+            NetCmd::Publish { ws, msg } => {
+                assert_eq!(ws, DEFAULT_WS_TOPIC);
+                match msg {
+                    NeighbourMsg::AppCrdtIncrementalSigned {
+                        peer,
+                        envelope: got,
+                    } => {
+                        assert_eq!(peer, 0xFEED_u64);
+                        assert_eq!(*got, envelope);
+                    }
+                    other => panic!(
+                        "expected AppCrdtIncrementalSigned, got {other:?}"
+                    ),
+                }
+            }
+            other => panic!("expected NetCmd::Publish, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_app_crdt_signed_message_buffers_for_drain() {
+        // The inbound adapter pushes onto the signed buffer the broker
+        // drainer reads from. Verify the entry preserves the peer hash
+        // and the envelope verbatim.
+        let tree = WorkspaceTree::bootstrap_default().shared();
+        let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
+        let buf_handle = net.inbound_app_crdt_signed_handle();
+        let envelope = make_envelope(13);
+        net.handle_app_crdt_signed_message(99u64, envelope.clone());
+        let buf = buf_handle.lock().unwrap();
+        assert_eq!(buf.len(), 1);
+        assert_eq!(buf[0].peer, 99u64);
+        assert_eq!(*buf[0].envelope, envelope);
+    }
+
     #[test]
     fn active_ws_for_publish_returns_default_topic() {
         // v1: publishes go to the single default workspace topic. This
