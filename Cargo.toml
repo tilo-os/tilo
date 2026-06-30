@@ -12,6 +12,10 @@ members = [
     "apps/notes",
     "apps/collab-broker",
     "apps/settings",
+    "apps/calculator",
+    "apps/totp",
+    "apps/weather",
+    "apps/contacts",
     "greeter",
     "installer",
 ]
