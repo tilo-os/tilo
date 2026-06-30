@@ -124,7 +124,7 @@ pub fn build_with(users: &[DeviceUser]) -> Box<dyn Widget> {
         )]),
     );
 
-    Box::new(Column::new().with_intrinsic_height().push(list).push(note))
+    crate::widgets::cards(vec![list, note])
 }
 
 fn user_row(u: &DeviceUser) -> El {

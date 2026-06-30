@@ -143,11 +143,11 @@ impl BluetoothPane {
              connect it.",
         ));
 
-        Box::new(
-            Column::new()
-                .with_intrinsic_height()
-                .push(card_with_action("Bluetooth", toggle, rows(device_rows))),
-        )
+        crate::widgets::cards(vec![card_with_action(
+            "Bluetooth",
+            toggle,
+            rows(device_rows),
+        )])
     }
 }
 

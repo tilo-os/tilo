@@ -36,6 +36,21 @@ use ui::theme::Theme;
 use ui::widget::{Column, Container, Scrollable, Text, Widget};
 
 use crate::categories::{Category, Section};
+use crate::widgets::vgap;
+
+/// Gap (logical px) injected under the "Settings" title so the first
+/// section header has clear breathing room beneath the title.
+const TITLE_GAP: f32 = 14.0;
+
+/// Extra gap (logical px) injected ABOVE each section header (beyond the
+/// first). Combined with the column's own inter-child gap this makes the
+/// space above a header noticeably larger than the space below it.
+const SECTION_GAP_ABOVE: f32 = 18.0;
+
+/// Small gap (logical px) injected BELOW a section header, before its
+/// first row. Deliberately smaller than [`SECTION_GAP_ABOVE`] so the
+/// header reads as belonging to the rows beneath it.
+const SECTION_GAP_BELOW: f32 = 2.0;
 
 /// Width (logical px) of the docked sidebar. Sized so the widest row
 /// ("Permissions & Roles" with its glyph, plus the row's horizontal padding)
@@ -276,16 +291,31 @@ impl Widget for SidebarRow {
 /// background so it reads as a single cohesive sidebar pane, with the rows
 /// inside a [`Scrollable`] so every category stays reachable on short windows.
 pub fn build(selected: Category) -> Box<dyn Widget> {
+    // An intrinsic-height column lays out as a block stack and ignores the
+    // toolkit's inter-child gap, so we place explicit fixed-height spacers
+    // to control the vertical rhythm:
+    //   * a generous gap under the "Settings" title so it isn't crowded by
+    //     the first section header;
+    //   * a clearly LARGER gap ABOVE each section header than the small gap
+    //     below it, so the header visibly groups the rows beneath it rather
+    //     than reading as a trailer to the previous section.
     let mut col = Column::new()
         .with_intrinsic_height()
-        .push(Box::new(Text::new("Settings").with_size(20.0)));
+        .push(Box::new(Text::new("Settings").with_size(22.0)));
+    col = col.push(vgap(TITLE_GAP));
 
-    for section in Section::ALL {
+    for (i, section) in Section::ALL.iter().enumerate() {
+        // Extra air above every header except the first (which already has
+        // the title gap above it).
+        if i != 0 {
+            col = col.push(vgap(SECTION_GAP_ABOVE));
+        }
         col = col.push(Box::new(
             Text::new(&section.label().to_uppercase())
-                .with_size(10.0)
+                .with_size(11.0)
                 .with_color(Theme::dark().text_dim),
         ));
+        col = col.push(vgap(SECTION_GAP_BELOW));
         for category in Category::in_section(*section) {
             col = col.push(Box::new(SidebarRow::new(category, category == selected)));
         }

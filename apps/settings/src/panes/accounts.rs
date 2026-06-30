@@ -45,35 +45,32 @@ pub fn build() -> Box<dyn Widget> {
 /// Build the pane from a caller-supplied directory — used by tests and the
 /// deterministic `--shots` render.
 pub fn build_with(dir: &AccountDirectory) -> Box<dyn Widget> {
-    let mut col = Column::new().with_intrinsic_height();
-
-    col = col.push(card(
-        "External accounts",
-        rows(vec![
-            Box::new(
-                Text::new(
-                    "Accounts you add here are shared across the system. \
-                     Mail reads your email accounts, Calendar reads your \
-                     CalDAV calendars, and the file apps mount your WebDAV \
-                     and Nextcloud shares.",
-                )
-                .with_size(12.0),
-            ),
-            caption(&format!(
-                "Email accounts: {}",
-                MailStore::path()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "~/.config/qos/mail/accounts.json".into())
-            )),
-        ]),
-    ));
-
-    col = col.push(kind_card(dir, AccountKind::Mail));
-    col = col.push(kind_card(dir, AccountKind::CalDav));
-    col = col.push(kind_card(dir, AccountKind::WebDav));
-    col = col.push(kind_card(dir, AccountKind::Nextcloud));
-
-    Box::new(col)
+    crate::widgets::cards(vec![
+        card(
+            "External accounts",
+            rows(vec![
+                Box::new(
+                    Text::new(
+                        "Accounts you add here are shared across the system. \
+                         Mail reads your email accounts, Calendar reads your \
+                         CalDAV calendars, and the file apps mount your WebDAV \
+                         and Nextcloud shares.",
+                    )
+                    .with_size(12.0),
+                ),
+                caption(&format!(
+                    "Email accounts: {}",
+                    MailStore::path()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "~/.config/qos/mail/accounts.json".into())
+                )),
+            ]),
+        ),
+        kind_card(dir, AccountKind::Mail),
+        kind_card(dir, AccountKind::CalDav),
+        kind_card(dir, AccountKind::WebDav),
+        kind_card(dir, AccountKind::Nextcloud),
+    ])
 }
 
 /// A card listing every account of one kind, with an "Add" button in the

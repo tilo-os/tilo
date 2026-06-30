@@ -27,8 +27,8 @@
 //! those keys and swaps in the editor. The contract is intentionally a
 //! data seam (intents + keys), not a compile-time coupling.
 
-use crate::widgets::{card, caption, rows, value_row};
-use ui::widget::{Button, Column, Row, Spacer, Text, Widget};
+use crate::widgets::{card, caption, cards, rows, value_row, El};
+use ui::widget::{Button, Row, Spacer, Text, Widget};
 
 /// CRDT key the "Open roles editor" affordance writes. A host that embeds
 /// the `permissions` crate watches this to mount `open_editor(roles)`.
@@ -37,9 +37,9 @@ pub const OPEN_ROLES_KEY: &str = "permissions.open_roles";
 pub const OPEN_MEMBERS_KEY: &str = "permissions.open_members";
 
 pub fn build() -> Box<dyn Widget> {
-    let mut col = Column::new().with_intrinsic_height();
+    let mut panel: Vec<El> = Vec::new();
 
-    col = col.push(card(
+    panel.push(card(
         "Roles & permissions",
         rows(vec![
             Box::new(
@@ -70,7 +70,7 @@ pub fn build() -> Box<dyn Widget> {
 
     // A read-only snapshot of the kinds of permissions the editor manages,
     // so the panel is informative before the editor is wired in.
-    col = col.push(card(
+    panel.push(card(
         "What the editor governs",
         rows(vec![
             value_row("Workspace", "Invite, remove, and manage members"),
@@ -80,7 +80,7 @@ pub fn build() -> Box<dyn Widget> {
         ]),
     ));
 
-    col = col.push(card(
+    panel.push(card(
         "Integration",
         rows(vec![caption(
             "The editor is provided by the qOS permissions service. This \
@@ -89,7 +89,7 @@ pub fn build() -> Box<dyn Widget> {
         )]),
     ));
 
-    Box::new(col)
+    cards(panel)
 }
 
 #[cfg(test)]
