@@ -1,0 +1,38 @@
+[package]
+name = "qos-pkg"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "qos_pkg"
+path = "src/lib.rs"
+
+# The foundation crate for qOS packages (.qpkg). Defines the manifest
+# schema, the BLAKE3 content-addressed package id, the on-disk blob
+# layout, and the pack/unpack/sign/verify operations. Used by all
+# package kinds (app, service, format-provider, plugin, runtime) and
+# by both the native loader and the Flatpak packager.
+
+[dependencies]
+# Threshold-shared Ed25519 identity. Signing goes through the
+# identity's group key; verify is a regular Ed25519 verify against
+# the group public key, so callers only need the verifying-key
+# bytes — not the threshold machinery — to verify a .qpkg.
+qos-threshold-identity = { path = "../qos-threshold-identity" }
+# Re-uses the canonical-bytes encoder + Ed25519 newtypes so the
+# signed-bytes shape matches the rest of qOS's signed wire types.
+qos-collab-types       = { path = "../qos-collab-types" }
+
+blake3       = "1.8.5"
+ed25519-dalek = { version = "2", features = ["serde", "rand_core"] }
+hex          = "0.4.3"
+rand         = "0.8"
+semver       = "1"
+serde        = { version = "1", features = ["derive"] }
+serde_bytes  = "0.11"
+thiserror    = "1"
+toml         = "0.8"
+walkdir      = "2"
+
+[dev-dependencies]
+tempfile = "3"
