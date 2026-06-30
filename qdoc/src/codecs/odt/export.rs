@@ -281,6 +281,28 @@ fn comment_ends_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
     v
 }
 
+/// The tracked-change ids (any `ins`/`del` mark) starting / ending exactly at `i`,
+/// sorted for deterministic output.
+fn change_starts_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
+    let mut v: Vec<String> = marks
+        .iter()
+        .filter(|m| (m.name == crate::schema::MARK_INS || m.name == crate::schema::MARK_DEL) && m.start == i)
+        .filter_map(|m| m.value.as_str().map(|s| s.to_string()))
+        .collect();
+    v.sort();
+    v
+}
+
+fn change_ends_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
+    let mut v: Vec<String> = marks
+        .iter()
+        .filter(|m| (m.name == crate::schema::MARK_INS || m.name == crate::schema::MARK_DEL) && m.end == i)
+        .filter_map(|m| m.value.as_str().map(|s| s.to_string()))
+        .collect();
+    v.sort();
+    v
+}
+
 /// Render a block's text with `text:a` hyperlinks (outer) and `text:span` style
 /// wrappers (inner) for its marks. The link wrapper and the span set are each
 /// closed and re-opened whenever they change, so the output is always
@@ -333,8 +355,30 @@ fn render_inline(
             }
         }
     };
+    // Emit tracked-change `text:change-end`/`text:change-start` markers at `i`, closing
+    // spans/link first so each marker is a clean sibling of the surrounding content.
+    let emit_change_boundaries = |out: &mut String, open: &mut Vec<String>, cur_link: &mut Option<String>, i: usize| {
+        let ends = change_ends_at(marks, i);
+        let starts = change_starts_at(marks, i);
+        if ends.is_empty() && starts.is_empty() {
+            return;
+        }
+        close_spans(out, open);
+        if cur_link.is_some() {
+            out.push_str("</text:a>");
+            *cur_link = None;
+        }
+        // Ends before starts so an adjacent change's end closes before the next opens.
+        for id in ends {
+            out.push_str(&super::changes::render_change_end(&id));
+        }
+        for id in starts {
+            out.push_str(&super::changes::render_change_start(&id));
+        }
+    };
     for i in 0..n {
         emit_comment_boundaries(&mut out, &mut open, &mut cur_link, i);
+        emit_change_boundaries(&mut out, &mut open, &mut cur_link, i);
         let link = link_at(marks, i);
         if link != cur_link {
             // A link is the outer element, so close any open spans first, then the
@@ -390,6 +434,10 @@ fn render_inline(
         if let Some(c) = comments.get(&id) {
             out.push_str(&super::comments::render_annotation_end(c));
         }
+    }
+    // A tracked change ending exactly at the block's end emits its change-end marker.
+    for id in change_ends_at(marks, n) {
+        out.push_str(&super::changes::render_change_end(&id));
     }
     out
 }
@@ -732,6 +780,9 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
     // Comments/annotations anchored to body ranges, emitted at each range's boundaries.
     let comments = comment_index(snap);
     let comments = &comments;
+    // Tracked changes: declared up front in a `text:tracked-changes` block; the body
+    // references each by `text:change-start`/`-end` markers (emitted in `render_inline`).
+    let tracked_changes = super::changes::render_tracked_changes(&snap.changes);
     let mut style_attr = |b: &BlockView| -> String { resolve_para_style(b, &snap.styles, &mut pstyles, &mut named_refs) };
     let mut i = 0;
     while i < snap.blocks.len() {
@@ -894,7 +945,7 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0" xmlns:number="urn:oasis:names:tc:opendocument:xmlns:datastyle:1.0">
 <office:automatic-styles>{styles}</office:automatic-styles>
-<office:body><office:text>{body}</office:text></office:body>
+<office:body><office:text>{tracked_changes}{body}</office:text></office:body>
 </office:document-content>"#
     )
 }
@@ -1674,6 +1725,69 @@ mod tests {
             authors_texts(&d3.materialize()),
             "comments stable across a second round-trip"
         );
+    }
+
+    #[test]
+    fn tracked_changes_roundtrip_through_odt() {
+        use crate::document::MarkValue;
+        use crate::schema::{MARK_DEL, MARK_INS};
+        // A tracked insertion + a tracked deletion (with author) must export as a
+        // text:tracked-changes block + inline change-start/change-end markers, and
+        // re-import with kind/author + anchored ranges intact.
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "hello world");
+        // Insert " there" after "hello" (idx 5).
+        let ins = d.track_insert(&p, 5, " there", "Ada", "2021-01-02T00:00:00");
+        // Delete "world" (now chars 12..17 in "hello there world").
+        let del = d.track_delete(&p, 12, 17, "Bob", "2021-03-04T00:00:00");
+        let _ = (ins, del);
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let cont = OdtContainer::read(&exported).unwrap();
+        let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
+        assert!(content.contains("<text:tracked-changes>"), "tracked-changes block emitted: {content}");
+        assert!(content.contains("<text:insertion>"), "insertion region emitted: {content}");
+        assert!(content.contains("<text:deletion>"), "deletion region emitted: {content}");
+        assert!(content.contains("<text:change-start"), "change-start marker emitted: {content}");
+        assert!(content.contains("<text:change-end"), "change-end marker emitted: {content}");
+        assert!(content.contains("<dc:creator>Ada</dc:creator>"), "ins author emitted: {content}");
+        assert!(content.contains("<dc:creator>Bob</dc:creator>"), "del author emitted: {content}");
+
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+        // Body text retains both the insertion and the (struck) deletion.
+        assert_eq!(snap.blocks[0].text, "hello there world", "ins kept, del retained: {:?}", snap.blocks[0].text);
+        let im = snap.blocks[0].marks.iter().find(|m| m.name == MARK_INS).expect("ins mark survives");
+        assert_eq!((im.start, im.end), (5, 11), "ins range survives: {:?}", snap.blocks[0].marks);
+        let dm = snap.blocks[0].marks.iter().find(|m| m.name == MARK_DEL).expect("del mark survives");
+        assert_eq!((dm.start, dm.end), (12, 17), "del range survives: {:?}", snap.blocks[0].marks);
+        let ins_id = match &im.value {
+            MarkValue::Str(s) => s.clone(),
+            _ => panic!("ins value"),
+        };
+        let del_id = match &dm.value {
+            MarkValue::Str(s) => s.clone(),
+            _ => panic!("del value"),
+        };
+        assert_eq!(snap.changes.len(), 2, "both changes survive: {:?}", snap.changes);
+        let ic = snap.changes.iter().find(|c| c.id == ins_id).expect("ins change present");
+        assert_eq!(ic.kind, crate::snapshot::ChangeKind::Ins);
+        assert_eq!(ic.author, "Ada");
+        assert_eq!(ic.range, Some((snap.blocks[0].id.clone(), 5, 11)));
+        let dc = snap.changes.iter().find(|c| c.id == del_id).expect("del change present");
+        assert_eq!(dc.kind, crate::snapshot::ChangeKind::Del);
+        assert_eq!(dc.author, "Bob");
+        assert_eq!(dc.range, Some((snap.blocks[0].id.clone(), 12, 17)));
+
+        // Accept on the imported document: insertion clears its mark (text kept),
+        // deletion removes its struck text.
+        d2.accept_change(&ins_id);
+        d2.accept_change(&del_id);
+        let after = d2.materialize();
+        assert_eq!(after.blocks[0].text, "hello there ", "accept-ins keeps text; accept-del removes 'world'");
+        assert!(after.changes.is_empty(), "both changes resolved");
     }
 
     #[test]

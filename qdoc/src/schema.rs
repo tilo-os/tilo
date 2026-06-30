@@ -59,6 +59,34 @@ pub const COMMENT_BLOCKS: &str = "blocks"; // Map<block_id, block> (the comment 
 /// spans real text rather than a placeholder character.
 pub const MARK_COMMENT: &str = "comment"; // Str — the anchored comment id
 
+// Tracked changes / revision marks. A `changes` root map holds `Map<change_id,
+// change>`, where each change is a sub-map carrying its `author`, `date` (a free-form
+// string — ISO-8601 in practice) and a `kind` ("ins"|"del"). A change is *anchored* to
+// body text by an inline `ins`/`del` mark (matching the change's kind) whose value is
+// the change id, covering the changed range `[start, end)`:
+//   * a tracked **insertion** wraps inserted body text with an `ins` mark — the text
+//     is real content, flagged as proposed-added until accepted;
+//   * a tracked **deletion** marks retained-but-struck body text with a `del` mark —
+//     the text stays in the document (so reviewers can see it) until accept removes it.
+// Both marks merge with concurrent text edits and round-trip through the codecs
+// (`text:tracked-changes`/`text:changed-region` + `text:change-start`/`text:change-end`/
+// `text:change` in `.odt`; `<w:ins>`/`<w:del>`(+`<w:delText>`) run wrappers in `.docx`).
+// Created eagerly (like `comments`) so two replicas that concurrently track a change
+// share ONE container object and converge; opened optionally so documents authored
+// before tracked changes existed still open (they then read as having no changes).
+pub const KEY_CHANGES: &str = "changes"; // Map<change_id, change>
+pub const CHANGE_AUTHOR: &str = "author"; // Str — the change author's display name
+pub const CHANGE_DATE: &str = "date"; // Str — the change timestamp (ISO-8601)
+pub const CHANGE_KIND: &str = "kind"; // Str ("ins"|"del")
+pub const CHANGE_KIND_INS: &str = "ins";
+pub const CHANGE_KIND_DEL: &str = "del";
+/// The inline mark anchoring a tracked **insertion** to a text range. Covers the
+/// inserted range `[start, end)`; its value is the change id (a `Str`).
+pub const MARK_INS: &str = "ins"; // Str — the anchored (insertion) change id
+/// The inline mark anchoring a tracked **deletion** to a retained-but-struck text
+/// range. Covers the deleted range `[start, end)`; its value is the change id (a `Str`).
+pub const MARK_DEL: &str = "del"; // Str — the anchored (deletion) change id
+
 // Document properties / metadata. A `props` sub-map under `meta` holding the
 // well-known document-level fields (title/author/…) as plain strings. Isolated
 // from other `meta` keys (page margins, stylesheet) and created lazily so
