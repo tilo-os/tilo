@@ -31,6 +31,9 @@ pub enum Action {
     SubmitSearch,
     SetQuality(String),
     Like,
+    /// Flip the navigation sidebar (the hamburger toggle). Only has a visible
+    /// effect on a narrow window, where the rail is an overlay flap.
+    ToggleSidebar,
 }
 
 /// Named boolean settings the settings page can flip.

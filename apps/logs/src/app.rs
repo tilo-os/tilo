@@ -43,6 +43,7 @@ use ui::ColorCompat;
 
 use crate::doc::LogsDoc;
 use crate::model::{Filter, LogEntry, Priority};
+use crate::responsive::{Pane, PushNav};
 use crate::theme_ext::{tint, ThemeColors};
 
 const PAD: f64 = 16.0;
@@ -78,6 +79,12 @@ struct Regions {
     list_header: Rect,
     list_body: Rect,
     detail: Rect,
+    /// `true` when the window is narrow enough that the list and detail are
+    /// single-pane push slabs instead of a side-by-side split.
+    narrow: bool,
+    /// Back affordance shown in the detail pane header on narrow windows
+    /// (returns to the list). `Rect::ZERO` when wide or showing the list.
+    back_btn: Rect,
     /// (rect, value) for the currently-open dropdown's rows. `value` is
     /// the canonical filter string ("" = the "All" row).
     dropdown: Vec<(Rect, String, String)>, // (rect, value, label)
@@ -109,6 +116,11 @@ pub struct LogsApp {
     focused: bool,
     dirty: bool,
 
+    // ---- responsiveness (master-detail push on narrow windows) ----
+    /// Drives the single-pane list↔detail push slide below the width
+    /// breakpoint. Inert on wide windows, where both panes are docked.
+    push: PushNav,
+
     // ---- live-tail plumbing (never runs under --shots) ----
     allow_live: bool,
     last_poll: Instant,
@@ -135,11 +147,21 @@ impl LogsApp {
             popup: None,
             focused: true,
             dirty: true,
+            push: PushNav::default(),
             allow_live,
             last_poll: Instant::now(),
         };
         app.rebuild_facets();
         app
+    }
+
+    /// Deterministically snap the narrow single-pane push flow to the
+    /// detail pane (with its Back affordance) for `--shots`, skipping the
+    /// eased slide so a headless frame captures a settled pane. A no-op
+    /// effect on wide windows, where both panes are docked anyway.
+    pub fn shots_show_detail(&mut self) {
+        self.push.snap(Pane::Detail);
+        self.dirty = true;
     }
 
     /// Recompute the distinct-unit and distinct-boot lists from entries.
@@ -319,16 +341,43 @@ impl LogsApp {
         let ly = legend.y0 + (LEGEND_H - 26.0) / 2.0;
         let clear_btn = Rect::new(x0 + w - PAD - 104.0, ly, x0 + w - PAD, ly + 26.0);
 
-        // Content split: list (left) + detail (right).
+        // Content area between the filter bar and the legend.
         let cx0 = x0 + PAD;
         let cy0 = content_top + PAD;
         let cx1 = x0 + w - PAD;
         let cy1 = content_bottom - PAD;
         let gap = 14.0;
-        let list_w = ((cx1 - cx0) - gap) * 0.58;
-        let list_header = Rect::new(cx0, cy0, cx0 + list_w, cy0 + LIST_HEADER_H);
-        let list_body = Rect::new(cx0, list_header.y1, cx0 + list_w, cy1);
-        let detail = Rect::new(cx0 + list_w + gap, cy0, cx1, cy1);
+
+        // Responsive split: side-by-side when wide, single-pane push when
+        // narrow. The choice is driven purely from the allocated width.
+        let narrow = PushNav::is_narrow(w);
+        let (list_header, list_body, detail, back_btn) = if narrow {
+            // Single-pane push: the list and detail each fill the whole
+            // content width and slide horizontally as one swaps for the
+            // other. `slide` (0 = list, 1 = detail) offsets both slabs.
+            let pane_w = cx1 - cx0;
+            let slide = self.push.slide();
+            let list_x = cx0 - pane_w * slide; // slides off to the left
+            let detail_x = cx0 + pane_w * (1.0 - slide); // slides in from the right
+            let lh = Rect::new(list_x, cy0, list_x + pane_w, cy0 + LIST_HEADER_H);
+            let lb = Rect::new(list_x, lh.y1, list_x + pane_w, cy1);
+            // Reserve a Back affordance strip at the top of the detail pane.
+            let detail_rect = Rect::new(detail_x, cy0, detail_x + pane_w, cy1);
+            let bb = Rect::new(
+                detail_rect.x0 + 12.0,
+                detail_rect.y0 + 10.0,
+                detail_rect.x0 + 92.0,
+                detail_rect.y0 + 10.0 + 26.0,
+            );
+            (lh, lb, detail_rect, bb)
+        } else {
+            // Wide: the classic list (left) + detail (right) split.
+            let list_w = ((cx1 - cx0) - gap) * 0.58;
+            let lh = Rect::new(cx0, cy0, cx0 + list_w, cy0 + LIST_HEADER_H);
+            let lb = Rect::new(cx0, lh.y1, cx0 + list_w, cy1);
+            let detail_rect = Rect::new(cx0 + list_w + gap, cy0, cx1, cy1);
+            (lh, lb, detail_rect, Rect::ZERO)
+        };
 
         // Open dropdown rows.
         let mut dropdown = Vec::new();
@@ -373,6 +422,8 @@ impl LogsApp {
             list_header,
             list_body,
             detail,
+            narrow,
+            back_btn,
             dropdown,
         }
     }
@@ -727,10 +778,17 @@ impl LogsApp {
         let inner_w = d.width() - 36.0;
         let mut y = d.y0 + 18.0;
 
+        // On narrow windows the detail is a pushed pane; draw a Back
+        // affordance at the top and inset the field content beneath it.
+        if reg.narrow && reg.back_btn.width() > 0.0 {
+            self.draw_back_button(scene, t, tr, theme, reg.back_btn);
+            y = reg.back_btn.y1 + 14.0;
+        }
+
         let Some(abs) = self.effective_selected() else {
             let msg = "Select an entry to inspect its fields.";
             let sz = theme.tokens.typography.scale.base;
-            text_at(tr, scene, t, msg, sz, theme.text_dim, inner_x, d.center().y, TextWeight::Regular, false);
+            text_at(tr, scene, t, msg, sz, theme.text_dim, inner_x, y.max(d.center().y), TextWeight::Regular, false);
             scene.pop_layer();
             return;
         };
@@ -802,6 +860,24 @@ impl LogsApp {
         }
 
         scene.pop_layer();
+    }
+
+    /// The Back affordance at the top of the pushed detail pane (narrow
+    /// windows only): a pill with a left chevron + "Back" that returns to
+    /// the list.
+    fn draw_back_button(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, rect: Rect) {
+        let c = &theme.tokens.colors;
+        let hovered = rect.contains(self.cursor);
+        let bg = if hovered { c.surface_white_10 } else { c.surface_white_5 };
+        fill_round(scene, t, rect, theme.tokens.radii.full, bg);
+        stroke_round(scene, t, rect, theme.tokens.radii.full, c.border_standard, 1.0);
+        // Left chevron.
+        let cyp = rect.center().y;
+        let cxp = rect.x0 + 18.0;
+        line(scene, t, cxp + 4.0, cyp - 5.0, cxp - 1.0, cyp, theme.text_primary, 1.6);
+        line(scene, t, cxp - 1.0, cyp, cxp + 4.0, cyp + 5.0, theme.text_primary, 1.6);
+        let sz = theme.tokens.typography.scale.sm;
+        text_at(tr, scene, t, "Back", sz, theme.text_primary, rect.x0 + 30.0, vcenter(rect, sz), TextWeight::Semibold, false);
     }
 
     fn draw_legend(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, reg: &Regions) {
@@ -976,6 +1052,14 @@ impl Widget for LogsApp {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        // Advance the master↔detail push slide. `draw` is the per-frame
+        // animation tick for a self-rendering widget (the live loop keeps
+        // redrawing while `needs_animation_frame` is true); ticking here
+        // keeps the eased slide in step with the frame it's drawn into.
+        if self.push.tick() {
+            self.dirty = true;
+        }
+
         let reg = self.regions();
         let c = &theme.tokens.colors;
         // App background.
@@ -983,8 +1067,24 @@ impl Widget for LogsApp {
 
         self.draw_header(scene, transform, tr, theme, &reg);
         self.draw_filter_bar(scene, transform, tr, theme, &reg);
-        self.draw_list(scene, transform, tr, theme, &reg);
-        self.draw_detail(scene, transform, tr, theme, &reg);
+        if reg.narrow {
+            // Single-pane push: clip both slabs to the content area so the
+            // off-screen pane (sliding in/out) never bleeds past the edges,
+            // and skip whichever pane is fully off-screen.
+            let content = Rect::new(self.rect.x0, reg.filter.y1, self.rect.x1, reg.legend.y0);
+            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &content);
+            let slide = self.push.slide();
+            if slide < 0.999 {
+                self.draw_list(scene, transform, tr, theme, &reg);
+            }
+            if slide > 0.001 {
+                self.draw_detail(scene, transform, tr, theme, &reg);
+            }
+            scene.pop_layer();
+        } else {
+            self.draw_list(scene, transform, tr, theme, &reg);
+            self.draw_detail(scene, transform, tr, theme, &reg);
+        }
         self.draw_legend(scene, transform, tr, theme, &reg);
     }
 
@@ -1121,7 +1221,9 @@ impl Widget for LogsApp {
         self.allow_live && self.live_tail
     }
     fn needs_animation_frame(&self) -> bool {
-        self.allow_live && self.live_tail
+        // Keep pumping frames while the push slide eases into place, or
+        // while live tail is on.
+        self.push.is_animating() || (self.allow_live && self.live_tail)
     }
 }
 
@@ -1171,6 +1273,15 @@ impl LogsApp {
         }
 
         let reg = self.regions();
+
+        // Narrow-window Back affordance: when the detail pane is pushed in,
+        // tapping Back slides the list back.
+        if reg.narrow && reg.back_btn.width() > 0.0 && reg.back_btn.contains(pt) {
+            self.push.show_list();
+            self.dirty = true;
+            *handled = true;
+            return;
+        }
 
         // 2. Header: live-tail pill.
         if reg.live_pill.contains(pt) {
@@ -1224,9 +1335,13 @@ impl LogsApp {
             return;
         }
 
-        // 7. List rows → select.
+        // 7. List rows → select. On a narrow window this also pushes the
+        // detail pane in (single-pane master-detail navigation).
         if let Some(abs) = self.row_at(&reg, pt) {
             self.select_abs(abs, doc, root);
+            if reg.narrow {
+                self.push.show_detail();
+            }
             *handled = true;
         }
     }
@@ -1266,8 +1381,13 @@ impl LogsApp {
                 *handled = true;
             }
             Key::Named(NamedKey::Escape) => {
+                let narrow_in_detail =
+                    PushNav::is_narrow(self.rect.width()) && self.push.pane() == Pane::Detail;
                 if self.popup.is_some() {
                     self.popup = None;
+                } else if narrow_in_detail {
+                    // Back out of the pushed detail pane to the list.
+                    self.push.show_list();
                 } else if !self.filter.search.is_empty() {
                     LogsDoc::search_set(doc, root, "");
                     self.scroll = 0.0;

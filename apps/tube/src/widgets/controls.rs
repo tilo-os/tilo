@@ -42,6 +42,9 @@ pub enum IconKind {
     Sparkle,
     Eye,
     Skip,
+    /// Hamburger — three horizontal bars. Summons the navigation rail when
+    /// it is collapsed to an overlay flap on a narrow window.
+    Menu,
 }
 
 pub struct Icon {
@@ -253,6 +256,11 @@ impl Icon {
                 scene.fill(Fill::NonZero, transform, self.color, None, &tri);
                 scene.fill(Fill::NonZero, transform, self.color, None,
                     &Rect::new(u(0.66, 0.22).x, u(0.66, 0.22).y, u(0.78, 0.78).x, u(0.78, 0.78).y));
+            }
+            IconKind::Menu => {
+                line(scene, &[(0.18, 0.3), (0.82, 0.3)], false);
+                line(scene, &[(0.18, 0.5), (0.82, 0.5)], false);
+                line(scene, &[(0.18, 0.7), (0.82, 0.7)], false);
             }
         }
     }

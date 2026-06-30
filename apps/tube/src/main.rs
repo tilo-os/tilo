@@ -4,6 +4,14 @@
 //!   * default        — run the live winit event loop via `ui::App`.
 //!   * `--shots PATH` — render one offscreen frame to a PNG and exit
 //!                       (headless screenshot; identical passes to the live app).
+//!
+//! Shots-only flags:
+//!   * `--viewport WxH` — render at WxH logical px instead of the default
+//!                         1280x800. A sub-`NAV_BREAKPOINT` width exercises the
+//!                         responsive overlay-flap layout.
+//!   * `--narrow`       — build the narrow variant (rail collapsed to an open
+//!                         overlay flap), so the still captures the summoned
+//!                         rail + scrim. Use together with a narrow `--viewport`.
 
 use std::collections::HashMap;
 
@@ -25,7 +33,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
-        render_shot_to_png(tube::app_root(), DEFAULT_SHOTS_VIEWPORT, &out)?;
+        let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+        let narrow = args.iter().any(|a| a == "--narrow");
+        let root = if narrow { tube::app_root_narrow_shot() } else { tube::app_root() };
+        render_shot_to_png(root, viewport, &out)?;
         return Ok(());
     }
 
@@ -43,6 +54,23 @@ fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
         }
         if let Some(rest) = arg.strip_prefix("--shots=") {
             return Some(std::path::PathBuf::from(rest));
+        }
+    }
+    None
+}
+
+/// Parse `--viewport WxH` (or `--viewport=WxH`) into a (width, height) pair.
+fn parse_viewport_arg(args: &[String]) -> Option<(u32, u32)> {
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        let spec = if arg == "--viewport" {
+            iter.next().map(String::as_str)
+        } else {
+            arg.strip_prefix("--viewport=")
+        };
+        if let Some(spec) = spec {
+            let (w, h) = spec.split_once(['x', 'X'])?;
+            return Some((w.trim().parse().ok()?, h.trim().parse().ok()?));
         }
     }
     None
