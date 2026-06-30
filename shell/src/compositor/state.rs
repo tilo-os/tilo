@@ -45,7 +45,11 @@ use smithay::wayland::shell::xdg::{
     XdgToplevelSurfaceData,
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
-use smithay::{delegate_compositor, delegate_output, delegate_seat, delegate_shm, delegate_xdg_shell};
+use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
+use smithay::{
+    delegate_compositor, delegate_output, delegate_seat, delegate_shm,
+    delegate_virtual_keyboard_manager, delegate_xdg_shell,
+};
 
 use crate::compositor::surface_readback::SurfaceTracker;
 use crate::compositor::tab_binding;
@@ -155,6 +159,18 @@ impl State {
         // intentionally defer.
         let mut seat = seat_state.new_wl_seat(&display_handle, "quick-desktop");
         seat.add_pointer();
+        // W7 text injection: a keyboard on the seat is required for the
+        // on-screen keyboard's `virtual-keyboard-v1` client (and any future
+        // `input-method`/`text-input` IME) to deliver keys to the focused
+        // surface. Default xkb config; 200ms repeat delay, 25/s rate. Guarded
+        // so a keymap-load failure degrades gracefully instead of panicking.
+        if let Err(e) = seat.add_keyboard(Default::default(), 200, 25) {
+            tracing::warn!("seat: failed to add keyboard (text injection disabled): {e}");
+        }
+        // W7: advertise the virtual-keyboard manager global so the OSK can
+        // inject text. Keys flow through the seat keyboard above to the
+        // focused surface; the global self-registers in the display.
+        VirtualKeyboardManagerState::new::<Self, _>(&display_handle, |_client| true);
 
         Self {
             loop_handle,
@@ -528,4 +544,5 @@ delegate_compositor!(State);
 delegate_xdg_shell!(State);
 delegate_shm!(State);
 delegate_seat!(State);
+delegate_virtual_keyboard_manager!(State);
 delegate_output!(State);
