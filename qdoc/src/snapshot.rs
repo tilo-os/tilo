@@ -35,6 +35,18 @@ pub struct DocSnapshot {
     /// properties set (and absent in snapshots authored before this field existed).
     #[serde(default)]
     pub properties: BTreeMap<String, String>,
+    /// Page-header block sequence (rendered at the top of every page). Empty for
+    /// documents with no header. A `field` mark valued `page-number` (see
+    /// `schema::MARK_FIELD`) over a placeholder character marks a page-number
+    /// field. Round-trips through the `.odt` master-page header and the `.docx`
+    /// `header1.xml` part.
+    #[serde(default)]
+    pub header: Vec<BlockView>,
+    /// Page-footer block sequence (rendered at the bottom of every page). Mirrors
+    /// `header`; round-trips through the `.odt` master-page footer and `.docx`
+    /// `footer1.xml` part.
+    #[serde(default)]
+    pub footer: Vec<BlockView>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

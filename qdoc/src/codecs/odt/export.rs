@@ -41,7 +41,9 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     let mut had_mimetype = false;
     let mut had_manifest = false;
     let mut had_meta = false;
+    let mut had_styles = false;
     let mut original_meta: Option<Vec<u8>> = None;
+    let mut original_styles: Option<Vec<u8>> = None;
     for (key, bytes) in preserved {
         if let Some(name) = key.strip_prefix("odt/part/") {
             had_mimetype |= name == "mimetype";
@@ -50,7 +52,23 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
                 had_meta = true;
                 original_meta = Some(bytes.clone());
             }
+            if name == "styles.xml" {
+                had_styles = true;
+                original_styles = Some(bytes.clone());
+            }
             c.set(name, bytes);
+        }
+    }
+    // Page header/footer → `styles.xml` master-page: splice the regenerated
+    // `style:header`/`style:footer` into a copy of the original `styles.xml` (or
+    // synthesise a minimal one if the source had none). Only runs when the document
+    // actually has a header or footer, so a doc with neither leaves `styles.xml`
+    // untouched (or absent).
+    if let Some(styles_xml) = super::headers::export_master_headers(&doc, original_styles.as_deref()) {
+        let is_new = !had_styles;
+        c.set("styles.xml", styles_xml);
+        if is_new {
+            had_styles = true;
         }
     }
     // Document properties → `meta.xml`: regenerate the part from the canonical
@@ -79,6 +97,9 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     let mut pic_entries: Vec<(String, &'static str)> = Vec::new();
     if had_meta {
         pic_entries.push(("meta.xml".to_string(), "text/xml"));
+    }
+    if had_styles {
+        pic_entries.push(("styles.xml".to_string(), "text/xml"));
     }
     for b in &snap.blocks {
         if b.kind != "image" {
@@ -791,6 +812,19 @@ mod tests {
             .collect()
     }
 
+    /// Normalize a region's blocks to `(text, marks-with-values)`, dropping the
+    /// volatile per-import block id so two independent imports compare equal.
+    fn norm_region(blocks: &[crate::snapshot::BlockView]) -> Vec<(String, Vec<(usize, usize, String, crate::document::MarkValue)>)> {
+        blocks
+            .iter()
+            .map(|b| {
+                let mut m: Vec<_> = b.marks.iter().map(|x| (x.start, x.end, x.name.clone(), x.value.clone())).collect();
+                m.sort();
+                (b.text.clone(), m)
+            })
+            .collect()
+    }
+
     #[test]
     fn export_import_roundtrips_model() {
         let styles = r#"<style:style style:name="T1" style:family="text"><style:text-properties fo:font-weight="bold"/></style:style>"#;
@@ -1261,6 +1295,83 @@ mod tests {
         let exported = OdtCodec.export(d.as_ref()).unwrap();
         let cont = OdtContainer::read(&exported).unwrap();
         assert!(cont.get("meta.xml").is_none(), "no metadata part synthesised for a doc with no properties");
+    }
+
+    #[test]
+    fn header_footer_with_page_number_roundtrip_through_odt() {
+        use crate::document::MarkValue;
+        use crate::schema::{FIELD_PAGE_NUMBER, FIELD_PLACEHOLDER, MARK_FIELD};
+        // A header "Title" + a footer with a page-number field must export into the
+        // master-page in styles.xml and re-import as the same header/footer + field.
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "body");
+        let h = d.insert_header_block(None, "paragraph");
+        d.splice_header_text(&h, 0, 0, "Title");
+        let f = d.insert_footer_block(None, "paragraph");
+        d.splice_footer_text(&f, 0, 0, "Page ");
+        d.insert_footer_page_number(&f, 5);
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        // styles.xml carries the master-page header/footer + a page-number field.
+        let cont = OdtContainer::read(&exported).unwrap();
+        let styles = std::str::from_utf8(cont.get("styles.xml").expect("styles.xml written")).unwrap();
+        assert!(styles.contains("<style:header>") && styles.contains("Title"), "header in master-page: {styles}");
+        assert!(styles.contains("<style:footer>"), "footer in master-page: {styles}");
+        assert!(styles.contains("<text:page-number/>"), "page-number field emitted: {styles}");
+        // The freshly-created styles.xml is registered in the manifest.
+        let manifest = std::str::from_utf8(cont.get("META-INF/manifest.xml").unwrap()).unwrap();
+        assert!(manifest.contains("styles.xml"), "styles.xml registered in manifest: {manifest}");
+
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        // Body intact.
+        assert_eq!(d2.materialize().blocks[0].text, "body");
+        // Header survives.
+        let header = d2.header();
+        assert_eq!(header.len(), 1, "header block present: {header:?}");
+        assert_eq!(header[0].text, "Title");
+        // Footer + field survive.
+        let footer = d2.footer();
+        assert_eq!(footer.len(), 1, "footer block present: {footer:?}");
+        assert_eq!(footer[0].text, format!("Page {}", FIELD_PLACEHOLDER), "placeholder kept: {:?}", footer[0].text);
+        let field = footer[0].marks.iter().find(|m| m.name == MARK_FIELD).expect("page-number field survives");
+        assert_eq!((field.start, field.end), (5, 6), "field spans the placeholder: {:?}", footer[0].marks);
+        assert_eq!(field.value, MarkValue::Str(FIELD_PAGE_NUMBER.into()));
+
+        // Idempotent across a second round-trip (block ids are volatile per import,
+        // so compare on text + marks, not the full BlockView).
+        let exported2 = OdtCodec.export(d2.as_ref()).unwrap();
+        let mut d3 = Document::new();
+        OdtCodec.import(&exported2, &mut d3.as_mut()).unwrap();
+        assert_eq!(norm_region(&d2.header()), norm_region(&d3.header()), "header stable across a second round-trip");
+        assert_eq!(norm_region(&d2.footer()), norm_region(&d3.footer()), "footer stable across a second round-trip");
+    }
+
+    #[test]
+    fn header_footer_preserve_existing_master_page_content() {
+        // An imported styles.xml whose master-page references a page-layout must keep
+        // that reference (+ any other master-page content) when the header/footer are
+        // re-emitted on export.
+        let styles_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"><office:master-styles><style:master-page style:name="Standard" style:page-layout-name="pm1"><style:header><text:p>Old Header</text:p></style:header></style:master-page></office:master-styles></office:document-styles>"#;
+        let base = minimal_odt_styled("", "<text:p>hi</text:p>");
+        let mut c = OdtContainer::read(&base).unwrap();
+        c.set("styles.xml", styles_xml.as_bytes().to_vec());
+        let odt = c.write().unwrap();
+
+        let mut d = Document::new();
+        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        assert_eq!(d.header()[0].text, "Old Header", "existing header imported");
+        // Replace the header text.
+        let hid = d.header_blocks_in_order()[0].clone();
+        d.splice_header_text(&hid, 0, 9, "New Header"); // replace "Old Header"
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let out = OdtContainer::read(&exported).unwrap();
+        let styles_out = std::str::from_utf8(out.get("styles.xml").unwrap()).unwrap();
+        assert!(styles_out.contains(r#"style:page-layout-name="pm1""#), "page-layout reference preserved: {styles_out}");
+        assert!(styles_out.contains("New Header") && !styles_out.contains("Old Header"), "header updated: {styles_out}");
     }
 
     #[test]

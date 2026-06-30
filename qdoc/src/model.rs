@@ -26,6 +26,22 @@ pub struct Containers {
     /// saved under an older schema that predates the blobs map; created lazily on
     /// the first [`DocMut::put_blob`].
     pub blobs: Option<ObjId>,
+    /// Page-header block container (same shape as `blocks`). `None` for documents
+    /// authored before the region existed; created lazily on the first header
+    /// write so older documents migrate transparently.
+    pub header: Option<ObjId>,
+    /// Page-footer block container (same shape as `blocks`). `None` / lazily
+    /// created, mirroring `header`.
+    pub footer: Option<ObjId>,
+}
+
+/// Which page region a block container refers to. The body is the canonical
+/// document flow; header/footer are the per-page repeated regions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Region {
+    Body,
+    Header,
+    Footer,
 }
 
 /// Per-replica, collision-free block id generator: `{actor_hex}.{counter}`.
@@ -82,7 +98,9 @@ pub fn init(doc: &mut AutoCommit, root: &ObjId) -> Containers {
     let preserved = doc.put_object(root, KEY_PRESERVED, ObjType::Map).unwrap();
     let meta = doc.put_object(root, KEY_META, ObjType::Map).unwrap();
     let blobs = doc.put_object(root, KEY_BLOBS, ObjType::Map).unwrap();
-    Containers { root: root.clone(), blocks, styles, preserved, meta, blobs: Some(blobs) }
+    // Header/footer regions are created lazily on first write (a fresh document has
+    // neither), so they stay `None` here.
+    Containers { root: root.clone(), blocks, styles, preserved, meta, blobs: Some(blobs), header: None, footer: None }
 }
 
 /// Resolve existing containers under `root`. The blobs map is optional so
@@ -95,6 +113,8 @@ pub fn open(doc: &AutoCommit, root: &ObjId) -> Result<Containers, DocError> {
         preserved: map_at(doc, root, KEY_PRESERVED)?,
         meta: map_at(doc, root, KEY_META)?,
         blobs: opt_map_at(doc, root, KEY_BLOBS),
+        header: opt_map_at(doc, root, KEY_HEADER),
+        footer: opt_map_at(doc, root, KEY_FOOTER),
     })
 }
 
@@ -120,6 +140,34 @@ fn blobs_obj(doc: &AutoCommit, c: &Containers) -> Option<ObjId> {
         return Some(b.clone());
     }
     opt_map_at(doc, &c.root, KEY_BLOBS)
+}
+
+/// Resolve a region's block container object, preferring the cached id and falling
+/// back to a fresh root lookup (so a lazily-created header/footer map is still
+/// found via reads). The body container always exists; header/footer may be
+/// `None` until first written.
+fn region_obj(doc: &AutoCommit, c: &Containers, region: Region) -> Option<ObjId> {
+    match region {
+        Region::Body => Some(c.blocks.clone()),
+        Region::Header => c.header.clone().or_else(|| opt_map_at(doc, &c.root, KEY_HEADER)),
+        Region::Footer => c.footer.clone().or_else(|| opt_map_at(doc, &c.root, KEY_FOOTER)),
+    }
+}
+
+/// The ordered block ids of a region (empty when the region is absent).
+pub fn region_blocks_in_order(doc: &AutoCommit, c: &Containers, region: Region) -> Vec<String> {
+    match region_obj(doc, c, region) {
+        Some(obj) => ordered_keys(doc, &obj),
+        None => Vec::new(),
+    }
+}
+
+/// Materialize a region's blocks into [`BlockView`]s (empty when absent).
+pub fn materialize_region(doc: &AutoCommit, c: &Containers, region: Region) -> Vec<BlockView> {
+    match region_obj(doc, c, region) {
+        Some(obj) => ordered_keys(doc, &obj).into_iter().map(|id| materialize_block(doc, &obj, &id)).collect(),
+        None => Vec::new(),
+    }
 }
 
 /// Fetch a content-addressed blob by its blake3 hex hash.
@@ -325,6 +373,8 @@ pub fn materialize(doc: &AutoCommit, c: &Containers) -> DocSnapshot {
         blobs: blobs(doc, c),
         styles: all_styles(doc, c),
         properties: doc_props(doc, c),
+        header: materialize_region(doc, c, Region::Header),
+        footer: materialize_region(doc, c, Region::Footer),
     }
 }
 
@@ -433,9 +483,33 @@ impl<'a> DocRef<'a> {
 }
 
 impl<'a> DocMut<'a> {
-    fn order_after(&self, after: Option<&str>) -> Vec<u8> {
+    /// Resolve-or-create a region's block container. The body always exists;
+    /// header/footer maps are created lazily on first write (so older documents
+    /// migrate transparently) and cached back into `Containers` for later reads.
+    /// Takes `&Containers` by value-copy of the relevant id so this doesn't need a
+    /// mutable borrow of `self.c` (which is shared `&`).
+    fn region_container(&mut self, region: Region) -> ObjId {
+        match region {
+            Region::Body => self.c.blocks.clone(),
+            Region::Header => self.ensure_region(KEY_HEADER, self.c.header.clone()),
+            Region::Footer => self.ensure_region(KEY_FOOTER, self.c.footer.clone()),
+        }
+    }
+
+    fn ensure_region(&mut self, key: &str, cached: Option<ObjId>) -> ObjId {
+        if let Some(obj) = cached {
+            return obj;
+        }
+        // Re-check the live doc in case a prior op in this transaction created it.
+        if let Some(obj) = opt_map_at(self.doc, &self.c.root, key) {
+            return obj;
+        }
+        self.doc.put_object(&self.c.root, key, ObjType::Map).unwrap()
+    }
+
+    fn order_after_in(&self, container: &ObjId, after: Option<&str>) -> Vec<u8> {
         let doc: &AutoCommit = &*self.doc;
-        let ordered = blocks_in_order(doc, self.c);
+        let ordered = ordered_keys(doc, container);
         let pos = match after {
             None => 0,
             Some(id) => ordered
@@ -444,9 +518,13 @@ impl<'a> DocMut<'a> {
                 .map(|i| i + 1)
                 .unwrap_or(ordered.len()),
         };
-        let lo = if pos == 0 { None } else { block_order(doc, &self.c.blocks, &ordered[pos - 1]) };
-        let hi = if pos >= ordered.len() { None } else { block_order(doc, &self.c.blocks, &ordered[pos]) };
+        let lo = if pos == 0 { None } else { block_order(doc, container, &ordered[pos - 1]) };
+        let hi = if pos >= ordered.len() { None } else { block_order(doc, container, &ordered[pos]) };
         crate::order::key_between(lo.as_deref(), hi.as_deref())
+    }
+
+    fn order_after(&self, after: Option<&str>) -> Vec<u8> {
+        self.order_after_in(&self.c.blocks, after)
     }
 
     // NOTE: DocMut does NOT commit the automerge transaction — the host owns the
@@ -455,13 +533,79 @@ impl<'a> DocMut<'a> {
     // snapshot-based undo records each action). Reads always observe pending ops.
 
     pub fn insert_block(&mut self, after: Option<&str>, kind: &str) -> String {
-        let key = self.order_after(after);
+        self.insert_block_in(Region::Body, after, kind)
+    }
+
+    /// Insert a block into a page region (`Body`/`Header`/`Footer`). Header/footer
+    /// containers are created lazily on first insert. Block ids are minted from the
+    /// same per-replica generator as the body, so they never collide across
+    /// regions.
+    pub fn insert_block_in(&mut self, region: Region, after: Option<&str>, kind: &str) -> String {
+        let container = self.region_container(region);
+        let key = self.order_after_in(&container, after);
         let id = self.ids.mint();
-        let obj = self.doc.put_object(&self.c.blocks, id.as_str(), ObjType::Map).unwrap();
+        let obj = self.doc.put_object(&container, id.as_str(), ObjType::Map).unwrap();
         self.doc.put(&obj, BLOCK_ORDER, ScalarValue::Bytes(key)).unwrap();
         self.doc.put(&obj, BLOCK_KIND, kind).unwrap();
         self.doc.put_object(&obj, BLOCK_ATTRS, ObjType::Map).unwrap();
         id
+    }
+
+    /// Splice text into a block living in `region`.
+    pub fn splice_text_in(&mut self, region: Region, block_id: &str, idx: usize, del: isize, ins: &str) {
+        if let Some(tid) = self.region_text_obj(region, block_id) {
+            let _ = self.doc.splice_text(&tid, idx, del, ins);
+        }
+    }
+
+    /// Add an inline mark over a block living in `region`.
+    pub fn add_mark_in(&mut self, region: Region, block_id: &str, start: usize, end: usize, name: &str, value: impl Into<ScalarValue>) {
+        if let Some(tid) = self.region_text_obj(region, block_id) {
+            let mark = Mark::new(name.to_string(), value, start, end);
+            let _ = self.doc.mark(&tid, mark, ExpandMark::After);
+        }
+    }
+
+    /// Set a scalar attribute on a block living in `region`.
+    pub fn set_attr_in(&mut self, region: Region, block_id: &str, key: &str, value: impl Into<ScalarValue>) {
+        let Some(container) = region_obj(self.doc, self.c, region) else { return };
+        let Some(obj) = block_obj(self.doc, &container, block_id) else { return };
+        let attrs = match self.doc.get(&obj, BLOCK_ATTRS) {
+            Ok(Some((Value::Object(ObjType::Map), a))) => a,
+            _ => return,
+        };
+        let _ = self.doc.put(&attrs, key, value);
+    }
+
+    /// Insert a page-number field at `idx` in a region block: splices the
+    /// placeholder character and covers it with a `field` mark valued
+    /// `page-number`. The field then merges with concurrent text edits and
+    /// round-trips through the codecs.
+    pub fn insert_page_number_field(&mut self, region: Region, block_id: &str, idx: usize) {
+        self.splice_text_in(region, block_id, idx, 0, &FIELD_PLACEHOLDER.to_string());
+        self.add_mark_in(region, block_id, idx, idx + 1, MARK_FIELD, FIELD_PAGE_NUMBER);
+    }
+
+    /// Remove every block from a region (clearing a header/footer).
+    pub fn clear_region(&mut self, region: Region) {
+        let Some(container) = region_obj(self.doc, self.c, region) else { return };
+        for id in ordered_keys(self.doc, &container) {
+            let _ = self.doc.delete(&container, &id);
+        }
+    }
+
+    /// Resolve-or-create the Text object of a region block.
+    fn region_text_obj(&mut self, region: Region, block_id: &str) -> Option<ObjId> {
+        let container = region_obj(self.doc, self.c, region)?;
+        let obj = block_obj(self.doc, &container, block_id)?;
+        let existing = match self.doc.get(&obj, BLOCK_TEXT) {
+            Ok(Some((Value::Object(ObjType::Text), tid))) => Some(tid),
+            _ => None,
+        };
+        if let Some(tid) = existing {
+            return Some(tid);
+        }
+        self.doc.put_object(&obj, BLOCK_TEXT, ObjType::Text).ok()
     }
 
     pub fn remove_block(&mut self, id: &str) {
@@ -705,5 +849,75 @@ mod style_tests {
             dm.remove_style("h1");
         }
         assert!(style_ids(&doc, &c).is_empty(), "style removed");
+    }
+}
+
+#[cfg(test)]
+mod region_tests {
+    use super::*;
+    use crate::schema::*;
+    use automerge::{AutoCommit, ROOT};
+
+    #[test]
+    fn header_footer_are_backward_compatible_and_lazily_created() {
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        // A fresh doc has no header/footer maps and reads as empty.
+        assert!(c.header.is_none() && c.footer.is_none(), "regions absent on a fresh doc");
+        assert!(region_blocks_in_order(&doc, &c, Region::Header).is_empty());
+        assert!(materialize_region(&doc, &c, Region::Footer).is_empty());
+        // A doc saved with no regions must still open.
+        let bytes = doc.save();
+        let reloaded = AutoCommit::load(&bytes).unwrap();
+        let c2 = open(&reloaded, &ROOT).unwrap();
+        assert!(c2.header.is_none() && c2.footer.is_none(), "regions still absent after reload");
+    }
+
+    #[test]
+    fn header_footer_blocks_and_page_number_field() {
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        let mut ids = IdGen::new(doc.get_actor().to_hex_string());
+        let (hid, fid);
+        {
+            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            hid = dm.insert_block_in(Region::Header, None, "paragraph");
+            dm.splice_text_in(Region::Header, &hid, 0, 0, "Title");
+            fid = dm.insert_block_in(Region::Footer, None, "paragraph");
+            dm.splice_text_in(Region::Footer, &fid, 0, 0, "Page ");
+            dm.insert_page_number_field(Region::Footer, &fid, 5);
+        }
+        // Header has the title; body is unaffected.
+        let header = materialize_region(&doc, &c, Region::Header);
+        assert_eq!(header.len(), 1);
+        assert_eq!(header[0].text, "Title");
+        assert!(blocks_in_order(&doc, &c).is_empty(), "body stays empty");
+
+        // Footer text carries the placeholder + a page-number field mark over it.
+        let footer = materialize_region(&doc, &c, Region::Footer);
+        assert_eq!(footer.len(), 1);
+        assert_eq!(footer[0].text, format!("Page {}", FIELD_PLACEHOLDER));
+        let field = footer[0].marks.iter().find(|m| m.name == MARK_FIELD).expect("page-number field mark present");
+        assert_eq!((field.start, field.end), (5, 6), "field covers exactly the placeholder");
+        assert_eq!(field.value, crate::document::MarkValue::Str(FIELD_PAGE_NUMBER.into()));
+
+        // The snapshot surfaces both regions.
+        let snap = materialize(&doc, &c);
+        assert_eq!(snap.header[0].text, "Title");
+        assert_eq!(snap.footer.len(), 1);
+    }
+
+    #[test]
+    fn clear_region_empties_it() {
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        let mut ids = IdGen::new(doc.get_actor().to_hex_string());
+        {
+            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            let a = dm.insert_block_in(Region::Header, None, "paragraph");
+            dm.splice_text_in(Region::Header, &a, 0, 0, "one");
+            dm.clear_region(Region::Header);
+        }
+        assert!(materialize_region(&doc, &c, Region::Header).is_empty(), "header cleared");
     }
 }
