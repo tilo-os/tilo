@@ -437,6 +437,57 @@ impl WordProcessor {
         }
     }
 
+    /// Whether the caret's block forces a page break before it (the
+    /// `page_break_before` block attr). False for a fresh/legacy block.
+    pub fn caret_page_break_before(&self, state: &AutoCommit) -> bool {
+        let Some(c) = self.containers.as_ref() else {
+            return false;
+        };
+        let snap = qdoc::model::materialize(state, c);
+        snap.blocks
+            .iter()
+            .find(|b| b.id == self.caret.block)
+            .map(|b| matches!(b.attrs.get("page_break_before"), Some(qdoc::AttrVal::Bool(true))))
+            .unwrap_or(false)
+    }
+
+    /// Set the `page_break_before` attr on the caret's block (forcing pagination
+    /// to start that block on a fresh page when `on`). Table cells are skipped —
+    /// a cell breaking mid-table would split the grid.
+    pub fn set_page_break_before(&mut self, state: &mut AutoCommit, on: bool) {
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        let block = self.caret.block.clone();
+        if self.block_meta(state, &block).0 == "cell" {
+            return;
+        }
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            dm.set_attr(&block, "page_break_before", on);
+        }
+    }
+
+    /// Toggle the page break on the caret's block (Ctrl+Enter when the caret
+    /// already starts a paragraph). Returns the new state.
+    pub fn toggle_page_break_before(&mut self, state: &mut AutoCommit) -> bool {
+        let on = !self.caret_page_break_before(state);
+        self.set_page_break_before(state, on);
+        on
+    }
+
+    /// Insert a manual page break at the caret: split the current block (like
+    /// Enter) and mark the new block to start on a fresh page. The caret follows
+    /// into the new block so typing continues on the next page.
+    pub fn insert_page_break(&mut self, state: &mut AutoCommit) {
+        // A page break inside a table cell would split the grid; ignore it.
+        if self.block_meta(state, &self.caret.block).0 == "cell" {
+            return;
+        }
+        self.enter(state);
+        self.set_page_break_before(state, true);
+    }
+
     /// Set a block-level attribute (e.g. font) on every selected block.
     /// Char ranges to apply an inline font mark to: the selection, or — with no
     /// selection — the whole caret block.
