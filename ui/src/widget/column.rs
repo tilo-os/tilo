@@ -421,3 +421,192 @@ impl Widget for Column {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widget::{Container, Row, Text};
+    use std::collections::HashMap;
+    use vello_encoding::DrawTag;
+
+    /// Build the five-pass layout for `root` inside an 800×600 viewport and
+    /// return the populated taffy tree + node so the caller can draw.
+    fn lay_out(root: &mut dyn Widget) -> (TaffyTree<()>, NodeId) {
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let mut tr = TextRenderer::new();
+        let node = root.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout_with_measure(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(800.0),
+                    height: taffy::AvailableSpace::Definite(600.0),
+                },
+                |known, available, node_id, _, _| {
+                    if let Some(&ptr) = node_map.get(&node_id) {
+                        unsafe { (*ptr).measure(known, available, &mut tr) }
+                    } else {
+                        taffy::Size::ZERO
+                    }
+                },
+            )
+            .unwrap();
+        root.apply_layout(&taffy, node, Point::new(0.0, 0.0));
+        (taffy, node)
+    }
+
+    /// Count GLYPH draw-tags in a freshly-drawn scene — proxy for "text was
+    /// actually emitted". A dropped leading Text shows up as zero glyphs.
+    fn glyph_count(root: &mut dyn Widget) -> usize {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let presence = crate::presence::PresenceCtx::default();
+        let perms = crate::permissions::PermissionContext::permissive();
+        let mut scene = Scene::new();
+        // Use draw_with_presence so the column's cached-draw path (the
+        // buggy one) is exercised — that's where the leading Text was
+        // dropped.
+        root.draw_with_presence(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &presence,
+            &perms,
+        );
+        scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|t| matches!(**t, DrawTag::IMAGE) || **t == DrawTag::COLOR)
+            .count()
+    }
+
+    /// Regression: a bare leading `Row[Text]` at the head of an
+    /// intrinsic-height `Column` followed by a `Container` sibling must
+    /// still emit the Text. Previously the column's cached-draw rebuild
+    /// dropped the leading child while the Container painted.
+    #[test]
+    fn leading_text_in_intrinsic_column_is_drawn() {
+        let mut col = Column::new()
+            .with_intrinsic_height()
+            .push(Box::new(Row::new().push(Box::new(Text::new("Heading")))))
+            .push(Box::new(
+                Container::new()
+                    .with_background()
+                    .with_child(Box::new(Text::new("Body"))),
+            ));
+        let _ = lay_out(&mut col);
+
+        // The leading Row's resolved rect must be non-degenerate — if it
+        // collapsed to zero the text could never paint.
+        let row_rect = col.children[0].get_rect();
+        assert!(
+            row_rect.width() > 1.0 && row_rect.height() > 1.0,
+            "leading Row collapsed to a degenerate rect: {row_rect:?}"
+        );
+
+        // And the leading Text inside the Row must have a real rect too.
+        let text_rect = col.children[0].children()[0].get_rect();
+        assert!(
+            text_rect.width() > 1.0 && text_rect.height() > 1.0,
+            "leading Text collapsed to a degenerate rect: {text_rect:?}"
+        );
+
+        // Drawing must emit content for BOTH children (a fill count > the
+        // Container's lone background fill proves the leading text painted).
+        let fills = glyph_count(&mut col);
+        assert!(
+            fills >= 2,
+            "expected the leading Text + the Container body to both paint; \
+             got {fills} fills (regression: leading child dropped)"
+        );
+    }
+
+    /// Reproduce the *cached*-path drop: draw once (warms every cache),
+    /// `mark_drawn`, then re-draw on a frame where the Column itself
+    /// rebuilds (its rect changed) but the leading Row is cache-clean.
+    /// The leading Text must still appear in the recomposed scene.
+    #[test]
+    fn leading_text_survives_cached_redraw() {
+        let mut col = Column::new()
+            .with_intrinsic_height()
+            .push(Box::new(Row::new().push(Box::new(Text::new("Heading")))))
+            .push(Box::new(
+                Container::new()
+                    .with_background()
+                    .with_child(Box::new(Text::new("Body"))),
+            ));
+        let _ = lay_out(&mut col);
+
+        // Frame 1 — warm caches, then clear dirty flags as the App does.
+        let f1 = glyph_count(&mut col);
+        col.mark_drawn();
+
+        // Frame 2 — same content, caches clean. The cache-hit path must
+        // replay the full subtree (leading Text included).
+        let f2 = glyph_count(&mut col);
+        assert!(
+            f2 >= f1 && f2 >= 2,
+            "cached re-draw dropped content: frame1={f1} frame2={f2}"
+        );
+    }
+
+    /// The settings scenario: a bare leading `Text` (NOT wrapped in a
+    /// Row or Container) at the head of an intrinsic-height Column hosted
+    /// inside a `Scrollable`. This is the exact shape Settings worked
+    /// around by wrapping every heading in a background Container. The
+    /// leading Text must resolve a non-degenerate rect through the measure
+    /// pass.
+    #[test]
+    fn bare_leading_text_in_scrolled_intrinsic_column() {
+        use crate::widget::{Scrollable, ScrollAxis};
+        // The Scrollable hosts the intrinsic column; this is what drives
+        // the constrained measure pass that previously zeroed the leading
+        // child.
+        let inner = Column::new()
+            .with_intrinsic_height()
+            .push(Box::new(Text::new("Section Heading")))
+            .push(Box::new(
+                Container::new().with_background().with_child(Box::new(Text::new("Row one"))),
+            ))
+            .push(Box::new(Text::new("Another Heading")))
+            .push(Box::new(
+                Container::new().with_background().with_child(Box::new(Text::new("Row two"))),
+            ));
+        let mut scroll = Scrollable::new(ScrollAxis::Vertical).with_child(Box::new(inner));
+        let _ = lay_out(&mut scroll);
+
+        // Reach the inner column's first child (the bare leading Text).
+        let inner_col = &scroll.children()[0];
+        let lead = inner_col.children()[0];
+        let r = lead.get_rect();
+        assert!(
+            r.width() > 1.0 && r.height() > 1.0,
+            "bare leading Text in a scrolled intrinsic Column collapsed: {r:?}"
+        );
+
+        // And it must actually paint.
+        let fills = glyph_count(&mut scroll);
+        assert!(fills >= 3, "expected headings + rows to paint; got {fills}");
+    }
+
+    /// The same content as a plain (fill-height) column must also draw the
+    /// leading text — guards the non-intrinsic path.
+    #[test]
+    fn leading_text_in_plain_column_is_drawn() {
+        let mut col = Column::new()
+            .push(Box::new(Text::new("Heading")))
+            .push(Box::new(
+                Container::new().with_background().with_child(Box::new(Text::new("Body"))),
+            ));
+        let _ = lay_out(&mut col);
+        let text_rect = col.children[0].get_rect();
+        assert!(
+            text_rect.width() > 1.0 && text_rect.height() > 1.0,
+            "leading Text collapsed: {text_rect:?}"
+        );
+    }
+}

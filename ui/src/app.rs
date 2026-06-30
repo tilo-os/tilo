@@ -1395,6 +1395,14 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 let mut focus_target = None;
                 let mut is_undo_redo = false;
 
+                // Modal focus-trap: when the tree hosts an open modal
+                // overlay it reports its box rect here. While set, the App
+                // must NOT run its own global keyboard shortcuts (Tab focus
+                // cycling, Alt/arrow directional focus) — the modal owns the
+                // keyboard — and an unhandled pointer press is swallowed so
+                // clicks can't fall through to widgets behind the modal.
+                let modal_rect = app.root_widget.modal_capture();
+
                 if let WindowEvent::KeyboardInput {
                     event:
                         winit::event::KeyEvent {
@@ -1468,7 +1476,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     }
                 }
 
-                if !handled {
+                if !handled && modal_rect.is_none() {
                     if let WindowEvent::KeyboardInput {
                         event:
                             winit::event::KeyEvent {
@@ -1522,7 +1530,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             winit::keyboard::NamedKey::ArrowRight => Some(Direction::Right),
                             _ => None,
                         };
-                        if let (Some(d), true) = (dir, app.modifiers.state().alt_key()) {
+                        if let (Some(d), true, true) =
+                            (dir, app.modifiers.state().alt_key(), modal_rect.is_none())
+                        {
                             app.navigate_focus(d);
                             handled = true;
                         }
@@ -1555,9 +1565,28 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             "root_widget.handle_event(MouseInput Pressed) returned"
                         );
                     }
+                    // Click-through swallow: with a modal active, any pointer
+                    // press the modal didn't already consume (e.g. a click on
+                    // the dimmed backdrop outside the box, before the modal's
+                    // own out-of-box dismiss has been wired) is marked handled
+                    // so it can't reach widgets painted behind the scrim.
+                    if modal_rect.is_some()
+                        && matches!(
+                            event,
+                            WindowEvent::MouseInput {
+                                state: winit::event::ElementState::Pressed,
+                                ..
+                            } | WindowEvent::MouseInput {
+                                state: winit::event::ElementState::Released,
+                                ..
+                            }
+                        )
+                    {
+                        handled = true;
+                    }
                 }
 
-                if !handled {
+                if !handled && modal_rect.is_none() {
                     if let WindowEvent::KeyboardInput {
                         event:
                             winit::event::KeyEvent {

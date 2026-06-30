@@ -103,6 +103,27 @@ pub trait Widget {
         self.children().iter().any(|c| c.needs_animation_frame())
     }
 
+    /// **Modal capture.** When this subtree contains an *open* modal
+    /// overlay (a [`crate::widget::modal_dialog::ModalDialog`], a movable
+    /// compose window, a blocking sheet, …) it returns `Some(rect)` where
+    /// `rect` is the modal panel's box. While any widget in the tree
+    /// reports `Some`, the host [`crate::app::App`]:
+    ///   1. suppresses its built-in global keyboard shortcuts (Tab focus
+    ///      cycling, Alt/arrow directional focus) so the modal owns the
+    ///      keyboard, and
+    ///   2. treats an *unhandled* pointer press as handled — swallowing
+    ///      click-through so widgets painted behind the modal can't be
+    ///      clicked.
+    ///
+    /// The modal widget itself is still responsible for consuming its own
+    /// keyboard + in-rect pointer events inside `handle_event`; this query
+    /// only gives the App the signal it needs to stop competing for input.
+    /// Default `None` (not modal). Containers MUST forward — the default
+    /// container impls do, by returning the first `Some` among children.
+    fn modal_capture(&self) -> Option<vello::kurbo::Rect> {
+        self.children().iter().find_map(|c| c.modal_capture())
+    }
+
     /// Returns true if this subtree mutated its structural composition (e.g.
     /// inserted/removed child widgets) since the last frame. The App polls
     /// this once per tick and rebuilds the taffy tree when true.
@@ -229,6 +250,18 @@ mod row;         pub use row::Row;
 mod toggle;      pub use toggle::Toggle;
 mod stack;       pub use stack::Stack;
 mod container;   pub use container::Container;
+mod divider;     pub use divider::{Divider, DividerAxis};
+mod nav_split;
+pub use nav_split::{
+    NavSplit, FlapState, SplitMode, SplitLayout, PushPane,
+    DEFAULT_BREAKPOINT, DEFAULT_SIDEBAR_WIDTH,
+};
+mod floating_window;
+pub use floating_window::FloatingWindow;
+mod segmented;
+pub use segmented::{
+    TriStateControl, SegmentTone, ColorSwatchPicker, packed_color, DEFAULT_PALETTE,
+};
 mod text;        pub use text::Text;
 mod spacer;      pub use spacer::Spacer;
 mod image;       pub use image::{Image, ImageFit, ImageDecodeError};

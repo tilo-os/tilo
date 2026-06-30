@@ -513,8 +513,12 @@ impl Widget for RichTextLine {
             if slice.is_empty() {
                 continue;
             }
-            let needs_overpaint =
-                seg.bold || seg.italic || seg.code || seg.link.is_some();
+            let needs_overpaint = seg.bold
+                || seg.italic
+                || seg.code
+                || seg.underline
+                || seg.strikethrough
+                || seg.link.is_some();
 
             // x for this segment.
             let x_offset = xs
@@ -578,6 +582,37 @@ impl Widget for RichTextLine {
                     tokens.colors.accent[5],
                     None,
                     &underline,
+                );
+            }
+
+            // Underline mark — a rule near the baseline, in the text
+            // colour (distinct from the accent-coloured link underline).
+            if seg.underline {
+                let rule = Rect::new(
+                    x,
+                    text_y + line_height - 2.0,
+                    sans_end_x,
+                    text_y + line_height - 1.0,
+                );
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    tokens.colors.text_primary,
+                    None,
+                    &rule,
+                );
+            }
+
+            // Strikethrough mark — a rule through the text mid-line.
+            if seg.strikethrough {
+                let mid = text_y + line_height * 0.5;
+                let rule = Rect::new(x, mid - 0.5, sans_end_x, mid + 0.5);
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    tokens.colors.text_primary,
+                    None,
+                    &rule,
                 );
             }
 
@@ -670,6 +705,11 @@ impl Widget for RichTextLine {
                             }
                             "e" => {
                                 self.toggle_mark(Mark::Code);
+                                *handled = true;
+                                return;
+                            }
+                            "u" => {
+                                self.toggle_mark(Mark::Underline);
                                 *handled = true;
                                 return;
                             }

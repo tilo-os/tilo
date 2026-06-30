@@ -1,0 +1,723 @@
+//! `FloatingWindow` — a movable + resizable in-app overlay window.
+//!
+//! This is the generic promotion of the proven floating-window kernel in
+//! `apps/mail/src/compose.rs`: a draggable title bar, edge/corner resize
+//! grips, and on-screen clamping that keeps the title bar reachable. It
+//! hosts an arbitrary content `Widget` and is genuinely modal while open —
+//! it consumes every keyboard event and every pointer event inside its
+//! rect, and swallows out-of-rect clicks without closing (use the title-bar
+//! close affordance or an explicit host action to dismiss), so clicks can't
+//! fall through to widgets behind it. It participates in the App's
+//! [`crate::widget::Widget::modal_capture`] contract.
+//!
+//! The window does NOT itself draw a close button or toolbar — those are the
+//! host's concern (drawn into the content). It owns only the frame chrome
+//! (title bar, border, shadow, resize grip) and the move/resize/clamp
+//! mechanics.
+
+use automerge::{AutoCommit, ObjId};
+use std::collections::HashMap;
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::peniko::{Color, Fill};
+use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
+
+use crate::color_compat::ColorCompat;
+use crate::presence::PresenceCtx;
+use crate::text_render::TextRenderer;
+use crate::theme::Theme;
+use crate::widget::Widget;
+
+/// Title-bar height (logical px).
+pub const TITLE_BAR_HEIGHT: f64 = 38.0;
+/// Resize-grip hit thickness around the window edges (logical px).
+pub const RESIZE_GRIP: f64 = 8.0;
+/// Smallest window the user can shrink to.
+pub const MIN_WIDTH: f64 = 280.0;
+pub const MIN_HEIGHT: f64 = 200.0;
+
+/// Which edge / corner a resize drag is anchored to. There is deliberately
+/// no top edge / top corner — the title bar owns the top of the window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Edge {
+    Right,
+    Bottom,
+    BottomRight,
+    Left,
+    BottomLeft,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Drag {
+    /// Moving the whole window. `grab` = cursor offset from window origin.
+    Move { grab: Point },
+    /// Resizing. `start` = window rect at press, `from` = cursor at press.
+    Resize { edge: Edge, start: Rect, from: Point },
+}
+
+/// A movable + resizable overlay window hosting one content widget.
+pub struct FloatingWindow<C: Widget> {
+    title: String,
+    content: C,
+    open: bool,
+    /// Window rect in screen coords — the source of truth for placement.
+    rect: Rect,
+    /// Bounds the window is clamped into (typically the app content area).
+    bounds: Rect,
+    /// `true` once positioned this open, so a re-layout doesn't recentre the
+    /// window after the user has moved it.
+    placed: bool,
+    drag: Option<Drag>,
+    last_cursor: Point,
+    /// Inner taffy tree for the content, retained so `handle_event` can
+    /// forward events into the content with a live node.
+    content_taffy: Option<TaffyTree<()>>,
+    content_node: Option<NodeId>,
+    /// Preferred size used on first placement (before any user resize).
+    initial_size: (f64, f64),
+}
+
+impl<C: Widget> FloatingWindow<C> {
+    /// Build a closed floating window with the given title + content.
+    pub fn new(title: impl Into<String>, content: C) -> Self {
+        Self {
+            title: title.into(),
+            content,
+            open: false,
+            rect: Rect::ZERO,
+            bounds: Rect::ZERO,
+            placed: false,
+            drag: None,
+            last_cursor: Point::ZERO,
+            content_taffy: None,
+            content_node: None,
+            initial_size: (560.0, 460.0),
+        }
+    }
+
+    /// Open / close the window. Closing clears the placement so the next
+    /// open re-centres.
+    pub fn open(mut self, open: bool) -> Self {
+        self.open = open;
+        if !open {
+            self.placed = false;
+        }
+        self
+    }
+
+    /// Set the window's open state at runtime (non-builder).
+    pub fn set_open(&mut self, open: bool) {
+        self.open = open;
+        if !open {
+            self.placed = false;
+        }
+    }
+
+    /// Override the initial (pre-resize) size.
+    pub fn with_initial_size(mut self, w: f64, h: f64) -> Self {
+        self.initial_size = (w, h);
+        self
+    }
+
+    /// Whether the window is currently open.
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
+
+    /// The resolved window rect.
+    pub fn window_rect(&self) -> Rect {
+        self.rect
+    }
+
+    /// Whether a move or resize drag is in progress (host can suppress
+    /// hover-driven work while dragging).
+    pub fn is_dragging(&self) -> bool {
+        self.drag.is_some()
+    }
+
+    /// Mutable access to the hosted content (for the host to read selection,
+    /// etc.).
+    pub fn content_mut(&mut self) -> &mut C {
+        &mut self.content
+    }
+
+    /// Position the window inside `bounds`. Centres on first placement, then
+    /// clamps on every call so a window stays reachable when the bounds
+    /// shrink (e.g. the app pane resized).
+    pub fn layout_within(&mut self, bounds: Rect) {
+        self.bounds = bounds;
+        if !self.placed && self.open {
+            let (mut w, mut h) = self.initial_size;
+            w = w.min(bounds.width() - 32.0).max(MIN_WIDTH.min(bounds.width()));
+            h = h.min(bounds.height() - 32.0).max(MIN_HEIGHT.min(bounds.height()));
+            let cx = (bounds.x0 + bounds.x1) / 2.0;
+            let y0 = (bounds.y0 + (bounds.height() - h) / 2.0).max(bounds.y0 + 8.0);
+            self.rect = Rect::new(cx - w / 2.0, y0, cx + w / 2.0, y0 + h);
+            self.placed = true;
+        }
+        self.clamp_into_bounds();
+    }
+
+    /// The content area below the title bar.
+    fn content_area(&self) -> Rect {
+        Rect::new(
+            self.rect.x0,
+            self.rect.y0 + TITLE_BAR_HEIGHT,
+            self.rect.x1,
+            self.rect.y1,
+        )
+    }
+
+    /// Keep the window inside `bounds` while leaving the title bar reachable.
+    fn clamp_into_bounds(&mut self) {
+        let b = self.bounds;
+        if b.width() <= 0.0 || b.height() <= 0.0 {
+            return;
+        }
+        let r = self.rect;
+        let w = r.width().min(b.width()).max(MIN_WIDTH.min(b.width()));
+        let h = r.height().min(b.height()).max(MIN_HEIGHT.min(b.height()));
+        let mut x0 = r.x0.clamp(b.x0, (b.x1 - w).max(b.x0));
+        let mut y0 = r.y0.clamp(b.y0, (b.y1 - h).max(b.y0));
+        // Always keep ≥80px of the title bar horizontally reachable.
+        x0 = x0.min(b.x1 - 80.0);
+        y0 = y0.max(b.y0);
+        self.rect = Rect::new(x0, y0, x0 + w, y0 + h);
+    }
+
+    /// Which resize edge (if any) the point is over.
+    fn resize_edge_at(&self, pt: Point) -> Option<Edge> {
+        let r = self.rect;
+        let near_r = (pt.x - r.x1).abs() <= RESIZE_GRIP;
+        let near_l = (pt.x - r.x0).abs() <= RESIZE_GRIP;
+        let near_b = (pt.y - r.y1).abs() <= RESIZE_GRIP;
+        match (near_l, near_r, near_b) {
+            (_, true, true) => Some(Edge::BottomRight),
+            (true, _, true) => Some(Edge::BottomLeft),
+            (_, true, _) => Some(Edge::Right),
+            (true, _, _) if pt.y > r.y0 + TITLE_BAR_HEIGHT => Some(Edge::Left),
+            (_, _, true) => Some(Edge::Bottom),
+            _ => None,
+        }
+    }
+
+    /// Title-bar hit region (the drag handle).
+    fn title_bar_rect(&self) -> Rect {
+        Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y0 + TITLE_BAR_HEIGHT)
+    }
+
+    /// Apply an in-progress drag at the new cursor position.
+    fn apply_drag(&mut self, drag: Drag, pt: Point) {
+        match drag {
+            Drag::Move { grab } => {
+                let w = self.rect.width();
+                let h = self.rect.height();
+                let x0 = pt.x - grab.x;
+                let y0 = pt.y - grab.y;
+                self.rect = Rect::new(x0, y0, x0 + w, y0 + h);
+                self.clamp_into_bounds();
+            }
+            Drag::Resize { edge, start, from } => {
+                let dx = pt.x - from.x;
+                let dy = pt.y - from.y;
+                let mut r = start;
+                match edge {
+                    Edge::Right => r.x1 = (start.x1 + dx).max(start.x0 + MIN_WIDTH),
+                    Edge::Bottom => r.y1 = (start.y1 + dy).max(start.y0 + MIN_HEIGHT),
+                    Edge::BottomRight => {
+                        r.x1 = (start.x1 + dx).max(start.x0 + MIN_WIDTH);
+                        r.y1 = (start.y1 + dy).max(start.y0 + MIN_HEIGHT);
+                    }
+                    Edge::Left => r.x0 = (start.x0 + dx).min(start.x1 - MIN_WIDTH),
+                    Edge::BottomLeft => {
+                        r.x0 = (start.x0 + dx).min(start.x1 - MIN_WIDTH);
+                        r.y1 = (start.y1 + dy).max(start.y0 + MIN_HEIGHT);
+                    }
+                }
+                self.rect = r;
+                self.clamp_into_bounds();
+            }
+        }
+    }
+
+    /// Lay out the content inside the content area via an isolated taffy
+    /// tree (retained so events can route in). Mirrors `ModalDialog`.
+    fn place_content(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) {
+        let inner = self.content_area();
+        if inner.width() <= 0.0 || inner.height() <= 0.0 {
+            return;
+        }
+        let mut taffy = TaffyTree::<()>::new();
+        let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = self.content.build_layout(&mut taffy, theme, &mut map);
+        let _ = taffy.compute_layout_with_measure(
+            node,
+            Size {
+                width: taffy::AvailableSpace::Definite(inner.width() as f32),
+                height: taffy::AvailableSpace::Definite(inner.height() as f32),
+            },
+            |known, available, node_id, _, _| {
+                if let Some(&ptr) = map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, available, text_renderer) }
+                } else {
+                    Size::ZERO
+                }
+            },
+        );
+        self.content.apply_layout(&taffy, node, Point::new(inner.x0, inner.y0));
+        self.content_taffy = Some(taffy);
+        self.content_node = Some(node);
+    }
+
+    fn forward_to_content(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        focus_target: &mut Option<NodeId>,
+    ) {
+        let (Some(taffy), Some(node)) = (self.content_taffy.as_ref(), self.content_node) else {
+            return;
+        };
+        let mut inner_handled = false;
+        self.content.handle_event(
+            event, scale_factor, modifiers, state, path, &mut inner_handled, focus_target, node,
+            taffy,
+        );
+    }
+}
+
+impl<C: Widget + 'static> Widget for FloatingWindow<C> {
+    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        self.content.sync(state, path);
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        // Occupy the whole viewport so we can clamp + paint anywhere.
+        let node = taffy
+            .new_leaf(Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
+                ..Default::default()
+            })
+            .unwrap();
+        node_map.insert(node, self as *mut dyn Widget);
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let l = taffy.layout(node).unwrap();
+        let viewport = Rect::new(
+            origin.x + l.location.x as f64,
+            origin.y + l.location.y as f64,
+            origin.x + l.location.x as f64 + l.size.width as f64,
+            origin.y + l.location.y as f64 + l.size.height as f64,
+        );
+        // Default the clamp bounds to the viewport when the host hasn't
+        // supplied tighter ones via `layout_within`.
+        if self.bounds.width() <= 0.0 {
+            self.bounds = viewport;
+        }
+        let bounds = self.bounds;
+        self.layout_within(bounds);
+        let mut tr = TextRenderer::new();
+        let theme = Theme::dark();
+        self.place_content(&theme, &mut tr);
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if !self.open {
+            return;
+        }
+        let radius = theme.tokens.radii.lg as f64;
+
+        // Drop shadow.
+        let shadow = Rect::new(
+            self.rect.x0 + 2.0,
+            self.rect.y0 + 4.0,
+            self.rect.x1 + 2.0,
+            self.rect.y1 + 6.0,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            Color::from_rgba8(0, 0, 0, 90),
+            None,
+            &RoundedRect::from_rect(shadow, radius),
+        );
+
+        // Body.
+        let body = RoundedRect::from_rect(self.rect, radius);
+        scene.fill(Fill::NonZero, transform, theme.tokens.colors.surfaces.raised, None, &body);
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.border_standard,
+            None,
+            &body,
+        );
+
+        // Title bar — a tinted band + the title text.
+        let title_band = Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y0 + TITLE_BAR_HEIGHT,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.base.with_alpha_factor(0.6),
+            None,
+            &title_band,
+        );
+        let title_size = theme.tokens.typography.scale.base;
+        let tx = self.rect.x0 + theme.tokens.spacing.s4 as f64;
+        let ty = self.rect.y0 + (TITLE_BAR_HEIGHT - title_size as f64) / 2.0;
+        text_renderer.draw_text(
+            scene,
+            &self.title,
+            title_size,
+            theme.tokens.colors.text_primary,
+            transform * Affine::translate((tx, ty)),
+            None,
+        );
+
+        // Content (clipped to the content area).
+        let inner = self.content_area();
+        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &inner);
+        self.content.draw(scene, transform, text_renderer, theme, presence);
+        scene.pop_layer();
+
+        // Bottom-right resize grip affordance (three short ticks).
+        let g = Rect::new(self.rect.x1 - 14.0, self.rect.y1 - 14.0, self.rect.x1 - 4.0, self.rect.y1 - 4.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.border_standard,
+            None,
+            &RoundedRect::from_rect(g, 1.0),
+        );
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        _node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
+        if !self.open {
+            return;
+        }
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor = pt;
+                if let Some(drag) = self.drag {
+                    self.apply_drag(drag, pt);
+                    self.place_content(&Theme::dark(), &mut TextRenderer::new());
+                    *handled = true;
+                    return;
+                }
+                // Forward hover so embedded fields arm their hover flag, but
+                // only while the cursor is over the window — a move outside
+                // the window must not reach the content (it's behind the
+                // modal boundary).
+                if self.content_area().contains(pt) {
+                    self.forward_to_content(event, scale_factor, modifiers, state, path, focus_target);
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let pt = self.last_cursor;
+                // Resize edge wins over everything — and is tested first so a
+                // press exactly on the (half-open) border, which `Rect::
+                // contains` reports as outside, still starts a resize.
+                if let Some(edge) = self.resize_edge_at(pt) {
+                    self.drag = Some(Drag::Resize { edge, start: self.rect, from: pt });
+                    *handled = true;
+                    return;
+                }
+                // Title bar starts a move drag.
+                if self.title_bar_rect().contains(pt) {
+                    self.drag = Some(Drag::Move {
+                        grab: Point::new(pt.x - self.rect.x0, pt.y - self.rect.y0),
+                    });
+                    *handled = true;
+                    return;
+                }
+                if !self.rect.contains(pt) {
+                    // Outside the window (and not on a resize grip): swallow
+                    // (modal) but DON'T close.
+                    *handled = true;
+                    return;
+                }
+                // Otherwise the press lands in the content.
+                self.forward_to_content(event, scale_factor, modifiers, state, path, focus_target);
+                *handled = true;
+            }
+            WindowEvent::MouseInput { state: ElementState::Released, .. } => {
+                if self.drag.is_some() {
+                    self.drag = None;
+                }
+                *handled = true;
+            }
+            WindowEvent::KeyboardInput {
+                event: KeyEvent { logical_key: Key::Named(NamedKey::Escape), state: ElementState::Pressed, .. },
+                ..
+            } => {
+                self.set_open(false);
+                *handled = true;
+            }
+            WindowEvent::KeyboardInput { .. } => {
+                self.forward_to_content(event, scale_factor, modifiers, state, path, focus_target);
+                *handled = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        vec![&self.content]
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        vec![&mut self.content]
+    }
+
+    fn name(&self) -> &str { "FloatingWindow" }
+
+    fn modal_capture(&self) -> Option<Rect> {
+        if self.open { Some(self.rect) } else { None }
+    }
+
+    fn get_rect(&self) -> Rect { self.rect }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vello_encoding::DrawTag;
+
+    /// A leaf content widget that records forwarded events.
+    #[derive(Default)]
+    struct Probe {
+        events: std::rc::Rc<std::cell::Cell<usize>>,
+        rect: Rect,
+    }
+    impl Widget for Probe {
+        fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _t: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let n = taffy
+                .new_leaf(Style {
+                    size: Size { width: Dimension::percent(1.0), height: Dimension::percent(1.0) },
+                    ..Default::default()
+                })
+                .unwrap();
+            node_map.insert(n, self as *mut dyn Widget);
+            n
+        }
+        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+            let l = taffy.layout(node).unwrap();
+            self.rect = Rect::new(
+                origin.x,
+                origin.y,
+                origin.x + l.size.width as f64,
+                origin.y + l.size.height as f64,
+            );
+        }
+        fn draw(&mut self, _s: &mut Scene, _t: Affine, _tr: &mut TextRenderer, _th: &Theme, _p: &PresenceCtx) {}
+        fn handle_event(
+            &mut self,
+            _e: &WindowEvent,
+            _sf: f64,
+            _m: &winit::event::Modifiers,
+            _s: &mut AutoCommit,
+            _p: &ObjId,
+            _h: &mut bool,
+            _ft: &mut Option<NodeId>,
+            _n: NodeId,
+            _t: &TaffyTree<()>,
+        ) {
+            self.events.set(self.events.get() + 1);
+        }
+        fn name(&self) -> &str { "Probe" }
+        fn get_rect(&self) -> Rect { self.rect }
+    }
+
+    fn laid_out(open: bool) -> (FloatingWindow<Probe>, std::rc::Rc<std::cell::Cell<usize>>) {
+        let events = std::rc::Rc::new(std::cell::Cell::new(0));
+        let probe = Probe { events: events.clone(), rect: Rect::ZERO };
+        let mut w = FloatingWindow::new("Compose", probe).open(open);
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = w.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(1000.0),
+                    height: taffy::AvailableSpace::Definite(800.0),
+                },
+            )
+            .unwrap();
+        w.apply_layout(&taffy, node, Point::ZERO);
+        (w, events)
+    }
+
+    fn synth_device() -> winit::event::DeviceId {
+        unsafe { std::mem::zeroed() }
+    }
+    fn cursor_at(p: Point) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: synth_device(),
+            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+        }
+    }
+    fn left_press() -> WindowEvent {
+        WindowEvent::MouseInput { device_id: synth_device(), state: ElementState::Pressed, button: MouseButton::Left }
+    }
+    fn left_release() -> WindowEvent {
+        WindowEvent::MouseInput { device_id: synth_device(), state: ElementState::Released, button: MouseButton::Left }
+    }
+    fn dispatch(w: &mut FloatingWindow<Probe>, e: &WindowEvent) -> bool {
+        let mut taffy = TaffyTree::<()>::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mut handled = false;
+        let mut ft = None;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        w.handle_event(e, 1.0, &winit::event::Modifiers::default(), &mut doc, &root, &mut handled, &mut ft, node, &taffy);
+        handled
+    }
+
+    #[test]
+    fn opens_centred_within_bounds() {
+        let (w, _e) = laid_out(true);
+        let r = w.window_rect();
+        // Centred horizontally in the 1000-wide viewport.
+        assert!((r.center().x - 500.0).abs() < 2.0, "centred horizontally: {r:?}");
+        assert!(r.x0 >= 0.0 && r.x1 <= 1000.0, "within bounds: {r:?}");
+    }
+
+    #[test]
+    fn title_bar_drag_moves_window() {
+        let (mut w, _e) = laid_out(true);
+        let start = w.window_rect();
+        // Press on the title bar, then move +120,+40.
+        let grab = Point::new(start.x0 + 40.0, start.y0 + 10.0);
+        dispatch(&mut w, &cursor_at(grab));
+        assert!(dispatch(&mut w, &left_press()), "title press consumed");
+        dispatch(&mut w, &cursor_at(Point::new(grab.x + 120.0, grab.y + 40.0)));
+        dispatch(&mut w, &left_release());
+        let moved = w.window_rect();
+        assert!((moved.x0 - (start.x0 + 120.0)).abs() < 2.0, "moved right by 120: {moved:?}");
+        assert!((moved.y0 - (start.y0 + 40.0)).abs() < 2.0, "moved down by 40: {moved:?}");
+    }
+
+    #[test]
+    fn bottom_right_resize_grows_window() {
+        let (mut w, _e) = laid_out(true);
+        let start = w.window_rect();
+        // Press at the bottom-right corner grip, drag +60,+50.
+        let corner = Point::new(start.x1, start.y1);
+        dispatch(&mut w, &cursor_at(corner));
+        assert!(dispatch(&mut w, &left_press()), "corner press consumed");
+        dispatch(&mut w, &cursor_at(Point::new(corner.x + 60.0, corner.y + 50.0)));
+        dispatch(&mut w, &left_release());
+        let grown = w.window_rect();
+        assert!(grown.width() > start.width() + 50.0, "wider: {} -> {}", start.width(), grown.width());
+        assert!(grown.height() > start.height() + 40.0, "taller");
+    }
+
+    #[test]
+    fn resize_respects_min_size() {
+        let (mut w, _e) = laid_out(true);
+        let start = w.window_rect();
+        // Drag the bottom-right corner far up-left past the minimum.
+        let corner = Point::new(start.x1, start.y1);
+        dispatch(&mut w, &cursor_at(corner));
+        dispatch(&mut w, &left_press());
+        dispatch(&mut w, &cursor_at(Point::new(start.x0 + 10.0, start.y0 + 10.0)));
+        dispatch(&mut w, &left_release());
+        let r = w.window_rect();
+        assert!(r.width() >= MIN_WIDTH - 0.5, "clamped to MIN_WIDTH: {}", r.width());
+        assert!(r.height() >= MIN_HEIGHT - 0.5, "clamped to MIN_HEIGHT: {}", r.height());
+    }
+
+    #[test]
+    fn outside_click_is_swallowed_not_passed_through() {
+        let (mut w, events) = laid_out(true);
+        // Click far outside the window.
+        dispatch(&mut w, &cursor_at(Point::new(5.0, 5.0)));
+        let handled = dispatch(&mut w, &left_press());
+        assert!(handled, "outside click must be swallowed");
+        assert!(w.is_open(), "outside click must NOT close the window");
+        assert_eq!(events.get(), 0, "outside click must not forward to content");
+    }
+
+    #[test]
+    fn inbox_content_press_forwards_to_content() {
+        let (mut w, events) = laid_out(true);
+        // Press inside the content area (below the title bar, away from grips).
+        let c = w.content_area().center();
+        dispatch(&mut w, &cursor_at(c));
+        let before = events.get();
+        let handled = dispatch(&mut w, &left_press());
+        assert!(handled, "in-box press consumed");
+        assert!(events.get() > before, "in-box content press forwarded to content");
+    }
+
+    #[test]
+    fn modal_capture_reflects_open() {
+        let (w, _e) = laid_out(true);
+        assert!(Widget::modal_capture(&w).is_some());
+        let (closed, _e) = laid_out(false);
+        assert!(Widget::modal_capture(&closed).is_none());
+    }
+
+    #[test]
+    fn draws_chrome_when_open() {
+        let (mut w, _e) = laid_out(true);
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        let mut scene = Scene::new();
+        w.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        let fills = scene.encoding().draw_tags.iter().filter(|t| **t == DrawTag::COLOR).count();
+        assert!(fills >= 3, "open window draws shadow+body+title chrome, got {fills}");
+    }
+}
