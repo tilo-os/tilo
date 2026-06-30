@@ -63,6 +63,15 @@ pub enum WpFormat {
     Odt,
     Docx,
     Markdown,
+    /// PDF — **export only** (rendered via the `docpdf` crate). Importing PDF is
+    /// not supported and returns a clear error.
+    Pdf,
+    /// HTML — **export only** (rendered via the `dochtml` crate). Importing HTML
+    /// is not supported and returns a clear error.
+    Html,
+    /// RTF — **export only** (rendered via the `docrtf` crate). Importing RTF is
+    /// not supported and returns a clear error.
+    Rtf,
 }
 
 impl WpFormat {
@@ -71,6 +80,9 @@ impl WpFormat {
         match path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
             Some("odt") => WpFormat::Odt,
             Some("docx") => WpFormat::Docx,
+            Some("pdf") => WpFormat::Pdf,
+            Some("html") | Some("htm") => WpFormat::Html,
+            Some("rtf") => WpFormat::Rtf,
             _ => WpFormat::Markdown,
         }
     }
@@ -81,6 +93,15 @@ impl WpFormat {
             WpFormat::Odt => qdoc::OdtCodec.import(bytes, dm),
             WpFormat::Docx => qdoc::DocxCodec.import(bytes, dm),
             WpFormat::Markdown => qdoc::MarkdownCodec.import(bytes, dm),
+            WpFormat::Pdf => Err(qdoc::CodecError::Unsupported(
+                "opening PDF documents is not supported (PDF is export-only)".to_string(),
+            )),
+            WpFormat::Html => Err(qdoc::CodecError::Unsupported(
+                "opening HTML documents is not supported (HTML is export-only)".to_string(),
+            )),
+            WpFormat::Rtf => Err(qdoc::CodecError::Unsupported(
+                "opening RTF documents is not supported (RTF is export-only)".to_string(),
+            )),
         }
     }
 
@@ -90,6 +111,23 @@ impl WpFormat {
             WpFormat::Odt => qdoc::OdtCodec.export(dr),
             WpFormat::Docx => qdoc::DocxCodec.export(dr),
             WpFormat::Markdown => qdoc::MarkdownCodec.export(dr),
+            // PDF isn't a `FormatProvider` codec — it renders from the materialized
+            // snapshot via `docpdf`. Map its error into the shared `CodecError`.
+            WpFormat::Pdf => {
+                let snap = dr.materialize();
+                docpdf::render_pdf(&snap).map_err(|e| qdoc::CodecError::Export(e.to_string()))
+            }
+            // HTML/RTF aren't `FormatProvider` codecs either — they render from
+            // the materialized snapshot via `dochtml`/`docrtf`, returning UTF-8
+            // bytes.
+            WpFormat::Html => {
+                let snap = dr.materialize();
+                Ok(dochtml::render_html(&snap, dochtml::HtmlOptions::default()).into_bytes())
+            }
+            WpFormat::Rtf => {
+                let snap = dr.materialize();
+                Ok(docrtf::render_rtf(&snap).into_bytes())
+            }
         }
     }
 }
@@ -188,6 +226,114 @@ mod tests {
         let snap_b = ed_b.snapshot(&sb.doc);
         assert_eq!(snap_a, snap_b, "peers converge to identical documents");
         assert_eq!(snap_a.blocks.len(), 2, "both concurrent edits are present");
+    }
+
+    /// Saving to a `*.pdf` path routes through `docpdf` and writes a valid PDF
+    /// (the bytes start with the `%PDF` signature). PDF is export-only.
+    #[test]
+    fn save_document_to_pdf_writes_valid_pdf() {
+        let mut s = ui::State::new();
+        let mut ed = EditorDoc::bind(&mut s.doc, &s.root);
+        {
+            let mut dm = ed.edit(&mut s.doc);
+            MarkdownCodec.import(b"# Title\n\nHello world\n", &mut dm).unwrap();
+        }
+
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("editor-pdf-test-{}.pdf", std::process::id()));
+        assert_eq!(WpFormat::from_path(&path), WpFormat::Pdf, ".pdf extension picks the Pdf format");
+
+        save_document(&s, &path, WpFormat::Pdf).expect("save to pdf");
+        let bytes = std::fs::read(&path).expect("read back the pdf");
+        let _ = std::fs::remove_file(&path);
+        assert!(bytes.starts_with(b"%PDF"), "output begins with the PDF signature: {:?}", &bytes[..bytes.len().min(8)]);
+    }
+
+    /// PDF import is unsupported and surfaces a clear error.
+    #[test]
+    fn pdf_import_is_unsupported() {
+        let mut s = ui::State::new();
+        let containers = qdoc::model::init(&mut s.doc, &s.root);
+        let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
+        let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &containers, ids: &mut ids };
+        let err = WpFormat::Pdf.import(b"%PDF-1.7", &mut dm).unwrap_err();
+        assert!(matches!(err, qdoc::CodecError::Unsupported(_)), "got {err:?}");
+    }
+
+    /// Saving to a `*.html` path routes through `dochtml` and writes a complete
+    /// HTML document. HTML is export-only.
+    #[test]
+    fn save_document_to_html_writes_html() {
+        let mut s = ui::State::new();
+        let mut ed = EditorDoc::bind(&mut s.doc, &s.root);
+        {
+            let mut dm = ed.edit(&mut s.doc);
+            MarkdownCodec.import(b"# Title\n\nHello world\n", &mut dm).unwrap();
+        }
+
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("editor-html-test-{}.html", std::process::id()));
+        assert_eq!(WpFormat::from_path(&path), WpFormat::Html, ".html extension picks the Html format");
+
+        save_document(&s, &path, WpFormat::Html).expect("save to html");
+        let bytes = std::fs::read(&path).expect("read back the html");
+        let _ = std::fs::remove_file(&path);
+        let text = String::from_utf8(bytes).expect("html output is valid UTF-8");
+        let lower = text.to_ascii_lowercase();
+        assert!(
+            lower.contains("<!doctype html") || lower.contains("<html"),
+            "output is an HTML document: {:?}",
+            &text[..text.len().min(64)]
+        );
+    }
+
+    /// Saving to a `*.rtf` path routes through `docrtf` and writes a valid RTF
+    /// document (the bytes start with the `{\rtf` signature). RTF is export-only.
+    #[test]
+    fn save_document_to_rtf_writes_rtf() {
+        let mut s = ui::State::new();
+        let mut ed = EditorDoc::bind(&mut s.doc, &s.root);
+        {
+            let mut dm = ed.edit(&mut s.doc);
+            MarkdownCodec.import(b"# Title\n\nHello world\n", &mut dm).unwrap();
+        }
+
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("editor-rtf-test-{}.rtf", std::process::id()));
+        assert_eq!(WpFormat::from_path(&path), WpFormat::Rtf, ".rtf extension picks the Rtf format");
+
+        save_document(&s, &path, WpFormat::Rtf).expect("save to rtf");
+        let bytes = std::fs::read(&path).expect("read back the rtf");
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            bytes.starts_with(b"{\\rtf"),
+            "output begins with the RTF signature: {:?}",
+            &bytes[..bytes.len().min(8)]
+        );
+    }
+
+    /// `WpFormat::from_path` maps the export-only extensions to their formats,
+    /// including the `.htm` alias for HTML.
+    #[test]
+    fn from_path_maps_html_htm_rtf() {
+        assert_eq!(WpFormat::from_path(Path::new("doc.html")), WpFormat::Html);
+        assert_eq!(WpFormat::from_path(Path::new("doc.htm")), WpFormat::Html);
+        assert_eq!(WpFormat::from_path(Path::new("doc.HTML")), WpFormat::Html, "case-insensitive");
+        assert_eq!(WpFormat::from_path(Path::new("doc.rtf")), WpFormat::Rtf);
+        assert_eq!(WpFormat::from_path(Path::new("doc.RTF")), WpFormat::Rtf, "case-insensitive");
+    }
+
+    /// HTML and RTF import are unsupported and surface a clear error.
+    #[test]
+    fn html_and_rtf_import_is_unsupported() {
+        let mut s = ui::State::new();
+        let containers = qdoc::model::init(&mut s.doc, &s.root);
+        let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
+        let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &containers, ids: &mut ids };
+        let html_err = WpFormat::Html.import(b"<html></html>", &mut dm).unwrap_err();
+        assert!(matches!(html_err, qdoc::CodecError::Unsupported(_)), "got {html_err:?}");
+        let rtf_err = WpFormat::Rtf.import(b"{\\rtf1}", &mut dm).unwrap_err();
+        assert!(matches!(rtf_err, qdoc::CodecError::Unsupported(_)), "got {rtf_err:?}");
     }
 
     /// The version timeline + time-travel work over a bound document.

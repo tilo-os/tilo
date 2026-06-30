@@ -258,6 +258,18 @@ log "  -> $LOCAL_IMG"
 # direct = plain filesystem; tpm2-luks = TPM2-bound LUKS full-disk encryption.
 BLOCK_SETUP=direct
 [ "$ENCRYPT" -eq 1 ] && BLOCK_SETUP=tpm2-luks
+# MEASURED-BOOT (security plan §4) — NOT YET ACTIVE, intentionally.
+# The trust root /usr/share/qos/tpm2-pcr-signing.public.pem is baked into the
+# image. The full design seals the LUKS keyslot to *signed PCR predictions*:
+#   systemd-cryptenroll --tpm2-device=auto --tpm2-with-pin=yes \
+#     --tpm2-public-key=/usr/share/qos/tpm2-pcr-signing.public.pem \
+#     --tpm2-public-key-pcrs=11 <luks-dev>
+# Enabling that REQUIRES the build/update pipeline to ship signed predictions
+# for a UKI (systemd-measure sign with the matching private key) — without them
+# the TPM has nothing valid to release against and unlock would FAIL. So this is
+# deliberately left until the UKI + prediction-signing land; today `--block-setup
+# tpm2-luks` uses bootc's default PCR policy. Adding the PIN + recovery-key +
+# FIDO2 keyslots (§5) is the companion near-term change.
 step "Installing qOS onto $DISK (this ERASES the disk; block-setup=$BLOCK_SETUP)"
 podman run --rm --privileged --pid=host --ipc=host \
   -v /var/lib/containers:/var/lib/containers \

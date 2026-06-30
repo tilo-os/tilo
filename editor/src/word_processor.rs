@@ -437,6 +437,57 @@ impl WordProcessor {
         }
     }
 
+    /// Whether the caret's block forces a page break before it (the
+    /// `page_break_before` block attr). False for a fresh/legacy block.
+    pub fn caret_page_break_before(&self, state: &AutoCommit) -> bool {
+        let Some(c) = self.containers.as_ref() else {
+            return false;
+        };
+        let snap = qdoc::model::materialize(state, c);
+        snap.blocks
+            .iter()
+            .find(|b| b.id == self.caret.block)
+            .map(|b| matches!(b.attrs.get("page_break_before"), Some(qdoc::AttrVal::Bool(true))))
+            .unwrap_or(false)
+    }
+
+    /// Set the `page_break_before` attr on the caret's block (forcing pagination
+    /// to start that block on a fresh page when `on`). Table cells are skipped —
+    /// a cell breaking mid-table would split the grid.
+    pub fn set_page_break_before(&mut self, state: &mut AutoCommit, on: bool) {
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        let block = self.caret.block.clone();
+        if self.block_meta(state, &block).0 == "cell" {
+            return;
+        }
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            dm.set_attr(&block, "page_break_before", on);
+        }
+    }
+
+    /// Toggle the page break on the caret's block (Ctrl+Enter when the caret
+    /// already starts a paragraph). Returns the new state.
+    pub fn toggle_page_break_before(&mut self, state: &mut AutoCommit) -> bool {
+        let on = !self.caret_page_break_before(state);
+        self.set_page_break_before(state, on);
+        on
+    }
+
+    /// Insert a manual page break at the caret: split the current block (like
+    /// Enter) and mark the new block to start on a fresh page. The caret follows
+    /// into the new block so typing continues on the next page.
+    pub fn insert_page_break(&mut self, state: &mut AutoCommit) {
+        // A page break inside a table cell would split the grid; ignore it.
+        if self.block_meta(state, &self.caret.block).0 == "cell" {
+            return;
+        }
+        self.enter(state);
+        self.set_page_break_before(state, true);
+    }
+
     /// Set a block-level attribute (e.g. font) on every selected block.
     /// Char ranges to apply an inline font mark to: the selection, or — with no
     /// selection — the whole caret block.
@@ -449,8 +500,14 @@ impl WordProcessor {
         }
     }
 
-    /// Set the font size over the selection (per-run), or the caret block.
-    pub fn set_font_size(&mut self, state: &mut AutoCommit, size: i64) {
+    /// Set a **non-toggle** inline mark to a specific `value` over the selection
+    /// (per-run), or — with no selection — over the whole caret block. Unlike
+    /// [`toggle_mark`] (which flips a boolean on/off), this *replaces* any prior
+    /// value of the same-named mark over each range: it removes the existing mark
+    /// then re-adds it at `value`, so changing e.g. a run's size/colour/font
+    /// overwrites rather than stacking. Used for the valued character formats
+    /// (`color`, `font`, `size`).
+    pub fn set_mark_value(&mut self, state: &mut AutoCommit, name: &str, value: qdoc::document::MarkValue) {
         let ranges = self.font_ranges(state);
         let Some(containers) = self.containers.clone() else {
             return;
@@ -459,14 +516,39 @@ impl WordProcessor {
             let mut dm = DocMut { doc: state, c: &containers, ids };
             for (b, s, e) in &ranges {
                 if s < e {
-                    dm.add_mark(b, *s, *e, "fontSize", size);
+                    dm.remove_mark(b, *s, *e, name);
+                    match &value {
+                        qdoc::document::MarkValue::Bool(v) => dm.add_mark(b, *s, *e, name, *v),
+                        qdoc::document::MarkValue::Int(n) => dm.add_mark(b, *s, *e, name, *n),
+                        qdoc::document::MarkValue::Str(st) => dm.add_mark(b, *s, *e, name, st.as_str()),
+                    }
                 }
             }
         }
     }
 
-    /// Set the font family over the selection (per-run), or the caret block.
+    /// Set the font size (pt) over the selection (per-run), or the caret block.
+    /// Stored as a `size` Int run mark (the codec contract's character format).
+    pub fn set_font_size(&mut self, state: &mut AutoCommit, size: i64) {
+        self.set_mark_value(state, "size", qdoc::document::MarkValue::Int(size));
+    }
+
+    /// Set the font family (`sans` | `serif` | `mono`) over the selection
+    /// (per-run), or the caret block. Stored as a `font` Str run mark.
     pub fn set_font_family(&mut self, state: &mut AutoCommit, family: &str) {
+        self.set_mark_value(state, "font", qdoc::document::MarkValue::Str(family.to_string()));
+    }
+
+    /// Set the text colour (`#rrggbb`) over the selection (per-run), or the caret
+    /// block. Stored as a `color` Str run mark.
+    pub fn set_text_color(&mut self, state: &mut AutoCommit, hex: &str) {
+        self.set_mark_value(state, "color", qdoc::document::MarkValue::Str(hex.to_string()));
+    }
+
+    /// Remove a named run mark over the selection (per-run), or the caret block —
+    /// the inverse of [`set_mark_value`]. Used by the toolbar's neutral colour
+    /// swatch to clear a `color` mark (reverting to the block's style ink).
+    pub fn clear_mark(&mut self, state: &mut AutoCommit, name: &str) {
         let ranges = self.font_ranges(state);
         let Some(containers) = self.containers.clone() else {
             return;
@@ -475,7 +557,7 @@ impl WordProcessor {
             let mut dm = DocMut { doc: state, c: &containers, ids };
             for (b, s, e) in &ranges {
                 if s < e {
-                    dm.add_mark(b, *s, *e, "fontFamily", family);
+                    dm.remove_mark(b, *s, *e, name);
                 }
             }
         }
@@ -540,6 +622,62 @@ impl WordProcessor {
         }
     }
 
+    /// Insert an image block carrying `bytes` at the caret. The bytes are stored
+    /// in the content-addressed blob store and the new `image` block references
+    /// them via its `blob` attr — mirroring how the codecs build image blocks
+    /// (see `qdoc::codecs::odt`). If the caret sits mid-text, the current block is
+    /// split so the image lands *between* the text before and after the caret;
+    /// otherwise it is inserted after the caret block. The caret moves to a fresh
+    /// empty paragraph just after the image so typing continues below it.
+    ///
+    /// When the bytes decode as an image, the intrinsic pixel `width`/`height` are
+    /// recorded as attrs (matching the ODF import path); undecodable bytes still
+    /// produce a valid `image` block (the renderer/exporter draw a placeholder).
+    pub fn insert_image_bytes(&mut self, state: &mut AutoCommit, bytes: &[u8]) {
+        self.delete_selection(state);
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        // Decode intrinsic dimensions up front (no doc borrow held), so the image
+        // block can carry width/height attrs like the ODF importer does.
+        let intrinsic = ui::widget::Image::from_encoded(bytes).ok().map(|im| im.intrinsic_size());
+
+        let block = self.caret.block.clone();
+        let offset = self.caret.offset;
+        let text = qdoc::model::block_text(state, &containers, &block).unwrap_or_default();
+        let char_count = text.chars().count();
+        // Tail after the caret moves into a new paragraph *below* the image so the
+        // split preserves the user's text around the insertion point.
+        let tail: String = text.chars().skip(offset).collect();
+
+        if let Some(ids) = self.ids.as_mut() {
+            let hash = {
+                let mut dm = DocMut { doc: state, c: &containers, ids };
+                let hash = dm.put_blob(bytes);
+                // Trim the caret block down to the head before the caret.
+                if offset < char_count {
+                    dm.splice_text(&block, offset, (char_count - offset) as isize, "");
+                }
+                let img = dm.insert_block(Some(&block), "image");
+                dm.set_attr(&img, "blob", hash.as_str());
+                if let Some((w, h)) = intrinsic {
+                    dm.set_attr(&img, "width", w as i64);
+                    dm.set_attr(&img, "height", h as i64);
+                }
+                // A paragraph after the image carries the split-off tail and hosts
+                // the caret so editing continues beneath the image.
+                let after = dm.insert_block(Some(&img), "paragraph");
+                if !tail.is_empty() {
+                    dm.splice_text(&after, 0, 0, &tail);
+                }
+                self.caret = Caret { block: after, offset: 0 };
+                hash
+            };
+            let _ = hash;
+        }
+        self.selection_anchor = None;
+    }
+
     /// `(table id, Vec<(cell_id, row, col)>)` for the table the caret is in.
     fn caret_table(&self, state: &AutoCommit) -> Option<(String, Vec<(String, usize, usize)>)> {
         let containers = self.containers.as_ref()?;
@@ -566,15 +704,50 @@ impl WordProcessor {
         cells.iter().find(|(id, _, _)| id == &self.caret.block).map(|(_, r, c)| (*r, *c)).unwrap_or((0, 0))
     }
 
-    /// Add a row below the caret's row.
+    /// Add a row below the caret's row (toolbar `+Row`).
     pub fn table_add_row(&mut self, state: &mut AutoCommit) {
+        self.insert_row(state, true);
+    }
+
+    /// Insert a blank row immediately above the caret's row.
+    pub fn insert_row_above(&mut self, state: &mut AutoCommit) {
+        self.insert_row(state, false);
+    }
+
+    /// Insert a blank row immediately below the caret's row.
+    pub fn insert_row_below(&mut self, state: &mut AutoCommit) {
+        self.insert_row(state, true);
+    }
+
+    /// Insert a full-width blank row adjacent to the caret's row. `below` selects
+    /// the side (`true` → below the caret row, `false` → above it). The table is
+    /// kept rectangular: the new row has exactly `ncols` cells and every row at or
+    /// past the insertion point has its `row` attr bumped by one. The caret moves
+    /// to the first cell of the new row.
+    fn insert_row(&mut self, state: &mut AutoCommit, below: bool) {
         let Some((tid, cells)) = self.caret_table(state) else {
             return;
         };
         let (cur_row, _) = self.caret_rc(&cells);
         let ncols = cells.iter().map(|(_, _, c)| *c).max().unwrap_or(0) + 1;
-        let anchor = cells.iter().find(|(_, r, c)| *r == cur_row && *c == ncols - 1).map(|(id, _, _)| id.clone());
-        let to_bump: Vec<(String, usize)> = cells.iter().filter(|(_, r, _)| *r > cur_row).map(|(id, r, _)| (id.clone(), *r)).collect();
+        // The new cells occupy `new_row`; every existing row at or past it shifts down.
+        let new_row = if below { cur_row + 1 } else { cur_row };
+        // Block-order anchor: the last cell of the row directly above `new_row`
+        // (so the inserted cells land between that row and the rest). When the new
+        // row is the table's first (`new_row == 0`), anchor to the document block
+        // just before the table so the cells slot in immediately ahead of it.
+        let anchor = if new_row == 0 {
+            let order = self.ordered_blocks(state);
+            let first_idx = cells.iter().filter_map(|(id, _, _)| order.iter().position(|b| b == id)).min();
+            first_idx.and_then(|i| if i > 0 { Some(order[i - 1].clone()) } else { None })
+        } else {
+            cells
+                .iter()
+                .filter(|(_, r, _)| *r == new_row - 1)
+                .max_by_key(|(_, _, c)| *c)
+                .map(|(id, _, _)| id.clone())
+        };
+        let to_bump: Vec<(String, usize)> = cells.iter().filter(|(_, r, _)| *r >= new_row).map(|(id, r, _)| (id.clone(), *r)).collect();
         let containers = self.containers.clone().unwrap();
         let mut first_new = None;
         if let Some(ids) = self.ids.as_mut() {
@@ -586,7 +759,7 @@ impl WordProcessor {
             for col in 0..ncols {
                 let id = dm.insert_block(prev.as_deref(), "cell");
                 dm.set_attr(&id, "table", tid.as_str());
-                dm.set_attr(&id, "row", (cur_row + 1) as i64);
+                dm.set_attr(&id, "row", new_row as i64);
                 dm.set_attr(&id, "col", col as i64);
                 if first_new.is_none() {
                     first_new = Some(id.clone());
@@ -600,14 +773,54 @@ impl WordProcessor {
         }
     }
 
-    /// Add a column to the right of the caret's column.
+    /// Add a column to the right of the caret's column (toolbar `+Col`).
     pub fn table_add_col(&mut self, state: &mut AutoCommit) {
+        self.insert_col(state, true);
+    }
+
+    /// Insert a blank column immediately to the left of the caret's column.
+    pub fn insert_col_left(&mut self, state: &mut AutoCommit) {
+        self.insert_col(state, false);
+    }
+
+    /// Insert a blank column immediately to the right of the caret's column.
+    pub fn insert_col_right(&mut self, state: &mut AutoCommit) {
+        self.insert_col(state, true);
+    }
+
+    /// Insert a blank column adjacent to the caret's column. `right` selects the
+    /// side (`true` → right of the caret column, `false` → left). The table stays
+    /// rectangular: one cell is added per row at `new_col`, and every existing
+    /// cell at or past `new_col` has its `col` attr bumped. The caret moves to the
+    /// new cell in the caret's row.
+    fn insert_col(&mut self, state: &mut AutoCommit, right: bool) {
         let Some((tid, cells)) = self.caret_table(state) else {
             return;
         };
         let (cur_row, cur_col) = self.caret_rc(&cells);
         let nrows = cells.iter().map(|(_, r, _)| *r).max().unwrap_or(0) + 1;
-        let to_bump: Vec<(String, usize)> = cells.iter().filter(|(_, _, c)| *c > cur_col).map(|(id, _, c)| (id.clone(), *c)).collect();
+        let new_col = if right { cur_col + 1 } else { cur_col };
+        let to_bump: Vec<(String, usize)> = cells.iter().filter(|(_, _, c)| *c >= new_col).map(|(id, _, c)| (id.clone(), *c)).collect();
+        // Precompute each row's insertion anchor (the block the new cell goes
+        // after) *before* borrowing the doc mutably. For `new_col > 0` the anchor
+        // is the original cell at `new_col - 1` in that row; for `new_col == 0`
+        // the new cell heads its row, so anchor to the previous row's last cell
+        // (or, for row 0, the document block just before the table).
+        let order = self.ordered_blocks(state);
+        let anchors: Vec<Option<String>> = (0..nrows)
+            .map(|r| {
+                if new_col == 0 {
+                    if r == 0 {
+                        let first_idx = cells.iter().filter_map(|(id, _, _)| order.iter().position(|b| b == id)).min();
+                        first_idx.and_then(|i| if i > 0 { Some(order[i - 1].clone()) } else { None })
+                    } else {
+                        cells.iter().filter(|(_, rr, _)| *rr == r - 1).max_by_key(|(_, _, cc)| *cc).map(|(id, _, _)| id.clone())
+                    }
+                } else {
+                    cells.iter().find(|(_, rr, cc)| *rr == r && *cc == new_col - 1).map(|(id, _, _)| id.clone())
+                }
+            })
+            .collect();
         let containers = self.containers.clone().unwrap();
         let mut caret_new = None;
         if let Some(ids) = self.ids.as_mut() {
@@ -616,11 +829,10 @@ impl WordProcessor {
                 dm.set_attr(id, "col", (*c + 1) as i64);
             }
             for r in 0..nrows {
-                let anchor = cells.iter().find(|(_, rr, cc)| *rr == r && *cc == cur_col).map(|(id, _, _)| id.clone());
-                let id = dm.insert_block(anchor.as_deref(), "cell");
+                let id = dm.insert_block(anchors[r].as_deref(), "cell");
                 dm.set_attr(&id, "table", tid.as_str());
                 dm.set_attr(&id, "row", r as i64);
-                dm.set_attr(&id, "col", (cur_col + 1) as i64);
+                dm.set_attr(&id, "col", new_col as i64);
                 if r == cur_row {
                     caret_new = Some(id.clone());
                 }
@@ -630,6 +842,79 @@ impl WordProcessor {
             self.caret = Caret { block: fc, offset: 0 };
             self.selection_anchor = None;
         }
+    }
+
+    /// `true` when the caret currently sits inside a table cell.
+    pub fn caret_in_cell(&self, state: &AutoCommit) -> bool {
+        self.caret_table(state).is_some()
+    }
+
+    /// Tab / Shift-Tab cell navigation. `forward` moves to the next cell in
+    /// row-major order (wrapping to the first cell of the next row); when the
+    /// caret is in the table's **last** cell, a fresh row is appended and the
+    /// caret lands in its first cell. `!forward` moves to the previous cell
+    /// (staying put at the very first cell). Returns `true` when the caret was in
+    /// a cell and was handled here (so the caller should not insert a tab).
+    pub fn tab_cell(&mut self, state: &mut AutoCommit, forward: bool) -> bool {
+        let Some((_, cells)) = self.caret_table(state) else {
+            return false;
+        };
+        // Cells in row-major order (row, then col) — the navigation order.
+        let mut ordered: Vec<(String, usize, usize)> = cells.clone();
+        ordered.sort_by_key(|(_, r, c)| (*r, *c));
+        let Some(pos) = ordered.iter().position(|(id, _, _)| id == &self.caret.block) else {
+            return false;
+        };
+        if forward {
+            if pos + 1 < ordered.len() {
+                let next = ordered[pos + 1].0.clone();
+                self.caret = Caret { block: next, offset: 0 };
+                self.selection_anchor = None;
+            } else {
+                // Last cell: grow the table by a row and land in its first cell.
+                self.insert_row(state, true);
+            }
+        } else if pos > 0 {
+            let prev = ordered[pos - 1].0.clone();
+            // Land at the end of the previous cell's text (natural Shift-Tab feel).
+            let off = self.block_len(state, &prev);
+            self.caret = Caret { block: prev, offset: off };
+            self.selection_anchor = None;
+        }
+        true
+    }
+
+    /// Vertical cell navigation (Up/Down) when the caret is at the top/bottom text
+    /// edge of a cell: move to the vertically-adjacent cell (same column, row
+    /// ±1). Returns `true` when it moved between cells; `false` lets the caller
+    /// fall back to ordinary block-relative motion.
+    pub fn cell_vertical(&mut self, state: &AutoCommit, down: bool) -> bool {
+        let Some((_, cells)) = self.caret_table(state) else {
+            return false;
+        };
+        let (cur_row, cur_col) = self.caret_rc(&cells);
+        let target_row = if down { cur_row + 1 } else { cur_row.checked_sub(1).unwrap_or(usize::MAX) };
+        if target_row == usize::MAX {
+            return false;
+        }
+        // Prefer the cell directly above/below; if that column is absent in the
+        // target row (ragged tables shouldn't happen, but be safe), pick the
+        // nearest column there.
+        let in_row: Vec<&(String, usize, usize)> = cells.iter().filter(|(_, r, _)| *r == target_row).collect();
+        if in_row.is_empty() {
+            return false;
+        }
+        let pick = in_row
+            .iter()
+            .min_by_key(|(_, _, c)| c.abs_diff(cur_col))
+            .map(|(id, _, _)| id.clone());
+        if let Some(id) = pick {
+            let off = self.caret.offset.min(self.block_len(state, &id));
+            self.caret = Caret { block: id, offset: off };
+            self.selection_anchor = None;
+            return true;
+        }
+        false
     }
 
     /// Delete the caret's row (deletes the whole table if it was the last row).
@@ -1288,6 +1573,36 @@ mod tests {
     }
 
     #[test]
+    fn inline_color_font_size_marks_apply_to_selection() {
+        use qdoc::document::MarkValue;
+        let (mut wp, mut state) = bound();
+        wp.insert_str(&mut state, "hello world");
+        // select "hello" (0..5)
+        wp.caret.offset = 0;
+        wp.set_anchor();
+        wp.caret.offset = 5;
+        wp.set_text_color(&mut state, "#ff0000");
+        wp.set_font_size(&mut state, 24);
+        wp.set_font_family(&mut state, "serif");
+        let c = wp.containers.as_ref().unwrap();
+        let snap = qdoc::model::materialize(&state, c);
+        let blk = &snap.blocks[0];
+        let mark = |name: &str| blk.marks.iter().find(|m| m.name == name && m.start == 0 && m.end == 5).map(|m| m.value.clone());
+        match mark("color") {
+            Some(MarkValue::Str(s)) => assert_eq!(s, "#ff0000"),
+            _ => panic!("color mark missing over selection"),
+        }
+        match mark("size") {
+            Some(MarkValue::Int(n)) => assert_eq!(n, 24),
+            _ => panic!("size mark missing over selection"),
+        }
+        match mark("font") {
+            Some(MarkValue::Str(s)) => assert_eq!(s, "serif"),
+            _ => panic!("font mark missing over selection"),
+        }
+    }
+
+    #[test]
     fn multi_block_selection_copy_and_delete() {
         let (mut wp, mut state) = bound();
         wp.insert_str(&mut state, "first");
@@ -1527,5 +1842,191 @@ mod tests {
         assert_eq!(snap.blocks[0].kind, "heading");
         assert_eq!(snap.blocks[0].attrs.get("level"), Some(&qdoc::AttrVal::Int(2)));
         assert_eq!(snap.blocks[0].attrs.get("align"), Some(&qdoc::AttrVal::Str("center".into())));
+    }
+
+    /// A minimal 2×3 RGB PNG (red pixels) — small enough to embed yet a real,
+    /// decodable image so intrinsic-size attrs can be asserted.
+    const TINY_PNG: &[u8] = &[
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 3, 8, 2, 0,
+        0, 0, 54, 136, 73, 214, 0, 0, 0, 17, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 240, 159, 1,
+        140, 17, 20, 0, 68, 208, 5, 251, 176, 88, 73, 172, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+    ];
+
+    #[test]
+    fn insert_image_bytes_round_trips_blob_and_dims() {
+        let (mut wp, mut state) = bound();
+        wp.insert_str(&mut state, "above");
+        wp.insert_image_bytes(&mut state, TINY_PNG);
+
+        let c = wp.containers.clone().unwrap();
+        let snap = qdoc::model::materialize(&state, &c);
+        let img = snap.blocks.iter().find(|b| b.kind == "image").expect("an image block was inserted");
+
+        // The blob attr references a blob whose bytes round-trip exactly.
+        let hash = match img.attrs.get("blob") {
+            Some(qdoc::AttrVal::Str(s)) => s.clone(),
+            other => panic!("image block missing blob attr: {other:?}"),
+        };
+        assert_eq!(snap.blobs.get(&hash).map(|b| b.as_slice()), Some(TINY_PNG), "blob bytes round-trip");
+
+        // Intrinsic pixel dimensions were recorded (mirrors the ODF import path).
+        assert_eq!(img.attrs.get("width"), Some(&qdoc::AttrVal::Int(2)));
+        assert_eq!(img.attrs.get("height"), Some(&qdoc::AttrVal::Int(3)));
+
+        // The image landed after the original text, and the caret sits in a fresh
+        // paragraph below it so typing continues beneath the image.
+        let order = wp.ordered_blocks(&state);
+        let img_pos = order.iter().position(|id| id == &img.id).unwrap();
+        assert!(img_pos >= 1, "image inserted after the original paragraph");
+        assert_eq!(wp.caret.offset, 0);
+        assert_ne!(wp.caret.block, img.id, "caret moved off the image block");
+    }
+
+    #[test]
+    fn insert_image_splits_text_around_caret() {
+        let (mut wp, mut state) = bound();
+        wp.insert_str(&mut state, "helloworld");
+        // caret between "hello" and "world"
+        for _ in 0..5 {
+            wp.move_left(&state);
+        }
+        wp.insert_image_bytes(&mut state, TINY_PNG);
+        let texts = wp.block_texts(&state);
+        // head paragraph, image (empty text), tail paragraph
+        assert_eq!(texts, vec!["hello".to_string(), String::new(), "world".to_string()]);
+        assert_eq!(wp.current_text(&state), "world", "caret follows the tail below the image");
+    }
+
+    // ---- table editing -----------------------------------------------------
+
+    /// The materialized `(row, col)` grid coordinates of every cell in the single
+    /// table the snapshot contains, sorted row-major. Reads the production
+    /// snapshot path so tests assert on what collaborators/exporters actually see.
+    fn table_grid(wp: &WordProcessor, state: &AutoCommit) -> Vec<(usize, usize)> {
+        let c = wp.containers.as_ref().unwrap();
+        let snap = qdoc::model::materialize(state, c);
+        let int = |b: &qdoc::snapshot::BlockView, k: &str| match b.attrs.get(k) {
+            Some(qdoc::AttrVal::Int(n)) if *n >= 0 => *n as usize,
+            _ => 0,
+        };
+        let mut g: Vec<(usize, usize)> =
+            snap.blocks.iter().filter(|b| b.kind == "cell").map(|b| (int(b, "row"), int(b, "col"))).collect();
+        g.sort();
+        g
+    }
+
+    /// Assert a grid is a full `rows × cols` rectangle (every coordinate present
+    /// exactly once) — the table-rectangularity invariant.
+    fn assert_rectangular(grid: &[(usize, usize)], rows: usize, cols: usize) {
+        let mut expected: Vec<(usize, usize)> = (0..rows).flat_map(|r| (0..cols).map(move |c| (r, c))).collect();
+        expected.sort();
+        assert_eq!(grid, expected.as_slice(), "table is a full {rows}×{cols} rectangle");
+    }
+
+    #[test]
+    fn insert_row_grows_table_and_stays_rectangular() {
+        let (mut wp, mut state) = bound();
+        wp.insert_table(&mut state, 2, 3);
+        assert_rectangular(&table_grid(&wp, &state), 2, 3);
+        // Caret is in the first cell (row 0) after insert_table.
+        wp.insert_row_below(&mut state);
+        let grid = table_grid(&wp, &state);
+        let rows = grid.iter().map(|(r, _)| *r).max().unwrap() + 1;
+        assert_eq!(rows, 3, "row count increased by one");
+        assert_rectangular(&grid, 3, 3);
+        // The caret landed on the freshly-inserted row (row 1, below row 0).
+        let (cr, _) = wp.caret_rc(&wp.caret_table(&state).unwrap().1);
+        assert_eq!(cr, 1, "caret moved into the new row");
+    }
+
+    #[test]
+    fn insert_row_above_inserts_before_caret_row() {
+        let (mut wp, mut state) = bound();
+        wp.insert_table(&mut state, 2, 2);
+        // Move caret to row 1.
+        let (_, cells) = wp.caret_table(&state).unwrap();
+        let r1c0 = cells.iter().find(|(_, r, c)| *r == 1 && *c == 0).unwrap().0.clone();
+        wp.set_caret(Caret { block: r1c0, offset: 0 });
+        wp.insert_row_above(&mut state);
+        assert_rectangular(&table_grid(&wp, &state), 3, 2);
+        let (cr, _) = wp.caret_rc(&wp.caret_table(&state).unwrap().1);
+        assert_eq!(cr, 1, "the new row took row 1's slot; caret is on it");
+    }
+
+    #[test]
+    fn delete_col_removes_one_cell_per_row() {
+        let (mut wp, mut state) = bound();
+        wp.insert_table(&mut state, 3, 3);
+        let before = table_grid(&wp, &state).len();
+        assert_eq!(before, 9);
+        wp.table_del_col(&mut state);
+        let grid = table_grid(&wp, &state);
+        assert_eq!(grid.len(), before - 3, "exactly one cell removed per row");
+        assert_rectangular(&grid, 3, 2);
+    }
+
+    #[test]
+    fn insert_col_left_and_right_stay_rectangular() {
+        let (mut wp, mut state) = bound();
+        wp.insert_table(&mut state, 2, 2);
+        // Move to col 1 so left/right are unambiguous.
+        let (_, cells) = wp.caret_table(&state).unwrap();
+        let r0c1 = cells.iter().find(|(_, r, c)| *r == 0 && *c == 1).unwrap().0.clone();
+        wp.set_caret(Caret { block: r0c1, offset: 0 });
+        wp.insert_col_left(&mut state);
+        assert_rectangular(&table_grid(&wp, &state), 2, 3);
+        wp.insert_col_right(&mut state);
+        assert_rectangular(&table_grid(&wp, &state), 2, 4);
+    }
+
+    #[test]
+    fn tab_walks_cells_and_appends_row_at_end() {
+        let (mut wp, mut state) = bound();
+        wp.insert_table(&mut state, 2, 2); // caret in (0,0)
+        // Tab forward through every cell: (0,0)->(0,1)->(1,0)->(1,1).
+        for expect in [(0, 1), (1, 0), (1, 1)] {
+            assert!(wp.tab_cell(&mut state, true), "tab handled inside the table");
+            assert_eq!(wp.caret_rc(&wp.caret_table(&state).unwrap().1), expect);
+        }
+        // One more Tab from the last cell appends a row and lands in (2,0).
+        assert!(wp.tab_cell(&mut state, true));
+        let grid = table_grid(&wp, &state);
+        assert_rectangular(&grid, 3, 2);
+        assert_eq!(wp.caret_rc(&wp.caret_table(&state).unwrap().1), (2, 0), "caret in first cell of the appended row");
+    }
+
+    #[test]
+    fn shift_tab_walks_backwards() {
+        let (mut wp, mut state) = bound();
+        wp.insert_table(&mut state, 2, 2);
+        // Jump to the last cell, then Shift-Tab back one.
+        let (_, cells) = wp.caret_table(&state).unwrap();
+        let last = cells.iter().find(|(_, r, c)| *r == 1 && *c == 1).unwrap().0.clone();
+        wp.set_caret(Caret { block: last, offset: 0 });
+        assert!(wp.tab_cell(&mut state, false));
+        assert_eq!(wp.caret_rc(&wp.caret_table(&state).unwrap().1), (1, 0), "shift-tab moved to the previous cell");
+    }
+
+    #[test]
+    fn vertical_arrows_move_between_cells() {
+        let (mut wp, mut state) = bound();
+        wp.insert_table(&mut state, 2, 2); // caret in (0,0)
+        assert!(wp.cell_vertical(&state, true), "down moved into a cell");
+        assert_eq!(wp.caret_rc(&wp.caret_table(&state).unwrap().1), (1, 0));
+        assert!(wp.cell_vertical(&state, false), "up moved back");
+        assert_eq!(wp.caret_rc(&wp.caret_table(&state).unwrap().1), (0, 0));
+        // Up from the top row has no cell above → not handled here.
+        assert!(!wp.cell_vertical(&state, false), "no cell above the top row");
+    }
+
+    #[test]
+    fn delete_last_row_removes_table() {
+        let (mut wp, mut state) = bound();
+        wp.insert_table(&mut state, 1, 2);
+        wp.table_del_row(&mut state);
+        let c = wp.containers.as_ref().unwrap();
+        let snap = qdoc::model::materialize(&state, c);
+        assert!(snap.blocks.iter().all(|b| b.kind != "cell"), "deleting the last row removed the whole table");
+        assert!(!wp.caret_in_cell(&state), "caret is no longer in a cell");
     }
 }

@@ -1,0 +1,16 @@
+{
+  "default": [
+    { "type": "insecureAcceptAnything" }
+  ],
+  "transports": {
+    "docker": {
+      "code.podesta.ai/qos/qos": [
+        {
+          "type": "sigstoreSigned",
+          "keyPath": "/usr/share/qos/cosign.pub",
+          "signedIdentity": { "type": "matchRepository" }
+        }
+      ]
+    }
+  }
+}

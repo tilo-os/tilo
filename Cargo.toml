@@ -1,6 +1,13 @@
 [workspace]
 members = [
+    "qos-swipe",
+    "qos-tts",
     "qdoc",
+    "spellcheck",
+    "docpdf",
+    "dochtml",
+    "docrtf",
+    "docepub",
     "editor",
     "fs",
     "shell",

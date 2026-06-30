@@ -15,6 +15,10 @@ path = "src/main.rs"
 [dependencies]
 ui = { path = "../ui" }
 qdoc = { path = "../qdoc" }
+spellcheck = { path = "../spellcheck" }
+docpdf = { path = "../docpdf" }
+dochtml = { path = "../dochtml" }
+docrtf = { path = "../docrtf" }
 automerge = "0.8.0"
 vello = "0.9"
 taffy = "0.10.1"
@@ -22,3 +26,4 @@ winit = "0.30.13"
 arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+regex = "1"

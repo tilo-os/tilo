@@ -1,0 +1,258 @@
+//! The set of known words.
+
+use std::collections::HashSet;
+
+/// The embedded English word list.
+///
+/// Source: the system `hunspell` en_US spelling dictionary
+/// (`/usr/share/hunspell/en_US.dic`, the SCOWL-derived list shipped by Fedora),
+/// used as an oracle to validate a lowercased/normalised pass over the much
+/// larger but noisier `/usr/share/dict/words` (`linux.words`). Every candidate
+/// that `hunspell -d en_US` accepted — which expands the dictionary's affix
+/// rules, so it includes inflected forms like `jumps`, `jumping`, `foxes` that
+/// the bare `.dic` stems omit — was kept. The result was lowercased, restricted
+/// to ASCII letters with optional internal apostrophes, length 1..=15, and sorted
+/// unique.
+///
+/// Size: ~75,000 words, ~700 KB. See `spellcheck/data/words.txt`.
+const BUILTIN_WORDS: &str = include_str!("../data/words.txt");
+
+/// A set of known words for spell checking.
+///
+/// Membership is **case-insensitive**: words are stored lowercased and
+/// [`Dictionary::contains`] lowercases its argument before looking it up. The
+/// dictionary also keeps a length-bucketed index used by the suggester to avoid
+/// scanning words whose length alone puts them out of edit-distance range.
+///
+/// On top of the built-in word list, a [`Dictionary`] carries a small,
+/// runtime-mutable **user dictionary** ([`Dictionary::add_word`]) — words the
+/// user has explicitly accepted (e.g. via "Add to dictionary" in the word
+/// processor). User words participate in [`contains`](Dictionary::contains)
+/// exactly like built-in ones, so an added word is no longer flagged.
+#[derive(Debug, Clone, Default)]
+pub struct Dictionary {
+    words: HashSet<String>,
+    /// `by_len[n]` holds every word of `char`-length `n` (lowercased), so the
+    /// suggester can restrict its scan to lengths within +-max of the query.
+    by_len: Vec<Vec<String>>,
+    /// Runtime-added user words (lowercased). Kept separate from `words` so the
+    /// built-in list stays a clean compile-time set and the user words can be
+    /// persisted independently. Consulted by [`contains`](Self::contains).
+    user_words: HashSet<String>,
+}
+
+impl Dictionary {
+    /// Build the dictionary embedded in the binary at compile time.
+    pub fn builtin() -> Self {
+        Self::from_words(BUILTIN_WORDS.lines())
+    }
+
+    /// Like [`builtin`](Self::builtin), but also load any persisted user words
+    /// from the user-config file (`$XDG_CONFIG_HOME/qos/userdict.txt`, falling
+    /// back to `~/.config/qos/userdict.txt`). Missing / unreadable file is a
+    /// silent no-op, so this is safe to call in headless tests and sandboxes.
+    pub fn with_user_dict() -> Self {
+        let mut d = Self::builtin();
+        d.load_user_dict();
+        d
+    }
+
+    /// Load any persisted user words from the user-config file into this
+    /// dictionary's runtime user set. Best-effort: a missing / unreadable file
+    /// is a silent no-op. Lets a caller that already holds a built-in dictionary
+    /// (e.g. cloned from a process-wide shared copy to avoid re-parsing the 75k
+    /// word list) layer in the persisted user words without re-parsing.
+    pub fn load_user_dict(&mut self) {
+        let Some(path) = user_dict_path() else { return };
+        if let Ok(contents) = std::fs::read_to_string(&path) {
+            for line in contents.lines() {
+                let w = line.trim();
+                if !w.is_empty() && !self.words.contains(&w.to_lowercase()) {
+                    self.user_words.insert(w.to_lowercase());
+                }
+            }
+        }
+    }
+
+    /// Build a dictionary from any iterator of word-like strings.
+    ///
+    /// Each entry is trimmed and lowercased; empty entries are ignored.
+    /// Duplicate words collapse. This is the constructor used both by
+    /// [`Dictionary::builtin`] and by callers supplying a custom list (e.g. a
+    /// per-document allow-list).
+    pub fn from_words<I, S>(words: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut set = HashSet::new();
+        let mut by_len: Vec<Vec<String>> = Vec::new();
+        for w in words {
+            let normalized = w.as_ref().trim().to_lowercase();
+            if normalized.is_empty() {
+                continue;
+            }
+            if set.insert(normalized.clone()) {
+                let len = normalized.chars().count();
+                if by_len.len() <= len {
+                    by_len.resize(len + 1, Vec::new());
+                }
+                by_len[len].push(normalized);
+            }
+        }
+        Dictionary { words: set, by_len, user_words: HashSet::new() }
+    }
+
+    /// Returns `true` if `word` is in the dictionary (built-in list **or** the
+    /// runtime user dictionary), compared case-insensitively.
+    pub fn contains(&self, word: &str) -> bool {
+        // Fast path: a word that is already lowercase needs no allocation.
+        if word.chars().all(|c| !c.is_uppercase()) {
+            self.words.contains(word) || self.user_words.contains(word)
+        } else {
+            let lower = word.to_lowercase();
+            self.words.contains(&lower) || self.user_words.contains(&lower)
+        }
+    }
+
+    /// Add `word` to the runtime user dictionary so it is no longer flagged as a
+    /// misspelling. Stored lowercased (membership is case-insensitive). Empty /
+    /// whitespace-only input is ignored. Returns `true` if the word was newly
+    /// added (i.e. not already known via the built-in list or a prior add).
+    ///
+    /// This does **not** persist on its own — call [`save_user_dict`](Self::save_user_dict)
+    /// to write the user dictionary to disk.
+    pub fn add_word(&mut self, word: &str) -> bool {
+        let normalized = word.trim().to_lowercase();
+        if normalized.is_empty() {
+            return false;
+        }
+        if self.words.contains(&normalized) {
+            // Already a built-in word — nothing to record.
+            return false;
+        }
+        self.user_words.insert(normalized)
+    }
+
+    /// Persist the runtime user dictionary to the user-config file
+    /// (`$XDG_CONFIG_HOME/qos/userdict.txt`). Best-effort: returns `Ok(())` and
+    /// no-ops when no config path is resolvable; surfaces I/O errors otherwise so
+    /// a caller *can* report them, but the typical caller ignores the result.
+    pub fn save_user_dict(&self) -> std::io::Result<()> {
+        let Some(path) = user_dict_path() else {
+            return Ok(());
+        };
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut words: Vec<&str> = self.user_words.iter().map(String::as_str).collect();
+        words.sort_unstable();
+        let body = words.join("\n");
+        std::fs::write(&path, body)
+    }
+
+    /// The runtime user-added words, lowercased and unsorted. Mostly useful for
+    /// tests and persistence.
+    pub fn user_words(&self) -> impl Iterator<Item = &str> {
+        self.user_words.iter().map(String::as_str)
+    }
+
+    /// Number of distinct words in the dictionary.
+    pub fn len(&self) -> usize {
+        self.words.len()
+    }
+
+    /// Returns `true` if the dictionary has no words.
+    pub fn is_empty(&self) -> bool {
+        self.words.is_empty()
+    }
+
+    /// Iterate over all words whose `char`-length is within `[min_len, max_len]`
+    /// (inclusive). Used by the suggester to bound its scan.
+    pub(crate) fn words_in_len_range(
+        &self,
+        min_len: usize,
+        max_len: usize,
+    ) -> impl Iterator<Item = &str> {
+        let hi = max_len.min(self.by_len.len().saturating_sub(1));
+        (min_len..=hi)
+            .filter(move |&n| n < self.by_len.len())
+            .flat_map(move |n| self.by_len[n].iter().map(String::as_str))
+    }
+}
+
+/// Resolve the path of the persisted user dictionary:
+/// `$XDG_CONFIG_HOME/qos/userdict.txt`, falling back to
+/// `$HOME/.config/qos/userdict.txt`. Returns `None` when neither environment
+/// variable is set (e.g. a locked-down sandbox), in which case the user
+/// dictionary lives only in memory.
+fn user_dict_path() -> Option<std::path::PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config"))
+        })?;
+    Some(base.join("qos").join("userdict.txt"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_words_is_case_insensitive() {
+        let d = Dictionary::from_words(["Hello", "WORLD"]);
+        assert!(d.contains("hello"));
+        assert!(d.contains("HELLO"));
+        assert!(d.contains("World"));
+        assert!(!d.contains("goodbye"));
+    }
+
+    #[test]
+    fn trims_and_skips_empty() {
+        let d = Dictionary::from_words(["  spaced  ", "", "   ", "ok"]);
+        assert!(d.contains("spaced"));
+        assert!(d.contains("ok"));
+        assert_eq!(d.len(), 2);
+    }
+
+    #[test]
+    fn len_range_iter_respects_bounds() {
+        let d = Dictionary::from_words(["a", "to", "cat", "four", "fives"]);
+        let got: HashSet<&str> = d.words_in_len_range(3, 4).collect();
+        assert!(got.contains("cat"));
+        assert!(got.contains("four"));
+        assert!(!got.contains("to"));
+        assert!(!got.contains("fives"));
+    }
+
+    #[test]
+    fn builtin_loads() {
+        let d = Dictionary::builtin();
+        assert!(d.len() > 10_000);
+        assert!(d.contains("the"));
+        assert!(d.contains("quick"));
+        assert!(!d.contains("teh"));
+    }
+
+    #[test]
+    fn add_word_makes_a_word_known_case_insensitively() {
+        let mut d = Dictionary::from_words(["alpha", "beta"]);
+        assert!(!d.contains("qos"), "precondition: unknown word");
+        assert!(d.add_word("qOS"), "first add records the word");
+        assert!(d.contains("qos"), "added word is now known");
+        assert!(d.contains("QOS"), "membership stays case-insensitive");
+        // Re-adding is a no-op, and adding a built-in word records nothing.
+        assert!(!d.add_word("qos"), "re-adding an existing user word is a no-op");
+        assert!(!d.add_word("alpha"), "adding a built-in word records nothing");
+    }
+
+    #[test]
+    fn add_word_ignores_empty_and_whitespace() {
+        let mut d = Dictionary::from_words(["alpha"]);
+        assert!(!d.add_word(""));
+        assert!(!d.add_word("   "));
+        assert_eq!(d.user_words().count(), 0);
+    }
+}

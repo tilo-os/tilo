@@ -1,0 +1,15 @@
+[package]
+name = "docepub"
+version = "0.1.0"
+edition = "2024"
+description = "EPUB 3 export for qdoc DocSnapshot documents (qOS)"
+
+[dependencies]
+qdoc = { path = "../qdoc" }
+# Reuse the HTML export engine for inline/block markup + escaping; we wrap its
+# fragment output in well-formed XHTML.
+dochtml = { path = "../dochtml" }
+# ZIP container for the EPUB OCF package. Pinned to the version already in the
+# workspace lockfile (qdoc's docx/odt codecs use it) so adding docepub does not
+# churn the resolve.
+zip = "2"
