@@ -21,12 +21,16 @@ Type=simple
 # the ExecStartPre's are a belt-and-suspenders fallback for the case
 # where systemd-tmpfiles-setup hasn't run yet.
 ExecStartPre=/usr/bin/mkdir -p /var/workspace
-# NOTE: the `fs` binary currently uses an in-memory blob store (MemStore) and
-# its CLI accepts ONLY --mount-point. Passing --cache-dir made clap exit 2
-# (INVALIDARGUMENT), which crash-looped this unit (Restart=always). Persistent
-# on-disk caching at /var/cache/qos-fs is a deferred fs-binary feature — re-add
-# `--cache-dir /var/cache/qos-fs` here (and the mkdir) once the binary supports it.
-ExecStart=/usr/bin/fs --mount-point /var/workspace
+ExecStartPre=/usr/bin/mkdir -p /var/cache/quick-fs
+# The collaborative `fs` binary is subcommand-based: `serve` hosts a workspace
+# and mounts it locally (what a fresh boot needs — no peer ticket); `mount`
+# joins a peer's workspace via a ticket. `--cache-dir` is the persistent
+# iroh-blobs content store so hydrated content survives reboots (the root stays
+# read-only under bootc; the cache lives on writable /var).
+# (Earlier the CLI was a flat `fs --mount-point`; it has since moved to
+# `fs serve --mount-point --cache-dir`. Verified live: mounts /var/workspace,
+# Iroh endpoint up, workspace hosted.)
+ExecStart=/usr/bin/fs serve --mount-point /var/workspace --cache-dir /var/cache/quick-fs
 # `fusermount -u` is preferable to plain `umount` because it doesn't
 # need CAP_SYS_ADMIN. `-z` makes the unmount lazy so a hung client
 # can't block shutdown.
