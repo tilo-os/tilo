@@ -17,7 +17,7 @@ use vello::kurbo::Rect;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OskToolbarAction {
     /// Paste clipboard contents into the focused field. Wires to the
-    /// existing `arboard` clipboard path (via the host) once W7 IM
+    /// existing `arboard` clipboard path (via the host) once IM
     /// injection lands.
     Paste,
     /// Extend/move the selection (or caret) one unit left.

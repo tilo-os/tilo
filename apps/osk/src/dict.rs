@@ -1,4 +1,4 @@
-//! English word-frequency dictionary (W9).
+//! English word-frequency dictionary.
 //!
 //! A compact, **offline**, embedded English word list with relative
 //! frequencies, used by both the swipe decoder ([`crate::swipe`]) and the
