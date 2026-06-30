@@ -1,0 +1,51 @@
+; qOS trusted-base SELinux confinement (CIL).
+; ===========================================================================
+; Confines the collaborative filesystem daemon (fs.service) into its own
+; SELinux domain instead of the catch-all unconfined_service_t it lands in
+; today (a custom binary with no policy = no MAC confinement). This is the
+; MAC backstop for the trusted base: if fs is ever compromised, the kernel
+; still boxes it.
+;
+; POSTURE: permissive-first.
+; --------------------------
+; The system runs SELinux ENFORCING and fs currently works. fs does a lot
+; (FUSE mount of /var/workspace, iroh P2P networking, blob I/O under
+; /var/cache, a unix control socket the compositor talks to), so the precise
+; enforcing allow-set can only be finalised by capturing live AVCs on a real
+; run. Shipping an incomplete ENFORCING domain would break a working daemon;
+; shipping it PERMISSIVE logs every access without blocking, so fs keeps
+; working AND we collect exactly the AVCs needed to tighten to enforcing.
+; This is the standard SELinux bring-up workflow (permissive -> audit2allow ->
+; enforcing), and is an honest improvement over unconfined_service_t.
+;
+; HOW fs ENTERS THE DOMAIN
+; ------------------------
+; fs.service carries `SELinuxContext=system_u:system_r:qos_fs_t:s0` (drop-in),
+; so systemd setexeccon's into qos_fs_t at exec — no binary relabel needed
+; (the executable stays bin_t; qos_fs_t is allowed to entrypoint bin_t). The
+; init_t -> qos_fs_t transition is allowed explicitly (init_t is enforcing).
+
+(type qos_fs_t)
+(typeattributeset domain (qos_fs_t))
+(roletype system_r qos_fs_t)
+
+; Permissive: log-but-allow everything qos_fs_t does while the enforcing
+; allow-set is being established from real AVCs.
+(typepermissive qos_fs_t)
+
+; Let init (systemd) transition fs into the domain and entrypoint the binary
+; (which keeps its default bin_t label — no relabel in the image).
+(allow init_t qos_fs_t (process (transition)))
+(allow qos_fs_t bin_t (file (entrypoint execute execute_no_trans read open getattr map ioctl)))
+(allow init_t qos_fs_t (process (siginh rlimitinh noatsecure)))
+
+; ENFORCING HARDENING PATH (do after a VM run captures AVCs):
+; -----------------------------------------------------------
+; 1. boot, exercise fs (mount /var/workspace, read/write, peer sync),
+;    then: `ausearch -m AVC -ts boot | audit2allow -C` (or audit2allow -M).
+; 2. translate the generated allow rules into CIL allows on qos_fs_t here
+;    (fuse, the iroh sockets, /var/workspace + /var/cache file types, the
+;    control socket, capabilities), replacing `(typepermissive qos_fs_t)`.
+; 3. drop the permissive line so qos_fs_t enforces.
+; The compositor (shell) runs in the greetd session domain; giving it its own
+; confined domain is the next base-daemon target, same workflow.
