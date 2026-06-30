@@ -166,6 +166,95 @@ impl VelloDrmBridge {
         }
 
         let (width, height) = self.size;
+        self.render_to_readback(scene)?;
+
+        // Block-map the readback buffer and copy into the tight
+        // `self.readback`, stripping row padding.
+        let mapped = self.map_readback()?;
+        let tight_row = (width * 4) as usize;
+        let needed = tight_row * height as usize;
+        self.readback.clear();
+        self.readback.reserve(needed);
+        for row in 0..height as usize {
+            let start = row * self.padded_bytes_per_row as usize;
+            self.readback
+                .extend_from_slice(&mapped[start..start + tight_row]);
+        }
+        drop(mapped);
+        self.readback_buf.unmap();
+
+        Ok(&self.readback)
+    }
+
+    /// Render `scene` and write it **directly** into an XRGB8888
+    /// destination (little-endian byte order `[B, G, R, X]`), fusing
+    /// the wgpu padding-strip and the RGBA→XRGB swizzle into a single
+    /// pass.
+    ///
+    /// This is the copy-eliminating sibling of [`paint`](Self::paint):
+    /// the `paint()` path produces a tight RGBA `Vec` that the DRM
+    /// scanout then swizzles into the dumb buffer (two full-frame
+    /// copies after the GPU readback). `paint_into_xrgb8888` swizzles
+    /// the mapped wgpu readback straight into the caller's destination
+    /// (a DRM dumb-buffer mmap), so only the unavoidable GPU→CPU
+    /// readback plus one swizzle remain.
+    ///
+    /// `dst` is the destination buffer and `dst_pitch` its row stride
+    /// in bytes (may exceed `width * 4` for hardware pitch alignment).
+    /// Rows and columns are clamped to whatever `dst` can hold, so a
+    /// short destination is logged-and-truncated rather than a panic —
+    /// matching the scanout's defensive contract.
+    pub fn paint_into_xrgb8888(
+        &mut self,
+        scene: &Scene,
+        dst: &mut [u8],
+        dst_pitch: usize,
+    ) -> Result<(), BridgeError> {
+        if !WARNED_CPU_FALLBACK.swap(true, Ordering::AcqRel) {
+            tracing::warn!(
+                "DRM paint: CPU fallback active — vello → wgpu readback → XRGB8888 \
+                 (fused swizzle, one copy eliminated vs. the tight-RGBA path); \
+                 zero-copy DMA-BUF interop remains a follow-up. \
+                 Expect ~several ms per frame for a 1080p output."
+            );
+        }
+
+        let (width, height) = self.size;
+        self.render_to_readback(scene)?;
+        let mapped = self.map_readback()?;
+
+        let tight_row = (width * 4) as usize;
+        if dst_pitch == 0 {
+            self.readback_buf.unmap();
+            return Ok(());
+        }
+        let max_rows = (dst.len() / dst_pitch).min(height as usize);
+        let cols = (dst_pitch / 4).min(width as usize);
+        for row in 0..max_rows {
+            let s_start = row * self.padded_bytes_per_row as usize;
+            let srow = &mapped[s_start..s_start + tight_row];
+            let d_start = row * dst_pitch;
+            let drow = &mut dst[d_start..d_start + cols * 4];
+            for x in 0..cols {
+                let s = &srow[x * 4..x * 4 + 4]; // R, G, B, A
+                let d = &mut drow[x * 4..x * 4 + 4]; // B, G, R, X
+                d[0] = s[2];
+                d[1] = s[1];
+                d[2] = s[0];
+                d[3] = 0xFF;
+            }
+        }
+        drop(mapped);
+        self.readback_buf.unmap();
+        Ok(())
+    }
+
+    /// Render `scene` into the offscreen texture and stage the
+    /// texture→`readback_buf` copy (padded to wgpu's row alignment).
+    /// Shared prologue for [`paint`](Self::paint) and
+    /// [`paint_into_xrgb8888`](Self::paint_into_xrgb8888).
+    fn render_to_readback(&mut self, scene: &Scene) -> Result<(), BridgeError> {
+        let (width, height) = self.size;
         let device = &self.context.devices[self.dev_id].device;
         let queue = &self.context.devices[self.dev_id].queue;
 
@@ -184,7 +273,6 @@ impl VelloDrmBridge {
             )
             .map_err(|e| BridgeError::Render(format!("{e:?}")))?;
 
-        // Stage the copy texture → padded readback buffer.
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         encoder.copy_texture_to_buffer(
@@ -209,9 +297,14 @@ impl VelloDrmBridge {
             },
         );
         queue.submit(std::iter::once(encoder.finish()));
+        Ok(())
+    }
 
-        // Block-map the readback buffer and copy into the tight
-        // `self.readback`, stripping row padding.
+    /// Map the staged `readback_buf` for CPU reads, blocking until the
+    /// GPU copy completes. The returned view borrows `readback_buf`;
+    /// the caller must drop it and then call `readback_buf.unmap()`.
+    fn map_readback(&self) -> Result<wgpu::BufferView, BridgeError> {
+        let device = &self.context.devices[self.dev_id].device;
         let slice = self.readback_buf.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| {
@@ -221,21 +314,7 @@ impl VelloDrmBridge {
         rx.recv()
             .map_err(|e| BridgeError::Map(format!("map_async channel: {e}")))?
             .map_err(|e| BridgeError::Map(format!("{e:?}")))?;
-
-        let mapped = slice.get_mapped_range();
-        let tight_row = (width * 4) as usize;
-        let needed = tight_row * height as usize;
-        self.readback.clear();
-        self.readback.reserve(needed);
-        for row in 0..height as usize {
-            let start = row * self.padded_bytes_per_row as usize;
-            self.readback
-                .extend_from_slice(&mapped[start..start + tight_row]);
-        }
-        drop(mapped);
-        self.readback_buf.unmap();
-
-        Ok(&self.readback)
+        Ok(slice.get_mapped_range())
     }
 
     /// Resize the offscreen target. Reallocates the texture + readback
@@ -395,6 +474,65 @@ mod tests {
                 "pixel {i} expected base color, got ({:#x}, {:#x}, {:#x})",
                 p[0], p[1], p[2]
             );
+        }
+    }
+
+    #[test]
+    fn paint_into_xrgb8888_matches_paint_swizzled() {
+        // The fused path must produce the same pixels as the tight-RGBA
+        // `paint()` output swizzled to XRGB8888 — proving the
+        // copy-elimination is byte-exact, not just "close".
+        let Some(mut bridge) = bridge_or_skip(40, 24) else {
+            return;
+        };
+        let scene = rect_scene(40, 24, Color::from_rgb8(10, 200, 90));
+
+        // Reference: paint() → tight RGBA → manual swizzle to XRGB.
+        let rgba = bridge.paint(&scene).expect("paint").to_vec();
+        let mut expected = vec![0u8; 40 * 24 * 4];
+        for (i, p) in rgba.chunks_exact(4).enumerate() {
+            let d = &mut expected[i * 4..i * 4 + 4];
+            d[0] = p[2]; // B
+            d[1] = p[1]; // G
+            d[2] = p[0]; // R
+            d[3] = 0xFF; // X
+        }
+
+        // Fused: paint_into_xrgb8888 with a tight pitch.
+        let pitch = 40 * 4;
+        let mut dst = vec![0u8; pitch * 24];
+        bridge
+            .paint_into_xrgb8888(&scene, &mut dst, pitch)
+            .expect("paint_into_xrgb8888");
+        assert_eq!(dst, expected, "fused XRGB output must equal swizzled paint()");
+    }
+
+    #[test]
+    fn paint_into_xrgb8888_respects_destination_pitch() {
+        // A destination whose pitch exceeds width*4 (the common DRM
+        // dumb-buffer case) must leave the trailing padding bytes
+        // untouched and place each row at `row * dst_pitch`.
+        let Some(mut bridge) = bridge_or_skip(8, 4) else {
+            return;
+        };
+        bridge.set_base_color(Color::from_rgb8(0x11, 0x22, 0x33));
+        let pitch = 64; // > 8*4 = 32
+        let mut dst = vec![0xEEu8; pitch * 4];
+        bridge
+            .paint_into_xrgb8888(&Scene::new(), &mut dst, pitch)
+            .expect("paint into padded dst");
+        for row in 0..4usize {
+            // First 8 pixels of each row are the base color (XRGB).
+            for x in 0..8usize {
+                let o = row * pitch + x * 4;
+                assert_eq!(
+                    (dst[o], dst[o + 1], dst[o + 2]),
+                    (0x33, 0x22, 0x11),
+                    "row {row} px {x} should be base color in BGR order"
+                );
+            }
+            // Padding after the row stays the untouched sentinel.
+            assert_eq!(dst[row * pitch + 8 * 4], 0xEE, "row {row} padding untouched");
         }
     }
 
