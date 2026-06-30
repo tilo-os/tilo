@@ -148,6 +148,35 @@ pub fn pump(relay: &mut MemoryRelay) {
                         });
                 }
             }
+            CollabRequest::SignedSyncIncremental { envelope } => {
+                // Mirror the production fan-out (collaboration.rs): the
+                // in-toolkit test broker routes verbatim (no role
+                // enforcement — that's the shell collab_broker's job).
+                for id in &peer_ids {
+                    if id == &from {
+                        continue;
+                    }
+                    inboxes
+                        .get_mut(id)
+                        .unwrap()
+                        .push_back(CollabEvent::SignedCRDTIncremental {
+                            envelope: envelope.clone(),
+                            from_user_id: from.clone(),
+                        });
+                }
+            }
+            CollabRequest::FetchScrollback { artifact, .. } => {
+                // The test broker holds no op log — answer the requester
+                // with an empty, exhausted batch (Phase 6 state is
+                // broker-side, mirrored from collaboration.rs).
+                if let Some(inbox) = inboxes.get_mut(&from) {
+                    inbox.push_back(CollabEvent::ScrollbackBatch {
+                        artifact: artifact.clone(),
+                        ops: Vec::new(),
+                        exhausted: true,
+                    });
+                }
+            }
             CollabRequest::Hello { .. } => {
                 // no fan-out in tests
             }
