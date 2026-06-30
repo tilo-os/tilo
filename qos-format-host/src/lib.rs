@@ -13,6 +13,7 @@ pub mod router;
 pub mod runner;
 pub mod service;
 pub mod transport;
+pub mod watch;
 
 pub use registry::{ProviderEntry, Registry};
 pub use router::{ActiveProvider, Router};
