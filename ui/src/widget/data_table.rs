@@ -44,12 +44,14 @@ pub enum ColumnWidth {
     Auto,
 }
 
-/// Type-erased cell renderer. Takes `(&Row, &mut Scene, &Theme)` so it can
-/// match the widget-level `draw` contract without threading the full
-/// `TextRenderer`/transform state through (callers that need text should
-/// handle that themselves in later tasks).
+/// Type-erased cell renderer. Receives `(&Row, &mut Scene, &Theme, &mut
+/// TextRenderer, Rect)` — the row, the scene to paint into, the active
+/// theme, the shared text renderer (so a cell can measure + draw real
+/// text), and the resolved on-screen cell rectangle (so the closure knows
+/// where to anchor its content). Coordinates are absolute scene space;
+/// the table-level transform has already been applied.
 pub type CellRender<Row> =
-    Box<dyn Fn(&Row, &mut Scene, &Theme) + Send + Sync>;
+    Box<dyn Fn(&Row, &mut Scene, &Theme, &mut TextRenderer, Rect) + Send + Sync>;
 
 /// Definition of a single column.
 pub struct ColumnDef<Row> {
@@ -74,7 +76,7 @@ impl<Row> ColumnDef<Row> {
             header: header.into(),
             width,
             sortable: false,
-            render_cell: Box::new(|_, _, _| {}),
+            render_cell: Box::new(|_, _, _, _, _| {}),
             resize_handle_px: 6.0,
         }
     }
@@ -478,10 +480,25 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 );
             }
             // Per-column cell render — the caller's `with_render` closure
-            // paints into the scene. Transform/theme are already applied at
-            // the table level; the cell closure sees the raw scene/theme.
-            for (_i, col) in self.columns.iter().enumerate() {
-                (col.render_cell)(&self.rows[row_idx], scene, theme);
+            // paints into the scene. The closure receives the shared text
+            // renderer and the resolved cell rect (column x-range × this
+            // row's y-band, clamped to the table's bottom edge) so it can
+            // measure and draw real text anchored to the cell. The closure
+            // paints in absolute scene coordinates; non-identity table
+            // transforms are uncommon for a DataTable (the App lays it out
+            // directly), matching the rest of this `draw` pass.
+            for (i, col) in self.columns.iter().enumerate() {
+                let cell_rect = match self.col_rects.get(i) {
+                    Some(cr) => Rect::new(cr.x0, y0, cr.x1, y1.min(self.rect.y1)),
+                    None => continue,
+                };
+                (col.render_cell)(
+                    &self.rows[row_idx],
+                    scene,
+                    theme,
+                    text_renderer,
+                    cell_rect,
+                );
             }
         }
     }

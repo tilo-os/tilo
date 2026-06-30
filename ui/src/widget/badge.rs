@@ -46,6 +46,13 @@ pub struct Badge {
     cached: vello::Scene,
     dirty: bool,
     cache_rect: Rect,
+    /// Optional background tint override. `None` keeps the default
+    /// notification treatment (`theme.tokens.colors.semantic.danger`)
+    /// for count/dot badges; a labeled "kind tag" pill sets this to a
+    /// caller-supplied accent (e.g. a category colour). Stored as a
+    /// [`Color`] so it survives across themes — callers wanting a
+    /// theme-relative tint pass a resolved theme colour.
+    tint: Option<Color>,
 }
 
 impl Badge {
@@ -57,6 +64,7 @@ impl Badge {
             cached: vello::Scene::new(),
             dirty: true,
             cache_rect: Rect::ZERO,
+            tint: None,
         }
     }
 
@@ -68,6 +76,7 @@ impl Badge {
             cached: vello::Scene::new(),
             dirty: true,
             cache_rect: Rect::ZERO,
+            tint: None,
         }
     }
 
@@ -79,7 +88,40 @@ impl Badge {
             cached: vello::Scene::new(),
             dirty: true,
             cache_rect: Rect::ZERO,
+            tint: None,
         }
+    }
+
+    /// Construct a labeled "kind tag" pill — a [`BadgeContent::Text`] badge
+    /// with a caller-supplied background `tint`. Use for category / status
+    /// chips ("DRAFT", "Rust", "online") where the colour carries meaning,
+    /// as opposed to [`Badge::text`] which uses the notification-red
+    /// default. The label renders in `Color::WHITE` on the tint.
+    pub fn pill(label: impl Into<String>, tint: Color) -> Self {
+        Self {
+            content: BadgeContent::Text(label.into()),
+            rect: Rect::ZERO,
+            cached: vello::Scene::new(),
+            dirty: true,
+            cache_rect: Rect::ZERO,
+            tint: Some(tint),
+        }
+    }
+
+    /// Builder: override the background tint of any badge variant. Pairs
+    /// with [`Badge::count`] / [`Badge::text`] when the caller wants a
+    /// non-default colour without switching to [`Badge::pill`].
+    pub fn with_tint(mut self, tint: Color) -> Self {
+        self.tint = Some(tint);
+        self
+    }
+
+    /// The background colour this badge will paint with, given `theme`.
+    /// Defaults to the semantic danger colour unless a [`tint`] override
+    /// was supplied. Exposed so tests can pin the kind-tag colour without
+    /// rendering.
+    pub fn background(&self, theme: &Theme) -> Color {
+        self.tint.unwrap_or(theme.tokens.colors.semantic.danger)
     }
 
     /// The string that `draw` will hand to the text renderer for this
@@ -180,7 +222,7 @@ impl Widget for Badge {
         let mut cached = std::mem::take(&mut self.cached);
         cached.reset();
         let transform = Affine::IDENTITY;
-        let bg = theme.tokens.colors.semantic.danger;
+        let bg = self.background(theme);
 
         match &self.content {
             BadgeContent::Dot => {
@@ -307,6 +349,30 @@ mod tests {
             Badge::count(99).display_text().as_deref(),
             Some("99"),
         );
+    }
+
+    /// A `Badge::pill` carries a caller-supplied tint while a plain
+    /// `Badge::text` falls back to the semantic danger colour. The
+    /// `background` accessor pins this without rendering, and the pill's
+    /// label still resolves through `display_text`.
+    #[test]
+    fn pill_uses_tint_text_uses_danger_default() {
+        let theme = Theme::dark();
+        let tint = Color::from_rgb8(10, 200, 90);
+        let pill = Badge::pill("ONLINE", tint);
+        assert_eq!(pill.background(&theme), tint, "pill must paint its tint");
+        assert_eq!(pill.display_text().as_deref(), Some("ONLINE"));
+
+        let plain = Badge::text("NEW");
+        assert_eq!(
+            plain.background(&theme),
+            theme.tokens.colors.semantic.danger,
+            "plain text badge keeps the notification-red default",
+        );
+
+        // `with_tint` overrides a count badge's colour too.
+        let counted = Badge::count(3).with_tint(tint);
+        assert_eq!(counted.background(&theme), tint);
     }
 
     /// `Badge::dot()` must emit exactly one fill — the filled circle.
