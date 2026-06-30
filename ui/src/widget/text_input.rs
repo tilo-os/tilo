@@ -33,6 +33,18 @@ use crate::text_selection::{
 };
 use crate::theme::Theme;
 use crate::presence::{PathSegment, PresenceKey};
+use crate::widget::context_menu::{ContextMenu, MenuItem};
+
+/// The editing action a [`TextInput`] right-click menu row maps to. The menu's
+/// `MenuItem` callbacks can't mutate the widget (they're `Arc<dyn Fn>`), so the
+/// widget keeps this parallel list and dispatches on the `item_at` index itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CtxAction {
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
+}
 
 /// Render-time font size for the input's body text. Kept as a single
 /// constant so the measure-and-draw pair always agrees.
@@ -128,6 +140,15 @@ pub struct TextInput {
     /// installer's `ActionButton::disabled`. Default `false`, so existing
     /// callers are unaffected.
     disabled: bool,
+    /// Right-click context menu (Cut / Copy / Paste / Select All). Built and
+    /// opened on a secondary (right) mouse press, dismissed on click-outside or
+    /// Escape. Reuses the shared [`ContextMenu`] primitive; rendered via the
+    /// overlay pass so it floats above the field.
+    context_menu: ContextMenu,
+    /// Per-row action parallel to `context_menu`'s items (separators map to
+    /// `None`). The menu's `Arc<dyn Fn>` callbacks can't reach back into the
+    /// widget, so a left-click on a row dispatches by index through this list.
+    context_actions: Vec<Option<CtxAction>>,
 }
 
 /// Automerge mark name used to attribute each character's author.
@@ -164,6 +185,8 @@ impl TextInput {
             local_author: None,
             secret: false,
             disabled: false,
+            context_menu: ContextMenu::new(),
+            context_actions: Vec::new(),
         }
     }
 
@@ -571,6 +594,131 @@ impl TextInput {
         self.dirty = true;
     }
 
+    // ---- right-click context menu ------------------------------------------
+
+    /// Copy the current selection to the clipboard (no-op when nothing is
+    /// selected). Shared by the Ctrl-C path and the menu's **Copy** row.
+    fn do_copy(&self) {
+        if let Some(s) = self.selected_str() {
+            clipboard_copy(s);
+        }
+    }
+
+    /// Cut the current selection: copy it, then delete it. No-op without a
+    /// selection. Shared by the Ctrl-X path and the menu's **Cut** row.
+    fn do_cut(&mut self, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
+        if let Some(s) = self.selected_str() {
+            let owned = s.to_string();
+            clipboard_copy(&owned);
+            self.delete_selection(state, obj_id);
+        }
+    }
+
+    /// Paste clipboard text at the caret (replacing the selection), stripping
+    /// control characters since this is a single-line field. Shared by the
+    /// Ctrl-V path and the menu's **Paste** row.
+    fn do_paste(&mut self, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
+        if let Some(paste) = clipboard_paste() {
+            let cleaned: String = paste.chars().filter(|c| !c.is_control()).collect();
+            if !cleaned.is_empty() {
+                self.insert_str(&cleaned, state, obj_id);
+            }
+        }
+    }
+
+    /// Select the whole field (no-op when empty). Shared by the Ctrl-A path and
+    /// the menu's **Select All** row.
+    fn do_select_all(&mut self) {
+        if !self.text.is_empty() {
+            self.selection_anchor = Some(0);
+            self.cursor_pos = self.text.len();
+        }
+    }
+
+    /// Build (and open) the right-click context menu at `pos`.
+    ///
+    /// If nothing is selected, the word under the click is selected first
+    /// (matches every native editor's right-click-on-a-word behaviour). Cut and
+    /// Copy are shown only when there is a selection; Paste only when the
+    /// clipboard holds non-empty text (when that can be determined). The parallel
+    /// `context_actions` list lets a left-click on a row dispatch by index.
+    fn open_context_menu(&mut self, pos: [f32; 2]) {
+        // Clicked-word fallback: select the word under the caret-from-point when
+        // there's no live selection, so Cut/Copy act on something sensible.
+        if !self.has_selection() {
+            let byte = self.cursor_from_x(pos[0] as f64);
+            let (start, end) = word_boundaries(&self.text, byte);
+            if start != end {
+                self.selection_anchor = Some(start);
+                self.cursor_pos = end;
+            } else {
+                self.cursor_pos = byte.min(self.text.len());
+            }
+        }
+
+        let has_sel = self.has_selection();
+        let can_paste = clipboard_paste().is_some_and(|s| !s.is_empty());
+
+        let mut menu = ContextMenu::new();
+        let mut actions: Vec<Option<CtxAction>> = Vec::new();
+        if has_sel {
+            menu.push(MenuItem::action("Cut", || {}));
+            actions.push(Some(CtxAction::Cut));
+            menu.push(MenuItem::action("Copy", || {}));
+            actions.push(Some(CtxAction::Copy));
+        }
+        if can_paste {
+            menu.push(MenuItem::action("Paste", || {}));
+            actions.push(Some(CtxAction::Paste));
+        }
+        if !menu.items().is_empty() {
+            menu.push(MenuItem::separator());
+            actions.push(None);
+        }
+        menu.push(MenuItem::action("Select All", || {}));
+        actions.push(Some(CtxAction::SelectAll));
+
+        menu.open_at(pos);
+        self.context_menu = menu;
+        self.context_actions = actions;
+    }
+
+    /// Dispatch the context-menu row at `idx` (mapped through `context_actions`)
+    /// against this input, then close the menu. Out-of-range / separator rows
+    /// are ignored. Returns `true` when a row was dispatched.
+    fn dispatch_context_action(
+        &mut self,
+        idx: usize,
+        state: &mut AutoCommit,
+        obj_id: Option<&ObjId>,
+    ) -> bool {
+        let Some(Some(action)) = self.context_actions.get(idx).copied() else {
+            return false;
+        };
+        match action {
+            CtxAction::Cut => self.do_cut(state, obj_id),
+            CtxAction::Copy => self.do_copy(),
+            CtxAction::Paste => self.do_paste(state, obj_id),
+            CtxAction::SelectAll => self.do_select_all(),
+        }
+        self.context_menu.close();
+        true
+    }
+
+    /// Test-visible labels of the currently-open context menu's rows
+    /// (separators omitted), in order. Empty when the menu is closed.
+    #[cfg(test)]
+    fn context_menu_labels(&self) -> Vec<String> {
+        if !self.context_menu.is_open() {
+            return Vec::new();
+        }
+        self.context_menu
+            .items()
+            .iter()
+            .filter_map(|i| i.label().map(str::to_string))
+            .collect()
+    }
+
     /// Resolve the cursor byte-position from a logical-space x point
     /// inside the input's rect.
     fn cursor_from_x(&self, logical_x: f64) -> usize {
@@ -807,7 +955,40 @@ impl Widget for TextInput {
                     }
                 }
             }
+            // Right (secondary) click opens the editing context menu. A press
+            // selects the word under the click (when nothing is selected) and
+            // anchors the menu at the pointer; the menu paints in the overlay
+            // pass so it floats above the field.
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } if self.is_hovered && !self.disabled => {
+                if !self.is_focused {
+                    *focus_target = Some(node_id);
+                }
+                let pos = [self.last_mouse_pos.x as f32, self.last_mouse_pos.y as f32];
+                self.open_context_menu(pos);
+                *handled = true;
+            }
             WindowEvent::MouseInput { state: element_state, button: MouseButton::Left, .. } => {
+                // While the context menu is open, a left press is routed to it:
+                // a row dispatches its action; a click outside dismisses it.
+                // Either way the click is consumed so it never falls through to
+                // caret placement underneath the menu.
+                if self.context_menu.is_open() {
+                    if *element_state == ElementState::Pressed {
+                        let point = [self.last_mouse_pos.x, self.last_mouse_pos.y];
+                        if let Some(idx) = self.context_menu.item_at(point) {
+                            let obj_id_opt = self.resolve_text_obj(state, root);
+                            self.dispatch_context_action(idx, state, obj_id_opt.as_ref());
+                        } else {
+                            self.context_menu.close();
+                        }
+                        *handled = true;
+                    }
+                    return;
+                }
                 match element_state {
                     ElementState::Pressed if self.is_hovered => {
                         if !self.is_focused {
@@ -861,7 +1042,19 @@ impl Widget for TextInput {
                 }
             }
             WindowEvent::KeyboardInput { event: KeyEvent { logical_key, text, state: element_state, .. }, .. } => {
-                if !self.is_focused || *element_state != ElementState::Pressed {
+                if *element_state != ElementState::Pressed {
+                    return;
+                }
+                // Escape dismisses an open context menu first (even if the field
+                // isn't focused, since the menu is the focused surface).
+                if self.context_menu.is_open()
+                    && matches!(logical_key, Key::Named(NamedKey::Escape))
+                {
+                    self.context_menu.close();
+                    *handled = true;
+                    return;
+                }
+                if !self.is_focused {
                     return;
                 }
                 let obj_id_opt: Option<ObjId> = self.resolve_text_obj(state, root);
@@ -966,36 +1159,19 @@ impl Widget for TextInput {
                         let lc = c.to_lowercase();
                         match lc.as_str() {
                             "a" => {
-                                if !self.text.is_empty() {
-                                    self.selection_anchor = Some(0);
-                                    self.cursor_pos = self.text.len();
-                                }
+                                self.do_select_all();
                                 *handled = true;
                             }
                             "c" => {
-                                if let Some(s) = self.selected_str() {
-                                    clipboard_copy(s);
-                                }
+                                self.do_copy();
                                 *handled = true;
                             }
                             "x" => {
-                                if let Some(s) = self.selected_str() {
-                                    clipboard_copy(&s.to_string());
-                                    self.delete_selection(state, obj_id_opt.as_ref());
-                                }
+                                self.do_cut(state, obj_id_opt.as_ref());
                                 *handled = true;
                             }
                             "v" => {
-                                if let Some(paste) = clipboard_paste() {
-                                    // Strip any newlines / nulls — single-line input.
-                                    let cleaned: String = paste
-                                        .chars()
-                                        .filter(|c| !c.is_control())
-                                        .collect();
-                                    if !cleaned.is_empty() {
-                                        self.insert_str(&cleaned, state, obj_id_opt.as_ref());
-                                    }
-                                }
+                                self.do_paste(state, obj_id_opt.as_ref());
                                 *handled = true;
                             }
                             _ => {}
@@ -1167,6 +1343,22 @@ impl Widget for TextInput {
                     &r,
                 );
             }
+        }
+    }
+
+    /// Top-layer pass: paint the right-click context menu (when open) so it
+    /// floats above every sibling regardless of tree order. Delegates to the
+    /// shared [`ContextMenu`] primitive's own `draw`.
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) {
+        if self.context_menu.is_open() {
+            Widget::draw(&mut self.context_menu, scene, transform, text_renderer, theme, presence);
         }
     }
 }
@@ -1401,6 +1593,140 @@ mod tests {
     fn text_input_test_id_can_be_overridden() {
         let ti = TextInput::new(Vec::new()).with_id("search_box");
         assert_eq!(Widget::test_id(&ti), Some("search_box"));
+    }
+
+    /// Drive a right (secondary) mouse press at `(x, y)` against `ti`, returning
+    /// whether the event was consumed. Sends a `CursorMoved` first so
+    /// `last_mouse_pos` / `is_hovered` are set, matching the real input order.
+    #[cfg(test)]
+    fn right_click(ti: &mut TextInput, doc: &mut AutoCommit, x: f64, y: f64) -> bool {
+        use winit::dpi::PhysicalPosition;
+        let mut handled = false;
+        let mut focus_target = None;
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let moved = WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: PhysicalPosition::new(x, y),
+        };
+        ti.handle_event(&moved, 1.0, &Modifiers::default(), doc, &automerge::ROOT, &mut handled, &mut focus_target, node, &taffy);
+        let press = WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Right,
+        };
+        ti.handle_event(&press, 1.0, &Modifiers::default(), doc, &automerge::ROOT, &mut handled, &mut focus_target, node, &taffy);
+        handled
+    }
+
+    /// A right-click with no live selection selects the word under the click
+    /// (the clicked-word fallback) and opens a menu carrying the expected rows.
+    #[test]
+    fn right_click_selects_word_and_opens_menu_with_expected_labels() {
+        let mut ti = TextInput::local().with_initial_value("hello world");
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+        ti.set_focus(true);
+        let mut doc = AutoCommit::new();
+
+        assert!(ti.selection_range().is_none(), "precondition: no selection");
+        assert!(right_click(&mut ti, &mut doc, 20.0, 20.0), "right-click is consumed");
+
+        // No char_x_positions yet → cursor_from_x resolves to byte 0, so the
+        // clicked-word fallback selects the first word "hello".
+        assert_eq!(ti.selected_str(), Some("hello"), "clicked word is selected");
+        assert!(ti.context_menu.is_open(), "menu opened");
+
+        // With a selection + an empty clipboard in the headless test env, Paste
+        // is omitted, so the rows are Cut, Copy, (separator), Select All.
+        let labels = ti.context_menu_labels();
+        assert!(labels.contains(&"Cut".to_string()), "got {labels:?}");
+        assert!(labels.contains(&"Copy".to_string()), "got {labels:?}");
+        assert!(labels.contains(&"Select All".to_string()), "got {labels:?}");
+    }
+
+    /// `item_at` + dispatch maps the right row to Copy: clicking the Copy row
+    /// runs the copy action (keeping the selection) and closes the menu.
+    #[test]
+    fn context_menu_dispatch_maps_index_to_copy() {
+        let mut ti = TextInput::local().with_initial_value("hello world");
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+        let mut doc = AutoCommit::new();
+        // Pre-select "world" so Cut/Copy are present and the selection survives a copy.
+        ti.selection_anchor = Some(6);
+        ti.cursor_pos = 11;
+
+        ti.open_context_menu([50.0, 18.0]);
+        let labels = ti.context_menu_labels();
+        let copy_idx = labels.iter().position(|l| l == "Copy").expect("Copy row present");
+        // Map the visible label index back to the real item index (labels skip
+        // separators, but Cut/Copy precede any separator so indices align here).
+        let item_idx = ti
+            .context_menu
+            .items()
+            .iter()
+            .position(|i| i.label() == Some("Copy"))
+            .unwrap();
+        assert_eq!(
+            ti.context_actions[item_idx],
+            Some(CtxAction::Copy),
+            "Copy row maps to the Copy action (label idx {copy_idx})"
+        );
+
+        assert!(ti.dispatch_context_action(item_idx, &mut doc, None), "dispatch ran");
+        assert!(!ti.context_menu.is_open(), "menu closed after dispatch");
+        // Copy preserves the selection (it's a read-only action).
+        assert_eq!(ti.selected_str(), Some("world"));
+    }
+
+    /// Cut dispatches to the cut action: it removes the selected text.
+    #[test]
+    fn context_menu_dispatch_cut_removes_selection() {
+        let mut ti = TextInput::local().with_initial_value("hello world");
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+        let mut doc = AutoCommit::new();
+        ti.selection_anchor = Some(0);
+        ti.cursor_pos = 5; // "hello"
+        ti.open_context_menu([10.0, 18.0]);
+        let cut_idx = ti
+            .context_menu
+            .items()
+            .iter()
+            .position(|i| i.label() == Some("Cut"))
+            .expect("Cut row present");
+        assert_eq!(ti.context_actions[cut_idx], Some(CtxAction::Cut));
+        ti.dispatch_context_action(cut_idx, &mut doc, None);
+        assert_eq!(ti.value(), " world", "cut removed the selected word");
+    }
+
+    /// A left-click outside the open menu dismisses it without placing a caret.
+    #[test]
+    fn left_click_outside_open_menu_dismisses_it() {
+        use winit::dpi::PhysicalPosition;
+        let mut ti = TextInput::local().with_initial_value("hello world");
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+        ti.set_focus(true);
+        let mut doc = AutoCommit::new();
+        ti.open_context_menu([10.0, 18.0]);
+        assert!(ti.context_menu.is_open());
+
+        // Left-press far from the menu rect.
+        let mut handled = false;
+        let mut focus_target = None;
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let moved = WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: PhysicalPosition::new(280.0, 38.0),
+        };
+        ti.handle_event(&moved, 1.0, &Modifiers::default(), &mut doc, &automerge::ROOT, &mut handled, &mut focus_target, node, &taffy);
+        let press = WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        };
+        ti.handle_event(&press, 1.0, &Modifiers::default(), &mut doc, &automerge::ROOT, &mut handled, &mut focus_target, node, &taffy);
+        assert!(handled, "click consumed while menu open");
+        assert!(!ti.context_menu.is_open(), "menu dismissed by outside click");
     }
 
     /// Walking back through a sentence with `prev_word_boundary` must
