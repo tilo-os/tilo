@@ -1,0 +1,12 @@
+[package]
+name = "spellcheck"
+version = "0.1.0"
+edition = "2024"
+description = "Self-contained English spelling engine for qOS: tokenize, check, and suggest corrections"
+
+# Intentionally NO external dependencies: the tokenizer, dictionary loader, and
+# Damerau/Levenshtein suggester are all implemented in-crate so adding this crate
+# does not churn the (gitignored) workspace Cargo.lock.
+[dependencies]
+
+[dev-dependencies]
