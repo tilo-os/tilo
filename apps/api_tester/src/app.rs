@@ -22,13 +22,15 @@
 
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
+use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 use ui::color_compat::ColorCompat;
 use ui::permissions::PermissionContext;
@@ -37,16 +39,23 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{TextInput, Widget};
 
+use ui::widget::SplitLayout;
+
 use crate::doc::ApiDoc;
 use crate::http::{self, Outgoing};
 use crate::model::{
     human_duration, human_size, Auth, BodyMode, Collection, Environment, HistoryEntry, HttpMethod,
     KeyValue, Request, RequestTab, ResponseData, ResponseView, StatusClass,
 };
+use crate::responsive::{RailState, RAIL_WIDTH};
 use crate::vars;
 
-const SIDEBAR_W: f64 = 264.0;
+/// The primary rail's docked / fully-revealed width. Sourced from the
+/// adaptive-chrome module so the breakpoint and the rail width stay in step.
+const SIDEBAR_W: f64 = RAIL_WIDTH;
 const METHOD_W: f64 = 104.0;
+/// The square hamburger toggle that summons the rail in overlay mode.
+const HAMBURGER_W: f64 = 36.0;
 const SEND_W: f64 = 96.0;
 const URLBAR_H: f64 = 56.0;
 const TAB_STRIP_H: f64 = 40.0;
@@ -96,6 +105,14 @@ pub struct ApiTesterApp {
     tx: Sender<SendOutcome>,
     rx: Receiver<SendOutcome>,
 
+    // --- Adaptive chrome ---
+    /// Primary rail collapse state — docked beside the builder on a wide
+    /// window, an overlay flap behind a scrim on a narrow one.
+    rail: RailState,
+    /// Wall-clock of the last rail animation tick, so the eased slide is
+    /// frame-rate independent.
+    last_tick: Instant,
+
     // --- Layout / interaction caches ---
     rect: Rect,
     /// Hit regions resolved during draw, consumed by handle_event.
@@ -130,6 +147,19 @@ struct Hits {
     body_region: Rect,
     url_rect: Rect,
     body_input_rect: Rect,
+    /// Hamburger toggle that summons the rail (overlay mode only).
+    hamburger: Rect,
+    /// Dimming scrim behind the open overlay rail; clicking it dismisses.
+    scrim: Rect,
+    /// The rail's drawn rect, used to keep scrim-clicks off the rail itself.
+    sidebar: Rect,
+}
+
+impl Hits {
+    /// The rail's current drawn area (zero-sized when the rail isn't shown).
+    fn sidebar_area(&self) -> Rect {
+        self.sidebar
+    }
 }
 
 impl ApiTesterApp {
@@ -169,6 +199,8 @@ impl ApiTesterApp {
             body_input,
             tx,
             rx,
+            rail: RailState::default(),
+            last_tick: Instant::now(),
             rect: Rect::ZERO,
             hits: Hits::default(),
             last_cursor: Point::ZERO,
@@ -177,6 +209,14 @@ impl ApiTesterApp {
             dirty: true,
             persisted_once: false,
         }
+    }
+
+    /// Snap the rail to a settled open/closed state with no animation. Used by
+    /// the single-frame `--shots` renderer so a headless capture shows the rail
+    /// fully docked or fully collapsed rather than mid-slide.
+    pub fn snap_rail(&mut self, open: bool) {
+        self.rail.snap(open);
+        self.dirty = true;
     }
 
     /// The active environment's variable map (for `{{var}}` substitution).
@@ -386,16 +426,69 @@ impl ApiTesterApp {
         // Whole-window background.
         scene.fill(Fill::NonZero, t, c.surfaces.base, None, &self.rect);
 
-        let sidebar = Rect::new(
-            self.rect.x0,
-            self.rect.y0,
-            self.rect.x0 + SIDEBAR_W,
-            self.rect.y1,
-        );
-        let main = Rect::new(sidebar.x1, self.rect.y0, self.rect.x1, self.rect.y1);
+        // Resolve docked vs. overlay from the allocated width and advance the
+        // eased reveal toward its target. The rail is the same width either
+        // way; only its placement (inset beside vs. slid over) differs.
+        let layout = self.rail.resolve(self.rect.width());
+        let now = Instant::now();
+        let dt = (now - self.last_tick).as_secs_f64().min(0.1);
+        self.last_tick = now;
+        self.rail.tick(dt);
 
-        self.draw_sidebar(scene, t, tr, theme, sidebar);
-        self.draw_main(scene, t, tr, theme, presence, main);
+        let reveal = self.rail.reveal();
+        let slide = self.rail.slide();
+        let sw = SIDEBAR_W.min(self.rect.width());
+
+        match layout {
+            SplitLayout::Docked => {
+                // The builder is inset by the eased rail width so showing /
+                // hiding the rail reflows without ever overlapping it.
+                let inset = sw * reveal;
+                let sidebar = Rect::new(
+                    self.rect.x0,
+                    self.rect.y0,
+                    self.rect.x0 + inset,
+                    self.rect.y1,
+                );
+                let main = Rect::new(sidebar.x1, self.rect.y0, self.rect.x1, self.rect.y1);
+                self.draw_main(scene, t, tr, theme, presence, main);
+                if reveal > 0.001 {
+                    self.draw_sidebar(scene, t, tr, theme, sidebar);
+                }
+            }
+            SplitLayout::Overlay => {
+                // The builder spans the full width; the rail slides in from the
+                // left over a dimming scrim, on top of the builder.
+                let main = self.rect;
+                self.draw_main(scene, t, tr, theme, presence, main);
+
+                if reveal > 0.001 {
+                    let scrim = self.rect;
+                    scene.fill(
+                        Fill::NonZero,
+                        t,
+                        Color::from_rgba8(0, 0, 0, 255).with_alpha_factor((reveal * 0.5) as f32),
+                        None,
+                        &scrim,
+                    );
+                    self.hits.scrim = scrim;
+
+                    let x0 = self.rect.x0 - sw * (1.0 - slide);
+                    let sidebar = Rect::new(x0, self.rect.y0, x0 + sw, self.rect.y1);
+                    // A soft shadow on the rail's trailing edge sells the
+                    // "floating over content" depth.
+                    let shadow = Rect::new(sidebar.x1, sidebar.y0, sidebar.x1 + 8.0, sidebar.y1);
+                    scene.fill(
+                        Fill::NonZero,
+                        t,
+                        Color::from_rgba8(0, 0, 0, 255).with_alpha_factor((reveal * 0.18) as f32),
+                        None,
+                        &shadow,
+                    );
+                    self.draw_sidebar(scene, t, tr, theme, sidebar);
+                }
+            }
+        }
     }
 
     fn draw_sidebar(
@@ -407,6 +500,7 @@ impl ApiTesterApp {
         area: Rect,
     ) {
         let c = &theme.tokens.colors;
+        self.hits.sidebar = area;
         scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &area);
         // Right divider.
         let div = Rect::new(area.x1 - 1.0, area.y0, area.x1, area.y1);
@@ -643,8 +737,24 @@ impl ApiTesterApp {
         scene.fill(Fill::NonZero, t, c.border_standard, None, &bar_div);
 
         let cy0 = bar.y0 + (URLBAR_H - 36.0) / 2.0;
+
+        // Hamburger toggle — only in overlay mode, where the rail is a flap
+        // the user must summon. It leads the URL row and shifts the method
+        // button right to make room. In docked mode the rail is always beside
+        // the builder, so no toggle is needed.
+        let mut row_x0 = area.x0 + PAD;
+        if self.rail.layout() == SplitLayout::Overlay {
+            let ham = Rect::new(row_x0, cy0, row_x0 + HAMBURGER_W, cy0 + 36.0);
+            let shape = RoundedRect::from_rect(ham, theme.tokens.radii.md as f64);
+            scene.fill(Fill::NonZero, t, c.surface_white_5, None, &shape);
+            scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
+            draw_hamburger(scene, t, ham, c.text_primary);
+            self.hits.hamburger = ham;
+            row_x0 = ham.x1 + 8.0;
+        }
+
         // Method button.
-        let method_btn = Rect::new(area.x0 + PAD, cy0, area.x0 + PAD + METHOD_W, cy0 + 36.0);
+        let method_btn = Rect::new(row_x0, cy0, row_x0 + METHOD_W, cy0 + 36.0);
         let mcol = method_color(theme, self.request.method);
         let shape = RoundedRect::from_rect(method_btn, theme.tokens.radii.md as f64);
         scene.fill(Fill::NonZero, t, mcol.with_alpha_factor(0.16), None, &shape);
@@ -1601,6 +1711,17 @@ fn draw_chevron(scene: &mut Scene, t: Affine, center: Point, color: Color, up: b
     scene.stroke(&Stroke::new(1.6), t, color, None, &p);
 }
 
+/// Three stacked bars — the hamburger toggle that summons the overlay rail.
+fn draw_hamburger(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
+    let cx = rect.center().x;
+    let cy = rect.center().y;
+    let half = 8.0;
+    for dy in [-6.0, 0.0, 6.0] {
+        let bar = Rect::new(cx - half, cy + dy - 1.0, cx + half, cy + dy + 1.0);
+        scene.fill(Fill::NonZero, t, color, None, &RoundedRect::from_rect(bar, 1.0));
+    }
+}
+
 fn draw_check(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
     let mut p = BezPath::new();
     p.move_to((rect.x0 + 3.5, rect.center().y));
@@ -1763,6 +1884,23 @@ impl Widget for ApiTesterApp {
         }
 
         match event {
+            // Esc dismisses the open overlay rail (after focused inputs have
+            // had their chance to consume it above).
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::Escape),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                if self.rail.layout() == SplitLayout::Overlay && self.rail.is_open() {
+                    self.rail.close();
+                    self.dirty = true;
+                    *handled = true;
+                }
+            }
             WindowEvent::MouseWheel { delta, .. } => {
                 if self.hits.body_region.contains(self.last_cursor) {
                     let dy = match delta {
@@ -1795,7 +1933,18 @@ impl Widget for ApiTesterApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.sending || self.url_input.needs_redraw() || self.body_input.needs_redraw()
+        self.dirty
+            || self.sending
+            || self.rail.is_animating()
+            || self.url_input.needs_redraw()
+            || self.body_input.needs_redraw()
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        // Keep the host pumping redraws while the rail slide / scrim fade is
+        // still settling, so a toggle eases smoothly instead of jumping a
+        // single frame and freezing.
+        self.rail.is_animating()
     }
 
     fn mark_drawn(&mut self) {
@@ -1872,6 +2021,25 @@ impl ApiTesterApp {
             self.dirty = true;
             *handled = true;
             return;
+        }
+
+        // 1b. Adaptive chrome: the hamburger toggles the rail; clicking the
+        // scrim outside the open rail dismisses it. Both run before the rest
+        // so a scrim click can't fall through to the builder beneath.
+        if self.hits.hamburger.width() > 0.0 && self.hits.hamburger.contains(p) {
+            self.rail.toggle();
+            self.dirty = true;
+            *handled = true;
+            return;
+        }
+        if self.rail.layout() == SplitLayout::Overlay && self.rail.is_open() {
+            let on_rail = self.hits.sidebar_area().contains(p);
+            if !on_rail && self.hits.scrim.width() > 0.0 && self.hits.scrim.contains(p) {
+                self.rail.close();
+                self.dirty = true;
+                *handled = true;
+                return;
+            }
         }
 
         // 2. Method / env / send buttons.

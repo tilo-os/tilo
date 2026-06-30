@@ -29,6 +29,9 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use ui::ColorCompat;
+use ui::widget::{FlapState, PushPane, SplitLayout};
+
 use crate::doc::SnippetsDoc;
 use crate::draw;
 use crate::expand::ExpandModal;
@@ -43,6 +46,23 @@ const SIDEBAR_ROW_H: f64 = 32.0;
 const SEARCH_H: f64 = 52.0;
 const BODY_FONT: f32 = 13.5;
 const BODY_LINE: f64 = 20.0;
+
+/// Below this allocated width (logical px) the primary sidebar (smart
+/// folders + folders + tags) stops sitting beside the list and detail and
+/// collapses into an overlay flap that slides over the content behind a
+/// dimming scrim — closed by default, summoned by the hamburger. Chosen so
+/// the 232px rail + 340px list + a readable detail pane stop fitting
+/// comfortably side by side.
+const SIDEBAR_BREAKPOINT: f64 = 820.0;
+
+/// Below this width even the list and the detail can't share the row, so the
+/// master-detail flow switches to single-pane push: the list OR the detail
+/// fills the pane, and opening a snippet slides the detail in with a Back
+/// affordance. Set so the 340px list + a usable code card stop coexisting.
+const PUSH_BREAKPOINT: f64 = 560.0;
+
+/// Top-left toggle (hamburger / Back / close) hit size, logical px.
+const TOGGLE_SIZE: f64 = 34.0;
 
 /// What kind of toast is currently showing (auto-dismisses on next event
 /// tick after a short hold — for the headless shot it simply persists).
@@ -76,6 +96,23 @@ pub struct SnippetsApp {
     last_mouse: Point,
     hit: Vec<(Rect, Action)>,
     scroll: f64,
+
+    // ---- responsive layout (shared `ui` flap kernel) -------------------
+    /// Primary sidebar flap: docked beside the content on wide windows,
+    /// an overlay flap over the content behind a scrim on narrow ones.
+    /// Defaults open when docked, closed (summon-on-demand) when overlay.
+    sidebar: FlapState,
+    /// Single-pane master-detail push for the very-narrow case: animates
+    /// the list↔detail slide. `reveal == 1` means the detail is shown.
+    push: FlapState,
+    /// Which pane the push flow currently shows (list = master, detail).
+    push_pane: PushPane,
+    /// `false` until the first laid-out frame snaps the sidebar reveal to the
+    /// resolved layout default. Without this, a window that first appears at
+    /// narrow width would render one frame with the docked-default reveal
+    /// (1.0) before the animation ticks it closed — the overlay would flash
+    /// open. A staged `--shots` scenario sets this so its snap isn't undone.
+    settled_layout: bool,
 }
 
 /// A clickable region recorded during draw and resolved on mouse-down.
@@ -92,6 +129,12 @@ enum Action {
     FocusSearch,
     ClearSearch,
     SetLanguage(SnippetId, Language),
+    /// Toggle the primary sidebar flap (hamburger / overlay close).
+    ToggleSidebar,
+    /// Dismiss the open overlay sidebar (scrim tap).
+    DismissSidebar,
+    /// Return from the detail pane to the list in single-pane push mode.
+    PushBack,
 }
 
 impl SnippetsApp {
@@ -116,6 +159,10 @@ impl SnippetsApp {
             last_mouse: Point::ZERO,
             hit: Vec::new(),
             scroll: 0.0,
+            sidebar: FlapState::open_when_docked(),
+            push: FlapState::closed_by_default(),
+            push_pane: PushPane::Master,
+            settled_layout: false,
         };
         app.recompute_visible();
         // Open a substantial, templated snippet so the detail pane shows
@@ -162,6 +209,12 @@ impl SnippetsApp {
 
     fn open_snippet(&mut self, id: SnippetId) {
         self.open = Some(id);
+        // In single-pane push mode, opening a snippet slides the detail in.
+        // (No-op in docked / overlay layouts, where both panes are visible.)
+        if self.is_push_layout() {
+            self.push_pane = PushPane::Detail;
+            self.push.open();
+        }
     }
 
     fn new_snippet(&mut self) {
@@ -296,6 +349,12 @@ impl SnippetsApp {
                 self.recompute_visible();
             }
             Action::SetLanguage(id, lang) => self.set_language(id, lang),
+            Action::ToggleSidebar => self.sidebar.toggle(self.sidebar_layout()),
+            Action::DismissSidebar => self.sidebar.close(),
+            Action::PushBack => {
+                self.push_pane = PushPane::Master;
+                self.push.close();
+            }
         }
     }
 
@@ -311,6 +370,88 @@ impl SnippetsApp {
 
     fn record(&mut self, rect: Rect, action: Action) {
         self.hit.push((rect, action));
+    }
+
+    // ---- responsive geometry -------------------------------------------
+
+    /// How the primary sidebar resolves at the current allocated width:
+    /// docked beside the content (wide) or an overlay flap (narrow).
+    fn sidebar_layout(&self) -> SplitLayout {
+        SplitLayout::from_width(self.rect.width(), SIDEBAR_BREAKPOINT)
+    }
+
+    /// Whether the window is narrow enough that the list and detail switch
+    /// to single-pane push navigation (show one or the other).
+    fn is_push_layout(&self) -> bool {
+        self.rect.width() < PUSH_BREAKPOINT
+    }
+
+    /// `true` while the sidebar flap is (resolved) open.
+    fn sidebar_open(&self) -> bool {
+        self.sidebar.is_open(self.sidebar_layout())
+    }
+
+    /// The sidebar's on-screen rect for this frame. Docked: a fixed rail at
+    /// the left whose width eases with the reveal. Overlay: a fixed-width
+    /// rail that slides in from the left edge over the content.
+    fn sidebar_rect(&self) -> Rect {
+        let r = self.rect;
+        match self.sidebar_layout() {
+            SplitLayout::Docked => {
+                let w = SIDEBAR_W * self.sidebar.reveal();
+                Rect::new(r.x0, r.y0, r.x0 + w, r.y1)
+            }
+            SplitLayout::Overlay => {
+                let slide = self.sidebar.slide();
+                let x0 = r.x0 - SIDEBAR_W * (1.0 - slide);
+                Rect::new(x0, r.y0, x0 + SIDEBAR_W, r.y1)
+            }
+        }
+    }
+
+    /// The horizontal band the list + detail occupy. Docked: inset by the
+    /// eased sidebar width so the rail doesn't overlap. Overlay/push: the
+    /// full width (the sidebar floats above it).
+    fn content_band(&self) -> Rect {
+        let r = self.rect;
+        match self.sidebar_layout() {
+            SplitLayout::Docked => {
+                let inset = SIDEBAR_W * self.sidebar.reveal();
+                Rect::new(r.x0 + inset, r.y0, r.x1, r.y1)
+            }
+            SplitLayout::Overlay => r,
+        }
+    }
+
+    /// Whether the primary sidebar should paint anything this frame.
+    fn sidebar_visible(&self) -> bool {
+        self.sidebar.reveal() > 0.001
+    }
+
+    // ---- shot scenarios -------------------------------------------------
+
+    /// Snap the responsive state to a deterministic configuration for the
+    /// single-frame `--shots` renderer (the live app eases via `update`).
+    ///
+    /// * `"narrow"` — open the overlay sidebar over the content + scrim.
+    /// * `"detail"` — single-pane push showing the detail with a Back chip.
+    /// * anything else — the default frame.
+    pub fn seed_shot_scenario(&mut self, scenario: &str) {
+        match scenario {
+            "narrow" => {
+                self.sidebar.snap(true);
+                // Keep the staged open flap from being re-settled to the
+                // overlay default on the first laid-out frame.
+                self.settled_layout = true;
+            }
+            "detail" => {
+                self.push_pane = PushPane::Detail;
+                self.push.snap(true);
+                self.sidebar.snap(false);
+                self.settled_layout = true;
+            }
+            _ => {}
+        }
     }
 
     // ---- test accessors -------------------------------------------------
@@ -349,6 +490,70 @@ impl SnippetsApp {
     #[doc(hidden)]
     pub fn snippet_uses_for_test(&self, id: SnippetId) -> u32 {
         self.library.get(id).map(|s| s.uses).unwrap_or(0)
+    }
+
+    // ---- responsive test accessors -------------------------------------
+
+    /// Lay the app out at `width` x 800 through the real `build_layout` /
+    /// `apply_layout` passes (so `rect` + the layout reconcile run exactly as
+    /// in a live frame), then settle any pending reveal animation.
+    #[doc(hidden)]
+    pub fn layout_at_width_for_test(&mut self, width: f64) {
+        use ui::widget::Widget;
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = self.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(width as f32),
+                    height: taffy::AvailableSpace::Definite(800.0),
+                },
+            )
+            .unwrap();
+        self.apply_layout(&taffy, node, Point::ZERO);
+        // Settle the reveal so `sidebar_open`/reveal reflect the target.
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        for _ in 0..240 {
+            if !Widget::update(self, &mut doc, &root) {
+                break;
+            }
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn sidebar_is_overlay_for_test(&self) -> bool {
+        self.sidebar_layout() == SplitLayout::Overlay
+    }
+
+    #[doc(hidden)]
+    pub fn sidebar_open_for_test(&self) -> bool {
+        self.sidebar_open()
+    }
+
+    #[doc(hidden)]
+    pub fn is_push_for_test(&self) -> bool {
+        self.is_push_layout()
+    }
+
+    #[doc(hidden)]
+    pub fn push_showing_detail_for_test(&self) -> bool {
+        self.push_pane == PushPane::Detail
+    }
+
+    #[doc(hidden)]
+    pub fn toggle_sidebar_for_test(&mut self) {
+        self.apply(Action::ToggleSidebar);
+    }
+
+    #[doc(hidden)]
+    pub fn open_first_for_test(&mut self) {
+        if let Some(id) = self.visible.first().copied() {
+            self.open_snippet(id);
+        }
     }
 }
 
@@ -395,6 +600,24 @@ impl ui::widget::Widget for SnippetsApp {
             origin.x + layout.location.x as f64 + layout.size.width as f64,
             origin.y + layout.location.y as f64 + layout.size.height as f64,
         );
+        // Crossing a breakpoint (a window resize) drops any stale user
+        // preference so the sidebar adopts the new layout's natural default.
+        let layout = self.sidebar_layout();
+        self.sidebar.reconcile(layout);
+        // On the first laid-out frame, snap the reveal to the resolved
+        // default so a window that opens narrow doesn't flash the overlay
+        // open before the animation settles. Subsequent frames ease via
+        // `update`. A staged shot scenario marks this already-settled.
+        if !self.settled_layout {
+            self.sidebar.snap(self.sidebar.is_open(layout));
+            self.settled_layout = true;
+        }
+        // Leaving the very-narrow push range collapses the single-pane stack
+        // back so both panes show again on the next wider frame.
+        if !self.is_push_layout() && self.push_pane == PushPane::Detail {
+            self.push_pane = PushPane::Master;
+            self.push.snap(false);
+        }
     }
 
     fn draw(
@@ -410,28 +633,38 @@ impl ui::widget::Widget for SnippetsApp {
         // Whole-window background.
         draw::fill_rect(scene, t, self.rect, c.surfaces.base);
 
-        let r = self.rect;
-        let sidebar = Rect::new(r.x0, r.y0, r.x0 + SIDEBAR_W, r.y1);
-        let list = Rect::new(sidebar.x1, r.y0, sidebar.x1 + LIST_W, r.y1);
-        let detail = Rect::new(list.x1, r.y0, r.x1, r.y1);
+        // The content band (list + detail) is inset by the docked sidebar,
+        // or spans the full width when the sidebar is an overlay flap.
+        let band = self.content_band();
+        self.draw_content_band(scene, t, tr, theme, band);
 
-        self.draw_sidebar(scene, t, tr, theme, sidebar);
-        self.draw_list(scene, t, tr, theme, list);
-        self.draw_detail(scene, t, tr, theme, detail);
+        // The primary sidebar: a docked rail beside the content, or — when
+        // narrow — an overlay flap that slides in over the content behind a
+        // dimming scrim. Painted last so it sits above the content.
+        if self.sidebar_layout() == SplitLayout::Overlay && self.sidebar_visible() {
+            // Scrim: fades in with the reveal, behind the sliding rail.
+            let scrim = c.surfaces.overlay.with_alpha_factor((self.sidebar.reveal() * 0.55) as f32);
+            draw::fill_rect(scene, t, self.rect, scrim);
+            self.record(self.rect, Action::DismissSidebar);
+        }
+        if self.sidebar_visible() {
+            let rail = self.sidebar_rect();
+            self.draw_sidebar(scene, t, tr, theme, rail);
+            // Right-edge divider for the rail.
+            draw::fill_rect(
+                scene,
+                t,
+                Rect::new(rail.x1 - 0.5, rail.y0, rail.x1 + 0.5, rail.y1),
+                c.border_standard,
+            );
+        }
 
-        // Vertical pane dividers.
-        draw::fill_rect(
-            scene,
-            t,
-            Rect::new(sidebar.x1 - 0.5, r.y0, sidebar.x1 + 0.5, r.y1),
-            c.border_standard,
-        );
-        draw::fill_rect(
-            scene,
-            t,
-            Rect::new(list.x1 - 0.5, r.y0, list.x1 + 0.5, r.y1),
-            c.border_standard,
-        );
+        // The hamburger toggle is shown whenever the sidebar isn't fully
+        // docked-open, so a collapsed rail can be summoned and an overlay
+        // rail dismissed. It records its own hit region.
+        if self.show_toggle() {
+            self.draw_toggle(scene, t, theme, band);
+        }
 
         if let Some(toast) = &self.toast {
             draw_toast(scene, t, tr, theme, self.rect, &toast.message);
@@ -555,9 +788,18 @@ impl ui::widget::Widget for SnippetsApp {
                     return;
                 }
 
-                // Escape clears search focus / search text.
+                // Escape walks back through the responsive layers, then
+                // finally clears the search. In single-pane push showing the
+                // detail it returns to the list; with the overlay sidebar
+                // open it dismisses the flap; otherwise it clears the search.
                 if let Key::Named(NamedKey::Escape) = logical_key {
-                    if !self.search.is_empty() {
+                    if self.is_push_layout() && self.push.reveal() > 0.5 {
+                        self.apply(Action::PushBack);
+                        *handled = true;
+                    } else if self.sidebar_layout() == SplitLayout::Overlay && self.sidebar_open() {
+                        self.apply(Action::DismissSidebar);
+                        *handled = true;
+                    } else if !self.search.is_empty() {
                         self.search.clear();
                         self.recompute_visible();
                         *handled = true;
@@ -570,9 +812,18 @@ impl ui::widget::Widget for SnippetsApp {
 
     fn needs_animation_frame(&self) -> bool {
         self.toast.is_some()
+            || self.sidebar.is_animating(self.sidebar_layout())
+            || self.push.is_animating(SplitLayout::Docked)
     }
 
     fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
+        // Advance the sidebar reveal + the push (list↔detail) slide toward
+        // their targets. Frame-rate-independent; the host re-pumps frames
+        // while `needs_animation_frame` stays true.
+        let dt = 1.0 / 60.0;
+        self.sidebar.tick(self.sidebar_layout(), dt);
+        self.push.tick(SplitLayout::Docked, dt);
+
         // Age out the toast.
         if let Some(toast) = &mut self.toast {
             if toast.ttl == 0 {
@@ -616,6 +867,109 @@ pub enum ExpandOutcome {
 }
 
 impl SnippetsApp {
+    // ---- content band (list + detail) ----------------------------------
+
+    /// Paint the list and the detail within `band`. Wide / medium: the two
+    /// panes sit side by side (list fixed-width, detail fills the rest).
+    /// Very narrow: a single-pane push stack shows the list OR the detail,
+    /// sliding between them, with a Back affordance on the detail.
+    fn draw_content_band(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        band: Rect,
+    ) {
+        let c = &theme.tokens.colors;
+        if self.is_push_layout() {
+            // Single pane: list and detail each span the full band, offset
+            // horizontally by the eased push amount (0 = list, 1 = detail).
+            let w = band.width();
+            let p = self.push.slide();
+            let list = Rect::new(band.x0 - w * p, band.y0, band.x1 - w * p, band.y1);
+            let detail = Rect::new(band.x0 + w * (1.0 - p), band.y0, band.x1 + w * (1.0 - p), band.y1);
+            // Draw the off-screen pane first so the incoming one sits on top.
+            if p < 0.999 {
+                self.draw_list(scene, t, tr, theme, list);
+            }
+            if p > 0.001 {
+                self.draw_detail(scene, t, tr, theme, detail);
+            }
+            return;
+        }
+
+        // Side-by-side: list rail + detail fills the remainder. The list
+        // narrows gracefully if the band can't fit the full fixed width.
+        let list_w = LIST_W.min((band.width() - 240.0).max(200.0));
+        let list = Rect::new(band.x0, band.y0, band.x0 + list_w, band.y1);
+        let detail = Rect::new(list.x1, band.y0, band.x1, band.y1);
+        self.draw_list(scene, t, tr, theme, list);
+        self.draw_detail(scene, t, tr, theme, detail);
+        // Divider between list and detail.
+        draw::fill_rect(
+            scene,
+            t,
+            Rect::new(list.x1 - 0.5, band.y0, list.x1 + 0.5, band.y1),
+            c.border_standard,
+        );
+    }
+
+    // ---- toggles --------------------------------------------------------
+
+    /// Whether the top-left toggle (hamburger / Back) should be shown. It
+    /// appears whenever the primary sidebar isn't fully docked-open (so it
+    /// can be summoned / dismissed), or while the push stack shows the detail
+    /// (so the user can go Back to the list).
+    fn show_toggle(&self) -> bool {
+        let sidebar_collapsed = self.sidebar.reveal() < 0.999
+            || self.sidebar_layout() == SplitLayout::Overlay;
+        let push_in_detail = self.is_push_layout() && self.push.reveal() > 0.5;
+        sidebar_collapsed || push_in_detail
+    }
+
+    /// Draw the top-left toggle button + glyph and record its hit region.
+    /// In single-pane push showing the detail it's a Back chevron (returns to
+    /// the list); otherwise it's a hamburger (open) / close-X (dismiss the
+    /// overlay sidebar).
+    fn draw_toggle(&mut self, scene: &mut Scene, t: Affine, theme: &Theme, band: Rect) {
+        let c = &theme.tokens.colors;
+        let pad = 10.0;
+        let bx = band.x0 + pad;
+        let by = band.y0 + pad;
+        let btn = Rect::new(bx, by, bx + TOGGLE_SIZE, by + TOGGLE_SIZE);
+        draw::fill_round(scene, t, btn, theme.radii_md(), c.surfaces.raised);
+        draw::stroke_round(scene, t, btn, theme.radii_md(), 1.0, c.border_standard);
+
+        let cx = btn.x0 + TOGGLE_SIZE / 2.0;
+        let cy = btn.y0 + TOGGLE_SIZE / 2.0;
+        let push_back = self.is_push_layout() && self.push.reveal() > 0.5;
+        let overlay_open =
+            self.sidebar_layout() == SplitLayout::Overlay && self.sidebar.reveal() > 0.5;
+
+        if push_back {
+            // Back chevron "‹".
+            let r = 5.0;
+            draw::stroke_line(scene, t, Point::new(cx + r * 0.6, cy - r), Point::new(cx - r * 0.6, cy), 1.8, c.text_primary);
+            draw::stroke_line(scene, t, Point::new(cx - r * 0.6, cy), Point::new(cx + r * 0.6, cy + r), 1.8, c.text_primary);
+            self.record(btn, Action::PushBack);
+        } else if overlay_open {
+            // Close "X" when the overlay sidebar is showing.
+            let r = 6.0;
+            draw::stroke_line(scene, t, Point::new(cx - r, cy - r), Point::new(cx + r, cy + r), 1.8, c.text_primary);
+            draw::stroke_line(scene, t, Point::new(cx + r, cy - r), Point::new(cx - r, cy + r), 1.8, c.text_primary);
+            self.record(btn, Action::ToggleSidebar);
+        } else {
+            // Three-line hamburger to summon the sidebar.
+            let half = 7.0;
+            for i in 0..3 {
+                let ly = btn.y0 + 11.0 + i as f64 * 6.0;
+                draw::stroke_line(scene, t, Point::new(cx - half, ly), Point::new(cx + half, ly), 1.8, c.text_primary);
+            }
+            self.record(btn, Action::ToggleSidebar);
+        }
+    }
+
     fn handle_search_key(&mut self, key: &Key, handled: &mut bool) {
         match key {
             Key::Character(s) => {
@@ -1345,5 +1699,85 @@ mod tests {
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
         assert_eq!(SnippetsDoc::list(&doc).len(), app.library_len_for_test());
+    }
+
+    // ---- responsive layout ---------------------------------------------
+
+    #[test]
+    fn wide_keeps_sidebar_docked_and_open() {
+        let mut app = SnippetsApp::new();
+        app.layout_at_width_for_test(1280.0);
+        assert!(!app.sidebar_is_overlay_for_test(), "wide window docks the sidebar");
+        assert!(app.sidebar_open_for_test(), "docked sidebar is open beside the content");
+        assert!(!app.is_push_for_test(), "wide window keeps list + detail side by side");
+    }
+
+    #[test]
+    fn narrow_collapses_sidebar_to_overlay_closed_by_default() {
+        let mut app = SnippetsApp::new();
+        app.layout_at_width_for_test(720.0);
+        assert!(app.sidebar_is_overlay_for_test(), "narrow window overlays the sidebar");
+        assert!(
+            !app.sidebar_open_for_test(),
+            "the overlay sidebar is closed by default, summoned by the hamburger"
+        );
+    }
+
+    #[test]
+    fn hamburger_toggles_the_overlay_sidebar() {
+        let mut app = SnippetsApp::new();
+        app.layout_at_width_for_test(720.0);
+        assert!(!app.sidebar_open_for_test());
+        app.toggle_sidebar_for_test();
+        assert!(app.sidebar_open_for_test(), "the toggle summons the overlay flap");
+        app.toggle_sidebar_for_test();
+        assert!(!app.sidebar_open_for_test(), "toggling again dismisses it");
+    }
+
+    #[test]
+    fn very_narrow_uses_single_pane_push() {
+        let mut app = SnippetsApp::new();
+        app.layout_at_width_for_test(480.0);
+        assert!(app.is_push_for_test(), "very-narrow window switches to single-pane push");
+        assert!(
+            !app.push_showing_detail_for_test(),
+            "push starts on the master list"
+        );
+    }
+
+    #[test]
+    fn opening_a_snippet_pushes_the_detail_when_very_narrow() {
+        let mut app = SnippetsApp::new();
+        app.layout_at_width_for_test(480.0);
+        assert!(!app.push_showing_detail_for_test());
+        app.open_first_for_test();
+        assert!(
+            app.push_showing_detail_for_test(),
+            "selecting a snippet pushes the detail pane in"
+        );
+    }
+
+    #[test]
+    fn opening_a_snippet_does_not_push_when_wide() {
+        let mut app = SnippetsApp::new();
+        app.layout_at_width_for_test(1280.0);
+        app.open_first_for_test();
+        assert!(
+            !app.push_showing_detail_for_test(),
+            "wide layout shows both panes; opening must not trigger a push"
+        );
+    }
+
+    #[test]
+    fn resizing_wide_again_restores_the_docked_default() {
+        let mut app = SnippetsApp::new();
+        // Narrow first (overlay, closed), then widen back.
+        app.layout_at_width_for_test(720.0);
+        assert!(!app.sidebar_open_for_test());
+        app.layout_at_width_for_test(1280.0);
+        assert!(
+            app.sidebar_open_for_test() && !app.sidebar_is_overlay_for_test(),
+            "crossing back over the breakpoint restores the docked-open default"
+        );
     }
 }
