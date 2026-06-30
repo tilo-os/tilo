@@ -31,6 +31,23 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
     let args: Vec<String> = std::env::args().collect();
+
+    // Headless relay mode: a home server runs the library document + sync
+    // transport with no GUI; clients sync to it. Live iroh transport is gated
+    // behind the `p2p` feature (the relay still runs on the loopback transport
+    // otherwise, demonstrating the seam). See `music::relay`.
+    if args.iter().any(|a| a == "--relay") {
+        let mut relay = music::relay::Relay::new();
+        println!(
+            "music: headless relay — {} tracks, live={}, ticket={}",
+            relay.track_count(),
+            relay.is_live(),
+            relay.ticket().as_deref().unwrap_or("<none>")
+        );
+        relay.run();
+        return Ok(());
+    }
+
     if let Some(out) = parse_shots_arg(&args) {
         let scenario = parse_value_arg(&args, "--scenario").unwrap_or_default();
         let viewport = parse_value_arg(&args, "--viewport")
