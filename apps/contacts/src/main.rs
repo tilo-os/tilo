@@ -32,11 +32,26 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // a narrow frame opens to the list, as a fresh window would).
         let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         let show_detail = args.iter().any(|a| a == "--detail");
+        let scenario = parse_scenario_arg(&args);
         let mut app = contacts::ContactsApp::new();
         if show_detail {
             app.shots_show_detail();
         }
-        render_shot_to_png(Box::new(app), viewport, &out)?;
+        // A `--scenario NAME` arg snaps a specific UI surface into view so a
+        // single headless frame captures it (new-contact form, export
+        // selection dialog, unsaved-changes modal, right-click menu). The
+        // hooks need the document seeded first, which `render_shot_to_png`
+        // does before drawing — so they're applied through a closure run
+        // *after* the sync pass.
+        let setup: Box<dyn FnOnce(&mut contacts::ContactsApp)> = match scenario.as_deref() {
+            Some("new") => Box::new(|a: &mut contacts::ContactsApp| a.shots_new_contact()),
+            Some("export") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_export()),
+            Some("unsaved") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_unsaved()),
+            Some("context") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_context_menu()),
+            Some("confirm") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_confirm_delete()),
+            _ => Box::new(|_: &mut contacts::ContactsApp| {}),
+        };
+        render_shot_to_png(app, viewport, &out, setup)?;
         return Ok(());
     }
 
@@ -63,6 +78,21 @@ fn parse_viewport_arg(args: &[String]) -> Option<(u32, u32)> {
     None
 }
 
+/// Parse `--scenario NAME` (e.g. `--scenario new`) for `--shots`, selecting
+/// which non-default UI surface to snap into view for the captured frame.
+fn parse_scenario_arg(args: &[String]) -> Option<String> {
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == "--scenario" {
+            return iter.next().cloned();
+        }
+        if let Some(rest) = arg.strip_prefix("--scenario=") {
+            return Some(rest.to_string());
+        }
+    }
+    None
+}
+
 fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
     let mut iter = args.iter().skip(1);
     while let Some(arg) = iter.next() {
@@ -79,9 +109,10 @@ fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
 /// Mirrors `ui::App`'s cycle: sync → build_layout → compute_layout → apply_layout → draw.
 fn render_shot_to_png(
-    mut widget: Box<dyn Widget>,
+    mut app: contacts::ContactsApp,
     viewport: (u32, u32),
     out: &std::path::Path,
+    setup: Box<dyn FnOnce(&mut contacts::ContactsApp)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
     let theme = Theme::dark();
@@ -92,7 +123,11 @@ fn render_shot_to_png(
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
     let mut state = ui::State::new();
-    widget.sync(&mut state.doc, &state.root);
+    app.sync(&mut state.doc, &state.root);
+    // Apply the scenario hook now that the document is seeded; the hooks
+    // (new-contact form, export dialog, …) operate on the live store.
+    setup(&mut app);
+    let widget: &mut dyn Widget = &mut app;
 
     let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
     let root = taffy.new_with_children(
