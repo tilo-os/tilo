@@ -1,48 +1,30 @@
 #!/bin/bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # os/
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"                       # cargo workspace root
 
 echo "=== Building qOS Image ==="
 
-# Step 1: Build the compositor
-echo "--- Step 1: Building compositor ---"
-cd "$PROJECT_DIR/shell"
-cargo build --release
-cp target/release/shell "$SCRIPT_DIR/shell"
-echo "Compositor binary copied to os/shell"
-
-# Step 1.5: Build the FUSE filesystem
-echo "--- Step 1.5: Building FUSE filesystem ---"
-cd "$PROJECT_DIR/fs"
-cargo build --release
-cp target/release/fs "$SCRIPT_DIR/fs"
-echo "FUSE binary copied to os/fs"
-
-# Step 1.7: Build the applications
-echo "--- Step 1.7: Building applications ---"
-cd "$PROJECT_DIR"
-cargo build --release -p file-explorer -p terminal -p browser -p greeter
-cp target/release/file-explorer "$SCRIPT_DIR/file-explorer"
-cp target/release/terminal "$SCRIPT_DIR/terminal"
-cp target/release/browser "$SCRIPT_DIR/browser"
-cp target/release/qos-greeter "$SCRIPT_DIR/qos-greeter"
-echo "Application binaries copied to os/"
-
-# Step 2: Build the container image (as user)
-echo "--- Step 2: Building container image ---"
-cd "$SCRIPT_DIR"
-podman build -t localhost/qos:latest .
+# Step 1: Build the container image.
+#
+# The Rust binaries (shell, fs, terminal, file-explorer, qos-greeter,
+# qos-installer) are now compiled INSIDE the image via the multi-stage
+# Containerfile (`builder` stage) — there is no host cargo build and no binary
+# staging into os/. The build context is the REPO ROOT so the in-image compile
+# can see the whole cargo workspace; .containerignore trims target/, os/output
+# and .git. The first build is a long cold Rust compile (cached on rebuilds).
+echo "--- Step 1: Building container image (in-image cargo compile) ---"
+podman build -f "$SCRIPT_DIR/Containerfile" -t localhost/qos:latest "$PROJECT_DIR"
 echo "Container image built: localhost/qos:latest"
 
-# Step 3: Transfer image to root storage (bootc-image-builder runs as root)
-echo "--- Step 3: Transferring image to root storage ---"
+# Step 2: Transfer image to root storage (bootc-image-builder runs as root)
+echo "--- Step 2: Transferring image to root storage ---"
 podman save localhost/qos:latest | sudo podman load
 echo "Image loaded into root storage"
 
-# Step 4: Build QCOW2 disk image
-echo "--- Step 4: Building QCOW2 disk image ---"
+# Step 3: Build QCOW2 disk image
+echo "--- Step 3: Building QCOW2 disk image ---"
 mkdir -p "$SCRIPT_DIR/output"
 sudo podman run --rm --privileged \
     --security-opt label=type:unconfined_t \
