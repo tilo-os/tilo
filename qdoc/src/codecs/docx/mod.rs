@@ -3,6 +3,7 @@
 //! onto the canonical model. Mirrors the `.odt` codec: container → styles →
 //! body parse → spans → export → preservation.
 
+pub mod comments;
 pub mod container;
 pub mod content;
 pub mod export;
@@ -57,7 +58,14 @@ impl FormatProvider for DocxCodec {
         if let Some(xml) = container.get("word/endnotes.xml") {
             end_map = notes::import_notes_part(xml, crate::model::NoteKind::Endnote, doc);
         }
-        content::parse_body(&document, &reg, &foot_map, &end_map, doc)?;
+        // Comments live in `word/comments.xml`; parse them first so the body parser
+        // can wire each `w:commentRangeStart/End` (by docx id) onto the canonical
+        // comment via the returned `docx-id → comment-id` map.
+        let mut comment_map = std::collections::BTreeMap::new();
+        if let Some(xml) = container.get(comments::COMMENTS_PART) {
+            comment_map = comments::import_comments_part(xml, doc);
+        }
+        content::parse_body(&document, &reg, &foot_map, &end_map, &comment_map, doc)?;
         // Document properties: parse `docProps/core.xml` (dc:title, dc:creator, …)
         // + `docProps/app.xml` (Application = generator) into `meta.props`.
         if let Some(core_xml) = container.get("docProps/core.xml") {

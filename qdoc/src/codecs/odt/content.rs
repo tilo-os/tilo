@@ -11,9 +11,10 @@ use super::styles::{attr_val, StyleRegistry};
 use crate::document::MarkValue;
 use crate::format::CodecError;
 use crate::model::DocMut;
-use crate::schema::{FIELD_PLACEHOLDER, MARK_NOTE_REF};
+use crate::schema::{FIELD_PLACEHOLDER, MARK_COMMENT, MARK_NOTE_REF};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
+use std::collections::BTreeMap;
 
 /// Parse an ODF length (`svg:width`/`svg:height`, e.g. `"3cm"`, `"96px"`, `"1in"`)
 /// to an integer pixel count. `px` (and bare numbers) round-trip exactly; other
@@ -166,6 +167,15 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
     let mut note: Option<(usize, i32, Option<String>, usize)> = None;
     // (block, char index, note id) reference markers, applied after all text is in.
     let mut note_refs: Vec<(String, usize, String)> = Vec::new();
+    // An in-progress inline `office:annotation` (comment): its raw-XML start byte,
+    // open depth, and the (block, start char index) at which the commented range
+    // begins. Deferred so the `comment` mark is added after all text is in place.
+    let mut annotation: Option<(usize, i32, Option<String>, usize)> = None;
+    // Pending comment ranges keyed by the ODF `office:name`: `name → (comment id,
+    // block, start char index)`, awaiting their matching `office:annotation-end`.
+    let mut open_comments: BTreeMap<String, (String, String, usize)> = BTreeMap::new();
+    // (block, start, end, comment id) anchor marks, applied after all text is in.
+    let mut comment_ranges: Vec<(String, usize, usize, String)> = Vec::new();
 
     // Flush the current block's paragraph-style marks over its full text range.
     macro_rules! flush_para_marks {
@@ -300,6 +310,37 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
             continue;
         }
 
+        // Inside an inline `office:annotation` (comment): collect its raw XML until it
+        // closes, parse it into a comment, and remember the start of the commented
+        // range so the matching `office:annotation-end` (or, for a point comment, the
+        // same position) anchors a `comment` mark.
+        if let Some((start, depth, block, idx)) = annotation.as_mut() {
+            match &ev {
+                Event::Start(_) => *depth += 1,
+                Event::End(_) => {
+                    *depth -= 1;
+                    if *depth == 0 {
+                        let raw = s[*start..reader.buffer_position() as usize].to_string();
+                        if let (Some(b), Some((name, cid))) = (block.clone(), super::comments::import_annotation(&raw, doc)) {
+                            match name {
+                                // A ranged comment: stash it until its annotation-end.
+                                Some(n) => {
+                                    open_comments.insert(n, (cid, b, *idx));
+                                }
+                                // A point comment (no office:name): anchor a 1-char
+                                // range at the insertion point if there's a character
+                                // there, else a zero-width range that import drops.
+                                None => comment_ranges.push((b, *idx, *idx, cid)),
+                            }
+                        }
+                        annotation = None;
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+
         match ev {
             Event::Start(e) => match e.name().as_ref() {
                 b"text:note" if in_text && cur.is_some() => {
@@ -310,6 +351,14 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                     let idx = cur_len;
                     append(doc, &cur, &mut cur_len, &FIELD_PLACEHOLDER.to_string());
                     note = Some((pos_before, 1, cur.clone(), idx));
+                }
+                b"office:annotation" if in_text && cur.is_some() => {
+                    // A comment anchored to a range: the annotation sits at the *start*
+                    // of the commented text (no placeholder — it spans real chars).
+                    // Capture the whole element verbatim and remember the current char
+                    // index; the matching `office:annotation-end` records the range end.
+                    let idx = cur_len;
+                    annotation = Some((pos_before, 1, cur.clone(), idx));
                 }
                 b"office:text" => in_text = true,
                 b"text:h" if in_text => {
@@ -477,6 +526,15 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                     doc.set_attr(&id, "level", lvl);
                     cur = None;
                 }
+                b"office:annotation-end" if in_text => {
+                    // Closes a comment's range: match by `office:name` to the open
+                    // annotation and anchor a `comment` mark over `[start, cur_len)`.
+                    if let Some(name) = attr_val(&e, b"office:name") {
+                        if let Some((cid, b, start)) = open_comments.remove(&name) {
+                            comment_ranges.push((b, start, cur_len, cid));
+                        }
+                    }
+                }
                 b"text:tab" if in_text => append(doc, &cur, &mut cur_len, "\t"),
                 b"text:line-break" if in_text => append(doc, &cur, &mut cur_len, "\n"),
                 b"text:s" if in_text => {
@@ -585,7 +643,32 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
     for (b, idx, nid) in note_refs {
         doc.add_mark(&b, idx, idx + 1, MARK_NOTE_REF, nid.as_str());
     }
+    // Any annotation whose `office:annotation-end` never arrived (a point comment, or
+    // a malformed range) still anchors at its start: extend to the block's end so the
+    // comment has a non-empty range when content follows, else leave it where it sits.
+    for (name, (cid, b, start)) in std::mem::take(&mut open_comments) {
+        let _ = name;
+        let end = doc_block_len(doc, &b).max(start);
+        comment_ranges.push((b, start, end, cid));
+    }
+    // Comment anchor marks: cover the commented range with a `comment` mark valued
+    // with the comment id. A zero-width range can't carry a mark, so widen it to one
+    // character when the block has text after the anchor.
+    for (b, start, mut end, cid) in comment_ranges {
+        if end <= start {
+            let blen = doc_block_len(doc, &b);
+            end = (start + 1).min(blen);
+        }
+        if end > start {
+            doc.add_mark(&b, start, end, MARK_COMMENT, cid.as_str());
+        }
+    }
     Ok(())
+}
+
+/// The character length of a body block's text (0 if absent).
+fn doc_block_len(doc: &DocMut, block_id: &str) -> usize {
+    crate::model::block_text(doc.doc, doc.c, block_id).map(|t| t.chars().count()).unwrap_or(0)
 }
 
 #[cfg(test)]
