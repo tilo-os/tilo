@@ -1,0 +1,32 @@
+# Build context excludes for `podman build -f os/Containerfile .` (context = repo
+# root). The multi-stage builder COPYs the whole workspace source; everything
+# here is either huge, regenerated in-image, or irrelevant to the build — and a
+# stray `target/` (tens of GB after local builds) makes the COPY OOM/hang.
+
+# Rust build output (the in-image build uses its own cache mounts, not this).
+target/
+**/target/
+
+# VCS + tooling
+.git/
+**/.git
+.claude/
+
+# Image build outputs
+os/output*/
+
+# Stale host-built binaries (the multi-stage build compiles in-image now;
+# these are leftovers from the old host-build flow and must not shadow it).
+os/shell
+os/fs
+os/terminal
+os/file-explorer
+os/qos-greeter
+os/qos-installer
+os/browser
+
+# Logs / scratch
+*.log
+**/*.h264
+
+# Keep Cargo.lock — needed for a reproducible resolve in the builder stage.
