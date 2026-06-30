@@ -725,20 +725,58 @@ fn comment_ends_at(marks: &[crate::document::MarkSpan], i: usize) -> Vec<String>
     v
 }
 
-/// Whether any run boundary (mark-set change, note-ref placeholder, or comment
-/// range boundary) occurs *at* `j`, so a text run must break before it.
+/// The bookmark names whose `bookmark` mark starts / ends exactly at `i` (sorted for
+/// deterministic output). `ends_at` matches `mark.end == i`.
+fn bookmark_starts_at(marks: &[crate::document::MarkSpan], i: usize) -> Vec<String> {
+    let mut v: Vec<String> = marks
+        .iter()
+        .filter(|m| m.name == crate::schema::MARK_BOOKMARK && m.start == i)
+        .filter_map(|m| m.value.as_str().map(|s| s.to_string()))
+        .collect();
+    v.sort();
+    v
+}
+
+fn bookmark_ends_at(marks: &[crate::document::MarkSpan], i: usize) -> Vec<String> {
+    let mut v: Vec<String> = marks
+        .iter()
+        .filter(|m| m.name == crate::schema::MARK_BOOKMARK && m.end == i)
+        .filter_map(|m| m.value.as_str().map(|s| s.to_string()))
+        .collect();
+    v.sort();
+    v
+}
+
+/// The internal cross-reference target (`#name` → `name`) of a `link` mark covering
+/// `[i, i+1)`, if the link is an internal reference (value starts with `#`). External
+/// URL links (no `#`) are not modeled in the `.docx` codec and return `None`.
+fn cross_ref_at(marks: &[crate::document::MarkSpan], i: usize) -> Option<String> {
+    marks
+        .iter()
+        .find(|m| m.name == crate::schema::MARK_LINK && i >= m.start && i < m.end)
+        .and_then(|m| m.value.as_str())
+        .and_then(|v| v.strip_prefix(crate::schema::CROSS_REF_PREFIX).map(|s| s.to_string()))
+}
+
+/// Whether any run boundary (mark-set change, note-ref placeholder, comment range
+/// boundary, bookmark boundary, or cross-reference change) occurs *at* `j`, so a text
+/// run must break before it.
 fn run_breaks_at(
     chars: &[char],
     marks: &[crate::document::MarkSpan],
     active: &[(String, MarkValue)],
     active_change: &Option<(crate::snapshot::ChangeKind, String)>,
+    active_xref: &Option<String>,
     j: usize,
 ) -> bool {
     marks_at(j, marks) != active
         || &change_at(marks, j) != active_change
+        || &cross_ref_at(marks, j) != active_xref
         || is_note_ref_placeholder(chars, marks, j)
         || !comment_starts_at(marks, j).is_empty()
         || !comment_ends_at(marks, j).is_empty()
+        || !bookmark_starts_at(marks, j).is_empty()
+        || !bookmark_ends_at(marks, j).is_empty()
 }
 
 /// A change-id → `&ChangeView` lookup for wrapping runs in `<w:ins>`/`<w:del>` on export.
@@ -822,6 +860,7 @@ fn render_runs(
     comment_ids: &BTreeMap<String, i64>,
     changes: &ChangeIndex,
     change_ids: &BTreeMap<String, i64>,
+    bookmark_ids: &BTreeMap<String, i64>,
 ) -> String {
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();
@@ -843,9 +882,25 @@ fn render_runs(
             }
         }
     };
+    // Bookmark boundary markers at index `i`: `w:bookmarkEnd` (by id) before
+    // `w:bookmarkStart` (id + name) so an adjacent bookmark's end closes before the
+    // next opens. These are empty elements sitting between runs at body level.
+    let emit_bookmark_boundaries = |out: &mut String, i: usize| {
+        for name in bookmark_ends_at(marks, i) {
+            if let Some(id) = bookmark_ids.get(&name) {
+                out.push_str(&format!(r#"<w:bookmarkEnd w:id="{id}"/>"#));
+            }
+        }
+        for name in bookmark_starts_at(marks, i) {
+            if let Some(id) = bookmark_ids.get(&name) {
+                out.push_str(&format!(r#"<w:bookmarkStart w:id="{id}" w:name="{}"/>"#, escape_attr(&name)));
+            }
+        }
+    };
     let mut i = 0;
     while i < n {
         emit_comment_boundaries(&mut out, i);
+        emit_bookmark_boundaries(&mut out, i);
         // A note-reference placeholder is its own run (no text), independent of the
         // surrounding mark set.
         if chars[i] == crate::schema::FIELD_PLACEHOLDER {
@@ -859,8 +914,9 @@ fn render_runs(
         }
         let active = marks_at(i, marks);
         let active_change = change_at(marks, i);
+        let active_xref = cross_ref_at(marks, i);
         let mut j = i + 1;
-        while j < n && !run_breaks_at(&chars, marks, &active, &active_change, j) {
+        while j < n && !run_breaks_at(&chars, marks, &active, &active_change, &active_xref, j) {
             j += 1;
         }
         // The tracked-change wrapper (if any) for this run group: a `<w:ins>`/`<w:del>`
@@ -878,7 +934,14 @@ fn render_runs(
             },
             None => (String::new(), "", false),
         };
+        // A cross-reference wraps the whole run group in a `<w:hyperlink w:anchor>`
+        // (the outermost wrapper), so the linked text points at the bookmark/heading.
+        let (xref_open, xref_close) = match &active_xref {
+            Some(target) => (format!(r#"<w:hyperlink w:anchor="{}">"#, escape_attr(target)), "</w:hyperlink>"),
+            None => (String::new(), ""),
+        };
         let rpr = run_props(&active);
+        out.push_str(&xref_open);
         out.push_str(&wrap_open);
         out.push_str("<w:r>");
         if !rpr.is_empty() {
@@ -891,7 +954,14 @@ fn render_runs(
         }
         out.push_str("</w:r>");
         out.push_str(wrap_close);
+        out.push_str(xref_close);
         i = j;
+    }
+    // Bookmarks ending exactly at the block's end emit their `w:bookmarkEnd`.
+    for name in bookmark_ends_at(marks, n) {
+        if let Some(id) = bookmark_ids.get(&name) {
+            out.push_str(&format!(r#"<w:bookmarkEnd w:id="{id}"/>"#));
+        }
     }
     // Comments ending exactly at the block's end emit their range-end + reference.
     emit_comment_boundaries(&mut out, n);
@@ -1196,6 +1266,15 @@ fn build_document_xml(
     let change_ids: BTreeMap<String, i64> = snap.changes.iter().enumerate().map(|(i, c)| (c.id.clone(), i as i64)).collect();
     let changes = &changes;
     let change_ids = &change_ids;
+    // Bookmarks: `w:bookmarkStart`/`w:bookmarkEnd` carry an integer `w:id` per name.
+    // Assigned from 0 in sorted-name order so output is deterministic.
+    let bookmark_ids: BTreeMap<String, i64> = {
+        let mut names: Vec<String> = snap.bookmarks.iter().map(|bm| bm.name.clone()).collect();
+        names.sort();
+        names.dedup();
+        names.into_iter().enumerate().map(|(i, name)| (name, i as i64)).collect()
+    };
+    let bookmark_ids = &bookmark_ids;
     let mut i = 0;
     while i < snap.blocks.len() {
         let b = &snap.blocks[i];
@@ -1209,7 +1288,7 @@ fn build_document_xml(
                     r#"<w:p><w:pPr><w:pStyle w:val="Heading{level}"/>{}{}</w:pPr>{}</w:p>"#,
                     jc_xml(b),
                     spacing_xml(b),
-                    render_runs(&b.text, &b.marks, note_ids, note_kinds, comment_ids, changes, change_ids)
+                    render_runs(&b.text, &b.marks, note_ids, note_kinds, comment_ids, changes, change_ids, bookmark_ids)
                 ));
                 i += 1;
             }
@@ -1219,7 +1298,7 @@ fn build_document_xml(
                     r#"<w:p><w:pPr><w:pStyle w:val="ListParagraph"/><w:numPr><w:ilvl w:val="0"/><w:numId w:val="{numid}"/></w:numPr>{}{}</w:pPr>{}</w:p>"#,
                     jc_xml(b),
                     spacing_xml(b),
-                    render_runs(&b.text, &b.marks, note_ids, note_kinds, comment_ids, changes, change_ids)
+                    render_runs(&b.text, &b.marks, note_ids, note_kinds, comment_ids, changes, change_ids, bookmark_ids)
                 ));
                 i += 1;
             }
@@ -1257,7 +1336,7 @@ fn build_document_xml(
                         let inner = cells
                             .iter()
                             .find(|cl| cell_rc(cl) == (r, c))
-                            .map(|cl| render_runs(&cl.text, &cl.marks, note_ids, note_kinds, comment_ids, changes, change_ids))
+                            .map(|cl| render_runs(&cl.text, &cl.marks, note_ids, note_kinds, comment_ids, changes, change_ids, bookmark_ids))
                             .unwrap_or_default();
                         body.push_str(&format!(
                             r#"<w:tc><w:tcPr><w:tcW w:w="0" w:type="auto"/></w:tcPr><w:p>{inner}</w:p></w:tc>"#
@@ -1281,7 +1360,7 @@ fn build_document_xml(
                 ppr_inner.push_str(&jc_xml(b));
                 ppr_inner.push_str(&spacing_xml(b));
                 let ppr = if ppr_inner.is_empty() { String::new() } else { format!("<w:pPr>{ppr_inner}</w:pPr>") };
-                body.push_str(&format!("<w:p>{ppr}{}</w:p>", render_runs(&b.text, &b.marks, note_ids, note_kinds, comment_ids, changes, change_ids)));
+                body.push_str(&format!("<w:p>{ppr}{}</w:p>", render_runs(&b.text, &b.marks, note_ids, note_kinds, comment_ids, changes, change_ids, bookmark_ids)));
                 i += 1;
             }
         }
@@ -1535,6 +1614,46 @@ mod tests {
             "sub mark: {:?}",
             b.marks
         );
+    }
+
+    #[test]
+    fn bookmark_and_cross_reference_roundtrip_through_docx() {
+        // A bookmark "intro" over a word + a cross-reference pointing at it must survive
+        // a `.docx` export+import with both names and ranges intact.
+        let mut d = Document::new();
+        let target = d.insert_block(None, "paragraph");
+        d.splice_text(&target, 0, 0, "the intro section");
+        d.add_bookmark(&target, 4, 9, "intro"); // over "intro"
+        let src = d.insert_block(Some(&target), "paragraph");
+        d.splice_text(&src, 0, 0, "see above");
+        d.add_cross_ref(&src, 4, 9, "intro"); // "above" → #intro
+
+        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let cont = DocxContainer::read(&exported).unwrap();
+        let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
+        // Bookmark markers + the cross-ref hyperlink anchor appear in the markup.
+        assert!(document.contains(r#"<w:bookmarkStart w:id="0" w:name="intro"/>"#), "bookmarkStart emitted: {document}");
+        assert!(document.contains(r#"<w:bookmarkEnd w:id="0"/>"#), "bookmarkEnd emitted: {document}");
+        assert!(document.contains(r#"<w:hyperlink w:anchor="intro">"#), "cross-ref hyperlink emitted: {document}");
+
+        let mut d2 = Document::new();
+        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+        // The bookmark survives with its name + range.
+        assert_eq!(snap.bookmarks.len(), 1, "one bookmark survives: {:?}", snap.bookmarks);
+        let bm = &snap.bookmarks[0];
+        assert_eq!(bm.name, "intro");
+        assert_eq!((bm.range.1, bm.range.2), (4, 9), "bookmark range over 'intro': {:?}", bm);
+        // The bookmarked block carries the `bookmark` mark.
+        let tb = snap.blocks.iter().find(|b| b.text == "the intro section").unwrap();
+        let mark = tb.marks.iter().find(|m| m.name == crate::schema::MARK_BOOKMARK).expect("bookmark mark present");
+        assert_eq!((mark.start, mark.end), (4, 9));
+        assert_eq!(mark.value, MarkValue::Str("intro".into()));
+        // The cross-reference survives as a `link` mark valued `#intro`.
+        let sb = snap.blocks.iter().find(|b| b.text == "see above").unwrap();
+        let link = sb.marks.iter().find(|m| m.name == "link").expect("cross-ref link mark present");
+        assert_eq!((link.start, link.end), (4, 9), "cross-ref over 'above': {:?}", sb.marks);
+        assert_eq!(link.value, MarkValue::Str("#intro".into()));
     }
 
     #[test]

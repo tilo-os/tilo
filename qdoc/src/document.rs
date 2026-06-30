@@ -465,6 +465,31 @@ impl Document {
         self.doc.commit();
     }
 
+    // ---- bookmarks / cross-references -------------------------------------
+
+    /// Every bookmark (named anchor) in the document, recovered from the body
+    /// `bookmark` marks.
+    pub fn bookmarks(&self) -> Vec<crate::snapshot::BookmarkView> {
+        crate::model::bookmarks(&self.doc, &self.c)
+    }
+
+    /// Anchor a bookmark named `name` over the body range `[start, end)` of `block_id`.
+    /// A point bookmark (`start == end`) is widened to one character so the mark has a
+    /// non-empty range.
+    pub fn add_bookmark(&mut self, block_id: &str, start: usize, end: usize, name: &str) {
+        self.as_mut().add_bookmark(block_id, start, end, name);
+        self.doc.commit();
+    }
+
+    /// Anchor a cross-reference (internal link) over the body range `[start, end)` of
+    /// `block_id`, pointing at `target` (a bookmark name or a heading's derived id —
+    /// see [`crate::model::heading_ref_id`]). Stored as a `link` mark valued
+    /// `#<target>`.
+    pub fn add_cross_ref(&mut self, block_id: &str, start: usize, end: usize, target: &str) {
+        self.as_mut().add_cross_ref(block_id, start, end, target);
+        self.doc.commit();
+    }
+
     /// Timeline of authored changes (oldest first).
     pub fn versions(&mut self) -> Vec<crate::history::VersionMeta> {
         crate::history::versions(&mut self.doc)

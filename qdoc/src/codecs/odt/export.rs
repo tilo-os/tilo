@@ -315,6 +315,28 @@ fn comment_ends_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
     v
 }
 
+/// The bookmark names whose anchoring `bookmark` mark starts exactly at `i` / ends
+/// exactly at `i` (i.e. `mark.end == i`), sorted for deterministic output.
+fn bookmark_starts_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
+    let mut v: Vec<String> = marks
+        .iter()
+        .filter(|m| m.name == crate::schema::MARK_BOOKMARK && m.start == i)
+        .filter_map(|m| m.value.as_str().map(|s| s.to_string()))
+        .collect();
+    v.sort();
+    v
+}
+
+fn bookmark_ends_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
+    let mut v: Vec<String> = marks
+        .iter()
+        .filter(|m| m.name == crate::schema::MARK_BOOKMARK && m.end == i)
+        .filter_map(|m| m.value.as_str().map(|s| s.to_string()))
+        .collect();
+    v.sort();
+    v
+}
+
 /// The tracked-change ids (any `ins`/`del` mark) starting / ending exactly at `i`,
 /// sorted for deterministic output.
 fn change_starts_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
@@ -389,6 +411,28 @@ fn render_inline(
             }
         }
     };
+    // Emit `text:bookmark-end`/`text:bookmark-start` markers at `i`, closing spans/link
+    // first so each marker is a clean sibling of the surrounding inline content (ODF
+    // bookmark markers are empty elements that sit between runs).
+    let emit_bookmark_boundaries = |out: &mut String, open: &mut Vec<String>, cur_link: &mut Option<String>, i: usize| {
+        let ends = bookmark_ends_at(marks, i);
+        let starts = bookmark_starts_at(marks, i);
+        if ends.is_empty() && starts.is_empty() {
+            return;
+        }
+        close_spans(out, open);
+        if cur_link.is_some() {
+            out.push_str("</text:a>");
+            *cur_link = None;
+        }
+        // Ends before starts so an adjacent bookmark's end closes before the next opens.
+        for name in ends {
+            out.push_str(&format!(r#"<text:bookmark-end text:name="{}"/>"#, escape_attr(&name)));
+        }
+        for name in starts {
+            out.push_str(&format!(r#"<text:bookmark-start text:name="{}"/>"#, escape_attr(&name)));
+        }
+    };
     // Emit tracked-change `text:change-end`/`text:change-start` markers at `i`, closing
     // spans/link first so each marker is a clean sibling of the surrounding content.
     let emit_change_boundaries = |out: &mut String, open: &mut Vec<String>, cur_link: &mut Option<String>, i: usize| {
@@ -412,6 +456,7 @@ fn render_inline(
     };
     for i in 0..n {
         emit_comment_boundaries(&mut out, &mut open, &mut cur_link, i);
+        emit_bookmark_boundaries(&mut out, &mut open, &mut cur_link, i);
         emit_change_boundaries(&mut out, &mut open, &mut cur_link, i);
         let link = link_at(marks, i);
         if link != cur_link {
@@ -461,6 +506,11 @@ fn render_inline(
     close_spans(&mut out, &mut open);
     if cur_link.is_some() {
         out.push_str("</text:a>");
+    }
+    // A bookmark ending exactly at the block's end (`mark.end == n`) emits its
+    // `text:bookmark-end` after the last char.
+    for name in bookmark_ends_at(marks, n) {
+        out.push_str(&format!(r#"<text:bookmark-end text:name="{}"/>"#, escape_attr(&name)));
     }
     // A comment ending exactly at the block's end (`mark.end == n`) emits its
     // annotation-end after the last char.
@@ -1204,6 +1254,47 @@ mod tests {
         let link = b.marks.iter().find(|m| m.name == "link").expect("link survives round-trip");
         assert_eq!((link.start, link.end), (3, 7), "{:?}", b.marks);
         assert_eq!(link.value, MarkValue::Str("https://qos.dev/".into()));
+    }
+
+    #[test]
+    fn bookmark_and_cross_reference_roundtrip() {
+        use crate::document::MarkValue;
+        // A bookmark "intro" over a word + a cross-reference pointing at it must survive
+        // an `.odt` export+import with both names and ranges intact.
+        let mut d = Document::new();
+        let target = d.insert_block(None, "paragraph");
+        d.splice_text(&target, 0, 0, "the intro section");
+        d.add_bookmark(&target, 4, 9, "intro"); // over "intro"
+        let src = d.insert_block(Some(&target), "paragraph");
+        d.splice_text(&src, 0, 0, "see above");
+        d.add_cross_ref(&src, 4, 9, "intro"); // "above" → #intro
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let c = OdtContainer::read(&exported).unwrap();
+        let content = std::str::from_utf8(c.get("content.xml").unwrap()).unwrap();
+        // Bookmark markers + the cross-ref `text:a` href appear in the markup.
+        assert!(content.contains(r#"<text:bookmark-start text:name="intro"/>"#), "bookmark-start emitted: {content}");
+        assert!(content.contains(r#"<text:bookmark-end text:name="intro"/>"#), "bookmark-end emitted: {content}");
+        assert!(content.contains(r##"<text:a xlink:href="#intro">above</text:a>"##), "cross-ref text:a emitted: {content}");
+
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+        // The bookmark survives with its name + range.
+        assert_eq!(snap.bookmarks.len(), 1, "one bookmark survives: {:?}", snap.bookmarks);
+        let bm = &snap.bookmarks[0];
+        assert_eq!(bm.name, "intro");
+        assert_eq!((bm.range.1, bm.range.2), (4, 9), "bookmark range over 'intro': {:?}", bm);
+        // The bookmarked block carries the `bookmark` mark.
+        let tb = snap.blocks.iter().find(|b| b.text == "the intro section").unwrap();
+        let mark = tb.marks.iter().find(|m| m.name == crate::schema::MARK_BOOKMARK).expect("bookmark mark present");
+        assert_eq!((mark.start, mark.end), (4, 9));
+        assert_eq!(mark.value, MarkValue::Str("intro".into()));
+        // The cross-reference survives as a `link` mark valued `#intro`.
+        let sb = snap.blocks.iter().find(|b| b.text == "see above").unwrap();
+        let link = sb.marks.iter().find(|m| m.name == "link").expect("cross-ref link mark present");
+        assert_eq!((link.start, link.end), (4, 9), "cross-ref over 'above': {:?}", sb.marks);
+        assert_eq!(link.value, MarkValue::Str("#intro".into()));
     }
 
     #[test]
