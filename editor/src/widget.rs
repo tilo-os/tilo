@@ -129,6 +129,15 @@ const STYLE_PALETTE: [[u8; 3]; 7] = [
     [0xb5, 0x7e, 0x10], // amber
     [0x7a, 0x3a, 0xa0], // purple
 ];
+/// A small palette of highlight (text background) colours for the swatch row.
+/// Familiar word-processor highlighter hues (yellow, green, cyan, pink, orange).
+const HIGHLIGHT_PALETTE: [[u8; 3]; 5] = [
+    [0xff, 0xf3, 0x5c], // yellow
+    [0x9b, 0xf0, 0x6a], // green
+    [0x6c, 0xe0, 0xf0], // cyan
+    [0xff, 0x9a, 0xd0], // pink
+    [0xff, 0xb1, 0x4d], // orange
+];
 /// Accent for active layout guides + handles.
 const GUIDE: Color = Color::from_rgb8(0x46, 0x78, 0xe6);
 /// Inactive guide line (semi-transparent accent).
@@ -154,6 +163,15 @@ enum ToolAction {
     /// Apply a per-run text colour (the toolbar swatch row). `None` is the
     /// neutral/default — it clears any `color` run mark over the selection.
     TextColor(Option<[u8; 3]>),
+    /// Apply a per-run highlight / background colour (the highlight swatch row).
+    /// `None` is the neutral/default — it clears any `highlight` run mark.
+    Highlight(Option<[u8; 3]>),
+    /// Toggle superscript (`super` run mark) over the selection; clears `sub`.
+    Super,
+    /// Toggle subscript (`sub` run mark) over the selection; clears `super`.
+    Sub,
+    /// Cycle the focused paragraph's line spacing (1.0 → 1.15 → 1.5 → 2.0 → 1.0).
+    LineSpacing,
     SizeUp,
     SizeDown,
     /// The size stepper's read-only value chip (between − and +). Display-only.
@@ -494,6 +512,28 @@ fn char_color(i: usize, marks: &[MarkSpan]) -> Option<[u8; 3]> {
         .and_then(parse_hex_rgb)
 }
 
+/// The highlight (background) colour covering char `i`: a `highlight` mark's
+/// `#RRGGBB`, if any. Maps to [`RichSpan::background`] (a band behind the run).
+fn char_highlight(i: usize, marks: &[MarkSpan]) -> Option<[u8; 3]> {
+    marks
+        .iter()
+        .find(|m| m.name == "highlight" && i >= m.start && i < m.end)
+        .and_then(|m| m.value.as_str())
+        .and_then(parse_hex_rgb)
+}
+
+/// The baseline shift covering char `i`: `super`/`sub` boolean run marks map to
+/// [`ui::richtext::BaselineShift`] (`super` wins if both are somehow present).
+fn char_baseline(i: usize, marks: &[MarkSpan]) -> ui::richtext::BaselineShift {
+    if char_has(i, marks, "super") {
+        ui::richtext::BaselineShift::Super
+    } else if char_has(i, marks, "sub") {
+        ui::richtext::BaselineShift::Sub
+    } else {
+        ui::richtext::BaselineShift::None
+    }
+}
+
 fn parse_hex_rgb(s: &str) -> Option<[u8; 3]> {
     let h = s.strip_prefix('#').unwrap_or(s);
     if h.len() != 6 {
@@ -511,6 +551,41 @@ fn parse_hex_rgb(s: &str) -> Option<[u8; 3]> {
 /// page even when it would otherwise fit on the current one.
 fn block_page_break_before(b: &BlockView) -> bool {
     matches!(b.attrs.get("page_break_before"), Some(AttrVal::Bool(true)))
+}
+
+/// A block's line-spacing multiplier (the `line_spacing` Float attr), defaulting
+/// to `1.0` when unset. Fed to `RichTextLayout::shape` as `line_height_mult`,
+/// scaling the line advance (1.5 = one-and-a-half, 2.0 = double).
+fn block_line_spacing(b: &BlockView) -> f32 {
+    match b.attrs.get("line_spacing") {
+        Some(AttrVal::Float(f)) if *f > 0.0 => *f as f32,
+        Some(AttrVal::Int(n)) if *n > 0 => *n as f32,
+        _ => 1.0,
+    }
+}
+
+/// The cycle of presented line-spacing multipliers.
+const LINE_SPACINGS: [f64; 4] = [1.0, 1.15, 1.5, 2.0];
+
+/// Next multiplier in the line-spacing cycle (wraps 2.0 → 1.0). The nearest
+/// preset to `cur` is the anchor, so an imported odd value still cycles cleanly.
+fn next_line_spacing(cur: f64) -> f64 {
+    let idx = LINE_SPACINGS
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| (**a - cur).abs().partial_cmp(&(**b - cur).abs()).unwrap())
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    LINE_SPACINGS[(idx + 1) % LINE_SPACINGS.len()]
+}
+
+/// A short label for a line-spacing multiplier (the toolbar chip text).
+fn line_spacing_label(mult: f64) -> String {
+    if (mult - mult.round()).abs() < 0.005 {
+        format!("⇕ {}", mult.round() as i64)
+    } else {
+        format!("⇕ {mult:.2}")
+    }
 }
 
 /// Pick a block's horizontal alignment from its `align` attribute.
@@ -557,7 +632,8 @@ fn block_style_key(b: &BlockView) -> String {
 fn block_runs(b: &BlockView) -> (Vec<RichSpan>, Vec<(usize, usize)>, Vec<(usize, usize)>) {
     let chars: Vec<char> = b.text.chars().collect();
     let n = chars.len();
-    // Run key: f32 size as bits so the tuple is comparable.
+    // Run key: f32 size as bits so the tuple is comparable. Highlight (background)
+    // and super/subscript baseline join the key so a change in either splits runs.
     let key = |i: usize| {
         (
             char_has(i, &b.marks, "strong"),
@@ -565,6 +641,8 @@ fn block_runs(b: &BlockView) -> (Vec<RichSpan>, Vec<(usize, usize)>, Vec<(usize,
             char_font_size(i, &b.marks).map(f32::to_bits),
             char_font_family(i, &b.marks),
             char_color(i, &b.marks),
+            char_highlight(i, &b.marks),
+            char_baseline(i, &b.marks),
         )
     };
     let mut runs = Vec::new();
@@ -575,7 +653,7 @@ fn block_runs(b: &BlockView) -> (Vec<RichSpan>, Vec<(usize, usize)>, Vec<(usize,
         while j < n && key(j) == k {
             j += 1;
         }
-        let (bold, italic, size_bits, family, color) = k;
+        let (bold, italic, size_bits, family, color, background, baseline) = k;
         runs.push(RichSpan {
             text: chars[i..j].iter().collect(),
             bold,
@@ -583,8 +661,8 @@ fn block_runs(b: &BlockView) -> (Vec<RichSpan>, Vec<(usize, usize)>, Vec<(usize,
             size: size_bits.map(f32::from_bits),
             family,
             color,
-            background: None,
-            baseline: ui::richtext::BaselineShift::None,
+            background,
+            baseline,
         });
         i = j;
     }
@@ -646,6 +724,8 @@ fn block_runs_markup(b: &BlockView, show_markup: bool) -> (Vec<RichSpan>, Vec<(u
             char_font_size(i, &b.marks).map(f32::to_bits),
             char_font_family(i, &b.marks),
             track_color(i).or_else(|| char_color(i, &b.marks)),
+            char_highlight(i, &b.marks),
+            char_baseline(i, &b.marks),
         )
     };
     let mut runs = Vec::new();
@@ -656,7 +736,7 @@ fn block_runs_markup(b: &BlockView, show_markup: bool) -> (Vec<RichSpan>, Vec<(u
         while j < n && key(j) == k {
             j += 1;
         }
-        let (bold, italic, size_bits, family, color) = k;
+        let (bold, italic, size_bits, family, color, background, baseline) = k;
         runs.push(RichSpan {
             text: chars[i..j].iter().collect(),
             bold,
@@ -664,8 +744,8 @@ fn block_runs_markup(b: &BlockView, show_markup: bool) -> (Vec<RichSpan>, Vec<(u
             size: size_bits.map(f32::from_bits),
             family,
             color,
-            background: None,
-            baseline: ui::richtext::BaselineShift::None,
+            background,
+            baseline,
         });
         i = j;
     }
@@ -878,6 +958,7 @@ fn shape_key(
     wrap_w: f32,
     align: TextAlign,
     family: FontFamily,
+    line_height_mult: f32,
 ) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -889,6 +970,10 @@ fn shape_key(
         s.size.map(f32::to_bits).hash(&mut h);
         s.family.map(|f| f as u8).hash(&mut h);
         s.color.hash(&mut h);
+        // Highlight band + baseline shift change the shaped layout (the latter
+        // shapes super/subscript runs at a reduced size), so fold them in.
+        s.background.hash(&mut h);
+        (s.baseline as u8).hash(&mut h);
     }
     underlines.hash(&mut h);
     strikes.hash(&mut h);
@@ -897,6 +982,7 @@ fn shape_key(
     wrap_w.to_bits().hash(&mut h);
     (align as u8).hash(&mut h);
     (family as u8).hash(&mut h);
+    line_height_mult.to_bits().hash(&mut h);
     h.finish()
 }
 
@@ -2302,7 +2388,7 @@ impl Widget for WordProcessorWidget {
                             let (runs, underlines, strikes) = block_runs_markup(cell, self.show_markup);
                             let wrap_w = (col_w - 2.0 * cell_pad).max(24.0) as f32;
                             let align = block_align(cell, TextAlign::Left);
-                            let key = shape_key(&runs, &underlines, &strikes, false, 16.0, wrap_w, align, FontFamily::Sans);
+                            let key = shape_key(&runs, &underlines, &strikes, false, 16.0, wrap_w, align, FontFamily::Sans, 1.0);
                             let layout = match old_cache.remove(&cell.id) {
                                 Some((k, lay)) if k == key => {
                                     self.dbg_layout_hits += 1;
@@ -2449,9 +2535,13 @@ impl Widget for WordProcessorWidget {
                 let (runs, underlines, strikes) = block_runs_markup(b, self.show_markup);
                 let align = block_align(b, style_align(&st.align));
                 let family = parse_font(&st.font);
-                let key = shape_key(&runs, &underlines, &strikes, base_bold, size, wrap_w, align, family);
+                // The paragraph's line-spacing multiplier (1.0 = single) scales the
+                // shaped line advance, so it is part of the shape key.
+                let line_mult = block_line_spacing(b);
+                let key = shape_key(&runs, &underlines, &strikes, base_bold, size, wrap_w, align, family, line_mult);
                 // Reuse the shaped layout if nothing affecting shaping changed
-                // (text, marks, resolved style, or wrap width), else re-shape.
+                // (text, marks, resolved style, wrap width, or line spacing), else
+                // re-shape.
                 let layout = match old_cache.remove(&b.id) {
                     Some((k, lay)) if k == key => {
                         self.dbg_layout_hits += 1;
@@ -2468,7 +2558,8 @@ impl Widget for WordProcessorWidget {
                             align,
                             family,
                             underlines,
-                            strikes, 1.0
+                            strikes,
+                            line_mult,
                         )
                     }
                 };
@@ -3339,6 +3430,10 @@ impl Widget for WordProcessorWidget {
                             "b" => self.inner.toggle_mark(state, "strong"),
                             "i" => self.inner.toggle_mark(state, "em"),
                             "u" => self.inner.toggle_mark(state, "underline"),
+                            // Ctrl+. → superscript, Ctrl+, → subscript (mutually
+                            // exclusive; matches common word-processor bindings).
+                            "." | ">" => self.inner.toggle_super(state),
+                            "," | "<" => self.inner.toggle_sub(state),
                             "c" => self.clipboard_copy(state),
                             "x" => {
                                 self.clipboard_copy(state);
@@ -3605,6 +3700,15 @@ impl WordProcessorWidget {
             // The neutral swatch clears any per-run colour, reverting to the
             // block's style ink.
             ToolAction::TextColor(None) => self.inner.clear_mark(state, "color"),
+            ToolAction::Highlight(Some(c)) => self.inner.set_highlight(state, &crate::styles::color_to_hex(c)),
+            // The "no highlight" swatch clears any per-run highlight band.
+            ToolAction::Highlight(None) => self.inner.clear_mark(state, "highlight"),
+            ToolAction::Super => self.inner.toggle_super(state),
+            ToolAction::Sub => self.inner.toggle_sub(state),
+            ToolAction::LineSpacing => {
+                let next = next_line_spacing(self.inner.caret_line_spacing(state));
+                self.inner.set_line_spacing(state, next);
+            }
             ToolAction::FontCycle => {
                 let name = match self.current_font().next() {
                     FontFamily::Sans => "sans",
@@ -3773,6 +3877,23 @@ impl WordProcessorWidget {
                 _ => None,
             })
             .unwrap_or_else(|| "left".into())
+    }
+
+    /// The caret block's line-spacing multiplier (from the cached blocks), or 1.0.
+    /// Drives the toolbar chip label.
+    fn current_line_spacing(&self) -> f64 {
+        self.blocks
+            .iter()
+            .find(|b| b.id == self.inner.caret.block)
+            .map(|b| block_line_spacing(b) as f64)
+            .unwrap_or(1.0)
+    }
+
+    /// The per-run `highlight` colour covering the font-probe position (just left
+    /// of the caret), if any — used to ring the active highlight swatch.
+    fn current_highlight_color(&self) -> Option<[u8; 3]> {
+        let (b, pos) = self.font_probe()?;
+        char_highlight(pos, &b.marks)
     }
 
     fn clipboard_copy(&mut self, state: &AutoCommit) {
@@ -4048,9 +4169,12 @@ impl WordProcessorWidget {
         let italic_a = self.mark_active_in_selection("em");
         let under_a = self.mark_active_in_selection("underline");
         let strike_a = self.mark_active_in_selection("strike");
+        let super_a = self.mark_active_in_selection("super");
+        let sub_a = self.mark_active_in_selection("sub");
         let (kind, level) = self.current_block_style();
         let align = self.current_align();
         let font_label = self.current_font().label();
+        let line_label = line_spacing_label(self.current_line_spacing());
 
         // Build the toolbar spec; the ui::chrome toolbar component owns the look
         // and hands back each button's clickable rect (zipped to its action).
@@ -4061,7 +4185,7 @@ impl WordProcessorWidget {
             _ => LabelCue::None,
         };
         let group_start = |a: ToolAction| {
-            matches!(a, ToolAction::H1 | ToolAction::AlignLeft | ToolAction::FontCycle | ToolAction::InsertTable | ToolAction::InsertImage | ToolAction::TableRowAdd | ToolAction::ToggleStyles)
+            matches!(a, ToolAction::H1 | ToolAction::AlignLeft | ToolAction::LineSpacing | ToolAction::FontCycle | ToolAction::InsertTable | ToolAction::InsertImage | ToolAction::TableRowAdd | ToolAction::ToggleStyles)
         };
         let panel_open = self.styles_panel_open;
         let mut specs: Vec<(ToolAction, ToolbarItem)> = Vec::new();
@@ -4072,6 +4196,8 @@ impl WordProcessorWidget {
         add(ToolAction::Italic, "I", 30.0, italic_a);
         add(ToolAction::Underline, "U", 32.0, under_a);
         add(ToolAction::Strike, "S", 30.0, strike_a);
+        add(ToolAction::Super, "x²", 34.0, super_a);
+        add(ToolAction::Sub, "x₂", 34.0, sub_a);
         add(ToolAction::H1, "H1", 42.0, kind == "heading" && level == Some(1));
         add(ToolAction::H2, "H2", 42.0, kind == "heading" && level == Some(2));
         add(ToolAction::Body, "Body", 58.0, kind == "paragraph");
@@ -4080,6 +4206,7 @@ impl WordProcessorWidget {
         add(ToolAction::AlignCenter, "C", 30.0, align == "center");
         add(ToolAction::AlignRight, "R", 30.0, align == "right");
         add(ToolAction::AlignJustify, "J", 30.0, align == "justify");
+        add(ToolAction::LineSpacing, &line_label, 54.0, false);
         add(ToolAction::FontCycle, font_label, 58.0, false);
         // Size stepper: − / current-value / +. The value chip is display-only.
         add(ToolAction::SizeDown, "A−", 34.0, false);
@@ -4132,7 +4259,10 @@ impl WordProcessorWidget {
         // run colour.
         let last_row_y = tb.y0 + (rows.len() as f64 - 1.0) * row_h;
         let swatch_band = Rect::new(tb.x0, last_row_y, tb.x1, last_row_y + row_h);
-        self.draw_color_swatches(scene, transform, tr, swatch_band);
+        let text_left = self.draw_color_swatches(scene, transform, tr, swatch_band);
+        // Highlight swatch strip, packed just left of the text-colour strip.
+        let hl_band = Rect::new(tb.x0, last_row_y, (text_left - 10.0).max(tb.x0), last_row_y + row_h);
+        self.draw_highlight_swatches(scene, transform, tr, hl_band);
 
         // Subtle hover highlight over the button under the pointer.
         if let Some(hr) = self.hover_tool {
@@ -4158,8 +4288,10 @@ impl WordProcessorWidget {
         let (kind, _) = self.current_block_style();
         let mut w = vec![
             34.0, 30.0, 32.0, 30.0, // B I U S
+            34.0, 34.0, // x² x₂
             42.0, 42.0, 58.0, 66.0, // H1 H2 Body • List
             30.0, 30.0, 30.0, 30.0, // L C R J
+            54.0, // line spacing
             58.0, // font
             34.0, 40.0, 34.0, // A− value A+
         ];
@@ -4179,8 +4311,10 @@ impl WordProcessorWidget {
         // Indices that start a group in `draw_toolbar` (see `group_start`).
         let mut g = vec![
             false, false, false, false, // B I U S
+            false, false, // x² x₂
             true, false, false, false, // H1(group) H2 Body • List
             true, false, false, false, // L(group) C R J
+            true, // line spacing(group)
             true, // font(group)
             false, false, false, // size stepper
         ];
@@ -4199,7 +4333,7 @@ impl WordProcessorWidget {
     /// The current run's colour gets a white selection ring. The first swatch is
     /// the neutral/default (an `A` glyph on the surface colour) — it clears any
     /// per-run `color` mark.
-    fn draw_color_swatches(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, tb: Rect) {
+    fn draw_color_swatches(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, tb: Rect) -> f64 {
         let cur = self.current_text_color();
         let cy = (tb.y0 + tb.y1) / 2.0;
         let sw = 20.0;
@@ -4207,7 +4341,8 @@ impl WordProcessorWidget {
         let n = STYLE_PALETTE.len() + 1; // +1 for the neutral default
         let total = n as f64 * sw + (n as f64 - 1.0) * gap;
         // Right-align the strip, leaving a small margin from the toolbar's edge.
-        let mut x = (tb.x1 - 14.0 - total).max(tb.x0 + 14.0);
+        let strip_left = (tb.x1 - 14.0 - total).max(tb.x0 + 14.0);
+        let mut x = strip_left;
         let y0 = cy - sw / 2.0;
 
         // Neutral / default swatch: surface-toned square with an "A", clears colour.
@@ -4228,6 +4363,50 @@ impl WordProcessorWidget {
                 scene.stroke(&vello::kurbo::Stroke::new(2.0), transform, Color::WHITE, None, &vello::kurbo::RoundedRect::from_rect(r, 4.0));
             }
             self.toolbar.push((ToolAction::TextColor(Some(*c)), r));
+            x += sw + gap;
+        }
+        strip_left
+    }
+
+    /// Draw the highlight (text-background) swatch row, right-aligned within
+    /// `tb`, and register each swatch as a `Highlight` click target. The leading
+    /// neutral swatch (a crossed marker on the surface tone) clears any highlight.
+    /// The current run's highlight gets a white selection ring. Skips drawing if
+    /// the band is too narrow (the toolbar is tightly packed).
+    fn draw_highlight_swatches(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, tb: Rect) {
+        let cur = self.current_highlight_color();
+        let cy = (tb.y0 + tb.y1) / 2.0;
+        let sw = 20.0;
+        let gap = 5.0;
+        let n = HIGHLIGHT_PALETTE.len() + 1; // +1 for the neutral "no highlight"
+        let total = n as f64 * sw + (n as f64 - 1.0) * gap;
+        // Not enough room beside the text-colour strip: skip (the buttons + Styles
+        // panel remain the path to highlight). Avoids overlapping the chrome.
+        if tb.width() < total + 14.0 {
+            return;
+        }
+        let strip_left = (tb.x1 - total).max(tb.x0 + 4.0);
+        let mut x = strip_left;
+        let y0 = cy - sw / 2.0;
+
+        // Neutral / "no highlight" swatch: surface-toned square with a "▱" hint.
+        let nr = Rect::new(x, y0, x + sw, y0 + sw);
+        scene.fill(Fill::NonZero, transform, Color::from_rgb8(0x3a, 0x3d, 0x46), None, &vello::kurbo::RoundedRect::from_rect(nr, 4.0));
+        if cur.is_none() {
+            scene.stroke(&vello::kurbo::Stroke::new(2.0), transform, Color::WHITE, None, &vello::kurbo::RoundedRect::from_rect(nr, 4.0));
+        }
+        tr.draw_text(scene, "▱", 12.0, Color::from_rgb8(0xd6, 0xd8, 0xde), transform * Affine::translate((x + 4.0, y0 + 2.5)), None);
+        self.toolbar.push((ToolAction::Highlight(None), nr));
+        x += sw + gap;
+
+        for c in HIGHLIGHT_PALETTE.iter() {
+            let r = Rect::new(x, y0, x + sw, y0 + sw);
+            let col = Color::from_rgb8(c[0], c[1], c[2]);
+            scene.fill(Fill::NonZero, transform, col, None, &vello::kurbo::RoundedRect::from_rect(r, 4.0));
+            if cur == Some(*c) {
+                scene.stroke(&vello::kurbo::Stroke::new(2.0), transform, Color::WHITE, None, &vello::kurbo::RoundedRect::from_rect(r, 4.0));
+            }
+            self.toolbar.push((ToolAction::Highlight(Some(*c)), r));
             x += sw + gap;
         }
     }
@@ -4298,6 +4477,82 @@ mod tests {
         wp.model_mut().insert_str(&mut state.doc, "World");
         pipeline_draw(&mut wp, &mut state, 1000, 700);
         assert_eq!(wp.laid.len(), 2, "draw laid out both paragraphs");
+    }
+
+    /// Select `[start, end)` chars of the (single) caret block.
+    fn select_range(wp: &mut WordProcessorWidget, start: usize, end: usize) {
+        let block = wp.model().caret.block.clone();
+        wp.model_mut().set_caret(Caret { block: block.clone(), offset: start });
+        wp.model_mut().set_anchor();
+        wp.model_mut().set_caret(Caret { block, offset: end });
+    }
+
+    #[test]
+    fn highlight_mark_yields_background_span() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "hello world");
+        select_range(&mut wp, 0, 5);
+        wp.model_mut().set_highlight(&mut state.doc, "#fff35c");
+        wp.refresh_blocks(&state.doc);
+        let b = wp.blocks.iter().find(|b| b.text == "hello world").expect("block present");
+        let (runs, _, _) = block_runs(b);
+        // The first run ("hello") carries the highlight as a background band.
+        let first = &runs[0];
+        assert_eq!(first.text, "hello");
+        assert_eq!(first.background, Some([0xff, 0xf3, 0x5c]), "highlight maps to RichSpan.background");
+        // The tail run (" world") has no highlight.
+        assert!(runs.iter().any(|r| r.text.contains("world") && r.background.is_none()), "unhighlighted tail has no band");
+    }
+
+    #[test]
+    fn super_mark_yields_super_baseline() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "x2");
+        select_range(&mut wp, 1, 2); // the "2"
+        wp.model_mut().toggle_super(&mut state.doc);
+        wp.refresh_blocks(&state.doc);
+        let b = wp.blocks.iter().find(|b| b.text == "x2").expect("block present");
+        let (runs, _, _) = block_runs(b);
+        let sup = runs.iter().find(|r| r.text == "2").expect("the '2' run");
+        assert_eq!(sup.baseline, ui::richtext::BaselineShift::Super, "super mark maps to BaselineShift::Super");
+        let base = runs.iter().find(|r| r.text == "x").expect("the 'x' run");
+        assert_eq!(base.baseline, ui::richtext::BaselineShift::None, "unmarked run stays on the baseline");
+    }
+
+    #[test]
+    fn line_spacing_2x_shapes_a_taller_layout() {
+        // A wrapped multi-line paragraph: single vs double spacing on the SAME
+        // production path (`block_line_spacing` → `RichTextLayout::shape`'s
+        // line_height_mult). Double spacing must produce a strictly taller layout.
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        let long = "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua";
+        wp.model_mut().insert_str(&mut state.doc, long);
+
+        // Single-spaced layout via the production draw pass.
+        pipeline_draw(&mut wp, &mut state, 700, 700);
+        let single_h = wp.laid.iter().find(|l| l.text == long).map(|l| l.height).expect("laid block");
+        assert_eq!(block_line_spacing(wp.blocks.iter().find(|b| b.text == long).unwrap()), 1.0, "default 1.0");
+
+        // Now set double spacing and redraw on the same path.
+        wp.model_mut().set_line_spacing(&mut state.doc, 2.0);
+        wp.refresh_blocks(&state.doc);
+        assert_eq!(
+            block_line_spacing(wp.blocks.iter().find(|b| b.text == long).unwrap()),
+            2.0,
+            "line_spacing=2.0 read from the block attr the layout pass uses"
+        );
+        pipeline_draw(&mut wp, &mut state, 700, 700);
+        let double_h = wp.laid.iter().find(|l| l.text == long).map(|l| l.height).expect("laid block");
+        assert!(
+            double_h > single_h * 1.5,
+            "double line spacing yields a much taller layout: single={single_h}, double={double_h}"
+        );
     }
 
     #[test]
