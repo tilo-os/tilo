@@ -804,6 +804,24 @@ impl Widget for RichTextLine {
     fn is_focused(&self) -> bool {
         self.inner.is_focused()
     }
+
+    /// An editable single line of rich text reports [`Role::TextInput`]
+    /// with `multiline` cleared (a block editor stacks many of these to
+    /// form a document). The line's plain text is the accessible value;
+    /// it is never a secret field, so the value is always surfaced.
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        Some(
+            AccessNode::new(Role::TextInput)
+                .with_value(self.value().to_string())
+                .with_state(AccessState {
+                    focusable: self.is_focusable(),
+                    focused: self.is_focused(),
+                    multiline: false,
+                    ..Default::default()
+                }),
+        )
+    }
 }
 
 /// Diff `old` and `new` and return `(at, inserted, removed)` where
@@ -1084,6 +1102,27 @@ mod tests {
         assert_eq!(l.value(), "hello");
         assert!(l.cursor_at_end());
         assert!(!l.cursor_at_start());
+    }
+
+    #[test]
+    fn accessibility_reports_single_line_text_input_with_value() {
+        use crate::a11y::Role;
+        let l = RichTextLine::new().with_text("hello world");
+        let node = Widget::accessibility(&l).expect("editable line is a text input");
+        assert_eq!(node.role, Role::TextInput);
+        assert_eq!(node.value.as_deref(), Some("hello world"));
+        assert!(!node.state.multiline, "a single line is not multiline");
+        assert!(node.state.focusable);
+        assert!(!node.state.focused, "fresh line is not focused");
+        assert!(!node.state.protected, "block text is never a secret field");
+    }
+
+    #[test]
+    fn accessibility_focus_tracks_inner_input() {
+        let mut l = RichTextLine::new().with_text("x");
+        Widget::set_focus(&mut l, true);
+        let node = Widget::accessibility(&l).unwrap();
+        assert!(node.state.focused);
     }
 
     #[test]

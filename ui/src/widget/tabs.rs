@@ -1839,6 +1839,31 @@ impl Widget for TabBar {
     }
     fn name(&self) -> &str { "TabBar" }
     fn test_id(&self) -> Option<&str> { Some("tabs") }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        // The bar maps to an AT tablist. Individual tabs are `TabDescriptor`
+        // data, not separate Widget children, so the bar is the single
+        // accessible node and we expose the *active* tab's title as `value`
+        // so an AT announces the current tab. Titles are runtime strings, not
+        // FTL keys, so no `i18n!` wrap. No intrinsic label → name None.
+        let value = self
+            .tabs
+            .iter()
+            .find(|t| t.id == self.active_id)
+            .map(|t| t.title.clone());
+        Some(
+            AccessNode::new(Role::TabBar)
+                .with_optional_value(value)
+                .with_state(AccessState {
+                    focusable: self.is_focusable(),
+                    focused: self.is_focused(),
+                    disabled: !self.is_enabled(),
+                    ..Default::default()
+                }),
+        )
+    }
+
     fn get_rect(&self) -> Rect { self.rect }
     fn wants_pointer_capture(&self) -> bool { self.press_origin.is_some() || self.pending_drag.is_some() }
     fn accepts_drop(&self, payload: &DragPayload) -> bool { matches!(payload, DragPayload::Tab { .. }) }
@@ -3809,5 +3834,28 @@ mod tests {
     fn tab_bar_test_id_returns_tabs() {
         let bar = TabBar::new("grp", vec![TabDescriptor::new(1, "a")], 1);
         assert_eq!(Widget::test_id(&bar), Some("tabs"));
+    }
+
+    #[test]
+    fn accessibility_reports_tabbar_role_and_active_title() {
+        use crate::a11y::Role;
+        // `bar()` builds tabs A/B/C with active_id = 1 ("A").
+        let b = bar();
+        let node = Widget::accessibility(&b).expect("tab bar is not presentational");
+        assert_eq!(node.role, Role::TabBar);
+        assert_eq!(node.name, None, "the bar has no intrinsic label");
+        assert_eq!(node.value.as_deref(), Some("A"), "value is the active tab's title");
+        // Focus state is DERIVED from the widget's own accessors, so it must
+        // mirror them rather than assume a value.
+        assert_eq!(node.state.focusable, Widget::is_focusable(&b));
+        assert_eq!(node.state.disabled, !Widget::is_enabled(&b));
+    }
+
+    #[test]
+    fn accessibility_value_follows_active_tab() {
+        let mut b = bar();
+        b.set_active(3); // "C"
+        let node = Widget::accessibility(&b).unwrap();
+        assert_eq!(node.value.as_deref(), Some("C"), "value tracks the active tab");
     }
 }

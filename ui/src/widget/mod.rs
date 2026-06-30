@@ -95,6 +95,34 @@ pub trait Widget {
     /// in-process channel feeds the same nodes to the built-in screen reader.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> { None }
 
+    /// Perform an accessibility [`Action`](crate::a11y::Action) requested by an
+    /// assistive technology (Orca, the built-in reader) or voice control, on
+    /// THIS widget. Like [`handle_event`](Widget::handle_event) it may mutate
+    /// the CRDT directly (e.g. `SetValue` splices into an Automerge `Text`).
+    ///
+    /// Returns `true` if the widget consumed the action. The **default
+    /// returns `false`** ("not handled here") so the host
+    /// ([`crate::app::App`]) can fall back to its generic dispatch —
+    /// for [`Action::Focus`](crate::a11y::Action::Focus) it moves keyboard
+    /// focus to the node, and for [`Action::Activate`](crate::a11y::Action::Activate)
+    /// it synthesises a click at the widget's centre through the same
+    /// [`UserEvent::Click`](crate::app::UserEvent::Click) path a real pointer
+    /// takes. Widgets that own richer semantics (a slider's increment/decrement,
+    /// a combo box's expand/collapse, a text field's set-value/set-selection)
+    /// override this to handle those verbs precisely.
+    ///
+    /// `state`/`path` are the same CRDT handles passed to `handle_event`, so a
+    /// widget can write its mutation exactly as it would for a keyboard or
+    /// pointer event.
+    fn perform_action(
+        &mut self,
+        _action: &crate::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        false
+    }
+
     /// Whether this widget is interactive. The default is `true`.
     ///
     /// A disabled widget (`false`) must be skipped by keyboard focus
@@ -313,7 +341,7 @@ mod scrollable;  pub use scrollable::{Scrollable, ScrollAxis};
 mod tile_host;   pub use tile_host::{TileHost, TileContent, AppKind};
 mod app_widget;  pub use app_widget::{AppCommand, AppWidget, IconDescriptor};
 pub mod command_palette;
-pub mod context_menu;
+pub mod context_menu;     pub use context_menu::{ContextMenu, MenuItem};
 pub mod data_table;
 pub mod icon_grid;     pub use icon_grid::{IconGrid, IconGridItem};
 mod window_group;

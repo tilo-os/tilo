@@ -478,6 +478,29 @@ impl<T: 'static> Widget for TreeView<T> {
     fn is_focusable(&self) -> bool { true }
     fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
     fn is_focused(&self) -> bool { self.is_focused }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        // Rows are drawn (not child widgets), so the Tree is the single
+        // accessible container. We surface the *selected* row's label as
+        // `value` so an AT announces the current choice. Labels are runtime
+        // strings (host-provided node names), not FTL keys → no `i18n!` wrap.
+        // No intrinsic label on the tree → name None.
+        let value = self
+            .selected
+            .and_then(|id| Self::find_node(&self.root, id))
+            .map(|n| n.label.clone());
+        Some(
+            AccessNode::new(Role::Tree)
+                .with_optional_value(value)
+                .with_state(AccessState {
+                    focusable: self.is_focusable(),
+                    focused: self.is_focused(),
+                    disabled: !self.is_enabled(),
+                    ..Default::default()
+                }),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -673,5 +696,39 @@ mod tests {
             Some(second_id),
             "ArrowDown must move focus from row 0 to row 1",
         );
+    }
+
+    #[test]
+    fn accessibility_reports_tree_role_and_no_value_when_unselected() {
+        use crate::a11y::Role;
+        let view = TreeView::new(sample_tree());
+        let node = Widget::accessibility(&view).expect("tree is not presentational");
+        assert_eq!(node.role, Role::Tree);
+        assert_eq!(node.name, None, "the tree has no intrinsic label");
+        assert_eq!(node.value, None, "no value until a row is selected");
+        assert!(node.state.focusable);
+        assert!(!node.state.disabled);
+        assert!(!node.state.focused);
+    }
+
+    #[test]
+    fn accessibility_value_is_selected_row_label() {
+        let mut view = TreeView::new(sample_tree());
+        view.toggle_expand(1);
+        view.select(2); // "child1"
+        let node = Widget::accessibility(&view).unwrap();
+        assert_eq!(
+            node.value.as_deref(),
+            Some("child1"),
+            "value is the selected node's label",
+        );
+    }
+
+    #[test]
+    fn accessibility_reflects_focus_state() {
+        let mut view = TreeView::new(sample_tree());
+        view.set_focus(true);
+        let node = Widget::accessibility(&view).unwrap();
+        assert!(node.state.focused, "widget focus surfaces in the access node");
     }
 }

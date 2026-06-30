@@ -653,6 +653,26 @@ impl Widget for TimePicker {
         }
     }
     fn is_focused(&self) -> bool { self.is_focused }
+
+    /// The time picker reports [`Role::ComboBox`] — a selector whose value
+    /// is the chosen time as `HH:MM` (or `HH:MM:SS` when the seconds spinner
+    /// is enabled). The spinners render inline, so `expanded` is left unset.
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        let value = match self.seconds {
+            Some(s) => format!("{:02}:{:02}:{:02}", self.hours, self.minutes, s),
+            None => format!("{:02}:{:02}", self.hours, self.minutes),
+        };
+        Some(
+            AccessNode::new(Role::ComboBox)
+                .with_value(value)
+                .with_state(AccessState {
+                    focusable: self.is_focusable(),
+                    focused: self.is_focused(),
+                    ..Default::default()
+                }),
+        )
+    }
 }
 
 // =====================================================================
@@ -711,6 +731,27 @@ mod tests {
         let root = taffy.new_with_children(Style::default(), &[node]).unwrap();
         taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
         tp.apply_layout(&taffy, node, Point::ZERO);
+    }
+
+    #[test]
+    fn accessibility_reports_combobox_role_and_hhmm_value() {
+        use crate::a11y::Role;
+        let tp = TimePicker::new(9, 5);
+        let node = Widget::accessibility(&tp).expect("time picker is a selector");
+        assert_eq!(node.role, Role::ComboBox);
+        assert_eq!(node.value.as_deref(), Some("09:05"));
+        assert!(node.state.focusable);
+        assert!(!node.state.focused);
+        assert_eq!(node.state.expanded, None, "spinners render inline");
+    }
+
+    #[test]
+    fn accessibility_value_includes_seconds_when_enabled() {
+        let mut tp = TimePicker::new(9, 5).with_seconds(7);
+        Widget::set_focus(&mut tp, true);
+        let node = Widget::accessibility(&tp).unwrap();
+        assert_eq!(node.value.as_deref(), Some("09:05:07"));
+        assert!(node.state.focused);
     }
 
     #[test]

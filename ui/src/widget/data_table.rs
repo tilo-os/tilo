@@ -746,6 +746,39 @@ impl<Row: 'static> Widget for DataTable<Row> {
     fn is_focusable(&self) -> bool { true }
     fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
     fn is_focused(&self) -> bool { self.is_focused }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        // Selection is by display index (indices into `view`); a screen reader
+        // wants something concrete, so surface the primary selected row's
+        // 1-based position out of the visible row count.
+        let value = self.selection.primary().map(|i| {
+            format!("row {} of {}", i + 1, self.view.len())
+        });
+        // Describe the active sort using the column's human header (not its
+        // internal key) so the announcement reads naturally.
+        let description = self.sort_state().map(|(key, ascending)| {
+            let header = self
+                .columns
+                .iter()
+                .find(|c| c.key == key)
+                .map(|c| c.header.as_str())
+                .unwrap_or(key);
+            let dir = if ascending { "ascending" } else { "descending" };
+            format!("sorted by {header} {dir}")
+        });
+        let mut node = AccessNode::new(Role::Table)
+            .with_optional_value(value)
+            .with_state(AccessState {
+                focusable: self.is_focusable(),
+                focused: self.is_focused(),
+                ..Default::default()
+            });
+        if let Some(desc) = description {
+            node = node.with_description(desc);
+        }
+        Some(node)
+    }
 }
 
 fn compute_column_rects<Row>(
@@ -850,6 +883,31 @@ mod tests {
     fn data_table_test_id_returns_data_table() {
         let t = DataTable::<R>::new(sample_cols());
         assert_eq!(Widget::test_id(&t), Some("data_table"));
+    }
+
+    #[test]
+    fn accessibility_reports_table_role_sort_and_selection() {
+        use crate::a11y::Role;
+        let mut t = DataTable::<R>::new(sample_cols()).selectable(true);
+        t.set_rows(rows4());
+        // Active sort surfaces via the column's human header, not its key.
+        t.sort_by_with(|a, b| a.name.cmp(&b.name), "name", true);
+        // Select the second display row.
+        t.selection_mut().select_only(1);
+        let node = Widget::accessibility(&t).expect("table is not presentational");
+        assert_eq!(node.role, Role::Table);
+        assert!(node.state.focusable);
+        assert!(!node.state.focused);
+        assert_eq!(node.value.as_deref(), Some("row 2 of 4"));
+        assert_eq!(node.description.as_deref(), Some("sorted by Name ascending"));
+    }
+
+    #[test]
+    fn accessibility_no_sort_or_selection_omits_value_and_description() {
+        let t = DataTable::<R>::new(sample_cols());
+        let node = Widget::accessibility(&t).unwrap();
+        assert_eq!(node.value, None, "no selection → no value");
+        assert_eq!(node.description, None, "no active sort → no description");
     }
 
     // --- Selection / interaction tests --------------------------------
