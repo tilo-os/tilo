@@ -38,6 +38,7 @@ members = [
     "apps/maps",
     "apps/chat",
     "apps/camera",
+    "apps/permissions",
     "apps/code_editor",
     "apps/git_client",
     "apps/containers",
