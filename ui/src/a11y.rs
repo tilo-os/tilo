@@ -278,6 +278,23 @@ pub enum Action {
     ShowContextMenu,
 }
 
+/// How urgently a [live region](AccessNode::live) announces a change.
+///
+/// A live region narrates its own updates *without moving focus* — a toast
+/// appearing, a status line changing, a progress step. The marker tells the
+/// reader whether an update may wait for a pause in speech or must cut in
+/// immediately. Maps onto ARIA `aria-live="polite"`/`"assertive"` and
+/// AccessKit's live politeness.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Politeness {
+    /// Wait for a natural pause before speaking — the default for unobtrusive
+    /// status updates that shouldn't interrupt what the user is doing.
+    Polite,
+    /// Speak at once, interrupting any in-flight narration — for time-critical
+    /// messages (errors, the toast a user just triggered).
+    Assertive,
+}
+
 /// The per-widget *local* accessibility semantics returned by
 /// [`Widget::accessibility`](crate::widget::Widget::accessibility).
 ///
@@ -300,6 +317,21 @@ pub struct AccessNode {
     pub value: Option<String>,
     /// Live boolean/tri-state flags.
     pub state: AccessState,
+    /// When set, this node is a **live region**: the `App` watches its spoken
+    /// text each frame and announces changes at the given politeness *without*
+    /// moving focus. `None` (the default) means the node is not a live region.
+    pub live: Option<Politeness>,
+    /// Total number of items in the owning collection (a tab strip's tab
+    /// count, a list's length). Pairs with [`pos_in_set`](Self::pos_in_set) to
+    /// let the reader say "2 of 4". `None` when the node isn't a positioned
+    /// collection item.
+    pub set_size: Option<usize>,
+    /// This item's 1-based position within its collection. See
+    /// [`set_size`](Self::set_size).
+    pub pos_in_set: Option<usize>,
+    /// Hierarchy depth, 1-based (a top-level tree row is `1`). Read out as
+    /// "level N" for nested structures. `None` for flat elements.
+    pub level: Option<usize>,
 }
 
 impl AccessNode {
@@ -312,6 +344,10 @@ impl AccessNode {
             description: None,
             value: None,
             state: AccessState::default(),
+            live: None,
+            set_size: None,
+            pos_in_set: None,
+            level: None,
         }
     }
 
@@ -350,6 +386,29 @@ impl AccessNode {
     /// Set the [`state`](Self::state).
     pub fn with_state(mut self, state: AccessState) -> Self {
         self.state = state;
+        self
+    }
+
+    /// Mark this node a [live region](Self::live) at the given politeness, so
+    /// the reader announces its changes without moving focus.
+    pub fn with_live(mut self, politeness: Politeness) -> Self {
+        self.live = Some(politeness);
+        self
+    }
+
+    /// Set this item's position within its collection: 1-based
+    /// [`pos_in_set`](Self::pos_in_set) within a total of `set_size`. Read out
+    /// as "N of M".
+    pub fn with_position(mut self, pos_in_set: usize, set_size: usize) -> Self {
+        self.pos_in_set = Some(pos_in_set);
+        self.set_size = Some(set_size);
+        self
+    }
+
+    /// Set the hierarchy [`level`](Self::level) (1-based depth), read out as
+    /// "level N" for nested structures like trees.
+    pub fn with_level(mut self, level: usize) -> Self {
+        self.level = Some(level);
         self
     }
 }
@@ -475,6 +534,25 @@ mod tests {
         assert_eq!(n.description.as_deref(), Some("Output volume"));
         assert_eq!(n.value.as_deref(), Some("50%"));
         assert!(n.state.focusable && n.state.focused);
+    }
+
+    #[test]
+    fn access_node_live_and_position_builders() {
+        let bare = AccessNode::new(Role::Group);
+        assert_eq!(bare.live, None);
+        assert_eq!(bare.set_size, None);
+        assert_eq!(bare.pos_in_set, None);
+        assert_eq!(bare.level, None);
+
+        let live = AccessNode::new(Role::Group).with_live(Politeness::Assertive);
+        assert_eq!(live.live, Some(Politeness::Assertive));
+
+        let item = AccessNode::new(Role::Tab).with_position(2, 4);
+        assert_eq!(item.pos_in_set, Some(2));
+        assert_eq!(item.set_size, Some(4));
+
+        let row = AccessNode::new(Role::TreeItem).with_level(3);
+        assert_eq!(row.level, Some(3));
     }
 
     #[test]

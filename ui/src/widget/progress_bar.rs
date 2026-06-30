@@ -47,6 +47,11 @@ pub struct ProgressBar {
     start: Instant,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
+    /// Accessible label (e.g. "Uploading"). When set, the bar becomes a
+    /// *polite* live region keyed by this name, so a screen reader announces
+    /// progress updates ("Uploading, 40%") without moving focus. Anonymous bars
+    /// (no label) are not tracked as live regions and stay quiet.
+    label: Option<String>,
 }
 
 impl ProgressBar {
@@ -61,6 +66,7 @@ impl ProgressBar {
             start: Instant::now(),
             presence_path: Vec::new(),
             permission_scope: None,
+            label: None,
         }
     }
 
@@ -74,7 +80,20 @@ impl ProgressBar {
             start: Instant::now(),
             presence_path: Vec::new(),
             permission_scope: None,
+            label: None,
         }
+    }
+
+    /// Give the bar an accessible label and make it a polite live region, so a
+    /// screen reader announces progress updates without stealing focus.
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    /// Set the accessible label (see [`with_label`](Self::with_label)).
+    pub fn set_label(&mut self, label: impl Into<String>) {
+        self.label = Some(label.into());
     }
 
     /// Update the determinate progress value. Clamped to `[0.0, 1.0]`.
@@ -244,20 +263,24 @@ impl Widget for ProgressBar {
     fn get_rect(&self) -> Rect { self.rect }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+        use crate::a11y::{AccessNode, AccessState, Politeness, Role};
         // Determinate bars expose a percentage value; indeterminate bars have
-        // no meaningful value, so omit it and mark the node busy instead.
-        if self.indeterminate {
-            Some(
-                AccessNode::new(Role::ProgressBar).with_state(AccessState {
-                    busy: true,
-                    ..Default::default()
-                }),
-            )
+        // no meaningful value, so omit it and mark the node busy instead. A
+        // labelled bar is a polite live region keyed by its name, so progress
+        // updates announce without moving focus.
+        let mut node = if self.indeterminate {
+            AccessNode::new(Role::ProgressBar).with_state(AccessState {
+                busy: true,
+                ..Default::default()
+            })
         } else {
             let pct = (self.progress.clamp(0.0, 1.0) * 100.0).round() as i64;
-            Some(AccessNode::new(Role::ProgressBar).with_value(format!("{pct}%")))
+            AccessNode::new(Role::ProgressBar).with_value(format!("{pct}%"))
+        };
+        if let Some(label) = &self.label {
+            node = node.with_name(label.clone()).with_live(Politeness::Polite);
         }
+        Some(node)
     }
 
     /// Indeterminate bars must keep the redraw loop pumping so the
