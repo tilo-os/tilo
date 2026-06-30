@@ -164,6 +164,9 @@ pub fn open_document(path: &Path) -> std::io::Result<(ui::State, WordProcessorWi
     }
     let mut widget = WordProcessorWidget::new();
     widget.set_file(path.to_path_buf(), format);
+    // If a previous session crashed before saving this document, a recovery copy
+    // is still on disk — surface the crash-recovery banner (Restore / Discard).
+    widget.check_for_recovery();
     Ok((state, widget, format))
 }
 
@@ -255,6 +258,128 @@ pub fn save_document(state: &ui::State, path: &Path, format: WpFormat) -> std::i
     let dr = qdoc::DocRef { doc: &state.doc, c: &containers };
     let bytes = format.export(dr).map_err(|e| std::io::Error::other(e.to_string()))?;
     std::fs::write(path, bytes)
+}
+
+// ---- autosave / crash-recovery -------------------------------------------
+
+/// Best-effort autosave / crash-recovery store.
+///
+/// While a document is being edited the word processor periodically writes a
+/// **recovery copy** (always Markdown — lossless for the canonical model and
+/// trivially re-importable) to a stable per-document path under the user's state
+/// directory. If the app crashes or is killed before the user saves, the next
+/// session that opens the same document finds the (newer) recovery copy and can
+/// offer to restore it. On a successful real save the recovery copy is deleted.
+///
+/// Everything here is **best-effort**: an unwritable state directory never
+/// panics and never blocks editing — recovery just silently does nothing.
+pub mod recovery {
+    use std::path::{Path, PathBuf};
+
+    /// Environment override for the recovery base directory. Set by tests (and
+    /// available to callers that want to relocate the store) so recovery never
+    /// touches the real `$HOME` / `$XDG_STATE_HOME` during a test run.
+    pub const RECOVERY_BASE_ENV: &str = "QOS_WP_RECOVERY_DIR";
+
+    /// The directory recovery copies live in. Resolution order:
+    /// 1. `$QOS_WP_RECOVERY_DIR` (test / explicit override), used verbatim;
+    /// 2. `$XDG_STATE_HOME/qos/word-processor/recovery`;
+    /// 3. `$HOME/.local/state/qos/word-processor/recovery`;
+    /// 4. `./.qos-wp-recovery` as a last resort (no HOME at all).
+    pub fn base_dir() -> PathBuf {
+        if let Some(dir) = std::env::var_os(RECOVERY_BASE_ENV) {
+            return PathBuf::from(dir);
+        }
+        let state_home = std::env::var_os("XDG_STATE_HOME")
+            .map(PathBuf::from)
+            .filter(|p| !p.as_os_str().is_empty())
+            .or_else(|| {
+                std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("state"))
+            });
+        match state_home {
+            Some(p) => p.join("qos").join("word-processor").join("recovery"),
+            None => PathBuf::from(".qos-wp-recovery"),
+        }
+    }
+
+    /// A small, dependency-free, deterministic 64-bit FNV-1a hash. Used to derive
+    /// a filesystem-safe, **stable** recovery filename from a document's path
+    /// (stable across runs and Rust versions, unlike `DefaultHasher`).
+    fn fnv1a(bytes: &[u8]) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for &b in bytes {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01B3);
+        }
+        h
+    }
+
+    /// The recovery file path for a document. Stable for a given target: the same
+    /// document path always maps to the same recovery file, so a later session
+    /// can find it. An **untitled** document (no path) maps to a single shared
+    /// `untitled` slot.
+    ///
+    /// The on-disk name is `<16-hex-hash>.md`; the hash is over the document's
+    /// absolute path string (or the literal `:untitled:` sentinel), which keeps
+    /// the name short and filesystem-safe regardless of the original path.
+    pub fn recovery_path_for(doc_path: Option<&Path>) -> PathBuf {
+        let key = match doc_path {
+            Some(p) => {
+                // Canonicalise lightly: prefer an absolute path so two ways of
+                // naming the same file collide on one recovery slot. We do NOT
+                // require the file to exist (it may be brand-new), so fall back
+                // to the path as-given when it can't be made absolute.
+                let abs = std::fs::canonicalize(p).unwrap_or_else(|_| {
+                    if p.is_absolute() {
+                        p.to_path_buf()
+                    } else {
+                        std::env::current_dir().map(|d| d.join(p)).unwrap_or_else(|_| p.to_path_buf())
+                    }
+                });
+                abs.to_string_lossy().into_owned()
+            }
+            None => ":untitled:".to_string(),
+        };
+        base_dir().join(format!("{:016x}.md", fnv1a(key.as_bytes())))
+    }
+
+    /// Write a recovery copy (Markdown bytes) for `doc_path`. Best-effort: creates
+    /// the base directory if needed and swallows any I/O error. Returns the path
+    /// it wrote to on success (for the caller's bookkeeping / tests).
+    pub fn write(doc_path: Option<&Path>, markdown: &[u8]) -> Option<PathBuf> {
+        let path = recovery_path_for(doc_path);
+        if let Some(parent) = path.parent() {
+            if std::fs::create_dir_all(parent).is_err() {
+                return None;
+            }
+        }
+        std::fs::write(&path, markdown).ok().map(|_| path)
+    }
+
+    /// Read back a recovery copy's Markdown bytes for `doc_path`, if one exists.
+    pub fn read(doc_path: Option<&Path>) -> Option<Vec<u8>> {
+        std::fs::read(recovery_path_for(doc_path)).ok()
+    }
+
+    /// Whether a recovery copy currently exists for `doc_path`.
+    pub fn exists(doc_path: Option<&Path>) -> bool {
+        recovery_path_for(doc_path).exists()
+    }
+
+    /// Delete the recovery copy for `doc_path` (best-effort; absence is success).
+    pub fn clear(doc_path: Option<&Path>) {
+        let _ = std::fs::remove_file(recovery_path_for(doc_path));
+    }
+
+    /// Render the document currently in `state` to Markdown bytes for a recovery
+    /// copy. Markdown is the canonical lossless interchange format for the model,
+    /// so this is what `WordProcessorWidget` writes regardless of the document's
+    /// on-disk save format. Returns `None` only if the document has no schema yet.
+    pub fn markdown_bytes(state: &ui::State) -> Option<Vec<u8>> {
+        let containers = qdoc::model::open(&state.doc, &state.root).ok()?;
+        let dr = qdoc::DocRef { doc: &state.doc, c: &containers };
+        crate::WpFormat::Markdown.export(dr).ok()
+    }
 }
 
 #[cfg(test)]
@@ -651,5 +776,103 @@ mod tests {
             let snap = qdoc::model::materialize(&state.doc, &containers);
             assert!(!snap.blocks.is_empty(), "{t:?} yields a non-empty document");
         }
+    }
+
+    // ---- autosave / crash-recovery -----------------------------------------
+
+    /// Serialises the tests that mutate the process-global `RECOVERY_BASE_ENV`
+    /// (env vars are process-wide; cargo runs `#[test]`s in parallel by default).
+    /// Each such test holds this for its whole body so the var is never observed
+    /// half-set by a sibling. `lock().unwrap_or_else(|e| e.into_inner())` keeps a
+    /// panicking test from poisoning the suite.
+    static RECOVERY_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A unique temp directory for a recovery test, cleaned up by the test (the
+    /// recovery store never touches the real `$HOME` thanks to the base override).
+    fn temp_recovery_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "editor-recovery-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    /// `recovery_path_for` is **stable** for a given document path: the same path
+    /// (in any equivalent spelling) maps to the same recovery file, and distinct
+    /// documents map to distinct files. The untitled slot is a single fixed path.
+    #[test]
+    fn recovery_path_is_stable_per_document() {
+        let _guard = RECOVERY_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = temp_recovery_dir("stable");
+        std::env::set_var(recovery::RECOVERY_BASE_ENV, &dir);
+
+        let doc = std::path::Path::new("/home/u/My Notes.md");
+        let p1 = recovery::recovery_path_for(Some(doc));
+        let p2 = recovery::recovery_path_for(Some(doc));
+        assert_eq!(p1, p2, "the same document maps to the same recovery file");
+        assert!(p1.starts_with(&dir), "recovery file lives under the override dir");
+
+        let other = recovery::recovery_path_for(Some(std::path::Path::new("/home/u/Other.md")));
+        assert_ne!(p1, other, "different documents map to different recovery files");
+
+        let u1 = recovery::recovery_path_for(None);
+        let u2 = recovery::recovery_path_for(None);
+        assert_eq!(u1, u2, "the untitled slot is a single stable path");
+        assert_ne!(u1, p1, "untitled and titled documents don't collide");
+
+        std::env::remove_var(recovery::RECOVERY_BASE_ENV);
+    }
+
+    /// `recovery::write` materializes a recovery copy under the (overridden) base
+    /// dir; `read`/`exists` see it; `clear` removes it. End-to-end on the real
+    /// filesystem (a temp dir), best-effort throughout.
+    #[test]
+    fn recovery_write_read_clear_roundtrip() {
+        let _guard = RECOVERY_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = temp_recovery_dir("rwc");
+        std::env::set_var(recovery::RECOVERY_BASE_ENV, &dir);
+        let doc = std::path::Path::new("/tmp/whatever/doc.md");
+
+        assert!(!recovery::exists(Some(doc)), "no recovery file before any write");
+        let written = recovery::write(Some(doc), b"# Recovered\n\nbody\n").expect("write a recovery copy");
+        assert!(written.exists(), "the written recovery file is on disk");
+        assert!(recovery::exists(Some(doc)), "exists() sees the recovery file");
+        assert_eq!(
+            recovery::read(Some(doc)).expect("read back"),
+            b"# Recovered\n\nbody\n",
+            "read back the exact bytes written"
+        );
+
+        recovery::clear(Some(doc));
+        assert!(!recovery::exists(Some(doc)), "clear() removes the recovery file");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        std::env::remove_var(recovery::RECOVERY_BASE_ENV);
+    }
+
+    /// `recovery::markdown_bytes` renders the live document to recovery Markdown
+    /// that re-imports to the same first heading — proving the recovery copy is a
+    /// faithful, restorable snapshot of the document.
+    #[test]
+    fn recovery_markdown_roundtrips_through_import() {
+        let mut s = ui::State::new();
+        let mut ed = EditorDoc::bind(&mut s.doc, &s.root);
+        {
+            let mut dm = ed.edit(&mut s.doc);
+            MarkdownCodec.import(b"# Draft Title\n\nUnsaved paragraph\n", &mut dm).unwrap();
+        }
+        let md = recovery::markdown_bytes(&s).expect("render recovery markdown");
+
+        let mut s2 = ui::State::new();
+        let containers = qdoc::model::init(&mut s2.doc, &s2.root);
+        let mut ids = qdoc::IdGen::new(s2.doc.get_actor().to_hex_string());
+        {
+            let mut dm = qdoc::DocMut { doc: &mut s2.doc, c: &containers, ids: &mut ids };
+            MarkdownCodec.import(&md, &mut dm).expect("re-import recovery markdown");
+        }
+        let snap = qdoc::model::materialize(&s2.doc, &containers);
+        assert_eq!(first_text(&snap).as_deref(), Some("Draft Title"), "recovery copy restores the heading");
     }
 }

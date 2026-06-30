@@ -223,6 +223,50 @@ impl WordProcessor {
         }
     }
 
+    /// Replace the **entire body** of the document with the content of `markdown`,
+    /// in place, on the live document (CRDT-friendly: existing block ids are
+    /// deleted and the imported content is appended as new blocks, so undo/redo
+    /// and incremental sync see one coherent action). Used by the
+    /// "New from template" picker (re-import a template's Markdown over the open
+    /// document) without throwing away the host `ui::State` (and thus its undo
+    /// history / collaboration session).
+    ///
+    /// The caret is moved to the first imported block. Returns `false` if the
+    /// document isn't bound yet, or if the Markdown fails to import (in which case
+    /// the document is left untouched — the body clear and the import share one
+    /// uncommitted transaction window, so the host can still undo cleanly).
+    pub fn replace_with_markdown(&mut self, state: &mut AutoCommit, markdown: &[u8]) -> bool {
+        use qdoc::FormatProvider;
+        let Some(containers) = self.containers.clone() else {
+            return false;
+        };
+        // Snapshot the existing body block ids before mutating.
+        let existing = qdoc::model::blocks_in_order(state, &containers);
+        let Some(ids) = self.ids.as_mut() else {
+            return false;
+        };
+        let mut dm = DocMut { doc: state, c: &containers, ids };
+        // Import the template into a clearly-empty body: drop every existing
+        // block first, then import (the codec appends fresh blocks). If the import
+        // fails we've only removed blocks within the still-open transaction, which
+        // the host's per-action undo will revert — so report failure and let the
+        // caller decide.
+        for id in &existing {
+            dm.remove_block(id);
+        }
+        if qdoc::MarkdownCodec.import(markdown, &mut dm).is_err() {
+            return false;
+        }
+        // Re-seat the caret on the first newly-imported block (the body is fresh).
+        let blocks = qdoc::model::blocks_in_order(state, &containers);
+        match blocks.first() {
+            Some(first) => self.caret = Caret { block: first.clone(), offset: 0 },
+            None => self.caret = Caret::default(),
+        }
+        self.clear_anchor();
+        true
+    }
+
     /// Load the document's stylesheet from the **CRDT styles container** (the
     /// field-level-mergeable, ODF-round-trippable source of truth). For documents
     /// authored before the container was populated, fall back to the legacy
