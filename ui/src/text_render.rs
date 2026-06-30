@@ -207,6 +207,128 @@ impl TextRenderer {
         result
     }
 
+    /// Truncate `text` to fit within `max_width` logical pixels on a
+    /// single line, appending an ellipsis (`…`) when anything was dropped.
+    ///
+    /// Returns `text` unchanged when it already fits. When even the
+    /// ellipsis alone doesn't fit, returns the ellipsis (callers that
+    /// reserve at least a few px get a sensible glyph rather than empty).
+    /// Measurement uses [`TextWeight::Regular`]; pair with
+    /// [`Self::elide_to_width_weighted`] when the draw weight differs so the
+    /// fit calculation matches the rendered advance.
+    pub fn elide_to_width(&mut self, text: &str, size: f32, max_width: f32) -> String {
+        self.elide_to_width_weighted(text, size, max_width, TextWeight::Regular)
+    }
+
+    /// Weighted variant of [`Self::elide_to_width`] — measures with the
+    /// supplied [`TextWeight`] so the fit matches a bold/medium draw call.
+    pub fn elide_to_width_weighted(
+        &mut self,
+        text: &str,
+        size: f32,
+        max_width: f32,
+        weight: TextWeight,
+    ) -> String {
+        if text.is_empty() || max_width <= 0.0 {
+            return String::new();
+        }
+        let (full_w, _) = self.measure_weighted(text, size, None, weight);
+        if full_w <= max_width {
+            return text.to_string();
+        }
+        const ELLIPSIS: char = '\u{2026}';
+        // If the ellipsis alone is wider than the budget, we still return
+        // it — a single glyph reads better than an empty slot, and callers
+        // that truly have no room won't have called us with text anyway.
+        let (ell_w, _) = self.measure_weighted("\u{2026}", size, None, weight);
+        if ell_w > max_width {
+            return ELLIPSIS.to_string();
+        }
+        let budget = max_width - ell_w;
+        // Grow a prefix char-by-char while it fits the remaining budget.
+        // Linear in char count — fine for the short labels (filenames,
+        // titles, legend entries) elision targets. Each step re-measures
+        // the candidate prefix, which hits the measure cache after warmup.
+        let mut best = String::new();
+        let mut candidate = String::new();
+        for ch in text.chars() {
+            candidate.push(ch);
+            let (w, _) = self.measure_weighted(&candidate, size, None, weight);
+            if w <= budget {
+                best.push(ch);
+            } else {
+                break;
+            }
+        }
+        // Drop a trailing space so the ellipsis doesn't read as " …".
+        while best.ends_with(' ') {
+            best.pop();
+        }
+        best.push(ELLIPSIS);
+        best
+    }
+
+    /// Word-wrap `text` to `max_width` and clamp the result to at most
+    /// `max_lines` lines, eliding the last kept line with an ellipsis when
+    /// content overflows. Returns the kept lines as a `Vec<String>`,
+    /// already wrapped — draw each entry on its own baseline at
+    /// `line_height = size * 1.25`.
+    ///
+    /// `max_lines == 0` returns an empty vec. A single-line clamp
+    /// (`max_lines == 1`) degenerates to [`Self::elide_to_width`].
+    pub fn clamp_to_lines(
+        &mut self,
+        text: &str,
+        size: f32,
+        max_width: f32,
+        max_lines: usize,
+    ) -> Vec<String> {
+        if max_lines == 0 || text.is_empty() || max_width <= 0.0 {
+            return Vec::new();
+        }
+        if max_lines == 1 {
+            return vec![self.elide_to_width(text, size, max_width)];
+        }
+        let wrapped = self.wrap_lines(text, size, max_width);
+        if wrapped.len() <= max_lines {
+            return wrapped;
+        }
+        // Overflow: keep the first `max_lines - 1` whole lines, then merge
+        // the remaining text onto the final line and elide it so the reader
+        // sees the truncation marker.
+        let mut kept: Vec<String> = wrapped[..max_lines - 1].to_vec();
+        let remainder: String = wrapped[max_lines - 1..].join(" ");
+        kept.push(self.elide_to_width(&remainder, size, max_width));
+        kept
+    }
+
+    /// Greedy word-wrap of `text` at `max_width`. A word longer than the
+    /// budget is placed on its own line (no mid-word breaking — the
+    /// per-line elision in [`Self::clamp_to_lines`] handles overlong
+    /// single words). Internal helper for the clamp; exposed for tests.
+    pub(crate) fn wrap_lines(&mut self, text: &str, size: f32, max_width: f32) -> Vec<String> {
+        let mut lines: Vec<String> = Vec::new();
+        let mut current = String::new();
+        for word in text.split_whitespace() {
+            if current.is_empty() {
+                current.push_str(word);
+                continue;
+            }
+            let candidate = format!("{current} {word}");
+            let (w, _) = self.measure(&candidate, size, None);
+            if w <= max_width {
+                current = candidate;
+            } else {
+                lines.push(std::mem::take(&mut current));
+                current.push_str(word);
+            }
+        }
+        if !current.is_empty() {
+            lines.push(current);
+        }
+        lines
+    }
+
     pub fn draw_text(
         &mut self,
         scene: &mut Scene,
@@ -527,6 +649,86 @@ mod tests {
         let (hits, misses) = tr.cache_stats();
         assert_eq!(hits, 1);
         assert_eq!(misses, 2);
+    }
+
+    /// Text that already fits is returned verbatim — no ellipsis is
+    /// appended and the budget check uses the real measured width.
+    #[test]
+    fn elide_returns_text_unchanged_when_it_fits() {
+        let mut tr = TextRenderer::new();
+        let s = "short";
+        let (w, _) = tr.measure(s, 14.0, None);
+        // Give a budget comfortably above the measured width.
+        let out = tr.elide_to_width(s, 14.0, w + 50.0);
+        assert_eq!(out, s, "fitting text must be returned unchanged");
+        assert!(!out.ends_with('\u{2026}'), "no ellipsis when it fits");
+    }
+
+    /// Text wider than the budget is truncated and ends with the ellipsis
+    /// glyph, and the truncated string measures within the budget.
+    #[test]
+    fn elide_truncates_and_appends_ellipsis() {
+        let mut tr = TextRenderer::new();
+        let s = "the quick brown fox jumps over the lazy dog";
+        let (full_w, _) = tr.measure(s, 14.0, None);
+        let budget = full_w / 3.0; // force truncation
+        let out = tr.elide_to_width(s, 14.0, budget);
+        assert!(out.ends_with('\u{2026}'), "truncated text must end with …, got {out:?}");
+        assert!(out.chars().count() < s.chars().count(), "must drop characters");
+        let (out_w, _) = tr.measure(&out, 14.0, None);
+        assert!(
+            out_w <= budget + 0.5,
+            "elided string ({out_w}) must fit the budget ({budget})",
+        );
+    }
+
+    /// A zero/empty budget yields an empty string; empty input yields
+    /// empty output. Defensive edge cases callers rely on.
+    #[test]
+    fn elide_edge_cases() {
+        let mut tr = TextRenderer::new();
+        assert_eq!(tr.elide_to_width("", 14.0, 100.0), "");
+        assert_eq!(tr.elide_to_width("abc", 14.0, 0.0), "");
+    }
+
+    /// A multi-line clamp keeps at most `max_lines` lines, and when the
+    /// content overflows the final kept line carries the ellipsis.
+    #[test]
+    fn clamp_to_lines_caps_line_count_and_elides_last() {
+        let mut tr = TextRenderer::new();
+        let paragraph =
+            "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor \
+             incididunt ut labore et dolore magna aliqua ut enim ad minim veniam quis";
+        // Narrow width forces several wrapped lines; cap to 2.
+        let lines = tr.clamp_to_lines(paragraph, 14.0, 120.0, 2);
+        assert!(lines.len() <= 2, "must not exceed max_lines, got {}", lines.len());
+        assert_eq!(lines.len(), 2, "this paragraph wraps to more than 2 lines");
+        assert!(
+            lines.last().unwrap().ends_with('\u{2026}'),
+            "overflowing clamp must elide the final line: {:?}",
+            lines.last(),
+        );
+    }
+
+    /// `max_lines == 1` degenerates to single-line elision; `max_lines == 0`
+    /// returns nothing.
+    #[test]
+    fn clamp_to_lines_degenerate_cases() {
+        let mut tr = TextRenderer::new();
+        assert!(tr.clamp_to_lines("anything", 14.0, 80.0, 0).is_empty());
+        let one = tr.clamp_to_lines("a fairly long single line of text here", 14.0, 60.0, 1);
+        assert_eq!(one.len(), 1);
+        assert!(one[0].ends_with('\u{2026}'), "single-line clamp elides");
+    }
+
+    /// Short content that fits within `max_lines` is returned wrapped but
+    /// un-elided.
+    #[test]
+    fn clamp_to_lines_no_overflow_keeps_all() {
+        let mut tr = TextRenderer::new();
+        let lines = tr.clamp_to_lines("two words", 14.0, 1000.0, 3);
+        assert_eq!(lines, vec!["two words".to_string()]);
+        assert!(!lines[0].ends_with('\u{2026}'));
     }
 
     /// `bump_generation` blows away every cached entry — the next
