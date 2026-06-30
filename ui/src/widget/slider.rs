@@ -337,6 +337,23 @@ impl Widget for Slider {
     fn is_focused(&self) -> bool { self.is_focused }
     fn is_enabled(&self) -> bool { self.enabled }
 
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        // The slider models a normalized 0..1 value; expose it as a percentage
+        // so a screen reader announces something meaningful ("50 percent").
+        let pct = (self.value.clamp(0.0, 1.0) * 100.0).round() as i64;
+        Some(
+            AccessNode::new(Role::Slider)
+                .with_value(format!("{pct}%"))
+                .with_state(AccessState {
+                    focusable: self.is_focusable(),
+                    focused: self.is_focused(),
+                    disabled: !self.is_enabled(),
+                    ..Default::default()
+                }),
+        )
+    }
+
     fn presence_key(&self) -> Option<PresenceKey> {
         if self.presence_path.is_empty() {
             None
@@ -528,6 +545,28 @@ mod tests {
         let s = Slider::new("any", "value").with_enabled(false);
         assert!(!Widget::is_enabled(&s));
         assert!(Widget::is_enabled(&Slider::new("any", "value")), "default is enabled");
+    }
+
+    #[test]
+    fn accessibility_reports_slider_role_and_percent_value() {
+        use crate::a11y::Role;
+        // Default value is 0.5 → "50%".
+        let s = Slider::new("any", "value");
+        let node = Widget::accessibility(&s).unwrap();
+        assert_eq!(node.role, Role::Slider);
+        assert_eq!(node.value.as_deref(), Some("50%"));
+        assert!(node.state.focusable);
+        assert!(!node.state.disabled);
+        assert_eq!(node.state.checked, None, "a slider is not checkable");
+    }
+
+    #[test]
+    fn accessibility_value_tracks_position_and_disabled() {
+        let mut s = Slider::new("any", "value").with_enabled(false);
+        s.value = 0.25;
+        let node = Widget::accessibility(&s).unwrap();
+        assert_eq!(node.value.as_deref(), Some("25%"));
+        assert!(node.state.disabled);
     }
 
     #[test]
