@@ -111,6 +111,9 @@ impl OutputRegistry {
     pub fn populate(&mut self, connectors: &[ConnectorInfo]) -> Vec<(OutputId, Output)> {
         use super::devices::preferred_mode;
         let mut out = Vec::with_capacity(connectors.len());
+        // Lay connectors out left-to-right: each output's left edge is the
+        // sum of prior connected outputs' widths (one output ⇒ origin).
+        let mut next_x: i32 = 0;
         for ci in connectors {
             if !ci.connected {
                 continue;
@@ -129,12 +132,14 @@ impl OutputRegistry {
             });
             let output = Output {
                 id,
+                position: (next_x, 0),
                 size: (mode.width as u32, mode.height as u32),
                 // Scale defaults to 1.0; per-output scale is a Phase 6+
                 // follow-up (HiDPI policy lives at the compositor layer,
                 // not the backend).
                 scale: 1.0,
             };
+            next_x += mode.width as i32;
             out.push((id, output));
         }
         out
