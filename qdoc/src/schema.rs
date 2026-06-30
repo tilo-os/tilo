@@ -38,6 +38,27 @@ pub const NOTE_KIND_ENDNOTE: &str = "endnote";
 /// note id (a `Str`). Renderers substitute the computed citation number.
 pub const MARK_NOTE_REF: &str = "note-ref"; // Str — the referenced note id
 
+// Comments / annotations. A `comments` root map holds `Map<comment_id, comment>`,
+// where each comment is a sub-map carrying its `author`, `date` (a free-form string
+// — ISO-8601 in practice) and a `blocks` child map (the comment's content — same
+// shape as the body `blocks`, with fractional order keys, so a comment can hold
+// multiple paragraphs). A comment is *anchored* to body text by an inline `comment`
+// mark whose value is the comment id, covering the commented range `[start, end)`;
+// the mark merges with concurrent text edits and round-trips through the codecs
+// (`office:annotation`/`office:annotation-end` in `.odt`, `commentRangeStart`/
+// `commentRangeEnd` + `commentReference` in `.docx`). Created eagerly (like
+// `notes`) so two replicas that concurrently add a comment share ONE container
+// object and converge; opened optionally so documents authored before comments
+// existed still open (they then read as having no comments).
+pub const KEY_COMMENTS: &str = "comments"; // Map<comment_id, comment>
+pub const COMMENT_AUTHOR: &str = "author"; // Str — the comment author's display name
+pub const COMMENT_DATE: &str = "date"; // Str — the comment timestamp (ISO-8601)
+pub const COMMENT_BLOCKS: &str = "blocks"; // Map<block_id, block> (the comment body)
+/// The inline mark anchoring a comment to a text range. Covers the commented range
+/// `[start, end)`; its value is the comment id (a `Str`). Unlike `note-ref`, this
+/// spans real text rather than a placeholder character.
+pub const MARK_COMMENT: &str = "comment"; // Str — the anchored comment id
+
 // Document properties / metadata. A `props` sub-map under `meta` holding the
 // well-known document-level fields (title/author/…) as plain strings. Isolated
 // from other `meta` keys (page margins, stylesheet) and created lazily so

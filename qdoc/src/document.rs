@@ -313,6 +313,81 @@ impl Document {
         self.doc.commit();
     }
 
+    // ---- comments / annotations -------------------------------------------
+
+    /// The comment ids present in the document (sorted, canonical order).
+    pub fn comment_ids(&self) -> Vec<String> {
+        crate::model::comment_ids(&self.doc, &self.c)
+    }
+
+    /// A comment's author display name, or `None` if the id is unknown.
+    pub fn comment_author(&self, id: &str) -> Option<String> {
+        crate::model::comment_author(&self.doc, &self.c, id)
+    }
+
+    /// A comment's date / timestamp string, or `None` if the id is unknown.
+    pub fn comment_date(&self, id: &str) -> Option<String> {
+        crate::model::comment_date(&self.doc, &self.c, id)
+    }
+
+    /// Materialize a comment's content blocks (empty if the id is unknown).
+    pub fn comment_blocks(&self, id: &str) -> Vec<crate::snapshot::BlockView> {
+        crate::model::materialize_comment_blocks(&self.doc, &self.c, id)
+    }
+
+    /// The ordered block ids of a comment's content (empty if absent).
+    pub fn comment_blocks_in_order(&self, id: &str) -> Vec<String> {
+        crate::model::comment_blocks_in_order(&self.doc, &self.c, id)
+    }
+
+    /// The anchored body range `(block_id, start, end)` of a comment, or `None` if its
+    /// anchoring `comment` mark is absent.
+    pub fn comment_range(&self, id: &str) -> Option<(String, usize, usize)> {
+        crate::model::comment_range(&self.doc, &self.c, id)
+    }
+
+    /// Materialize every comment into a [`crate::snapshot::CommentView`].
+    pub fn comments(&self) -> Vec<crate::snapshot::CommentView> {
+        crate::model::materialize_comments(&self.doc, &self.c)
+    }
+
+    /// Create a comment authored by `author` with body `text`, anchored to the body
+    /// range `[start, end)` of `block_id`; returns the new comment id.
+    pub fn add_comment(&mut self, block_id: &str, start: usize, end: usize, author: &str, text: &str) -> String {
+        let id = self.as_mut().add_comment(block_id, start, end, author, text);
+        self.doc.commit();
+        id
+    }
+
+    /// Create an empty comment (author + date) with no anchor; fill its content via
+    /// [`Self::insert_comment_block`] + [`Self::splice_comment_text`] and anchor it via
+    /// [`Self::add_comment_mark`]. Returns the new comment id.
+    pub fn insert_comment(&mut self, author: &str, date: &str) -> String {
+        let id = self.as_mut().insert_comment(author, date);
+        self.doc.commit();
+        id
+    }
+
+    /// Anchor an existing comment to the body range `[start, end)` of `block_id`.
+    pub fn add_comment_mark(&mut self, block_id: &str, start: usize, end: usize, comment_id: &str) {
+        self.as_mut().add_comment_mark(block_id, start, end, comment_id);
+        self.doc.commit();
+    }
+
+    /// Insert a block into a comment's content; returns its id (or `None` if the
+    /// comment id is unknown).
+    pub fn insert_comment_block(&mut self, comment_id: &str, after: Option<&str>, kind: &str) -> Option<String> {
+        let id = self.as_mut().insert_comment_block(comment_id, after, kind);
+        self.doc.commit();
+        id
+    }
+
+    /// Splice text into a comment's block.
+    pub fn splice_comment_text(&mut self, comment_id: &str, block_id: &str, char_idx: usize, del: isize, ins: &str) {
+        self.as_mut().splice_comment_text(comment_id, block_id, char_idx, del, ins);
+        self.doc.commit();
+    }
+
     /// Timeline of authored changes (oldest first).
     pub fn versions(&mut self) -> Vec<crate::history::VersionMeta> {
         crate::history::versions(&mut self.doc)
@@ -536,6 +611,45 @@ mod tests {
         b.merge(&mut a);
         assert_eq!(a.materialize(), b.materialize(), "replicas converge with notes");
         assert_eq!(a.materialize().notes.len(), 2, "both notes present after merge");
+    }
+
+    #[test]
+    fn comment_accessors_and_snapshot() {
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "review this paragraph");
+        let cid = d.add_comment(&p, 7, 11, "Grace", "note: fix"); // over "this"
+
+        // Accessors agree with the snapshot.
+        assert_eq!(d.comment_ids(), vec![cid.clone()]);
+        assert_eq!(d.comment_author(&cid).as_deref(), Some("Grace"));
+        assert_eq!(d.comment_blocks(&cid)[0].text, "note: fix");
+        assert_eq!(d.comment_range(&cid), Some((p.clone(), 7, 11)));
+        let snap = d.materialize();
+        assert_eq!(snap.comments.len(), 1);
+        assert_eq!(snap.comments[0].id, cid);
+        assert_eq!(snap.comments[0].range, Some((p.clone(), 7, 11)));
+        // The comment mark + content survive a save/load round-trip (seeded id gen).
+        let bytes = d.save();
+        let d2 = Document::load(&bytes).unwrap();
+        assert_eq!(d2.comment_blocks(&cid)[0].text, "note: fix");
+        assert!(d2.materialize().blocks[0].marks.iter().any(|m| m.name == crate::schema::MARK_COMMENT));
+    }
+
+    #[test]
+    fn comments_converge_across_replicas() {
+        // Two replicas each add a comment to the same document; after merge both
+        // converge with both comments present (CRDT-native).
+        let mut a = Document::new();
+        let p = a.insert_block(None, "paragraph");
+        a.splice_text(&p, 0, 0, "base text here");
+        let mut b = a.fork();
+        a.add_comment(&p, 0, 4, "A", "from A"); // over "base"
+        b.add_comment(&p, 5, 9, "B", "from B"); // over "text"
+        a.merge(&mut b);
+        b.merge(&mut a);
+        assert_eq!(a.materialize(), b.materialize(), "replicas converge with comments");
+        assert_eq!(a.materialize().comments.len(), 2, "both comments present after merge");
     }
 
     #[test]

@@ -243,6 +243,14 @@ fn note_index(snap: &DocSnapshot) -> NoteIndex<'_> {
     snap.notes.iter().map(|n| (n.id.clone(), n)).collect()
 }
 
+/// A comment-id → `&CommentView` lookup for emitting `office:annotation`(+`-end`) at
+/// a commented range's boundaries on export.
+type CommentIndex<'a> = std::collections::BTreeMap<String, &'a crate::snapshot::CommentView>;
+
+fn comment_index(snap: &DocSnapshot) -> CommentIndex<'_> {
+    snap.comments.iter().map(|c| (c.id.clone(), c)).collect()
+}
+
 /// The note id of a `note-ref` mark covering exactly `[i, i+1)`, if any.
 fn note_ref_at(marks: &[MarkSpan], i: usize) -> Option<String> {
     marks
@@ -251,17 +259,43 @@ fn note_ref_at(marks: &[MarkSpan], i: usize) -> Option<String> {
         .and_then(|m| m.value.as_str().map(|s| s.to_string()))
 }
 
+/// The comment ids whose anchoring `comment` mark starts exactly at `i` (sorted for
+/// deterministic output) / ends exactly at `i` (i.e. `mark.end == i`).
+fn comment_starts_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
+    let mut v: Vec<String> = marks
+        .iter()
+        .filter(|m| m.name == crate::schema::MARK_COMMENT && m.start == i)
+        .filter_map(|m| m.value.as_str().map(|s| s.to_string()))
+        .collect();
+    v.sort();
+    v
+}
+
+fn comment_ends_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
+    let mut v: Vec<String> = marks
+        .iter()
+        .filter(|m| m.name == crate::schema::MARK_COMMENT && m.end == i)
+        .filter_map(|m| m.value.as_str().map(|s| s.to_string()))
+        .collect();
+    v.sort();
+    v
+}
+
 /// Render a block's text with `text:a` hyperlinks (outer) and `text:span` style
 /// wrappers (inner) for its marks. The link wrapper and the span set are each
 /// closed and re-opened whenever they change, so the output is always
 /// well-nested even for overlapping marks. A placeholder covered by a `note-ref`
-/// mark is emitted as the referenced inline `text:note` (advancing `note_ctr`).
+/// mark is emitted as the referenced inline `text:note` (advancing `note_ctr`). A
+/// `comment` mark emits an `office:annotation` at its start and an
+/// `office:annotation-end` at its end (both outside the span/link wrappers so the
+/// output stays well-nested).
 fn render_inline(
     text: &str,
     marks: &[MarkSpan],
     used: &mut std::collections::BTreeMap<String, String>,
     notes: &NoteIndex,
     note_ctr: &mut usize,
+    comments: &CommentIndex,
 ) -> String {
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();
@@ -274,7 +308,33 @@ fn render_inline(
         }
         open.clear();
     };
+    // Emit annotation boundary markers at `i`, closing spans/link first so the
+    // annotation element is a clean sibling of the surrounding inline content.
+    let emit_comment_boundaries = |out: &mut String, open: &mut Vec<String>, cur_link: &mut Option<String>, i: usize| {
+        let ends = comment_ends_at(marks, i);
+        let starts = comment_starts_at(marks, i);
+        if ends.is_empty() && starts.is_empty() {
+            return;
+        }
+        close_spans(out, open);
+        if cur_link.is_some() {
+            out.push_str("</text:a>");
+            *cur_link = None;
+        }
+        // Ends before starts so an adjacent comment's end closes before the next opens.
+        for id in ends {
+            if let Some(c) = comments.get(&id) {
+                out.push_str(&super::comments::render_annotation_end(c));
+            }
+        }
+        for id in starts {
+            if let Some(c) = comments.get(&id) {
+                out.push_str(&super::comments::render_annotation_start(c));
+            }
+        }
+    };
     for i in 0..n {
+        emit_comment_boundaries(&mut out, &mut open, &mut cur_link, i);
         let link = link_at(marks, i);
         if link != cur_link {
             // A link is the outer element, so close any open spans first, then the
@@ -323,6 +383,13 @@ fn render_inline(
     close_spans(&mut out, &mut open);
     if cur_link.is_some() {
         out.push_str("</text:a>");
+    }
+    // A comment ending exactly at the block's end (`mark.end == n`) emits its
+    // annotation-end after the last char.
+    for id in comment_ends_at(marks, n) {
+        if let Some(c) = comments.get(&id) {
+            out.push_str(&super::comments::render_annotation_end(c));
+        }
     }
     out
 }
@@ -662,6 +729,9 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
     let notes = note_index(snap);
     let mut note_ctr = 0usize;
     let note_ctr = &mut note_ctr;
+    // Comments/annotations anchored to body ranges, emitted at each range's boundaries.
+    let comments = comment_index(snap);
+    let comments = &comments;
     let mut style_attr = |b: &BlockView| -> String { resolve_para_style(b, &snap.styles, &mut pstyles, &mut named_refs) };
     let mut i = 0;
     while i < snap.blocks.len() {
@@ -675,7 +745,7 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
                 let sa = style_attr(b);
                 body.push_str(&format!(
                     r#"<text:h text:outline-level="{level}"{sa}>{}</text:h>"#,
-                    render_inline(&b.text, &b.marks, &mut used, &notes, note_ctr)
+                    render_inline(&b.text, &b.marks, &mut used, &notes, note_ctr, comments)
                 ));
                 i += 1;
             }
@@ -720,7 +790,7 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
                         }
                     }
                     let sa = style_attr(li);
-                    body.push_str(&format!(r#"<text:list-item><text:p{sa}>{}</text:p>"#, render_inline(&li.text, &li.marks, &mut used, &notes, note_ctr)));
+                    body.push_str(&format!(r#"<text:list-item><text:p{sa}>{}</text:p>"#, render_inline(&li.text, &li.marks, &mut used, &notes, note_ctr, comments)));
                     item_open = true;
                     i += 1;
                 }
@@ -770,7 +840,7 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
                         let cell = cells.iter().find(|cl| snap_cell_rc(cl) == (r, c));
                         // The cell's alignment lives on the inner paragraph in ODF.
                         let sa = cell.map(|cl| style_attr(cl)).unwrap_or_default();
-                        let inner = cell.map(|cl| render_inline(&cl.text, &cl.marks, &mut used, &notes, note_ctr)).unwrap_or_default();
+                        let inner = cell.map(|cl| render_inline(&cl.text, &cl.marks, &mut used, &notes, note_ctr, comments)).unwrap_or_default();
                         body.push_str(&format!(r#"<table:table-cell><text:p{sa}>{inner}</text:p></table:table-cell>"#));
                     }
                     body.push_str("</table:table-row>");
@@ -781,7 +851,7 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
                 let sa = style_attr(b);
                 body.push_str(&format!(
                     r#"<text:p{sa}>{}</text:p>"#,
-                    render_inline(&b.text, &b.marks, &mut used, &notes, note_ctr)
+                    render_inline(&b.text, &b.marks, &mut used, &notes, note_ctr, comments)
                 ));
                 i += 1;
             }
@@ -1504,6 +1574,106 @@ mod tests {
             v
         };
         assert_eq!(kinds_texts(&d2.materialize()), kinds_texts(&d3.materialize()), "notes stable across a second round-trip");
+    }
+
+    #[test]
+    fn comment_imports_from_inline_annotation() {
+        use crate::document::MarkValue;
+        use crate::schema::MARK_COMMENT;
+        // A paragraph "fix this word" with an annotation spanning "this word": the
+        // annotation sits at the range start, an annotation-end at the range end.
+        let body = concat!(
+            r#"<text:p>fix "#,
+            r#"<office:annotation office:name="c1"><dc:creator>Ada</dc:creator><dc:date>2021-01-02T03:04:05</dc:date><text:p>note: fix</text:p></office:annotation>"#,
+            r#"this word"#,
+            r#"<office:annotation-end office:name="c1"/>"#,
+            r#"</text:p>"#,
+        );
+        let odt = minimal_odt(body);
+        let mut d = Document::new();
+        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        let snap = d.materialize();
+
+        // The body text excludes the annotation markup; a `comment` mark spans "this word".
+        let p = &snap.blocks[0];
+        assert_eq!(p.text, "fix this word", "annotation markup not in text: {:?}", p.text);
+        let cm = p.marks.iter().find(|m| m.name == MARK_COMMENT).expect("comment mark present");
+        assert_eq!((cm.start, cm.end), (4, 13), "marker spans 'this word': {:?}", p.marks);
+        let cid = match &cm.value {
+            MarkValue::Str(s) => s.clone(),
+            other => panic!("comment value is the comment id, got {other:?}"),
+        };
+        // The comment exists with author + date + body.
+        assert_eq!(snap.comments.len(), 1, "one comment: {:?}", snap.comments);
+        let comment = &snap.comments[0];
+        assert_eq!(comment.id, cid, "marker references the comment by id");
+        assert_eq!(comment.author, "Ada");
+        assert_eq!(comment.date, "2021-01-02T03:04:05");
+        assert_eq!(comment.blocks[0].text, "note: fix");
+    }
+
+    #[test]
+    fn comment_roundtrips_through_odt() {
+        use crate::document::MarkValue;
+        use crate::schema::MARK_COMMENT;
+        // The headline task: a comment over a word must export as an inline
+        // office:annotation(+ -end) and re-import with author/text + anchored range.
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "please fix this word now");
+        let cid = d.add_comment(&p, 11, 20, "Ada Lovelace", "note: fix"); // over "this word"
+        let _ = cid;
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let cont = OdtContainer::read(&exported).unwrap();
+        let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
+        assert!(content.contains("<office:annotation"), "annotation emitted: {content}");
+        assert!(content.contains("<office:annotation-end"), "annotation-end emitted (ranged): {content}");
+        assert!(content.contains("<dc:creator>Ada Lovelace</dc:creator>"), "author emitted: {content}");
+        assert!(content.contains("note: fix"), "comment body emitted: {content}");
+
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+        // Body text intact; the comment mark anchors "this word".
+        assert_eq!(snap.blocks[0].text, "please fix this word now");
+        let cm = snap.blocks[0].marks.iter().find(|m| m.name == MARK_COMMENT).expect("comment marker survives");
+        assert_eq!((cm.start, cm.end), (11, 20), "anchored range survives: {:?}", snap.blocks[0].marks);
+        let new_id = match &cm.value {
+            MarkValue::Str(s) => s.clone(),
+            _ => panic!("comment value"),
+        };
+        // The comment survives with author + body.
+        assert_eq!(snap.comments.len(), 1, "comment survives: {:?}", snap.comments);
+        let cmt = snap.comments.iter().find(|c| c.id == new_id).expect("comment present by id");
+        assert_eq!(cmt.author, "Ada Lovelace");
+        assert_eq!(cmt.blocks[0].text, "note: fix");
+        assert_eq!(cmt.range, Some((snap.blocks[0].id.clone(), 11, 20)));
+
+        // Idempotent across a second round-trip (ids volatile; compare author+text+span).
+        let exported2 = OdtCodec.export(d2.as_ref()).unwrap();
+        let mut d3 = Document::new();
+        OdtCodec.import(&exported2, &mut d3.as_mut()).unwrap();
+        let authors_texts = |snap: &DocSnapshot| {
+            let mut v: Vec<(String, String, Option<(usize, usize)>)> = snap
+                .comments
+                .iter()
+                .map(|c| {
+                    (
+                        c.author.clone(),
+                        c.blocks.iter().map(|b| b.text.clone()).collect(),
+                        c.range.as_ref().map(|(_, s, e)| (*s, *e)),
+                    )
+                })
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(
+            authors_texts(&d2.materialize()),
+            authors_texts(&d3.materialize()),
+            "comments stable across a second round-trip"
+        );
     }
 
     #[test]
