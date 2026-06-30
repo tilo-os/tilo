@@ -189,6 +189,12 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
     // (block, start, end, comment id) anchor marks, applied after all text is in.
     let mut comment_ranges: Vec<(String, usize, usize, String)> = Vec::new();
 
+    // Open bookmark ranges keyed by the ODF `text:name`: `name → (block, start char
+    // index)`, awaiting their matching `text:bookmark-end`.
+    let mut open_bookmarks: BTreeMap<String, (String, usize)> = BTreeMap::new();
+    // (block, start, end, bookmark name) anchor marks, applied after all text is in.
+    let mut bookmark_ranges: Vec<(String, usize, usize, String)> = Vec::new();
+
     // An in-progress `text:tracked-changes` declaration block: its raw-XML start byte +
     // open depth. Captured whole, then parsed into change records on close.
     let mut tracked: Option<(usize, i32)> = None;
@@ -605,6 +611,29 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                         }
                     }
                 }
+                b"text:bookmark-start" if in_text && cur.is_some() => {
+                    // Opens a bookmark's range: remember the current char index; the
+                    // matching `text:bookmark-end` (by `text:name`) records the end.
+                    if let (Some(name), Some(b)) = (attr_val(&e, b"text:name"), cur.clone()) {
+                        open_bookmarks.insert(name, (b, cur_len));
+                    }
+                }
+                b"text:bookmark-end" if in_text => {
+                    // Closes a bookmark's range: anchor a `bookmark` mark valued with the
+                    // name over `[start, cur_len)`.
+                    if let Some(name) = attr_val(&e, b"text:name") {
+                        if let Some((b, start)) = open_bookmarks.remove(&name) {
+                            bookmark_ranges.push((b, start, cur_len, name));
+                        }
+                    }
+                }
+                b"text:bookmark" if in_text && cur.is_some() => {
+                    // A point bookmark (no range): anchor a zero-width range at the
+                    // current char index — widened to one character on apply below.
+                    if let (Some(name), Some(b)) = (attr_val(&e, b"text:name"), cur.clone()) {
+                        bookmark_ranges.push((b, cur_len, cur_len, name));
+                    }
+                }
                 b"text:change-start" if in_text && cur.is_some() => {
                     // Opens a tracked-change range: remember the current char index; the
                     // matching `text:change-end` records the end.
@@ -760,6 +789,19 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
         if end > start {
             doc.add_mark(&b, start, end, MARK_COMMENT, cid.as_str());
         }
+    }
+    // Any bookmark whose `text:bookmark-end` never arrived still anchors at its start,
+    // extending to the block's end so it has a non-empty range when content follows.
+    for (name, (b, start)) in std::mem::take(&mut open_bookmarks) {
+        let end = doc_block_len(doc, &b).max(start);
+        bookmark_ranges.push((b, start, end, name));
+    }
+    // Bookmark anchor marks: cover each bookmarked range with a `bookmark` mark valued
+    // with the name. A zero-width (point) range can't carry a mark, so widen it to one
+    // character when the block has text after the anchor; an end-of-block point sits
+    // over the last character.
+    for (b, start, end, name) in bookmark_ranges {
+        doc.add_bookmark(&b, start, end, &name);
     }
     // Any tracked change whose `text:change-end` never arrived still anchors at its
     // start, extending to the block's end so it has a non-empty range when content

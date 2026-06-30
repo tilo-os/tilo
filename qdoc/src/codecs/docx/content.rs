@@ -135,6 +135,20 @@ pub(crate) fn parse_body(
     // (block, start, end, comment id) anchor marks, applied after all text is in.
     let mut comment_ranges: Vec<(String, usize, usize, String)> = Vec::new();
 
+    // Open bookmark ranges keyed by the OOXML `w:id`: `w:id → (block, start char index,
+    // name)`, awaiting their matching `w:bookmarkEnd` (matched by id). The name comes
+    // from the `w:bookmarkStart`'s `w:name`.
+    let mut open_bookmarks: BTreeMap<String, (String, usize, String)> = BTreeMap::new();
+    // (block, start, end, bookmark name) anchor marks, applied after all text is in.
+    let mut bookmark_ranges: Vec<(String, usize, usize, String)> = Vec::new();
+
+    // In-progress `w:hyperlink w:anchor="name"` (an internal cross-reference): the
+    // anchor target + the char index at which its run group begins. The runs inside
+    // splice text normally; a `link` mark valued `#name` is applied at the close.
+    let mut hyperlink: Option<(String, Option<String>, usize)> = None;
+    // (block, start, end, `#target` value) cross-ref `link` marks, applied after text.
+    let mut cross_refs: Vec<(String, usize, usize, String)> = Vec::new();
+
     // In-progress tracked change `<w:ins>`/`<w:del>` wrapper: its qdoc change id, kind,
     // anchor block, and the char index at which the changed range begins. The runs
     // inside splice text normally; the `ins`/`del` mark is applied at the close. Deleted
@@ -391,6 +405,15 @@ pub(crate) fn parse_body(
                     let cid = doc.insert_change(kind, &author, &date);
                     change = Some((cid, kind, cur.clone(), cur_len));
                 }
+                b"w:hyperlink" if in_body && cur.is_some() => {
+                    // An internal cross-reference (`w:anchor="name"`): remember the
+                    // target + current char index; the runs inside splice text normally
+                    // and a `link` mark valued `#name` is applied at `</w:hyperlink>`.
+                    // (`r:id`-based external links aren't modeled by this codec.)
+                    if let Some(anchor) = attr_val(&e, b"w:anchor") {
+                        hyperlink = Some((format!("{}{anchor}", crate::schema::CROSS_REF_PREFIX), cur.clone(), cur_len));
+                    }
+                }
                 b"w:r" if in_body => {
                     in_run = true;
                     run_start = cur_len;
@@ -479,6 +502,25 @@ pub(crate) fn parse_body(
                         }
                     }
                 }
+                b"w:bookmarkStart" if in_body && cur.is_some() => {
+                    // Opens a bookmark's range: remember the name + current char index;
+                    // the matching `w:bookmarkEnd` (by `w:id`) records the end. Word's
+                    // built-in `_GoBack` bookmark carries no useful name → skip it.
+                    if let (Some(id), Some(name), Some(b)) = (attr_val(&e, b"w:id"), attr_val(&e, b"w:name"), cur.clone()) {
+                        if name != "_GoBack" {
+                            open_bookmarks.insert(id, (b, cur_len, name));
+                        }
+                    }
+                }
+                b"w:bookmarkEnd" if in_body => {
+                    // Closes a bookmark's range: anchor a `bookmark` mark valued with the
+                    // name over `[start, cur_len)` for the matching `w:id`.
+                    if let Some(id) = attr_val(&e, b"w:id") {
+                        if let Some((b, start, name)) = open_bookmarks.remove(&id) {
+                            bookmark_ranges.push((b, start, cur_len, name));
+                        }
+                    }
+                }
                 // `w:commentReference` (the citation marker run child) carries no
                 // range info — the range is defined by start/end — so it is ignored.
                 _ if in_rpr => {
@@ -530,6 +572,15 @@ pub(crate) fn parse_body(
                         }
                     }
                     run_marks.clear();
+                }
+                b"w:hyperlink" => {
+                    // Close the cross-reference: anchor a `link` mark valued `#name` over
+                    // `[start, cur_len)` (applied after all text is in).
+                    if let Some((value, block, start)) = hyperlink.take() {
+                        if let Some(b) = block {
+                            cross_refs.push((b, start, cur_len, value));
+                        }
+                    }
                 }
                 b"w:p" if table_id.is_none() => {
                     flush_para_marks!();
@@ -600,6 +651,25 @@ pub(crate) fn parse_body(
     for (b, start, end, kind, cid) in change_ranges {
         if end > start {
             doc.add_change_mark(kind, &b, start, end, &cid);
+        }
+    }
+    // Any bookmark whose `w:bookmarkEnd` never arrived still anchors at its start,
+    // extending to the block's end so it has a non-empty range when content follows.
+    for (_id, (b, start, name)) in std::mem::take(&mut open_bookmarks) {
+        let end = doc_block_len(doc, &b).max(start);
+        bookmark_ranges.push((b, start, end, name));
+    }
+    // Bookmark anchor marks: cover each bookmarked range with a `bookmark` mark valued
+    // with the name. A zero-width (point) range is widened to one character (see
+    // `add_bookmark`).
+    for (b, start, end, name) in bookmark_ranges {
+        doc.add_bookmark(&b, start, end, &name);
+    }
+    // Cross-reference `link` marks (internal hyperlinks): cover each linked range with a
+    // `link` mark valued `#target`.
+    for (b, start, end, value) in cross_refs {
+        if end > start {
+            doc.add_mark(&b, start, end, crate::schema::MARK_LINK, value.as_str());
         }
     }
     Ok(())
