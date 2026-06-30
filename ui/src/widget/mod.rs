@@ -358,6 +358,42 @@ pub mod image_viewer;     pub use image_viewer::ImageViewer;
 pub mod tree_view;        pub use tree_view::TreeView;
 pub mod toggle_group;     pub use toggle_group::ToggleGroup;
 
+// === Phase 1: Audit timeline + history scrubber =====================
+// Pure widget + types work in `ui/` — no shell wiring yet. See
+// `docs/superpowers/specs/2026-06-29-spaces-channels-and-cryptographic-roles.md`
+// Phase 1 ("Audit timeline + soft-delete + restore-from-history").
+pub mod history;
+pub mod activity_timeline;
+pub mod history_scrubber;
+pub use history::{
+    HistoryAuthor, HistoryEntry, HistoryEntryId, HistoryFilter,
+    format_relative_time, hue_to_rgb, op_class_glyph, op_class_is_revertible,
+};
+pub use activity_timeline::ActivityTimeline;
+pub use history_scrubber::HistoryScrubber;
+
+// === Phase 5: Channel browser =======================================
+// Pure widget work in `ui/` — wheel-disc spoke overflow integration
+// lives in `shell` and is blocked on shell ABI drift. See
+// `docs/superpowers/specs/2026-06-29-spaces-channels-and-cryptographic-roles.md`
+// Phase 5 ("Channel browser + wheel-disc overflow").
+pub mod channel_browser;
+pub use channel_browser::{ChannelBrowser, ChannelEntry};
+
+// === Phase 4: Conflict toolkit ======================================
+// Pure widget + types work in `ui/` — no shell wiring yet. See
+// `docs/superpowers/specs/2026-06-29-spaces-channels-and-cryptographic-roles.md`
+// Phase 4 ("Conflict toolkit + reconciliation UI").
+pub mod merge_strategy;
+pub mod conflict_banner;
+pub mod conflict_picker;
+pub use merge_strategy::{
+    Alternative, ConcurrentOp, ConflictKind, ConflictResolver, MergeStrategy,
+    surface_banner,
+};
+pub use conflict_banner::ConflictBanner;
+pub use conflict_picker::{ConflictPicker, PickerOutcome};
+
 // =====================================================================
 // Tests
 // =====================================================================
