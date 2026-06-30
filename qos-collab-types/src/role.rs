@@ -86,6 +86,20 @@ pub enum OpClass {
     /// [`crate::compaction::CompactionCheckpoint`] encoded with
     /// [`crate::canonical::canonical_bytes`].
     Compaction,
+    /// Phase 9 (second half): cooperative cryptographic redaction.
+    /// The channel **owner** (and only the owner — see the role table
+    /// in [`role_permits`]) mints a Redact op to declare "this earlier
+    /// op is now compliance-required to be removed; peers, please
+    /// honour it." The payload is a
+    /// [`crate::redaction::RedactRequest`] encoded with
+    /// [`crate::canonical::canonical_bytes`]. See
+    /// `docs/superpowers/specs/2026-06-30-cryptographic-redaction-design.md`
+    /// for the full threat model + rationale.
+    ///
+    /// Recursive redaction (a `Redact` whose `target_op_id` resolves to
+    /// another `Redact`) is rejected by the validator — see
+    /// [`crate::validator::ValidationError::RecursiveRedaction`].
+    Redact,
 }
 
 /// The categorical kind of an artifact.
@@ -145,10 +159,13 @@ pub fn role_permits(role: Role, _kind: ArtifactKind, op: OpClass) -> bool {
             | OpClass::Comment
             | OpClass::Tombstone
             | OpClass::Restore => true,
-            // Editors mutate artifacts; they don't govern, and they
+            // Editors mutate artifacts; they don't govern, they
             // don't issue compaction checkpoints (Phase 6 v1 pins the
-            // host to the channel owner).
-            OpClass::Govern | OpClass::Compaction => false,
+            // host to the channel owner), and they don't redact.
+            // Redaction is a governance act and stays with governance
+            // authority; an editor who wants something removed asks
+            // an owner.
+            OpClass::Govern | OpClass::Compaction | OpClass::Redact => false,
         },
         Role::Commenter => matches!(op, OpClass::Comment),
         Role::Viewer => false,
@@ -178,6 +195,7 @@ mod tests {
                 OpClass::Restore,
                 OpClass::Govern,
                 OpClass::Compaction,
+                OpClass::Redact,
             ] {
                 assert!(
                     role_permits(Role::Owner, kind, op),
@@ -211,6 +229,20 @@ mod tests {
     }
 
     #[test]
+    fn editor_cannot_redact() {
+        // Phase 9 (second half): redaction is a governance act. An
+        // Editor with full mutate permissions can tombstone — the
+        // soft-delete primitive that says "I changed my mind about
+        // this edit" — but cannot redact: the validator's role table
+        // pins Redact to the channel owner.
+        assert!(!role_permits(
+            Role::Editor,
+            ArtifactKind::Note,
+            OpClass::Redact
+        ));
+    }
+
+    #[test]
     fn commenter_only_comment() {
         for op in [
             OpClass::Splice,
@@ -220,6 +252,7 @@ mod tests {
             OpClass::Restore,
             OpClass::Govern,
             OpClass::Compaction,
+            OpClass::Redact,
         ] {
             assert!(!role_permits(Role::Commenter, ArtifactKind::Note, op));
         }
@@ -241,6 +274,7 @@ mod tests {
             OpClass::Restore,
             OpClass::Govern,
             OpClass::Compaction,
+            OpClass::Redact,
         ] {
             assert!(!role_permits(Role::Viewer, ArtifactKind::Kanban, op));
         }
@@ -257,6 +291,7 @@ mod tests {
             OpClass::Restore,
             OpClass::Govern,
             OpClass::Compaction,
+            OpClass::Redact,
         ] {
             assert!(!role_permits(Role::Denied, ArtifactKind::File, op));
         }
