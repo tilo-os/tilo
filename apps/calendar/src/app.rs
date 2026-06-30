@@ -38,6 +38,8 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::BlockEditor;
 
+use crate::account::AccountStore;
+use crate::caldav::{self, SyncOutcome};
 use crate::date;
 use crate::doc::CalDoc;
 use crate::ics;
@@ -45,13 +47,43 @@ use crate::model::{seed_demo, Event, Id, ListSel, Model, Palette, Priority, Recu
 
 const SIDEBAR_W: f64 = 252.0;
 const TOPBAR_H: f64 = 60.0;
-const DETAIL_W: f64 = 392.0;
 const DETAIL_PAD: f64 = 22.0;
-const NOTES_W: f64 = DETAIL_W - 2.0 * DETAIL_PAD;
 const NOTES_TOP_OFFSET: f64 = 296.0;
 /// First/last hours shown in the week/day timelines.
 const DAY_START: i64 = 7;
 const DAY_END: i64 = 22;
+
+/// Width at/above which the calendar shows its full side-by-side layout
+/// (persistent sidebar + calendar view + detail panel). Below it the app
+/// collapses to a narrow single-pane: the sidebar becomes an overlay flap and
+/// the detail is pushed over the calendar as its own screen. Driven purely by
+/// the allocated window width (see [`CalendarApp::relayout`]).
+const WIDE_BREAKPOINT: f64 = 980.0;
+/// Detail panel width when it sits beside the calendar (wide layout). In the
+/// narrow layout the detail screen takes the whole content width instead.
+const DETAIL_W_WIDE: f64 = 392.0;
+/// Notes editor column width. Fixed (rather than tracking the detail width) so
+/// the taffy-registered editor node has a stable size across frames; the
+/// narrow detail screen simply left-aligns the same column.
+const NOTES_W: f64 = DETAIL_W_WIDE - 2.0 * DETAIL_PAD;
+
+/// How the calendars/smart-lists sidebar is presented at the current width.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SidebarMode {
+    /// Inline, always visible, occupies the left edge (wide windows).
+    Persistent,
+    /// Floats over the content behind a scrim; toggled open, hidden by default
+    /// (narrow windows).
+    Overlay,
+}
+
+/// In the narrow layout the content area is a two-screen navigation stack: the
+/// calendar view, or the event/task detail pushed in from the right.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum NarrowScreen {
+    Calendar,
+    Detail,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Sel {
@@ -81,6 +113,18 @@ enum Action {
     CycleRecurrence,
     CycleReminder,
     ToggleSelectedTask,
+    /// Select a task to view its detail (without toggling completion).
+    OpenTask(Id),
+    /// Show/hide the overlay sidebar flap (narrow layout).
+    ToggleSidebar,
+    /// Dismiss the overlay sidebar by clicking the scrim (narrow layout).
+    DismissSidebar,
+    /// Pop the narrow detail screen, returning to the calendar.
+    BackToCalendar,
+    /// Toggle whether a synced remote calendar's events are shown.
+    ToggleCalendarVisible(String),
+    /// Pull events from the configured CalDAV calendars.
+    Sync,
 }
 
 pub struct CalendarApp {
@@ -92,13 +136,34 @@ pub struct CalendarApp {
     selection: Option<Sel>,
     detail_open: bool,
 
+    /// CalDAV accounts + their calendars, as configured by OS Settings (the
+    /// shared [`AccountStore`]). Read-only here; Settings owns the lifecycle.
+    accounts: AccountStore,
+
     notes_editor: BlockEditor,
     bound: Option<Sel>,
     seeded: bool,
+    /// Set once the first frame has merged the synced sample calendars in, so
+    /// the offline CalDAV pull runs exactly once.
+    synced: bool,
 
+    // --- responsive state ------------------------------------------------
+    /// Recomputed every layout from the allocated width.
+    sidebar_mode: SidebarMode,
+    /// Whether the overlay flap is open (only meaningful in `Overlay` mode).
+    sidebar_open: bool,
+    /// Which narrow screen is showing (only meaningful below the breakpoint).
+    narrow_screen: NarrowScreen,
+
+    // --- layout caches (filled by `relayout`) ----------------------------
     rect: Rect,
+    sidebar_rect: Rect,
+    /// The region right of a persistent sidebar (or full-width under an overlay
+    /// one) holding the topbar + calendar view.
+    content_rect: Rect,
     detail_rect: Rect,
     notes_origin: Point,
+    notes_w: f64,
     editor_node: Option<NodeId>,
 
     hits: Vec<(Rect, Action)>,
@@ -120,6 +185,13 @@ impl CalendarApp {
             .or_else(|| model.events.first())
             .map(|e| Sel::Event(e.id));
 
+        // OS Settings owns the account lifecycle; we consume whatever it has
+        // persisted. When nothing is configured (fresh machine, or the headless
+        // `--shots` run), fall back to a representative offline store so synced
+        // calendars still appear in the sidebar.
+        let accounts =
+            AccountStore::load_from_settings().unwrap_or_else(AccountStore::sample);
+
         Self {
             model,
             today,
@@ -128,18 +200,83 @@ impl CalendarApp {
             list_sel: ListSel::Today,
             selection,
             detail_open: selection.is_some(),
+            accounts,
             notes_editor: BlockEditor::new(),
             bound: None,
             seeded: false,
+            synced: false,
+            sidebar_mode: SidebarMode::Persistent,
+            sidebar_open: false,
+            narrow_screen: if selection.is_some() {
+                NarrowScreen::Detail
+            } else {
+                NarrowScreen::Calendar
+            },
             rect: Rect::ZERO,
+            sidebar_rect: Rect::ZERO,
+            content_rect: Rect::ZERO,
             detail_rect: Rect::ZERO,
             notes_origin: Point::new(-10000.0, -10000.0),
+            notes_w: DETAIL_W_WIDE - 2.0 * DETAIL_PAD,
             editor_node: None,
             hits: Vec::new(),
             last_mouse: Point::ZERO,
             status: None,
             dirty: true,
         }
+    }
+
+    /// Pull events from the configured CalDAV calendars and merge them into the
+    /// model. Offline / headless this synthesises each calendar's events through
+    /// the real [`ics::parse`] path (see [`crate::caldav`]); the live app runs
+    /// the same merge with results posted from a background sync worker.
+    ///
+    /// De-duped by (title, start) so a repeated sync is close to idempotent.
+    fn sync_caldav(&mut self, doc: &mut AutoCommit) {
+        let inputs: Vec<_> = self
+            .accounts
+            .accounts
+            .iter()
+            .map(|a| (a.config.clone(), a.calendars.clone()))
+            .collect();
+        let (result, outcome) = caldav::sync_all(&inputs, self.today);
+        let mut added = 0usize;
+        for mut e in result.events {
+            if self
+                .model
+                .events
+                .iter()
+                .any(|x| x.title == e.title && x.start == e.start)
+            {
+                continue;
+            }
+            e.id = Uuid::new_v4();
+            CalDoc::update_event(doc, &e);
+            if let Some(list) = CalDoc::event_notes(doc, e.id) {
+                CalDoc::seed_notes_if_empty(doc, &list, &["Synced from CalDAV"]);
+            }
+            self.model.events.push(e);
+            added += 1;
+        }
+        self.model.events.sort_by_key(|e| e.start);
+        self.status = match outcome {
+            SyncOutcome::Synced { calendars, .. } => {
+                Some(format!("Synced {added} events from {calendars} calendars"))
+            }
+            SyncOutcome::Offline => None,
+            SyncOutcome::Failed(reason) => Some(format!("Sync failed: {reason}")),
+        };
+        self.dirty = true;
+    }
+
+    /// The single notes-editor entry point. All notes rendering and editing for
+    /// the selected event/task goes through this widget; binding it to the
+    /// selected item's CRDT block list happens in [`Self::ensure_bound`]. This
+    /// is the seam the shared WYSIWYG editor will replace: swap the
+    /// [`BlockEditor`] field type and re-point `ensure_bound`/`notes_list_for`,
+    /// and nothing in the layout/draw/event code below needs to change.
+    fn notes_editor(&mut self) -> &mut BlockEditor {
+        &mut self.notes_editor
     }
 
     // --- CRDT plumbing ---------------------------------------------------
@@ -201,7 +338,9 @@ impl CalendarApp {
         if let Some(list) = self.notes_list_for(doc, sel) {
             let mut ed = BlockEditor::new();
             ed.bind_blocks(doc, list);
-            self.notes_editor = ed;
+            // Install the freshly-bound editor through the single notes-editor
+            // seam (the swap-point for the shared WYSIWYG editor).
+            *self.notes_editor() = ed;
             self.bound = Some(sel);
             self.dirty = true;
         }
@@ -211,7 +350,23 @@ impl CalendarApp {
 
     fn select_event(&mut self, id: Id) {
         self.selection = Some(Sel::Event(id));
+        self.open_detail();
+    }
+
+    fn select_task(&mut self, id: Id) {
+        self.selection = Some(Sel::Task(id));
+        self.open_detail();
+    }
+
+    /// Open the detail panel for the current selection. In the narrow layout
+    /// this pushes the detail screen over the calendar and closes the flap; in
+    /// the wide layout the panel just appears beside the calendar.
+    fn open_detail(&mut self) {
         self.detail_open = true;
+        if matches!(self.sidebar_mode, SidebarMode::Overlay) {
+            self.narrow_screen = NarrowScreen::Detail;
+            self.sidebar_open = false;
+        }
         self.dirty = true;
     }
 
@@ -337,6 +492,87 @@ impl CalendarApp {
         self.dirty = true;
     }
 
+    /// Recompute every layout rect from the allocated window size. Called from
+    /// `apply_layout`. This is the one place breakpoints are decided:
+    ///
+    /// * **wide** (`width >= WIDE_BREAKPOINT`): persistent sidebar on the left,
+    ///   calendar view in the middle, detail panel docked on the right.
+    /// * **narrow**: the sidebar becomes an overlay flap (hidden by default),
+    ///   the calendar view goes full-width, and the detail is its own screen
+    ///   pushed over the calendar — only one of {calendar, detail} is laid out
+    ///   at a time (the other gets a zero rect and is neither drawn nor hit).
+    fn relayout(&mut self) {
+        let r = self.rect;
+        let wide = r.width() >= WIDE_BREAKPOINT;
+        self.sidebar_mode = if wide { SidebarMode::Persistent } else { SidebarMode::Overlay };
+
+        // Sidebar occupies the left edge in both modes; in overlay it floats
+        // over the content (so the content starts at the window's left edge).
+        self.sidebar_rect = Rect::new(r.x0, r.y0, r.x0 + SIDEBAR_W, r.y1);
+        let content_x0 = match self.sidebar_mode {
+            SidebarMode::Persistent => r.x0 + SIDEBAR_W,
+            SidebarMode::Overlay => r.x0,
+        };
+
+        if wide {
+            // Detail docked on the right when open; calendar fills the rest.
+            let detail_x0 = if self.detail_open { r.x1 - DETAIL_W_WIDE } else { r.x1 };
+            self.content_rect = Rect::new(content_x0, r.y0, detail_x0, r.y1);
+            self.detail_rect = if self.detail_open {
+                Rect::new(detail_x0, r.y0, r.x1, r.y1)
+            } else {
+                Rect::ZERO
+            };
+        } else {
+            // Single-pane: calendar OR detail occupies the full content width.
+            let full = Rect::new(content_x0, r.y0, r.x1, r.y1);
+            match (self.detail_open, self.narrow_screen) {
+                (true, NarrowScreen::Detail) => {
+                    self.content_rect = Rect::ZERO;
+                    self.detail_rect = full;
+                }
+                _ => {
+                    self.content_rect = full;
+                    self.detail_rect = Rect::ZERO;
+                }
+            }
+        }
+
+        // Notes editor placement, derived from whichever detail rect is active.
+        // The column itself is a fixed `NOTES_W` (the editor node's stable
+        // taffy size); only its origin moves with the active detail rect.
+        self.notes_w = NOTES_W;
+        if self.detail_rect.area() > 0.0 {
+            self.notes_origin = Point::new(
+                self.detail_rect.x0 + DETAIL_PAD,
+                self.detail_rect.y0 + self.notes_top_offset(),
+            );
+        } else {
+            self.notes_origin = Point::new(-10000.0, -10000.0);
+        }
+    }
+
+    /// Whether the overlay flap is currently shown (always true for a
+    /// persistent sidebar).
+    fn sidebar_visible(&self) -> bool {
+        match self.sidebar_mode {
+            SidebarMode::Persistent => true,
+            SidebarMode::Overlay => self.sidebar_open,
+        }
+    }
+
+    /// Y offset (from the detail rect top) of the NOTES section + editor. The
+    /// narrow detail screen carries a back bar above the body, so its notes
+    /// start lower. Single source of truth for both `relayout` (editor origin)
+    /// and `draw_detail` (the NOTES label/divider).
+    fn notes_top_offset(&self) -> f64 {
+        if matches!(self.sidebar_mode, SidebarMode::Overlay) {
+            NOTES_TOP_OFFSET + 40.0
+        } else {
+            NOTES_TOP_OFFSET
+        }
+    }
+
     fn apply_action(&mut self, action: Action, doc: &mut AutoCommit) {
         match action {
             Action::View(v) => {
@@ -351,14 +587,33 @@ impl CalendarApp {
                 self.view = View::Day;
             }
             Action::OpenEvent(id) => self.select_event(id),
+            Action::OpenTask(id) => self.select_task(id),
             Action::ToggleTask(id) => self.toggle_task(id, doc),
             Action::List(s) => {
                 self.list_sel = s;
+                // Picking a smart list/project on the narrow flap returns to
+                // the calendar screen and dismisses the flap.
+                if matches!(self.sidebar_mode, SidebarMode::Overlay) {
+                    self.narrow_screen = NarrowScreen::Calendar;
+                    self.sidebar_open = false;
+                }
             }
             Action::CloseDetail => {
                 self.detail_open = false;
                 self.selection = None;
+                self.narrow_screen = NarrowScreen::Calendar;
             }
+            Action::ToggleSidebar => self.sidebar_open = !self.sidebar_open,
+            Action::DismissSidebar => self.sidebar_open = false,
+            Action::BackToCalendar => self.narrow_screen = NarrowScreen::Calendar,
+            Action::ToggleCalendarVisible(id) => {
+                for acc in &mut self.accounts.accounts {
+                    if let Some(cal) = acc.calendars.iter_mut().find(|c| c.id == id) {
+                        cal.visible = !cal.visible;
+                    }
+                }
+            }
+            Action::Sync => self.sync_caldav(doc),
             Action::Export => self.export_ics(),
             Action::Import => self.import_ics(doc),
             Action::ShiftMonth(n) => self.anchor = date::add_months(self.anchor, n),
@@ -403,8 +658,34 @@ impl CalendarApp {
     ) -> Vec<(Rect, Action)> {
         let c = &theme.tokens.colors;
         let mut hits = Vec::new();
-        let r = Rect::new(self.rect.x0, self.rect.y0, self.rect.x0 + SIDEBAR_W, self.rect.y1);
+        if !self.sidebar_visible() {
+            return hits;
+        }
+        let overlay = matches!(self.sidebar_mode, SidebarMode::Overlay);
+        // The overlay flap dims the content behind a scrim; clicking it
+        // dismisses the flap. Drawn before the panel so the panel sits on top.
+        if overlay && self.content_rect.area() > 0.0 || (overlay && self.detail_rect.area() > 0.0) {
+            let behind = if self.content_rect.area() > 0.0 {
+                self.content_rect
+            } else {
+                self.detail_rect
+            };
+            fill_rect(scene, t, c.surfaces.overlay, behind);
+            hits.push((behind, Action::DismissSidebar));
+        }
+
+        let r = self.sidebar_rect;
         fill_rect(scene, t, c.surfaces.raised, r);
+        if overlay {
+            // Drop shadow along the flap's right edge.
+            scene.fill(
+                Fill::NonZero,
+                t,
+                Color::from_rgba8(0, 0, 0, 70),
+                None,
+                &Rect::new(r.x1, r.y0, r.x1 + 8.0, r.y1),
+            );
+        }
         stroke_line(
             scene,
             t,
@@ -552,60 +833,154 @@ impl CalendarApp {
             y += 38.0;
         }
 
-        // Mini upcoming-task rail at the bottom of the sidebar.
-        let list_title = match &self.list_sel {
-            ListSel::Inbox => "Inbox",
-            ListSel::Today => "Today",
-            ListSel::Upcoming => "Upcoming",
-            ListSel::Completed => "Completed",
-            ListSel::Project(_) => "Tasks",
-        };
-        y += 10.0;
-        stroke_line(scene, t, c.border_standard, Point::new(r.x0 + pad, y), Point::new(r.x1 - pad, y), 1.0);
-        y += 14.0;
-        tr.draw_text(
-            scene,
-            list_title,
-            11.0,
-            c.text_dim,
-            t * Affine::translate((r.x0 + pad, y)),
-            None,
-        );
-        y += 24.0;
+        // CalDAV calendars from the shared OS accounts store. Each account's
+        // calendars are listed with a visibility checkbox; a Sync affordance in
+        // the heading pulls events from every visible calendar.
+        if !self.accounts.is_empty() {
+            y += 14.0;
+            tr.draw_text(
+                scene,
+                "CALENDARS",
+                11.0,
+                c.text_dim,
+                t * Affine::translate((r.x0 + pad, y)),
+                None,
+            );
+            let sync = Rect::new(r.x1 - pad - 44.0, y - 4.0, r.x1 - pad, y + 16.0);
+            if sync.contains(self.last_mouse) {
+                fill_round(scene, t, c.surface_white_5, sync, 6.0);
+            }
+            tr.draw_text(
+                scene,
+                "Sync",
+                11.0,
+                c.accent[6],
+                t * Affine::translate((sync.x0 + 6.0, y)),
+                None,
+            );
+            hits.push((sync, Action::Sync));
+            y += 26.0;
+
+            for acc in &self.accounts.accounts {
+                // Account header (label only — management lives in Settings).
+                tr.draw_text(
+                    scene,
+                    &elide(acc.label(), 26),
+                    12.0,
+                    c.neutral[7],
+                    t * Affine::translate((r.x0 + pad, y)),
+                    None,
+                );
+                y += 22.0;
+                for cal in &acc.calendars {
+                    let row = Rect::new(r.x0 + 10.0, y, r.x1 - 10.0, y + 30.0);
+                    if row.contains(self.last_mouse) {
+                        fill_round(scene, t, c.surface_white_5, row, 6.0);
+                    }
+                    // Colour swatch checkbox: filled when visible, hollow when
+                    // hidden. The whole row toggles visibility.
+                    let sw = Rect::new(
+                        row.x0 + 8.0,
+                        row.center().y - 7.0,
+                        row.x0 + 22.0,
+                        row.center().y + 7.0,
+                    );
+                    let pc = cal.palette().color(theme);
+                    if cal.visible {
+                        fill_round(scene, t, pc, sw, 4.0);
+                        draw_check(scene, t, Color::WHITE, sw);
+                    } else {
+                        stroke_round(scene, t, pc.with_alpha(0.6), sw, 4.0, 1.4);
+                    }
+                    let txt_color = if cal.visible { c.neutral[8] } else { c.text_dim };
+                    tr.draw_text(
+                        scene,
+                        &elide(&cal.name, 24),
+                        13.0,
+                        txt_color,
+                        t * Affine::translate((row.x0 + 32.0, row.center().y - 8.0)),
+                        None,
+                    );
+                    hits.push((row, Action::ToggleCalendarVisible(cal.id.clone())));
+                    y += 32.0;
+                }
+            }
+        }
+
         // Reserve the bottom of the sidebar for the mini-month navigator.
         let mini_top = r.y1 - 196.0;
-        let tasks = self.model.tasks_for(&self.list_sel, self.today);
-        for tk in tasks.iter().take(4) {
-            if y > mini_top - 34.0 {
-                break;
-            }
+        // Mini upcoming-task rail — only when there's vertical room left above
+        // the mini-month (the CALENDARS section above may have used it up; the
+        // agenda/day views still list the tasks in full either way).
+        if y + 56.0 < mini_top {
+            let list_title = match &self.list_sel {
+                ListSel::Inbox => "Inbox",
+                ListSel::Today => "Today",
+                ListSel::Upcoming => "Upcoming",
+                ListSel::Completed => "Completed",
+                ListSel::Project(_) => "Tasks",
+            };
+            y += 10.0;
+            stroke_line(scene, t, c.border_standard, Point::new(r.x0 + pad, y), Point::new(r.x1 - pad, y), 1.0);
+            y += 14.0;
+            tr.draw_text(
+                scene,
+                list_title,
+                11.0,
+                c.text_dim,
+                t * Affine::translate((r.x0 + pad, y)),
+                None,
+            );
+            y += 24.0;
+            let tasks = self.model.tasks_for(&self.list_sel, self.today);
+            for tk in tasks.iter().take(4) {
+                if y > mini_top - 34.0 {
+                    break;
+                }
             let row = Rect::new(r.x0 + 12.0, y, r.x1 - 12.0, y + 30.0);
             if row.contains(self.last_mouse) {
                 fill_round(scene, t, c.surface_white_5, row, 6.0);
             }
+            // Affordance split: the checkbox AND the label text toggle
+            // completion; the open area to their right selects the task to view
+            // its detail. Push the wide "open" target first, then the narrower
+            // "complete" target on top so the reverse hit-scan lets the
+            // label/checkbox win where they overlap.
+            hits.push((row, Action::OpenTask(tk.id)));
+
             let box_rect = Rect::new(row.x0 + 4.0, row.center().y - 8.0, row.x0 + 20.0, row.center().y + 8.0);
             draw_checkbox(scene, t, theme, box_rect, tk.done);
-            hits.push((box_rect, Action::ToggleTask(tk.id)));
             let txt_color = if tk.done { c.text_dim } else { c.neutral[8] };
+            let label = elide(&tk.title, 22);
+            let label_x0 = row.x0 + 28.0;
             tr.draw_text(
                 scene,
-                &elide(&tk.title, 22),
+                &label,
                 13.0,
                 txt_color,
-                t * Affine::translate((row.x0 + 28.0, row.center().y - 7.0)),
+                t * Affine::translate((label_x0, row.center().y - 7.0)),
                 None,
             );
+            let label_w = tr.measure(&label, 13.0, None).0 as f64;
             if tk.done {
-                let w = tr.measure(&elide(&tk.title, 22), 13.0, None).0 as f64;
                 stroke_line(
                     scene,
                     t,
                     c.text_dim,
-                    Point::new(row.x0 + 28.0, row.center().y),
-                    Point::new(row.x0 + 28.0 + w, row.center().y),
+                    Point::new(label_x0, row.center().y),
+                    Point::new(label_x0 + label_w, row.center().y),
                     1.0,
                 );
             }
+            // Completion target spans the checkbox and the label text (with a
+            // little slack), so clicking either toggles done.
+            let complete = Rect::new(
+                row.x0,
+                row.y0,
+                (label_x0 + label_w + 8.0).min(row.x1),
+                row.y1,
+            );
+            hits.push((complete, Action::ToggleTask(tk.id)));
             // priority flag
             if tk.priority != Priority::None {
                 tr.draw_text(
@@ -618,19 +993,24 @@ impl CalendarApp {
                 );
             }
             y += 32.0;
+            }
         }
 
-        // Mini-month navigator pinned to the sidebar bottom.
-        stroke_line(
-            scene,
-            t,
-            c.border_standard,
-            Point::new(r.x0 + pad, mini_top - 8.0),
-            Point::new(r.x1 - pad, mini_top - 8.0),
-            1.0,
-        );
-        let mini_region = Rect::new(r.x0, mini_top, r.x1, r.y1 - 12.0);
-        hits.extend(self.draw_mini_month(scene, t, tr, theme, mini_region));
+        // Mini-month navigator pinned to the sidebar bottom — drawn only when
+        // the sidebar content above it (lists + projects + CALENDARS) hasn't
+        // already grown into its reserved band, so the two never overlap.
+        if y < mini_top - 8.0 {
+            stroke_line(
+                scene,
+                t,
+                c.border_standard,
+                Point::new(r.x0 + pad, mini_top - 8.0),
+                Point::new(r.x1 - pad, mini_top - 8.0),
+                1.0,
+            );
+            let mini_region = Rect::new(r.x0, mini_top, r.x1, r.y1 - 12.0);
+            hits.extend(self.draw_mini_month(scene, t, tr, theme, mini_region));
+        }
 
         hits
     }
@@ -752,53 +1132,76 @@ impl CalendarApp {
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        content_x0: f64,
-        right_edge: f64,
     ) -> Vec<(Rect, Action)> {
         let c = &theme.tokens.colors;
         let mut hits = Vec::new();
+        let content_x0 = self.content_rect.x0;
+        let right_edge = self.content_rect.x1;
         let r = Rect::new(content_x0, self.rect.y0, right_edge, self.rect.y0 + TOPBAR_H);
         fill_rect(scene, t, c.surfaces.base, r);
         stroke_line(scene, t, c.border_standard, Point::new(r.x0, r.y1), Point::new(r.x1, r.y1), 1.0);
 
         let cy = r.center().y;
+        let overlay_sidebar = matches!(self.sidebar_mode, SidebarMode::Overlay);
+        // Narrow layouts cannot fit the segmented view switch; it folds away
+        // (the view is still switchable by keyboard m/w/d/a).
+        let show_segmented = !overlay_sidebar;
+
+        let mut left = r.x0 + 16.0;
+        // Hamburger toggle for the overlay flap (narrow only).
+        if overlay_sidebar {
+            let ham = Rect::new(left, cy - 15.0, left + 30.0, cy + 15.0);
+            draw_icon_button(scene, t, theme, ham, ham.contains(self.last_mouse));
+            draw_hamburger(scene, t, c.neutral[8], ham.center());
+            hits.push((ham, Action::ToggleSidebar));
+            left += 38.0;
+        }
+
         // prev / next chevrons
-        let prev = Rect::new(r.x0 + 16.0, cy - 15.0, r.x0 + 46.0, cy + 15.0);
-        let next = Rect::new(r.x0 + 50.0, cy - 15.0, r.x0 + 80.0, cy + 15.0);
+        let prev = Rect::new(left, cy - 15.0, left + 30.0, cy + 15.0);
+        let next = Rect::new(left + 34.0, cy - 15.0, left + 64.0, cy + 15.0);
         draw_icon_button(scene, t, theme, prev, prev.contains(self.last_mouse));
         draw_icon_button(scene, t, theme, next, next.contains(self.last_mouse));
         draw_chevron(scene, t, c.neutral[8], prev.center(), true);
         draw_chevron(scene, t, c.neutral[8], next.center(), false);
         hits.push((prev, Action::Prev));
         hits.push((next, Action::Next));
+        left += 74.0;
 
         // Today pill
-        let today_btn = Rect::new(r.x0 + 90.0, cy - 15.0, r.x0 + 150.0, cy + 15.0);
+        let today_btn = Rect::new(left, cy - 15.0, left + 60.0, cy + 15.0);
         draw_icon_button(scene, t, theme, today_btn, today_btn.contains(self.last_mouse));
         center_text(scene, tr, "Today", 13.0, c.neutral[8], today_btn, t);
         hits.push((today_btn, Action::Today));
+        let title_x = today_btn.x1 + 18.0;
 
-        // Right cluster: segmented view control + New button.
-        let seg_w = 64.0;
-        let seg_total = seg_w * 4.0;
-        let seg_x1 = right_edge - 14.0;
-        let seg_x0 = seg_x1 - seg_total;
-        let seg = Rect::new(seg_x0, cy - 16.0, seg_x1, cy + 16.0);
-        fill_round(scene, t, c.surfaces.raised, seg, 9.0);
-        stroke_round(scene, t, c.border_standard, seg, 9.0, 1.0);
-        for (i, v) in View::ALL.iter().enumerate() {
-            let cell = Rect::new(seg_x0 + seg_w * i as f64, seg.y0, seg_x0 + seg_w * (i as f64 + 1.0), seg.y1);
-            if self.view == *v {
-                fill_round(scene, t, c.accent[5], cell.inflate(-3.0, -3.0), 7.0);
-            } else if cell.contains(self.last_mouse) {
-                fill_round(scene, t, c.surface_white_5, cell.inflate(-3.0, -3.0), 7.0);
+        // Right cluster: segmented view control (wide only) + New button.
+        let new_w = 66.0;
+        let seg_x0 = if show_segmented {
+            let seg_w = 64.0;
+            let seg_total = seg_w * 4.0;
+            let seg_x1 = right_edge - 14.0;
+            let seg_x0 = seg_x1 - seg_total;
+            let seg = Rect::new(seg_x0, cy - 16.0, seg_x1, cy + 16.0);
+            fill_round(scene, t, c.surfaces.raised, seg, 9.0);
+            stroke_round(scene, t, c.border_standard, seg, 9.0, 1.0);
+            for (i, v) in View::ALL.iter().enumerate() {
+                let cell = Rect::new(seg_x0 + seg_w * i as f64, seg.y0, seg_x0 + seg_w * (i as f64 + 1.0), seg.y1);
+                if self.view == *v {
+                    fill_round(scene, t, c.accent[5], cell.inflate(-3.0, -3.0), 7.0);
+                } else if cell.contains(self.last_mouse) {
+                    fill_round(scene, t, c.surface_white_5, cell.inflate(-3.0, -3.0), 7.0);
+                }
+                let col = if self.view == *v { Color::WHITE } else { c.neutral[7] };
+                center_text(scene, tr, v.label(), 13.0, col, cell, t);
+                hits.push((cell, Action::View(*v)));
             }
-            let col = if self.view == *v { Color::WHITE } else { c.neutral[7] };
-            center_text(scene, tr, v.label(), 13.0, col, cell, t);
-            hits.push((cell, Action::View(*v)));
-        }
+            seg_x0
+        } else {
+            right_edge - 14.0
+        };
 
-        let new_btn = Rect::new(seg_x0 - 78.0, cy - 16.0, seg_x0 - 12.0, cy + 16.0);
+        let new_btn = Rect::new(seg_x0 - new_w - 12.0, cy - 16.0, seg_x0 - 12.0, cy + 16.0);
         fill_round(scene, t, c.accent[5], new_btn, 9.0);
         draw_plus(scene, t, Color::WHITE, Point::new(new_btn.x0 + 16.0, cy));
         tr.draw_text(
@@ -813,7 +1216,6 @@ impl CalendarApp {
 
         // Period title — fills the gap, clipped so a long week range never
         // collides with the New button.
-        let title_x = r.x0 + 168.0;
         let title_clip = Rect::new(title_x - 2.0, r.y0, new_btn.x0 - 12.0, r.y1);
         scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, t, &title_clip);
         tr.draw_text(
@@ -829,8 +1231,13 @@ impl CalendarApp {
         hits
     }
 
-    fn view_rect(&self, content_x0: f64, right_edge: f64) -> Rect {
-        Rect::new(content_x0, self.rect.y0 + TOPBAR_H, right_edge, self.rect.y1)
+    fn view_rect(&self) -> Rect {
+        Rect::new(
+            self.content_rect.x0,
+            self.rect.y0 + TOPBAR_H,
+            self.content_rect.x1,
+            self.rect.y1,
+        )
     }
 
     fn draw_month(
@@ -1237,22 +1644,32 @@ impl CalendarApp {
                 if row.contains(self.last_mouse) {
                     fill_round(scene, t, c.surface_white_5, row, 6.0);
                 }
+                // Open the task on a plain row click; checkbox + label toggle
+                // completion (pushed on top so they win the reverse hit-scan).
+                hits.push((row, Action::OpenTask(tk.id)));
                 let box_rect = Rect::new(row.x0 + 8.0, row.center().y - 8.0, row.x0 + 24.0, row.center().y + 8.0);
                 draw_checkbox(scene, t, theme, box_rect, tk.done);
-                hits.push((box_rect, Action::ToggleTask(tk.id)));
                 let col = if tk.done { c.text_dim } else { c.neutral[9] };
+                let label_x0 = row.x0 + 34.0;
                 tr.draw_text(
                     scene,
                     &tk.title,
                     13.0,
                     col,
-                    t * Affine::translate((row.x0 + 34.0, y + 7.0)),
+                    t * Affine::translate((label_x0, y + 7.0)),
                     Some((row.width() - 160.0) as f32),
                 );
+                let label_w = tr.measure(&tk.title, 13.0, None).0 as f64;
                 if tk.done {
-                    let w = tr.measure(&tk.title, 13.0, None).0 as f64;
-                    stroke_line(scene, t, c.text_dim, Point::new(row.x0 + 34.0, row.center().y), Point::new((row.x0 + 34.0 + w).min(row.x1 - 120.0), row.center().y), 1.0);
+                    stroke_line(scene, t, c.text_dim, Point::new(label_x0, row.center().y), Point::new((label_x0 + label_w).min(row.x1 - 120.0), row.center().y), 1.0);
                 }
+                let complete = Rect::new(
+                    row.x0,
+                    row.y0,
+                    (label_x0 + label_w.min(row.width() - 160.0) + 8.0).min(row.x1 - 40.0),
+                    row.y1,
+                );
+                hits.push((complete, Action::ToggleTask(tk.id)));
                 if tk.priority != Priority::None {
                     tr.draw_text(scene, tk.priority.flag(), 11.0, tk.priority.color(theme), t * Affine::translate((row.x1 - 30.0, y + 7.0)), None);
                 }
@@ -1282,8 +1699,29 @@ impl CalendarApp {
         stroke_line(scene, t, c.border_standard, Point::new(r.x0, r.y0), Point::new(r.x0, r.y1), 1.0);
 
         let x = r.x0 + DETAIL_PAD;
-        let w = NOTES_W;
+        let w = self.notes_w;
         let mut y = r.y0 + 18.0;
+
+        // In the narrow single-pane layout the detail is its own pushed screen,
+        // so it gets a back affordance instead of a docked close button.
+        if matches!(self.sidebar_mode, SidebarMode::Overlay) {
+            let back = Rect::new(r.x0 + 12.0, r.y0 + 12.0, r.x0 + 96.0, r.y0 + 44.0);
+            if back.contains(self.last_mouse) {
+                fill_round(scene, t, c.surface_white_5, back, 8.0);
+            }
+            draw_back_arrow(scene, t, c.neutral[8], Point::new(back.x0 + 14.0, back.center().y));
+            tr.draw_text(
+                scene,
+                "Back",
+                13.0,
+                c.neutral[8],
+                t * Affine::translate((back.x0 + 28.0, back.center().y - 8.0)),
+                None,
+            );
+            hits.push((back, Action::BackToCalendar));
+            // Push the detail body below the back bar.
+            y += 34.0;
+        }
 
         // close button
         let close = Rect::new(r.x1 - 36.0, r.y0 + 14.0, r.x1 - 14.0, r.y0 + 36.0);
@@ -1383,7 +1821,7 @@ impl CalendarApp {
         }
 
         // Notes header (the editor itself is drawn separately in draw()).
-        let notes_label_y = r.y0 + NOTES_TOP_OFFSET - 26.0;
+        let notes_label_y = r.y0 + self.notes_top_offset() - 26.0;
         tr.draw_text(scene, "NOTES", 11.0, c.text_dim, t * Affine::translate((x, notes_label_y)), None);
         stroke_line(scene, t, c.border_standard, Point::new(x, notes_label_y + 18.0), Point::new(x + w, notes_label_y + 18.0), 1.0);
 
@@ -1419,6 +1857,13 @@ impl Widget for CalendarApp {
                 self.model = CalDoc::read_model(state);
             }
             self.seeded = true;
+        }
+        // First-frame CalDAV pull: merge the configured calendars' events in so
+        // the seeded view (and `--shots`) shows real synced entries. Runs once;
+        // the live app re-syncs from a worker on the `Sync` action.
+        if !self.synced {
+            self.sync_caldav(state);
+            self.synced = true;
         }
         self.ensure_bound(state);
         self.notes_editor.sync(state, path);
@@ -1481,14 +1926,9 @@ impl Widget for CalendarApp {
         }
         self.rect = new_rect;
 
-        // Detail panel rect + notes editor placement.
-        if self.detail_open {
-            self.detail_rect = Rect::new(self.rect.x1 - DETAIL_W, self.rect.y0, self.rect.x1, self.rect.y1);
-            self.notes_origin = Point::new(self.detail_rect.x0 + DETAIL_PAD, self.detail_rect.y0 + NOTES_TOP_OFFSET);
-        } else {
-            self.detail_rect = Rect::ZERO;
-            self.notes_origin = Point::new(-10000.0, -10000.0);
-        }
+        // Recompute the responsive rects (sidebar / content / detail / notes)
+        // from the new allocated size, then place the notes editor.
+        self.relayout();
         if let Some(n) = self.editor_node {
             self.notes_editor.apply_layout(taffy, n, self.notes_origin);
         }
@@ -1506,30 +1946,31 @@ impl Widget for CalendarApp {
         let c = &theme.tokens.colors;
         fill_rect(scene, t, c.surfaces.base, self.rect);
 
-        let content_x0 = self.rect.x0 + SIDEBAR_W;
-        let right_edge = if self.detail_open { self.rect.x1 - DETAIL_W } else { self.rect.x1 };
-
         let mut hits = Vec::new();
-        hits.extend(self.draw_sidebar(scene, t, text_renderer, theme));
-        hits.extend(self.draw_topbar(scene, t, text_renderer, theme, content_x0, right_edge));
 
-        let area = self.view_rect(content_x0, right_edge);
-        match self.view {
-            View::Month => hits.extend(self.draw_month(scene, t, text_renderer, theme, area)),
-            View::Week => {
-                let days = date::week_days(self.anchor);
-                hits.extend(self.draw_timeline(scene, t, text_renderer, theme, area, &days));
+        // Content: the calendar screen (topbar + active view) when it has a
+        // rect, otherwise the detail screen has taken the whole width (narrow
+        // pushed detail).
+        let detail_drawn = self.detail_open && self.detail_rect.area() > 0.0;
+        if self.content_rect.area() > 0.0 {
+            hits.extend(self.draw_topbar(scene, t, text_renderer, theme));
+            let area = self.view_rect();
+            match self.view {
+                View::Month => hits.extend(self.draw_month(scene, t, text_renderer, theme, area)),
+                View::Week => {
+                    let days = date::week_days(self.anchor);
+                    hits.extend(self.draw_timeline(scene, t, text_renderer, theme, area, &days));
+                }
+                View::Day => {
+                    let days = [self.anchor];
+                    hits.extend(self.draw_timeline(scene, t, text_renderer, theme, area, &days));
+                }
+                View::Agenda => hits.extend(self.draw_agenda(scene, t, text_renderer, theme, area)),
             }
-            View::Day => {
-                let days = [self.anchor];
-                hits.extend(self.draw_timeline(scene, t, text_renderer, theme, area, &days));
-            }
-            View::Agenda => hits.extend(self.draw_agenda(scene, t, text_renderer, theme, area)),
+            self.draw_status(scene, t, text_renderer, theme, self.content_rect.x0);
         }
 
-        self.draw_status(scene, t, text_renderer, theme, content_x0);
-
-        if self.detail_open {
+        if detail_drawn {
             hits.extend(self.draw_detail(scene, t, text_renderer, theme));
             // Notes editor — clipped to the notes region below the header.
             // Clip to the editor's own column (not the whole panel) so a
@@ -1546,6 +1987,10 @@ impl Widget for CalendarApp {
             scene.pop_layer();
             self.notes_editor.draw_overlay(scene, t, text_renderer, theme);
         }
+
+        // Sidebar last so the overlay flap (and its scrim) paint over the
+        // calendar/detail content beneath them.
+        hits.extend(self.draw_sidebar(scene, t, text_renderer, theme));
 
         self.hits = hits;
     }
@@ -1568,7 +2013,10 @@ impl Widget for CalendarApp {
             self.dirty = true;
         }
 
-        let editor_active = self.detail_open;
+        // The notes editor is only live when the detail screen is actually
+        // drawn (in the narrow layout it isn't, while the calendar screen
+        // shows).
+        let editor_active = self.detail_open && self.detail_rect.area() > 0.0;
         let in_notes = editor_active
             && self.last_mouse.x >= self.detail_rect.x0
             && self.last_mouse.y >= self.notes_origin.y - 4.0;
@@ -1579,11 +2027,28 @@ impl Widget for CalendarApp {
             ..
         } = event
         {
-            // Escape closes the detail panel.
+            // Escape: dismiss the overlay flap, else pop the narrow detail
+            // screen back to the calendar, else close the detail entirely.
             if matches!(logical_key, Key::Named(NamedKey::Escape)) {
+                if matches!(self.sidebar_mode, SidebarMode::Overlay) && self.sidebar_open {
+                    self.sidebar_open = false;
+                    *handled = true;
+                    self.dirty = true;
+                    return;
+                }
+                if matches!(self.sidebar_mode, SidebarMode::Overlay)
+                    && matches!(self.narrow_screen, NarrowScreen::Detail)
+                {
+                    self.narrow_screen = NarrowScreen::Calendar;
+                    self.notes_editor.set_focus(false);
+                    *handled = true;
+                    self.dirty = true;
+                    return;
+                }
                 if self.detail_open {
                     self.detail_open = false;
                     self.selection = None;
+                    self.narrow_screen = NarrowScreen::Calendar;
                     self.notes_editor.set_focus(false);
                     *handled = true;
                     self.dirty = true;
@@ -1754,6 +2219,29 @@ fn draw_plus(scene: &mut Scene, t: Affine, color: Color, center: Point) {
     stroke_line(scene, t, color, Point::new(center.x, center.y - 5.0), Point::new(center.x, center.y + 5.0), 1.8);
 }
 
+fn draw_hamburger(scene: &mut Scene, t: Affine, color: Color, center: Point) {
+    for dy in [-5.0, 0.0, 5.0] {
+        stroke_line(
+            scene,
+            t,
+            color,
+            Point::new(center.x - 7.0, center.y + dy),
+            Point::new(center.x + 7.0, center.y + dy),
+            1.6,
+        );
+    }
+}
+
+fn draw_back_arrow(scene: &mut Scene, t: Affine, color: Color, center: Point) {
+    // A "←": horizontal shaft plus an arrowhead opening left.
+    stroke_line(scene, t, color, Point::new(center.x - 6.0, center.y), Point::new(center.x + 6.0, center.y), 1.7);
+    let mut p = BezPath::new();
+    p.move_to(Point::new(center.x - 1.0, center.y - 5.0));
+    p.line_to(Point::new(center.x - 6.0, center.y));
+    p.line_to(Point::new(center.x - 1.0, center.y + 5.0));
+    scene.stroke(&Stroke::new(1.7), t, color, None, &p);
+}
+
 fn draw_cross(scene: &mut Scene, t: Affine, color: Color, center: Point) {
     stroke_line(scene, t, color, Point::new(center.x - 5.0, center.y - 5.0), Point::new(center.x + 5.0, center.y + 5.0), 1.6);
     stroke_line(scene, t, color, Point::new(center.x + 5.0, center.y - 5.0), Point::new(center.x - 5.0, center.y + 5.0), 1.6);
@@ -1905,5 +2393,157 @@ mod tests {
         app.apply_action(Action::Next, &mut state);
         // Month view by default → Next advances one month.
         assert_ne!(app.anchor.month(), m0);
+    }
+
+    // --- responsive layout ---------------------------------------------
+
+    #[test]
+    fn wide_window_uses_persistent_sidebar_and_docked_detail() {
+        let mut app = CalendarApp::new();
+        app.detail_open = true;
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.relayout();
+        assert_eq!(app.sidebar_mode, SidebarMode::Persistent);
+        // Sidebar is inline (content starts to its right), detail docked right.
+        assert!(app.content_rect.x0 >= app.sidebar_rect.x1 - 0.5);
+        assert!(app.detail_rect.area() > 0.0);
+        assert!(app.content_rect.area() > 0.0);
+    }
+
+    #[test]
+    fn narrow_window_collapses_sidebar_to_overlay() {
+        let mut app = CalendarApp::new();
+        app.rect = Rect::new(0.0, 0.0, 700.0, 900.0);
+        app.sidebar_open = false;
+        app.relayout();
+        assert_eq!(app.sidebar_mode, SidebarMode::Overlay);
+        // Overlay sidebar floats over the content from the left edge: content
+        // starts at the window's left edge, not to the sidebar's right.
+        assert_eq!(app.content_rect.x0, app.rect.x0);
+        assert!(!app.sidebar_visible(), "overlay flap is closed by default");
+    }
+
+    #[test]
+    fn narrow_detail_screen_replaces_the_calendar() {
+        let mut app = CalendarApp::new();
+        app.rect = Rect::new(0.0, 0.0, 700.0, 900.0);
+        app.detail_open = true;
+        app.narrow_screen = NarrowScreen::Detail;
+        app.relayout();
+        // The detail is pushed over the calendar: only one pane is laid out.
+        assert!(app.detail_rect.area() > 0.0);
+        assert_eq!(app.content_rect.area(), 0.0, "calendar hidden behind detail");
+
+        // Going back returns to the calendar screen.
+        let mut state = AutoCommit::new();
+        app.apply_action(Action::BackToCalendar, &mut state);
+        app.relayout();
+        assert!(app.content_rect.area() > 0.0);
+        assert_eq!(app.detail_rect.area(), 0.0);
+    }
+
+    #[test]
+    fn selecting_in_narrow_mode_pushes_detail_and_closes_flap() {
+        let mut app = CalendarApp::new();
+        app.rect = Rect::new(0.0, 0.0, 700.0, 900.0);
+        app.relayout();
+        app.sidebar_open = true;
+        let id = app.model.events[0].id;
+        app.select_event(id);
+        assert_eq!(app.narrow_screen, NarrowScreen::Detail);
+        assert!(!app.sidebar_open, "opening a detail dismisses the overlay flap");
+    }
+
+    // --- click-label-to-complete ---------------------------------------
+
+    #[test]
+    fn sidebar_task_label_and_open_targets_coexist() {
+        // The mini task rail must offer BOTH a completion target (checkbox +
+        // label) and a select target (open the task) for the same row.
+        let mut app = CalendarApp::new();
+        let mut state = AutoCommit::new();
+        app.sync(&mut state, &automerge::ROOT);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.relayout();
+        // Draw to populate the hit-map.
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &PresenceCtx::empty());
+
+        let open_task = app
+            .hits
+            .iter()
+            .filter(|(_, a)| matches!(a, Action::OpenTask(_)))
+            .count();
+        let toggle_in_rail = app
+            .hits
+            .iter()
+            .any(|(_, a)| matches!(a, Action::ToggleTask(_)));
+        assert!(open_task > 0, "task rows must be selectable to view detail");
+        assert!(toggle_in_rail, "checkbox+label must offer a completion target");
+    }
+
+    #[test]
+    fn toggling_via_label_hit_flips_completion() {
+        // Resolving a ToggleTask action (what a label/checkbox click produces)
+        // flips done — the production toggle path, not a helper.
+        let mut app = CalendarApp::new();
+        let mut state = AutoCommit::new();
+        app.sync(&mut state, &automerge::ROOT);
+        let id = app.model.tasks.iter().find(|t| !t.done).unwrap().id;
+        let before = app.model.task(id).unwrap().done;
+        app.apply_action(Action::ToggleTask(id), &mut state);
+        assert_ne!(app.model.task(id).unwrap().done, before);
+    }
+
+    // --- caldav accounts seam ------------------------------------------
+
+    #[test]
+    fn new_app_loads_caldav_accounts() {
+        // Offline, the app falls back to the sample account store so synced
+        // calendars appear in the sidebar.
+        let app = CalendarApp::new();
+        assert!(!app.accounts.is_empty());
+        assert!(app.accounts.all_calendars().count() > 0);
+    }
+
+    #[test]
+    fn sync_merges_visible_calendar_events() {
+        let mut app = CalendarApp::new();
+        let mut state = AutoCommit::new();
+        app.sync(&mut state, &automerge::ROOT);
+        // The first-frame sync should have merged at least one synced event in.
+        assert!(app.model.events.iter().any(|e| e.title == "Synced standup"));
+        // The hidden "Holidays" calendar's event must not appear.
+        assert!(!app.model.events.iter().any(|e| e.title == "Public holiday"));
+    }
+
+    #[test]
+    fn toggling_calendar_visibility_flips_the_flag() {
+        let mut app = CalendarApp::new();
+        let mut state = AutoCommit::new();
+        let id = app
+            .accounts
+            .all_calendars()
+            .map(|(_, c)| c.id.clone())
+            .next()
+            .unwrap();
+        let before = app
+            .accounts
+            .all_calendars()
+            .find(|(_, c)| c.id == id)
+            .unwrap()
+            .1
+            .visible;
+        app.apply_action(Action::ToggleCalendarVisible(id.clone()), &mut state);
+        let after = app
+            .accounts
+            .all_calendars()
+            .find(|(_, c)| c.id == id)
+            .unwrap()
+            .1
+            .visible;
+        assert_ne!(before, after);
     }
 }
