@@ -4,11 +4,13 @@
 //! export → preservation.
 
 pub mod changes;
+pub mod columns;
 pub mod comments;
 pub mod container;
 pub mod content;
 pub mod export;
 pub mod headers;
+pub mod language;
 pub mod meta;
 pub mod notes;
 pub mod styles;
@@ -63,6 +65,16 @@ impl FormatProvider for OdtCodec {
         // canonical header/footer regions.
         if let Some(styles_xml) = container.get("styles.xml") {
             headers::import_master_headers(styles_xml, doc);
+        }
+        // Multi-column section layout: parse the page-layout's `style:columns`
+        // count/gap from `styles.xml` into the document-wide column setting.
+        if let Some(styles_xml) = container.get("styles.xml") {
+            columns::import_page_layout_columns(styles_xml, doc);
+        }
+        // Document default language: parse the paragraph-family `style:default-style`'s
+        // `fo:language`/`fo:country` from `styles.xml` into the document-wide setting.
+        if let Some(styles_xml) = container.get("styles.xml") {
+            language::import_default_language(styles_xml, doc);
         }
         // Preservation layer: stash every part except the (regenerated)
         // content.xml verbatim so export round-trips them losslessly. `meta.xml`

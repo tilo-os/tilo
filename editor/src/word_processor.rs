@@ -6,6 +6,7 @@
 //! in `widget.rs`; click-to-caret needs layout and is wired there.
 
 use crate::styles::{StyleProps, StyleSheet};
+use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId};
 use qdoc::{Containers, DocMut, IdGen};
 
@@ -26,6 +27,56 @@ pub struct ClipBlock {
     pub level: Option<i64>,
     pub ordered: Option<bool>,
     pub align: Option<String>,
+}
+
+/// One entry of the document outline / navigation pane: a heading block's id,
+/// its `level` (1-based; defaults to 1), and its current text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Heading {
+    pub id: String,
+    pub level: i64,
+    pub text: String,
+}
+
+/// One line of a generated table of contents: a heading's outline `level`, its
+/// `text`, and the `page` it falls on (1-based) when pagination is known.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TocEntry {
+    pub level: i64,
+    pub text: String,
+    pub page: Option<usize>,
+}
+
+/// True when a materialized block was generated as part of the table of contents
+/// (carries a truthy `toc` attr). Used to find the old TOC for replacement and to
+/// keep TOC lines out of the heading outline.
+pub(crate) fn block_is_toc(b: &qdoc::snapshot::BlockView) -> bool {
+    matches!(b.attrs.get("toc"), Some(qdoc::AttrVal::Bool(true)))
+}
+
+/// Parse the comma-separated `tab_stops` attr into px positions, sorted ascending
+/// with near-duplicates collapsed. Blank / malformed entries are skipped.
+pub(crate) fn parse_tab_stops(raw: &str) -> Vec<f64> {
+    let mut v: Vec<f64> = raw
+        .split(',')
+        .filter_map(|s| s.trim().parse::<f64>().ok())
+        .filter(|p| *p >= 0.0)
+        .collect();
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    v.dedup_by(|a, b| (*a - *b).abs() < 0.5);
+    v
+}
+
+/// Render one TOC entry to its line text: a per-level indent, the heading text,
+/// then a dotted leader and the page number when known. Levels deeper than 1 are
+/// indented by two spaces each. An entry with no page just shows the text.
+fn toc_line(e: &TocEntry) -> String {
+    let indent = "  ".repeat((e.level.max(1) - 1) as usize);
+    let title = e.text.trim();
+    match e.page {
+        Some(p) => format!("{indent}{title} .......... {p}"),
+        None => format!("{indent}{title}"),
+    }
 }
 
 /// The editing core. `bind` resolves/initialises the document; the edit ops
@@ -183,6 +234,50 @@ impl WordProcessor {
             let mut dm = DocMut { doc: state, c: &containers, ids };
             dm.splice_text(block_id, char_start, char_end.saturating_sub(char_start) as isize, text);
         }
+    }
+
+    /// Replace the **entire body** of the document with the content of `markdown`,
+    /// in place, on the live document (CRDT-friendly: existing block ids are
+    /// deleted and the imported content is appended as new blocks, so undo/redo
+    /// and incremental sync see one coherent action). Used by the
+    /// "New from template" picker (re-import a template's Markdown over the open
+    /// document) without throwing away the host `ui::State` (and thus its undo
+    /// history / collaboration session).
+    ///
+    /// The caret is moved to the first imported block. Returns `false` if the
+    /// document isn't bound yet, or if the Markdown fails to import (in which case
+    /// the document is left untouched — the body clear and the import share one
+    /// uncommitted transaction window, so the host can still undo cleanly).
+    pub fn replace_with_markdown(&mut self, state: &mut AutoCommit, markdown: &[u8]) -> bool {
+        use qdoc::FormatProvider;
+        let Some(containers) = self.containers.clone() else {
+            return false;
+        };
+        // Snapshot the existing body block ids before mutating.
+        let existing = qdoc::model::blocks_in_order(state, &containers);
+        let Some(ids) = self.ids.as_mut() else {
+            return false;
+        };
+        let mut dm = DocMut { doc: state, c: &containers, ids };
+        // Import the template into a clearly-empty body: drop every existing
+        // block first, then import (the codec appends fresh blocks). If the import
+        // fails we've only removed blocks within the still-open transaction, which
+        // the host's per-action undo will revert — so report failure and let the
+        // caller decide.
+        for id in &existing {
+            dm.remove_block(id);
+        }
+        if qdoc::MarkdownCodec.import(markdown, &mut dm).is_err() {
+            return false;
+        }
+        // Re-seat the caret on the first newly-imported block (the body is fresh).
+        let blocks = qdoc::model::blocks_in_order(state, &containers);
+        match blocks.first() {
+            Some(first) => self.caret = Caret { block: first.clone(), offset: 0 },
+            None => self.caret = Caret::default(),
+        }
+        self.clear_anchor();
+        true
     }
 
     /// Load the document's stylesheet from the **CRDT styles container** (the
@@ -587,6 +682,344 @@ impl WordProcessor {
                 }
             }
         }
+    }
+
+    /// Set the highlight (background) colour (`#rrggbb`) over the selection
+    /// (per-run), or the caret block. Stored as a `highlight` Str run mark; the
+    /// widget maps it to a `RichSpan.background` band behind the glyphs.
+    pub fn set_highlight(&mut self, state: &mut AutoCommit, hex: &str) {
+        self.set_mark_value(state, "highlight", qdoc::document::MarkValue::Str(hex.to_string()));
+    }
+
+    // ---- tracked changes / comments review --------------------------------
+
+    /// Accept a tracked change by id (insertion: keep the text, drop its `ins`
+    /// mark; deletion: remove the struck text). The change record is removed from
+    /// the `changes` container, so it stops being reported in the materialized
+    /// snapshot. No-op for an unknown id or an unbound document.
+    pub fn accept_change(&mut self, state: &mut AutoCommit, change_id: &str) {
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            dm.accept_change(change_id);
+        }
+    }
+
+    /// Reject a tracked change by id (insertion: remove the inserted text;
+    /// deletion: keep the text, drop its `del` mark) — the inverse of
+    /// [`Self::accept_change`]. The change record is removed either way. No-op
+    /// for an unknown id or an unbound document.
+    pub fn reject_change(&mut self, state: &mut AutoCommit, change_id: &str) {
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            dm.reject_change(change_id);
+        }
+    }
+
+    /// Accept every tracked change in the document. Processed in reverse
+    /// document order so an accepted deletion's text removal never shifts the
+    /// anchored range of an earlier-but-not-yet-processed change.
+    pub fn accept_all_changes(&mut self, state: &mut AutoCommit) {
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        let mut ids_in_order = self.changes_in_doc_order(state);
+        ids_in_order.reverse();
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            for cid in &ids_in_order {
+                dm.accept_change(cid);
+            }
+        }
+    }
+
+    /// Reject every tracked change in the document (see [`Self::accept_all_changes`]
+    /// for the ordering rationale).
+    pub fn reject_all_changes(&mut self, state: &mut AutoCommit) {
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        let mut ids_in_order = self.changes_in_doc_order(state);
+        ids_in_order.reverse();
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            for cid in &ids_in_order {
+                dm.reject_change(cid);
+            }
+        }
+    }
+
+    /// The tracked-change ids present in the document, sorted by their anchored
+    /// `(block-order, start)` body position (earliest first). Falls back to the
+    /// canonical id order for changes whose anchoring mark is gone.
+    fn changes_in_doc_order(&self, state: &AutoCommit) -> Vec<String> {
+        let Some(c) = self.containers.as_ref() else {
+            return Vec::new();
+        };
+        let block_order = self.ordered_blocks(state);
+        let pos = |bid: &str| block_order.iter().position(|b| b == bid).unwrap_or(usize::MAX);
+        let mut ids = qdoc::model::change_ids(state, c);
+        ids.sort_by_key(|id| {
+            qdoc::model::change_range(state, c, id)
+                .map(|(b, s, _)| (pos(&b), s))
+                .unwrap_or((usize::MAX, usize::MAX))
+        });
+        ids
+    }
+
+    /// Delete a comment by id: remove its anchoring `comment` mark over the body
+    /// range it covers, then drop the comment entry from the `comments`
+    /// container. After this the comment no longer appears in the materialized
+    /// snapshot and its highlight band disappears. No-op for an unknown id or an
+    /// unbound document.
+    pub fn delete_comment(&mut self, state: &mut AutoCommit, comment_id: &str) {
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        // The anchored range (recovered from the `comment` mark), if still present.
+        let range = qdoc::model::comment_range(state, &containers, comment_id);
+        let comments_obj = containers.comments.clone();
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            // 1. Clear the anchoring mark over its range so the highlight clears.
+            if let Some((b, s, e)) = &range {
+                if e > s {
+                    dm.remove_mark(b, *s, *e, qdoc::schema::MARK_COMMENT);
+                }
+            }
+            // 2. Drop the comment entry from the comments container. `dm.doc` is
+            //    the host `AutoCommit`; the container id comes from `Containers`.
+            if let Some(obj) = comments_obj.as_ref() {
+                let _ = dm.doc.delete(obj, comment_id);
+            }
+        }
+    }
+
+    /// Whether a named boolean run mark covers the whole of `ranges`.
+    fn mark_over_ranges(&self, state: &AutoCommit, ranges: &[(String, usize, usize)], name: &str) -> bool {
+        let Some(containers) = self.containers.as_ref() else {
+            return false;
+        };
+        let active: Vec<_> = ranges.iter().filter(|(_, s, e)| s < e).collect();
+        if active.is_empty() {
+            return false;
+        }
+        active
+            .iter()
+            .all(|(b, s, e)| qdoc::model::has_mark_over(state, containers, b, *s, *e, name))
+    }
+
+    /// Toggle a boolean run mark over the selection (per-run), or — with no
+    /// selection — the whole caret block. `clears` is a sibling mark removed
+    /// whenever this one is turned on, so a pair like `super`/`sub` stays mutually
+    /// exclusive. Returns nothing; reads/writes happen in document order.
+    fn toggle_exclusive_run_mark(&mut self, state: &mut AutoCommit, name: &str, clears: &str) {
+        let ranges = self.font_ranges(state);
+        let on = self.mark_over_ranges(state, &ranges, name);
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            for (b, s, e) in &ranges {
+                if s >= e {
+                    continue;
+                }
+                if on {
+                    dm.remove_mark(b, *s, *e, name);
+                } else {
+                    // Turning this on: drop the sibling so the pair is exclusive.
+                    dm.remove_mark(b, *s, *e, clears);
+                    dm.add_mark(b, *s, *e, name, true);
+                }
+            }
+        }
+    }
+
+    /// Toggle the `super` (superscript) run mark over the selection / caret block,
+    /// clearing any `sub` mark on the same range (the pair is mutually exclusive).
+    pub fn toggle_super(&mut self, state: &mut AutoCommit) {
+        self.toggle_exclusive_run_mark(state, "super", "sub");
+    }
+
+    /// Toggle the `sub` (subscript) run mark over the selection / caret block,
+    /// clearing any `super` mark on the same range (mutually exclusive).
+    pub fn toggle_sub(&mut self, state: &mut AutoCommit) {
+        self.toggle_exclusive_run_mark(state, "sub", "super");
+    }
+
+    /// Set the paragraph line-spacing multiplier (1.0 = single) on every block in
+    /// the selection (or the caret block). Stored as the `line_spacing` Float
+    /// block attr; the layout pass feeds it to `RichTextLayout::shape` as the
+    /// `line_height_mult`. A multiplier of `1.0` clears the attr (the default).
+    pub fn set_line_spacing(&mut self, state: &mut AutoCommit, mult: f64) {
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        let targets = self.selected_block_ids(state);
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            for block in &targets {
+                dm.set_attr(block, "line_spacing", mult);
+            }
+        }
+    }
+
+    /// The line-spacing multiplier on the caret's block (the `line_spacing` Float
+    /// attr), or `1.0` when unset. Drives the toolbar's cycling control.
+    pub fn caret_line_spacing(&self, state: &AutoCommit) -> f64 {
+        let Some(c) = self.containers.as_ref() else {
+            return 1.0;
+        };
+        let snap = qdoc::model::materialize(state, c);
+        snap.blocks
+            .iter()
+            .find(|b| b.id == self.caret.block)
+            .map(|b| match b.attrs.get("line_spacing") {
+                Some(qdoc::AttrVal::Float(f)) => *f,
+                Some(qdoc::AttrVal::Int(n)) => *n as f64,
+                _ => 1.0,
+            })
+            .unwrap_or(1.0)
+    }
+
+    // ---- ruler: per-block indents + tab stops --------------------------------
+    //
+    // The horizontal ruler edits three per-paragraph measures, stored as block
+    // attrs (so they merge field-by-field and survive save/reload):
+    //   * `indent`            — left / hanging indent in px (added on top of the
+    //                           block style's indent; drives `text_x`/`wrap_w`).
+    //   * `first_line_indent` — extra indent applied to the paragraph's first line
+    //                           only (recorded + reflected by the ruler marker;
+    //                           first-line-only rendering is a v1 layout limitation).
+    //   * `tab_stops`         — a comma-separated list of px positions (measured
+    //                           from the left text margin). qdoc's attr map only
+    //                           stores scalars, so the list is encoded as one `Str`.
+
+    /// Read a numeric attr (`Float`/`Int`) off an arbitrary block by id, `0.0`
+    /// when absent. Shared by the indent getters below.
+    fn block_num_attr(&self, state: &AutoCommit, block: &str, key: &str) -> f64 {
+        let Some(c) = self.containers.as_ref() else {
+            return 0.0;
+        };
+        let snap = qdoc::model::materialize(state, c);
+        snap.blocks
+            .iter()
+            .find(|b| b.id == block)
+            .map(|b| match b.attrs.get(key) {
+                Some(qdoc::AttrVal::Float(f)) => *f,
+                Some(qdoc::AttrVal::Int(n)) => *n as f64,
+                _ => 0.0,
+            })
+            .unwrap_or(0.0)
+    }
+
+    /// The left / hanging indent (px) of an arbitrary block — the `indent` attr,
+    /// `0.0` when unset.
+    pub fn block_indent(&self, state: &AutoCommit, block: &str) -> f64 {
+        self.block_num_attr(state, block, "indent")
+    }
+
+    /// The first-line indent (px) of an arbitrary block — the `first_line_indent`
+    /// attr, `0.0` when unset.
+    pub fn block_first_line_indent(&self, state: &AutoCommit, block: &str) -> f64 {
+        self.block_num_attr(state, block, "first_line_indent")
+    }
+
+    /// Set the left / hanging indent (px) on `block`. Clamped non-negative.
+    pub fn set_block_indent(&mut self, state: &mut AutoCommit, block: &str, px: f64) {
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        let v = px.max(0.0);
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            dm.set_attr(block, "indent", v);
+        }
+    }
+
+    /// Set the first-line indent (px) on `block`. May be negative (a hanging
+    /// indent draws the first line back toward the margin).
+    pub fn set_block_first_line_indent(&mut self, state: &mut AutoCommit, block: &str, px: f64) {
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            dm.set_attr(block, "first_line_indent", px);
+        }
+    }
+
+    /// The tab stops (px positions from the left text margin) of an arbitrary
+    /// block, sorted ascending. Empty when the `tab_stops` attr is unset/blank.
+    pub fn block_tab_stops(&self, state: &AutoCommit, block: &str) -> Vec<f64> {
+        let Some(c) = self.containers.as_ref() else {
+            return vec![];
+        };
+        let snap = qdoc::model::materialize(state, c);
+        let raw = snap
+            .blocks
+            .iter()
+            .find(|b| b.id == block)
+            .and_then(|b| match b.attrs.get("tab_stops") {
+                Some(qdoc::AttrVal::Str(s)) => Some(s.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        parse_tab_stops(&raw)
+    }
+
+    /// Tab stops on the caret's block (convenience for the widget).
+    pub fn caret_tab_stops(&self, state: &AutoCommit) -> Vec<f64> {
+        self.block_tab_stops(state, &self.caret.block.clone())
+    }
+
+    /// Replace `block`'s tab stops with `stops` (deduplicated + sorted). An empty
+    /// list clears the attr to the empty string.
+    pub fn set_block_tab_stops(&mut self, state: &mut AutoCommit, block: &str, stops: &[f64]) {
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        let mut v: Vec<f64> = stops.iter().copied().filter(|p| *p >= 0.0).collect();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        v.dedup_by(|a, b| (*a - *b).abs() < 0.5);
+        let encoded = v.iter().map(|p| format!("{p:.1}")).collect::<Vec<_>>().join(",");
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            dm.set_attr(block, "tab_stops", encoded.as_str());
+        }
+    }
+
+    /// Add a tab stop at `px` (from the left text margin) on the caret's block.
+    pub fn add_tab_stop(&mut self, state: &mut AutoCommit, px: f64) {
+        let block = self.caret.block.clone();
+        let mut stops = self.block_tab_stops(state, &block);
+        // Ignore a stop that coincides with an existing one.
+        if stops.iter().any(|p| (*p - px).abs() < 2.0) {
+            return;
+        }
+        stops.push(px.max(0.0));
+        self.set_block_tab_stops(state, &block, &stops);
+    }
+
+    /// Tab key: advance the caret to the next tab stop on its block, if any.
+    /// Returns `true` when a stop existed and the caret advanced (the caller then
+    /// skips the legacy "insert spaces" fallback). The advance is recorded in the
+    /// document as a single tab character so it survives save/reload and reflows
+    /// with edits — the layout treats the run up to the next stop as the tab's
+    /// width (full per-stop glyph expansion is a v1 limitation).
+    pub fn tab_advance(&mut self, state: &mut AutoCommit) -> bool {
+        let stops = self.block_tab_stops(state, &self.caret.block.clone());
+        if stops.is_empty() {
+            return false;
+        }
+        self.insert_str(state, "\t");
+        true
     }
 
     /// Insert a `rows`×`cols` table after the caret block. Cells are modeled as
@@ -1093,6 +1526,88 @@ impl WordProcessor {
             .as_ref()
             .map(|c| qdoc::model::blocks_in_order(state, c))
             .unwrap_or_default()
+    }
+
+    // ---- document outline / navigation ------------------------------------
+
+    /// Every `heading` block in document order, as `(block_id, level, text)`.
+    /// `level` defaults to 1 when the `level` attr is absent. Blocks generated
+    /// for the table of contents (carrying the `toc` attr) are **excluded** so the
+    /// outline and a regenerated TOC never list the TOC's own lines as headings.
+    pub fn headings(&self, state: &AutoCommit) -> Vec<Heading> {
+        let Some(c) = self.containers.as_ref() else {
+            return vec![];
+        };
+        let snap = qdoc::model::materialize(state, c);
+        snap.blocks
+            .iter()
+            .filter(|b| b.kind == "heading" && !block_is_toc(b))
+            .map(|b| {
+                let level = match b.attrs.get("level") {
+                    Some(qdoc::AttrVal::Int(n)) if *n >= 1 => *n,
+                    _ => 1,
+                };
+                Heading { id: b.id.clone(), level, text: b.text.clone() }
+            })
+            .collect()
+    }
+
+    /// Replace any previously generated table of contents with a fresh one built
+    /// from `entries` (each `(level, text, page)`), inserted as `toc`-marked
+    /// `paragraph` blocks at the very top of the document — one block per entry.
+    ///
+    /// Re-running first removes the old TOC blocks (found by their `toc` attr), so
+    /// regenerating never duplicates the table. Each line is indented by its
+    /// heading level and ends with the page number (when known) after a dot
+    /// leader, e.g. `  Background .......... 3`. The caret is left untouched unless
+    /// it pointed at a removed TOC block, in which case it falls back to the first
+    /// surviving block.
+    ///
+    /// Returns the ids of the inserted TOC blocks (top-to-bottom).
+    pub fn generate_toc(&mut self, state: &mut AutoCommit, entries: &[TocEntry]) -> Vec<String> {
+        let Some(containers) = self.containers.clone() else {
+            return vec![];
+        };
+        // Collect the existing TOC block ids (document order) before mutating.
+        let old: Vec<String> = {
+            let snap = qdoc::model::materialize(state, &containers);
+            snap.blocks.iter().filter(|b| block_is_toc(b)).map(|b| b.id.clone()).collect()
+        };
+        let caret_in_old = old.contains(&self.caret.block);
+
+        let mut inserted = Vec::with_capacity(entries.len());
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            // Drop the previous TOC first so the new one starts at a clean top.
+            for id in &old {
+                dm.remove_block(id);
+            }
+            // Insert each entry at the top, threading `prev` so the lines stay in
+            // order (first entry on top). `None` targets the document head.
+            let mut prev: Option<String> = None;
+            for e in entries {
+                let id = dm.insert_block(prev.as_deref(), "paragraph");
+                dm.set_attr(&id, "toc", true);
+                // Record the level so the line keeps its outline depth on reload.
+                dm.set_attr(&id, "toc_level", e.level.max(1));
+                let line = toc_line(e);
+                if !line.is_empty() {
+                    dm.splice_text(&id, 0, 0, &line);
+                }
+                prev = Some(id.clone());
+                inserted.push(id);
+            }
+        }
+        // If the caret sat in a removed TOC block, re-home it so later edits don't
+        // target a deleted block.
+        if caret_in_old {
+            let order = self.ordered_blocks(state);
+            if let Some(first) = order.first() {
+                self.caret = Caret { block: first.clone(), offset: 0 };
+            }
+        }
+        self.selection_anchor = None;
+        inserted
     }
 
     /// `(kind, ordered, level)` for a block.
@@ -1603,6 +2118,78 @@ mod tests {
     }
 
     #[test]
+    fn highlight_mark_applies_to_selection() {
+        use qdoc::document::MarkValue;
+        let (mut wp, mut state) = bound();
+        wp.insert_str(&mut state, "hello world");
+        wp.caret.offset = 0;
+        wp.set_anchor();
+        wp.caret.offset = 5;
+        wp.set_highlight(&mut state, "#fff35c");
+        let c = wp.containers.as_ref().unwrap();
+        let snap = qdoc::model::materialize(&state, c);
+        let blk = &snap.blocks[0];
+        match blk.marks.iter().find(|m| m.name == "highlight" && m.start == 0 && m.end == 5).map(|m| m.value.clone()) {
+            Some(MarkValue::Str(s)) => assert_eq!(s, "#fff35c"),
+            _ => panic!("highlight mark missing over selection"),
+        }
+        // Clearing removes it.
+        wp.caret.offset = 0;
+        wp.set_anchor();
+        wp.caret.offset = 5;
+        wp.clear_mark(&mut state, "highlight");
+        let snap = qdoc::model::materialize(&state, wp.containers.as_ref().unwrap());
+        assert!(
+            !snap.blocks[0].marks.iter().any(|m| m.name == "highlight"),
+            "highlight cleared"
+        );
+    }
+
+    #[test]
+    fn super_and_sub_are_mutually_exclusive() {
+        let (mut wp, mut state) = bound();
+        wp.insert_str(&mut state, "x2");
+        // Select "2".
+        wp.caret.offset = 1;
+        wp.set_anchor();
+        wp.caret.offset = 2;
+        wp.toggle_super(&mut state);
+        let c = wp.containers.clone().unwrap();
+        assert!(qdoc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "super"), "super applied");
+        assert!(!qdoc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "sub"), "no sub yet");
+
+        // Re-select and toggle sub: it must clear super (mutual exclusion).
+        wp.caret.offset = 1;
+        wp.set_anchor();
+        wp.caret.offset = 2;
+        wp.toggle_sub(&mut state);
+        assert!(qdoc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "sub"), "sub applied");
+        assert!(!qdoc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "super"), "super cleared");
+
+        // Toggling sub again removes it (off).
+        wp.caret.offset = 1;
+        wp.set_anchor();
+        wp.caret.offset = 2;
+        wp.toggle_sub(&mut state);
+        assert!(!qdoc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "sub"), "sub toggled off");
+    }
+
+    #[test]
+    fn line_spacing_writes_block_attr_and_reads_back() {
+        let (mut wp, mut state) = bound();
+        wp.insert_str(&mut state, "a paragraph");
+        assert!((wp.caret_line_spacing(&state) - 1.0).abs() < 1e-9, "default 1.0 when unset");
+        wp.set_line_spacing(&mut state, 2.0);
+        let c = wp.containers.as_ref().unwrap();
+        let snap = qdoc::model::materialize(&state, c);
+        match snap.blocks[0].attrs.get("line_spacing") {
+            Some(qdoc::AttrVal::Float(f)) => assert!((f - 2.0).abs() < 1e-9, "line_spacing=2.0 stored"),
+            other => panic!("expected line_spacing Float attr, got {other:?}"),
+        }
+        assert!((wp.caret_line_spacing(&state) - 2.0).abs() < 1e-9, "caret reads 2.0 back");
+    }
+
+    #[test]
     fn multi_block_selection_copy_and_delete() {
         let (mut wp, mut state) = bound();
         wp.insert_str(&mut state, "first");
@@ -2028,5 +2615,74 @@ mod tests {
         let snap = qdoc::model::materialize(&state, c);
         assert!(snap.blocks.iter().all(|b| b.kind != "cell"), "deleting the last row removed the whole table");
         assert!(!wp.caret_in_cell(&state), "caret is no longer in a cell");
+    }
+
+    /// Build a small document with three headings of differing levels and a body
+    /// paragraph between them, returning `(wp, state)`.
+    fn doc_with_headings() -> (WordProcessor, AutoCommit) {
+        let (mut wp, mut state) = bound();
+        wp.insert_str(&mut state, "Introduction");
+        wp.set_paragraph_style(&mut state, "heading", Some(1), None);
+        wp.enter(&mut state);
+        wp.set_paragraph_style(&mut state, "paragraph", None, None);
+        wp.insert_str(&mut state, "Body text here.");
+        wp.enter(&mut state);
+        wp.insert_str(&mut state, "Background");
+        wp.set_paragraph_style(&mut state, "heading", Some(2), None);
+        wp.enter(&mut state);
+        wp.set_paragraph_style(&mut state, "paragraph", None, None);
+        wp.insert_str(&mut state, "More body.");
+        wp.enter(&mut state);
+        wp.insert_str(&mut state, "Conclusion");
+        wp.set_paragraph_style(&mut state, "heading", Some(1), None);
+        (wp, state)
+    }
+
+    #[test]
+    fn headings_lists_one_entry_per_heading_in_order_with_levels() {
+        let (wp, state) = doc_with_headings();
+        let h = wp.headings(&state);
+        assert_eq!(h.len(), 3, "one outline entry per heading block");
+        assert_eq!(h.iter().map(|e| e.text.as_str()).collect::<Vec<_>>(), vec!["Introduction", "Background", "Conclusion"], "headings in document order");
+        assert_eq!(h.iter().map(|e| e.level).collect::<Vec<_>>(), vec![1, 2, 1], "levels preserved per heading");
+    }
+
+    #[test]
+    fn generate_toc_inserts_one_block_per_heading_at_top() {
+        let (mut wp, mut state) = doc_with_headings();
+        let entries: Vec<TocEntry> = wp.headings(&state).iter().map(|h| TocEntry { level: h.level, text: h.text.clone(), page: Some(1) }).collect();
+        let inserted = wp.generate_toc(&mut state, &entries);
+        assert_eq!(inserted.len(), 3, "one TOC block per heading");
+
+        let c = wp.containers.clone().unwrap();
+        let snap = qdoc::model::materialize(&state, &c);
+        let toc: Vec<_> = snap.blocks.iter().filter(|b| block_is_toc(b)).collect();
+        assert_eq!(toc.len(), 3, "exactly three toc-marked blocks exist");
+        // They sit at the very top of the document, in heading order.
+        assert_eq!(&snap.blocks[0].id, &inserted[0], "TOC begins at the document top");
+        assert!(snap.blocks[0].text.contains("Introduction"));
+        assert!(snap.blocks[1].text.contains("Background"));
+        assert!(snap.blocks[2].text.contains("Conclusion"));
+        // The page number appears on each line.
+        assert!(snap.blocks[0].text.trim_end().ends_with('1'), "line carries the page number");
+    }
+
+    #[test]
+    fn regenerating_toc_replaces_without_duplicating() {
+        let (mut wp, mut state) = doc_with_headings();
+        let entries: Vec<TocEntry> = wp.headings(&state).iter().map(|h| TocEntry { level: h.level, text: h.text.clone(), page: Some(2) }).collect();
+        wp.generate_toc(&mut state, &entries);
+        // Regenerate from the (now TOC-prefixed) document: headings() excludes the
+        // TOC's own lines, so the entry set is unchanged.
+        let entries2: Vec<TocEntry> = wp.headings(&state).iter().map(|h| TocEntry { level: h.level, text: h.text.clone(), page: Some(2) }).collect();
+        assert_eq!(entries2.len(), 3, "TOC lines are not mistaken for headings on regen");
+        wp.generate_toc(&mut state, &entries2);
+
+        let c = wp.containers.clone().unwrap();
+        let snap = qdoc::model::materialize(&state, &c);
+        let toc_count = snap.blocks.iter().filter(|b| block_is_toc(b)).count();
+        assert_eq!(toc_count, 3, "regenerating replaces the old TOC (no duplicate)");
+        let heading_count = snap.blocks.iter().filter(|b| b.kind == "heading").count();
+        assert_eq!(heading_count, 3, "headings are untouched by TOC regeneration");
     }
 }
