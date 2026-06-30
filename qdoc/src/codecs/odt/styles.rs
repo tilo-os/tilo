@@ -61,6 +61,42 @@ pub(super) fn normalize_color(v: &str) -> String {
     t.to_string()
 }
 
+/// Classify an ODF `style:text-position` value as superscript (`Some(true)`),
+/// subscript (`Some(false)`), or neither (`None`). The value is `<position>
+/// [height]` where the position is a percent (`super`/`sub` keywords or a signed
+/// percentage like `33%`/`-33%`); positive → superscript, negative → subscript.
+pub(super) fn text_position_kind(v: &str) -> Option<bool> {
+    let first = v.trim().split_whitespace().next()?;
+    match first {
+        "super" => Some(true),
+        "sub" => Some(false),
+        _ => {
+            let pct = first.trim_end_matches('%').trim().parse::<f64>().ok()?;
+            if pct > 0.0 {
+                Some(true)
+            } else if pct < 0.0 {
+                Some(false)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// Parse an ODF `fo:line-height` percentage (e.g. `150%`) into the model's
+/// `line_spacing` multiple (1.5). Only percentage line-heights map cleanly onto a
+/// unitless multiple; fixed lengths (`fo:line-height="0.5cm"`) and `normal` are
+/// left unset (best-effort, matching the size-percentage handling above).
+pub(super) fn parse_line_height(v: &str) -> Option<f64> {
+    let t = v.trim();
+    let pct = t.strip_suffix('%')?.trim().parse::<f64>().ok()?;
+    if pct > 0.0 {
+        Some((pct / 100.0 * 1000.0).round() / 1000.0)
+    } else {
+        None
+    }
+}
+
 pub(super) fn map_align(v: &str) -> String {
     match v {
         "center" => "center".into(),
@@ -140,6 +176,19 @@ pub(super) fn marks_from_text_props(e: &BytesStart) -> Vec<(String, MarkValue)> 
             }
             b"style:font-name" | b"fo:font-family" => m.push(("fontFamily".into(), MarkValue::Str(generic_font(&val)))),
             b"fo:color" => m.push(("color".into(), MarkValue::Str(normalize_color(&val)))),
+            // Text background (highlight): ODF `fo:background-color` (skip the
+            // `transparent` sentinel — that's "no highlight").
+            b"fo:background-color" if val != "transparent" => {
+                m.push(("highlight".into(), MarkValue::Str(normalize_color(&val))))
+            }
+            // Vertical alignment: `style:text-position` is `<pos> <height>` where a
+            // positive position (or the keyword `super`) is superscript and a
+            // negative position (or `sub`) is subscript.
+            b"style:text-position" => match text_position_kind(&val) {
+                Some(true) => m.push(("super".into(), MarkValue::Bool(true))),
+                Some(false) => m.push(("sub".into(), MarkValue::Bool(true))),
+                None => {}
+            },
             _ => {}
         }
     }
@@ -169,6 +218,8 @@ pub(super) struct ParaStyle {
     pub space_before: Option<f64>,
     pub space_after: Option<f64>,
     pub indent: Option<f64>,
+    /// Line spacing as a unitless multiple (e.g. 1.5), from `fo:line-height` (%).
+    pub line_height: Option<f64>,
 }
 
 /// Map an ODF `style:num-format` value to the model's canonical numbering format
@@ -231,6 +282,21 @@ impl StyleRegistry {
             let p = self.para.get(&n)?;
             if let Some(a) = &p.align {
                 return Some(a.clone());
+            }
+            cur = p.parent.clone();
+        }
+        None
+    }
+
+    /// Line spacing (`fo:line-height` %) a paragraph style applies, following the
+    /// parent chain (most-derived first).
+    pub(super) fn para_line_height(&self, name: &str) -> Option<f64> {
+        let mut cur = Some(name.to_string());
+        for _ in 0..8 {
+            let n = cur?;
+            let p = self.para.get(&n)?;
+            if let Some(lh) = p.line_height {
+                return Some(lh);
             }
             cur = p.parent.clone();
         }
@@ -350,6 +416,7 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry, from_named_secti
     let mut space_before: Option<f64> = None;
     let mut space_after: Option<f64> = None;
     let mut indent: Option<f64> = None;
+    let mut line_height: Option<f64> = None;
 
     let mut list_name: Option<String> = None;
     let mut list_numbered = false;
@@ -401,6 +468,7 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry, from_named_secti
                     space_before = None;
                     space_after = None;
                     indent = None;
+                    line_height = None;
                 }
                 b"style:text-properties" => {
                     text.extend(marks_from_text_props(&e));
@@ -434,6 +502,9 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry, from_named_secti
                     // Left indent: prefer fo:margin-left, fall back to text-indent.
                     if let Some(v) = attr_val(&e, b"fo:margin-left").or_else(|| attr_val(&e, b"fo:text-indent")) {
                         indent = parse_margin_px(&v);
+                    }
+                    if let Some(v) = attr_val(&e, b"fo:line-height") {
+                        line_height = parse_line_height(&v);
                     }
                 }
                 b"text:list-style" => {
@@ -487,6 +558,7 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry, from_named_secti
                                         space_before: space_before.take(),
                                         space_after: space_after.take(),
                                         indent: indent.take(),
+                                        line_height: line_height.take(),
                                     },
                                 );
                             }
@@ -502,6 +574,7 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry, from_named_secti
                     space_before = None;
                     space_after = None;
                     indent = None;
+                    line_height = None;
                 }
                 b"text:list-style" => {
                     if let Some(n) = list_name.take() {
