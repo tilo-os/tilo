@@ -49,6 +49,7 @@ use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -73,9 +74,9 @@ pub const ACCENT_PALETTE: [[u8; 3]; 8] = [
 /// Screen 1: identity creation form.
 pub struct CreateIdentityScreen {
     rect: Rect,
-    display_name: String,
-    /// Cursor position in `display_name`, byte index.
-    cursor: usize,
+    /// Single-line editor backing the display-name field. Use
+    /// `display_name()` / `set_display_name()` to read/write.
+    editor: crate::widget::identity_flow::LineEditState,
     selected_accent: usize,
     submit_hovered: bool,
     submit_rect: Rect,
@@ -96,8 +97,7 @@ impl CreateIdentityScreen {
     pub fn new() -> Self {
         Self {
             rect: Rect::ZERO,
-            display_name: String::new(),
-            cursor: 0,
+            editor: crate::widget::identity_flow::LineEditState::new(),
             selected_accent: 0,
             submit_hovered: false,
             submit_rect: Rect::ZERO,
@@ -111,12 +111,11 @@ impl CreateIdentityScreen {
 
     /// Live display-name input — useful for tests.
     pub fn display_name(&self) -> &str {
-        &self.display_name
+        &self.editor.text
     }
 
     pub fn set_display_name(&mut self, name: impl Into<String>) {
-        self.display_name = name.into();
-        self.cursor = self.display_name.len();
+        self.editor = crate::widget::identity_flow::LineEditState::with_text(name);
         self.submit_error = None;
     }
 
@@ -131,7 +130,7 @@ impl CreateIdentityScreen {
     }
 
     pub fn is_submit_enabled(&self) -> bool {
-        !self.display_name.trim().is_empty()
+        !self.editor.text.trim().is_empty()
     }
 
     pub fn last_record(&self) -> Option<&IdentityRecord> {
@@ -160,7 +159,7 @@ impl CreateIdentityScreen {
         let id = ThresholdIdentity::bootstrap_single_device(&mut rng)?;
         let record = IdentityRecord::from_threshold_identity(
             &id,
-            self.display_name.trim(),
+            self.editor.text.trim(),
             ACCENT_PALETTE[self.selected_accent],
             SystemTime::now(),
         )?;
@@ -233,43 +232,23 @@ impl CreateIdentityScreen {
                     },
                 ..
             } => {
-                // Lightweight text editing for the display-name field.
-                match logical_key {
-                    Key::Named(NamedKey::Backspace) => {
-                        if self.cursor > 0 {
-                            // Pop one char.
-                            let mut new_cursor = self.cursor - 1;
-                            while new_cursor > 0 && !self.display_name.is_char_boundary(new_cursor) {
-                                new_cursor -= 1;
-                            }
-                            self.display_name.replace_range(new_cursor..self.cursor, "");
-                            self.cursor = new_cursor;
-                            *handled = true;
+                // Enter submits; everything else delegates to the
+                // shared single-line editor so we get arrow keys,
+                // Ctrl+arrows (word jump), Shift selection,
+                // Ctrl+A/C/X/V, Home/End, Delete — without
+                // re-implementing them per-screen.
+                if matches!(logical_key, Key::Named(NamedKey::Enter)) {
+                    if self.is_submit_enabled() {
+                        *handled = true;
+                        match self.submit_to_store(store) {
+                            Ok(_) => return ScreenOutcome::Advance,
+                            Err(e) => self.submit_error = Some(format!("{e}")),
                         }
                     }
-                    Key::Named(NamedKey::Enter) => {
-                        if self.is_submit_enabled() {
-                            *handled = true;
-                            match self.submit_to_store(store) {
-                                Ok(_) => return ScreenOutcome::Advance,
-                                Err(e) => self.submit_error = Some(format!("{e}")),
-                            }
-                        }
-                    }
-                    _ => {
-                        if let Some(t) = text {
-                            for c in t.chars() {
-                                if c.is_control() {
-                                    continue;
-                                }
-                                let mut buf = [0u8; 4];
-                                let s = c.encode_utf8(&mut buf);
-                                self.display_name.insert_str(self.cursor, s);
-                                self.cursor += s.len();
-                                *handled = true;
-                            }
-                        }
-                    }
+                    return ScreenOutcome::Stay;
+                }
+                if self.editor.apply_key(logical_key, _modifiers, text.as_deref()) {
+                    *handled = true;
                 }
                 ScreenOutcome::Stay
             }
@@ -419,23 +398,60 @@ impl Widget for CreateIdentityScreen {
             None,
             &RoundedRect::from_rect(self.input_rect, 6.0),
         );
-        let text_color = if self.display_name.is_empty() {
+        let name = &self.editor.text;
+        let text_color = if name.is_empty() {
             theme.tokens.colors.text_dim
         } else {
             theme.tokens.colors.text_primary
         };
-        let displayed = if self.display_name.is_empty() {
+        let displayed: String = if name.is_empty() {
             "Your name…".to_string()
         } else {
-            self.display_name.clone()
+            name.clone()
         };
+        let text_origin_x = self.input_rect.x0 + 12.0;
+        let text_origin_y = self.input_rect.y0 + 12.0;
+        // Selection highlight band, if any.
+        if let Some((lo, hi)) = self.editor.selection_range() {
+            let (pre_w, _) = text_renderer.measure(&name[..lo], 15.0, None);
+            let (mid_w, _) = text_renderer.measure(&name[lo..hi], 15.0, None);
+            let sel_color = theme.accent_primary.with_alpha_factor(0.30);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                sel_color,
+                None,
+                &Rect::new(
+                    text_origin_x + pre_w as f64,
+                    text_origin_y - 2.0,
+                    text_origin_x + pre_w as f64 + mid_w as f64,
+                    text_origin_y + 18.0,
+                ),
+            );
+        }
         text_renderer.draw_text(
             scene,
             &displayed,
             15.0,
             text_color,
-            transform * Affine::translate((self.input_rect.x0 + 12.0, self.input_rect.y0 + 12.0)),
+            transform * Affine::translate((text_origin_x, text_origin_y)),
             None,
+        );
+        // Caret — drawn over selection (if any) so the user always
+        // sees where they'd type. Uses the editor's byte cursor.
+        let cursor_byte = self.editor.cursor.min(name.len());
+        let prefix = &name[..cursor_byte];
+        let (prefix_w, _) = text_renderer.measure(prefix, 15.0, None);
+        let caret_x = text_origin_x + prefix_w as f64;
+        let caret_top = text_origin_y - 2.0;
+        let caret_bottom = text_origin_y + 18.0;
+        let caret_rect = Rect::new(caret_x, caret_top, caret_x + 1.5, caret_bottom);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
+            None,
+            &caret_rect,
         );
         // Accent-tile heading.
         text_renderer.draw_text(
