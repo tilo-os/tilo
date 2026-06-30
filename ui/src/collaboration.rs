@@ -36,6 +36,33 @@ pub enum CollabRequest {
     /// payload + UUIDs) and growing the enum to its inline size would
     /// bloat every `CollabRequest` value passed by value.
     SignedSyncIncremental { envelope: Box<SignedOp> },
+    /// Phase 6: late-join scrollback fetch. A peer that has just
+    /// joined a channel and wants to render older edits asks the
+    /// broker for up to `max` ops with `seq < before_seq` on the
+    /// given artifact. The broker replies with a single
+    /// [`CollabEvent::ScrollbackBatch`].
+    ///
+    /// Apps drive this in two steps: a first request with
+    /// `before_seq` set to "the lowest seq I've already seen + 1",
+    /// then if `exhausted == false` repeat with `before_seq` set to
+    /// the lowest seq from the previous batch. When `exhausted ==
+    /// true` (or the batch is empty) the in-memory broker has no
+    /// more history; the cooperative scrollback path takes over
+    /// (broker queries gossipsub peers — see
+    /// `NeighbourMsg::ScrollbackRequest`).
+    FetchScrollback {
+        /// The artifact whose log to scroll. Same id the app passes
+        /// when sending mutation ops.
+        artifact: qos_collab_types::ArtifactId,
+        /// Exclusive upper bound on `seq`. The broker returns ops
+        /// with `seq < before_seq`. To fetch "everything I haven't
+        /// seen", pass the lowest seq the app has rendered locally.
+        before_seq: u64,
+        /// Page size cap. `u16` because individual scrollback pages
+        /// are bounded by chrome UX (~50 ops/page); a wider int would
+        /// be premature flexibility.
+        max: u16,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -76,6 +103,31 @@ pub enum CollabEvent {
     SignedCRDTIncremental {
         envelope: Box<SignedOp>,
         from_user_id: String,
+    },
+    /// Phase 6: response to a [`CollabRequest::FetchScrollback`].
+    /// Carries a page of previously-validated ops (or the empty
+    /// vector if the broker has nothing in the requested range) plus
+    /// an `exhausted` flag that tells the requester whether to stop
+    /// paging in-memory and fall back to the cooperative path.
+    ///
+    /// Targeted send: the broker writes a `ScrollbackBatch` only to
+    /// the connection that issued the matching `FetchScrollback`, not
+    /// to every connected app. This is the first per-peer reply in
+    /// the broker — every prior event was fan-out.
+    ScrollbackBatch {
+        /// Echo of the original `FetchScrollback::artifact` so the
+        /// app can route the reply to the right history view when
+        /// multiple scrollback fetches are in flight.
+        artifact: qos_collab_types::ArtifactId,
+        /// The page of ops, in ascending seq order. Empty when the
+        /// broker has no matching range (typically because compaction
+        /// has evicted it).
+        ops: Vec<Box<SignedOp>>,
+        /// True iff the broker holds no more history in the requested
+        /// range — i.e. the page is the complete answer from
+        /// in-memory storage. False means there's more on the broker
+        /// that the app can fetch with another request.
+        exhausted: bool,
     },
 }
 
@@ -536,6 +588,19 @@ pub mod broker {
                     CollabEvent::SignedCRDTIncremental {
                         envelope,
                         from_user_id: user_id,
+                    }
+                }
+                CollabRequest::FetchScrollback { artifact, .. } => {
+                    // The in-toolkit test broker holds no op log
+                    // (Phase 6 is broker-side state), so the answer is
+                    // always "empty + exhausted". Apps using this
+                    // broker get no scrollback; production apps wire
+                    // through `shell::shell::collab_broker` which
+                    // does hold the log.
+                    CollabEvent::ScrollbackBatch {
+                        artifact,
+                        ops: Vec::new(),
+                        exhausted: true,
                     }
                 }
             };
