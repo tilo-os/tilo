@@ -7,6 +7,7 @@ members = [
     "docpdf",
     "dochtml",
     "docrtf",
+    "docepub",
     "editor",
     "fs",
     "shell",
