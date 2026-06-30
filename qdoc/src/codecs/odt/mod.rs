@@ -3,6 +3,7 @@
 //! canonical model. Built across Phase 4: container → body parse → spans →
 //! export → preservation.
 
+pub mod comments;
 pub mod container;
 pub mod content;
 pub mod export;

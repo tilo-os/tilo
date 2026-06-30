@@ -10,7 +10,7 @@ use super::styles::{attr_val, mark_from_rpr_child, map_jc, StyleRegistry};
 use crate::document::MarkValue;
 use crate::format::CodecError;
 use crate::model::DocMut;
-use crate::schema::{FIELD_PLACEHOLDER, MARK_NOTE_REF};
+use crate::schema::{FIELD_PLACEHOLDER, MARK_COMMENT, MARK_NOTE_REF};
 
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
@@ -40,6 +40,7 @@ pub(crate) fn parse_body(
     reg: &StyleRegistry,
     foot_map: &BTreeMap<String, String>,
     end_map: &BTreeMap<String, String>,
+    comment_map: &BTreeMap<String, String>,
     doc: &mut DocMut,
 ) -> Result<(), CodecError> {
     let s = std::str::from_utf8(document_xml).map_err(|e| CodecError::Parse(e.to_string()))?;
@@ -71,6 +72,11 @@ pub(crate) fn parse_body(
     let mut cur_para_marks: Vec<(String, MarkValue)> = Vec::new();
     // (block, char index, note id) reference markers, applied after all text is in.
     let mut note_refs: Vec<(String, usize, String)> = Vec::new();
+    // Open comment ranges keyed by docx id: `docx_id → (comment id, block, start char
+    // index)`, awaiting their matching `w:commentRangeEnd`.
+    let mut open_comments: BTreeMap<String, (String, String, usize)> = BTreeMap::new();
+    // (block, start, end, comment id) anchor marks, applied after all text is in.
+    let mut comment_ranges: Vec<(String, usize, usize, String)> = Vec::new();
 
     // Table state: cells become consecutive `cell` blocks tagged table/row/col.
     let mut table_id: Option<String> = None;
@@ -258,6 +264,29 @@ pub(crate) fn parse_body(
                         }
                     }
                 }
+                b"w:commentRangeStart" if in_body && cur.is_some() => {
+                    // The start of a commented range: remember the current char index;
+                    // the matching `w:commentRangeEnd` records the end. The range marks
+                    // sit at body level (between runs), so `cur_len` is the boundary.
+                    if let Some(docx_id) = attr_val(&e, b"w:id") {
+                        if let Some(cid) = comment_map.get(&docx_id) {
+                            if let Some(b) = cur.clone() {
+                                open_comments.insert(docx_id, (cid.clone(), b, cur_len));
+                            }
+                        }
+                    }
+                }
+                b"w:commentRangeEnd" if in_body => {
+                    // Closes a commented range: anchor a `comment` mark over
+                    // `[start, cur_len)` for the matching docx id.
+                    if let Some(docx_id) = attr_val(&e, b"w:id") {
+                        if let Some((cid, b, start)) = open_comments.remove(&docx_id) {
+                            comment_ranges.push((b, start, cur_len, cid));
+                        }
+                    }
+                }
+                // `w:commentReference` (the citation marker run child) carries no
+                // range info — the range is defined by start/end — so it is ignored.
                 _ if in_rpr => {
                     if let Some((k, v)) = mark_from_rpr_child(&e) {
                         run_marks.retain(|(k2, _)| k2 != &k);
@@ -344,7 +373,30 @@ pub(crate) fn parse_body(
     for (b, idx, nid) in note_refs {
         doc.add_mark(&b, idx, idx + 1, MARK_NOTE_REF, nid.as_str());
     }
+    // A comment whose `w:commentRangeEnd` never arrived still anchors at its start,
+    // extending to the block's end so it has a non-empty range when content follows.
+    for (_docx_id, (cid, b, start)) in std::mem::take(&mut open_comments) {
+        let end = doc_block_len(doc, &b).max(start);
+        comment_ranges.push((b, start, end, cid));
+    }
+    // Comment anchor marks: cover each commented range with a `comment` mark valued
+    // with the comment id. A zero-width range can't carry a mark, so widen it to one
+    // character when the block has text after the anchor.
+    for (b, start, mut end, cid) in comment_ranges {
+        if end <= start {
+            let blen = doc_block_len(doc, &b);
+            end = (start + 1).min(blen);
+        }
+        if end > start {
+            doc.add_mark(&b, start, end, MARK_COMMENT, cid.as_str());
+        }
+    }
     Ok(())
+}
+
+/// The character length of a body block's text (0 if absent).
+fn doc_block_len(doc: &DocMut, block_id: &str) -> usize {
+    crate::model::block_text(doc.doc, doc.c, block_id).map(|t| t.chars().count()).unwrap_or(0)
 }
 
 #[cfg(test)]
