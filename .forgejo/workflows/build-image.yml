@@ -87,3 +87,25 @@ jobs:
           # transparency log (security plan §9) is a separate follow-up.
           cosign sign --yes --tlog-upload=false --key env://COSIGN_PRIVATE_KEY \
             "code.podesta.ai/qos/qos@${{ steps.build.outputs.digest }}"
+
+      # SBOM (security plan §9): generate an SPDX inventory of the image and
+      # attach it as a SIGNED in-toto attestation, so consumers can audit exactly
+      # what shipped + verify it came from us.
+      - name: Generate SBOM (syft → SPDX)
+        if: github.event_name != 'pull_request'
+        uses: anchore/sbom-action@v0
+        with:
+          image: code.podesta.ai/qos/qos@${{ steps.build.outputs.digest }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Attest the SBOM to the image (signed)
+        if: github.event_name != 'pull_request'
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          cosign attest --yes --tlog-upload=false \
+            --predicate sbom.spdx.json --type spdxjson \
+            --key env://COSIGN_PRIVATE_KEY \
+            "code.podesta.ai/qos/qos@${{ steps.build.outputs.digest }}"

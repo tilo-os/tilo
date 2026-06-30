@@ -23,6 +23,11 @@
 #     os/Containerfile.
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
+# Fail loudly: a broken container build must NOT silently fall through to imaging
+# a stale container (which previously produced a misleadingly "successful" qcow2
+# built from an old image). pipefail also catches `podman save | podman load`.
+set -euo pipefail
+
 for a in "$@"; do
   case "$a" in
     -h|--help) sed -n '2,30p' "$0"; exit 0 ;;

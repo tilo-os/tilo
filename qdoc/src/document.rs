@@ -169,6 +169,34 @@ impl Document {
         crate::model::doc_props(&self.doc, &self.c)
     }
 
+    /// Set the document-wide multi-column layout: `count` newspaper-style columns
+    /// for the body, with an optional `gap` (px) between them. `count <= 1` clears
+    /// the setting (single column). Round-trips through `.odt`/`.docx`.
+    pub fn set_columns(&mut self, count: u32, gap: Option<f64>) {
+        self.as_mut().set_columns(count, gap);
+        self.doc.commit();
+    }
+
+    /// The document-wide multi-column layout: `(column_count, optional_gap_px)`.
+    /// Defaults to `(1, None)` (single column) for documents with no column setting.
+    pub fn columns(&self) -> (u32, Option<f64>) {
+        crate::model::columns(&self.doc, &self.c)
+    }
+
+    /// Set the document default language as a BCP-47 tag (`en-US`, `de-DE`, `fr`). An
+    /// empty `code` clears the setting. Round-trips through `.odt`/`.docx`. Supports
+    /// spell-check locale selection and accessibility/screen-reader language.
+    pub fn set_language(&mut self, code: &str) {
+        self.as_mut().set_language(code);
+        self.doc.commit();
+    }
+
+    /// The document default language as a BCP-47 tag, or `None` if the document
+    /// declares no default language.
+    pub fn language(&self) -> Option<String> {
+        crate::model::language(&self.doc, &self.c)
+    }
+
     pub fn blocks_in_order(&self) -> Vec<String> {
         crate::model::blocks_in_order(&self.doc, &self.c)
     }
@@ -451,6 +479,31 @@ impl Document {
         self.doc.commit();
     }
 
+    // ---- bookmarks / cross-references -------------------------------------
+
+    /// Every bookmark (named anchor) in the document, recovered from the body
+    /// `bookmark` marks.
+    pub fn bookmarks(&self) -> Vec<crate::snapshot::BookmarkView> {
+        crate::model::bookmarks(&self.doc, &self.c)
+    }
+
+    /// Anchor a bookmark named `name` over the body range `[start, end)` of `block_id`.
+    /// A point bookmark (`start == end`) is widened to one character so the mark has a
+    /// non-empty range.
+    pub fn add_bookmark(&mut self, block_id: &str, start: usize, end: usize, name: &str) {
+        self.as_mut().add_bookmark(block_id, start, end, name);
+        self.doc.commit();
+    }
+
+    /// Anchor a cross-reference (internal link) over the body range `[start, end)` of
+    /// `block_id`, pointing at `target` (a bookmark name or a heading's derived id —
+    /// see [`crate::model::heading_ref_id`]). Stored as a `link` mark valued
+    /// `#<target>`.
+    pub fn add_cross_ref(&mut self, block_id: &str, start: usize, end: usize, target: &str) {
+        self.as_mut().add_cross_ref(block_id, start, end, target);
+        self.doc.commit();
+    }
+
     /// Timeline of authored changes (oldest first).
     pub fn versions(&mut self) -> Vec<crate::history::VersionMeta> {
         crate::history::versions(&mut self.doc)
@@ -522,6 +575,81 @@ mod tests {
         let d2 = Document::load(&bytes).unwrap();
         let (v, _) = d2.doc.get(&ROOT, KEY_SCHEMA).unwrap().unwrap();
         assert_eq!(v.to_str(), Some(SCHEMA_ID));
+    }
+
+    #[test]
+    fn columns_default_set_clear_and_persist() {
+        let mut d = Document::new();
+        // Absent → single column, surfaced in the snapshot.
+        assert_eq!(d.columns(), (1, None), "default is a single column with no gap");
+        assert_eq!(d.materialize().columns, 1);
+        assert_eq!(d.materialize().column_gap, None);
+
+        // Set + read back, and surface in the snapshot.
+        d.set_columns(2, Some(18.0));
+        assert_eq!(d.columns(), (2, Some(18.0)));
+        let snap = d.materialize();
+        assert_eq!(snap.columns, 2);
+        assert_eq!(snap.column_gap, Some(18.0));
+
+        // Survives a CRDT save/load round-trip.
+        let bytes = d.save();
+        let d2 = Document::load(&bytes).unwrap();
+        assert_eq!(d2.columns(), (2, Some(18.0)), "columns survive save/load");
+
+        // Setting back to one column clears the setting (single-column default).
+        let mut d3 = Document::load(&bytes).unwrap();
+        d3.set_columns(1, None);
+        assert_eq!(d3.columns(), (1, None));
+        assert_eq!(d3.materialize().columns, 1);
+    }
+
+    #[test]
+    fn columns_count_is_clamped_to_at_least_one() {
+        let mut d = Document::new();
+        // A zero count is meaningless; the reader clamps to a single column.
+        d.set_columns(0, None);
+        assert_eq!(d.columns(), (1, None));
+    }
+
+    #[test]
+    fn docsnapshot_default_is_single_column() {
+        // The hand-rolled `Default` must yield one column, not the integer default 0.
+        assert_eq!(crate::snapshot::DocSnapshot::default().columns, 1);
+    }
+
+    #[test]
+    fn language_default_set_clear_and_persist() {
+        let mut d = Document::new();
+        // Absent → no declared default language (backward-compatible open).
+        assert_eq!(d.language(), None, "default has no declared language");
+        assert_eq!(d.materialize().language, None);
+
+        // Set + read back, surfaced in the snapshot.
+        d.set_language("de-DE");
+        assert_eq!(d.language().as_deref(), Some("de-DE"));
+        assert_eq!(d.materialize().language.as_deref(), Some("de-DE"));
+
+        // Survives a CRDT save/load round-trip.
+        let bytes = d.save();
+        let d2 = Document::load(&bytes).unwrap();
+        assert_eq!(d2.language().as_deref(), Some("de-DE"), "language survives save/load");
+
+        // An empty code clears the setting.
+        let mut d3 = Document::load(&bytes).unwrap();
+        d3.set_language("");
+        assert_eq!(d3.language(), None);
+        assert_eq!(d3.materialize().language, None);
+    }
+
+    #[test]
+    fn open_without_language_is_backward_compatible() {
+        // A document saved with no language must still open and read `None` (the
+        // `meta.language` register simply doesn't exist).
+        let mut d = Document::new();
+        let bytes = d.save();
+        let d2 = Document::load(&bytes).unwrap();
+        assert_eq!(d2.language(), None);
     }
 
     #[test]

@@ -61,12 +61,69 @@ pub(super) fn normalize_color(v: &str) -> String {
     t.to_string()
 }
 
+/// Classify an ODF `style:text-position` value as superscript (`Some(true)`),
+/// subscript (`Some(false)`), or neither (`None`). The value is `<position>
+/// [height]` where the position is a percent (`super`/`sub` keywords or a signed
+/// percentage like `33%`/`-33%`); positive → superscript, negative → subscript.
+pub(super) fn text_position_kind(v: &str) -> Option<bool> {
+    let first = v.trim().split_whitespace().next()?;
+    match first {
+        "super" => Some(true),
+        "sub" => Some(false),
+        _ => {
+            let pct = first.trim_end_matches('%').trim().parse::<f64>().ok()?;
+            if pct > 0.0 {
+                Some(true)
+            } else if pct < 0.0 {
+                Some(false)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// Parse an ODF `fo:line-height` percentage (e.g. `150%`) into the model's
+/// `line_spacing` multiple (1.5). Only percentage line-heights map cleanly onto a
+/// unitless multiple; fixed lengths (`fo:line-height="0.5cm"`) and `normal` are
+/// left unset (best-effort, matching the size-percentage handling above).
+pub(super) fn parse_line_height(v: &str) -> Option<f64> {
+    let t = v.trim();
+    let pct = t.strip_suffix('%')?.trim().parse::<f64>().ok()?;
+    if pct > 0.0 {
+        Some((pct / 100.0 * 1000.0).round() / 1000.0)
+    } else {
+        None
+    }
+}
+
 pub(super) fn map_align(v: &str) -> String {
     match v {
         "center" => "center".into(),
         "end" | "right" => "right".into(),
         "justify" | "justified" => "justify".into(),
         _ => "left".into(),
+    }
+}
+
+/// Map an ODF `style:wrap` value onto the model wrap (`none`|`left`|`right`|`both`).
+/// `run-through`/`none` → no wrap; `parallel`/`dynamic`/`biggest` → wrap both sides.
+pub(super) fn map_odf_wrap(v: &str) -> &'static str {
+    match v {
+        "left" => "left",
+        "right" => "right",
+        "parallel" | "dynamic" | "biggest" => "both",
+        _ => "none", // "none" | "run-through" | unknown
+    }
+}
+
+/// Map a model wrap (`none`|`left`|`right`|`both`) onto the ODF `style:wrap` value.
+pub(super) fn model_wrap_to_odf(v: &str) -> &'static str {
+    match v {
+        "left" => "left",
+        "right" => "right",
+        "both" => "parallel",
+        _ => "none",
     }
 }
 
@@ -123,9 +180,23 @@ pub(super) fn text_fields(e: &BytesStart) -> TextFields {
     f
 }
 
+/// Reassemble a BCP-47 tag from an ODF `fo:language` + optional `fo:country` pair
+/// (`de` + `DE` → `de-DE`; `fr` alone → `fr`). Returns `None` when no language part is
+/// present (the `none` sentinel ODF uses for "no language" yields `None` too).
+pub(super) fn reassemble_bcp47(language: Option<&str>, country: Option<&str>) -> Option<String> {
+    let lang = language.map(str::trim).filter(|s| !s.is_empty() && *s != "none")?;
+    match country.map(str::trim).filter(|s| !s.is_empty() && *s != "none") {
+        Some(c) => Some(format!("{lang}-{c}")),
+        None => Some(lang.to_string()),
+    }
+}
+
 /// Inline marks (with values) implied by a `style:text-properties` element.
 pub(super) fn marks_from_text_props(e: &BytesStart) -> Vec<(String, MarkValue)> {
     let mut m = Vec::new();
+    // Per-run language override is split across `fo:language` + `fo:country`; collect
+    // both, then reassemble one BCP-47 `lang` mark after the per-attribute scan.
+    let (mut fo_language, mut fo_country) = (None, None);
     for a in e.attributes().flatten() {
         let val = a.unescape_value().unwrap_or_default();
         match a.key.as_ref() {
@@ -140,8 +211,28 @@ pub(super) fn marks_from_text_props(e: &BytesStart) -> Vec<(String, MarkValue)> 
             }
             b"style:font-name" | b"fo:font-family" => m.push(("fontFamily".into(), MarkValue::Str(generic_font(&val)))),
             b"fo:color" => m.push(("color".into(), MarkValue::Str(normalize_color(&val)))),
+            // Text background (highlight): ODF `fo:background-color` (skip the
+            // `transparent` sentinel — that's "no highlight").
+            b"fo:background-color" if val != "transparent" => {
+                m.push(("highlight".into(), MarkValue::Str(normalize_color(&val))))
+            }
+            // Vertical alignment: `style:text-position` is `<pos> <height>` where a
+            // positive position (or the keyword `super`) is superscript and a
+            // negative position (or `sub`) is subscript.
+            b"style:text-position" => match text_position_kind(&val) {
+                Some(true) => m.push(("super".into(), MarkValue::Bool(true))),
+                Some(false) => m.push(("sub".into(), MarkValue::Bool(true))),
+                None => {}
+            },
+            // Per-run language override: `fo:language` (+ optional `fo:country`)
+            // reassembled into one BCP-47 `lang` mark below.
+            b"fo:language" => fo_language = Some(val.into_owned()),
+            b"fo:country" => fo_country = Some(val.into_owned()),
             _ => {}
         }
+    }
+    if let Some(code) = reassemble_bcp47(fo_language.as_deref(), fo_country.as_deref()) {
+        m.push(("lang".into(), MarkValue::Str(code)));
     }
     m
 }
@@ -169,6 +260,8 @@ pub(super) struct ParaStyle {
     pub space_before: Option<f64>,
     pub space_after: Option<f64>,
     pub indent: Option<f64>,
+    /// Line spacing as a unitless multiple (e.g. 1.5), from `fo:line-height` (%).
+    pub line_height: Option<f64>,
 }
 
 /// Map an ODF `style:num-format` value to the model's canonical numbering format
@@ -203,6 +296,9 @@ pub(super) struct StyleRegistry {
     /// list-style name → its level-0 numbering (format + start), for fidelity
     /// preservation of ordered lists.
     pub list_numbering: HashMap<String, ListNumbering>,
+    /// `graphic`-family (frame) style name → the model wrap value
+    /// (`none`|`left`|`right`|`both`) parsed from its `style:wrap`.
+    pub graphic_wrap: HashMap<String, String>,
 }
 
 impl StyleRegistry {
@@ -231,6 +327,21 @@ impl StyleRegistry {
             let p = self.para.get(&n)?;
             if let Some(a) = &p.align {
                 return Some(a.clone());
+            }
+            cur = p.parent.clone();
+        }
+        None
+    }
+
+    /// Line spacing (`fo:line-height` %) a paragraph style applies, following the
+    /// parent chain (most-derived first).
+    pub(super) fn para_line_height(&self, name: &str) -> Option<f64> {
+        let mut cur = Some(name.to_string());
+        for _ in 0..8 {
+            let n = cur?;
+            let p = self.para.get(&n)?;
+            if let Some(lh) = p.line_height {
+                return Some(lh);
             }
             cur = p.parent.clone();
         }
@@ -350,6 +461,9 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry, from_named_secti
     let mut space_before: Option<f64> = None;
     let mut space_after: Option<f64> = None;
     let mut indent: Option<f64> = None;
+    let mut line_height: Option<f64> = None;
+    // Frame (graphic-family) wrap, parsed from `style:graphic-properties style:wrap`.
+    let mut graphic_wrap: Option<String> = None;
 
     let mut list_name: Option<String> = None;
     let mut list_numbered = false;
@@ -401,6 +515,13 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry, from_named_secti
                     space_before = None;
                     space_after = None;
                     indent = None;
+                    line_height = None;
+                    graphic_wrap = None;
+                }
+                b"style:graphic-properties" => {
+                    if let Some(w) = attr_val(&e, b"style:wrap") {
+                        graphic_wrap = Some(map_odf_wrap(&w).to_string());
+                    }
                 }
                 b"style:text-properties" => {
                     text.extend(marks_from_text_props(&e));
@@ -434,6 +555,9 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry, from_named_secti
                     // Left indent: prefer fo:margin-left, fall back to text-indent.
                     if let Some(v) = attr_val(&e, b"fo:margin-left").or_else(|| attr_val(&e, b"fo:text-indent")) {
                         indent = parse_margin_px(&v);
+                    }
+                    if let Some(v) = attr_val(&e, b"fo:line-height") {
+                        line_height = parse_line_height(&v);
                     }
                 }
                 b"text:list-style" => {
@@ -487,8 +611,14 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry, from_named_secti
                                         space_before: space_before.take(),
                                         space_after: space_after.take(),
                                         indent: indent.take(),
+                                        line_height: line_height.take(),
                                     },
                                 );
+                            }
+                            "graphic" => {
+                                if let Some(w) = graphic_wrap.take() {
+                                    reg.graphic_wrap.insert(n, w);
+                                }
                             }
                             _ => {}
                         }
@@ -502,6 +632,8 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry, from_named_secti
                     space_before = None;
                     space_after = None;
                     indent = None;
+                    line_height = None;
+                    graphic_wrap = None;
                 }
                 b"text:list-style" => {
                     if let Some(n) = list_name.take() {

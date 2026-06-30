@@ -46,6 +46,11 @@ struct FrameState {
     depth: i32,
     width: Option<String>,
     height: Option<String>,
+    /// Model anchor (`inline`|`paragraph`|`page`) from `text:anchor-type`.
+    anchor: Option<String>,
+    /// Model wrap (`none`|`left`|`right`|`both`) resolved from the frame's
+    /// graphic style's `style:wrap`.
+    wrap: Option<String>,
     href: Option<String>,
     title: String,
     desc: String,
@@ -99,6 +104,12 @@ fn open_para(doc: &mut DocMut, prev: &mut Option<String>, cur: &mut Option<Strin
     let id = start_block(doc, prev, cur, cur_len, if level.is_some() { "heading" } else { "paragraph" });
     if let Some(l) = level {
         doc.set_attr(&id, "level", l);
+    }
+    // Line spacing rides as a direct `line_spacing` Float attr (it isn't part of
+    // the CRDT named-style props, so it's always lifted onto the block — even when
+    // the paragraph references a named style below).
+    if let Some(lh) = style.and_then(|s| reg.para_line_height(s)) {
+        doc.set_attr(&id, "line_spacing", lh);
     }
     // A *named* (common) non-heading paragraph style → a real CRDT-native style:
     // lift its definition into the styles container and point the block at it via
@@ -177,6 +188,12 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
     let mut open_comments: BTreeMap<String, (String, String, usize)> = BTreeMap::new();
     // (block, start, end, comment id) anchor marks, applied after all text is in.
     let mut comment_ranges: Vec<(String, usize, usize, String)> = Vec::new();
+
+    // Open bookmark ranges keyed by the ODF `text:name`: `name → (block, start char
+    // index)`, awaiting their matching `text:bookmark-end`.
+    let mut open_bookmarks: BTreeMap<String, (String, usize)> = BTreeMap::new();
+    // (block, start, end, bookmark name) anchor marks, applied after all text is in.
+    let mut bookmark_ranges: Vec<(String, usize, usize, String)> = Vec::new();
 
     // An in-progress `text:tracked-changes` declaration block: its raw-XML start byte +
     // open depth. Captured whole, then parsed into change records on close.
@@ -280,6 +297,13 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                             }
                             if let Some(h) = fr.height.as_deref().and_then(parse_len_px) {
                                 doc.set_attr(&id, "height", h);
+                            }
+                            // Positioning: anchor (inline/paragraph/page) + wrap.
+                            if let Some(a) = fr.anchor.as_deref() {
+                                doc.set_attr(&id, "anchor", a);
+                            }
+                            if let Some(w) = fr.wrap.as_deref() {
+                                doc.set_attr(&id, "wrap", w);
                             }
                             // An image-only paragraph (the common LibreOffice/pandoc
                             // "figure" layout) leaves an empty wrapper paragraph — drop
@@ -537,11 +561,22 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                     } else {
                         (None, false)
                     };
+                    // `text:anchor-type`: `as-char` → inline; `page` → page; everything
+                    // else (`paragraph`/`char`/`frame`) → paragraph-anchored floating.
+                    let anchor = attr_val(&e, b"text:anchor-type").map(|a| match a.as_str() {
+                        "as-char" => "inline".to_string(),
+                        "page" => "page".to_string(),
+                        _ => "paragraph".to_string(),
+                    });
+                    // Wrap rides on the frame's graphic style (`draw:style-name`).
+                    let wrap = attr_val(&e, b"draw:style-name").and_then(|s| reg.graphic_wrap.get(&s).cloned());
                     frame = Some(FrameState {
                         raw_start: pos_before,
                         depth: 1,
                         width: attr_val(&e, b"svg:width"),
                         height: attr_val(&e, b"svg:height"),
+                        anchor,
+                        wrap,
                         href: None,
                         title: String::new(),
                         desc: String::new(),
@@ -574,6 +609,29 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                         if let Some((cid, b, start)) = open_comments.remove(&name) {
                             comment_ranges.push((b, start, cur_len, cid));
                         }
+                    }
+                }
+                b"text:bookmark-start" if in_text && cur.is_some() => {
+                    // Opens a bookmark's range: remember the current char index; the
+                    // matching `text:bookmark-end` (by `text:name`) records the end.
+                    if let (Some(name), Some(b)) = (attr_val(&e, b"text:name"), cur.clone()) {
+                        open_bookmarks.insert(name, (b, cur_len));
+                    }
+                }
+                b"text:bookmark-end" if in_text => {
+                    // Closes a bookmark's range: anchor a `bookmark` mark valued with the
+                    // name over `[start, cur_len)`.
+                    if let Some(name) = attr_val(&e, b"text:name") {
+                        if let Some((b, start)) = open_bookmarks.remove(&name) {
+                            bookmark_ranges.push((b, start, cur_len, name));
+                        }
+                    }
+                }
+                b"text:bookmark" if in_text && cur.is_some() => {
+                    // A point bookmark (no range): anchor a zero-width range at the
+                    // current char index — widened to one character on apply below.
+                    if let (Some(name), Some(b)) = (attr_val(&e, b"text:name"), cur.clone()) {
+                        bookmark_ranges.push((b, cur_len, cur_len, name));
                     }
                 }
                 b"text:change-start" if in_text && cur.is_some() => {
@@ -731,6 +789,19 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
         if end > start {
             doc.add_mark(&b, start, end, MARK_COMMENT, cid.as_str());
         }
+    }
+    // Any bookmark whose `text:bookmark-end` never arrived still anchors at its start,
+    // extending to the block's end so it has a non-empty range when content follows.
+    for (name, (b, start)) in std::mem::take(&mut open_bookmarks) {
+        let end = doc_block_len(doc, &b).max(start);
+        bookmark_ranges.push((b, start, end, name));
+    }
+    // Bookmark anchor marks: cover each bookmarked range with a `bookmark` mark valued
+    // with the name. A zero-width (point) range can't carry a mark, so widen it to one
+    // character when the block has text after the anchor; an end-of-block point sits
+    // over the last character.
+    for (b, start, end, name) in bookmark_ranges {
+        doc.add_bookmark(&b, start, end, &name);
     }
     // Any tracked change whose `text:change-end` never arrived still anchors at its
     // start, extending to the block's end so it has a non-empty range when content
@@ -1117,5 +1188,52 @@ mod tests {
             other => panic!("fidelity atom missing after round-trip: {other:?}"),
         };
         assert_eq!(raw1, raw2, "fidelity atom round-trips verbatim");
+    }
+
+    #[test]
+    fn imports_run_language_as_mark() {
+        use crate::document::MarkValue;
+        // A text style carrying `fo:language` + `fo:country` → a `lang` run mark with
+        // the reassembled BCP-47 tag.
+        let styles = r#"<style:style style:name="Lf" style:family="text"><style:text-properties fo:language="fr" fo:country="FR"/></style:style>"#;
+        let body = r#"<text:p>a <text:span text:style-name="Lf">bonjour</text:span></text:p>"#;
+        let odt = minimal_odt_styled(styles, body);
+        let mut d = Document::new();
+        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        let b = &d.materialize().blocks[0];
+        assert_eq!(b.text, "a bonjour");
+        assert!(
+            b.marks.iter().any(|m| m.name == "lang" && m.start == 2 && m.end == 9 && m.value == MarkValue::Str("fr-FR".into())),
+            "lang mark reassembled from fo:language+fo:country, ranged: {:?}",
+            b.marks
+        );
+    }
+
+    #[test]
+    fn document_and_run_language_roundtrip() {
+        use crate::document::MarkValue;
+        // Author a document with a `de-DE` default language and a `fr`-marked run,
+        // export to `.odt`, re-import: both the document language and the run mark
+        // survive, with BCP-47 reassembled from `fo:language`+`fo:country`.
+        let mut d = Document::new();
+        d.set_language("de-DE");
+        let id = d.insert_block(None, "paragraph");
+        d.splice_text(&id, 0, 0, "bonjour monde");
+        // Mark "bonjour" (chars 0..7) as French (`fr`, no country).
+        d.add_mark(&id, 0, 7, "lang", "fr");
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+
+        assert_eq!(snap.language.as_deref(), Some("de-DE"), "document default language survives: {:?}", snap.language);
+        let b = &snap.blocks[0];
+        assert_eq!(b.text, "bonjour monde");
+        assert!(
+            b.marks.iter().any(|m| m.name == "lang" && m.start == 0 && m.end == 7 && m.value == MarkValue::Str("fr".into())),
+            "run lang mark `fr` survives over 'bonjour': {:?}",
+            b.marks
+        );
     }
 }

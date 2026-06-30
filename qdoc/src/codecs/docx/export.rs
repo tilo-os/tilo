@@ -56,8 +56,13 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     let snap = doc.materialize();
     // Page header/footer parts + the `w:sectPr` references that wire them in.
     let hf_parts = super::headers::export_parts(&doc);
-    let sectpr = if hf_parts.any() {
-        format!(r#"<w:sectPr>{}</w:sectPr>"#, super::headers::section_references(&hf_parts))
+    // Multi-column section layout: a `<w:cols>` element folded into the same sectPr.
+    let cols = super::columns::section_columns_xml(&doc).unwrap_or_default();
+    // The `w:sectPr` is emitted when *either* the header/footer references or the
+    // columns need to ride in it. In a sectPr's defined element order the
+    // header/footer references precede `w:cols`, so the references come first.
+    let sectpr = if hf_parts.any() || !cols.is_empty() {
+        format!(r#"<w:sectPr>{}{}</w:sectPr>"#, super::headers::section_references(&hf_parts), cols)
     } else {
         String::new()
     };
@@ -65,10 +70,15 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     let notes = super::notes::export_notes(&doc);
     // Comments part + the qdoc-id → docx-id map the body's range markers reference.
     let comments = super::comments::export_comments(&doc);
-    let (document, named_refs, numbering) =
+    let (document, named_refs, numbering, images) =
         build_document_xml(&snap, &sectpr, &notes.id_map, &notes.kind_map, &comments.id_map);
     let has_lists = snap.blocks.iter().any(|b| b.kind == "list_item");
-    let has_styles = !named_refs.is_empty();
+    // The document default language (BCP-47) → a `<w:docDefaults>` block in
+    // word/styles.xml. Its presence forces styles.xml emission even when the document
+    // defines no named styles (so the default language always has a home).
+    let doc_lang = snap.language.clone();
+    let has_styles = !named_refs.is_empty() || doc_lang.is_some();
+    let has_images = !images.images.is_empty();
 
     let mut c = DocxContainer { parts: Vec::new() };
     // Re-emit every preserved part verbatim (styles.xml, settings.xml, the
@@ -112,6 +122,12 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     }
 
     c.set("word/document.xml", document.into_bytes());
+
+    // Image media parts. Each exported drawing references a `word/media/imageN.<ext>`
+    // part by a synthesised relationship; the bytes are written here.
+    for img in &images.images {
+        c.set(&img.part, img.bytes.clone());
+    }
 
     // Page header/footer parts. Written under the fixed `word/header1.xml` /
     // `word/footer1.xml` names (the `w:sectPr` built above references them by the
@@ -181,7 +197,7 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     // Word/LibreOffice render the document's named styles. Styles already declared
     // in a preserved styles.xml are referenced, not redefined.
     if has_styles {
-        let merged = merge_styles_xml(c.get("word/styles.xml"), &named_refs, &snap.styles);
+        let merged = merge_styles_xml(c.get("word/styles.xml"), &named_refs, &snap.styles, doc_lang.as_deref());
         c.set("word/styles.xml", merged);
     }
     // A styles part referenced for the first time still needs a content-type
@@ -218,6 +234,9 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
         if comments.comments_xml.is_some() {
             ct.push_str(COMMENTS_OVERRIDE);
         }
+        for def in images.content_type_defaults() {
+            ct.push_str(&def);
+        }
         ct.push_str("</Types>");
         c.set("[Content_Types].xml", ct.into_bytes());
     } else {
@@ -249,12 +268,22 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
         if need_comments_wireup {
             overrides.push(("/word/comments.xml", COMMENTS_OVERRIDE));
         }
-        if !overrides.is_empty() {
+        let image_defaults = images.content_type_defaults();
+        if !overrides.is_empty() || !image_defaults.is_empty() {
             if let Some(ct) = c.get("[Content_Types].xml") {
                 let mut s = String::from_utf8_lossy(ct).into_owned();
                 for (part, ovr) in overrides {
                     if !s.contains(part) {
                         inject_before(&mut s, "</Types>", ovr);
+                    }
+                }
+                // Image content-type `Default`s — dedup on `Extension="<ext>"`.
+                for img in &images.images {
+                    let probe = format!(r#"Extension="{}""#, img.ext);
+                    if !s.contains(&probe) {
+                        let (_, media) = image_ext_and_media(&img.bytes);
+                        let def = format!(r#"<Default Extension="{}" ContentType="{}"/>"#, img.ext, media);
+                        inject_before(&mut s, "</Types>", &def);
                     }
                 }
                 c.set("[Content_Types].xml", s.into_bytes());
@@ -296,6 +325,7 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
         || need_footnotes_wireup
         || need_endnotes_wireup
         || need_comments_wireup
+        || has_images
     {
         if !had_doc_rels {
             let mut inner = String::new();
@@ -320,6 +350,7 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
             if need_comments_wireup {
                 inner.push_str(COMMENTS_REL);
             }
+            inner.push_str(&images.relationships());
             let rels = format!(
                 r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{inner}</Relationships>"#
@@ -348,6 +379,19 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
             if need_comments_wireup && !s.contains("Target=\"comments.xml\"") {
                 inject_before(&mut s, "</Relationships>", COMMENTS_REL);
             }
+            // Image rels — unique ids (`rIdImgN`), so a simple id-presence check dedups.
+            for img in &images.images {
+                if !s.contains(&format!(r#"Id="{}""#, img.rel_id)) {
+                    inject_before(
+                        &mut s,
+                        "</Relationships>",
+                        &format!(
+                            r#"<Relationship Id="{}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="{}"/>"#,
+                            img.rel_id, img.target
+                        ),
+                    );
+                }
+            }
             c.set("word/_rels/document.xml.rels", s.into_bytes());
         }
     }
@@ -355,10 +399,24 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     c.write()
 }
 
+/// The `<w:docDefaults>` block declaring a document default language via
+/// `<w:rPrDefault><w:rPr><w:lang w:val="…"/>`, the home Word/LibreOffice read for a
+/// document's default spell-check/screen-reader locale. Re-imported by `parse_styles`.
+fn doc_defaults_lang_xml(lang: &str) -> String {
+    format!(
+        r#"<w:docDefaults><w:rPrDefault><w:rPr><w:lang w:val="{}"/></w:rPr></w:rPrDefault></w:docDefaults>"#,
+        escape_attr(lang)
+    )
+}
+
 /// Build or extend `word/styles.xml` with `<w:style w:type="paragraph">` defs for
 /// the referenced container styles. A style already declared (by `w:styleId`) in a
 /// preserved styles.xml is left untouched (no duplicate; the preserved bytes win).
-fn merge_styles_xml(existing: Option<&[u8]>, refs: &BTreeSet<String>, styles: &BTreeMap<String, BTreeMap<String, AttrVal>>) -> Vec<u8> {
+/// A `doc_lang` (the document default language, BCP-47) is emitted as a
+/// `<w:docDefaults>` block ahead of the styles — only when the part doesn't already
+/// carry a `<w:docDefaults>` (so a preserved one wins and we never corrupt the schema
+/// order, which requires docDefaults precede styles).
+fn merge_styles_xml(existing: Option<&[u8]>, refs: &BTreeSet<String>, styles: &BTreeMap<String, BTreeMap<String, AttrVal>>, doc_lang: Option<&str>) -> Vec<u8> {
     match existing {
         Some(bytes) => {
             let present = style_ids_in(bytes);
@@ -371,15 +429,30 @@ fn merge_styles_xml(existing: Option<&[u8]>, refs: &BTreeSet<String>, styles: &B
                     defs.push_str(&para_style_def_xml(id, props));
                 }
             }
-            if defs.is_empty() {
+            let has_doc_defaults = bytes.windows(b"<w:docDefaults".len()).any(|w| w == b"<w:docDefaults");
+            let defaults_inject = match doc_lang {
+                Some(lang) if !has_doc_defaults => doc_defaults_lang_xml(lang),
+                _ => String::new(),
+            };
+            if defs.is_empty() && defaults_inject.is_empty() {
                 return bytes.to_vec();
             }
             let mut s = String::from_utf8_lossy(bytes).into_owned();
-            inject_before(&mut s, "</w:styles>", &defs);
+            if !defs.is_empty() {
+                inject_before(&mut s, "</w:styles>", &defs);
+            }
+            // docDefaults must precede every `<w:style>`, so inject right after the
+            // `<w:styles …>` open tag rather than before the close.
+            if !defaults_inject.is_empty() {
+                inject_after_styles_open(&mut s, &defaults_inject);
+            }
             s.into_bytes()
         }
         None => {
             let mut s = STYLES_XML_OPEN.to_string();
+            if let Some(lang) = doc_lang {
+                s.push_str(&doc_defaults_lang_xml(lang));
+            }
             for id in refs {
                 if let Some(props) = styles.get(id) {
                     s.push_str(&para_style_def_xml(id, props));
@@ -387,6 +460,18 @@ fn merge_styles_xml(existing: Option<&[u8]>, refs: &BTreeSet<String>, styles: &B
             }
             s.push_str("</w:styles>");
             s.into_bytes()
+        }
+    }
+}
+
+/// Insert `frag` immediately after the `<w:styles …>` opening tag (just after its
+/// closing `>`), so a `<w:docDefaults>` block lands ahead of every `<w:style>` as the
+/// schema requires.
+fn inject_after_styles_open(s: &mut String, frag: &str) {
+    if let Some(open) = s.find("<w:styles") {
+        if let Some(rel_close) = s[open..].find('>') {
+            let pos = open + rel_close + 1;
+            s.insert_str(pos, frag);
         }
     }
 }
@@ -551,6 +636,11 @@ fn run_props(marks: &[(String, MarkValue)]) -> String {
     let mut sz: Option<i64> = None;
     let mut font: Option<&str> = None;
     let mut color: Option<&str> = None;
+    let mut highlight: Option<&str> = None;
+    // Per-run language override (BCP-47, e.g. `fr`/`de-DE`) → `w:lang w:val`.
+    let mut lang: Option<&str> = None;
+    // Vertical alignment: `superscript`/`subscript` (super wins if both present).
+    let mut vert_align: Option<&'static str> = None;
     for (name, val) in marks {
         match name.as_str() {
             "strong" => b = true,
@@ -560,6 +650,10 @@ fn run_props(marks: &[(String, MarkValue)]) -> String {
             "fontSize" => sz = val.as_int(),
             "fontFamily" => font = val.as_str(),
             "color" => color = val.as_str(),
+            "highlight" => highlight = val.as_str(),
+            "lang" => lang = val.as_str(),
+            "super" => vert_align = Some("superscript"),
+            "sub" if vert_align.is_none() => vert_align = Some("subscript"),
             _ => {}
         }
     }
@@ -580,12 +674,26 @@ fn run_props(marks: &[(String, MarkValue)]) -> String {
     if let Some(c) = color {
         s.push_str(&format!(r#"<w:color w:val="{}"/>"#, color_hex(c)));
     }
+    // Text background (highlight): `w:shd w:fill` carries the arbitrary hex
+    // (re-imported via `w:shd`), which round-trips any colour (unlike the named
+    // `w:highlight` palette).
+    if let Some(c) = highlight {
+        s.push_str(&format!(r#"<w:shd w:val="clear" w:color="auto" w:fill="{}"/>"#, color_hex(c)));
+    }
     if let Some(n) = sz {
         let hp = n * 2;
         s.push_str(&format!(r#"<w:sz w:val="{hp}"/><w:szCs w:val="{hp}"/>"#));
     }
+    // Per-run language (`w:lang w:val="de-DE"`). The value is a BCP-47 tag emitted
+    // verbatim; Word uses it for spell-check locale and screen-reader language.
+    if let Some(l) = lang {
+        s.push_str(&format!(r#"<w:lang w:val="{}"/>"#, escape_attr(l)));
+    }
     if u {
         s.push_str(r#"<w:u w:val="single"/>"#);
+    }
+    if let Some(va) = vert_align {
+        s.push_str(&format!(r#"<w:vertAlign w:val="{va}"/>"#));
     }
     s
 }
@@ -670,20 +778,58 @@ fn comment_ends_at(marks: &[crate::document::MarkSpan], i: usize) -> Vec<String>
     v
 }
 
-/// Whether any run boundary (mark-set change, note-ref placeholder, or comment
-/// range boundary) occurs *at* `j`, so a text run must break before it.
+/// The bookmark names whose `bookmark` mark starts / ends exactly at `i` (sorted for
+/// deterministic output). `ends_at` matches `mark.end == i`.
+fn bookmark_starts_at(marks: &[crate::document::MarkSpan], i: usize) -> Vec<String> {
+    let mut v: Vec<String> = marks
+        .iter()
+        .filter(|m| m.name == crate::schema::MARK_BOOKMARK && m.start == i)
+        .filter_map(|m| m.value.as_str().map(|s| s.to_string()))
+        .collect();
+    v.sort();
+    v
+}
+
+fn bookmark_ends_at(marks: &[crate::document::MarkSpan], i: usize) -> Vec<String> {
+    let mut v: Vec<String> = marks
+        .iter()
+        .filter(|m| m.name == crate::schema::MARK_BOOKMARK && m.end == i)
+        .filter_map(|m| m.value.as_str().map(|s| s.to_string()))
+        .collect();
+    v.sort();
+    v
+}
+
+/// The internal cross-reference target (`#name` → `name`) of a `link` mark covering
+/// `[i, i+1)`, if the link is an internal reference (value starts with `#`). External
+/// URL links (no `#`) are not modeled in the `.docx` codec and return `None`.
+fn cross_ref_at(marks: &[crate::document::MarkSpan], i: usize) -> Option<String> {
+    marks
+        .iter()
+        .find(|m| m.name == crate::schema::MARK_LINK && i >= m.start && i < m.end)
+        .and_then(|m| m.value.as_str())
+        .and_then(|v| v.strip_prefix(crate::schema::CROSS_REF_PREFIX).map(|s| s.to_string()))
+}
+
+/// Whether any run boundary (mark-set change, note-ref placeholder, comment range
+/// boundary, bookmark boundary, or cross-reference change) occurs *at* `j`, so a text
+/// run must break before it.
 fn run_breaks_at(
     chars: &[char],
     marks: &[crate::document::MarkSpan],
     active: &[(String, MarkValue)],
     active_change: &Option<(crate::snapshot::ChangeKind, String)>,
+    active_xref: &Option<String>,
     j: usize,
 ) -> bool {
     marks_at(j, marks) != active
         || &change_at(marks, j) != active_change
+        || &cross_ref_at(marks, j) != active_xref
         || is_note_ref_placeholder(chars, marks, j)
         || !comment_starts_at(marks, j).is_empty()
         || !comment_ends_at(marks, j).is_empty()
+        || !bookmark_starts_at(marks, j).is_empty()
+        || !bookmark_ends_at(marks, j).is_empty()
 }
 
 /// A change-id → `&ChangeView` lookup for wrapping runs in `<w:ins>`/`<w:del>` on export.
@@ -767,6 +913,7 @@ fn render_runs(
     comment_ids: &BTreeMap<String, i64>,
     changes: &ChangeIndex,
     change_ids: &BTreeMap<String, i64>,
+    bookmark_ids: &BTreeMap<String, i64>,
 ) -> String {
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();
@@ -788,9 +935,25 @@ fn render_runs(
             }
         }
     };
+    // Bookmark boundary markers at index `i`: `w:bookmarkEnd` (by id) before
+    // `w:bookmarkStart` (id + name) so an adjacent bookmark's end closes before the
+    // next opens. These are empty elements sitting between runs at body level.
+    let emit_bookmark_boundaries = |out: &mut String, i: usize| {
+        for name in bookmark_ends_at(marks, i) {
+            if let Some(id) = bookmark_ids.get(&name) {
+                out.push_str(&format!(r#"<w:bookmarkEnd w:id="{id}"/>"#));
+            }
+        }
+        for name in bookmark_starts_at(marks, i) {
+            if let Some(id) = bookmark_ids.get(&name) {
+                out.push_str(&format!(r#"<w:bookmarkStart w:id="{id}" w:name="{}"/>"#, escape_attr(&name)));
+            }
+        }
+    };
     let mut i = 0;
     while i < n {
         emit_comment_boundaries(&mut out, i);
+        emit_bookmark_boundaries(&mut out, i);
         // A note-reference placeholder is its own run (no text), independent of the
         // surrounding mark set.
         if chars[i] == crate::schema::FIELD_PLACEHOLDER {
@@ -804,8 +967,9 @@ fn render_runs(
         }
         let active = marks_at(i, marks);
         let active_change = change_at(marks, i);
+        let active_xref = cross_ref_at(marks, i);
         let mut j = i + 1;
-        while j < n && !run_breaks_at(&chars, marks, &active, &active_change, j) {
+        while j < n && !run_breaks_at(&chars, marks, &active, &active_change, &active_xref, j) {
             j += 1;
         }
         // The tracked-change wrapper (if any) for this run group: a `<w:ins>`/`<w:del>`
@@ -823,7 +987,14 @@ fn render_runs(
             },
             None => (String::new(), "", false),
         };
+        // A cross-reference wraps the whole run group in a `<w:hyperlink w:anchor>`
+        // (the outermost wrapper), so the linked text points at the bookmark/heading.
+        let (xref_open, xref_close) = match &active_xref {
+            Some(target) => (format!(r#"<w:hyperlink w:anchor="{}">"#, escape_attr(target)), "</w:hyperlink>"),
+            None => (String::new(), ""),
+        };
         let rpr = run_props(&active);
+        out.push_str(&xref_open);
         out.push_str(&wrap_open);
         out.push_str("<w:r>");
         if !rpr.is_empty() {
@@ -836,7 +1007,14 @@ fn render_runs(
         }
         out.push_str("</w:r>");
         out.push_str(wrap_close);
+        out.push_str(xref_close);
         i = j;
+    }
+    // Bookmarks ending exactly at the block's end emit their `w:bookmarkEnd`.
+    for name in bookmark_ends_at(marks, n) {
+        if let Some(id) = bookmark_ids.get(&name) {
+            out.push_str(&format!(r#"<w:bookmarkEnd w:id="{id}"/>"#));
+        }
     }
     // Comments ending exactly at the block's end emit their range-end + reference.
     emit_comment_boundaries(&mut out, n);
@@ -857,6 +1035,19 @@ fn jc_xml(b: &BlockView) -> String {
             "justify" => r#"<w:jc w:val="both"/>"#.into(),
             _ => String::new(),
         },
+        _ => String::new(),
+    }
+}
+
+/// The `<w:spacing w:line w:lineRule="auto"/>` for a block's `line_spacing` attr
+/// (the multiple → 240ths: 1.5 → 360), or empty when unset/non-positive.
+/// Re-imports to the same `line_spacing` via `styles::line_spacing_from_spacing`.
+fn spacing_xml(b: &BlockView) -> String {
+    match b.attrs.get("line_spacing") {
+        Some(AttrVal::Float(ls)) if *ls > 0.0 => {
+            let line = (ls * 240.0).round() as i64;
+            format!(r#"<w:spacing w:line="{line}" w:lineRule="auto"/>"#)
+        }
         _ => String::new(),
     }
 }
@@ -957,6 +1148,155 @@ impl Numbering {
     }
 }
 
+/// EMUs per CSS pixel (914400 EMU/inch ÷ 96 px/inch).
+const EMU_PER_PX: f64 = 914400.0 / 96.0;
+
+/// A media part + relationship synthesised for an exported image block.
+struct ExportedImage {
+    /// Relationship id (e.g. `rIdImg1`) referenced by the drawing's `a:blip`.
+    rel_id: String,
+    /// Package part name, e.g. `word/media/image1.png`.
+    part: String,
+    /// `Target` written into the document rels (relative to `word/`).
+    target: String,
+    /// File extension (`png`/`jpg`/…) for the content-type `Default`.
+    ext: &'static str,
+    /// Image bytes.
+    bytes: Vec<u8>,
+}
+
+/// Accumulator threaded through the body build: assigns rel ids + media part names
+/// to image blocks and remembers their bytes so `export()` can write the parts +
+/// wire the relationships and content-type defaults.
+#[derive(Default)]
+struct ImageExport {
+    images: Vec<ExportedImage>,
+}
+
+impl ImageExport {
+    /// The distinct `<Default Extension="…" ContentType="…"/>` rows the exported
+    /// media parts need in `[Content_Types].xml`.
+    fn content_type_defaults(&self) -> Vec<String> {
+        let mut seen = BTreeSet::new();
+        let mut out = Vec::new();
+        for img in &self.images {
+            if seen.insert(img.ext) {
+                let (_, media) = image_ext_and_media(&img.bytes);
+                out.push(format!(r#"<Default Extension="{}" ContentType="{}"/>"#, img.ext, media));
+            }
+        }
+        out
+    }
+
+    /// The `<Relationship>` rows wiring each media part into the document rels.
+    fn relationships(&self) -> String {
+        let mut s = String::new();
+        for img in &self.images {
+            s.push_str(&format!(
+                r#"<Relationship Id="{}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="{}"/>"#,
+                img.rel_id, img.target
+            ));
+        }
+        s
+    }
+
+    /// Register an image blob, returning its relationship id. The same blob is
+    /// stored once per occurrence (Word references each drawing by its own rel).
+    fn add(&mut self, bytes: &[u8]) -> String {
+        let n = self.images.len() + 1;
+        let (ext, _) = image_ext_and_media(bytes);
+        let rel_id = format!("rIdImg{n}");
+        let target = format!("media/image{n}.{ext}");
+        self.images.push(ExportedImage {
+            rel_id: rel_id.clone(),
+            part: format!("word/{target}"),
+            target,
+            ext,
+            bytes: bytes.to_vec(),
+        });
+        rel_id
+    }
+}
+
+/// Sniff an image's extension + media type from its magic bytes.
+fn image_ext_and_media(bytes: &[u8]) -> (&'static str, &'static str) {
+    if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
+        ("png", "image/png")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        ("jpg", "image/jpeg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        ("gif", "image/gif")
+    } else {
+        ("bin", "application/octet-stream")
+    }
+}
+
+/// The model `anchor` value of an image block (default `inline`).
+fn image_anchor(b: &BlockView) -> &str {
+    match b.attrs.get("anchor") {
+        Some(AttrVal::Str(s)) => s.as_str(),
+        _ => "inline",
+    }
+}
+
+/// The model `wrap` value of an image block (default `none`).
+fn image_wrap(b: &BlockView) -> &str {
+    match b.attrs.get("wrap") {
+        Some(AttrVal::Str(s)) => s.as_str(),
+        _ => "none",
+    }
+}
+
+/// An image block's display size in EMU (`width`/`height` px → EMU), defaulting to
+/// a 1-inch square when unset so Word still renders something.
+fn image_extent_emu(b: &BlockView) -> (i64, i64) {
+    let px = |k: &str, dflt: i64| match b.attrs.get(k) {
+        Some(AttrVal::Int(n)) if *n > 0 => *n,
+        _ => dflt,
+    };
+    let cx = (px("width", 96) as f64 * EMU_PER_PX).round() as i64;
+    let cy = (px("height", 96) as f64 * EMU_PER_PX).round() as i64;
+    (cx, cy)
+}
+
+/// Build the `w:drawing` XML for an image block, registering its blob with `imgs`.
+/// Returns `None` if the blob is absent. Inline images emit `wp:inline`; floating
+/// images emit `wp:anchor` with the appropriate `wp:wrap*` element + a position.
+fn image_drawing_xml(b: &BlockView, snap: &DocSnapshot, imgs: &mut ImageExport) -> Option<String> {
+    let hash = match b.attrs.get("blob") {
+        Some(AttrVal::Str(h)) => h,
+        _ => return None,
+    };
+    let bytes = snap.blobs.get(hash)?;
+    let rel_id = imgs.add(bytes);
+    let (cx, cy) = image_extent_emu(b);
+    let docpr_id = imgs.images.len(); // unique per drawing
+    let name = escape_attr(&b.id);
+    // The graphic payload (blip + shape) is shared by inline and anchored drawings.
+    let graphic = format!(
+        r#"<wp:docPr id="{docpr_id}" name="{name}"/><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="{docpr_id}" name="{name}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="{rel_id}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic>"#
+    );
+    let anchor = image_anchor(b);
+    if anchor == "inline" {
+        Some(format!(
+            r#"<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="{cx}" cy="{cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/>{graphic}</wp:inline></w:drawing></w:r>"#
+        ))
+    } else {
+        // Floating: positioned relative to the column (paragraph anchor) or page.
+        let rel_from = if anchor == "page" { "page" } else { "column" };
+        let rel_from_v = if anchor == "page" { "page" } else { "paragraph" };
+        let wrap = match image_wrap(b) {
+            "left" => r#"<wp:wrapSquare wrapText="left"/>"#.to_string(),
+            "right" => r#"<wp:wrapSquare wrapText="right"/>"#.to_string(),
+            "both" => r#"<wp:wrapSquare wrapText="bothSides"/>"#.to_string(),
+            _ => r#"<wp:wrapNone/>"#.to_string(),
+        };
+        Some(format!(
+            r#"<w:r><w:drawing><wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="0" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="{rel_from}"><wp:posOffset>0</wp:posOffset></wp:positionH><wp:positionV relativeFrom="{rel_from_v}"><wp:posOffset>0</wp:posOffset></wp:positionV><wp:extent cx="{cx}" cy="{cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/>{wrap}{graphic}</wp:anchor></w:drawing></w:r>"#
+        ))
+    }
+}
+
 /// Build `word/document.xml` and collect the set of CRDT styles-container styleIds
 /// referenced by a `<w:pStyle>` (so the caller can emit their definitions), plus
 /// the list-numbering plan (so the caller can write a matching numbering.xml).
@@ -968,16 +1308,26 @@ fn build_document_xml(
     note_ids: &BTreeMap<String, i64>,
     note_kinds: &BTreeMap<String, crate::model::NoteKind>,
     comment_ids: &BTreeMap<String, i64>,
-) -> (String, BTreeSet<String>, Numbering) {
+) -> (String, BTreeSet<String>, Numbering, ImageExport) {
     let mut body = String::new();
     let mut named_refs: BTreeSet<String> = BTreeSet::new();
     let mut numbering = Numbering::default();
+    let mut imgs = ImageExport::default();
     // Tracked changes: a `<w:ins>`/`<w:del>` wrapper carries an integer revision id.
     // Assigned from 0 in canonical (sorted) order — independent of comment ids.
     let changes = change_index(snap);
     let change_ids: BTreeMap<String, i64> = snap.changes.iter().enumerate().map(|(i, c)| (c.id.clone(), i as i64)).collect();
     let changes = &changes;
     let change_ids = &change_ids;
+    // Bookmarks: `w:bookmarkStart`/`w:bookmarkEnd` carry an integer `w:id` per name.
+    // Assigned from 0 in sorted-name order so output is deterministic.
+    let bookmark_ids: BTreeMap<String, i64> = {
+        let mut names: Vec<String> = snap.bookmarks.iter().map(|bm| bm.name.clone()).collect();
+        names.sort();
+        names.dedup();
+        names.into_iter().enumerate().map(|(i, name)| (name, i as i64)).collect()
+    };
+    let bookmark_ids = &bookmark_ids;
     let mut i = 0;
     while i < snap.blocks.len() {
         let b = &snap.blocks[i];
@@ -988,19 +1338,28 @@ fn build_document_xml(
                     _ => 1,
                 };
                 body.push_str(&format!(
-                    r#"<w:p><w:pPr><w:pStyle w:val="Heading{level}"/>{}</w:pPr>{}</w:p>"#,
+                    r#"<w:p><w:pPr><w:pStyle w:val="Heading{level}"/>{}{}</w:pPr>{}</w:p>"#,
                     jc_xml(b),
-                    render_runs(&b.text, &b.marks, note_ids, note_kinds, comment_ids, changes, change_ids)
+                    spacing_xml(b),
+                    render_runs(&b.text, &b.marks, note_ids, note_kinds, comment_ids, changes, change_ids, bookmark_ids)
                 ));
                 i += 1;
             }
             "list_item" => {
                 let numid = numbering.num_id(b);
                 body.push_str(&format!(
-                    r#"<w:p><w:pPr><w:pStyle w:val="ListParagraph"/><w:numPr><w:ilvl w:val="0"/><w:numId w:val="{numid}"/></w:numPr>{}</w:pPr>{}</w:p>"#,
+                    r#"<w:p><w:pPr><w:pStyle w:val="ListParagraph"/><w:numPr><w:ilvl w:val="0"/><w:numId w:val="{numid}"/></w:numPr>{}{}</w:pPr>{}</w:p>"#,
                     jc_xml(b),
-                    render_runs(&b.text, &b.marks, note_ids, note_kinds, comment_ids, changes, change_ids)
+                    spacing_xml(b),
+                    render_runs(&b.text, &b.marks, note_ids, note_kinds, comment_ids, changes, change_ids, bookmark_ids)
                 ));
+                i += 1;
+            }
+            "image" => {
+                // Wrap the drawing run in a paragraph (Word images live in a `w:p`).
+                if let Some(drawing) = image_drawing_xml(b, snap, &mut imgs) {
+                    body.push_str(&format!("<w:p>{drawing}</w:p>"));
+                }
                 i += 1;
             }
             "fidelity" => {
@@ -1030,7 +1389,7 @@ fn build_document_xml(
                         let inner = cells
                             .iter()
                             .find(|cl| cell_rc(cl) == (r, c))
-                            .map(|cl| render_runs(&cl.text, &cl.marks, note_ids, note_kinds, comment_ids, changes, change_ids))
+                            .map(|cl| render_runs(&cl.text, &cl.marks, note_ids, note_kinds, comment_ids, changes, change_ids, bookmark_ids))
                             .unwrap_or_default();
                         body.push_str(&format!(
                             r#"<w:tc><w:tcPr><w:tcW w:w="0" w:type="auto"/></w:tcPr><w:p>{inner}</w:p></w:tc>"#
@@ -1052,8 +1411,9 @@ fn build_document_xml(
                     }
                 }
                 ppr_inner.push_str(&jc_xml(b));
+                ppr_inner.push_str(&spacing_xml(b));
                 let ppr = if ppr_inner.is_empty() { String::new() } else { format!("<w:pPr>{ppr_inner}</w:pPr>") };
-                body.push_str(&format!("<w:p>{ppr}{}</w:p>", render_runs(&b.text, &b.marks, note_ids, note_kinds, comment_ids, changes, change_ids)));
+                body.push_str(&format!("<w:p>{ppr}{}</w:p>", render_runs(&b.text, &b.marks, note_ids, note_kinds, comment_ids, changes, change_ids, bookmark_ids)));
                 i += 1;
             }
         }
@@ -1065,7 +1425,7 @@ fn build_document_xml(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="{W_NS}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w10="urn:schemas-microsoft-com:office:word" xmlns:wne="http://schemas.microsoft.com/office/word/2006/wordml"><w:body>{body}{sectpr}</w:body></w:document>"#
     );
-    (document, named_refs, numbering)
+    (document, named_refs, numbering, imgs)
 }
 
 #[cfg(test)]
@@ -1125,6 +1485,100 @@ mod tests {
         assert_eq!(m1, m2, "model round-trips through .docx export then import");
     }
 
+    // A 1×1 PNG, used as image blob bytes in the image round-trip test.
+    const TINY_PNG: [u8; 69] = [
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+        0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
+        0x00, 0x03, 0x01, 0x01, 0x00, 0xf7, 0x03, 0x41, 0x43, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
+        0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    #[test]
+    fn image_inline_roundtrips_through_docx() {
+        // A plain inline image with an explicit display size must round-trip with
+        // its blob bytes, `anchor=inline`, and size intact — plus emit a real
+        // `wp:inline` drawing, a media part, a relationship and a content-type.
+        let mut d = Document::new();
+        let p1 = d.insert_block(None, "paragraph");
+        d.splice_text(&p1, 0, 0, "before");
+        let img = d.insert_block(Some(&p1), "image");
+        let p3 = d.insert_block(Some(&img), "paragraph");
+        d.splice_text(&p3, 0, 0, "after");
+        let hash = d.put_blob(&TINY_PNG);
+        {
+            let mut dm = d.as_mut();
+            dm.set_attr(&img, "blob", hash.as_str());
+            dm.set_attr(&img, "width", 64_i64);
+            dm.set_attr(&img, "height", 48_i64);
+        }
+
+        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let cont = DocxContainer::read(&exported).unwrap();
+        // Media part + relationship + content-type default written.
+        let media = cont
+            .parts
+            .iter()
+            .find(|(n, _)| n.starts_with("word/media/") && n.ends_with(".png"))
+            .expect("media part written");
+        assert_eq!(media.1, &TINY_PNG[..], "image bytes written verbatim");
+        let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
+        assert!(document.contains("<wp:inline"), "inline drawing emitted: {document}");
+        let rels = std::str::from_utf8(cont.get("word/_rels/document.xml.rels").unwrap()).unwrap();
+        assert!(rels.contains(r#"Target="media/image1.png""#), "image rel wired: {rels}");
+        let ct = std::str::from_utf8(cont.get("[Content_Types].xml").unwrap()).unwrap();
+        assert!(ct.contains(r#"Extension="png""#), "png content-type default: {ct}");
+
+        let mut d2 = Document::new();
+        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+        let im = snap.blocks.iter().find(|b| b.kind == "image").expect("image block present");
+        let blob_hash = match im.attrs.get("blob") {
+            Some(AttrVal::Str(h)) => h.clone(),
+            other => panic!("image missing blob attr: {other:?}"),
+        };
+        assert_eq!(blob_hash, hash, "blake3 hash stable across round-trip");
+        assert_eq!(snap.blobs.get(&blob_hash).map(|b| b.as_slice()), Some(&TINY_PNG[..]), "blob bytes survive");
+        assert_eq!(im.attrs.get("anchor"), Some(&AttrVal::Str("inline".into())), "{:?}", im.attrs);
+        assert_eq!(im.attrs.get("width"), Some(&AttrVal::Int(64)), "{:?}", im.attrs);
+        assert_eq!(im.attrs.get("height"), Some(&AttrVal::Int(48)), "{:?}", im.attrs);
+    }
+
+    #[test]
+    fn image_positioning_roundtrips_through_docx() {
+        // A floating, paragraph-anchored image that wraps text on its right, with an
+        // explicit display size, must survive a .docx round-trip with anchor + wrap +
+        // size intact (emitting a `wp:anchor` + `wp:wrapSquare wrapText="right"`).
+        let mut d = Document::new();
+        let p1 = d.insert_block(None, "paragraph");
+        d.splice_text(&p1, 0, 0, "text");
+        let img = d.insert_block(Some(&p1), "image");
+        let hash = d.put_blob(&TINY_PNG);
+        {
+            let mut dm = d.as_mut();
+            dm.set_attr(&img, "blob", hash.as_str());
+            dm.set_attr(&img, "anchor", "paragraph");
+            dm.set_attr(&img, "wrap", "right");
+            dm.set_attr(&img, "width", 120_i64);
+            dm.set_attr(&img, "height", 80_i64);
+        }
+
+        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let cont = DocxContainer::read(&exported).unwrap();
+        let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
+        assert!(document.contains("<wp:anchor"), "anchor drawing emitted: {document}");
+        assert!(document.contains(r#"<wp:wrapSquare wrapText="right"/>"#), "right wrap emitted: {document}");
+
+        let mut d2 = Document::new();
+        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+        let im = snap.blocks.iter().find(|b| b.kind == "image").expect("image block present");
+        assert_eq!(im.attrs.get("anchor"), Some(&AttrVal::Str("paragraph".into())), "{:?}", im.attrs);
+        assert_eq!(im.attrs.get("wrap"), Some(&AttrVal::Str("right".into())), "{:?}", im.attrs);
+        assert_eq!(im.attrs.get("width"), Some(&AttrVal::Int(120)), "{:?}", im.attrs);
+        assert_eq!(im.attrs.get("height"), Some(&AttrVal::Int(80)), "{:?}", im.attrs);
+    }
+
     #[test]
     fn heading_paragraph_props_roundtrip() {
         let mut d = Document::new();
@@ -1153,6 +1607,106 @@ mod tests {
         assert!(b.marks.iter().any(|m| m.name == "fontSize" && m.value == MarkValue::Int(22)), "{:?}", b.marks);
         assert!(b.marks.iter().any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into())), "{:?}", b.marks);
         assert!(b.marks.iter().any(|m| m.name == "underline"), "{:?}", b.marks);
+    }
+
+    #[test]
+    fn highlight_super_and_line_spacing_roundtrip() {
+        // A run with `highlight` + a `super` run + a paragraph-level `line_spacing`
+        // attr must all survive the .docx export → import cycle.
+        let mut d = Document::new();
+        let id = d.insert_block(None, "paragraph");
+        d.splice_text(&id, 0, 0, "E=mc2");
+        {
+            let mut dm = d.as_mut();
+            dm.add_mark(&id, 0, 5, "highlight", "#ffff00");
+            dm.add_mark(&id, 4, 5, "super", true);
+            dm.set_attr(&id, "line_spacing", 1.5_f64);
+        }
+
+        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        // The export carries the OOXML properties we expect.
+        let c = DocxContainer::read(&exported).unwrap();
+        let xml = std::str::from_utf8(c.get("word/document.xml").unwrap()).unwrap();
+        assert!(xml.contains(r#"w:shd w:val="clear" w:color="auto" w:fill="FFFF00""#), "highlight shd: {xml}");
+        assert!(xml.contains(r#"<w:vertAlign w:val="superscript"/>"#), "super vertAlign: {xml}");
+        assert!(xml.contains(r#"<w:spacing w:line="360" w:lineRule="auto"/>"#), "line spacing: {xml}");
+
+        let mut d2 = Document::new();
+        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+        let b = &snap.blocks[0];
+        assert_eq!(b.text, "E=mc2");
+        assert!(
+            b.marks.iter().any(|m| m.name == "highlight" && m.value == MarkValue::Str("#ffff00".into()) && m.start == 0 && m.end == 5),
+            "highlight mark: {:?}",
+            b.marks
+        );
+        assert!(
+            b.marks.iter().any(|m| m.name == "super" && m.value == MarkValue::Bool(true) && m.start == 4 && m.end == 5),
+            "super mark: {:?}",
+            b.marks
+        );
+        assert_eq!(b.attrs.get("line_spacing"), Some(&AttrVal::Float(1.5)), "line_spacing attr: {:?}", b.attrs);
+    }
+
+    #[test]
+    fn subscript_roundtrips_through_docx() {
+        // A `sub` run exports as `<w:vertAlign w:val="subscript"/>` and re-imports as `sub`.
+        let mut d = Document::new();
+        let id = d.insert_block(None, "paragraph");
+        d.splice_text(&id, 0, 0, "H2O");
+        d.as_mut().add_mark(&id, 1, 2, "sub", true);
+
+        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let mut d2 = Document::new();
+        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+        let b = &snap.blocks[0];
+        assert!(
+            b.marks.iter().any(|m| m.name == "sub" && m.value == MarkValue::Bool(true) && m.start == 1 && m.end == 2),
+            "sub mark: {:?}",
+            b.marks
+        );
+    }
+
+    #[test]
+    fn bookmark_and_cross_reference_roundtrip_through_docx() {
+        // A bookmark "intro" over a word + a cross-reference pointing at it must survive
+        // a `.docx` export+import with both names and ranges intact.
+        let mut d = Document::new();
+        let target = d.insert_block(None, "paragraph");
+        d.splice_text(&target, 0, 0, "the intro section");
+        d.add_bookmark(&target, 4, 9, "intro"); // over "intro"
+        let src = d.insert_block(Some(&target), "paragraph");
+        d.splice_text(&src, 0, 0, "see above");
+        d.add_cross_ref(&src, 4, 9, "intro"); // "above" → #intro
+
+        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let cont = DocxContainer::read(&exported).unwrap();
+        let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
+        // Bookmark markers + the cross-ref hyperlink anchor appear in the markup.
+        assert!(document.contains(r#"<w:bookmarkStart w:id="0" w:name="intro"/>"#), "bookmarkStart emitted: {document}");
+        assert!(document.contains(r#"<w:bookmarkEnd w:id="0"/>"#), "bookmarkEnd emitted: {document}");
+        assert!(document.contains(r#"<w:hyperlink w:anchor="intro">"#), "cross-ref hyperlink emitted: {document}");
+
+        let mut d2 = Document::new();
+        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+        // The bookmark survives with its name + range.
+        assert_eq!(snap.bookmarks.len(), 1, "one bookmark survives: {:?}", snap.bookmarks);
+        let bm = &snap.bookmarks[0];
+        assert_eq!(bm.name, "intro");
+        assert_eq!((bm.range.1, bm.range.2), (4, 9), "bookmark range over 'intro': {:?}", bm);
+        // The bookmarked block carries the `bookmark` mark.
+        let tb = snap.blocks.iter().find(|b| b.text == "the intro section").unwrap();
+        let mark = tb.marks.iter().find(|m| m.name == crate::schema::MARK_BOOKMARK).expect("bookmark mark present");
+        assert_eq!((mark.start, mark.end), (4, 9));
+        assert_eq!(mark.value, MarkValue::Str("intro".into()));
+        // The cross-reference survives as a `link` mark valued `#intro`.
+        let sb = snap.blocks.iter().find(|b| b.text == "see above").unwrap();
+        let link = sb.marks.iter().find(|m| m.name == "link").expect("cross-ref link mark present");
+        assert_eq!((link.start, link.end), (4, 9), "cross-ref over 'above': {:?}", sb.marks);
+        assert_eq!(link.value, MarkValue::Str("#intro".into()));
     }
 
     #[test]
@@ -1854,5 +2408,71 @@ mod tests {
         assert!(out.get("word/document.xml").is_some(), "body regenerated");
         // styles.xml from the source survives verbatim.
         assert_eq!(out.get("word/styles.xml"), c.get("word/styles.xml"));
+    }
+
+    #[test]
+    fn columns_roundtrip() {
+        // Author a 2-column body with a gap, export to .docx, re-import: the column
+        // setting survives, and the sectPr carries a `w:cols w:num="2" w:space="…"`.
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "flows across columns");
+        d.set_columns(2, Some(24.0)); // 24 px gap → 360 twips
+
+        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let out = DocxContainer::read(&exported).unwrap();
+        let document = std::str::from_utf8(out.get("word/document.xml").unwrap()).unwrap();
+        assert!(document.contains("<w:sectPr>"), "sectPr emitted for columns: {document}");
+        assert!(document.contains(r#"<w:cols w:num="2""#), "w:cols num=2 in sectPr: {document}");
+        assert!(document.contains(r#"w:space="360""#), "w:cols space=360 twips (24px): {document}");
+
+        let mut d2 = Document::new();
+        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let (count, gap) = d2.columns();
+        assert_eq!(count, 2, "column count survives .docx round-trip");
+        assert_eq!(gap, Some(24.0), "column gap (px) survives .docx round-trip");
+        assert_eq!(d2.materialize().columns, 2, "snapshot surfaces the column count");
+    }
+
+    #[test]
+    fn columns_added_to_existing_header_sectpr() {
+        // A document that already needs a sectPr (it has a header) must get `w:cols`
+        // ADDED to that same sectPr, not a second one.
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "body");
+        let h = d.insert_header_block(None, "paragraph");
+        d.splice_header_text(&h, 0, 0, "Header");
+        d.set_columns(3, None);
+
+        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let out = DocxContainer::read(&exported).unwrap();
+        let document = std::str::from_utf8(out.get("word/document.xml").unwrap()).unwrap();
+        assert_eq!(document.matches("<w:sectPr>").count(), 1, "exactly one sectPr: {document}");
+        assert!(document.contains("<w:headerReference"), "header reference kept: {document}");
+        assert!(document.contains(r#"<w:cols w:num="3""#), "columns folded into the sectPr: {document}");
+
+        let mut d2 = Document::new();
+        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        assert_eq!(d2.columns().0, 3, "column count survives alongside the header");
+        assert_eq!(d2.header()[0].text, "Header", "header survives alongside columns");
+    }
+
+    #[test]
+    fn single_column_emits_no_cols() {
+        // The default single-column document must not emit a `w:cols` (nor force a
+        // sectPr when nothing else needs one).
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "plain");
+
+        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let out = DocxContainer::read(&exported).unwrap();
+        let document = std::str::from_utf8(out.get("word/document.xml").unwrap()).unwrap();
+        assert!(!document.contains("<w:cols"), "no w:cols for a single-column doc: {document}");
+
+        let mut d2 = Document::new();
+        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        assert_eq!(d2.columns(), (1, None), "single-column default round-trips");
     }
 }

@@ -1,0 +1,68 @@
+#!/usr/bin/bash
+# qOS security self-check (security plan §11). Oneshot at boot: logs which
+# hardening features are actually ACTIVE to the journal, so "we think it's on"
+# becomes "verified on". Read with: journalctl -u qos-security-audit
+# Never fails the boot — it only reports (always exits 0).
+set -u
+
+ok()   { echo "[ OK ]   $*"; }
+warn() { echo "[WARN]   $*"; }
+note() { echo "[info]   $*"; }
+
+cmdline="$(cat /proc/cmdline 2>/dev/null || true)"
+has_karg() { case " $cmdline " in *" $1 "*) return 0;; *) return 1;; esac; }
+
+echo "=== qOS security audit ==="
+
+# SELinux
+mode="$(getenforce 2>/dev/null || echo unknown)"
+[ "$mode" = "Enforcing" ] && ok "SELinux: Enforcing" || warn "SELinux: $mode (expected Enforcing)"
+
+# Kernel lockdown
+lock="$(cat /sys/kernel/security/lockdown 2>/dev/null || echo 'n/a')"
+case "$lock" in
+  *'[integrity]'*|*'[confidentiality]'*) ok "kernel lockdown: $lock" ;;
+  *) warn "kernel lockdown: $lock (expected [integrity]; needs Secure Boot to fully enforce)" ;;
+esac
+
+# Memory-init + heap hardening kargs
+for k in init_on_alloc=1 init_on_free=1 slab_nomerge page_alloc.shuffle=1 vsyscall=none; do
+  has_karg "$k" && ok "karg $k" || warn "karg $k MISSING"
+done
+case " $cmdline " in *randomize_kstack_offset=on*|*randomize_kstack_offset=1*) ok "karg randomize_kstack_offset";; *) warn "karg randomize_kstack_offset MISSING";; esac
+
+# Secure Boot
+sb="$(mokutil --sb-state 2>/dev/null | head -1 || echo 'unknown')"
+case "$sb" in *enabled*) ok "Secure Boot: $sb";; *) note "Secure Boot: $sb (HW/firmware-gated; off in the dev VM)";; esac
+
+# hidepid on /proc (other users' processes hidden)
+if findmnt -no OPTIONS /proc 2>/dev/null | grep -qE 'hidepid=(2|invisible|1)'; then
+  ok "hidepid on /proc: $(findmnt -no OPTIONS /proc | tr ',' '\n' | grep hidepid)"
+else
+  warn "hidepid on /proc NOT set"
+fi
+
+# Hardened userspace allocator (scudo) on the base daemons
+fspid="$(systemctl show -p MainPID --value fs.service 2>/dev/null)"
+if [ -n "${fspid:-}" ] && [ "$fspid" != 0 ] && grep -q 'scudo' "/proc/$fspid/maps" 2>/dev/null; then
+  ok "scudo hardened allocator active in fs.service"
+else
+  warn "scudo allocator NOT detected in fs.service"
+fi
+
+# Image signature enforcement (verify-before-update)
+if grep -q 'sigstoreSigned' /etc/containers/policy.json 2>/dev/null; then
+  ok "container signature policy requires signed qOS images"
+else
+  warn "no sigstoreSigned policy for qOS images"
+fi
+
+# Display server is Wayland (no X11 keylogging surface)
+note "display server: Wayland (compositor: shell --backend drm)"
+
+# Unprivileged userns is intentionally ALLOWED (bubblewrap needs it); report it.
+maxns="$(sysctl -n user.max_user_namespaces 2>/dev/null || echo '?')"
+note "unprivileged user namespaces enabled (bwrap requires them); max=$maxns"
+
+echo "=== end qOS security audit ==="
+exit 0

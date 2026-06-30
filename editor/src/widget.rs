@@ -16,15 +16,19 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDe
 use winit::keyboard::{Key, NamedKey};
 
 use qdoc::document::MarkSpan;
-use qdoc::snapshot::{AttrVal, BlockView, NoteView};
+use qdoc::snapshot::{AttrVal, BlockView, ChangeView, CommentView, NoteView};
 use ui::chrome::{self, LabelCue, ToolbarItem};
 use ui::gesture::{DragSelect, Granularity};
 use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+// Provides `.r()/.g()/.b()` accessors on `vello` `Color` (used to derive
+// theme-tinted translucent chrome tones).
+use ui::ColorCompat;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::Widget;
-use ui::PresenceCtx;
+use ui::permissions::UserId;
+use ui::{PathSegment, PresenceCtx, PresenceKey};
 
 use crate::word_processor::{Caret, ClipBlock, WordProcessor};
 use crate::WpFormat;
@@ -48,20 +52,139 @@ enum CtxAction {
         end: usize,
         replacement: String,
     },
+    /// Accept the tracked change with this id (right-clicked inside its range, or
+    /// chosen from a margin card's ✓ affordance).
+    AcceptChange(String),
+    /// Reject the tracked change with this id.
+    RejectChange(String),
+    /// Accept every tracked change in the document.
+    AcceptAllChanges,
+    /// Reject every tracked change in the document.
+    RejectAllChanges,
+    /// Resolve / delete the comment with this id (remove it + its anchoring mark).
+    ResolveComment(String),
 }
 
-// Document surface colors (a white page is the familiar word-processor look,
-// independent of the OS chrome theme).
-const CANVAS: Color = Color::from_rgb8(0x2b, 0x2e, 0x34);
-const PAPER: Color = Color::from_rgb8(0xfc, 0xfc, 0xfa);
-const SHADOW: Color = Color::from_rgb8(0x16, 0x18, 0x1c);
-const INK: Color = Color::from_rgb8(0x1c, 0x1c, 0x20);
-const MUTED: Color = Color::from_rgb8(0x8a, 0x8a, 0x92);
-const CARET_COLOR: Color = Color::from_rgb8(0x28, 0x5a, 0xc8);
-const SELECTION: Color = Color::from_rgba8(0x46, 0x78, 0xe6, 0x4d);
+// --- Paper-context colors (the document sheet) ----------------------------
+// The document "page" is the familiar word-processor *paper*. Document text is
+// authored with ink colours that assume a light sheet (the stylesheet's default
+// ink is near-black, e.g. `STYLE_PALETTE[0]`), so the paper stays a light tone
+// in BOTH light and dark mode — only the surrounding chrome follows the theme.
+// Keeping these as single, clearly-named constants (rather than scattering
+// `Color::WHITE`) documents the deliberate "paper is always light" convention.
+//
+// `ChromeColors::for_theme` derives `paper`/`shadow` from the theme's *lightest*
+// neutral when available so the sheet harmonises with the palette; these consts
+// are the fallback / canonical paper tones the ink colours below contrast with.
+/// Canonical paper tone — a barely-warm off-white. Ink/selection/caret below are
+/// chosen to read on this in every theme.
+const PAPER_DEFAULT: Color = Color::from_rgb8(0xfc, 0xfc, 0xfa);
+/// Soft drop-shadow under the paper sheet.
+const PAPER_SHADOW_DEFAULT: Color = Color::from_rgb8(0x16, 0x18, 0x1c);
+/// Default ink for paper content that has no per-block style colour (table
+/// cells, image-block fallbacks). Dark so it reads on the light paper.
+const PAPER_INK: Color = Color::from_rgb8(0x1c, 0x1c, 0x20);
+/// Muted ink for paper chrome (running heads/footers, placeholders on paper).
+const PAPER_MUTED: Color = Color::from_rgb8(0x8a, 0x8a, 0x92);
+/// Selection highlight painted on paper (a translucent accent so text reads
+/// through it). Tied to paper, not the theme, so it always contrasts the sheet.
+const PAPER_SELECTION: Color = Color::from_rgba8(0x46, 0x78, 0xe6, 0x4d);
+/// Caret colour on paper.
+const PAPER_CARET: Color = Color::from_rgb8(0x28, 0x5a, 0xc8);
+
+/// OS-theme-driven chrome palette for the editor. Resolved once per frame from
+/// the [`Theme`] passed to `draw` (see [`ChromeColors::for_theme`]) and stashed
+/// on the widget so every chrome helper reads themed colours instead of
+/// hard-coded literals. This is what makes the toolbar / panels / bars / canvas
+/// honour light/dark mode and the OS palette. Paper-context colours (the sheet
+/// + ink on it) are deliberately *not* here — see the `PAPER_*` consts above.
+#[derive(Clone, Copy)]
+struct ChromeColors {
+    /// Canvas behind the page (the desk). `surfaces.base`.
+    canvas: Color,
+    /// Bar / panel surface (toolbar, status bar, find bar, layout bar, side
+    /// panels). `surfaces.raised`.
+    bar: Color,
+    /// A slightly recessed surface for input fields / value boxes. `surfaces.base`.
+    field: Color,
+    /// A raised "chip" tone for inactive buttons/chips. Between base and raised.
+    chip: Color,
+    /// Hairline separators, borders, panel edges, the scrollbar track tone.
+    border: Color,
+    /// Primary chrome ink (button labels, panel headings).
+    text: Color,
+    /// Dimmed chrome ink (hints, secondary labels, match counts).
+    text_dim: Color,
+    /// Accent fill for active controls / layout guides (the "guide" blue).
+    accent: Color,
+    /// A translucent accent for inactive guide lines.
+    accent_faint: Color,
+    /// Ink that reads on top of an `accent` fill (active button labels).
+    on_accent: Color,
+    /// Scrollbar thumb tone.
+    scrollbar: Color,
+    /// The paper sheet, derived from the theme's lightest surface when it is
+    /// genuinely light, else [`PAPER_DEFAULT`]. Always a light tone so the
+    /// dark-authored document ink stays readable.
+    paper: Color,
+    /// Drop shadow under the paper sheet.
+    paper_shadow: Color,
+}
+
+impl ChromeColors {
+    /// Map the OS [`Theme`] onto the editor's chrome palette. Only the closest
+    /// available token is used for each slot — no new theme tokens are invented.
+    fn for_theme(theme: &Theme) -> Self {
+        let c = &theme.tokens.colors;
+        // Pick a paper tone: prefer the theme's lightest neutral when it is
+        // actually light (so light themes use their own near-white sheet), but
+        // never go dark — dark themes keep the canonical light paper so the
+        // document ink contrasts. `neutral[10]` is the lightest ramp slot.
+        let lightest = c.neutral[10];
+        let paper = if luminance(lightest) >= 0.85 { lightest } else { PAPER_DEFAULT };
+        Self {
+            canvas: c.surfaces.base,
+            bar: c.surfaces.raised,
+            field: c.surfaces.base,
+            chip: c.neutral[2],
+            border: c.border_standard,
+            text: c.text_primary,
+            text_dim: c.text_dim,
+            accent: theme.accent_primary,
+            accent_faint: with_alpha(theme.accent_primary, 0x70),
+            on_accent: Color::WHITE,
+            scrollbar: c.neutral[4],
+            paper,
+            paper_shadow: PAPER_SHADOW_DEFAULT,
+        }
+    }
+}
+
+/// Relative luminance (0..1) of a colour — used only to decide whether a theme's
+/// "lightest" surface is light enough to serve as paper.
+fn luminance(c: Color) -> f64 {
+    let r = c.r() as f64 / 255.0;
+    let g = c.g() as f64 / 255.0;
+    let b = c.b() as f64 / 255.0;
+    0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+/// Return `base` with its alpha replaced (0..=255). Keeps the RGB, used for the
+/// translucent accent guide tint.
+fn with_alpha(base: Color, alpha: u8) -> Color {
+    Color::from_rgba8(base.r(), base.g(), base.b(), alpha)
+}
 
 const PAGE_TOP: f64 = 28.0;
 const MAX_PAGE_W: f64 = 820.0;
+/// Pixels per inch — the page is a fixed `MAX_PAGE_W` px wide ≙ 8.5in (US-Letter),
+/// so one inch is this many px. Drives the ruler's tick spacing + labels.
+const PX_PER_INCH: f64 = MAX_PAGE_W / 8.5;
+/// Height of the horizontal ruler band carved out of the canvas top (below the
+/// toolbar / recovery banner / find bar, above the page).
+const RULER_H: f64 = 24.0;
+/// Pointer pick radius (px, screen space) for grabbing a ruler marker.
+const RULER_GRAB: f64 = 8.0;
 /// Vertical gap between consecutive discrete pages (the canvas shows through it),
 /// à la Google Docs. Together with `LETTER_RATIO` this drives true pagination.
 const PAGE_GAP: f64 = 22.0;
@@ -71,6 +194,9 @@ const STATUS_H: f64 = ui::chrome::STATUS_BAR_HEIGHT;
 const LAYOUT_BAR_H: f64 = 32.0;
 /// Width of the contextual styles panel reserved on the right of the canvas.
 const STYLES_PANEL_W: f64 = 250.0;
+/// Width of the document outline / navigation pane reserved on the LEFT of the
+/// canvas (mirrors the styles panel on the right).
+const OUTLINE_PANEL_W: f64 = 230.0;
 const FIND_BAR_H: f64 = 42.0;
 /// Find-match highlight (amber, semi-transparent).
 const FIND_HL: Color = Color::from_rgba8(0xff, 0xc8, 0x4a, 0x80);
@@ -87,13 +213,52 @@ const NOTE_INK: Color = Color::from_rgb8(0x3a, 0x3a, 0x40);
 /// Footnote text size (smaller than body) and the gap above the separator.
 const NOTE_FONT: f32 = 11.0;
 const NOTE_AREA_GAP: f64 = 10.0;
-/// Panel chrome colors (consistent with the bottom layout bar).
-const PANEL_BG: Color = Color::from_rgb8(0x20, 0x22, 0x28);
-const PANEL_EDGE: Color = Color::from_rgb8(0x32, 0x35, 0x3e);
-const PANEL_CHIP: Color = Color::from_rgb8(0x2c, 0x2f, 0x38);
-const PANEL_FG: Color = Color::from_rgb8(0xc6, 0xca, 0xd2);
-const PANEL_MUTED: Color = Color::from_rgb8(0x80, 0x84, 0x90);
-const PANEL_FIELD: Color = Color::from_rgb8(0x16, 0x18, 0x1c);
+
+// --- Markup (comments + tracked changes) rendering ------------------------
+/// Pale-yellow band drawn behind a `comment`-marked body range (semi-transparent
+/// so the text reads clearly through it).
+const COMMENT_HL: Color = Color::from_rgba8(0xff, 0xe5, 0x7a, 0x66);
+/// The little comment indicator tab drawn in the right margin at a comment's
+/// start line, and the annotation card's accent.
+const COMMENT_TAB: Color = Color::from_rgb8(0xe0, 0xa8, 0x10);
+/// Background of the right-margin comment annotation card.
+const COMMENT_CARD_BG: Color = Color::from_rgb8(0xff, 0xf8, 0xdc);
+/// Border of the right-margin comment annotation card.
+const COMMENT_CARD_EDGE: Color = Color::from_rgb8(0xe6, 0xcf, 0x7a);
+/// Author-line text colour in the comment annotation card.
+const COMMENT_AUTHOR_INK: Color = Color::from_rgb8(0x6a, 0x52, 0x00);
+/// Body-text colour in the comment annotation card.
+const COMMENT_BODY_INK: Color = Color::from_rgb8(0x3a, 0x32, 0x14);
+/// Review colour for tracked **insertions** (a green; rendered coloured +
+/// underlined, the standard tracked-insertion style).
+const TRACK_INS: Color = Color::from_rgb8(0x1d, 0x7a, 0x3a);
+/// Review colour for tracked **deletions** (a red; rendered coloured + struck).
+const TRACK_DEL: Color = Color::from_rgb8(0xbf, 0x29, 0x29);
+/// Width of the comment indicator tab in the right margin.
+const COMMENT_TAB_W: f64 = 4.0;
+/// Width of the right-margin annotation card.
+const COMMENT_CARD_W: f64 = 150.0;
+/// Background of a tracked-change review card in the right margin.
+const CHANGE_CARD_BG: Color = Color::from_rgb8(0xf3, 0xf4, 0xf7);
+/// Border of a tracked-change review card.
+const CHANGE_CARD_EDGE: Color = Color::from_rgb8(0xcf, 0xd2, 0xda);
+/// Author/label ink in a tracked-change review card.
+const CHANGE_LABEL_INK: Color = Color::from_rgb8(0x44, 0x46, 0x50);
+/// Accept (✓) affordance button fill — a soft green wash.
+const REVIEW_ACCEPT_BG: Color = Color::from_rgb8(0xe2, 0xf3, 0xe6);
+/// Accept (✓) affordance glyph ink (green).
+const REVIEW_ACCEPT_INK: Color = Color::from_rgb8(0x18, 0x6a, 0x32);
+/// Reject (✗) affordance button fill — a soft red wash.
+const REVIEW_REJECT_BG: Color = Color::from_rgb8(0xf7, 0xe4, 0xe4);
+/// Reject (✗) affordance glyph ink (red).
+const REVIEW_REJECT_INK: Color = Color::from_rgb8(0xa8, 0x24, 0x24);
+/// Side length of a square review affordance button (✓ / ✗ / resolve).
+const REVIEW_BTN: f64 = 18.0;
+/// Width of a tracked-change review card in the right margin.
+const CHANGE_CARD_W: f64 = 132.0;
+// Panel + guide chrome colours are theme-driven — see `ChromeColors`. The side
+// panels read `chrome.bar`/`chrome.border`/`chrome.chip`/`chrome.text`/
+// `chrome.text_dim`/`chrome.field`; layout guides read `chrome.accent`.
 /// A small color palette for the style-colour picker.
 const STYLE_PALETTE: [[u8; 3]; 7] = [
     [0x1c, 0x1c, 0x20], // ink
@@ -104,10 +269,17 @@ const STYLE_PALETTE: [[u8; 3]; 7] = [
     [0xb5, 0x7e, 0x10], // amber
     [0x7a, 0x3a, 0xa0], // purple
 ];
-/// Accent for active layout guides + handles.
-const GUIDE: Color = Color::from_rgb8(0x46, 0x78, 0xe6);
-/// Inactive guide line (semi-transparent accent).
-const GUIDE_FAINT: Color = Color::from_rgba8(0x46, 0x78, 0xe6, 0x70);
+/// A small palette of highlight (text background) colours for the swatch row.
+/// Familiar word-processor highlighter hues (yellow, green, cyan, pink, orange).
+const HIGHLIGHT_PALETTE: [[u8; 3]; 5] = [
+    [0xff, 0xf3, 0x5c], // yellow
+    [0x9b, 0xf0, 0x6a], // green
+    [0x6c, 0xe0, 0xf0], // cyan
+    [0xff, 0x9a, 0xd0], // pink
+    [0xff, 0xb1, 0x4d], // orange
+];
+// Layout guides + handles use the theme accent — see `chrome.accent` /
+// `chrome.accent_faint`.
 /// How close (px) the pointer must be to a guide line to grab it.
 const GUIDE_GRAB: f64 = 7.0;
 
@@ -129,6 +301,15 @@ enum ToolAction {
     /// Apply a per-run text colour (the toolbar swatch row). `None` is the
     /// neutral/default — it clears any `color` run mark over the selection.
     TextColor(Option<[u8; 3]>),
+    /// Apply a per-run highlight / background colour (the highlight swatch row).
+    /// `None` is the neutral/default — it clears any `highlight` run mark.
+    Highlight(Option<[u8; 3]>),
+    /// Toggle superscript (`super` run mark) over the selection; clears `sub`.
+    Super,
+    /// Toggle subscript (`sub` run mark) over the selection; clears `super`.
+    Sub,
+    /// Cycle the focused paragraph's line spacing (1.0 → 1.15 → 1.5 → 2.0 → 1.0).
+    LineSpacing,
     SizeUp,
     SizeDown,
     /// The size stepper's read-only value chip (between − and +). Display-only.
@@ -144,6 +325,15 @@ enum ToolAction {
     TableColDel,
     TableDelete,
     ToggleStyles,
+    /// Toggle the horizontal ruler band (margins / indents / tab stops).
+    ToggleRuler,
+    /// Toggle the document outline / navigation pane (left side).
+    ToggleOutline,
+    /// Generate (or regenerate) a table of contents from the document headings.
+    InsertToc,
+    /// Open the "New ▾" template picker menu (lists every [`crate::Template`];
+    /// a selection replaces the open document with the chosen template in place).
+    NewMenu,
 }
 
 /// A clickable control in the Find & Replace bar.
@@ -179,18 +369,28 @@ const ZOOM_STEP: f64 = 0.1;
 
 /// Draw a text-input box (Find/Replace fields). A trailing `_` marks the focused
 /// field's caret; an empty field shows the placeholder.
-fn draw_field_box(scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, r: Rect, text: &str, placeholder: &str, focused: bool) {
-    let border = if focused { GUIDE } else { Color::from_rgb8(0x44, 0x47, 0x52) };
-    scene.fill(Fill::NonZero, transform, Color::from_rgb8(0x16, 0x18, 0x1e), None, &vello::kurbo::RoundedRect::from_rect(r, 5.0));
+fn draw_field_box(scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, cc: &ChromeColors, r: Rect, text: &str, placeholder: &str, focused: bool) {
+    let border = if focused { cc.accent } else { cc.border };
+    scene.fill(Fill::NonZero, transform, cc.field, None, &vello::kurbo::RoundedRect::from_rect(r, 5.0));
     scene.stroke(&vello::kurbo::Stroke::new(if focused { 1.5 } else { 1.0 }), transform, border, None, &vello::kurbo::RoundedRect::from_rect(r, 5.0));
     let (shown, col) = if text.is_empty() && !focused {
-        (placeholder.to_string(), MUTED)
+        (placeholder.to_string(), cc.text_dim)
     } else if focused {
-        (format!("{text}_"), Color::from_rgb8(0xee, 0xef, 0xf2))
+        (format!("{text}_"), cc.text)
     } else {
-        (text.to_string(), Color::from_rgb8(0xee, 0xef, 0xf2))
+        (text.to_string(), cc.text)
     };
     tr.draw_text(scene, &shown, 13.0, col, transform * Affine::translate((r.x0 + 8.0, (r.y0 + r.y1) / 2.0 - 8.0)), None);
+}
+
+/// Fill a triangle from three screen-space points (ruler indent wedges).
+fn fill_tri(scene: &mut Scene, transform: Affine, col: Color, a: (f64, f64), b: (f64, f64), c: (f64, f64)) {
+    let mut p = vello::kurbo::BezPath::new();
+    p.move_to(a);
+    p.line_to(b);
+    p.line_to(c);
+    p.close_path();
+    scene.fill(Fill::NonZero, transform, col, None, &p);
 }
 
 /// Which layout element the bottom bar is editing. Each mode shows draggable
@@ -258,6 +458,32 @@ struct GuideDrag {
     mode: LayoutMode,
     side: Side,
     kind: DragKind,
+}
+
+/// A draggable marker on the horizontal ruler. Margin markers edit `self.margins`
+/// (page-wide, persisted like the on-page guides); indent + tab markers edit the
+/// caret paragraph's block attrs.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum RulerMarker {
+    /// Left page margin (the down-pointing wedge at the left text edge).
+    MarginLeft,
+    /// Right page margin.
+    MarginRight,
+    /// Left / hanging indent of the current paragraph (the bottom up-wedge).
+    IndentLeft,
+    /// First-line indent of the current paragraph (the top down-wedge).
+    IndentFirst,
+    /// A tab stop on the current paragraph, by index into its sorted stop list.
+    Tab(usize),
+}
+
+/// An active ruler-marker drag.
+#[derive(Clone, Copy)]
+struct RulerDrag {
+    marker: RulerMarker,
+    /// Set once a tab marker has been dragged below the ruler band — releasing
+    /// there removes the stop (the standard "drag off to delete" gesture).
+    drop_off: bool,
 }
 
 impl Side {
@@ -372,6 +598,46 @@ fn byte_to_char(text: &str, byte_off: usize) -> usize {
     text[..b].chars().count()
 }
 
+/// The collaboration presence key for a document block, keyed by its **stable
+/// CRDT block id** (not its index): two peers share the same Automerge object
+/// ids for a given block, whereas a block's positional index drifts as peers
+/// concurrently insert/delete blocks. Keying by id therefore keeps a remote
+/// peer's caret/selection pinned to the right paragraph even while the document
+/// is being restructured. Used by BOTH the outbound `presence_payload` (so the
+/// App broadcasts the local caret/selection under this key) and the inbound
+/// render pass (so received caret/selection presence maps back onto the same
+/// block) — keeping the two halves in agreement is the whole point of the
+/// single helper.
+fn block_presence_key(block_id: &str) -> PresenceKey {
+    PresenceKey::Widget {
+        path: vec![
+            PathSegment::Field("wp_block".to_string()),
+            PathSegment::Field(block_id.to_string()),
+        ],
+    }
+}
+
+/// A resolved remote collaborator caret to paint this frame: the on-screen
+/// caret rectangle (in *content* space, ready to be mapped through the page
+/// content transform), the peer's id (for colour + the name label), and the
+/// label text. Produced by [`WordProcessorWidget::remote_presence_overlays`]
+/// from the live `PresenceCtx` + the frame's laid-out blocks so the geometry is
+/// pixel-identical to a local caret — never a re-derived approximation.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RemoteCaretOverlay {
+    pub user: UserId,
+    pub rect: Rect,
+}
+
+/// A resolved remote collaborator selection to paint this frame: one-or-more
+/// on-screen rectangles (a wrapped selection spans several lines) in content
+/// space, plus the peer it belongs to.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RemoteSelectionOverlay {
+    pub user: UserId,
+    pub rects: Vec<Rect>,
+}
+
 /// Whether the char range `[s, e)` in `chars` is bounded by word boundaries on
 /// both sides — i.e. the char immediately before `s` and at `e` (if present) are
 /// not word characters. Used by the Find bar's whole-word toggle.
@@ -469,6 +735,28 @@ fn char_color(i: usize, marks: &[MarkSpan]) -> Option<[u8; 3]> {
         .and_then(parse_hex_rgb)
 }
 
+/// The highlight (background) colour covering char `i`: a `highlight` mark's
+/// `#RRGGBB`, if any. Maps to [`RichSpan::background`] (a band behind the run).
+fn char_highlight(i: usize, marks: &[MarkSpan]) -> Option<[u8; 3]> {
+    marks
+        .iter()
+        .find(|m| m.name == "highlight" && i >= m.start && i < m.end)
+        .and_then(|m| m.value.as_str())
+        .and_then(parse_hex_rgb)
+}
+
+/// The baseline shift covering char `i`: `super`/`sub` boolean run marks map to
+/// [`ui::richtext::BaselineShift`] (`super` wins if both are somehow present).
+fn char_baseline(i: usize, marks: &[MarkSpan]) -> ui::richtext::BaselineShift {
+    if char_has(i, marks, "super") {
+        ui::richtext::BaselineShift::Super
+    } else if char_has(i, marks, "sub") {
+        ui::richtext::BaselineShift::Sub
+    } else {
+        ui::richtext::BaselineShift::None
+    }
+}
+
 fn parse_hex_rgb(s: &str) -> Option<[u8; 3]> {
     let h = s.strip_prefix('#').unwrap_or(s);
     if h.len() != 6 {
@@ -486,6 +774,51 @@ fn parse_hex_rgb(s: &str) -> Option<[u8; 3]> {
 /// page even when it would otherwise fit on the current one.
 fn block_page_break_before(b: &BlockView) -> bool {
     matches!(b.attrs.get("page_break_before"), Some(AttrVal::Bool(true)))
+}
+
+/// A block's line-spacing multiplier (the `line_spacing` Float attr), defaulting
+/// to `1.0` when unset. Fed to `RichTextLayout::shape` as `line_height_mult`,
+/// scaling the line advance (1.5 = one-and-a-half, 2.0 = double).
+fn block_line_spacing(b: &BlockView) -> f32 {
+    match b.attrs.get("line_spacing") {
+        Some(AttrVal::Float(f)) if *f > 0.0 => *f as f32,
+        Some(AttrVal::Int(n)) if *n > 0 => *n as f32,
+        _ => 1.0,
+    }
+}
+
+/// The cycle of presented line-spacing multipliers.
+const LINE_SPACINGS: [f64; 4] = [1.0, 1.15, 1.5, 2.0];
+
+/// Next multiplier in the line-spacing cycle (wraps 2.0 → 1.0). The nearest
+/// preset to `cur` is the anchor, so an imported odd value still cycles cleanly.
+fn next_line_spacing(cur: f64) -> f64 {
+    let idx = LINE_SPACINGS
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| (**a - cur).abs().partial_cmp(&(**b - cur).abs()).unwrap())
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    LINE_SPACINGS[(idx + 1) % LINE_SPACINGS.len()]
+}
+
+/// A short label for a line-spacing multiplier (the toolbar chip text).
+fn line_spacing_label(mult: f64) -> String {
+    if (mult - mult.round()).abs() < 0.005 {
+        format!("⇕ {}", mult.round() as i64)
+    } else {
+        format!("⇕ {mult:.2}")
+    }
+}
+
+/// A block's own left/hanging indent (px) from its `indent` attr — added on top
+/// of the style indent by the layout pass. `0.0` when unset.
+fn block_indent_attr(b: &BlockView) -> f64 {
+    match b.attrs.get("indent") {
+        Some(AttrVal::Float(f)) => *f,
+        Some(AttrVal::Int(n)) => *n as f64,
+        _ => 0.0,
+    }
 }
 
 /// Pick a block's horizontal alignment from its `align` attribute.
@@ -532,7 +865,8 @@ fn block_style_key(b: &BlockView) -> String {
 fn block_runs(b: &BlockView) -> (Vec<RichSpan>, Vec<(usize, usize)>, Vec<(usize, usize)>) {
     let chars: Vec<char> = b.text.chars().collect();
     let n = chars.len();
-    // Run key: f32 size as bits so the tuple is comparable.
+    // Run key: f32 size as bits so the tuple is comparable. Highlight (background)
+    // and super/subscript baseline join the key so a change in either splits runs.
     let key = |i: usize| {
         (
             char_has(i, &b.marks, "strong"),
@@ -540,6 +874,8 @@ fn block_runs(b: &BlockView) -> (Vec<RichSpan>, Vec<(usize, usize)>, Vec<(usize,
             char_font_size(i, &b.marks).map(f32::to_bits),
             char_font_family(i, &b.marks),
             char_color(i, &b.marks),
+            char_highlight(i, &b.marks),
+            char_baseline(i, &b.marks),
         )
     };
     let mut runs = Vec::new();
@@ -550,7 +886,7 @@ fn block_runs(b: &BlockView) -> (Vec<RichSpan>, Vec<(usize, usize)>, Vec<(usize,
         while j < n && key(j) == k {
             j += 1;
         }
-        let (bold, italic, size_bits, family, color) = k;
+        let (bold, italic, size_bits, family, color, background, baseline) = k;
         runs.push(RichSpan {
             text: chars[i..j].iter().collect(),
             bold,
@@ -558,6 +894,8 @@ fn block_runs(b: &BlockView) -> (Vec<RichSpan>, Vec<(usize, usize)>, Vec<(usize,
             size: size_bits.map(f32::from_bits),
             family,
             color,
+            background,
+            baseline,
         });
         i = j;
     }
@@ -575,6 +913,137 @@ fn block_runs(b: &BlockView) -> (Vec<RichSpan>, Vec<(usize, usize)>, Vec<(usize,
     let mut underlines = deco("underline");
     underlines.extend(deco("link"));
     (runs, underlines, deco("strike"))
+}
+
+/// RGB of the tracked-insertion review colour (mirrors [`TRACK_INS`]).
+const TRACK_INS_RGB: [u8; 3] = [0x1d, 0x7a, 0x3a];
+/// RGB of the tracked-deletion review colour (mirrors [`TRACK_DEL`]).
+const TRACK_DEL_RGB: [u8; 3] = [0xbf, 0x29, 0x29];
+
+/// Whether char `i` of a block is covered by a mark named `name` (an `ins`/`del`
+/// tracked-change mark, or a `comment` annotation mark).
+fn char_in_mark(i: usize, marks: &[MarkSpan], name: &str) -> bool {
+    marks.iter().any(|m| m.name == name && i >= m.start && i < m.end)
+}
+
+/// Split a block's text into styled runs like [`block_runs`], but additionally
+/// tint any `ins`/`del` tracked-change run with the review colour so the glyphs
+/// themselves read as proposed-added (green) / proposed-removed (red). The
+/// underline/strike decorations for those ranges are drawn separately (in the
+/// body pass, in the matching review colour). When `show_markup` is false this
+/// is identical to [`block_runs`] — markup is hidden, text shows as plain.
+fn block_runs_markup(b: &BlockView, show_markup: bool) -> (Vec<RichSpan>, Vec<(usize, usize)>, Vec<(usize, usize)>) {
+    if !show_markup {
+        return block_runs(b);
+    }
+    let chars: Vec<char> = b.text.chars().collect();
+    let n = chars.len();
+    // The run key now also folds in the tracked-change review colour: an `ins`
+    // run becomes green, a `del` run red. This overrides any explicit `color`
+    // mark over the same range (review colour wins for legibility).
+    let track_color = |i: usize| -> Option<[u8; 3]> {
+        if char_in_mark(i, &b.marks, qdoc::schema::MARK_INS) {
+            Some(TRACK_INS_RGB)
+        } else if char_in_mark(i, &b.marks, qdoc::schema::MARK_DEL) {
+            Some(TRACK_DEL_RGB)
+        } else {
+            None
+        }
+    };
+    let key = |i: usize| {
+        (
+            char_has(i, &b.marks, "strong"),
+            char_has(i, &b.marks, "em"),
+            char_font_size(i, &b.marks).map(f32::to_bits),
+            char_font_family(i, &b.marks),
+            track_color(i).or_else(|| char_color(i, &b.marks)),
+            char_highlight(i, &b.marks),
+            char_baseline(i, &b.marks),
+        )
+    };
+    let mut runs = Vec::new();
+    let mut i = 0;
+    while i < n {
+        let k = key(i);
+        let mut j = i;
+        while j < n && key(j) == k {
+            j += 1;
+        }
+        let (bold, italic, size_bits, family, color, background, baseline) = k;
+        runs.push(RichSpan {
+            text: chars[i..j].iter().collect(),
+            bold,
+            italic,
+            size: size_bits.map(f32::from_bits),
+            family,
+            color,
+            background,
+            baseline,
+        });
+        i = j;
+    }
+    if runs.is_empty() {
+        runs.push(RichSpan::new(""));
+    }
+    let deco = |name: &str| {
+        b.marks
+            .iter()
+            .filter(|m| m.name == name)
+            .map(|m| (char_to_byte(&b.text, m.start), char_to_byte(&b.text, m.end)))
+            .collect::<Vec<_>>()
+    };
+    let mut underlines = deco("underline");
+    underlines.extend(deco("link"));
+    let strikes = deco("strike");
+    // NOTE: the `ins`/`del` review decorations (underline for ins, strike for
+    // del) are *not* added here — they are drawn in the body pass in the review
+    // colour (`draw_rich` paints these decorations in the block ink, which would
+    // mismatch the coloured glyphs). Keeping them out of the shaped layout also
+    // keeps `block_runs`'s underline/strike contract unchanged.
+    (runs, underlines, strikes)
+}
+
+/// The `(byte_start, byte_end)` ranges in a block covered by an `ins` tracked-
+/// insertion mark and a `del` tracked-deletion mark respectively. Used by the
+/// body draw pass to paint the review underline (ins) / strike (del).
+fn block_change_decos(b: &BlockView) -> (Vec<(usize, usize)>, Vec<(usize, usize)>) {
+    let collect = |name: &str| {
+        b.marks
+            .iter()
+            .filter(|m| m.name == name && m.end > m.start)
+            .map(|m| (char_to_byte(&b.text, m.start), char_to_byte(&b.text, m.end)))
+            .collect::<Vec<_>>()
+    };
+    (collect(qdoc::schema::MARK_INS), collect(qdoc::schema::MARK_DEL))
+}
+
+/// Every tracked change anchored in a block, as `(byte_start, byte_end,
+/// change_id)` in source order — for both `ins` and `del` marks. The change id
+/// comes from the mark value (the key the `changes` container uses). Drives the
+/// right-margin Accept/Reject review cards (which need the id to act on).
+fn block_change_ranges(b: &BlockView) -> Vec<(usize, usize, String)> {
+    b.marks
+        .iter()
+        .filter(|m| (m.name == qdoc::schema::MARK_INS || m.name == qdoc::schema::MARK_DEL) && m.end > m.start)
+        .filter_map(|m| {
+            let id = m.value.as_str()?.to_string();
+            Some((char_to_byte(&b.text, m.start), char_to_byte(&b.text, m.end), id))
+        })
+        .collect()
+}
+
+/// Every `comment` annotation anchored in a block, as `(byte_start, byte_end,
+/// comment_id)` in source order. The body pass paints a pale highlight band over
+/// the range and a margin indicator at the start.
+fn block_comment_ranges(b: &BlockView) -> Vec<(usize, usize, String)> {
+    b.marks
+        .iter()
+        .filter(|m| m.name == qdoc::schema::MARK_COMMENT && m.end > m.start)
+        .filter_map(|m| {
+            let id = m.value.as_str()?.to_string();
+            Some((char_to_byte(&b.text, m.start), char_to_byte(&b.text, m.end), id))
+        })
+        .collect()
 }
 
 /// Whether char `i` of `b` is a `page-number` field placeholder (a U+FFFC
@@ -631,6 +1100,8 @@ fn running_head_runs(b: &BlockView, page_no: usize) -> Vec<RichSpan> {
             size: size_bits.map(f32::from_bits),
             family,
             color,
+            background: None,
+            baseline: ui::richtext::BaselineShift::None,
         });
         i = j;
     }
@@ -735,6 +1206,7 @@ fn shape_key(
     wrap_w: f32,
     align: TextAlign,
     family: FontFamily,
+    line_height_mult: f32,
 ) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -746,6 +1218,10 @@ fn shape_key(
         s.size.map(f32::to_bits).hash(&mut h);
         s.family.map(|f| f as u8).hash(&mut h);
         s.color.hash(&mut h);
+        // Highlight band + baseline shift change the shaped layout (the latter
+        // shapes super/subscript runs at a reduced size), so fold them in.
+        s.background.hash(&mut h);
+        (s.baseline as u8).hash(&mut h);
     }
     underlines.hash(&mut h);
     strikes.hash(&mut h);
@@ -754,6 +1230,7 @@ fn shape_key(
     wrap_w.to_bits().hash(&mut h);
     (align as u8).hash(&mut h);
     (family as u8).hash(&mut h);
+    line_height_mult.to_bits().hash(&mut h);
     h.finish()
 }
 
@@ -886,6 +1363,14 @@ pub struct WordProcessorWidget {
     layout_mode: LayoutMode,
     /// Active guide drag (the side being dragged), if any.
     guide_drag: Option<GuideDrag>,
+    /// Whether the horizontal ruler band is shown (toggled via the toolbar
+    /// "Ruler" button + the View bottom-bar chip). Default ON — it is the primary
+    /// surface for margin / indent / tab-stop editing.
+    ruler_on: bool,
+    /// The ruler band's rect in screen space, cached each frame for hit-testing.
+    ruler_rect: Rect,
+    /// An active ruler-marker drag, if any.
+    ruler_drag: Option<RulerDrag>,
     /// The page rect in screen space (post-scroll), cached each frame so the
     /// event handler can hit-test layout guides against it.
     page_rect: Rect,
@@ -948,7 +1433,89 @@ pub struct WordProcessorWidget {
     /// Per-row action parallel to `context_menu`'s items (separators map to
     /// `None`). A left-click on a row dispatches by index through this list.
     context_actions: Vec<Option<CtxAction>>,
+    /// Clickable review affordances rendered into the right-margin cards this
+    /// frame: `(screen_rect, action)`. Populated by the comment + tracked-change
+    /// card pass; a left-click that lands on one dispatches the action (accept /
+    /// reject a change, resolve a comment). Cleared + rebuilt every draw.
+    review_hits: Vec<(Rect, CtxAction)>,
+    /// Comments / annotations (materialized from the doc each refresh). Each is
+    /// anchored to a body range via a `comment` mark; rendered as a pale highlight
+    /// band + a right-margin indicator/card. Empty when the doc has no comments.
+    comments: Vec<CommentView>,
+    /// Tracked changes / revision marks (materialized from the doc each refresh).
+    /// Each is anchored to a body range via an `ins`/`del` mark; insertions render
+    /// coloured + underlined, deletions coloured + struck. Empty when none.
+    changes: Vec<ChangeView>,
+    /// Whether comment + tracked-change markup is drawn (default ON, like
+    /// spell-check). View-only — never mutates the document.
+    show_markup: bool,
+    /// Whether the document outline / navigation pane is shown (left side).
+    /// Toggled via the toolbar "Outline" button. Default OFF so existing layouts
+    /// are unchanged until the user opens it.
+    outline_open: bool,
+    /// The outline pane rect in screen space, cached each frame for hit-testing.
+    outline_rect: Rect,
+    /// Clickable outline entries this frame: `(rect, heading_block_id)`. A click
+    /// scrolls that heading into view.
+    outline_hits: Vec<(Rect, String)>,
+    /// OS-theme-driven chrome palette, resolved at the top of every `draw` from
+    /// the passed-in [`Theme`]. Every chrome helper reads this instead of
+    /// hard-coded colours, so the editor honours light/dark mode + the OS
+    /// palette. Initialised to the dark theme's mapping for off-frame use.
+    chrome: ChromeColors,
+    // ---- autosave / crash-recovery ----------------------------------------
+    /// Document-modifying edits accumulated since the last recovery write. When
+    /// it reaches [`AUTOSAVE_EDIT_THRESHOLD`] a recovery copy is written and this
+    /// resets to 0. Drives the "every N edits" autosave debounce (no wall clock
+    /// is available in the headless test path, so the trigger is edit-count based).
+    edits_since_autosave: u32,
+    /// A pending crash-recovery offer: a newer recovery copy was found on disk for
+    /// the open document. Surfaced as a banner with Restore / Discard. `None` when
+    /// there is nothing to recover (the common case).
+    recovery: Option<RecoveryOffer>,
+    /// Clickable recovery-banner controls this frame: `(action, rect)`.
+    recovery_buttons: Vec<(RecoveryAction, Rect)>,
+    /// Test/override base directory for recovery copies. When set it takes
+    /// precedence over the `$QOS_WP_RECOVERY_DIR` / `$XDG_STATE_HOME` resolution so
+    /// a test can point recovery at a temp dir without touching the real home.
+    recovery_base: Option<PathBuf>,
+    // ---- new-from-template picker -----------------------------------------
+    /// The "New ▾" template picker menu (reuses the shared [`ContextMenu`]). Open
+    /// only while the user is choosing a template; a selection replaces the open
+    /// document's content with the chosen template in place.
+    new_menu: ContextMenu,
+    /// The [`crate::Template`] parallel to `new_menu`'s rows (selection dispatch).
+    new_menu_templates: Vec<crate::Template>,
 }
+
+/// A crash-recovery offer: a recovery copy exists on disk for the open document
+/// and is newer than (or present without) a clean save. Holds the recovery
+/// file's path + the Markdown to restore so Restore is a pure in-memory re-import.
+#[derive(Clone, Debug)]
+struct RecoveryOffer {
+    /// The on-disk recovery file (deleted on Discard / a successful real save).
+    path: PathBuf,
+    /// The recovered document's Markdown bytes (re-imported in place on Restore).
+    markdown: Vec<u8>,
+}
+
+/// A clickable control in the crash-recovery banner.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum RecoveryAction {
+    /// Re-import the recovery copy over the current (just-opened) document.
+    Restore,
+    /// Dismiss the banner and delete the recovery copy.
+    Discard,
+}
+
+/// Write a recovery copy after this many document-modifying edits. Small enough
+/// that little work is lost on a crash, large enough that the codec export isn't
+/// run on literally every keystroke.
+const AUTOSAVE_EDIT_THRESHOLD: u32 = 24;
+
+/// Height of the crash-recovery banner (drawn just under the toolbar, like the
+/// Find bar).
+const RECOVERY_BANNER_H: f64 = 40.0;
 
 /// One process-wide built-in dictionary, shared across every word-processor
 /// widget so the ~75k-word list is parsed at most once per process.
@@ -1002,6 +1569,9 @@ impl WordProcessorWidget {
             margins: Edges::uniform(72.0),
             layout_mode: LayoutMode::None,
             guide_drag: None,
+            ruler_on: true,
+            ruler_rect: Rect::ZERO,
+            ruler_drag: None,
             page_rect: Rect::ZERO,
             layout_chips: Vec::new(),
             // Default the panel open: it is the primary surface for the
@@ -1026,6 +1596,21 @@ impl WordProcessorWidget {
             spell_cache: HashMap::new(),
             context_menu: ContextMenu::new(),
             context_actions: Vec::new(),
+            review_hits: Vec::new(),
+            comments: Vec::new(),
+            changes: Vec::new(),
+            show_markup: true,
+            outline_open: false,
+            outline_rect: Rect::ZERO,
+            outline_hits: Vec::new(),
+            // Overwritten at the top of every `draw` from the live theme.
+            chrome: ChromeColors::for_theme(&Theme::dark()),
+            edits_since_autosave: 0,
+            recovery: None,
+            recovery_buttons: Vec::new(),
+            recovery_base: None,
+            new_menu: ContextMenu::new(),
+            new_menu_templates: Vec::new(),
         }
     }
 
@@ -1065,6 +1650,23 @@ impl WordProcessorWidget {
     /// Whether the spell-check squiggles are currently enabled.
     pub fn spellcheck_enabled(&self) -> bool {
         self.spellcheck_on
+    }
+
+    /// Toggle comment + tracked-change markup on/off (default ON). View-only;
+    /// forces a redraw and never mutates the document. When off, commented text
+    /// shows without its highlight band/indicator and tracked-change runs render
+    /// as plain text (no review colour / underline / strike).
+    pub fn toggle_markup(&mut self) {
+        self.show_markup = !self.show_markup;
+        // Re-shaping depends on `show_markup` (it changes the per-run colours), so
+        // invalidate the layout cache to force every block to re-shape next frame.
+        self.layout_cache.clear();
+        self.dirty = true;
+    }
+
+    /// Whether comment + tracked-change markup is currently drawn.
+    pub fn markup_enabled(&self) -> bool {
+        self.show_markup
     }
 
     pub fn model(&self) -> &WordProcessor {
@@ -1121,6 +1723,7 @@ impl WordProcessorWidget {
             self.path = Some(std::path::PathBuf::from(home).join("Untitled.md"));
             self.format = Some(WpFormat::Markdown);
         }
+        let mut saved = false;
         if let (Some(path), Some(format), Some(c)) =
             (self.path.as_ref(), self.format, self.inner.containers.as_ref())
         {
@@ -1128,8 +1731,14 @@ impl WordProcessorWidget {
             if let Ok(bytes) = format.export(dr) {
                 if std::fs::write(path, bytes).is_ok() {
                     self.modified = false;
+                    saved = true;
                 }
             }
+        }
+        // A successful real save supersedes any recovery copy — drop it so a later
+        // session doesn't re-offer stale unsaved changes.
+        if saved {
+            self.clear_recovery();
         }
     }
 
@@ -1354,19 +1963,23 @@ impl WordProcessorWidget {
         }
     }
 
-    fn draw_find_bar(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, _theme: &Theme, bar: Rect) {
+    fn draw_find_bar(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, bar: Rect) {
+        let cc = self.chrome;
+        // Danger cue (regex-error ring/text) is *semantic* — keep it as the
+        // theme's danger colour, not chrome.
+        let danger = theme.tokens.colors.semantic.danger;
         self.find_buttons.clear();
-        scene.fill(Fill::NonZero, transform, Color::from_rgb8(0x24, 0x26, 0x2d), None, &bar);
-        scene.fill(Fill::NonZero, transform, Color::from_rgb8(0x33, 0x36, 0x40), None, &Rect::new(bar.x0, bar.y1 - 1.0, bar.x1, bar.y1));
+        scene.fill(Fill::NonZero, transform, cc.bar, None, &bar);
+        scene.fill(Fill::NonZero, transform, cc.border, None, &Rect::new(bar.x0, bar.y1 - 1.0, bar.x1, bar.y1));
         let cy = (bar.y0 + bar.y1) / 2.0;
         let fy0 = cy - 13.0;
         let mut x = bar.x0 + 12.0;
 
         let fr = Rect::new(x, fy0, x + 188.0, fy0 + 26.0);
-        draw_field_box(scene, transform, tr, fr, &self.find_query, "Find", !self.find_on_replace);
-        // A subtle red ring when a regex query fails to compile.
+        draw_field_box(scene, transform, tr, &cc, fr, &self.find_query, "Find", !self.find_on_replace);
+        // A subtle danger ring when a regex query fails to compile.
         if self.find_regex && self.find_regex_error {
-            scene.stroke(&vello::kurbo::Stroke::new(1.5), transform, Color::from_rgb8(0xd0, 0x52, 0x4a), None, &vello::kurbo::RoundedRect::from_rect(fr, 5.0));
+            scene.stroke(&vello::kurbo::Stroke::new(1.5), transform, danger, None, &vello::kurbo::RoundedRect::from_rect(fr, 5.0));
         }
         self.find_buttons.push((FindAction::FocusFind, fr));
         x += 196.0;
@@ -1379,9 +1992,9 @@ impl WordProcessorWidget {
         ] {
             let r = Rect::new(x, fy0, x + w, fy0 + 26.0);
             let (bg, fg) = if on {
-                (GUIDE, Color::WHITE)
+                (cc.accent, cc.on_accent)
             } else {
-                (Color::from_rgb8(0x2a, 0x2d, 0x36), Color::from_rgb8(0xb6, 0xba, 0xc4))
+                (cc.chip, cc.text_dim)
             };
             scene.fill(Fill::NonZero, transform, bg, None, &vello::kurbo::RoundedRect::from_rect(r, 5.0));
             let tx = r.x0 + (w - label.chars().count() as f64 * 7.2).max(4.0) / 2.0;
@@ -1392,18 +2005,18 @@ impl WordProcessorWidget {
         x += 8.0;
 
         let rr = Rect::new(x, fy0, x + 188.0, fy0 + 26.0);
-        draw_field_box(scene, transform, tr, rr, &self.replace_query, "Replace with", self.find_on_replace);
+        draw_field_box(scene, transform, tr, &cc, rr, &self.replace_query, "Replace with", self.find_on_replace);
         self.find_buttons.push((FindAction::FocusReplace, rr));
         x += 196.0;
 
         let (count, count_col) = if self.find_query.is_empty() {
-            (String::new(), MUTED)
+            (String::new(), cc.text_dim)
         } else if self.find_regex && self.find_regex_error {
-            ("Bad pattern".to_string(), Color::from_rgb8(0xd0, 0x6a, 0x62))
+            ("Bad pattern".to_string(), danger)
         } else if self.find_matches.is_empty() {
-            ("No results".to_string(), MUTED)
+            ("No results".to_string(), cc.text_dim)
         } else {
-            (format!("{} / {}", self.find_idx + 1, self.find_matches.len()), MUTED)
+            (format!("{} / {}", self.find_idx + 1, self.find_matches.len()), cc.text_dim)
         };
         tr.draw_text(scene, &count, 12.5, count_col, transform * Affine::translate((x, cy - 7.0)), None);
         x += 78.0;
@@ -1416,9 +2029,9 @@ impl WordProcessorWidget {
             (FindAction::Close, "✕", 28.0),
         ] {
             let r = Rect::new(x, fy0, x + w, fy0 + 26.0);
-            scene.fill(Fill::NonZero, transform, Color::from_rgb8(0x2e, 0x31, 0x3a), None, &vello::kurbo::RoundedRect::from_rect(r, 5.0));
+            scene.fill(Fill::NonZero, transform, cc.chip, None, &vello::kurbo::RoundedRect::from_rect(r, 5.0));
             let tx = r.x0 + (w - label.chars().count() as f64 * 7.2).max(6.0) / 2.0;
-            tr.draw_text(scene, label, 13.0, Color::from_rgb8(0xd2, 0xd5, 0xdc), transform * Affine::translate((tx, cy - 8.0)), None);
+            tr.draw_text(scene, label, 13.0, cc.text, transform * Affine::translate((tx, cy - 8.0)), None);
             self.find_buttons.push((action, r));
             x += w + 6.0;
         }
@@ -1464,6 +2077,8 @@ impl WordProcessorWidget {
             self.header = snap.header;
             self.footer = snap.footer;
             self.notes = snap.notes;
+            self.comments = snap.comments;
+            self.changes = snap.changes;
             // Drop spell-cache entries for blocks that no longer exist so the cache
             // stays bounded; surviving blocks keep their (text-keyed) spans.
             let live: std::collections::HashSet<&str> = self.blocks.iter().map(|b| b.id.as_str()).collect();
@@ -1623,7 +2238,7 @@ impl WordProcessorWidget {
                 align,
                 FontFamily::Sans,
                 vec![],
-                vec![],
+                vec![], 1.0
             );
             total_h += layout.height() as f64;
             shaped.push(layout);
@@ -1633,7 +2248,7 @@ impl WordProcessorWidget {
         let mut y = if is_footer { (band.y1 - total_h).max(band.y0) } else { band.y0 };
         let mut drew = false;
         for layout in &shaped {
-            tr.draw_rich(scene, layout, ctf * Affine::translate((band.x0, y)), MUTED);
+            tr.draw_rich(scene, layout, ctf * Affine::translate((band.x0, y)), PAPER_MUTED);
             y += layout.height() as f64;
             drew = true;
         }
@@ -1718,9 +2333,456 @@ impl WordProcessorWidget {
         }
     }
 
+    // ---- horizontal ruler ----------------------------------------------------
+
+    /// The caret paragraph's left/hanging indent (px), read from the cached block
+    /// views (the `indent` block attr). `0.0` when unset. Mirrors the model's
+    /// `block_indent` so the draw pass (which has no `state`) can read it.
+    fn caret_block_indent(&self) -> f64 {
+        self.block_num_attr_view(&self.inner.caret.block, "indent")
+    }
+
+    /// The caret paragraph's first-line indent (px), read from cached block views.
+    fn caret_block_first_line_indent(&self) -> f64 {
+        self.block_num_attr_view(&self.inner.caret.block, "first_line_indent")
+    }
+
+    /// The caret paragraph's tab stops (px from the left text margin), read from
+    /// cached block views (the comma-encoded `tab_stops` attr).
+    fn caret_block_tab_stops(&self) -> Vec<f64> {
+        let raw = self
+            .blocks
+            .iter()
+            .find(|b| b.id == self.inner.caret.block)
+            .and_then(|b| match b.attrs.get("tab_stops") {
+                Some(AttrVal::Str(s)) => Some(s.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        crate::word_processor::parse_tab_stops(&raw)
+    }
+
+    /// Read a numeric (`Float`/`Int`) attr off a cached block view, `0.0` absent.
+    fn block_num_attr_view(&self, block: &str, key: &str) -> f64 {
+        self.blocks
+            .iter()
+            .find(|b| b.id == block)
+            .map(|b| match b.attrs.get(key) {
+                Some(AttrVal::Float(f)) => *f,
+                Some(AttrVal::Int(n)) => *n as f64,
+                _ => 0.0,
+            })
+            .unwrap_or(0.0)
+    }
+
+    /// Map an unscaled content x (the page coordinate space) to screen x using the
+    /// cached zoom + anchor — the same scale-about the page content draws through.
+    fn content_x_to_screen(&self, cx: f64) -> f64 {
+        self.zoom_anchor.x + (cx - self.zoom_anchor.x) * self.zoom
+    }
+
+    /// Inverse of [`Self::content_x_to_screen`].
+    fn screen_x_to_content(&self, sx: f64) -> f64 {
+        self.zoom_anchor.x + (sx - self.zoom_anchor.x) / self.zoom
+    }
+
+    /// The screen-space x of every ruler marker for the current margins + caret
+    /// paragraph, as `(marker, screen_x)`. `page_x` is the page's left edge in
+    /// content space. Shared by `draw_ruler` (positions) and the event handler
+    /// (hit-testing), so the picked marker always matches what is drawn.
+    fn ruler_markers(&self, page_x: f64, page_w: f64) -> Vec<(RulerMarker, f64)> {
+        let m = self.margins;
+        let left_margin_cx = page_x + m.left; // left text edge
+        let right_margin_cx = page_x + page_w - m.right;
+        let indent = self.caret_block_indent();
+        let first = self.caret_block_first_line_indent();
+        let left_indent_cx = left_margin_cx + indent;
+        let first_indent_cx = left_indent_cx + first;
+        let mut v = vec![
+            (RulerMarker::MarginLeft, self.content_x_to_screen(left_margin_cx)),
+            (RulerMarker::MarginRight, self.content_x_to_screen(right_margin_cx)),
+            (RulerMarker::IndentLeft, self.content_x_to_screen(left_indent_cx)),
+            (RulerMarker::IndentFirst, self.content_x_to_screen(first_indent_cx)),
+        ];
+        for (i, t) in self.caret_block_tab_stops().into_iter().enumerate() {
+            v.push((RulerMarker::Tab(i), self.content_x_to_screen(left_margin_cx + t)));
+        }
+        v
+    }
+
+    /// Draw the horizontal ruler band: a fixed-height strip with inch ticks +
+    /// labels aligned to the page, a tinted "text region" between the margins, and
+    /// the draggable margin / indent / tab markers.
+    fn draw_ruler(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        _theme: &Theme,
+        band: Rect,
+        page_x: f64,
+        page_w: f64,
+    ) {
+        let cc = self.chrome;
+        self.ruler_rect = band;
+        // Band background.
+        scene.fill(Fill::NonZero, transform, cc.bar, None, &band);
+        // Hairline along the bottom edge separating ruler from canvas.
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            cc.border,
+            None,
+            &Rect::new(band.x0, band.y1 - 1.0, band.x1, band.y1),
+        );
+
+        let page_left_sx = self.content_x_to_screen(page_x);
+        let page_right_sx = self.content_x_to_screen(page_x + page_w);
+        let text_left_sx = self.content_x_to_screen(page_x + self.margins.left);
+        let text_right_sx = self.content_x_to_screen(page_x + page_w - self.margins.right);
+        // Clamp drawing to the band's visible width.
+        let clip = |x: f64| x.clamp(band.x0, band.x1);
+        let mid = (band.y0 + band.y1) / 2.0;
+
+        // The whole page span: a recessed "field" tone (the margins area).
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            cc.field,
+            None,
+            &Rect::new(clip(page_left_sx), band.y0 + 4.0, clip(page_right_sx), band.y1 - 4.0),
+        );
+        // The text region (between the margins): the paper tone, so the active
+        // typing column reads as the lit part of the ruler.
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            cc.paper,
+            None,
+            &Rect::new(clip(text_left_sx), band.y0 + 4.0, clip(text_right_sx), band.y1 - 4.0),
+        );
+
+        // Inch ticks + quarter ticks, measured from the LEFT TEXT MARGIN (so "0"
+        // sits at the left indent edge — the standard word-processor convention).
+        // Ticks are placed in content space and mapped through zoom so they track
+        // the page at any scale.
+        let unit_px = PX_PER_INCH; // ticks per inch
+        let text_left_cx = page_x + self.margins.left;
+        let text_right_cx = page_x + page_w - self.margins.right;
+        let max_in = ((text_right_cx - text_left_cx) / unit_px).ceil() as i32;
+        for i in 0..=max_in {
+            let cx = text_left_cx + i as f64 * unit_px;
+            let sx = self.content_x_to_screen(cx);
+            if sx < band.x0 - 2.0 || sx > band.x1 + 2.0 {
+                continue;
+            }
+            // Major inch tick + number.
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                cc.text_dim,
+                None,
+                &Rect::new(sx - 0.5, mid - 5.0, sx + 0.5, mid + 5.0),
+            );
+            if i > 0 {
+                tr.draw_text(
+                    scene,
+                    &i.to_string(),
+                    9.0,
+                    cc.text_dim,
+                    transform * Affine::translate((sx + 2.0, band.y0 + 1.0)),
+                    None,
+                );
+            }
+            // Quarter-inch minor ticks between this inch and the next.
+            for q in 1..4 {
+                let qcx = cx + q as f64 * unit_px / 4.0;
+                if qcx > text_right_cx + 1.0 {
+                    break;
+                }
+                let qsx = self.content_x_to_screen(qcx);
+                let h = if q == 2 { 3.5 } else { 2.0 }; // half-inch tick is taller
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    with_alpha(cc.text_dim, 0xaa),
+                    None,
+                    &Rect::new(qsx - 0.5, mid - h, qsx + 0.5, mid + h),
+                );
+            }
+        }
+
+        // "in" unit label at the far left of the band.
+        tr.draw_text(
+            scene,
+            "in",
+            9.0,
+            cc.text_dim,
+            transform * Affine::translate((band.x0 + 4.0, mid - 6.0)),
+            None,
+        );
+
+        // Markers. Margins draw as solid wedges at the band edges; indent markers
+        // as smaller wedges (first-line points down from the top, hanging/left
+        // points up from the bottom); tab stops as small ⌐ ticks.
+        let drag_marker = self.ruler_drag.map(|d| d.marker);
+        for (marker, sx) in self.ruler_markers(page_x, page_w) {
+            if sx < band.x0 - 6.0 || sx > band.x1 + 6.0 {
+                continue;
+            }
+            let active = drag_marker == Some(marker);
+            let col = if active { cc.accent } else { cc.text };
+            match marker {
+                RulerMarker::MarginLeft | RulerMarker::MarginRight => {
+                    // Tall thin handle spanning the band at the margin edge.
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        if active { cc.accent } else { cc.accent_faint },
+                        None,
+                        &Rect::new(sx - 1.0, band.y0 + 2.0, sx + 1.0, band.y1 - 2.0),
+                    );
+                    // A small grab knob.
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        col,
+                        None,
+                        &vello::kurbo::Circle::new((sx, mid), 3.0),
+                    );
+                }
+                RulerMarker::IndentFirst => {
+                    // Down-pointing wedge near the top of the band.
+                    fill_tri(
+                        scene,
+                        transform,
+                        col,
+                        (sx - 4.0, band.y0 + 2.0),
+                        (sx + 4.0, band.y0 + 2.0),
+                        (sx, band.y0 + 9.0),
+                    );
+                }
+                RulerMarker::IndentLeft => {
+                    // Up-pointing wedge near the bottom of the band.
+                    fill_tri(
+                        scene,
+                        transform,
+                        col,
+                        (sx - 4.0, band.y1 - 2.0),
+                        (sx + 4.0, band.y1 - 2.0),
+                        (sx, band.y1 - 9.0),
+                    );
+                }
+                RulerMarker::Tab(_) => {
+                    // Small ⌐ tab mark sitting on the band's lower edge.
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        col,
+                        None,
+                        &Rect::new(sx - 0.5, mid, sx + 0.5, band.y1 - 3.0),
+                    );
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        col,
+                        None,
+                        &Rect::new(sx - 0.5, band.y1 - 3.5, sx + 4.0, band.y1 - 3.0),
+                    );
+                }
+            }
+        }
+    }
+
+    /// A left press inside the ruler band: grab the nearest marker to start a
+    /// drag, or — on the page span with no marker hit — add a tab stop on the
+    /// caret paragraph at the clicked position.
+    fn ruler_press(&mut self, state: &mut AutoCommit) {
+        let page_x = self.page_rect.x0;
+        let page_w = self.page_rect.width();
+        if page_w <= 0.0 {
+            return;
+        }
+        let px = self.pointer.x;
+        let py = self.pointer.y;
+        let band = self.ruler_rect;
+        // Nearest marker within the grab radius. Markers often coincide on screen
+        // (e.g. a 0-indent paragraph stacks the indent markers on the left
+        // margin), so ties are broken by (a) the pointer's vertical zone — the
+        // first-line wedge lives in the top third, the hanging wedge in the bottom
+        // third — and (b) a type priority so the small indent/tab handles win over
+        // the full-height margin bar when genuinely ambiguous.
+        // Vertical zones: the first-line wedge is drawn at the TOP, the hanging
+        // wedge at the BOTTOM, and the full-height margin bar owns the MIDDLE. The
+        // zone the pointer is in decides which coincident marker wins.
+        let top_zone = py < band.y0 + (band.y1 - band.y0) / 3.0;
+        let bot_zone = py > band.y1 - (band.y1 - band.y0) / 3.0;
+        let priority = |m: RulerMarker| -> i32 {
+            match m {
+                RulerMarker::Tab(_) => 4,
+                RulerMarker::IndentFirst => {
+                    if top_zone { 5 } else { 1 }
+                }
+                RulerMarker::IndentLeft => {
+                    if bot_zone { 5 } else { 1 }
+                }
+                // The margin bar wins the middle zone (where indent wedges are
+                // absent), so a 0-indent paragraph can still grab its margin.
+                RulerMarker::MarginLeft | RulerMarker::MarginRight => {
+                    if top_zone || bot_zone { 1 } else { 3 }
+                }
+            }
+        };
+        let mut best: Option<(RulerMarker, f64, i32)> = None;
+        for (marker, sx) in self.ruler_markers(page_x, page_w) {
+            let d = (px - sx).abs();
+            if d > RULER_GRAB {
+                continue;
+            }
+            let pr = priority(marker);
+            let better = match best {
+                None => true,
+                Some((_, bd, bpr)) => d < bd - 0.5 || ((d - bd).abs() <= 0.5 && pr > bpr),
+            };
+            if better {
+                best = Some((marker, d, pr));
+            }
+        }
+        if let Some((marker, _, _)) = best {
+            self.ruler_drag = Some(RulerDrag { marker, drop_off: false });
+            return;
+        }
+        // No marker — a click in the page span adds a tab stop (px from the left
+        // text margin). Clicks outside the page span do nothing.
+        let text_left_sx = self.content_x_to_screen(page_x + self.margins.left);
+        let text_right_sx = self.content_x_to_screen(page_x + page_w - self.margins.right);
+        if px >= text_left_sx && px <= text_right_sx {
+            let cx = self.screen_x_to_content(px);
+            let tab_px = (cx - (page_x + self.margins.left)).max(0.0);
+            self.inner.add_tab_stop(state, tab_px);
+            self.refresh_blocks(state);
+            self.needs_commit = true;
+            self.modified = true;
+            self.note_edit_for_autosave(state);
+        }
+    }
+
+    /// Live-update a ruler-marker drag from the current pointer. Margin + indent
+    /// markers update the widget value (persisted on release); tab markers update
+    /// the in-progress stop position. A tab dragged below the band is flagged for
+    /// removal on release ("drag off to delete").
+    fn ruler_drag_move(&mut self) {
+        let Some(mut drag) = self.ruler_drag else { return };
+        let page_x = self.page_rect.x0;
+        let page_w = self.page_rect.width();
+        if page_w <= 0.0 {
+            return;
+        }
+        let cx = self.screen_x_to_content(self.pointer.x);
+        let left_margin_cx = page_x + self.margins.left;
+        match drag.marker {
+            RulerMarker::MarginLeft => {
+                // Distance of the pointer from the page's left edge → left margin.
+                let v = (cx - page_x).clamp(4.0, page_w / 2.0);
+                self.margins.left = v;
+            }
+            RulerMarker::MarginRight => {
+                let v = (page_x + page_w - cx).clamp(4.0, page_w / 2.0);
+                self.margins.right = v;
+            }
+            RulerMarker::IndentLeft => {
+                let v = (cx - left_margin_cx).max(0.0);
+                // Drag follows in the widget's cached block view so the preview is
+                // live; persisted to the document on release.
+                self.set_caret_block_indent_view(v);
+            }
+            RulerMarker::IndentFirst => {
+                let base = left_margin_cx + self.caret_block_indent();
+                let v = cx - base; // may be negative (hanging first line)
+                self.set_caret_block_first_line_view(v);
+            }
+            RulerMarker::Tab(i) => {
+                // Below the band → mark for removal; else move the stop.
+                drag.drop_off = self.pointer.y > self.ruler_rect.y1;
+                self.ruler_drag = Some(drag);
+                if !drag.drop_off {
+                    let v = (cx - left_margin_cx).max(0.0);
+                    self.set_caret_tab_stop_view(i, v);
+                }
+                return;
+            }
+        }
+        self.ruler_drag = Some(drag);
+    }
+
+    /// Persist a ruler-marker drag on release.
+    fn ruler_drag_release(&mut self, state: &mut AutoCommit) {
+        let Some(drag) = self.ruler_drag.take() else { return };
+        match drag.marker {
+            RulerMarker::MarginLeft | RulerMarker::MarginRight => {
+                self.persist_margins(state);
+            }
+            RulerMarker::IndentLeft => {
+                let v = self.caret_block_indent();
+                let block = self.inner.caret.block.clone();
+                self.inner.set_block_indent(state, &block, v);
+            }
+            RulerMarker::IndentFirst => {
+                let v = self.caret_block_first_line_indent();
+                let block = self.inner.caret.block.clone();
+                self.inner.set_block_first_line_indent(state, &block, v);
+            }
+            RulerMarker::Tab(i) => {
+                let mut stops = self.caret_block_tab_stops();
+                if drag.drop_off {
+                    if i < stops.len() {
+                        stops.remove(i);
+                    }
+                }
+                let block = self.inner.caret.block.clone();
+                self.inner.set_block_tab_stops(state, &block, &stops);
+            }
+        }
+        self.refresh_blocks(state);
+        self.needs_commit = true;
+        self.modified = true;
+        self.note_edit_for_autosave(state);
+    }
+
+    /// Update the caret block's `indent` attr in the cached block views only (a
+    /// live drag preview before the release persists it).
+    fn set_caret_block_indent_view(&mut self, v: f64) {
+        let id = self.inner.caret.block.clone();
+        if let Some(b) = self.blocks.iter_mut().find(|b| b.id == id) {
+            b.attrs.insert("indent".to_string(), AttrVal::Float(v.max(0.0)));
+        }
+    }
+
+    /// Update the caret block's `first_line_indent` attr in the cached block views.
+    fn set_caret_block_first_line_view(&mut self, v: f64) {
+        let id = self.inner.caret.block.clone();
+        if let Some(b) = self.blocks.iter_mut().find(|b| b.id == id) {
+            b.attrs.insert("first_line_indent".to_string(), AttrVal::Float(v));
+        }
+    }
+
+    /// Update tab stop `i` in the cached block views (live drag preview).
+    fn set_caret_tab_stop_view(&mut self, i: usize, v: f64) {
+        let id = self.inner.caret.block.clone();
+        let mut stops = self.caret_block_tab_stops();
+        if i < stops.len() {
+            stops[i] = v.max(0.0);
+        }
+        let encoded = stops.iter().map(|p| format!("{p:.1}")).collect::<Vec<_>>().join(",");
+        if let Some(b) = self.blocks.iter_mut().find(|b| b.id == id) {
+            b.attrs.insert("tab_stops".to_string(), AttrVal::Str(encoded));
+        }
+    }
+
     /// Draggable guides + live value labels for the active layout mode, drawn
     /// over the page content.
     fn draw_layout_overlay(&self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, page: Rect) {
+        let accent = self.chrome.accent;
         if let Some(e) = self.active_edges() {
             let drag = self.guide_drag;
             for side in [Side::Left, Side::Right, Side::Top, Side::Bottom] {
@@ -1732,7 +2794,7 @@ impl WordProcessorWidget {
                         DragKind::Single => g.side == side,
                     })
                     .unwrap_or(false);
-                let col = if active { GUIDE } else { GUIDE_FAINT };
+                let col = if active { accent } else { self.chrome.accent_faint };
                 let t = if active { 2.0 } else { 1.0 };
                 let line = if vert {
                     Rect::new(c - t / 2.0, page.y0, c + t / 2.0, page.y1)
@@ -1742,26 +2804,27 @@ impl WordProcessorWidget {
                 scene.fill(Fill::NonZero, transform, col, None, &line);
                 // grip dot at the line's midpoint
                 let (gx, gy) = if vert { (c, (page.y0 + page.y1) / 2.0) } else { ((page.x0 + page.x1) / 2.0, c) };
-                scene.fill(Fill::NonZero, transform, GUIDE, None, &vello::kurbo::Circle::new((gx, gy), 4.0));
+                scene.fill(Fill::NonZero, transform, accent, None, &vello::kurbo::Circle::new((gx, gy), 4.0));
                 // value label, offset inside the page
                 let label = format!("{}", e.get(side).round() as i64);
                 let (lx, ly) = if vert { (c + 6.0, page.y0 + 16.0) } else { (page.x0 + 10.0, c + 5.0) };
-                tr.draw_text(scene, &label, 12.0, GUIDE, transform * Affine::translate((lx, ly)), None);
+                tr.draw_text(scene, &label, 12.0, accent, transform * Affine::translate((lx, ly)), None);
             }
         } else if self.layout_mode == LayoutMode::Spacing {
             if let Some((hx, hy)) = self.spacing_handle() {
                 let pill = Rect::new(hx - 20.0, hy - 3.0, hx + 20.0, hy + 3.0);
-                scene.fill(Fill::NonZero, transform, GUIDE, None, &vello::kurbo::RoundedRect::from_rect(pill, 3.0));
+                scene.fill(Fill::NonZero, transform, accent, None, &vello::kurbo::RoundedRect::from_rect(pill, 3.0));
                 let label = format!("{} px", self.focused_space_after().round() as i64);
-                tr.draw_text(scene, &label, 12.0, GUIDE, transform * Affine::translate((hx + 30.0, hy - 7.0)), None);
+                tr.draw_text(scene, &label, 12.0, accent, transform * Affine::translate((hx + 30.0, hy - 7.0)), None);
             }
         }
     }
 
     /// The bottom layout bar: mode chips + a live readout / hint.
     fn draw_layout_bar(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, _theme: &Theme, bar: Rect) {
-        scene.fill(Fill::NonZero, transform, Color::from_rgb8(0x20, 0x22, 0x28), None, &bar);
-        scene.fill(Fill::NonZero, transform, Color::from_rgb8(0x32, 0x35, 0x3e), None, &Rect::new(bar.x0, bar.y0, bar.x1, bar.y0 + 1.0));
+        let cc = self.chrome;
+        scene.fill(Fill::NonZero, transform, cc.bar, None, &bar);
+        scene.fill(Fill::NonZero, transform, cc.border, None, &Rect::new(bar.x0, bar.y0, bar.x1, bar.y0 + 1.0));
 
         let cy = (bar.y0 + bar.y1) / 2.0;
         let mut x = bar.x0 + 12.0;
@@ -1770,8 +2833,8 @@ impl WordProcessorWidget {
             let w = 16.0 + label.chars().count() as f64 * 7.6;
             let r = Rect::new(x, bar.y0 + 5.0, x + w, bar.y1 - 5.0);
             let active = self.layout_mode == mode;
-            let bg = if active { GUIDE } else { Color::from_rgb8(0x2c, 0x2f, 0x38) };
-            let fg = if active { Color::from_rgb8(0xff, 0xff, 0xff) } else { Color::from_rgb8(0xc6, 0xca, 0xd2) };
+            let bg = if active { cc.accent } else { cc.chip };
+            let fg = if active { cc.on_accent } else { cc.text_dim };
             scene.fill(Fill::NonZero, transform, bg, None, &vello::kurbo::RoundedRect::from_rect(r, 6.0));
             tr.draw_text(scene, label, 13.0, fg, transform * Affine::translate((x + 8.0, cy - 8.0)), None);
             self.layout_chips.push((mode, r));
@@ -1789,18 +2852,19 @@ impl WordProcessorWidget {
             }
             LayoutMode::None => "Page layout — pick Margins or Spacing, then drag on the page".to_string(),
         };
-        tr.draw_text(scene, &readout, 12.5, Color::from_rgb8(0x9a, 0x9e, 0xa8), transform * Affine::translate((x + 12.0, cy - 8.0)), None);
+        tr.draw_text(scene, &readout, 12.5, cc.text_dim, transform * Affine::translate((x + 12.0, cy - 8.0)), None);
     }
 
     /// The contextual styles panel: the focused block's style name, a style
     /// picker (apply any style to the selection), and editable property rows that
     /// mutate the *style* — every block of that style updates live.
     fn draw_styles_panel(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, panel: Rect) {
+        let cc = self.chrome;
         self.panel_rect = panel;
         self.panel_hits.clear();
         // Background + left border.
-        scene.fill(Fill::NonZero, transform, PANEL_BG, None, &panel);
-        scene.fill(Fill::NonZero, transform, PANEL_EDGE, None, &Rect::new(panel.x0, panel.y0, panel.x0 + 1.0, panel.y1));
+        scene.fill(Fill::NonZero, transform, cc.bar, None, &panel);
+        scene.fill(Fill::NonZero, transform, cc.border, None, &Rect::new(panel.x0, panel.y0, panel.x0 + 1.0, panel.y1));
         // Clip content to the panel so nothing bleeds into the bars.
         scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &panel);
 
@@ -1810,24 +2874,24 @@ impl WordProcessorWidget {
         let inner_w = right - x0;
         let mut y = panel.y0 + 14.0;
 
-        tr.draw_text(scene, "STYLE", 10.5, PANEL_MUTED, transform * Affine::translate((x0, y)), None);
+        tr.draw_text(scene, "STYLE", 10.5, cc.text_dim, transform * Affine::translate((x0, y)), None);
         y += 16.0;
 
         let Some(key) = self.focused_style_key() else {
-            tr.draw_text(scene, "Place the caret in a paragraph", 12.5, PANEL_MUTED, transform * Affine::translate((x0, y)), Some(inner_w as f32));
+            tr.draw_text(scene, "Place the caret in a paragraph", 12.5, cc.text_dim, transform * Affine::translate((x0, y)), Some(inner_w as f32));
             scene.pop_layer();
             return;
         };
         // Snapshot the focused style for drawing (read-only copy).
         let st = self.sheet.get(&key);
 
-        tr.draw_text(scene, &st.name, 18.0, PANEL_FG, transform * Affine::translate((x0, y)), Some(inner_w as f32));
+        tr.draw_text(scene, &st.name, 18.0, cc.text, transform * Affine::translate((x0, y)), Some(inner_w as f32));
         y += 28.0;
-        panel_divider(scene, transform, x0, right, y);
+        panel_divider(scene, transform, &cc, x0, right, y);
         y += 12.0;
 
         // ---- Style picker -------------------------------------------------
-        tr.draw_text(scene, "PARAGRAPH STYLES", 10.5, PANEL_MUTED, transform * Affine::translate((x0, y)), None);
+        tr.draw_text(scene, "PARAGRAPH STYLES", 10.5, cc.text_dim, transform * Affine::translate((x0, y)), None);
         y += 16.0;
         let order = self.sheet.order();
         let gap = 6.0;
@@ -1840,40 +2904,40 @@ impl WordProcessorWidget {
             let cy = y + row * (chip_h + gap);
             let r = Rect::new(cx, cy, cx + col_w, cy + chip_h);
             let name = self.sheet.get(id).name;
-            draw_btn(scene, transform, tr, r, &name, id == &key, false);
+            draw_btn(scene, transform, tr, &cc, r, &name, id == &key, false);
             self.panel_hits.push((r, PanelHit::Pick(id.clone())));
         }
         let rows = order.len().div_ceil(2) as f64;
         y += rows * (chip_h + gap) + 6.0;
-        panel_divider(scene, transform, x0, right, y);
+        panel_divider(scene, transform, &cc, x0, right, y);
         y += 12.0;
 
         // ---- Editable style properties ------------------------------------
-        tr.draw_text(scene, "STYLE PROPERTIES", 10.5, PANEL_MUTED, transform * Affine::translate((x0, y)), None);
+        tr.draw_text(scene, "STYLE PROPERTIES", 10.5, cc.text_dim, transform * Affine::translate((x0, y)), None);
         y += 18.0;
 
         // Font (cycles sans → serif → mono).
         {
-            tr.draw_text(scene, "Font", 12.5, PANEL_FG, transform * Affine::translate((x0, y + 5.0)), None);
+            tr.draw_text(scene, "Font", 12.5, cc.text, transform * Affine::translate((x0, y + 5.0)), None);
             let fl = match st.font.as_str() {
                 "serif" => "Serif",
                 "mono" => "Mono",
                 _ => "Sans",
             };
             let r = Rect::new(right - 96.0, y, right, y + 24.0);
-            draw_btn(scene, transform, tr, r, fl, false, true);
+            draw_btn(scene, transform, tr, &cc, r, fl, false, true);
             self.panel_hits.push((r, PanelHit::CycleFont));
             y += 30.0;
         }
 
         // Weight: Bold / Italic toggles.
         {
-            tr.draw_text(scene, "Weight", 12.5, PANEL_FG, transform * Affine::translate((x0, y + 5.0)), None);
+            tr.draw_text(scene, "Weight", 12.5, cc.text, transform * Affine::translate((x0, y + 5.0)), None);
             let bw = 60.0;
             let rb = Rect::new(right - bw * 2.0 - 6.0, y, right - bw - 6.0, y + 24.0);
             let ri = Rect::new(right - bw, y, right, y + 24.0);
-            draw_btn(scene, transform, tr, rb, "Bold", st.bold, true);
-            draw_btn(scene, transform, tr, ri, "Italic", st.italic, true);
+            draw_btn(scene, transform, tr, &cc, rb, "Bold", st.bold, true);
+            draw_btn(scene, transform, tr, &cc, ri, "Italic", st.italic, true);
             self.panel_hits.push((rb, PanelHit::ToggleBold));
             self.panel_hits.push((ri, PanelHit::ToggleItalic));
             y += 30.0;
@@ -1881,7 +2945,7 @@ impl WordProcessorWidget {
 
         // Colour: a palette of swatches.
         {
-            tr.draw_text(scene, "Colour", 12.5, PANEL_FG, transform * Affine::translate((x0, y + 5.0)), None);
+            tr.draw_text(scene, "Colour", 12.5, cc.text, transform * Affine::translate((x0, y + 5.0)), None);
             let n = STYLE_PALETTE.len();
             let sw_gap = 5.0;
             // Leave room on the left for the "Colour" label.
@@ -1903,13 +2967,13 @@ impl WordProcessorWidget {
 
         // Alignment: L / C / R.
         {
-            tr.draw_text(scene, "Align", 12.5, PANEL_FG, transform * Affine::translate((x0, y + 5.0)), None);
+            tr.draw_text(scene, "Align", 12.5, cc.text, transform * Affine::translate((x0, y + 5.0)), None);
             let bw = 40.0;
             let gap = 6.0;
             for (i, (label, val)) in [("L", "left"), ("C", "center"), ("R", "right")].iter().enumerate() {
                 let rx = right - (3.0 - i as f64) * bw - (2.0 - i as f64) * gap;
                 let r = Rect::new(rx, y, rx + bw, y + 24.0);
-                draw_btn(scene, transform, tr, r, label, st.align == *val, true);
+                draw_btn(scene, transform, tr, &cc, r, label, st.align == *val, true);
                 self.panel_hits.push((r, PanelHit::SetAlign(val)));
             }
             y += 30.0;
@@ -1921,13 +2985,13 @@ impl WordProcessorWidget {
             y += 30.0;
         }
 
-        panel_divider(scene, transform, x0, right, y);
+        panel_divider(scene, transform, &cc, x0, right, y);
         y += 12.0;
 
         // New style from this.
         {
             let r = Rect::new(x0, y, right, y + 26.0);
-            draw_btn(scene, transform, tr, r, "+ New style from this", false, true);
+            draw_btn(scene, transform, tr, &cc, r, "+ New style from this", false, true);
             self.panel_hits.push((r, PanelHit::NewStyle));
         }
 
@@ -1937,17 +3001,18 @@ impl WordProcessorWidget {
     /// One numeric property row: `Label    [−] [ value ] [+]`. The value box is
     /// click-to-type / drag-to-scrub; the steppers nudge by `field.step()`.
     fn draw_num_row(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, field: NumField, value: f32, x0: f64, right: f64, y: f64) {
-        tr.draw_text(scene, field.label(), 12.5, PANEL_FG, transform * Affine::translate((x0, y + 5.0)), None);
+        let cc = self.chrome;
+        tr.draw_text(scene, field.label(), 12.5, cc.text, transform * Affine::translate((x0, y + 5.0)), None);
         let plus = Rect::new(right - 24.0, y, right, y + 24.0);
         let vb = Rect::new(plus.x0 - 60.0, y, plus.x0 - 2.0, y + 24.0);
         let minus = Rect::new(vb.x0 - 26.0, y, vb.x0 - 2.0, y + 24.0);
-        draw_btn(scene, transform, tr, minus, "−", false, true);
-        draw_btn(scene, transform, tr, plus, "+", false, true);
+        draw_btn(scene, transform, tr, &cc, minus, "−", false, true);
+        draw_btn(scene, transform, tr, &cc, plus, "+", false, true);
         // Value box.
         let editing = self.editing_field == Some(field);
         let scrubbing = self.scrub.map(|s| s.field == field).unwrap_or(false);
-        let border = if editing || scrubbing { GUIDE } else { PANEL_EDGE };
-        scene.fill(Fill::NonZero, transform, PANEL_FIELD, None, &vello::kurbo::RoundedRect::from_rect(vb, 5.0));
+        let border = if editing || scrubbing { cc.accent } else { cc.border };
+        scene.fill(Fill::NonZero, transform, cc.field, None, &vello::kurbo::RoundedRect::from_rect(vb, 5.0));
         scene.stroke(&vello::kurbo::Stroke::new(if editing || scrubbing { 1.5 } else { 1.0 }), transform, border, None, &vello::kurbo::RoundedRect::from_rect(vb, 5.0));
         let text = if editing {
             format!("{}_", self.edit_buf)
@@ -1956,28 +3021,366 @@ impl WordProcessorWidget {
         };
         let approx = text.chars().count() as f64 * 7.0;
         let tx = (vb.x0 + vb.x1) / 2.0 - approx / 2.0;
-        tr.draw_text(scene, &text, 12.5, PANEL_FG, transform * Affine::translate((tx, (vb.y0 + vb.y1) / 2.0 - 8.0)), None);
+        tr.draw_text(scene, &text, 12.5, cc.text, transform * Affine::translate((tx, (vb.y0 + vb.y1) / 2.0 - 8.0)), None);
         self.panel_hits.push((vb, PanelHit::Num(field)));
         self.panel_hits.push((minus, PanelHit::NumDelta(field, -field.step())));
         self.panel_hits.push((plus, PanelHit::NumDelta(field, field.step())));
     }
+
+    // ---- document outline / navigation pane -------------------------------
+
+    /// The document outline: one entry per `heading` block (in document order),
+    /// derived from the live block set. Mirrors `WordProcessor::headings`, but the
+    /// widget reads its already-materialized `self.blocks` so it works mid-frame
+    /// without re-materializing the doc. Excludes generated TOC lines.
+    fn outline_entries(&self) -> Vec<crate::word_processor::Heading> {
+        self.blocks
+            .iter()
+            .filter(|b| b.kind == "heading" && !crate::word_processor::block_is_toc(b))
+            .map(|b| {
+                let level = match b.attrs.get("level") {
+                    Some(AttrVal::Int(n)) if *n >= 1 => *n,
+                    _ => 1,
+                };
+                crate::word_processor::Heading { id: b.id.clone(), level, text: b.text.clone() }
+            })
+            .collect()
+    }
+
+    /// The heading nearest (at or just above) the current scroll position — the
+    /// one to highlight in the outline as "where you are". Uses the last frame's
+    /// laid geometry (`y_top` is screen-space post-scroll; recover content space).
+    /// Returns the heading block id, or `None` when there are no headings laid.
+    fn active_outline_block(&self) -> Option<String> {
+        // Content-space top of the visible canvas region.
+        let view_top = self.scroll_y;
+        let mut best: Option<(f64, String)> = None; // (content_y, id)
+        let mut first: Option<(f64, String)> = None;
+        for l in &self.laid {
+            if l.kind != "heading" {
+                continue;
+            }
+            let cy = l.y_top + self.scroll_y; // content-space top
+            if first.as_ref().map(|(y, _)| cy < *y).unwrap_or(true) {
+                first = Some((cy, l.id.clone()));
+            }
+            // The deepest heading whose top is at/above the viewport top.
+            if cy <= view_top + 1.0 && best.as_ref().map(|(y, _)| cy >= *y).unwrap_or(true) {
+                best = Some((cy, l.id.clone()));
+            }
+        }
+        best.or(first).map(|(_, id)| id)
+    }
+
+    /// The document outline / navigation pane: a scroll-anchored list of every
+    /// heading, indented by level. Clicking an entry scrolls it into view; the
+    /// heading nearest the current scroll is highlighted. Mirrors the styles
+    /// panel's chrome (background, left/right edge, clipped content).
+    fn draw_outline_pane(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, panel: Rect) {
+        let cc = self.chrome;
+        self.outline_rect = panel;
+        self.outline_hits.clear();
+        scene.fill(Fill::NonZero, transform, cc.bar, None, &panel);
+        // Right border (the pane sits on the canvas's left edge).
+        scene.fill(Fill::NonZero, transform, cc.border, None, &Rect::new(panel.x1 - 1.0, panel.y0, panel.x1, panel.y1));
+        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &panel);
+
+        let pad = 14.0;
+        let x0 = panel.x0 + pad;
+        let right = panel.x1 - pad;
+        let inner_w = (right - x0).max(40.0);
+        let mut y = panel.y0 + 14.0;
+
+        tr.draw_text(scene, "OUTLINE", 10.5, cc.text_dim, transform * Affine::translate((x0, y)), None);
+        y += 18.0;
+
+        let entries = self.outline_entries();
+        if entries.is_empty() {
+            tr.draw_text(scene, "No headings yet", 12.5, cc.text_dim, transform * Affine::translate((x0, y)), Some(inner_w as f32));
+            scene.pop_layer();
+            return;
+        }
+        let active = self.active_outline_block();
+        let row_h = 24.0;
+        for h in &entries {
+            if y > panel.y1 - 4.0 {
+                break; // beyond the pane; the list is unscrolled for v1
+            }
+            let indent = ((h.level.max(1) - 1) as f64) * 14.0;
+            let r = Rect::new(x0, y, right, y + row_h);
+            let is_active = active.as_deref() == Some(h.id.as_str());
+            if is_active {
+                scene.fill(Fill::NonZero, transform, cc.chip, None, &vello::kurbo::RoundedRect::from_rect(r, 5.0));
+            }
+            // A small level cue: deeper headings render dimmer + smaller. The
+            // active row sits on a `chip` fill, so its ink is the primary text
+            // colour (readable on the chip), not the on-accent colour.
+            let (size, ink) = match h.level {
+                1 => (13.5, cc.text),
+                2 => (12.5, cc.text),
+                _ => (11.5, if is_active { cc.text } else { cc.text_dim }),
+            };
+            let label = if h.text.trim().is_empty() { "(untitled)".to_string() } else { h.text.trim().to_string() };
+            tr.draw_text(scene, &label, size, ink, transform * Affine::translate((x0 + indent, y + 4.0)), Some((inner_w - indent).max(20.0) as f32));
+            self.outline_hits.push((r, h.id.clone()));
+            y += row_h;
+        }
+        scene.pop_layer();
+    }
+
+    /// Generate (or regenerate) the table of contents from the document headings.
+    /// Page numbers are read from the last frame's laid geometry (`Laid::page`);
+    /// a heading not yet laid out falls back to page 1. Delegates the block
+    /// mutation to the model so the insert/replace logic stays testable.
+    fn generate_toc(&mut self, state: &mut AutoCommit) {
+        // Map heading block id → 1-based page from the last laid-out frame.
+        let page_of: HashMap<&str, usize> = self.laid.iter().map(|l| (l.id.as_str(), l.page + 1)).collect();
+        let entries: Vec<crate::word_processor::TocEntry> = self
+            .outline_entries()
+            .into_iter()
+            .map(|h| {
+                let page = page_of.get(h.id.as_str()).copied();
+                crate::word_processor::TocEntry { level: h.level, text: h.text, page }
+            })
+            .collect();
+        if entries.is_empty() {
+            return; // nothing to build a TOC from
+        }
+        self.inner.generate_toc(state, &entries);
+        self.refresh_blocks(state);
+        self.needs_commit = true;
+        self.dirty = true;
+    }
 }
 
 /// A horizontal 1px divider line inside the panel.
-fn panel_divider(scene: &mut Scene, transform: Affine, x0: f64, x1: f64, y: f64) {
-    scene.fill(Fill::NonZero, transform, PANEL_EDGE, None, &Rect::new(x0, y, x1, y + 1.0));
+fn panel_divider(scene: &mut Scene, transform: Affine, cc: &ChromeColors, x0: f64, x1: f64, y: f64) {
+    scene.fill(Fill::NonZero, transform, cc.border, None, &Rect::new(x0, y, x1, y + 1.0));
 }
 
 /// A panel chip / button: rounded rect + label. `center` centers the label
 /// (approximate), else left-pads it.
-fn draw_btn(scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, r: Rect, label: &str, active: bool, center: bool) {
-    let bg = if active { GUIDE } else { PANEL_CHIP };
-    let fg = if active { Color::WHITE } else { PANEL_FG };
+fn draw_btn(scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, cc: &ChromeColors, r: Rect, label: &str, active: bool, center: bool) {
+    let bg = if active { cc.accent } else { cc.chip };
+    let fg = if active { cc.on_accent } else { cc.text };
     scene.fill(Fill::NonZero, transform, bg, None, &vello::kurbo::RoundedRect::from_rect(r, 6.0));
     let approx = label.chars().count() as f64 * 6.6;
     let tx = if center { ((r.x0 + r.x1) / 2.0 - approx / 2.0).max(r.x0 + 4.0) } else { r.x0 + 8.0 };
     let ty = (r.y0 + r.y1) / 2.0 - 8.0;
     tr.draw_text(scene, label, 12.5, fg, transform * Affine::translate((tx, ty)), Some((r.width() - 6.0) as f32));
+}
+
+/// One node of the word processor's accessibility tree: a [`ui::a11y::AccessNode`]
+/// plus its accessible children.
+///
+/// The `ui` toolkit's [`Widget::accessibility`] returns a single *local*
+/// [`AccessNode`](ui::a11y::AccessNode) and the host normally assembles the
+/// global tree from [`Widget::children`]. The word processor renders its blocks
+/// directly (they are materialized [`BlockView`]s, not child widgets), so it has
+/// no child widgets to walk. Instead it builds the whole document + chrome node
+/// tree itself via [`WordProcessorWidget::accessibility_tree`], with this struct
+/// as the carrier. The trait [`Widget::accessibility`] returns this tree's root
+/// node so the standard host path still sees a focusable `Document`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct A11yTreeNode {
+    /// The local semantics of this element.
+    pub node: ui::a11y::AccessNode,
+    /// This element's accessible children, in reading order.
+    pub children: Vec<A11yTreeNode>,
+}
+
+impl A11yTreeNode {
+    fn leaf(node: ui::a11y::AccessNode) -> Self {
+        Self { node, children: Vec::new() }
+    }
+}
+
+/// A human-readable accessible name for a toolbar [`ToolAction`]. The visible
+/// toolbar labels are terse glyphs ("B", "H1", "🖼 Image") tuned for sighted
+/// users; a screen reader needs the spelled-out verb instead.
+fn tool_action_a11y_label(a: ToolAction) -> String {
+    let s = match a {
+        ToolAction::Bold => "Bold",
+        ToolAction::Italic => "Italic",
+        ToolAction::Underline => "Underline",
+        ToolAction::Strike => "Strikethrough",
+        ToolAction::Super => "Superscript",
+        ToolAction::Sub => "Subscript",
+        ToolAction::H1 => "Heading 1",
+        ToolAction::H2 => "Heading 2",
+        ToolAction::Body => "Body text",
+        ToolAction::Bullet => "Bulleted list",
+        ToolAction::AlignLeft => "Align left",
+        ToolAction::AlignCenter => "Align center",
+        ToolAction::AlignRight => "Align right",
+        ToolAction::AlignJustify => "Justify",
+        ToolAction::LineSpacing => "Line spacing",
+        ToolAction::FontCycle => "Font",
+        ToolAction::SizeUp => "Increase font size",
+        ToolAction::SizeDown => "Decrease font size",
+        ToolAction::SizeShow => "Font size",
+        ToolAction::InsertImage => "Insert image",
+        ToolAction::InsertTable => "Insert table",
+        ToolAction::TableRowAdd => "Add table row",
+        ToolAction::TableRowDel => "Delete table row",
+        ToolAction::TableColAdd => "Add table column",
+        ToolAction::TableColDel => "Delete table column",
+        ToolAction::TableDelete => "Delete table",
+        ToolAction::ToggleStyles => "Styles panel",
+        ToolAction::ToggleRuler => "Ruler",
+        ToolAction::ToggleOutline => "Document outline",
+        ToolAction::InsertToc => "Insert table of contents",
+        ToolAction::NewMenu => "New from template",
+        ToolAction::TextColor(c) => {
+            return match c {
+                Some(rgb) => format!("Text color #{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]),
+                None => "Default text color".to_string(),
+            };
+        }
+        ToolAction::Highlight(c) => {
+            return match c {
+                Some(rgb) => format!("Highlight #{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]),
+                None => "Clear highlight".to_string(),
+            };
+        }
+    };
+    s.to_string()
+}
+
+impl WordProcessorWidget {
+    /// The 1-based heading level for a heading block (defaults to 1 when the
+    /// `level` attr is absent or non-positive).
+    fn block_heading_level(b: &BlockView) -> u8 {
+        match b.attrs.get("level") {
+            Some(AttrVal::Int(n)) if *n >= 1 => (*n).min(255) as u8,
+            _ => 1,
+        }
+    }
+
+    /// The accessible name for an image block: its explicit `alt` attr (set by
+    /// the ODT/DOCX importers, round-tripped through `svg:desc`), falling back to
+    /// the block's own text (a caption), or `None` when neither is present (a
+    /// decorative / unlabelled image).
+    fn image_alt(b: &BlockView) -> Option<String> {
+        if let Some(AttrVal::Str(alt)) = b.attrs.get("alt") {
+            let alt = alt.trim();
+            if !alt.is_empty() {
+                return Some(alt.to_string());
+            }
+        }
+        let text = b.text.trim();
+        if text.is_empty() { None } else { Some(text.to_string()) }
+    }
+
+    /// The accessibility node for a single document block, or `None` for a block
+    /// kind that carries no standalone semantics here (table cells are emitted as
+    /// children of their table node, not at the top level).
+    fn block_access_node(b: &BlockView) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, Role};
+        let node = match b.kind.as_str() {
+            "heading" => AccessNode::new(Role::Heading { level: Self::block_heading_level(b) })
+                .with_name(b.text.clone()),
+            "paragraph" => AccessNode::new(Role::Paragraph).with_value(b.text.clone()),
+            "list_item" => AccessNode::new(Role::ListItem).with_value(b.text.clone()),
+            "image" => {
+                AccessNode::new(Role::Image).with_optional_name(Self::image_alt(b))
+            }
+            // Cells are surfaced under their table; standalone they have no role.
+            "cell" => return None,
+            // Unknown / future block kinds degrade to non-editable static text so
+            // their content is still announced rather than dropped.
+            _ => AccessNode::new(Role::StaticText).with_value(b.text.clone()),
+        };
+        Some(node)
+    }
+
+    /// Build the toolbar group node + a button node per visible toolbar control.
+    /// Returns `None` when the toolbar has not been laid out yet (no frame drawn),
+    /// so the document tree never carries an empty toolbar group.
+    fn toolbar_access_node(&self) -> Option<A11yTreeNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        if self.toolbar.is_empty() {
+            return None;
+        }
+        let buttons: Vec<A11yTreeNode> = self
+            .toolbar
+            .iter()
+            .map(|(action, _rect)| {
+                // The size-value chip is display-only; everything else is a button.
+                let role = if matches!(action, ToolAction::SizeShow) {
+                    Role::StaticText
+                } else {
+                    Role::Button
+                };
+                let node = AccessNode::new(role)
+                    .with_name(tool_action_a11y_label(*action))
+                    .with_state(AccessState { focusable: matches!(role, Role::Button), ..Default::default() });
+                A11yTreeNode::leaf(node)
+            })
+            .collect();
+        Some(A11yTreeNode {
+            node: AccessNode::new(Role::Toolbar).with_name("Formatting"),
+            children: buttons,
+        })
+    }
+
+    /// Assemble the full accessibility node tree for the word processor: a
+    /// [`Role::Document`] root holding one node per document block (headings with
+    /// their level, paragraphs / list items carrying their text, images with
+    /// their alt text, tables as a [`Role::Table`] with [`Role::Cell`] children),
+    /// followed by a [`Role::Toolbar`] group of formatting buttons.
+    ///
+    /// This is the production path consumed by the future a11y export (W4) and
+    /// the built-in screen reader; [`Widget::accessibility`] returns this tree's
+    /// root so the host's standard per-widget path still surfaces the document.
+    pub fn accessibility_tree(&self) -> A11yTreeNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let mut children: Vec<A11yTreeNode> = Vec::new();
+        let mut i = 0usize;
+        while i < self.blocks.len() {
+            let b = &self.blocks[i];
+            if b.kind == "cell" {
+                // Coalesce a run of consecutive cells sharing a `table` id into a
+                // single Table node with the cells as Cell children.
+                let table_id = cell_table(b);
+                let mut cells: Vec<A11yTreeNode> = Vec::new();
+                while i < self.blocks.len()
+                    && self.blocks[i].kind == "cell"
+                    && cell_table(&self.blocks[i]) == table_id
+                {
+                    let c = &self.blocks[i];
+                    cells.push(A11yTreeNode::leaf(
+                        AccessNode::new(Role::Cell).with_value(c.text.clone()),
+                    ));
+                    i += 1;
+                }
+                children.push(A11yTreeNode {
+                    node: AccessNode::new(Role::Table),
+                    children: cells,
+                });
+                continue;
+            }
+            if let Some(node) = Self::block_access_node(b) {
+                children.push(A11yTreeNode::leaf(node));
+            }
+            i += 1;
+        }
+
+        if let Some(toolbar) = self.toolbar_access_node() {
+            children.push(toolbar);
+        }
+
+        A11yTreeNode {
+            node: AccessNode::new(Role::Document).with_state(AccessState {
+                focusable: true,
+                focused: self.focused,
+                multiline: true,
+                ..Default::default()
+            }),
+            children,
+        }
+    }
 }
 
 impl Widget for WordProcessorWidget {
@@ -2022,7 +3425,11 @@ impl Widget for WordProcessorWidget {
         );
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &PresenceCtx) {
+    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
+        // Resolve the OS theme into this frame's chrome palette once; every
+        // chrome helper below reads `self.chrome` so the whole editor follows
+        // light/dark mode + the OS palette.
+        self.chrome = ChromeColors::for_theme(theme);
         let full = self.rect;
         // The toolbar may wrap to several rows on a narrow window; reserve its
         // actual (possibly multi-row) height so the canvas top sits below it and
@@ -2041,16 +3448,38 @@ impl Widget for WordProcessorWidget {
         } else {
             full.x1
         };
-        // Reserve the Find bar (when open) out of the canvas top.
+        // Reserve the outline / navigation pane out of the canvas LEFT (mirrors the
+        // styles panel on the right) so the page re-centers and scrolled content
+        // never paints under the pane.
+        let canvas_left = if self.outline_open {
+            (full.x0 + OUTLINE_PANEL_W).min(canvas_right - 1.0)
+        } else {
+            full.x0
+        };
+        // Reserve the crash-recovery banner (when an offer is staged) directly
+        // under the toolbar — above the Find bar and the canvas.
+        let recovery_h = if self.recovery.is_some() { RECOVERY_BANNER_H } else { 0.0 };
+        if recovery_h > 0.0 {
+            let rbar = Rect::new(canvas_left, full.y0 + tb_h, canvas_right, full.y0 + tb_h + recovery_h);
+            self.draw_recovery_banner(scene, transform, text_renderer, theme, rbar);
+        } else {
+            self.recovery_buttons.clear();
+        }
+        // Reserve the Find bar (when open) out of the canvas top (below the banner).
         let find_h = if self.find_open { FIND_BAR_H } else { 0.0 };
         if find_h > 0.0 {
-            let fbar = Rect::new(full.x0, full.y0 + tb_h, canvas_right, full.y0 + tb_h + find_h);
+            let fbar = Rect::new(canvas_left, full.y0 + tb_h + recovery_h, canvas_right, full.y0 + tb_h + recovery_h + find_h);
             self.draw_find_bar(scene, transform, text_renderer, theme, fbar);
         } else {
             self.find_buttons.clear();
         }
-        let canvas = Rect::new(full.x0, full.y0 + tb_h + find_h, canvas_right, layout_bar_top);
-        scene.fill(Fill::NonZero, transform, CANVAS, None, &canvas);
+        // Reserve the horizontal ruler band (when on) out of the canvas top, below
+        // the find bar. It is drawn with the *unscaled* `transform` so it stays a
+        // fixed-height strip while the page scrolls/zooms; its tick + marker
+        // positions are mapped through the zoom so they track the page edge.
+        let ruler_h = if self.ruler_on { RULER_H } else { 0.0 };
+        let canvas = Rect::new(canvas_left, full.y0 + tb_h + recovery_h + find_h + ruler_h, canvas_right, layout_bar_top);
+        scene.fill(Fill::NonZero, transform, self.chrome.canvas, None, &canvas);
 
         // Zoom anchor: the canvas top, horizontally centered. The page+content
         // transform scales about this point, so the page stays centered and the
@@ -2069,6 +3498,21 @@ impl Widget for WordProcessorWidget {
         let page_top = canvas.y0 + PAGE_TOP;
         let content_x = page_x + m.left;
         let content_w = (page_w - m.left - m.right).max(80.0) as f32;
+
+        // Horizontal ruler band (drawn unscaled, above the canvas). Reads the
+        // page edge geometry just computed, plus the caret paragraph's indent +
+        // tab stops from the cached block views.
+        if ruler_h > 0.0 {
+            let band = Rect::new(
+                canvas_left,
+                full.y0 + tb_h + recovery_h + find_h,
+                canvas_right,
+                canvas.y0,
+            );
+            self.draw_ruler(scene, transform, text_renderer, theme, band, page_x, page_w);
+        } else {
+            self.ruler_rect = Rect::ZERO;
+        }
         // True pagination: each page is a fixed US-Letter sheet (height `letter_h`)
         // stacked with `PAGE_GAP` between sheets. A block lays into the current
         // page's text band [content_top, content_bottom]; when the *next whole
@@ -2123,10 +3567,10 @@ impl Widget for WordProcessorWidget {
                     let mut row_h = 26.0f64;
                     for c in 0..ncols {
                         if let Some(cell) = cells.iter().find(|cl| cell_rc(cl) == (r, c)) {
-                            let (runs, underlines, strikes) = block_runs(cell);
+                            let (runs, underlines, strikes) = block_runs_markup(cell, self.show_markup);
                             let wrap_w = (col_w - 2.0 * cell_pad).max(24.0) as f32;
                             let align = block_align(cell, TextAlign::Left);
-                            let key = shape_key(&runs, &underlines, &strikes, false, 16.0, wrap_w, align, FontFamily::Sans);
+                            let key = shape_key(&runs, &underlines, &strikes, false, 16.0, wrap_w, align, FontFamily::Sans, 1.0);
                             let layout = match old_cache.remove(&cell.id) {
                                 Some((k, lay)) if k == key => {
                                     self.dbg_layout_hits += 1;
@@ -2143,7 +3587,7 @@ impl Widget for WordProcessorWidget {
                                         align,
                                         FontFamily::Sans,
                                         underlines,
-                                        strikes,
+                                        strikes, 1.0
                                     )
                                 }
                             };
@@ -2181,7 +3625,7 @@ impl Widget for WordProcessorWidget {
                             width: col_w - 2.0 * cell_pad,
                             height: cell_h,
                             bullet: None,
-                            ink: INK,
+                            ink: PAPER_INK,
                             image_hash: None,
                             cell_box: Some(cbox),
                             cell_row: Some(r),
@@ -2212,7 +3656,7 @@ impl Widget for WordProcessorWidget {
                 // Image blocks carry a trivial empty layout (used only so pointer
                 // hit-testing resolves to offset 0); it is cheap, so just re-shape
                 // it every frame rather than caching it incrementally.
-                let empty = RichTextLayout::shape(&mut text_renderer.font_system, &[RichSpan::new("")], false, 16.0, content_w, TextAlign::Left, FontFamily::Sans, vec![], vec![]);
+                let empty = RichTextLayout::shape(&mut text_renderer.font_system, &[RichSpan::new("")], false, 16.0, content_w, TextAlign::Left, FontFamily::Sans, vec![], vec![], 1.0);
                 new_cache.insert(b.id.clone(), (0, empty));
                 // Break to the next page on a manual page break, or if the image
                 // would not fit.
@@ -2234,7 +3678,7 @@ impl Widget for WordProcessorWidget {
                     width: draw_w,
                     height: draw_h,
                     bullet: None,
-                    ink: INK,
+                    ink: PAPER_INK,
                     image_hash: intrinsic.map(|_| hash),
                     cell_box: None,
                     cell_row: None,
@@ -2267,15 +3711,20 @@ impl Widget for WordProcessorWidget {
                     (indent, Some(bullet))
                 } else {
                     ol_counts.clear();
-                    (st.indent as f64, None)
+                    // Style indent + the paragraph's own ruler indent attr.
+                    (st.indent as f64 + block_indent_attr(b), None)
                 };
                 let wrap_w = (content_w - indent as f32).max(40.0);
-                let (runs, underlines, strikes) = block_runs(b);
+                let (runs, underlines, strikes) = block_runs_markup(b, self.show_markup);
                 let align = block_align(b, style_align(&st.align));
                 let family = parse_font(&st.font);
-                let key = shape_key(&runs, &underlines, &strikes, base_bold, size, wrap_w, align, family);
+                // The paragraph's line-spacing multiplier (1.0 = single) scales the
+                // shaped line advance, so it is part of the shape key.
+                let line_mult = block_line_spacing(b);
+                let key = shape_key(&runs, &underlines, &strikes, base_bold, size, wrap_w, align, family, line_mult);
                 // Reuse the shaped layout if nothing affecting shaping changed
-                // (text, marks, resolved style, or wrap width), else re-shape.
+                // (text, marks, resolved style, wrap width, or line spacing), else
+                // re-shape.
                 let layout = match old_cache.remove(&b.id) {
                     Some((k, lay)) if k == key => {
                         self.dbg_layout_hits += 1;
@@ -2293,6 +3742,7 @@ impl Widget for WordProcessorWidget {
                             family,
                             underlines,
                             strikes,
+                            line_mult,
                         )
                     }
                 };
@@ -2372,7 +3822,7 @@ impl Widget for WordProcessorWidget {
         for i in 0..num_pages {
             let ptop = page_top + i as f64 * page_pitch - sy;
             let sheet = Rect::new(page_x, ptop, page_x + page_w, ptop + letter_h);
-            chrome::page::draw(scene, ctf, sheet, PAPER, SHADOW);
+            chrome::page::draw(scene, ctf, sheet, self.chrome.paper, self.chrome.paper_shadow);
             let page_no = i + 1;
             // Header band: the top margin, inset by the L/R text margins.
             let head_band = Rect::new(sheet.x0 + m.left, sheet.y0, sheet.x1 - m.right, sheet.y0 + m.top);
@@ -2386,7 +3836,8 @@ impl Widget for WordProcessorWidget {
                 let approx = label.chars().count() as f64 * 6.4;
                 let lx = (sheet.x0 + sheet.x1) / 2.0 - approx / 2.0;
                 let ly = sheet.y1 + PAGE_GAP / 2.0 - 6.0;
-                text_renderer.draw_text(scene, &label, 11.0, Color::from_rgb8(0x9a, 0x9e, 0xa8), ctf * Affine::translate((lx, ly)), None);
+                // Drawn in the inter-page gap on the canvas — chrome, so themed.
+                text_renderer.draw_text(scene, &label, 11.0, self.chrome.text_dim, ctf * Affine::translate((lx, ly)), None);
             }
         }
         self.header = header;
@@ -2443,6 +3894,21 @@ impl Widget for WordProcessorWidget {
         // on that page, collected during pass 2 and rendered after it.
         let mut page_notes: HashMap<usize, Vec<usize>> = HashMap::new();
 
+        // Comment-marker collection: `(comment_id, start_line_top_y,
+        // range_right_x)` for each comment range encountered in pass 2. Rendered
+        // after the loop as an inline indicator tab (at the range's right edge) +
+        // an annotation card stacked at the right edge of the visible canvas (so
+        // it is never clipped by the page width or hidden behind the styles
+        // panel). Only populated when markup is shown.
+        let mut comment_markers: Vec<(String, f64, f64)> = Vec::new();
+
+        // Tracked-change-marker collection: `(change_id, start_line_top_y,
+        // range_right_x)` for each `ins`/`del` range encountered in pass 2. Used
+        // after the loop to stack a small Accept/Reject review card next to each
+        // change. The change id is recovered from the mark value (the same id the
+        // `changes` container keys on). Only populated when markup is shown.
+        let mut change_markers: Vec<(String, f64, f64)> = Vec::new();
+
         // Pass 2: draw cell borders, bullets, selection, text, caret. Everything
         // here renders through `ctf` (the zoom transform) so page content scales
         // while the surrounding chrome stays at 100%.
@@ -2459,7 +3925,7 @@ impl Widget for WordProcessorWidget {
                     // Missing or undecodable (e.g. non-PNG) image — placeholder.
                     scene.fill(Fill::NonZero, ctf, Color::from_rgb8(0xee, 0xee, 0xf2), None, &vello::kurbo::RoundedRect::from_rect(rect, 6.0));
                     scene.stroke(&vello::kurbo::Stroke::new(1.0), ctf, Color::from_rgb8(0xcc, 0xce, 0xd6), None, &vello::kurbo::RoundedRect::from_rect(rect, 6.0));
-                    text_renderer.draw_text(scene, "🖼  image", 14.0, MUTED, ctf * Affine::translate((rect.x0 + 12.0, rect.y0 + rect.height() / 2.0 - 8.0)), None);
+                    text_renderer.draw_text(scene, "🖼  image", 14.0, PAPER_MUTED, ctf * Affine::translate((rect.x0 + 12.0, rect.y0 + rect.height() / 2.0 - 8.0)), None);
                 }
                 continue;
             }
@@ -2467,7 +3933,7 @@ impl Widget for WordProcessorWidget {
                 let fill = match l.cell_row {
                     Some(0) => Color::from_rgb8(0xec, 0xee, 0xf3), // header row tint
                     Some(r) if r % 2 == 0 => Color::from_rgb8(0xf6, 0xf6, 0xf9), // zebra
-                    _ => PAPER,
+                    _ => self.chrome.paper,
                 };
                 scene.fill(Fill::NonZero, ctf, fill, None, &bx);
                 scene.stroke(&vello::kurbo::Stroke::new(1.0), ctf, Color::from_rgb8(0xc4, 0xc6, 0xcc), None, &bx);
@@ -2476,7 +3942,7 @@ impl Widget for WordProcessorWidget {
             if l.kind == "fidelity" {
                 let box_rect = Rect::new(l.text_x, l.y_top + 2.0, (page_x + page_w - m.right).min(l.text_x + 360.0), l.y_top + l.height - 2.0);
                 scene.fill(Fill::NonZero, ctf, Color::from_rgb8(0xee, 0xee, 0xf2), None, &vello::kurbo::RoundedRect::from_rect(box_rect, 4.0));
-                text_renderer.draw_text(scene, "⟦ embedded content ⟧", 14.0, MUTED, ctf * Affine::translate((l.text_x + 10.0, l.y_top + 6.0)), None);
+                text_renderer.draw_text(scene, "⟦ embedded content ⟧", 14.0, PAPER_MUTED, ctf * Affine::translate((l.text_x + 10.0, l.y_top + 6.0)), None);
                 continue;
             }
 
@@ -2494,11 +3960,11 @@ impl Widget for WordProcessorWidget {
             if let Some((b0, b1)) = self.selection_bytes_for(&l.id, &l.text) {
                 if let (Some(bx), true) = (l.cell_box, multi_sel) {
                     // Multi-cell selection: highlight the whole cell (spreadsheet-style).
-                    scene.fill(Fill::NonZero, ctf, SELECTION, None, &bx);
+                    scene.fill(Fill::NonZero, ctf, PAPER_SELECTION, None, &bx);
                 } else {
                     for (rx0, ry0, rx1, ry1) in layout.selection_rects(b0, b1) {
                         let r = Rect::new(l.text_x + rx0 as f64, l.y_top + ry0 as f64, l.text_x + rx1 as f64, l.y_top + ry1 as f64);
-                        scene.fill(Fill::NonZero, ctf, SELECTION, None, &r);
+                        scene.fill(Fill::NonZero, ctf, PAPER_SELECTION, None, &r);
                     }
                 }
             }
@@ -2516,7 +3982,65 @@ impl Widget for WordProcessorWidget {
                     }
                 }
             }
+            // Comment highlight bands (under the text): a pale-yellow band over
+            // each `comment`-marked range. Mapped to on-screen rects via the same
+            // `selection_rects` geometry as the selection highlight, so it tracks
+            // wrapping. The comment's start line is recorded for the right-margin
+            // indicator/card rendered after the loop. Only when markup is shown.
+            if self.show_markup {
+                if let Some(b) = self.blocks.iter().find(|b| b.id == l.id) {
+                    for (bs, be, cid) in block_comment_ranges(b) {
+                        let rects = layout.selection_rects(bs, be);
+                        for &(rx0, ry0, rx1, ry1) in &rects {
+                            let r = Rect::new(l.text_x + rx0 as f64, l.y_top + ry0 as f64, l.text_x + rx1 as f64, l.y_top + ry1 as f64);
+                            scene.fill(Fill::NonZero, ctf, COMMENT_HL, None, &r);
+                        }
+                        // Anchor the marker at the start line's top, and remember
+                        // the range's right edge (max rect x1) for the inline tab.
+                        if let Some(&(_, ry0, _, _)) = rects.first() {
+                            let right_x = rects.iter().map(|r| r.2).fold(f32::MIN, f32::max);
+                            comment_markers.push((cid, l.y_top + ry0 as f64, l.text_x + right_x as f64));
+                        }
+                    }
+                }
+            }
+
             text_renderer.draw_rich(scene, layout, ctf * Affine::translate((l.text_x, l.y_top)), l.ink);
+
+            // Tracked-change decorations (over the text): an `ins` range gets a
+            // green underline (the glyphs are already tinted green by
+            // `block_runs_markup`); a `del` range gets a red strike-through. Drawn
+            // here — rather than via the shaped layout's underline/strike lists —
+            // so the decoration colour matches the review-tinted glyphs (the
+            // toolkit paints shaped decorations in the block ink). Only when shown.
+            if self.show_markup {
+                if let Some(b) = self.blocks.iter().find(|b| b.id == l.id) {
+                    let (ins_ranges, del_ranges) = block_change_decos(b);
+                    for &(b0, b1) in &ins_ranges {
+                        for (rx0, _ry0, rx1, ry1) in layout.selection_rects(b0, b1) {
+                            let uy = l.y_top + ry1 as f64 - 2.0;
+                            let line = Rect::new(l.text_x + rx0 as f64, uy, l.text_x + rx1 as f64, uy + 1.5);
+                            scene.fill(Fill::NonZero, ctf, TRACK_INS, None, &line);
+                        }
+                    }
+                    for &(b0, b1) in &del_ranges {
+                        for (rx0, ry0, rx1, ry1) in layout.selection_rects(b0, b1) {
+                            let my = l.y_top + ((ry0 + ry1) / 2.0) as f64;
+                            let line = Rect::new(l.text_x + rx0 as f64, my, l.text_x + rx1 as f64, my + 1.5);
+                            scene.fill(Fill::NonZero, ctf, TRACK_DEL, None, &line);
+                        }
+                    }
+                    // Collect a review-card marker per change range (carrying the
+                    // change id so the card's Accept/Reject can act on it).
+                    for (bs, be, cid) in block_change_ranges(b) {
+                        let rects = layout.selection_rects(bs, be);
+                        if let Some(&(_, ry0, _, _)) = rects.first() {
+                            let right_x = rects.iter().map(|r| r.2).fold(f32::MIN, f32::max);
+                            change_markers.push((cid, l.y_top + ry0 as f64, l.text_x + right_x as f64));
+                        }
+                    }
+                }
+            }
 
             // Spell-check squiggles: a wavy red underline under each misspelled
             // span. The byte span maps to one-or-more on-screen rects via the same
@@ -2556,7 +4080,7 @@ impl Widget for WordProcessorWidget {
                         // fonts) with paper so only the superscript number shows.
                         if let Some((rx0, ry0, rx1, ry1)) = placeholder_rect {
                             let mask = Rect::new(l.text_x + rx0 as f64, l.y_top + ry0 as f64, l.text_x + rx1 as f64, l.y_top + ry1 as f64);
-                            scene.fill(Fill::NonZero, ctf, PAPER, None, &mask);
+                            scene.fill(Fill::NonZero, ctf, self.chrome.paper, None, &mask);
                         }
                         let label = num.to_string();
                         // Superscript: smaller font, raised toward the line's top.
@@ -2578,7 +4102,115 @@ impl Widget for WordProcessorWidget {
                 let byte = char_to_byte(&l.text, self.inner.caret.offset);
                 let (cx, cy, ch) = layout.caret_geometry(byte);
                 let caret = Rect::new(l.text_x + cx as f64, l.y_top + cy as f64, l.text_x + cx as f64 + CARET_WIDTH, l.y_top + cy as f64 + ch as f64);
-                scene.fill(Fill::NonZero, ctf, CARET_COLOR, None, &caret);
+                scene.fill(Fill::NonZero, ctf, PAPER_CARET, None, &caret);
+            }
+        }
+
+        // Review affordances (comment Resolve + tracked-change Accept/Reject
+        // buttons) live in the right-margin cards; rebuilt fresh each frame. Hit
+        // rects are stored in *content* space (the same space `pointer_to_content`
+        // maps a pointer into) since the cards draw through `ctf`.
+        self.review_hits.clear();
+
+        // Comment indicators + annotation cards. For each comment whose start line
+        // was laid this frame, draw a small accent tab just after the commented
+        // text (the range's right edge), and an always-visible annotation card
+        // (author + content) stacked along the right edge of the visible canvas.
+        // Anchoring the card to the *canvas* (not the page) keeps it on-screen even
+        // when the page is wider than the canvas or the styles panel is open. Cards
+        // stack top-to-bottom (sorted by anchor y) and never overlap. Inside the
+        // page clip so they scroll with the content.
+        if self.show_markup && !comment_markers.is_empty() {
+            comment_markers.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            // The card column hugs the right edge of the visible canvas.
+            let card_x = canvas.x1 - COMMENT_CARD_W - 6.0;
+            let mut next_card_y = f64::MIN;
+            for (cid, anchor_y, range_right) in &comment_markers {
+                let Some(cv) = self.comments.iter().find(|c| &c.id == cid) else { continue };
+                // The little accent tab sits just after the commented text, on its
+                // start line — an always-visible inline indicator.
+                let tab_x = (range_right + 2.0).min(card_x - COMMENT_TAB_W - 2.0);
+                let tab = Rect::new(tab_x, anchor_y + 1.0, tab_x + COMMENT_TAB_W, anchor_y + 18.0);
+                scene.fill(Fill::NonZero, ctf, COMMENT_TAB, None, &vello::kurbo::RoundedRect::from_rect(tab, 1.5));
+
+                // Author + content (comment bodies are a small block sequence).
+                let author = if cv.author.is_empty() { "Comment" } else { cv.author.as_str() };
+                let body: String = {
+                    let parts: Vec<&str> = cv.blocks.iter().map(|b| b.text.as_str()).filter(|t| !t.is_empty()).collect();
+                    parts.join(" ")
+                };
+                let inner_w = (COMMENT_CARD_W - 16.0) as f32;
+                let body_layout = RichTextLayout::shape(
+                    &mut text_renderer.font_system,
+                    &[RichSpan::new(&body)],
+                    false,
+                    11.0,
+                    inner_w,
+                    TextAlign::Left,
+                    FontFamily::Sans,
+                    vec![],
+                    vec![], 1.0
+                );
+                let body_h = body_layout.height() as f64;
+                let card_top = anchor_y.max(next_card_y);
+                // Header (author) + body + a footer row carrying the Resolve button.
+                let card_h = 22.0 + body_h + 8.0 + REVIEW_BTN + 6.0;
+                let card = Rect::new(card_x, card_top, card_x + COMMENT_CARD_W, card_top + card_h);
+                scene.fill(Fill::NonZero, ctf, COMMENT_CARD_BG, None, &vello::kurbo::RoundedRect::from_rect(card, 5.0));
+                scene.stroke(&vello::kurbo::Stroke::new(1.0), ctf, COMMENT_CARD_EDGE, None, &vello::kurbo::RoundedRect::from_rect(card, 5.0));
+                // Accent stripe down the card's left edge (ties it to the tab).
+                let stripe = Rect::new(card_x, card_top, card_x + 3.0, card_top + card_h);
+                scene.fill(Fill::NonZero, ctf, COMMENT_TAB, None, &stripe);
+                text_renderer.draw_text(scene, author, 11.5, COMMENT_AUTHOR_INK, ctf * Affine::translate((card_x + 9.0, card_top + 5.0)), None);
+                text_renderer.draw_rich(scene, &body_layout, ctf * Affine::translate((card_x + 9.0, card_top + 20.0)), COMMENT_BODY_INK);
+                // Footer: a single "Resolve" pill that removes the comment + its mark.
+                let btn_y = card_top + card_h - REVIEW_BTN - 4.0;
+                let resolve = Rect::new(card_x + COMMENT_CARD_W - 64.0, btn_y, card_x + COMMENT_CARD_W - 8.0, btn_y + REVIEW_BTN);
+                scene.fill(Fill::NonZero, ctf, REVIEW_ACCEPT_BG, None, &vello::kurbo::RoundedRect::from_rect(resolve, 4.0));
+                scene.stroke(&vello::kurbo::Stroke::new(1.0), ctf, COMMENT_CARD_EDGE, None, &vello::kurbo::RoundedRect::from_rect(resolve, 4.0));
+                text_renderer.draw_text(scene, "✓ Resolve", 10.5, REVIEW_ACCEPT_INK, ctf * Affine::translate((resolve.x0 + 5.0, resolve.y0 + 2.5)), None);
+                self.review_hits.push((resolve, CtxAction::ResolveComment(cid.clone())));
+                next_card_y = card_top + card_h + 6.0;
+            }
+        }
+
+        // Tracked-change review cards. For each `ins`/`del` range laid this frame,
+        // stack a compact card (a kind/author label + Accept ✓ / Reject ✗ buttons)
+        // in a column to the LEFT of the comment column so the two don't collide.
+        // Each button registers a content-space hit rect in `review_hits`.
+        if self.show_markup && !change_markers.is_empty() {
+            change_markers.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            // The change column sits just left of the comment column.
+            let card_x = canvas.x1 - COMMENT_CARD_W - 6.0 - CHANGE_CARD_W - 6.0;
+            let mut next_card_y = f64::MIN;
+            for (cid, anchor_y, _range_right) in &change_markers {
+                let Some(cv) = self.changes.iter().find(|c| &c.id == cid) else { continue };
+                let (label, kind_color) = match cv.kind {
+                    qdoc::snapshot::ChangeKind::Ins => ("Insertion", TRACK_INS),
+                    qdoc::snapshot::ChangeKind::Del => ("Deletion", TRACK_DEL),
+                };
+                let author = if cv.author.is_empty() { String::new() } else { format!(" · {}", cv.author) };
+                let heading = format!("{label}{author}");
+                let card_top = anchor_y.max(next_card_y);
+                let card_h = 22.0 + REVIEW_BTN + 6.0;
+                let card = Rect::new(card_x, card_top, card_x + CHANGE_CARD_W, card_top + card_h);
+                scene.fill(Fill::NonZero, ctf, CHANGE_CARD_BG, None, &vello::kurbo::RoundedRect::from_rect(card, 5.0));
+                scene.stroke(&vello::kurbo::Stroke::new(1.0), ctf, CHANGE_CARD_EDGE, None, &vello::kurbo::RoundedRect::from_rect(card, 5.0));
+                // Accent stripe in the change's review colour (green ins / red del).
+                let stripe = Rect::new(card_x, card_top, card_x + 3.0, card_top + card_h);
+                scene.fill(Fill::NonZero, ctf, kind_color, None, &stripe);
+                text_renderer.draw_text(scene, &heading, 10.5, CHANGE_LABEL_INK, ctf * Affine::translate((card_x + 9.0, card_top + 5.0)), None);
+                // Accept ✓ / Reject ✗ buttons on the footer row.
+                let btn_y = card_top + card_h - REVIEW_BTN - 4.0;
+                let accept = Rect::new(card_x + 9.0, btn_y, card_x + 9.0 + REVIEW_BTN, btn_y + REVIEW_BTN);
+                let reject = Rect::new(accept.x1 + 6.0, btn_y, accept.x1 + 6.0 + REVIEW_BTN, btn_y + REVIEW_BTN);
+                scene.fill(Fill::NonZero, ctf, REVIEW_ACCEPT_BG, None, &vello::kurbo::RoundedRect::from_rect(accept, 4.0));
+                scene.fill(Fill::NonZero, ctf, REVIEW_REJECT_BG, None, &vello::kurbo::RoundedRect::from_rect(reject, 4.0));
+                text_renderer.draw_text(scene, "✓", 12.0, REVIEW_ACCEPT_INK, ctf * Affine::translate((accept.x0 + 4.0, accept.y0 + 1.5)), None);
+                text_renderer.draw_text(scene, "✗", 12.0, REVIEW_REJECT_INK, ctf * Affine::translate((reject.x0 + 4.0, reject.y0 + 1.5)), None);
+                self.review_hits.push((accept, CtxAction::AcceptChange(cid.clone())));
+                self.review_hits.push((reject, CtxAction::RejectChange(cid.clone())));
+                next_card_y = card_top + card_h + 6.0;
             }
         }
 
@@ -2635,7 +4267,7 @@ impl Widget for WordProcessorWidget {
                     scene,
                     "Start writing…",
                     16.5,
-                    Color::from_rgb8(0xbc, 0xbc, 0xc2),
+                    PAPER_MUTED,
                     ctf * Affine::translate((l.text_x, l.y_top)),
                     None,
                 );
@@ -2657,13 +4289,42 @@ impl Widget for WordProcessorWidget {
             let frac = self.scroll_y / self.max_scroll;
             let thumb_y = canvas.y0 + frac * (track - thumb_h);
             let thumb = Rect::new(canvas.x1 - 8.0, thumb_y + 2.0, canvas.x1 - 4.0, thumb_y + thumb_h - 2.0);
-            scene.fill(Fill::NonZero, transform, Color::from_rgb8(0x55, 0x58, 0x60), None, &vello::kurbo::RoundedRect::from_rect(thumb, 2.0));
+            scene.fill(Fill::NonZero, transform, self.chrome.scrollbar, None, &vello::kurbo::RoundedRect::from_rect(thumb, 2.0));
         }
 
         self.laid = laid;
         // Adopt this frame's cache (dropping `old_cache`, i.e. pruning entries
         // for blocks that no longer exist) so the next frame can reuse it.
         self.layout_cache = new_cache;
+
+        // Remote collaborators' carets + selections (collaboration). Resolved by
+        // the single `remote_presence_overlays` pass from the just-committed
+        // `self.laid` + `self.layout_cache`, so the on-screen geometry is
+        // byte-for-byte the same the unit test asserts on. Selections paint at
+        // read-through alpha and carets paint over the text, each in the peer's
+        // colour with a name pill — mapped through the page content transform
+        // `ctf` so they track scroll/zoom exactly like the local caret. A no-op
+        // when the PresenceCtx carries no remote carets/selections (single-user,
+        // no broker), so single-user rendering is unchanged.
+        let (remote_carets, remote_selections) = self.remote_presence_overlays(presence);
+        for sel in &remote_selections {
+            for r in &sel.rects {
+                presence.draw_peer_selection(scene, theme, ctf, &sel.user, *r);
+            }
+        }
+        for c in &remote_carets {
+            presence.draw_peer_caret(scene, theme, ctf, &c.user, c.rect);
+            self.draw_remote_caret_label(
+                scene,
+                ctf,
+                text_renderer,
+                theme,
+                presence,
+                &c.user,
+                c.rect.x0,
+                c.rect.y0,
+            );
+        }
 
         // Contextual styles panel on the right (between toolbar and layout bar).
         if self.styles_panel_open {
@@ -2672,6 +4333,17 @@ impl Widget for WordProcessorWidget {
         } else {
             self.panel_rect = Rect::ZERO;
             self.panel_hits.clear();
+        }
+
+        // Document outline / navigation pane on the left (between toolbar and
+        // layout bar). Drawn after `self.laid` is set so the active-heading
+        // highlight reflects this frame's pagination.
+        if self.outline_open {
+            let pane = Rect::new(full.x0, full.y0 + tb_h, canvas_left, layout_bar_top);
+            self.draw_outline_pane(scene, transform, text_renderer, pane);
+        } else {
+            self.outline_rect = Rect::ZERO;
+            self.outline_hits.clear();
         }
 
         let lbar = Rect::new(full.x0, layout_bar_top, full.x1, status_top);
@@ -2746,6 +4418,12 @@ impl Widget for WordProcessorWidget {
                         self.dirty = true;
                     }
                     *handled = true;
+                } else if self.ruler_drag.is_some() {
+                    // Live-drag a ruler marker (margin / indent / tab). Updates the
+                    // value for an instant preview; persisted on release.
+                    self.ruler_drag_move();
+                    self.dirty = true;
+                    *handled = true;
                 } else if let Some(gd) = self.guide_drag {
                     // Live-drag a layout guide (margin / border / spacing). Guides
                     // live in unscaled page space, so map the pointer through the
@@ -2772,7 +4450,8 @@ impl Widget for WordProcessorWidget {
                 self.focused = true;
                 let in_chrome = self.pointer.y < self.rect.y0 + tb_h
                     || self.pointer.y > self.rect.y1 - STATUS_H
-                    || (self.styles_panel_open && self.panel_rect.contains(self.pointer));
+                    || (self.styles_panel_open && self.panel_rect.contains(self.pointer))
+                    || (self.outline_open && self.outline_rect.contains(self.pointer));
                 if !in_chrome {
                     let cp = self.pointer_to_content(self.pointer);
                     let pos = [self.pointer.x as f32, self.pointer.y as f32];
@@ -2796,10 +4475,38 @@ impl Widget for WordProcessorWidget {
                     *handled = true;
                     return;
                 }
+                // Likewise route the press to the "New ▾" template menu when open:
+                // a row applies that template; a click elsewhere dismisses it.
+                if self.new_menu.is_open() {
+                    let point = [self.pointer.x, self.pointer.y];
+                    if let Some(idx) = self.new_menu.item_at(point) {
+                        self.dispatch_new_menu(idx, state);
+                    } else {
+                        self.new_menu.close();
+                    }
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
                 if !self.rect.contains(self.pointer) {
                     return;
                 }
                 self.focused = true;
+                // Crash-recovery banner (just under the toolbar): a click on
+                // Restore / Discard resolves the offer before any other hit-test.
+                if self.recovery.is_some() {
+                    if let Some(action) =
+                        self.recovery_buttons.iter().find(|(_, r)| r.contains(self.pointer)).map(|(a, _)| *a)
+                    {
+                        match action {
+                            RecoveryAction::Restore => self.restore_recovery(state),
+                            RecoveryAction::Discard => self.discard_recovery(),
+                        }
+                        self.dirty = true;
+                        *handled = true;
+                        return;
+                    }
+                }
                 // A press anywhere commits a pending typed numeric edit.
                 if self.editing_field.is_some() {
                     self.commit_num_edit(state);
@@ -2813,10 +4520,24 @@ impl Widget for WordProcessorWidget {
                     *handled = true;
                     return;
                 }
+                // Outline / navigation pane (left side): a click on an entry
+                // scrolls that heading into view.
+                if self.outline_open && self.outline_rect.contains(self.pointer) {
+                    if let Some(bid) = self.outline_hits.iter().find(|(r, _)| r.contains(self.pointer)).map(|(_, b)| b.clone()) {
+                        self.scroll_to_block(&bid);
+                    }
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
                 // Find bar (when open): dispatch clicks on its fields + controls.
+                // The recovery banner (when shown) sits above the find bar, so the
+                // find band starts below it.
                 if self.find_open {
-                    let fbar_bot = self.rect.y0 + tb_h + FIND_BAR_H;
-                    if self.pointer.y >= self.rect.y0 + tb_h && self.pointer.y < fbar_bot {
+                    let recovery_h = if self.recovery.is_some() { RECOVERY_BANNER_H } else { 0.0 };
+                    let fbar_top = self.rect.y0 + tb_h + recovery_h;
+                    let fbar_bot = fbar_top + FIND_BAR_H;
+                    if self.pointer.y >= fbar_top && self.pointer.y < fbar_bot {
                         if let Some(action) = self.find_buttons.iter().find(|(_, r)| r.contains(self.pointer)).map(|(a, _)| *a) {
                             self.find_action(state, action);
                         }
@@ -2824,6 +4545,14 @@ impl Widget for WordProcessorWidget {
                         *handled = true;
                         return;
                     }
+                }
+                // Ruler band (when on): grab a marker to drag, else a click in the
+                // page span adds a tab stop on the current paragraph.
+                if self.ruler_on && self.ruler_rect.contains(self.pointer) {
+                    self.ruler_press(state);
+                    self.dirty = true;
+                    *handled = true;
+                    return;
                 }
                 if self.pointer.y < self.rect.y0 + tb_h {
                     // Reverse so the colour swatches (pushed after the chrome
@@ -2833,8 +4562,18 @@ impl Widget for WordProcessorWidget {
                         self.apply_tool(state, action);
                         self.refresh_blocks(state);
                         self.dirty = true;
-                        if action != ToolAction::ToggleStyles {
+                        // View toggles (panels) + opening the New menu are not undo
+                        // points; everything else (including TOC generation) is.
+                        if !matches!(
+                            action,
+                            ToolAction::ToggleStyles
+                                | ToolAction::ToggleRuler
+                                | ToolAction::ToggleOutline
+                                | ToolAction::NewMenu
+                        ) {
                             self.needs_commit = true;
+                            self.modified = true;
+                            self.note_edit_for_autosave(state);
                         }
                     }
                     *handled = true;
@@ -2866,6 +4605,16 @@ impl Widget for WordProcessorWidget {
                 // Page-content hit-tests work in unscaled content space; map the
                 // pointer through the inverse zoom transform once here.
                 let cp = self.pointer_to_content(self.pointer);
+                // Right-margin review affordances (comment Resolve, change
+                // Accept/Reject) are drawn through the zoom transform, so they
+                // hit-test in content space too. A hit dispatches + consumes the
+                // click before it can start a text selection.
+                if let Some(action) = self.review_hits.iter().rev().find(|(r, _)| r.contains(cp)).map(|(_, a)| a.clone()) {
+                    self.dispatch_review_action(action, state);
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
                 // In a layout-edit mode, grabbing a guide starts a drag instead of
                 // a text selection.
                 if self.layout_mode != LayoutMode::None {
@@ -2908,6 +4657,12 @@ impl Widget for WordProcessorWidget {
                         let cur = self.focused_style_key().map(|k| sc.field.get(&self.sheet.get(&k))).unwrap_or(0.0);
                         self.edit_buf = fmt_num(cur);
                     }
+                    self.dirty = true;
+                    *handled = true;
+                } else if self.ruler_drag.is_some() {
+                    // A ruler-marker drag persists on release (margins → page meta,
+                    // indents / tab stops → the caret block's attrs).
+                    self.ruler_drag_release(state);
                     self.dirty = true;
                     *handled = true;
                 } else if let Some(gd) = self.guide_drag.take() {
@@ -3020,6 +4775,13 @@ impl Widget for WordProcessorWidget {
                             *handled = true;
                             return;
                         }
+                        // Ctrl+Shift+M toggles comment + tracked-change markup
+                        // (view-only, default ON). Never mutates the document.
+                        if shift && s.eq_ignore_ascii_case("m") {
+                            self.toggle_markup();
+                            *handled = true;
+                            return;
+                        }
                         // Zoom: Ctrl+= / Ctrl++ (in), Ctrl+- (out), Ctrl+0 (reset
                         // to 100%). These are view-only — they never mutate the doc,
                         // so they return before the editing path below.
@@ -3045,6 +4807,10 @@ impl Widget for WordProcessorWidget {
                             "b" => self.inner.toggle_mark(state, "strong"),
                             "i" => self.inner.toggle_mark(state, "em"),
                             "u" => self.inner.toggle_mark(state, "underline"),
+                            // Ctrl+. → superscript, Ctrl+, → subscript (mutually
+                            // exclusive; matches common word-processor bindings).
+                            "." | ">" => self.inner.toggle_super(state),
+                            "," | "<" => self.inner.toggle_sub(state),
                             "c" => self.clipboard_copy(state),
                             "x" => {
                                 self.clipboard_copy(state);
@@ -3065,6 +4831,8 @@ impl Widget for WordProcessorWidget {
                         self.refresh_blocks(state);
                         self.dirty = true;
                         self.needs_commit = true;
+                        self.modified = true;
+                        self.note_edit_for_autosave(state);
                         *handled = true;
                         return;
                     }
@@ -3075,9 +4843,13 @@ impl Widget for WordProcessorWidget {
                 match logical_key {
                     Key::Named(NamedKey::Tab) => {
                         // Inside a table, Tab/Shift-Tab walk cells (and Tab in the
-                        // last cell appends a row). Elsewhere Tab inserts spaces.
+                        // last cell appends a row). Otherwise, when the paragraph has
+                        // ruler tab stops, Tab advances to the next one (recording a
+                        // tab char); with no stops it falls back to inserting spaces.
                         if self.inner.tab_cell(state, !shift) {
                             motion = true; // tab_cell already cleared any selection
+                        } else if self.inner.tab_advance(state) {
+                            // Caret advanced to the next tab stop.
                         } else {
                             self.inner.insert_str(state, "    ");
                         }
@@ -3142,6 +4914,10 @@ impl Widget for WordProcessorWidget {
                     if !motion {
                         // editing consumes/collapses any selection
                         self.inner.clear_anchor();
+                        // A real content edit (not caret motion) advances the
+                        // autosave debounce — may write a recovery copy.
+                        self.modified = true;
+                        self.note_edit_for_autosave(state);
                     }
                     self.refresh_blocks(state);
                     self.dirty = true;
@@ -3166,11 +4942,72 @@ impl Widget for WordProcessorWidget {
         if self.context_menu.is_open() {
             Widget::draw(&mut self.context_menu, scene, transform, text_renderer, theme, presence);
         }
+        if self.new_menu.is_open() {
+            Widget::draw(&mut self.new_menu, scene, transform, text_renderer, theme, presence);
+        }
+    }
+
+    /// Outbound collaboration presence: while focused, broadcast the local
+    /// caret (or, when a selection exists, its range) keyed to the block the
+    /// caret is in. The App polls this after each event and fans the diff out to
+    /// peers as `CollabEvent::RemotePresenceUpdate`, so collaborators see this
+    /// user's caret/selection move live (the inbound half is rendered in
+    /// `draw`). Offsets are emitted in **bytes** so the receiver can feed them
+    /// straight into `RichTextLayout::caret_geometry` / `selection_rects`.
+    fn presence_payload(&self) -> Option<(PresenceKey, ui::PresencePayload)> {
+        if !self.focused {
+            return None;
+        }
+        let caret_block = &self.inner.caret.block;
+        if caret_block.is_empty() {
+            return None;
+        }
+        let key = block_presence_key(caret_block);
+        // A selection within the caret's block takes priority over the bare
+        // caret. (v1 collab presence reports the caret-block portion of a
+        // multi-block selection, mirroring how the caret block is what the
+        // peer's caret lands in.)
+        if self.inner.has_selection() {
+            if let Some((_, s, e)) = self
+                .selection_blocks_cached()
+                .into_iter()
+                .find(|(b, _, _)| b == caret_block)
+            {
+                if let Some(block) = self.blocks.iter().find(|b| &b.id == caret_block) {
+                    if s < e {
+                        let start = char_to_byte(&block.text, s);
+                        let end = char_to_byte(&block.text, e);
+                        return Some((key, ui::PresencePayload::Selection { start, end }));
+                    }
+                }
+            }
+        }
+        // Bare caret: convert the char offset to a byte offset against the
+        // caret block's text so it maps directly through the layout geometry.
+        let pos = self
+            .blocks
+            .iter()
+            .find(|b| &b.id == caret_block)
+            .map(|b| char_to_byte(&b.text, self.inner.caret.offset))
+            .unwrap_or(self.inner.caret.offset);
+        Some((key, ui::PresencePayload::Caret { pos }))
     }
 
     fn name(&self) -> &str {
         "WordProcessor"
     }
+
+    /// The word processor's local accessibility semantics: the editable
+    /// [`Role::Document`] root. The blocks are rendered directly (they are
+    /// materialized [`BlockView`]s, not child widgets), so the full per-block /
+    /// toolbar subtree is exposed via the inherent
+    /// [`WordProcessorWidget::accessibility_tree`] rather than `children()`; this
+    /// trait method returns that tree's root so the standard host path still sees
+    /// a focusable, multiline document.
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        Some(self.accessibility_tree().node)
+    }
+
     fn test_id(&self) -> Option<&str> {
         Some("word_processor")
     }
@@ -3261,6 +5098,120 @@ impl WordProcessorWidget {
         Some((char_to_byte(text, s), char_to_byte(text, e)))
     }
 
+    /// Resolve every remote collaborator's caret + selection against this
+    /// frame's laid-out blocks, producing content-space rectangles ready to be
+    /// painted through the page content transform.
+    ///
+    /// This is the production presence-render computation, factored out of
+    /// [`Widget::draw`] so it can be asserted on directly (a populated
+    /// `PresenceCtx` yields the expected remote-caret rect; an empty one yields
+    /// nothing). For each laid block it looks up `presence.carets` /
+    /// `presence.selections` under the SAME [`block_presence_key`] the local
+    /// caret is broadcast under, then maps the peer's byte offset(s) through the
+    /// block's shaped [`RichTextLayout`] via the very same
+    /// `caret_geometry` / `selection_rects` geometry the local caret/selection
+    /// use — so a remote caret is pixel-identical to a local one, just
+    /// recoloured per peer in the draw.
+    ///
+    /// Geometry is read from `self.laid` + `self.layout_cache`, both of which
+    /// are populated by the end of a `draw` pass, so this is meaningful after at
+    /// least one frame has been rendered.
+    pub(crate) fn remote_presence_overlays(
+        &self,
+        presence: &PresenceCtx,
+    ) -> (Vec<RemoteCaretOverlay>, Vec<RemoteSelectionOverlay>) {
+        let mut carets = Vec::new();
+        let mut selections = Vec::new();
+        for l in &self.laid {
+            let Some((_, layout)) = self.layout_cache.get(&l.id) else {
+                continue;
+            };
+            let key = block_presence_key(&l.id);
+
+            // Remote selections (drawn under the text, like the local one).
+            if let Some(list) = presence.selections.get(&key) {
+                for (user, range) in list {
+                    if range.start >= range.end {
+                        continue;
+                    }
+                    let rects: Vec<Rect> = layout
+                        .selection_rects(range.start, range.end)
+                        .into_iter()
+                        .map(|(rx0, ry0, rx1, ry1)| {
+                            Rect::new(
+                                l.text_x + rx0 as f64,
+                                l.y_top + ry0 as f64,
+                                l.text_x + rx1 as f64,
+                                l.y_top + ry1 as f64,
+                            )
+                        })
+                        .collect();
+                    if !rects.is_empty() {
+                        selections.push(RemoteSelectionOverlay { user: user.clone(), rects });
+                    }
+                }
+            }
+
+            // Remote carets (drawn over the text, like the local one).
+            if let Some(list) = presence.carets.get(&key) {
+                for (user, byte_pos) in list {
+                    let (cx, cy, ch) = layout.caret_geometry(*byte_pos);
+                    let rect = Rect::new(
+                        l.text_x + cx as f64,
+                        l.y_top + cy as f64,
+                        l.text_x + cx as f64 + CARET_WIDTH,
+                        l.y_top + cy as f64 + ch as f64,
+                    );
+                    carets.push(RemoteCaretOverlay { user: user.clone(), rect });
+                }
+            }
+        }
+        (carets, selections)
+    }
+
+    /// Paint a small rounded name pill in the peer's colour, anchored just above
+    /// a remote caret at content-space `(caret_x, caret_top)`, so a user can see
+    /// *who* is editing where. Drawn through the page content transform `ctf` so
+    /// it tracks the page as it scrolls/zooms, exactly like the caret it labels.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_remote_caret_label(
+        &self,
+        scene: &mut Scene,
+        ctf: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        user: &UserId,
+        caret_x: f64,
+        caret_top: f64,
+    ) {
+        let label = &user.0;
+        let (r, g, b) = presence.color_for(user);
+        let peer = Color::from_rgb8(r, g, b);
+        let size = 11.0_f32;
+        let pad_x = 5.0_f64;
+        let pad_y = 2.0_f64;
+        let (tw, _th) = text_renderer.measure(label, size, None);
+        let chip_w = tw as f64 + pad_x * 2.0;
+        let chip_h = size as f64 + pad_y * 2.0;
+        // Sit the pill just above the caret's top edge.
+        let chip_x = caret_x;
+        let chip_y = caret_top - chip_h - 2.0;
+        let chip_rect = Rect::new(chip_x, chip_y, chip_x + chip_w, chip_y + chip_h);
+        let chip = vello::kurbo::RoundedRect::from_rect(chip_rect, 3.0);
+        scene.fill(Fill::NonZero, ctf, peer, None, &chip);
+        // White-on-colour label for contrast against the peer hue.
+        text_renderer.draw_text(
+            scene,
+            label,
+            size,
+            Color::WHITE,
+            ctf * Affine::translate((chip_rect.x0 + pad_x, chip_rect.y0 + pad_y)),
+            None,
+        );
+        let _ = theme;
+    }
+
     fn extend_or_clear(&mut self, shift: bool) {
         if shift {
             self.inner.set_anchor();
@@ -3311,6 +5262,15 @@ impl WordProcessorWidget {
             // The neutral swatch clears any per-run colour, reverting to the
             // block's style ink.
             ToolAction::TextColor(None) => self.inner.clear_mark(state, "color"),
+            ToolAction::Highlight(Some(c)) => self.inner.set_highlight(state, &crate::styles::color_to_hex(c)),
+            // The "no highlight" swatch clears any per-run highlight band.
+            ToolAction::Highlight(None) => self.inner.clear_mark(state, "highlight"),
+            ToolAction::Super => self.inner.toggle_super(state),
+            ToolAction::Sub => self.inner.toggle_sub(state),
+            ToolAction::LineSpacing => {
+                let next = next_line_spacing(self.inner.caret_line_spacing(state));
+                self.inner.set_line_spacing(state, next);
+            }
             ToolAction::FontCycle => {
                 let name = match self.current_font().next() {
                     FontFamily::Sans => "sans",
@@ -3336,6 +5296,10 @@ impl WordProcessorWidget {
             ToolAction::TableColDel => self.inner.table_del_col(state),
             ToolAction::TableDelete => self.inner.table_delete(state),
             ToolAction::ToggleStyles => self.styles_panel_open = !self.styles_panel_open,
+            ToolAction::ToggleRuler => self.ruler_on = !self.ruler_on,
+            ToolAction::ToggleOutline => self.outline_open = !self.outline_open,
+            ToolAction::InsertToc => self.generate_toc(state),
+            ToolAction::NewMenu => self.open_new_menu(),
         }
     }
 
@@ -3481,6 +5445,23 @@ impl WordProcessorWidget {
             .unwrap_or_else(|| "left".into())
     }
 
+    /// The caret block's line-spacing multiplier (from the cached blocks), or 1.0.
+    /// Drives the toolbar chip label.
+    fn current_line_spacing(&self) -> f64 {
+        self.blocks
+            .iter()
+            .find(|b| b.id == self.inner.caret.block)
+            .map(|b| block_line_spacing(b) as f64)
+            .unwrap_or(1.0)
+    }
+
+    /// The per-run `highlight` colour covering the font-probe position (just left
+    /// of the caret), if any — used to ring the active highlight swatch.
+    fn current_highlight_color(&self) -> Option<[u8; 3]> {
+        let (b, pos) = self.font_probe()?;
+        char_highlight(pos, &b.marks)
+    }
+
     fn clipboard_copy(&mut self, state: &AutoCommit) {
         if !self.inner.has_selection() {
             return;
@@ -3567,6 +5548,9 @@ impl WordProcessorWidget {
         // selection so Cut/Copy act on something.
         let had_selection = self.inner.has_selection();
         self.caret_from_pointer(content_pt, false);
+        // Raw click char offset (before `select_word` snaps the caret to the word
+        // end) — used to test which tracked-change / comment range was clicked.
+        let raw_click_off = self.inner.caret.offset;
         if !had_selection {
             self.inner.select_word(state);
         }
@@ -3580,6 +5564,54 @@ impl WordProcessorWidget {
 
         let mut menu = ContextMenu::new();
         let mut actions: Vec<Option<CtxAction>> = Vec::new();
+
+        // Review rows: when the click lands inside a tracked-change range, offer
+        // Accept/Reject for that change; inside a comment range, offer Resolve.
+        // The clicked char offset is `click_off` in `block`; match it against the
+        // block's `ins`/`del`/`comment` marks (char offsets). Always offer
+        // Accept All / Reject All when the document has any tracked change.
+        if self.show_markup {
+            let mut review_rows = false;
+            if let Some(b) = self.blocks.iter().find(|b| b.id == block) {
+                for m in &b.marks {
+                    // The clicked word span `[wstart, wend)` must overlap the mark
+                    // (covers a click anywhere in the range, robust to the
+                    // word-snap). Fall back to the raw click point for whitespace.
+                    let overlaps = if wstart < wend {
+                        wstart < m.end && m.start < wend
+                    } else {
+                        raw_click_off >= m.start && raw_click_off < m.end
+                    };
+                    if !overlaps {
+                        continue;
+                    }
+                    let Some(id) = m.value.as_str().map(|s| s.to_string()) else { continue };
+                    if m.name == qdoc::schema::MARK_INS || m.name == qdoc::schema::MARK_DEL {
+                        let kind = if m.name == qdoc::schema::MARK_INS { "insertion" } else { "deletion" };
+                        menu.push(MenuItem::action(format!("Accept {kind}"), || {}));
+                        actions.push(Some(CtxAction::AcceptChange(id.clone())));
+                        menu.push(MenuItem::action(format!("Reject {kind}"), || {}));
+                        actions.push(Some(CtxAction::RejectChange(id.clone())));
+                        review_rows = true;
+                    } else if m.name == qdoc::schema::MARK_COMMENT {
+                        menu.push(MenuItem::action("Resolve comment", || {}));
+                        actions.push(Some(CtxAction::ResolveComment(id.clone())));
+                        review_rows = true;
+                    }
+                }
+            }
+            if !self.changes.is_empty() {
+                menu.push(MenuItem::action("Accept all changes", || {}));
+                actions.push(Some(CtxAction::AcceptAllChanges));
+                menu.push(MenuItem::action("Reject all changes", || {}));
+                actions.push(Some(CtxAction::RejectAllChanges));
+                review_rows = true;
+            }
+            if review_rows {
+                menu.push(MenuItem::separator());
+                actions.push(None);
+            }
+        }
 
         // Spell-check rows: only when the clicked word is currently flagged.
         if self.spellcheck_on {
@@ -3664,10 +5696,237 @@ impl WordProcessorWidget {
                 self.spell_cache.remove(&block);
                 self.needs_commit = true;
             }
+            action @ (CtxAction::AcceptChange(_)
+            | CtxAction::RejectChange(_)
+            | CtxAction::AcceptAllChanges
+            | CtxAction::RejectAllChanges
+            | CtxAction::ResolveComment(_)) => {
+                self.dispatch_review_action(action, state);
+            }
         }
         self.context_menu.close();
         self.dirty = true;
         true
+    }
+
+    // ---- new-from-template picker -----------------------------------------
+
+    /// Open the "New ▾" template picker: build a [`ContextMenu`] listing every
+    /// [`crate::Template`] by `title()`, anchored just under the toolbar's leading
+    /// edge. A selection (left-click on a row) replaces the open document's
+    /// content with the chosen template in place (see [`Self::apply_template`]).
+    fn open_new_menu(&mut self) {
+        let mut menu = ContextMenu::new();
+        let mut templates = Vec::new();
+        for &t in crate::Template::all() {
+            menu.push(MenuItem::action(t.title(), || {}));
+            templates.push(t);
+        }
+        // Anchor below the toolbar's left edge (where the "New ▾" button lives).
+        let anchor_x = self.toolbar.first().map(|(_, r)| r.x0).unwrap_or(self.rect.x0 + 8.0);
+        let anchor_y = self.rect.y0 + self.toolbar_height(self.rect.width());
+        menu.open_at([anchor_x as f32, anchor_y as f32]);
+        self.new_menu = menu;
+        self.new_menu_templates = templates;
+        self.dirty = true;
+    }
+
+    /// Replace the open document's content with `template`'s Markdown, **in place**
+    /// on the live `state` (preserving the host `ui::State` and its undo history /
+    /// collaboration session). Re-seats the caret, refreshes the view, flags an
+    /// undo point, and counts as a document-modifying edit (so autosave still
+    /// protects the freshly-templated content).
+    fn apply_template(&mut self, state: &mut AutoCommit, template: crate::Template) {
+        if self.inner.replace_with_markdown(state, template.content().as_bytes()) {
+            self.refresh_blocks(state);
+            // The whole body changed; per-block caches keyed by id/text are stale.
+            self.layout_cache.clear();
+            self.spell_cache.clear();
+            self.modified = true;
+            self.needs_commit = true;
+            self.dirty = true;
+            // A wholesale content swap is a strong autosave trigger.
+            self.note_edit_for_autosave(state);
+        }
+    }
+
+    /// Dispatch the new-menu row at `idx`: apply the chosen template, then close
+    /// the menu. Out-of-range rows are ignored.
+    fn dispatch_new_menu(&mut self, idx: usize, state: &mut AutoCommit) {
+        if let Some(&t) = self.new_menu_templates.get(idx) {
+            self.apply_template(state, t);
+        }
+        self.new_menu.close();
+        self.dirty = true;
+    }
+
+    // ---- autosave / crash-recovery ----------------------------------------
+
+    /// The recovery base directory this widget uses: the per-instance override if
+    /// set (tests), else the library default ([`crate::recovery::base_dir`]).
+    fn recovery_dir(&self) -> PathBuf {
+        self.recovery_base.clone().unwrap_or_else(crate::recovery::base_dir)
+    }
+
+    /// The recovery file path for the open document (stable per document path; a
+    /// single shared slot for an untitled doc). Honours the per-instance override.
+    fn recovery_path(&self) -> PathBuf {
+        let name = crate::recovery::recovery_path_for(self.path.as_deref());
+        // Re-root onto this widget's base dir so the override applies even though
+        // `recovery_path_for` only consults the env/default.
+        match name.file_name() {
+            Some(f) => self.recovery_dir().join(f),
+            None => name,
+        }
+    }
+
+    /// Point this widget's recovery store at `dir` (used by tests + callers that
+    /// want to relocate the store). Takes effect immediately for the next write.
+    pub fn set_recovery_dir(&mut self, dir: PathBuf) {
+        self.recovery_base = Some(dir);
+    }
+
+    /// Count one document-modifying edit toward the autosave debounce; when the
+    /// running count crosses [`AUTOSAVE_EDIT_THRESHOLD`], write a recovery copy and
+    /// reset. Best-effort — a failed write never disturbs editing.
+    fn note_edit_for_autosave(&mut self, state: &AutoCommit) {
+        self.edits_since_autosave = self.edits_since_autosave.saturating_add(1);
+        if self.edits_since_autosave >= AUTOSAVE_EDIT_THRESHOLD {
+            self.write_recovery(state);
+        }
+    }
+
+    /// Write a recovery copy of the current document (Markdown) to the stable
+    /// recovery path and reset the edit counter. Best-effort: no panic if the
+    /// directory is unwritable or the document has no schema yet.
+    fn write_recovery(&mut self, state: &AutoCommit) {
+        self.edits_since_autosave = 0;
+        let Some(c) = self.inner.containers.as_ref() else {
+            return;
+        };
+        let dr = qdoc::DocRef { doc: state, c };
+        let Ok(bytes) = WpFormat::Markdown.export(dr) else {
+            return;
+        };
+        let path = self.recovery_path();
+        if let Some(parent) = path.parent() {
+            if std::fs::create_dir_all(parent).is_err() {
+                return;
+            }
+        }
+        let _ = std::fs::write(&path, bytes);
+    }
+
+    /// Delete the recovery copy for the open document (called after a successful
+    /// real save — the on-disk file is now authoritative). Resets the autosave
+    /// counter so the next edit starts a fresh debounce window.
+    fn clear_recovery(&mut self) {
+        let _ = std::fs::remove_file(self.recovery_path());
+        self.edits_since_autosave = 0;
+    }
+
+    /// Check for an existing recovery copy of the open document and, if one is
+    /// present (a previous session crashed before saving), stage a recovery offer
+    /// so the banner surfaces with Restore / Discard. Idempotent and best-effort.
+    /// Call after binding a freshly-opened document. Returns whether an offer was
+    /// staged.
+    pub fn check_for_recovery(&mut self) -> bool {
+        let path = self.recovery_path();
+        match std::fs::read(&path) {
+            Ok(markdown) if !markdown.is_empty() => {
+                self.recovery = Some(RecoveryOffer { path, markdown });
+                self.dirty = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Restore the staged recovery copy: re-import its Markdown over the open
+    /// document in place, mark the document modified (the restored content is not
+    /// yet on disk), dismiss the banner, and delete the recovery file (the live
+    /// document now holds its content).
+    fn restore_recovery(&mut self, state: &mut AutoCommit) {
+        let Some(offer) = self.recovery.take() else {
+            return;
+        };
+        if self.inner.replace_with_markdown(state, &offer.markdown) {
+            self.refresh_blocks(state);
+            self.layout_cache.clear();
+            self.spell_cache.clear();
+            self.modified = true;
+            self.needs_commit = true;
+        }
+        let _ = std::fs::remove_file(&offer.path);
+        self.dirty = true;
+    }
+
+    /// Discard the staged recovery copy: dismiss the banner and delete the file
+    /// (the user prefers the on-disk document as opened).
+    fn discard_recovery(&mut self) {
+        if let Some(offer) = self.recovery.take() {
+            let _ = std::fs::remove_file(&offer.path);
+        }
+        self.dirty = true;
+    }
+
+    /// Draw the crash-recovery banner (a prominent strip under the toolbar with
+    /// Restore / Discard buttons), registering its controls for hit-testing.
+    fn draw_recovery_banner(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, bar: Rect) {
+        self.recovery_buttons.clear();
+        let cc = self.chrome;
+        let accent = theme.accent_primary;
+        // A tinted strip so it reads as a transient notice, not chrome.
+        scene.fill(Fill::NonZero, transform, with_alpha(accent, 0x22), None, &bar);
+        scene.fill(Fill::NonZero, transform, cc.border, None, &Rect::new(bar.x0, bar.y1 - 1.0, bar.x1, bar.y1));
+        let cy = (bar.y0 + bar.y1) / 2.0;
+        tr.draw_text(
+            scene,
+            "Recovered unsaved changes from a previous session.",
+            13.0,
+            cc.text,
+            transform * Affine::translate((bar.x0 + 14.0, cy - 8.0)),
+            None,
+        );
+        // Right-aligned Restore / Discard buttons.
+        let mut x = bar.x1 - 12.0;
+        for (action, label, w, primary) in [
+            (RecoveryAction::Discard, "Discard", 80.0, false),
+            (RecoveryAction::Restore, "Restore", 80.0, true),
+        ] {
+            x -= w;
+            let r = Rect::new(x, cy - 13.0, x + w, cy + 13.0);
+            let (bg, fg) = if primary { (accent, cc.on_accent) } else { (cc.chip, cc.text) };
+            scene.fill(Fill::NonZero, transform, bg, None, &vello::kurbo::RoundedRect::from_rect(r, 6.0));
+            let tx = r.x0 + (w - label.chars().count() as f64 * 7.4).max(6.0) / 2.0;
+            tr.draw_text(scene, label, 13.0, fg, transform * Affine::translate((tx, cy - 8.0)), None);
+            self.recovery_buttons.push((action, r));
+            x -= 8.0;
+        }
+    }
+
+    /// Act on a tracked-change / comment review affordance (from a margin-card
+    /// button or a context-menu row): accept/reject a change, accept/reject all,
+    /// or resolve (delete) a comment. Refreshes the materialized blocks +
+    /// comments/changes so the acted-on item disappears, and flags an undo point.
+    fn dispatch_review_action(&mut self, action: CtxAction, state: &mut AutoCommit) {
+        match action {
+            CtxAction::AcceptChange(id) => self.inner.accept_change(state, &id),
+            CtxAction::RejectChange(id) => self.inner.reject_change(state, &id),
+            CtxAction::AcceptAllChanges => self.inner.accept_all_changes(state),
+            CtxAction::RejectAllChanges => self.inner.reject_all_changes(state),
+            CtxAction::ResolveComment(id) => self.inner.delete_comment(state, &id),
+            // Non-review actions are dispatched by `dispatch_context_action`.
+            _ => return,
+        }
+        self.refresh_blocks(state);
+        // Accepting/rejecting can change body text (an accepted deletion removes
+        // glyphs, a rejected insertion removes them); the spell cache is keyed by
+        // text so affected blocks re-check on the next draw — clear it wholesale
+        // (cheap, and these are infrequent review actions).
+        self.spell_cache.clear();
+        self.needs_commit = true;
+        self.dirty = true;
     }
 
     /// Test-visible labels of the currently-open context menu's rows
@@ -3696,6 +5955,7 @@ impl WordProcessorWidget {
             Some(WpFormat::Pdf) => "PDF",
             Some(WpFormat::Html) => "HTML",
             Some(WpFormat::Rtf) => "Rich Text",
+            Some(WpFormat::Epub) => "EPUB",
             None => "",
         };
         let dot = if self.modified { "●  " } else { "" };
@@ -3714,6 +5974,7 @@ impl WordProcessorWidget {
     /// button, then a small "Reset" affordance when zoomed away from 100%. Each
     /// button is registered in `self.status_buttons` for click hit-testing.
     fn draw_zoom_control(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, bar: Rect) {
+        let cc = self.chrome;
         self.status_buttons.clear();
         let cy = (bar.y0 + bar.y1) / 2.0;
         let bw = 18.0;
@@ -3727,9 +5988,9 @@ impl WordProcessorWidget {
 
         let btn = |scene: &mut Scene, tr: &mut TextRenderer, x: f64, label: &str| -> Rect {
             let r = Rect::new(x, y0, x + bw, y0 + bh);
-            scene.fill(Fill::NonZero, transform, Color::from_rgb8(0x33, 0x36, 0x40), None, &vello::kurbo::RoundedRect::from_rect(r, 4.0));
+            scene.fill(Fill::NonZero, transform, cc.chip, None, &vello::kurbo::RoundedRect::from_rect(r, 4.0));
             let tx = r.x0 + (bw - label.chars().count() as f64 * 6.5).max(2.0) / 2.0;
-            tr.draw_text(scene, label, 13.0, Color::from_rgb8(0xc8, 0xcc, 0xd4), transform * Affine::translate((tx, cy - 8.0)), None);
+            tr.draw_text(scene, label, 13.0, cc.text, transform * Affine::translate((tx, cy - 8.0)), None);
             r
         };
 
@@ -3740,7 +6001,7 @@ impl WordProcessorWidget {
         // The percentage chip doubles as a reset target (click to return to 100%).
         let vr = Rect::new(x, y0, x + val_w, y0 + bh);
         let pw = pct.chars().count() as f64 * 6.8;
-        tr.draw_text(scene, &pct, 12.5, Color::from_rgb8(0xd6, 0xd9, 0xe0), transform * Affine::translate((x + (val_w - pw) / 2.0, cy - 8.0)), None);
+        tr.draw_text(scene, &pct, 12.5, cc.text, transform * Affine::translate((x + (val_w - pw) / 2.0, cy - 8.0)), None);
         self.status_buttons.push((StatusAction::ZoomReset, vr));
         x += val_w + 4.0;
 
@@ -3753,9 +6014,12 @@ impl WordProcessorWidget {
         let italic_a = self.mark_active_in_selection("em");
         let under_a = self.mark_active_in_selection("underline");
         let strike_a = self.mark_active_in_selection("strike");
+        let super_a = self.mark_active_in_selection("super");
+        let sub_a = self.mark_active_in_selection("sub");
         let (kind, level) = self.current_block_style();
         let align = self.current_align();
         let font_label = self.current_font().label();
+        let line_label = line_spacing_label(self.current_line_spacing());
 
         // Build the toolbar spec; the ui::chrome toolbar component owns the look
         // and hands back each button's clickable rect (zipped to its action).
@@ -3766,17 +6030,21 @@ impl WordProcessorWidget {
             _ => LabelCue::None,
         };
         let group_start = |a: ToolAction| {
-            matches!(a, ToolAction::H1 | ToolAction::AlignLeft | ToolAction::FontCycle | ToolAction::InsertTable | ToolAction::InsertImage | ToolAction::TableRowAdd | ToolAction::ToggleStyles)
+            matches!(a, ToolAction::NewMenu | ToolAction::Bold | ToolAction::H1 | ToolAction::AlignLeft | ToolAction::LineSpacing | ToolAction::FontCycle | ToolAction::InsertTable | ToolAction::InsertImage | ToolAction::TableRowAdd | ToolAction::ToggleStyles | ToolAction::ToggleOutline)
         };
         let panel_open = self.styles_panel_open;
         let mut specs: Vec<(ToolAction, ToolbarItem)> = Vec::new();
         let mut add = |a: ToolAction, label: &str, w: f64, active: bool| {
             specs.push((a, ToolbarItem::new(label, w).active(active).cue(cue(a)).group_start(group_start(a))));
         };
+        // New-from-template picker (leads the toolbar). Active while its menu is open.
+        add(ToolAction::NewMenu, "New ▾", 64.0, self.new_menu.is_open());
         add(ToolAction::Bold, "B", 34.0, bold_a);
         add(ToolAction::Italic, "I", 30.0, italic_a);
         add(ToolAction::Underline, "U", 32.0, under_a);
         add(ToolAction::Strike, "S", 30.0, strike_a);
+        add(ToolAction::Super, "x²", 34.0, super_a);
+        add(ToolAction::Sub, "x₂", 34.0, sub_a);
         add(ToolAction::H1, "H1", 42.0, kind == "heading" && level == Some(1));
         add(ToolAction::H2, "H2", 42.0, kind == "heading" && level == Some(2));
         add(ToolAction::Body, "Body", 58.0, kind == "paragraph");
@@ -3785,6 +6053,7 @@ impl WordProcessorWidget {
         add(ToolAction::AlignCenter, "C", 30.0, align == "center");
         add(ToolAction::AlignRight, "R", 30.0, align == "right");
         add(ToolAction::AlignJustify, "J", 30.0, align == "justify");
+        add(ToolAction::LineSpacing, &line_label, 54.0, false);
         add(ToolAction::FontCycle, font_label, 58.0, false);
         // Size stepper: − / current-value / +. The value chip is display-only.
         add(ToolAction::SizeDown, "A−", 34.0, false);
@@ -3802,6 +6071,10 @@ impl WordProcessorWidget {
         }
         add(ToolAction::InsertImage, "🖼 Image", 80.0, false);
         add(ToolAction::ToggleStyles, "Styles", 64.0, panel_open);
+        add(ToolAction::ToggleRuler, "Ruler", 60.0, self.ruler_on);
+        // Navigation: outline pane toggle + table-of-contents generator.
+        add(ToolAction::ToggleOutline, "Outline", 72.0, self.outline_open);
+        add(ToolAction::InsertToc, "TOC", 48.0, false);
         drop(add);
 
         let items: Vec<ToolbarItem> = specs.iter().map(|(_, item)| item.clone()).collect();
@@ -3837,12 +6110,18 @@ impl WordProcessorWidget {
         // run colour.
         let last_row_y = tb.y0 + (rows.len() as f64 - 1.0) * row_h;
         let swatch_band = Rect::new(tb.x0, last_row_y, tb.x1, last_row_y + row_h);
-        self.draw_color_swatches(scene, transform, tr, swatch_band);
+        let text_left = self.draw_color_swatches(scene, transform, tr, swatch_band);
+        // Highlight swatch strip, packed just left of the text-colour strip.
+        let hl_band = Rect::new(tb.x0, last_row_y, (text_left - 10.0).max(tb.x0), last_row_y + row_h);
+        self.draw_highlight_swatches(scene, transform, tr, hl_band);
 
-        // Subtle hover highlight over the button under the pointer.
+        // Subtle hover highlight over the button under the pointer. A low-alpha
+        // tint of the primary text colour reads as a veneer in both light
+        // (dark-on-light) and dark (light-on-dark) modes.
         if let Some(hr) = self.hover_tool {
             let pad = Rect::new(hr.x0 - 2.0, hr.y0 + 1.0, hr.x1 + 2.0, hr.y1 - 1.0);
-            scene.fill(Fill::NonZero, transform, Color::from_rgba8(0xff, 0xff, 0xff, 0x14), None, &vello::kurbo::RoundedRect::from_rect(pad, 6.0));
+            let veneer = with_alpha(self.chrome.text, 0x14);
+            scene.fill(Fill::NonZero, transform, veneer, None, &vello::kurbo::RoundedRect::from_rect(pad, 6.0));
         }
     }
 
@@ -3862,9 +6141,12 @@ impl WordProcessorWidget {
     fn toolbar_item_widths(&self) -> Vec<f64> {
         let (kind, _) = self.current_block_style();
         let mut w = vec![
+            64.0, // New ▾
             34.0, 30.0, 32.0, 30.0, // B I U S
+            34.0, 34.0, // x² x₂
             42.0, 42.0, 58.0, 66.0, // H1 H2 Body • List
             30.0, 30.0, 30.0, 30.0, // L C R J
+            54.0, // line spacing
             58.0, // font
             34.0, 40.0, 34.0, // A− value A+
         ];
@@ -3875,6 +6157,9 @@ impl WordProcessorWidget {
         }
         w.push(80.0); // 🖼 Image
         w.push(64.0); // Styles
+        w.push(60.0); // Ruler
+        w.push(72.0); // Outline
+        w.push(48.0); // TOC
         w
     }
 
@@ -3883,9 +6168,12 @@ impl WordProcessorWidget {
         let (kind, _) = self.current_block_style();
         // Indices that start a group in `draw_toolbar` (see `group_start`).
         let mut g = vec![
-            false, false, false, false, // B I U S
+            true, // New ▾ (group)
+            true, false, false, false, // B(group) I U S
+            false, false, // x² x₂
             true, false, false, false, // H1(group) H2 Body • List
             true, false, false, false, // L(group) C R J
+            true, // line spacing(group)
             true, // font(group)
             false, false, false, // size stepper
         ];
@@ -3896,6 +6184,9 @@ impl WordProcessorWidget {
         }
         g.push(true); // 🖼 Image starts a group
         g.push(true); // Styles starts a group
+        g.push(false); // Ruler (same group as Styles)
+        g.push(true); // Outline starts a group (navigation)
+        g.push(false); // TOC
         g
     }
 
@@ -3904,7 +6195,7 @@ impl WordProcessorWidget {
     /// The current run's colour gets a white selection ring. The first swatch is
     /// the neutral/default (an `A` glyph on the surface colour) — it clears any
     /// per-run `color` mark.
-    fn draw_color_swatches(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, tb: Rect) {
+    fn draw_color_swatches(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, tb: Rect) -> f64 {
         let cur = self.current_text_color();
         let cy = (tb.y0 + tb.y1) / 2.0;
         let sw = 20.0;
@@ -3912,16 +6203,17 @@ impl WordProcessorWidget {
         let n = STYLE_PALETTE.len() + 1; // +1 for the neutral default
         let total = n as f64 * sw + (n as f64 - 1.0) * gap;
         // Right-align the strip, leaving a small margin from the toolbar's edge.
-        let mut x = (tb.x1 - 14.0 - total).max(tb.x0 + 14.0);
+        let strip_left = (tb.x1 - 14.0 - total).max(tb.x0 + 14.0);
+        let mut x = strip_left;
         let y0 = cy - sw / 2.0;
 
         // Neutral / default swatch: surface-toned square with an "A", clears colour.
         let nr = Rect::new(x, y0, x + sw, y0 + sw);
-        scene.fill(Fill::NonZero, transform, Color::from_rgb8(0x3a, 0x3d, 0x46), None, &vello::kurbo::RoundedRect::from_rect(nr, 4.0));
+        scene.fill(Fill::NonZero, transform, self.chrome.chip, None, &vello::kurbo::RoundedRect::from_rect(nr, 4.0));
         if cur.is_none() {
             scene.stroke(&vello::kurbo::Stroke::new(2.0), transform, Color::WHITE, None, &vello::kurbo::RoundedRect::from_rect(nr, 4.0));
         }
-        tr.draw_text(scene, "A", 13.0, Color::from_rgb8(0xd6, 0xd8, 0xde), transform * Affine::translate((x + 5.5, y0 + 2.0)), None);
+        tr.draw_text(scene, "A", 13.0, self.chrome.text, transform * Affine::translate((x + 5.5, y0 + 2.0)), None);
         self.toolbar.push((ToolAction::TextColor(None), nr));
         x += sw + gap;
 
@@ -3933,6 +6225,50 @@ impl WordProcessorWidget {
                 scene.stroke(&vello::kurbo::Stroke::new(2.0), transform, Color::WHITE, None, &vello::kurbo::RoundedRect::from_rect(r, 4.0));
             }
             self.toolbar.push((ToolAction::TextColor(Some(*c)), r));
+            x += sw + gap;
+        }
+        strip_left
+    }
+
+    /// Draw the highlight (text-background) swatch row, right-aligned within
+    /// `tb`, and register each swatch as a `Highlight` click target. The leading
+    /// neutral swatch (a crossed marker on the surface tone) clears any highlight.
+    /// The current run's highlight gets a white selection ring. Skips drawing if
+    /// the band is too narrow (the toolbar is tightly packed).
+    fn draw_highlight_swatches(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, tb: Rect) {
+        let cur = self.current_highlight_color();
+        let cy = (tb.y0 + tb.y1) / 2.0;
+        let sw = 20.0;
+        let gap = 5.0;
+        let n = HIGHLIGHT_PALETTE.len() + 1; // +1 for the neutral "no highlight"
+        let total = n as f64 * sw + (n as f64 - 1.0) * gap;
+        // Not enough room beside the text-colour strip: skip (the buttons + Styles
+        // panel remain the path to highlight). Avoids overlapping the chrome.
+        if tb.width() < total + 14.0 {
+            return;
+        }
+        let strip_left = (tb.x1 - total).max(tb.x0 + 4.0);
+        let mut x = strip_left;
+        let y0 = cy - sw / 2.0;
+
+        // Neutral / "no highlight" swatch: surface-toned square with a "▱" hint.
+        let nr = Rect::new(x, y0, x + sw, y0 + sw);
+        scene.fill(Fill::NonZero, transform, self.chrome.chip, None, &vello::kurbo::RoundedRect::from_rect(nr, 4.0));
+        if cur.is_none() {
+            scene.stroke(&vello::kurbo::Stroke::new(2.0), transform, Color::WHITE, None, &vello::kurbo::RoundedRect::from_rect(nr, 4.0));
+        }
+        tr.draw_text(scene, "▱", 12.0, self.chrome.text, transform * Affine::translate((x + 4.0, y0 + 2.5)), None);
+        self.toolbar.push((ToolAction::Highlight(None), nr));
+        x += sw + gap;
+
+        for c in HIGHLIGHT_PALETTE.iter() {
+            let r = Rect::new(x, y0, x + sw, y0 + sw);
+            let col = Color::from_rgb8(c[0], c[1], c[2]);
+            scene.fill(Fill::NonZero, transform, col, None, &vello::kurbo::RoundedRect::from_rect(r, 4.0));
+            if cur == Some(*c) {
+                scene.stroke(&vello::kurbo::Stroke::new(2.0), transform, Color::WHITE, None, &vello::kurbo::RoundedRect::from_rect(r, 4.0));
+            }
+            self.toolbar.push((ToolAction::Highlight(Some(*c)), r));
             x += sw + gap;
         }
     }
@@ -3956,7 +6292,13 @@ mod tests {
     use ui::permissions::PermissionContext;
 
     fn pipeline_draw(wp: &mut WordProcessorWidget, state: &mut ui::State, w: u32, h: u32) {
-        let theme = Theme::dark();
+        pipeline_draw_themed(wp, state, w, h, &Theme::dark());
+    }
+
+    /// Like [`pipeline_draw`] but renders under an explicit [`Theme`] so tests
+    /// can exercise the real five-pass draw path under light/dark/high-contrast
+    /// palettes. Returns the widget's resolved chrome palette for inspection.
+    fn pipeline_draw_themed(wp: &mut WordProcessorWidget, state: &mut ui::State, w: u32, h: u32, theme: &Theme) -> ChromeColors {
         let presence = PresenceCtx::empty();
         let permission = PermissionContext::permissive();
         let mut tr = TextRenderer::new();
@@ -3964,7 +6306,7 @@ mod tests {
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
         wp.sync(&mut state.doc, &state.root);
-        let child = wp.build_layout(&mut taffy, &theme, &mut node_map);
+        let child = wp.build_layout(&mut taffy, theme, &mut node_map);
         let root = taffy
             .new_with_children(
                 Style { size: Size { width: Dimension::length(w as f32), height: Dimension::length(h as f32) }, ..Default::default() },
@@ -3990,7 +6332,94 @@ mod tests {
         }
         wp.apply_layout(&taffy, child, Point::ORIGIN);
         let mut scene = Scene::new();
-        wp.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence, &permission);
+        wp.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence, &permission);
+        // `draw` resolves the chrome palette from `theme` into `wp.chrome`.
+        wp.chrome
+    }
+
+    /// Build a small populated doc (heading + paragraph) so a draw exercises the
+    /// toolbar, panels, page, body ink, selection, and bars in one pass.
+    fn populated() -> (ui::State, WordProcessorWidget) {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "Title");
+        wp.model_mut().enter(&mut state.doc);
+        wp.model_mut().insert_str(&mut state.doc, "Body text here");
+        // Open the find bar + outline pane so their chrome is drawn too.
+        wp.find_open = true;
+        wp.outline_open = true;
+        (state, wp)
+    }
+
+    /// `ChromeColors::for_theme` is the single production mapping `draw` uses.
+    /// Assert every chrome slot is *sourced from the theme token* (not a literal)
+    /// and that swapping the theme actually changes the sampled chrome surfaces —
+    /// proving the chrome follows the OS palette.
+    #[test]
+    fn chrome_colors_are_sourced_from_theme_tokens() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let cc = ChromeColors::for_theme(&theme);
+            let c = &theme.tokens.colors;
+            assert_eq!(cc.canvas, c.surfaces.base, "canvas = surfaces.base");
+            assert_eq!(cc.bar, c.surfaces.raised, "bar = surfaces.raised");
+            assert_eq!(cc.border, c.border_standard, "border = border_standard");
+            assert_eq!(cc.text, c.text_primary, "text = text_primary");
+            assert_eq!(cc.text_dim, c.text_dim, "text_dim = text_dim");
+            assert_eq!(cc.accent, theme.accent_primary, "accent = accent_primary");
+        }
+    }
+
+    #[test]
+    fn swapping_theme_changes_sampled_chrome() {
+        let dark = ChromeColors::for_theme(&Theme::dark());
+        let light = ChromeColors::for_theme(&Theme::light());
+        // The desk/canvas and bar surfaces must differ between light and dark —
+        // if the chrome were hard-coded these would be identical.
+        assert_ne!(
+            (dark.canvas.r(), dark.canvas.g(), dark.canvas.b()),
+            (light.canvas.r(), light.canvas.g(), light.canvas.b()),
+            "canvas tracks the theme",
+        );
+        assert_ne!(
+            (dark.text.r(), dark.text.g(), dark.text.b()),
+            (light.text.r(), light.text.g(), light.text.b()),
+            "chrome text tracks the theme",
+        );
+    }
+
+    /// The paper sheet is deliberately a *light* tone in every theme so the
+    /// dark-authored document ink stays readable (see the `PAPER_*` convention).
+    #[test]
+    fn paper_stays_light_for_readable_ink_in_every_theme() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let cc = ChromeColors::for_theme(&theme);
+            assert!(
+                luminance(cc.paper) >= 0.85,
+                "paper must stay light (got luminance {:.2}) so ink contrasts",
+                luminance(cc.paper),
+            );
+            // The default paper ink is dark — confirm it actually contrasts.
+            assert!(
+                luminance(cc.paper) - luminance(PAPER_INK) > 0.5,
+                "paper/ink contrast must be ample",
+            );
+        }
+    }
+
+    /// The whole five-pass draw path must run (and stash the themed chrome on the
+    /// widget) without panicking under light, dark, AND high-contrast palettes.
+    #[test]
+    fn draw_path_reads_theme_and_does_not_panic_in_any_mode() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let (mut state, mut wp) = populated();
+            let cc = pipeline_draw_themed(&mut wp, &mut state, 1100, 760, &theme);
+            // The widget's live chrome must equal the theme's mapping — i.e. the
+            // production `draw` resolved it from the passed-in `theme`.
+            assert_eq!(cc.canvas, theme.tokens.colors.surfaces.base);
+            assert_eq!(cc.bar, theme.tokens.colors.surfaces.raised);
+            assert_eq!(cc.accent, theme.accent_primary);
+        }
     }
 
     #[test]
@@ -4003,6 +6432,82 @@ mod tests {
         wp.model_mut().insert_str(&mut state.doc, "World");
         pipeline_draw(&mut wp, &mut state, 1000, 700);
         assert_eq!(wp.laid.len(), 2, "draw laid out both paragraphs");
+    }
+
+    /// Select `[start, end)` chars of the (single) caret block.
+    fn select_range(wp: &mut WordProcessorWidget, start: usize, end: usize) {
+        let block = wp.model().caret.block.clone();
+        wp.model_mut().set_caret(Caret { block: block.clone(), offset: start });
+        wp.model_mut().set_anchor();
+        wp.model_mut().set_caret(Caret { block, offset: end });
+    }
+
+    #[test]
+    fn highlight_mark_yields_background_span() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "hello world");
+        select_range(&mut wp, 0, 5);
+        wp.model_mut().set_highlight(&mut state.doc, "#fff35c");
+        wp.refresh_blocks(&state.doc);
+        let b = wp.blocks.iter().find(|b| b.text == "hello world").expect("block present");
+        let (runs, _, _) = block_runs(b);
+        // The first run ("hello") carries the highlight as a background band.
+        let first = &runs[0];
+        assert_eq!(first.text, "hello");
+        assert_eq!(first.background, Some([0xff, 0xf3, 0x5c]), "highlight maps to RichSpan.background");
+        // The tail run (" world") has no highlight.
+        assert!(runs.iter().any(|r| r.text.contains("world") && r.background.is_none()), "unhighlighted tail has no band");
+    }
+
+    #[test]
+    fn super_mark_yields_super_baseline() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "x2");
+        select_range(&mut wp, 1, 2); // the "2"
+        wp.model_mut().toggle_super(&mut state.doc);
+        wp.refresh_blocks(&state.doc);
+        let b = wp.blocks.iter().find(|b| b.text == "x2").expect("block present");
+        let (runs, _, _) = block_runs(b);
+        let sup = runs.iter().find(|r| r.text == "2").expect("the '2' run");
+        assert_eq!(sup.baseline, ui::richtext::BaselineShift::Super, "super mark maps to BaselineShift::Super");
+        let base = runs.iter().find(|r| r.text == "x").expect("the 'x' run");
+        assert_eq!(base.baseline, ui::richtext::BaselineShift::None, "unmarked run stays on the baseline");
+    }
+
+    #[test]
+    fn line_spacing_2x_shapes_a_taller_layout() {
+        // A wrapped multi-line paragraph: single vs double spacing on the SAME
+        // production path (`block_line_spacing` → `RichTextLayout::shape`'s
+        // line_height_mult). Double spacing must produce a strictly taller layout.
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        let long = "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua";
+        wp.model_mut().insert_str(&mut state.doc, long);
+
+        // Single-spaced layout via the production draw pass.
+        pipeline_draw(&mut wp, &mut state, 700, 700);
+        let single_h = wp.laid.iter().find(|l| l.text == long).map(|l| l.height).expect("laid block");
+        assert_eq!(block_line_spacing(wp.blocks.iter().find(|b| b.text == long).unwrap()), 1.0, "default 1.0");
+
+        // Now set double spacing and redraw on the same path.
+        wp.model_mut().set_line_spacing(&mut state.doc, 2.0);
+        wp.refresh_blocks(&state.doc);
+        assert_eq!(
+            block_line_spacing(wp.blocks.iter().find(|b| b.text == long).unwrap()),
+            2.0,
+            "line_spacing=2.0 read from the block attr the layout pass uses"
+        );
+        pipeline_draw(&mut wp, &mut state, 700, 700);
+        let double_h = wp.laid.iter().find(|l| l.text == long).map(|l| l.height).expect("laid block");
+        assert!(
+            double_h > single_h * 1.5,
+            "double line spacing yields a much taller layout: single={single_h}, double={double_h}"
+        );
     }
 
     #[test]
@@ -4246,9 +6751,10 @@ mod tests {
         }
         pipeline_draw(&mut wp, &mut state, 1000, 700);
 
-        // The canvas top sits below the (wrapped) toolbar — the real offset the
-        // pagination cursor starts from.
-        let page_top = wp.toolbar_height(1000.0) + PAGE_TOP;
+        // The canvas top sits below the (wrapped) toolbar AND the ruler band
+        // (on by default) — the real offset the pagination cursor starts from.
+        let ruler_h = if wp.ruler_on { RULER_H } else { 0.0 };
+        let page_top = wp.toolbar_height(1000.0) + ruler_h + PAGE_TOP;
         let pct = |i: usize| page_top + i as f64 * page_pitch + mar; // page content top
         let pcb = |i: usize| page_top + i as f64 * page_pitch + letter_h - mar; // bottom margin
         let page_of = |y: f64| ((y - page_top) / page_pitch).floor() as i64;
@@ -4298,7 +6804,8 @@ mod tests {
 
         // The footer is loaded from the snapshot and spans >1 page.
         assert_eq!(wp.footer.len(), 1, "the footer block is materialized into the widget");
-        let max_page = wp.laid.iter().map(|l| ((l.y_top + wp.scroll_y - (wp.toolbar_height(1000.0) + PAGE_TOP)) / (MAX_PAGE_W * LETTER_RATIO + PAGE_GAP)).floor() as i64).max().unwrap();
+        let ruler_h = if wp.ruler_on { RULER_H } else { 0.0 };
+        let max_page = wp.laid.iter().map(|l| ((l.y_top + wp.scroll_y - (wp.toolbar_height(1000.0) + ruler_h + PAGE_TOP)) / (MAX_PAGE_W * LETTER_RATIO + PAGE_GAP)).floor() as i64).max().unwrap();
         assert!(max_page >= 1, "the document spans more than one page (got {max_page})");
 
         // The production substitution path renders the page number per page: the
@@ -4330,7 +6837,8 @@ mod tests {
         wp.model_mut().insert_str(&mut state.doc, "This paragraph is forced onto page two.");
         pipeline_draw(&mut wp, &mut state, 1000, 700);
 
-        let page_top = wp.toolbar_height(1000.0) + PAGE_TOP;
+        let ruler_h = if wp.ruler_on { RULER_H } else { 0.0 };
+        let page_top = wp.toolbar_height(1000.0) + ruler_h + PAGE_TOP;
         let pct = |i: usize| page_top + i as f64 * page_pitch + mar; // page content top
         let page_of = |y: f64| ((y - page_top) / page_pitch).floor() as i64;
 
@@ -4894,5 +7402,1302 @@ mod tests {
         let nums = note_numbering(&wp.blocks);
         assert_eq!(nums.get(n_first.as_str()), Some(&1), "the earlier marker is #1 by document order");
         assert_eq!(nums.get(n_second.as_str()), Some(&2), "the later marker is #2");
+    }
+
+    /// Build a single-paragraph document with `text`, returning the drawn widget
+    /// plus its `ui::State` and the paragraph's block id. The caller mutates the
+    /// doc (adding comments/changes) via a `DocMut`, then re-draws and inspects.
+    fn doc_with_paragraph(text: &str) -> (WordProcessorWidget, ui::State, qdoc::Containers, qdoc::IdGen, String) {
+        let mut state = ui::State::new();
+        let c = qdoc::model::init(&mut state.doc, &state.root);
+        let mut ids = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
+        let bid;
+        {
+            let mut dm = qdoc::DocMut { doc: &mut state.doc, c: &c, ids: &mut ids };
+            bid = dm.insert_block(None, "paragraph");
+            dm.splice_text(&bid, 0, 0, text);
+        }
+        state.doc.commit();
+        let wp = WordProcessorWidget::new();
+        (wp, state, c, ids, bid)
+    }
+
+    #[test]
+    fn comment_range_computes_a_highlight_rect() {
+        // "hello world" with a comment over the word "world" (chars 6..11).
+        let (mut wp, mut state, c, mut ids, bid) = doc_with_paragraph("hello world");
+        {
+            let mut dm = qdoc::DocMut { doc: &mut state.doc, c: &c, ids: &mut ids };
+            dm.add_comment(&bid, 6, 11, "Ada", "Reword this");
+        }
+        state.doc.commit();
+        pipeline_draw(&mut wp, &mut state, 1000, 900);
+
+        // The comment is materialized and anchored to the body range.
+        assert_eq!(wp.comments.len(), 1, "the comment is materialized into the widget");
+        assert_eq!(wp.comments[0].author, "Ada");
+
+        // The production helper recovers the commented byte range from the block's
+        // `comment` mark (this is exactly what the draw pass calls).
+        let b = wp.blocks.iter().find(|b| b.id == bid).expect("block present");
+        let ranges = block_comment_ranges(b);
+        assert_eq!(ranges.len(), 1, "one comment range over the block");
+        let (bs, be, cid) = &ranges[0];
+        assert_eq!((*bs, *be), (6, 11), "byte range covers 'world'");
+        assert_eq!(cid, &wp.comments[0].id, "range carries the comment id");
+
+        // The draw pass maps that byte range → on-screen highlight rects via the
+        // shaped layout's `selection_rects`. Assert a non-empty rect with width.
+        let (_, lay) = wp.layout_cache.get(&bid).expect("shaped layout cached");
+        let rects = lay.selection_rects(*bs, *be);
+        assert!(!rects.is_empty(), "the commented range computes a highlight rect");
+        assert!(rects[0].2 > rects[0].0, "the highlight rect has positive width");
+    }
+
+    #[test]
+    fn tracked_insert_underlines_colored_and_delete_strikes() {
+        // "keep gone": flag "keep" (0..4) as a tracked insertion and "gone" (5..9)
+        // as a tracked deletion, via the production tracked-change helpers.
+        let (mut wp, mut state, c, mut ids, bid) = doc_with_paragraph("keep gone");
+        let (ins_id, del_id);
+        {
+            let mut dm = qdoc::DocMut { doc: &mut state.doc, c: &c, ids: &mut ids };
+            // "keep" is already in the block; mark it as a tracked insertion.
+            ins_id = dm.insert_change(qdoc::ChangeKind::Ins, "Ada", "");
+            dm.add_change_mark(qdoc::ChangeKind::Ins, &bid, 0, 4, &ins_id);
+            // "gone" stays in the doc but is flagged for deletion.
+            del_id = dm.track_delete(&bid, 5, 9, "Ada", "");
+        }
+        state.doc.commit();
+        pipeline_draw(&mut wp, &mut state, 1000, 900);
+
+        // Both changes materialize with their kinds.
+        assert_eq!(wp.changes.len(), 2, "both tracked changes materialized");
+        let ins = wp.changes.iter().find(|ch| ch.id == ins_id).expect("ins change");
+        let del = wp.changes.iter().find(|ch| ch.id == del_id).expect("del change");
+        assert_eq!(ins.kind, qdoc::ChangeKind::Ins);
+        assert_eq!(del.kind, qdoc::ChangeKind::Del);
+
+        let b = wp.blocks.iter().find(|b| b.id == bid).expect("block present");
+
+        // Decoration ranges (the production draw path): ins → underline, del → strike.
+        let (ins_ranges, del_ranges) = block_change_decos(b);
+        assert_eq!(ins_ranges, vec![(0, 4)], "the insertion range underlines 'keep'");
+        assert_eq!(del_ranges, vec![(5, 9)], "the deletion range strikes 'gone'");
+
+        // Both decoration ranges resolve to real on-screen rects via the layout.
+        let (_, lay) = wp.layout_cache.get(&bid).expect("shaped layout cached");
+        assert!(!lay.selection_rects(0, 4).is_empty(), "insertion underline has geometry");
+        assert!(!lay.selection_rects(5, 9).is_empty(), "deletion strike has geometry");
+
+        // Glyph tinting: `block_runs_markup` colours the ins run green and the del
+        // run red (the standard review styling). With markup OFF those runs are
+        // plain (no review colour).
+        let (runs_on, _, _) = block_runs_markup(b, true);
+        assert!(
+            runs_on.iter().any(|r| r.text.contains("keep") && r.color == Some(TRACK_INS_RGB)),
+            "the inserted run is tinted with the insertion review colour"
+        );
+        assert!(
+            runs_on.iter().any(|r| r.text.contains("gone") && r.color == Some(TRACK_DEL_RGB)),
+            "the deleted run is tinted with the deletion review colour"
+        );
+        let (runs_off, _, _) = block_runs_markup(b, false);
+        assert!(
+            runs_off.iter().all(|r| r.color != Some(TRACK_INS_RGB) && r.color != Some(TRACK_DEL_RGB)),
+            "with markup hidden, tracked-change runs render as plain text"
+        );
+    }
+
+    /// Re-materialize the document straight from the CRDT (the production
+    /// snapshot path) so a test asserts on what every reader sees — not on the
+    /// widget's cached copy.
+    fn snapshot(state: &ui::State, c: &qdoc::Containers) -> qdoc::snapshot::DocSnapshot {
+        qdoc::model::materialize(&state.doc, c)
+    }
+
+    #[test]
+    fn accepting_tracked_insertion_clears_its_ins_mark() {
+        // "keep gone": flag "keep" (0..4) as a tracked insertion.
+        let (mut wp, mut state, c, mut ids, bid) = doc_with_paragraph("keep gone");
+        let ins_id = {
+            let mut dm = qdoc::DocMut { doc: &mut state.doc, c: &c, ids: &mut ids };
+            let id = dm.insert_change(qdoc::ChangeKind::Ins, "Ada", "");
+            dm.add_change_mark(qdoc::ChangeKind::Ins, &bid, 0, 4, &id);
+            id
+        };
+        state.doc.commit();
+        pipeline_draw(&mut wp, &mut state, 1000, 900);
+
+        // Before: the change is reported in the materialized snapshot, and the
+        // block carries a decoration range over "keep".
+        let before = snapshot(&state, &c);
+        assert!(before.changes.iter().any(|ch| ch.id == ins_id), "the insertion is a tracked change before accept");
+        let b = before.blocks.iter().find(|b| b.id == bid).unwrap();
+        assert_eq!(block_change_decos(b).0, vec![(0, 4)], "the insertion underlines 'keep' before accept");
+
+        // Accept via the production review-dispatch path (the same call the
+        // margin ✓ button + context menu use).
+        wp.dispatch_review_action(CtxAction::AcceptChange(ins_id.clone()), &mut state.doc);
+
+        // After: the text is kept, but the `ins` mark + change record are gone —
+        // the run is no longer reported as a tracked change anywhere.
+        let after = snapshot(&state, &c);
+        let b = after.blocks.iter().find(|b| b.id == bid).unwrap();
+        assert_eq!(b.text, "keep gone", "accepting an insertion keeps the inserted text");
+        assert!(!after.changes.iter().any(|ch| ch.id == ins_id), "the change record is dropped after accept");
+        assert!(block_change_decos(b).0.is_empty(), "no `ins` decoration remains after accept");
+        assert!(
+            !b.marks.iter().any(|m| m.name == qdoc::schema::MARK_INS),
+            "the `ins` mark is cleared from the block after accept"
+        );
+    }
+
+    #[test]
+    fn accepting_tracked_deletion_removes_the_struck_text() {
+        // "keep gone": flag "gone" (5..9) as a tracked deletion (retained-but-struck).
+        // qdoc semantics: ACCEPTING a deletion applies it (removes the struck text);
+        // REJECTING keeps the text and drops the `del` mark. We assert both arms
+        // on the materialized snapshot (the production read path).
+        let (mut wp, mut state, c, mut ids, bid) = doc_with_paragraph("keep gone");
+        let del_id = {
+            let mut dm = qdoc::DocMut { doc: &mut state.doc, c: &c, ids: &mut ids };
+            dm.track_delete(&bid, 5, 9, "Ada", "")
+        };
+        state.doc.commit();
+        pipeline_draw(&mut wp, &mut state, 1000, 900);
+
+        // Before: the struck text is still present + reported as a change.
+        let before = snapshot(&state, &c);
+        assert!(before.changes.iter().any(|ch| ch.id == del_id), "the deletion is a tracked change before accept");
+        assert_eq!(before.blocks.iter().find(|b| b.id == bid).unwrap().text, "keep gone");
+
+        // Accept the deletion: the struck text is removed.
+        wp.dispatch_review_action(CtxAction::AcceptChange(del_id.clone()), &mut state.doc);
+
+        let after = snapshot(&state, &c);
+        let b = after.blocks.iter().find(|b| b.id == bid).unwrap();
+        assert_eq!(b.text, "keep ", "accepting a deletion removes the struck text");
+        assert!(!after.changes.iter().any(|ch| ch.id == del_id), "the change record is dropped after accept");
+        assert!(
+            block_change_decos(b).1.is_empty(),
+            "no `del` strike decoration remains after accept"
+        );
+    }
+
+    #[test]
+    fn rejecting_tracked_deletion_keeps_the_text_and_drops_the_mark() {
+        // The inverse arm: rejecting a tracked deletion keeps the text (the author
+        // chose NOT to delete) and clears the `del` strike.
+        let (mut wp, mut state, c, mut ids, bid) = doc_with_paragraph("keep gone");
+        let del_id = {
+            let mut dm = qdoc::DocMut { doc: &mut state.doc, c: &c, ids: &mut ids };
+            dm.track_delete(&bid, 5, 9, "Ada", "")
+        };
+        state.doc.commit();
+        pipeline_draw(&mut wp, &mut state, 1000, 900);
+
+        wp.dispatch_review_action(CtxAction::RejectChange(del_id.clone()), &mut state.doc);
+
+        let after = snapshot(&state, &c);
+        let b = after.blocks.iter().find(|b| b.id == bid).unwrap();
+        assert_eq!(b.text, "keep gone", "rejecting a deletion keeps the text");
+        assert!(!after.changes.iter().any(|ch| ch.id == del_id), "the change record is dropped after reject");
+        assert!(
+            block_change_decos(b).1.is_empty(),
+            "the `del` strike decoration is cleared after reject"
+        );
+    }
+
+    #[test]
+    fn deleting_comment_removes_it_and_clears_the_highlight() {
+        // "hello world" with a comment over "world" (chars 6..11).
+        let (mut wp, mut state, c, mut ids, bid) = doc_with_paragraph("hello world");
+        let cid = {
+            let mut dm = qdoc::DocMut { doc: &mut state.doc, c: &c, ids: &mut ids };
+            dm.add_comment(&bid, 6, 11, "Ada", "Reword this")
+        };
+        state.doc.commit();
+        pipeline_draw(&mut wp, &mut state, 1000, 900);
+
+        // Before: the comment is in the snapshot and its highlight range is present.
+        let before = snapshot(&state, &c);
+        assert!(before.comments.iter().any(|cm| cm.id == cid), "the comment exists before resolve");
+        let b = before.blocks.iter().find(|b| b.id == bid).unwrap();
+        assert_eq!(block_comment_ranges(b).len(), 1, "the highlight range exists before resolve");
+
+        // Resolve (delete) via the production review-dispatch path.
+        wp.dispatch_review_action(CtxAction::ResolveComment(cid.clone()), &mut state.doc);
+
+        // After: gone from `comments`, and the anchoring `comment` mark (the
+        // highlight band) is cleared from the block. Body text is untouched.
+        let after = snapshot(&state, &c);
+        let b = after.blocks.iter().find(|b| b.id == bid).unwrap();
+        assert!(!after.comments.iter().any(|cm| cm.id == cid), "the comment is removed from the snapshot after resolve");
+        assert!(block_comment_ranges(b).is_empty(), "the comment highlight is cleared after resolve");
+        assert_eq!(b.text, "hello world", "resolving a comment leaves the commented text intact");
+    }
+
+    #[test]
+    fn accept_all_clears_every_tracked_change() {
+        // Two changes: an insertion over "keep" and a deletion over "gone".
+        let (mut wp, mut state, c, mut ids, bid) = doc_with_paragraph("keep gone");
+        {
+            let mut dm = qdoc::DocMut { doc: &mut state.doc, c: &c, ids: &mut ids };
+            let ins = dm.insert_change(qdoc::ChangeKind::Ins, "Ada", "");
+            dm.add_change_mark(qdoc::ChangeKind::Ins, &bid, 0, 4, &ins);
+            dm.track_delete(&bid, 5, 9, "Ada", "");
+        }
+        state.doc.commit();
+        pipeline_draw(&mut wp, &mut state, 1000, 900);
+        assert_eq!(snapshot(&state, &c).changes.len(), 2, "two tracked changes before Accept All");
+
+        wp.dispatch_review_action(CtxAction::AcceptAllChanges, &mut state.doc);
+
+        // Every change is gone; accepting the insertion kept "keep" and accepting
+        // the deletion removed "gone".
+        let after = snapshot(&state, &c);
+        assert!(after.changes.is_empty(), "no tracked changes remain after Accept All");
+        let b = after.blocks.iter().find(|b| b.id == bid).unwrap();
+        assert_eq!(b.text, "keep ", "Accept All keeps insertions and applies deletions");
+        assert!(b.marks.iter().all(|m| m.name != qdoc::schema::MARK_INS && m.name != qdoc::schema::MARK_DEL));
+    }
+
+    #[test]
+    fn margin_card_buttons_register_review_hits() {
+        // A drawn frame with one comment + one tracked change populates clickable
+        // affordances in `review_hits` (the production hit list the left-click
+        // handler dispatches through).
+        let (mut wp, mut state, c, mut ids, bid) = doc_with_paragraph("keep gone");
+        let (cid, ins_id);
+        {
+            let mut dm = qdoc::DocMut { doc: &mut state.doc, c: &c, ids: &mut ids };
+            cid = dm.add_comment(&bid, 0, 4, "Ada", "look");
+            ins_id = dm.insert_change(qdoc::ChangeKind::Ins, "Ada", "");
+            dm.add_change_mark(qdoc::ChangeKind::Ins, &bid, 5, 9, &ins_id);
+        }
+        state.doc.commit();
+        pipeline_draw(&mut wp, &mut state, 1200, 900);
+
+        let has = |pred: &dyn Fn(&CtxAction) -> bool| wp.review_hits.iter().any(|(r, a)| pred(a) && r.width() > 0.0 && r.height() > 0.0);
+        assert!(has(&|a| matches!(a, CtxAction::ResolveComment(id) if id == &cid)), "a Resolve affordance for the comment");
+        assert!(has(&|a| matches!(a, CtxAction::AcceptChange(id) if id == &ins_id)), "an Accept ✓ affordance for the change");
+        assert!(has(&|a| matches!(a, CtxAction::RejectChange(id) if id == &ins_id)), "a Reject ✗ affordance for the change");
+    }
+
+    #[test]
+    fn markup_toggle_hides_comment_ranges_and_changes() {
+        let (mut wp, mut state, c, mut ids, bid) = doc_with_paragraph("hello world");
+        {
+            let mut dm = qdoc::DocMut { doc: &mut state.doc, c: &c, ids: &mut ids };
+            dm.add_comment(&bid, 0, 5, "Ada", "note");
+            let ci = dm.insert_change(qdoc::ChangeKind::Ins, "Ada", "");
+            dm.add_change_mark(qdoc::ChangeKind::Ins, &bid, 6, 11, &ci);
+        }
+        state.doc.commit();
+
+        // Default ON: a comment marker is collected for the right-margin card.
+        assert!(wp.markup_enabled(), "markup defaults ON");
+        pipeline_draw(&mut wp, &mut state, 1000, 900);
+        let b = wp.blocks.iter().find(|b| b.id == bid).unwrap().clone();
+        assert_eq!(block_comment_ranges(&b).len(), 1, "comment range present in the data");
+
+        // Toggle OFF: the markup-gated runs lose their review colour, proving the
+        // draw path suppresses tracked-change styling.
+        wp.toggle_markup();
+        assert!(!wp.markup_enabled(), "toggle flips the flag");
+        let (runs_off, _, _) = block_runs_markup(&b, wp.show_markup);
+        assert!(
+            runs_off.iter().all(|r| r.color != Some(TRACK_INS_RGB)),
+            "no review colour is applied while markup is hidden"
+        );
+    }
+
+    // ---- outline / navigation pane + table of contents ----------------------
+
+    /// Build a document with several headings (some on later pages) interleaved
+    /// with body paragraphs, returning `(wp, state)` already drawn at `w×h`.
+    fn doc_with_headings(w: u32, h: u32) -> (WordProcessorWidget, ui::State) {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        let add_heading = |wp: &mut WordProcessorWidget, st: &mut ui::State, text: &str, level: i64| {
+            wp.model_mut().insert_str(&mut st.doc, text);
+            wp.model_mut().set_paragraph_style(&mut st.doc, "heading", Some(level), None);
+            wp.model_mut().enter(&mut st.doc);
+            wp.model_mut().set_paragraph_style(&mut st.doc, "paragraph", None, None);
+        };
+        add_heading(&mut wp, &mut state, "Introduction", 1);
+        for i in 0..30 {
+            wp.model_mut().insert_str(&mut state.doc, &format!("Intro body line {i} with enough words to fill the line."));
+            wp.model_mut().enter(&mut state.doc);
+        }
+        add_heading(&mut wp, &mut state, "Background", 2);
+        for i in 0..30 {
+            wp.model_mut().insert_str(&mut state.doc, &format!("Background body line {i} with enough words to fill it."));
+            wp.model_mut().enter(&mut state.doc);
+        }
+        add_heading(&mut wp, &mut state, "Conclusion", 1);
+        wp.model_mut().insert_str(&mut state.doc, "The end.");
+        pipeline_draw(&mut wp, &mut state, w, h);
+        (wp, state)
+    }
+
+    #[test]
+    fn outline_has_one_entry_per_heading_with_levels_in_order() {
+        let (wp, _state) = doc_with_headings(1000, 700);
+        let entries = wp.outline_entries();
+        assert_eq!(entries.iter().map(|e| e.text.as_str()).collect::<Vec<_>>(), vec!["Introduction", "Background", "Conclusion"], "one entry per heading in document order");
+        assert_eq!(entries.iter().map(|e| e.level).collect::<Vec<_>>(), vec![1, 2, 1], "levels preserved");
+    }
+
+    /// Drive a real left-click at `pt` through the production `handle_event`.
+    fn left_click(wp: &mut WordProcessorWidget, state: &mut ui::State, pt: Point) {
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let node = NodeId::new(0);
+        let mods = Modifiers::default();
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        // Move the pointer, then press.
+        wp.handle_event(
+            &WindowEvent::CursorMoved { device_id: unsafe { std::mem::zeroed() }, position: (pt.x, pt.y).into() },
+            1.0, &mods, &mut state.doc, &state.root, &mut handled, &mut focus, node, &taffy,
+        );
+        wp.handle_event(
+            &WindowEvent::MouseInput { device_id: unsafe { std::mem::zeroed() }, state: ElementState::Pressed, button: MouseButton::Left },
+            1.0, &mods, &mut state.doc, &state.root, &mut handled, &mut focus, node, &taffy,
+        );
+    }
+
+    #[test]
+    fn clicking_an_outline_entry_scrolls_the_heading_into_view() {
+        let (mut wp, mut state) = doc_with_headings(1000, 700);
+        // Open the outline pane and redraw so its clickable entries are built.
+        wp.apply_tool(&mut state.doc, ToolAction::ToggleOutline);
+        assert!(wp.outline_open, "outline toggled on");
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+
+        // The last heading ("Conclusion") is far down; it should be off-screen at
+        // the top of the document.
+        let concl = wp.outline_entries().into_iter().find(|h| h.text == "Conclusion").expect("conclusion heading");
+        let (rect, _) = wp.outline_hits.iter().find(|(_, id)| id == &concl.id).expect("conclusion has a clickable outline entry").clone();
+        assert_eq!(wp.scroll_y, 0.0, "starts scrolled to the top");
+
+        // Click the entry; the production handler scrolls that heading into view.
+        let pt = Point::new((rect.x0 + rect.x1) / 2.0, (rect.y0 + rect.y1) / 2.0);
+        left_click(&mut wp, &mut state, pt);
+        assert!(wp.scroll_y > 0.0, "clicking a far-down heading scrolls the document");
+
+        // After redrawing at the new scroll, the heading is laid within the canvas.
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let canvas_top = wp.toolbar_height(1000.0);
+        let canvas_bottom = wp.rect.y1 - STATUS_H - LAYOUT_BAR_H;
+        let laid = wp.laid.iter().find(|l| l.id == concl.id).expect("conclusion is laid out after scrolling to it");
+        assert!(laid.y_top >= canvas_top && laid.y_top <= canvas_bottom, "the clicked heading is visible in the canvas (y_top={}, canvas=[{canvas_top},{canvas_bottom}])", laid.y_top);
+    }
+
+    #[test]
+    fn generate_toc_inserts_one_marked_block_per_heading() {
+        let (mut wp, mut state) = doc_with_headings(1000, 700);
+        let heading_count = wp.outline_entries().len();
+        wp.apply_tool(&mut state.doc, ToolAction::InsertToc);
+
+        let c = wp.model().containers.clone().unwrap();
+        let snap = qdoc::model::materialize(&state.doc, &c);
+        let toc: Vec<_> = snap.blocks.iter().filter(|b| crate::word_processor::block_is_toc(b)).collect();
+        assert_eq!(toc.len(), heading_count, "one toc-marked block per heading (one line each)");
+        // The TOC sits at the document top, in heading order, each line carrying
+        // the heading text.
+        assert!(snap.blocks[0].text.contains("Introduction"), "TOC begins at the top with the first heading");
+        assert!(toc.iter().any(|b| b.text.contains("Conclusion")), "every heading is listed");
+        assert!(wp.needs_commit, "TOC generation is an undo point");
+    }
+
+    #[test]
+    fn regenerating_toc_replaces_rather_than_duplicating() {
+        let (mut wp, mut state) = doc_with_headings(1000, 700);
+        let heading_count = wp.outline_entries().len();
+        wp.apply_tool(&mut state.doc, ToolAction::InsertToc);
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        // Regenerate.
+        wp.apply_tool(&mut state.doc, ToolAction::InsertToc);
+
+        let c = wp.model().containers.clone().unwrap();
+        let snap = qdoc::model::materialize(&state.doc, &c);
+        let toc_count = snap.blocks.iter().filter(|b| crate::word_processor::block_is_toc(b)).count();
+        assert_eq!(toc_count, heading_count, "regenerating replaces the prior TOC (no duplicate)");
+        // The headings themselves are untouched (still derive the same outline).
+        assert_eq!(wp.outline_entries().len(), heading_count, "headings unchanged by TOC regeneration");
+    }
+
+    // ---- new-from-template picker -----------------------------------------
+
+    /// The materialized first block of the document in `state`.
+    fn first_block(wp: &WordProcessorWidget, state: &ui::State) -> Option<BlockView> {
+        let c = wp.model().containers.clone()?;
+        qdoc::model::materialize(&state.doc, &c).blocks.into_iter().next()
+    }
+
+    /// A blank, bound widget over a fresh `ui::State`.
+    fn bound() -> (ui::State, WordProcessorWidget) {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        (state, wp)
+    }
+
+    /// The "New ▾" toolbar button is present and registered as a click target.
+    #[test]
+    fn new_menu_button_is_in_the_toolbar() {
+        let (mut state, mut wp) = bound();
+        pipeline_draw(&mut wp, &mut state, 1200, 700);
+        assert!(
+            wp.toolbar.iter().any(|(a, _)| *a == ToolAction::NewMenu),
+            "the New ▾ button is a registered toolbar action"
+        );
+    }
+
+    /// Opening the "New ▾" menu lists every template by title; selecting one
+    /// replaces the document content with that template's first heading — driven
+    /// through the production `apply_tool` → menu → `dispatch_new_menu` path.
+    #[test]
+    fn selecting_a_template_replaces_the_document_content() {
+        let (mut state, mut wp) = bound();
+        // Author some pre-existing content so we can prove it's actually replaced.
+        wp.model_mut().insert_str(&mut state.doc, "Pre-existing rough draft");
+        wp.refresh_blocks(&state.doc);
+        assert_eq!(
+            first_block(&wp, &state).map(|b| b.text),
+            Some("Pre-existing rough draft".to_string()),
+            "the document starts with the user's own text"
+        );
+
+        // Open the picker via the real toolbar action.
+        wp.apply_tool(&mut state.doc, ToolAction::NewMenu);
+        assert!(wp.new_menu.is_open(), "the New ▾ menu opens");
+        let labels: Vec<String> =
+            wp.new_menu.items().iter().filter_map(|i| i.label().map(str::to_string)).collect();
+        let titles: Vec<&str> = crate::Template::all().iter().map(|t| t.title()).collect();
+        assert_eq!(labels, titles, "the menu lists every template by title, in order");
+
+        // Select "Report" (its first heading is a known, stable string).
+        let report_idx = crate::Template::all().iter().position(|t| *t == crate::Template::Report).unwrap();
+        wp.dispatch_new_menu(report_idx, &mut state.doc);
+        assert!(!wp.new_menu.is_open(), "the menu closes after a selection");
+
+        let first = first_block(&wp, &state).expect("the templated document has a first block");
+        assert_eq!(first.kind, "heading", "the report template opens with a heading");
+        assert_eq!(first.text, "Report Title", "content is replaced by the template's first heading");
+        // The old draft text is gone — the body is the template, not an append.
+        let c = wp.model().containers.clone().unwrap();
+        let all_text: String =
+            qdoc::model::materialize(&state.doc, &c).blocks.iter().map(|b| b.text.clone()).collect();
+        assert!(!all_text.contains("rough draft"), "the prior content was replaced, not appended");
+        assert!(wp.modified, "a template swap marks the document modified");
+    }
+
+    // ---- autosave / crash-recovery ----------------------------------------
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "editor-wp-recovery-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    /// Drive a real keypress (single typed character) through the production
+    /// `handle_event` keyboard path. winit's `KeyEvent` has a private
+    /// `platform_specific` field, so (per the shell's `e2e_shell_flows` pattern)
+    /// zero-init the whole struct and overwrite the public fields we read.
+    fn type_char(wp: &mut WordProcessorWidget, state: &mut ui::State, ch: char) {
+        use winit::keyboard::{NativeKeyCode, PhysicalKey, SmolStr};
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let node = NodeId::new(0);
+        let mods = Modifiers::default();
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        // SAFETY: identical to the shell's KeyEvent synthesis — all public fields
+        // tolerate the zero bit pattern (Option → None, enums → first variant),
+        // and we overwrite the ones `handle_event` reads (`logical_key`/`text`/
+        // `state`). The private `platform_specific` field is plain/zero-sized.
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        ev.logical_key = Key::Character(SmolStr::new(ch.to_string()));
+        ev.text = Some(SmolStr::new(ch.to_string()));
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        wp.handle_event(
+            &WindowEvent::KeyboardInput {
+                device_id: unsafe { std::mem::zeroed() },
+                event: ev,
+                is_synthetic: false,
+            },
+            1.0, &mods, &mut state.doc, &state.root, &mut handled, &mut focus, node, &taffy,
+        );
+    }
+
+    /// Autosave: typing past the edit threshold (through the production keyboard
+    /// path) writes a recovery copy to the widget's recovery dir. A real save then
+    /// clears it. Asserts on file existence (the production path), not pixels.
+    #[test]
+    fn autosave_writes_recovery_then_save_clears_it() {
+        let dir = temp_dir("autosave");
+        let (mut state, mut wp) = bound();
+        wp.set_recovery_dir(dir.clone());
+        // Point the document at a real (temp) save target so `save` succeeds and
+        // `recovery_path` is keyed off a stable document path.
+        let doc_path = dir.join("doc.md");
+        wp.set_file(doc_path.clone(), WpFormat::Markdown);
+
+        let recovery_path = wp.recovery_path();
+        assert!(!recovery_path.exists(), "no recovery file before any edits");
+
+        // Type more than AUTOSAVE_EDIT_THRESHOLD characters through `handle_event`.
+        for _ in 0..(AUTOSAVE_EDIT_THRESHOLD as usize + 2) {
+            type_char(&mut wp, &mut state, 'x');
+        }
+        assert!(
+            recovery_path.exists(),
+            "a recovery copy is written once the edit threshold is crossed ({})",
+            recovery_path.display()
+        );
+        // The recovery copy is a faithful Markdown snapshot (re-imports our text).
+        let recovered = std::fs::read(&recovery_path).expect("read recovery copy");
+        assert!(
+            String::from_utf8_lossy(&recovered).contains('x'),
+            "the recovery copy holds the typed content"
+        );
+
+        // A real save supersedes and removes the recovery copy.
+        wp.save(&state.doc);
+        assert!(doc_path.exists(), "the document saved to its real path");
+        assert!(!recovery_path.exists(), "a successful save clears the recovery copy");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `check_for_recovery` surfaces the banner (Restore/Discard) when a recovery
+    /// copy exists for the open document; Restore re-imports its content in place.
+    #[test]
+    fn check_for_recovery_surfaces_banner_and_restore_loads_it() {
+        let dir = temp_dir("restore");
+        let (mut state, mut wp) = bound();
+        wp.set_recovery_dir(dir.clone());
+        let doc_path = dir.join("notes.md");
+        wp.set_file(doc_path.clone(), WpFormat::Markdown);
+
+        // Stage a recovery copy on disk (as a previous, crashed session would).
+        let rp = wp.recovery_path();
+        std::fs::create_dir_all(rp.parent().unwrap()).unwrap();
+        std::fs::write(&rp, b"# Recovered Heading\n\nUnsaved work\n").unwrap();
+
+        assert!(wp.check_for_recovery(), "a present recovery copy stages an offer");
+        assert!(wp.recovery.is_some(), "the recovery banner is now active");
+
+        // Draw so the banner's Restore/Discard buttons are registered, then click
+        // Restore through the production handler.
+        pipeline_draw(&mut wp, &mut state, 1200, 700);
+        let (_, rrect) = wp
+            .recovery_buttons
+            .iter()
+            .find(|(a, _)| *a == RecoveryAction::Restore)
+            .expect("Restore button is drawn")
+            .clone();
+        left_click(&mut wp, &mut state, Point::new((rrect.x0 + rrect.x1) / 2.0, (rrect.y0 + rrect.y1) / 2.0));
+
+        assert!(wp.recovery.is_none(), "the banner is dismissed after Restore");
+        assert_eq!(
+            first_block(&wp, &state).map(|b| b.text),
+            Some("Recovered Heading".to_string()),
+            "Restore re-imported the recovery copy into the live document"
+        );
+        assert!(!rp.exists(), "the recovery file is consumed by Restore");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Discard dismisses the banner and deletes the recovery file without touching
+    /// the document.
+    #[test]
+    fn discard_recovery_removes_the_file_and_banner() {
+        let dir = temp_dir("discard");
+        let (mut state, mut wp) = bound();
+        wp.set_recovery_dir(dir.clone());
+        wp.set_file(dir.join("d.md"), WpFormat::Markdown);
+        wp.model_mut().insert_str(&mut state.doc, "Keep me");
+        wp.refresh_blocks(&state.doc);
+
+        let rp = wp.recovery_path();
+        std::fs::create_dir_all(rp.parent().unwrap()).unwrap();
+        std::fs::write(&rp, b"# Stale\n").unwrap();
+        assert!(wp.check_for_recovery());
+
+        pipeline_draw(&mut wp, &mut state, 1200, 700);
+        let (_, drect) = wp
+            .recovery_buttons
+            .iter()
+            .find(|(a, _)| *a == RecoveryAction::Discard)
+            .expect("Discard button is drawn")
+            .clone();
+        left_click(&mut wp, &mut state, Point::new((drect.x0 + drect.x1) / 2.0, (drect.y0 + drect.y1) / 2.0));
+
+        assert!(wp.recovery.is_none(), "Discard dismisses the banner");
+        assert!(!rp.exists(), "Discard deletes the recovery file");
+        assert_eq!(
+            first_block(&wp, &state).map(|b| b.text),
+            Some("Keep me".to_string()),
+            "Discard leaves the open document untouched"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The recovery path is stable for a given document and distinct per document.
+    #[test]
+    fn widget_recovery_path_is_stable_and_per_document() {
+        let dir = temp_dir("stable");
+        let mut a = WordProcessorWidget::new();
+        a.set_recovery_dir(dir.clone());
+        a.set_file(std::path::PathBuf::from("/docs/a.md"), WpFormat::Markdown);
+        let pa1 = a.recovery_path();
+        let pa2 = a.recovery_path();
+        assert_eq!(pa1, pa2, "stable across calls for the same document");
+        assert!(pa1.starts_with(&dir), "honours the widget's recovery dir override");
+
+        let mut b = WordProcessorWidget::new();
+        b.set_recovery_dir(dir.clone());
+        b.set_file(std::path::PathBuf::from("/docs/b.md"), WpFormat::Markdown);
+        assert_ne!(pa1, b.recovery_path(), "different documents get different recovery files");
+    }
+
+    // ---- horizontal ruler ----------------------------------------------------
+
+    /// Drive a real Tab keypress through the production `handle_event` keyboard
+    /// path (no `text`, just the named key).
+    fn press_tab(wp: &mut WordProcessorWidget, state: &mut ui::State) {
+        use winit::keyboard::{NativeKeyCode, PhysicalKey};
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let node = NodeId::new(0);
+        let mods = Modifiers::default();
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        ev.logical_key = Key::Named(NamedKey::Tab);
+        ev.text = None;
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        wp.handle_event(
+            &WindowEvent::KeyboardInput { device_id: unsafe { std::mem::zeroed() }, event: ev, is_synthetic: false },
+            1.0, &mods, &mut state.doc, &state.root, &mut handled, &mut focus, node, &taffy,
+        );
+    }
+
+    /// The ruler is on by default and toggles off/on via the toolbar action.
+    #[test]
+    fn ruler_defaults_on_and_toggles() {
+        let (mut state, mut wp) = bound();
+        assert!(wp.ruler_on, "ruler defaults ON (discoverable)");
+        wp.apply_tool(&mut state.doc, ToolAction::ToggleRuler);
+        assert!(!wp.ruler_on, "toolbar toggle hides the ruler");
+        wp.apply_tool(&mut state.doc, ToolAction::ToggleRuler);
+        assert!(wp.ruler_on, "toggles back on");
+    }
+
+    /// The ruler computes correct marker x-positions from the margins + the caret
+    /// paragraph's indent, and those positions scale with zoom about the anchor.
+    #[test]
+    fn ruler_marker_positions_track_margins_indent_and_zoom() {
+        let (mut state, mut wp) = bound();
+        wp.model_mut().insert_str(&mut state.doc, "para");
+        // Set a known left/hanging indent + first-line indent on the caret block.
+        let block = wp.model().caret().block.clone();
+        wp.model_mut().set_block_indent(&mut state.doc, &block, 40.0);
+        wp.model_mut().set_block_first_line_indent(&mut state.doc, &block, 18.0);
+        pipeline_draw(&mut wp, &mut state, 1200, 760);
+
+        let page_x = wp.page_rect.x0;
+        let page_w = wp.page_rect.width();
+        assert!((page_w - MAX_PAGE_W).abs() < 1e-6, "page is the fixed US-Letter width");
+
+        // At zoom 1.0 content-x == screen-x (anchor scale is identity).
+        assert!((wp.zoom - 1.0).abs() < 1e-6, "default zoom");
+        let markers = wp.ruler_markers(page_x, page_w);
+        let mx = |m: RulerMarker| markers.iter().find(|(k, _)| *k == m).map(|(_, x)| *x).unwrap();
+
+        let m = wp.margins;
+        assert!((mx(RulerMarker::MarginLeft) - (page_x + m.left)).abs() < 1e-6, "left margin marker at the left text edge");
+        assert!((mx(RulerMarker::MarginRight) - (page_x + page_w - m.right)).abs() < 1e-6, "right margin marker at the right text edge");
+        assert!((mx(RulerMarker::IndentLeft) - (page_x + m.left + 40.0)).abs() < 1e-6, "left-indent marker offset by the block indent");
+        assert!((mx(RulerMarker::IndentFirst) - (page_x + m.left + 40.0 + 18.0)).abs() < 1e-6, "first-line marker offset by indent + first-line indent");
+
+        // Zooming in moves the markers further from the anchor by the zoom factor.
+        wp.set_zoom(2.0);
+        pipeline_draw(&mut wp, &mut state, 1200, 760);
+        let anchor = wp.zoom_anchor.x;
+        let zoomed = wp.ruler_markers(wp.page_rect.x0, wp.page_rect.width());
+        let zx = |m: RulerMarker| zoomed.iter().find(|(k, _)| *k == m).map(|(_, x)| *x).unwrap();
+        // The left-margin marker's screen position = anchor + (content - anchor)*zoom.
+        let content_left = wp.page_rect.x0 + wp.margins.left;
+        let expect = anchor + (content_left - anchor) * 2.0;
+        assert!((zx(RulerMarker::MarginLeft) - expect).abs() < 1e-6, "marker scales with zoom about the anchor");
+    }
+
+    /// Dragging the left-margin marker on the ruler updates `self.margins.left`
+    /// (with a live preview) and persists it through the production path.
+    #[test]
+    fn dragging_left_margin_marker_updates_margins_left() {
+        let (mut state, mut wp) = bound();
+        wp.model_mut().insert_str(&mut state.doc, "para");
+        pipeline_draw(&mut wp, &mut state, 1200, 760);
+
+        let page_x = wp.page_rect.x0;
+        let page_w = wp.page_rect.width();
+        let before = wp.margins.left;
+
+        // Grab the left-margin marker (press on its screen x within the band).
+        let markers = wp.ruler_markers(page_x, page_w);
+        let marker_x = markers.iter().find(|(k, _)| *k == RulerMarker::MarginLeft).map(|(_, x)| *x).unwrap();
+        wp.pointer = Point::new(marker_x, (wp.ruler_rect.y0 + wp.ruler_rect.y1) / 2.0);
+        wp.ruler_press(&mut state.doc);
+        assert_eq!(wp.ruler_drag.map(|d| d.marker), Some(RulerMarker::MarginLeft), "grabbed the left-margin marker");
+
+        // Drag it right (toward the page center): a wider left margin.
+        let target_content_x = page_x + 120.0; // 120 px from the page's left edge
+        wp.pointer = Point::new(wp.content_x_to_screen(target_content_x), wp.pointer.y);
+        wp.ruler_drag_move();
+        assert!((wp.margins.left - 120.0).abs() < 1.0, "live preview updated margins.left to ~120 (got {})", wp.margins.left);
+        assert_ne!(wp.margins.left, before, "the left margin actually changed");
+
+        // Release persists into the document (a fresh widget reloads the value).
+        wp.ruler_drag_release(&mut state.doc);
+        assert!(wp.ruler_drag.is_none(), "drag ended on release");
+        let mut wp2 = WordProcessorWidget::new();
+        wp2.sync(&mut state.doc, &state.root);
+        assert!((wp2.margins.left - wp.margins.left).abs() < 1e-6, "the dragged left margin persisted to the document");
+    }
+
+    /// Dragging the left-indent marker sets the caret block's `indent` attr, which
+    /// reflows the paragraph's text-left (`text_x`) by that amount.
+    #[test]
+    fn dragging_indent_marker_sets_block_indent_and_reflows() {
+        let (mut state, mut wp) = bound();
+        wp.model_mut().insert_str(&mut state.doc, "indent me");
+        pipeline_draw(&mut wp, &mut state, 1200, 760);
+        let block = wp.model().caret().block.clone();
+        let x_before = wp.laid.iter().find(|l| l.id == block).unwrap().text_x;
+
+        let page_x = wp.page_rect.x0;
+        let page_w = wp.page_rect.width();
+        let markers = wp.ruler_markers(page_x, page_w);
+        let mxl = markers.iter().find(|(k, _)| *k == RulerMarker::IndentLeft).map(|(_, x)| *x).unwrap();
+        // The hanging/left-indent wedge lives in the lower third of the band.
+        wp.pointer = Point::new(mxl, wp.ruler_rect.y1 - 2.0);
+        wp.ruler_press(&mut state.doc);
+        assert_eq!(wp.ruler_drag.map(|d| d.marker), Some(RulerMarker::IndentLeft));
+
+        // Drag the indent marker 60 px right of the left text margin.
+        let target = page_x + wp.margins.left + 60.0;
+        wp.pointer = Point::new(wp.content_x_to_screen(target), wp.pointer.y);
+        wp.ruler_drag_move();
+        wp.ruler_drag_release(&mut state.doc);
+
+        // The block's `indent` attr was persisted (~60 px).
+        let stored = wp.model().block_indent(&state.doc, &block);
+        assert!((stored - 60.0).abs() < 1.0, "indent persisted to the block attr (got {stored})");
+
+        // A redraw reflows the paragraph's text-left by the new indent.
+        pipeline_draw(&mut wp, &mut state, 1200, 760);
+        let x_after = wp.laid.iter().find(|l| l.id == block).unwrap().text_x;
+        assert!((x_after - x_before - 60.0).abs() < 1.0, "text reflowed right by the indent (before {x_before}, after {x_after})");
+    }
+
+    /// Clicking the ruler in the page span adds a tab stop on the caret paragraph;
+    /// pressing Tab then advances the caret to it (instead of inserting spaces).
+    #[test]
+    fn clicking_ruler_adds_tab_stop_and_tab_advances_to_it() {
+        let (mut state, mut wp) = bound();
+        wp.model_mut().insert_str(&mut state.doc, "ab");
+        pipeline_draw(&mut wp, &mut state, 1200, 760);
+        let block = wp.model().caret().block.clone();
+        assert!(wp.model().block_tab_stops(&state.doc, &block).is_empty(), "no tab stops initially");
+
+        // Click on the ruler, well inside the text region (no marker there).
+        let page_x = wp.page_rect.x0;
+        let tab_content_x = page_x + wp.margins.left + 200.0;
+        wp.pointer = Point::new(wp.content_x_to_screen(tab_content_x), (wp.ruler_rect.y0 + wp.ruler_rect.y1) / 2.0);
+        wp.ruler_press(&mut state.doc);
+        let stops = wp.model().block_tab_stops(&state.doc, &block);
+        assert_eq!(stops.len(), 1, "a tab stop was stored on the block");
+        assert!((stops[0] - 200.0).abs() < 2.0, "the stop is ~200 px from the left text margin (got {})", stops[0]);
+
+        // Caret at end of "ab". Tab advances to the stop (records a tab char).
+        wp.model_mut().move_end(&state.doc);
+        let off_before = wp.model().caret().offset;
+        press_tab(&mut wp, &mut state);
+        let off_after = wp.model().caret().offset;
+        assert_eq!(off_after, off_before + 1, "Tab advanced the caret by one (to the tab stop), not four spaces");
+        // The advance is recorded as a single tab char (not spaces).
+        assert!(wp.model().current_text(&state.doc).contains('\t'), "a tab character records the advance");
+        assert!(!wp.model().current_text(&state.doc).contains("    "), "Tab did not fall back to inserting spaces");
+    }
+
+    /// With no tab stops, Tab keeps the legacy behaviour (inserts spaces) so the
+    /// key is never a dead no-op.
+    #[test]
+    fn tab_without_stops_inserts_spaces() {
+        let (mut state, mut wp) = bound();
+        wp.model_mut().insert_str(&mut state.doc, "x");
+        pipeline_draw(&mut wp, &mut state, 1200, 760);
+        press_tab(&mut wp, &mut state);
+        assert!(wp.model().current_text(&state.doc).contains("    "), "no stops → Tab inserts spaces as before");
+    }
+
+    /// Dragging a tab marker below the ruler band removes the stop ("drag off").
+    #[test]
+    fn dragging_tab_marker_off_removes_it() {
+        let (mut state, mut wp) = bound();
+        wp.model_mut().insert_str(&mut state.doc, "para");
+        let block = wp.model().caret().block.clone();
+        wp.model_mut().set_block_tab_stops(&mut state.doc, &block, &[150.0]);
+        pipeline_draw(&mut wp, &mut state, 1200, 760);
+
+        let page_x = wp.page_rect.x0;
+        let page_w = wp.page_rect.width();
+        let markers = wp.ruler_markers(page_x, page_w);
+        let tx = markers.iter().find(|(k, _)| matches!(k, RulerMarker::Tab(0))).map(|(_, x)| *x).unwrap();
+        wp.pointer = Point::new(tx, (wp.ruler_rect.y0 + wp.ruler_rect.y1) / 2.0);
+        wp.ruler_press(&mut state.doc);
+        assert!(matches!(wp.ruler_drag.map(|d| d.marker), Some(RulerMarker::Tab(0))), "grabbed the tab marker");
+
+        // Drag below the band → flagged for removal, then release removes it.
+        wp.pointer = Point::new(tx, wp.ruler_rect.y1 + 40.0);
+        wp.ruler_drag_move();
+        assert!(wp.ruler_drag.map(|d| d.drop_off).unwrap_or(false), "dragging below the band flags drop-off");
+        wp.ruler_drag_release(&mut state.doc);
+        assert!(wp.model().block_tab_stops(&state.doc, &block).is_empty(), "the tab stop was removed");
+    }
+
+    // ---- Accessibility ------------------------------------------------------
+
+    /// A 2×3 RGB PNG fixture (shared with the image-layout test).
+    const A11Y_TINY_PNG: &[u8] = &[
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 3, 8, 2,
+        0, 0, 0, 54, 136, 73, 214, 0, 0, 0, 17, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 240,
+        159, 1, 140, 17, 20, 0, 68, 208, 5, 251, 176, 88, 73, 172, 0, 0, 0, 0, 73, 69, 78, 68, 174,
+        66, 96, 130,
+    ];
+
+    /// The accessibility tree's root is a focusable, multiline [`Role::Document`].
+    #[test]
+    fn accessibility_root_is_a_multiline_document() {
+        use ui::a11y::Role;
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+
+        let tree = wp.accessibility_tree();
+        assert_eq!(tree.node.role, Role::Document);
+        assert!(tree.node.state.multiline, "the document is multiline");
+        assert!(tree.node.state.focusable, "the document is focusable");
+
+        // The document's `focused` flag is derived from the widget's focus state,
+        // not stored separately, so it tracks `set_focus`.
+        Widget::set_focus(&mut wp, false);
+        assert!(!wp.accessibility_tree().node.state.focused, "blurred editor → not focused");
+        Widget::set_focus(&mut wp, true);
+        assert!(wp.accessibility_tree().node.state.focused, "focused editor → focused");
+
+        // The trait method returns the same root, so the host path agrees.
+        let trait_root = Widget::accessibility(&wp).expect("editor exposes a document node");
+        assert_eq!(trait_root, wp.accessibility_tree().node, "Widget::accessibility() returns the tree root");
+    }
+
+    /// A heading + a paragraph yield a heading node (correct level + text) and a
+    /// paragraph node carrying the paragraph text, under the document root.
+    #[test]
+    fn accessibility_tree_has_heading_and_paragraph_nodes() {
+        use ui::a11y::Role;
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+
+        // First block: a level-1 heading "Title".
+        wp.model_mut().insert_str(&mut state.doc, "Title");
+        wp.model_mut().set_paragraph_style(&mut state.doc, "heading", Some(1), None);
+        wp.model_mut().enter(&mut state.doc);
+        // Second block: a body paragraph.
+        wp.model_mut().set_paragraph_style(&mut state.doc, "paragraph", None, None);
+        wp.model_mut().insert_str(&mut state.doc, "Body text here");
+        wp.sync(&mut state.doc, &state.root);
+
+        let tree = wp.accessibility_tree();
+
+        let heading = tree
+            .children
+            .iter()
+            .find(|c| matches!(c.node.role, Role::Heading { .. }))
+            .expect("a heading node is present");
+        assert_eq!(heading.node.role, Role::Heading { level: 1 }, "level-1 heading");
+        assert_eq!(heading.node.name.as_deref(), Some("Title"), "heading carries its text");
+
+        let paragraph = tree
+            .children
+            .iter()
+            .find(|c| c.node.role == Role::Paragraph)
+            .expect("a paragraph node is present");
+        assert_eq!(
+            paragraph.node.value.as_deref(),
+            Some("Body text here"),
+            "paragraph carries its text",
+        );
+    }
+
+    /// An image block whose `alt` attr is set (as the ODT/DOCX importers do)
+    /// yields a [`Role::Image`] node carrying that alt text. Asserted on the
+    /// production node-builder (`block_access_node`) with a directly-built
+    /// [`BlockView`], since setting an arbitrary block attr is not on the model's
+    /// public surface.
+    #[test]
+    fn accessibility_image_node_carries_alt() {
+        use qdoc::snapshot::{AttrVal, BlockView};
+        use std::collections::BTreeMap;
+        use ui::a11y::Role;
+
+        let mut attrs = BTreeMap::new();
+        attrs.insert("blob".to_string(), AttrVal::Str("deadbeef".into()));
+        attrs.insert("alt".to_string(), AttrVal::Str("a tiny dot".into()));
+        let img = BlockView {
+            id: "img1".into(),
+            kind: "image".into(),
+            text: String::new(),
+            marks: Vec::new(),
+            attrs,
+            children: Vec::new(),
+        };
+
+        let node = WordProcessorWidget::block_access_node(&img).expect("image yields a node");
+        assert_eq!(node.role, Role::Image);
+        assert_eq!(node.name.as_deref(), Some("a tiny dot"), "image node carries its alt text");
+
+        // With no `alt` attr the block's own text (a caption) is the fallback name.
+        let mut captioned = img.clone();
+        captioned.attrs.remove("alt");
+        captioned.text = "Figure 1".into();
+        let cap_node = WordProcessorWidget::block_access_node(&captioned).unwrap();
+        assert_eq!(cap_node.name.as_deref(), Some("Figure 1"), "caption text is the alt fallback");
+
+        // And a genuinely-inserted image surfaces as an Image node in the full tree.
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "before");
+        wp.model_mut().insert_image_bytes(&mut state.doc, A11Y_TINY_PNG);
+        wp.sync(&mut state.doc, &state.root);
+        let tree = wp.accessibility_tree();
+        assert!(
+            tree.children.iter().any(|c| c.node.role == Role::Image),
+            "an inserted image appears as an image node in the document tree",
+        );
+    }
+
+    /// A table's cells are surfaced as [`Role::Cell`] children of a single
+    /// [`Role::Table`] node (not as loose top-level blocks).
+    #[test]
+    fn accessibility_tree_groups_table_cells_under_a_table() {
+        use ui::a11y::Role;
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_table(&mut state.doc, 2, 2);
+        wp.sync(&mut state.doc, &state.root);
+
+        let tree = wp.accessibility_tree();
+        let table = tree
+            .children
+            .iter()
+            .find(|c| c.node.role == Role::Table)
+            .expect("a table node is present");
+        assert_eq!(table.children.len(), 4, "the 2×2 table has four cell nodes");
+        assert!(
+            table.children.iter().all(|c| c.node.role == Role::Cell),
+            "every table child is a cell",
+        );
+        // No loose cell nodes leaked to the document root.
+        assert!(
+            !tree.children.iter().any(|c| c.node.role == Role::Cell),
+            "cells are not top-level document children",
+        );
+    }
+
+    /// Once a frame has been drawn (the toolbar is laid out), the tree carries a
+    /// [`Role::Toolbar`] group of button nodes with spelled-out accessible names.
+    #[test]
+    fn accessibility_tree_exposes_toolbar_buttons() {
+        use ui::a11y::Role;
+        let (mut state, mut wp) = populated();
+        pipeline_draw(&mut wp, &mut state, 1100, 760);
+        // Re-sync so the tree reflects the drawn toolbar.
+        wp.sync(&mut state.doc, &state.root);
+
+        let tree = wp.accessibility_tree();
+        let toolbar = tree
+            .children
+            .iter()
+            .find(|c| c.node.role == Role::Toolbar)
+            .expect("a toolbar group is present after a draw");
+        assert!(!toolbar.children.is_empty(), "the toolbar has button nodes");
+        // The buttons read with human names, not the terse visible glyphs.
+        let names: Vec<&str> = toolbar
+            .children
+            .iter()
+            .filter_map(|c| c.node.name.as_deref())
+            .collect();
+        assert!(names.contains(&"Bold"), "the Bold button is named for a screen reader");
+        assert!(
+            toolbar.children.iter().any(|c| c.node.role == Role::Button),
+            "the toolbar contains button nodes",
+        );
+    }
+
+    // ---- collaboration: remote presence rendering --------------------------
+
+    use ui::permissions::UserId;
+    use ui::presence::SelectionRange;
+
+    /// The id of the first laid-out block (after a draw) — the block a remote
+    /// peer's caret/selection will be keyed to.
+    fn first_block_id(wp: &WordProcessorWidget) -> String {
+        wp.laid.first().expect("at least one block was laid out").id.clone()
+    }
+
+    /// A populated, focused widget that has been drawn once (so `self.laid` +
+    /// `self.layout_cache` are live and `remote_presence_overlays` is
+    /// meaningful).
+    fn drawn_focused() -> (ui::State, WordProcessorWidget) {
+        let (mut state, mut wp) = populated();
+        wp.set_focus(true);
+        pipeline_draw(&mut wp, &mut state, 1100, 760);
+        (state, wp)
+    }
+
+    /// An empty `PresenceCtx` (single-user / no broker) yields no remote
+    /// caret/selection overlays — proving the collab render path is a strict
+    /// no-op when there are no peers, so single-user editing is unchanged.
+    #[test]
+    fn remote_presence_is_noop_without_peers() {
+        let (_state, wp) = drawn_focused();
+        let presence = PresenceCtx::empty();
+        let (carets, selections) = wp.remote_presence_overlays(&presence);
+        assert!(carets.is_empty(), "no remote carets without peers");
+        assert!(selections.is_empty(), "no remote selections without peers");
+    }
+
+    /// A `PresenceCtx` carrying a remote collaborator's caret (under the same
+    /// per-block key the widget broadcasts the local caret under) yields exactly
+    /// one remote-caret overlay, positioned inside the laid block — proving
+    /// `draw` consumes presence and maps a remote byte offset onto on-screen
+    /// caret geometry via the production `caret_geometry` path.
+    #[test]
+    fn remote_caret_is_resolved_to_on_screen_rect() {
+        let (_state, wp) = drawn_focused();
+        let block_id = first_block_id(&wp);
+
+        let mut presence = PresenceCtx::empty();
+        // Place "alice"'s caret 3 bytes into the first block.
+        presence.set_remote_caret("alice".into(), block_presence_key(&block_id), 3);
+
+        let (carets, selections) = wp.remote_presence_overlays(&presence);
+        assert_eq!(carets.len(), 1, "one remote caret resolved");
+        assert!(selections.is_empty(), "a bare caret yields no selection rects");
+        let c = &carets[0];
+        assert_eq!(c.user, UserId("alice".into()));
+        // The caret rect must be a real, non-degenerate vertical bar (the
+        // `CARET_WIDTH`-wide, line-tall geometry produced by `caret_geometry`),
+        // and it must land within the block's laid rectangle.
+        let block = wp.laid.iter().find(|l| l.id == block_id).unwrap();
+        assert!((c.rect.width() - CARET_WIDTH).abs() < 1e-6, "caret is CARET_WIDTH wide: {:?}", c.rect);
+        assert!(c.rect.height() > 1.0, "caret has a real height: {:?}", c.rect);
+        assert!(c.rect.x0 >= block.text_x - 0.5, "caret sits at/after the block's text edge");
+        assert!(c.rect.y0 >= block.y_top - 0.5, "caret sits within the block vertically");
+    }
+
+    /// A remote selection range yields one-or-more non-degenerate highlight
+    /// rectangles (a single-line selection is one rect), mapped through the same
+    /// `selection_rects` geometry the local selection uses.
+    #[test]
+    fn remote_selection_is_resolved_to_highlight_rects() {
+        let (_state, wp) = drawn_focused();
+        let block_id = first_block_id(&wp);
+
+        let mut presence = PresenceCtx::empty();
+        // "bob" selects bytes [0, 4) of the first block.
+        presence.set_remote_selection("bob".into(), block_presence_key(&block_id), 0, 4);
+
+        let (carets, selections) = wp.remote_presence_overlays(&presence);
+        assert!(carets.is_empty(), "a selection yields no bare caret");
+        assert_eq!(selections.len(), 1, "one remote selection resolved");
+        let s = &selections[0];
+        assert_eq!(s.user, UserId("bob".into()));
+        assert!(!s.rects.is_empty(), "the selection produced at least one highlight rect");
+        for r in &s.rects {
+            assert!(r.width() > 0.0 && r.height() > 0.0, "highlight rect is non-degenerate: {r:?}");
+        }
+    }
+
+    /// A degenerate (empty) remote selection range produces no highlight rects —
+    /// the render guards against a zero-width selection painting a stray band.
+    #[test]
+    fn empty_remote_selection_produces_no_rects() {
+        let (_state, wp) = drawn_focused();
+        let block_id = first_block_id(&wp);
+
+        let mut presence = PresenceCtx::empty();
+        presence.selections.insert(
+            block_presence_key(&block_id),
+            vec![(UserId("bob".into()), SelectionRange { start: 2, end: 2 })],
+        );
+
+        let (_carets, selections) = wp.remote_presence_overlays(&presence);
+        assert!(selections.is_empty(), "an empty selection range paints nothing");
+    }
+
+    /// Two peers on DIFFERENT blocks each get their own caret overlay, attributed
+    /// to the right user — the per-block key keeps them from colliding.
+    #[test]
+    fn distinct_peers_on_distinct_blocks_resolve_independently() {
+        let (_state, wp) = drawn_focused();
+        assert!(wp.laid.len() >= 2, "the populated doc lays out at least two blocks");
+        let b0 = wp.laid[0].id.clone();
+        let b1 = wp.laid[1].id.clone();
+
+        let mut presence = PresenceCtx::empty();
+        presence.set_remote_caret("alice".into(), block_presence_key(&b0), 1);
+        presence.set_remote_caret("bob".into(), block_presence_key(&b1), 1);
+
+        let (carets, _selections) = wp.remote_presence_overlays(&presence);
+        assert_eq!(carets.len(), 2, "both peers' carets resolved");
+        let users: Vec<&str> = carets.iter().map(|c| c.user.0.as_str()).collect();
+        assert!(users.contains(&"alice") && users.contains(&"bob"), "got {users:?}");
+        // The two carets land in different blocks (different vertical bands).
+        let ya = carets.iter().find(|c| c.user.0 == "alice").unwrap().rect.y0;
+        let yb = carets.iter().find(|c| c.user.0 == "bob").unwrap().rect.y0;
+        assert!((ya - yb).abs() > 1.0, "carets in different blocks have distinct y positions");
+    }
+
+    /// The full `draw_with_presence` path consumes a populated `PresenceCtx`
+    /// without panicking AND the resolver agrees — i.e. the production draw and
+    /// the asserted helper are the same path, not a parallel re-implementation.
+    #[test]
+    fn draw_with_presence_renders_remote_caret_through_production_path() {
+        let (mut state, mut wp) = drawn_focused();
+        let block_id = first_block_id(&wp);
+
+        let mut presence = PresenceCtx::empty();
+        presence.set_remote_caret("charlie".into(), block_presence_key(&block_id), 2);
+
+        // Run the REAL five-pass draw with the populated presence (the same call
+        // the App makes each frame). It must paint without panicking.
+        let permission = PermissionContext::permissive();
+        let mut tr = TextRenderer::new();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        wp.sync(&mut state.doc, &state.root);
+        let child = wp.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        let root = taffy
+            .new_with_children(
+                Style { size: Size { width: Dimension::length(1100.0), height: Dimension::length(760.0) }, ..Default::default() },
+                &[child],
+            )
+            .unwrap();
+        {
+            let measure_map = node_map.clone();
+            let trr = &mut tr;
+            taffy
+                .compute_layout_with_measure(
+                    root,
+                    taffy::Size { width: AvailableSpace::Definite(1100.0), height: AvailableSpace::Definite(760.0) },
+                    |known, available, node_id, _, _| {
+                        if let Some(&ptr) = measure_map.get(&node_id) {
+                            unsafe { (*ptr).measure(known, available, trr) }
+                        } else {
+                            taffy::Size::ZERO
+                        }
+                    },
+                )
+                .unwrap();
+        }
+        wp.apply_layout(&taffy, child, Point::ORIGIN);
+        let mut scene = Scene::new();
+        wp.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &Theme::dark(), &presence, &permission);
+
+        // After the production draw, the resolver (which the draw itself called)
+        // reports the same single remote caret — proving the draw consumed it.
+        let (carets, _sel) = wp.remote_presence_overlays(&presence);
+        assert_eq!(carets.len(), 1, "the production draw consumed the remote caret");
+        assert_eq!(carets[0].user, UserId("charlie".into()));
+    }
+
+    // ---- collaboration: outbound presence (presence_payload) ---------------
+
+    /// While focused, the widget reports its local caret as outbound presence,
+    /// keyed to the caret's block and carrying a BYTE offset (so a peer can feed
+    /// it straight into the layout geometry). The App polls this each frame and
+    /// broadcasts the diff to peers.
+    #[test]
+    fn presence_payload_reports_focused_caret_in_bytes() {
+        let (mut state, mut wp) = populated();
+        wp.set_focus(true);
+        // Move the caret to char offset 3 of the caret block.
+        let block = wp.model().caret().block.clone();
+        wp.model_mut().set_caret(Caret { block: block.clone(), offset: 3 });
+        // A draw populates the block cache (needed for char→byte conversion).
+        pipeline_draw(&mut wp, &mut state, 1100, 760);
+
+        match wp.presence_payload() {
+            Some((key, ui::PresencePayload::Caret { pos })) => {
+                assert_eq!(key, block_presence_key(&block), "keyed to the caret's block");
+                // The caret block text is ASCII here, so byte offset == char offset.
+                assert_eq!(pos, 3, "caret reported at byte 3");
+            }
+            other => panic!("expected a Caret payload, got {other:?}"),
+        }
+    }
+
+    /// A selection takes priority over the bare caret in the outbound payload,
+    /// reported as a byte range over the caret block.
+    #[test]
+    fn presence_payload_reports_selection_when_present() {
+        let (mut state, mut wp) = populated();
+        wp.set_focus(true);
+        pipeline_draw(&mut wp, &mut state, 1100, 760);
+        // Select chars [1, 4) of the caret block.
+        select_range(&mut wp, 1, 4);
+        // Re-draw so the selection is reflected in the cached block views.
+        pipeline_draw(&mut wp, &mut state, 1100, 760);
+
+        let block = wp.model().caret().block.clone();
+        match wp.presence_payload() {
+            Some((key, ui::PresencePayload::Selection { start, end })) => {
+                assert_eq!(key, block_presence_key(&block));
+                assert_eq!((start, end), (1, 4), "selection reported as a byte range");
+            }
+            other => panic!("expected a Selection payload, got {other:?}"),
+        }
+    }
+
+    /// An unfocused widget broadcasts no presence (so a background editor doesn't
+    /// flood peers with a stale caret).
+    #[test]
+    fn presence_payload_is_none_when_unfocused() {
+        let (mut state, mut wp) = populated();
+        pipeline_draw(&mut wp, &mut state, 1100, 760);
+        wp.set_focus(false);
+        assert!(wp.presence_payload().is_none(), "no presence while unfocused");
     }
 }

@@ -3,6 +3,7 @@
 //! onto the canonical model. Mirrors the `.odt` codec: container → styles →
 //! body parse → spans → export → preservation.
 
+pub mod columns;
 pub mod comments;
 pub mod container;
 pub mod content;
@@ -43,6 +44,10 @@ impl FormatProvider for DocxCodec {
         let mut reg = styles::StyleRegistry::default();
         if let Some(styles_xml) = container.get("word/styles.xml") {
             styles::parse_styles(styles_xml, &mut reg);
+            // Document default language: `docDefaults > rPrDefault > rPr > w:lang`.
+            if let Some(lang) = styles::doc_default_language(styles_xml) {
+                doc.set_language(&lang);
+            }
         }
         if let Some(numbering_xml) = container.get("word/numbering.xml") {
             styles::parse_numbering(numbering_xml, &mut reg);
@@ -65,7 +70,10 @@ impl FormatProvider for DocxCodec {
         if let Some(xml) = container.get(comments::COMMENTS_PART) {
             comment_map = comments::import_comments_part(xml, doc);
         }
-        content::parse_body(&document, &reg, &foot_map, &end_map, &comment_map, doc)?;
+        // Image relationships: resolve each `r:embed` rel id to the bytes of its
+        // referenced media part so the body parser can store image blobs.
+        let image_map = content::build_image_map(&container);
+        content::parse_body(&document, &reg, &foot_map, &end_map, &comment_map, &image_map, doc)?;
         // Document properties: parse `docProps/core.xml` (dc:title, dc:creator, …)
         // + `docProps/app.xml` (Application = generator) into `meta.props`.
         if let Some(core_xml) = container.get("docProps/core.xml") {
@@ -89,6 +97,9 @@ impl FormatProvider for DocxCodec {
                 headers::import_region(xml, crate::model::Region::Footer, doc);
             }
         }
+        // Multi-column section layout: parse the body `w:sectPr`'s `w:cols` num/space
+        // into the document-wide column setting.
+        columns::import_section_columns(&document, doc);
         // Preservation layer: stash every part except the (regenerated)
         // word/document.xml verbatim so export round-trips them losslessly. The
         // docProps parts are preserved too so their unmodeled fields survive
