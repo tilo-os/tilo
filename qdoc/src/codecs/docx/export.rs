@@ -39,6 +39,11 @@ const FOOTER_OVERRIDE: &str = r#"<Override PartName="/word/footer1.xml" ContentT
 const HEADER_REL: &str = r#"<Relationship Id="rIdQdocHdr" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>"#;
 const FOOTER_REL: &str = r#"<Relationship Id="rIdQdocFtr" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>"#;
 
+const FOOTNOTES_OVERRIDE: &str = r#"<Override PartName="/word/footnotes.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml"/>"#;
+const ENDNOTES_OVERRIDE: &str = r#"<Override PartName="/word/endnotes.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.endnotes+xml"/>"#;
+const FOOTNOTES_REL: &str = r#"<Relationship Id="rIdQdocFtnotes" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="footnotes.xml"/>"#;
+const ENDNOTES_REL: &str = r#"<Relationship Id="rIdQdocEndnotes" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes" Target="endnotes.xml"/>"#;
+
 const STYLES_OVERRIDE: &str = r#"<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>"#;
 const STYLES_REL: &str = r#"<Relationship Id="rIdQdocStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>"#;
 const STYLES_XML_OPEN: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -53,7 +58,9 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     } else {
         String::new()
     };
-    let (document, named_refs, numbering) = build_document_xml(&snap, &sectpr);
+    // Footnote/endnote parts + the qdoc-id → docx-id / kind maps the body references.
+    let notes = super::notes::export_notes(&doc);
+    let (document, named_refs, numbering) = build_document_xml(&snap, &sectpr, &notes.id_map, &notes.kind_map);
     let has_lists = snap.blocks.iter().any(|b| b.kind == "list_item");
     let has_styles = !named_refs.is_empty();
 
@@ -69,6 +76,8 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     let mut had_app = false;
     let mut had_header_part = false;
     let mut had_footer_part = false;
+    let mut had_footnotes_part = false;
+    let mut had_endnotes_part = false;
     let mut original_core: Option<Vec<u8>> = None;
     let mut original_app: Option<Vec<u8>> = None;
     for (key, bytes) in crate::model::preserved_parts(doc.doc, doc.c) {
@@ -80,6 +89,8 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
             had_styles_part |= name == "word/styles.xml";
             had_header_part |= name == super::headers::HEADER_PART;
             had_footer_part |= name == super::headers::FOOTER_PART;
+            had_footnotes_part |= name == super::notes::FOOTNOTES_PART;
+            had_endnotes_part |= name == super::notes::ENDNOTES_PART;
             if name == "docProps/core.xml" {
                 had_core = true;
                 original_core = Some(bytes.clone());
@@ -106,6 +117,19 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     }
     let need_header_wireup = hf_parts.header.is_some() && !had_header_part;
     let need_footer_wireup = hf_parts.footer.is_some() && !had_footer_part;
+
+    // Footnote/endnote parts. Written under the fixed `word/footnotes.xml` /
+    // `word/endnotes.xml` names; the body references emitted above use the matching
+    // docx ids. A part newly created here needs a content-type override + a document
+    // relationship.
+    if let Some(ftn) = notes.footnotes_xml.clone() {
+        c.set(super::notes::FOOTNOTES_PART, ftn);
+    }
+    if let Some(end) = notes.endnotes_xml.clone() {
+        c.set(super::notes::ENDNOTES_PART, end);
+    }
+    let need_footnotes_wireup = notes.footnotes_xml.is_some() && !had_footnotes_part;
+    let need_endnotes_wireup = notes.endnotes_xml.is_some() && !had_endnotes_part;
 
     // Document properties → `docProps/core.xml` (+ `app.xml` generator). Regenerate
     // from the canonical properties, merging unmodeled children of the preserved
@@ -169,6 +193,12 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
         if hf_parts.footer.is_some() {
             ct.push_str(FOOTER_OVERRIDE);
         }
+        if notes.footnotes_xml.is_some() {
+            ct.push_str(FOOTNOTES_OVERRIDE);
+        }
+        if notes.endnotes_xml.is_some() {
+            ct.push_str(ENDNOTES_OVERRIDE);
+        }
         ct.push_str("</Types>");
         c.set("[Content_Types].xml", ct.into_bytes());
     } else {
@@ -190,6 +220,12 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
         }
         if need_footer_wireup {
             overrides.push(("/word/footer1.xml", FOOTER_OVERRIDE));
+        }
+        if need_footnotes_wireup {
+            overrides.push(("/word/footnotes.xml", FOOTNOTES_OVERRIDE));
+        }
+        if need_endnotes_wireup {
+            overrides.push(("/word/endnotes.xml", ENDNOTES_OVERRIDE));
         }
         if !overrides.is_empty() {
             if let Some(ct) = c.get("[Content_Types].xml") {
@@ -230,8 +266,8 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     }
 
     // word/_rels/document.xml.rels — needed once there's a numbering, a
-    // freshly-synthesised styles part, and/or a header/footer part.
-    if has_lists || need_styles_wireup || need_header_wireup || need_footer_wireup {
+    // freshly-synthesised styles part, a header/footer part, and/or a notes part.
+    if has_lists || need_styles_wireup || need_header_wireup || need_footer_wireup || need_footnotes_wireup || need_endnotes_wireup {
         if !had_doc_rels {
             let mut inner = String::new();
             if need_styles_wireup {
@@ -245,6 +281,12 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
             }
             if need_footer_wireup {
                 inner.push_str(FOOTER_REL);
+            }
+            if need_footnotes_wireup {
+                inner.push_str(FOOTNOTES_REL);
+            }
+            if need_endnotes_wireup {
+                inner.push_str(ENDNOTES_REL);
             }
             let rels = format!(
                 r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -264,6 +306,12 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
             }
             if need_footer_wireup && !s.contains("Target=\"footer1.xml\"") {
                 inject_before(&mut s, "</Relationships>", FOOTER_REL);
+            }
+            if need_footnotes_wireup && !s.contains("Target=\"footnotes.xml\"") {
+                inject_before(&mut s, "</Relationships>", FOOTNOTES_REL);
+            }
+            if need_endnotes_wireup && !s.contains("Target=\"endnotes.xml\"") {
+                inject_before(&mut s, "</Relationships>", ENDNOTES_REL);
             }
             c.set("word/_rels/document.xml.rels", s.into_bytes());
         }
@@ -538,9 +586,42 @@ fn run_content(chars: &[char]) -> String {
     out
 }
 
+/// The note id of a `note-ref` mark covering exactly `[i, i+1)`, if any.
+fn note_ref_at(marks: &[crate::document::MarkSpan], i: usize) -> Option<String> {
+    marks
+        .iter()
+        .find(|m| m.name == crate::schema::MARK_NOTE_REF && m.start == i && m.end == i + 1)
+        .and_then(|m| m.value.as_str().map(|s| s.to_string()))
+}
+
+/// The `w:footnoteReference`/`w:endnoteReference` run for a note id, or `None` when
+/// the note isn't being exported. Carries the FootnoteReference/EndnoteReference
+/// character style so Word superscripts the citation.
+fn note_reference_run(
+    note_id: &str,
+    note_ids: &BTreeMap<String, i64>,
+    note_kinds: &BTreeMap<String, crate::model::NoteKind>,
+) -> Option<String> {
+    let docx_id = note_ids.get(note_id)?;
+    let kind = note_kinds.get(note_id).copied().unwrap_or(crate::model::NoteKind::Footnote);
+    let (style, elem) = match kind {
+        crate::model::NoteKind::Footnote => ("FootnoteReference", "w:footnoteReference"),
+        crate::model::NoteKind::Endnote => ("EndnoteReference", "w:endnoteReference"),
+    };
+    Some(format!(
+        r#"<w:r><w:rPr><w:rStyle w:val="{style}"/></w:rPr><{elem} w:id="{docx_id}"/></w:r>"#
+    ))
+}
+
 /// Render a block's text + marks as a sequence of `<w:r>` runs. A new run starts
-/// whenever the active mark set changes, so output is always well-formed.
-fn render_runs(text: &str, marks: &[crate::document::MarkSpan]) -> String {
+/// whenever the active mark set changes, so output is always well-formed. A
+/// placeholder carrying a `note-ref` mark is emitted as its reference element run.
+fn render_runs(
+    text: &str,
+    marks: &[crate::document::MarkSpan],
+    note_ids: &BTreeMap<String, i64>,
+    note_kinds: &BTreeMap<String, crate::model::NoteKind>,
+) -> String {
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();
     if n == 0 {
@@ -549,9 +630,20 @@ fn render_runs(text: &str, marks: &[crate::document::MarkSpan]) -> String {
     let mut out = String::new();
     let mut i = 0;
     while i < n {
+        // A note-reference placeholder is its own run (no text), independent of the
+        // surrounding mark set.
+        if chars[i] == crate::schema::FIELD_PLACEHOLDER {
+            if let Some(note_id) = note_ref_at(marks, i) {
+                if let Some(run) = note_reference_run(&note_id, note_ids, note_kinds) {
+                    out.push_str(&run);
+                }
+                i += 1;
+                continue;
+            }
+        }
         let active = marks_at(i, marks);
         let mut j = i + 1;
-        while j < n && marks_at(j, marks) == active {
+        while j < n && marks_at(j, marks) == active && !is_note_ref_placeholder(&chars, marks, j) {
             j += 1;
         }
         let rpr = run_props(&active);
@@ -564,6 +656,12 @@ fn render_runs(text: &str, marks: &[crate::document::MarkSpan]) -> String {
         i = j;
     }
     out
+}
+
+/// Whether char `j` is a note-reference placeholder (so a text run must break
+/// before it — the reference is emitted as its own run).
+fn is_note_ref_placeholder(chars: &[char], marks: &[crate::document::MarkSpan], j: usize) -> bool {
+    chars[j] == crate::schema::FIELD_PLACEHOLDER && note_ref_at(marks, j).is_some()
 }
 
 fn jc_xml(b: &BlockView) -> String {
@@ -677,7 +775,14 @@ impl Numbering {
 /// Build `word/document.xml` and collect the set of CRDT styles-container styleIds
 /// referenced by a `<w:pStyle>` (so the caller can emit their definitions), plus
 /// the list-numbering plan (so the caller can write a matching numbering.xml).
-fn build_document_xml(snap: &DocSnapshot, sectpr: &str) -> (String, BTreeSet<String>, Numbering) {
+/// `note_ids`/`note_kinds` map each qdoc note id to its emitted docx id + kind, so a
+/// `note-ref` placeholder renders the right `w:footnoteReference`/`w:endnoteReference`.
+fn build_document_xml(
+    snap: &DocSnapshot,
+    sectpr: &str,
+    note_ids: &BTreeMap<String, i64>,
+    note_kinds: &BTreeMap<String, crate::model::NoteKind>,
+) -> (String, BTreeSet<String>, Numbering) {
     let mut body = String::new();
     let mut named_refs: BTreeSet<String> = BTreeSet::new();
     let mut numbering = Numbering::default();
@@ -693,7 +798,7 @@ fn build_document_xml(snap: &DocSnapshot, sectpr: &str) -> (String, BTreeSet<Str
                 body.push_str(&format!(
                     r#"<w:p><w:pPr><w:pStyle w:val="Heading{level}"/>{}</w:pPr>{}</w:p>"#,
                     jc_xml(b),
-                    render_runs(&b.text, &b.marks)
+                    render_runs(&b.text, &b.marks, note_ids, note_kinds)
                 ));
                 i += 1;
             }
@@ -702,7 +807,7 @@ fn build_document_xml(snap: &DocSnapshot, sectpr: &str) -> (String, BTreeSet<Str
                 body.push_str(&format!(
                     r#"<w:p><w:pPr><w:pStyle w:val="ListParagraph"/><w:numPr><w:ilvl w:val="0"/><w:numId w:val="{numid}"/></w:numPr>{}</w:pPr>{}</w:p>"#,
                     jc_xml(b),
-                    render_runs(&b.text, &b.marks)
+                    render_runs(&b.text, &b.marks, note_ids, note_kinds)
                 ));
                 i += 1;
             }
@@ -733,7 +838,7 @@ fn build_document_xml(snap: &DocSnapshot, sectpr: &str) -> (String, BTreeSet<Str
                         let inner = cells
                             .iter()
                             .find(|cl| cell_rc(cl) == (r, c))
-                            .map(|cl| render_runs(&cl.text, &cl.marks))
+                            .map(|cl| render_runs(&cl.text, &cl.marks, note_ids, note_kinds))
                             .unwrap_or_default();
                         body.push_str(&format!(
                             r#"<w:tc><w:tcPr><w:tcW w:w="0" w:type="auto"/></w:tcPr><w:p>{inner}</w:p></w:tc>"#
@@ -756,7 +861,7 @@ fn build_document_xml(snap: &DocSnapshot, sectpr: &str) -> (String, BTreeSet<Str
                 }
                 ppr_inner.push_str(&jc_xml(b));
                 let ppr = if ppr_inner.is_empty() { String::new() } else { format!("<w:pPr>{ppr_inner}</w:pPr>") };
-                body.push_str(&format!("<w:p>{ppr}{}</w:p>", render_runs(&b.text, &b.marks)));
+                body.push_str(&format!("<w:p>{ppr}{}</w:p>", render_runs(&b.text, &b.marks, note_ids, note_kinds)));
                 i += 1;
             }
         }
@@ -773,7 +878,7 @@ fn build_document_xml(snap: &DocSnapshot, sectpr: &str) -> (String, BTreeSet<Str
 
 #[cfg(test)]
 mod tests {
-    use super::super::container::{minimal_docx_styled, DocxContainer};
+    use super::super::container::{minimal_docx, minimal_docx_styled, DocxContainer};
     use super::super::DocxCodec;
     use crate::document::MarkValue;
     use crate::{AttrVal, DocSnapshot, Document, FormatProvider};
@@ -1234,6 +1339,115 @@ mod tests {
         // "p. " + a single placeholder; the cached "7" result is dropped.
         assert_eq!(header[0].text, format!("p. {}", FIELD_PLACEHOLDER), "complex field → one placeholder: {:?}", header[0].text);
         assert!(header[0].marks.iter().any(|m| m.name == MARK_FIELD && m.start == 3 && m.end == 4), "field mark: {:?}", header[0].marks);
+    }
+
+    #[test]
+    fn footnote_imports_from_footnotes_part() {
+        use crate::document::MarkValue;
+        use crate::schema::{FIELD_PLACEHOLDER, MARK_NOTE_REF};
+        // A body paragraph "see ref" referencing footnote id 2, whose content lives
+        // in word/footnotes.xml. Import must place a note-ref marker + create the note.
+        let body = concat!(
+            r#"<w:p>"#,
+            r#"<w:r><w:t xml:space="preserve">see </w:t></w:r>"#,
+            r#"<w:r><w:rPr><w:rStyle w:val="FootnoteReference"/></w:rPr><w:footnoteReference w:id="2"/></w:r>"#,
+            r#"<w:r><w:t>ref</w:t></w:r>"#,
+            r#"</w:p>"#,
+        );
+        let footnotes = concat!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+            "\n",
+            r#"<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">"#,
+            r#"<w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>"#,
+            r#"<w:footnote w:id="2"><w:p><w:r><w:t>the footnote</w:t></w:r></w:p></w:footnote>"#,
+            r#"</w:footnotes>"#,
+        );
+        let base = minimal_docx(body);
+        let mut c = DocxContainer::read(&base).unwrap();
+        c.set("word/footnotes.xml", footnotes.as_bytes().to_vec());
+        let docx = c.write().unwrap();
+
+        let mut d = Document::new();
+        DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
+        let snap = d.materialize();
+        let p = &snap.blocks[0];
+        assert_eq!(p.text, format!("see {}ref", FIELD_PLACEHOLDER), "placeholder spliced inline: {:?}", p.text);
+        let nref = p.marks.iter().find(|m| m.name == MARK_NOTE_REF).expect("note-ref mark present");
+        assert_eq!((nref.start, nref.end), (4, 5), "marker covers the placeholder: {:?}", p.marks);
+        let nid = match &nref.value {
+            MarkValue::Str(s) => s.clone(),
+            other => panic!("note-ref value is the note id: {other:?}"),
+        };
+        assert_eq!(snap.notes.len(), 1, "one note, separators skipped: {:?}", snap.notes);
+        assert_eq!(snap.notes[0].id, nid);
+        assert_eq!(snap.notes[0].kind, "footnote");
+        assert_eq!(snap.notes[0].blocks[0].text, "the footnote");
+    }
+
+    #[test]
+    fn footnote_and_endnote_roundtrip_through_docx() {
+        use crate::document::MarkValue;
+        use crate::schema::MARK_NOTE_REF;
+        // Build from scratch: a footnote after "see " in one paragraph, an endnote in
+        // a second. Export must write footnotes.xml/endnotes.xml + the references +
+        // content-types/rels, and re-import as the same markers + notes + kinds.
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "see ref");
+        let fid = d.insert_footnote(&p, 4);
+        let fb = d.insert_note_block(&fid, None, "paragraph").unwrap();
+        d.splice_note_text(&fid, &fb, 0, 0, "a footnote");
+
+        let p2 = d.insert_block(Some(&p), "paragraph");
+        d.splice_text(&p2, 0, 0, "tail");
+        let eid = d.insert_endnote(&p2, 4);
+        let eb = d.insert_note_block(&eid, None, "paragraph").unwrap();
+        d.splice_note_text(&eid, &eb, 0, 0, "an endnote");
+
+        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let cont = DocxContainer::read(&exported).unwrap();
+        // Parts written.
+        let ftn = std::str::from_utf8(cont.get("word/footnotes.xml").expect("footnotes.xml written")).unwrap();
+        assert!(ftn.contains("a footnote"), "footnote body emitted: {ftn}");
+        let end = std::str::from_utf8(cont.get("word/endnotes.xml").expect("endnotes.xml written")).unwrap();
+        assert!(end.contains("an endnote"), "endnote body emitted: {end}");
+        // Body references emitted.
+        let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
+        assert!(document.contains("<w:footnoteReference"), "footnote reference emitted: {document}");
+        assert!(document.contains("<w:endnoteReference"), "endnote reference emitted: {document}");
+        // Wired into content-types + rels.
+        let ct = std::str::from_utf8(cont.get("[Content_Types].xml").unwrap()).unwrap();
+        assert!(ct.contains("/word/footnotes.xml") && ct.contains("/word/endnotes.xml"), "note parts in content-types: {ct}");
+        let rels = std::str::from_utf8(cont.get("word/_rels/document.xml.rels").unwrap()).unwrap();
+        assert!(rels.contains(r#"Target="footnotes.xml""#) && rels.contains(r#"Target="endnotes.xml""#), "note rels registered: {rels}");
+
+        let mut d2 = Document::new();
+        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+        assert_eq!(snap.blocks[0].text.chars().filter(|c| *c != '\u{FFFC}').collect::<String>(), "see ref");
+        let nref = snap.blocks[0].marks.iter().find(|m| m.name == MARK_NOTE_REF).expect("footnote marker survives");
+        let f_id = match &nref.value {
+            MarkValue::Str(s) => s.clone(),
+            _ => panic!("note-ref value"),
+        };
+        assert_eq!(snap.notes.len(), 2, "both notes survive: {:?}", snap.notes);
+        let foot = snap.notes.iter().find(|n| n.id == f_id).expect("footnote present by id");
+        assert_eq!(foot.kind, "footnote");
+        assert_eq!(foot.blocks[0].text, "a footnote");
+        let end_note = snap.notes.iter().find(|n| n.kind == "endnote").expect("endnote present");
+        assert_eq!(end_note.blocks[0].text, "an endnote");
+
+        // Idempotent across a second round-trip (ids volatile; compare kind+text).
+        let exported2 = DocxCodec.export(d2.as_ref()).unwrap();
+        let mut d3 = Document::new();
+        DocxCodec.import(&exported2, &mut d3.as_mut()).unwrap();
+        let kinds_texts = |snap: &DocSnapshot| {
+            let mut v: Vec<(String, String)> =
+                snap.notes.iter().map(|n| (n.kind.clone(), n.blocks.iter().map(|b| b.text.clone()).collect())).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(kinds_texts(&d2.materialize()), kinds_texts(&d3.materialize()), "notes stable across a second round-trip");
     }
 
     #[test]
