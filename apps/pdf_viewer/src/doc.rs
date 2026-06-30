@@ -226,7 +226,22 @@ impl PdfDoc {
         if let Some(i) = Self::index_of(doc, &list, id) {
             let _ = doc.delete(&list, i);
         }
-        // Orphaned comments lose their anchor but stay readable.
+        // Any comments anchored to this annotation are removed with it so a
+        // deleted note never leaves a dangling thread behind in the rail.
+        let comments = Self::list(doc, "comments");
+        let mut i = 0;
+        while i < doc.length(&comments) {
+            let anchored = matches!(
+                doc.get(&comments, i),
+                Ok(Some((Value::Object(ObjType::Map), m)))
+                    if Self::get_str(doc, &m, "anno").as_deref() == Some(id)
+            );
+            if anchored {
+                let _ = doc.delete(&comments, i);
+            } else {
+                i += 1;
+            }
+        }
     }
 
     // ---- comments ---------------------------------------------------
@@ -309,6 +324,13 @@ impl PdfDoc {
         }
     }
 
+    pub fn delete_comment(doc: &mut AutoCommit, id: &str) {
+        let list = Self::list(doc, "comments");
+        if let Some(i) = Self::index_of(doc, &list, id) {
+            let _ = doc.delete(&list, i);
+        }
+    }
+
     pub fn add_reply(doc: &mut AutoCommit, comment_id: &str, reply: &Reply) {
         let list = Self::list(doc, "comments");
         if let Some(i) = Self::index_of(doc, &list, comment_id) {
@@ -372,6 +394,13 @@ impl PdfDoc {
             });
         }
         out
+    }
+
+    pub fn delete_signature(doc: &mut AutoCommit, id: &str) {
+        let list = Self::list(doc, "signatures");
+        if let Some(i) = Self::index_of(doc, &list, id) {
+            let _ = doc.delete(&list, i);
+        }
     }
 }
 
@@ -509,6 +538,79 @@ mod tests {
         assert_eq!(got[0].signer, "Alice Daskju");
         assert_eq!(got[0].page, 5);
         assert_eq!(got[0].style, 1);
+    }
+
+    #[test]
+    fn deleting_annotation_removes_its_anchored_comments() {
+        let mut doc = AutoCommit::new();
+        let a = hl(1);
+        let aid = a.id.clone();
+        PdfDoc::add_annotation(&mut doc, &a);
+        PdfDoc::add_comment(
+            &mut doc,
+            &Comment {
+                id: Comment::new_id(),
+                anno_id: Some(aid.clone()),
+                page: 1,
+                author: "Alice".into(),
+                body: "pinned".into(),
+                created: 1,
+                resolved: false,
+                replies: vec![],
+            },
+        );
+        // An unrelated free comment must survive the delete.
+        PdfDoc::add_comment(
+            &mut doc,
+            &Comment {
+                id: Comment::new_id(),
+                anno_id: None,
+                page: 1,
+                author: "Bob".into(),
+                body: "free".into(),
+                created: 2,
+                resolved: false,
+                replies: vec![],
+            },
+        );
+        assert_eq!(PdfDoc::list_comments(&doc).len(), 2);
+        PdfDoc::delete_annotation(&mut doc, &aid);
+        assert!(PdfDoc::list_annotations(&doc).is_empty());
+        let left = PdfDoc::list_comments(&doc);
+        assert_eq!(left.len(), 1, "anchored comment should be deleted with its annotation");
+        assert_eq!(left[0].body, "free");
+    }
+
+    #[test]
+    fn delete_comment_and_signature() {
+        let mut doc = AutoCommit::new();
+        let c = Comment {
+            id: Comment::new_id(),
+            anno_id: None,
+            page: 1,
+            author: "Alice".into(),
+            body: "x".into(),
+            created: 1,
+            resolved: false,
+            replies: vec![],
+        };
+        let cid = c.id.clone();
+        PdfDoc::add_comment(&mut doc, &c);
+        PdfDoc::delete_comment(&mut doc, &cid);
+        assert!(PdfDoc::list_comments(&doc).is_empty());
+
+        let s = Signature {
+            id: Signature::new_id(),
+            page: 1,
+            rect: PtRect::new(10.0, 10.0, 100.0, 40.0),
+            signer: "Alice".into(),
+            date: "2026-06-30".into(),
+            style: 0,
+        };
+        let sid = s.id.clone();
+        PdfDoc::add_signature(&mut doc, &s);
+        PdfDoc::delete_signature(&mut doc, &sid);
+        assert!(PdfDoc::list_signatures(&doc).is_empty());
     }
 
     #[test]

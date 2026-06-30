@@ -36,6 +36,11 @@ impl PdfApp {
         self.reflow();
     }
 
+    fn toggle_rail(&mut self) {
+        self.show_rail = !self.show_rail;
+        self.reflow();
+    }
+
     fn open_search(&mut self) {
         if !self.search_active {
             self.search_active = true;
@@ -112,11 +117,18 @@ impl PdfApp {
         if lay.zoom_in.contains(p) {
             return Some(ToolbarHit::ZoomIn);
         }
+        if lay.zoom_label.contains(p) {
+            // Clicking the percentage resets to fit.
+            return Some(ToolbarHit::Fit);
+        }
         if lay.fit.contains(p) {
             return Some(ToolbarHit::Fit);
         }
         if lay.search.contains(p) {
             return Some(ToolbarHit::Search);
+        }
+        if lay.toggle_rail.contains(p) {
+            return Some(ToolbarHit::ToggleRail);
         }
         if lay.toggle_sidebar.contains(p) {
             return Some(ToolbarHit::ToggleSidebar);
@@ -154,8 +166,24 @@ impl PdfApp {
                     self.open_search();
                 }
             }
+            ToolbarHit::ToggleRail => self.toggle_rail(),
             ToolbarHit::ToggleSidebar => self.toggle_sidebar(),
         }
+    }
+
+    fn apply_search_strip(&mut self, p: Point) -> bool {
+        for (hit, r) in &self.search_hits {
+            if r.contains(p) {
+                match hit {
+                    SearchHit::ToggleWholeWord => self.search_whole_word = !self.search_whole_word,
+                    SearchHit::ToggleCaseSensitive => self.search_case_sensitive = !self.search_case_sensitive,
+                }
+                self.recompute_matches();
+                self.dirty = true;
+                return true;
+            }
+        }
+        false
     }
 
     /// Resolve the most specific captured sidebar hit (smallest rect wins,
@@ -200,12 +228,20 @@ impl PdfApp {
                 self.commit_pending = true;
                 self.reload(state);
             }
+            SidebarHit::DeleteComment(id) => {
+                self.delete_target(&DeleteTarget::Comment(id), state);
+            }
             SidebarHit::AddSignature => self.set_tool(Tool::Sign),
             SidebarHit::SigJump(i) => {
                 if let Some(s) = self.signatures.get(i) {
                     let page = s.page;
+                    self.selected_sig = Some(s.id.clone());
+                    self.selected_anno = None;
                     self.go_to_page(page);
                 }
+            }
+            SidebarHit::DeleteSignature(id) => {
+                self.delete_target(&DeleteTarget::Signature(id), state);
             }
         }
         self.dirty = true;
@@ -243,28 +279,65 @@ impl PdfApp {
         if !self.canvas_rect.contains(p) {
             return false;
         }
-        let Some((page, pt)) = self.hit_page(p) else {
-            // Click on empty canvas clears any selection.
-            self.selected_anno = None;
-            self.dirty = true;
-            return true;
-        };
-        match self.tool {
-            Tool::Select => self.select_at(page, pt),
-            Tool::Highlight | Tool::Ink => {
-                self.drag = Some(DragState {
-                    tool: self.tool,
-                    page,
-                    start: pt,
-                    cur: pt,
-                    points: vec![pt],
-                });
+        match self.hit_page(p) {
+            Some((page, pt)) => match self.tool {
+                // Select arms a pan-or-click: a press that doesn't move is a
+                // selection; a press that drags pans the canvas.
+                Tool::Select => {
+                    self.pan = Some(PanState {
+                        start: p,
+                        scroll_x0: self.scroll_x,
+                        scroll_y0: self.scroll_y,
+                        moved: false,
+                    });
+                    self.dirty = true;
+                }
+                Tool::Highlight | Tool::Ink => {
+                    self.drag = Some(DragState {
+                        tool: self.tool,
+                        page,
+                        start: pt,
+                        cur: pt,
+                        points: vec![pt],
+                    });
+                    self.dirty = true;
+                }
+                Tool::Note => self.create_note(state, page, pt),
+                Tool::Sign => self.place_signature(state, page, pt),
+            },
+            None => {
+                // Empty canvas: with Select, start a pan; otherwise clear.
+                if matches!(self.tool, Tool::Select) {
+                    self.pan = Some(PanState {
+                        start: p,
+                        scroll_x0: self.scroll_x,
+                        scroll_y0: self.scroll_y,
+                        moved: false,
+                    });
+                } else {
+                    self.selected_anno = None;
+                    self.selected_sig = None;
+                }
                 self.dirty = true;
             }
-            Tool::Note => self.create_note(state, page, pt),
-            Tool::Sign => self.place_signature(state, page, pt),
         }
         true
+    }
+
+    /// Resolve a right-click into a context menu over a deletable item.
+    fn open_context_menu(&mut self, p: Point) -> bool {
+        if let Some((page, pt)) = self.hit_page(p) {
+            if let Some(target) = self.delete_target_at(page, pt) {
+                self.context_menu = Some(ContextMenu { at: p, target, item_rect: Rect::ZERO });
+                self.dirty = true;
+                return true;
+            }
+        }
+        // A right-click elsewhere just dismisses any open menu.
+        if self.context_menu.take().is_some() {
+            self.dirty = true;
+        }
+        false
     }
 
     // ---- top-level dispatch -----------------------------------------
@@ -281,6 +354,34 @@ impl PdfApp {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_mouse = p;
+
+                // Rail resize drag takes priority over everything else.
+                if let Some(grip_x) = self.rail_drag {
+                    let _ = grip_x;
+                    let new_w = (p.x - self.rect.x0).clamp(RAIL_W_MIN, RAIL_W_MAX);
+                    self.rail_w = new_w;
+                    self.reflow();
+                    self.dirty = true;
+                    return;
+                }
+
+                // Drag-to-pan (Select tool).
+                if let Some(pan) = self.pan {
+                    let dx = p.x - pan.start.x;
+                    let dy = p.y - pan.start.y;
+                    if dx.hypot(dy) > PAN_SLOP {
+                        self.scroll_x = pan.scroll_x0 - dx;
+                        self.scroll_y = pan.scroll_y0 - dy;
+                        self.clamp_scroll();
+                        self.current_page = self.nearest_page();
+                        if let Some(pan) = self.pan.as_mut() {
+                            pan.moved = true;
+                        }
+                    }
+                    self.dirty = true;
+                    return;
+                }
+
                 if let Some(page) = self.drag.as_ref().map(|d| d.page) {
                     let pt = self.page_point(page, p);
                     if let Some(d) = self.drag.as_mut() {
@@ -306,12 +407,25 @@ impl PdfApp {
                 ..
             } => {
                 let p = self.last_mouse;
+                // An open context menu intercepts the next click.
+                if self.context_menu.is_some() {
+                    let menu = self.context_menu.clone().unwrap();
+                    if menu.item_rect.contains(p) {
+                        self.delete_target(&menu.target, state);
+                    } else {
+                        self.context_menu = None;
+                        self.dirty = true;
+                    }
+                    *handled = true;
+                    return;
+                }
                 if let Some(hit) = self.toolbar_hit(p) {
                     self.apply_toolbar(hit, state);
                     *handled = true;
                     return;
                 }
                 if self.search_active && self.search_rect.contains(p) {
+                    self.apply_search_strip(p);
                     *handled = true;
                     return;
                 }
@@ -322,6 +436,16 @@ impl PdfApp {
                 if self.apply_sidebar(p, state) {
                     *handled = true;
                     return;
+                }
+                // Rail resize grip: a thin strip on the rail's right edge.
+                if self.show_rail {
+                    let rail = self.rail_rect;
+                    if (p.x - rail.x1).abs() <= RAIL_GRIP && p.y >= rail.y0 && p.y <= rail.y1 {
+                        self.rail_drag = Some(p.x);
+                        self.dirty = true;
+                        *handled = true;
+                        return;
+                    }
                 }
                 if self.apply_rail(p) {
                     *handled = true;
@@ -337,18 +461,74 @@ impl PdfApp {
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.drag.is_some() {
+                if self.rail_drag.take().is_some() {
+                    self.dirty = true;
+                    *handled = true;
+                } else if let Some(pan) = self.pan.take() {
+                    // A press that never moved is a selection click.
+                    if !pan.moved {
+                        if let Some((page, pt)) = self.hit_page(pan.start) {
+                            self.select_at(page, pt);
+                        } else {
+                            self.selected_anno = None;
+                            self.selected_sig = None;
+                        }
+                    }
+                    self.dirty = true;
+                    *handled = true;
+                } else if self.drag.is_some() {
                     self.commit_drag(state);
                     *handled = true;
                 }
             }
 
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } => {
+                let p = self.last_mouse;
+                if self.canvas_rect.contains(p) {
+                    self.open_context_menu(p);
+                    *handled = true;
+                }
+            }
+
             WindowEvent::MouseWheel { delta, .. } => {
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => *y as f64 * 56.0,
-                    MouseScrollDelta::PixelDelta(pos) => pos.y / scale_factor,
+                let p = self.last_mouse;
+                let (raw_x, raw_y) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => (*x as f64 * 56.0, *y as f64 * 56.0),
+                    MouseScrollDelta::PixelDelta(pos) => (pos.x / scale_factor, pos.y / scale_factor),
                 };
-                self.scroll_y -= dy;
+                let mods = modifiers.state();
+                let ctrl = mods.control_key() || mods.super_key();
+
+                // Wheel over the sidebar scrolls its list.
+                if self.show_sidebar && self.sidebar_rect.contains(p) {
+                    // (sidebar_max_scroll needs the text renderer, so just
+                    // nudge and let the next draw clamp it.)
+                    self.sidebar_scroll = (self.sidebar_scroll - raw_y).max(0.0);
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
+
+                if ctrl {
+                    // Ctrl+wheel zooms, centred on the cursor.
+                    let factor = if raw_y > 0.0 { 1.0 + raw_y / 240.0 } else { 1.0 / (1.0 - raw_y / 240.0) };
+                    self.zoom_at(factor, p);
+                    *handled = true;
+                    return;
+                }
+
+                // Shift+wheel (or a horizontal wheel) pans horizontally;
+                // otherwise vertical. Either axis only moves if it can.
+                if mods.shift_key() && self.is_overflowing_x() {
+                    self.scroll_x -= raw_y;
+                } else {
+                    self.scroll_x -= raw_x;
+                    self.scroll_y -= raw_y;
+                }
                 self.clamp_scroll();
                 self.current_page = self.nearest_page();
                 self.dirty = true;
@@ -408,13 +588,32 @@ impl PdfApp {
             return;
         }
 
-        // Ctrl/Cmd-F opens search from anywhere.
+        // Ctrl/Cmd shortcuts: find, and zoom (+ / − / 0). Handled up front so
+        // the bare-key fallbacks below can keep their own meanings.
         if ctrl {
             if let Key::Character(c) = &key_event.logical_key {
-                if c.as_str().eq_ignore_ascii_case("f") {
-                    self.open_search();
-                    *handled = true;
-                    return;
+                match c.as_str() {
+                    "f" | "F" => {
+                        self.open_search();
+                        *handled = true;
+                        return;
+                    }
+                    "+" | "=" => {
+                        self.zoom_by(1.15);
+                        *handled = true;
+                        return;
+                    }
+                    "-" | "_" => {
+                        self.zoom_by(1.0 / 1.15);
+                        *handled = true;
+                        return;
+                    }
+                    "0" => {
+                        self.reset_zoom();
+                        *handled = true;
+                        return;
+                    }
+                    _ => {}
                 }
             }
         }
@@ -451,7 +650,7 @@ impl PdfApp {
                         true
                     }
                     "0" => {
-                        self.fit_page();
+                        self.reset_zoom();
                         true
                     }
                     "w" | "W" => {
@@ -482,6 +681,8 @@ impl PdfApp {
             }
             Key::Named(NamedKey::Escape) => {
                 self.selected_anno = None;
+                self.selected_sig = None;
+                self.context_menu = None;
                 self.dirty = true;
                 *handled = true;
             }
@@ -495,6 +696,28 @@ impl PdfApp {
                 self.prev_page();
                 *handled = true;
             }
+            // Left/Right pan horizontally when the zoomed page is wider than
+            // the viewport; otherwise they step pages.
+            Key::Named(NamedKey::ArrowLeft) => {
+                if self.is_overflowing_x() {
+                    self.scroll_x = (self.scroll_x - 80.0).max(0.0);
+                    self.clamp_scroll();
+                    self.dirty = true;
+                } else {
+                    self.prev_page();
+                }
+                *handled = true;
+            }
+            Key::Named(NamedKey::ArrowRight) => {
+                if self.is_overflowing_x() {
+                    self.scroll_x = (self.scroll_x + 80.0).min(self.max_scroll_x());
+                    self.clamp_scroll();
+                    self.dirty = true;
+                } else {
+                    self.next_page();
+                }
+                *handled = true;
+            }
             Key::Named(NamedKey::Home) => {
                 self.go_to_page(1);
                 *handled = true;
@@ -504,11 +727,7 @@ impl PdfApp {
                 *handled = true;
             }
             Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace) => {
-                if let Some(id) = self.selected_anno.take() {
-                    PdfDoc::delete_annotation(state, &id);
-                    self.commit_pending = true;
-                    self.reload(state);
-                    self.dirty = true;
+                if self.delete_selected(state) {
                     *handled = true;
                 }
             }
@@ -599,5 +818,80 @@ mod event_tests {
             let after = app.comments.iter().find(|c| c.id == id).unwrap().resolved;
             assert_ne!(before, after, "resolve chip should toggle, not open the card");
         }
+    }
+
+    #[test]
+    fn sidebar_delete_buttons_remove_items() {
+        let (mut app, mut st) = app();
+        let mut scene = vello::Scene::new();
+        let theme = ui::theme::Theme::dark();
+        let mut tr = ui::text_render::TextRenderer::new();
+
+        // Comments tab: click a comment's delete (×) and confirm removal.
+        app.sidebar_tab = SidebarTab::Comments;
+        app.sidebar_hits = app.draw_sidebar(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        let del = app.sidebar_hits.iter().find_map(|(h, r)| match h {
+            SidebarHit::DeleteComment(id) => Some((id.clone(), *r)),
+            _ => None,
+        });
+        if let Some((id, r)) = del {
+            let n = app.comments.len();
+            let p = Point::new((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0);
+            assert!(app.apply_sidebar(p, &mut st.doc));
+            assert_eq!(app.comments.len(), n - 1);
+            assert!(!app.comments.iter().any(|c| c.id == id));
+        }
+
+        // Signatures tab: click a signature's delete (×).
+        app.sidebar_tab = SidebarTab::Signatures;
+        let mut scene2 = vello::Scene::new();
+        app.sidebar_hits = app.draw_sidebar(&mut scene2, Affine::IDENTITY, &mut tr, &theme);
+        let dels = app.sidebar_hits.iter().find_map(|(h, r)| match h {
+            SidebarHit::DeleteSignature(id) => Some((id.clone(), *r)),
+            _ => None,
+        });
+        if let Some((id, r)) = dels {
+            let n = app.signatures.len();
+            let p = Point::new((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0);
+            assert!(app.apply_sidebar(p, &mut st.doc));
+            assert_eq!(app.signatures.len(), n - 1);
+            assert!(!app.signatures.iter().any(|s| s.id == id));
+        }
+    }
+
+    #[test]
+    fn every_sidebar_tab_and_search_strip_draws_without_panicking() {
+        let (mut app, _st) = app();
+        let theme = ui::theme::Theme::dark();
+        let mut tr = ui::text_render::TextRenderer::new();
+        app.search_active = true;
+        app.query = "the".into();
+        app.recompute_matches();
+        app.recompute_regions();
+        for tab in [SidebarTab::Comments, SidebarTab::Outline, SidebarTab::Signatures] {
+            app.sidebar_tab = tab;
+            let mut scene = vello::Scene::new();
+            app.prepare_sidebar_scroll(&mut tr);
+            let _ = app.draw_sidebar(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+            let shits = app.draw_search(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+            assert!(
+                shits.iter().any(|(h, _)| matches!(h, SearchHit::ToggleWholeWord))
+                    && shits.iter().any(|(h, _)| matches!(h, SearchHit::ToggleCaseSensitive)),
+                "search strip exposes both option toggles"
+            );
+        }
+    }
+
+    #[test]
+    fn context_menu_delete_item_rect_is_captured_on_draw() {
+        let (mut app, _st) = app();
+        let theme = ui::theme::Theme::dark();
+        let mut tr = ui::text_render::TextRenderer::new();
+        let target = DeleteTarget::Annotation("anno".into());
+        app.context_menu = Some(ContextMenu { at: Point::new(400.0, 400.0), target, item_rect: Rect::ZERO });
+        let mut scene = vello::Scene::new();
+        app.draw_context_menu(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        let menu = app.context_menu.as_ref().unwrap();
+        assert!(menu.item_rect.area() > 1.0, "the Delete item rect is captured for hit-testing");
     }
 }
