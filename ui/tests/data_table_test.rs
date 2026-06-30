@@ -9,12 +9,8 @@ struct Row {
 
 fn cols() -> Vec<ColumnDef<Row>> {
     vec![
-        ColumnDef::new("name", "Name", ColumnWidth::Flex(1.0))
-            .sortable(true)
-            .with_render(Box::new(|_r, _s, _t| {})),
-        ColumnDef::new("size", "Size", ColumnWidth::Fixed(80.0))
-            .sortable(true)
-            .with_render(Box::new(|_r, _s, _t| {})),
+        ColumnDef::new("name", "Name", ColumnWidth::Flex(1.0)).sortable(true),
+        ColumnDef::new("size", "Size", ColumnWidth::Fixed(80.0)).sortable(true),
     ]
 }
 
