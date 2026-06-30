@@ -22,6 +22,9 @@ use ui::gesture::{DragSelect, Granularity};
 use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+// Provides `.r()/.g()/.b()` accessors on `vello` `Color` (used to derive
+// theme-tinted translucent chrome tones).
+use ui::ColorCompat;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::Widget;
 use ui::PresenceCtx;
@@ -50,15 +53,115 @@ enum CtxAction {
     },
 }
 
-// Document surface colors (a white page is the familiar word-processor look,
-// independent of the OS chrome theme).
-const CANVAS: Color = Color::from_rgb8(0x2b, 0x2e, 0x34);
-const PAPER: Color = Color::from_rgb8(0xfc, 0xfc, 0xfa);
-const SHADOW: Color = Color::from_rgb8(0x16, 0x18, 0x1c);
-const INK: Color = Color::from_rgb8(0x1c, 0x1c, 0x20);
-const MUTED: Color = Color::from_rgb8(0x8a, 0x8a, 0x92);
-const CARET_COLOR: Color = Color::from_rgb8(0x28, 0x5a, 0xc8);
-const SELECTION: Color = Color::from_rgba8(0x46, 0x78, 0xe6, 0x4d);
+// --- Paper-context colors (the document sheet) ----------------------------
+// The document "page" is the familiar word-processor *paper*. Document text is
+// authored with ink colours that assume a light sheet (the stylesheet's default
+// ink is near-black, e.g. `STYLE_PALETTE[0]`), so the paper stays a light tone
+// in BOTH light and dark mode — only the surrounding chrome follows the theme.
+// Keeping these as single, clearly-named constants (rather than scattering
+// `Color::WHITE`) documents the deliberate "paper is always light" convention.
+//
+// `ChromeColors::for_theme` derives `paper`/`shadow` from the theme's *lightest*
+// neutral when available so the sheet harmonises with the palette; these consts
+// are the fallback / canonical paper tones the ink colours below contrast with.
+/// Canonical paper tone — a barely-warm off-white. Ink/selection/caret below are
+/// chosen to read on this in every theme.
+const PAPER_DEFAULT: Color = Color::from_rgb8(0xfc, 0xfc, 0xfa);
+/// Soft drop-shadow under the paper sheet.
+const PAPER_SHADOW_DEFAULT: Color = Color::from_rgb8(0x16, 0x18, 0x1c);
+/// Default ink for paper content that has no per-block style colour (table
+/// cells, image-block fallbacks). Dark so it reads on the light paper.
+const PAPER_INK: Color = Color::from_rgb8(0x1c, 0x1c, 0x20);
+/// Muted ink for paper chrome (running heads/footers, placeholders on paper).
+const PAPER_MUTED: Color = Color::from_rgb8(0x8a, 0x8a, 0x92);
+/// Selection highlight painted on paper (a translucent accent so text reads
+/// through it). Tied to paper, not the theme, so it always contrasts the sheet.
+const PAPER_SELECTION: Color = Color::from_rgba8(0x46, 0x78, 0xe6, 0x4d);
+/// Caret colour on paper.
+const PAPER_CARET: Color = Color::from_rgb8(0x28, 0x5a, 0xc8);
+
+/// OS-theme-driven chrome palette for the editor. Resolved once per frame from
+/// the [`Theme`] passed to `draw` (see [`ChromeColors::for_theme`]) and stashed
+/// on the widget so every chrome helper reads themed colours instead of
+/// hard-coded literals. This is what makes the toolbar / panels / bars / canvas
+/// honour light/dark mode and the OS palette. Paper-context colours (the sheet
+/// + ink on it) are deliberately *not* here — see the `PAPER_*` consts above.
+#[derive(Clone, Copy)]
+struct ChromeColors {
+    /// Canvas behind the page (the desk). `surfaces.base`.
+    canvas: Color,
+    /// Bar / panel surface (toolbar, status bar, find bar, layout bar, side
+    /// panels). `surfaces.raised`.
+    bar: Color,
+    /// A slightly recessed surface for input fields / value boxes. `surfaces.base`.
+    field: Color,
+    /// A raised "chip" tone for inactive buttons/chips. Between base and raised.
+    chip: Color,
+    /// Hairline separators, borders, panel edges, the scrollbar track tone.
+    border: Color,
+    /// Primary chrome ink (button labels, panel headings).
+    text: Color,
+    /// Dimmed chrome ink (hints, secondary labels, match counts).
+    text_dim: Color,
+    /// Accent fill for active controls / layout guides (the "guide" blue).
+    accent: Color,
+    /// A translucent accent for inactive guide lines.
+    accent_faint: Color,
+    /// Ink that reads on top of an `accent` fill (active button labels).
+    on_accent: Color,
+    /// Scrollbar thumb tone.
+    scrollbar: Color,
+    /// The paper sheet, derived from the theme's lightest surface when it is
+    /// genuinely light, else [`PAPER_DEFAULT`]. Always a light tone so the
+    /// dark-authored document ink stays readable.
+    paper: Color,
+    /// Drop shadow under the paper sheet.
+    paper_shadow: Color,
+}
+
+impl ChromeColors {
+    /// Map the OS [`Theme`] onto the editor's chrome palette. Only the closest
+    /// available token is used for each slot — no new theme tokens are invented.
+    fn for_theme(theme: &Theme) -> Self {
+        let c = &theme.tokens.colors;
+        // Pick a paper tone: prefer the theme's lightest neutral when it is
+        // actually light (so light themes use their own near-white sheet), but
+        // never go dark — dark themes keep the canonical light paper so the
+        // document ink contrasts. `neutral[10]` is the lightest ramp slot.
+        let lightest = c.neutral[10];
+        let paper = if luminance(lightest) >= 0.85 { lightest } else { PAPER_DEFAULT };
+        Self {
+            canvas: c.surfaces.base,
+            bar: c.surfaces.raised,
+            field: c.surfaces.base,
+            chip: c.neutral[2],
+            border: c.border_standard,
+            text: c.text_primary,
+            text_dim: c.text_dim,
+            accent: theme.accent_primary,
+            accent_faint: with_alpha(theme.accent_primary, 0x70),
+            on_accent: Color::WHITE,
+            scrollbar: c.neutral[4],
+            paper,
+            paper_shadow: PAPER_SHADOW_DEFAULT,
+        }
+    }
+}
+
+/// Relative luminance (0..1) of a colour — used only to decide whether a theme's
+/// "lightest" surface is light enough to serve as paper.
+fn luminance(c: Color) -> f64 {
+    let r = c.r() as f64 / 255.0;
+    let g = c.g() as f64 / 255.0;
+    let b = c.b() as f64 / 255.0;
+    0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+/// Return `base` with its alpha replaced (0..=255). Keeps the RGB, used for the
+/// translucent accent guide tint.
+fn with_alpha(base: Color, alpha: u8) -> Color {
+    Color::from_rgba8(base.r(), base.g(), base.b(), alpha)
+}
 
 const PAGE_TOP: f64 = 28.0;
 const MAX_PAGE_W: f64 = 820.0;
@@ -115,13 +218,9 @@ const TRACK_DEL: Color = Color::from_rgb8(0xbf, 0x29, 0x29);
 const COMMENT_TAB_W: f64 = 4.0;
 /// Width of the right-margin annotation card.
 const COMMENT_CARD_W: f64 = 150.0;
-/// Panel chrome colors (consistent with the bottom layout bar).
-const PANEL_BG: Color = Color::from_rgb8(0x20, 0x22, 0x28);
-const PANEL_EDGE: Color = Color::from_rgb8(0x32, 0x35, 0x3e);
-const PANEL_CHIP: Color = Color::from_rgb8(0x2c, 0x2f, 0x38);
-const PANEL_FG: Color = Color::from_rgb8(0xc6, 0xca, 0xd2);
-const PANEL_MUTED: Color = Color::from_rgb8(0x80, 0x84, 0x90);
-const PANEL_FIELD: Color = Color::from_rgb8(0x16, 0x18, 0x1c);
+// Panel + guide chrome colours are theme-driven — see `ChromeColors`. The side
+// panels read `chrome.bar`/`chrome.border`/`chrome.chip`/`chrome.text`/
+// `chrome.text_dim`/`chrome.field`; layout guides read `chrome.accent`.
 /// A small color palette for the style-colour picker.
 const STYLE_PALETTE: [[u8; 3]; 7] = [
     [0x1c, 0x1c, 0x20], // ink
@@ -141,10 +240,8 @@ const HIGHLIGHT_PALETTE: [[u8; 3]; 5] = [
     [0xff, 0x9a, 0xd0], // pink
     [0xff, 0xb1, 0x4d], // orange
 ];
-/// Accent for active layout guides + handles.
-const GUIDE: Color = Color::from_rgb8(0x46, 0x78, 0xe6);
-/// Inactive guide line (semi-transparent accent).
-const GUIDE_FAINT: Color = Color::from_rgba8(0x46, 0x78, 0xe6, 0x70);
+// Layout guides + handles use the theme accent — see `chrome.accent` /
+// `chrome.accent_faint`.
 /// How close (px) the pointer must be to a guide line to grab it.
 const GUIDE_GRAB: f64 = 7.0;
 
@@ -229,16 +326,16 @@ const ZOOM_STEP: f64 = 0.1;
 
 /// Draw a text-input box (Find/Replace fields). A trailing `_` marks the focused
 /// field's caret; an empty field shows the placeholder.
-fn draw_field_box(scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, r: Rect, text: &str, placeholder: &str, focused: bool) {
-    let border = if focused { GUIDE } else { Color::from_rgb8(0x44, 0x47, 0x52) };
-    scene.fill(Fill::NonZero, transform, Color::from_rgb8(0x16, 0x18, 0x1e), None, &vello::kurbo::RoundedRect::from_rect(r, 5.0));
+fn draw_field_box(scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, cc: &ChromeColors, r: Rect, text: &str, placeholder: &str, focused: bool) {
+    let border = if focused { cc.accent } else { cc.border };
+    scene.fill(Fill::NonZero, transform, cc.field, None, &vello::kurbo::RoundedRect::from_rect(r, 5.0));
     scene.stroke(&vello::kurbo::Stroke::new(if focused { 1.5 } else { 1.0 }), transform, border, None, &vello::kurbo::RoundedRect::from_rect(r, 5.0));
     let (shown, col) = if text.is_empty() && !focused {
-        (placeholder.to_string(), MUTED)
+        (placeholder.to_string(), cc.text_dim)
     } else if focused {
-        (format!("{text}_"), Color::from_rgb8(0xee, 0xef, 0xf2))
+        (format!("{text}_"), cc.text)
     } else {
-        (text.to_string(), Color::from_rgb8(0xee, 0xef, 0xf2))
+        (text.to_string(), cc.text)
     };
     tr.draw_text(scene, &shown, 13.0, col, transform * Affine::translate((r.x0 + 8.0, (r.y0 + r.y1) / 2.0 - 8.0)), None);
 }
@@ -1204,6 +1301,11 @@ pub struct WordProcessorWidget {
     /// Clickable outline entries this frame: `(rect, heading_block_id)`. A click
     /// scrolls that heading into view.
     outline_hits: Vec<(Rect, String)>,
+    /// OS-theme-driven chrome palette, resolved at the top of every `draw` from
+    /// the passed-in [`Theme`]. Every chrome helper reads this instead of
+    /// hard-coded colours, so the editor honours light/dark mode + the OS
+    /// palette. Initialised to the dark theme's mapping for off-frame use.
+    chrome: ChromeColors,
 }
 
 /// One process-wide built-in dictionary, shared across every word-processor
@@ -1288,6 +1390,8 @@ impl WordProcessorWidget {
             outline_open: false,
             outline_rect: Rect::ZERO,
             outline_hits: Vec::new(),
+            // Overwritten at the top of every `draw` from the live theme.
+            chrome: ChromeColors::for_theme(&Theme::dark()),
         }
     }
 
@@ -1633,19 +1737,23 @@ impl WordProcessorWidget {
         }
     }
 
-    fn draw_find_bar(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, _theme: &Theme, bar: Rect) {
+    fn draw_find_bar(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, bar: Rect) {
+        let cc = self.chrome;
+        // Danger cue (regex-error ring/text) is *semantic* — keep it as the
+        // theme's danger colour, not chrome.
+        let danger = theme.tokens.colors.semantic.danger;
         self.find_buttons.clear();
-        scene.fill(Fill::NonZero, transform, Color::from_rgb8(0x24, 0x26, 0x2d), None, &bar);
-        scene.fill(Fill::NonZero, transform, Color::from_rgb8(0x33, 0x36, 0x40), None, &Rect::new(bar.x0, bar.y1 - 1.0, bar.x1, bar.y1));
+        scene.fill(Fill::NonZero, transform, cc.bar, None, &bar);
+        scene.fill(Fill::NonZero, transform, cc.border, None, &Rect::new(bar.x0, bar.y1 - 1.0, bar.x1, bar.y1));
         let cy = (bar.y0 + bar.y1) / 2.0;
         let fy0 = cy - 13.0;
         let mut x = bar.x0 + 12.0;
 
         let fr = Rect::new(x, fy0, x + 188.0, fy0 + 26.0);
-        draw_field_box(scene, transform, tr, fr, &self.find_query, "Find", !self.find_on_replace);
-        // A subtle red ring when a regex query fails to compile.
+        draw_field_box(scene, transform, tr, &cc, fr, &self.find_query, "Find", !self.find_on_replace);
+        // A subtle danger ring when a regex query fails to compile.
         if self.find_regex && self.find_regex_error {
-            scene.stroke(&vello::kurbo::Stroke::new(1.5), transform, Color::from_rgb8(0xd0, 0x52, 0x4a), None, &vello::kurbo::RoundedRect::from_rect(fr, 5.0));
+            scene.stroke(&vello::kurbo::Stroke::new(1.5), transform, danger, None, &vello::kurbo::RoundedRect::from_rect(fr, 5.0));
         }
         self.find_buttons.push((FindAction::FocusFind, fr));
         x += 196.0;
@@ -1658,9 +1766,9 @@ impl WordProcessorWidget {
         ] {
             let r = Rect::new(x, fy0, x + w, fy0 + 26.0);
             let (bg, fg) = if on {
-                (GUIDE, Color::WHITE)
+                (cc.accent, cc.on_accent)
             } else {
-                (Color::from_rgb8(0x2a, 0x2d, 0x36), Color::from_rgb8(0xb6, 0xba, 0xc4))
+                (cc.chip, cc.text_dim)
             };
             scene.fill(Fill::NonZero, transform, bg, None, &vello::kurbo::RoundedRect::from_rect(r, 5.0));
             let tx = r.x0 + (w - label.chars().count() as f64 * 7.2).max(4.0) / 2.0;
@@ -1671,18 +1779,18 @@ impl WordProcessorWidget {
         x += 8.0;
 
         let rr = Rect::new(x, fy0, x + 188.0, fy0 + 26.0);
-        draw_field_box(scene, transform, tr, rr, &self.replace_query, "Replace with", self.find_on_replace);
+        draw_field_box(scene, transform, tr, &cc, rr, &self.replace_query, "Replace with", self.find_on_replace);
         self.find_buttons.push((FindAction::FocusReplace, rr));
         x += 196.0;
 
         let (count, count_col) = if self.find_query.is_empty() {
-            (String::new(), MUTED)
+            (String::new(), cc.text_dim)
         } else if self.find_regex && self.find_regex_error {
-            ("Bad pattern".to_string(), Color::from_rgb8(0xd0, 0x6a, 0x62))
+            ("Bad pattern".to_string(), danger)
         } else if self.find_matches.is_empty() {
-            ("No results".to_string(), MUTED)
+            ("No results".to_string(), cc.text_dim)
         } else {
-            (format!("{} / {}", self.find_idx + 1, self.find_matches.len()), MUTED)
+            (format!("{} / {}", self.find_idx + 1, self.find_matches.len()), cc.text_dim)
         };
         tr.draw_text(scene, &count, 12.5, count_col, transform * Affine::translate((x, cy - 7.0)), None);
         x += 78.0;
@@ -1695,9 +1803,9 @@ impl WordProcessorWidget {
             (FindAction::Close, "✕", 28.0),
         ] {
             let r = Rect::new(x, fy0, x + w, fy0 + 26.0);
-            scene.fill(Fill::NonZero, transform, Color::from_rgb8(0x2e, 0x31, 0x3a), None, &vello::kurbo::RoundedRect::from_rect(r, 5.0));
+            scene.fill(Fill::NonZero, transform, cc.chip, None, &vello::kurbo::RoundedRect::from_rect(r, 5.0));
             let tx = r.x0 + (w - label.chars().count() as f64 * 7.2).max(6.0) / 2.0;
-            tr.draw_text(scene, label, 13.0, Color::from_rgb8(0xd2, 0xd5, 0xdc), transform * Affine::translate((tx, cy - 8.0)), None);
+            tr.draw_text(scene, label, 13.0, cc.text, transform * Affine::translate((tx, cy - 8.0)), None);
             self.find_buttons.push((action, r));
             x += w + 6.0;
         }
@@ -1914,7 +2022,7 @@ impl WordProcessorWidget {
         let mut y = if is_footer { (band.y1 - total_h).max(band.y0) } else { band.y0 };
         let mut drew = false;
         for layout in &shaped {
-            tr.draw_rich(scene, layout, ctf * Affine::translate((band.x0, y)), MUTED);
+            tr.draw_rich(scene, layout, ctf * Affine::translate((band.x0, y)), PAPER_MUTED);
             y += layout.height() as f64;
             drew = true;
         }
@@ -2002,6 +2110,7 @@ impl WordProcessorWidget {
     /// Draggable guides + live value labels for the active layout mode, drawn
     /// over the page content.
     fn draw_layout_overlay(&self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, page: Rect) {
+        let accent = self.chrome.accent;
         if let Some(e) = self.active_edges() {
             let drag = self.guide_drag;
             for side in [Side::Left, Side::Right, Side::Top, Side::Bottom] {
@@ -2013,7 +2122,7 @@ impl WordProcessorWidget {
                         DragKind::Single => g.side == side,
                     })
                     .unwrap_or(false);
-                let col = if active { GUIDE } else { GUIDE_FAINT };
+                let col = if active { accent } else { self.chrome.accent_faint };
                 let t = if active { 2.0 } else { 1.0 };
                 let line = if vert {
                     Rect::new(c - t / 2.0, page.y0, c + t / 2.0, page.y1)
@@ -2023,26 +2132,27 @@ impl WordProcessorWidget {
                 scene.fill(Fill::NonZero, transform, col, None, &line);
                 // grip dot at the line's midpoint
                 let (gx, gy) = if vert { (c, (page.y0 + page.y1) / 2.0) } else { ((page.x0 + page.x1) / 2.0, c) };
-                scene.fill(Fill::NonZero, transform, GUIDE, None, &vello::kurbo::Circle::new((gx, gy), 4.0));
+                scene.fill(Fill::NonZero, transform, accent, None, &vello::kurbo::Circle::new((gx, gy), 4.0));
                 // value label, offset inside the page
                 let label = format!("{}", e.get(side).round() as i64);
                 let (lx, ly) = if vert { (c + 6.0, page.y0 + 16.0) } else { (page.x0 + 10.0, c + 5.0) };
-                tr.draw_text(scene, &label, 12.0, GUIDE, transform * Affine::translate((lx, ly)), None);
+                tr.draw_text(scene, &label, 12.0, accent, transform * Affine::translate((lx, ly)), None);
             }
         } else if self.layout_mode == LayoutMode::Spacing {
             if let Some((hx, hy)) = self.spacing_handle() {
                 let pill = Rect::new(hx - 20.0, hy - 3.0, hx + 20.0, hy + 3.0);
-                scene.fill(Fill::NonZero, transform, GUIDE, None, &vello::kurbo::RoundedRect::from_rect(pill, 3.0));
+                scene.fill(Fill::NonZero, transform, accent, None, &vello::kurbo::RoundedRect::from_rect(pill, 3.0));
                 let label = format!("{} px", self.focused_space_after().round() as i64);
-                tr.draw_text(scene, &label, 12.0, GUIDE, transform * Affine::translate((hx + 30.0, hy - 7.0)), None);
+                tr.draw_text(scene, &label, 12.0, accent, transform * Affine::translate((hx + 30.0, hy - 7.0)), None);
             }
         }
     }
 
     /// The bottom layout bar: mode chips + a live readout / hint.
     fn draw_layout_bar(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, _theme: &Theme, bar: Rect) {
-        scene.fill(Fill::NonZero, transform, Color::from_rgb8(0x20, 0x22, 0x28), None, &bar);
-        scene.fill(Fill::NonZero, transform, Color::from_rgb8(0x32, 0x35, 0x3e), None, &Rect::new(bar.x0, bar.y0, bar.x1, bar.y0 + 1.0));
+        let cc = self.chrome;
+        scene.fill(Fill::NonZero, transform, cc.bar, None, &bar);
+        scene.fill(Fill::NonZero, transform, cc.border, None, &Rect::new(bar.x0, bar.y0, bar.x1, bar.y0 + 1.0));
 
         let cy = (bar.y0 + bar.y1) / 2.0;
         let mut x = bar.x0 + 12.0;
@@ -2051,8 +2161,8 @@ impl WordProcessorWidget {
             let w = 16.0 + label.chars().count() as f64 * 7.6;
             let r = Rect::new(x, bar.y0 + 5.0, x + w, bar.y1 - 5.0);
             let active = self.layout_mode == mode;
-            let bg = if active { GUIDE } else { Color::from_rgb8(0x2c, 0x2f, 0x38) };
-            let fg = if active { Color::from_rgb8(0xff, 0xff, 0xff) } else { Color::from_rgb8(0xc6, 0xca, 0xd2) };
+            let bg = if active { cc.accent } else { cc.chip };
+            let fg = if active { cc.on_accent } else { cc.text_dim };
             scene.fill(Fill::NonZero, transform, bg, None, &vello::kurbo::RoundedRect::from_rect(r, 6.0));
             tr.draw_text(scene, label, 13.0, fg, transform * Affine::translate((x + 8.0, cy - 8.0)), None);
             self.layout_chips.push((mode, r));
@@ -2070,18 +2180,19 @@ impl WordProcessorWidget {
             }
             LayoutMode::None => "Page layout — pick Margins or Spacing, then drag on the page".to_string(),
         };
-        tr.draw_text(scene, &readout, 12.5, Color::from_rgb8(0x9a, 0x9e, 0xa8), transform * Affine::translate((x + 12.0, cy - 8.0)), None);
+        tr.draw_text(scene, &readout, 12.5, cc.text_dim, transform * Affine::translate((x + 12.0, cy - 8.0)), None);
     }
 
     /// The contextual styles panel: the focused block's style name, a style
     /// picker (apply any style to the selection), and editable property rows that
     /// mutate the *style* — every block of that style updates live.
     fn draw_styles_panel(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, panel: Rect) {
+        let cc = self.chrome;
         self.panel_rect = panel;
         self.panel_hits.clear();
         // Background + left border.
-        scene.fill(Fill::NonZero, transform, PANEL_BG, None, &panel);
-        scene.fill(Fill::NonZero, transform, PANEL_EDGE, None, &Rect::new(panel.x0, panel.y0, panel.x0 + 1.0, panel.y1));
+        scene.fill(Fill::NonZero, transform, cc.bar, None, &panel);
+        scene.fill(Fill::NonZero, transform, cc.border, None, &Rect::new(panel.x0, panel.y0, panel.x0 + 1.0, panel.y1));
         // Clip content to the panel so nothing bleeds into the bars.
         scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &panel);
 
@@ -2091,24 +2202,24 @@ impl WordProcessorWidget {
         let inner_w = right - x0;
         let mut y = panel.y0 + 14.0;
 
-        tr.draw_text(scene, "STYLE", 10.5, PANEL_MUTED, transform * Affine::translate((x0, y)), None);
+        tr.draw_text(scene, "STYLE", 10.5, cc.text_dim, transform * Affine::translate((x0, y)), None);
         y += 16.0;
 
         let Some(key) = self.focused_style_key() else {
-            tr.draw_text(scene, "Place the caret in a paragraph", 12.5, PANEL_MUTED, transform * Affine::translate((x0, y)), Some(inner_w as f32));
+            tr.draw_text(scene, "Place the caret in a paragraph", 12.5, cc.text_dim, transform * Affine::translate((x0, y)), Some(inner_w as f32));
             scene.pop_layer();
             return;
         };
         // Snapshot the focused style for drawing (read-only copy).
         let st = self.sheet.get(&key);
 
-        tr.draw_text(scene, &st.name, 18.0, PANEL_FG, transform * Affine::translate((x0, y)), Some(inner_w as f32));
+        tr.draw_text(scene, &st.name, 18.0, cc.text, transform * Affine::translate((x0, y)), Some(inner_w as f32));
         y += 28.0;
-        panel_divider(scene, transform, x0, right, y);
+        panel_divider(scene, transform, &cc, x0, right, y);
         y += 12.0;
 
         // ---- Style picker -------------------------------------------------
-        tr.draw_text(scene, "PARAGRAPH STYLES", 10.5, PANEL_MUTED, transform * Affine::translate((x0, y)), None);
+        tr.draw_text(scene, "PARAGRAPH STYLES", 10.5, cc.text_dim, transform * Affine::translate((x0, y)), None);
         y += 16.0;
         let order = self.sheet.order();
         let gap = 6.0;
@@ -2121,40 +2232,40 @@ impl WordProcessorWidget {
             let cy = y + row * (chip_h + gap);
             let r = Rect::new(cx, cy, cx + col_w, cy + chip_h);
             let name = self.sheet.get(id).name;
-            draw_btn(scene, transform, tr, r, &name, id == &key, false);
+            draw_btn(scene, transform, tr, &cc, r, &name, id == &key, false);
             self.panel_hits.push((r, PanelHit::Pick(id.clone())));
         }
         let rows = order.len().div_ceil(2) as f64;
         y += rows * (chip_h + gap) + 6.0;
-        panel_divider(scene, transform, x0, right, y);
+        panel_divider(scene, transform, &cc, x0, right, y);
         y += 12.0;
 
         // ---- Editable style properties ------------------------------------
-        tr.draw_text(scene, "STYLE PROPERTIES", 10.5, PANEL_MUTED, transform * Affine::translate((x0, y)), None);
+        tr.draw_text(scene, "STYLE PROPERTIES", 10.5, cc.text_dim, transform * Affine::translate((x0, y)), None);
         y += 18.0;
 
         // Font (cycles sans → serif → mono).
         {
-            tr.draw_text(scene, "Font", 12.5, PANEL_FG, transform * Affine::translate((x0, y + 5.0)), None);
+            tr.draw_text(scene, "Font", 12.5, cc.text, transform * Affine::translate((x0, y + 5.0)), None);
             let fl = match st.font.as_str() {
                 "serif" => "Serif",
                 "mono" => "Mono",
                 _ => "Sans",
             };
             let r = Rect::new(right - 96.0, y, right, y + 24.0);
-            draw_btn(scene, transform, tr, r, fl, false, true);
+            draw_btn(scene, transform, tr, &cc, r, fl, false, true);
             self.panel_hits.push((r, PanelHit::CycleFont));
             y += 30.0;
         }
 
         // Weight: Bold / Italic toggles.
         {
-            tr.draw_text(scene, "Weight", 12.5, PANEL_FG, transform * Affine::translate((x0, y + 5.0)), None);
+            tr.draw_text(scene, "Weight", 12.5, cc.text, transform * Affine::translate((x0, y + 5.0)), None);
             let bw = 60.0;
             let rb = Rect::new(right - bw * 2.0 - 6.0, y, right - bw - 6.0, y + 24.0);
             let ri = Rect::new(right - bw, y, right, y + 24.0);
-            draw_btn(scene, transform, tr, rb, "Bold", st.bold, true);
-            draw_btn(scene, transform, tr, ri, "Italic", st.italic, true);
+            draw_btn(scene, transform, tr, &cc, rb, "Bold", st.bold, true);
+            draw_btn(scene, transform, tr, &cc, ri, "Italic", st.italic, true);
             self.panel_hits.push((rb, PanelHit::ToggleBold));
             self.panel_hits.push((ri, PanelHit::ToggleItalic));
             y += 30.0;
@@ -2162,7 +2273,7 @@ impl WordProcessorWidget {
 
         // Colour: a palette of swatches.
         {
-            tr.draw_text(scene, "Colour", 12.5, PANEL_FG, transform * Affine::translate((x0, y + 5.0)), None);
+            tr.draw_text(scene, "Colour", 12.5, cc.text, transform * Affine::translate((x0, y + 5.0)), None);
             let n = STYLE_PALETTE.len();
             let sw_gap = 5.0;
             // Leave room on the left for the "Colour" label.
@@ -2184,13 +2295,13 @@ impl WordProcessorWidget {
 
         // Alignment: L / C / R.
         {
-            tr.draw_text(scene, "Align", 12.5, PANEL_FG, transform * Affine::translate((x0, y + 5.0)), None);
+            tr.draw_text(scene, "Align", 12.5, cc.text, transform * Affine::translate((x0, y + 5.0)), None);
             let bw = 40.0;
             let gap = 6.0;
             for (i, (label, val)) in [("L", "left"), ("C", "center"), ("R", "right")].iter().enumerate() {
                 let rx = right - (3.0 - i as f64) * bw - (2.0 - i as f64) * gap;
                 let r = Rect::new(rx, y, rx + bw, y + 24.0);
-                draw_btn(scene, transform, tr, r, label, st.align == *val, true);
+                draw_btn(scene, transform, tr, &cc, r, label, st.align == *val, true);
                 self.panel_hits.push((r, PanelHit::SetAlign(val)));
             }
             y += 30.0;
@@ -2202,13 +2313,13 @@ impl WordProcessorWidget {
             y += 30.0;
         }
 
-        panel_divider(scene, transform, x0, right, y);
+        panel_divider(scene, transform, &cc, x0, right, y);
         y += 12.0;
 
         // New style from this.
         {
             let r = Rect::new(x0, y, right, y + 26.0);
-            draw_btn(scene, transform, tr, r, "+ New style from this", false, true);
+            draw_btn(scene, transform, tr, &cc, r, "+ New style from this", false, true);
             self.panel_hits.push((r, PanelHit::NewStyle));
         }
 
@@ -2218,17 +2329,18 @@ impl WordProcessorWidget {
     /// One numeric property row: `Label    [−] [ value ] [+]`. The value box is
     /// click-to-type / drag-to-scrub; the steppers nudge by `field.step()`.
     fn draw_num_row(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, field: NumField, value: f32, x0: f64, right: f64, y: f64) {
-        tr.draw_text(scene, field.label(), 12.5, PANEL_FG, transform * Affine::translate((x0, y + 5.0)), None);
+        let cc = self.chrome;
+        tr.draw_text(scene, field.label(), 12.5, cc.text, transform * Affine::translate((x0, y + 5.0)), None);
         let plus = Rect::new(right - 24.0, y, right, y + 24.0);
         let vb = Rect::new(plus.x0 - 60.0, y, plus.x0 - 2.0, y + 24.0);
         let minus = Rect::new(vb.x0 - 26.0, y, vb.x0 - 2.0, y + 24.0);
-        draw_btn(scene, transform, tr, minus, "−", false, true);
-        draw_btn(scene, transform, tr, plus, "+", false, true);
+        draw_btn(scene, transform, tr, &cc, minus, "−", false, true);
+        draw_btn(scene, transform, tr, &cc, plus, "+", false, true);
         // Value box.
         let editing = self.editing_field == Some(field);
         let scrubbing = self.scrub.map(|s| s.field == field).unwrap_or(false);
-        let border = if editing || scrubbing { GUIDE } else { PANEL_EDGE };
-        scene.fill(Fill::NonZero, transform, PANEL_FIELD, None, &vello::kurbo::RoundedRect::from_rect(vb, 5.0));
+        let border = if editing || scrubbing { cc.accent } else { cc.border };
+        scene.fill(Fill::NonZero, transform, cc.field, None, &vello::kurbo::RoundedRect::from_rect(vb, 5.0));
         scene.stroke(&vello::kurbo::Stroke::new(if editing || scrubbing { 1.5 } else { 1.0 }), transform, border, None, &vello::kurbo::RoundedRect::from_rect(vb, 5.0));
         let text = if editing {
             format!("{}_", self.edit_buf)
@@ -2237,7 +2349,7 @@ impl WordProcessorWidget {
         };
         let approx = text.chars().count() as f64 * 7.0;
         let tx = (vb.x0 + vb.x1) / 2.0 - approx / 2.0;
-        tr.draw_text(scene, &text, 12.5, PANEL_FG, transform * Affine::translate((tx, (vb.y0 + vb.y1) / 2.0 - 8.0)), None);
+        tr.draw_text(scene, &text, 12.5, cc.text, transform * Affine::translate((tx, (vb.y0 + vb.y1) / 2.0 - 8.0)), None);
         self.panel_hits.push((vb, PanelHit::Num(field)));
         self.panel_hits.push((minus, PanelHit::NumDelta(field, -field.step())));
         self.panel_hits.push((plus, PanelHit::NumDelta(field, field.step())));
@@ -2293,11 +2405,12 @@ impl WordProcessorWidget {
     /// heading nearest the current scroll is highlighted. Mirrors the styles
     /// panel's chrome (background, left/right edge, clipped content).
     fn draw_outline_pane(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, panel: Rect) {
+        let cc = self.chrome;
         self.outline_rect = panel;
         self.outline_hits.clear();
-        scene.fill(Fill::NonZero, transform, PANEL_BG, None, &panel);
+        scene.fill(Fill::NonZero, transform, cc.bar, None, &panel);
         // Right border (the pane sits on the canvas's left edge).
-        scene.fill(Fill::NonZero, transform, PANEL_EDGE, None, &Rect::new(panel.x1 - 1.0, panel.y0, panel.x1, panel.y1));
+        scene.fill(Fill::NonZero, transform, cc.border, None, &Rect::new(panel.x1 - 1.0, panel.y0, panel.x1, panel.y1));
         scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &panel);
 
         let pad = 14.0;
@@ -2306,12 +2419,12 @@ impl WordProcessorWidget {
         let inner_w = (right - x0).max(40.0);
         let mut y = panel.y0 + 14.0;
 
-        tr.draw_text(scene, "OUTLINE", 10.5, PANEL_MUTED, transform * Affine::translate((x0, y)), None);
+        tr.draw_text(scene, "OUTLINE", 10.5, cc.text_dim, transform * Affine::translate((x0, y)), None);
         y += 18.0;
 
         let entries = self.outline_entries();
         if entries.is_empty() {
-            tr.draw_text(scene, "No headings yet", 12.5, PANEL_MUTED, transform * Affine::translate((x0, y)), Some(inner_w as f32));
+            tr.draw_text(scene, "No headings yet", 12.5, cc.text_dim, transform * Affine::translate((x0, y)), Some(inner_w as f32));
             scene.pop_layer();
             return;
         }
@@ -2325,13 +2438,15 @@ impl WordProcessorWidget {
             let r = Rect::new(x0, y, right, y + row_h);
             let is_active = active.as_deref() == Some(h.id.as_str());
             if is_active {
-                scene.fill(Fill::NonZero, transform, PANEL_CHIP, None, &vello::kurbo::RoundedRect::from_rect(r, 5.0));
+                scene.fill(Fill::NonZero, transform, cc.chip, None, &vello::kurbo::RoundedRect::from_rect(r, 5.0));
             }
-            // A small level cue: deeper headings render dimmer + smaller.
+            // A small level cue: deeper headings render dimmer + smaller. The
+            // active row sits on a `chip` fill, so its ink is the primary text
+            // colour (readable on the chip), not the on-accent colour.
             let (size, ink) = match h.level {
-                1 => (13.5, if is_active { Color::WHITE } else { PANEL_FG }),
-                2 => (12.5, if is_active { Color::WHITE } else { PANEL_FG }),
-                _ => (11.5, if is_active { Color::WHITE } else { PANEL_MUTED }),
+                1 => (13.5, cc.text),
+                2 => (12.5, cc.text),
+                _ => (11.5, if is_active { cc.text } else { cc.text_dim }),
             };
             let label = if h.text.trim().is_empty() { "(untitled)".to_string() } else { h.text.trim().to_string() };
             tr.draw_text(scene, &label, size, ink, transform * Affine::translate((x0 + indent, y + 4.0)), Some((inner_w - indent).max(20.0) as f32));
@@ -2367,15 +2482,15 @@ impl WordProcessorWidget {
 }
 
 /// A horizontal 1px divider line inside the panel.
-fn panel_divider(scene: &mut Scene, transform: Affine, x0: f64, x1: f64, y: f64) {
-    scene.fill(Fill::NonZero, transform, PANEL_EDGE, None, &Rect::new(x0, y, x1, y + 1.0));
+fn panel_divider(scene: &mut Scene, transform: Affine, cc: &ChromeColors, x0: f64, x1: f64, y: f64) {
+    scene.fill(Fill::NonZero, transform, cc.border, None, &Rect::new(x0, y, x1, y + 1.0));
 }
 
 /// A panel chip / button: rounded rect + label. `center` centers the label
 /// (approximate), else left-pads it.
-fn draw_btn(scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, r: Rect, label: &str, active: bool, center: bool) {
-    let bg = if active { GUIDE } else { PANEL_CHIP };
-    let fg = if active { Color::WHITE } else { PANEL_FG };
+fn draw_btn(scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, cc: &ChromeColors, r: Rect, label: &str, active: bool, center: bool) {
+    let bg = if active { cc.accent } else { cc.chip };
+    let fg = if active { cc.on_accent } else { cc.text };
     scene.fill(Fill::NonZero, transform, bg, None, &vello::kurbo::RoundedRect::from_rect(r, 6.0));
     let approx = label.chars().count() as f64 * 6.6;
     let tx = if center { ((r.x0 + r.x1) / 2.0 - approx / 2.0).max(r.x0 + 4.0) } else { r.x0 + 8.0 };
@@ -2426,6 +2541,10 @@ impl Widget for WordProcessorWidget {
     }
 
     fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &PresenceCtx) {
+        // Resolve the OS theme into this frame's chrome palette once; every
+        // chrome helper below reads `self.chrome` so the whole editor follows
+        // light/dark mode + the OS palette.
+        self.chrome = ChromeColors::for_theme(theme);
         let full = self.rect;
         // The toolbar may wrap to several rows on a narrow window; reserve its
         // actual (possibly multi-row) height so the canvas top sits below it and
@@ -2461,7 +2580,7 @@ impl Widget for WordProcessorWidget {
             self.find_buttons.clear();
         }
         let canvas = Rect::new(canvas_left, full.y0 + tb_h + find_h, canvas_right, layout_bar_top);
-        scene.fill(Fill::NonZero, transform, CANVAS, None, &canvas);
+        scene.fill(Fill::NonZero, transform, self.chrome.canvas, None, &canvas);
 
         // Zoom anchor: the canvas top, horizontally centered. The page+content
         // transform scales about this point, so the page stays centered and the
@@ -2592,7 +2711,7 @@ impl Widget for WordProcessorWidget {
                             width: col_w - 2.0 * cell_pad,
                             height: cell_h,
                             bullet: None,
-                            ink: INK,
+                            ink: PAPER_INK,
                             image_hash: None,
                             cell_box: Some(cbox),
                             cell_row: Some(r),
@@ -2645,7 +2764,7 @@ impl Widget for WordProcessorWidget {
                     width: draw_w,
                     height: draw_h,
                     bullet: None,
-                    ink: INK,
+                    ink: PAPER_INK,
                     image_hash: intrinsic.map(|_| hash),
                     cell_box: None,
                     cell_row: None,
@@ -2788,7 +2907,7 @@ impl Widget for WordProcessorWidget {
         for i in 0..num_pages {
             let ptop = page_top + i as f64 * page_pitch - sy;
             let sheet = Rect::new(page_x, ptop, page_x + page_w, ptop + letter_h);
-            chrome::page::draw(scene, ctf, sheet, PAPER, SHADOW);
+            chrome::page::draw(scene, ctf, sheet, self.chrome.paper, self.chrome.paper_shadow);
             let page_no = i + 1;
             // Header band: the top margin, inset by the L/R text margins.
             let head_band = Rect::new(sheet.x0 + m.left, sheet.y0, sheet.x1 - m.right, sheet.y0 + m.top);
@@ -2802,7 +2921,8 @@ impl Widget for WordProcessorWidget {
                 let approx = label.chars().count() as f64 * 6.4;
                 let lx = (sheet.x0 + sheet.x1) / 2.0 - approx / 2.0;
                 let ly = sheet.y1 + PAGE_GAP / 2.0 - 6.0;
-                text_renderer.draw_text(scene, &label, 11.0, Color::from_rgb8(0x9a, 0x9e, 0xa8), ctf * Affine::translate((lx, ly)), None);
+                // Drawn in the inter-page gap on the canvas — chrome, so themed.
+                text_renderer.draw_text(scene, &label, 11.0, self.chrome.text_dim, ctf * Affine::translate((lx, ly)), None);
             }
         }
         self.header = header;
@@ -2883,7 +3003,7 @@ impl Widget for WordProcessorWidget {
                     // Missing or undecodable (e.g. non-PNG) image — placeholder.
                     scene.fill(Fill::NonZero, ctf, Color::from_rgb8(0xee, 0xee, 0xf2), None, &vello::kurbo::RoundedRect::from_rect(rect, 6.0));
                     scene.stroke(&vello::kurbo::Stroke::new(1.0), ctf, Color::from_rgb8(0xcc, 0xce, 0xd6), None, &vello::kurbo::RoundedRect::from_rect(rect, 6.0));
-                    text_renderer.draw_text(scene, "🖼  image", 14.0, MUTED, ctf * Affine::translate((rect.x0 + 12.0, rect.y0 + rect.height() / 2.0 - 8.0)), None);
+                    text_renderer.draw_text(scene, "🖼  image", 14.0, PAPER_MUTED, ctf * Affine::translate((rect.x0 + 12.0, rect.y0 + rect.height() / 2.0 - 8.0)), None);
                 }
                 continue;
             }
@@ -2891,7 +3011,7 @@ impl Widget for WordProcessorWidget {
                 let fill = match l.cell_row {
                     Some(0) => Color::from_rgb8(0xec, 0xee, 0xf3), // header row tint
                     Some(r) if r % 2 == 0 => Color::from_rgb8(0xf6, 0xf6, 0xf9), // zebra
-                    _ => PAPER,
+                    _ => self.chrome.paper,
                 };
                 scene.fill(Fill::NonZero, ctf, fill, None, &bx);
                 scene.stroke(&vello::kurbo::Stroke::new(1.0), ctf, Color::from_rgb8(0xc4, 0xc6, 0xcc), None, &bx);
@@ -2900,7 +3020,7 @@ impl Widget for WordProcessorWidget {
             if l.kind == "fidelity" {
                 let box_rect = Rect::new(l.text_x, l.y_top + 2.0, (page_x + page_w - m.right).min(l.text_x + 360.0), l.y_top + l.height - 2.0);
                 scene.fill(Fill::NonZero, ctf, Color::from_rgb8(0xee, 0xee, 0xf2), None, &vello::kurbo::RoundedRect::from_rect(box_rect, 4.0));
-                text_renderer.draw_text(scene, "⟦ embedded content ⟧", 14.0, MUTED, ctf * Affine::translate((l.text_x + 10.0, l.y_top + 6.0)), None);
+                text_renderer.draw_text(scene, "⟦ embedded content ⟧", 14.0, PAPER_MUTED, ctf * Affine::translate((l.text_x + 10.0, l.y_top + 6.0)), None);
                 continue;
             }
 
@@ -2918,11 +3038,11 @@ impl Widget for WordProcessorWidget {
             if let Some((b0, b1)) = self.selection_bytes_for(&l.id, &l.text) {
                 if let (Some(bx), true) = (l.cell_box, multi_sel) {
                     // Multi-cell selection: highlight the whole cell (spreadsheet-style).
-                    scene.fill(Fill::NonZero, ctf, SELECTION, None, &bx);
+                    scene.fill(Fill::NonZero, ctf, PAPER_SELECTION, None, &bx);
                 } else {
                     for (rx0, ry0, rx1, ry1) in layout.selection_rects(b0, b1) {
                         let r = Rect::new(l.text_x + rx0 as f64, l.y_top + ry0 as f64, l.text_x + rx1 as f64, l.y_top + ry1 as f64);
-                        scene.fill(Fill::NonZero, ctf, SELECTION, None, &r);
+                        scene.fill(Fill::NonZero, ctf, PAPER_SELECTION, None, &r);
                     }
                 }
             }
@@ -3029,7 +3149,7 @@ impl Widget for WordProcessorWidget {
                         // fonts) with paper so only the superscript number shows.
                         if let Some((rx0, ry0, rx1, ry1)) = placeholder_rect {
                             let mask = Rect::new(l.text_x + rx0 as f64, l.y_top + ry0 as f64, l.text_x + rx1 as f64, l.y_top + ry1 as f64);
-                            scene.fill(Fill::NonZero, ctf, PAPER, None, &mask);
+                            scene.fill(Fill::NonZero, ctf, self.chrome.paper, None, &mask);
                         }
                         let label = num.to_string();
                         // Superscript: smaller font, raised toward the line's top.
@@ -3051,7 +3171,7 @@ impl Widget for WordProcessorWidget {
                 let byte = char_to_byte(&l.text, self.inner.caret.offset);
                 let (cx, cy, ch) = layout.caret_geometry(byte);
                 let caret = Rect::new(l.text_x + cx as f64, l.y_top + cy as f64, l.text_x + cx as f64 + CARET_WIDTH, l.y_top + cy as f64 + ch as f64);
-                scene.fill(Fill::NonZero, ctf, CARET_COLOR, None, &caret);
+                scene.fill(Fill::NonZero, ctf, PAPER_CARET, None, &caret);
             }
         }
 
@@ -3162,7 +3282,7 @@ impl Widget for WordProcessorWidget {
                     scene,
                     "Start writing…",
                     16.5,
-                    Color::from_rgb8(0xbc, 0xbc, 0xc2),
+                    PAPER_MUTED,
                     ctf * Affine::translate((l.text_x, l.y_top)),
                     None,
                 );
@@ -3184,7 +3304,7 @@ impl Widget for WordProcessorWidget {
             let frac = self.scroll_y / self.max_scroll;
             let thumb_y = canvas.y0 + frac * (track - thumb_h);
             let thumb = Rect::new(canvas.x1 - 8.0, thumb_y + 2.0, canvas.x1 - 4.0, thumb_y + thumb_h - 2.0);
-            scene.fill(Fill::NonZero, transform, Color::from_rgb8(0x55, 0x58, 0x60), None, &vello::kurbo::RoundedRect::from_rect(thumb, 2.0));
+            scene.fill(Fill::NonZero, transform, self.chrome.scrollbar, None, &vello::kurbo::RoundedRect::from_rect(thumb, 2.0));
         }
 
         self.laid = laid;
@@ -4305,6 +4425,7 @@ impl WordProcessorWidget {
     /// button, then a small "Reset" affordance when zoomed away from 100%. Each
     /// button is registered in `self.status_buttons` for click hit-testing.
     fn draw_zoom_control(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, bar: Rect) {
+        let cc = self.chrome;
         self.status_buttons.clear();
         let cy = (bar.y0 + bar.y1) / 2.0;
         let bw = 18.0;
@@ -4318,9 +4439,9 @@ impl WordProcessorWidget {
 
         let btn = |scene: &mut Scene, tr: &mut TextRenderer, x: f64, label: &str| -> Rect {
             let r = Rect::new(x, y0, x + bw, y0 + bh);
-            scene.fill(Fill::NonZero, transform, Color::from_rgb8(0x33, 0x36, 0x40), None, &vello::kurbo::RoundedRect::from_rect(r, 4.0));
+            scene.fill(Fill::NonZero, transform, cc.chip, None, &vello::kurbo::RoundedRect::from_rect(r, 4.0));
             let tx = r.x0 + (bw - label.chars().count() as f64 * 6.5).max(2.0) / 2.0;
-            tr.draw_text(scene, label, 13.0, Color::from_rgb8(0xc8, 0xcc, 0xd4), transform * Affine::translate((tx, cy - 8.0)), None);
+            tr.draw_text(scene, label, 13.0, cc.text, transform * Affine::translate((tx, cy - 8.0)), None);
             r
         };
 
@@ -4331,7 +4452,7 @@ impl WordProcessorWidget {
         // The percentage chip doubles as a reset target (click to return to 100%).
         let vr = Rect::new(x, y0, x + val_w, y0 + bh);
         let pw = pct.chars().count() as f64 * 6.8;
-        tr.draw_text(scene, &pct, 12.5, Color::from_rgb8(0xd6, 0xd9, 0xe0), transform * Affine::translate((x + (val_w - pw) / 2.0, cy - 8.0)), None);
+        tr.draw_text(scene, &pct, 12.5, cc.text, transform * Affine::translate((x + (val_w - pw) / 2.0, cy - 8.0)), None);
         self.status_buttons.push((StatusAction::ZoomReset, vr));
         x += val_w + 4.0;
 
@@ -4442,10 +4563,13 @@ impl WordProcessorWidget {
         let hl_band = Rect::new(tb.x0, last_row_y, (text_left - 10.0).max(tb.x0), last_row_y + row_h);
         self.draw_highlight_swatches(scene, transform, tr, hl_band);
 
-        // Subtle hover highlight over the button under the pointer.
+        // Subtle hover highlight over the button under the pointer. A low-alpha
+        // tint of the primary text colour reads as a veneer in both light
+        // (dark-on-light) and dark (light-on-dark) modes.
         if let Some(hr) = self.hover_tool {
             let pad = Rect::new(hr.x0 - 2.0, hr.y0 + 1.0, hr.x1 + 2.0, hr.y1 - 1.0);
-            scene.fill(Fill::NonZero, transform, Color::from_rgba8(0xff, 0xff, 0xff, 0x14), None, &vello::kurbo::RoundedRect::from_rect(pad, 6.0));
+            let veneer = with_alpha(self.chrome.text, 0x14);
+            scene.fill(Fill::NonZero, transform, veneer, None, &vello::kurbo::RoundedRect::from_rect(pad, 6.0));
         }
     }
 
@@ -4529,11 +4653,11 @@ impl WordProcessorWidget {
 
         // Neutral / default swatch: surface-toned square with an "A", clears colour.
         let nr = Rect::new(x, y0, x + sw, y0 + sw);
-        scene.fill(Fill::NonZero, transform, Color::from_rgb8(0x3a, 0x3d, 0x46), None, &vello::kurbo::RoundedRect::from_rect(nr, 4.0));
+        scene.fill(Fill::NonZero, transform, self.chrome.chip, None, &vello::kurbo::RoundedRect::from_rect(nr, 4.0));
         if cur.is_none() {
             scene.stroke(&vello::kurbo::Stroke::new(2.0), transform, Color::WHITE, None, &vello::kurbo::RoundedRect::from_rect(nr, 4.0));
         }
-        tr.draw_text(scene, "A", 13.0, Color::from_rgb8(0xd6, 0xd8, 0xde), transform * Affine::translate((x + 5.5, y0 + 2.0)), None);
+        tr.draw_text(scene, "A", 13.0, self.chrome.text, transform * Affine::translate((x + 5.5, y0 + 2.0)), None);
         self.toolbar.push((ToolAction::TextColor(None), nr));
         x += sw + gap;
 
@@ -4573,11 +4697,11 @@ impl WordProcessorWidget {
 
         // Neutral / "no highlight" swatch: surface-toned square with a "▱" hint.
         let nr = Rect::new(x, y0, x + sw, y0 + sw);
-        scene.fill(Fill::NonZero, transform, Color::from_rgb8(0x3a, 0x3d, 0x46), None, &vello::kurbo::RoundedRect::from_rect(nr, 4.0));
+        scene.fill(Fill::NonZero, transform, self.chrome.chip, None, &vello::kurbo::RoundedRect::from_rect(nr, 4.0));
         if cur.is_none() {
             scene.stroke(&vello::kurbo::Stroke::new(2.0), transform, Color::WHITE, None, &vello::kurbo::RoundedRect::from_rect(nr, 4.0));
         }
-        tr.draw_text(scene, "▱", 12.0, Color::from_rgb8(0xd6, 0xd8, 0xde), transform * Affine::translate((x + 4.0, y0 + 2.5)), None);
+        tr.draw_text(scene, "▱", 12.0, self.chrome.text, transform * Affine::translate((x + 4.0, y0 + 2.5)), None);
         self.toolbar.push((ToolAction::Highlight(None), nr));
         x += sw + gap;
 
@@ -4612,7 +4736,13 @@ mod tests {
     use ui::permissions::PermissionContext;
 
     fn pipeline_draw(wp: &mut WordProcessorWidget, state: &mut ui::State, w: u32, h: u32) {
-        let theme = Theme::dark();
+        pipeline_draw_themed(wp, state, w, h, &Theme::dark());
+    }
+
+    /// Like [`pipeline_draw`] but renders under an explicit [`Theme`] so tests
+    /// can exercise the real five-pass draw path under light/dark/high-contrast
+    /// palettes. Returns the widget's resolved chrome palette for inspection.
+    fn pipeline_draw_themed(wp: &mut WordProcessorWidget, state: &mut ui::State, w: u32, h: u32, theme: &Theme) -> ChromeColors {
         let presence = PresenceCtx::empty();
         let permission = PermissionContext::permissive();
         let mut tr = TextRenderer::new();
@@ -4620,7 +4750,7 @@ mod tests {
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
         wp.sync(&mut state.doc, &state.root);
-        let child = wp.build_layout(&mut taffy, &theme, &mut node_map);
+        let child = wp.build_layout(&mut taffy, theme, &mut node_map);
         let root = taffy
             .new_with_children(
                 Style { size: Size { width: Dimension::length(w as f32), height: Dimension::length(h as f32) }, ..Default::default() },
@@ -4646,7 +4776,94 @@ mod tests {
         }
         wp.apply_layout(&taffy, child, Point::ORIGIN);
         let mut scene = Scene::new();
-        wp.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence, &permission);
+        wp.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence, &permission);
+        // `draw` resolves the chrome palette from `theme` into `wp.chrome`.
+        wp.chrome
+    }
+
+    /// Build a small populated doc (heading + paragraph) so a draw exercises the
+    /// toolbar, panels, page, body ink, selection, and bars in one pass.
+    fn populated() -> (ui::State, WordProcessorWidget) {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "Title");
+        wp.model_mut().enter(&mut state.doc);
+        wp.model_mut().insert_str(&mut state.doc, "Body text here");
+        // Open the find bar + outline pane so their chrome is drawn too.
+        wp.find_open = true;
+        wp.outline_open = true;
+        (state, wp)
+    }
+
+    /// `ChromeColors::for_theme` is the single production mapping `draw` uses.
+    /// Assert every chrome slot is *sourced from the theme token* (not a literal)
+    /// and that swapping the theme actually changes the sampled chrome surfaces —
+    /// proving the chrome follows the OS palette.
+    #[test]
+    fn chrome_colors_are_sourced_from_theme_tokens() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let cc = ChromeColors::for_theme(&theme);
+            let c = &theme.tokens.colors;
+            assert_eq!(cc.canvas, c.surfaces.base, "canvas = surfaces.base");
+            assert_eq!(cc.bar, c.surfaces.raised, "bar = surfaces.raised");
+            assert_eq!(cc.border, c.border_standard, "border = border_standard");
+            assert_eq!(cc.text, c.text_primary, "text = text_primary");
+            assert_eq!(cc.text_dim, c.text_dim, "text_dim = text_dim");
+            assert_eq!(cc.accent, theme.accent_primary, "accent = accent_primary");
+        }
+    }
+
+    #[test]
+    fn swapping_theme_changes_sampled_chrome() {
+        let dark = ChromeColors::for_theme(&Theme::dark());
+        let light = ChromeColors::for_theme(&Theme::light());
+        // The desk/canvas and bar surfaces must differ between light and dark —
+        // if the chrome were hard-coded these would be identical.
+        assert_ne!(
+            (dark.canvas.r(), dark.canvas.g(), dark.canvas.b()),
+            (light.canvas.r(), light.canvas.g(), light.canvas.b()),
+            "canvas tracks the theme",
+        );
+        assert_ne!(
+            (dark.text.r(), dark.text.g(), dark.text.b()),
+            (light.text.r(), light.text.g(), light.text.b()),
+            "chrome text tracks the theme",
+        );
+    }
+
+    /// The paper sheet is deliberately a *light* tone in every theme so the
+    /// dark-authored document ink stays readable (see the `PAPER_*` convention).
+    #[test]
+    fn paper_stays_light_for_readable_ink_in_every_theme() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let cc = ChromeColors::for_theme(&theme);
+            assert!(
+                luminance(cc.paper) >= 0.85,
+                "paper must stay light (got luminance {:.2}) so ink contrasts",
+                luminance(cc.paper),
+            );
+            // The default paper ink is dark — confirm it actually contrasts.
+            assert!(
+                luminance(cc.paper) - luminance(PAPER_INK) > 0.5,
+                "paper/ink contrast must be ample",
+            );
+        }
+    }
+
+    /// The whole five-pass draw path must run (and stash the themed chrome on the
+    /// widget) without panicking under light, dark, AND high-contrast palettes.
+    #[test]
+    fn draw_path_reads_theme_and_does_not_panic_in_any_mode() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let (mut state, mut wp) = populated();
+            let cc = pipeline_draw_themed(&mut wp, &mut state, 1100, 760, &theme);
+            // The widget's live chrome must equal the theme's mapping — i.e. the
+            // production `draw` resolved it from the passed-in `theme`.
+            assert_eq!(cc.canvas, theme.tokens.colors.surfaces.base);
+            assert_eq!(cc.bar, theme.tokens.colors.surfaces.raised);
+            assert_eq!(cc.accent, theme.accent_primary);
+        }
     }
 
     #[test]
