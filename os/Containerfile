@@ -233,6 +233,23 @@ COPY os/etc/pam.d/greetd /etc/pam.d/greetd
 # from the pre-login screen (see the rule's header for the rationale).
 COPY os/etc/polkit-1/rules.d/49-qos-greeter-power.rules /etc/polkit-1/rules.d/49-qos-greeter-power.rules
 
+# --- Signing trust roots (security plan §9 image signing, §4 measured boot) ---
+# Public keys only (the private keys are git-excluded; see keys/README.md).
+#  - cosign.pub verifies the OS image signature before `bootc upgrade` applies
+#    it (policy.json below). CI signs each pushed image (see .forgejo/workflows).
+#  - tpm2-pcr-signing.public.pem is the trust root for measured-boot PCR
+#    predictions; baked here so the installer/enroll path can bind LUKS to it
+#    once the build-side prediction-signing + UKI land (see §4 — not yet active).
+COPY keys/cosign.pub /usr/share/qos/cosign.pub
+COPY keys/tpm2-pcr-signing.public.pem /usr/share/qos/tpm2-pcr-signing.public.pem
+
+# Container signature policy: REQUIRE a valid cosign signature for
+# code.podesta.ai/qos/qos (everything else stays permissive), so a tampered or
+# unsigned OS image is refused at `bootc upgrade`. registries.d points the
+# verifier at cosign's sigstore attachment in the same repo.
+COPY os/etc/containers/policy.json /etc/containers/policy.json
+COPY os/etc/containers/registries.d/code.podesta.ai.yaml /etc/containers/registries.d/code.podesta.ai.yaml
+
 # First-boot setup service
 COPY os/usr/lib/systemd/system/shell-firstboot.service /usr/lib/systemd/system/shell-firstboot.service
 
