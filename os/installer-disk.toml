@@ -16,15 +16,25 @@
 [customizations.kernel]
 # qos.installer=1 — drives installer-vs-greeter session selection + the safety
 #   guards (see below).
-# enforcing=0 — boot the live medium SELinux-permissive. The installer UI runs
-#   under cage in the greetd session (the `xdm_t` domain), and `xdm_t` is denied
-#   the privileged container/install operations (`bootc image copy-to-storage`
-#   fails "Permission denied (os error 13)" under enforcing — confirmed via an
-#   enforcing-vs-permissive A/B). Permissive is appropriate for an ephemeral
-#   installer doing whole-disk ops; the INSTALLED system has neither arg, so it
-#   boots fully enforcing. (Follow-up: a targeted SELinux policy or running the
-#   backend as a transient system unit would let the live medium stay enforcing.)
-append = "qos.installer=1 enforcing=0"
+#
+# The live medium now boots SELinux ENFORCING (no `enforcing=0`). The installer
+# UI runs under cage in the greetd session (the `xdm_t` domain), which is denied
+# the privileged container/install operations — `bootc image copy-to-storage`
+# used to fail "Permission denied (os error 13)" under enforcing. Instead of
+# disabling SELinux globally, the privileged backend (qos-install) re-launches
+# its real work as a TRANSIENT systemd unit (`systemd-run`), so the dangerous
+# operations execute in a system-service domain (init_t) the policy already
+# permits — and stay fully enforced. A scoped, live-medium-only SELinux module
+# (qos-installer.cil, loaded at boot by qos-installer-setup.service) grants the
+# greeter session domain the narrow ability to launch that transient unit.
+# See docs/selinux-installer.md.
+#
+# NOTE (E1): the systemd-run path + policy are reasoned-correct but were NOT yet
+# confirmed on a live VM install (this build env can't boot the medium). A VM
+# install-test under enforcing is required to finalise — see the doc for the
+# exact verification + audit2allow workflow. The INSTALLED system has never had
+# `enforcing=0` and is unaffected.
+append = "qos.installer=1"
 
 # The self-install model copies the booted image into the live medium's
 # /var/lib/containers (bootc image copy-to-storage) before `bootc install`.

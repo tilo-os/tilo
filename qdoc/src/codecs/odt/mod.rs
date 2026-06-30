@@ -38,11 +38,15 @@ impl FormatProvider for OdtCodec {
         // (automatic styles); later styles win, so content overrides styles.xml.
         let mut reg = styles::StyleRegistry::default();
         if let Some(styles_xml) = container.get("styles.xml") {
-            styles::parse_styles(styles_xml, &mut reg);
+            // styles.xml holds common/named styles → flag them as named.
+            styles::parse_styles(styles_xml, &mut reg, true);
         }
-        styles::parse_styles(&content, &mut reg);
+        // content.xml holds automatic (anonymous) styles → not named unless they
+        // carry an explicit display-name (e.g. styles this codec itself exports).
+        styles::parse_styles(&content, &mut reg, false);
         // The container is threaded through so `draw:frame`/`draw:image` can read
-        // the referenced `Pictures/*` bytes and store them as image-block blobs.
+        // the referenced `Pictures/*` bytes and store them as image-block blobs,
+        // and so named paragraph styles are lifted into the qdoc styles container.
         content::parse_body(&content, &reg, &container, doc)?;
         // Preservation layer: stash every part except the (regenerated)
         // content.xml verbatim so export round-trips them losslessly.

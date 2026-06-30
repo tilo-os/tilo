@@ -37,6 +37,10 @@ pub struct SegChoice {
     /// Per-segment CRDT flag path; index-aligned with `labels`.
     select_paths: Vec<String>,
     selected: usize,
+    /// Stable name for E2E click targeting (`Widget::test_id`). Defaults to
+    /// `filesystem_choice`; override via [`SegChoice::with_test_id`] when the
+    /// same widget is reused for another choice (e.g. encryption).
+    test_id: String,
     rect: Rect,
     segment_rects: Vec<Rect>,
     is_focused: bool,
@@ -50,11 +54,18 @@ impl SegChoice {
             labels,
             select_paths,
             selected: if n == 0 { 0 } else { selected.min(n - 1) },
+            test_id: "filesystem_choice".to_string(),
             rect: Rect::ZERO,
             segment_rects: Vec::new(),
             is_focused: false,
             last_cursor: Cell::new(Point::ZERO),
         }
+    }
+
+    /// Override the E2E `test_id` (default `filesystem_choice`).
+    pub fn with_test_id(mut self, id: &str) -> Self {
+        self.test_id = id.to_string();
+        self
     }
 
     fn fire(&self, idx: usize, state: &mut AutoCommit, root: &ObjId) {
@@ -248,7 +259,7 @@ impl Widget for SegChoice {
     }
 
     fn test_id(&self) -> Option<&str> {
-        Some("filesystem_choice")
+        Some(&self.test_id)
     }
 
     fn get_rect(&self) -> Rect {

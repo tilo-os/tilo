@@ -1,3 +1,98 @@
+# syntax=docker/dockerfile:1.7
+# ============================================================================
+# qOS bootc image — multi-stage build
+# ----------------------------------------------------------------------------
+# Stage 1 (builder): compiles the Rust workspace binaries INSIDE the image
+#   build, on a Fedora 44 base whose glibc matches the runtime. This removes
+#   the old host-build + `COPY shell`/`COPY fs` hack and the F43->F44 glibc
+#   coupling it caused.
+# Stage 2 (final): the actual fedora-bootc:44 OS image. Installs the runtime
+#   packages + configs + systemd units and copies the binaries out of the
+#   builder. None of the builder's toolchain/-devel deps land here.
+#
+# The build context MUST be the repo root (the builder needs the workspace
+# source). The OS config files live under os/, so their COPY sources are
+# `os/`-prefixed:
+#
+#     podman build -f os/Containerfile -t localhost/qos:latest <repo-root>
+#
+# `.containerignore` at the repo root trims target/, os/output and .git from
+# the context. See os/dev/build-image.sh and os/build.sh.
+# ============================================================================
+
+
+# ---- Stage 1: builder ------------------------------------------------------
+FROM quay.io/fedora/fedora-bootc:44 AS builder
+
+# Rust toolchain + the C/-devel deps the workspace's *-sys crates link or build
+# against. Superset of the my-distrobox dev deps (repo CLAUDE.md) plus the base
+# toolchain a minimal bootc image lacks: cmake/perl/clang/openssl etc. that
+# vendored crates (aws-lc-sys, the freetype/harfbuzz/fontconfig font stack,
+# jemalloc, sqlite) need to build. `sccache` honours the project's
+# .cargo/config.toml `rustc-wrapper`. Throwaway stage — nothing here ships.
+RUN dnf install -y \
+        rust cargo sccache \
+        gcc gcc-c++ make cmake perl perl-FindBin python3 git \
+        clang clang-devel pkgconf-pkg-config \
+        libxkbcommon-devel wayland-devel \
+        libseat-devel libinput-devel systemd-devel libdrm-devel \
+        mesa-libgbm-devel mesa-libGL-devel mesa-libEGL-devel \
+        pipewire-devel \
+        openssl-devel sqlite-devel zlib-ng-compat-devel \
+        fontconfig-devel freetype-devel harfbuzz-devel expat-devel \
+        nasm \
+    && dnf clean all
+
+WORKDIR /build
+
+# The whole cargo workspace: in-tree crates (ui) + submodule working trees
+# (shell, fs, greeter, installer, apps/*). .containerignore keeps target/,
+# os/output and .git out of the context.
+COPY . /build
+
+# Keep cargo's home and sccache's cache under /build (which exists via WORKDIR/
+# COPY). The fedora-bootc base has no /root, so nesting cache mounts there fails
+# ("stat /root: no such file or directory"); single subdirs of /build are safe.
+ENV CARGO_HOME=/build/.cargo-home \
+    SCCACHE_DIR=/build/.sccache
+
+# Compile the binaries the OS images need. Cache mounts persist cargo's
+# registry + git checkouts (CARGO_HOME), the target dir, and the sccache store
+# across rebuilds; a cache-mounted target/ isn't in any layer, so the binaries
+# are cp'd to /out (a real path) in the same RUN for the final stage to COPY.
+#
+# Three CI guards (the image builds under buildkit, not just podman/buildah):
+#  - Drop apps/browser (Servo) from the workspace before building: it's never
+#    built here and its `libservo` dep can't resolve in a clean checkout
+#    (the root Cargo.lock is gitignored). This sed only runs in-build; the
+#    committed Cargo.toml is untouched.
+#  - Seed the resolve from a committed pinned lock (os/Cargo.lock.pinned, kept
+#    in sync from a known-good build): without it a fresh CI resolve picks
+#    incompatible transitive versions (e.g. ed25519-dalek vs ed25519/pkcs8).
+#    `cargo build` (not --locked) lets it adjust conservatively for submodule
+#    drift while keeping the good pins.
+#  - Brace the trailing sccache stat so a failing `cargo build` fails the RUN
+#    instead of being swallowed by `|| true` (which masked a cargo failure as a
+#    confusing downstream "COPY --from /out: not found").
+RUN --mount=type=cache,target=/build/.cargo-home \
+    --mount=type=cache,target=/build/target \
+    --mount=type=cache,target=/build/.sccache \
+    sed -i '/"apps\/browser",/d' Cargo.toml \
+    && cp os/Cargo.lock.pinned Cargo.lock \
+    && cargo build --release \
+        -p shell -p fs -p terminal -p file-explorer -p greeter -p installer \
+    && mkdir -p /out \
+    && cp target/release/shell \
+          target/release/fs \
+          target/release/terminal \
+          target/release/file-explorer \
+          target/release/qos-greeter \
+          target/release/qos-installer \
+          /out/ \
+    && { sccache --show-stats 2>/dev/null || true; }
+
+
+# ---- Stage 2: final (the OS image) -----------------------------------------
 FROM quay.io/fedora/fedora-bootc:44
 
 # Graphics stack
@@ -56,6 +151,21 @@ RUN dnf install -y \
     xdg-desktop-portal \
     && dnf clean all
 
+# ---------------------------------------------------------------------------
+# OS infrastructure (C2-C8)
+# ---------------------------------------------------------------------------
+# C2 time sync (chrony), C3 zram swap (zram-generator), C4 locale data,
+# C5 firewall (firewalld), C7 bluetooth (bluez), C8 power (power-profiles-daemon).
+# Audio (C6) reuses the pipewire stack installed above.
+RUN dnf install -y \
+    chrony \
+    zram-generator \
+    glibc-langpack-en \
+    firewalld \
+    bluez \
+    power-profiles-daemon \
+    && dnf clean all
+
 # Ensure system groups exist in /etc/group and add greetd to them
 RUN (getent group video || echo "video:x:39:greetd" >> /etc/group) && \
     (getent group input || echo "input:x:104:greetd" >> /etc/group) && \
@@ -75,61 +185,61 @@ RUN dnf install -y \
     libinput-devel \
     && dnf clean all
 
-# Copy the compiled compositor binary
-COPY shell /usr/bin/shell
-RUN chmod 755 /usr/bin/shell
-
-# Copy the compiled FUSE binary
-COPY fs /usr/bin/fs
-RUN chmod 755 /usr/bin/fs
-
-# Copy the compiled application binaries
-COPY terminal /usr/bin/terminal
-RUN chmod 755 /usr/bin/terminal
-COPY file-explorer /usr/bin/file-explorer
-RUN chmod 755 /usr/bin/file-explorer
+# ---------------------------------------------------------------------------
+# Compiled qOS binaries (built in the `builder` stage above)
+# ---------------------------------------------------------------------------
+# Compositor
+COPY --from=builder /out/shell /usr/bin/shell
+# FUSE driver
+COPY --from=builder /out/fs /usr/bin/fs
+# System apps
+COPY --from=builder /out/terminal /usr/bin/terminal
+COPY --from=builder /out/file-explorer /usr/bin/file-explorer
 # NOTE: browser (Servo) intentionally omitted — currently unmaintained and
 # does not build against the GCC-15/C23 toolchain (glsl-optimizer once_flag
-# conflict). Re-add the COPY/chmod once the browser is revived.
-
-# Graphical login greeter (ui-toolkit based). Launched at the greetd VT
-# inside `cage` — see etc/greetd/config.toml. cage + greetd are already
-# installed in the System utilities block above.
-COPY qos-greeter /usr/bin/qos-greeter
-RUN chmod 755 /usr/bin/qos-greeter
+# conflict). Add `-p browser` to the builder's cargo invocation and a COPY
+# here once the browser is revived.
+# Graphical login greeter (ui-toolkit based). Launched at the greetd VT inside
+# `cage` — see etc/greetd/config.toml.
+COPY --from=builder /out/qos-greeter /usr/bin/qos-greeter
+# Graphical installer. Primarily consumed by the layered installer image
+# (Containerfile.installer); bundled here so it no longer needs a host build.
+COPY --from=builder /out/qos-installer /usr/bin/qos-installer
+RUN chmod 755 /usr/bin/shell /usr/bin/fs /usr/bin/terminal \
+              /usr/bin/file-explorer /usr/bin/qos-greeter /usr/bin/qos-installer
 
 # FUSE mount service
-COPY usr/lib/systemd/system/fs.service /usr/lib/systemd/system/fs.service
+COPY os/usr/lib/systemd/system/fs.service /usr/lib/systemd/system/fs.service
 
 # Wayland session desktop entries. Two files land here:
 #   - shell.desktop          — default session (no peer-sync)
 #   - shell-peer-sync.desktop — opt-in session (libp2p enabled)
 # tuigreet lists both at the login prompt; see docs/peer-sync.md.
-COPY usr/share/wayland-sessions/shell.desktop /usr/share/wayland-sessions/shell.desktop
-COPY usr/share/wayland-sessions/shell-peer-sync.desktop /usr/share/wayland-sessions/shell-peer-sync.desktop
+COPY os/usr/share/wayland-sessions/shell.desktop /usr/share/wayland-sessions/shell.desktop
+COPY os/usr/share/wayland-sessions/shell-peer-sync.desktop /usr/share/wayland-sessions/shell-peer-sync.desktop
 
 # Default compositor config
-COPY etc/qos/desktop.toml /etc/qos/desktop.toml
+COPY os/etc/qos/desktop.toml /etc/qos/desktop.toml
 
 # greetd display manager config
-COPY etc/greetd/config.toml /etc/greetd/config.toml
+COPY os/etc/greetd/config.toml /etc/greetd/config.toml
 
 # PAM stack for the greetd auth service (adds tolerant pam_fprintd so a
 # fingerprint can satisfy login; falls back to password-auth).
-COPY etc/pam.d/greetd /etc/pam.d/greetd
+COPY os/etc/pam.d/greetd /etc/pam.d/greetd
 
 # polkit rule authorising the greeter's Reboot / Shut down buttons. Lets the
 # `greetd` user issue org.freedesktop.login1.{reboot,power-off} via logind
 # from the pre-login screen (see the rule's header for the rationale).
-COPY etc/polkit-1/rules.d/49-qos-greeter-power.rules /etc/polkit-1/rules.d/49-qos-greeter-power.rules
+COPY os/etc/polkit-1/rules.d/49-qos-greeter-power.rules /etc/polkit-1/rules.d/49-qos-greeter-power.rules
 
 # First-boot setup service
-COPY usr/lib/systemd/system/shell-firstboot.service /usr/lib/systemd/system/shell-firstboot.service
+COPY os/usr/lib/systemd/system/shell-firstboot.service /usr/lib/systemd/system/shell-firstboot.service
 
 # systemd-tmpfiles snippets — pre-create /var/workspace and
 # /var/cache/quick-fs at boot. bootc images mount the root r/o, so
 # this is the only sanctioned way to materialise persistent dirs.
-COPY usr/lib/tmpfiles.d/qos.conf /usr/lib/tmpfiles.d/qos.conf
+COPY os/usr/lib/tmpfiles.d/qos.conf /usr/lib/tmpfiles.d/qos.conf
 
 # xdg-desktop-portal backend registration (Sandbox Phase 4.3 follow-up).
 # Three files cooperate:
@@ -140,32 +250,61 @@ COPY usr/lib/tmpfiles.d/qos.conf /usr/lib/tmpfiles.d/qos.conf
 #   3. shell-portal.service — runs `shell
 #      --portal-server-only`, owning the backend bus name without
 #      starting a compositor (the compositor session runs separately).
-COPY usr/share/xdg-desktop-portal/portals/qos.portal /usr/share/xdg-desktop-portal/portals/qos.portal
-COPY usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.qos.service /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.qos.service
-COPY usr/lib/systemd/user/shell-portal.service /usr/lib/systemd/user/shell-portal.service
+COPY os/usr/share/xdg-desktop-portal/portals/qos.portal /usr/share/xdg-desktop-portal/portals/qos.portal
+COPY os/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.qos.service /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.qos.service
+COPY os/usr/lib/systemd/user/shell-portal.service /usr/lib/systemd/user/shell-portal.service
 
 # Opt-in peer-sync user service. NOT enabled by default — users opt
 # in via `systemctl --user enable shell-peer-sync` or by
 # picking the "qOS (peer-sync)" session entry at the greetd
 # prompt. See /usr/share/doc/qos/peer-sync.md for the
 # privacy / discovery trade-off.
-COPY usr/lib/systemd/user/shell-peer-sync.service /usr/lib/systemd/user/shell-peer-sync.service
+COPY os/usr/lib/systemd/user/shell-peer-sync.service /usr/lib/systemd/user/shell-peer-sync.service
+
+# OS infra config (C3 zram swap, C4 locale).
+COPY os/etc/systemd/zram-generator.conf /etc/systemd/zram-generator.conf
+COPY os/etc/locale.conf /etc/locale.conf
 
 # Bundled documentation (the README in the OS submodule, plus the
 # peer-sync trade-off doc users are pointed at from the .desktop
 # Comment field and the systemd unit Documentation= line).
-COPY docs/peer-sync.md /usr/share/doc/qos/peer-sync.md
+COPY os/docs/peer-sync.md /usr/share/doc/qos/peer-sync.md
 
+# ---------------------------------------------------------------------------
 # Enable services
+# ---------------------------------------------------------------------------
+# `shell-portal.service` is `--global` enabled so it lights up for every user
+# account; `shell-peer-sync.service` is pointedly **NOT** enabled — that's the
+# user-opt-in part.
 #
-# `shell-portal.service` is `--global` enabled so it lights
-# up for every user account; `shell-peer-sync.service` is
-# pointedly **NOT** enabled — that's the user-opt-in part.
+# C6 audio: enable the PipeWire user stack for every account (socket-activated
+# pipewire + pipewire-pulse, plus the wireplumber session manager).
 RUN systemctl enable greetd.service && \
     systemctl set-default graphical.target && \
     systemctl enable shell-firstboot.service && \
     systemctl enable fs.service && \
-    systemctl --global enable shell-portal.service
+    systemctl --global enable shell-portal.service && \
+    systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service
+
+# C2 time sync, C5 firewall, C7 bluetooth, C8 power — system services.
+RUN systemctl enable chronyd.service && \
+    systemctl enable firewalld.service && \
+    systemctl enable bluetooth.service && \
+    systemctl enable power-profiles-daemon.service
+
+# A3: automatic bootc updates. The timer pulls + applies the image at
+# QOS_TARGET_IMGREF (code.podesta.ai/qos/qos:latest, baked at install by
+# qos-install) on a schedule, so installed systems stay current.
+RUN systemctl enable bootc-fetch-apply-updates.timer
+
+# C5 firewall policy. Default to the desktop zone (FedoraWorkstation), whose
+# 1025-65535 tcp/udp ranges already cover the compositor's peer-sync traffic:
+#   * mDNS LAN discovery on 5353/udp (also added explicitly below).
+#   * The libp2p/gossipsub TCP listener, which binds an EPHEMERAL port
+#     (`/ip4/0.0.0.0/tcp/0` in shell/src/network/p2p.rs) inside that range.
+# firewalld isn't running at build time, so edit the permanent config offline.
+RUN firewall-offline-cmd --set-default-zone=FedoraWorkstation && \
+    firewall-offline-cmd --zone=FedoraWorkstation --add-service=mdns
 
 # Validate
 RUN bootc container lint

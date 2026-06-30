@@ -5,9 +5,14 @@
 //! makes real documents import faithfully.
 
 use crate::document::MarkValue;
+use crate::schema::{
+    STYLE_ALIGN, STYLE_BOLD, STYLE_COLOR, STYLE_FONT, STYLE_INDENT, STYLE_ITALIC, STYLE_NAME, STYLE_SIZE, STYLE_SPACE_AFTER,
+    STYLE_SPACE_BEFORE,
+};
+use crate::snapshot::AttrVal;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 pub(super) fn attr_val(e: &BytesStart, key: &[u8]) -> Option<String> {
     e.attributes()
@@ -63,6 +68,27 @@ pub(super) fn map_jc(v: &str) -> String {
     }
 }
 
+/// Normalise an OOXML `w:color w:val` (`RRGGBB`, optionally `#`-prefixed) to the
+/// model's canonical `#rrggbb`. `auto`/non-hex values yield `None` so the style's
+/// colour stays at its neutral default rather than importing garbage.
+pub(super) fn normalize_color(v: &str) -> Option<String> {
+    let t = v.trim().trim_start_matches('#');
+    if t.len() == 6 && t.chars().all(|c| c.is_ascii_hexdigit()) {
+        Some(format!("#{}", t.to_ascii_lowercase()))
+    } else {
+        None
+    }
+}
+
+/// Parse an OOXML twips length (`w:spacing`/`w:ind`, 1/1440 inch) to pixels at
+/// 96 dpi: 1 twip = 96/1440 = 1/15 px. Mirrors the model's px-based spacing/indent
+/// units (the inverse of `export::px_to_twips`). Negative values (hanging indents)
+/// clamp to 0 since the model has no negative indent.
+pub(super) fn twips_to_px(v: &str) -> Option<f64> {
+    let n: f64 = v.trim().parse().ok()?;
+    Some(((n / 15.0).max(0.0) * 100.0).round() / 100.0)
+}
+
 /// Inline marks implied by a single `w:rPr` child element.
 pub(super) fn mark_from_rpr_child(e: &BytesStart) -> Option<(String, MarkValue)> {
     match e.name().as_ref() {
@@ -86,6 +112,22 @@ pub(super) struct ParaStyle {
     pub heading_name: bool,
     pub name_level: Option<i64>,
     pub text: Vec<(String, MarkValue)>,
+    /// Human display name (`w:name w:val`), if any.
+    pub display_name: Option<String>,
+    /// A user-facing *named* paragraph style (every `w:style w:type="paragraph"`
+    /// in `word/styles.xml` is one). Distinguishes real named styles the codec
+    /// lifts into the CRDT styles container from styles only used for resolution.
+    pub named: bool,
+    /// Typed `StyleProps`-shaped fields (distinct from the inline `text` marks the
+    /// same `w:rPr`/`w:pPr` imply) used to build the container style's scalars.
+    pub size: Option<f64>,
+    pub bold: Option<bool>,
+    pub italic: Option<bool>,
+    pub color: Option<String>,
+    pub font: Option<String>,
+    pub space_before: Option<f64>,
+    pub space_after: Option<f64>,
+    pub indent: Option<f64>,
 }
 
 #[derive(Default)]
@@ -159,6 +201,63 @@ impl StyleRegistry {
     pub(super) fn text_marks(&self, name: &str) -> Vec<(String, MarkValue)> {
         self.text.get(name).cloned().unwrap_or_default()
     }
+
+    /// Whether `id` is a user-facing *named* paragraph style (every paragraph
+    /// style declared in `word/styles.xml`) — the styles lifted into the styles
+    /// container. Built-in heading styles resolve to a heading level first, so the
+    /// body parser never lifts them even though they are also "named".
+    pub(super) fn is_named_para(&self, id: &str) -> bool {
+        self.para.get(id).map(|p| p.named).unwrap_or(false)
+    }
+
+    /// The paragraph-style chain (self → basedOn → …), most-derived first.
+    fn para_chain(&self, name: &str) -> Vec<&ParaStyle> {
+        let mut chain = Vec::new();
+        let mut cur = Some(name.to_string());
+        for _ in 0..8 {
+            let Some(n) = cur else { break };
+            let Some(p) = self.para.get(&n) else { break };
+            chain.push(p);
+            cur = p.parent.clone();
+        }
+        chain
+    }
+
+    /// Resolve a named paragraph style into the `StyleProps`-shaped scalar map the
+    /// CRDT styles container stores (self overrides `basedOn` parent for each
+    /// field; unset fields fall back to neutral defaults so the editor renders
+    /// them, and so the round-trip is idempotent). Mirrors the `.odt` codec.
+    pub(super) fn style_props(&self, id: &str) -> Option<BTreeMap<String, AttrVal>> {
+        let chain = self.para_chain(id);
+        if chain.is_empty() {
+            return None;
+        }
+        // First-set-wins scan over the chain (most-derived first).
+        let display = chain.iter().find_map(|p| p.display_name.clone());
+        let size = chain.iter().find_map(|p| p.size).unwrap_or(16.0);
+        let bold = chain.iter().find_map(|p| p.bold).unwrap_or(false);
+        let italic = chain.iter().find_map(|p| p.italic).unwrap_or(false);
+        let color = chain.iter().find_map(|p| p.color.clone()).unwrap_or_else(|| "#000000".to_string());
+        let font = chain.iter().find_map(|p| p.font.clone()).unwrap_or_else(|| "sans".to_string());
+        let align = chain.iter().find_map(|p| p.align.clone()).unwrap_or_else(|| "left".to_string());
+        let space_before = chain.iter().find_map(|p| p.space_before).unwrap_or(0.0);
+        let space_after = chain.iter().find_map(|p| p.space_after).unwrap_or(0.0);
+        let indent = chain.iter().find_map(|p| p.indent).unwrap_or(0.0);
+        let name_str = display.unwrap_or_else(|| id.to_string());
+
+        let mut m = BTreeMap::new();
+        m.insert(STYLE_NAME.to_string(), AttrVal::Str(name_str));
+        m.insert(STYLE_FONT.to_string(), AttrVal::Str(font));
+        m.insert(STYLE_SIZE.to_string(), AttrVal::Float(size));
+        m.insert(STYLE_BOLD.to_string(), AttrVal::Bool(bold));
+        m.insert(STYLE_ITALIC.to_string(), AttrVal::Bool(italic));
+        m.insert(STYLE_COLOR.to_string(), AttrVal::Str(color));
+        m.insert(STYLE_ALIGN.to_string(), AttrVal::Str(align));
+        m.insert(STYLE_SPACE_BEFORE.to_string(), AttrVal::Float(space_before));
+        m.insert(STYLE_SPACE_AFTER.to_string(), AttrVal::Float(space_after));
+        m.insert(STYLE_INDENT.to_string(), AttrVal::Float(indent));
+        Some(m)
+    }
 }
 
 /// `(looks like a heading, level)` for a style id / display name.
@@ -187,6 +286,15 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry) {
     let mut align: Option<String> = None;
     let mut outline: Option<i64> = None;
     let mut text: Vec<(String, MarkValue)> = Vec::new();
+    // Typed `StyleProps`-shaped scratch (built alongside `text`).
+    let mut size: Option<f64> = None;
+    let mut bold: Option<bool> = None;
+    let mut italic: Option<bool> = None;
+    let mut color: Option<String> = None;
+    let mut font: Option<String> = None;
+    let mut space_before: Option<f64> = None;
+    let mut space_after: Option<f64> = None;
+    let mut indent: Option<f64> = None;
     let mut in_ppr = false;
     let mut in_rpr = false;
 
@@ -201,7 +309,43 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry) {
                 b"w:outlineLvl" if in_ppr => {
                     outline = attr_val(&e, b"w:val").and_then(|v| v.parse::<i64>().ok()).map(|n| n + 1)
                 }
+                // Paragraph spacing (twips) → px space_before/space_after.
+                b"w:spacing" if in_ppr => {
+                    if let Some(v) = attr_val(&e, b"w:before") {
+                        space_before = twips_to_px(&v);
+                    }
+                    if let Some(v) = attr_val(&e, b"w:after") {
+                        space_after = twips_to_px(&v);
+                    }
+                }
+                // Left indent (twips, `w:left`/`w:start`) → px indent.
+                b"w:ind" if in_ppr => {
+                    if let Some(v) = attr_val(&e, b"w:left").or_else(|| attr_val(&e, b"w:start")) {
+                        indent = twips_to_px(&v);
+                    }
+                }
                 _ if in_rpr => {
+                    // Typed style fields, in parallel with the inline `text` marks.
+                    match e.name().as_ref() {
+                        b"w:b" | b"w:bCs" => bold = Some(toggle_on(&e)),
+                        b"w:i" | b"w:iCs" => italic = Some(toggle_on(&e)),
+                        b"w:sz" => {
+                            if let Some(hp) = attr_val(&e, b"w:val").and_then(|v| v.parse::<f64>().ok()) {
+                                size = Some(hp / 2.0);
+                            }
+                        }
+                        b"w:color" => {
+                            if let Some(c) = attr_val(&e, b"w:val").and_then(|v| normalize_color(&v)) {
+                                color = Some(c);
+                            }
+                        }
+                        b"w:rFonts" => {
+                            if let Some(f) = attr_val(&e, b"w:ascii").or_else(|| attr_val(&e, b"w:hAnsi")) {
+                                font = Some(generic_font(&f));
+                            }
+                        }
+                        _ => {}
+                    }
                     if let Some((k, v)) = mark_from_rpr_child(&e) {
                         text.retain(|(k2, _)| k2 != &k);
                         text.push((k, v));
@@ -227,6 +371,14 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry) {
                     align = None;
                     outline = None;
                     text.clear();
+                    size = None;
+                    bold = None;
+                    italic = None;
+                    color = None;
+                    font = None;
+                    space_before = None;
+                    space_after = None;
+                    indent = None;
                     in_ppr = false;
                     in_rpr = false;
                 }
@@ -261,6 +413,16 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry) {
                                         heading_name: h,
                                         name_level: l,
                                         text: std::mem::take(&mut text),
+                                        display_name: name_disp.take(),
+                                        named: true,
+                                        size: size.take(),
+                                        bold: bold.take(),
+                                        italic: italic.take(),
+                                        color: color.take(),
+                                        font: font.take(),
+                                        space_before: space_before.take(),
+                                        space_after: space_after.take(),
+                                        indent: indent.take(),
                                     },
                                 );
                             }
@@ -273,6 +435,14 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry) {
                     align = None;
                     outline = None;
                     text.clear();
+                    size = None;
+                    bold = None;
+                    italic = None;
+                    color = None;
+                    font = None;
+                    space_before = None;
+                    space_after = None;
+                    indent = None;
                 }
                 _ => {}
             },
