@@ -116,10 +116,26 @@ zbus = { version = "4", default-features = false, features = ["tokio", "p2p"] }
 # the runtime path so we promote it. Cargo collapses to a single copy
 # either way — moving the entry is zero compile-time cost.
 png = "0.18.1"
+# Phase 3 of `2026-06-29-spaces-channels-and-cryptographic-roles.md`:
+# the broker validates inbound `SignedOp` envelopes against the
+# channel's role table before fan-out; the libp2p actor carries them
+# via `NeighbourMsg::AppCrdtIncrementalSigned`. The contract types and
+# the validator live in `qos-collab-types`.
+qos-collab-types = { path = "../qos-collab-types" }
 
 [dev-dependencies]
 wayland-client = "0.31"
 tokio-test = "0.4"
+# Canonical-bytes encoder for Phase 3 wire-format round-trip tests in
+# `src/network/protocol.rs`. `qos-collab-types` already uses this for
+# signing; the test verifies `NeighbourMsg::AppCrdtIncrementalSigned`
+# survives the same codec.
+postcard = { version = "1", features = ["alloc"] }
+# Phase 3 broker integration tests need the `SigningKey` type by name
+# to plumb the role-attestation issuer through the test fixture. Same
+# version as `qos-collab-types`'s direct dep so Cargo collapses to one
+# copy in the workspace lock.
+ed25519-dalek = { version = "2", features = ["rand_core"] }
 # Offscreen headless renderer used by `tests/e2e_shell_flows.rs`. Versions
 # mirror ui so Cargo collapses to a single copy in the workspace lock.
 pollster = "0.4.0"
