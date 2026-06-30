@@ -26,6 +26,10 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 0
+          # The automatic job token is scoped to qos/qos only; the sibling
+          # submodule repos (qos/shell, qos/ui, qos/fs, qos/apps) need a token
+          # with org-wide read, so reuse the REGISTRY_TOKEN PAT for checkout.
+          token: ${{ secrets.REGISTRY_TOKEN }}
 
       # Only log in when we actually push (not on PRs — keep creds out of
       # untrusted PR contexts; PRs build-only to catch Containerfile breakage).
