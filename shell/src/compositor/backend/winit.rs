@@ -89,11 +89,7 @@ impl WinitBackend {
     /// only fails if winit can't construct the event loop at all.
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let event_loop = EventLoop::new()?;
-        let outputs = vec![Output {
-            id: OutputId(0),
-            size: (INITIAL_WIDTH, INITIAL_HEIGHT),
-            scale: 1.0,
-        }];
+        let outputs = vec![Output::new(OutputId(0), (INITIAL_WIDTH, INITIAL_HEIGHT), 1.0)];
         Ok(Self {
             event_loop,
             inner: Inner {

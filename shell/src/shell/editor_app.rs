@@ -543,7 +543,8 @@ impl Widget for EditorApp {
                 // geometry as a `Rect` plus the scene transform — match
                 // the widget-side carets in `TextInput` / `RichTextLine`
                 // (2 px wide, full line height) so a peer caret is
-                // visually identical to the local user's.
+                // visually identical to the local user's. Use the
+                // parent `transform` so HiDPI scaling carries through.
                 let caret_rect = Rect::new(x, y, x + 2.0, y + LINE_HEIGHT as f64);
                 presence.draw_peer_caret(scene, theme, transform, user, caret_rect);
             }
@@ -588,8 +589,8 @@ impl Widget for EditorApp {
                 }
                 // `ui::PresenceCtx::draw_peer_selection` paints a single
                 // `Rect` per call; emit one call per visual line so multi-
-                // line selections render as a band per row (matching how
-                // selection highlights are drawn elsewhere in the toolkit).
+                // line selections render as a band per row. Use the
+                // parent `transform` so HiDPI scaling carries through.
                 for line_rect in &line_rects {
                     presence.draw_peer_selection(scene, theme, transform, user, *line_rect);
                 }

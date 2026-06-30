@@ -27,12 +27,22 @@ use std::sync::atomic::Ordering;
 
 use smithay::backend::drm::{DrmDevice, DrmDeviceFd};
 use smithay::backend::input::{
-    AbsolutePositionEvent, Axis, ButtonState, InputEvent, PointerAxisEvent, PointerButtonEvent,
-    PointerMotionEvent,
+    AbsolutePositionEvent, Axis, ButtonState, InputEvent, KeyState, KeyboardKeyEvent,
+    PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
 };
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
+// xkb keymap/state for keyboard handling — smithay re-exports `xkbcommon`
+// here, so we don't add a new dependency. `XkbConfig::default()` reads
+// the `XKB_DEFAULT_*` env vars; we mirror that by compiling a keymap with
+// empty rule names (see `KeyboardXkb::new`).
+use smithay::input::keyboard::{keysyms, xkb, Keysym};
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
+use winit::event::{
+    ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
+};
+use winit::keyboard::{
+    Key, KeyLocation, ModifiersState, NamedKey, NativeKeyCode, PhysicalKey, SmolStr,
+};
 use smithay::backend::session::libseat::LibSeatSession;
 use smithay::backend::session::Session;
 use smithay::backend::udev::{all_gpus, UdevBackend};
@@ -42,7 +52,7 @@ use smithay::reexports::input::Libinput;
 
 use super::devices::{filter_kms_nodes, ModeInfo};
 use super::outputs::{ConnectorInfo, OutputRegistry};
-use super::scanout::DrmScanout;
+use super::scanout::{DrmScanout, HwCursor};
 use super::session::SessionState;
 use crate::compositor::backend::{BackendEvent, Output, OutputId};
 
@@ -81,17 +91,57 @@ pub struct DrmDispatchState {
     /// Per-device output metadata, keyed by the public `OutputId`.
     pub output_meta: HashMap<OutputId, Output>,
     /// Current pointer position in output coords. Updated from libinput
-    /// motion; the scanout composites a software cursor here and the
-    /// compositor receives matching `CursorMoved` events.
+    /// motion; the compositor receives matching `CursorMoved` events and
+    /// (when the hardware cursor is unavailable) the scanout composites a
+    /// software cursor here.
     pub pointer: (f64, f64),
     /// Primary output size (px) — needed to transform libinput's
     /// absolute (0..1) coordinates and to clamp relative motion.
     pub output_size: (i32, i32),
+    /// Hardware-cursor mover for the primary scanout. `Some` only when
+    /// the KMS cursor plane is active; the libinput motion handlers call
+    /// `move_to` on every pointer event so the cursor tracks at input
+    /// rate without a framebuffer redraw. `None` → the scanout draws a
+    /// software cursor from `pointer` instead.
+    pub hw_cursor: Option<HwCursor>,
+    /// xkb keymap + state for translating libinput keycodes into winit
+    /// `KeyboardInput` events (the same wire the winit backend feeds to
+    /// `FrameBuilder::dispatch_event`). `None` when the keymap couldn't
+    /// be compiled — the session then runs pointer-only instead of
+    /// aborting. Built from the `XKB_DEFAULT_*` environment so the
+    /// installer-seeded layout reaches the session (see [`KeyboardXkb`]).
+    pub keyboard: Option<KeyboardXkb>,
 }
 
 impl DrmDispatchState {
     pub fn push(&mut self, ev: BackendEvent) {
         self.events.push(ev);
+    }
+
+    /// Translate one libinput keyboard event through xkb and enqueue the
+    /// resulting events: a `ModifiersChanged` when the Ctrl/Shift/Alt/
+    /// Super mask flips (so chord handling in the chrome sees the right
+    /// state) followed by the `KeyboardInput` itself. No-op when the xkb
+    /// keymap failed to load.
+    ///
+    /// `keycode` is the value reported by smithay's
+    /// [`KeyboardKeyEvent::key_code`], which already includes the +8
+    /// evdev→xkb offset, so it feeds straight into the xkb state.
+    fn handle_keyboard_key(&mut self, keycode: xkb::Keycode, pressed: bool) {
+        // Scope the `&mut self.keyboard` borrow so we can push onto
+        // `self.events` afterwards without aliasing.
+        let outcome = {
+            let Some(kbd) = self.keyboard.as_mut() else {
+                return;
+            };
+            kbd.process(keycode, pressed)
+        };
+        if let Some(mods) = outcome.modifiers_changed {
+            self.events.push(BackendEvent::ModifiersChanged(mods));
+        }
+        if let Some(input) = outcome.input {
+            self.events.push(BackendEvent::Input(input));
+        }
     }
 }
 
@@ -269,6 +319,11 @@ impl DrmRuntime {
                     let x = event.x_transformed(w.max(1));
                     let y = event.y_transformed(h.max(1));
                     state.pointer = (x, y);
+                    // Reposition the hardware cursor plane immediately —
+                    // no framebuffer redraw needed for a cursor move.
+                    if let Some(c) = &state.hw_cursor {
+                        c.move_to(x as i32, y as i32);
+                    }
                     state.push(BackendEvent::Input(cursor_moved_event(x, y)));
                 }
                 // Relative motion (mouse): accumulate + clamp to output.
@@ -279,6 +334,9 @@ impl DrmRuntime {
                     let x = (state.pointer.0 + event.delta_x()).clamp(0.0, max_x);
                     let y = (state.pointer.1 + event.delta_y()).clamp(0.0, max_y);
                     state.pointer = (x, y);
+                    if let Some(c) = &state.hw_cursor {
+                        c.move_to(x as i32, y as i32);
+                    }
                     state.push(BackendEvent::Input(cursor_moved_event(x, y)));
                 }
                 InputEvent::PointerButton { event } => {
@@ -297,8 +355,16 @@ impl DrmRuntime {
                         state.push(BackendEvent::Input(mouse_wheel_event(dx, dy)));
                     }
                 }
-                // Keyboard on a bare TTY still needs an xkb keymap layer to
-                // turn libinput keycodes into `winit::Key`s — deferred.
+                // Keyboard: run the libinput keycode through xkb to get a
+                // logical key + text, then enqueue a winit-shaped
+                // `KeyboardInput` (plus a `ModifiersChanged` when the
+                // modifier mask flips). This is the same wire the winit
+                // backend feeds, so the chrome's `dispatch_event` handles
+                // DRM keystrokes identically to hosted-mode ones.
+                InputEvent::Keyboard { event } => {
+                    let pressed = matches!(event.state(), KeyState::Pressed);
+                    state.handle_keyboard_key(event.key_code(), pressed);
+                }
                 _ => {}
             })
             .map_err(|e| DrmBackendError::Calloop(format!("{e}")))?;
@@ -316,6 +382,7 @@ impl DrmRuntime {
                 OutputId(0),
                 Output {
                     id: OutputId(0),
+                    position: (0, 0),
                     size: (w, h),
                     scale: 1.0,
                 },
@@ -326,6 +393,23 @@ impl DrmRuntime {
         // transforms and cursor clamping use the right output size; start
         // the cursor centered.
         let (ow, oh) = scanout.as_ref().map(|s| s.size()).unwrap_or((0, 0));
+        // Grab a hardware-cursor mover so the libinput motion handlers can
+        // reposition the plane at input rate. `None` if the cursor plane
+        // isn't active (software-cursor fallback in the scanout).
+        let hw_cursor = scanout.as_ref().and_then(|s| s.cursor_mover());
+
+        // Compile the xkb keymap once at startup from the session's
+        // `XKB_DEFAULT_*` environment (installer-seeded, PAM-exported).
+        // A failure here is non-fatal: the session keeps running with
+        // pointer-only input rather than refusing to boot.
+        let keyboard = KeyboardXkb::new();
+        match &keyboard {
+            Some(_) => tracing::info!("DRM backend: xkb keyboard initialised"),
+            None => tracing::warn!(
+                "DRM backend: xkb keymap unavailable; keyboard input disabled"
+            ),
+        }
+
         let dispatch = DrmDispatchState {
             session: Some(session_state),
             outputs,
@@ -333,6 +417,8 @@ impl DrmRuntime {
             output_meta,
             pointer: (ow as f64 / 2.0, oh as f64 / 2.0),
             output_size: (ow as i32, oh as i32),
+            hw_cursor,
+            keyboard,
         };
 
         Ok(Self {
@@ -377,6 +463,8 @@ impl DrmRuntime {
             output_meta: outputs.into_iter().collect(),
             pointer: (0.0, 0.0),
             output_size: (0, 0),
+            hw_cursor: None,
+            keyboard: None,
         }
     }
 }
@@ -419,6 +507,195 @@ fn map_mouse_button(code: u32) -> Option<MouseButton> {
         0x111 => Some(MouseButton::Right),
         0x112 => Some(MouseButton::Middle),
         _ => None,
+    }
+}
+
+/// xkb keymap + state owned by the DRM backend. Turns libinput keycodes
+/// into the winit `KeyboardInput` events the chrome understands. The
+/// winit backend gets these from the OS; on a bare TTY libinput only
+/// reports raw keycodes, so we run the keymap ourselves — the missing
+/// half of the input wire on DRM.
+pub struct KeyboardXkb {
+    // Held for the lifetime of `state`. xkbcommon refcounts internally,
+    // but keeping ownership explicit makes the lifetime obvious. Never
+    // read after construction (hence the underscore).
+    _context: xkb::Context,
+    _keymap: xkb::Keymap,
+    state: xkb::State,
+    /// Last modifier mask we emitted. We only push `ModifiersChanged`
+    /// when it actually flips, matching winit's behaviour.
+    mods: ModifiersState,
+}
+
+/// What translating one key event yields: an optional `KeyboardInput`
+/// (absent for keys with no logical mapping, e.g. bare modifiers) and an
+/// optional `ModifiersChanged` (present only when the mask flips).
+struct KeyOutcome {
+    input: Option<WindowEvent>,
+    modifiers_changed: Option<Modifiers>,
+}
+
+impl KeyboardXkb {
+    /// Compile a keymap from the `XKB_DEFAULT_*` environment. Passing
+    /// empty rule names makes xkbcommon consult `XKB_DEFAULT_RULES`,
+    /// `_MODEL`, `_LAYOUT`, `_VARIANT` and `_OPTIONS` — byte-for-byte
+    /// what `smithay::input::keyboard::XkbConfig::default()` does. The
+    /// installer writes those into `/etc/environment` and PAM exports
+    /// them into the greetd session, so the user's chosen layout is what
+    /// gets compiled here.
+    ///
+    /// Returns `None` (the caller logs) if the keymap can't be built so
+    /// the backend degrades to pointer-only rather than aborting.
+    pub fn new() -> Option<Self> {
+        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        let keymap = xkb::Keymap::new_from_names(
+            &context,
+            "", // rules  -> XKB_DEFAULT_RULES
+            "", // model  -> XKB_DEFAULT_MODEL
+            "", // layout -> XKB_DEFAULT_LAYOUT
+            "", // variant-> XKB_DEFAULT_VARIANT
+            None, // options -> XKB_DEFAULT_OPTIONS
+            xkb::KEYMAP_COMPILE_NO_FLAGS,
+        )?;
+        let state = xkb::State::new(&keymap);
+        Some(Self {
+            _context: context,
+            _keymap: keymap,
+            state,
+            mods: ModifiersState::empty(),
+        })
+    }
+
+    /// Read the current effective Ctrl/Shift/Alt/Super state as a winit
+    /// `ModifiersState`.
+    fn current_mods(&self) -> ModifiersState {
+        let eff = xkb::STATE_MODS_EFFECTIVE;
+        let mut m = ModifiersState::empty();
+        if self.state.mod_name_is_active(xkb::MOD_NAME_CTRL, eff) {
+            m |= ModifiersState::CONTROL;
+        }
+        if self.state.mod_name_is_active(xkb::MOD_NAME_SHIFT, eff) {
+            m |= ModifiersState::SHIFT;
+        }
+        if self.state.mod_name_is_active(xkb::MOD_NAME_ALT, eff) {
+            m |= ModifiersState::ALT;
+        }
+        if self.state.mod_name_is_active(xkb::MOD_NAME_LOGO, eff) {
+            m |= ModifiersState::SUPER;
+        }
+        m
+    }
+
+    /// Translate one key event. `keycode` already carries the +8 offset
+    /// (see [`KeyboardKeyEvent::key_code`]).
+    fn process(&mut self, keycode: xkb::Keycode, pressed: bool) -> KeyOutcome {
+        // Read the produced keysym with the *current* modifier state
+        // (prior Shift/Caps already applied), then advance the state for
+        // this key. For a held Shift the letter is already uppercased
+        // because the Shift-down event updated the state first; for a
+        // modifier key the produced sym is unaffected by the ordering.
+        let sym = self.state.key_get_one_sym(keycode);
+        let direction = if pressed {
+            xkb::KeyDirection::Down
+        } else {
+            xkb::KeyDirection::Up
+        };
+        let _ = self.state.update_key(keycode, direction);
+
+        let new_mods = self.current_mods();
+        let modifiers_changed = if new_mods != self.mods {
+            self.mods = new_mods;
+            Some(Modifiers::from(new_mods))
+        } else {
+            None
+        };
+
+        // Derive the logical key from the *keysym* (not the UTF-8 output)
+        // so chords like Ctrl+K resolve to `Character("k")` rather than
+        // the control character the key would otherwise produce.
+        let input = keysym_to_winit_key(sym.raw()).map(|logical| {
+            let text = text_for(sym.key_char(), new_mods);
+            keyboard_input_event(logical, text, pressed)
+        });
+
+        KeyOutcome {
+            input,
+            modifiers_changed,
+        }
+    }
+}
+
+/// Map an xkb keysym (raw value) to a winit logical [`Key`]. Special
+/// keys the chrome matches on become `Key::Named`; anything with a
+/// printable Unicode value becomes `Key::Character`. Bare modifiers and
+/// unmapped keys return `None` (their effect is carried by the separate
+/// `ModifiersChanged` event).
+fn keysym_to_winit_key(raw: u32) -> Option<Key> {
+    let named = match raw {
+        keysyms::KEY_Return | keysyms::KEY_KP_Enter => Some(NamedKey::Enter),
+        keysyms::KEY_Escape => Some(NamedKey::Escape),
+        keysyms::KEY_Tab | keysyms::KEY_ISO_Left_Tab => Some(NamedKey::Tab),
+        keysyms::KEY_BackSpace => Some(NamedKey::Backspace),
+        keysyms::KEY_Delete | keysyms::KEY_KP_Delete => Some(NamedKey::Delete),
+        keysyms::KEY_Left | keysyms::KEY_KP_Left => Some(NamedKey::ArrowLeft),
+        keysyms::KEY_Right | keysyms::KEY_KP_Right => Some(NamedKey::ArrowRight),
+        keysyms::KEY_Up | keysyms::KEY_KP_Up => Some(NamedKey::ArrowUp),
+        keysyms::KEY_Down | keysyms::KEY_KP_Down => Some(NamedKey::ArrowDown),
+        keysyms::KEY_Home | keysyms::KEY_KP_Home => Some(NamedKey::Home),
+        keysyms::KEY_End | keysyms::KEY_KP_End => Some(NamedKey::End),
+        keysyms::KEY_Page_Up | keysyms::KEY_KP_Page_Up => Some(NamedKey::PageUp),
+        keysyms::KEY_Page_Down | keysyms::KEY_KP_Page_Down => Some(NamedKey::PageDown),
+        keysyms::KEY_space => Some(NamedKey::Space),
+        _ => None,
+    };
+    if let Some(n) = named {
+        return Some(Key::Named(n));
+    }
+    // Printable character (handles layout + shift + caps via the keysym).
+    match Keysym::new(raw).key_char() {
+        Some(c) if !c.is_control() => Some(Key::Character(SmolStr::new(c.to_string()))),
+        _ => None,
+    }
+}
+
+/// The typed text for a key event, or `None`. Suppressed under Ctrl/Super
+/// (those are chords, not text) and for control characters — matching
+/// winit, and keeping control bytes out of text inputs.
+fn text_for(ch: Option<char>, mods: ModifiersState) -> Option<SmolStr> {
+    if mods.control_key() || mods.super_key() {
+        return None;
+    }
+    match ch {
+        Some(c) if !c.is_control() => Some(SmolStr::new(c.to_string())),
+        _ => None,
+    }
+}
+
+/// Build a `WindowEvent::KeyboardInput`. Mirrors the zero-init workaround
+/// in `compositor::native::keyboard_input_event` and
+/// `overlay_host::key_press`: winit's `KeyEvent` has a `pub(crate)`
+/// `platform_specific` field, so we zero the struct and overwrite the
+/// fields the host reads.
+fn keyboard_input_event(logical_key: Key, text: Option<SmolStr>, pressed: bool) -> WindowEvent {
+    // SAFETY: every public field of `KeyEvent` is overwritten below, and
+    // the only non-public field (`platform_specific: KeyEventExtra`)
+    // tolerates the all-zero bit pattern — the same invariant the two
+    // existing `KeyEvent`-building helpers in this crate rely on.
+    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+    ev.logical_key = logical_key;
+    ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+    ev.location = KeyLocation::Standard;
+    ev.state = if pressed {
+        ElementState::Pressed
+    } else {
+        ElementState::Released
+    };
+    ev.repeat = false;
+    ev.text = text;
+    WindowEvent::KeyboardInput {
+        device_id: unsafe { std::mem::zeroed() },
+        event: ev,
+        is_synthetic: false,
     }
 }
 
@@ -711,11 +988,131 @@ mod tests {
         assert_eq!(picked.width, 2560);
     }
 
+    // ===================================================================
+    // Keyboard: xkb keycode → winit key translation (Track B2)
+    // ===================================================================
+
+    /// Pure mapping: named special keys and printable characters resolve
+    /// to the winit `Key` the chrome matches on. Mirrors the level of the
+    /// `preferred_mode` / pointer-helper tests — no real keymap needed.
+    #[test]
+    fn keysym_mapping_named_and_character() {
+        use smithay::input::keyboard::keysyms as ks;
+        assert!(matches!(
+            keysym_to_winit_key(ks::KEY_Return),
+            Some(Key::Named(NamedKey::Enter))
+        ));
+        assert!(matches!(
+            keysym_to_winit_key(ks::KEY_Escape),
+            Some(Key::Named(NamedKey::Escape))
+        ));
+        assert!(matches!(
+            keysym_to_winit_key(ks::KEY_Tab),
+            Some(Key::Named(NamedKey::Tab))
+        ));
+        assert!(matches!(
+            keysym_to_winit_key(ks::KEY_BackSpace),
+            Some(Key::Named(NamedKey::Backspace))
+        ));
+        assert!(matches!(
+            keysym_to_winit_key(ks::KEY_Left),
+            Some(Key::Named(NamedKey::ArrowLeft))
+        ));
+        assert!(matches!(
+            keysym_to_winit_key(ks::KEY_space),
+            Some(Key::Named(NamedKey::Space))
+        ));
+        // Letter keysyms carry case from the keysym itself (US 'a' vs 'A').
+        match keysym_to_winit_key(ks::KEY_a) {
+            Some(Key::Character(s)) => assert_eq!(s.as_str(), "a"),
+            other => panic!("KEY_a mapped to {other:?}"),
+        }
+        match keysym_to_winit_key(ks::KEY_A) {
+            Some(Key::Character(s)) => assert_eq!(s.as_str(), "A"),
+            other => panic!("KEY_A mapped to {other:?}"),
+        }
+        // Bare modifier keysyms have no logical key — their effect rides
+        // on the separate `ModifiersChanged` event instead.
+        assert!(keysym_to_winit_key(ks::KEY_Control_L).is_none());
+        assert!(keysym_to_winit_key(ks::KEY_Shift_L).is_none());
+    }
+
+    /// Text is produced for plain printable keys, suppressed under Ctrl
+    /// (chords) and for control characters.
+    #[test]
+    fn text_for_respects_modifiers_and_control_chars() {
+        let none = ModifiersState::empty();
+        let ctrl = ModifiersState::CONTROL;
+        assert_eq!(text_for(Some('a'), none).as_deref(), Some("a"));
+        assert_eq!(text_for(Some('A'), none).as_deref(), Some("A"));
+        // Ctrl held → no typed text (Ctrl+K must not insert a glyph).
+        assert_eq!(text_for(Some('a'), ctrl), None);
+        // ESC (0x1b) is a control char and never becomes text.
+        assert_eq!(text_for(Some('\u{1b}'), none), None);
+        assert_eq!(text_for(None, none), None);
+    }
+
+    /// End-to-end through a real keymap: pressing/releasing Left Shift
+    /// flips the modifier mask. Layout-independent (Shift is Shift on
+    /// every layout). Soft-skips if no xkb data is installed.
+    #[test]
+    fn xkb_left_shift_toggles_modifier_mask() {
+        let Some(mut kbd) = KeyboardXkb::new() else {
+            eprintln!("xkb keymap unavailable (no xkeyboard-config?); skipping");
+            return;
+        };
+        // evdev KEY_LEFTSHIFT (42) + 8 = xkb keycode 50.
+        let shift = xkb::Keycode::new(50);
+        let down = kbd.process(shift, true);
+        let m = down
+            .modifiers_changed
+            .expect("shift press should flip the modifier mask");
+        assert!(m.state().shift_key(), "left shift down -> shift active");
+        // The bare modifier produces no logical key event.
+        assert!(down.input.is_none(), "bare modifier yields no KeyboardInput");
+
+        let up = kbd.process(shift, false);
+        let m = up
+            .modifiers_changed
+            .expect("shift release should flip the modifier mask");
+        assert!(!m.state().shift_key(), "left shift up -> shift cleared");
+    }
+
+    /// End-to-end: an alpha-row keycode yields a `Character` KeyboardInput
+    /// carrying text. The QWERTY 'a' position is a letter on every Latin
+    /// layout, so asserting `Character` is layout-independent. Soft-skips
+    /// without xkb data.
+    #[test]
+    fn xkb_alpha_key_produces_character_input() {
+        let Some(mut kbd) = KeyboardXkb::new() else {
+            eprintln!("xkb keymap unavailable; skipping");
+            return;
+        };
+        // evdev KEY_A (30) + 8 = 38.
+        let key_a = xkb::Keycode::new(38);
+        let out = kbd.process(key_a, true);
+        let input = out
+            .input
+            .expect("alpha key down should yield a KeyboardInput");
+        match input {
+            WindowEvent::KeyboardInput { event, .. } => {
+                assert!(
+                    matches!(event.logical_key, Key::Character(_)),
+                    "alpha key should map to a Character logical key, got {:?}",
+                    event.logical_key
+                );
+                assert_eq!(event.state, ElementState::Pressed);
+                assert!(event.text.is_some(), "typed alpha key carries text");
+            }
+            other => panic!("expected KeyboardInput, got {other:?}"),
+        }
+    }
+
     #[test]
     fn synthesize_for_tests_populates_output_meta() {
         let outs = vec![
-            (OutputId(0), Output { id: OutputId(0), size: (1920, 1080), scale: 1.0 }),
-            (OutputId(1), Output { id: OutputId(1), size: (1280, 720), scale: 1.0 }),
+            (OutputId(0), Output::new(OutputId(0), (1920, 1080), 1.0)),
+            (OutputId(1), Output::new(OutputId(1), (1280, 720), 1.0)),
         ];
         let state = DrmRuntime::synthesize_for_tests(outs);
         assert_eq!(state.output_meta.len(), 2);
