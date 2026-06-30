@@ -174,6 +174,36 @@ impl AuthenticatorApp {
         }
     }
 
+    /// Import a QR code from an image file into the open add panel.
+    ///
+    /// The compositor's file picker (gated by the cluster's file-access
+    /// capability) is the user-facing chooser; it hands the app a path,
+    /// which arrives here via the `TOTP_QR_IMAGE` environment variable in
+    /// the headless / seeded flows. The decode itself is pure-Rust and
+    /// offline — see [`crate::qr::decode_image_file`]. A successful decode
+    /// auto-fills the panel via [`AddAccountPanel::apply_uri`]; anything
+    /// else surfaces a calm toast rather than failing silently.
+    fn import_qr_from_image(&mut self) {
+        let Some(path) = std::env::var_os("TOTP_QR_IMAGE") else {
+            self.toast("Choose a screenshot of the QR code");
+            return;
+        };
+        match crate::qr::decode_image_file(std::path::Path::new(&path)) {
+            Ok(uri) => {
+                self.add_panel.apply_uri(&uri);
+                self.toast("QR code read");
+            }
+            Err(reason) => self.toast(reason),
+        }
+    }
+
+    /// Open the Add-account screen straight away. Used by the `--shots`
+    /// renderer (and any caller that wants to land on the add flow) so the
+    /// captured frame shows the redesigned add UI rather than the list.
+    pub fn seed_open_add(&mut self) {
+        self.add_panel.open();
+    }
+
     // ---- header drawing ----------------------------------------------
 
     fn draw_header(
@@ -415,6 +445,7 @@ impl Widget for AuthenticatorApp {
             if let Some(ev) = self.add_panel.take_event() {
                 match ev {
                     AddPanelEvent::Cancel => {}
+                    AddPanelEvent::PickImageForQr => self.import_qr_from_image(),
                     AddPanelEvent::Save(mut acc) => {
                         // Give the new account a distinct colour slot.
                         acc.color = (self.vault.len() % 7) as u8;
