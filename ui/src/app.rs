@@ -513,7 +513,8 @@ impl App {
     fn update_focusable_order(&mut self) {
         self.focusable_order.clear();
         fn collect_focusable(node_id: NodeId, widget: &dyn Widget, taffy: &TaffyTree<()>, order: &mut Vec<NodeId>) {
-            if widget.is_focusable() { order.push(node_id); }
+            // Disabled widgets are skipped by keyboard focus traversal.
+            if widget.is_focusable() && widget.is_enabled() { order.push(node_id); }
             let children = widget.children();
             if let Ok(child_nodes) = taffy.children(node_id) {
                 for (child_widget, &child_node) in children.iter().zip(child_nodes.iter()) {
