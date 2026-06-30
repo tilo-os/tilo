@@ -58,7 +58,7 @@ use crate::role::{ArtifactKind, role_permits};
 /// enough context to log a structured audit entry; the
 /// `OpRejected { op_hash, reason, observer }` event in the spec
 /// uses the `Display` form as the reason string.
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum ValidationError {
     /// Step 1: the op references an attestation id the validator
     /// has never seen. In production the broker lazy-fetches and
