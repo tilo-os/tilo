@@ -205,7 +205,13 @@ pub fn op_class_is_revertible(op: OpClass) -> bool {
         | OpClass::EditMeta
         | OpClass::Tombstone
         | OpClass::Restore => true,
-        OpClass::Comment | OpClass::Govern => false,
+        // `Comment` and `Govern` are not revertible (see the doc
+        // comment). Phase 6's `Compaction` is also non-revertible by
+        // design: it asserts a snapshot horizon for the channel and
+        // "reverting" it would mean un-evicting bytes the local cache
+        // may no longer hold. Owners issue a new checkpoint rather
+        // than reverting an old one.
+        OpClass::Comment | OpClass::Govern | OpClass::Compaction => false,
     }
 }
 
@@ -222,6 +228,7 @@ pub fn op_class_glyph(op: OpClass) -> &'static str {
         OpClass::Tombstone => "\u{2715}",  // ✕
         OpClass::Restore => "\u{21b6}",    // ↶
         OpClass::Govern => "\u{2605}",     // ★
+        OpClass::Compaction => "\u{2702}", // ✂ — host-driven horizon
     }
 }
 
