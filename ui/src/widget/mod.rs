@@ -36,6 +36,31 @@ pub trait Widget {
     /// not `TextInput`).
     fn test_id(&self) -> Option<&str> { None }
     fn get_rect(&self) -> vello::kurbo::Rect;
+
+    /// Resolve the OS cursor shape this widget wants while the pointer
+    /// hovers `point` (in **logical** coordinates — the same space as
+    /// [`Widget::get_rect`]). Return `None` to defer to the host's
+    /// default arrow cursor.
+    ///
+    /// The default is `None`: a widget claims a cursor only by opting in.
+    /// Leaf widgets override this to request a shape over their interactive
+    /// area — e.g. [`TextInput`] returns [`winit::window::CursorIcon::Text`]
+    /// over its editable text, [`Button`] returns `CursorIcon::Pointer`,
+    /// and [`ResizeHandle`] / [`resizable_split::ResizableSplit`] return
+    /// `CursorIcon::EwResize` / `NsResize` over their divider.
+    ///
+    /// Container widgets need not override this. The host
+    /// ([`crate::app::App`]) hit-tests the whole widget tree by sweeping
+    /// its `node_map` — every laid-out widget registers itself there in
+    /// `build_layout`, regardless of whether it exposes [`Widget::children`]
+    /// (the shell's `GroupRow` / `WindowGroup` don't) — and picks the
+    /// smallest-area widget under `point` that claims a shape, i.e. the
+    /// deepest / most-specific one. A container that *does* expose
+    /// `children` may still walk them and return the first child's
+    /// `Some(..)` to short-circuit, but it is not required to.
+    fn cursor_shape(&self, _point: vello::kurbo::Point) -> Option<winit::window::CursorIcon> {
+        None
+    }
     fn is_focusable(&self) -> bool { false }
     fn set_focus(&mut self, _focused: bool) {}
     fn is_focused(&self) -> bool { false }
