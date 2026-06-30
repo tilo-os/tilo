@@ -106,6 +106,27 @@ pub(super) fn map_align(v: &str) -> String {
     }
 }
 
+/// Map an ODF `style:wrap` value onto the model wrap (`none`|`left`|`right`|`both`).
+/// `run-through`/`none` → no wrap; `parallel`/`dynamic`/`biggest` → wrap both sides.
+pub(super) fn map_odf_wrap(v: &str) -> &'static str {
+    match v {
+        "left" => "left",
+        "right" => "right",
+        "parallel" | "dynamic" | "biggest" => "both",
+        _ => "none", // "none" | "run-through" | unknown
+    }
+}
+
+/// Map a model wrap (`none`|`left`|`right`|`both`) onto the ODF `style:wrap` value.
+pub(super) fn model_wrap_to_odf(v: &str) -> &'static str {
+    match v {
+        "left" => "left",
+        "right" => "right",
+        "both" => "parallel",
+        _ => "none",
+    }
+}
+
 /// Parse an ODF length used in margins/indents (`fo:margin-*`, `fo:text-indent`)
 /// to pixels. Mirrors `content::parse_len_px` but kept local so the styles parser
 /// has no cross-module dependency.
@@ -254,6 +275,9 @@ pub(super) struct StyleRegistry {
     /// list-style name → its level-0 numbering (format + start), for fidelity
     /// preservation of ordered lists.
     pub list_numbering: HashMap<String, ListNumbering>,
+    /// `graphic`-family (frame) style name → the model wrap value
+    /// (`none`|`left`|`right`|`both`) parsed from its `style:wrap`.
+    pub graphic_wrap: HashMap<String, String>,
 }
 
 impl StyleRegistry {
@@ -417,6 +441,8 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry, from_named_secti
     let mut space_after: Option<f64> = None;
     let mut indent: Option<f64> = None;
     let mut line_height: Option<f64> = None;
+    // Frame (graphic-family) wrap, parsed from `style:graphic-properties style:wrap`.
+    let mut graphic_wrap: Option<String> = None;
 
     let mut list_name: Option<String> = None;
     let mut list_numbered = false;
@@ -469,6 +495,12 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry, from_named_secti
                     space_after = None;
                     indent = None;
                     line_height = None;
+                    graphic_wrap = None;
+                }
+                b"style:graphic-properties" => {
+                    if let Some(w) = attr_val(&e, b"style:wrap") {
+                        graphic_wrap = Some(map_odf_wrap(&w).to_string());
+                    }
                 }
                 b"style:text-properties" => {
                     text.extend(marks_from_text_props(&e));
@@ -562,6 +594,11 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry, from_named_secti
                                     },
                                 );
                             }
+                            "graphic" => {
+                                if let Some(w) = graphic_wrap.take() {
+                                    reg.graphic_wrap.insert(n, w);
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -575,6 +612,7 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry, from_named_secti
                     space_after = None;
                     indent = None;
                     line_height = None;
+                    graphic_wrap = None;
                 }
                 b"text:list-style" => {
                     if let Some(n) = list_name.take() {
