@@ -87,6 +87,18 @@ pub struct ShellNetwork {
     /// to locally-connected apps. See
     /// [`Self::inbound_app_crdt_signed_handle`].
     inbound_app_crdt_signed: Arc<Mutex<Vec<InboundAppCrdtSigned>>>,
+    /// Phase 6 buffer of inbound cooperative-scrollback *requests*.
+    /// The broker's drainer reads these, consults its local op log,
+    /// and (if it has any matching ops) publishes a corresponding
+    /// `ScrollbackResponse` back over gossipsub. See
+    /// [`Self::inbound_scrollback_request_handle`].
+    inbound_scrollback_request: Arc<Mutex<Vec<InboundScrollbackRequest>>>,
+    /// Phase 6 buffer of inbound cooperative-scrollback *responses*.
+    /// The broker's drainer pulls answers out of here and forwards
+    /// them to the local app that originally asked, as a
+    /// `CollabEvent::ScrollbackBatch`. See
+    /// [`Self::inbound_scrollback_response_handle`].
+    inbound_scrollback_response: Arc<Mutex<Vec<InboundScrollbackResponse>>>,
 }
 
 /// One received app-CRDT incremental update, queued by
@@ -121,6 +133,39 @@ pub struct InboundAppCrdtSigned {
     /// and keep the queue entry size bounded — `SignedOp` is large
     /// (32-byte pubkey + 64-byte sig + variable payload + UUIDs).
     pub envelope: Box<qos_collab_types::SignedOp>,
+}
+
+/// One received cooperative-scrollback request, queued by
+/// [`ShellNetwork::tick`]. The broker's drainer reads these and may
+/// publish a `ScrollbackResponse` if its local op log holds the
+/// requested range.
+#[derive(Debug, Clone)]
+pub struct InboundScrollbackRequest {
+    /// Hashed libp2p peer id of the asker; the broker's response
+    /// uses this to mark its own response as a reply to that peer
+    /// (i.e. fills `ScrollbackResponse::responder` with `self`, not
+    /// `requester`).
+    pub requester: u64,
+    /// The artifact whose scrollback is requested.
+    pub artifact: qos_collab_types::ArtifactId,
+    /// Exclusive upper bound on `seq`.
+    pub before_seq: u64,
+    /// Page cap.
+    pub max: u16,
+}
+
+/// One received cooperative-scrollback response, queued by
+/// [`ShellNetwork::tick`]. The broker's drainer translates these
+/// into `CollabEvent::ScrollbackBatch` events and forwards them to
+/// the local app that initiated the request.
+#[derive(Debug, Clone)]
+pub struct InboundScrollbackResponse {
+    /// Hashed libp2p peer id of the answering broker.
+    pub responder: u64,
+    /// Artifact the response covers.
+    pub artifact: qos_collab_types::ArtifactId,
+    /// The page of ops the answering peer is sharing.
+    pub ops: Vec<Box<qos_collab_types::SignedOp>>,
 }
 
 /// One received cursor-presence update, queued by [`ShellNetwork::tick`]
@@ -211,6 +256,8 @@ impl ShellNetwork {
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_app_crdt: Arc::new(Mutex::new(Vec::new())),
             inbound_app_crdt_signed: Arc::new(Mutex::new(Vec::new())),
+            inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
+            inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -383,6 +430,102 @@ impl ShellNetwork {
         }
     }
 
+    /// Shared handle to the cooperative-scrollback request buffer.
+    /// The broker's drainer reads it on each tick and answers any
+    /// request for an artifact whose log it holds.
+    pub fn inbound_scrollback_request_handle(
+        &self,
+    ) -> Arc<Mutex<Vec<InboundScrollbackRequest>>> {
+        Arc::clone(&self.inbound_scrollback_request)
+    }
+
+    /// Shared handle to the cooperative-scrollback response buffer.
+    pub fn inbound_scrollback_response_handle(
+        &self,
+    ) -> Arc<Mutex<Vec<InboundScrollbackResponse>>> {
+        Arc::clone(&self.inbound_scrollback_response)
+    }
+
+    /// Phase 6: publish a `NeighbourMsg::ScrollbackRequest` to the
+    /// default workspace topic. The broker calls this when a local
+    /// app's `FetchScrollback` returned `exhausted=true` with an
+    /// empty batch (the broker has nothing more in-memory, but the
+    /// app still wants the range). `try_send` failures are
+    /// swallowed; the app can re-issue the request after a back-off.
+    pub fn publish_scrollback_request(
+        &self,
+        artifact: qos_collab_types::ArtifactId,
+        before_seq: u64,
+        max: u16,
+    ) {
+        let msg = NeighbourMsg::ScrollbackRequest {
+            artifact,
+            before_seq,
+            max,
+            requester: self.local_peer_id_hash(),
+        };
+        let _ = self.cmd_tx.try_send(NetCmd::Publish {
+            ws: self.active_ws_for_publish(),
+            msg,
+        });
+    }
+
+    /// Phase 6: publish a `NeighbourMsg::ScrollbackResponse`. The
+    /// broker calls this when it sees a `ScrollbackRequest` for an
+    /// artifact whose log it has matching ops for.
+    pub fn publish_scrollback_response(
+        &self,
+        artifact: qos_collab_types::ArtifactId,
+        ops: Vec<Box<qos_collab_types::SignedOp>>,
+    ) {
+        let msg = NeighbourMsg::ScrollbackResponse {
+            artifact,
+            ops,
+            responder: self.local_peer_id_hash(),
+        };
+        let _ = self.cmd_tx.try_send(NetCmd::Publish {
+            ws: self.active_ws_for_publish(),
+            msg,
+        });
+    }
+
+    /// Adapter: queue a received `ScrollbackRequest` for the broker
+    /// drainer. Public for tests; in production the `tick` path
+    /// calls this when it sees the inbound `NeighbourMsg`.
+    pub fn handle_scrollback_request_message(
+        &self,
+        requester: u64,
+        artifact: qos_collab_types::ArtifactId,
+        before_seq: u64,
+        max: u16,
+    ) {
+        if let Ok(mut buf) = self.inbound_scrollback_request.lock() {
+            buf.push(InboundScrollbackRequest {
+                requester,
+                artifact,
+                before_seq,
+                max,
+            });
+        }
+    }
+
+    /// Adapter: queue a received `ScrollbackResponse` for the
+    /// broker drainer.
+    pub fn handle_scrollback_response_message(
+        &self,
+        responder: u64,
+        artifact: qos_collab_types::ArtifactId,
+        ops: Vec<Box<qos_collab_types::SignedOp>>,
+    ) {
+        if let Ok(mut buf) = self.inbound_scrollback_response.lock() {
+            buf.push(InboundScrollbackResponse {
+                responder,
+                artifact,
+                ops,
+            });
+        }
+    }
+
     /// Subscribe the actor to the default workspace topic, registering
     /// our `event_tx` as the per-workspace event sink. v1 uses a
     /// single topic ([`DEFAULT_WS_TOPIC`]); per-workspace routing
@@ -471,6 +614,41 @@ impl ShellNetwork {
                     }
                     continue;
                 }
+                // Phase 6 cooperative scrollback. Skip self-echoes
+                // (we already have the answer) and route requests +
+                // responses to their dedicated buffers.
+                if let NeighbourMsg::ScrollbackRequest {
+                    artifact,
+                    before_seq,
+                    max,
+                    requester,
+                } = msg
+                {
+                    if requester != self.local_peer_hash {
+                        self.handle_scrollback_request_message(
+                            requester,
+                            artifact,
+                            before_seq,
+                            max,
+                        );
+                    }
+                    continue;
+                }
+                if let NeighbourMsg::ScrollbackResponse {
+                    artifact,
+                    ref ops,
+                    responder,
+                } = msg
+                {
+                    if responder != self.local_peer_hash {
+                        self.handle_scrollback_response_message(
+                            responder,
+                            artifact,
+                            ops.clone(),
+                        );
+                    }
+                    continue;
+                }
                 let mut rep = self.replica.lock().unwrap();
                 rep.handle(peer_id_to_u64(peer), &msg);
                 let outgoing = rep.drain_outgoing();
@@ -533,6 +711,8 @@ fn shell_network_for_test(
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_app_crdt: Arc::new(Mutex::new(Vec::new())),
         inbound_app_crdt_signed: Arc::new(Mutex::new(Vec::new())),
+        inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
+        inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
     };
     (net, cmd_rx)
 }
@@ -766,4 +946,68 @@ mod tests {
         assert_eq!(net.active_ws_for_publish(), DEFAULT_WS_TOPIC);
     }
 
+    #[test]
+    fn publish_scrollback_request_emits_a_publish_command() {
+        use qos_collab_types::ArtifactId;
+        let tree = WorkspaceTree::bootstrap_default().shared();
+        let (net, mut cmd_rx) = shell_network_for_test(tree, 0xDEAD_u64);
+        let artifact = ArtifactId::new();
+        net.publish_scrollback_request(artifact, 100, 25);
+        let cmd = cmd_rx
+            .try_recv()
+            .expect("publish_scrollback_request must enqueue a NetCmd");
+        match cmd {
+            NetCmd::Publish { ws, msg } => {
+                assert_eq!(ws, DEFAULT_WS_TOPIC);
+                match msg {
+                    NeighbourMsg::ScrollbackRequest {
+                        artifact: got_art,
+                        before_seq,
+                        max,
+                        requester,
+                    } => {
+                        assert_eq!(got_art, artifact);
+                        assert_eq!(before_seq, 100);
+                        assert_eq!(max, 25);
+                        assert_eq!(requester, 0xDEAD_u64);
+                    }
+                    other => panic!("expected ScrollbackRequest, got {other:?}"),
+                }
+            }
+            other => panic!("expected NetCmd::Publish, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_scrollback_request_message_buffers_for_drain() {
+        use qos_collab_types::ArtifactId;
+        let tree = WorkspaceTree::bootstrap_default().shared();
+        let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
+        let handle = net.inbound_scrollback_request_handle();
+        let artifact = ArtifactId::new();
+        net.handle_scrollback_request_message(7u64, artifact, 50, 10);
+        let buf = handle.lock().unwrap();
+        assert_eq!(buf.len(), 1);
+        assert_eq!(buf[0].requester, 7u64);
+        assert_eq!(buf[0].artifact, artifact);
+        assert_eq!(buf[0].before_seq, 50);
+        assert_eq!(buf[0].max, 10);
+    }
+
+    #[test]
+    fn handle_scrollback_response_message_buffers_for_drain() {
+        use qos_collab_types::ArtifactId;
+        let tree = WorkspaceTree::bootstrap_default().shared();
+        let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
+        let handle = net.inbound_scrollback_response_handle();
+        let artifact = ArtifactId::new();
+        let env = Box::new(make_envelope(11));
+        net.handle_scrollback_response_message(99u64, artifact, vec![env.clone()]);
+        let buf = handle.lock().unwrap();
+        assert_eq!(buf.len(), 1);
+        assert_eq!(buf[0].responder, 99u64);
+        assert_eq!(buf[0].artifact, artifact);
+        assert_eq!(buf[0].ops.len(), 1);
+        assert_eq!(*buf[0].ops[0], *env);
+    }
 }
