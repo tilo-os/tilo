@@ -1,0 +1,368 @@
+//! Pure data model for the chat workspace.
+//!
+//! These types are the in-memory projection of the Automerge document
+//! (see [`crate::doc`]). The convergent state — channels, messages,
+//! reactions, edit history, threads, attachments — lives in the CRDT;
+//! this module is just the strongly-typed view the renderer consumes,
+//! plus the pure helper logic (message grouping, reply counts, reaction
+//! toggling) that has no business reaching into Automerge.
+
+/// String identifier (UUID or stable seed key). Used as Automerge map
+/// keys so it must round-trip as a plain string.
+pub type Id = String;
+
+/// The local user. Authored messages + the user's own reactions are keyed
+/// to this; the call host tile represents this user's camera.
+pub const ME: &str = "u_me";
+
+/// Two messages by the same author land in one visual group when they're
+/// within this many seconds of each other (Slack/Discord convention).
+pub const GROUP_WINDOW_SECS: i64 = 5 * 60;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChannelKind {
+    Text,
+    Voice,
+}
+
+impl ChannelKind {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "voice" => ChannelKind::Voice,
+            _ => ChannelKind::Text,
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ChannelKind::Voice => "voice",
+            ChannelKind::Text => "text",
+        }
+    }
+    /// Channel-list glyph: `#` for text, a speaker for voice.
+    pub fn glyph(self) -> &'static str {
+        match self {
+            ChannelKind::Text => "#",
+            ChannelKind::Voice => "\u{1F50A}",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Presence {
+    Online,
+    Idle,
+    Dnd,
+    Offline,
+}
+
+impl Presence {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "idle" => Presence::Idle,
+            "dnd" => Presence::Dnd,
+            "offline" => Presence::Offline,
+            _ => Presence::Online,
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Presence::Idle => "idle",
+            Presence::Dnd => "dnd",
+            Presence::Offline => "offline",
+            Presence::Online => "online",
+        }
+    }
+}
+
+/// A top-level workspace. Channels belong to exactly one workspace; the
+/// left rail switches between them.
+#[derive(Clone, Debug)]
+pub struct Workspace {
+    pub id: Id,
+    pub name: String,
+    /// Two-letter monogram shown in the rail.
+    pub glyph: String,
+    pub color_idx: usize,
+    pub order: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct Channel {
+    pub id: Id,
+    pub workspace: Id,
+    pub name: String,
+    pub topic: String,
+    pub kind: ChannelKind,
+    pub order: u32,
+    pub unread: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct User {
+    pub id: Id,
+    pub name: String,
+    pub initials: String,
+    pub color_idx: usize,
+    pub status: Presence,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Attachment {
+    /// An image projected from the P2P FUSE filesystem. `tint` selects a
+    /// deterministic gradient stand-in until the bytes hydrate from
+    /// `/var/workspace` (content is fetched on first read — see `fs`).
+    Image {
+        name: String,
+        path: String,
+        w: u32,
+        h: u32,
+        tint: usize,
+    },
+    /// A non-image file share (chip with name + size).
+    File {
+        name: String,
+        path: String,
+        size: u64,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub struct Reaction {
+    pub emoji: String,
+    pub users: Vec<Id>,
+}
+
+impl Reaction {
+    pub fn count(&self) -> usize {
+        self.users.len()
+    }
+    pub fn reacted_by(&self, user: &str) -> bool {
+        self.users.iter().any(|u| u == user)
+    }
+}
+
+/// One prior version of a message body, captured when the author edits.
+#[derive(Clone, Debug)]
+pub struct EditRecord {
+    pub ts: i64,
+    pub text: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct Message {
+    pub id: Id,
+    pub channel: Id,
+    pub author: Id,
+    pub ts: i64,
+    pub text: String,
+    pub edited: bool,
+    pub history: Vec<EditRecord>,
+    /// `Some(parent_id)` when this message is a threaded reply.
+    pub parent: Option<Id>,
+    pub reactions: Vec<Reaction>,
+    pub attachment: Option<Attachment>,
+}
+
+impl Message {
+    pub fn is_top_level(&self) -> bool {
+        self.parent.is_none()
+    }
+}
+
+/// A run of consecutive top-level messages by one author shown as a single
+/// avatar + name header followed by stacked bodies.
+#[derive(Clone, Debug)]
+pub struct MessageGroup {
+    pub author: Id,
+    /// Indices into the source `&[Message]` slice, in order.
+    pub message_indices: Vec<usize>,
+}
+
+/// Group consecutive **top-level** messages (parent == None) by the same
+/// author within [`GROUP_WINDOW_SECS`]. Threaded replies are excluded —
+/// they render inside the thread panel, not the main timeline.
+pub fn group_messages(messages: &[Message]) -> Vec<MessageGroup> {
+    let mut groups: Vec<MessageGroup> = Vec::new();
+    for (i, m) in messages.iter().enumerate() {
+        if !m.is_top_level() {
+            continue;
+        }
+        let extend = groups.last().is_some_and(|g| {
+            g.author == m.author
+                && messages
+                    .get(*g.message_indices.last().unwrap())
+                    .is_some_and(|prev| (m.ts - prev.ts).abs() <= GROUP_WINDOW_SECS)
+        });
+        if extend {
+            groups.last_mut().unwrap().message_indices.push(i);
+        } else {
+            groups.push(MessageGroup {
+                author: m.author.clone(),
+                message_indices: vec![i],
+            });
+        }
+    }
+    groups
+}
+
+/// Number of replies whose `parent` is `parent_id`.
+pub fn reply_count(messages: &[Message], parent_id: &str) -> usize {
+    messages
+        .iter()
+        .filter(|m| m.parent.as_deref() == Some(parent_id))
+        .count()
+}
+
+/// Distinct authors who replied in a thread, in first-seen order. Used to
+/// render the stacked avatar cluster on the "N replies" affordance.
+pub fn thread_participants(messages: &[Message], parent_id: &str) -> Vec<Id> {
+    let mut seen: Vec<Id> = Vec::new();
+    for m in messages {
+        if m.parent.as_deref() == Some(parent_id) && !seen.contains(&m.author) {
+            seen.push(m.author.clone());
+        }
+    }
+    seen
+}
+
+/// Toggle `user`'s reaction with `emoji` on a reaction set. Adds the emoji
+/// (and user) when absent, removes the user when present, and drops the
+/// emoji entirely once nobody is left reacting. Returns the resulting
+/// "is the user now reacting" flag. Pure — the CRDT writer mirrors this.
+pub fn toggle_reaction(reactions: &mut Vec<Reaction>, emoji: &str, user: &str) -> bool {
+    if let Some(pos) = reactions.iter().position(|r| r.emoji == emoji) {
+        let r = &mut reactions[pos];
+        if let Some(uidx) = r.users.iter().position(|u| u == user) {
+            r.users.remove(uidx);
+            if r.users.is_empty() {
+                reactions.remove(pos);
+            }
+            false
+        } else {
+            r.users.push(user.to_string());
+            true
+        }
+    } else {
+        reactions.push(Reaction {
+            emoji: emoji.to_string(),
+            users: vec![user.to_string()],
+        });
+        true
+    }
+}
+
+/// Format an epoch-seconds timestamp as a 24-hour `HH:MM` clock.
+pub fn clock(ts: i64) -> String {
+    let secs_in_day = ts.rem_euclid(86_400);
+    let h = secs_in_day / 3600;
+    let m = (secs_in_day % 3600) / 60;
+    format!("{h:02}:{m:02}")
+}
+
+/// Human relative label for a message timestamp relative to `now` —
+/// "Today" / "Yesterday" / "{n}d ago". Used for the date divider.
+pub fn day_label(ts: i64, now: i64) -> String {
+    let day = ts.div_euclid(86_400);
+    let today = now.div_euclid(86_400);
+    match today - day {
+        d if d <= 0 => "Today".to_string(),
+        1 => "Yesterday".to_string(),
+        d => format!("{d} days ago"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn msg(id: &str, author: &str, ts: i64, parent: Option<&str>) -> Message {
+        Message {
+            id: id.into(),
+            channel: "c".into(),
+            author: author.into(),
+            ts,
+            text: "x".into(),
+            edited: false,
+            history: vec![],
+            parent: parent.map(|s| s.to_string()),
+            reactions: vec![],
+            attachment: None,
+        }
+    }
+
+    #[test]
+    fn grouping_merges_same_author_within_window() {
+        let msgs = vec![
+            msg("a", "u1", 0, None),
+            msg("b", "u1", 60, None),
+            msg("c", "u1", 120, None),
+        ];
+        let groups = group_messages(&msgs);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].message_indices, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn grouping_splits_on_author_change_and_time_gap() {
+        let msgs = vec![
+            msg("a", "u1", 0, None),
+            msg("b", "u2", 30, None),       // author change
+            msg("c", "u2", 30 + 999, None), // gap > window
+        ];
+        let groups = group_messages(&msgs);
+        assert_eq!(groups.len(), 3);
+    }
+
+    #[test]
+    fn grouping_excludes_thread_replies() {
+        let msgs = vec![
+            msg("a", "u1", 0, None),
+            msg("r", "u1", 10, Some("a")), // reply — not in the timeline
+        ];
+        let groups = group_messages(&msgs);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].message_indices, vec![0]);
+    }
+
+    #[test]
+    fn reply_count_and_participants() {
+        let msgs = vec![
+            msg("a", "u1", 0, None),
+            msg("r1", "u2", 10, Some("a")),
+            msg("r2", "u3", 20, Some("a")),
+            msg("r3", "u2", 30, Some("a")),
+        ];
+        assert_eq!(reply_count(&msgs, "a"), 3);
+        assert_eq!(thread_participants(&msgs, "a"), vec!["u2", "u3"]);
+    }
+
+    #[test]
+    fn toggle_reaction_adds_removes_and_prunes() {
+        let mut rx: Vec<Reaction> = vec![];
+        assert!(toggle_reaction(&mut rx, "👍", "u1"));
+        assert_eq!(rx.len(), 1);
+        assert!(toggle_reaction(&mut rx, "👍", "u2"));
+        assert_eq!(rx[0].count(), 2);
+        // u1 removes — emoji survives with u2.
+        assert!(!toggle_reaction(&mut rx, "👍", "u1"));
+        assert_eq!(rx[0].count(), 1);
+        // u2 removes — emoji pruned.
+        assert!(!toggle_reaction(&mut rx, "👍", "u2"));
+        assert!(rx.is_empty());
+    }
+
+    #[test]
+    fn clock_formats_24h() {
+        assert_eq!(clock(0), "00:00");
+        assert_eq!(clock(14 * 3600 + 32 * 60), "14:32");
+        assert_eq!(clock(23 * 3600 + 59 * 60), "23:59");
+    }
+
+    #[test]
+    fn day_label_relative() {
+        let now = 100 * 86_400 + 3600;
+        assert_eq!(day_label(now, now), "Today");
+        assert_eq!(day_label(now - 86_400, now), "Yesterday");
+        assert_eq!(day_label(now - 3 * 86_400, now), "3 days ago");
+    }
+}

@@ -1,0 +1,1697 @@
+//! The editor's root widget: media bin, preview, transport, timeline and
+//! inspector, all drawn into one Vello scene with hand-rolled hit-testing.
+//!
+//! Why one big custom widget instead of composed toolkit widgets? A
+//! timeline is fundamentally a canvas: clips are positioned proportional
+//! to time, trim handles live on sub-pixel edges, the playhead crosses
+//! every lane. That density is far cleaner to express as direct drawing +
+//! geometric hit-tests than as a Taffy tree. The structural state still
+//! lives in the CRDT (see [`crate::doc`]) so the edit is collaborative and
+//! undoable; only ephemeral *view* state (playhead, zoom, selection) is
+//! held in widget fields, matching the toolkit's per-peer-view convention.
+
+use std::collections::HashMap;
+use std::time::Instant;
+
+use automerge::{AutoCommit, ObjId};
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
+use vello::peniko::{Color, Fill};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
+
+use ui::ColorCompat;
+use ui::permissions::PermissionContext;
+use ui::presence::PresenceCtx;
+use ui::text_render::{TextRenderer, TextWeight};
+use ui::theme::Theme;
+use ui::widget::Widget;
+
+use crate::doc::VideoDoc;
+use crate::export::{
+    begin_export, Container, ExportSettings, ExportStatus, FrameRate, Resolution,
+};
+use crate::model::{Clip, ClipId, MediaId, MediaKind, Project, TrackId, TrackKind, Transition};
+use crate::timecode::{clock, frame_step, snap_to_frame, timecode};
+
+// ---- layout constants ----------------------------------------------------
+const TOPBAR_H: f64 = 48.0;
+const TIMELINE_H: f64 = 304.0;
+const BIN_W: f64 = 268.0;
+const INSPECTOR_W: f64 = 300.0;
+const GUTTER_W: f64 = 128.0;
+const RULER_H: f64 = 30.0;
+const TRANSPORT_H: f64 = 58.0;
+const LANE_GAP: f64 = 4.0;
+const VIDEO_LANE_H: f64 = 62.0;
+const AUDIO_LANE_H: f64 = 46.0;
+const TRIM_HIT: f64 = 8.0;
+const PAD: f64 = 14.0;
+
+/// Computed region rectangles for one frame, derived purely from the root
+/// rect. Recomputed in both `draw` and `handle_event` so the two never
+/// disagree about where anything is.
+#[derive(Clone, Copy, Default)]
+struct Regions {
+    topbar: Rect,
+    export_btn: Rect,
+    split_btn: Rect,
+    bin: Rect,
+    preview: Rect,
+    canvas: Rect,
+    transport: Rect,
+    inspector: Rect,
+    timeline: Rect,
+    ruler: Rect,
+    gutter: Rect,
+    lanes: Rect,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum TransportAction {
+    ToStart,
+    StepBack,
+    PlayPause,
+    StepFwd,
+    ToEnd,
+}
+
+enum Drag {
+    Playhead,
+    Scrubber,
+    ClipMove { id: ClipId, grab_dt: f64 },
+    TrimIn { id: ClipId },
+    TrimOut { id: ClipId },
+    Opacity,
+    Volume,
+}
+
+pub struct VideoEditorApp {
+    project: Project,
+    // --- view state (per-peer, never in the CRDT) ---
+    playhead: f64,
+    zoom: f64,  // pixels per second
+    scroll: f64, // seconds at the left edge of the lane area
+    selected: Option<ClipId>,
+    selected_media: Option<MediaId>,
+    playing: bool,
+    // --- ui state ---
+    show_export: bool,
+    export: ExportSettings,
+    export_status: ExportStatus,
+    drag: Option<Drag>,
+    last_mouse: Point,
+    hover_clip: Option<ClipId>,
+    hover_media: Option<MediaId>,
+    last_click_media: Option<(MediaId, Instant)>,
+    seeded: bool,
+    initialised_selection: bool,
+    last_tick: Instant,
+    rect: Rect,
+}
+
+impl Default for VideoEditorApp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl VideoEditorApp {
+    pub fn new() -> Self {
+        Self {
+            project: Project::new("Untitled"),
+            playhead: 10.0,
+            zoom: 34.0,
+            scroll: 0.0,
+            selected: None,
+            selected_media: None,
+            playing: false,
+            // Dev aid: `QOS_VE_EXPORT=1` opens straight into the export
+            // dialog so its layout can be screenshotted headlessly.
+            show_export: std::env::var_os("QOS_VE_EXPORT").is_some(),
+            export: ExportSettings::default(),
+            export_status: ExportStatus::Idle,
+            drag: None,
+            last_mouse: Point::ZERO,
+            hover_clip: None,
+            hover_media: None,
+            last_click_media: None,
+            seeded: false,
+            initialised_selection: false,
+            last_tick: Instant::now(),
+            rect: Rect::ZERO,
+        }
+    }
+
+    // ---- region geometry -------------------------------------------------
+    fn regions(&self) -> Regions {
+        let r = self.rect;
+        let topbar = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOPBAR_H);
+        let export_btn = Rect::new(r.x1 - 124.0, r.y0 + 9.0, r.x1 - 14.0, r.y0 + 39.0);
+        let split_btn = Rect::new(r.x1 - 244.0, r.y0 + 9.0, r.x1 - 134.0, r.y0 + 39.0);
+        let timeline_top = (r.y1 - TIMELINE_H).max(topbar.y1 + 80.0);
+        let timeline = Rect::new(r.x0, timeline_top, r.x1, r.y1);
+        let mid_top = topbar.y1;
+        let mid_bot = timeline.y0;
+        let bin = Rect::new(r.x0, mid_top, r.x0 + BIN_W, mid_bot);
+        let inspector = Rect::new(r.x1 - INSPECTOR_W, mid_top, r.x1, mid_bot);
+        let preview = Rect::new(bin.x1, mid_top, inspector.x0, mid_bot);
+        let transport = Rect::new(preview.x0, preview.y1 - TRANSPORT_H, preview.x1, preview.y1);
+        let canvas_area = Rect::new(preview.x0 + 10.0, preview.y0 + 10.0, preview.x1 - 10.0, transport.y0 - 8.0);
+        let canvas = fit_aspect(canvas_area, self.project.width.max(16) as f64, self.project.height.max(9) as f64);
+        let ruler = Rect::new(timeline.x0 + GUTTER_W, timeline.y0, timeline.x1, timeline.y0 + RULER_H);
+        let gutter = Rect::new(timeline.x0, timeline.y0 + RULER_H, timeline.x0 + GUTTER_W, timeline.y1);
+        let lanes = Rect::new(timeline.x0 + GUTTER_W, timeline.y0 + RULER_H, timeline.x1, timeline.y1);
+        Regions {
+            topbar, export_btn, split_btn, bin, preview, canvas, transport,
+            inspector, timeline, ruler, gutter, lanes,
+        }
+    }
+
+    fn time_to_x(&self, t: f64, lanes: &Rect) -> f64 {
+        lanes.x0 + (t - self.scroll) * self.zoom
+    }
+    fn x_to_time(&self, x: f64, lanes: &Rect) -> f64 {
+        (self.scroll + (x - lanes.x0) / self.zoom).max(0.0)
+    }
+
+    /// (track id, kind, lane rect) in display order. Lane rect spans the
+    /// full lane width.
+    fn lane_rects(&self, r: &Regions) -> Vec<(TrackId, TrackKind, Rect)> {
+        let mut out = Vec::new();
+        let mut y = r.lanes.y0 + LANE_GAP;
+        for t in self.project.display_tracks() {
+            let h = if t.kind == TrackKind::Video { VIDEO_LANE_H } else { AUDIO_LANE_H };
+            let lane = Rect::new(r.lanes.x0, y, r.lanes.x1, y + h);
+            out.push((t.id, t.kind, lane));
+            y += h + LANE_GAP;
+        }
+        out
+    }
+
+    fn clip_rect(&self, clip: &Clip, lane: &Rect, r: &Regions) -> Rect {
+        let x0 = self.time_to_x(clip.start, &r.lanes);
+        let x1 = self.time_to_x(clip.end(), &r.lanes);
+        Rect::new(x0, lane.y0 + 2.0, x1.max(x0 + 2.0), lane.y1 - 2.0)
+    }
+
+    fn transport_buttons(&self, r: &Regions) -> [(TransportAction, Rect); 5] {
+        let cy = r.transport.y0 + 20.0;
+        let cx0 = r.transport.x0 + 30.0;
+        let gap = 40.0;
+        let mk = |i: f64, a: TransportAction| {
+            let cx = cx0 + i * gap;
+            (a, Rect::new(cx - 15.0, cy - 15.0, cx + 15.0, cy + 15.0))
+        };
+        [
+            mk(0.0, TransportAction::ToStart),
+            mk(1.0, TransportAction::StepBack),
+            mk(2.0, TransportAction::PlayPause),
+            mk(3.0, TransportAction::StepFwd),
+            mk(4.0, TransportAction::ToEnd),
+        ]
+    }
+
+    fn scrubber_rect(&self, r: &Regions) -> Rect {
+        Rect::new(r.transport.x0 + 220.0, r.transport.y0 + 38.0, r.transport.x1 - 16.0, r.transport.y0 + 46.0)
+    }
+
+    /// Media for the bin in a stable, meaningful order: visual media
+    /// first, then audio, each alphabetised. (The CRDT key iteration order
+    /// is otherwise arbitrary.)
+    fn bin_order(&self) -> Vec<MediaId> {
+        let mut v: Vec<&crate::model::MediaItem> = self.project.media.iter().collect();
+        v.sort_by(|a, b| {
+            b.kind.is_visual().cmp(&a.kind.is_visual()).then(a.name.cmp(&b.name))
+        });
+        v.into_iter().map(|m| m.id).collect()
+    }
+
+    fn bin_item_rects(&self, r: &Regions) -> Vec<(MediaId, Rect)> {
+        let mut out = Vec::new();
+        let mut y = r.bin.y0 + 40.0;
+        let row_h = 56.0;
+        for mid in self.bin_order() {
+            let rect = Rect::new(r.bin.x0 + 8.0, y, r.bin.x1 - 8.0, y + row_h - 6.0);
+            out.push((mid, rect));
+            y += row_h;
+        }
+        out
+    }
+
+    // ---- playback --------------------------------------------------------
+    fn advance_playback(&mut self) {
+        let now = Instant::now();
+        let dt = now.duration_since(self.last_tick).as_secs_f64();
+        self.last_tick = now;
+        if self.playing {
+            let dur = self.project.duration();
+            self.playhead += dt;
+            if self.playhead >= dur {
+                self.playhead = dur;
+                self.playing = false;
+            }
+        }
+    }
+
+    fn toggle_play(&mut self) {
+        self.playing = !self.playing;
+        self.last_tick = Instant::now();
+        if self.playing && self.playhead >= self.project.duration() {
+            self.playhead = 0.0;
+        }
+    }
+
+    fn step_frame(&mut self, dir: f64) {
+        let step = frame_step(self.project.fps);
+        self.playhead = (self.playhead + dir * step).clamp(0.0, self.project.duration());
+        self.playing = false;
+    }
+
+    // ---- mutations (write through to the CRDT) ---------------------------
+    fn split_selected(&mut self, doc: &mut AutoCommit) {
+        let Some(id) = self.selected else { return };
+        if let Some(rid) = self.project.split_clip(id, self.playhead) {
+            if let Some(left) = self.project.clip(id) {
+                VideoDoc::upsert_clip(doc, left);
+            }
+            if let Some(right) = self.project.clip(rid) {
+                VideoDoc::upsert_clip(doc, right);
+            }
+            self.selected = Some(rid);
+        }
+    }
+
+    fn delete_selected(&mut self, doc: &mut AutoCommit) {
+        let Some(id) = self.selected else { return };
+        self.project.delete_clip(id);
+        VideoDoc::remove_clip(doc, id);
+        self.selected = None;
+    }
+
+    fn set_opacity(&mut self, doc: &mut AutoCommit, v: f64) {
+        if let Some(id) = self.selected {
+            if let Some(c) = self.project.clip_mut(id) {
+                c.opacity = v.clamp(0.0, 1.0);
+            }
+            if let Some(c) = self.project.clip(id) {
+                VideoDoc::upsert_clip(doc, c);
+            }
+        }
+    }
+    fn set_volume(&mut self, doc: &mut AutoCommit, v: f64) {
+        if let Some(id) = self.selected {
+            if let Some(c) = self.project.clip_mut(id) {
+                c.volume = v.clamp(0.0, 1.0);
+            }
+            if let Some(c) = self.project.clip(id) {
+                VideoDoc::upsert_clip(doc, c);
+            }
+        }
+    }
+    fn set_transition(&mut self, doc: &mut AutoCommit, t: Transition) {
+        if let Some(id) = self.selected {
+            if let Some(c) = self.project.clip_mut(id) {
+                c.transition = t;
+            }
+            if let Some(c) = self.project.clip(id) {
+                VideoDoc::upsert_clip(doc, c);
+            }
+        }
+    }
+    fn set_palette(&mut self, doc: &mut AutoCommit, p: u8) {
+        if let Some(id) = self.selected {
+            if let Some(c) = self.project.clip_mut(id) {
+                c.palette = p;
+            }
+            if let Some(c) = self.project.clip(id) {
+                VideoDoc::upsert_clip(doc, c);
+            }
+        }
+    }
+
+    /// Append the bin-selected (or given) media as a clip on a matching
+    /// track, at the end of that track's content.
+    fn add_media_to_timeline(&mut self, doc: &mut AutoCommit, media: MediaId) {
+        let Some(m) = self.project.media(media).cloned() else { return };
+        let kind = if m.kind.is_visual() { TrackKind::Video } else { TrackKind::Audio };
+        // Lowest-index track of the right kind, else any.
+        let track = self
+            .project
+            .tracks
+            .iter()
+            .filter(|t| t.kind == kind)
+            .min_by_key(|t| t.index)
+            .map(|t| t.id);
+        let Some(track) = track else { return };
+        let start = self
+            .project
+            .clips_on(track)
+            .last()
+            .map(|c| c.end())
+            .unwrap_or(0.0);
+        if let Some(id) = self.project.add_clip(track, media, start) {
+            if let Some(c) = self.project.clip(id) {
+                VideoDoc::upsert_clip(doc, c);
+            }
+            self.selected = Some(id);
+        }
+    }
+
+    fn zoom_by(&mut self, factor: f64) {
+        self.zoom = (self.zoom * factor).clamp(6.0, 220.0);
+    }
+
+    fn inspector_layout(&self, r: &Regions) -> InspectorLayout {
+        let mut l = InspectorLayout::default();
+        let Some(id) = self.selected else { return l };
+        let Some(clip) = self.project.clip(id) else { return l };
+        let is_video = self
+            .project
+            .media(clip.media)
+            .map(|m| m.kind.is_visual())
+            .unwrap_or(true);
+        let x0 = r.inspector.x0 + PAD;
+        let x1 = r.inspector.x1 - PAD;
+        // Static header + property rows consume a fixed block; controls
+        // start below it.
+        let mut y = r.inspector.y0 + 164.0;
+        let row = 52.0;
+        if is_video {
+            l.opacity = Some(Rect::new(x0, y + 24.0, x1, y + 34.0));
+        } else {
+            l.volume = Some(Rect::new(x0, y + 24.0, x1, y + 34.0));
+        }
+        y += row;
+        // Transition segmented control.
+        let seg_w = (x1 - x0) / Transition::ALL.len() as f64;
+        l.transition_y = y + 24.0;
+        for (i, t) in Transition::ALL.iter().enumerate() {
+            let sx0 = x0 + i as f64 * seg_w;
+            l.transitions.push((*t, Rect::new(sx0, y + 24.0, sx0 + seg_w - 3.0, y + 52.0)));
+        }
+        y += row + 16.0;
+        // Label color swatches.
+        l.colors_y = y + 24.0;
+        let sw = 30.0;
+        for i in 0..7u8 {
+            let sx0 = x0 + i as f64 * (sw + 4.0);
+            if sx0 + sw > x1 { break; }
+            l.colors.push((i, Rect::new(sx0, y + 24.0, sx0 + sw, y + 24.0 + sw)));
+        }
+        y += row + 22.0;
+        l.split = Rect::new(x0, y, (x0 + x1) / 2.0 - 4.0, y + 34.0);
+        l.delete = Rect::new((x0 + x1) / 2.0 + 4.0, y, x1, y + 34.0);
+        l.valid = true;
+        l
+    }
+
+    fn export_layout(&self, r: &Regions) -> ExportLayout {
+        let card_w = 460.0;
+        let card_h = 360.0;
+        let cx = (r.timeline.x0 + r.timeline.x1) / 2.0;
+        let cy = (self.rect.y0 + self.rect.y1) / 2.0;
+        let card = Rect::new(cx - card_w / 2.0, cy - card_h / 2.0, cx + card_w / 2.0, cy + card_h / 2.0);
+        let x0 = card.x0 + 24.0;
+        let x1 = card.x1 - 24.0;
+        let mut l = ExportLayout { card, ..Default::default() };
+        let mut y = card.y0 + 70.0;
+        let seg = |x0: f64, x1: f64, n: usize, y: f64| -> Vec<Rect> {
+            let w = (x1 - x0) / n as f64;
+            (0..n).map(|i| Rect::new(x0 + i as f64 * w, y, x0 + (i as f64 + 1.0) * w - 4.0, y + 32.0)).collect()
+        };
+        for (i, rect) in seg(x0, x1, Resolution::ALL.len(), y).into_iter().enumerate() {
+            l.resolution.push((Resolution::ALL[i], rect));
+        }
+        y += 64.0;
+        for (i, rect) in seg(x0, x1, Container::ALL.len(), y).into_iter().enumerate() {
+            l.container.push((Container::ALL[i], rect));
+        }
+        y += 64.0;
+        for (i, rect) in seg(x0, x1, FrameRate::ALL.len(), y).into_iter().enumerate() {
+            l.fps.push((FrameRate::ALL[i], rect));
+        }
+        l.cancel = Rect::new(x0, card.y1 - 50.0, (x0 + x1) / 2.0 - 6.0, card.y1 - 18.0);
+        l.confirm = Rect::new((x0 + x1) / 2.0 + 6.0, card.y1 - 50.0, x1, card.y1 - 18.0);
+        l
+    }
+
+    fn ensure_initial_selection(&mut self) {
+        if self.initialised_selection || self.project.clips.is_empty() {
+            return;
+        }
+        self.selected = self
+            .project
+            .top_video_clip_at(self.playhead)
+            .map(|c| c.id)
+            .or_else(|| self.project.clips.first().map(|c| c.id));
+        self.selected_media = self.project.media.first().map(|m| m.id);
+        self.initialised_selection = true;
+    }
+}
+
+#[derive(Default)]
+struct InspectorLayout {
+    valid: bool,
+    opacity: Option<Rect>,
+    volume: Option<Rect>,
+    transition_y: f64,
+    transitions: Vec<(Transition, Rect)>,
+    colors_y: f64,
+    colors: Vec<(u8, Rect)>,
+    split: Rect,
+    delete: Rect,
+}
+
+#[derive(Default)]
+struct ExportLayout {
+    card: Rect,
+    resolution: Vec<(Resolution, Rect)>,
+    container: Vec<(Container, Rect)>,
+    fps: Vec<(FrameRate, Rect)>,
+    cancel: Rect,
+    confirm: Rect,
+}
+
+// ==========================================================================
+// Widget impl
+// ==========================================================================
+impl Widget for VideoEditorApp {
+    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+        if !self.seeded {
+            if VideoDoc::is_empty(state) {
+                VideoDoc::seed_sample(state);
+            }
+            self.seeded = true;
+        }
+        self.project = VideoDoc::load_project(state);
+        // Drop a stale selection if the clip vanished (e.g. remote delete).
+        if let Some(id) = self.selected {
+            if self.project.clip(id).is_none() {
+                self.selected = None;
+            }
+        }
+        self.ensure_initial_selection();
+    }
+
+    fn needs_idle_sync(&self) -> bool {
+        // Keep syncing until the sample/shared project is loaded so a
+        // freshly-spawned, input-free instance still seeds + paints.
+        !self.seeded || self.project.clips.is_empty()
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.playing
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy
+            .new_leaf(Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
+                ..Default::default()
+            })
+            .unwrap();
+        node_map.insert(node, self as *mut dyn Widget);
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let layout = taffy.layout(node).unwrap();
+        self.rect = Rect::new(
+            origin.x + layout.location.x as f64,
+            origin.y + layout.location.y as f64,
+            origin.x + layout.location.x as f64 + layout.size.width as f64,
+            origin.y + layout.location.y as f64 + layout.size.height as f64,
+        );
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        self.advance_playback();
+        let r = self.regions();
+        self.draw_chrome(scene, transform, tr, theme, &r);
+        self.draw_bin(scene, transform, tr, theme, &r);
+        self.draw_preview(scene, transform, tr, theme, &r);
+        self.draw_transport(scene, transform, tr, theme, &r);
+        self.draw_inspector(scene, transform, tr, theme, &r);
+        self.draw_timeline(scene, transform, tr, theme, &r);
+        if self.show_export {
+            self.draw_export_modal(scene, transform, tr, theme, &r);
+        }
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        _path: &ObjId,
+        handled: &mut bool,
+        _focus_target: &mut Option<NodeId>,
+        _node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
+        let r = self.regions();
+        match event {
+            WindowEvent::KeyboardInput { event: key_event, .. }
+                if key_event.state == ElementState::Pressed =>
+            {
+                if self.handle_key(&key_event.logical_key, modifiers, state, &r) {
+                    *handled = true;
+                }
+            }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+                self.handle_press(state, &r);
+                *handled = true;
+            }
+            WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
+                if self.drag.is_some() {
+                    self.drag = None;
+                    *handled = true;
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_mouse = p;
+                self.update_hover(&r);
+                self.apply_drag(state, &r);
+                *handled = true;
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let dy = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => *y as f64,
+                    MouseScrollDelta::PixelDelta(p) => p.y / 40.0,
+                };
+                if dy.abs() > 0.0 {
+                    self.zoom_by(if dy > 0.0 { 1.12 } else { 1.0 / 1.12 });
+                    *handled = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn name(&self) -> &str {
+        "VideoEditorApp"
+    }
+    fn test_id(&self) -> Option<&str> {
+        Some("video_editor_root")
+    }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn draw_with_presence(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        _permissions: &PermissionContext,
+    ) {
+        self.draw(scene, transform, tr, theme, presence);
+    }
+}
+
+// ==========================================================================
+// Event handling helpers
+// ==========================================================================
+impl VideoEditorApp {
+    fn handle_key(
+        &mut self,
+        key: &Key,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        r: &Regions,
+    ) -> bool {
+        let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
+        let shift = modifiers.state().shift_key();
+        if self.show_export {
+            if matches!(key, Key::Named(NamedKey::Escape)) {
+                self.show_export = false;
+                return true;
+            }
+            if matches!(key, Key::Named(NamedKey::Enter)) {
+                self.export_status = begin_export(&self.project, &self.export);
+                return true;
+            }
+            return false;
+        }
+        match key {
+            Key::Named(NamedKey::Space) => {
+                self.toggle_play();
+                true
+            }
+            Key::Named(NamedKey::ArrowLeft) => {
+                self.step_frame(if shift { -self.project.fps } else { -1.0 });
+                true
+            }
+            Key::Named(NamedKey::ArrowRight) => {
+                self.step_frame(if shift { self.project.fps } else { 1.0 });
+                true
+            }
+            Key::Named(NamedKey::Home) => {
+                self.playhead = 0.0;
+                self.playing = false;
+                true
+            }
+            Key::Named(NamedKey::End) => {
+                self.playhead = self.project.duration();
+                self.playing = false;
+                true
+            }
+            Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace) => {
+                self.delete_selected(state);
+                true
+            }
+            Key::Character(c) if ctrl && c.eq_ignore_ascii_case("e") => {
+                self.show_export = true;
+                let _ = r;
+                true
+            }
+            Key::Character(c) if c.eq_ignore_ascii_case("s") && !ctrl => {
+                self.split_selected(state);
+                true
+            }
+            Key::Character(c) if c.as_str() == "+" || c.as_str() == "=" => {
+                self.zoom_by(1.25);
+                true
+            }
+            Key::Character(c) if c.as_str() == "-" || c.as_str() == "_" => {
+                self.zoom_by(1.0 / 1.25);
+                true
+            }
+            Key::Named(NamedKey::Escape) => {
+                self.selected = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn handle_press(&mut self, state: &mut AutoCommit, r: &Regions) {
+        let p = self.last_mouse;
+
+        // Modal owns all clicks.
+        if self.show_export {
+            self.press_export(state, r, p);
+            return;
+        }
+        // Top bar buttons.
+        if r.export_btn.contains(p) {
+            self.show_export = true;
+            return;
+        }
+        if r.split_btn.contains(p) {
+            self.split_selected(state);
+            return;
+        }
+        // Media bin.
+        for (mid, rect) in self.bin_item_rects(r) {
+            if rect.contains(p) {
+                self.selected_media = Some(mid);
+                let dbl = matches!(self.last_click_media, Some((m, t)) if m == mid && t.elapsed().as_millis() < 400);
+                if dbl {
+                    self.add_media_to_timeline(state, mid);
+                    self.last_click_media = None;
+                } else {
+                    self.last_click_media = Some((mid, Instant::now()));
+                }
+                return;
+            }
+        }
+        // Inspector controls.
+        if r.inspector.contains(p) {
+            self.press_inspector(state, r, p);
+            return;
+        }
+        // Transport controls.
+        for (action, rect) in self.transport_buttons(r) {
+            if rect.contains(p) {
+                self.transport_action(action);
+                return;
+            }
+        }
+        let scrub = self.scrubber_rect(r);
+        if scrub.contains(p) || (p.x >= scrub.x0 && p.x <= scrub.x1 && (p.y - scrub.center().y).abs() < 14.0) {
+            self.drag = Some(Drag::Scrubber);
+            self.apply_scrubber(p, r);
+            return;
+        }
+        // Ruler scrub.
+        if r.ruler.contains(p) {
+            self.drag = Some(Drag::Playhead);
+            self.playhead = snap_to_frame(self.x_to_time(p.x, &r.lanes), self.project.fps)
+                .clamp(0.0, self.project.duration());
+            return;
+        }
+        // Timeline lanes — clips, trim handles, empty-space scrub.
+        if r.lanes.contains(p) {
+            self.press_timeline(r, p);
+        }
+    }
+
+    fn press_timeline(&mut self, r: &Regions, p: Point) {
+        for (tid, _kind, lane) in self.lane_rects(r) {
+            if p.y < lane.y0 || p.y > lane.y1 {
+                continue;
+            }
+            // Search clips on this lane.
+            let clip_ids: Vec<ClipId> = self.project.clips_on(tid).iter().map(|c| c.id).collect();
+            for cid in clip_ids {
+                let Some(clip) = self.project.clip(cid).cloned() else { continue };
+                let cr = self.clip_rect(&clip, &lane, r);
+                if p.x < cr.x0 - 2.0 || p.x > cr.x1 + 2.0 {
+                    continue;
+                }
+                self.selected = Some(cid);
+                if (p.x - cr.x0).abs() <= TRIM_HIT {
+                    self.drag = Some(Drag::TrimIn { id: cid });
+                } else if (p.x - cr.x1).abs() <= TRIM_HIT {
+                    self.drag = Some(Drag::TrimOut { id: cid });
+                } else {
+                    self.drag = Some(Drag::ClipMove { id: cid, grab_dt: self.x_to_time(p.x, &r.lanes) - clip.start });
+                }
+                return;
+            }
+        }
+        // Empty lane area: scrub the playhead.
+        self.drag = Some(Drag::Playhead);
+        self.playhead = snap_to_frame(self.x_to_time(p.x, &r.lanes), self.project.fps)
+            .clamp(0.0, self.project.duration());
+    }
+
+    fn press_inspector(&mut self, state: &mut AutoCommit, r: &Regions, p: Point) {
+        let l = self.inspector_layout(r);
+        if !l.valid {
+            return;
+        }
+        if let Some(track) = l.opacity {
+            if hit_slider(track, p) {
+                self.drag = Some(Drag::Opacity);
+                let v = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+                self.set_opacity(state, v);
+                return;
+            }
+        }
+        if let Some(track) = l.volume {
+            if hit_slider(track, p) {
+                self.drag = Some(Drag::Volume);
+                let v = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+                self.set_volume(state, v);
+                return;
+            }
+        }
+        for (t, rect) in &l.transitions {
+            if rect.contains(p) {
+                self.set_transition(state, *t);
+                return;
+            }
+        }
+        for (pal, rect) in &l.colors {
+            if rect.contains(p) {
+                self.set_palette(state, *pal);
+                return;
+            }
+        }
+        if l.split.contains(p) {
+            self.split_selected(state);
+            return;
+        }
+        if l.delete.contains(p) {
+            self.delete_selected(state);
+        }
+    }
+
+    fn press_export(&mut self, state: &mut AutoCommit, r: &Regions, p: Point) {
+        let l = self.export_layout(r);
+        if !l.card.contains(p) {
+            // Click outside the card dismisses.
+            self.show_export = false;
+            return;
+        }
+        for (res, rect) in &l.resolution {
+            if rect.contains(p) {
+                self.export.resolution = *res;
+                return;
+            }
+        }
+        for (c, rect) in &l.container {
+            if rect.contains(p) {
+                self.export.container = *c;
+                return;
+            }
+        }
+        for (f, rect) in &l.fps {
+            if rect.contains(p) {
+                self.export.frame_rate = *f;
+                return;
+            }
+        }
+        if l.cancel.contains(p) {
+            self.show_export = false;
+            return;
+        }
+        if l.confirm.contains(p) {
+            self.export_status = begin_export(&self.project, &self.export);
+            let _ = state;
+        }
+    }
+
+    fn transport_action(&mut self, action: TransportAction) {
+        match action {
+            TransportAction::ToStart => {
+                self.playhead = 0.0;
+                self.playing = false;
+            }
+            TransportAction::StepBack => self.step_frame(-1.0),
+            TransportAction::PlayPause => self.toggle_play(),
+            TransportAction::StepFwd => self.step_frame(1.0),
+            TransportAction::ToEnd => {
+                self.playhead = self.project.duration();
+                self.playing = false;
+            }
+        }
+    }
+
+    fn apply_drag(&mut self, state: &mut AutoCommit, r: &Regions) {
+        let Some(drag) = &self.drag else { return };
+        let p = self.last_mouse;
+        match drag {
+            Drag::Playhead => {
+                self.playhead = snap_to_frame(self.x_to_time(p.x, &r.lanes), self.project.fps)
+                    .clamp(0.0, self.project.duration());
+            }
+            Drag::Scrubber => self.apply_scrubber(p, r),
+            Drag::ClipMove { id, grab_dt } => {
+                let (id, grab_dt) = (*id, *grab_dt);
+                let new_start = snap_to_frame((self.x_to_time(p.x, &r.lanes) - grab_dt).max(0.0), self.project.fps);
+                self.project.move_clip(id, new_start);
+                if let Some(c) = self.project.clip(id) {
+                    VideoDoc::upsert_clip(state, c);
+                }
+            }
+            Drag::TrimIn { id } => {
+                let id = *id;
+                let target = snap_to_frame(self.x_to_time(p.x, &r.lanes), self.project.fps);
+                let delta = self.project.clip(id).map(|c| target - c.start).unwrap_or(0.0);
+                self.project.trim_in(id, delta);
+                if let Some(c) = self.project.clip(id) {
+                    VideoDoc::upsert_clip(state, c);
+                }
+            }
+            Drag::TrimOut { id } => {
+                let id = *id;
+                let target = snap_to_frame(self.x_to_time(p.x, &r.lanes), self.project.fps);
+                let delta = self.project.clip(id).map(|c| target - c.end()).unwrap_or(0.0);
+                self.project.trim_out(id, delta);
+                if let Some(c) = self.project.clip(id) {
+                    VideoDoc::upsert_clip(state, c);
+                }
+            }
+            Drag::Opacity => {
+                let l = self.inspector_layout(r);
+                if let Some(track) = l.opacity {
+                    let v = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+                    self.set_opacity(state, v);
+                }
+            }
+            Drag::Volume => {
+                let l = self.inspector_layout(r);
+                if let Some(track) = l.volume {
+                    let v = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
+                    self.set_volume(state, v);
+                }
+            }
+        }
+    }
+
+    fn apply_scrubber(&mut self, p: Point, r: &Regions) {
+        let scrub = self.scrubber_rect(r);
+        let frac = ((p.x - scrub.x0) / scrub.width()).clamp(0.0, 1.0);
+        self.playhead = (frac * self.project.duration()).clamp(0.0, self.project.duration());
+        self.playing = false;
+    }
+
+    fn update_hover(&mut self, r: &Regions) {
+        let p = self.last_mouse;
+        self.hover_media = self.bin_item_rects(r).into_iter().find(|(_, rect)| rect.contains(p)).map(|(m, _)| m);
+        self.hover_clip = None;
+        if r.lanes.contains(p) {
+            for (tid, _k, lane) in self.lane_rects(r) {
+                if p.y < lane.y0 || p.y > lane.y1 {
+                    continue;
+                }
+                for c in self.project.clips_on(tid) {
+                    let cr = self.clip_rect(c, &lane, r);
+                    if p.x >= cr.x0 && p.x <= cr.x1 {
+                        self.hover_clip = Some(c.id);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ==========================================================================
+// Drawing helpers
+// ==========================================================================
+impl VideoEditorApp {
+    fn draw_chrome(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
+        let c = &theme.tokens.colors;
+        fill_rect(scene, tf, c.surfaces.base, self.rect);
+        // Top bar.
+        fill_rect(scene, tf, c.surfaces.raised, r.topbar);
+        stroke_line(scene, tf, c.border_standard, r.topbar.x0, r.topbar.y1, r.topbar.x1, r.topbar.y1, 1.0);
+        // Accent app glyph.
+        let glyph = RoundedRect::new(r.topbar.x0 + 14.0, r.topbar.y0 + 12.0, r.topbar.x0 + 38.0, r.topbar.y0 + 36.0, 6.0);
+        scene.fill(Fill::NonZero, tf, c.accent[5], None, &glyph);
+        let tri = triangle(r.topbar.x0 + 21.0, r.topbar.y0 + 18.0, 12.0);
+        scene.fill(Fill::NonZero, tf, Color::WHITE, None, &tri);
+        text_w(scene, tr, tf, "Video Editor", 16.0, c.text_primary, r.topbar.x0 + 48.0, r.topbar.y0 + 15.0, TextWeight::Semibold);
+        // Project meta, centered-ish.
+        let meta = format!(
+            "{}   ·   {}×{}   ·   {:.0} fps   ·   {}",
+            self.project.name,
+            self.project.width,
+            self.project.height,
+            self.project.fps,
+            timecode(self.project.duration(), self.project.fps),
+        );
+        let (mw, _) = tr.measure(&meta, 13.0, None);
+        text(scene, tr, tf, &meta, 13.0, c.text_dim, (self.rect.x0 + self.rect.x1) / 2.0 - mw as f64 / 2.0, r.topbar.y0 + 17.0);
+        // Buttons.
+        draw_button(scene, tf, tr, theme, r.split_btn, "Split  (S)", false);
+        draw_button(scene, tf, tr, theme, r.export_btn, "Export…", true);
+    }
+
+    fn draw_bin(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
+        let c = &theme.tokens.colors;
+        fill_rect(scene, tf, c.surfaces.raised, r.bin);
+        stroke_line(scene, tf, c.border_standard, r.bin.x1, r.bin.y0, r.bin.x1, r.bin.y1, 1.0);
+        text_w(scene, tr, tf, "MEDIA BIN", 11.0, c.text_dim, r.bin.x0 + 14.0, r.bin.y0 + 14.0, TextWeight::Semibold);
+        let count = format!("{} clips", self.project.media.len());
+        let (cw, _) = tr.measure(&count, 11.0, None);
+        text(scene, tr, tf, &count, 11.0, c.text_dim, r.bin.x1 - 14.0 - cw as f64, r.bin.y0 + 14.0);
+
+        // Clip bin content so a long list can't bleed over the timeline.
+        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, tf, &Rect::new(r.bin.x0, r.bin.y0 + 30.0, r.bin.x1, r.bin.y1));
+        for (mid, rect) in self.bin_item_rects(r) {
+            let Some(m) = self.project.media(mid) else { continue };
+            let selected = self.selected_media == Some(mid);
+            let hover = self.hover_media == Some(mid);
+            if selected {
+                fill_rrect(scene, tf, with_alpha(c.accent[5], 0.22), rect, 8.0);
+                stroke_rrect(scene, tf, c.accent[5], rect, 8.0, 1.5);
+            } else if hover {
+                fill_rrect(scene, tf, c.surface_white_5, rect, 8.0);
+            }
+            // Thumbnail swatch.
+            let thumb = Rect::new(rect.x0 + 8.0, rect.y0 + 8.0, rect.x0 + 8.0 + 64.0, rect.y1 - 8.0);
+            let base = clip_color(theme, m.palette);
+            fill_rrect(scene, tf, darken(base, 0.25), thumb, 5.0);
+            // mini content: filmstrip for visual, bars for audio.
+            if m.kind.is_visual() {
+                for i in 0..3 {
+                    let bx = thumb.x0 + 6.0 + i as f64 * 18.0;
+                    let block = Rect::new(bx, thumb.y0 + 6.0, bx + 14.0, thumb.y1 - 6.0);
+                    fill_rrect(scene, tf, lighten(base, 0.18), block, 2.0);
+                }
+            } else {
+                let midy = thumb.center().y;
+                for i in 0..9 {
+                    let bx = thumb.x0 + 6.0 + i as f64 * 6.4;
+                    let amp = waveform_amp(i as f64) * (thumb.height() / 2.0 - 6.0);
+                    let bar = Rect::new(bx, midy - amp, bx + 3.0, midy + amp);
+                    fill_rect(scene, tf, lighten(base, 0.25), bar);
+                }
+            }
+            // kind dot.
+            let kc = match m.kind {
+                MediaKind::Video => c.semantic.info,
+                MediaKind::Audio => c.semantic.success,
+                MediaKind::Image => c.semantic.warning,
+            };
+            scene.fill(Fill::NonZero, tf, kc, None, &Circle::new(Point::new(thumb.x1 - 8.0, thumb.y0 + 8.0), 4.0));
+            // text.
+            let tx = thumb.x1 + 12.0;
+            text_w(scene, tr, tf, &elide(&m.name, 22), 13.0, c.text_primary, tx, rect.y0 + 10.0, TextWeight::Medium);
+            let sub = match m.kind {
+                MediaKind::Audio => format!("Audio · {}", clock(m.duration)),
+                _ => format!("{}p · {}", m.height, clock(m.duration)),
+            };
+            text(scene, tr, tf, &sub, 11.0, c.text_dim, tx, rect.y0 + 30.0);
+        }
+        scene.pop_layer();
+    }
+
+    fn draw_preview(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
+        let c = &theme.tokens.colors;
+        fill_rect(scene, tf, c.surfaces.base, r.preview);
+        // Canvas backdrop (letterbox black).
+        let canvas = r.canvas;
+        fill_rect(scene, tf, Color::BLACK, canvas);
+        if let Some(clip) = self.project.top_video_clip_at(self.playhead) {
+            let base = clip_color(theme, clip.palette);
+            // Fake frame: two-band vertical gradient via stacked fills.
+            fill_rect(scene, tf, darken(base, 0.45), canvas);
+            let upper = Rect::new(canvas.x0, canvas.y0, canvas.x1, canvas.center().y);
+            fill_rect(scene, tf, with_alpha(lighten(base, 0.1), 0.55), upper);
+            let band = Rect::new(canvas.x0, canvas.y0 + canvas.height() * 0.62, canvas.x1, canvas.y0 + canvas.height() * 0.72);
+            fill_rect(scene, tf, with_alpha(darken(base, 0.1), 0.6), band);
+            // Vignette: translucent dark frame.
+            stroke_rrect(scene, tf, with_alpha(Color::BLACK, 0.5), canvas.inset(2.0), 2.0, 18.0);
+            // Source name.
+            if let Some(m) = self.project.media(clip.media) {
+                let (nw, _) = tr.measure_weighted(&m.name, 22.0, None, TextWeight::Semibold);
+                text_w(scene, tr, tf, &m.name, 22.0, with_alpha(Color::WHITE, 0.92), canvas.center().x - nw as f64 / 2.0, canvas.center().y - 16.0, TextWeight::Semibold);
+            }
+            // Opacity scrim (shows < 100% opacity clips dimming toward black).
+            if clip.opacity < 0.999 {
+                fill_rect(scene, tf, with_alpha(Color::BLACK, 1.0 - clip.opacity), canvas);
+            }
+            // Transition flash on the clip head.
+            let into = self.playhead - clip.start;
+            if into >= 0.0 && into < 0.6 && clip.transition != Transition::None {
+                let a = 1.0 - into / 0.6;
+                let col = if clip.transition == Transition::DipToBlack { Color::BLACK } else { Color::WHITE };
+                fill_rect(scene, tf, with_alpha(col, a * 0.65), canvas);
+            }
+        } else {
+            let (tw, _) = tr.measure("No clip at playhead", 14.0, None);
+            text(scene, tr, tf, "No clip at playhead", 14.0, c.text_dim, canvas.center().x - tw as f64 / 2.0, canvas.center().y - 8.0);
+        }
+        // HUD overlays.
+        text_w(scene, tr, tf, &timecode(self.playhead, self.project.fps), 13.0, with_alpha(Color::WHITE, 0.85), canvas.x0 + 10.0, canvas.y0 + 8.0, TextWeight::Bold);
+        let res = format!("{}×{}", self.project.width, self.project.height);
+        let (rw, _) = tr.measure(&res, 12.0, None);
+        text(scene, tr, tf, &res, 12.0, with_alpha(Color::WHITE, 0.7), canvas.x1 - 10.0 - rw as f64, canvas.y0 + 8.0);
+        // Safe-area guide.
+        stroke_rrect(scene, tf, with_alpha(Color::WHITE, 0.12), canvas.inset(-canvas.width() * 0.05), 0.0, 1.0);
+    }
+
+    fn draw_transport(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
+        let c = &theme.tokens.colors;
+        fill_rect(scene, tf, c.surfaces.raised, r.transport);
+        stroke_line(scene, tf, c.border_standard, r.transport.x0, r.transport.y0, r.transport.x1, r.transport.y0, 1.0);
+        for (action, rect) in self.transport_buttons(r) {
+            let is_play = action == TransportAction::PlayPause;
+            let hovered = rect.contains(self.last_mouse);
+            let bg = if is_play { c.accent[5] } else if hovered { c.surface_white_10 } else { c.neutral[3] };
+            scene.fill(Fill::NonZero, tf, bg, None, &Circle::new(rect.center(), rect.width() / 2.0));
+            let col = if is_play { Color::WHITE } else { c.text_primary };
+            self.draw_transport_icon(scene, tf, action, rect.center(), col);
+        }
+        // Timecode readout.
+        let big = timecode(self.playhead, self.project.fps);
+        text_w(scene, tr, tf, &big, 18.0, c.text_primary, r.transport.x0 + 220.0, r.transport.y0 + 8.0, TextWeight::Bold);
+        let total = format!("/  {}", timecode(self.project.duration(), self.project.fps));
+        let (bw, _) = tr.measure_weighted(&big, 18.0, None, TextWeight::Bold);
+        text(scene, tr, tf, &total, 13.0, c.text_dim, r.transport.x0 + 224.0 + bw as f64, r.transport.y0 + 13.0);
+        // Scrubber.
+        let scrub = self.scrubber_rect(r);
+        fill_rrect(scene, tf, c.neutral[3], scrub, 4.0);
+        let frac = (self.playhead / self.project.duration()).clamp(0.0, 1.0);
+        let filled = Rect::new(scrub.x0, scrub.y0, scrub.x0 + scrub.width() * frac, scrub.y1);
+        fill_rrect(scene, tf, c.accent[5], filled, 4.0);
+        scene.fill(Fill::NonZero, tf, Color::WHITE, None, &Circle::new(Point::new(filled.x1, scrub.center().y), 6.0));
+        if self.playing {
+            text(scene, tr, tf, "PLAYING", 10.0, c.semantic.success, scrub.x0, scrub.y0 - 16.0);
+        }
+    }
+
+    fn draw_transport_icon(&self, scene: &mut Scene, tf: Affine, action: TransportAction, ctr: Point, col: Color) {
+        let s = 6.0;
+        match action {
+            TransportAction::PlayPause => {
+                if self.playing {
+                    fill_rect(scene, tf, col, Rect::new(ctr.x - 5.0, ctr.y - 6.0, ctr.x - 1.0, ctr.y + 6.0));
+                    fill_rect(scene, tf, col, Rect::new(ctr.x + 1.0, ctr.y - 6.0, ctr.x + 5.0, ctr.y + 6.0));
+                } else {
+                    let mut p = BezPath::new();
+                    p.move_to((ctr.x - 5.0, ctr.y - 7.0));
+                    p.line_to((ctr.x + 7.0, ctr.y));
+                    p.line_to((ctr.x - 5.0, ctr.y + 7.0));
+                    p.close_path();
+                    scene.fill(Fill::NonZero, tf, col, None, &p);
+                }
+            }
+            TransportAction::StepBack => {
+                let mut p = BezPath::new();
+                p.move_to((ctr.x + s, ctr.y - s));
+                p.line_to((ctr.x - 2.0, ctr.y));
+                p.line_to((ctr.x + s, ctr.y + s));
+                p.close_path();
+                scene.fill(Fill::NonZero, tf, col, None, &p);
+                fill_rect(scene, tf, col, Rect::new(ctr.x - 6.0, ctr.y - s, ctr.x - 4.0, ctr.y + s));
+            }
+            TransportAction::StepFwd => {
+                let mut p = BezPath::new();
+                p.move_to((ctr.x - s, ctr.y - s));
+                p.line_to((ctr.x + 2.0, ctr.y));
+                p.line_to((ctr.x - s, ctr.y + s));
+                p.close_path();
+                scene.fill(Fill::NonZero, tf, col, None, &p);
+                fill_rect(scene, tf, col, Rect::new(ctr.x + 4.0, ctr.y - s, ctr.x + 6.0, ctr.y + s));
+            }
+            TransportAction::ToStart => {
+                fill_rect(scene, tf, col, Rect::new(ctr.x - 7.0, ctr.y - s, ctr.x - 5.0, ctr.y + s));
+                let mut p = BezPath::new();
+                p.move_to((ctr.x + 6.0, ctr.y - s));
+                p.line_to((ctr.x - 3.0, ctr.y));
+                p.line_to((ctr.x + 6.0, ctr.y + s));
+                p.close_path();
+                scene.fill(Fill::NonZero, tf, col, None, &p);
+            }
+            TransportAction::ToEnd => {
+                fill_rect(scene, tf, col, Rect::new(ctr.x + 5.0, ctr.y - s, ctr.x + 7.0, ctr.y + s));
+                let mut p = BezPath::new();
+                p.move_to((ctr.x - 6.0, ctr.y - s));
+                p.line_to((ctr.x + 3.0, ctr.y));
+                p.line_to((ctr.x - 6.0, ctr.y + s));
+                p.close_path();
+                scene.fill(Fill::NonZero, tf, col, None, &p);
+            }
+        }
+    }
+
+    fn draw_inspector(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
+        let c = &theme.tokens.colors;
+        fill_rect(scene, tf, c.surfaces.raised, r.inspector);
+        stroke_line(scene, tf, c.border_standard, r.inspector.x0, r.inspector.y0, r.inspector.x0, r.inspector.y1, 1.0);
+        let x0 = r.inspector.x0 + PAD;
+        let x1 = r.inspector.x1 - PAD;
+        text_w(scene, tr, tf, "INSPECTOR", 11.0, c.text_dim, x0, r.inspector.y0 + 14.0, TextWeight::Semibold);
+
+        let Some(id) = self.selected else {
+            text(scene, tr, tf, "No clip selected", 13.0, c.text_dim, x0, r.inspector.y0 + 60.0);
+            text(scene, tr, tf, "Click a clip in the timeline", 11.5, c.text_dim, x0, r.inspector.y0 + 82.0);
+            return;
+        };
+        let Some(clip) = self.project.clip(id).cloned() else { return };
+        let media = self.project.media(clip.media).cloned();
+        let is_video = media.as_ref().map(|m| m.kind.is_visual()).unwrap_or(true);
+        let track_name = self.project.track(clip.track).map(|t| t.name.clone()).unwrap_or_default();
+
+        // Header card with color tag + name.
+        let tag = Rect::new(x0, r.inspector.y0 + 36.0, x0 + 6.0, r.inspector.y0 + 64.0);
+        fill_rrect(scene, tf, clip_color(theme, clip.palette), tag, 3.0);
+        let name = media.as_ref().map(|m| m.name.clone()).unwrap_or_else(|| "clip".into());
+        text_w(scene, tr, tf, &elide(&name, 26), 15.0, c.text_primary, x0 + 14.0, r.inspector.y0 + 38.0, TextWeight::Semibold);
+        text(scene, tr, tf, &format!("on {track_name}"), 11.5, c.text_dim, x0 + 14.0, r.inspector.y0 + 58.0);
+
+        // Property rows.
+        let mut y = r.inspector.y0 + 80.0;
+        let fps = self.project.fps;
+        let prop = |scene: &mut Scene, tr: &mut TextRenderer, label: &str, value: &str, y: f64| {
+            text(scene, tr, tf, label, 12.0, c.text_dim, x0, y);
+            let (vw, _) = tr.measure_weighted(value, 12.0, None, TextWeight::Medium);
+            text_w(scene, tr, tf, value, 12.0, c.text_primary, x1 - vw as f64, y, TextWeight::Medium);
+        };
+        prop(scene, tr, "Position", &timecode(clip.start, fps), y); y += 20.0;
+        prop(scene, tr, "Duration", &timecode(clip.duration(), fps), y); y += 20.0;
+        prop(scene, tr, "Source In", &timecode(clip.in_point, fps), y); y += 20.0;
+        prop(scene, tr, "Source Out", &timecode(clip.out_point, fps), y);
+
+        let l = self.inspector_layout(r);
+        // Opacity / Volume slider.
+        if let Some(track) = l.opacity {
+            text(scene, tr, tf, "Opacity", 12.0, c.text_dim, x0, track.y0 - 20.0);
+            let pct = format!("{:.0}%", clip.opacity * 100.0);
+            let (pw, _) = tr.measure(&pct, 12.0, None);
+            text(scene, tr, tf, &pct, 12.0, c.text_primary, x1 - pw as f64, track.y0 - 20.0);
+            draw_track(scene, tf, theme, track, clip.opacity);
+        }
+        if let Some(track) = l.volume {
+            text(scene, tr, tf, "Volume", 12.0, c.text_dim, x0, track.y0 - 20.0);
+            let pct = format!("{:.0}%", clip.volume * 100.0);
+            let (pw, _) = tr.measure(&pct, 12.0, None);
+            text(scene, tr, tf, &pct, 12.0, c.text_primary, x1 - pw as f64, track.y0 - 20.0);
+            draw_track(scene, tf, theme, track, clip.volume);
+        }
+        // Transition segmented control.
+        if !l.transitions.is_empty() {
+            text(scene, tr, tf, "Transition", 12.0, c.text_dim, x0, l.transition_y - 20.0);
+            for (t, rect) in &l.transitions {
+                let on = clip.transition == *t;
+                let bg = if on { c.accent[5] } else { c.neutral[3] };
+                fill_rrect(scene, tf, bg, *rect, 5.0);
+                let col = if on { Color::WHITE } else { c.text_dim };
+                let lab = t.label();
+                let (lw, _) = tr.measure(lab, 10.0, None);
+                text(scene, tr, tf, lab, 10.0, col, rect.center().x - lw as f64 / 2.0, rect.center().y - 6.0);
+            }
+        }
+        // Color swatches.
+        if !l.colors.is_empty() {
+            text(scene, tr, tf, "Label", 12.0, c.text_dim, x0, l.colors_y - 20.0);
+            for (pal, rect) in &l.colors {
+                fill_rrect(scene, tf, clip_color(theme, *pal), *rect, 6.0);
+                if clip.palette == *pal {
+                    stroke_rrect(scene, tf, Color::WHITE, *rect, 6.0, 2.0);
+                }
+            }
+        }
+        if l.valid {
+            draw_button(scene, tf, tr, theme, l.split, "Split", false);
+            draw_button(scene, tf, tr, theme, l.delete, "Delete", false);
+        }
+        if !is_video {
+            // a small note for audio clips
+            text(scene, tr, tf, "Audio clip", 10.5, c.text_dim, x0, r.inspector.y1 - 22.0);
+        }
+    }
+
+    fn draw_timeline(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
+        let c = &theme.tokens.colors;
+        fill_rect(scene, tf, c.surfaces.base, r.timeline);
+        stroke_line(scene, tf, c.border_standard, r.timeline.x0, r.timeline.y0, r.timeline.x1, r.timeline.y0, 1.0);
+
+        // --- ruler ticks ---
+        fill_rect(scene, tf, c.surfaces.raised, r.ruler);
+        let tick_step = nice_tick(self.zoom);
+        let start_t = self.scroll.max(0.0);
+        let end_t = self.x_to_time(r.lanes.x1, &r.lanes);
+        let mut t = (start_t / tick_step).floor() * tick_step;
+        while t <= end_t {
+            let x = self.time_to_x(t, &r.lanes);
+            if x >= r.ruler.x0 - 1.0 && x <= r.ruler.x1 {
+                stroke_line(scene, tf, c.border_standard, x, r.ruler.y1 - 8.0, x, r.ruler.y1, 1.0);
+                let label = timecode(t, self.project.fps);
+                text(scene, tr, tf, &label, 10.0, c.text_dim, x + 4.0, r.ruler.y0 + 6.0);
+                // faint grid line down the lanes
+                stroke_line(scene, tf, with_alpha(c.border_standard, 0.4), x, r.lanes.y0, x, r.timeline.y1, 1.0);
+            }
+            t += tick_step;
+        }
+
+        // --- lanes + headers + clips ---
+        let lanes = self.lane_rects(r);
+        for (tid, kind, lane) in &lanes {
+            // lane background stripe
+            let stripe = if *kind == TrackKind::Video { c.surface_white_5 } else { with_alpha(c.semantic.success, 0.05) };
+            fill_rect(scene, tf, stripe, Rect::new(r.lanes.x0, lane.y0, r.lanes.x1, lane.y1));
+            // header
+            let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
+            fill_rect(scene, tf, c.surfaces.raised, header);
+            let track = self.project.track(*tid);
+            let name = track.map(|t| t.name.as_str()).unwrap_or("?");
+            text_w(scene, tr, tf, name, 13.0, c.text_primary, header.x0 + 12.0, header.center().y - 8.0, TextWeight::Semibold);
+            let knd = if *kind == TrackKind::Video { "VIDEO" } else { "AUDIO" };
+            text(scene, tr, tf, knd, 9.0, c.text_dim, header.x0 + 12.0, header.center().y + 6.0);
+            // mute pill
+            let muted = track.map(|t| t.muted).unwrap_or(false);
+            let pill = Rect::new(header.x1 - 26.0, header.center().y - 9.0, header.x1 - 8.0, header.center().y + 9.0);
+            fill_rrect(scene, tf, if muted { c.semantic.danger } else { c.neutral[3] }, pill, 4.0);
+            let ml = if *kind == TrackKind::Video { "H" } else { "M" };
+            text(scene, tr, tf, ml, 10.0, c.text_primary, pill.center().x - 4.0, pill.center().y - 6.0);
+        }
+
+        // Clip bodies clipped to the lane area so they don't bleed over the gutter/ruler.
+        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, tf, &Rect::new(r.lanes.x0, r.lanes.y0, r.lanes.x1, r.timeline.y1));
+        for (tid, kind, lane) in &lanes {
+            for clip in self.project.clips_on(*tid) {
+                self.draw_clip(scene, tf, tr, theme, clip, lane, *kind, r);
+            }
+        }
+        scene.pop_layer();
+
+        // --- playhead ---
+        let px = self.time_to_x(self.playhead, &r.lanes);
+        if px >= r.lanes.x0 - 0.5 && px <= r.lanes.x1 + 0.5 {
+            stroke_line(scene, tf, c.accent[5], px, r.ruler.y0 + 4.0, px, r.timeline.y1, 1.5);
+            let head = triangle_down(px, r.ruler.y0 + 4.0, 10.0);
+            scene.fill(Fill::NonZero, tf, c.accent[5], None, &head);
+        }
+        // playhead timecode tag in ruler
+        let tag = timecode(self.playhead, self.project.fps);
+        let (tw, _) = tr.measure_weighted(&tag, 10.0, None, TextWeight::Bold);
+        let tagx = (px + 6.0).min(r.ruler.x1 - tw as f64 - 8.0).max(r.ruler.x0);
+        let tagrect = Rect::new(tagx - 3.0, r.ruler.y0 + 2.0, tagx + tw as f64 + 5.0, r.ruler.y0 + 16.0);
+        fill_rrect(scene, tf, c.accent[5], tagrect, 3.0);
+        text_w(scene, tr, tf, &tag, 10.0, Color::WHITE, tagx, r.ruler.y0 + 3.0, TextWeight::Bold);
+    }
+
+    fn draw_clip(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, clip: &Clip, lane: &Rect, kind: TrackKind, r: &Regions) {
+        let c = &theme.tokens.colors;
+        let cr = self.clip_rect(clip, lane, r);
+        if cr.x1 < r.lanes.x0 || cr.x0 > r.lanes.x1 {
+            return;
+        }
+        let base = clip_color(theme, clip.palette);
+        let selected = self.selected == Some(clip.id);
+        let hovered = self.hover_clip == Some(clip.id);
+        let body = if kind == TrackKind::Video { base } else { darken(base, 0.05) };
+        let body = if hovered { lighten(body, 0.08) } else { body };
+        fill_rrect(scene, tf, with_alpha(body, if kind == TrackKind::Video { clip.opacity * 0.85 + 0.15 } else { 0.92 }), cr, 6.0);
+        // header strip
+        let strip = Rect::new(cr.x0, cr.y0, cr.x1, (cr.y0 + 18.0).min(cr.y1));
+        fill_rrect(scene, tf, darken(base, 0.3), strip, 6.0);
+
+        // content: filmstrip or waveform
+        let inner = Rect::new(cr.x0 + 2.0, strip.y1, cr.x1 - 2.0, cr.y1 - 2.0);
+        if inner.height() > 4.0 && inner.width() > 4.0 {
+            if kind == TrackKind::Video {
+                let n = (inner.width() / 28.0).floor().max(1.0) as i64;
+                for i in 0..n {
+                    let bx = inner.x0 + 4.0 + i as f64 * 28.0;
+                    if bx + 22.0 > inner.x1 { break; }
+                    fill_rrect(scene, tf, lighten(base, 0.16), Rect::new(bx, inner.y0 + 3.0, bx + 22.0, inner.y1 - 3.0), 2.0);
+                }
+            } else {
+                let midy = inner.center().y;
+                let n = (inner.width() / 4.0).floor() as i64;
+                for i in 0..n {
+                    let bx = inner.x0 + 2.0 + i as f64 * 4.0;
+                    let amp = waveform_amp(i as f64 + clip.start) * (inner.height() / 2.0 - 2.0) * (0.35 + clip.volume * 0.65);
+                    fill_rect(scene, tf, lighten(base, 0.3), Rect::new(bx, midy - amp, bx + 2.0, midy + amp));
+                }
+            }
+        }
+        // name label
+        let label = self.project.media(clip.media).map(|m| m.name.clone()).unwrap_or_default();
+        let avail = (cr.width() - 10.0).max(4.0) as f32;
+        if cr.width() > 30.0 {
+            let shown = elide_w(&label, avail, tr);
+            text_w(scene, tr, tf, &shown, 11.0, with_alpha(Color::WHITE, 0.95), cr.x0 + 5.0, cr.y0 + 3.0, TextWeight::Medium);
+        }
+        // transition marker at head
+        if clip.transition != Transition::None && cr.width() > 16.0 {
+            let mk = triangle_corner(cr.x0, cr.y0, 12.0);
+            scene.fill(Fill::NonZero, tf, with_alpha(Color::WHITE, 0.85), None, &mk);
+        }
+        // selection / trim handles
+        if selected {
+            stroke_rrect(scene, tf, Color::WHITE, cr, 6.0, 2.0);
+            for hx in [cr.x0, cr.x1] {
+                let hrect = Rect::new(hx - 3.0, cr.y0 + 2.0, hx + 3.0, cr.y1 - 2.0);
+                fill_rrect(scene, tf, c.accent[5], hrect, 2.0);
+            }
+        } else {
+            stroke_rrect(scene, tf, with_alpha(Color::BLACK, 0.35), cr, 6.0, 1.0);
+        }
+    }
+
+    fn draw_export_modal(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
+        let c = &theme.tokens.colors;
+        // Scrim.
+        fill_rect(scene, tf, c.surfaces.overlay, self.rect);
+        let l = self.export_layout(r);
+        let card = l.card;
+        fill_rrect(scene, tf, c.surfaces.raised, card, 14.0);
+        stroke_rrect(scene, tf, c.border_standard, card, 14.0, 1.0);
+        let x0 = card.x0 + 24.0;
+        text_w(scene, tr, tf, "Export Project", 18.0, c.text_primary, x0, card.y0 + 20.0, TextWeight::Bold);
+        text(scene, tr, tf, &self.export.suggested_filename(&self.project.name), 12.0, c.text_dim, x0, card.y0 + 44.0);
+
+        let seg_group = |scene: &mut Scene, tr: &mut TextRenderer, label: &str, items: &[(String, Rect, bool)]| {
+            if let Some((_, first, _)) = items.first() {
+                text(scene, tr, tf, label, 11.0, c.text_dim, first.x0, first.y0 - 18.0);
+            }
+            for (name, rect, on) in items {
+                let bg = if *on { c.accent[5] } else { c.neutral[3] };
+                fill_rrect(scene, tf, bg, *rect, 6.0);
+                let col = if *on { Color::WHITE } else { c.text_dim };
+                let (lw, _) = tr.measure(name, 12.0, None);
+                text(scene, tr, tf, name, 12.0, col, rect.center().x - lw as f64 / 2.0, rect.center().y - 7.0);
+            }
+        };
+        let res: Vec<_> = l.resolution.iter().map(|(v, r)| (v.label().to_string(), *r, *v == self.export.resolution)).collect();
+        seg_group(scene, tr, "RESOLUTION", &res);
+        let con: Vec<_> = l.container.iter().map(|(v, r)| (v.label().to_string(), *r, *v == self.export.container)).collect();
+        seg_group(scene, tr, "FORMAT", &con);
+        let fps: Vec<_> = l.fps.iter().map(|(v, r)| (format!("{} fps", v.label()), *r, *v == self.export.frame_rate)).collect();
+        seg_group(scene, tr, "FRAME RATE", &fps);
+
+        // Estimate + status.
+        let est = self.export.estimated_mb(self.project.duration());
+        let (w, h) = self.export.resolution.dims();
+        let info = format!("≈ {:.0} MB   ·   {}×{}   ·   {}", est, w, h, timecode(self.project.duration(), self.project.fps));
+        text(scene, tr, tf, &info, 12.0, c.text_dim, x0, card.y1 - 96.0);
+        match &self.export_status {
+            ExportStatus::Rendering { progress } => {
+                let bar = Rect::new(x0, card.y1 - 74.0, card.x1 - 24.0, card.y1 - 66.0);
+                fill_rrect(scene, tf, c.neutral[3], bar, 4.0);
+                let f = Rect::new(bar.x0, bar.y0, bar.x0 + bar.width() * progress.max(0.04), bar.y1);
+                fill_rrect(scene, tf, c.accent[5], f, 4.0);
+                text(scene, tr, tf, "Rendering… (pipeline gated — see export.rs TODO)", 10.5, c.semantic.warning, x0, card.y1 - 62.0);
+            }
+            ExportStatus::Done { path } => {
+                text(scene, tr, tf, &format!("Done: {path}"), 11.0, c.semantic.success, x0, card.y1 - 68.0);
+            }
+            ExportStatus::Failed { reason } => {
+                text(scene, tr, tf, &format!("Export gated: {reason}"), 10.5, c.text_dim, x0, card.y1 - 68.0);
+            }
+            ExportStatus::Idle => {
+                text(scene, tr, tf, "GStreamer encode runs behind the `gst` build feature.", 10.5, c.text_dim, x0, card.y1 - 68.0);
+            }
+        }
+        draw_button(scene, tf, tr, theme, l.cancel, "Cancel", false);
+        draw_button(scene, tf, tr, theme, l.confirm, "Start Export", true);
+    }
+}
+
+// ==========================================================================
+// Free drawing utilities
+// ==========================================================================
+fn fill_rect(scene: &mut Scene, tf: Affine, color: Color, rect: Rect) {
+    scene.fill(Fill::NonZero, tf, color, None, &rect);
+}
+fn fill_rrect(scene: &mut Scene, tf: Affine, color: Color, rect: Rect, radius: f64) {
+    scene.fill(Fill::NonZero, tf, color, None, &RoundedRect::from_rect(rect, radius));
+}
+fn stroke_rrect(scene: &mut Scene, tf: Affine, color: Color, rect: Rect, radius: f64, w: f64) {
+    scene.stroke(&Stroke::new(w), tf, color, None, &RoundedRect::from_rect(rect, radius));
+}
+fn stroke_line(scene: &mut Scene, tf: Affine, color: Color, x0: f64, y0: f64, x1: f64, y1: f64, w: f64) {
+    scene.stroke(&Stroke::new(w), tf, color, None, &Line::new(Point::new(x0, y0), Point::new(x1, y1)));
+}
+fn text(scene: &mut Scene, tr: &mut TextRenderer, tf: Affine, s: &str, size: f32, color: Color, x: f64, y: f64) {
+    tr.draw_text(scene, s, size, color, tf * Affine::translate((x, y)), None);
+}
+#[allow(clippy::too_many_arguments)]
+fn text_w(scene: &mut Scene, tr: &mut TextRenderer, tf: Affine, s: &str, size: f32, color: Color, x: f64, y: f64, weight: TextWeight) {
+    tr.draw_text_weighted(scene, s, size, color, tf * Affine::translate((x, y)), None, weight);
+}
+
+fn draw_button(scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, rect: Rect, label: &str, primary: bool) {
+    let c = &theme.tokens.colors;
+    let bg = if primary { c.accent[5] } else { c.neutral[3] };
+    fill_rrect(scene, tf, bg, rect, 7.0);
+    if !primary {
+        stroke_rrect(scene, tf, c.border_standard, rect, 7.0, 1.0);
+    }
+    let col = if primary { Color::WHITE } else { c.text_primary };
+    let (lw, _) = tr.measure_weighted(label, 13.0, None, TextWeight::Medium);
+    text_w(scene, tr, tf, label, 13.0, col, rect.center().x - lw as f64 / 2.0, rect.center().y - 8.0, TextWeight::Medium);
+}
+
+/// Draw an inspector slider track + fill + knob for a 0..1 value.
+fn draw_track(scene: &mut Scene, tf: Affine, theme: &Theme, track: Rect, value: f64) {
+    let c = &theme.tokens.colors;
+    fill_rrect(scene, tf, c.neutral[3], track, 4.0);
+    let v = value.clamp(0.0, 1.0);
+    let filled = Rect::new(track.x0, track.y0, track.x0 + track.width() * v, track.y1);
+    fill_rrect(scene, tf, c.accent[5], filled, 4.0);
+    scene.fill(Fill::NonZero, tf, Color::WHITE, None, &Circle::new(Point::new(filled.x1, track.center().y), 7.0));
+    scene.stroke(&Stroke::new(1.0), tf, c.border_standard, None, &Circle::new(Point::new(filled.x1, track.center().y), 7.0));
+}
+
+fn hit_slider(track: Rect, p: Point) -> bool {
+    p.x >= track.x0 - 8.0 && p.x <= track.x1 + 8.0 && (p.y - track.center().y).abs() < 14.0
+}
+
+fn triangle(x: f64, y: f64, s: f64) -> BezPath {
+    let mut p = BezPath::new();
+    p.move_to((x, y));
+    p.line_to((x + s, y + s / 2.0));
+    p.line_to((x, y + s));
+    p.close_path();
+    p
+}
+fn triangle_down(cx: f64, top: f64, s: f64) -> BezPath {
+    let mut p = BezPath::new();
+    p.move_to((cx - s / 2.0, top));
+    p.line_to((cx + s / 2.0, top));
+    p.line_to((cx, top + s));
+    p.close_path();
+    p
+}
+fn triangle_corner(x: f64, y: f64, s: f64) -> BezPath {
+    let mut p = BezPath::new();
+    p.move_to((x, y));
+    p.line_to((x + s, y));
+    p.line_to((x, y + s));
+    p.close_path();
+    p
+}
+
+fn clip_color(theme: &Theme, palette: u8) -> Color {
+    let c = &theme.tokens.colors;
+    match palette % 7 {
+        0 => c.accent[5],
+        1 => c.semantic.info,
+        2 => c.semantic.success,
+        3 => c.semantic.warning,
+        4 => c.accent[6],
+        5 => c.semantic.danger,
+        _ => c.neutral[5],
+    }
+}
+
+fn with_alpha(c: Color, a: f64) -> Color {
+    Color::from_rgba8(c.r(), c.g(), c.b(), (a.clamp(0.0, 1.0) * 255.0).round() as u8)
+}
+fn lerp_u8(a: u8, b: u8, t: f64) -> u8 {
+    (a as f64 + (b as f64 - a as f64) * t.clamp(0.0, 1.0)).round() as u8
+}
+fn lighten(c: Color, t: f64) -> Color {
+    Color::from_rgb8(lerp_u8(c.r(), 255, t), lerp_u8(c.g(), 255, t), lerp_u8(c.b(), 255, t))
+}
+fn darken(c: Color, t: f64) -> Color {
+    Color::from_rgb8(lerp_u8(c.r(), 0, t), lerp_u8(c.g(), 0, t), lerp_u8(c.b(), 0, t))
+}
+
+/// Deterministic pseudo-waveform amplitude in 0..1 for column `i`.
+fn waveform_amp(i: f64) -> f64 {
+    let v = (i * 0.7).sin() * 0.5 + (i * 0.31 + 1.3).sin() * 0.3 + (i * 1.93).sin() * 0.2;
+    (v.abs() * 0.85 + 0.12).clamp(0.05, 1.0)
+}
+
+/// Fit a w:h aspect rect centered inside `area`.
+fn fit_aspect(area: Rect, w: f64, h: f64) -> Rect {
+    if area.width() <= 0.0 || area.height() <= 0.0 {
+        return area;
+    }
+    let target = w / h;
+    let avail = area.width() / area.height();
+    let (rw, rh) = if avail > target {
+        (area.height() * target, area.height())
+    } else {
+        (area.width(), area.width() / target)
+    };
+    let cx = area.center().x;
+    let cy = area.center().y;
+    Rect::new(cx - rw / 2.0, cy - rh / 2.0, cx + rw / 2.0, cy + rh / 2.0)
+}
+
+fn elide(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+        out.push('…');
+        out
+    }
+}
+
+fn elide_w(s: &str, max_px: f32, tr: &mut TextRenderer) -> String {
+    let (w, _) = tr.measure(s, 11.0, None);
+    if w <= max_px {
+        return s.to_string();
+    }
+    let mut chars: Vec<char> = s.chars().collect();
+    while chars.len() > 1 {
+        chars.pop();
+        let candidate: String = chars.iter().collect::<String>() + "…";
+        let (cw, _) = tr.measure(&candidate, 11.0, None);
+        if cw <= max_px {
+            return candidate;
+        }
+    }
+    "…".to_string()
+}
+
+/// Choose a ruler tick spacing (seconds) so labels stay ~70px apart.
+fn nice_tick(px_per_sec: f64) -> f64 {
+    let target_px = 76.0;
+    let raw = target_px / px_per_sec.max(0.001);
+    for step in [0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0, 300.0] {
+        if step >= raw {
+            return step;
+        }
+    }
+    600.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app_with_sample() -> VideoEditorApp {
+        let mut doc = AutoCommit::new();
+        VideoDoc::seed_sample(&mut doc);
+        let mut app = VideoEditorApp::new();
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.sync(&mut doc, &automerge::ROOT);
+        app
+    }
+
+    #[test]
+    fn sync_seeds_and_selects() {
+        let app = app_with_sample();
+        assert_eq!(app.project.clips.len(), 7);
+        assert!(app.selected.is_some(), "a clip should be auto-selected");
+    }
+
+    #[test]
+    fn time_x_round_trips() {
+        let app = app_with_sample();
+        let r = app.regions();
+        let x = app.time_to_x(12.0, &r.lanes);
+        let t = app.x_to_time(x, &r.lanes);
+        assert!((t - 12.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn split_then_delete_changes_clip_count() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        VideoDoc::seed_sample(&mut doc);
+        app.sync(&mut doc, &automerge::ROOT);
+        // Select a clip we know spans the playhead and split there.
+        let target = app.project.top_video_clip_at(10.0).unwrap().id;
+        app.selected = Some(target);
+        app.playhead = 12.0;
+        let before = app.project.clips.len();
+        app.split_selected(&mut doc);
+        app.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(app.project.clips.len(), before + 1, "split adds one clip");
+        // Delete the new right half (now selected).
+        app.delete_selected(&mut doc);
+        app.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(app.project.clips.len(), before);
+    }
+
+    #[test]
+    fn lane_rects_cover_all_tracks() {
+        let app = app_with_sample();
+        let r = app.regions();
+        assert_eq!(app.lane_rects(&r).len(), 4);
+    }
+
+    #[test]
+    fn regions_letterbox_canvas_is_16x9() {
+        let app = app_with_sample();
+        let r = app.regions();
+        let aspect = r.canvas.width() / r.canvas.height();
+        assert!((aspect - 16.0 / 9.0).abs() < 0.05, "canvas aspect {aspect}");
+    }
+}
