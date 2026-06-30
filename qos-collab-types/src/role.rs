@@ -76,6 +76,16 @@ pub enum OpClass {
     /// rename channel, update channel settings. Only Owner role
     /// permits this class.
     Govern,
+    /// Phase 6: host-driven compaction checkpoint. The channel's
+    /// host (initial: the channel owner's primary device) emits one
+    /// of these every N ops or M bytes; recipients use it to evict
+    /// older op-log entries from in-memory storage and snapshot the
+    /// document state to cold history. Only `Owner` role permits this
+    /// class — the eventual quorum-elected backup host is a v2
+    /// follow-up. The payload of a `SignedOp` with this class is a
+    /// [`crate::compaction::CompactionCheckpoint`] encoded with
+    /// [`crate::canonical::canonical_bytes`].
+    Compaction,
 }
 
 /// The categorical kind of an artifact.
@@ -135,7 +145,10 @@ pub fn role_permits(role: Role, _kind: ArtifactKind, op: OpClass) -> bool {
             | OpClass::Comment
             | OpClass::Tombstone
             | OpClass::Restore => true,
-            OpClass::Govern => false,
+            // Editors mutate artifacts; they don't govern, and they
+            // don't issue compaction checkpoints (Phase 6 v1 pins the
+            // host to the channel owner).
+            OpClass::Govern | OpClass::Compaction => false,
         },
         Role::Commenter => matches!(op, OpClass::Comment),
         Role::Viewer => false,
@@ -164,6 +177,7 @@ mod tests {
                 OpClass::Tombstone,
                 OpClass::Restore,
                 OpClass::Govern,
+                OpClass::Compaction,
             ] {
                 assert!(
                     role_permits(Role::Owner, kind, op),
@@ -185,6 +199,18 @@ mod tests {
     }
 
     #[test]
+    fn editor_cannot_compact() {
+        // Phase 6 v1: only the channel owner may emit a Compaction
+        // checkpoint. An Editor with full mutate permissions still
+        // does NOT get to evict history for the channel.
+        assert!(!role_permits(
+            Role::Editor,
+            ArtifactKind::Note,
+            OpClass::Compaction
+        ));
+    }
+
+    #[test]
     fn commenter_only_comment() {
         for op in [
             OpClass::Splice,
@@ -193,6 +219,7 @@ mod tests {
             OpClass::Tombstone,
             OpClass::Restore,
             OpClass::Govern,
+            OpClass::Compaction,
         ] {
             assert!(!role_permits(Role::Commenter, ArtifactKind::Note, op));
         }
@@ -213,6 +240,7 @@ mod tests {
             OpClass::Tombstone,
             OpClass::Restore,
             OpClass::Govern,
+            OpClass::Compaction,
         ] {
             assert!(!role_permits(Role::Viewer, ArtifactKind::Kanban, op));
         }
@@ -228,6 +256,7 @@ mod tests {
             OpClass::Tombstone,
             OpClass::Restore,
             OpClass::Govern,
+            OpClass::Compaction,
         ] {
             assert!(!role_permits(Role::Denied, ArtifactKind::File, op));
         }
