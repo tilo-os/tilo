@@ -22,7 +22,7 @@ RUN dnf install -y createrepo_c \
  && dnf clean packages \
  && dnf install -y --downloadonly --exclude='qemu-user-static*' ${PACKAGES} \
  && mkdir -p /repo \
- && find /var/cache/libdnf5 /var/cache/dnf -name '*.rpm' -exec cp -n {} /repo/ \; \
+ && for d in /var/cache/libdnf5 /var/cache/dnf; do [ -d "$d" ] && find "$d" -name '*.rpm' -exec cp -n {} /repo/ \; ; done \
  && test -n "$(ls /repo/*.rpm 2>/dev/null)" \
  && createrepo_c --quiet /repo \
  && printf '[frozen]\nname=qOS frozen package snapshot\nbaseurl=file:///repo\ngpgcheck=0\nenabled=1\n' > /repo/frozen.repo
