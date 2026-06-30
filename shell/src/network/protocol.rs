@@ -113,6 +113,53 @@ pub enum NeighbourMsg {
         /// audit-log entry.
         envelope: Box<qos_collab_types::SignedOp>,
     },
+    /// Phase 6: cooperative scrollback request. Broadcast over
+    /// gossipsub when a peer's local broker has no in-memory
+    /// scrollback for a given artifact range and the requesting app
+    /// asked for it. Any peer that *does* hold the range replies
+    /// with [`NeighbourMsg::ScrollbackResponse`].
+    ///
+    /// `requester` is the local peer hash of the broker that issued
+    /// the request — receiving brokers use it to target the response
+    /// (`ScrollbackResponse::responder` becomes the source). v1 does
+    /// not deduplicate concurrent identical requests; the typical
+    /// case is "rare, single-shot" so amplification isn't a concern.
+    ScrollbackRequest {
+        /// The artifact whose log to fetch.
+        artifact: qos_collab_types::ArtifactId,
+        /// Exclusive upper bound on `seq`. Same semantics as
+        /// `CollabRequest::FetchScrollback::before_seq`.
+        before_seq: u64,
+        /// Page size cap. Matches `CollabRequest::FetchScrollback::max`
+        /// so the cooperative path doesn't have to re-cap.
+        max: u16,
+        /// Hashed libp2p peer id of the requesting broker. Receivers
+        /// use it to skip themselves when they echo their own
+        /// requests back over gossipsub.
+        requester: PeerId,
+    },
+    /// Phase 6: response to a [`NeighbourMsg::ScrollbackRequest`].
+    /// The responding broker fetched `ops` from its own local op
+    /// log and forwarded them; the requesting broker delivers them
+    /// to the original requesting local app via
+    /// `CollabEvent::ScrollbackBatch`.
+    ///
+    /// `responder` is the local peer hash of the answering broker
+    /// (useful for "who served me the page" audit / replay
+    /// diagnostics). It does NOT play a role in the validation path
+    /// — every envelope inside `ops` is independently signed.
+    ScrollbackResponse {
+        /// Same as the request's `artifact`. Repeated on the
+        /// response so the receiving broker can route without
+        /// matching on a request-id.
+        artifact: qos_collab_types::ArtifactId,
+        /// The page of validated ops the responder is sharing. Empty
+        /// is allowed (means "I don't have the range either"); the
+        /// requester treats an empty response as a non-answer.
+        ops: Vec<Box<qos_collab_types::SignedOp>>,
+        /// Hashed libp2p peer id of the answering broker.
+        responder: PeerId,
+    },
 }
 
 #[cfg(test)]
@@ -252,6 +299,57 @@ mod tests {
         let msg = NeighbourMsg::AppCrdtIncrementalSigned {
             peer: 0x1234,
             envelope: dummy_envelope(),
+        };
+        let bytes = postcard::to_allocvec(&msg).expect("postcard serialize");
+        let back: NeighbourMsg = postcard::from_bytes(&bytes).expect("postcard deserialize");
+        assert_eq!(msg, back);
+    }
+
+    #[test]
+    fn scrollback_request_round_trips_serde_json() {
+        // Phase 6 — the cooperative-fetch request must survive the
+        // actor's serde_json pipeline the same way every other
+        // gossipsub message does.
+        use qos_collab_types::ArtifactId;
+        round_trip(NeighbourMsg::ScrollbackRequest {
+            artifact: ArtifactId::new(),
+            before_seq: 42,
+            max: 50,
+            requester: 0xABCDEF,
+        });
+    }
+
+    #[test]
+    fn scrollback_request_round_trips_postcard() {
+        use qos_collab_types::ArtifactId;
+        let msg = NeighbourMsg::ScrollbackRequest {
+            artifact: ArtifactId::new(),
+            before_seq: 42,
+            max: 50,
+            requester: 0xABCDEF,
+        };
+        let bytes = postcard::to_allocvec(&msg).expect("postcard serialize");
+        let back: NeighbourMsg = postcard::from_bytes(&bytes).expect("postcard deserialize");
+        assert_eq!(msg, back);
+    }
+
+    #[test]
+    fn scrollback_response_round_trips_serde_json() {
+        use qos_collab_types::ArtifactId;
+        round_trip(NeighbourMsg::ScrollbackResponse {
+            artifact: ArtifactId::new(),
+            ops: vec![dummy_envelope(), dummy_envelope()],
+            responder: 0x123_456,
+        });
+    }
+
+    #[test]
+    fn scrollback_response_round_trips_postcard() {
+        use qos_collab_types::ArtifactId;
+        let msg = NeighbourMsg::ScrollbackResponse {
+            artifact: ArtifactId::new(),
+            ops: vec![dummy_envelope()],
+            responder: 0x123_456,
         };
         let bytes = postcard::to_allocvec(&msg).expect("postcard serialize");
         let back: NeighbourMsg = postcard::from_bytes(&bytes).expect("postcard deserialize");
