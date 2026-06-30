@@ -6,6 +6,7 @@ members = [
     "shell",
     "ui",
     "os-actions",
+    "qos-tts",
     "apps/file-explorer",
     "apps/terminal",
     "apps/browser",
