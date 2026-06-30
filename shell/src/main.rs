@@ -77,6 +77,22 @@ fn install_crash_log_hook() {
 }
 
 fn main() {
+    // Landlock launcher shim (`plan/security.md` §7.1). bwrap execs us as
+    // `shell __sandbox-exec --ro <p>… --rw <p>… [--net-restricted] -- <app
+    // argv>` from inside the per-workspace sandbox; we apply an in-kernel
+    // Landlock ruleset to ourselves (and thus to the app we then exec) and
+    // `execvp` the real app. This must short-circuit before *any* normal
+    // compositor setup — we are not the compositor here, just a one-shot
+    // restriction step. `run_sandbox_exec` diverges (execvp or exit).
+    let raw_args: Vec<String> = std::env::args().collect();
+    if raw_args
+        .get(1)
+        .is_some_and(|a| a == shell::sandbox::SANDBOX_EXEC_SUBCOMMAND)
+    {
+        tracing_subscriber::fmt::init();
+        shell::sandbox::run_sandbox_exec(&raw_args[2..]);
+    }
+
     tracing_subscriber::fmt::init();
     install_crash_log_hook();
 

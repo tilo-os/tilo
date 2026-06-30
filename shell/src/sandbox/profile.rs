@@ -137,6 +137,22 @@ pub struct SandboxProfile {
     /// network namespace. Phase 1 defaults to `true` for safety; the
     /// portal flow in a later phase flips this for the owner session.
     pub net_isolated: bool,
+    /// Optional path to the Landlock launcher shim (`plan/security.md`
+    /// §7.1). When `Some`, [`Self::into_argv`] makes `bwrap` exec the
+    /// shim — `<shim> __sandbox-exec --ro <p>… --rw <p>… [--net-restricted]
+    /// -- <real argv>` — instead of the app directly. The shim applies an
+    /// in-kernel Landlock ruleset (derived from this profile's binds) to
+    /// the app process and all its descendants *after* bwrap has set up
+    /// the namespace, then `execvp`s the real app. Layered with seccomp:
+    /// both filters apply.
+    ///
+    /// Set by [`crate::sandbox::spawn`] just before rendering argv (it
+    /// points at the running `shell` binary via `current_exe()`), mirroring
+    /// the `seccomp_fd` plumbing. Profiles built by hand (unit tests, or
+    /// callers that skip the spawn helper) leave this `None`, in which case
+    /// argv rendering appends the command verbatim — the app still runs
+    /// inside bwrap + seccomp, just without the extra Landlock layer.
+    pub landlock_shim: Option<PathBuf>,
 }
 
 impl SandboxProfile {
@@ -182,6 +198,10 @@ impl SandboxProfile {
             wayland_socket,
             dbus_socket: None,
             net_isolated: true,
+            // The spawn helper stamps this with `current_exe()` before
+            // rendering argv; a bare test profile renders the command
+            // verbatim (no shim) so existing argv-shape tests are unchanged.
+            landlock_shim: None,
         }
     }
 
@@ -322,13 +342,37 @@ impl SandboxProfile {
     /// Callers that need the profile afterwards should clone before
     /// rendering.
     pub fn into_argv(self, command: &[String]) -> Vec<String> {
+        // Capture the bits the Landlock shim needs BEFORE the consuming
+        // `for (host, sandbox) in self.binds_*` loops move the binds out.
+        // The shim runs *inside* bwrap's mount namespace, so it must
+        // restrict the *sandbox-side* (destination) paths — `/work`,
+        // `/usr`, … — not the host source paths.
+        let landlock_shim = self.landlock_shim.clone();
+        let (ro_targets, rw_targets): (Vec<PathBuf>, Vec<PathBuf>) = if landlock_shim.is_some()
+        {
+            (
+                self.binds_ro.iter().map(|(_, sandbox)| sandbox.clone()).collect(),
+                self.binds_rw.iter().map(|(_, sandbox)| sandbox.clone()).collect(),
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        let net_restricted = self.net_isolated;
+
         // Pre-size: each bind is 3 args, each env entry is 3 args, plus
-        // a handful of fixed flags and the command tail.
+        // a handful of fixed flags, the optional Landlock shim wrapper
+        // (shim + subcommand + 2 args per ro/rw path + flag + `--`), and
+        // the command tail.
         let mut argv: Vec<String> = Vec::with_capacity(
             self.binds_ro.len() * 3
                 + self.binds_rw.len() * 3
                 + self.env.len() * 3
                 + 8
+                + if landlock_shim.is_some() {
+                    3 + ro_targets.len() * 2 + rw_targets.len() * 2
+                } else {
+                    0
+                }
                 + command.len(),
         );
 
@@ -380,7 +424,34 @@ impl SandboxProfile {
             argv.push(fd.to_string());
         }
 
-        argv.extend_from_slice(command);
+        // Landlock layer (`plan/security.md` §7.1). When the spawn helper
+        // has stamped `landlock_shim`, bwrap execs the shim instead of the
+        // app: `<shim> __sandbox-exec --ro <p>… --rw <p>… [--net-restricted]
+        // -- <real argv>`. The shim builds + applies a Landlock ruleset for
+        // the sandbox-side bind paths (read for ro, read+write+create for
+        // rw) and, when net-restricted, denies TCP bind/connect — then
+        // `execvp`s the real command. seccomp (above) still applies; both
+        // layers compose. Without the shim, the command is appended raw.
+        match landlock_shim {
+            Some(shim) => {
+                argv.push(path_to_string(&shim));
+                argv.push(crate::sandbox::SANDBOX_EXEC_SUBCOMMAND.to_string());
+                for sandbox_path in &ro_targets {
+                    argv.push("--ro".to_string());
+                    argv.push(path_to_string(sandbox_path));
+                }
+                for sandbox_path in &rw_targets {
+                    argv.push("--rw".to_string());
+                    argv.push(path_to_string(sandbox_path));
+                }
+                if net_restricted {
+                    argv.push("--net-restricted".to_string());
+                }
+                argv.push("--".to_string());
+                argv.extend_from_slice(command);
+            }
+            None => argv.extend_from_slice(command),
+        }
         argv
     }
 }
@@ -775,6 +846,7 @@ mod tests {
             wayland_socket: p.wayland_socket.clone(),
             dbus_socket: p.dbus_socket.clone(),
             net_isolated: p.net_isolated,
+            landlock_shim: p.landlock_shim.clone(),
         }
     }
 
@@ -871,6 +943,136 @@ mod tests {
             "second apply_grants within the 5s TTL should reuse the \
              memoised scan; got {walks_after_second} additional walks"
         );
+    }
+
+    /// Landlock (`plan/security.md` §7.1): when `landlock_shim` is set,
+    /// `into_argv` must make bwrap exec the shim — `<shim> __sandbox-exec
+    /// --ro <p>… --rw <p>… [--net-restricted] -- <app argv>` — rather than
+    /// the app directly. The `--ro`/`--rw` paths must be the *sandbox-side*
+    /// (destination) bind paths, and the real command must follow `--`.
+    #[test]
+    fn landlock_shim_wraps_command_with_ro_rw_and_separator() {
+        let mut p = SandboxProfile::for_workspace_test(
+            Path::new("/tmp/ws"),
+            Path::new("/tmp/cache"),
+        );
+        p.landlock_shim = Some(PathBuf::from("/usr/bin/shell"));
+        let argv = clone_for_test(&p).into_argv(&["/usr/bin/terminal".into(), "--foo".into()]);
+
+        // The shim binary + hidden subcommand appear, in order.
+        let shim_pos = argv
+            .iter()
+            .position(|a| a == "/usr/bin/shell")
+            .expect("shim path present in argv");
+        assert_eq!(
+            argv.get(shim_pos + 1).map(String::as_str),
+            Some(super::super::SANDBOX_EXEC_SUBCOMMAND),
+            "shim path must be immediately followed by the __sandbox-exec token: {argv:?}"
+        );
+
+        // Exactly one `--` separator, and the real command follows it.
+        let sep_pos = argv
+            .iter()
+            .position(|a| a == "--")
+            .expect("`--` separator present");
+        assert_eq!(
+            argv.iter().filter(|a| a.as_str() == "--").count(),
+            1,
+            "exactly one `--` separator expected: {argv:?}"
+        );
+        assert_eq!(
+            &argv[sep_pos + 1..],
+            &["/usr/bin/terminal".to_string(), "--foo".to_string()],
+            "the real app argv must follow `--` verbatim: {argv:?}"
+        );
+
+        // `--ro /usr` and `--ro /run/user/1000/wayland-0` are sandbox-side
+        // (destination) bind paths from the default profile.
+        let ro_paths: Vec<&String> = argv
+            .windows(2)
+            .filter(|w| w[0] == "--ro")
+            .map(|w| &w[1])
+            .collect();
+        assert!(
+            ro_paths.iter().any(|p| p.as_str() == "/usr"),
+            "expected `--ro /usr` (sandbox-side ro bind): {argv:?}"
+        );
+
+        // `--rw /work` is the sandbox-side destination of the ws-root bind
+        // (NOT the host `/tmp/ws` source) — Landlock runs inside the
+        // namespace where `/work` is what exists.
+        let rw_paths: Vec<&String> = argv
+            .windows(2)
+            .filter(|w| w[0] == "--rw")
+            .map(|w| &w[1])
+            .collect();
+        assert!(
+            rw_paths.iter().any(|p| p.as_str() == "/work"),
+            "expected `--rw /work` (sandbox-side rw bind): {argv:?}"
+        );
+        assert!(
+            !rw_paths.iter().any(|p| p.as_str() == "/tmp/ws"),
+            "Landlock rules must use sandbox-side paths, not host sources: {argv:?}"
+        );
+
+        // The shim/`--ro`/`--rw` wrapping sits AFTER the bwrap flags: the
+        // shim path must come after the last `--bind`/`--ro-bind`/`--setenv`.
+        let last_bwrap_flag = argv
+            .iter()
+            .rposition(|a| a == "--bind" || a == "--ro-bind" || a == "--setenv")
+            .expect("bwrap flags present");
+        assert!(
+            shim_pos > last_bwrap_flag,
+            "shim must be the bwrap command tail, after all bwrap flags: {argv:?}"
+        );
+    }
+
+    /// Landlock net policy: `--net-restricted` is emitted iff the profile
+    /// is `net_isolated` (it mirrors `--unshare-net`). A network-granted
+    /// workspace (`net_isolated = false`) must NOT carry it.
+    #[test]
+    fn landlock_shim_net_restricted_tracks_net_isolated() {
+        let mut isolated = SandboxProfile::for_workspace_test(
+            Path::new("/tmp/ws"),
+            Path::new("/tmp/cache"),
+        );
+        isolated.landlock_shim = Some(PathBuf::from("/usr/bin/shell"));
+        isolated.net_isolated = true;
+        let argv = clone_for_test(&isolated).into_argv(&["/bin/true".into()]);
+        assert!(
+            argv.iter().any(|a| a == "--net-restricted"),
+            "net_isolated profile must pass --net-restricted: {argv:?}"
+        );
+
+        let mut open = clone_for_test(&isolated);
+        open.net_isolated = false;
+        let argv = open.into_argv(&["/bin/true".into()]);
+        assert!(
+            !argv.iter().any(|a| a == "--net-restricted"),
+            "network-granted profile must NOT pass --net-restricted: {argv:?}"
+        );
+    }
+
+    /// Without `landlock_shim` set (the default for hand-built profiles),
+    /// `into_argv` appends the command verbatim and emits no shim wrapping
+    /// — the backward-compatible path the other argv tests rely on.
+    #[test]
+    fn no_landlock_shim_appends_command_verbatim() {
+        let p = SandboxProfile::for_workspace_test(
+            Path::new("/tmp/ws"),
+            Path::new("/tmp/cache"),
+        );
+        assert!(p.landlock_shim.is_none(), "default profile has no shim");
+        let argv = p.into_argv(&["/bin/echo".into(), "hi".into()]);
+        assert!(
+            !argv.iter().any(|a| a == super::super::SANDBOX_EXEC_SUBCOMMAND),
+            "no shim token without landlock_shim: {argv:?}"
+        );
+        assert!(
+            !argv.iter().any(|a| a == "--ro" || a == "--rw" || a == "--net-restricted"),
+            "no shim flags without landlock_shim: {argv:?}"
+        );
+        assert_eq!(argv.last().unwrap(), "hi");
     }
 
     /// C-5 regression: when both `seccomp` AND `seccomp_fd` are set —
