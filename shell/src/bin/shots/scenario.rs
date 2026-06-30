@@ -482,7 +482,60 @@ pub fn catalogue() -> Vec<Scenario> {
         workspace_switch_animated(),
         wheel_scroll_workspaces(),
         strip_horizontal_scroll(),
+        notes_click_and_type(),
+        cycle_all_tabs(),
     ]
+}
+
+/// Repro for "apps render but can't be interacted with". Click in the
+/// middle of the Notes tile (the active tab on the default workspace)
+/// and type "hi". The pre-click snapshot shows the "Click to edit"
+/// hint. The post-type snapshot is the proof: if interaction works
+/// the hint reads "Type to edit · Ctrl+Z to undo" AND the typed text
+/// appears in the body.
+fn notes_click_and_type() -> Scenario {
+    Scenario {
+        name: "notes_click_and_type",
+        description: "Click into the Notes tile, type 'hi', snapshot — proves apps are interactive.",
+        actions: vec![
+            Action::Snapshot("01-pre-click"),
+            // The Notes tile is centred horizontally with the body
+            // starting ~150 px below the topbar. 660,500 lands inside
+            // the body text area on the default 1600×900 viewport.
+            Action::ClickAt(Point::new(660.0, 500.0)),
+            Action::Wait(2),
+            Action::Snapshot("02-post-click"),
+            Action::Type("hi".into()),
+            Action::Wait(2),
+            Action::Snapshot("03-post-type"),
+        ],
+    }
+}
+
+/// Companion to `notes_click_and_type` — click each non-active tab
+/// (Files, Terminal, Browser) and snapshot, so we can SEE what
+/// renders for each app today. Tabs switch active by clicking on
+/// the pill in the tab bar.
+fn cycle_all_tabs() -> Scenario {
+    Scenario {
+        name: "cycle_all_tabs",
+        description: "Click Notes → Files → Terminal → Browser tabs, snapshot each.",
+        actions: vec![
+            Action::Snapshot("01-notes-active"),
+            // Files tab pill.
+            Action::ClickAt(Point::new(443.0, 103.0)),
+            Action::Wait(2),
+            Action::Snapshot("02-files-active"),
+            // Terminal tab pill.
+            Action::ClickAt(Point::new(589.0, 103.0)),
+            Action::Wait(2),
+            Action::Snapshot("03-terminal-active"),
+            // Browser tab pill.
+            Action::ClickAt(Point::new(744.0, 103.0)),
+            Action::Wait(2),
+            Action::Snapshot("04-browser-active"),
+        ],
+    }
 }
 
 pub fn lookup(name: &str) -> Option<Scenario> {
