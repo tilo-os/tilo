@@ -7,7 +7,8 @@
 
 use crate::styles::{StyleProps, StyleSheet};
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId};
+use automerge::{AutoCommit, ObjId, ReadDoc};
+use qdoc::model::Region;
 use qdoc::{Containers, DocMut, IdGen};
 
 /// Caret position: a block id plus a character offset within that block's text.
@@ -54,6 +55,25 @@ pub(crate) fn block_is_toc(b: &qdoc::snapshot::BlockView) -> bool {
     matches!(b.attrs.get("toc"), Some(qdoc::AttrVal::Bool(true)))
 }
 
+/// Resolve a region's block-container map object (`header`/`footer`) live from the
+/// document root. Used by the editor-level header/footer write primitives that
+/// qdoc does not yet expose a `*_in` op for (`remove_block`/`set_kind`/
+/// `remove_mark`). Returns `None` when the region has not been created yet.
+fn region_map_obj(doc: &AutoCommit, root: &ObjId, key: &str) -> Option<ObjId> {
+    match doc.get(root, key) {
+        Ok(Some((automerge::Value::Object(automerge::ObjType::Map), oid))) => Some(oid),
+        _ => None,
+    }
+}
+
+/// Resolve a single block's map object by id within a region container.
+fn region_block_obj(doc: &AutoCommit, container: &ObjId, id: &str) -> Option<ObjId> {
+    match doc.get(container, id) {
+        Ok(Some((automerge::Value::Object(automerge::ObjType::Map), oid))) => Some(oid),
+        _ => None,
+    }
+}
+
 /// Parse the comma-separated `tab_stops` attr into px positions, sorted ascending
 /// with near-duplicates collapsed. Blank / malformed entries are skipped.
 pub(crate) fn parse_tab_stops(raw: &str) -> Vec<f64> {
@@ -88,6 +108,18 @@ pub struct WordProcessor {
     /// Selection anchor; a selection exists when this is set and differs from
     /// the caret (within the same block, for v1).
     pub(crate) selection_anchor: Option<Caret>,
+    /// The active **edit context** — which page region the caret + edit ops
+    /// address. `Body` is the default canonical flow; `Header`/`Footer` route
+    /// every text/structure op to the page header / footer container instead (so
+    /// clicking into a running-head band lets the user type there). Per-region
+    /// caret state is stashed in `region_carets` so switching contexts (and back)
+    /// restores where the caret was.
+    pub(crate) region: Region,
+    /// Stashed `(caret, anchor)` for the regions not currently active, so e.g.
+    /// returning to the body re-seats the caret where it was. Indexed by region.
+    body_caret: Option<(Caret, Option<Caret>)>,
+    header_caret: Option<(Caret, Option<Caret>)>,
+    footer_caret: Option<(Caret, Option<Caret>)>,
 }
 
 impl Default for WordProcessor {
@@ -98,7 +130,106 @@ impl Default for WordProcessor {
 
 impl WordProcessor {
     pub fn new() -> Self {
-        Self { containers: None, ids: None, caret: Caret::default(), selection_anchor: None }
+        Self {
+            containers: None,
+            ids: None,
+            caret: Caret::default(),
+            selection_anchor: None,
+            region: Region::Body,
+            body_caret: None,
+            header_caret: None,
+            footer_caret: None,
+        }
+    }
+
+    // ---- edit context (Body / Header / Footer) -----------------------------
+
+    /// The region the caret + edit ops currently address.
+    pub fn region(&self) -> Region {
+        self.region
+    }
+
+    /// True when editing the page header or footer (not the body flow).
+    pub fn in_running_region(&self) -> bool {
+        !matches!(self.region, Region::Body)
+    }
+
+    fn caret_slot(&mut self, region: Region) -> &mut Option<(Caret, Option<Caret>)> {
+        match region {
+            Region::Body => &mut self.body_caret,
+            Region::Header => &mut self.header_caret,
+            Region::Footer => &mut self.footer_caret,
+        }
+    }
+
+    /// Switch the active edit context to `region`, stashing the current caret +
+    /// selection under the old region and restoring (or seeding) the new one.
+    /// For Header/Footer this lazily creates an empty paragraph if the region is
+    /// empty, so there is always a block to type into. Returns the caret block id
+    /// the context lands on (empty string only if the doc isn't bound).
+    pub fn focus_region(&mut self, state: &mut AutoCommit, region: Region) -> String {
+        if region == self.region {
+            // Already here — still guarantee a block exists (header/footer may be
+            // empty) and the caret is valid.
+            return self.ensure_region_block(state);
+        }
+        // Stash the outgoing region's caret/selection.
+        let prev = (self.caret.clone(), self.selection_anchor.clone());
+        let prev_region = self.region;
+        *self.caret_slot(prev_region) = Some(prev);
+
+        self.region = region;
+        // Restore the incoming region's caret if we have one and it still exists;
+        // otherwise fall back to its first block.
+        let restored = self.caret_slot(region).take();
+        if let Some((c, anchor)) = restored {
+            self.caret = c;
+            self.selection_anchor = anchor;
+        } else {
+            self.caret = Caret::default();
+            self.selection_anchor = None;
+        }
+        self.ensure_region_block(state)
+    }
+
+    /// Convenience: focus the body context (Esc / clicking the body).
+    pub fn focus_body(&mut self, state: &mut AutoCommit) -> String {
+        self.focus_region(state, Region::Body)
+    }
+
+    /// Guarantee the active region has at least one block and the caret sits on a
+    /// real one (clamped). Creates an empty paragraph in an empty header/footer.
+    /// Returns the resolved caret block id.
+    fn ensure_region_block(&mut self, state: &mut AutoCommit) -> String {
+        let Some(containers) = self.containers.clone() else {
+            return String::new();
+        };
+        let blocks = self.region_blocks_in_order(state);
+        if blocks.is_empty() {
+            // Body always has a block (bind seeds one); header/footer may be empty.
+            let new = if let Some(ids) = self.ids.as_mut() {
+                let mut dm = DocMut { doc: state, c: &containers, ids };
+                Some(dm.insert_block_in(self.region, None, "paragraph"))
+            } else {
+                None
+            };
+            if let Some(id) = new {
+                self.caret = Caret { block: id.clone(), offset: 0 };
+                self.selection_anchor = None;
+                return id;
+            }
+            return String::new();
+        }
+        if !blocks.contains(&self.caret.block) {
+            self.caret = Caret { block: blocks[0].clone(), offset: 0 };
+            self.selection_anchor = None;
+        } else {
+            let len = self.region_block_len(state, &self.caret.block);
+            if self.caret.offset > len {
+                self.caret.offset = len;
+            }
+        }
+        self.caret.block.clone()
     }
 
     // ---- selection ---------------------------------------------------------
@@ -604,20 +735,13 @@ impl WordProcessor {
     /// (`color`, `font`, `size`).
     pub fn set_mark_value(&mut self, state: &mut AutoCommit, name: &str, value: qdoc::document::MarkValue) {
         let ranges = self.font_ranges(state);
-        let Some(containers) = self.containers.clone() else {
+        if self.containers.is_none() {
             return;
-        };
-        if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
-            for (b, s, e) in &ranges {
-                if s < e {
-                    dm.remove_mark(b, *s, *e, name);
-                    match &value {
-                        qdoc::document::MarkValue::Bool(v) => dm.add_mark(b, *s, *e, name, *v),
-                        qdoc::document::MarkValue::Int(n) => dm.add_mark(b, *s, *e, name, *n),
-                        qdoc::document::MarkValue::Str(st) => dm.add_mark(b, *s, *e, name, st.as_str()),
-                    }
-                }
+        }
+        for (b, s, e) in &ranges {
+            if s < e {
+                self.region_remove_mark(state, b, *s, *e, name);
+                self.region_add_mark(state, b, *s, *e, name, value.clone());
             }
         }
     }
@@ -645,41 +769,34 @@ impl WordProcessor {
     /// swatch to clear a `color` mark (reverting to the block's style ink).
     pub fn clear_mark(&mut self, state: &mut AutoCommit, name: &str) {
         let ranges = self.font_ranges(state);
-        let Some(containers) = self.containers.clone() else {
+        if self.containers.is_none() {
             return;
-        };
-        if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
-            for (b, s, e) in &ranges {
-                if s < e {
-                    dm.remove_mark(b, *s, *e, name);
-                }
+        }
+        for (b, s, e) in &ranges {
+            if s < e {
+                self.region_remove_mark(state, b, *s, *e, name);
             }
         }
     }
 
-    /// Toggle an inline mark over the selection (across blocks).
+    /// Toggle an inline mark over the selection (across blocks). Region-aware.
     pub fn toggle_mark(&mut self, state: &mut AutoCommit, name: &str) {
         let sel = self.selection_blocks(state);
-        if sel.is_empty() {
+        if sel.is_empty() || self.containers.is_none() {
             return;
         }
-        let containers = self.containers.clone().unwrap();
         let all_marked = sel
             .iter()
             .filter(|(_, s, e)| s < e)
-            .all(|(b, s, e)| qdoc::model::has_mark_over(state, &containers, b, *s, *e, name));
-        if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
-            for (b, s, e) in &sel {
-                if s >= e {
-                    continue;
-                }
-                if all_marked {
-                    dm.remove_mark(b, *s, *e, name);
-                } else {
-                    dm.add_mark(b, *s, *e, name, true);
-                }
+            .all(|(b, s, e)| self.region_has_mark_over(state, b, *s, *e, name));
+        for (b, s, e) in &sel {
+            if s >= e {
+                continue;
+            }
+            if all_marked {
+                self.region_remove_mark(state, b, *s, *e, name);
+            } else {
+                self.region_add_mark(state, b, *s, *e, name, qdoc::document::MarkValue::Bool(true));
             }
         }
     }
@@ -1492,22 +1609,210 @@ impl WordProcessor {
         }
     }
 
+    // ---- region-aware primitives -------------------------------------------
+    //
+    // The caret/edit machinery below addresses whichever region is active
+    // (`self.region`). These helpers dispatch each read/write to the body ops or
+    // the region-aware (`*_in`) qdoc ops accordingly, so the edit operations
+    // (`insert_str`, `enter`, `backspace`, motion, marks…) are written once and
+    // work in the body, header, and footer alike.
+
+    /// Block ids of the **active region**, in order.
+    fn region_blocks_in_order(&self, state: &AutoCommit) -> Vec<String> {
+        let Some(c) = self.containers.as_ref() else { return vec![] };
+        qdoc::model::region_blocks_in_order(state, c, self.region)
+    }
+
+    /// Text of a block in the **active region** (body uses the body reader;
+    /// header/footer scan the materialized region — the body-only `block_text`
+    /// reader hard-codes the body container).
+    fn region_block_text(&self, state: &AutoCommit, block: &str) -> Option<String> {
+        let c = self.containers.as_ref()?;
+        match self.region {
+            Region::Body => qdoc::model::block_text(state, c, block),
+            r => qdoc::model::materialize_region(state, c, r)
+                .into_iter()
+                .find(|b| b.id == block)
+                .map(|b| b.text),
+        }
+    }
+
+    fn region_block_len(&self, state: &AutoCommit, block: &str) -> usize {
+        self.region_block_text(state, block).map(|t| t.chars().count()).unwrap_or(0)
+    }
+
+    /// Whether a boolean mark covers `[start,end)` of a block in the active region.
+    fn region_has_mark_over(&self, state: &AutoCommit, block: &str, start: usize, end: usize, name: &str) -> bool {
+        let Some(c) = self.containers.as_ref() else { return false };
+        match self.region {
+            Region::Body => qdoc::model::has_mark_over(state, c, block, start, end, name),
+            r => qdoc::model::materialize_region(state, c, r)
+                .into_iter()
+                .find(|b| b.id == block)
+                .map(|b| b.marks.iter().any(|m| m.name == name && m.start <= start && m.end >= end))
+                .unwrap_or(false),
+        }
+    }
+
+    // ---- region-aware writes (dispatch body vs. header/footer) -------------
+    //
+    // `splice` / `insert_block` / `set_attr` / `add_mark` have region-aware qdoc
+    // ops (`*_in`); `remove_block` / `set_kind` / `remove_mark` do NOT yet, so for
+    // header/footer they are implemented here over raw automerge against the live
+    // region container (resolved fresh from the document root each call, never a
+    // possibly-stale cached id). See the "missing qdoc ops" note in the report.
+
+    /// Resolve the active region's live block container object.
+    fn region_container_obj(&self, doc: &AutoCommit) -> Option<ObjId> {
+        let c = self.containers.as_ref()?;
+        match self.region {
+            Region::Body => Some(c.blocks.clone()),
+            Region::Header => region_map_obj(doc, &c.root, qdoc::schema::KEY_HEADER),
+            Region::Footer => region_map_obj(doc, &c.root, qdoc::schema::KEY_FOOTER),
+        }
+    }
+
+    fn region_splice(&mut self, state: &mut AutoCommit, block: &str, idx: usize, del: isize, ins: &str) {
+        let Some(containers) = self.containers.clone() else { return };
+        let region = self.region;
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            match region {
+                Region::Body => dm.splice_text(block, idx, del, ins),
+                r => dm.splice_text_in(r, block, idx, del, ins),
+            }
+        }
+    }
+
+    fn region_insert_block(&mut self, state: &mut AutoCommit, after: Option<&str>, kind: &str) -> Option<String> {
+        let Some(containers) = self.containers.clone() else { return None };
+        let region = self.region;
+        let ids = self.ids.as_mut()?;
+        let mut dm = DocMut { doc: state, c: &containers, ids };
+        Some(match region {
+            Region::Body => dm.insert_block(after, kind),
+            r => dm.insert_block_in(r, after, kind),
+        })
+    }
+
+    fn region_set_attr(&mut self, state: &mut AutoCommit, block: &str, key: &str, value: impl Into<automerge::ScalarValue>) {
+        let Some(containers) = self.containers.clone() else { return };
+        let region = self.region;
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            match region {
+                Region::Body => dm.set_attr(block, key, value),
+                r => dm.set_attr_in(r, block, key, value),
+            }
+        }
+    }
+
+    fn region_set_kind(&mut self, state: &mut AutoCommit, block: &str, kind: &str) {
+        let region = self.region;
+        if region == Region::Body {
+            let Some(containers) = self.containers.clone() else { return };
+            if let Some(ids) = self.ids.as_mut() {
+                let mut dm = DocMut { doc: state, c: &containers, ids };
+                dm.set_kind(block, kind);
+            }
+            return;
+        }
+        // Header/Footer: no `set_kind_in` exists yet — write the block `kind`
+        // scalar directly on the region block object.
+        if let Some(container) = self.region_container_obj(state) {
+            if let Some(obj) = region_block_obj(state, &container, block) {
+                let _ = state.put(&obj, qdoc::schema::BLOCK_KIND, kind);
+            }
+        }
+    }
+
+    fn region_remove_block(&mut self, state: &mut AutoCommit, block: &str) {
+        let region = self.region;
+        if region == Region::Body {
+            let Some(containers) = self.containers.clone() else { return };
+            if let Some(ids) = self.ids.as_mut() {
+                let mut dm = DocMut { doc: state, c: &containers, ids };
+                dm.remove_block(block);
+            }
+            return;
+        }
+        // Header/Footer: no `remove_block_in` exists yet — delete the block key
+        // from the region container directly.
+        if let Some(container) = self.region_container_obj(state) {
+            let _ = state.delete(&container, block);
+        }
+    }
+
+    fn region_add_mark(&mut self, state: &mut AutoCommit, block: &str, start: usize, end: usize, name: &str, value: qdoc::document::MarkValue) {
+        let Some(containers) = self.containers.clone() else { return };
+        let region = self.region;
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            match region {
+                Region::Body => match value {
+                    qdoc::document::MarkValue::Bool(v) => dm.add_mark(block, start, end, name, v),
+                    qdoc::document::MarkValue::Int(n) => dm.add_mark(block, start, end, name, n),
+                    qdoc::document::MarkValue::Str(s) => dm.add_mark(block, start, end, name, s.as_str()),
+                },
+                r => match value {
+                    qdoc::document::MarkValue::Bool(v) => dm.add_mark_in(r, block, start, end, name, v),
+                    qdoc::document::MarkValue::Int(n) => dm.add_mark_in(r, block, start, end, name, n),
+                    qdoc::document::MarkValue::Str(s) => dm.add_mark_in(r, block, start, end, name, s.as_str()),
+                },
+            }
+        }
+    }
+
+    fn region_remove_mark(&mut self, state: &mut AutoCommit, block: &str, start: usize, end: usize, name: &str) {
+        let region = self.region;
+        if region == Region::Body {
+            let Some(containers) = self.containers.clone() else { return };
+            if let Some(ids) = self.ids.as_mut() {
+                let mut dm = DocMut { doc: state, c: &containers, ids };
+                dm.remove_mark(block, start, end, name);
+            }
+            return;
+        }
+        // Header/Footer: no `remove_mark_in` exists yet — clear the mark over the
+        // range directly on the region block's Text object (mirrors the body
+        // `DocMut::remove_mark`, which uses `unmark(.., ExpandMark::After)`).
+        if let Some(container) = self.region_container_obj(state) {
+            if let Some(obj) = region_block_obj(state, &container, block) {
+                if let Ok(Some((automerge::Value::Object(automerge::ObjType::Text), tid))) =
+                    state.get(&obj, qdoc::schema::BLOCK_TEXT)
+                {
+                    let _ = state.unmark(&tid, name, start, end, automerge::marks::ExpandMark::After);
+                }
+            }
+        }
+    }
+
+    /// Insert a page-number field at the caret in the active region. Works in the
+    /// body too (renders as a `field` mark; the body renderer substitutes it).
+    pub fn insert_page_number(&mut self, state: &mut AutoCommit) {
+        self.delete_selection(state);
+        let Some(containers) = self.containers.clone() else { return };
+        let block = self.caret.block.clone();
+        let idx = self.caret.offset;
+        let region = self.region;
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            dm.insert_page_number_field(region, &block, idx);
+        }
+        // The placeholder occupies one character.
+        self.caret.offset = idx + 1;
+        self.clear_anchor();
+    }
+
     // ---- read helpers ------------------------------------------------------
 
     fn block_len(&self, state: &AutoCommit, block: &str) -> usize {
-        self.containers
-            .as_ref()
-            .and_then(|c| qdoc::model::block_text(state, c, block))
-            .map(|t| t.chars().count())
-            .unwrap_or(0)
+        self.region_block_len(state, block)
     }
 
-    /// Text of the block the caret is in.
+    /// Text of the block the caret is in (in the active region).
     pub fn current_text(&self, state: &AutoCommit) -> String {
-        self.containers
-            .as_ref()
-            .and_then(|c| qdoc::model::block_text(state, c, &self.caret.block))
-            .unwrap_or_default()
+        self.region_block_text(state, &self.caret.block).unwrap_or_default()
     }
 
     /// Ordered block texts (empty blocks render as empty strings).
@@ -1522,10 +1827,7 @@ impl WordProcessor {
     }
 
     fn ordered_blocks(&self, state: &AutoCommit) -> Vec<String> {
-        self.containers
-            .as_ref()
-            .map(|c| qdoc::model::blocks_in_order(state, c))
-            .unwrap_or_default()
+        self.region_blocks_in_order(state)
     }
 
     // ---- document outline / navigation ------------------------------------
@@ -1610,13 +1912,16 @@ impl WordProcessor {
         inserted
     }
 
-    /// `(kind, ordered, level)` for a block.
+    /// `(kind, ordered, level)` for a block in the **active region**.
     fn block_meta(&self, state: &AutoCommit, block: &str) -> (String, bool, Option<i64>) {
         let Some(c) = self.containers.as_ref() else {
             return ("paragraph".into(), false, None);
         };
-        let snap = qdoc::model::materialize(state, c);
-        let b = snap.blocks.iter().find(|b| b.id == block);
+        let views = match self.region {
+            Region::Body => qdoc::model::materialize(state, c).blocks,
+            r => qdoc::model::materialize_region(state, c, r),
+        };
+        let b = views.iter().find(|b| b.id == block);
         let kind = b.map(|b| b.kind.clone()).unwrap_or_else(|| "paragraph".into());
         let ordered = b.map(|b| matches!(b.attrs.get("ordered"), Some(qdoc::AttrVal::Bool(true)))).unwrap_or(false);
         let level = b.and_then(|b| match b.attrs.get("level") {
@@ -1701,90 +2006,77 @@ impl WordProcessor {
     // ---- edit operations ---------------------------------------------------
 
     /// Insert `s` at the caret and advance. Replaces the selection if any.
+    /// Routes through the active region (body / header / footer).
     pub fn insert_str(&mut self, state: &mut AutoCommit, s: &str) {
         self.delete_selection(state);
-        let Some(containers) = self.containers.clone() else {
+        if self.containers.is_none() {
             return;
-        };
+        }
         let block = self.caret.block.clone();
         let offset = self.caret.offset;
-        if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
-            dm.splice_text(&block, offset, 0, s);
-        }
+        self.region_splice(state, &block, offset, 0, s);
         self.caret.offset = offset + s.chars().count();
     }
 
     /// Split the current block at the caret. Lists continue (the new block is a
     /// list item of the same kind); pressing Enter on an *empty* list item exits
     /// the list (the item becomes a paragraph). Headings split into a paragraph.
+    /// Region-aware: in a header/footer the same split logic runs against that
+    /// region's container.
     pub fn enter(&mut self, state: &mut AutoCommit) {
-        let Some(containers) = self.containers.clone() else {
+        if self.containers.is_none() {
             return;
-        };
+        }
         let block = self.caret.block.clone();
         let offset = self.caret.offset;
-        let text = qdoc::model::block_text(state, &containers, &block).unwrap_or_default();
+        let text = self.region_block_text(state, &block).unwrap_or_default();
         let char_count = text.chars().count();
         let tail: String = text.chars().skip(offset).collect();
         let (kind, ordered, _level) = self.block_meta(state, &block);
 
         // Enter on an empty list item exits the list.
         if kind == "list_item" && char_count == 0 {
-            if let Some(ids) = self.ids.as_mut() {
-                let mut dm = DocMut { doc: state, c: &containers, ids };
-                dm.set_kind(&block, "paragraph");
-            }
+            self.region_set_kind(state, &block, "paragraph");
             return;
         }
 
         let new_kind = if kind == "list_item" { "list_item" } else { "paragraph" };
-        let new_id = if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
-            if offset < char_count {
-                dm.splice_text(&block, offset, (char_count - offset) as isize, "");
-            }
-            let id = dm.insert_block(Some(&block), new_kind);
-            if new_kind == "list_item" {
-                dm.set_attr(&id, "ordered", ordered);
-            }
-            if !tail.is_empty() {
-                dm.splice_text(&id, 0, 0, &tail);
-            }
-            id
-        } else {
+        if offset < char_count {
+            self.region_splice(state, &block, offset, (char_count - offset) as isize, "");
+        }
+        let Some(id) = self.region_insert_block(state, Some(&block), new_kind) else {
             return;
         };
-        self.caret = Caret { block: new_id, offset: 0 };
+        if new_kind == "list_item" {
+            self.region_set_attr(state, &id, "ordered", ordered);
+        }
+        if !tail.is_empty() {
+            self.region_splice(state, &id, 0, 0, &tail);
+        }
+        self.caret = Caret { block: id, offset: 0 };
     }
 
     /// Delete the character before the caret; at offset 0 merge into the
-    /// previous block.
+    /// previous block. Region-aware.
     pub fn backspace(&mut self, state: &mut AutoCommit) {
         if self.delete_selection(state) {
             return;
         }
-        let Some(containers) = self.containers.clone() else {
+        if self.containers.is_none() {
             return;
-        };
+        }
         let block = self.caret.block.clone();
         let offset = self.caret.offset;
 
         if offset > 0 {
-            if let Some(ids) = self.ids.as_mut() {
-                let mut dm = DocMut { doc: state, c: &containers, ids };
-                dm.splice_text(&block, offset - 1, 1, "");
-            }
+            self.region_splice(state, &block, offset - 1, 1, "");
             self.caret.offset = offset - 1;
             return;
         }
 
         // Backspace at the start of a list item removes the list style first.
         if self.block_meta(state, &block).0 == "list_item" {
-            if let Some(ids) = self.ids.as_mut() {
-                let mut dm = DocMut { doc: state, c: &containers, ids };
-                dm.set_kind(&block, "paragraph");
-            }
+            self.region_set_kind(state, &block, "paragraph");
             return;
         }
 
@@ -1798,35 +2090,29 @@ impl WordProcessor {
         }
         let prev = blocks[pos - 1].clone();
         let prev_len = self.block_len(state, &prev);
-        let cur_text = qdoc::model::block_text(state, &containers, &block).unwrap_or_default();
-        if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
-            if !cur_text.is_empty() {
-                dm.splice_text(&prev, prev_len, 0, &cur_text);
-            }
-            dm.remove_block(&block);
+        let cur_text = self.region_block_text(state, &block).unwrap_or_default();
+        if !cur_text.is_empty() {
+            self.region_splice(state, &prev, prev_len, 0, &cur_text);
         }
+        self.region_remove_block(state, &block);
         self.caret = Caret { block: prev, offset: prev_len };
     }
 
     /// Delete the character after the caret; at end-of-block merge the next
-    /// block in.
+    /// block in. Region-aware.
     pub fn delete_forward(&mut self, state: &mut AutoCommit) {
         if self.delete_selection(state) {
             return;
         }
-        let Some(containers) = self.containers.clone() else {
+        if self.containers.is_none() {
             return;
-        };
+        }
         let block = self.caret.block.clone();
         let offset = self.caret.offset;
         let len = self.block_len(state, &block);
 
         if offset < len {
-            if let Some(ids) = self.ids.as_mut() {
-                let mut dm = DocMut { doc: state, c: &containers, ids };
-                dm.splice_text(&block, offset, 1, "");
-            }
+            self.region_splice(state, &block, offset, 1, "");
             return;
         }
 
@@ -1838,14 +2124,11 @@ impl WordProcessor {
             return;
         }
         let next = blocks[pos + 1].clone();
-        let next_text = qdoc::model::block_text(state, &containers, &next).unwrap_or_default();
-        if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut { doc: state, c: &containers, ids };
-            if !next_text.is_empty() {
-                dm.splice_text(&block, len, 0, &next_text);
-            }
-            dm.remove_block(&next);
+        let next_text = self.region_block_text(state, &next).unwrap_or_default();
+        if !next_text.is_empty() {
+            self.region_splice(state, &block, len, 0, &next_text);
         }
+        self.region_remove_block(state, &next);
         // caret stays at the merge point
     }
 
@@ -1921,6 +2204,24 @@ impl WordProcessor {
         let len = self.block_len(state, &block);
         let offset = self.caret.offset.min(len);
         self.caret = Caret { block, offset };
+    }
+
+    /// The active selection as `((block, start), (block, end))` **when it is a
+    /// single-block selection** (the v1 case the header/footer band renders). The
+    /// endpoints are ordered. Returns `None` for no selection or a multi-block one
+    /// (the band is one short paragraph in practice). Used by the widget to paint
+    /// the band selection without depending on layout.
+    pub fn band_selection_range(&self) -> Option<((String, usize), (String, usize))> {
+        let anchor = self.selection_anchor.as_ref()?;
+        if anchor == &self.caret || anchor.block != self.caret.block {
+            return None;
+        }
+        let (lo, hi) = if anchor.offset <= self.caret.offset {
+            (anchor.offset, self.caret.offset)
+        } else {
+            (self.caret.offset, anchor.offset)
+        };
+        Some(((self.caret.block.clone(), lo), (self.caret.block.clone(), hi)))
     }
 }
 
@@ -2684,5 +2985,141 @@ mod tests {
         assert_eq!(toc_count, 3, "regenerating replaces the old TOC (no duplicate)");
         let heading_count = snap.blocks.iter().filter(|b| b.kind == "heading").count();
         assert_eq!(heading_count, 3, "headings are untouched by TOC regeneration");
+    }
+
+    // ---- editable headers / footers (edit-context routing) -----------------
+
+    fn header_texts(wp: &WordProcessor, state: &AutoCommit) -> Vec<String> {
+        let c = wp.containers.as_ref().unwrap();
+        qdoc::model::materialize_region(state, c, Region::Header).into_iter().map(|b| b.text).collect()
+    }
+    fn footer_texts(wp: &WordProcessor, state: &AutoCommit) -> Vec<String> {
+        let c = wp.containers.as_ref().unwrap();
+        qdoc::model::materialize_region(state, c, Region::Footer).into_iter().map(|b| b.text).collect()
+    }
+    fn body_texts(wp: &WordProcessor, state: &AutoCommit) -> Vec<String> {
+        let c = wp.containers.as_ref().unwrap();
+        qdoc::model::materialize(state, c).blocks.into_iter().map(|b| b.text).collect()
+    }
+
+    #[test]
+    fn focusing_header_and_typing_writes_into_header_not_body() {
+        let (mut wp, mut state) = bound();
+        // Body has its seeded empty paragraph.
+        wp.insert_str(&mut state, "body-content");
+        assert_eq!(wp.region(), Region::Body);
+
+        // Focus the header context — an empty header paragraph is created lazily.
+        wp.focus_region(&mut state, Region::Header);
+        assert_eq!(wp.region(), Region::Header);
+        assert!(wp.in_running_region());
+        wp.insert_str(&mut state, "My Title");
+
+        // The text lands in the HEADER container, asserted on the materialized snap.
+        assert_eq!(header_texts(&wp, &state), vec!["My Title".to_string()]);
+        // The body is untouched.
+        assert_eq!(body_texts(&wp, &state), vec!["body-content".to_string()]);
+    }
+
+    #[test]
+    fn switching_back_to_body_edits_the_body_again() {
+        let (mut wp, mut state) = bound();
+        wp.focus_region(&mut state, Region::Header);
+        wp.insert_str(&mut state, "Head");
+        // Return to the body and type — edits go to the body, header preserved.
+        wp.focus_body(&mut state);
+        assert_eq!(wp.region(), Region::Body);
+        wp.insert_str(&mut state, "Body");
+        assert_eq!(body_texts(&wp, &state), vec!["Body".to_string()]);
+        assert_eq!(header_texts(&wp, &state), vec!["Head".to_string()]);
+        // Returning to the header restores its caret (end of "Head") and appends.
+        wp.focus_region(&mut state, Region::Header);
+        wp.insert_str(&mut state, "er");
+        assert_eq!(header_texts(&wp, &state), vec!["Header".to_string()]);
+    }
+
+    #[test]
+    fn footer_enter_splits_into_two_footer_blocks() {
+        let (mut wp, mut state) = bound();
+        wp.focus_region(&mut state, Region::Footer);
+        wp.insert_str(&mut state, "ab");
+        wp.enter(&mut state);
+        wp.insert_str(&mut state, "cd");
+        assert_eq!(footer_texts(&wp, &state), vec!["ab".to_string(), "cd".to_string()]);
+        // Body never gained a block beyond its seeded empty paragraph.
+        assert_eq!(body_texts(&wp, &state), vec!["".to_string()]);
+    }
+
+    #[test]
+    fn header_backspace_within_and_merges_blocks() {
+        let (mut wp, mut state) = bound();
+        wp.focus_region(&mut state, Region::Header);
+        wp.insert_str(&mut state, "ab");
+        wp.enter(&mut state);
+        wp.insert_str(&mut state, "cd");
+        assert_eq!(header_texts(&wp, &state), vec!["ab".to_string(), "cd".to_string()]);
+        // Delete 'd', 'c', then merge into the previous header block.
+        wp.backspace(&mut state);
+        wp.backspace(&mut state);
+        assert_eq!(header_texts(&wp, &state), vec!["ab".to_string(), "".to_string()]);
+        wp.backspace(&mut state);
+        assert_eq!(header_texts(&wp, &state), vec!["ab".to_string()]);
+        assert_eq!(wp.caret.offset, 2, "caret lands at the merge point in the header");
+    }
+
+    #[test]
+    fn header_bold_mark_routes_to_the_header_block() {
+        let (mut wp, mut state) = bound();
+        wp.focus_region(&mut state, Region::Header);
+        wp.insert_str(&mut state, "Title");
+        // Select the whole word, then toggle bold.
+        wp.select_all(&state);
+        wp.toggle_mark(&mut state, "strong");
+
+        let c = wp.containers.as_ref().unwrap();
+        let hv = qdoc::model::materialize_region(&state, c, Region::Header);
+        let marks = &hv[0].marks;
+        assert!(
+            marks.iter().any(|m| m.name == "strong" && m.start == 0 && m.end >= 5),
+            "bold mark applied to the header run: {marks:?}"
+        );
+        // Toggling again clears it (uses the region-aware unmark path).
+        wp.select_all(&state);
+        wp.toggle_mark(&mut state, "strong");
+        let hv2 = qdoc::model::materialize_region(&state, wp.containers.as_ref().unwrap(), Region::Header);
+        assert!(!hv2[0].marks.iter().any(|m| m.name == "strong"), "bold mark cleared in the header");
+    }
+
+    #[test]
+    fn insert_page_number_in_footer_writes_a_field_mark() {
+        let (mut wp, mut state) = bound();
+        wp.focus_region(&mut state, Region::Footer);
+        wp.insert_str(&mut state, "Page ");
+        wp.insert_page_number(&mut state);
+
+        let c = wp.containers.as_ref().unwrap();
+        let fv = qdoc::model::materialize_region(&state, c, Region::Footer);
+        assert!(fv[0].text.starts_with("Page "), "footer keeps its literal text: {:?}", fv[0].text);
+        assert!(
+            fv[0].marks.iter().any(|m| m.name == qdoc::schema::MARK_FIELD),
+            "a page-number field mark is present in the footer: {:?}",
+            fv[0].marks
+        );
+    }
+
+    #[test]
+    fn body_editing_is_unchanged_by_the_region_machinery() {
+        // Regression guard: with the default Body context the ops behave exactly
+        // as before (the body path must stay intact).
+        let (mut wp, mut state) = bound();
+        wp.insert_str(&mut state, "helloworld");
+        for _ in 0..5 {
+            wp.move_left(&state);
+        }
+        wp.enter(&mut state);
+        assert_eq!(wp.block_texts(&state), vec!["hello".to_string(), "world".to_string()]);
+        // No header/footer were created by body editing.
+        assert!(header_texts(&wp, &state).is_empty());
+        assert!(footer_texts(&wp, &state).is_empty());
     }
 }
