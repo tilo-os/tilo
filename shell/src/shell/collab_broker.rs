@@ -38,7 +38,8 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use qos_collab_types::{
-    ArtifactId, ChannelState, OpClass, SignedOp, ValidationError, validate_inbound_op,
+    ArtifactId, ChannelState, Ed25519PublicKey, OpClass, OpId, RedactedMarker, SignedOp,
+    ValidationError, parse_redact_payload, validate_inbound_op,
 };
 use ui::collaboration::{CollabEvent, CollabRequest};
 
@@ -104,6 +105,73 @@ impl AuditLog {
     }
 }
 
+/// Phase 9: one entry in the per-channel **redaction record** log.
+///
+/// Independent of the per-artifact rejection-audit ring buffer — a
+/// redaction is a positive governance event, not a failure. Stored in
+/// its own map so the chrome's compliance/audit surface can iterate
+/// only over redactions without filtering through every dropped
+/// envelope.
+///
+/// The record retains the Redact op's full envelope (so the original
+/// signature is verifiable forever) plus the parsed payload fields
+/// promoted to typed columns for fast lookup.
+#[derive(Clone, Debug)]
+pub struct RedactionRecord {
+    /// The Redact op envelope itself. Its signature is verifiable
+    /// against `redactor_pk` long after this record is consulted.
+    pub redact_envelope: Box<SignedOp>,
+    /// The id of the op that was redacted. Cross-references the
+    /// `target_op_hash` to a specific seq + author tuple.
+    pub target_op_id: OpId,
+    /// SHA-256 of the target op's canonical bytes at the moment the
+    /// redaction was minted. The validator preserves this even after
+    /// the op-log entry is rewritten to the redacted marker.
+    pub target_op_hash: [u8; 32],
+    /// Public key of the redactor (also recorded in the envelope's
+    /// `author` field but lifted here for direct match in audit
+    /// queries).
+    pub redactor_pk: Ed25519PublicKey,
+    /// Free-text justification (capped at
+    /// `qos_collab_types::MAX_REDACTION_REASON_BYTES`). Used by the
+    /// chrome's tooltip and the compliance system's case record.
+    pub reason: String,
+    /// Wall-clock time the redactor recorded in the request payload.
+    pub redacted_at: std::time::SystemTime,
+}
+
+/// Phase 9: per-artifact redaction-record log.
+///
+/// Like [`AuditLog`] this is a fixed-capacity ring buffer to avoid
+/// unbounded growth, but redaction events are rare by construction
+/// (manual compliance acts) so the cap is mostly defensive.
+#[derive(Default)]
+pub struct RedactionLog {
+    pub entries: HashMap<ArtifactId, VecDeque<RedactionRecord>>,
+}
+
+impl RedactionLog {
+    /// Append `record` to the ring buffer for `artifact`, evicting
+    /// the oldest entry if the buffer is at capacity.
+    pub fn record(&mut self, artifact: ArtifactId, record: RedactionRecord) {
+        let buf = self.entries.entry(artifact).or_default();
+        if buf.len() >= AUDIT_LOG_RING_CAPACITY {
+            buf.pop_front();
+        }
+        buf.push_back(record);
+    }
+
+    /// Read-only view of the redaction records for one artifact.
+    /// Exposed via [`BrokerHandle::redactions_for`] for tests and the
+    /// chrome's compliance surface.
+    pub fn for_artifact(&self, artifact: ArtifactId) -> Vec<RedactionRecord> {
+        self.entries
+            .get(&artifact)
+            .map(|q| q.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+}
+
 /// Per-peer entry in the broker's fan-out table.
 struct Peer {
     /// Stable id assigned at accept time. Threaded into the synthetic
@@ -155,8 +223,14 @@ pub struct BrokerChannels {
     /// channel id because the wire only carries artifact id; the
     /// 3.5 follow-up adds a real artifact→channel resolver.
     pub states: HashMap<ArtifactId, ChannelState>,
-    /// Per-artifact audit log, fixed-capacity.
+    /// Per-artifact audit log, fixed-capacity. Records rejected
+    /// envelopes (and Phase 9's `OpArrivedRedacted` late-arrival
+    /// records via the same shape) so an operator can triage drops.
     pub audit: AuditLog,
+    /// Phase 9: per-artifact redaction record log. Separate from the
+    /// rejection-audit because a redaction is a positive governance
+    /// event, not a failure.
+    pub redactions: RedactionLog,
 }
 
 impl BrokerChannels {
@@ -315,6 +389,68 @@ fn write_frame(writer: &Mutex<UnixStream>, bytes: &[u8]) -> std::io::Result<()> 
     Ok(())
 }
 
+/// Phase 9: apply a validated Redact envelope to the shared channel
+/// state.
+///
+/// Hoisted to a helper because both the local-broker hot path
+/// (`translate`) and the libp2p drain thread reach the same code
+/// after a Redact validates. Both paths have already pushed the
+/// envelope onto the op log via `record_validated_op`; this helper
+/// only owns the derived-state mutation + the redaction-record
+/// audit entry.
+fn apply_redaction_from_envelope(
+    envelope: &SignedOp,
+    artifact: ArtifactId,
+    channels: &Arc<Mutex<BrokerChannels>>,
+) {
+    // Parse the payload defensively — the validator's step 5b already
+    // ran parse_redact_payload, so a Some(_) here should never come
+    // back malformed; we keep the parse so this helper can be reused
+    // outside the validated path (drain thread + future replays).
+    let req = match parse_redact_payload(envelope) {
+        Ok(r) => r,
+        Err(err) => {
+            tracing::warn!(
+                artifact = ?artifact,
+                "collab_broker: malformed Redact payload after validation: {err}",
+            );
+            return;
+        }
+    };
+    if let Ok(mut ch) = channels.lock() {
+        let state = ch.state_for(artifact);
+        match state.apply_redaction(&req) {
+            Ok(rewritten) => {
+                tracing::info!(
+                    artifact = ?artifact,
+                    target = ?req.target_op_id,
+                    rewritten,
+                    "collab_broker: applied redaction",
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    artifact = ?artifact,
+                    target = ?req.target_op_id,
+                    "collab_broker: apply_redaction failed: {err}",
+                );
+                return;
+            }
+        }
+        ch.redactions.record(
+            artifact,
+            RedactionRecord {
+                redact_envelope: Box::new(envelope.clone()),
+                target_op_id: req.target_op_id,
+                target_op_hash: req.target_op_hash,
+                redactor_pk: req.redacted_by,
+                reason: req.reason,
+                redacted_at: req.redacted_at,
+            },
+        );
+    }
+}
+
 /// Translate one `CollabRequest` (already deserialized off the wire)
 /// to the action peers should observe. Returns
 /// [`TranslatedAction::Nothing`] for `Hello` (which is swallowed —
@@ -364,6 +500,14 @@ fn translate(
                     // strictly greater than `up_to_seq` by
                     // construction), so recording first and
                     // compacting afterwards is safe.
+                    //
+                    // Phase 9 housekeeping: if this op is a Redact,
+                    // parse the payload and apply the redaction —
+                    // rewrites local op-log entries matching
+                    // `target_op_id` to the redacted marker. Records
+                    // a `RedactionRecord` in the redaction log so
+                    // `BrokerHandle::redactions_for` can surface the
+                    // governance event to the chrome.
                     let mut compaction_evicted: Option<usize> = None;
                     if let Ok(mut ch) = channels.lock() {
                         let state = ch.state_for(artifact);
@@ -403,6 +547,9 @@ fn translate(
                             }
                         }
                     }
+                    if envelope.op_class == OpClass::Redact {
+                        apply_redaction_from_envelope(&envelope, artifact, channels);
+                    }
                     let event = CollabEvent::SignedCRDTIncremental {
                         envelope,
                         from_user_id: format!("peer-{src_id}"),
@@ -412,6 +559,44 @@ fn translate(
                     } else {
                         TranslatedAction::FanoutExcept(event)
                     }
+                }
+                Err(ValidationError::OpAlreadyRedacted { target }) => {
+                    // Phase 9 §7: a buggy or offline peer re-broadcast
+                    // an op whose id we have already redacted. Do NOT
+                    // fan it out, but DO push a marker-payload entry
+                    // into the local op log so the seq stream doesn't
+                    // form a hole (late-joiners would otherwise hunt
+                    // cooperative scrollback for an op that we deleted
+                    // by policy). Also audit-log the late arrival so
+                    // an operator can see if a peer is repeatedly
+                    // resurrecting a redacted op.
+                    tracing::warn!(
+                        artifact = ?artifact,
+                        author = ?envelope.author,
+                        seq = envelope.seq,
+                        target = ?target,
+                        "collab_broker: late-arriving op was already redacted; \
+                         storing marker entry, not fanning out",
+                    );
+                    if let Ok(mut ch) = channels.lock() {
+                        let state = ch.state_for(artifact);
+                        let mut marker_envelope = (*envelope).clone();
+                        if let Ok(marker_bytes) = RedactedMarker::v1().canonical() {
+                            marker_envelope.payload = marker_bytes;
+                        }
+                        state.record_validated_op(marker_envelope);
+                        ch.audit.record(
+                            artifact,
+                            AuditEntry {
+                                envelope,
+                                rejection: Some(ValidationError::OpAlreadyRedacted {
+                                    target,
+                                }),
+                                at: std::time::SystemTime::now(),
+                            },
+                        );
+                    }
+                    TranslatedAction::Nothing
                 }
                 Err(reason) => {
                     tracing::warn!(
@@ -661,6 +846,20 @@ impl BrokerHandle {
             .map(|g| g.audit.for_artifact(artifact))
             .unwrap_or_default()
     }
+
+    /// Phase 9: snapshot the structured redaction records for one
+    /// artifact. Used by chrome widgets (the activity timeline +
+    /// history scrubber) and by tests that want to assert "this
+    /// op was redacted by this owner at this time with this reason."
+    /// Independent of the rejection-audit `audit_for` so the
+    /// compliance surface doesn't have to filter through every
+    /// dropped envelope.
+    pub fn redactions_for(&self, artifact: ArtifactId) -> Vec<RedactionRecord> {
+        self.channels
+            .lock()
+            .map(|g| g.redactions.for_artifact(artifact))
+            .unwrap_or_default()
+    }
 }
 
 impl Drop for BrokerHandle {
@@ -870,11 +1069,50 @@ pub fn spawn_with_peer_sync(
                                         }
                                     }
                                 }
+                                if envelope.op_class == OpClass::Redact {
+                                    apply_redaction_from_envelope(
+                                        &envelope,
+                                        artifact,
+                                        &drain_channels,
+                                    );
+                                }
                                 let event = CollabEvent::SignedCRDTIncremental {
                                     envelope: Box::new(envelope),
                                     from_user_id: format!("peer-net-{}", entry.peer),
                                 };
                                 drain_table.fanout_except(&event, u64::MAX);
+                            }
+                            Err(ValidationError::OpAlreadyRedacted { target }) => {
+                                // Phase 9 §7: late-arriving op via the
+                                // libp2p bridge whose id is already in
+                                // our redacted set. Don't fan; do push
+                                // a marker entry into the log so the
+                                // seq stream stays gapless.
+                                tracing::warn!(
+                                    artifact = ?artifact,
+                                    target = ?target,
+                                    "collab_broker (net): late-arriving op already redacted",
+                                );
+                                if let Ok(mut ch) = drain_channels.lock() {
+                                    let state = ch.state_for(artifact);
+                                    let mut marker_envelope = envelope.clone();
+                                    if let Ok(marker_bytes) =
+                                        RedactedMarker::v1().canonical()
+                                    {
+                                        marker_envelope.payload = marker_bytes;
+                                    }
+                                    state.record_validated_op(marker_envelope);
+                                    ch.audit.record(
+                                        artifact,
+                                        AuditEntry {
+                                            envelope: Box::new(envelope),
+                                            rejection: Some(
+                                                ValidationError::OpAlreadyRedacted { target },
+                                            ),
+                                            at: std::time::SystemTime::now(),
+                                        },
+                                    );
+                                }
                             }
                             Err(reason) => {
                                 tracing::warn!(
