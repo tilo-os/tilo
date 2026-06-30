@@ -167,6 +167,88 @@ pub fn open_document(path: &Path) -> std::io::Result<(ui::State, WordProcessorWi
     Ok((state, widget, format))
 }
 
+// ---- document templates (new-from-template) -------------------------------
+
+/// A bundled starter document. The content is embedded at compile time
+/// (`include_str!`) so there is no runtime file dependency — a template is just
+/// Markdown that seeds a fresh, untitled document.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Template {
+    /// An (almost) empty document — a single heading and a prompt to start.
+    Blank,
+    /// A formal letter scaffold (sender/recipient blocks, salutation, body).
+    Letter,
+    /// A structured report (summary, background, findings, recommendations).
+    Report,
+    /// A résumé / CV scaffold (summary, experience, education, skills).
+    Resume,
+    /// Meeting notes (attendees, agenda, decisions, action items).
+    MeetingNotes,
+}
+
+impl Template {
+    /// Every template variant, in menu order.
+    pub fn all() -> &'static [Template] {
+        &[
+            Template::Blank,
+            Template::Letter,
+            Template::Report,
+            Template::Resume,
+            Template::MeetingNotes,
+        ]
+    }
+
+    /// A short, human-readable name for the template (for menus / pickers).
+    pub fn title(self) -> &'static str {
+        match self {
+            Template::Blank => "Blank",
+            Template::Letter => "Letter",
+            Template::Report => "Report",
+            Template::Resume => "Resume",
+            Template::MeetingNotes => "Meeting Notes",
+        }
+    }
+
+    /// The template's Markdown source, embedded at compile time.
+    pub fn content(self) -> &'static str {
+        match self {
+            Template::Blank => include_str!("../templates/blank.md"),
+            Template::Letter => include_str!("../templates/letter.md"),
+            Template::Report => include_str!("../templates/report.md"),
+            Template::Resume => include_str!("../templates/resume.md"),
+            Template::MeetingNotes => include_str!("../templates/meeting-notes.md"),
+        }
+    }
+}
+
+/// Start a fresh, untitled document seeded from a bundled `Template`.
+///
+/// Mirrors [`open_document`] but imports the template's embedded Markdown string
+/// instead of reading a file. The returned widget has **no path** set — the
+/// document is untitled and will prompt for a destination on first save. The
+/// format is always [`WpFormat::Markdown`] (the templates are Markdown), though
+/// the user is free to save under any export format afterwards.
+pub fn new_from_template(t: Template) -> (ui::State, WordProcessorWidget, WpFormat) {
+    let format = WpFormat::Markdown;
+    let mut state = ui::State::new();
+    let containers = qdoc::model::init(&mut state.doc, &state.root);
+    let mut ids = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
+    {
+        let mut dm = qdoc::DocMut { doc: &mut state.doc, c: &containers, ids: &mut ids };
+        // Templates are bundled and validated by tests, so import cannot fail in
+        // practice; if a malformed template ever shipped we'd rather surface it
+        // loudly than silently hand back an empty document.
+        format
+            .import(t.content().as_bytes(), &mut dm)
+            .expect("bundled template imports cleanly");
+    }
+    // Intentionally do NOT call `widget.set_file(..)`: leaving the path unset
+    // keeps the document untitled (the widget falls back to `Untitled.md` on
+    // save). The format is returned so callers can wire it up if they wish.
+    let widget = WordProcessorWidget::new();
+    (state, widget, format)
+}
+
 /// Export the document currently in `state` to `path` using `format`.
 pub fn save_document(state: &ui::State, path: &Path, format: WpFormat) -> std::io::Result<()> {
     let containers = qdoc::model::open(&state.doc, &state.root).map_err(invalid_data)?;
@@ -432,5 +514,85 @@ mod tests {
                 .unwrap_or(false)
         });
         assert!(saw_hello, "timeline should expose the intermediate 'hello' state");
+    }
+
+    // ---- document templates -----------------------------------------------
+
+    /// `new_from_template` seeds a fresh state whose materialized document opens
+    /// with the template's first heading. (`Report` begins with "Report Title".)
+    #[test]
+    fn new_from_template_report_seeds_expected_heading() {
+        let (state, widget, format) = new_from_template(Template::Report);
+        assert_eq!(format, WpFormat::Markdown, "templates are imported as Markdown");
+
+        let containers = qdoc::model::open(&state.doc, &state.root)
+            .expect("template-seeded state has the canonical schema");
+        let snap = qdoc::model::materialize(&state.doc, &containers);
+        let first = snap.blocks.first().expect("report template has at least one block");
+        assert_eq!(first.kind, "heading", "the report opens with a heading");
+        assert_eq!(first.text, "Report Title", "the report's first heading text");
+
+        // Untitled / unbound: a freshly returned widget hasn't run its `sync`
+        // pass yet, so it has no bound containers and no file path — the
+        // document will prompt for a destination on first save.
+        assert!(
+            widget.model().containers.is_none(),
+            "a fresh template widget is unbound until the first sync"
+        );
+    }
+
+    /// `Template::all()` enumerates every variant exactly once, in menu order.
+    #[test]
+    fn template_all_lists_every_variant() {
+        let all = Template::all();
+        assert_eq!(
+            all,
+            &[
+                Template::Blank,
+                Template::Letter,
+                Template::Report,
+                Template::Resume,
+                Template::MeetingNotes,
+            ]
+        );
+        // Titles are present and non-empty for each.
+        for t in all {
+            assert!(!t.title().is_empty(), "{t:?} has a title");
+        }
+    }
+
+    /// Every bundled template has non-empty content and imports without error
+    /// into a fresh document with at least one block.
+    #[test]
+    fn every_template_imports_non_empty() {
+        for &t in Template::all() {
+            assert!(!t.content().trim().is_empty(), "{t:?} content is non-empty");
+
+            // Import path mirrors `new_from_template` but asserts on each variant.
+            let mut s = ui::State::new();
+            let containers = qdoc::model::init(&mut s.doc, &s.root);
+            let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
+            {
+                let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &containers, ids: &mut ids };
+                WpFormat::Markdown
+                    .import(t.content().as_bytes(), &mut dm)
+                    .unwrap_or_else(|e| panic!("{t:?} imports cleanly: {e:?}"));
+            }
+            let snap = qdoc::model::materialize(&s.doc, &containers);
+            assert!(!snap.blocks.is_empty(), "{t:?} produces at least one block");
+        }
+    }
+
+    /// The public `new_from_template` entrypoint builds a usable document for
+    /// every variant (not just `Report`).
+    #[test]
+    fn new_from_template_builds_every_variant() {
+        for &t in Template::all() {
+            let (state, _widget, format) = new_from_template(t);
+            assert_eq!(format, WpFormat::Markdown);
+            let containers = qdoc::model::open(&state.doc, &state.root).unwrap();
+            let snap = qdoc::model::materialize(&state.doc, &containers);
+            assert!(!snap.blocks.is_empty(), "{t:?} yields a non-empty document");
+        }
     }
 }
