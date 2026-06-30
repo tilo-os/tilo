@@ -608,6 +608,54 @@ fn byte_to_char(text: &str, byte_off: usize) -> usize {
     text[..b].chars().count()
 }
 
+/// Per-visual-line `(line_top, line_height)` for a shaped layout, in the layout's
+/// internal coordinate space (the same space `selection_rects`/`caret_geometry`
+/// report). Used by intra-block pagination to find the line boundary at which a
+/// too-tall block is split across a page.
+///
+/// `RichTextLayout` does not expose a line iterator, so the tops are recovered
+/// from the selection rectangles of the full text (one rect per wrapped line that
+/// carries glyphs). Lines with no glyphs (a wholly blank wrapped line) produce no
+/// rect; the tail is back-filled at the uniform single-line advance so the list
+/// still spans the layout's full height. The result is sorted, de-duplicated by
+/// top, and always covers `[0, layout.height())`.
+fn layout_line_tops(layout: &RichTextLayout, text: &str) -> Vec<(f64, f64)> {
+    let mut tops: Vec<(f64, f64)> = layout
+        .selection_rects(0, text.len().max(1))
+        .into_iter()
+        .map(|(_, y0, _, y1)| (y0 as f64, (y1 - y0) as f64))
+        .collect();
+    // `selection_rects` may emit several spans on the same line (one per run); keep
+    // one entry per distinct top, preferring the larger height for that line.
+    tops.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    tops.dedup_by(|b, a| {
+        if (a.0 - b.0).abs() < 0.5 {
+            a.1 = a.1.max(b.1);
+            true
+        } else {
+            false
+        }
+    });
+    let total_h = layout.height() as f64;
+    if tops.is_empty() {
+        return vec![(0.0, total_h.max(1.0))];
+    }
+    // Ensure the first line starts at the top (a leading blank line has no rect).
+    let line_h = tops[0].1.max(1.0);
+    while tops[0].0 > line_h * 0.5 {
+        tops.insert(0, (tops[0].0 - line_h, line_h));
+    }
+    // Back-fill any trailing blank lines so the tops span the full height.
+    let (last_top, last_h) = *tops.last().unwrap();
+    let mut next = last_top + last_h;
+    let step = last_h.max(1.0);
+    while next + step * 0.5 < total_h {
+        tops.push((next, step));
+        next += step;
+    }
+    tops
+}
+
 /// The collaboration presence key for a document block, keyed by its **stable
 /// CRDT block id** (not its index): two peers share the same Automerge object
 /// ids for a given block, whereas a block's positional index drifts as peers
@@ -1294,15 +1342,35 @@ fn shape_key(
 /// A block laid out for the current frame; kept for click hit-testing. The
 /// shaped `RichTextLayout` itself lives in `WordProcessorWidget::layout_cache`
 /// (keyed by `id`) so it can be reused across frames; look it up by `id`.
+#[derive(Clone)]
 struct Laid {
     id: String,
     text: String,
     kind: String,
     size: f32,
+    /// On-screen top of this slice's visible band (post-scroll). For an unsplit
+    /// block this is where the shaped layout's first line sits. For a block split
+    /// across a page boundary, each slice is a separate `Laid` and `y_top` is the
+    /// top of the band that slice occupies on its page.
     y_top: f64,
     text_x: f64,
     width: f64,
+    /// On-screen height of this slice's visible band. For an unsplit block this is
+    /// the full shaped-layout height; for a split slice it is only the height of
+    /// the lines that fall on this slice's page.
     height: f64,
+    /// Y where the shaped layout's internal origin (line_top = 0) maps on screen.
+    /// All layout-relative geometry (`selection_rects`, `caret_geometry`, `hit`)
+    /// is measured from here, so a line at internal `line_top` draws at
+    /// `layout_y + line_top`. Equals `y_top` for an unsplit block; for the lower
+    /// slice of a split block it sits *above* `y_top` (and above the page) so the
+    /// first carried-over line lands at the next page's top margin.
+    layout_y: f64,
+    /// When a block is split across pages this slice must clip its drawing to its
+    /// own band so lines belonging to other slices (which share the same layout,
+    /// mapped through `layout_y`) do not bleed onto this page. `None` for unsplit
+    /// blocks (the band equals the whole layout, so no clip is needed).
+    clip: Option<Rect>,
     bullet: Option<String>,
     /// Resolved text colour from the block's style.
     ink: Color,
@@ -2245,10 +2313,14 @@ impl WordProcessorWidget {
                 None => p.y >= l.y_top && p.y < l.y_top + l.height,
             };
             if inside {
+                // Hit-test in the layout's own coordinate space: `layout_y` maps the
+                // shaped layout origin onto this slice, so `p.y - layout_y` is the
+                // internal y of the line under the pointer (correct even when the
+                // line lives in a page-split slice whose band starts mid-layout).
                 let byte = self
                     .layout_cache
                     .get(&l.id)
-                    .map(|(_, lay)| lay.hit((p.x - l.text_x) as f32, (p.y - l.y_top) as f32))
+                    .map(|(_, lay)| lay.hit((p.x - l.text_x) as f32, (p.y - l.layout_y) as f32))
                     .unwrap_or(0);
                 hit = Some((l.id.clone(), byte_to_char(&l.text, byte)));
                 break;
@@ -2263,10 +2335,13 @@ impl WordProcessorWidget {
             }
             if hit.is_none() {
                 if let Some(l) = self.laid.last() {
+                    // Below the last slice → caret to the layout's final line. Hit at
+                    // the layout's own bottom (not the slice band height, which for a
+                    // split last slice covers only its carried-over lines).
                     let byte = self
                         .layout_cache
                         .get(&l.id)
-                        .map(|(_, lay)| lay.hit((p.x - l.text_x) as f32, (l.height - 1.0) as f32))
+                        .map(|(_, lay)| lay.hit((p.x - l.text_x) as f32, (lay.height() - 1.0) as f32))
                         .unwrap_or(0);
                     hit = Some((l.id.clone(), byte_to_char(&l.text, byte)));
                 }
@@ -3843,7 +3918,19 @@ impl Widget for WordProcessorWidget {
                 };
                 placed_on_page = true;
                 let mut ry = item_top;
+                // Whether the current page already carries a row of this table —
+                // the first row on a page never breaks (so an over-tall single row
+                // overflows its page, acceptable for v1).
+                let mut row_on_page = false;
                 for (r, (row_h, row_items)) in rows.into_iter().enumerate() {
+                    // Split the table at a row boundary: if this whole row would
+                    // cross the page's bottom margin, move it to the next page's top
+                    // margin (rows that fit stay on this page). No header repeat.
+                    if row_on_page && ry + row_h > page_content_bottom(cur_page) + 0.5 {
+                        cur_page += 1;
+                        ry = page_content_top(cur_page);
+                    }
+                    row_on_page = true;
                     for (c, cell_h, cell) in row_items {
                         let cell_x = content_x + c as f64 * col_w;
                         let cbox = Rect::new(cell_x, ry, cell_x + col_w, ry + row_h);
@@ -3856,6 +3943,8 @@ impl Widget for WordProcessorWidget {
                             text_x: cell_x + cell_pad,
                             width: col_w - 2.0 * cell_pad,
                             height: cell_h,
+                            layout_y: ry + cell_pad,
+                            clip: None,
                             bullet: None,
                             ink: PAPER_INK,
                             image_hash: None,
@@ -3909,6 +3998,8 @@ impl Widget for WordProcessorWidget {
                     text_x: content_x,
                     width: draw_w,
                     height: draw_h,
+                    layout_y: item_top,
+                    clip: None,
                     bullet: None,
                     ink: PAPER_INK,
                     image_hash: intrinsic.map(|_| hash),
@@ -3979,7 +4070,6 @@ impl Widget for WordProcessorWidget {
                     }
                 };
                 let block_h = layout.height() as f64;
-                new_cache.insert(b.id.clone(), (key, layout));
                 // Place with the style's space-before as the leading gap, breaking
                 // to the next page when the whole block would not fit before the
                 // bottom text margin (the lead is dropped at the top of a fresh
@@ -3995,23 +4085,92 @@ impl Widget for WordProcessorWidget {
                     top_candidate
                 };
                 placed_on_page = true;
-                laid.push(Laid {
-                    id: b.id.clone(),
-                    text: b.text.clone(),
-                    kind: b.kind.clone(),
-                    size,
-                    y_top: item_top,
-                    text_x: content_x + indent,
-                    width: wrap_w as f64,
-                    height: block_h,
-                    bullet,
-                    ink: Color::from_rgb8(st.color[0], st.color[1], st.color[2]),
-                    image_hash: None,
-                    cell_box: None,
-                    cell_row: None,
-                    page: cur_page,
-                });
-                y = item_top + block_h + st.space_after as f64;
+                let text_x = content_x + indent;
+                let ink = Color::from_rgb8(st.color[0], st.color[1], st.color[2]);
+                let width = wrap_w as f64;
+                // Does the whole block fit on the current page from `item_top`? If
+                // so this is the fast, unchanged single-`Laid` path. Otherwise the
+                // block is split at line boundaries across as many pages as needed.
+                if item_top + block_h <= page_content_bottom(cur_page) + 0.5 {
+                    laid.push(Laid {
+                        id: b.id.clone(),
+                        text: b.text.clone(),
+                        kind: b.kind.clone(),
+                        size,
+                        y_top: item_top,
+                        text_x,
+                        width,
+                        height: block_h,
+                        layout_y: item_top,
+                        clip: None,
+                        bullet,
+                        ink,
+                        image_hash: None,
+                        cell_box: None,
+                        cell_row: None,
+                        page: cur_page,
+                    });
+                    y = item_top + block_h + st.space_after as f64;
+                } else {
+                    // Intra-block pagination: emit one `Laid` slice per page the
+                    // block spans. Each slice shares the one cached layout (one id,
+                    // one cache entry); only the *visual* rendering is split. A
+                    // slice's `layout_y` maps the layout origin so that line geometry
+                    // (`selection_rects`/`caret_geometry`/`hit`) still resolves, and
+                    // its `clip` band keeps lines from other slices off this page.
+                    let lines = layout_line_tops(&layout, &b.text);
+                    let mut li = 0usize;
+                    let mut slice_top = item_top; // on-screen top of the current slice
+                    let mut first_slice = true;
+                    while li < lines.len() {
+                        let bottom = page_content_bottom(cur_page);
+                        let (first_line_top, _) = lines[li];
+                        // layout_y maps line `li`'s internal top to `slice_top`.
+                        let layout_y = slice_top - first_line_top;
+                        // Take every subsequent line that still fits on this page.
+                        let mut last = li;
+                        while last + 1 < lines.len() {
+                            let (nt, nh) = lines[last + 1];
+                            if layout_y + nt + nh > bottom + 0.5 {
+                                break;
+                            }
+                            last += 1;
+                        }
+                        let (lt, lh) = lines[last];
+                        let slice_bottom = layout_y + lt + lh;
+                        let band = Rect::new(text_x, slice_top, text_x + width, slice_bottom);
+                        laid.push(Laid {
+                            id: b.id.clone(),
+                            text: b.text.clone(),
+                            kind: b.kind.clone(),
+                            size,
+                            y_top: slice_top,
+                            text_x,
+                            width,
+                            height: slice_bottom - slice_top,
+                            layout_y,
+                            clip: Some(band),
+                            // The bullet/number belongs to the block's first line only.
+                            bullet: if first_slice { bullet.clone() } else { None },
+                            ink,
+                            image_hash: None,
+                            cell_box: None,
+                            cell_row: None,
+                            page: cur_page,
+                        });
+                        li = last + 1;
+                        first_slice = false;
+                        if li < lines.len() {
+                            // More lines remain: spill onto the next page's top margin.
+                            cur_page += 1;
+                            slice_top = page_content_top(cur_page);
+                            y = slice_top;
+                        } else {
+                            y = slice_bottom + st.space_after as f64;
+                        }
+                    }
+                }
+                new_cache.insert(b.id.clone(), (key, layout));
                 bi += 1;
             }
         }
@@ -4033,8 +4192,12 @@ impl Widget for WordProcessorWidget {
         if sy != 0.0 {
             for l in laid.iter_mut() {
                 l.y_top -= sy;
+                l.layout_y -= sy;
                 if let Some(bx) = l.cell_box.as_mut() {
                     *bx = Rect::new(bx.x0, bx.y0 - sy, bx.x1, bx.y1 - sy);
+                }
+                if let Some(c) = l.clip.as_mut() {
+                    *c = Rect::new(c.x0, c.y0 - sy, c.x1, c.y1 - sy);
                 }
             }
         }
@@ -4209,6 +4372,18 @@ impl Widget for WordProcessorWidget {
                 Some((_, lay)) => lay,
                 None => continue,
             };
+            // Layout-relative geometry is measured from `layout_y` (= the on-screen
+            // y of the shaped layout's origin). For an unsplit block this equals
+            // `y_top`; for a slice of a page-split block it is offset so the carried
+            // lines land in this slice's band.
+            let ly = l.layout_y;
+            // A split slice clips its drawing to its own band so lines belonging to
+            // the block's other slices (drawn from the same layout via `ly`) never
+            // bleed onto this page. Unsplit blocks (`clip == None`) draw unclipped.
+            let clipped = l.clip.is_some();
+            if let Some(band) = l.clip {
+                scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, ctf, &band);
+            }
 
             if let Some((b0, b1)) = self.selection_bytes_for(&l.id, &l.text) {
                 if let (Some(bx), true) = (l.cell_box, multi_sel) {
@@ -4216,7 +4391,7 @@ impl Widget for WordProcessorWidget {
                     scene.fill(Fill::NonZero, ctf, PAPER_SELECTION, None, &bx);
                 } else {
                     for (rx0, ry0, rx1, ry1) in layout.selection_rects(b0, b1) {
-                        let r = Rect::new(l.text_x + rx0 as f64, l.y_top + ry0 as f64, l.text_x + rx1 as f64, l.y_top + ry1 as f64);
+                        let r = Rect::new(l.text_x + rx0 as f64, ly + ry0 as f64, l.text_x + rx1 as f64, ly + ry1 as f64);
                         scene.fill(Fill::NonZero, ctf, PAPER_SELECTION, None, &r);
                     }
                 }
@@ -4229,7 +4404,7 @@ impl Widget for WordProcessorWidget {
                         let bs = char_to_byte(&l.text, *cs);
                         let be = char_to_byte(&l.text, *ce);
                         for (rx0, ry0, rx1, ry1) in layout.selection_rects(bs, be) {
-                            let r = Rect::new(l.text_x + rx0 as f64, l.y_top + ry0 as f64, l.text_x + rx1 as f64, l.y_top + ry1 as f64);
+                            let r = Rect::new(l.text_x + rx0 as f64, ly + ry0 as f64, l.text_x + rx1 as f64, ly + ry1 as f64);
                             scene.fill(Fill::NonZero, ctf, FIND_HL, None, &r);
                         }
                     }
@@ -4245,20 +4420,20 @@ impl Widget for WordProcessorWidget {
                     for (bs, be, cid) in block_comment_ranges(b) {
                         let rects = layout.selection_rects(bs, be);
                         for &(rx0, ry0, rx1, ry1) in &rects {
-                            let r = Rect::new(l.text_x + rx0 as f64, l.y_top + ry0 as f64, l.text_x + rx1 as f64, l.y_top + ry1 as f64);
+                            let r = Rect::new(l.text_x + rx0 as f64, ly + ry0 as f64, l.text_x + rx1 as f64, ly + ry1 as f64);
                             scene.fill(Fill::NonZero, ctf, COMMENT_HL, None, &r);
                         }
                         // Anchor the marker at the start line's top, and remember
                         // the range's right edge (max rect x1) for the inline tab.
                         if let Some(&(_, ry0, _, _)) = rects.first() {
                             let right_x = rects.iter().map(|r| r.2).fold(f32::MIN, f32::max);
-                            comment_markers.push((cid, l.y_top + ry0 as f64, l.text_x + right_x as f64));
+                            comment_markers.push((cid, ly + ry0 as f64, l.text_x + right_x as f64));
                         }
                     }
                 }
             }
 
-            text_renderer.draw_rich(scene, layout, ctf * Affine::translate((l.text_x, l.y_top)), l.ink);
+            text_renderer.draw_rich(scene, layout, ctf * Affine::translate((l.text_x, ly)), l.ink);
 
             // Tracked-change decorations (over the text): an `ins` range gets a
             // green underline (the glyphs are already tinted green by
@@ -4271,14 +4446,14 @@ impl Widget for WordProcessorWidget {
                     let (ins_ranges, del_ranges) = block_change_decos(b);
                     for &(b0, b1) in &ins_ranges {
                         for (rx0, _ry0, rx1, ry1) in layout.selection_rects(b0, b1) {
-                            let uy = l.y_top + ry1 as f64 - 2.0;
+                            let uy = ly + ry1 as f64 - 2.0;
                             let line = Rect::new(l.text_x + rx0 as f64, uy, l.text_x + rx1 as f64, uy + 1.5);
                             scene.fill(Fill::NonZero, ctf, TRACK_INS, None, &line);
                         }
                     }
                     for &(b0, b1) in &del_ranges {
                         for (rx0, ry0, rx1, ry1) in layout.selection_rects(b0, b1) {
-                            let my = l.y_top + ((ry0 + ry1) / 2.0) as f64;
+                            let my = ly + ((ry0 + ry1) / 2.0) as f64;
                             let line = Rect::new(l.text_x + rx0 as f64, my, l.text_x + rx1 as f64, my + 1.5);
                             scene.fill(Fill::NonZero, ctf, TRACK_DEL, None, &line);
                         }
@@ -4289,7 +4464,7 @@ impl Widget for WordProcessorWidget {
                         let rects = layout.selection_rects(bs, be);
                         if let Some(&(_, ry0, _, _)) = rects.first() {
                             let right_x = rects.iter().map(|r| r.2).fold(f32::MIN, f32::max);
-                            change_markers.push((cid, l.y_top + ry0 as f64, l.text_x + right_x as f64));
+                            change_markers.push((cid, ly + ry0 as f64, l.text_x + right_x as f64));
                         }
                     }
                 }
@@ -4302,7 +4477,7 @@ impl Widget for WordProcessorWidget {
             if let Some(spans) = spell_by_block.get(&l.id) {
                 for &(b0, b1) in spans {
                     for (rx0, _ry0, rx1, ry1) in layout.selection_rects(b0, b1) {
-                        let y = l.y_top + ry1 as f64 - 1.0;
+                        let y = ly + ry1 as f64 - 1.0;
                         draw_squiggle(scene, ctf, l.text_x + rx0 as f64, l.text_x + rx1 as f64, y);
                     }
                 }
@@ -4332,7 +4507,7 @@ impl Widget for WordProcessorWidget {
                         // Mask the U+FFFC object-replacement glyph (a box in some
                         // fonts) with paper so only the superscript number shows.
                         if let Some((rx0, ry0, rx1, ry1)) = placeholder_rect {
-                            let mask = Rect::new(l.text_x + rx0 as f64, l.y_top + ry0 as f64, l.text_x + rx1 as f64, l.y_top + ry1 as f64);
+                            let mask = Rect::new(l.text_x + rx0 as f64, ly + ry0 as f64, l.text_x + rx1 as f64, ly + ry1 as f64);
                             scene.fill(Fill::NonZero, ctf, self.chrome.paper, None, &mask);
                         }
                         let label = num.to_string();
@@ -4343,7 +4518,7 @@ impl Widget for WordProcessorWidget {
                             &label,
                             sup_size,
                             l.ink,
-                            ctf * Affine::translate((l.text_x + mx as f64, l.y_top + my as f64 - 1.0)),
+                            ctf * Affine::translate((l.text_x + mx as f64, ly + my as f64 - 1.0)),
                             None,
                         );
                         page_notes.entry(l.page).or_default().push(num);
@@ -4354,8 +4529,11 @@ impl Widget for WordProcessorWidget {
             if self.focused && l.id == self.inner.caret.block && !self.inner.has_selection() {
                 let byte = char_to_byte(&l.text, self.inner.caret.offset);
                 let (cx, cy, ch) = layout.caret_geometry(byte);
-                let caret = Rect::new(l.text_x + cx as f64, l.y_top + cy as f64, l.text_x + cx as f64 + CARET_WIDTH, l.y_top + cy as f64 + ch as f64);
+                let caret = Rect::new(l.text_x + cx as f64, ly + cy as f64, l.text_x + cx as f64 + CARET_WIDTH, ly + cy as f64 + ch as f64);
                 scene.fill(Fill::NonZero, ctf, PAPER_CARET, None, &caret);
+            }
+            if clipped {
+                scene.pop_layer();
             }
         }
 
@@ -7110,6 +7288,129 @@ mod tests {
         assert!(idx > 0, "page 2 is preceded by page-1 content");
         assert!((wp.laid[idx].y_top - pct(1)).abs() < 1.0, "the first page-2 block hugs the page-2 top margin");
         assert_eq!(page_of(wp.laid[idx - 1].y_top), 0, "the block before it is on page 1");
+    }
+
+    /// A SINGLE paragraph taller than one page is split at a line boundary across
+    /// pages (intra-block pagination): the lines that fit stay on page 1, the rest
+    /// flow to page 2. The block stays one logical block (one id, one cache entry);
+    /// only its visual rendering is split. Asserts on the production layout
+    /// geometry (`wp.laid` slices), not a helper.
+    #[test]
+    fn single_paragraph_splits_at_line_boundary_across_pages() {
+        let mar = 72.0;
+        let letter_h = MAX_PAGE_W * LETTER_RATIO;
+        let page_pitch = letter_h + PAGE_GAP;
+
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        // ONE paragraph with enough words to wrap to well over a page of lines.
+        let mut para = String::new();
+        for i in 0..400 {
+            para.push_str(&format!("word{i} "));
+        }
+        let para = para.trim_end().to_string();
+        wp.model_mut().insert_str(&mut state.doc, &para);
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+
+        let ruler_h = if wp.ruler_on { RULER_H } else { 0.0 };
+        let page_top = wp.toolbar_height(1000.0) + ruler_h + PAGE_TOP;
+        let pct = |i: usize| page_top + i as f64 * page_pitch + mar; // page content top
+        let pcb = |i: usize| page_top + i as f64 * page_pitch + letter_h - mar; // bottom margin
+        let page_of = |y: f64| ((y - page_top) / page_pitch).floor() as i64;
+
+        // The one paragraph produced multiple laid slices, all sharing its id.
+        let bid = wp.blocks[0].id.clone();
+        let slices: Vec<&Laid> = wp.laid.iter().filter(|l| l.id == bid).collect();
+        assert!(slices.len() >= 2, "a too-tall paragraph splits into >=2 page slices (got {})", slices.len());
+        // One logical block, one layout cache entry — only the rendering is split.
+        assert_eq!(wp.layout_cache.len(), 1, "the split block keeps exactly one cache entry");
+        assert!(wp.layout_cache.contains_key(&bid), "the cache entry is keyed by the single block id");
+
+        // The first slice is on page 1 and its last line ends ABOVE the page-1
+        // bottom text margin — the page boundary never bisects a line.
+        let s0 = slices[0];
+        assert_eq!(page_of(s0.y_top), 0, "the first slice is on page 1");
+        assert!(s0.y_top + s0.height <= pcb(0) + 1.0, "page-1 slice ends above the bottom margin (no straddle): bottom={} margin={}", s0.y_top + s0.height, pcb(0));
+
+        // The second slice's first carried line starts at the page-2 TOP margin.
+        let s1 = slices[1];
+        assert_eq!(page_of(s1.y_top), 1, "the carried-over slice is on page 2");
+        assert!((s1.y_top - pct(1)).abs() < 1.0, "the first carried line hugs the page-2 top margin: top={} margin={}", s1.y_top, pct(1));
+
+        // The carried slice maps the layout origin ABOVE its band (so an internal
+        // line N draws at `layout_y + line_top`), and clips to its own band.
+        assert!(s1.layout_y < s1.y_top, "the carried slice's layout origin sits above its page-2 band");
+        assert!(s1.clip.is_some(), "a split slice clips its drawing to its band");
+        assert!(s0.clip.is_some(), "the first slice of a split block also clips its band");
+    }
+
+    /// Caret hit-testing on a line that MOVED to page 2 by intra-block pagination
+    /// returns the right offset: a pointer over the carried line resolves to the
+    /// byte that the production layout places at that on-screen position. Drives
+    /// the production `caret_from_pointer` path, asserts on its result.
+    #[test]
+    fn caret_hit_on_a_carried_line_returns_the_right_offset() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        let mut para = String::new();
+        for i in 0..400 {
+            para.push_str(&format!("word{i} "));
+        }
+        let para = para.trim_end().to_string();
+        wp.model_mut().insert_str(&mut state.doc, &para);
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+
+        let bid = wp.blocks[0].id.clone();
+        // The carried-over slice (the first one on page 2 for this block).
+        let s1 = wp
+            .laid
+            .iter()
+            .filter(|l| l.id == bid)
+            .find(|l| l.page == 1)
+            .cloned()
+            .map(|l| (l.text_x, l.layout_y, l.y_top, l.height))
+            .expect("the paragraph spills onto page 2");
+        let (text_x, layout_y, band_top, band_h) = s1;
+
+        // Pick a byte whose shaped position falls inside the page-2 band — i.e. a
+        // character that was carried over. Walk the layout's caret geometry to find
+        // the first byte whose on-screen y lands in slice 2's band.
+        let (key_byte, gx, gy) = {
+            let (_, layout) = wp.layout_cache.get(&bid).expect("cached layout");
+            let mut found = None;
+            let mut byte = 0usize;
+            while byte <= para.len() {
+                let (cx, cy, _ch) = layout.caret_geometry(byte);
+                let screen_y = layout_y + cy as f64;
+                if screen_y >= band_top - 0.5 && screen_y < band_top + band_h {
+                    // A non-leading byte on this line (so click x is unambiguous).
+                    found = Some((byte, cx as f64, cy as f64));
+                    break;
+                }
+                // Advance to the next char boundary.
+                byte += 1;
+                while byte < para.len() && !para.is_char_boundary(byte) {
+                    byte += 1;
+                }
+            }
+            found.expect("some byte renders on the page-2 carried band")
+        };
+        let expected_char = byte_to_char(&para, key_byte);
+
+        // Click a few px to the right of that glyph's left edge, on its line — a
+        // point unambiguously inside one character — using the slice's on-screen
+        // mapping (`text_x` for x, `layout_y + glyph_top` for y).
+        let click = Point::new(text_x + gx + 2.0, layout_y + gy + 4.0);
+        // The click must really be inside the page-2 band (sanity on the geometry).
+        assert!(click.y >= band_top - 0.5 && click.y < band_top + band_h, "click lands in the carried band");
+        wp.caret_from_pointer(click, false);
+
+        // The resolved caret is in the same (single) block, at the carried char.
+        assert_eq!(wp.inner.caret.block, bid, "hit resolves to the one logical block");
+        let got = wp.inner.caret.offset as i64;
+        assert!((got - expected_char as i64).abs() <= 1, "carried-line hit resolves to the right offset: got {got}, expected ~{expected_char}");
     }
 
     #[test]
