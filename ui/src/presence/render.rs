@@ -133,9 +133,12 @@ impl PresenceCtx {
         );
     }
 
-    /// Draw a 2-px focus outline around `rect` in `user`'s assigned color.
-    /// Used by widgets that want to signal "this peer is present on me"
-    /// without owning caret/selection geometry of their own.
+    /// Draw a thin gutter strip on the left edge of `rect` in `user`'s
+    /// assigned color — a far subtler "this peer is present on me"
+    /// signal than a heavy block outline. Mirrors the gutter-rule a
+    /// code editor uses to mark a hunk of unsaved changes. `rect` is
+    /// already in scene space (transformed by the caller); the strip
+    /// itself uses `Affine::IDENTITY` to avoid double-transforming.
     pub fn draw_peer_focus(
         &self,
         scene: &mut Scene,
@@ -144,9 +147,8 @@ impl PresenceCtx {
         rect: Rect,
     ) {
         let color = color_for(self, user, theme);
-        // Inflate inward by 1px so the 2px stroke sits inside `rect`.
-        let outline = rect.inflate(-1.0, -1.0);
-        scene.stroke(&Stroke::new(2.0), Affine::IDENTITY, color, None, &outline);
+        let strip = Rect::new(rect.x0 - 4.0, rect.y0, rect.x0 - 1.0, rect.y1);
+        scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, &strip);
     }
 }
 
