@@ -8,6 +8,7 @@ pub mod content;
 pub mod export;
 pub mod headers;
 pub mod meta;
+pub mod notes;
 pub mod styles;
 
 use crate::format::{CodecError, Confidence, FormatProvider};

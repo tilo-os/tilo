@@ -47,6 +47,24 @@ pub struct DocSnapshot {
     /// `footer1.xml` part.
     #[serde(default)]
     pub footer: Vec<BlockView>,
+    /// Footnotes / endnotes, each a small block sequence keyed by note id. The body
+    /// text references a note via an inline `note-ref` mark (see
+    /// `schema::MARK_NOTE_REF`) over a placeholder character carrying the note id.
+    /// Round-trips through inline `text:note` elements in `.odt` and the
+    /// `word/footnotes.xml` / `word/endnotes.xml` parts in `.docx`. Empty for
+    /// documents with no notes (and absent in snapshots authored before this field).
+    #[serde(default)]
+    pub notes: Vec<NoteView>,
+}
+
+/// One footnote/endnote: its id, kind (`"footnote"`/`"endnote"`), and the block
+/// sequence forming its content. The body text references it by a `note-ref` mark
+/// valued with this `id`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NoteView {
+    pub id: String,
+    pub kind: String,
+    pub blocks: Vec<BlockView>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
