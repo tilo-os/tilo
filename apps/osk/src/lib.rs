@@ -37,6 +37,7 @@
 //! See [`widget`] for where W7 and W9 plug in.
 
 pub mod dict;
+pub mod futo;
 pub mod layout;
 pub mod predict;
 pub mod suggest;
@@ -45,6 +46,7 @@ pub mod toolbar;
 pub mod widget;
 
 pub use dict::{Dictionary, Entry};
+pub use futo::FutoSwipeModel;
 pub use layout::{Key, KeyAction, KeyId, KeyboardLayout, ShiftState, key_rects};
 pub use predict::Predictor;
 pub use suggest::{Suggestion, suggestion_rects};
