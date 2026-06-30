@@ -41,6 +41,15 @@ const DIVIDER_W: f64 = 6.0;
 const PAD: f64 = 16.0;
 const FIELD_H: f64 = 38.0;
 
+/// Edit-form header band geometry. The header is two stacked rows so the
+/// title and the Favorite control never overlap: row 1 is the title, row 2
+/// holds the Favorite pill and the Save/Cancel buttons. `layout_form` and
+/// `draw_form` both derive their offsets from these so the hit rects and the
+/// painted text stay aligned.
+const FORM_TITLE_TOP: f64 = 16.0; // title row top, relative to detail pane top
+const FORM_TITLE_H: f64 = 26.0; // title row height
+const FORM_ROW_GAP: f64 = 10.0; // vertical gap between header rows / before body
+
 /// Type labels offered in the phone/email/address chip menu.
 const TYPE_OPTIONS: &[&str] = &["home", "work", "mobile", "main", "other"];
 
@@ -227,8 +236,44 @@ enum Popup {
     ContextMenu { target: ContactId, anchor: Rect },
 }
 
-/// Actions offered in the per-contact right-click context menu.
-const CONTEXT_ACTIONS: &[&str] = &["Edit", "Export", "Delete"];
+/// Stable identifiers for the per-contact right-click context-menu items. The
+/// visible label for [`ContextAction::Favorite`] depends on the contact's
+/// current favorite state, so the menu is built per-contact at open time via
+/// [`ContactsApp::context_actions`] rather than from a single static list.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ContextAction {
+    Edit,
+    Favorite,
+    Export,
+    Delete,
+}
+
+impl ContextAction {
+    /// The user-facing label. The Favorite entry reads "Add to favorites" or
+    /// "Remove from favorites" depending on the contact's current state.
+    fn label(self, is_favorite: bool) -> &'static str {
+        match self {
+            ContextAction::Edit => "Edit",
+            ContextAction::Favorite => {
+                if is_favorite {
+                    "Remove from favorites"
+                } else {
+                    "Add to favorites"
+                }
+            }
+            ContextAction::Export => "Export",
+            ContextAction::Delete => "Delete",
+        }
+    }
+}
+
+/// Order of items in the per-contact right-click context menu.
+const CONTEXT_ACTIONS: &[ContextAction] = &[
+    ContextAction::Edit,
+    ContextAction::Favorite,
+    ContextAction::Export,
+    ContextAction::Delete,
+];
 
 #[derive(Clone, Copy)]
 enum TypeTarget {
@@ -379,6 +424,16 @@ impl ContactsApp {
         c.emails.push(Labeled::new("home", ""));
         self.begin_edit(c, true);
         self.push.snap(Pane::Detail);
+    }
+
+    /// Snap the EDIT form open on the selected contact for `--shots`, so a
+    /// headless frame captures the edit view (title header row + Favorite
+    /// control + Save/Cancel) for visual inspection of the header layout.
+    pub fn shots_edit_contact(&mut self) {
+        if let Some(c) = self.selected.and_then(|id| self.store.get(id)).cloned() {
+            self.begin_edit(c, false);
+            self.push.snap(Pane::Detail);
+        }
     }
 
     /// Snap the export-selection dialog open for `--shots`.
@@ -778,12 +833,16 @@ impl ContactsApp {
         let x0 = area.x0 + PAD;
         let x1 = area.x1 - PAD;
         let w = x1 - x0;
-        let top = area.y0 + 64.0 + off; // header band reserved for Save/Cancel
+        // The (non-scrolled) header band is two stacked rows so nothing
+        // collides: row 1 is the "Edit/New Contact" title, row 2 holds the
+        // Favorite pill (left) and Save/Cancel (right). The scrollable body
+        // begins below both. Keep these constants in sync with `draw_form`
+        // (the title baseline and the body clip both derive from them).
+        let title_y = area.y0 + FORM_TITLE_TOP + off;
+        let by = title_y + FORM_TITLE_H + FORM_ROW_GAP; // controls row top
+        let top = by + 32.0 + FORM_ROW_GAP; // first field row top
         let mut y = top - self.detail_scroll;
 
-        // Save / Cancel live pinned in the header band (not scrolled). On a
-        // narrow window the band sits below the Back affordance pill.
-        let by = area.y0 + 16.0 + off;
         self.hit.cancel = Rect::new(x1 - 88.0, by, x1, by + 32.0);
         self.hit.save = Rect::new(x1 - 88.0 - 96.0, by, x1 - 88.0 - 8.0, by + 32.0);
         self.hit.fav_toggle = Rect::new(x0, by, x0 + 120.0, by + 32.0);
@@ -1412,19 +1471,22 @@ impl ContactsApp {
         let off = self.detail_top_offset();
         let x0 = area.x0 + PAD;
 
-        // Header band (not scrolled). On a narrow window the band is pushed
-        // down so the Back affordance pill sits above it.
+        // Header band (not scrolled), two stacked rows so the title and the
+        // Favorite control don't collide. On a narrow window the whole band is
+        // pushed down so the Back affordance pill sits above it. Title sits on
+        // its own row (`FORM_TITLE_TOP`), vertically centered in `FORM_TITLE_H`.
         let title = if self.form.as_ref().map(|f| f.is_new).unwrap_or(false) {
             "New Contact"
         } else {
             "Edit Contact"
         };
+        let title_y = area.y0 + FORM_TITLE_TOP + off;
         tr.draw_text_weighted(
             scene,
             title,
             18.0,
             c.text_primary,
-            t * Affine::translate((x0, area.y0 + 22.0 + off)),
+            t * Affine::translate((x0, title_y + (FORM_TITLE_H - 22.0) / 2.0)),
             None,
             TextWeight::Bold,
         );
@@ -1449,8 +1511,11 @@ impl ContactsApp {
         toolbar_button(scene, t, tr, theme, self.hit.save, "Save", true);
         toolbar_button(scene, t, tr, theme, self.hit.cancel, "Cancel", false);
 
-        // Scrollable body, clipped below the header band.
-        let body = Rect::new(area.x0, area.y0 + 60.0 + off, area.x1, area.y1);
+        // Scrollable body, clipped below the two-row header band (title row +
+        // controls row). Derived from the same constants as `layout_form` so
+        // the clip starts exactly under the Favorite/Save/Cancel row.
+        let body_top = area.y0 + FORM_TITLE_TOP + FORM_TITLE_H + FORM_ROW_GAP + 32.0 + off;
+        let body = Rect::new(area.x0, body_top, area.x1, area.y1);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &body);
 
         // Section labels are drawn relative to the first input of each group.
@@ -1651,15 +1716,19 @@ impl ContactsApp {
                     );
                 }
             }
-            Popup::ContextMenu { anchor, .. } => {
-                let (panel, rows) = self.popup_menu_geometry(*anchor, CONTEXT_ACTIONS.len(), 160.0);
+            Popup::ContextMenu { target, anchor } => {
+                let (panel, rows) = self.popup_menu_geometry(*anchor, CONTEXT_ACTIONS.len(), 200.0);
                 menu_panel(scene, t, theme, panel);
+                // The Favorite item's label reflects the target contact's
+                // current state ("Add to favorites" vs "Remove from favorites").
+                let is_fav = self.store.get(*target).map(|c| c.favorite).unwrap_or(false);
                 for (i, r) in rows.iter().enumerate() {
                     let hov = r.contains(self.last_mouse);
+                    let action = CONTEXT_ACTIONS[i];
+                    let label = action.label(is_fav);
                     // The destructive "Delete" item reads in the danger color
                     // when not hovered (hover inverts to white-on-accent).
-                    let label = CONTEXT_ACTIONS[i];
-                    if label == "Delete" && !hov {
+                    if action == ContextAction::Delete && !hov {
                         menu_item_colored(scene, t, tr, theme, *r, label, c.semantic.danger);
                     } else {
                         menu_item(scene, t, tr, theme, *r, label, hov, false);
@@ -2950,16 +3019,28 @@ impl ContactsApp {
                 self.relayout = true;
             }
             Popup::ContextMenu { target, anchor } => {
-                let (_panel, rows) = self.popup_menu_geometry(anchor, CONTEXT_ACTIONS.len(), 160.0);
+                let (_panel, rows) = self.popup_menu_geometry(anchor, CONTEXT_ACTIONS.len(), 200.0);
                 if let Some(i) = rows.iter().position(|r| r.contains(p)) {
                     match CONTEXT_ACTIONS[i] {
-                        "Edit" => {
+                        ContextAction::Edit => {
                             if let Some(c) = self.store.get(target).cloned() {
                                 self.selected = Some(target);
                                 self.begin_edit(c, false);
                             }
                         }
-                        "Export" => {
+                        ContextAction::Favorite => {
+                            // Toggle the favorite flag and persist it to the
+                            // CRDT (same write path as the view-mode star and
+                            // Save), so the list star and the menu label flip
+                            // immediately and the change survives a reload.
+                            if let Some(c) = self.store.get_mut(target) {
+                                c.favorite = !c.favorite;
+                                let cc = c.clone();
+                                ContactsDoc::upsert_contact(state, &cc);
+                            }
+                            self.relayout = true;
+                        }
+                        ContextAction::Export => {
                             // Open the export dialog pre-ticked with just this
                             // contact.
                             let mut set = std::collections::HashSet::new();
@@ -2967,11 +3048,10 @@ impl ContactsApp {
                             self.export_sel = Some(set);
                             self.export_scroll = 0.0;
                         }
-                        "Delete" => {
+                        ContextAction::Delete => {
                             self.selected = Some(target);
                             self.confirm_delete = Some(target);
                         }
-                        _ => {}
                     }
                 }
             }
@@ -3681,8 +3761,9 @@ mod tests {
         }
         // Click the "Delete" row in the menu → the delete-confirm modal opens.
         let Some(Popup::ContextMenu { anchor, .. }) = h.app.popup else { unreachable!() };
-        let (_panel, rows) = h.app.popup_menu_geometry(anchor, CONTEXT_ACTIONS.len(), 160.0);
-        let delete_idx = CONTEXT_ACTIONS.iter().position(|a| *a == "Delete").unwrap();
+        let (_panel, rows) = h.app.popup_menu_geometry(anchor, CONTEXT_ACTIONS.len(), 200.0);
+        let delete_idx =
+            CONTEXT_ACTIONS.iter().position(|a| *a == ContextAction::Delete).unwrap();
         h.press_left(rows[delete_idx].center());
         assert_eq!(
             h.app.confirm_delete,
@@ -3690,6 +3771,62 @@ mod tests {
             "context-menu Delete routes through the confirmation modal"
         );
         assert!(h.app.popup.is_none(), "the context menu closes when an item is chosen");
+    }
+
+    /// The context-menu Favorite item flips the contact's flag, persists it to
+    /// the CRDT, and its label reflects the (now-updated) state on reopen.
+    #[test]
+    fn context_menu_favorite_toggles_flag_persists_and_relabels() {
+        let mut h = Harness::new(1280, 800);
+        let row = h.row_center(0);
+        let id = h.row_id(0);
+
+        // Read the CRDT-backed favorite state (not just the in-memory store).
+        let fav_in_doc = |doc: &AutoCommit, id: ContactId| {
+            ContactsDoc::list_contacts(doc)
+                .into_iter()
+                .find(|c| c.id == id)
+                .map(|c| c.favorite)
+                .expect("contact present in doc")
+        };
+        let before = h.app.store.get(id).unwrap().favorite;
+
+        // The menu item index is stable; resolve it and confirm its label
+        // matches the *current* (pre-toggle) favorite state.
+        let fav_idx =
+            CONTEXT_ACTIONS.iter().position(|a| *a == ContextAction::Favorite).unwrap();
+        assert_eq!(
+            CONTEXT_ACTIONS[fav_idx].label(before),
+            if before { "Remove from favorites" } else { "Add to favorites" },
+            "the Favorite item is labelled for the contact's current state",
+        );
+
+        // Open the menu and click the Favorite item.
+        assert!(h.press_right(row));
+        let Some(Popup::ContextMenu { anchor, .. }) = h.app.popup else {
+            panic!("right-click should open the context menu");
+        };
+        let (_panel, rows) = h.app.popup_menu_geometry(anchor, CONTEXT_ACTIONS.len(), 200.0);
+        h.press_left(rows[fav_idx].center());
+
+        // The flag flipped in the store AND in the CRDT, and the menu closed.
+        assert_eq!(h.app.store.get(id).unwrap().favorite, !before, "store flag flipped");
+        assert_eq!(fav_in_doc(&h.doc, id), !before, "CRDT favorite flag flipped");
+        assert!(h.app.popup.is_none(), "the menu closes after toggling favorite");
+
+        // Reopening the menu now shows the inverted label.
+        assert!(h.press_right(h.row_center(0)));
+        assert_eq!(
+            CONTEXT_ACTIONS[fav_idx].label(!before),
+            if !before { "Remove from favorites" } else { "Add to favorites" },
+            "the relabelled item reflects the toggled state",
+        );
+
+        // Toggling again restores the original state (round-trip).
+        let Some(Popup::ContextMenu { anchor, .. }) = h.app.popup else { unreachable!() };
+        let (_panel, rows) = h.app.popup_menu_geometry(anchor, CONTEXT_ACTIONS.len(), 200.0);
+        h.press_left(rows[fav_idx].center());
+        assert_eq!(fav_in_doc(&h.doc, id), before, "second toggle restores the CRDT flag");
     }
 
     #[test]

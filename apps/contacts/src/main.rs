@@ -45,6 +45,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // *after* the sync pass.
         let setup: Box<dyn FnOnce(&mut contacts::ContactsApp)> = match scenario.as_deref() {
             Some("new") => Box::new(|a: &mut contacts::ContactsApp| a.shots_new_contact()),
+            Some("edit") => Box::new(|a: &mut contacts::ContactsApp| a.shots_edit_contact()),
             Some("export") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_export()),
             Some("unsaved") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_unsaved()),
             Some("context") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_context_menu()),
