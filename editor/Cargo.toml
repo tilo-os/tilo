@@ -19,6 +19,7 @@ spellcheck = { path = "../spellcheck" }
 docpdf = { path = "../docpdf" }
 dochtml = { path = "../dochtml" }
 docrtf = { path = "../docrtf" }
+docepub = { path = "../docepub" }
 automerge = "0.8.0"
 vello = "0.9"
 taffy = "0.10.1"
