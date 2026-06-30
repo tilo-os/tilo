@@ -202,6 +202,17 @@ impl Widget for Text {
     fn is_focused(&self) -> bool { false }
     fn needs_commit(&self) -> bool { false }
 
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Role};
+        // The FTL-resolved text *is* the accessible name. Empty text carries no
+        // meaning, so it stays presentational (collapses out of the tree).
+        let label = crate::i18n!(&self.label);
+        if label.is_empty() {
+            return None;
+        }
+        Some(AccessNode::new(Role::StaticText).with_name(label))
+    }
+
     fn presence_key(&self) -> Option<PresenceKey> {
         if self.presence_path.is_empty() {
             None
@@ -240,5 +251,30 @@ impl Widget for Text {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::a11y::Role;
+
+    #[test]
+    fn accessibility_reports_static_text_with_label_as_name() {
+        let t = Text::new("Hello world");
+        let node = Widget::accessibility(&t).expect("non-empty text is not presentational");
+        assert_eq!(node.role, Role::StaticText);
+        assert_eq!(node.name.as_deref(), Some("Hello world"));
+        assert_eq!(node.value, None);
+        assert!(!node.state.focusable, "static text is not focusable");
+    }
+
+    #[test]
+    fn accessibility_empty_text_is_presentational() {
+        let t = Text::new("");
+        assert!(
+            Widget::accessibility(&t).is_none(),
+            "empty text collapses out of the a11y tree",
+        );
     }
 }
