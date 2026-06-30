@@ -767,6 +767,12 @@ impl Widget for RichTextLine {
         self.inner.get_rect()
     }
 
+    /// Forward to the wrapped [`TextInput`] so the editable line shows the
+    /// I-beam over its text area.
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        self.inner.cursor_shape(point)
+    }
+
     fn is_focusable(&self) -> bool {
         true
     }

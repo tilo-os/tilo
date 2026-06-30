@@ -1039,6 +1039,18 @@ impl Widget for TextInput {
         self.rect
     }
 
+    /// An editable text field shows the I-beam over its area. A disabled
+    /// input is inert (it swallows no input) so it claims no cursor and
+    /// defers to the host default. `point` is in the same logical space
+    /// as `rect`.
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if !self.disabled && self.rect.contains(point) {
+            Some(winit::window::CursorIcon::Text)
+        } else {
+            None
+        }
+    }
+
     fn is_focusable(&self) -> bool { !self.disabled }
     fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
     fn is_focused(&self) -> bool { self.is_focused }
@@ -1144,7 +1156,7 @@ impl TextInput {
     /// resolves to denied. Concept's every-widget convention is
     /// `bg-black/30` ≈ 0.30 × 255 ≈ 77.
     pub(crate) const PERMISSION_DENIED_OVERLAY: vello::peniko::Color =
-        vello::peniko::Color::from_rgba8(0, 0, 0, 77);
+        crate::tokens::colors::PERMISSION_DENIED_SCRIM;
 }
 
 #[cfg(test)]
@@ -1155,7 +1167,7 @@ mod tests {
     /// the same alpha across every widget.
     #[test]
     fn permission_denied_overlay_alpha_matches_other_widgets() {
-        let expected = vello::peniko::Color::from_rgba8(0, 0, 0, 77);
+        let expected = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
         assert_eq!(TextInput::PERMISSION_DENIED_OVERLAY, expected);
     }
 
@@ -1163,6 +1175,34 @@ mod tests {
     fn text_input_test_id_default_is_text_input() {
         let ti = TextInput::new(Vec::new());
         assert_eq!(Widget::test_id(&ti), Some("text_input"));
+    }
+
+    #[test]
+    fn cursor_shape_is_text_over_rect() {
+        // An enabled input shows the I-beam over its editable area and
+        // defers elsewhere.
+        let mut ti = TextInput::local();
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
+        assert_eq!(
+            Widget::cursor_shape(&ti, Point::new(20.0, 20.0)),
+            Some(winit::window::CursorIcon::Text),
+            "pointer over the editable area requests an I-beam",
+        );
+        assert_eq!(
+            Widget::cursor_shape(&ti, Point::new(500.0, 500.0)),
+            None,
+            "pointer outside the input defers (no cursor claim)",
+        );
+
+        // A disabled input is inert — it swallows no input, so it claims
+        // no cursor even when the pointer is over its rect.
+        let mut off = TextInput::local().disabled(true);
+        off.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
+        assert_eq!(
+            Widget::cursor_shape(&off, Point::new(20.0, 20.0)),
+            None,
+            "disabled input claims no cursor",
+        );
     }
 
     /// The peer caret and the local caret are the SAME geometry: a real

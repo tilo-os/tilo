@@ -83,7 +83,8 @@ pub struct ResizeHandle {
     right_rect: Rect,
     /// True while the cursor is inside the handle's hit area and
     /// no drag is in flight. Drives the "thicken to 3 px" paint
-    /// branch and (eventually) the OS cursor change to `EwResize`.
+    /// branch; the OS `EwResize` cursor is driven by
+    /// [`Widget::cursor_shape`].
     hover: bool,
     /// In-flight drag state. `Some` once the user pressed inside
     /// the hit area; `None` otherwise. We keep the cursor's
@@ -147,9 +148,9 @@ impl ResizeHandle {
     }
 
     /// True if the cursor is currently hovering this handle's hit
-    /// area (and no drag is in flight). Public so the row can
-    /// surface a cursor-change hint (`EwResize`) to the host once
-    /// the cursor-update plumbing exists.
+    /// area (and no drag is in flight). The OS `EwResize` cursor hint
+    /// is surfaced separately via [`Widget::cursor_shape`], which the
+    /// host hit-tests on every pointer move.
     pub fn is_hovered(&self) -> bool {
         self.hover
     }
@@ -327,12 +328,10 @@ impl Widget for ResizeHandle {
                         Self::compute_widths(origin.left_w, origin.right_w, dx);
                     self.pending = Some((new_left, new_right));
                     *handled = true;
-                    // TODO(cursor): swap the OS cursor to
-                    // `winit::window::CursorIcon::EwResize` while the
-                    // pointer sits in `self.rect` or while `drag` is
-                    // `Some`. The host (`App`) doesn't expose a cursor
-                    // hint yet; until then the user gets no system-
-                    // cursor feedback, only the visual thickening.
+                    // OS cursor feedback is now driven by `cursor_shape`
+                    // below: the host (`App`) hit-tests the tree on every
+                    // `CursorMoved` and adopts the `EwResize` icon while the
+                    // pointer sits in `self.rect` or a drag is in flight.
                 }
             }
             WindowEvent::MouseInput {
@@ -385,6 +384,17 @@ impl Widget for ResizeHandle {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    /// East-west resize cursor while the pointer sits in the handle's hit
+    /// area or a drag is in flight (the inter-group handle only resizes
+    /// horizontally). `point` is in the same logical space as `self.rect`.
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if self.drag.is_some() || self.rect.contains(point) {
+            Some(winit::window::CursorIcon::EwResize)
+        } else {
+            None
+        }
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -591,6 +601,27 @@ mod tests {
             &mut handled, &mut focus, node, &taffy,
         );
         assert!(!h.is_dragging(), "press outside hit area must NOT start drag");
+    }
+
+    #[test]
+    fn cursor_shape_is_ew_resize_over_hit_area() {
+        let mut h = ResizeHandle::new();
+        // Two 600-wide groups with the row's 8 px gap: hit area centred on
+        // x = 604, spanning 596..612.
+        h.set_neighbour_rects(
+            Rect::new(0.0, 0.0, 600.0, 400.0),
+            Rect::new(608.0, 0.0, 1208.0, 400.0),
+        );
+        assert_eq!(
+            Widget::cursor_shape(&h, Point::new(604.0, 200.0)),
+            Some(winit::window::CursorIcon::EwResize),
+            "pointer over the handle hit area requests an east-west resize cursor",
+        );
+        assert_eq!(
+            Widget::cursor_shape(&h, Point::new(100.0, 200.0)),
+            None,
+            "pointer well outside the handle defers (no cursor claim)",
+        );
     }
 
     #[test]
