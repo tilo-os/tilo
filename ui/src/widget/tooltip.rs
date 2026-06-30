@@ -23,7 +23,7 @@
 //! widget hides itself when `!is_visible()`.
 
 use automerge::{AutoCommit, ObjId};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -53,6 +53,15 @@ pub struct Tooltip {
     elapsed: Option<Duration>,
     is_visible: bool,
     rect: Rect,
+    /// Anchor rect the pointer must be over to trigger the tooltip. When
+    /// set, `handle_event` self-routes hover enter/leave and positions the
+    /// popover beside the anchor. `Rect::ZERO` leaves the widget driven
+    /// purely by the explicit `on_hover_*`/`tick` API (the test path).
+    anchor: Rect,
+    /// Wall-clock hover start, used so the reveal works in a live event
+    /// loop without an external `tick` pump (frames are kept coming via
+    /// `needs_animation_frame`).
+    hover_since: Option<Instant>,
 }
 
 impl std::fmt::Debug for Tooltip {
@@ -75,6 +84,8 @@ impl Tooltip {
             elapsed: None,
             is_visible: false,
             rect: Rect::ZERO,
+            anchor: Rect::ZERO,
+            hover_since: None,
         }
     }
 
@@ -82,6 +93,18 @@ impl Tooltip {
     pub fn with_delay(mut self, delay: Duration) -> Self {
         self.delay = delay;
         self
+    }
+
+    /// Set the anchor rect the pointer must hover to reveal the tooltip.
+    /// Enables self-routing in `handle_event`.
+    pub fn with_anchor(mut self, anchor: Rect) -> Self {
+        self.anchor = anchor;
+        self
+    }
+
+    /// Update the anchor rect (e.g. each frame as the anchored widget moves).
+    pub fn set_anchor(&mut self, anchor: Rect) {
+        self.anchor = anchor;
     }
 
     /// The current label shown when visible.
@@ -169,7 +192,21 @@ impl Widget for Tooltip {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        // Wall-clock reveal: once the hover outlasts the delay, show it.
+        if let Some(since) = self.hover_since {
+            if !self.is_visible && since.elapsed() >= self.delay {
+                self.is_visible = true;
+            }
+        }
         if !self.is_visible { return; }
+
+        // When anchored, float the popover just below-left of the anchor
+        // (the taffy slot is zero-sized until visible, so position here).
+        if self.anchor != Rect::ZERO {
+            let x0 = self.anchor.x0;
+            let y0 = self.anchor.y1 + 4.0;
+            self.rect = Rect::new(x0, y0, x0 + TOOLTIP_WIDTH, y0 + TOOLTIP_HEIGHT);
+        }
 
         let shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.sm as f64);
         scene.fill(
@@ -201,8 +238,8 @@ impl Widget for Tooltip {
 
     fn handle_event(
         &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
+        event: &WindowEvent,
+        scale_factor: f64,
         _modifiers: &winit::event::Modifiers,
         _state: &mut AutoCommit,
         _path: &ObjId,
@@ -211,13 +248,86 @@ impl Widget for Tooltip {
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
-        // Pointer-enter / pointer-leave routing is driven by the shell
-        // consumer via `on_hover_enter` / `on_hover_leave`. The primitive
-        // exposes timing-only API so it stays unit-testable without a
-        // live event loop.
+        // Self-route hover from the anchor rect when one is set. Without an
+        // anchor the widget stays driven by the explicit on_hover_*/tick API.
+        if self.anchor == Rect::ZERO {
+            return;
+        }
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+            let inside = self.anchor.contains(p);
+            if inside && self.hover_since.is_none() {
+                self.on_hover_enter(Duration::ZERO);
+                self.hover_since = Some(Instant::now());
+            } else if !inside && self.hover_since.is_some() {
+                self.on_hover_leave();
+                self.hover_since = None;
+            }
+        }
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        // Keep frames coming during the reveal delay so the wall-clock
+        // path can flip `is_visible` in `draw` without an external tick.
+        self.hover_since.is_some() && !self.is_visible
     }
 
     fn name(&self) -> &str { "Tooltip" }
 
     fn get_rect(&self) -> Rect { self.rect }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn feed(t: &mut Tooltip, p: Point) {
+        let mut tree = TaffyTree::<()>::new();
+        let node = tree.new_leaf(Style::default()).unwrap();
+        let mut handled = false;
+        let mut focus = None;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let ev = WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: (p.x, p.y).into(),
+        };
+        t.handle_event(&ev, 1.0, &Default::default(), &mut doc, &root, &mut handled, &mut focus, node, &tree);
+    }
+
+    #[test]
+    fn hovering_anchor_enters_and_leaving_dismisses() {
+        // Zero delay → reveal is immediate on enter (on_hover_enter flips it).
+        let mut t = Tooltip::new("Save")
+            .with_delay(Duration::ZERO)
+            .with_anchor(Rect::new(0.0, 0.0, 100.0, 30.0));
+        assert!(!t.is_visible());
+        feed(&mut t, Point::new(50.0, 15.0)); // inside anchor
+        assert!(t.is_visible(), "zero-delay tooltip shows on hover-enter");
+        feed(&mut t, Point::new(500.0, 500.0)); // outside
+        assert!(!t.is_visible(), "hides on hover-leave");
+    }
+
+    #[test]
+    fn delayed_tooltip_requests_frames_while_pending() {
+        let mut t = Tooltip::new("Later")
+            .with_delay(Duration::from_millis(600))
+            .with_anchor(Rect::new(0.0, 0.0, 80.0, 24.0));
+        assert!(!t.needs_animation_frame());
+        feed(&mut t, Point::new(10.0, 10.0)); // enter
+        // Pending (not yet visible) → host must keep pumping frames.
+        assert!(t.needs_animation_frame());
+        assert!(!t.is_visible());
+    }
+
+    #[test]
+    fn without_anchor_handle_event_is_inert() {
+        // Back-compat: no anchor → explicit API still drives it.
+        let mut t = Tooltip::new("x");
+        feed(&mut t, Point::new(5.0, 5.0));
+        assert!(!t.is_visible());
+        t.on_hover_enter(Duration::ZERO);
+        t.tick(Duration::from_millis(700));
+        assert!(t.is_visible());
+    }
 }
