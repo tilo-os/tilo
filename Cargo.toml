@@ -18,6 +18,7 @@ members = [
     "qos-channel-crypto",
     "qos-collab-link",
     "qos-relay",
+    "qos-launcher",
     "apps/file-explorer",
     "apps/terminal",
     "apps/browser",
