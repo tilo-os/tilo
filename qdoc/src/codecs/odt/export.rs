@@ -513,18 +513,53 @@ fn para_props(b: &BlockView) -> Option<(String, String)> {
     }
 }
 
+/// The model `anchor` value of an image block (default `inline`).
+fn image_anchor(b: &BlockView) -> &str {
+    match b.attrs.get("anchor") {
+        Some(AttrVal::Str(s)) => s.as_str(),
+        _ => "inline",
+    }
+}
+
+/// The model `wrap` value of an image block (default `none`).
+fn image_wrap(b: &BlockView) -> &str {
+    match b.attrs.get("wrap") {
+        Some(AttrVal::Str(s)) => s.as_str(),
+        _ => "none",
+    }
+}
+
 /// Build the `draw:frame` XML for an `image` block, or `None` if its blob is
 /// absent from the document. The `xlink:href` matches the `Pictures/<hash>.<ext>`
-/// part `export()` writes for the same blob.
-fn image_frame_xml(b: &BlockView, snap: &DocSnapshot) -> Option<String> {
+/// part `export()` writes for the same blob. When the image is floating (anchor
+/// other than `inline`) and/or wraps text, a per-image graphic automatic style is
+/// pushed onto `graphic_styles` (name, `style:wrap` value) and referenced via
+/// `draw:style-name`.
+fn image_frame_xml(b: &BlockView, snap: &DocSnapshot, graphic_styles: &mut Vec<(String, String)>) -> Option<String> {
     let hash = match b.attrs.get("blob") {
         Some(AttrVal::Str(h)) => h,
         _ => return None,
     };
     let bytes = snap.blobs.get(hash)?;
     let href = picture_href(hash, bytes);
+    let anchor = image_anchor(b);
+    let wrap = image_wrap(b);
     let mut frame = String::from("<draw:frame");
     frame.push_str(&format!(r#" draw:name="{}""#, escape_attr(&b.id)));
+    // ODF anchor type: inline → as-char; page → page; everything else → paragraph.
+    let anchor_type = match anchor {
+        "inline" => "as-char",
+        "page" => "page",
+        _ => "paragraph",
+    };
+    frame.push_str(&format!(r#" text:anchor-type="{anchor_type}""#));
+    // A graphic automatic style carries the wrap; only emit it when meaningful
+    // (a floating frame, since `as-char` ignores wrap in ODF anyway).
+    if anchor != "inline" {
+        let gname = format!("gr{}", graphic_styles.len() + 1);
+        graphic_styles.push((gname.clone(), super::styles::model_wrap_to_odf(wrap).to_string()));
+        frame.push_str(&format!(r#" draw:style-name="{gname}""#));
+    }
     if let Some(AttrVal::Int(w)) = b.attrs.get("width") {
         if *w > 0 {
             frame.push_str(&format!(r#" svg:width="{w}px""#));
@@ -813,6 +848,9 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
     // numbering (format/start), emitted into automatic-styles.
     let mut list_styles: Vec<ListStyle> = Vec::new();
     let list_styles = &mut list_styles;
+    // Per-image graphic automatic styles (name, `style:wrap` value) for floating
+    // images, emitted into automatic-styles and referenced by `draw:style-name`.
+    let mut graphic_styles: Vec<(String, String)> = Vec::new();
     // Footnotes/endnotes referenced from body text, numbered 1.. in reference order.
     let notes = note_index(snap);
     let mut note_ctr = 0usize;
@@ -901,7 +939,7 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
                 // Emit a top-level `draw:frame` referencing the blob written as a
                 // `Pictures/<hash>.<ext>` part. Size (svg:width/height in px) and
                 // alt (svg:title) round-trip when present.
-                if let Some(frame) = image_frame_xml(b, snap) {
+                if let Some(frame) = image_frame_xml(b, snap, &mut graphic_styles) {
                     body.push_str(&frame);
                 }
                 i += 1;
@@ -976,6 +1014,12 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
     // Reconstructed list-styles (numbering format + start) for ordered lists.
     for ls in list_styles.iter() {
         styles.push_str(&ls.xml);
+    }
+    // Per-image graphic styles carrying the frame wrap (`style:wrap`).
+    for (name, wrap) in &graphic_styles {
+        styles.push_str(&format!(
+            r#"<style:style style:name="{name}" style:family="graphic"><style:graphic-properties style:wrap="{wrap}"/></style:style>"#
+        ));
     }
 
     // Declare the common ODF namespaces so re-emitted fidelity atoms (tables,
@@ -1297,6 +1341,44 @@ mod tests {
         assert_eq!(bytes.as_slice(), &TINY_PNG[..], "image bytes survive the round-trip");
         // And the read-side accessor returns them too.
         assert_eq!(d2.blob(&blob_hash).as_deref(), Some(&TINY_PNG[..]));
+    }
+
+    #[test]
+    fn image_positioning_roundtrips_through_odt() {
+        // A floating, paragraph-anchored image that wraps text on its right, with an
+        // explicit display size, must survive an .odt round-trip with anchor + wrap +
+        // size intact (and the wrap carried on a real graphic style).
+        let mut d = Document::new();
+        let p1 = d.insert_block(None, "paragraph");
+        d.splice_text(&p1, 0, 0, "text");
+        let img = d.insert_block(Some(&p1), "image");
+        let hash = d.put_blob(&TINY_PNG);
+        {
+            let mut dm = d.as_mut();
+            dm.set_attr(&img, "blob", hash.as_str());
+            dm.set_attr(&img, "anchor", "paragraph");
+            dm.set_attr(&img, "wrap", "right");
+            dm.set_attr(&img, "width", 120_i64);
+            dm.set_attr(&img, "height", 80_i64);
+        }
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let cont = OdtContainer::read(&exported).unwrap();
+        let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
+        assert!(content.contains(r#"text:anchor-type="paragraph""#), "anchor-type emitted: {content}");
+        assert!(
+            content.contains(r#"style:family="graphic""#) && content.contains(r#"style:wrap="right""#),
+            "graphic style with wrap emitted: {content}"
+        );
+
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+        let im = snap.blocks.iter().find(|b| b.kind == "image").expect("image block present");
+        assert_eq!(im.attrs.get("anchor"), Some(&AttrVal::Str("paragraph".into())), "{:?}", im.attrs);
+        assert_eq!(im.attrs.get("wrap"), Some(&AttrVal::Str("right".into())), "{:?}", im.attrs);
+        assert_eq!(im.attrs.get("width"), Some(&AttrVal::Int(120)), "{:?}", im.attrs);
+        assert_eq!(im.attrs.get("height"), Some(&AttrVal::Int(80)), "{:?}", im.attrs);
     }
 
     #[test]
