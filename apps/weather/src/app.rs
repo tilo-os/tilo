@@ -495,7 +495,7 @@ impl WeatherApp {
         // mobile-compatible). A small close affordance sits at the right edge
         // so an overlay rail can be dismissed without reaching the scrim.
         text_left(scene, tr, "Weather", x, rail.y0 + 24.0, 22.0, TextWeight::Bold, c.text_primary);
-        text_left(scene, tr, "Open-Meteo · qOS", x, rail.y0 + 52.0, 12.0, TextWeight::Regular, c.text_dim);
+        text_left(scene, tr, "Open-Meteo", x, rail.y0 + 52.0, 12.0, TextWeight::Regular, c.text_dim);
         {
             let cs = 26.0;
             let close = Rect::new(rail.x1 - RP - cs, rail.y0 + 18.0, rail.x1 - RP, rail.y0 + 18.0 + cs);
