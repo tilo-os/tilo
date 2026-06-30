@@ -109,6 +109,18 @@ impl EspeakSpeaker {
         if let Some(mut stdin) = child.stdin.take() {
             // Best-effort: if the write fails the child will just speak nothing.
             let _ = stdin.write_all(text.as_bytes());
+            // espeak-ng's pulse output (pcaudiolib) exits before its final audio
+            // buffer fully drains, so the last phoneme gets clipped/stretched —
+            // a word like "button" is heard as "buttooo". Appending a
+            // sentence-final pause makes that ragged tail land on generated
+            // silence instead of on a real phoneme. Only added when the text
+            // doesn't already end in terminal punctuation.
+            let needs_pause = !text
+                .trim_end()
+                .ends_with(['.', '!', '?', ',', ';', ':']);
+            if needs_pause {
+                let _ = stdin.write_all(b" .");
+            }
             // Drop closes stdin -> espeak-ng sees EOF and speaks.
         }
         self.current = Some(child);
