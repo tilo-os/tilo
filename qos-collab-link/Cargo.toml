@@ -1,0 +1,12 @@
+[package]
+name = "qos-collab-link"
+version = "0.1.0"
+edition = "2024"
+description = "Configurable-latency / throughput proxy in front of the qOS collab broker socket — lets you test collaboration under realistic network conditions without leaving localhost."
+
+[[bin]]
+name = "qos-collab-link"
+path = "src/main.rs"
+
+[dependencies]
+# Plain stdlib. The proxy is just threads + UnixStream + sleep.
