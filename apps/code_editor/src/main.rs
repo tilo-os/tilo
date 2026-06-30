@@ -25,7 +25,22 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
-        render_shot_to_png(code_editor::app_root(), DEFAULT_SHOTS_VIEWPORT, &out)?;
+        // `--shots` renders one offscreen frame. `--viewport WxH` overrides the
+        // default desktop viewport so the same binary can capture the narrow
+        // (overlay-sidebar) responsive layout. `--sidebar-open` snaps the flap
+        // open so a narrow shot shows the summoned sidebar + scrim rather than
+        // the closed default a fresh narrow window opens to.
+        let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+        let open_sidebar = args.iter().any(|a| a == "--sidebar-open");
+        let mut app = code_editor::CodeApp::new();
+        // Seed the width up front so this single offscreen frame resolves the
+        // responsive layout (docked vs. overlay) correctly — `build_layout`
+        // runs before `apply_layout` would otherwise measure the window.
+        app.set_width_hint(viewport.0 as f64);
+        if open_sidebar {
+            app.shots_snap_sidebar(true);
+        }
+        render_shot_to_png(Box::new(app), viewport, &out)?;
         return Ok(());
     }
 
@@ -33,6 +48,23 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = ui::App::new(state, code_editor::app_root());
     app.run();
     Ok(())
+}
+
+/// Parse `--viewport WxH` (e.g. `--viewport 520x820`) for `--shots`.
+fn parse_viewport_arg(args: &[String]) -> Option<(u32, u32)> {
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        let spec = if arg == "--viewport" {
+            iter.next().map(String::as_str)
+        } else {
+            arg.strip_prefix("--viewport=")
+        };
+        if let Some(spec) = spec {
+            let (w, h) = spec.split_once(['x', 'X'])?;
+            return Some((w.trim().parse().ok()?, h.trim().parse().ok()?));
+        }
+    }
+    None
 }
 
 fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {

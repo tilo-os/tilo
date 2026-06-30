@@ -70,6 +70,17 @@ impl TabBar {
         std::mem::take(&mut self.pending)
     }
 
+    /// Shrink the bar's drawable region from the left by `px`, reserving room
+    /// for the overlay-mode hamburger toggle the app draws over that corner.
+    /// The bar both draws and hit-tests from `self.rect`, so moving its left
+    /// edge shifts the tabs without touching the per-tab layout. Applied each
+    /// frame after the taffy-derived rect is set (see `CodeApp::apply_layout`).
+    pub fn inset_left(&mut self, px: f64) {
+        if px > 0.0 && self.rect.width() > px {
+            self.rect = Rect::new(self.rect.x0 + px, self.rect.y0, self.rect.x1, self.rect.y1);
+        }
+    }
+
     /// A language-distinct dot colour, derived from theme tokens.
     fn lang_color(language: Language, theme: &Theme) -> vello::peniko::Color {
         let c = &theme.tokens.colors;

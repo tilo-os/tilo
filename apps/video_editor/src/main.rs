@@ -19,13 +19,22 @@ use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
+/// Narrow capture viewport — below the bin's collapse breakpoint so `--shots`
+/// can exercise the overlay-flap layout. Pass `--narrow` to select it.
+const NARROW_SHOTS_VIEWPORT: (u32, u32) = (720, 820);
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
-        render_shot_to_png(video_editor::app_root(), DEFAULT_SHOTS_VIEWPORT, &out)?;
+        // `--narrow` renders below the breakpoint with the bin overlay open so
+        // the collapsed-sidebar layout is captured deterministically.
+        if args.iter().any(|a| a == "--narrow") {
+            render_shot_to_png(video_editor::app_root_narrow(), NARROW_SHOTS_VIEWPORT, &out)?;
+        } else {
+            render_shot_to_png(video_editor::app_root(), DEFAULT_SHOTS_VIEWPORT, &out)?;
+        }
         return Ok(());
     }
 
