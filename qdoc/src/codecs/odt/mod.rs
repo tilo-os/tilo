@@ -6,6 +6,7 @@
 pub mod container;
 pub mod content;
 pub mod export;
+pub mod meta;
 pub mod styles;
 
 use crate::format::{CodecError, Confidence, FormatProvider};
@@ -48,8 +49,15 @@ impl FormatProvider for OdtCodec {
         // the referenced `Pictures/*` bytes and store them as image-block blobs,
         // and so named paragraph styles are lifted into the qdoc styles container.
         content::parse_body(&content, &reg, &container, doc)?;
+        // Document properties: parse `meta.xml`'s `office:meta` fields (dc:title,
+        // dc:creator, …) into the canonical `meta.props` map.
+        if let Some(meta_xml) = container.get("meta.xml") {
+            meta::import_meta(meta_xml, doc);
+        }
         // Preservation layer: stash every part except the (regenerated)
-        // content.xml verbatim so export round-trips them losslessly.
+        // content.xml verbatim so export round-trips them losslessly. `meta.xml`
+        // is preserved too so its unmodeled fields survive (export merges the
+        // canonical properties back into a copy of it).
         for (name, part) in &container.parts {
             if name != "content.xml" {
                 doc.set_preserved(&format!("odt/part/{name}"), part);

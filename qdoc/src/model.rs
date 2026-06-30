@@ -190,6 +190,42 @@ pub fn meta_str(doc: &AutoCommit, c: &Containers, key: &str) -> Option<String> {
     }
 }
 
+/// Resolve the document-properties sub-map under `meta` (`meta.props`), if it
+/// exists. Created lazily on the first [`DocMut::set_doc_prop`], so documents
+/// authored before the props map existed simply read as having no properties.
+fn props_obj(doc: &AutoCommit, c: &Containers) -> Option<ObjId> {
+    match doc.get(&c.meta, KEY_PROPS) {
+        Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
+        _ => None,
+    }
+}
+
+/// Read a single document property (`title`/`author`/… — see [`DOC_PROP_KEYS`]),
+/// or any other string property name a codec stashed. `None` if unset.
+pub fn doc_prop(doc: &AutoCommit, c: &Containers, name: &str) -> Option<String> {
+    let props = props_obj(doc, c)?;
+    match doc.get(&props, name) {
+        Ok(Some((v, _))) => v.to_str().map(|s| s.to_string()),
+        _ => None,
+    }
+}
+
+/// All document properties (`name → value`) as a sorted map. Empty for documents
+/// with no properties set.
+pub fn doc_props(doc: &AutoCommit, c: &Containers) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    if let Some(props) = props_obj(doc, c) {
+        for k in doc.keys(&props) {
+            if let Ok(Some((v, _))) = doc.get(&props, &k) {
+                if let Some(s) = v.to_str() {
+                    out.insert(k, s.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
 pub fn block_kind(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
     let obj = block_obj(doc, &c.blocks, id)?;
     match doc.get(&obj, BLOCK_KIND) {
@@ -288,6 +324,7 @@ pub fn materialize(doc: &AutoCommit, c: &Containers) -> DocSnapshot {
         blocks,
         blobs: blobs(doc, c),
         styles: all_styles(doc, c),
+        properties: doc_props(doc, c),
     }
 }
 
@@ -481,6 +518,25 @@ impl<'a> DocMut<'a> {
         let _ = self.doc.put(&self.c.meta, key, value);
     }
 
+    /// Resolve-or-create the `meta.props` document-properties sub-map. Created
+    /// lazily so documents authored before it existed migrate transparently.
+    fn props_map(&mut self) -> ObjId {
+        match self.doc.get(&self.c.meta, KEY_PROPS) {
+            Ok(Some((Value::Object(ObjType::Map), id))) => id,
+            _ => self.doc.put_object(&self.c.meta, KEY_PROPS, ObjType::Map).unwrap(),
+        }
+    }
+
+    /// Set a document property (`title`/`author`/`subject`/`keywords`/`created`/
+    /// `modified`/`generator` — see [`DOC_PROP_KEYS`]). Each property is its own
+    /// scalar register in the `meta.props` map, so two replicas editing different
+    /// properties field-level merge rather than clobbering each other. Round-trips
+    /// through `.odt`/`.docx` metadata parts.
+    pub fn set_doc_prop(&mut self, name: &str, value: &str) {
+        let props = self.props_map();
+        let _ = self.doc.put(&props, name, value);
+    }
+
     /// Upsert a named style into the styles container. Each property is written
     /// as its own scalar register *into the existing sub-map* (not a fresh map),
     /// so two replicas editing different properties of the same style field-level
@@ -579,6 +635,51 @@ mod style_tests {
         let snap = materialize(&doc, &c);
         assert_eq!(snap.styles.len(), 2);
         assert_eq!(snap.styles["h1"].get(STYLE_BOLD), Some(&AttrVal::Bool(true)));
+    }
+
+    #[test]
+    fn doc_props_crud_and_snapshot() {
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        let mut ids = IdGen::new(doc.get_actor().to_hex_string());
+        // No props map yet → empty reads, no panic, open still works.
+        assert!(doc_props(&doc, &c).is_empty());
+        assert_eq!(doc_prop(&doc, &c, PROP_TITLE), None);
+        {
+            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            dm.set_doc_prop(PROP_TITLE, "Hello");
+            dm.set_doc_prop(PROP_AUTHOR, "Ada");
+        }
+        assert_eq!(doc_prop(&doc, &c, PROP_TITLE).as_deref(), Some("Hello"));
+        assert_eq!(doc_prop(&doc, &c, PROP_AUTHOR).as_deref(), Some("Ada"));
+        let all = doc_props(&doc, &c);
+        assert_eq!(all.get("title").map(String::as_str), Some("Hello"));
+        assert_eq!(all.get("author").map(String::as_str), Some("Ada"));
+        // The snapshot exposes the properties map.
+        let snap = materialize(&doc, &c);
+        assert_eq!(snap.properties.get("title").map(String::as_str), Some("Hello"));
+        // Field-level upsert: setting one property leaves the other intact.
+        {
+            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            dm.set_doc_prop(PROP_TITLE, "Changed");
+        }
+        assert_eq!(doc_prop(&doc, &c, PROP_TITLE).as_deref(), Some("Changed"));
+        assert_eq!(doc_prop(&doc, &c, PROP_AUTHOR).as_deref(), Some("Ada"), "untouched prop preserved");
+    }
+
+    #[test]
+    fn open_is_backward_compatible_without_props_map() {
+        // A document whose meta map predates the props sub-map must open + read as
+        // having no properties (the props map is created lazily on first write).
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        // `init` does not create meta.props; confirm reads degrade gracefully.
+        assert!(doc_props(&doc, &c).is_empty(), "no props map → empty");
+        assert_eq!(doc_prop(&doc, &c, PROP_GENERATOR), None);
+        let bytes = doc.save();
+        let reloaded = AutoCommit::load(&bytes).unwrap();
+        let c2 = open(&reloaded, &ROOT).unwrap();
+        assert!(doc_props(&reloaded, &c2).is_empty(), "reload still opens with no props");
     }
 
     #[test]

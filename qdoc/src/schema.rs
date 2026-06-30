@@ -13,6 +13,25 @@ pub const KEY_PRESERVED: &str = "preserved"; // Map<part_name, Bytes>  (preserva
 pub const KEY_META: &str = "meta"; // Map (actor->user, etc.)
 pub const KEY_BLOBS: &str = "blobs"; // Map<blake3_hex, Bytes>  (content-addressed image/binary store)
 
+// Document properties / metadata. A `props` sub-map under `meta` holding the
+// well-known document-level fields (title/author/…) as plain strings. Isolated
+// from other `meta` keys (page margins, stylesheet) and created lazily so
+// documents authored before it existed still open. These keys are the shared
+// contract between the qdoc model and the `dc:`/`cp:`/`dcterms:` metadata fields
+// the `.odt` (`meta.xml`) and `.docx` (`docProps/*.xml`) codecs map onto.
+pub const KEY_PROPS: &str = "props"; // Map<prop_name, Str>  (under meta)
+pub const PROP_TITLE: &str = "title"; // Str — dc:title
+pub const PROP_AUTHOR: &str = "author"; // Str — dc:creator
+pub const PROP_SUBJECT: &str = "subject"; // Str — dc:subject
+pub const PROP_KEYWORDS: &str = "keywords"; // Str — meta:keyword / cp:keywords
+pub const PROP_CREATED: &str = "created"; // Str — meta:creation-date / dcterms:created (ISO-8601)
+pub const PROP_MODIFIED: &str = "modified"; // Str — dc:date / dcterms:modified (ISO-8601)
+pub const PROP_GENERATOR: &str = "generator"; // Str — meta:generator / app.xml Application
+
+/// The canonical well-known document-property names, in a stable order.
+pub const DOC_PROP_KEYS: [&str; 7] =
+    [PROP_TITLE, PROP_AUTHOR, PROP_SUBJECT, PROP_KEYWORDS, PROP_CREATED, PROP_MODIFIED, PROP_GENERATOR];
+
 // Block fields
 pub const BLOCK_ORDER: &str = "order"; // Bytes (fractional key)
 pub const BLOCK_KIND: &str = "kind"; // Str ("paragraph"|"heading"|"list_item"|"table"|"cell"|"image"|"fidelity")

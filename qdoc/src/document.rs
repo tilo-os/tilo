@@ -152,6 +152,23 @@ impl Document {
         crate::model::blob(&self.doc, &self.c, hash)
     }
 
+    /// Set a document property (`title`/`author`/`subject`/`keywords`/`created`/
+    /// `modified`/`generator`). Round-trips through `.odt`/`.docx`.
+    pub fn set_doc_prop(&mut self, name: &str, value: &str) {
+        self.as_mut().set_doc_prop(name, value);
+        self.doc.commit();
+    }
+
+    /// Read a single document property, or `None` if unset.
+    pub fn doc_prop(&self, name: &str) -> Option<String> {
+        crate::model::doc_prop(&self.doc, &self.c, name)
+    }
+
+    /// All document properties (`name → value`).
+    pub fn doc_props(&self) -> std::collections::BTreeMap<String, String> {
+        crate::model::doc_props(&self.doc, &self.c)
+    }
+
     pub fn blocks_in_order(&self) -> Vec<String> {
         crate::model::blocks_in_order(&self.doc, &self.c)
     }

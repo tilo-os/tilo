@@ -40,11 +40,28 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     // the original manifest/mimetype, …).
     let mut had_mimetype = false;
     let mut had_manifest = false;
+    let mut had_meta = false;
+    let mut original_meta: Option<Vec<u8>> = None;
     for (key, bytes) in preserved {
         if let Some(name) = key.strip_prefix("odt/part/") {
             had_mimetype |= name == "mimetype";
             had_manifest |= name == "META-INF/manifest.xml";
+            if name == "meta.xml" {
+                had_meta = true;
+                original_meta = Some(bytes.clone());
+            }
             c.set(name, bytes);
+        }
+    }
+    // Document properties → `meta.xml`: regenerate the part from the canonical
+    // properties, merging in any unmodeled `office:meta` children from the
+    // preserved original so they survive. Created when the doc has properties even
+    // if the source had no meta.xml (so freshly-authored properties export).
+    if let Some(meta_xml) = super::meta::export_meta(&doc, original_meta.as_deref()) {
+        let is_new = !had_meta;
+        c.set("meta.xml", meta_xml);
+        if is_new {
+            had_meta = true;
         }
     }
     // Fall back to generated mimetype/manifest when the source had none (e.g. a
@@ -57,8 +74,12 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     }
 
     // Write each image block's blob into the zip as `Pictures/<hash>.<ext>` and
-    // collect manifest entries (the `draw:image` hrefs in content.xml match).
+    // collect manifest entries (the `draw:image` hrefs in content.xml match). A
+    // freshly-created `meta.xml` also needs a manifest entry.
     let mut pic_entries: Vec<(String, &'static str)> = Vec::new();
+    if had_meta {
+        pic_entries.push(("meta.xml".to_string(), "text/xml"));
+    }
     for b in &snap.blocks {
         if b.kind != "image" {
             continue;
@@ -1152,6 +1173,94 @@ mod tests {
         let mut d3 = Document::new();
         OdtCodec.import(&exported2, &mut d3.as_mut()).unwrap();
         assert_eq!(norm(&d2.materialize()), norm(&d3.materialize()), "named-style model is stable across a second round-trip");
+    }
+
+    #[test]
+    fn document_properties_roundtrip_through_odt() {
+        // Title/author/subject/keywords/dates/generator set on a fresh doc must
+        // export into meta.xml and re-import as the same properties.
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "body");
+        d.set_doc_prop("title", "My Title");
+        d.set_doc_prop("author", "Ada Lovelace");
+        d.set_doc_prop("subject", "Analytical Engine");
+        d.set_doc_prop("keywords", "computing, history");
+        d.set_doc_prop("created", "2020-01-02T03:04:05");
+        d.set_doc_prop("modified", "2021-06-07T08:09:10");
+        d.set_doc_prop("generator", "qdoc/1.0");
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        // The meta.xml part carries the dc:/meta: fields.
+        let cont = OdtContainer::read(&exported).unwrap();
+        let meta = std::str::from_utf8(cont.get("meta.xml").expect("meta.xml written")).unwrap();
+        assert!(meta.contains("<dc:title>My Title</dc:title>"), "title in meta.xml: {meta}");
+        assert!(meta.contains("<dc:creator>Ada Lovelace</dc:creator>"), "creator: {meta}");
+        assert!(meta.contains("<dc:subject>Analytical Engine</dc:subject>"), "subject: {meta}");
+        assert!(meta.contains("<meta:keyword>computing, history</meta:keyword>"), "keyword: {meta}");
+        assert!(meta.contains("<meta:creation-date>2020-01-02T03:04:05</meta:creation-date>"), "created: {meta}");
+        assert!(meta.contains("<dc:date>2021-06-07T08:09:10</dc:date>"), "modified: {meta}");
+        assert!(meta.contains("<meta:generator>qdoc/1.0</meta:generator>"), "generator: {meta}");
+        // A fresh meta.xml is registered in the manifest.
+        let manifest = std::str::from_utf8(cont.get("META-INF/manifest.xml").unwrap()).unwrap();
+        assert!(manifest.contains("meta.xml"), "meta.xml registered in manifest: {manifest}");
+
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let props = d2.doc_props();
+        assert_eq!(props.get("title").map(String::as_str), Some("My Title"));
+        assert_eq!(props.get("author").map(String::as_str), Some("Ada Lovelace"));
+        assert_eq!(props.get("subject").map(String::as_str), Some("Analytical Engine"));
+        assert_eq!(props.get("keywords").map(String::as_str), Some("computing, history"));
+        assert_eq!(props.get("created").map(String::as_str), Some("2020-01-02T03:04:05"));
+        assert_eq!(props.get("modified").map(String::as_str), Some("2021-06-07T08:09:10"));
+        assert_eq!(props.get("generator").map(String::as_str), Some("qdoc/1.0"));
+        // Body content still intact alongside the metadata.
+        assert_eq!(d2.materialize().blocks[0].text, "body");
+
+        // Idempotent across a second round-trip.
+        let exported2 = OdtCodec.export(d2.as_ref()).unwrap();
+        let mut d3 = Document::new();
+        OdtCodec.import(&exported2, &mut d3.as_mut()).unwrap();
+        assert_eq!(d2.doc_props(), d3.doc_props(), "properties stable across a second round-trip");
+    }
+
+    #[test]
+    fn meta_xml_preserves_unmodeled_fields_and_updates_modeled() {
+        // An imported meta.xml with an unmodeled field (editing-cycles) plus an
+        // existing title: the unmodeled field survives and the title updates.
+        let meta = r#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document-meta xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/"><office:meta><dc:title>Old</dc:title><meta:editing-cycles>7</meta:editing-cycles></office:meta></office:document-meta>"#;
+        let base = minimal_odt_styled("", "<text:p>hi</text:p>");
+        let mut c = OdtContainer::read(&base).unwrap();
+        c.set("meta.xml", meta.as_bytes().to_vec());
+        let odt = c.write().unwrap();
+
+        let mut d = Document::new();
+        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        assert_eq!(d.doc_prop("title").as_deref(), Some("Old"), "title imported");
+        // Change the title; keywords are new.
+        d.set_doc_prop("title", "New");
+        d.set_doc_prop("keywords", "k");
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let out = OdtContainer::read(&exported).unwrap();
+        let meta_out = std::str::from_utf8(out.get("meta.xml").unwrap()).unwrap();
+        assert!(meta_out.contains("<dc:title>New</dc:title>"), "title updated: {meta_out}");
+        assert!(!meta_out.contains("<dc:title>Old</dc:title>"), "old title gone: {meta_out}");
+        assert!(meta_out.contains("editing-cycles>7</"), "unmodeled field preserved: {meta_out}");
+        assert!(meta_out.contains("<meta:keyword>k</meta:keyword>"), "new keyword emitted: {meta_out}");
+    }
+
+    #[test]
+    fn no_meta_part_when_no_properties_and_none_imported() {
+        // A from-scratch doc with no properties must not synthesise a meta.xml.
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "plain");
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let cont = OdtContainer::read(&exported).unwrap();
+        assert!(cont.get("meta.xml").is_none(), "no metadata part synthesised for a doc with no properties");
     }
 
     #[test]
