@@ -963,6 +963,48 @@ impl Grid {
         scene.fill(Fill::NonZero, transform, colors.surfaces.raised, None, &corner);
     }
 
+    /// Is a cell non-empty in the current data? Used to decide how far the
+    /// in-cell editor may overflow before a neighbour blocks it.
+    fn cell_is_occupied(&self, addr: Addr) -> bool {
+        match self.values.get(&addr) {
+            Some(v) => !v.is_empty(),
+            None => self.raw.get(&addr).map(|s| !s.is_empty()).unwrap_or(false),
+        }
+    }
+
+    /// The width the editor wants to display its text comfortably.
+    fn editor_desired_width(&self, text: &str, tr: &mut TextRenderer, size: f32) -> f64 {
+        let (tw, _) = tr.measure(text, size, None);
+        // Text width + padding on both sides + caret room, never narrower
+        // than the cell itself.
+        (tw as f64 + CELL_PAD_X * 2.0 + 8.0).max(self.col_w(0))
+    }
+
+    /// Compute how far the floating editor for cell `addr` may extend to the
+    /// right, in absolute screen x. It grows across **empty** neighbours
+    /// until it has `desired` width, hits an occupied cell, runs out of
+    /// columns, or reaches `body_right`. This is the pure geometry behind
+    /// the "overflow into empty cells, clip at a non-empty neighbour" rule.
+    fn editor_right_extent(&self, addr: Addr, desired: f64, body_right: f64) -> f64 {
+        let (ec, er) = addr;
+        let cell = self.cell_screen_rect(ec, er);
+        let mut right = cell.x1;
+        let mut next_col = ec + 1;
+        while right - cell.x0 < desired && next_col < self.n_cols {
+            if self.cell_is_occupied((next_col, er)) {
+                break;
+            }
+            right += self.col_w(next_col);
+            next_col += 1;
+        }
+        // Never overrun the visible body, but always show at least the cell.
+        right.min(body_right).max(cell.x1.min(body_right))
+    }
+
+    /// Like Excel: the active edit is a floating box aligned to the cell
+    /// that grows rightward into **empty** neighbours only, stopping at the
+    /// first occupied cell or the grid's right edge. It is always clipped to
+    /// the grid body so it never paints over the headers.
     fn draw_editor(
         &self,
         scene: &mut Scene,
@@ -972,25 +1014,46 @@ impl Grid {
     ) {
         let Some(e) = &self.edit else { return };
         let colors = &theme.tokens.colors;
-        let cell = self.cell_screen_rect(e.addr.0, e.addr.1);
-        // Editor can be wider than the cell to show long formulas.
-        let min_w = 140.0_f64.max(self.col_w(e.addr.0));
-        let edit_rect = Rect::new(cell.x0, cell.y0, (cell.x0 + min_w).min(self.rect.x1 - 2.0).max(cell.x1), cell.y1);
-        // Don't paint an editor that scrolled under the headers.
-        if cell.y1 <= self.grid_y0() || cell.x1 <= self.grid_x0() {
+        let (ec, er) = e.addr;
+        let cell = self.cell_screen_rect(ec, er);
+        let body = self.body_rect();
+
+        // Don't paint an editor that scrolled out from under the body.
+        if cell.y1 <= body.y0 || cell.x1 <= body.x0 || cell.x0 >= body.x1 || cell.y0 >= body.y1 {
             return;
         }
-        scene.fill(Fill::NonZero, transform, colors.surfaces.base, None, &edit_rect);
-        scene.stroke(&Stroke::new(2.0), transform, colors.accent[5], None, &edit_rect);
 
         let size = theme.tokens.typography.scale.base;
         let text = e.text();
+        let desired = self.editor_desired_width(&text, tr, size);
+
+        // Grow rightward across empty neighbours until we have enough room or
+        // we hit an occupied cell / the last column / the grid edge.
+        let right = self.editor_right_extent((ec, er), desired, body.x1);
+        let edit_rect = Rect::new(cell.x0.max(body.x0), cell.y0, right, cell.y1);
+
+        // Clip everything to the body so the floating editor stays inside the
+        // grid even when it overflows past where data ends.
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &body);
+
+        // Solid backing so underlying empty cells/gridlines don't bleed
+        // through, then a crisp accent border — the "clean Excel" look.
+        scene.fill(Fill::NonZero, transform, colors.surfaces.base, None, &edit_rect);
+        scene.stroke(&Stroke::new(2.0), transform, colors.accent[5], None, &edit_rect);
+
+        // Text + caret, clipped to the editor box.
         let ty = edit_rect.y0 + (edit_rect.height() - size as f64) / 2.0;
         let tx = edit_rect.x0 + CELL_PAD_X;
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &edit_rect);
-        tr.draw_text(scene, &text, size, colors.text_primary, transform * Affine::translate((tx, ty)), None);
-        // Caret.
-        let prefix: String = e.chars[..e.caret].iter().collect();
+        tr.draw_text(
+            scene,
+            &text,
+            size,
+            colors.text_primary,
+            transform * Affine::translate((tx, ty)),
+            None,
+        );
+        let prefix: String = e.chars[..e.caret.min(e.chars.len())].iter().collect();
         let (pw, _) = tr.measure(&prefix, size, None);
         let caret_x = tx + pw as f64;
         scene.stroke(
@@ -1000,6 +1063,7 @@ impl Grid {
             None,
             &Line::new((caret_x, edit_rect.y0 + 4.0), (caret_x, edit_rect.y1 - 4.0)),
         );
+        scene.pop_layer();
         scene.pop_layer();
     }
 }
@@ -1014,5 +1078,93 @@ fn intersect(a: Rect, b: Rect) -> Option<Rect> {
         Some(Rect::new(x0, y0, x1, y1))
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::CellValue;
+
+    /// A grid with a known geometry: each column is the default width, the
+    /// body starts at `ROW_HEADER_W` / `COL_HEADER_H` and is wide enough for
+    /// many columns. No scroll.
+    fn grid_with(values: &[(Addr, CellValue)]) -> Grid {
+        let mut g = Grid::new();
+        // Body roughly 12 columns wide so overflow has room.
+        let width = ROW_HEADER_W + DEFAULT_COL_W * 12.0;
+        let height = COL_HEADER_H + DEFAULT_ROW_H * 12.0;
+        g.rect = Rect::new(0.0, 0.0, width, height);
+        let mut map = HashMap::new();
+        for (addr, v) in values {
+            map.insert(*addr, v.clone());
+        }
+        g.values = map;
+        g
+    }
+
+    #[test]
+    fn occupied_detects_value_and_raw() {
+        let mut g = grid_with(&[((1, 0), CellValue::Number(5.0))]);
+        assert!(g.cell_is_occupied((1, 0)));
+        assert!(!g.cell_is_occupied((2, 0)));
+        // Empty CellValue is not occupied.
+        g.values.insert((3, 0), CellValue::Empty);
+        assert!(!g.cell_is_occupied((3, 0)));
+        // A raw entry (mid-edit, pre-eval) counts as occupied too.
+        g.raw.insert((4, 0), "x".into());
+        assert!(g.cell_is_occupied((4, 0)));
+    }
+
+    #[test]
+    fn editor_overflows_into_empty_neighbours() {
+        // A0 is being edited; B0.. are all empty. A wide desired width should
+        // grow across several empty columns.
+        let g = grid_with(&[]);
+        let cell = g.cell_screen_rect(0, 0);
+        let body_right = g.body_rect().x1;
+        // Desired width spanning ~3 columns.
+        let desired = DEFAULT_COL_W * 3.0;
+        let right = g.editor_right_extent((0, 0), desired, body_right);
+        // It should reach at least 3 columns wide (within the body).
+        assert!(
+            right >= cell.x0 + DEFAULT_COL_W * 3.0 - 0.5,
+            "right={right} expected >= {}",
+            cell.x0 + DEFAULT_COL_W * 3.0
+        );
+        assert!(right <= body_right + 0.5);
+    }
+
+    #[test]
+    fn editor_clips_at_first_occupied_neighbour() {
+        // A0 edited; C0 (two cells over) is occupied. The editor may use B0
+        // but must STOP before C0 even though it wants more room.
+        let g = grid_with(&[((2, 0), CellValue::Text("blocker".into()))]);
+        let cell = g.cell_screen_rect(0, 0);
+        let body_right = g.body_rect().x1;
+        let desired = DEFAULT_COL_W * 6.0; // wants a lot
+        let right = g.editor_right_extent((0, 0), desired, body_right);
+        // Reaches the end of B0 (= start of C0) but not into C0.
+        let c0_left = g.cell_screen_rect(2, 0).x0;
+        assert!((right - c0_left).abs() < 0.5, "right={right} c0_left={c0_left}");
+    }
+
+    #[test]
+    fn editor_at_least_its_own_cell_when_neighbour_adjacent() {
+        // B0 occupied directly to the right of A0 → editor stays cell-wide.
+        let g = grid_with(&[((1, 0), CellValue::Number(1.0))]);
+        let cell = g.cell_screen_rect(0, 0);
+        let body_right = g.body_rect().x1;
+        let right = g.editor_right_extent((0, 0), DEFAULT_COL_W * 4.0, body_right);
+        assert!((right - cell.x1).abs() < 0.5, "right={right} cell.x1={}", cell.x1);
+    }
+
+    #[test]
+    fn editor_never_exceeds_body() {
+        // Edit the last visible column with a huge desired width.
+        let g = grid_with(&[]);
+        let body_right = g.body_rect().x1;
+        let right = g.editor_right_extent((10, 0), DEFAULT_COL_W * 50.0, body_right);
+        assert!(right <= body_right + 0.5, "right={right} body_right={body_right}");
     }
 }

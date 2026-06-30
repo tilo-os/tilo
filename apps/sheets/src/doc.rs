@@ -22,7 +22,8 @@
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, ROOT};
 
-use crate::model::{Addr, CellFormat};
+use crate::model::{Addr, CellFormat, Currency, DateStyle, TimeStyle};
+use crate::settings::DocSettings;
 
 /// One sheet's snapshot pulled out of the CRDT for rendering.
 #[derive(Clone, Debug, Default)]
@@ -205,6 +206,65 @@ impl SheetsDoc {
         let _ = doc.put(&cell, "fmt", fmt.as_str());
     }
 
+    /// Get-or-create the per-document `settings` Map under `wb`.
+    fn settings_map(doc: &mut AutoCommit) -> ObjId {
+        let wb = Self::wb_map(doc);
+        match doc.get(&wb, "settings") {
+            Ok(Some((Value::Object(ObjType::Map), id))) => id,
+            _ => doc
+                .put_object(&wb, "settings", ObjType::Map)
+                .expect("put settings never fails"),
+        }
+    }
+
+    fn read_str(doc: &mut AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
+        match doc.get(obj, key) {
+            Ok(Some((Value::Scalar(v), _))) => v.to_str().map(|s| s.to_string()),
+            _ => None,
+        }
+    }
+
+    /// Read the per-document locale overrides from the CRDT. Absent fields
+    /// mean "inherit the global default".
+    pub fn doc_settings(doc: &mut AutoCommit) -> DocSettings {
+        let s = Self::settings_map(doc);
+        DocSettings {
+            currency: Self::read_str(doc, &s, "currency").and_then(|c| Currency::from_code(&c)),
+            date_format: Self::read_str(doc, &s, "date_format").and_then(parse_date_style),
+            time_format: Self::read_str(doc, &s, "time_format").and_then(parse_time_style),
+        }
+    }
+
+    /// Persist the per-document locale overrides. A `None` field clears the
+    /// stored override so the document falls back to the global default.
+    pub fn set_doc_settings(doc: &mut AutoCommit, settings: &DocSettings) {
+        let s = Self::settings_map(doc);
+        match settings.currency {
+            Some(c) => {
+                let _ = doc.put(&s, "currency", c.code());
+            }
+            None => {
+                let _ = doc.delete(&s, "currency");
+            }
+        }
+        match settings.date_format {
+            Some(d) => {
+                let _ = doc.put(&s, "date_format", date_style_code(d));
+            }
+            None => {
+                let _ = doc.delete(&s, "date_format");
+            }
+        }
+        match settings.time_format {
+            Some(t) => {
+                let _ = doc.put(&s, "time_format", time_style_code(t));
+            }
+            None => {
+                let _ = doc.delete(&s, "time_format");
+            }
+        }
+    }
+
     /// Read the raw input of a single cell.
     pub fn cell_raw(doc: &mut AutoCommit, idx: usize, addr: Addr) -> String {
         let Some(cells) = Self::cells_map(doc, idx) else {
@@ -223,7 +283,13 @@ impl SheetsDoc {
     }
 
     /// Snapshot one sheet (raw inputs + formats + name) for rendering.
-    pub fn snapshot_sheet(doc: &mut AutoCommit, idx: usize) -> SheetSnapshot {
+    /// `default_currency` seeds any stored currency format whose subtype is
+    /// missing (legacy data) — fresh formats always carry their own.
+    pub fn snapshot_sheet(
+        doc: &mut AutoCommit,
+        idx: usize,
+        default_currency: Currency,
+    ) -> SheetSnapshot {
         let mut snap = SheetSnapshot::default();
         let Some(sheet) = Self::sheet_map(doc, idx) else {
             return snap;
@@ -256,7 +322,7 @@ impl SheetsDoc {
             }
             if let Ok(Some((Value::Scalar(v), _))) = doc.get(&cell, "fmt") {
                 if let Some(s) = v.to_str() {
-                    let f = CellFormat::from_str(s);
+                    let f = CellFormat::from_str_with(s, default_currency);
                     if f != CellFormat::General {
                         snap.fmt.insert(addr, f);
                     }
@@ -264,6 +330,37 @@ impl SheetsDoc {
             }
         }
         snap
+    }
+}
+
+fn parse_date_style(s: String) -> Option<DateStyle> {
+    Some(match s.as_str() {
+        "ISO" => DateStyle::Iso,
+        "US" => DateStyle::Us,
+        "EU" => DateStyle::Eu,
+        "Long" => DateStyle::Long,
+        _ => return None,
+    })
+}
+fn date_style_code(s: DateStyle) -> &'static str {
+    match s {
+        DateStyle::Iso => "ISO",
+        DateStyle::Us => "US",
+        DateStyle::Eu => "EU",
+        DateStyle::Long => "Long",
+    }
+}
+fn parse_time_style(s: String) -> Option<TimeStyle> {
+    Some(match s.as_str() {
+        "H24" => TimeStyle::H24,
+        "H12" => TimeStyle::H12,
+        _ => return None,
+    })
+}
+fn time_style_code(s: TimeStyle) -> &'static str {
+    match s {
+        TimeStyle::H24 => "H24",
+        TimeStyle::H12 => "H12",
     }
 }
 
@@ -277,12 +374,15 @@ mod tests {
         let idx = SheetsDoc::add_sheet(&mut doc, "Budget");
         SheetsDoc::set_cell_raw(&mut doc, idx, (0, 0), "Hello");
         SheetsDoc::set_cell_raw(&mut doc, idx, (1, 0), "=1+1");
-        SheetsDoc::set_cell_format(&mut doc, idx, (1, 0), CellFormat::Currency);
-        let snap = SheetsDoc::snapshot_sheet(&mut doc, idx);
+        SheetsDoc::set_cell_format(&mut doc, idx, (1, 0), CellFormat::Currency(Currency::USD));
+        let snap = SheetsDoc::snapshot_sheet(&mut doc, idx, Currency::USD);
         assert_eq!(snap.name, "Budget");
         assert_eq!(snap.raw.get(&(0, 0)).unwrap(), "Hello");
         assert_eq!(snap.raw.get(&(1, 0)).unwrap(), "=1+1");
-        assert_eq!(snap.fmt.get(&(1, 0)).copied(), Some(CellFormat::Currency));
+        assert_eq!(
+            snap.fmt.get(&(1, 0)).copied(),
+            Some(CellFormat::Currency(Currency::USD))
+        );
     }
 
     #[test]
@@ -291,8 +391,32 @@ mod tests {
         let idx = SheetsDoc::add_sheet(&mut doc, "S");
         SheetsDoc::set_cell_raw(&mut doc, idx, (0, 0), "x");
         SheetsDoc::set_cell_raw(&mut doc, idx, (0, 0), "");
-        let snap = SheetsDoc::snapshot_sheet(&mut doc, idx);
+        let snap = SheetsDoc::snapshot_sheet(&mut doc, idx, Currency::USD);
         assert!(snap.raw.is_empty());
+    }
+
+    #[test]
+    fn doc_settings_round_trip_and_clear() {
+        let mut doc = AutoCommit::new();
+        SheetsDoc::add_sheet(&mut doc, "S");
+        // Default: everything inherits.
+        assert_eq!(SheetsDoc::doc_settings(&mut doc), DocSettings::default());
+        // Set an override.
+        SheetsDoc::set_doc_settings(
+            &mut doc,
+            &DocSettings {
+                currency: Some(Currency::EUR),
+                date_format: Some(DateStyle::Eu),
+                time_format: None,
+            },
+        );
+        let s = SheetsDoc::doc_settings(&mut doc);
+        assert_eq!(s.currency, Some(Currency::EUR));
+        assert_eq!(s.date_format, Some(DateStyle::Eu));
+        assert_eq!(s.time_format, None);
+        // Clearing returns to inherit.
+        SheetsDoc::set_doc_settings(&mut doc, &DocSettings::default());
+        assert_eq!(SheetsDoc::doc_settings(&mut doc), DocSettings::default());
     }
 
     #[test]
