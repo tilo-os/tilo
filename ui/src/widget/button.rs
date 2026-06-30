@@ -383,6 +383,24 @@ impl Widget for Button {
     fn is_focused(&self) -> bool { self.is_focused }
     fn is_enabled(&self) -> bool { self.enabled }
 
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        // FTL-resolved label is the accessible name; an icon-only button with
+        // an empty label has no name here (a tooltip would supply one later).
+        let label = i18n!(&self.label);
+        let name = (!label.is_empty()).then_some(label);
+        Some(
+            AccessNode::new(Role::Button)
+                .with_optional_name(name)
+                .with_state(AccessState {
+                    focusable: self.is_focusable(),
+                    focused: self.is_focused(),
+                    disabled: !self.is_enabled(),
+                    ..Default::default()
+                }),
+        )
+    }
+
     fn presence_key(&self) -> Option<PresenceKey> {
         if self.presence_path.is_empty() {
             None
@@ -517,6 +535,35 @@ mod tests {
         assert!(!Widget::is_enabled(&b));
         let b2 = Button::new("id", "Go", None);
         assert!(Widget::is_enabled(&b2), "default is enabled");
+    }
+
+    #[test]
+    fn accessibility_reports_button_role_name_and_state() {
+        use crate::a11y::Role;
+        let b = Button::new("id", "Save", None);
+        let node = Widget::accessibility(&b).expect("button is not presentational");
+        assert_eq!(node.role, Role::Button);
+        assert_eq!(node.name.as_deref(), Some("Save"));
+        assert!(node.state.focusable);
+        assert!(!node.state.focused);
+        assert!(!node.state.disabled);
+        assert_eq!(node.state.checked, None, "a button is not checkable");
+    }
+
+    #[test]
+    fn accessibility_reflects_disabled_and_focus() {
+        let mut b = Button::new("id", "Save", None).with_enabled(false);
+        b.set_focus(true);
+        let node = Widget::accessibility(&b).unwrap();
+        assert!(node.state.disabled);
+        assert!(node.state.focused);
+    }
+
+    #[test]
+    fn accessibility_icon_only_button_has_no_name() {
+        let b = Button::new("id", "", None).with_icon(crate::icons::Icon::Check);
+        let node = Widget::accessibility(&b).unwrap();
+        assert_eq!(node.name, None, "icon-only button has no accessible name yet");
     }
 
     #[test]

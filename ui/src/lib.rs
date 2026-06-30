@@ -1,3 +1,4 @@
+pub mod a11y;
 pub mod app;
 pub mod color_compat;
 pub mod state;
@@ -28,6 +29,11 @@ pub use state::{State, UndoEntry};
 pub use theme::Theme;
 pub use caps_lock::CapsLockEstimate;
 pub use selection::SelectionModel;
+
+// Accessibility semantic model (W0). `a11y::Role` / `a11y::Action` are reached
+// through the module path to avoid clashing with `permissions::{Role}` /
+// `permissions::Op`, which are already re-exported at the crate root.
+pub use a11y::{A11ySettings, AccessNode, AccessState};
 
 pub use widget::{Widget, Element};
 pub use widget::{AppCommand, AppKind, AppWidget, IconDescriptor};
