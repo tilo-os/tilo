@@ -31,3 +31,11 @@ use ui::widget::Widget;
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(TubeApp::new())
 }
+
+/// `--shots` variant for a NARROW viewport: the navigation rail is collapsed
+/// to an overlay flap and forced open so the still frame captures the
+/// summoned rail + dimming scrim. Pair with a sub-breakpoint `--viewport`
+/// width. Identical to [`app_root`] apart from that one shots-only flag.
+pub fn app_root_narrow_shot() -> Box<dyn Widget> {
+    Box::new(TubeApp::new().with_open_sidebar_shot())
+}
