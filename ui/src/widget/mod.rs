@@ -72,6 +72,29 @@ pub trait Widget {
     fn set_focus(&mut self, _focused: bool) {}
     fn is_focused(&self) -> bool { false }
 
+    /// Local accessibility semantics for THIS widget — its semantic
+    /// [`Role`](crate::a11y::Role), accessible name/description/value, and
+    /// [`AccessState`](crate::a11y::AccessState).
+    ///
+    /// The default `None` means **presentational / pass-through**: the node is
+    /// skipped and its children are reparented onto its parent, so layout-only
+    /// widgets (`Row`, `Column`, `Container`, `Stack`, `Spacer`) don't pollute
+    /// the tree with "group, group, group" (matching ARIA
+    /// `role="presentation"`). Only widgets that carry meaning override this;
+    /// semantic containers (`TabBar`, `List`, `Dialog`, `Toolbar`) return
+    /// `Some(..)` and expose their structure via the existing
+    /// [`children`](Widget::children).
+    ///
+    /// State is **derived, not stored**: compute it from existing signals
+    /// ([`is_focused`](Widget::is_focused), [`is_enabled`](Widget::is_enabled),
+    /// selection indices, …) at call time so it can't drift from `draw`.
+    /// Geometry flows from [`get_rect`](Widget::get_rect); names must already be
+    /// [`i18n!`](crate::i18n)-resolved strings, not keys. A later workstream
+    /// (W4) walks the tree, maps each node onto AccessKit's schema, and exports
+    /// it over AT-SPI2 so standard ATs (Orca, braille) work — while an
+    /// in-process channel feeds the same nodes to the built-in screen reader.
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> { None }
+
     /// Whether this widget is interactive. The default is `true`.
     ///
     /// A disabled widget (`false`) must be skipped by keyboard focus
