@@ -341,7 +341,7 @@ mod scrollable;  pub use scrollable::{Scrollable, ScrollAxis};
 mod tile_host;   pub use tile_host::{TileHost, TileContent, AppKind};
 mod app_widget;  pub use app_widget::{AppCommand, AppWidget, IconDescriptor};
 pub mod command_palette;
-pub mod context_menu;
+pub mod context_menu;     pub use context_menu::{ContextMenu, MenuItem};
 pub mod data_table;
 pub mod icon_grid;     pub use icon_grid::{IconGrid, IconGridItem};
 mod window_group;

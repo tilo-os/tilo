@@ -103,10 +103,30 @@ impl ContextMenu {
     /// Borrow the menu's full item list (actions and separators) in order.
     pub fn items(&self) -> &[MenuItem] { &self.items }
 
-    /// Open the menu anchored at logical position `[x, y]`.
+    /// Open the menu anchored at logical position `[x, y]`. Also computes the
+    /// menu's `rect` immediately (via [`layout_at_position`](Self::layout_at_position))
+    /// so [`item_at`](Self::item_at) / [`contains`](Self::contains) are usable
+    /// without first running a `draw`/`apply_layout` pass — needed by consumers
+    /// (like `TextInput`) that route a click to a row in the same input batch
+    /// the menu opened in.
     pub fn open_at(&mut self, position: [f32; 2]) {
         self.open = true;
         self.position = Some(position);
+        self.layout_at_position();
+    }
+
+    /// Recompute `self.rect` from the stored anchor position and the menu's
+    /// item heights, mirroring the `build_layout` + `apply_layout` geometry but
+    /// without a taffy round-trip. A no-op when the menu has never been
+    /// positioned. Lets a standalone consumer (one that owns a `ContextMenu` as
+    /// a field rather than as a tree node) hit-test and draw the menu directly.
+    pub fn layout_at_position(&mut self) {
+        let Some([px, py]) = self.position else { return };
+        let height =
+            PADDING * 2.0 + self.items.iter().map(item_height).sum::<f64>().max(ROW_HEIGHT);
+        let x0 = px as f64;
+        let y0 = py as f64;
+        self.rect = Rect::new(x0, y0, x0 + MENU_WIDTH, y0 + height);
     }
 
     /// Close the menu. Safe to call when already closed.
