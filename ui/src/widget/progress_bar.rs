@@ -200,7 +200,14 @@ impl Widget for ProgressBar {
             // exits the track every period.
             let segment_width = track_width * INDETERMINATE_SEGMENT_FRAC;
             let travel = track_width + segment_width;
-            let phase = self.indeterminate_phase() as f64;
+            // With reduced motion the segment holds at a fixed position
+            // instead of sweeping across the track: the bar still reads as
+            // busy, but nothing moves.
+            let phase = if theme.reduce_motion {
+                (segment_width / 2.0) / travel
+            } else {
+                self.indeterminate_phase() as f64
+            };
             let segment_x0 = self.rect.x0 - segment_width + phase * travel;
             let segment_x1 = segment_x0 + segment_width;
             // Clip the segment to the track so the rounded ends never
@@ -368,7 +375,12 @@ mod tests {
     /// Render a bar into a fresh scene and return that scene. Mirrors
     /// the helper pattern from `tabs.rs`'s encoding tests.
     fn render(bar: &mut ProgressBar) -> Scene {
-        let theme = Theme::dark();
+        render_with(bar, false)
+    }
+
+    /// Render a bar against a theme with the given reduced-motion setting.
+    fn render_with(bar: &mut ProgressBar, reduce_motion: bool) -> Scene {
+        let theme = Theme::dark().with_reduce_motion(reduce_motion);
         let mut tr = TextRenderer::new();
         let presence = PresenceCtx::default();
         let mut scene = Scene::new();
@@ -491,6 +503,42 @@ mod tests {
         assert!(
             !determinate.needs_animation_frame(),
             "determinate bar must not request animation frames",
+        );
+    }
+
+    /// With reduced motion an indeterminate bar holds its segment at a fixed
+    /// position: a bar backdated by a full sweep paints the *same* segment
+    /// geometry as a fresh one, because `draw` ignores elapsed time. With
+    /// motion on, the same backdate lands the segment elsewhere — proving the
+    /// freeze is the reduced-motion path, not a no-op.
+    #[test]
+    fn reduce_motion_freezes_the_indeterminate_segment() {
+        use std::time::{Duration, Instant};
+        let one_sweep = Duration::from_secs_f32(INDETERMINATE_PERIOD_SECS);
+        // A quarter-sweep backdate so the moving segment is plainly off the
+        // resting position (a full sweep would alias back to phase 0).
+        let backdate = Instant::now() - one_sweep / 4;
+
+        let mut fresh = ProgressBar::indeterminate();
+        fresh.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
+        let fresh_geo = render_with(&mut fresh, true).encoding().path_data.clone();
+
+        let mut aged = ProgressBar::indeterminate();
+        aged.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
+        aged.start = backdate;
+        let aged_reduced = render_with(&mut aged, true).encoding().path_data.clone();
+        assert_eq!(
+            fresh_geo, aged_reduced,
+            "reduced motion must paint the resting segment regardless of elapsed time",
+        );
+
+        let mut aged2 = ProgressBar::indeterminate();
+        aged2.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
+        aged2.start = backdate;
+        let aged_moving = render_with(&mut aged2, false).encoding().path_data.clone();
+        assert_ne!(
+            fresh_geo, aged_moving,
+            "with motion on, a backdated bar's segment is at a different position",
         );
     }
 }
