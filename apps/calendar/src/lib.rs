@@ -1,0 +1,27 @@
+//! Calendar — qOS native app (CRDT-native, built on the `ui` toolkit).
+//!
+//! A calendar that is also a task manager, inspired by GNOME Planify:
+//! month / week / day / agenda views, a Planify-style sidebar of smart
+//! lists + projects, events with recurrence + reminders, checkable tasks
+//! with priorities and subtasks, and rich-text **notes** on any event or
+//! task using the same `BlockEditor` the Notes app is built on.
+//!
+//! State lives in the Automerge CRDT (`doc`), interop is via iCalendar
+//! (`ics`), and `app_root()` is the single integration point used by both
+//! the live event loop and the `--shots` offscreen renderer.
+
+pub mod app;
+pub mod date;
+pub mod doc;
+pub mod ics;
+pub mod model;
+
+pub use app::CalendarApp;
+pub use model::{Event, Model, Priority, Project, Recurrence, Task, View};
+
+use ui::widget::Widget;
+
+/// Build and return the app's root widget tree.
+pub fn app_root() -> Box<dyn Widget> {
+    Box::new(CalendarApp::new())
+}
