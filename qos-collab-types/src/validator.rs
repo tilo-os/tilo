@@ -39,6 +39,7 @@
 //! - the per-artifact classification override.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::time::SystemTime;
 
@@ -50,7 +51,8 @@ use crate::crypto::{Ed25519PublicKey, VerifyError, verify_event, verify_op};
 use crate::event::RoleAttestation;
 use crate::identity::{Attestation, AttestationId, Claim, Clearance};
 use crate::op::SignedOp;
-use crate::role::{ArtifactKind, role_permits};
+use crate::redaction::{OpId, RedactRequest, RedactedMarker, RedactionError, parse_redact_payload};
+use crate::role::{ArtifactKind, OpClass, role_permits};
 
 /// Default upper bound on the per-channel in-memory op log. Once the
 /// log exceeds this size the oldest op is evicted on the next push.
@@ -153,6 +155,37 @@ pub enum ValidationError {
         /// The issuer key on the rejected `ClearedAt` claim.
         issuer: Ed25519PublicKey,
     },
+
+    /// Step 5b (Phase 9): a `Redact` op's payload could not be parsed
+    /// or violated a per-payload invariant (e.g. `reason` too long,
+    /// `redacted_by` does not match the envelope's author). Reported
+    /// here rather than in a separate decode pass so audit-log entries
+    /// for malformed Redacts land in the same `ValidationError` bucket
+    /// as every other invalid op.
+    #[error("malformed redact payload: {0}")]
+    MalformedRedact(#[source] RedactionError),
+
+    /// Step 5c (Phase 9): the `Redact` op's `target_op_id` resolves to
+    /// another op that has itself been redacted. Recursive redaction
+    /// is rejected — see the design doc §6 for the rationale ("un-
+    /// redact is not a concept").
+    #[error("recursive redaction: target op id {target:?} is itself a Redact")]
+    RecursiveRedaction {
+        /// The id of the op the rejected Redact attempted to target.
+        target: OpId,
+    },
+
+    /// Step 9 (Phase 9): the inbound op's id is already in the
+    /// channel's `redacted_ops` set. The op-log entry is rewritten to
+    /// the redacted marker (so the seq gap doesn't form) but the
+    /// derived state is **not** updated and the validator surfaces
+    /// this error so the broker can audit-log a `OpArrivedRedacted`
+    /// entry.
+    #[error("op {target:?} was already redacted; payload swapped for marker")]
+    OpAlreadyRedacted {
+        /// The id of the op that was already in the redacted set.
+        target: OpId,
+    },
 }
 
 /// The validator's snapshot of a channel.
@@ -226,6 +259,30 @@ pub struct ChannelState {
     /// op cadences; a single global default would either OOM the
     /// chat or starve the kanban.
     pub max_in_memory_ops: usize,
+
+    /// Phase 9: the set of op ids that have been redacted on this
+    /// channel. Used by [`ChannelState::is_redacted`] +
+    /// [`validate_inbound_op`]'s step-9 redaction-aware filter.
+    ///
+    /// The set survives across compaction (a redaction record is
+    /// retained even when the op it points to has been evicted; see
+    /// §4 of the design doc). It is in-memory only in v1 — Phase 9.5
+    /// adds persistence to the channel's authoritative event log so
+    /// a cold-start peer can re-derive the set without re-running the
+    /// full op stream.
+    pub redacted_ops: HashSet<OpId>,
+
+    /// Phase 9: snapshot of the **pre-redaction full envelope** of
+    /// every redacted op, keyed by [`OpId`]. The audit log uses these
+    /// to reconstruct the original `target_op_hash` long after the
+    /// op-log entry has been rewritten to the redacted marker; the
+    /// compaction path also consults them so the prefix hash stays
+    /// stable across redactions (see §4 of the design doc — hash
+    /// original bytes, not marker bytes).
+    ///
+    /// Bounded by the redaction set, which is small by construction
+    /// (manual compliance acts, not bulk traffic).
+    pub original_envelopes: HashMap<OpId, Box<SignedOp>>,
 }
 
 impl Default for ChannelState {
@@ -241,6 +298,8 @@ impl Default for ChannelState {
             last_seq_per_author: HashMap::new(),
             op_log: VecDeque::new(),
             max_in_memory_ops: DEFAULT_MAX_IN_MEMORY_OPS,
+            redacted_ops: HashSet::new(),
+            original_envelopes: HashMap::new(),
         }
     }
 }
@@ -296,14 +355,28 @@ impl ChannelState {
         &mut self,
         checkpoint: &CompactionCheckpoint,
     ) -> Result<usize, CompactionError> {
-        // Gather + sort the candidate prefix.
+        // Gather + sort the candidate prefix. For Phase 9 we substitute
+        // the **pre-redaction** envelope when an op has been redacted:
+        // the prefix hash is canonically computed over the original
+        // bytes so a peer that received a Redact before a Compaction
+        // still verifies the checkpoint correctly (design doc §4 —
+        // hash original bytes, not marker bytes).
         let mut prefix: Vec<SignedOp> = self
             .op_log
             .iter()
             .filter(|op| {
                 op.artifact == checkpoint.artifact && op.seq <= checkpoint.up_to_seq
             })
-            .cloned()
+            .map(|op| {
+                let id = OpId::from_op(op);
+                if self.redacted_ops.contains(&id)
+                    && let Some(original) = self.original_envelopes.get(&id)
+                {
+                    (**original).clone()
+                } else {
+                    op.clone()
+                }
+            })
             .collect();
         prefix.sort_by_key(|op| op.seq);
 
@@ -312,12 +385,72 @@ impl ChannelState {
             return Err(CompactionError::PrefixHashMismatch);
         }
 
-        // Evict in place.
+        // Evict in place. Redact ops themselves survive compaction —
+        // they carry the audit record for a removal that may need to
+        // be visible long after the targeted op is gone (design doc §4).
         let before = self.op_log.len();
         self.op_log.retain(|op| {
-            !(op.artifact == checkpoint.artifact && op.seq <= checkpoint.up_to_seq)
+            !(op.artifact == checkpoint.artifact
+                && op.seq <= checkpoint.up_to_seq
+                && op.op_class != OpClass::Redact)
         });
         Ok(before - self.op_log.len())
+    }
+
+    /// Phase 9: is this op-id in the channel's `redacted_ops` set?
+    ///
+    /// Cheap query consulted by the broker before fanning a freshly-
+    /// arrived op out to local apps + by the validator's step-9 to
+    /// rewrite a late-arriving op's payload to the redacted marker.
+    pub fn is_redacted(&self, op_id: OpId) -> bool {
+        self.redacted_ops.contains(&op_id)
+    }
+
+    /// Phase 9: apply a parsed [`RedactRequest`] to this channel's
+    /// state.
+    ///
+    /// On success:
+    /// - inserts `req.target_op_id` into `redacted_ops`;
+    /// - walks `op_log` and, for every matching entry, snapshots the
+    ///   pre-redaction signing-bytes into `original_signing_bytes`
+    ///   (keyed by id), then rewrites the entry's `payload` to a
+    ///   [`RedactedMarker::v1`] canonical-bytes blob;
+    /// - returns the number of log entries that were rewritten. Zero
+    ///   is valid — the op may have been compacted away before the
+    ///   redaction landed, or may arrive later (the validator's step
+    ///   9 catches that).
+    ///
+    /// On failure: [`RedactionError::RedactorMismatch`] or
+    /// [`RedactionError::Malformed`] surface verbatim from the caller's
+    /// pre-parsed request — `apply_redaction` does not re-parse;
+    /// callers run [`parse_redact_payload`] first.
+    ///
+    /// The function does **not** add the Redact op itself to
+    /// `op_log` — the broker's hot path records the validated op
+    /// before calling here so this method only handles the
+    /// derived-state mutation.
+    pub fn apply_redaction(&mut self, req: &RedactRequest) -> Result<usize, RedactionError> {
+        let target = req.target_op_id;
+        self.redacted_ops.insert(target);
+        let marker_bytes = RedactedMarker::v1()
+            .canonical()
+            .map_err(RedactionError::Malformed)?;
+        let mut rewritten = 0usize;
+        for entry in self.op_log.iter_mut() {
+            if OpId::from_op(entry) == target && entry.op_class != OpClass::Redact {
+                // Snapshot the pre-redaction full envelope so the audit
+                // log can verify the original `target_op_hash` and the
+                // compaction path can keep its prefix hash stable.
+                // Only the first sighting matters — replays of the
+                // same target are idempotent.
+                self.original_envelopes
+                    .entry(target)
+                    .or_insert_with(|| Box::new(entry.clone()));
+                entry.payload = marker_bytes.clone();
+                rewritten += 1;
+            }
+        }
+        Ok(rewritten)
     }
 
     /// Phase 6: collect up to `max` ops from the in-memory log whose
@@ -360,10 +493,10 @@ impl ChannelState {
     }
 }
 
-/// Run the eight-step inbound-op validation pipeline against the
-/// given snapshot. On success, `channel_state.last_seq_per_author`
-/// is updated for the op's author so subsequent ops with the same
-/// or earlier seq are rejected.
+/// Run the inbound-op validation pipeline against the given
+/// snapshot. On success, `channel_state.last_seq_per_author` is
+/// updated for the op's author so subsequent ops with the same or
+/// earlier seq are rejected.
 ///
 /// Returns the first failure encountered; we do not collect all
 /// failures because in practice the audit-log entry only carries
@@ -378,11 +511,21 @@ impl ChannelState {
 /// 3. Verify the op's signature against the author's public key.
 /// 4. `op.author == attestation.subject`.
 /// 5. `role_permits(role, kind, op_class)` for the resolved triple.
+/// 5b. **Phase 9, Redact-specific:** if `op.op_class == Redact`,
+///     parse the payload as a `RedactRequest`; reject recursive
+///     redactions (target id resolves to another Redact in the
+///     local op log).
 /// 6. `op.timestamp ∈ [attestation.valid_from, attestation.valid_until]`.
 /// 7. `op.seq > last_seq_per_author[op.author]`.
 /// 8. Clearance gate: if the artifact's effective classification
 ///    is set, the author needs a matching `ClearedAt` claim
 ///    issued by an accepted trust root.
+/// 9. **Phase 9 redaction-aware filter:** if the op's derived
+///    [`OpId`] is already in `channel_state.redacted_ops`, return
+///    [`ValidationError::OpAlreadyRedacted`]. The broker treats this
+///    specially — pushes a redacted-marker entry into the op log
+///    and audit-logs an `OpArrivedRedacted` event — rather than
+///    fanning the op out.
 pub fn validate_inbound_op(
     op: &SignedOp,
     channel_state: &mut ChannelState,
@@ -431,6 +574,31 @@ pub fn validate_inbound_op(
         .ok_or(ValidationError::UnknownArtifact(op.artifact))?;
     if !role_permits(ra.role, artifact_kind, op.op_class) {
         return Err(ValidationError::RoleForbidsOpClass);
+    }
+
+    // Step 5b (Phase 9): if this is a Redact op, parse the payload and
+    // reject recursive redactions. Parsing also catches the
+    // envelope-author / payload-redactor mismatch + the reason-length
+    // bound; the validator surfaces those as `MalformedRedact` so the
+    // audit log preserves the specific reason.
+    if op.op_class == OpClass::Redact {
+        let req = parse_redact_payload(op).map_err(ValidationError::MalformedRedact)?;
+        // Recursive-redaction check. Walk the in-memory op log for an
+        // entry whose derived OpId matches `req.target_op_id` and whose
+        // op_class is itself `Redact` — that would be a redact-of-a-
+        // redact, which we disallow. The walk is bounded by
+        // max_in_memory_ops; we don't consult original_envelopes here
+        // because a previously-redacted op (whose op_class was also
+        // Redact, were that allowed) would have been refused at this
+        // very check on first apply, so by induction the cache never
+        // contains a Redact.
+        for entry in channel_state.op_log.iter() {
+            if entry.op_class == OpClass::Redact && OpId::from_op(entry) == req.target_op_id {
+                return Err(ValidationError::RecursiveRedaction {
+                    target: req.target_op_id,
+                });
+            }
+        }
     }
 
     // Step 6: timestamp inside attestation validity window.
@@ -493,6 +661,33 @@ pub fn validate_inbound_op(
                     found: None,
                 });
             }
+        }
+    }
+
+    // Step 9 (Phase 9): redaction-aware filter. An op whose derived
+    // OpId is in `redacted_ops` is the late-arrival case described in
+    // §7 of the design doc — the redaction reached this peer before
+    // the op did, and now the op shows up. The validator surfaces
+    // this as a typed error so the broker can:
+    //   - record the envelope in the audit log as `OpArrivedRedacted`,
+    //   - push a marker-payload entry into the op log so the seq gap
+    //     doesn't form,
+    //   - refuse to fan out / apply.
+    //
+    // We don't bump `last_seq_per_author` on this path: failing
+    // validations leave the seq counter alone (mirrors every other
+    // error variant). A re-broadcast of the same op hits the same
+    // check on the next pass, which is the intended idempotent
+    // behaviour.
+    //
+    // Redact ops themselves are exempt from this check: a Redact-of-a-
+    // Redact would land on step 5b, and a Redact's own id is never in
+    // `redacted_ops` by construction (it would mean redacting a
+    // redaction, which the recursive-redaction rule already forbade).
+    if op.op_class != OpClass::Redact {
+        let id = OpId::from_op(op);
+        if channel_state.redacted_ops.contains(&id) {
+            return Err(ValidationError::OpAlreadyRedacted { target: id });
         }
     }
 
