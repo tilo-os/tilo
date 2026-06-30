@@ -131,6 +131,49 @@ impl AudioEngine {
         self.current_uri.as_deref()
     }
 
+    /// Query the pipeline's current playhead in milliseconds, when the live
+    /// GStreamer backend is running and a position is available. The UI uses
+    /// this to drive a *real* (not simulated) playhead while audio plays;
+    /// `None` falls back to the local simulated playhead.
+    pub fn position_ms(&self) -> Option<u64> {
+        #[cfg(feature = "audio")]
+        {
+            use gstreamer::prelude::*;
+            return self
+                .inner
+                .playbin
+                .query_position::<gstreamer::ClockTime>()
+                .map(|p| p.mseconds());
+        }
+        #[cfg(not(feature = "audio"))]
+        {
+            None
+        }
+    }
+
+    /// Query the pipeline's total duration in milliseconds, when known.
+    pub fn duration_ms(&self) -> Option<u64> {
+        #[cfg(feature = "audio")]
+        {
+            use gstreamer::prelude::*;
+            return self
+                .inner
+                .playbin
+                .query_duration::<gstreamer::ClockTime>()
+                .map(|d| d.mseconds());
+        }
+        #[cfg(not(feature = "audio"))]
+        {
+            None
+        }
+    }
+
+    /// Whether the live backend currently has a stream loaded (so the app can
+    /// decide to trust [`Self::position_ms`] over the simulated playhead).
+    pub fn has_stream(&self) -> bool {
+        Self::is_live() && self.current_uri.is_some()
+    }
+
     /// Whether real audio output is wired up in this build.
     pub fn is_live() -> bool {
         cfg!(feature = "audio")

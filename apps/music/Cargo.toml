@@ -20,6 +20,14 @@ streaming = ["dep:reqwest"]
 # Real GStreamer `playbin` audio output. Off by default (no system GStreamer
 # dependency for CI / screenshots).
 audio = ["dep:gstreamer"]
+# Live synced-lyrics fetch from lrclib.net over HTTP. Off by default; the
+# bundled sample lyrics keep the lyrics view populated offline / in `--shots`.
+lyrics = ["dep:reqwest"]
+# Live P2P library sync over iroh QUIC (the headless self-host transport).
+# Off by default so the default build + the headless relay still compile and
+# run in CI without an iroh/Tokio stack; the loopback transport demonstrates
+# the full convergence seam without it.
+p2p = ["dep:iroh", "dep:tokio"]
 
 [dependencies]
 ui = { path = "../../ui" }
@@ -34,6 +42,10 @@ winit = "0.30.13"
 taffy = "0.10.1"
 anyhow = "1.0"
 
-# Optional: enabled only by the `streaming` / `audio` features above.
+# Optional: enabled only by the `streaming` / `audio` / `lyrics` / `p2p`
+# features above. Versions pinned to match the workspace lock so no extra
+# copies resolve (iroh/tokio mirror the `chat` app + `fs` submodule pins).
 reqwest = { version = "0.12", features = ["blocking", "json"], optional = true }
 gstreamer = { version = "0.23", optional = true }
+iroh = { version = "0.96", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread"], optional = true }

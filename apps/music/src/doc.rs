@@ -149,6 +149,16 @@ pub fn seed(doc: &mut AutoCommit, lib: &Library, playback: &Playback) {
         let _ = doc.put(&cache, id.as_str(), cache_to_str(*st));
     }
 
+    // Liked songs + saved albums.
+    let liked = doc.put_object(&ROOT, "liked", ObjType::List).expect("liked");
+    for (i, id) in lib.liked.iter().enumerate() {
+        let _ = doc.insert(&liked, i, id.as_str());
+    }
+    let saved = doc.put_object(&ROOT, "saved_albums", ObjType::List).expect("saved_albums");
+    for (i, id) in lib.saved_albums.iter().enumerate() {
+        let _ = doc.insert(&saved, i, id.as_str());
+    }
+
     write_playback(doc, playback);
 }
 
@@ -207,24 +217,131 @@ pub fn set_cache(doc: &mut AutoCommit, track_id: &str, state: CacheState) {
     let _ = doc.put(&cache, track_id, cache_to_str(state));
 }
 
+/// Locate a playlist map object by its `id` field. Returns the playlist's
+/// `ObjId` so callers can mutate it directly.
+fn find_playlist_obj(doc: &AutoCommit, playlist_id: &str) -> Option<ObjId> {
+    let playlists = get_list(doc, &ROOT, "playlists")?;
+    let n = doc.length(&playlists);
+    for i in 0..n {
+        if let Ok(Some((Value::Object(ObjType::Map), pm))) = doc.get(&playlists, i) {
+            if get_str(doc, &pm, "id").as_deref() == Some(playlist_id) {
+                return Some(pm);
+            }
+        }
+    }
+    None
+}
+
 /// Append a track id to a playlist (by playlist id). No-op if the track is
 /// already present or the playlist is unknown.
 pub fn add_track_to_playlist(doc: &mut AutoCommit, playlist_id: &str, track_id: &str) {
+    let Some(pm) = find_playlist_obj(doc, playlist_id) else { return };
+    if let Some(list) = get_list(doc, &pm, "tracks") {
+        if !list_strings(doc, &list).iter().any(|t| t == track_id) {
+            let len = doc.length(&list);
+            let _ = doc.insert(&list, len, track_id);
+        }
+    }
+}
+
+/// Remove the first occurrence of a track id from a playlist.
+pub fn remove_track_from_playlist(doc: &mut AutoCommit, playlist_id: &str, track_id: &str) {
+    let Some(pm) = find_playlist_obj(doc, playlist_id) else { return };
+    if let Some(list) = get_list(doc, &pm, "tracks") {
+        let ids = list_strings(doc, &list);
+        if let Some(pos) = ids.iter().position(|t| t == track_id) {
+            let _ = doc.delete(&list, pos);
+        }
+    }
+}
+
+/// Move a track within a playlist from `from` to `to` (clamped). Implemented
+/// as delete + insert so the ordered list stays compact.
+pub fn move_track_in_playlist(doc: &mut AutoCommit, playlist_id: &str, from: usize, to: usize) {
+    let Some(pm) = find_playlist_obj(doc, playlist_id) else { return };
+    let Some(list) = get_list(doc, &pm, "tracks") else { return };
+    let ids = list_strings(doc, &list);
+    if from >= ids.len() || from == to {
+        return;
+    }
+    let to = to.min(ids.len().saturating_sub(1));
+    let moved = ids[from].clone();
+    let _ = doc.delete(&list, from);
+    let _ = doc.insert(&list, to, moved.as_str());
+}
+
+/// Rename a playlist.
+pub fn rename_playlist(doc: &mut AutoCommit, playlist_id: &str, name: &str) {
+    if let Some(pm) = find_playlist_obj(doc, playlist_id) {
+        let _ = doc.put(&pm, "name", name);
+    }
+}
+
+/// Delete a playlist by id.
+pub fn delete_playlist(doc: &mut AutoCommit, playlist_id: &str) {
     let Some(playlists) = get_list(doc, &ROOT, "playlists") else { return };
     let n = doc.length(&playlists);
     for i in 0..n {
-        let Ok(Some((Value::Object(ObjType::Map), pm))) = doc.get(&playlists, i) else {
-            continue;
-        };
-        if get_str(doc, &pm, "id").as_deref() == Some(playlist_id) {
-            if let Some(list) = get_list(doc, &pm, "tracks") {
-                if !list_strings(doc, &list).iter().any(|t| t == track_id) {
-                    let len = doc.length(&list);
-                    let _ = doc.insert(&list, len, track_id);
-                }
+        if let Ok(Some((Value::Object(ObjType::Map), pm))) = doc.get(&playlists, i) {
+            if get_str(doc, &pm, "id").as_deref() == Some(playlist_id) {
+                let _ = doc.delete(&playlists, i);
+                return;
             }
-            return;
         }
+    }
+}
+
+// ---- liked songs + saved albums ------------------------------------------
+
+fn ensure_str_list(doc: &mut AutoCommit, key: &str) -> ObjId {
+    match get_list(doc, &ROOT, key) {
+        Some(l) => l,
+        None => doc.put_object(&ROOT, key, ObjType::List).expect("str list"),
+    }
+}
+
+/// Toggle a track's membership in "Liked Songs". Returns the new liked state.
+pub fn toggle_liked(doc: &mut AutoCommit, track_id: &str) -> bool {
+    let list = ensure_str_list(doc, "liked");
+    let ids = list_strings(doc, &list);
+    if let Some(pos) = ids.iter().position(|t| t == track_id) {
+        let _ = doc.delete(&list, pos);
+        false
+    } else {
+        let len = doc.length(&list);
+        let _ = doc.insert(&list, len, track_id);
+        true
+    }
+}
+
+/// Force a track liked (idempotent). Used by the context-menu "Like" /
+/// "Add to library" entries which are one-way affordances.
+pub fn set_liked(doc: &mut AutoCommit, track_id: &str, liked: bool) {
+    let list = ensure_str_list(doc, "liked");
+    let ids = list_strings(doc, &list);
+    let present = ids.iter().any(|t| t == track_id);
+    if liked && !present {
+        let len = doc.length(&list);
+        let _ = doc.insert(&list, len, track_id);
+    } else if !liked && present {
+        if let Some(pos) = ids.iter().position(|t| t == track_id) {
+            let _ = doc.delete(&list, pos);
+        }
+    }
+}
+
+/// Toggle an album's membership in the saved-albums set. Returns the new
+/// saved state.
+pub fn toggle_saved_album(doc: &mut AutoCommit, album_id: &str) -> bool {
+    let list = ensure_str_list(doc, "saved_albums");
+    let ids = list_strings(doc, &list);
+    if let Some(pos) = ids.iter().position(|t| t == album_id) {
+        let _ = doc.delete(&list, pos);
+        false
+    } else {
+        let len = doc.length(&list);
+        let _ = doc.insert(&list, len, album_id);
+        true
     }
 }
 
@@ -327,6 +444,17 @@ pub fn load_library(doc: &AutoCommit) -> Library {
         }
     }
 
+    if let Some(liked) = get_list(doc, &ROOT, "liked") {
+        for id in list_strings(doc, &liked) {
+            lib.liked.insert(id);
+        }
+    }
+    if let Some(saved) = get_list(doc, &ROOT, "saved_albums") {
+        for id in list_strings(doc, &saved) {
+            lib.saved_albums.insert(id);
+        }
+    }
+
     lib
 }
 
@@ -410,6 +538,70 @@ mod tests {
         let loaded = load_library(&doc);
         let pl = loaded.playlist("pl_morning").unwrap();
         assert_eq!(pl.track_ids.iter().filter(|t| *t == "tk_h1").count(), 1);
+    }
+
+    fn seeded_doc() -> AutoCommit {
+        let mut doc = AutoCommit::new();
+        let lib = seed::sample_library();
+        seed(&mut doc, &lib, &seed::sample_playback(&lib));
+        doc
+    }
+
+    #[test]
+    fn remove_and_reorder_playlist_tracks() {
+        let mut doc = seeded_doc();
+        // pl_morning seeds [tk_p1, tk_r1, tk_g2, tk_r3].
+        remove_track_from_playlist(&mut doc, "pl_morning", "tk_g2");
+        let pl = load_library(&doc).playlist("pl_morning").unwrap().clone();
+        assert_eq!(pl.track_ids, vec!["tk_p1", "tk_r1", "tk_r3"]);
+        // Move the first track to the end.
+        move_track_in_playlist(&mut doc, "pl_morning", 0, 2);
+        let pl = load_library(&doc).playlist("pl_morning").unwrap().clone();
+        assert_eq!(pl.track_ids, vec!["tk_r1", "tk_r3", "tk_p1"]);
+    }
+
+    #[test]
+    fn rename_and_delete_playlist() {
+        let mut doc = seeded_doc();
+        rename_playlist(&mut doc, "pl_focus", "Concentration");
+        assert_eq!(load_library(&doc).playlist("pl_focus").unwrap().name, "Concentration");
+        let before = load_library(&doc).playlists.len();
+        delete_playlist(&mut doc, "pl_focus");
+        let after = load_library(&doc);
+        assert_eq!(after.playlists.len(), before - 1);
+        assert!(after.playlist("pl_focus").is_none());
+    }
+
+    #[test]
+    fn toggle_liked_round_trips_through_doc() {
+        let mut doc = seeded_doc();
+        assert!(!load_library(&doc).is_liked("tk_g2"));
+        assert!(toggle_liked(&mut doc, "tk_g2"));
+        assert!(load_library(&doc).is_liked("tk_g2"));
+        assert!(!toggle_liked(&mut doc, "tk_g2"));
+        assert!(!load_library(&doc).is_liked("tk_g2"));
+    }
+
+    #[test]
+    fn toggle_saved_album_round_trips() {
+        let mut doc = seeded_doc();
+        // al_glasslight is seeded saved; al_strata is not.
+        assert!(load_library(&doc).is_album_saved("al_glasslight"));
+        assert!(toggle_saved_album(&mut doc, "al_strata"));
+        assert!(load_library(&doc).is_album_saved("al_strata"));
+        assert!(!toggle_saved_album(&mut doc, "al_strata"));
+        assert!(!load_library(&doc).is_album_saved("al_strata"));
+    }
+
+    #[test]
+    fn liked_set_replicates_between_devices() {
+        // Device A seeds, B loads, B likes a track, A merges and converges.
+        let mut a = seeded_doc();
+        let mut b = AutoCommit::load(&a.save()).unwrap();
+        set_liked(&mut b, "tk_v2", true);
+        let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
+        a.merge(&mut b_loaded).unwrap();
+        assert!(load_library(&a).is_liked("tk_v2"));
     }
 
     #[test]

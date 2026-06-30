@@ -9,7 +9,7 @@
 //! state; they read a snapshot of these structs that `sync` refreshes from
 //! the document each frame.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -165,6 +165,11 @@ impl Default for Playback {
     }
 }
 
+/// Stable id of the synthetic "Liked Songs" playlist surfaced in the UI. It
+/// is not a stored [`Playlist`] — it is a virtual projection of [`Library::liked`]
+/// so it always reflects the like set without a second source of truth.
+pub const LIKED_PLAYLIST_ID: &str = "pl_liked";
+
 /// The complete in-memory catalog + user data. The app holds one of these
 /// as a render snapshot, refreshed from the CRDT each `sync`.
 #[derive(Clone, Debug, Default)]
@@ -174,6 +179,12 @@ pub struct Library {
     pub tracks: BTreeMap<TrackId, Track>,
     pub playlists: Vec<Playlist>,
     pub cache: BTreeMap<TrackId, CacheState>,
+    /// Track ids the user has liked ("Liked Songs"). Ordered set so the
+    /// virtual Liked playlist is stable across devices.
+    pub liked: BTreeSet<TrackId>,
+    /// Album ids the user has saved to their library ("Add to library" on an
+    /// album card/header).
+    pub saved_albums: BTreeSet<AlbumId>,
 }
 
 impl Library {
@@ -297,6 +308,35 @@ impl Library {
 
     pub fn total_tracks(&self) -> usize {
         self.tracks.len()
+    }
+
+    /// Whether a track is in "Liked Songs".
+    pub fn is_liked(&self, id: &str) -> bool {
+        self.liked.contains(id)
+    }
+
+    /// Whether an album is saved to the library.
+    pub fn is_album_saved(&self, id: &str) -> bool {
+        self.saved_albums.contains(id)
+    }
+
+    /// Liked tracks ordered by artist / album / track number (a virtual
+    /// "Liked Songs" playlist surfaced in the UI).
+    pub fn liked_tracks(&self) -> Vec<&Track> {
+        let mut v: Vec<&Track> =
+            self.liked.iter().filter_map(|id| self.tracks.get(id)).collect();
+        v.sort_by(|a, b| {
+            self.artist_name(&a.artist_id)
+                .cmp(self.artist_name(&b.artist_id))
+                .then(self.album_title(&a.album_id).cmp(self.album_title(&b.album_id)))
+                .then(a.track_no.cmp(&b.track_no))
+        });
+        v
+    }
+
+    /// Track ids of the "Liked Songs" virtual playlist, in display order.
+    pub fn liked_ids(&self) -> Vec<TrackId> {
+        self.liked_tracks().into_iter().map(|t| t.id.clone()).collect()
     }
 }
 
