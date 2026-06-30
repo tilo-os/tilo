@@ -32,6 +32,7 @@ use ui::widget::{TextInput, Widget};
 use crate::date;
 use crate::doc::ContactsDoc;
 use crate::model::{Address, Contact, ContactId, ContactStore, Labeled, SortKey, sample_contacts};
+use crate::responsive::{Pane, PushNav};
 use crate::vcard::{self, VCardVersion};
 
 const TOOLBAR_H: f64 = 56.0;
@@ -209,6 +210,8 @@ struct Hit {
     fav: Rect,
     edit: Rect,
     delete: Rect,
+    // narrow single-pane push: Back affordance at the top of the detail pane
+    back: Rect,
     // form actions
     save: Rect,
     cancel: Rect,
@@ -251,6 +254,11 @@ pub struct ContactsApp {
     hit: Hit,
     detail_content_h: f64,
 
+    // Responsiveness: single-pane master-detail push below the breakpoint.
+    push: PushNav,
+    /// Whether the last layout resolved to the narrow single-pane mode.
+    narrow: bool,
+
     last_mouse: Point,
     dirty: bool,
     relayout: bool,
@@ -282,11 +290,21 @@ impl ContactsApp {
             list_rows: Vec::new(),
             hit: Hit::default(),
             detail_content_h: 0.0,
+            push: PushNav::default(),
+            narrow: false,
             last_mouse: Point::ZERO,
             dirty: true,
             relayout: true,
             seeded: false,
         }
+    }
+
+    /// Deterministically snap the narrow single-pane push flow to the
+    /// detail pane (with its Back affordance) for `--shots`, skipping the
+    /// slide animation so a headless frame captures the settled pushed
+    /// detail rather than one mid-transition.
+    pub fn shots_show_detail(&mut self) {
+        self.push.snap(Pane::Detail);
     }
 
     /// Ids currently visible after search + group filter, in sort order.
@@ -308,6 +326,11 @@ impl ContactsApp {
         self.mode = Mode::Edit;
         self.popup = None;
         self.detail_scroll = 0.0;
+        // The edit form lives in the detail pane; on a narrow window push it
+        // in so the form is visible (single-pane master-detail navigation).
+        if self.narrow {
+            self.push.show_detail();
+        }
         self.relayout = true;
         self.dirty = true;
     }
@@ -429,12 +452,39 @@ impl ContactsApp {
         let imp_w = 86.0;
         self.hit.import = Rect::new(x - imp_w, btn_y, x, btn_y + 32.0);
 
-        // Split panes.
+        // Responsive split: side-by-side when wide, single-pane push when
+        // narrow. The choice is driven purely from the allocated width.
         let avail_w = content.width();
-        let list_w = (avail_w * self.split_pos).clamp(260.0, avail_w - 360.0).max(220.0);
-        self.list_rect = Rect::new(content.x0, content.y0, content.x0 + list_w, content.y1);
-        let div_x0 = self.list_rect.x1;
-        self.detail_rect = Rect::new(div_x0 + DIVIDER_W, content.y0, content.x1, content.y1);
+        self.narrow = PushNav::is_narrow(avail_w);
+        if self.narrow {
+            // Single-pane push: the list and detail each fill the whole
+            // content width and slide horizontally as one swaps for the
+            // other. `slide` (0 = list, 1 = detail) offsets both slabs so
+            // the list slides off to the left while the detail slides in
+            // from the right.
+            let slide = self.push.slide();
+            let list_x0 = content.x0 - avail_w * slide;
+            self.list_rect = Rect::new(list_x0, content.y0, list_x0 + avail_w, content.y1);
+            let detail_x0 = content.x0 + avail_w * (1.0 - slide);
+            self.detail_rect =
+                Rect::new(detail_x0, content.y0, detail_x0 + avail_w, content.y1);
+            // Reserve a Back affordance pill at the top-left of the detail
+            // pane (the master-detail return-to-list affordance).
+            self.hit.back = Rect::new(
+                self.detail_rect.x0 + PAD,
+                self.detail_rect.y0 + 14.0,
+                self.detail_rect.x0 + PAD + 92.0,
+                self.detail_rect.y0 + 14.0 + 30.0,
+            );
+        } else {
+            // Wide: the classic list (left) + detail (right) split with a
+            // draggable divider between them.
+            let list_w = (avail_w * self.split_pos).clamp(260.0, avail_w - 360.0).max(220.0);
+            self.list_rect = Rect::new(content.x0, content.y0, content.x0 + list_w, content.y1);
+            let div_x0 = self.list_rect.x1;
+            self.detail_rect = Rect::new(div_x0 + DIVIDER_W, content.y0, content.x1, content.y1);
+            self.hit.back = Rect::ZERO;
+        }
 
         // List header: search + filter row.
         let search_y = self.list_rect.y0 + PAD;
@@ -485,20 +535,41 @@ impl ContactsApp {
         }
     }
 
+    /// Extra vertical space reserved at the top of the detail pane when the
+    /// narrow single-pane push layout is active, so the pushed detail's
+    /// header (action buttons, avatar) clears the Back affordance pill.
+    fn detail_top_offset(&self) -> f64 {
+        if self.narrow { 44.0 } else { 0.0 }
+    }
+
+    /// View-mode detail action rects (favorite / Edit / Delete), pinned to
+    /// the top-right of the detail pane. Recomputed whenever `detail_rect`
+    /// moves (window resize, and every frame of the narrow push slide). On a
+    /// narrow window they shift down to clear the Back affordance pill.
+    fn layout_detail_actions(&mut self) {
+        let ax1 = self.detail_rect.x1 - 24.0;
+        let by = self.detail_rect.y0 + 30.0 + self.detail_top_offset();
+        self.hit.delete = Rect::new(ax1 - 84.0, by, ax1, by + 32.0);
+        self.hit.edit = Rect::new(self.hit.delete.x0 - 8.0 - 72.0, by, self.hit.delete.x0 - 8.0, by + 32.0);
+        self.hit.fav = Rect::new(self.hit.edit.x0 - 8.0 - 32.0, by, self.hit.edit.x0 - 8.0, by + 32.0);
+    }
+
     /// Assign rects to every form input + dynamic control. Mirrors the
     /// vertical order the form renders in. Two-phase to avoid holding a
     /// `self.form` borrow while writing `self.hit`: build a rect plan
     /// first, then apply it to the inputs.
     fn layout_form(&mut self) {
         let area = self.detail_rect;
+        let off = self.detail_top_offset();
         let x0 = area.x0 + PAD;
         let x1 = area.x1 - PAD;
         let w = x1 - x0;
-        let top = area.y0 + 64.0; // header band reserved for Save/Cancel
+        let top = area.y0 + 64.0 + off; // header band reserved for Save/Cancel
         let mut y = top - self.detail_scroll;
 
-        // Save / Cancel live pinned in the header band (not scrolled).
-        let by = area.y0 + 16.0;
+        // Save / Cancel live pinned in the header band (not scrolled). On a
+        // narrow window the band sits below the Back affordance pill.
+        let by = area.y0 + 16.0 + off;
         self.hit.cancel = Rect::new(x1 - 88.0, by, x1, by + 32.0);
         self.hit.save = Rect::new(x1 - 88.0 - 96.0, by, x1 - 88.0 - 8.0, by + 32.0);
         self.hit.fav_toggle = Rect::new(x0, by, x0 + 120.0, by + 32.0);
@@ -672,11 +743,67 @@ impl ContactsApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // Advance the master↔detail push slide. `draw` is the per-frame
+        // animation tick for a self-rendering widget (the live loop keeps
+        // redrawing while `needs_animation_frame` is true); ticking here
+        // keeps the eased slide in step with the frame it's drawn into. The
+        // sliding pane rects are recomputed by re-running layout.
+        if self.push.tick() {
+            self.layout();
+            self.layout_detail_actions();
+            self.dirty = true;
+        }
+
         let c = &theme.tokens.colors;
         // App background.
         scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &self.rect);
 
         self.draw_toolbar(scene, transform, tr, theme);
+
+        if self.narrow {
+            // Single-pane push: clip both slabs to the content area below the
+            // toolbar so the off-screen pane (sliding in/out) never bleeds
+            // past the edges, and skip whichever pane is fully off-screen.
+            let content = Rect::new(self.rect.x0, self.rect.y0 + TOOLBAR_H, self.rect.x1, self.rect.y1);
+            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &content);
+            let slide = self.push.slide();
+            if slide < 0.999 {
+                self.draw_list_pane(scene, transform, tr, theme, presence);
+            }
+            if slide > 0.001 {
+                self.draw_detail_pane(scene, transform, tr, theme, presence);
+            }
+            scene.pop_layer();
+        } else {
+            self.draw_list_pane(scene, transform, tr, theme, presence);
+            self.draw_divider(scene, transform, theme);
+            self.draw_detail_pane(scene, transform, tr, theme, presence);
+        }
+
+        // Overlays.
+        if let Some(popup) = &self.popup {
+            self.draw_popup(scene, transform, tr, theme, popup);
+        }
+        if let Some(id) = self.confirm_delete {
+            self.draw_confirm(scene, transform, tr, theme, id);
+        }
+        if let Some((msg, _)) = &self.toast {
+            draw_toast(scene, transform, tr, theme, self.rect, msg);
+        }
+    }
+
+    /// The master pane: the contact list chrome, its embedded search input,
+    /// and the empty-search placeholder. Bundled so the responsive renderer
+    /// can place it as one slab (docked beside the detail when wide, or as a
+    /// single full-width pane when narrow).
+    fn draw_list_pane(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
         self.draw_list(scene, transform, tr, theme, presence);
         // Search input draws on top of the list-pane chrome.
         self.search.draw(scene, transform, tr, theme, presence);
@@ -691,8 +818,19 @@ impl ContactsApp {
                 None,
             );
         }
-        self.draw_divider(scene, transform, theme);
+    }
 
+    /// The detail pane: its background, the contact card or edit form, and —
+    /// on a narrow window — the Back affordance that returns to the list.
+    fn draw_detail_pane(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let c = &theme.tokens.colors;
         // Detail panel background.
         scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &self.detail_rect);
         if self.mode == Mode::Edit {
@@ -700,17 +838,40 @@ impl ContactsApp {
         } else {
             self.draw_detail(scene, transform, tr, theme);
         }
+        // Narrow-window Back affordance (the master-detail return-to-list).
+        if self.narrow && self.hit.back.width() > 0.0 {
+            self.draw_back_button(scene, transform, tr, theme);
+        }
+    }
 
-        // Overlays.
-        if let Some(popup) = &self.popup {
-            self.draw_popup(scene, transform, tr, theme, popup);
-        }
-        if let Some(id) = self.confirm_delete {
-            self.draw_confirm(scene, transform, tr, theme, id);
-        }
-        if let Some((msg, _)) = &self.toast {
-            draw_toast(scene, transform, tr, theme, self.rect, msg);
-        }
+    /// The Back affordance pill at the top-left of the pushed detail pane
+    /// (narrow windows only): a left chevron + "Back" that slides the list
+    /// back into view.
+    fn draw_back_button(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let c = &theme.tokens.colors;
+        let rect = self.hit.back;
+        let hovered = rect.contains(self.last_mouse);
+        let shape = RoundedRect::from_rect(rect, theme.tokens.radii.full as f64);
+        let bg = if hovered { c.surfaces.raised } else { c.surfaces.base };
+        scene.fill(Fill::NonZero, t, bg, None, &shape);
+        scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
+        // Left chevron.
+        let cyp = rect.center().y;
+        let cxp = rect.x0 + 18.0;
+        let mut p = BezPath::new();
+        p.move_to((cxp + 4.0, cyp - 5.0));
+        p.line_to((cxp - 1.0, cyp));
+        p.line_to((cxp + 4.0, cyp + 5.0));
+        scene.stroke(&Stroke::new(1.6), t, c.text_primary, None, &p);
+        tr.draw_text_weighted(
+            scene,
+            "Back",
+            13.0,
+            c.text_primary,
+            t * Affine::translate((rect.x0 + 30.0, rect.center().y - 8.0)),
+            None,
+            TextWeight::Semibold,
+        );
     }
 
     fn draw_toolbar(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
@@ -869,7 +1030,7 @@ impl ContactsApp {
                 "Select a contact",
                 15.0,
                 c.text_dim,
-                t * Affine::translate((area.x0 + PAD, area.y0 + 40.0)),
+                t * Affine::translate((area.x0 + PAD, area.y0 + 40.0 + self.detail_top_offset())),
                 None,
             );
             self.detail_content_h = 0.0;
@@ -878,32 +1039,46 @@ impl ContactsApp {
         let Some(contact) = self.store.get(id).cloned() else { return };
 
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &area);
+        let off = self.detail_top_offset();
         let x0 = area.x0 + 28.0;
         let x1 = area.x1 - 24.0;
-        let mut y = area.y0 + 28.0 - self.detail_scroll;
+        let top = area.y0 + 28.0 + off;
+        let mut y = top - self.detail_scroll;
 
         // Header: big avatar + name + subtitle.
         let av = Rect::new(x0, y, x0 + 72.0, y + 72.0);
         draw_avatar(scene, t, tr, theme, av, &contact.initials());
         let hx = av.x1 + 18.0;
+        // Cap the name/subtitle so they stop before the favorite/Edit/Delete
+        // action band (it shares this y-band, especially in the narrow
+        // full-width detail pane). Elide to a single line rather than wrap,
+        // since the header below uses fixed vertical offsets.
+        let head_x1 = if self.hit.fav.width() > 0.0 {
+            (self.hit.fav.x0 - 12.0).min(x1)
+        } else {
+            x1
+        };
+        let head_w = (head_x1 - hx).max(40.0) as f32;
+        let name = tr.elide_to_width_weighted(&contact.display_name(), 26.0, head_w, TextWeight::Bold);
         tr.draw_text_weighted(
             scene,
-            &contact.display_name(),
+            &name,
             26.0,
             c.text_primary,
             t * Affine::translate((hx, y + 4.0)),
-            Some((x1 - hx) as f32),
+            None,
             TextWeight::Bold,
         );
         let sub = contact.subtitle();
         if !sub.is_empty() {
+            let sub = tr.elide_to_width(&sub, 14.0, head_w);
             tr.draw_text(
                 scene,
                 &sub,
                 14.0,
                 c.text_dim,
                 t * Affine::translate((hx, y + 38.0)),
-                Some((x1 - hx) as f32),
+                None,
             );
         }
         // Group badges.
@@ -977,7 +1152,7 @@ impl ContactsApp {
             y += h + 8.0;
         }
 
-        self.detail_content_h = (y + self.detail_scroll) - (area.y0 + 28.0) + 24.0;
+        self.detail_content_h = (y + self.detail_scroll) - top + 24.0;
         scene.pop_layer();
     }
 
@@ -991,9 +1166,11 @@ impl ContactsApp {
     ) {
         let c = &theme.tokens.colors;
         let area = self.detail_rect;
+        let off = self.detail_top_offset();
         let x0 = area.x0 + PAD;
 
-        // Header band (not scrolled).
+        // Header band (not scrolled). On a narrow window the band is pushed
+        // down so the Back affordance pill sits above it.
         let title = if self.form.as_ref().map(|f| f.is_new).unwrap_or(false) {
             "New Contact"
         } else {
@@ -1004,7 +1181,7 @@ impl ContactsApp {
             title,
             18.0,
             c.text_primary,
-            t * Affine::translate((x0, area.y0 + 22.0)),
+            t * Affine::translate((x0, area.y0 + 22.0 + off)),
             None,
             TextWeight::Bold,
         );
@@ -1030,7 +1207,7 @@ impl ContactsApp {
         toolbar_button(scene, t, tr, theme, self.hit.cancel, "Cancel", false);
 
         // Scrollable body, clipped below the header band.
-        let body = Rect::new(area.x0, area.y0 + 60.0, area.x1, area.y1);
+        let body = Rect::new(area.x0, area.y0 + 60.0 + off, area.x1, area.y1);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &body);
 
         // Section labels are drawn relative to the first input of each group.
@@ -1618,13 +1795,7 @@ impl Widget for ContactsApp {
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
         self.layout();
-        // View-mode detail action rects (top-right of the detail pane),
-        // computed after `layout()` populates `detail_rect`.
-        let ax1 = self.detail_rect.x1 - 24.0;
-        let by = self.rect.y0 + TOOLBAR_H + 30.0;
-        self.hit.delete = Rect::new(ax1 - 84.0, by, ax1, by + 32.0);
-        self.hit.edit = Rect::new(self.hit.delete.x0 - 8.0 - 72.0, by, self.hit.delete.x0 - 8.0, by + 32.0);
-        self.hit.fav = Rect::new(self.hit.edit.x0 - 8.0 - 32.0, by, self.hit.edit.x0 - 8.0, by + 32.0);
+        self.layout_detail_actions();
         self.relayout = false;
     }
 
@@ -1671,7 +1842,9 @@ impl Widget for ContactsApp {
 
         match event {
             WindowEvent::CursorMoved { .. } => {
-                self.divider_hover = self.divider_hit().contains(self.last_mouse);
+                // The divider only exists in the wide side-by-side layout.
+                self.divider_hover =
+                    !self.narrow && self.divider_hit().contains(self.last_mouse);
                 if self.divider_drag {
                     let content_w = (self.rect.width()).max(1.0);
                     let rel = (self.last_mouse.x - self.rect.x0) / content_w;
@@ -1742,11 +1915,17 @@ impl Widget for ContactsApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty
+        self.dirty || self.push.is_animating()
     }
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        // Keep the host pumping frames while the master↔detail push slide
+        // eases into place on a narrow window.
+        self.push.is_animating()
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -1837,6 +2016,20 @@ impl ContactsApp {
     ) {
         let p = self.last_mouse;
 
+        // Narrow single-pane push: the Back affordance returns to the list.
+        // Only hittable while the detail pane is the visible (pushed) slab.
+        if self.narrow
+            && self.push.pane() == Pane::Detail
+            && self.hit.back.width() > 0.0
+            && self.hit.back.contains(p)
+        {
+            self.push.show_list();
+            self.dirty = true;
+            self.relayout = true;
+            *handled = true;
+            return;
+        }
+
         // Toolbar.
         if self.hit.import.contains(p) {
             self.import_vcards(state);
@@ -1888,6 +2081,11 @@ impl ContactsApp {
                     self.dirty = true;
                     self.relayout = true;
                     self.search.set_focus(false);
+                    // On a narrow window, selecting a contact pushes the
+                    // detail pane in (single-pane master-detail navigation).
+                    if self.narrow {
+                        self.push.show_detail();
+                    }
                     *handled = true;
                     return;
                 }
@@ -2240,12 +2438,23 @@ impl ContactsApp {
         }
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
 
-        // Escape closes popups / cancels edit / clears search focus.
+        // Escape closes popups / cancels edit / returns from a narrow pushed
+        // detail to the list / clears search focus.
         if matches!(ke.logical_key, Key::Named(NamedKey::Escape)) {
             if self.popup.is_some() {
                 self.popup = None;
             } else if self.mode == Mode::Edit {
                 self.cancel_edit();
+                // On a narrow window, leaving the edit form returns to the
+                // list (the form lived in the pushed detail pane).
+                if self.narrow {
+                    self.push.show_list();
+                    self.relayout = true;
+                }
+            } else if self.narrow && self.push.pane() == Pane::Detail {
+                // Back out of the pushed detail pane to the list.
+                self.push.show_list();
+                self.relayout = true;
             } else {
                 self.search.set_focus(false);
                 if let Some(f) = &mut self.form {
@@ -2408,6 +2617,40 @@ mod tests {
     fn view_mode_frame_does_not_panic() {
         let mut app = ContactsApp::new();
         drive_frame(&mut app, 1280, 800);
+    }
+
+    #[test]
+    fn narrow_frame_resolves_single_pane_push() {
+        let mut app = ContactsApp::new();
+        // A narrow viewport drives the single-pane master-detail push.
+        drive_frame(&mut app, 480, 860);
+        assert!(app.narrow, "a narrow viewport resolves to single-pane push");
+        assert_eq!(app.push.pane(), Pane::List, "a fresh narrow frame opens to the list");
+    }
+
+    #[test]
+    fn narrow_selection_pushes_detail_then_back_returns_to_list() {
+        let mut app = ContactsApp::new();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &ROOT);
+        drive_frame(&mut app, 480, 860);
+        assert!(app.narrow);
+        // Snap the push to the detail pane (as a row selection would) and
+        // confirm the pushed-detail frame renders without panicking.
+        app.shots_show_detail();
+        assert_eq!(app.push.pane(), Pane::Detail);
+        drive_frame(&mut app, 480, 860);
+        // The Back affordance must be laid out (hittable) in the pushed pane.
+        assert!(app.hit.back.width() > 0.0, "pushed detail shows a Back affordance");
+    }
+
+    #[test]
+    fn wide_frame_stays_docked_side_by_side() {
+        let mut app = ContactsApp::new();
+        drive_frame(&mut app, 1280, 800);
+        assert!(!app.narrow, "a desktop-width viewport keeps the docked split");
+        // The list pane sits left of the detail pane (classic split).
+        assert!(app.list_rect.x1 <= app.detail_rect.x0 + 0.001);
     }
 
     #[test]

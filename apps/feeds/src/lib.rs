@@ -32,3 +32,25 @@ use ui::widget::Widget;
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(FeedsApp::new())
 }
+
+/// Like [`app_root`] but staged for a named `--shots` scenario. Used to
+/// capture interaction states the single-frame headless renderer can't reach
+/// through live input:
+///
+/// * `"sidebar-open"` — pre-open the subscriptions sidebar, so a narrow
+///   viewport (`--viewport 560x800`) captures the overlay flap floating over
+///   the dimmed content with its close affordance.
+/// * `"detail"` — push the reader (detail) in, so a narrow viewport captures
+///   the single-pane master→detail reader with its Back affordance.
+///
+/// Any other (or empty) scenario yields the same default frame as
+/// [`app_root`].
+pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
+    let mut app = FeedsApp::new();
+    match scenario {
+        "sidebar-open" => app.snap_sidebar_open(true),
+        "detail" => app.force_detail_pushed(),
+        _ => {}
+    }
+    Box::new(app)
+}

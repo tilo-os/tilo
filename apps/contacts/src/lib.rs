@@ -11,6 +11,7 @@ pub mod app;
 pub mod date;
 pub mod doc;
 pub mod model;
+pub mod responsive;
 pub mod vcard;
 
 pub use app::ContactsApp;
