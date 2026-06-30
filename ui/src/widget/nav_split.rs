@@ -28,6 +28,7 @@
 
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
+use std::time::Instant;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -49,6 +50,12 @@ pub const DEFAULT_BREAKPOINT: f64 = 900.0;
 /// Exponential approach rate for the reveal animation — `~0.2s` Adwaita-like
 /// slide. Proven in weather + chat.
 const REVEAL_RATE: f64 = 14.0;
+/// Upper bound (seconds) on the per-frame delta used to advance the slide.
+/// The gap between construction and the first painted frame — or any frame
+/// after the host parks the event loop — can be large; clamping keeps a
+/// stale `Instant` from teleporting the flap straight to its endpoint and
+/// skipping the slide entirely.
+const MAX_FRAME_DT: f64 = 0.1;
 
 /// How the split resolves at the current width.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -219,6 +226,12 @@ pub struct NavSplit {
     animating: bool,
     /// Whether the user toggled this frame (so the host re-syncs).
     dirty: bool,
+    /// Wall-clock anchor of the last `draw`, so the slide self-ticks off a
+    /// real `dt` from inside the draw path. `ui::App` never calls
+    /// `Widget::update()`, so the flap MUST advance here (the host pumps
+    /// another frame whenever `needs_animation_frame` is true). `None` until
+    /// the first draw, which therefore advances by `0` and never jumps.
+    last_tick: Option<Instant>,
 }
 
 impl NavSplit {
@@ -244,6 +257,7 @@ impl NavSplit {
             content_node: None,
             animating: false,
             dirty: false,
+            last_tick: None,
         }
     }
 
@@ -437,6 +451,41 @@ impl NavSplit {
         self.content_node = Some(c_node);
     }
 
+    /// Advance the reveal + push animations off a real wall-clock delta,
+    /// recomputing the child rects when something moved. Driven from `draw`
+    /// (NOT `update`, which `ui::App` never calls) so the slide actually
+    /// plays: the App re-requests a frame while `needs_animation_frame` is
+    /// true, each `draw` ticks the easing forward, and the loop settles when
+    /// the flap reaches its endpoint. The first draw sees `dt == 0` (no prior
+    /// `Instant`), so the flap never teleports; later deltas are clamped to
+    /// [`MAX_FRAME_DT`] so a parked event loop can't skip the slide.
+    fn self_tick(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) {
+        let now = Instant::now();
+        let dt = self
+            .last_tick
+            .map(|t| now.duration_since(t).as_secs_f64().min(MAX_FRAME_DT))
+            .unwrap_or(0.0);
+        self.last_tick = Some(now);
+
+        let layout = self.layout_mode();
+        let a = self.flap.tick(layout, dt);
+        let b = if self.mode == SplitMode::Push {
+            self.push.tick(SplitLayout::Docked, dt)
+        } else {
+            false
+        };
+        self.animating = a || b;
+        if self.animating {
+            // Re-derive the sub-rects from the freshly-eased reveal AND
+            // re-lay the children at them, so the panes visually slide every
+            // frame instead of just the scrim alpha fading. Without the
+            // re-place the children would stay pinned at their
+            // `apply_layout` rects and the slide would be invisible.
+            self.recompute_rects();
+            self.place_children(theme, text_renderer);
+        }
+    }
+
     /// Whether the sidebar pane should be drawn this frame.
     fn sidebar_visible(&self) -> bool {
         match (self.mode, self.layout_mode()) {
@@ -492,22 +541,16 @@ impl Widget for NavSplit {
     }
 
     fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
-        // Drive the reveal + push animations off the per-frame update tick.
-        let layout = self.layout_mode();
-        let dt = 1.0 / 60.0;
-        let a = self.flap.tick(layout, dt);
-        let b = if self.mode == SplitMode::Push {
-            self.push.tick(SplitLayout::Docked, dt)
-        } else {
-            false
-        };
-        self.animating = a || b;
-        if self.animating {
-            self.recompute_rects();
-        }
+        // The reveal/push slide is driven from the draw path (`self_tick`),
+        // NOT here: `ui::App` never calls `Widget::update`, so advancing the
+        // easing on this tick would silently snap the flap open/closed
+        // instead of sliding it. This method now only forwards to children
+        // (for any host that still drives the legacy update chain) and
+        // reports whether anything still needs frames. The authoritative
+        // "still animating?" signal is `needs_animation_frame`.
         let sc = self.sidebar.update(state, path);
         let cc = self.content.update(state, path);
-        self.animating || sc || cc
+        self.flap.is_animating(self.layout_mode()) || sc || cc
     }
 
     fn draw(
@@ -518,6 +561,10 @@ impl Widget for NavSplit {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // Advance the slide off a real per-frame delta (the App pumps frames
+        // via `needs_animation_frame`, never `update`).
+        self.self_tick(theme, text_renderer);
+
         // Content first (it's behind the overlay flap).
         self.content.draw(scene, transform, text_renderer, theme, presence);
 
@@ -541,6 +588,10 @@ impl Widget for NavSplit {
         presence: &PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
+        // Advance the slide before the cull check so the animation keeps
+        // ticking (and the host keeps pumping frames) even while the split is
+        // momentarily off-viewport.
+        self.self_tick(theme, text_renderer);
         if presence.should_cull(self.get_rect()) {
             return;
         }
@@ -846,6 +897,96 @@ mod tests {
             .filter(|t| **t == DrawTag::COLOR)
             .count();
         assert!(fills >= 1, "a laid-out split must paint something");
+    }
+
+    /// Helper: run a full presence draw through the real production path.
+    fn draw_frame(ns: &mut NavSplit) {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        let perms = crate::permissions::PermissionContext::permissive();
+        let mut scene = Scene::new();
+        ns.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence, &perms);
+    }
+
+    /// The overlay flap must *slide* — advance its eased reveal across
+    /// successive frames from the DRAW path — not snap straight to the
+    /// endpoint. This is the regression the apps reported: the old code
+    /// advanced the easing only in `Widget::update()`, which `ui::App` never
+    /// calls, so the flap teleported. We open the flap (reveal target = 1
+    /// from 0), draw two frames a few ms apart, and assert the reveal moved
+    /// strictly between 0 and 1 — i.e. it actually slid.
+    #[test]
+    fn overlay_flap_slides_across_frames_from_draw_path() {
+        let mut ns = split(600.0, SplitMode::Adaptive);
+        // Pin a deterministic CLOSED start (reveal == 0), then open: the
+        // target flips to 1 while the current reveal is 0, so a correct
+        // slide must traverse the gap across frames.
+        ns.snap_open(false);
+        assert_eq!(ns.flap().reveal(), 0.0, "snap gives a deterministic closed start");
+        ns.open_sidebar();
+        assert!(ns.is_sidebar_open());
+
+        // First draw establishes the clock (dt == 0) → reveal stays at 0,
+        // proving the flap does NOT teleport on the very first frame.
+        draw_frame(&mut ns);
+        assert_eq!(
+            ns.flap().reveal(),
+            0.0,
+            "first frame establishes the clock and must not jump the slide"
+        );
+
+        // A real wall-clock gap, then a second draw advances the easing by a
+        // genuine dt.
+        std::thread::sleep(std::time::Duration::from_millis(16));
+        draw_frame(&mut ns);
+        let r = ns.flap().reveal();
+        assert!(
+            r > 0.0 && r < 1.0,
+            "after one ~16ms frame the flap is mid-slide (reveal {r}), not snapped"
+        );
+        assert!(
+            ns.needs_animation_frame(),
+            "a mid-slide flap must keep requesting frames so the host pumps the loop"
+        );
+
+        // Pump enough frames for the exponential approach to settle.
+        for _ in 0..240 {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            draw_frame(&mut ns);
+            if !ns.flap().is_animating(ns.layout_mode()) {
+                break;
+            }
+        }
+        assert!(
+            (ns.flap().reveal() - 1.0).abs() < 0.01,
+            "the slide eventually settles fully open (reveal {})",
+            ns.flap().reveal()
+        );
+    }
+
+    /// `snap_open` must remain a hard, deterministic jump for `--shots`:
+    /// after a snap, a draw (which self-ticks) must NOT drift the reveal off
+    /// the snapped endpoint — the screenshot has to be stable.
+    #[test]
+    fn snap_open_stays_deterministic_through_draw() {
+        let mut ns = split(600.0, SplitMode::Adaptive);
+        ns.open_sidebar();
+        ns.snap_open(true);
+        assert_eq!(ns.flap().reveal(), 1.0, "snap jumps straight to fully open");
+        // Even with a real time gap, a snapped (already-settled) flap stays
+        // put because tick() is a no-op once reveal == target.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        draw_frame(&mut ns);
+        assert_eq!(
+            ns.flap().reveal(),
+            1.0,
+            "a snapped flap must not drift when the draw path self-ticks"
+        );
+        assert!(
+            !ns.needs_animation_frame(),
+            "a settled flap requests no further frames"
+        );
     }
 
     // --- event scaffolding ---
