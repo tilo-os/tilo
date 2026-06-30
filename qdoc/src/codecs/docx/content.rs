@@ -6,6 +6,7 @@
 //! inline marks; tabs/breaks, alignment, fonts and tables all map onto the model.
 //! Unmodeled body-level elements are captured verbatim as fidelity atoms.
 
+use super::container::DocxContainer;
 use super::styles::{attr_val, line_spacing_from_spacing, mark_from_rpr_child, map_jc, StyleRegistry};
 use crate::document::MarkValue;
 use crate::format::CodecError;
@@ -15,6 +16,60 @@ use crate::schema::{FIELD_PLACEHOLDER, MARK_COMMENT, MARK_NOTE_REF};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use std::collections::BTreeMap;
+
+/// EMUs per CSS pixel (914400 EMU/inch ÷ 96 px/inch). Used to convert OOXML
+/// `wp:extent` sizes to the model's pixel width/height.
+const EMU_PER_PX: f64 = 914400.0 / 96.0;
+
+/// Build a `rId → media bytes` map from `word/_rels/document.xml.rels`, resolving
+/// each image relationship's `Target` against the package. So the body parser can
+/// turn an `a:blip r:embed="rIdN"` into a stored image blob.
+pub(crate) fn build_image_map(container: &DocxContainer) -> BTreeMap<String, Vec<u8>> {
+    let mut out = BTreeMap::new();
+    let Some(rels) = container.get("word/_rels/document.xml.rels") else { return out };
+    let Ok(s) = std::str::from_utf8(rels) else { return out };
+    let mut reader = Reader::from_str(s);
+    loop {
+        let ev = match reader.read_event() {
+            Ok(e) => e,
+            Err(_) => break,
+        };
+        match ev {
+            Event::Empty(e) | Event::Start(e) if e.name().as_ref() == b"Relationship" => {
+                let id = attr_val(&e, b"Id");
+                let target = attr_val(&e, b"Target");
+                if let (Some(id), Some(target)) = (id, target) {
+                    // Targets are relative to `word/` (e.g. `media/image1.png`);
+                    // absolute (`/word/...`) targets are de-slashed.
+                    let t = target.trim_start_matches('/');
+                    let part = if t.starts_with("word/") { t.to_string() } else { format!("word/{t}") };
+                    if let Some(bytes) = container.get(&part) {
+                        out.insert(id, bytes.to_vec());
+                    }
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    out
+}
+
+/// In-progress `w:drawing` capture: an embedded image with size + positioning.
+#[derive(Default)]
+struct DrawingState {
+    /// `false` = `wp:inline` (inline), `true` = `wp:anchor` (floating).
+    floating: bool,
+    /// Display size in px from `wp:extent` (cx/cy in EMU).
+    width: Option<i64>,
+    height: Option<i64>,
+    /// Model wrap (`none`|`left`|`right`|`both`) from the wrap element.
+    wrap: Option<String>,
+    /// Model anchor (`page` if positioned relative to the page, else `paragraph`).
+    page_relative: bool,
+    /// The `r:embed` rel id of the `a:blip` referencing the media part.
+    rel: Option<String>,
+}
 
 /// Open a fresh top-level block anchored after the previous one.
 fn start_block(doc: &mut DocMut, prev: &mut Option<String>, cur: &mut Option<String>, cur_len: &mut usize, kind: &str) -> String {
@@ -41,6 +96,7 @@ pub(crate) fn parse_body(
     foot_map: &BTreeMap<String, String>,
     end_map: &BTreeMap<String, String>,
     comment_map: &BTreeMap<String, String>,
+    image_map: &BTreeMap<String, Vec<u8>>,
     doc: &mut DocMut,
 ) -> Result<(), CodecError> {
     let s = std::str::from_utf8(document_xml).map_err(|e| CodecError::Parse(e.to_string()))?;
@@ -94,6 +150,11 @@ pub(crate) fn parse_body(
     let mut table_seq: usize = 0;
 
     let mut capture: Option<(usize, i32)> = None; // (start byte, open depth) of a fidelity atom
+
+    // In-progress `w:drawing` (image). Collected as we descend its children; the
+    // image becomes its own `image` block at `</w:drawing>` (replacing the enclosing
+    // empty paragraph, mirroring how the ODT codec lifts an image-only paragraph).
+    let mut drawing: Option<DrawingState> = None;
 
     macro_rules! flush_para_marks {
         () => {
@@ -213,6 +274,93 @@ pub(crate) fn parse_body(
             continue;
         }
 
+        // Inside a `w:drawing`: collect inline-vs-anchor, extent, wrap, and the blip
+        // rel, then materialise an `image` block on `</w:drawing>`.
+        if let Some(dr) = drawing.as_mut() {
+            match &ev {
+                Event::Start(e) | Event::Empty(e) => match e.name().as_ref() {
+                    b"wp:inline" => dr.floating = false,
+                    b"wp:anchor" => dr.floating = true,
+                    b"wp:extent" => {
+                        if let Some(cx) = attr_val(e, b"cx").and_then(|v| v.parse::<f64>().ok()) {
+                            dr.width = Some((cx / EMU_PER_PX).round() as i64);
+                        }
+                        if let Some(cy) = attr_val(e, b"cy").and_then(|v| v.parse::<f64>().ok()) {
+                            dr.height = Some((cy / EMU_PER_PX).round() as i64);
+                        }
+                    }
+                    // Wrap modes. `wrapNone`/`wrapTopAndBottom` don't flow text beside
+                    // the image → `none`; `wrapSquare`/`wrapTight`/`wrapThrough` use the
+                    // `wrapText` side (`left`/`right`/`bothSides`→both, default both).
+                    b"wp:wrapNone" | b"wp:wrapTopAndBottom" => dr.wrap = Some("none".to_string()),
+                    b"wp:wrapSquare" | b"wp:wrapTight" | b"wp:wrapThrough" => {
+                        let side = attr_val(e, b"wrapText");
+                        dr.wrap = Some(match side.as_deref() {
+                            Some("left") => "left",
+                            Some("right") => "right",
+                            _ => "both", // "bothSides" | "largest" | absent
+                        }
+                        .to_string());
+                    }
+                    // Page-relative horizontal/vertical positioning marks a page anchor.
+                    b"wp:positionH" | b"wp:positionV" => {
+                        if attr_val(e, b"relativeFrom").as_deref() == Some("page") {
+                            dr.page_relative = true;
+                        }
+                    }
+                    b"a:blip" => {
+                        if dr.rel.is_none() {
+                            dr.rel = attr_val(e, b"r:embed").or_else(|| attr_val(e, b"r:link"));
+                        }
+                    }
+                    _ => {}
+                },
+                Event::End(e) if e.name().as_ref() == b"w:drawing" => {
+                    let dr = drawing.take().unwrap();
+                    let bytes = dr.rel.as_deref().and_then(|r| image_map.get(r));
+                    if let Some(bytes) = bytes {
+                        let hash = doc.put_blob(bytes);
+                        // Reuse the enclosing (image-only) paragraph if it holds no text,
+                        // else open a fresh block. Either way it becomes an `image`.
+                        let id = if let (Some(c), 0) = (cur.clone(), cur_len) {
+                            doc.set_kind(&c, "image");
+                            c
+                        } else {
+                            start_block(doc, &mut prev, &mut cur, &mut cur_len, "image")
+                        };
+                        doc.set_attr(&id, "blob", hash.as_str());
+                        let anchor = if !dr.floating {
+                            "inline"
+                        } else if dr.page_relative {
+                            "page"
+                        } else {
+                            "paragraph"
+                        };
+                        doc.set_attr(&id, "anchor", anchor);
+                        if let Some(w) = dr.width {
+                            if w > 0 {
+                                doc.set_attr(&id, "width", w);
+                            }
+                        }
+                        if let Some(h) = dr.height {
+                            if h > 0 {
+                                doc.set_attr(&id, "height", h);
+                            }
+                        }
+                        if let Some(w) = dr.wrap {
+                            doc.set_attr(&id, "wrap", w.as_str());
+                        }
+                        // An image block isn't a text container; close it.
+                        prev = Some(id);
+                        cur = None;
+                    }
+                    in_run = false;
+                }
+                _ => {}
+            }
+            continue;
+        }
+
         match ev {
             Event::Start(e) => match e.name().as_ref() {
                 b"w:body" => in_body = true,
@@ -249,6 +397,11 @@ pub(crate) fn parse_body(
                     run_marks.clear();
                 }
                 b"w:rPr" if in_run => in_rpr = true,
+                // An embedded image: begin collecting the drawing's size/positioning/
+                // blip until `</w:drawing>`. (`in_run` is always true here in practice.)
+                b"w:drawing" if in_body => {
+                    drawing = Some(DrawingState::default());
+                }
                 b"w:t" if in_run => in_t = true,
                 // Deleted text inside a `<w:del>` run uses `<w:delText>`; treat it like
                 // `<w:t>` so the retained-but-struck content lands in the model.

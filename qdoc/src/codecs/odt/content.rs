@@ -46,6 +46,11 @@ struct FrameState {
     depth: i32,
     width: Option<String>,
     height: Option<String>,
+    /// Model anchor (`inline`|`paragraph`|`page`) from `text:anchor-type`.
+    anchor: Option<String>,
+    /// Model wrap (`none`|`left`|`right`|`both`) resolved from the frame's
+    /// graphic style's `style:wrap`.
+    wrap: Option<String>,
     href: Option<String>,
     title: String,
     desc: String,
@@ -286,6 +291,13 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                             }
                             if let Some(h) = fr.height.as_deref().and_then(parse_len_px) {
                                 doc.set_attr(&id, "height", h);
+                            }
+                            // Positioning: anchor (inline/paragraph/page) + wrap.
+                            if let Some(a) = fr.anchor.as_deref() {
+                                doc.set_attr(&id, "anchor", a);
+                            }
+                            if let Some(w) = fr.wrap.as_deref() {
+                                doc.set_attr(&id, "wrap", w);
                             }
                             // An image-only paragraph (the common LibreOffice/pandoc
                             // "figure" layout) leaves an empty wrapper paragraph — drop
@@ -543,11 +555,22 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                     } else {
                         (None, false)
                     };
+                    // `text:anchor-type`: `as-char` → inline; `page` → page; everything
+                    // else (`paragraph`/`char`/`frame`) → paragraph-anchored floating.
+                    let anchor = attr_val(&e, b"text:anchor-type").map(|a| match a.as_str() {
+                        "as-char" => "inline".to_string(),
+                        "page" => "page".to_string(),
+                        _ => "paragraph".to_string(),
+                    });
+                    // Wrap rides on the frame's graphic style (`draw:style-name`).
+                    let wrap = attr_val(&e, b"draw:style-name").and_then(|s| reg.graphic_wrap.get(&s).cloned());
                     frame = Some(FrameState {
                         raw_start: pos_before,
                         depth: 1,
                         width: attr_val(&e, b"svg:width"),
                         height: attr_val(&e, b"svg:height"),
+                        anchor,
+                        wrap,
                         href: None,
                         title: String::new(),
                         desc: String::new(),
