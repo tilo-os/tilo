@@ -585,3 +585,141 @@ fn replay_slot_bumps_on_success() {
         Some(42)
     );
 }
+
+// ---------- surface-stream ops: role-table decision pinned ----------
+//
+// Hosting a live-streamed Wayland surface is authorial: the host is
+// publishing live pixels of an app every channel member will see, and
+// remote input mutates the live app's state on the host's machine. The
+// role table in `src/role.rs` therefore pins all four surface-stream
+// op classes to Editor+. These tests drive the *whole* pipeline —
+// signature, attestation, role-table — to lock that decision in
+// against accidental changes to `role_permits`.
+
+#[test]
+fn surface_stream_start_editor_permitted() {
+    let mut f = fixture();
+    // The default fixture issues an Editor attestation.
+    let op = build_op(&f, OpClass::SurfaceStreamStart, t(10), 1);
+    let r = validate_inbound_op(&op, &mut f.state);
+    assert!(r.is_ok(), "expected Editor to start a stream, got {r:?}");
+}
+
+#[test]
+fn surface_stream_end_editor_permitted() {
+    let mut f = fixture();
+    let op = build_op(&f, OpClass::SurfaceStreamEnd, t(10), 1);
+    let r = validate_inbound_op(&op, &mut f.state);
+    assert!(r.is_ok(), "expected Editor to end a stream, got {r:?}");
+}
+
+#[test]
+fn surface_frame_editor_permitted() {
+    let mut f = fixture();
+    let op = build_op(&f, OpClass::SurfaceFrame, t(10), 1);
+    let r = validate_inbound_op(&op, &mut f.state);
+    assert!(r.is_ok(), "expected Editor to push a frame, got {r:?}");
+}
+
+#[test]
+fn remote_input_editor_permitted() {
+    let mut f = fixture();
+    let op = build_op(&f, OpClass::RemoteInput, t(10), 1);
+    let r = validate_inbound_op(&op, &mut f.state);
+    assert!(r.is_ok(), "expected Editor to inject input, got {r:?}");
+}
+
+#[test]
+fn surface_stream_start_commenter_rejected() {
+    // Rebuild the fixture with a Commenter attestation and assert
+    // every surface-stream op class lands on RoleForbidsOpClass.
+    for op_class in [
+        OpClass::SurfaceStreamStart,
+        OpClass::SurfaceStreamEnd,
+        OpClass::SurfaceFrame,
+        OpClass::RemoteInput,
+    ] {
+        let (owner_sk, owner_pk) = generate_keypair();
+        let (author_sk, author_pk) = generate_keypair();
+        let channel = ChannelId::new();
+        let artifact = ArtifactId::new();
+
+        let ra = make_role_attestation(
+            &owner_sk,
+            owner_pk,
+            author_pk,
+            channel,
+            Role::Commenter,
+            t(0),
+            t(100_000),
+            vec![],
+        );
+        let attestation_id = ra.attestation.id;
+        let mut state = ChannelState::default();
+        state.authorised_signers.push(owner_pk);
+        state.artifacts.insert(artifact, ArtifactKind::Cluster);
+        state.register_attestation(ra);
+
+        let mut op = SignedOp::new_unsigned(
+            b"x".to_vec(),
+            artifact,
+            author_pk,
+            attestation_id,
+            op_class,
+            t(10),
+            1,
+        );
+        sign_op(&mut op, &author_sk).unwrap();
+        match validate_inbound_op(&op, &mut state) {
+            Err(ValidationError::RoleForbidsOpClass) => {}
+            other => panic!(
+                "expected RoleForbidsOpClass for Commenter + {op_class:?}, got {other:?}",
+            ),
+        }
+    }
+}
+
+#[test]
+fn surface_stream_viewer_rejected() {
+    // Same shape as the Commenter case but with Viewer + Denied for
+    // completeness — anything sub-Editor must not drive a stream.
+    for role in [Role::Viewer, Role::Denied] {
+        let (owner_sk, owner_pk) = generate_keypair();
+        let (author_sk, author_pk) = generate_keypair();
+        let channel = ChannelId::new();
+        let artifact = ArtifactId::new();
+
+        let ra = make_role_attestation(
+            &owner_sk,
+            owner_pk,
+            author_pk,
+            channel,
+            role,
+            t(0),
+            t(100_000),
+            vec![],
+        );
+        let attestation_id = ra.attestation.id;
+        let mut state = ChannelState::default();
+        state.authorised_signers.push(owner_pk);
+        state.artifacts.insert(artifact, ArtifactKind::Cluster);
+        state.register_attestation(ra);
+
+        let mut op = SignedOp::new_unsigned(
+            b"x".to_vec(),
+            artifact,
+            author_pk,
+            attestation_id,
+            OpClass::SurfaceFrame,
+            t(10),
+            1,
+        );
+        sign_op(&mut op, &author_sk).unwrap();
+        match validate_inbound_op(&op, &mut state) {
+            Err(ValidationError::RoleForbidsOpClass) => {}
+            other => panic!(
+                "expected RoleForbidsOpClass for {role:?} + SurfaceFrame, got {other:?}",
+            ),
+        }
+    }
+}
