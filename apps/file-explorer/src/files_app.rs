@@ -846,6 +846,27 @@ impl Widget for FileExplorerWidget {
             None,
             &self.rect,
         );
+        // `self.composed` is normally built inside `build_layout`. When
+        // this widget is hosted inside a shell's TabBar (e.g. Files
+        // tab on the qOS shell that boots Notes-active), `build_layout`
+        // doesn't run for inactive tabs — so switching to Files later
+        // produces a widget with `composed = None` and nothing visible
+        // renders even though `self.rect` is correct. Lazy-build here
+        // so the first paint after tab activation populates a tree we
+        // can hand to taffy on the NEXT layout pass. We trigger a
+        // structure-dirty flag so the host rebuilds taffy with the
+        // composition included on the next frame.
+        if self.composed.is_none() && self.rect.width() > 0.0 && self.rect.height() > 0.0 {
+            // Build the composition (toolbar + breadcrumbs + file
+            // list) so a structure-dirty relayout next frame includes
+            // it. The current frame still won't render content (no
+            // valid taffy layout for the composed tree yet) but the
+            // next frame will — the host's `take_structure_dirty`
+            // pump rebuilds taffy and the third frame onward is
+            // populated correctly.
+            self.composed = Some(self.build_composition());
+            self.structure_dirty = true;
+        }
         if let Some(c) = &mut self.composed {
             c.draw(scene, transform, text_renderer, theme, presence);
         }
