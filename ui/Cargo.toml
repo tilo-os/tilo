@@ -42,11 +42,19 @@ openh264 = { version = "0.9", features = ["source"] }
 # (kanshi / GNOME / KDE), falling back to the seat-driven protocol
 # otherwise.
 arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
-# Phase 1 (Audit timeline) widgets `widget::activity_timeline` +
-# `widget::history_scrubber` consume `OpClass` / `ArtifactKind` from
-# the shared collaboration-types crate so the visualisation pins to the
-# same permission-table types Phase 3 will enforce on the wire.
+# Shared collaboration-types crate. Phase 1 widgets
+# (`widget::activity_timeline`, `widget::history_scrubber`,
+# `widget::conflict_picker`, `widget::channel_browser`) read `OpClass`
+# / `ArtifactKind` from here; Phase 3 also uses `SignedOp` +
+# `validate_inbound_op` for the wire envelopes carried by
+# `CollabRequest::SignedSyncIncremental` /
+# `CollabEvent::SignedCRDTIncremental`.
 qos-collab-types = { path = "../qos-collab-types" }
+# Direct dep on the Ed25519 implementation `qos-collab-types` uses so
+# the toolkit can name `SigningKey` in `collaboration::SigningIdentity`
+# without reaching into the qos-collab-types private module path. Pinned
+# to the same major as `qos-collab-types`.
+ed25519-dalek = { version = "2", features = ["rand_core"] }
 
 [dev-dependencies]
 regex = "1"
