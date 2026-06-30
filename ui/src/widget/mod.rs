@@ -387,6 +387,22 @@ pub use channel_browser::{ChannelBrowser, ChannelEntry};
 pub mod merge_strategy;
 pub mod conflict_banner;
 pub mod conflict_picker;
+
+// === Phase 8: Threshold-shared identity + invite ceremony ===========
+// The user-facing ceremony from
+// `docs/superpowers/specs/2026-06-29-spaces-channels-and-cryptographic-roles.md`
+// Phase 8 ("Threshold-shared identity + invite ceremony"). Wraps the
+// `qos-threshold-identity` engine in a six-screen ceremony plus a QR
+// widget. See `identity_flow/mod.rs` for the state-machine entry
+// point.
+pub mod qr;
+pub mod identity_flow;
+pub use qr::QrWidget;
+pub use identity_flow::{
+    IdentityFlow, IdentityFlowScreen, IdentityRecord, IdentityStore,
+    InviteEnvelope, InviteExpiry, MemoryIdentityStore, PairingHandshake,
+    PairingPayload, ScreenOutcome,
+};
 pub use merge_strategy::{
     Alternative, ConcurrentOp, ConflictKind, ConflictResolver, MergeStrategy,
     surface_banner,
