@@ -449,6 +449,35 @@ pub fn materialize_comments(doc: &AutoCommit, c: &Containers) -> Vec<crate::snap
         .collect()
 }
 
+// ---- bookmarks / cross-references ------------------------------------------
+
+/// Every bookmark in the body, recovered from the `bookmark` marks (each a named
+/// anchor over a range). Sorted by `(name, block, start)` so two replicas that merged
+/// in different orders materialize byte-identically. A name may appear more than once
+/// only if duplicated by the source document; each occurrence is its own entry.
+pub fn bookmarks(doc: &AutoCommit, c: &Containers) -> Vec<crate::snapshot::BookmarkView> {
+    let mut out: Vec<crate::snapshot::BookmarkView> = Vec::new();
+    for bid in blocks_in_order(doc, c) {
+        for m in marks(doc, c, &bid) {
+            if m.name == MARK_BOOKMARK {
+                if let crate::document::MarkValue::Str(name) = &m.value {
+                    out.push(crate::snapshot::BookmarkView { name: name.clone(), range: (bid.clone(), m.start, m.end) });
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| (&a.name, &a.range.0, a.range.1, a.range.2).cmp(&(&b.name, &b.range.0, b.range.1, b.range.2)));
+    out
+}
+
+/// The auto/derived reference id of a heading block (so a cross-reference can target a
+/// heading that carries no explicit bookmark): the [`HEADING_REF_PREFIX`] followed by
+/// the block id. Stable across save/load (block ids are stable) and distinct from any
+/// user bookmark name.
+pub fn heading_ref_id(block_id: &str) -> String {
+    format!("{HEADING_REF_PREFIX}{block_id}")
+}
+
 // ---- tracked changes / revision marks --------------------------------------
 
 /// Resolve the changes container object, preferring the cached id and falling back to a
@@ -789,6 +818,7 @@ pub fn materialize(doc: &AutoCommit, c: &Containers) -> DocSnapshot {
         notes: materialize_notes(doc, c),
         comments: materialize_comments(doc, c),
         changes: materialize_changes(doc, c),
+        bookmarks: bookmarks(doc, c),
         columns,
         column_gap: column_gap.map(|g| g as f32),
     }
@@ -1326,6 +1356,49 @@ impl<'a> DocMut<'a> {
         if let Some(changes) = changes_obj(self.doc, self.c) {
             let _ = self.doc.delete(&changes, change_id);
         }
+    }
+
+    // ---- bookmarks / cross-references -------------------------------------
+
+    /// Anchor a **bookmark** (named anchor) over the body range `[start, end)` of
+    /// `block_id`: cover it with a `bookmark` mark valued with `name`. The mark merges
+    /// with concurrent text edits and round-trips through the codecs. A zero-width
+    /// (point) bookmark is widened to one character when the block has text after the
+    /// anchor (a mark needs a non-empty range to live on); an end-of-block point sits
+    /// over the last character.
+    pub fn add_bookmark(&mut self, block_id: &str, start: usize, end: usize, name: &str) {
+        let (mut s, mut e) = (start, end);
+        if e <= s {
+            // Widen a point bookmark to one character so the mark has somewhere to live.
+            let blen = crate::model::block_text(self.doc, self.c, block_id).map(|t| t.chars().count()).unwrap_or(0);
+            if s < blen {
+                e = s + 1;
+            } else if blen > 0 {
+                // End-of-block point: sit over the last character.
+                s = blen - 1;
+                e = blen;
+            }
+        }
+        if e > s {
+            self.add_mark(block_id, s, e, MARK_BOOKMARK, name);
+        }
+    }
+
+    /// Anchor a **cross-reference** (internal link) over the body range `[start, end)`
+    /// of `block_id`: cover it with a `link` mark valued `#<target>`, where `target` is
+    /// a bookmark name or a heading's derived id (see [`heading_ref_id`]). The leading
+    /// `#` distinguishes an internal reference from an external URL. A bare target that
+    /// already begins with `#` is used verbatim. Round-trips through the codecs.
+    pub fn add_cross_ref(&mut self, block_id: &str, start: usize, end: usize, target: &str) {
+        if end <= start {
+            return;
+        }
+        let value = if target.starts_with(CROSS_REF_PREFIX) {
+            target.to_string()
+        } else {
+            format!("{CROSS_REF_PREFIX}{target}")
+        };
+        self.add_mark(block_id, start, end, MARK_LINK, value.as_str());
     }
 
     /// Remove every block from a region (clearing a header/footer).
@@ -1988,6 +2061,79 @@ mod region_tests {
         assert_ne!(chid, chid2, "second change id must not collide with the first");
         let snap = materialize(&doc, &c);
         assert_eq!(snap.changes.len(), 2, "both changes survive (no overwrite): {:?}", snap.changes);
+    }
+
+    #[test]
+    fn bookmark_anchor_cross_ref_and_snapshot() {
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        let mut ids = IdGen::new(doc.get_actor().to_hex_string());
+        let (target, src);
+        {
+            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            target = dm.insert_block(None, "paragraph");
+            dm.splice_text(&target, 0, 0, "the intro section");
+            dm.add_bookmark(&target, 4, 9, "intro"); // over "intro"
+            src = dm.insert_block(Some(&target), "paragraph");
+            dm.splice_text(&src, 0, 0, "see above");
+            dm.add_cross_ref(&src, 4, 9, "intro"); // "above" → #intro
+        }
+        // The bookmarked block carries a `bookmark` mark valued with the name.
+        let tb = materialize_block(&doc, &c.blocks, &target);
+        let bm = tb.marks.iter().find(|m| m.name == MARK_BOOKMARK).expect("bookmark mark present");
+        assert_eq!((bm.start, bm.end), (4, 9));
+        assert_eq!(bm.value, crate::document::MarkValue::Str("intro".into()));
+        // The cross-ref is a `link` mark valued `#intro`.
+        let sb = materialize_block(&doc, &c.blocks, &src);
+        let link = sb.marks.iter().find(|m| m.name == MARK_LINK).expect("cross-ref link mark present");
+        assert_eq!((link.start, link.end), (4, 9));
+        assert_eq!(link.value, crate::document::MarkValue::Str("#intro".into()));
+        // The snapshot surfaces the bookmark registry.
+        let snap = materialize(&doc, &c);
+        assert_eq!(snap.bookmarks.len(), 1);
+        assert_eq!(snap.bookmarks[0].name, "intro");
+        assert_eq!(snap.bookmarks[0].range, (target.clone(), 4, 9));
+    }
+
+    #[test]
+    fn point_bookmark_is_widened_and_heading_ref_id_targets_heading() {
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        let mut ids = IdGen::new(doc.get_actor().to_hex_string());
+        let (h, p);
+        {
+            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            h = dm.insert_block(None, "heading");
+            dm.set_attr(&h, "level", 1i64);
+            dm.splice_text(&h, 0, 0, "Title");
+            p = dm.insert_block(Some(&h), "paragraph");
+            dm.splice_text(&p, 0, 0, "abc");
+            // A point bookmark at idx 1 (start == end) widens to one character.
+            dm.add_bookmark(&p, 1, 1, "pt");
+            // A cross-reference targeting the heading's derived id.
+            dm.add_cross_ref(&p, 0, 3, &heading_ref_id(&h));
+        }
+        let snap = materialize(&doc, &c);
+        let pt = snap.bookmarks.iter().find(|b| b.name == "pt").expect("point bookmark present");
+        assert_eq!((pt.range.1, pt.range.2), (1, 2), "point bookmark widened to one char");
+        let link = snap.blocks.iter().find(|b| b.text == "abc").unwrap().marks.iter().find(|m| m.name == MARK_LINK).unwrap().clone();
+        assert_eq!(link.value, crate::document::MarkValue::Str(format!("#{}{}", HEADING_REF_PREFIX, h)));
+    }
+
+    #[test]
+    fn bookmarks_converge_across_replicas() {
+        // Two replicas each add a bookmark to the same document; after merge both
+        // converge with both bookmarks present (CRDT-native — the mark is the source).
+        let mut a = crate::Document::new();
+        let p = a.insert_block(None, "paragraph");
+        a.splice_text(&p, 0, 0, "shared base text");
+        let mut b = a.fork();
+        a.add_bookmark(&p, 0, 6, "first"); // "shared"
+        b.add_bookmark(&p, 7, 11, "second"); // "base"
+        a.merge(&mut b);
+        b.merge(&mut a);
+        assert_eq!(a.materialize(), b.materialize(), "replicas converge with bookmarks");
+        assert_eq!(a.materialize().bookmarks.len(), 2, "both bookmarks present after merge");
     }
 
     #[test]

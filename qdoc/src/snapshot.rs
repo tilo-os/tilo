@@ -74,6 +74,17 @@ pub struct DocSnapshot {
     /// tracked changes (and absent in snapshots authored before this field existed).
     #[serde(default)]
     pub changes: Vec<ChangeView>,
+    /// Bookmarks (named anchors), each a `(name, range)` derived from the body
+    /// `bookmark` marks (see `schema::MARK_BOOKMARK`). The mark is the source of
+    /// truth; this is a convenience registry. Round-trips through
+    /// `text:bookmark-start`/`text:bookmark-end` in `.odt` and `w:bookmarkStart`/
+    /// `w:bookmarkEnd` in `.docx`. A cross-reference is an internal `link` mark whose
+    /// value is `#<name>` (or `#<heading derived id>`) — surfaced as an ordinary
+    /// `link` mark on the referencing block, not in a separate list. Empty for
+    /// documents with no bookmarks (and absent in snapshots authored before this
+    /// field existed).
+    #[serde(default)]
+    pub bookmarks: Vec<BookmarkView>,
     /// Document-wide multi-column section layout: the number of newspaper-style
     /// columns the body text flows across. `1` (the default) for a single-column
     /// document; absent in snapshots authored before this field existed (which then
@@ -112,10 +123,22 @@ impl Default for DocSnapshot {
             notes: Vec::default(),
             comments: Vec::default(),
             changes: Vec::default(),
+            bookmarks: Vec::default(),
             columns: default_columns(),
             column_gap: None,
         }
     }
+}
+
+/// One bookmark (named anchor): its `name` and the anchored body range `[start, end)`
+/// it covers (recovered from the `bookmark` mark). The body text references it by a
+/// `bookmark` mark valued with this `name`. A cross-reference targets it by a `link`
+/// mark valued `#<name>`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BookmarkView {
+    pub name: String,
+    /// `(block_id, start, end)` of the anchored range in the body.
+    pub range: (String, usize, usize),
 }
 
 /// Whether a tracked change is an insertion (proposed-added text) or a deletion
