@@ -37,6 +37,11 @@ The existing `plan/security.md` covers T1/T2 well. This plan fills T0 (boot
 integrity + supply chain), T3 (peer code isolation), and T4 (hosted), and adds
 the per-capability layers (Landlock, typed egress) that harden T1/T2.
 
+**Identity assumption:** qOS v1 is **single-identity** (one human owns the
+device). This plan targets that model but is deliberately structured so
+**multi-user is a later extension, not a rewrite** — see **§6.1**, which carries
+the single→multi-user seam for every layer.
+
 ---
 
 ## 2. UX principles (these gate every mechanism)
@@ -221,6 +226,65 @@ invite tokens; per-user identity self-asserted.
 
 ---
 
+## 6.1 Identity model: single-identity today, multi-user-ready
+
+qOS v1 is **single-identity**: one human owns the device; that owner's identity
+is the device's primary identity; collaboration is **between owners across
+devices** (P2P), not between users on one device. This plan is built to that
+model — but every layer is chosen so that **becoming multi-user later is an
+extension, not a re-encrypt / re-architecture**. The rule: *design the seams
+now, don't build the machinery yet.*
+
+### The one invariant that makes multi-user possible: split device ↔ user
+The single most important decision (already in §6) is keeping the **device key**
+(hardware-bound, machine-scoped) **separate from the user/account identity**
+(recoverable, person-scoped). In v1 they look 1:1 (one owner per device), but
+because they're *distinct objects cross-signed together*, multi-user is later
+just "this device hosts **N** authorized user identities" instead of one. If we
+instead collapsed them into a single "owner = device" principal (the tempting
+v1 shortcut), multi-user would require a rewrite. **We do not take that
+shortcut.** Concretely, even in v1: no code assumes a global singleton "the
+owner" — ownership is always *an* identity that happens to be the only one.
+
+### Per layer: single-user reality → multi-user extension (and what to design now)
+
+| Layer | v1 (single-identity) | Multi-user later | Design now so it's not a rewrite |
+|---|---|---|---|
+| **FDE (§5)** | device key unlocked by the owner's factors | device-wide key; **any** enrolled user's factor (or their homed credential) can bring the device up | keep FDE a **device** capability distinct from user login — never seal the *device* key to one *user's* identity alone. Adding a user later = enroll another LUKS keyslot, **no re-encrypt.** |
+| **homed (§5)** | one encrypted home | **N** homed homes, each unlocked by its own user, locked on that user's logout | **adopt homed from the start** (even for the single user) so per-user crypto is the boundary on day one; a second user is then just `homectl create`. Retrofitting homed onto a plain `/home/quickuser` later is the painful path we avoid. |
+| **Identity / device key (§6)** | device key ↔ owner account (1:1, cross-signed) | device hosts a **set** of authorized user identities; device key cross-signed by each | the device-authorization list is **already a CRDT set**, not a scalar — it holds one entry in v1, many later. **Don't special-case "the" owner.** |
+| **Login / session-lock (D2)** | single session; lock = the owner's lock | greeter picks a user; per-user session + per-user lock/idle; fast user-switch | route lock/unlock through the **homed/identity credential**, not a device-global secret, so "who is unlocking" is a real question with a real answer even when the answer is always the same person today. |
+| **Workspaces & capability grants (§7, plan/security.md)** | "only the owner can grant" | grants owned **by a user**; a workspace has an owning user; co-resident users can't grant in each other's workspaces | model grant authority as **"the workspace's owning identity"**, not "the device owner." In v1 they coincide; the field exists either way. (This is the one place current code says "owner" as a singleton — flag it for a `WorkspaceOwner = UserId` refactor before multi-user.) |
+| **P2P / collaboration** | peers = remote owners; my device speaks as me | peers can be **other users on my own device** too; identity is per-user not per-device | already true — P2P identity is the *account* key (§6), which is per-user by construction; nothing to change. |
+| **Disk-at-rest, boot, supply chain, hardening, egress, attestation (§4, §8–§11)** | device/base level | **unchanged** — these are machine/image properties, not user properties | nothing; they're already user-count-agnostic. Multi-user adds *no* boot/supply-chain work. |
+
+### UX implications
+- **v1 stays dead-simple:** install creates one user, one home, one identity; no
+  user-picker, no "switch user" — that surface is simply not shown when there's
+  one user. Single-identity users never pay a multi-user tax.
+- **The growth path is additive:** "Add a user" in Settings → Users later =
+  `homectl create` (new encrypted home + enroll their FDE keyslot + their
+  identity credential). Existing data is untouched (no re-encrypt, because FDE
+  was never sealed to one *user*). The greeter gains a user list; everything
+  else the user already knows stays put.
+- **Recovery scales per-user:** each user gets their **own** homed recovery
+  credential (§5); the device recovery key (FDE) stays the device-owner's. Two
+  independent recovery scopes = no user can lock another out, and no single
+  recovery secret rules everyone (consistent with §3).
+
+### Anti-patterns to avoid in v1 (the seams)
+1. Don't seal the **device** LUKS key to a **user's** TPM/identity such that the
+   key dies or must be re-wrapped when users change → keep device-key and
+   user-key independent keyslots.
+2. Don't bake a global `OWNER` singleton into grant/sandbox logic → use
+   `UserId` even when there's exactly one.
+3. Don't put `/home` on plain FDE-only storage if homed is feasible → adopt
+   homed now so per-user encryption isn't a later migration.
+4. Don't make the P2P/device key *be* the identity → it authorizes *an*
+   identity (§6); keep the indirection.
+
+---
+
 ## 7. Sandboxing / confinement (T1–T3) — finish the layers
 
 ### Have (per `plan/security.md`)
@@ -369,7 +433,18 @@ the chip alone:
 - §5 upgrade E2: TPM2**+PIN** + **mandatory recovery key** + optional FIDO2 +
   fTPM preference. (Direct, near-term code change to `qos-install` + a Settings →
   Security pane.)
+- §5 **adopt `systemd-homed` for the single user now** — per-user encryption is
+  the multi-user boundary; retrofitting it later is the painful path (§6.1).
 - §9 image **signing + verify-before-update**; stand up the transparency log.
+
+**Multi-user seams — cheap to design now, expensive to retrofit (§6.1):**
+- Keep **device key ≠ user identity** (§6) — device-authorization is a CRDT
+  *set*, not a scalar; FDE device-key independent of any user keyslot.
+- Replace the `OWNER` singleton in grant/sandbox logic with `WorkspaceOwner =
+  UserId` (coincides with the sole user in v1; no behavior change, just the
+  seam).
+- Route D2 lock/login through the per-user homed/identity credential, not a
+  device-global secret.
 
 **Next:**
 - §7.1 Landlock per-capability enforcement; §8 typed egress cap.
