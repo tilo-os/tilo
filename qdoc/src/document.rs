@@ -249,6 +249,70 @@ impl Document {
         self.doc.commit();
     }
 
+    // ---- footnotes / endnotes ---------------------------------------------
+
+    /// The note ids present in the document (sorted, canonical order).
+    pub fn note_ids(&self) -> Vec<String> {
+        crate::model::note_ids(&self.doc, &self.c)
+    }
+
+    /// A note's kind (`Footnote`/`Endnote`), or `None` if the id is unknown.
+    pub fn note_kind(&self, id: &str) -> Option<crate::model::NoteKind> {
+        crate::model::note_kind(&self.doc, &self.c, id)
+    }
+
+    /// Materialize a note's content blocks (empty if the id is unknown).
+    pub fn note_blocks(&self, id: &str) -> Vec<crate::snapshot::BlockView> {
+        crate::model::materialize_note_blocks(&self.doc, &self.c, id)
+    }
+
+    /// The ordered block ids of a note's content (empty if absent).
+    pub fn note_blocks_in_order(&self, id: &str) -> Vec<String> {
+        crate::model::note_blocks_in_order(&self.doc, &self.c, id)
+    }
+
+    /// Materialize every note into a [`crate::snapshot::NoteView`].
+    pub fn notes(&self) -> Vec<crate::snapshot::NoteView> {
+        crate::model::materialize_notes(&self.doc, &self.c)
+    }
+
+    /// Create a footnote, place its reference marker at `char_idx` in `block_id`,
+    /// and return the new note id (its content is filled via [`Self::insert_note_block`]
+    /// + [`Self::splice_note_text`]).
+    pub fn insert_footnote(&mut self, block_id: &str, char_idx: usize) -> String {
+        let id = self.as_mut().insert_footnote(block_id, char_idx);
+        self.doc.commit();
+        id
+    }
+
+    /// Create an endnote, place its reference marker at `char_idx` in `block_id`,
+    /// and return the new note id.
+    pub fn insert_endnote(&mut self, block_id: &str, char_idx: usize) -> String {
+        let id = self.as_mut().insert_endnote(block_id, char_idx);
+        self.doc.commit();
+        id
+    }
+
+    /// Insert a block into a note's content; returns its id (or `None` if the note
+    /// id is unknown).
+    pub fn insert_note_block(&mut self, note_id: &str, after: Option<&str>, kind: &str) -> Option<String> {
+        let id = self.as_mut().insert_note_block(note_id, after, kind);
+        self.doc.commit();
+        id
+    }
+
+    /// Splice text into a note's block.
+    pub fn splice_note_text(&mut self, note_id: &str, block_id: &str, char_idx: usize, del: isize, ins: &str) {
+        self.as_mut().splice_note_text(note_id, block_id, char_idx, del, ins);
+        self.doc.commit();
+    }
+
+    /// Add an inline mark over a note's block text.
+    pub fn add_note_mark(&mut self, note_id: &str, block_id: &str, start: usize, end: usize, name: &str, value: impl Into<automerge::ScalarValue>) {
+        self.as_mut().add_note_mark(note_id, block_id, start, end, name, value);
+        self.doc.commit();
+    }
+
     /// Timeline of authored changes (oldest first).
     pub fn versions(&mut self) -> Vec<crate::history::VersionMeta> {
         crate::history::versions(&mut self.doc)
@@ -429,6 +493,49 @@ mod tests {
         assert_eq!(snap.blocks.len(), 2, "must not overwrite the existing block");
         assert_eq!(snap.blocks[0].text, "first");
         assert_eq!(snap.blocks[1].text, "second");
+    }
+
+    #[test]
+    fn footnote_accessors_and_snapshot() {
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "see ref");
+        let nid = d.insert_footnote(&p, 4);
+        let nb = d.insert_note_block(&nid, None, "paragraph").unwrap();
+        d.splice_note_text(&nid, &nb, 0, 0, "footnote body");
+
+        // Accessors agree with the snapshot.
+        assert_eq!(d.note_ids(), vec![nid.clone()]);
+        assert_eq!(d.note_kind(&nid), Some(crate::model::NoteKind::Footnote));
+        assert_eq!(d.note_blocks(&nid)[0].text, "footnote body");
+        let snap = d.materialize();
+        assert_eq!(snap.notes.len(), 1);
+        assert_eq!(snap.notes[0].id, nid);
+        // The note-ref marker survives a save/load round-trip (seeded id gen).
+        let bytes = d.save();
+        let d2 = Document::load(&bytes).unwrap();
+        assert_eq!(d2.note_blocks(&nid)[0].text, "footnote body");
+        assert!(d2.materialize().blocks[0].marks.iter().any(|m| m.name == crate::schema::MARK_NOTE_REF));
+    }
+
+    #[test]
+    fn notes_converge_across_replicas() {
+        // Two replicas each add a note to the same document; after merge both
+        // converge with both notes present (CRDT-native).
+        let mut a = Document::new();
+        let p = a.insert_block(None, "paragraph");
+        a.splice_text(&p, 0, 0, "base");
+        let mut b = a.fork();
+        let na = a.insert_footnote(&p, 4);
+        let nab = a.insert_note_block(&na, None, "paragraph").unwrap();
+        a.splice_note_text(&na, &nab, 0, 0, "from A");
+        let nb = b.insert_endnote(&p, 0);
+        let nbb = b.insert_note_block(&nb, None, "paragraph").unwrap();
+        b.splice_note_text(&nb, &nbb, 0, 0, "from B");
+        a.merge(&mut b);
+        b.merge(&mut a);
+        assert_eq!(a.materialize(), b.materialize(), "replicas converge with notes");
+        assert_eq!(a.materialize().notes.len(), 2, "both notes present after merge");
     }
 
     #[test]
