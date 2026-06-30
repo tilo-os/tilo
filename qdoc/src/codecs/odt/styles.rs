@@ -65,6 +65,7 @@ pub(super) fn map_align(v: &str) -> String {
     match v {
         "center" => "center".into(),
         "end" | "right" => "right".into(),
+        "justify" | "justified" => "justify".into(),
         _ => "left".into(),
     }
 }
@@ -170,6 +171,27 @@ pub(super) struct ParaStyle {
     pub indent: Option<f64>,
 }
 
+/// Map an ODF `style:num-format` value to the model's canonical numbering format
+/// (`decimal|lower-roman|upper-roman|lower-alpha|upper-alpha`). A bullet list has
+/// no num-format; unknown values fall back to `decimal`.
+pub(super) fn map_num_format(v: &str) -> &'static str {
+    match v.trim() {
+        "i" => "lower-roman",
+        "I" => "upper-roman",
+        "a" => "lower-alpha",
+        "A" => "upper-alpha",
+        _ => "decimal", // "1" and anything else
+    }
+}
+
+/// The captured numbering of one `text:list-style` level (level 0 is what the
+/// model preserves): its canonical format + start value.
+#[derive(Default)]
+pub(super) struct ListNumbering {
+    pub num_format: Option<&'static str>,
+    pub num_start: Option<i64>,
+}
+
 #[derive(Default)]
 pub(super) struct StyleRegistry {
     /// `text`-family style name → inline marks.
@@ -178,6 +200,9 @@ pub(super) struct StyleRegistry {
     pub para: HashMap<String, ParaStyle>,
     /// list-style name → is it numbered (ordered)?
     pub list_ordered: HashMap<String, bool>,
+    /// list-style name → its level-0 numbering (format + start), for fidelity
+    /// preservation of ordered lists.
+    pub list_numbering: HashMap<String, ListNumbering>,
 }
 
 impl StyleRegistry {
@@ -328,6 +353,9 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry, from_named_secti
 
     let mut list_name: Option<String> = None;
     let mut list_numbered = false;
+    // Level-0 numbering captured from the current list-style (format + start).
+    let mut list_num_format: Option<&'static str> = None;
+    let mut list_num_start: Option<i64> = None;
 
     loop {
         let ev = match reader.read_event() {
@@ -411,8 +439,23 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry, from_named_secti
                 b"text:list-style" => {
                     list_name = attr_val(&e, b"style:name");
                     list_numbered = false;
+                    list_num_format = None;
+                    list_num_start = None;
                 }
-                b"text:list-level-style-number" => list_numbered = true,
+                b"text:list-level-style-number" => {
+                    list_numbered = true;
+                    // Capture the level-1 (0-based level 0) format + start. ODF
+                    // numbers levels from 1; `text:level="1"` is the model's level 0.
+                    let is_lvl0 = attr_val(&e, b"text:level").map(|l| l == "1").unwrap_or(true);
+                    if is_lvl0 {
+                        if let Some(f) = attr_val(&e, b"style:num-format") {
+                            list_num_format = Some(map_num_format(&f));
+                        }
+                        if let Some(s) = attr_val(&e, b"text:start-value").and_then(|v| v.parse::<i64>().ok()) {
+                            list_num_start = Some(s);
+                        }
+                    }
+                }
                 _ => {}
             },
             Event::End(e) => match e.name().as_ref() {
@@ -462,8 +505,14 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry, from_named_secti
                 }
                 b"text:list-style" => {
                     if let Some(n) = list_name.take() {
-                        reg.list_ordered.insert(n, list_numbered);
+                        reg.list_ordered.insert(n.clone(), list_numbered);
+                        reg.list_numbering.insert(
+                            n,
+                            ListNumbering { num_format: list_num_format.take(), num_start: list_num_start.take() },
+                        );
                     }
+                    list_num_format = None;
+                    list_num_start = None;
                 }
                 _ => {}
             },
