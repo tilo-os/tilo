@@ -25,7 +25,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
-        render_shot_to_png(calculator::app_root(), DEFAULT_SHOTS_VIEWPORT, &out)?;
+        render_shot_to_png(calculator::app_root(), shots_viewport(), &out)?;
         return Ok(());
     }
 
@@ -33,6 +33,21 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = ui::App::new(state, calculator::app_root());
     app.run();
     Ok(())
+}
+
+/// Viewport for the headless screenshot. Defaults to a wide desktop frame;
+/// `QOS_CALC_SHOTS_SIZE=WxH` overrides it (e.g. to capture the compact keypad
+/// + overlay-history behaviour at a narrow size).
+fn shots_viewport() -> (u32, u32) {
+    if let Some(s) = std::env::var_os("QOS_CALC_SHOTS_SIZE") {
+        let s = s.to_string_lossy();
+        if let Some((w, h)) = s.split_once(['x', 'X', '*']) {
+            if let (Ok(w), Ok(h)) = (w.trim().parse(), h.trim().parse()) {
+                return (w, h);
+            }
+        }
+    }
+    DEFAULT_SHOTS_VIEWPORT
 }
 
 fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {

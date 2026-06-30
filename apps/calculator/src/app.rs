@@ -207,6 +207,16 @@ impl CalculatorApp {
     }
 
     fn on_press_calc(&mut self, p: Point) {
+        // History sidebar chrome takes priority over the keypad underneath.
+        if self.calc.toggle_at(p) {
+            self.calc.toggle_sidebar();
+            return;
+        }
+        if self.calc.scrim_at(p) {
+            // Tapping outside an open overlay drawer dismisses it (Adwaita).
+            self.calc.close_sidebar();
+            return;
+        }
         if let Some(i) = self.calc.key_at(p) {
             self.calc.pressed_key = Some(i);
             let key = self.calc.keys()[i].clone();
