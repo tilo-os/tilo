@@ -31,6 +31,10 @@ pub struct Slider {
     on_change_path: String,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
+    /// When `false` the slider is disabled: skipped by focus, rejects
+    /// input (no drag, no value change, no hover feedback) and renders
+    /// dimmed. Default `true`.
+    enabled: bool,
     /// Last observed cursor position in logical-pixel space. Updated on
     /// every `CursorMoved`, used by `MouseInput::Pressed` so a press can
     /// (a) decide whether it's inside the slider's rect without relying
@@ -57,6 +61,7 @@ impl Slider {
             on_change_path: on_change_path.to_string(),
             presence_path: Vec::new(),
             permission_scope: None,
+            enabled: true,
             last_cursor: Point::ZERO,
             id_override: None,
         }
@@ -81,6 +86,18 @@ impl Slider {
     pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
         self.permission_scope = Some(scope);
         self
+    }
+
+    /// Set the enabled state at build time. A disabled slider is skipped
+    /// by focus, rejects input and renders dimmed. Default `true`.
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// Imperatively flip the enabled state.
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
     }
 
     /// Map a cursor x in widget-local logical pixels to the slider's
@@ -166,6 +183,12 @@ impl Widget for Slider {
     }
 
     fn draw(&mut self, scene: &mut Scene, transform: Affine, _text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
+        // Disabled widgets paint their (forced-idle) look under a reduced
+        // group opacity so they read as non-interactive.
+        let disabled = !self.enabled;
+        if disabled {
+            scene.push_layer(vello::peniko::Fill::NonZero, vello::peniko::BlendMode::default(), crate::widget::DISABLED_ALPHA, transform, &self.rect);
+        }
         // Focus indicator (deferred until after the knob is positioned so
         // we can draw a tight ring around the knob, not the whole widget
         // rect — the full-rect ring looked like a stray border around
@@ -240,9 +263,15 @@ impl Widget for Slider {
                 &focus_ring,
             );
         }
+
+        if disabled {
+            scene.pop_layer();
+        }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, _modifiers: &winit::event::Modifiers, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, _taffy: &TaffyTree<()>) {
+        // Disabled: reject all input — no drag, no value change, no hover.
+        if !self.enabled { return; }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -306,6 +335,7 @@ impl Widget for Slider {
     fn is_focusable(&self) -> bool { true }
     fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
     fn is_focused(&self) -> bool { self.is_focused }
+    fn is_enabled(&self) -> bool { self.enabled }
 
     fn presence_key(&self) -> Option<PresenceKey> {
         if self.presence_path.is_empty() {
@@ -491,6 +521,28 @@ mod tests {
     fn slider_test_id_can_be_overridden() {
         let s = Slider::new("any", "value").with_id("volume");
         assert_eq!(Widget::test_id(&s), Some("volume"));
+    }
+
+    #[test]
+    fn with_enabled_false_is_reported_by_is_enabled() {
+        let s = Slider::new("any", "value").with_enabled(false);
+        assert!(!Widget::is_enabled(&s));
+        assert!(Widget::is_enabled(&Slider::new("any", "value")), "default is enabled");
+    }
+
+    #[test]
+    fn disabled_slider_rejects_input() {
+        // Rect [0..200, 0..30]. A disabled slider must ignore press/drag.
+        let mut s = slider_at(0.0, 0.0, 200.0, 30.0);
+        s.set_enabled(false);
+        let before = s.value;
+
+        dispatch(&mut s, &cursor_moved(20.0, 15.0));
+        dispatch(&mut s, &mouse_press());
+        dispatch(&mut s, &cursor_moved(150.0, 15.0));
+
+        assert!(!s.is_dragging, "disabled slider must not start a drag");
+        assert_eq!(s.value, before, "disabled slider must not change its value");
     }
 }
 
