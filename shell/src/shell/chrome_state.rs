@@ -18,6 +18,7 @@ use std::rc::Rc;
 
 use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
 
+use crate::notifications::{CloseReason, NotificationBridge};
 use crate::shell::notification::{
     MAX_NOTIFICATIONS, Notification, NotificationIconKind, NotificationSeverity,
 };
@@ -245,6 +246,19 @@ pub struct ChromeState {
     /// reads from here and drives expiry via
     /// [`Self::update_notification_lifecycle`] each frame.
     pub notifications: Vec<Notification>,
+    /// Bridge to the `org.freedesktop.Notifications` D-Bus service
+    /// (Track D1). `None` until the compositor wires it up
+    /// ([`Self::set_notification_bridge`]); tests and the offscreen
+    /// `shots` path run without it. When present, toast lifecycle
+    /// transitions (dismiss / expire / close / action) emit the
+    /// corresponding D-Bus signal back to the originating app via the
+    /// bridge's reverse-event queues.
+    notification_bridge: Option<NotificationBridge>,
+    /// Whether the session is currently locked (mirrored from the
+    /// compositor's `SessionManager` each frame). Drives notification
+    /// lock-suppression: while `true`, the notification stack withholds
+    /// app names / summaries / bodies and shows only a count.
+    session_locked: bool,
 }
 
 impl ChromeState {
@@ -275,6 +289,8 @@ impl ChromeState {
             pending_grants: VecDeque::new(),
             test_only_owner_override: None,
             notifications: Vec::new(),
+            notification_bridge: None,
+            session_locked: false,
         }))
     }
 
@@ -521,12 +537,52 @@ impl ChromeState {
         )
     }
 
-    /// Dismiss a notification by id. No-op if the id has already
-    /// expired or was never pushed.
+    /// Dismiss a notification by its internal id. No-op if the id has
+    /// already expired or was never pushed. If the removed toast came
+    /// from a D-Bus `Notify`, emits `NotificationClosed(id, 2)` (reason:
+    /// dismissed-by-user) via the bridge.
     pub fn dismiss_notification(&mut self, id: u64) {
-        let before = self.notifications.len();
-        self.notifications.retain(|n| n.id != id);
-        if self.notifications.len() != before {
+        if let Some(pos) = self.notifications.iter().position(|n| n.id == id) {
+            let removed = self.notifications.remove(pos);
+            self.emit_closed(&removed, CloseReason::Dismissed);
+            self.bump();
+        }
+    }
+
+    /// Activate a notification by its internal id (the user clicked the
+    /// toast body, not the X). If the toast carries actions, emits
+    /// `ActionInvoked(id, key)` for the default/first action before
+    /// removing it; otherwise behaves exactly like
+    /// [`Self::dismiss_notification`]. Returns `true` if a toast was
+    /// found.
+    pub fn activate_notification(&mut self, id: u64) -> bool {
+        let Some(pos) = self.notifications.iter().position(|n| n.id == id) else {
+            return false;
+        };
+        let removed = self.notifications.remove(pos);
+        if let (Some(bridge), Some(dbus_id)) =
+            (self.notification_bridge.as_ref(), removed.dbus_id)
+        {
+            if let Some(key) = removed.default_action_key() {
+                bridge.note_action(dbus_id, key);
+            }
+            bridge.note_closed(dbus_id, CloseReason::Dismissed);
+        }
+        self.bump();
+        true
+    }
+
+    /// Close a notification by its freedesktop (`dbus_id`) id with an
+    /// explicit reason. Used by the `CloseNotification` pump path. No-op
+    /// if no live toast carries that id.
+    pub fn close_notification_by_dbus_id(&mut self, dbus_id: u32, reason: CloseReason) {
+        if let Some(pos) = self
+            .notifications
+            .iter()
+            .position(|n| n.dbus_id == Some(dbus_id))
+        {
+            let removed = self.notifications.remove(pos);
+            self.emit_closed(&removed, reason);
             self.bump();
         }
     }
@@ -534,15 +590,91 @@ impl ChromeState {
     /// Drop every notification whose `created_at + dismiss_after`
     /// has passed `now`. Returns the number of entries removed.
     /// Called by [`crate::shell::notification::NotificationStack::update`]
-    /// each frame so the stack shrinks automatically.
+    /// each frame so the stack shrinks automatically. Expired toasts that
+    /// came from a D-Bus `Notify` emit `NotificationClosed(id, 1)`.
     pub fn update_notification_lifecycle(&mut self, now: std::time::Instant) -> usize {
+        let mut closed_dbus_ids = Vec::new();
         let before = self.notifications.len();
-        self.notifications.retain(|n| !n.is_expired_at(now));
+        self.notifications.retain(|n| {
+            let keep = !n.is_expired_at(now);
+            if !keep {
+                if let Some(d) = n.dbus_id {
+                    closed_dbus_ids.push(d);
+                }
+            }
+            keep
+        });
         let dropped = before - self.notifications.len();
+        if let Some(bridge) = self.notification_bridge.as_ref() {
+            for d in closed_dbus_ids {
+                bridge.note_closed(d, CloseReason::Expired);
+            }
+        }
         if dropped > 0 {
             self.bump();
         }
         dropped
+    }
+
+    /// Number of currently active notifications (used by the lock screen
+    /// to show "N notifications" without exposing any content).
+    pub fn notification_count(&self) -> usize {
+        self.notifications.len()
+    }
+
+    // ---------- Track D1: D-Bus notification wiring ----------
+
+    /// Install the [`NotificationBridge`] the compositor shares with the
+    /// `org.freedesktop.Notifications` D-Bus service. Once set, the toast
+    /// lifecycle emits `NotificationClosed` / `ActionInvoked` events back
+    /// to apps via the bridge.
+    pub fn set_notification_bridge(&mut self, bridge: NotificationBridge) {
+        self.notification_bridge = Some(bridge);
+    }
+
+    /// Mirror the compositor's session-lock state into the chrome so the
+    /// notification stack can suppress content while locked.
+    pub fn set_session_locked(&mut self, locked: bool) {
+        if self.session_locked != locked {
+            self.session_locked = locked;
+            self.bump();
+        }
+    }
+
+    /// Whether the session is currently locked.
+    pub fn session_locked(&self) -> bool {
+        self.session_locked
+    }
+
+    /// Drain the D-Bus notification bridge into the live toast stack:
+    /// every queued `Notify` becomes a toast (honouring `replaces_id` by
+    /// evicting the prior toast with the same `dbus_id` first), and every
+    /// `CloseNotification` removes the matching toast. Called once per
+    /// frame by the compositor; a no-op when no bridge is installed.
+    pub fn pump_dbus_notifications(&mut self) {
+        let Some(bridge) = self.notification_bridge.clone() else {
+            return;
+        };
+        for inc in bridge.drain_incoming() {
+            let dbus_id = inc.dbus_id;
+            // `replaces_id` semantics: a fresh Notify with an existing id
+            // supersedes the prior toast.
+            self.notifications.retain(|n| n.dbus_id != Some(dbus_id));
+            self.push_notification_full(Notification::from_incoming(inc));
+        }
+        for id in bridge.drain_close_requests() {
+            self.close_notification_by_dbus_id(id, CloseReason::Closed);
+        }
+    }
+
+    /// Emit a `NotificationClosed` for a removed toast iff it originated
+    /// from D-Bus and the bridge is installed.
+    fn emit_closed(&self, removed: &Notification, reason: CloseReason) {
+        if let (Some(bridge), Some(dbus_id)) =
+            (self.notification_bridge.as_ref(), removed.dbus_id)
+        {
+            bridge.note_closed(dbus_id, reason);
+        }
     }
 }
 
