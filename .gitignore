@@ -16,3 +16,11 @@ Cargo.lock
 .branchbox.env
 .env.local
 scripts/headless-examples/__pycache__/
+
+# qOS signing keys — PRIVATE material is NEVER committed (see keys/README.md).
+# Public keys (keys/*.pub, keys/*.public.pem) ARE tracked — verifiers need them.
+keys/*.key
+keys/*.password
+keys/*.private.pem
+keys/**/*.key
+keys/**/*.private.pem
