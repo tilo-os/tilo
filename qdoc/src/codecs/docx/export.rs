@@ -34,6 +34,11 @@ const APP_OVERRIDE: &str = r#"<Override PartName="/docProps/app.xml" ContentType
 const CORE_REL: &str = r#"<Relationship Id="rIdQdocCore" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>"#;
 const APP_REL: &str = r#"<Relationship Id="rIdQdocApp" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>"#;
 
+const HEADER_OVERRIDE: &str = r#"<Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>"#;
+const FOOTER_OVERRIDE: &str = r#"<Override PartName="/word/footer1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/>"#;
+const HEADER_REL: &str = r#"<Relationship Id="rIdQdocHdr" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>"#;
+const FOOTER_REL: &str = r#"<Relationship Id="rIdQdocFtr" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>"#;
+
 const STYLES_OVERRIDE: &str = r#"<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>"#;
 const STYLES_REL: &str = r#"<Relationship Id="rIdQdocStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>"#;
 const STYLES_XML_OPEN: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -41,7 +46,14 @@ const STYLES_XML_OPEN: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone
 
 pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     let snap = doc.materialize();
-    let (document, named_refs, numbering) = build_document_xml(&snap);
+    // Page header/footer parts + the `w:sectPr` references that wire them in.
+    let hf_parts = super::headers::export_parts(&doc);
+    let sectpr = if hf_parts.any() {
+        format!(r#"<w:sectPr>{}</w:sectPr>"#, super::headers::section_references(&hf_parts))
+    } else {
+        String::new()
+    };
+    let (document, named_refs, numbering) = build_document_xml(&snap, &sectpr);
     let has_lists = snap.blocks.iter().any(|b| b.kind == "list_item");
     let has_styles = !named_refs.is_empty();
 
@@ -55,6 +67,8 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     let mut had_styles_part = false;
     let mut had_core = false;
     let mut had_app = false;
+    let mut had_header_part = false;
+    let mut had_footer_part = false;
     let mut original_core: Option<Vec<u8>> = None;
     let mut original_app: Option<Vec<u8>> = None;
     for (key, bytes) in crate::model::preserved_parts(doc.doc, doc.c) {
@@ -64,6 +78,8 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
             had_doc_rels |= name == "word/_rels/document.xml.rels";
             had_numbering |= name == "word/numbering.xml";
             had_styles_part |= name == "word/styles.xml";
+            had_header_part |= name == super::headers::HEADER_PART;
+            had_footer_part |= name == super::headers::FOOTER_PART;
             if name == "docProps/core.xml" {
                 had_core = true;
                 original_core = Some(bytes.clone());
@@ -77,6 +93,19 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     }
 
     c.set("word/document.xml", document.into_bytes());
+
+    // Page header/footer parts. Written under the fixed `word/header1.xml` /
+    // `word/footer1.xml` names (the `w:sectPr` built above references them by the
+    // fixed rel ids), overwriting a same-named preserved part. A part newly created
+    // here needs a content-type override + a document relationship.
+    if let Some(hdr) = hf_parts.header.clone() {
+        c.set(super::headers::HEADER_PART, hdr);
+    }
+    if let Some(ftr) = hf_parts.footer.clone() {
+        c.set(super::headers::FOOTER_PART, ftr);
+    }
+    let need_header_wireup = hf_parts.header.is_some() && !had_header_part;
+    let need_footer_wireup = hf_parts.footer.is_some() && !had_footer_part;
 
     // Document properties → `docProps/core.xml` (+ `app.xml` generator). Regenerate
     // from the canonical properties, merging unmodeled children of the preserved
@@ -134,6 +163,12 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
         if wrote_app {
             ct.push_str(APP_OVERRIDE);
         }
+        if hf_parts.header.is_some() {
+            ct.push_str(HEADER_OVERRIDE);
+        }
+        if hf_parts.footer.is_some() {
+            ct.push_str(FOOTER_OVERRIDE);
+        }
         ct.push_str("</Types>");
         c.set("[Content_Types].xml", ct.into_bytes());
     } else {
@@ -149,6 +184,12 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
         }
         if need_app_wireup {
             overrides.push(("/docProps/app.xml", APP_OVERRIDE));
+        }
+        if need_header_wireup {
+            overrides.push(("/word/header1.xml", HEADER_OVERRIDE));
+        }
+        if need_footer_wireup {
+            overrides.push(("/word/footer1.xml", FOOTER_OVERRIDE));
         }
         if !overrides.is_empty() {
             if let Some(ct) = c.get("[Content_Types].xml") {
@@ -188,9 +229,9 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
         }
     }
 
-    // word/_rels/document.xml.rels — needed once there's a numbering and/or a
-    // freshly-synthesised styles part.
-    if has_lists || need_styles_wireup {
+    // word/_rels/document.xml.rels — needed once there's a numbering, a
+    // freshly-synthesised styles part, and/or a header/footer part.
+    if has_lists || need_styles_wireup || need_header_wireup || need_footer_wireup {
         if !had_doc_rels {
             let mut inner = String::new();
             if need_styles_wireup {
@@ -198,6 +239,12 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
             }
             if has_lists {
                 inner.push_str(NUMBERING_REL);
+            }
+            if need_header_wireup {
+                inner.push_str(HEADER_REL);
+            }
+            if need_footer_wireup {
+                inner.push_str(FOOTER_REL);
             }
             let rels = format!(
                 r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -211,6 +258,12 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
             }
             if need_styles_wireup && !s.contains("Target=\"styles.xml\"") {
                 inject_before(&mut s, "</Relationships>", STYLES_REL);
+            }
+            if need_header_wireup && !s.contains("Target=\"header1.xml\"") {
+                inject_before(&mut s, "</Relationships>", HEADER_REL);
+            }
+            if need_footer_wireup && !s.contains("Target=\"footer1.xml\"") {
+                inject_before(&mut s, "</Relationships>", FOOTER_REL);
             }
             c.set("word/_rels/document.xml.rels", s.into_bytes());
         }
@@ -624,7 +677,7 @@ impl Numbering {
 /// Build `word/document.xml` and collect the set of CRDT styles-container styleIds
 /// referenced by a `<w:pStyle>` (so the caller can emit their definitions), plus
 /// the list-numbering plan (so the caller can write a matching numbering.xml).
-fn build_document_xml(snap: &DocSnapshot) -> (String, BTreeSet<String>, Numbering) {
+fn build_document_xml(snap: &DocSnapshot, sectpr: &str) -> (String, BTreeSet<String>, Numbering) {
     let mut body = String::new();
     let mut named_refs: BTreeSet<String> = BTreeSet::new();
     let mut numbering = Numbering::default();
@@ -709,9 +762,11 @@ fn build_document_xml(snap: &DocSnapshot) -> (String, BTreeSet<String>, Numberin
         }
     }
 
+    // The section properties (with header/footer references) close the body. A
+    // `w:sectPr` is a direct child of `w:body`, after the last block.
     let document = format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="{W_NS}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w10="urn:schemas-microsoft-com:office:word" xmlns:wne="http://schemas.microsoft.com/office/word/2006/wordml"><w:body>{body}</w:body></w:document>"#
+<w:document xmlns:w="{W_NS}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w10="urn:schemas-microsoft-com:office:word" xmlns:wne="http://schemas.microsoft.com/office/word/2006/wordml"><w:body>{body}{sectpr}</w:body></w:document>"#
     );
     (document, named_refs, numbering)
 }
@@ -733,6 +788,19 @@ mod tests {
                 let mut m: Vec<_> = b.marks.iter().map(|x| (x.start, x.end, x.name.clone())).collect();
                 m.sort();
                 (b.kind.clone(), b.text.clone(), m, b.attrs.clone())
+            })
+            .collect()
+    }
+
+    /// Normalize a region's blocks to `(text, marks-with-values)`, dropping the
+    /// volatile per-import block id so two independent imports compare equal.
+    fn norm_region(blocks: &[crate::snapshot::BlockView]) -> Vec<(String, Vec<(usize, usize, String, MarkValue)>)> {
+        blocks
+            .iter()
+            .map(|b| {
+                let mut m: Vec<_> = b.marks.iter().map(|x| (x.start, x.end, x.name.clone(), x.value.clone())).collect();
+                m.sort();
+                (b.text.clone(), m)
             })
             .collect()
     }
@@ -1068,6 +1136,104 @@ mod tests {
         let cont = DocxContainer::read(&exported).unwrap();
         assert!(cont.get("docProps/core.xml").is_none(), "no core.xml for a doc with no properties");
         assert!(cont.get("docProps/app.xml").is_none(), "no app.xml for a doc with no properties");
+    }
+
+    #[test]
+    fn header_footer_with_page_number_roundtrip_through_docx() {
+        use crate::schema::{FIELD_PAGE_NUMBER, FIELD_PLACEHOLDER, MARK_FIELD};
+        // A header "Title" + footer with a page-number field must export as
+        // header1.xml/footer1.xml wired through sectPr + content-types + rels, and
+        // re-import as the same header/footer + field.
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "body");
+        let h = d.insert_header_block(None, "paragraph");
+        d.splice_header_text(&h, 0, 0, "Title");
+        let f = d.insert_footer_block(None, "paragraph");
+        d.splice_footer_text(&f, 0, 0, "Page ");
+        d.insert_footer_page_number(&f, 5);
+
+        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let cont = DocxContainer::read(&exported).unwrap();
+        // The header/footer parts exist and carry the content + a PAGE field.
+        let hdr = std::str::from_utf8(cont.get("word/header1.xml").expect("header1.xml written")).unwrap();
+        assert!(hdr.contains("<w:hdr") && hdr.contains("Title"), "header part holds the title: {hdr}");
+        let ftr = std::str::from_utf8(cont.get("word/footer1.xml").expect("footer1.xml written")).unwrap();
+        assert!(ftr.contains("<w:ftr"), "footer part is a w:ftr: {ftr}");
+        assert!(ftr.contains(r#"w:instr=" PAGE ""#), "PAGE field emitted: {ftr}");
+        // The body's sectPr references them.
+        let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
+        assert!(document.contains("<w:sectPr>"), "sectPr present: {document}");
+        assert!(document.contains(r#"<w:headerReference w:type="default" r:id="rIdQdocHdr"/>"#), "header ref: {document}");
+        assert!(document.contains(r#"<w:footerReference w:type="default" r:id="rIdQdocFtr"/>"#), "footer ref: {document}");
+        // Content-types + rels wired.
+        let ct = std::str::from_utf8(cont.get("[Content_Types].xml").unwrap()).unwrap();
+        assert!(ct.contains("/word/header1.xml") && ct.contains("/word/footer1.xml"), "overrides registered: {ct}");
+        let rels = std::str::from_utf8(cont.get("word/_rels/document.xml.rels").unwrap()).unwrap();
+        assert!(rels.contains(r#"Target="header1.xml""#) && rels.contains(r#"Target="footer1.xml""#), "rels registered: {rels}");
+
+        let mut d2 = Document::new();
+        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        assert_eq!(d2.materialize().blocks[0].text, "body", "body intact");
+        let header = d2.header();
+        assert_eq!(header.len(), 1, "header block present: {header:?}");
+        assert_eq!(header[0].text, "Title");
+        let footer = d2.footer();
+        assert_eq!(footer.len(), 1, "footer block present: {footer:?}");
+        assert_eq!(footer[0].text, format!("Page {}", FIELD_PLACEHOLDER), "placeholder kept: {:?}", footer[0].text);
+        let field = footer[0].marks.iter().find(|m| m.name == MARK_FIELD).expect("page-number field survives");
+        assert_eq!((field.start, field.end), (5, 6), "field spans the placeholder: {:?}", footer[0].marks);
+        assert_eq!(field.value, MarkValue::Str(FIELD_PAGE_NUMBER.into()));
+
+        // Idempotent across a second round-trip (block ids are volatile per import,
+        // so compare on text + marks, not the full BlockView).
+        let exported2 = DocxCodec.export(d2.as_ref()).unwrap();
+        let mut d3 = Document::new();
+        DocxCodec.import(&exported2, &mut d3.as_mut()).unwrap();
+        assert_eq!(norm_region(&d2.header()), norm_region(&d3.header()), "header stable across a second round-trip");
+        assert_eq!(norm_region(&d2.footer()), norm_region(&d3.footer()), "footer stable across a second round-trip");
+    }
+
+    #[test]
+    fn imports_complex_page_field_from_header() {
+        // A header using the complex-field form (fldChar begin/instrText PAGE/
+        // separate/end) must import as a single page-number field, dropping the
+        // cached result text.
+        use crate::schema::{FIELD_PLACEHOLDER, MARK_FIELD};
+        let header = concat!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+            "\n",
+            r#"<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">"#,
+            r#"<w:p><w:r><w:t xml:space="preserve">p. </w:t></w:r>"#,
+            r#"<w:r><w:fldChar w:fldCharType="begin"/></w:r>"#,
+            r#"<w:r><w:instrText xml:space="preserve"> PAGE </w:instrText></w:r>"#,
+            r#"<w:r><w:fldChar w:fldCharType="separate"/></w:r>"#,
+            r#"<w:r><w:t>7</w:t></w:r>"#,
+            r#"<w:r><w:fldChar w:fldCharType="end"/></w:r></w:p></w:hdr>"#,
+        );
+        let body = concat!(
+            r#"<w:p><w:r><w:t>body</w:t></w:r></w:p>"#,
+            r#"<w:sectPr><w:headerReference w:type="default" r:id="rId7"/></w:sectPr>"#,
+        );
+        let base = minimal_docx_styled("", body);
+        let mut c = DocxContainer::read(&base).unwrap();
+        c.set("word/header1.xml", header.as_bytes().to_vec());
+        // Point rId7 at the header part.
+        let rels = std::str::from_utf8(c.get("word/_rels/document.xml.rels").unwrap()).unwrap().to_string();
+        let rels = rels.replace(
+            "</Relationships>",
+            r#"<Relationship Id="rId7" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/></Relationships>"#,
+        );
+        c.set("word/_rels/document.xml.rels", rels.into_bytes());
+        let docx = c.write().unwrap();
+
+        let mut d = Document::new();
+        DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
+        let header = d.header();
+        assert_eq!(header.len(), 1, "{header:?}");
+        // "p. " + a single placeholder; the cached "7" result is dropped.
+        assert_eq!(header[0].text, format!("p. {}", FIELD_PLACEHOLDER), "complex field → one placeholder: {:?}", header[0].text);
+        assert!(header[0].marks.iter().any(|m| m.name == MARK_FIELD && m.start == 3 && m.end == 4), "field mark: {:?}", header[0].marks);
     }
 
     #[test]

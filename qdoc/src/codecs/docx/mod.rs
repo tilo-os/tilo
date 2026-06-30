@@ -6,6 +6,7 @@
 pub mod container;
 pub mod content;
 pub mod export;
+pub mod headers;
 pub mod meta;
 pub mod styles;
 
@@ -52,6 +53,21 @@ impl FormatProvider for DocxCodec {
         }
         if let Some(app_xml) = container.get("docProps/app.xml") {
             meta::import_app(app_xml, doc);
+        }
+        // Page header/footer: resolve the default header/footer parts referenced by
+        // the body's `w:sectPr` (via `word/_rels/document.xml.rels`) and parse each
+        // (incl. PAGE fields) into the canonical header/footer regions.
+        let rels = container.get("word/_rels/document.xml.rels");
+        let (hdr_part, ftr_part) = headers::resolve_default_parts(&document, rels);
+        if let Some(part) = hdr_part {
+            if let Some(xml) = container.get(&part) {
+                headers::import_region(xml, crate::model::Region::Header, doc);
+            }
+        }
+        if let Some(part) = ftr_part {
+            if let Some(xml) = container.get(&part) {
+                headers::import_region(xml, crate::model::Region::Footer, doc);
+            }
         }
         // Preservation layer: stash every part except the (regenerated)
         // word/document.xml verbatim so export round-trips them losslessly. The
