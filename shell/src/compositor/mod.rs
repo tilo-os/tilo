@@ -24,6 +24,8 @@ pub mod backend;
 pub mod bridge;
 pub mod frame;
 pub mod hosted;
+pub mod idle;
+pub mod lock_screen;
 pub mod native;
 pub mod state;
 pub mod surface_readback;
