@@ -25,11 +25,17 @@
 //! * The [`OskWidget`] captures pointer drags as a gesture path, decodes
 //!   swipes, and renders a tappable **suggestion bar** above the keys.
 //!
+//! ## W7 — text injection (client half, shipped here)
+//! * [`inject`] — a [`TextInjector`] trait with a [`VirtualKeyboardInjector`]
+//!   (wtype-style `virtual-keyboard-v1`) and a [`NullInjector`] fallback. The
+//!   binary wires the widget's `on_key` callback to the injector so every
+//!   committed [`KeyAction`] is typed into the focused surface. The compositor
+//!   *server* half (the layer-shell role + advertising the protocol) is a
+//!   separate workstream.
+//!
 //! ## Explicitly out of scope (left as clean seams)
-//! * **W7** — the compositor `input-method-v2` / `virtual-keyboard` protocols
-//!   and text injection into the focused surface. The widget exposes its
-//!   output via [`OskWidget::on_key`] + [`OskWidget::take_pending_text`]; a
-//!   host wires that to the IM client.
+//! * **W7 (server)** — the `wlr-layer-shell` surface role and the compositor
+//!   side of `virtual-keyboard-v1` / `input-method-v2`.
 //! * **W9a (neural)** — the FUTO `swipe-library` (GPL C++ + ExecuTorch `.pte`
 //!   model). Drop a `FutoSwipeModel: SwipeModel` in and the wiring is
 //!   unchanged.
@@ -38,6 +44,7 @@
 
 pub mod dict;
 pub mod futo;
+pub mod inject;
 pub mod layout;
 pub mod predict;
 pub mod suggest;
@@ -47,6 +54,10 @@ pub mod widget;
 
 pub use dict::{Dictionary, Entry};
 pub use futo::FutoSwipeModel;
+pub use inject::{
+    NullInjector, Symbol, TextInjector, VirtualKeyboardInjector, action_symbols, build_keymap,
+    default_injector,
+};
 pub use layout::{Key, KeyAction, KeyId, KeyboardLayout, ShiftState, key_rects};
 pub use predict::Predictor;
 pub use suggest::{Suggestion, suggestion_rects};
