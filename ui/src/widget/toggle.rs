@@ -18,6 +18,9 @@ pub struct Toggle {
     on_toggle_path: String, // Path in CRDT to mutate
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
+    /// When `false` the toggle is disabled: skipped by focus, rejects
+    /// input (no toggle, no hover feedback) and renders dimmed. Default `true`.
+    enabled: bool,
     /// Optional override for `Widget::test_id()`. Defaults to `"toggle"`.
     id_override: Option<String>,
 }
@@ -33,6 +36,7 @@ impl Toggle {
             on_toggle_path: on_toggle_path.to_string(),
             presence_path: Vec::new(),
             permission_scope: None,
+            enabled: true,
             id_override: None,
         }
     }
@@ -56,6 +60,18 @@ impl Toggle {
     pub fn with_id(mut self, id: &str) -> Self {
         self.id_override = Some(id.to_string());
         self
+    }
+
+    /// Set the enabled state at build time. A disabled toggle is skipped
+    /// by focus, rejects input and renders dimmed. Default `true`.
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// Imperatively flip the enabled state.
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
     }
 }
 
@@ -93,6 +109,13 @@ impl Widget for Toggle {
     }
 
     fn draw(&mut self, scene: &mut Scene, transform: Affine, _text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
+        // Disabled widgets paint their (forced-idle) look under a reduced
+        // group opacity so they read as non-interactive.
+        let disabled = !self.enabled;
+        if disabled {
+            let clip = RoundedRect::from_rect(self.rect, theme.tokens.radii.full as f64);
+            scene.push_layer(vello::peniko::Fill::NonZero, vello::peniko::BlendMode::default(), crate::widget::DISABLED_ALPHA, transform, &clip);
+        }
         let track_color = if self.is_checked {
             // On-state = active fill — concept renders the on-state at
             // indigo-500 and reserves indigo-600 for hover.
@@ -129,9 +152,15 @@ impl Widget for Toggle {
         
         let knob_shape = Circle::new(Point::new(knob_x, knob_y), knob_radius);
         scene.fill(vello::peniko::Fill::NonZero, transform, knob_color, None, &knob_shape);
+
+        if disabled {
+            scene.pop_layer();
+        }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, _modifiers: &winit::event::Modifiers, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, _taffy: &TaffyTree<()>) {
+        // Disabled: reject all input — no toggle, no hover feedback.
+        if !self.enabled { return; }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let logical_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -167,6 +196,7 @@ impl Widget for Toggle {
     fn is_focusable(&self) -> bool { true }
     fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
     fn is_focused(&self) -> bool { self.is_focused }
+    fn is_enabled(&self) -> bool { self.enabled }
 
     fn presence_key(&self) -> Option<PresenceKey> {
         if self.presence_path.is_empty() {
@@ -224,5 +254,56 @@ mod tests {
     fn toggle_test_id_can_be_overridden() {
         let t = Toggle::new("any", "path").with_id("airplane_mode");
         assert_eq!(Widget::test_id(&t), Some("airplane_mode"));
+    }
+
+    #[test]
+    fn with_enabled_false_is_reported_by_is_enabled() {
+        let t = Toggle::new("any", "path").with_enabled(false);
+        assert!(!Widget::is_enabled(&t));
+        assert!(Widget::is_enabled(&Toggle::new("any", "path")), "default is enabled");
+    }
+
+    #[test]
+    fn disabled_toggle_does_not_toggle() {
+        use winit::event::DeviceId;
+
+        let mut t = Toggle::new("id", "on").with_enabled(false);
+
+        let mut tree = TaffyTree::<()>::new();
+        let mut node_map = std::collections::HashMap::new();
+        let theme = Theme::dark();
+        let node = t.build_layout(&mut tree, &theme, &mut node_map);
+        tree.compute_layout(
+            node,
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(60.0),
+                height: taffy::AvailableSpace::Definite(40.0),
+            },
+        )
+        .unwrap();
+        t.apply_layout(&tree, node, Point::ZERO);
+
+        let device: DeviceId = unsafe { std::mem::zeroed() };
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mods = winit::event::Modifiers::default();
+        let mut focus = None;
+        let mut handled = false;
+
+        t.handle_event(
+            &WindowEvent::CursorMoved { device_id: device, position: (10.0, 10.0).into() },
+            1.0, &mods, &mut doc, &root, &mut handled, &mut focus, node, &tree,
+        );
+        t.handle_event(
+            &WindowEvent::MouseInput { device_id: device, state: ElementState::Pressed, button: MouseButton::Left },
+            1.0, &mods, &mut doc, &root, &mut handled, &mut focus, node, &tree,
+        );
+
+        assert!(focus.is_none(), "disabled toggle must not request focus");
+        assert!(!handled, "disabled toggle must not swallow input");
+        assert!(
+            doc.get(&root, "on").unwrap().is_none(),
+            "disabled toggle must not write the CRDT path"
+        );
     }
 }
