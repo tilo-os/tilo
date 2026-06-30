@@ -21,6 +21,7 @@ pub mod html;
 pub mod icons;
 pub mod model;
 pub mod opml;
+pub mod reader_theme;
 pub mod sample;
 
 pub use app::FeedsApp;
@@ -46,10 +47,20 @@ pub fn app_root() -> Box<dyn Widget> {
 /// Any other (or empty) scenario yields the same default frame as
 /// [`app_root`].
 pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
+    use crate::model::{ReadFont, ReadTheme};
     let mut app = FeedsApp::new();
     match scenario {
         "sidebar-open" => app.snap_sidebar_open(true),
         "detail" => app.force_detail_pushed(),
+        // Reading-settings popover open over a serif, sepia reader page so the
+        // shot shows the font/size/theme controls and the serif body together.
+        "reader-settings" => {
+            app.set_read_font(ReadFont::Serif);
+            app.set_read_theme(ReadTheme::Sepia);
+            app.force_reader_settings_open();
+        }
+        // A "Refresh all" mid-flight: the per-feed progress strip + bar.
+        "refresh" => app.force_refresh_in_progress(),
         _ => {}
     }
     Box::new(app)

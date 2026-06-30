@@ -86,10 +86,34 @@ impl FetchWorker {
     pub fn pending(&self) -> usize {
         self.pending
     }
+
+    /// Build a worker with no backing fetch thread, plus the sender half of its
+    /// result channel. Used by tests to drive the *non-blocking* result path
+    /// deterministically: enqueue requests (which never touch the network),
+    /// inject `FetchResult`s through the returned sender exactly as a real
+    /// worker thread would, and assert the UI drains them. Because there's no
+    /// thread, `send()` here only records `pending` — proving that queuing a
+    /// refresh is a constant-time, network-free operation.
+    #[cfg(test)]
+    pub fn for_test() -> (Self, Sender<FetchResult>) {
+        let (req_tx, _req_rx) = std::sync::mpsc::channel::<FetchRequest>();
+        let (res_tx, res_rx) = std::sync::mpsc::channel::<FetchResult>();
+        // `_req_rx` is dropped, so `send()` would fail; keep it alive so the
+        // pending counter advances just like the production path.
+        std::mem::forget(_req_rx);
+        (Self { tx: req_tx, rx: res_rx, pending: 0 }, res_tx)
+    }
 }
 
 fn worker_main(req_rx: Receiver<FetchRequest>, res_tx: Sender<FetchResult>) {
-    let runtime = match tokio::runtime::Builder::new_current_thread()
+    // A *multi-thread* runtime so a burst of refresh requests run concurrently
+    // rather than head-of-line-blocking each other. Previously this used a
+    // current-thread runtime and `block_on`'d each request in turn, so a single
+    // slow (or 20s-timeout) feed stalled every feed queued behind it, making a
+    // "Refresh all" feel like it hung. Now each request is `spawn`ed and posts
+    // its own result back the instant it completes — fast feeds land first.
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(6)
         .enable_all()
         .build()
     {
@@ -109,12 +133,20 @@ fn worker_main(req_rx: Receiver<FetchRequest>, res_tx: Sender<FetchResult>) {
         .build()
         .ok();
 
+    // Receive requests on this (blocking) thread and hand each one to the
+    // runtime as an independent task. The channel `recv()` blocks here, off the
+    // UI thread, so the UI never waits on the network.
     while let Ok(req) = req_rx.recv() {
-        let result = runtime.block_on(handle(&client, req));
-        if res_tx.send(result).is_err() {
-            break; // UI gone
-        }
+        let client = client.clone();
+        let res_tx = res_tx.clone();
+        runtime.spawn(async move {
+            let result = handle(&client, req).await;
+            // If the UI is gone the send fails; the task simply ends.
+            let _ = res_tx.send(result);
+        });
     }
+    // Drop the runtime — outstanding tasks are detached and torn down when the
+    // process exits; for app shutdown that's fine (best-effort fetches).
 }
 
 async fn handle(
@@ -447,6 +479,42 @@ mod tests {
             derive_site_url("gemini://example.org/foo/bar"),
             "gemini://example.org"
         );
+    }
+
+    #[test]
+    fn worker_send_is_nonblocking_and_poll_drains() {
+        use std::time::Instant;
+
+        // A worker with no fetch thread. Enqueuing must be instant (no I/O).
+        let (mut w, res_tx) = FetchWorker::for_test();
+        let start = Instant::now();
+        for _ in 0..50 {
+            w.send(FetchRequest::Refresh {
+                feed_id: Uuid::new_v4(),
+                url: "https://example.invalid/feed.xml".into(),
+                kind: FeedKind::Rss,
+            });
+        }
+        // 50 enqueues with bogus URLs return in well under a frame budget,
+        // proving `send` never fetches.
+        assert!(start.elapsed().as_millis() < 50, "enqueue must not block");
+        assert_eq!(w.pending(), 50);
+
+        // Nothing drained yet.
+        assert!(w.poll().is_empty());
+
+        // A "worker thread" posts a result; the UI drains it non-blockingly.
+        let fid = Uuid::new_v4();
+        res_tx
+            .send(FetchResult::Articles { feed_id: fid, title: Some("T".into()), articles: vec![] })
+            .unwrap();
+        let drained = w.poll();
+        assert_eq!(drained.len(), 1);
+        assert_eq!(w.pending(), 49, "poll decrements the in-flight counter");
+        match &drained[0] {
+            FetchResult::Articles { feed_id, .. } => assert_eq!(*feed_id, fid),
+            _ => panic!("wrong result variant"),
+        }
     }
 
     #[test]
