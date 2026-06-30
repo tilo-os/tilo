@@ -292,6 +292,16 @@ impl Widget for Avatar {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Role};
+        // An avatar is a non-focusable image. The initials identify the person;
+        // the image variant carries empty initials, so collapse that to no name
+        // (a caller-supplied alt would supply one in a future enhancement).
+        let initials = self.display_initials();
+        let name = (!initials.is_empty()).then(|| initials.to_string());
+        Some(AccessNode::new(Role::Image).with_optional_name(name))
+    }
 }
 
 // =====================================================================
@@ -367,6 +377,32 @@ mod tests {
             "Avatar::from_initials must push a glyph run for the initials text \
              into the scene; resources.glyph_runs is empty",
         );
+    }
+
+    /// The initials variant exposes the `Image` role with the (uppercased,
+    /// truncated) initials as its accessible name; the image variant has empty
+    /// initials and so reports no name.
+    #[test]
+    fn accessibility_reports_image_role_and_initials_name() {
+        use crate::a11y::Role;
+        let a = Avatar::from_initials("qd", 40.0);
+        let node = Widget::accessibility(&a).expect("avatar is not presentational");
+        assert_eq!(node.role, Role::Image);
+        assert_eq!(node.name.as_deref(), Some("QD"));
+        assert!(!node.state.focusable, "an avatar is not focusable");
+
+        // Image variant: no initials → no accessible name.
+        let bytes: Vec<u8> = vec![0u8; 4];
+        let blob = Blob::new(Arc::new(bytes));
+        let img = PenikoImage {
+            data: blob,
+            format: Format::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width: 1,
+            height: 1,
+        };
+        let photo = Avatar::new(img, 40.0);
+        assert_eq!(Widget::accessibility(&photo).unwrap().name, None);
     }
 
     /// Two avatars constructed with the same initials must resolve to

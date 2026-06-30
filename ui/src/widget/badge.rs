@@ -236,6 +236,14 @@ impl Widget for Badge {
     fn name(&self) -> &str { "Badge" }
 
     fn get_rect(&self) -> Rect { self.rect }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Role};
+        // A badge is a small, non-focusable status label. Its visible text
+        // (count / "99+" / label) is the accessible value; the dot variant and
+        // the zero-count "nothing to show" case have no text and so no value.
+        Some(AccessNode::new(Role::StaticText).with_optional_value(self.display_text()))
+    }
 }
 
 // =====================================================================
@@ -307,6 +315,26 @@ mod tests {
             Badge::count(99).display_text().as_deref(),
             Some("99"),
         );
+    }
+
+    /// A count badge reports the `StaticText` role and surfaces its visible
+    /// text as the accessible value; the dot variant has no value.
+    #[test]
+    fn accessibility_reports_static_text_role_and_value() {
+        use crate::a11y::Role;
+        let b = Badge::count(3);
+        let node = Widget::accessibility(&b).expect("badge is not presentational");
+        assert_eq!(node.role, Role::StaticText);
+        assert_eq!(node.value.as_deref(), Some("3"));
+        assert!(!node.state.focusable, "a badge is not focusable");
+
+        // Overflow clamps in the value too.
+        let over = Badge::count(250);
+        assert_eq!(Widget::accessibility(&over).unwrap().value.as_deref(), Some("99+"));
+
+        // Dot variant carries no text → no accessible value.
+        let dot = Badge::dot();
+        assert_eq!(Widget::accessibility(&dot).unwrap().value, None);
     }
 
     /// `Badge::dot()` must emit exactly one fill — the filled circle.

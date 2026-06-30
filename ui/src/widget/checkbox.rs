@@ -218,6 +218,39 @@ impl Widget for Checkbox {
         )
     }
 
+    /// Accessibility (W4): an AT toggles the checkbox with
+    /// [`Action::ToggleCheck`](crate::a11y::Action::ToggleCheck) or the generic
+    /// [`Action::Activate`](crate::a11y::Action::Activate). Both flip the
+    /// checked state through the exact CRDT write a real click performs. A
+    /// disabled checkbox rejects the action.
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        use crate::a11y::Action;
+        if !self.enabled {
+            return false;
+        }
+        match action {
+            Action::ToggleCheck | Action::Activate => {
+                let new_val = !self.is_checked;
+                let _ = state.put(
+                    path,
+                    self.on_toggle_path.as_str(),
+                    automerge::ScalarValue::Boolean(new_val),
+                );
+                // Mirror the optimistic local update the event path does on
+                // the next `sync`; setting it here keeps `accessibility()`
+                // consistent within the same frame.
+                self.is_checked = new_val;
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn presence_key(&self) -> Option<PresenceKey> {
         if self.presence_path.is_empty() {
             None
@@ -303,6 +336,30 @@ mod tests {
         assert_eq!(node.role, Role::Checkbox);
         assert_eq!(node.state.checked, Some(true), "checked state surfaces");
         assert!(node.state.disabled, "disabled surfaces");
+    }
+
+    #[test]
+    fn perform_action_toggle_check_flips_state() {
+        use crate::a11y::Action;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut c = Checkbox::new("any", "checked");
+        assert!(!c.is_checked);
+        assert!(Widget::perform_action(&mut c, &Action::ToggleCheck, &mut doc, &root));
+        assert!(c.is_checked, "ToggleCheck flips to checked");
+        // Activate also toggles.
+        assert!(Widget::perform_action(&mut c, &Action::Activate, &mut doc, &root));
+        assert!(!c.is_checked, "Activate flips back");
+    }
+
+    #[test]
+    fn disabled_checkbox_rejects_perform_action() {
+        use crate::a11y::Action;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut c = Checkbox::new("any", "checked").with_enabled(false);
+        assert!(!Widget::perform_action(&mut c, &Action::ToggleCheck, &mut doc, &root));
+        assert!(!c.is_checked, "a disabled checkbox must not toggle");
     }
 
     #[test]
