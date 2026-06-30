@@ -82,6 +82,37 @@ impl AsFd for Card {
 impl BasicDevice for Card {}
 impl ControlDevice for Card {}
 
+impl Card {
+    /// Duplicate the card's file descriptor. The dup shares the same
+    /// open file description, so it stays DRM master and queues into the
+    /// **same** DRM event stream as the original — that's exactly why
+    /// page-flip completions for every connector on this card arrive on
+    /// a single fd and are routed by crtc (see
+    /// [`DrmScanout::poll_flip_completions`]). Used to give each
+    /// per-connector [`DrmScanout`] its own ioctl handle without a second
+    /// `session.open` (which libseat refuses for an already-open node).
+    fn try_clone(&self) -> Result<Card, String> {
+        self.0
+            .try_clone()
+            .map(Card)
+            .map_err(|e| format!("dup card fd: {e}"))
+    }
+
+    /// `dev_t` of the underlying `cardN` node, so the
+    /// [`OutputRegistry`](super::outputs::OutputRegistry) can mint stable
+    /// per-connector `OutputId`s. Best-effort: `0` on `fstat` failure
+    /// (the connector id still disambiguates outputs on one card).
+    fn dev_id(&self) -> u64 {
+        match smithay::reexports::rustix::fs::fstat(&self.0) {
+            Ok(st) => st.st_rdev as u64,
+            Err(e) => {
+                tracing::debug!("DRM scanout: fstat for dev_id failed: {e}");
+                0
+            }
+        }
+    }
+}
+
 /// Lightweight handle that repositions the hardware cursor plane without
 /// touching the framebuffer. Holds a *dup* of the card fd (which shares
 /// the open file description, so it stays DRM master) plus the crtc the
@@ -103,6 +134,90 @@ impl HwCursor {
             tracing::trace!("DRM scanout: move_cursor failed: {e}");
         }
     }
+
+    /// Park the cursor fully off this output's panel. Used by
+    /// [`CursorPlanes`] when the pointer leaves this output for another:
+    /// the KMS cursor plane is per-CRTC, so the plane on the output the
+    /// pointer just left must be hidden or it would leave a frozen arrow
+    /// behind. Moving it to `(-CURSOR_DIM, -CURSOR_DIM)` takes it entirely
+    /// off-screen without touching the (still-bound) cursor buffer.
+    pub fn hide(&self) {
+        self.move_to(-(CURSOR_DIM as i32), -(CURSOR_DIM as i32));
+    }
+}
+
+/// One output's hardware-cursor plane plus that output's rectangle in the
+/// compositor's combined (global) coordinate space.
+pub struct OutputCursor {
+    /// `(x, y, w, h)` of the output in global coords.
+    rect: (i32, i32, u32, u32),
+    mover: HwCursor,
+}
+
+/// Routes a single global pointer position to the correct output's
+/// hardware cursor plane (Track B3). The pointer lives in the
+/// compositor's combined coordinate space; each KMS cursor plane is
+/// per-CRTC and takes output-local coordinates, so on every motion we
+/// find the output under the pointer, move *its* plane to the local
+/// offset, and hide the plane on the output the pointer just left.
+///
+/// A single-output system collapses to one entry whose rect starts at
+/// `(0, 0)`, so `move_to(gx, gy)` forwards `(gx, gy)` unchanged — the
+/// single-output cursor path is identical to before B3.
+pub struct CursorPlanes {
+    outputs: Vec<OutputCursor>,
+    /// Index of the output currently showing the cursor, if any.
+    active: Option<usize>,
+}
+
+impl CursorPlanes {
+    /// Build from `(rect, mover)` pairs — one per output whose hardware
+    /// cursor plane is active. Outputs without a hardware cursor fall back
+    /// to the per-output software cursor drawn in
+    /// [`DrmScanout::present_no_drain`], so they're simply absent here.
+    pub fn new(outputs: Vec<OutputCursor>) -> Self {
+        Self {
+            outputs,
+            active: None,
+        }
+    }
+
+    /// Construct one `OutputCursor`. Kept as a constructor so the rect
+    /// field stays private to this module.
+    pub fn output_cursor(rect: (i32, i32, u32, u32), mover: HwCursor) -> OutputCursor {
+        OutputCursor { rect, mover }
+    }
+
+    /// Move the cursor to global `(gx, gy)`: pick the output whose rect
+    /// contains the point, move that plane to the local offset, and hide
+    /// the previously-active plane if the pointer crossed to a different
+    /// output. Outside every output (a gap between mismatched-height
+    /// monitors) the last position is left untouched.
+    pub fn move_to(&mut self, gx: f64, gy: f64) {
+        let (xi, yi) = (gx as i32, gy as i32);
+        let rects: Vec<_> = self.outputs.iter().map(|o| o.rect).collect();
+        let Some(i) = output_index_at(&rects, xi, yi) else {
+            return;
+        };
+        if self.active != Some(i) {
+            if let Some(prev) = self.active {
+                self.outputs[prev].mover.hide();
+            }
+            self.active = Some(i);
+        }
+        let (ox, oy, _, _) = self.outputs[i].rect;
+        self.outputs[i].mover.move_to(xi - ox, yi - oy);
+    }
+}
+
+/// Index of the first output rectangle (`(x, y, w, h)`, global coords)
+/// that contains the point `(xi, yi)`, or `None` if it falls in a gap
+/// between mismatched-size outputs. Pure so the cursor-routing decision is
+/// unit-testable without a DRM device.
+fn output_index_at(rects: &[(i32, i32, u32, u32)], xi: i32, yi: i32) -> Option<usize> {
+    rects.iter().position(|&(ox, oy, ow, oh)| {
+        xi >= ox && xi < ox + ow as i32 && yi >= oy && yi < oy + oh as i32
+    })
 }
 
 /// Holds the primary card open as master and owns the scanout buffers.
@@ -139,11 +254,11 @@ pub struct DrmScanout {
 }
 
 impl DrmScanout {
-    /// Open `card_path` via the session, pick a connected connector +
-    /// mode + crtc, allocate two dumb framebuffers, modeset, and set up
-    /// the hardware cursor plane. Returns `Err` (never panics) so the
-    /// caller can run the compositor headless if scanout can't be set up.
-    pub fn new<S: Session>(session: &mut S, card_path: &Path) -> Result<Self, String> {
+    /// Open `card_path` via the session and become DRM master. Split out
+    /// of [`Self::new`] so the multi-output path ([`open_all_scanouts`])
+    /// can open the card **once** and hand each per-connector scanout a
+    /// dup of the same fd (libseat refuses a second open of one node).
+    fn open_card<S: Session>(session: &mut S, card_path: &Path) -> Result<Card, String> {
         use smithay::backend::session::AsErrno;
         let fd = session
             .open(
@@ -160,7 +275,21 @@ impl DrmScanout {
                 tracing::warn!("DRM scanout: acquire_master_lock failed ({e}); set_crtc may EACCES")
             }
         }
+        Ok(card)
+    }
 
+    /// Open `card_path` via the session, pick the **first** connected
+    /// connector + mode + crtc, allocate two dumb framebuffers, modeset,
+    /// and set up the hardware cursor plane. Returns `Err` (never panics)
+    /// so the caller can run the compositor headless if scanout can't be
+    /// set up.
+    ///
+    /// This is the single-output convenience constructor; the runtime
+    /// drives every connected output via [`open_all_scanouts`], which
+    /// shares the same per-connector [`Self::from_card`] body so a
+    /// one-output system is byte-identical to this path.
+    pub fn new<S: Session>(session: &mut S, card_path: &Path) -> Result<Self, String> {
+        let card = Self::open_card(session, card_path)?;
         let res = card
             .resource_handles()
             .map_err(|e| format!("resource_handles: {e}"))?;
@@ -189,6 +318,21 @@ impl DrmScanout {
             .or_else(|| res.crtcs().first().copied())
             .ok_or("no crtc available for connector")?;
 
+        Self::from_card(card, connector, crtc, mode)
+    }
+
+    /// Allocate framebuffers, modeset `connector` on `crtc` at `mode`, and
+    /// set up the hardware cursor plane — the hardware-bring-up tail
+    /// shared by [`Self::new`] (single output) and [`open_all_scanouts`]
+    /// (one call per connected connector). `card` is this scanout's own
+    /// handle (an independent fd for the single path, a dup of the shared
+    /// card fd for the multi path).
+    fn from_card(
+        card: Card,
+        connector: connector::Handle,
+        crtc: crtc::Handle,
+        mode: Mode,
+    ) -> Result<Self, String> {
         let (mw, mh) = mode.size();
         let (width, height) = (mw as u32, mh as u32);
 
@@ -305,9 +449,13 @@ impl DrmScanout {
         }
     }
 
-    /// Present one frame. `fill` writes the frame into the back buffer in
-    /// XRGB8888 (`[B, G, R, X]`), given the mapped destination slice and
-    /// its row pitch — typically
+    /// Present one frame, draining this scanout's own page-flip
+    /// completions first. This is the **single-output** entry point and
+    /// is unchanged from before B3 (drain, then present).
+    ///
+    /// `fill` writes the frame into the back buffer in XRGB8888
+    /// (`[B, G, R, X]`), given the mapped destination slice and its row
+    /// pitch — typically
     /// [`VelloDrmBridge::paint_into_xrgb8888`](super::paint::VelloDrmBridge::paint_into_xrgb8888).
     ///
     /// `cursor` is the pointer position; it is only consulted when the
@@ -321,7 +469,20 @@ impl DrmScanout {
     {
         // Drain any retired page-flip completion so we can flip again.
         self.drain_flip_events();
+        self.present_no_drain(cursor, fill);
+    }
 
+    /// Present one frame **without** draining DRM events first. The
+    /// multi-output backend drains the shared card fd once per frame and
+    /// routes each completion to the owning scanout via
+    /// [`Self::mark_flip_complete`] before calling this, so draining here
+    /// (per scanout, on the shared fd) would steal sibling outputs'
+    /// completion events. Otherwise identical to the body of
+    /// [`Self::present_into`].
+    pub fn present_no_drain<F>(&mut self, cursor: Option<(f64, f64)>, fill: F)
+    where
+        F: FnOnce(&mut [u8], usize),
+    {
         if self.use_pageflip && self.flip_pending {
             // Previous flip not yet retired — drop this frame (natural
             // vsync throttle). The scene we would have shown is simply
@@ -432,6 +593,11 @@ impl DrmScanout {
     /// page-flip completion arrives. The card fd is `O_NONBLOCK`, so the
     /// read returns `EAGAIN` (an `Err`) when nothing is queued — that's
     /// the no-events case, not a failure.
+    ///
+    /// Single-output only: with one scanout every completion on the fd is
+    /// this scanout's, so attributing them all to `self` is correct. The
+    /// multi-output backend uses [`Self::poll_flip_completions`] +
+    /// [`Self::mark_flip_complete`] to route by crtc instead.
     fn drain_flip_events(&mut self) {
         if let Ok(events) = self.card.receive_events() {
             for ev in events {
@@ -439,6 +605,34 @@ impl DrmScanout {
                     self.flip_pending = false;
                 }
             }
+        }
+    }
+
+    /// Drain the card fd's pending DRM events and return the crtc of each
+    /// page-flip completion. Because every per-connector scanout dups the
+    /// **same** open file description, all crtcs' completions arrive on
+    /// any one fd — so the multi-output backend drains this **once** (on
+    /// the primary scanout) and routes each crtc to the owning scanout
+    /// with [`Self::mark_flip_complete`]. Draining per scanout instead
+    /// would let the first scanout consume (and discard) its siblings'
+    /// completions, wedging their `flip_pending` forever.
+    pub fn poll_flip_completions(&mut self) -> Vec<crtc::Handle> {
+        let mut done = Vec::new();
+        if let Ok(events) = self.card.receive_events() {
+            for ev in events {
+                if let Event::PageFlip(pf) = ev {
+                    done.push(pf.crtc);
+                }
+            }
+        }
+        done
+    }
+
+    /// Clear `flip_pending` iff `crtc` is this scanout's crtc. Paired with
+    /// [`Self::poll_flip_completions`] for the routed multi-output drain.
+    pub fn mark_flip_complete(&mut self, crtc: crtc::Handle) {
+        if crtc == self.crtc {
+            self.flip_pending = false;
         }
     }
 
@@ -525,6 +719,144 @@ impl DrmScanout {
             }
         }
     }
+}
+
+/// One connected output's scanout plus the registry-key fields the
+/// runtime needs to intern a stable [`OutputId`](super::OutputId) and lay
+/// the output out side-by-side.
+pub struct ScanoutBuild {
+    /// `dev_t` of the `cardN` node this output is on.
+    pub device_id: u64,
+    /// DRM connector handle (raw u32) for this output.
+    pub connector_id: u32,
+    /// Live, modeset scanout bound to this connector's crtc.
+    pub scanout: DrmScanout,
+}
+
+/// Open `card_path` **once** and build one [`DrmScanout`] per connected
+/// connector that advertises a usable mode, each bound to a distinct crtc
+/// and sharing a dup of the single card fd (Track B3 multi-monitor).
+///
+/// Sharing one open file description is required: libseat refuses a second
+/// `open` of an already-open node, so the dups are the only way to give
+/// each connector its own ioctl handle. The shared description also means
+/// every crtc's page-flip completions arrive on one event stream, which
+/// the backend drains once and routes by crtc.
+///
+/// Each connector gets a distinct crtc via [`pick_crtc`]; a connector for
+/// which no free crtc / mode / modeset is available is logged and skipped
+/// rather than aborting the others. Returns `Err` only when **no** output
+/// could be brought up (so the caller can fall back to headless), matching
+/// [`DrmScanout::new`]'s contract.
+///
+/// For a single connected connector this returns a one-element `Vec` whose
+/// scanout went through the same [`DrmScanout::from_card`] body as
+/// [`DrmScanout::new`], so single-output bring-up is unchanged.
+///
+/// **Scope:** drives every connector on the *primary* card. Connectors on
+/// *secondary* GPUs need their own card fd + GPU-to-GPU buffer handling
+/// and remain a documented follow-up; hot-plug after startup is likewise a
+/// follow-up (we enumerate everything connected at startup).
+pub fn open_all_scanouts<S: Session>(
+    session: &mut S,
+    card_path: &Path,
+) -> Result<Vec<ScanoutBuild>, String> {
+    let card = DrmScanout::open_card(session, card_path)?;
+    let device_id = card.dev_id();
+    let res = card
+        .resource_handles()
+        .map_err(|e| format!("resource_handles: {e}"))?;
+
+    let mut used_crtcs: Vec<crtc::Handle> = Vec::new();
+    let mut builds: Vec<ScanoutBuild> = Vec::new();
+
+    for &ch in res.connectors() {
+        let info = match card.get_connector(ch, true) {
+            Ok(i) => i,
+            Err(e) => {
+                tracing::warn!(?ch, "DRM scanout: get_connector failed: {e}");
+                continue;
+            }
+        };
+        if info.state() != connector::State::Connected {
+            continue;
+        }
+        let Some(mode) = pick_mode(info.modes()) else {
+            tracing::warn!(?ch, "DRM scanout: connected connector advertises no usable mode; skipping");
+            continue;
+        };
+        let Some(crtc) = pick_crtc(&card, &res, &info, &used_crtcs) else {
+            tracing::warn!(?ch, "DRM scanout: no free crtc for connector; skipping");
+            continue;
+        };
+        // Each scanout owns its own dup of the shared card fd.
+        let card_dup = match card.try_clone() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(?ch, "DRM scanout: {e}; skipping connector");
+                continue;
+            }
+        };
+        match DrmScanout::from_card(card_dup, info.handle(), crtc, mode) {
+            Ok(scanout) => {
+                used_crtcs.push(crtc);
+                builds.push(ScanoutBuild {
+                    device_id,
+                    connector_id: u32::from(ch),
+                    scanout,
+                });
+            }
+            Err(e) => {
+                tracing::warn!(?ch, "DRM scanout: modeset failed for connector: {e}; skipping");
+            }
+        }
+    }
+
+    // The local `card` is dropped here; the per-scanout dups keep the open
+    // file description (and DRM master) alive.
+    if builds.is_empty() {
+        return Err("no connected connector could be brought up for scanout".into());
+    }
+    tracing::info!(count = builds.len(), "DRM scanout: brought up outputs");
+    Ok(builds)
+}
+
+/// Pick a crtc for `conn_info` that isn't already in `used`.
+///
+/// Order: (1) the connector's current encoder's crtc if free (the common
+/// already-lit case, and what [`DrmScanout::new`] uses); (2) walk the
+/// connector's possible encoders and their `possible_crtcs` mask for a
+/// free crtc (correct routing for multi-head GPUs); (3) any free crtc as a
+/// last resort. Returns `None` when every crtc is taken (more connectors
+/// than crtcs — rare, and the extra connector is skipped).
+fn pick_crtc(
+    card: &Card,
+    res: &drm_re::control::ResourceHandles,
+    conn_info: &connector::Info,
+    used: &[crtc::Handle],
+) -> Option<crtc::Handle> {
+    // 1. Current encoder's crtc.
+    if let Some(c) = conn_info
+        .current_encoder()
+        .and_then(|e| card.get_encoder(e).ok())
+        .and_then(|e| e.crtc())
+    {
+        if !used.contains(&c) {
+            return Some(c);
+        }
+    }
+    // 2. Any crtc allowed by one of the connector's possible encoders.
+    for &eh in conn_info.encoders() {
+        if let Ok(enc) = card.get_encoder(eh) {
+            for c in res.filter_crtcs(enc.possible_crtcs()) {
+                if !used.contains(&c) {
+                    return Some(c);
+                }
+            }
+        }
+    }
+    // 3. Any free crtc.
+    res.crtcs().iter().copied().find(|c| !used.contains(c))
 }
 
 /// Choose a scanout mode. The kernel lists the EDID-preferred mode first
@@ -685,5 +1017,37 @@ mod tests {
         let mut dst = vec![0u8; pitch * h];
         draw_cursor(&mut dst, pitch, w, h, 18, 18); // most of it off-screen
         draw_cursor(&mut dst, pitch, w, h, -3, -3); // off the top-left
+    }
+
+    #[test]
+    fn cursor_routing_single_output_is_global_coords() {
+        // One output at the origin contains every in-bounds point, so the
+        // routing always selects index 0 — identical to pre-B3 behaviour.
+        let rects = [(0, 0, 1920u32, 1080u32)];
+        assert_eq!(output_index_at(&rects, 0, 0), Some(0));
+        assert_eq!(output_index_at(&rects, 1919, 1079), Some(0));
+        assert_eq!(output_index_at(&rects, 1920, 0), None); // just past the edge
+    }
+
+    #[test]
+    fn cursor_routing_picks_output_under_pointer() {
+        // Two 1920x1080 outputs side by side: [0,1920) -> output 0,
+        // [1920,3840) -> output 1. This is what decides which crtc's
+        // cursor plane a pointer move drives.
+        let rects = [(0, 0, 1920u32, 1080u32), (1920, 0, 1920u32, 1080u32)];
+        assert_eq!(output_index_at(&rects, 10, 10), Some(0));
+        assert_eq!(output_index_at(&rects, 1919, 500), Some(0));
+        assert_eq!(output_index_at(&rects, 1920, 500), Some(1));
+        assert_eq!(output_index_at(&rects, 3000, 500), Some(1));
+        assert_eq!(output_index_at(&rects, 3840, 500), None); // off the right
+    }
+
+    #[test]
+    fn cursor_routing_gap_between_mismatched_heights_is_none() {
+        // A shorter second output leaves a gap below it; a point in that
+        // gap belongs to no output and must not panic / mis-route.
+        let rects = [(0, 0, 1920u32, 1080u32), (1920, 0, 1280u32, 720u32)];
+        assert_eq!(output_index_at(&rects, 2000, 700), Some(1));
+        assert_eq!(output_index_at(&rects, 2000, 800), None); // below output 1
     }
 }

@@ -24,9 +24,20 @@ use ui::theme::Theme;
 /// Build the lock-screen scene at `viewport` size, themed via `theme`,
 /// using `text` for the glyph-shaped labels.
 ///
+/// `notification_count` is the number of active notifications; when
+/// non-zero the lock screen shows "N notifications" so the user knows
+/// something arrived **without** leaking any app name, summary, or body
+/// (Track D1 lock-suppression — consistent with D2's "app content is
+/// hidden behind the overlay"). Bodies are never rendered here.
+///
 /// Returns a fresh [`Scene`] the backend can submit exactly like a
 /// chrome frame — no special-casing downstream.
-pub fn draw_lock_scene(viewport: (f64, f64), theme: &Theme, text: &mut TextRenderer) -> Scene {
+pub fn draw_lock_scene(
+    viewport: (f64, f64),
+    theme: &Theme,
+    text: &mut TextRenderer,
+    notification_count: usize,
+) -> Scene {
     let mut scene = Scene::new();
     let (w, h) = viewport;
 
@@ -101,7 +112,30 @@ pub fn draw_lock_scene(viewport: (f64, f64), theme: &Theme, text: &mut TextRende
         None,
     );
 
+    // 6. Count-only notification summary (Track D1 lock-suppression).
+    //    Show "N notifications" — never any content.
+    let label = count_label(notification_count);
+    if !label.is_empty() {
+        let label_size = 14.0_f32;
+        let (lw, _) = text.measure(&label, label_size, None);
+        text.draw_text(
+            &mut scene,
+            &label,
+            label_size,
+            theme.text_dim,
+            Affine::translate((cx - lw as f64 / 2.0, body_y + bh + 104.0)),
+            None,
+        );
+    }
+
     scene
+}
+
+/// Lock-screen count label: "N notifications" (or empty for zero). Kept
+/// next to [`draw_lock_scene`] and re-using the shell's redaction helper
+/// so the lock screen and the toast stack agree on wording.
+fn count_label(count: usize) -> String {
+    crate::shell::notification::lock_suppressed_label(count)
 }
 
 #[cfg(test)]
@@ -115,7 +149,7 @@ mod tests {
     fn lock_scene_is_non_empty() {
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
-        let scene = draw_lock_scene((1600.0, 900.0), &theme, &mut text);
+        let scene = draw_lock_scene((1600.0, 900.0), &theme, &mut text, 0);
         assert!(
             !scene.encoding().is_empty(),
             "lock overlay must produce a non-empty scene so it hides app content"
@@ -128,6 +162,25 @@ mod tests {
     fn lock_scene_handles_tiny_viewport() {
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
-        let _ = draw_lock_scene((1.0, 1.0), &theme, &mut text);
+        let _ = draw_lock_scene((1.0, 1.0), &theme, &mut text, 3);
+    }
+
+    /// The count-only summary never renders content. We can't read text
+    /// back out of a Vello scene, so assert the contract at the label
+    /// helper: it is count-only and empty for zero.
+    #[test]
+    fn count_label_is_count_only() {
+        assert_eq!(count_label(0), "");
+        assert_eq!(count_label(1), "1 notification");
+        assert_eq!(count_label(4), "4 notifications");
+    }
+
+    /// Rendering with a non-zero count still produces a valid scene.
+    #[test]
+    fn lock_scene_with_notifications_paints() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let scene = draw_lock_scene((1600.0, 900.0), &theme, &mut text, 5);
+        assert!(!scene.encoding().is_empty());
     }
 }

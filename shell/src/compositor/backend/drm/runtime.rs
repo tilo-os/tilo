@@ -51,8 +51,8 @@ use smithay::reexports::drm as drm_re;
 use smithay::reexports::input::Libinput;
 
 use super::devices::{filter_kms_nodes, ModeInfo};
-use super::outputs::{ConnectorInfo, OutputRegistry};
-use super::scanout::{DrmScanout, HwCursor};
+use super::outputs::{ConnectorInfo, DrmOutputKey, OutputRegistry};
+use super::scanout::{open_all_scanouts, CursorPlanes, DrmScanout};
 use super::session::SessionState;
 use crate::compositor::backend::{BackendEvent, Output, OutputId};
 
@@ -98,12 +98,15 @@ pub struct DrmDispatchState {
     /// Primary output size (px) — needed to transform libinput's
     /// absolute (0..1) coordinates and to clamp relative motion.
     pub output_size: (i32, i32),
-    /// Hardware-cursor mover for the primary scanout. `Some` only when
-    /// the KMS cursor plane is active; the libinput motion handlers call
-    /// `move_to` on every pointer event so the cursor tracks at input
-    /// rate without a framebuffer redraw. `None` → the scanout draws a
-    /// software cursor from `pointer` instead.
-    pub hw_cursor: Option<HwCursor>,
+    /// Hardware-cursor multiplexer across all outputs (Track B3). `Some`
+    /// when at least one output's KMS cursor plane is active; the libinput
+    /// motion handlers call `move_to(global_x, global_y)` on every pointer
+    /// event, and [`CursorPlanes`] routes the move to the plane of the
+    /// output the pointer is over (hiding the plane it just left), all at
+    /// input rate without a framebuffer redraw. `None` → outputs draw a
+    /// software cursor from `pointer` instead. For a single output this
+    /// collapses to one plane at the origin, identical to pre-B3.
+    pub hw_cursor: Option<CursorPlanes>,
     /// xkb keymap + state for translating libinput keycodes into winit
     /// `KeyboardInput` events (the same wire the winit backend feeds to
     /// `FrameBuilder::dispatch_event`). `None` when the keymap couldn't
@@ -161,10 +164,36 @@ pub struct DrmRuntime {
     /// `NoDevices` in that case, but keeping the field is convenient
     /// for follow-ups).
     pub primary_gpu: Option<PathBuf>,
-    /// Live scanout for the primary connector. `None` if modeset failed
-    /// (e.g. not DRM master / no connected connector) — the compositor
-    /// still runs headless in that case rather than crashing.
-    pub scanout: Option<DrmScanout>,
+    /// Live scanouts — one per connected output (Track B3). Empty if
+    /// modeset failed for every connector (e.g. not DRM master / nothing
+    /// connected) — the compositor still runs headless in that case
+    /// rather than crashing. Ordered by `OutputId`; `scanouts[0]` is the
+    /// primary (the one the frame loop targets with `OutputId(0)`, and the
+    /// fd the multi-output drain reads).
+    pub scanouts: Vec<ScanoutEntry>,
+}
+
+/// One live output: its public [`OutputId`], its top-left position in the
+/// compositor's combined coordinate space (outputs are laid out
+/// side-by-side), and the [`DrmScanout`] driving its crtc.
+pub struct ScanoutEntry {
+    pub id: OutputId,
+    pub position: (i32, i32),
+    pub scanout: DrmScanout,
+}
+
+/// Lay output sizes out left-to-right at `y = 0`: each output's left edge
+/// is the sum of the prior outputs' widths. Mirrors
+/// [`OutputRegistry::populate`]'s side-by-side policy. Pure so it's unit-
+/// testable without a DRM device; a single output lands at `(0, 0)`.
+fn side_by_side_layout(sizes: &[(u32, u32)]) -> Vec<(i32, i32)> {
+    let mut next_x: i32 = 0;
+    let mut out = Vec::with_capacity(sizes.len());
+    for &(w, _h) in sizes {
+        out.push((next_x, 0));
+        next_x += w as i32;
+    }
+    out
 }
 
 impl DrmRuntime {
@@ -201,36 +230,46 @@ impl DrmRuntime {
             "DRM backend: enumerated KMS card nodes"
         );
 
-        // 2.2. Bring up scanout on the primary GPU FIRST, keeping its fd
-        //      open as DRM master. libseat refuses a second `open` of the
-        //      same node, so the primary must NOT also be opened by the
+        // 2.2. Bring up scanout(s) on the primary GPU FIRST, keeping the
+        //      card fd open as DRM master. `open_all_scanouts` opens the
+        //      card ONCE and modesets EVERY connected connector — each on
+        //      its own crtc, sharing a dup of the one fd (Track B3
+        //      multi-monitor). libseat refuses a second `open` of the same
+        //      node, so the primary must NOT also be opened by the
         //      connector-enumeration pass below — we exclude it when
-        //      scanout owns it. A modeset failure is non-fatal: log and
-        //      run headless (the wayland socket is still served).
-        let scanout = match primary_gpu.as_ref() {
+        //      scanout owns it. A total modeset failure is non-fatal: log
+        //      and run headless (the wayland socket is still served).
+        let scanout_builds = match primary_gpu.as_ref() {
             Some(path) => {
                 let mut scanout_session = session.clone();
-                match DrmScanout::new(&mut scanout_session, path) {
-                    Ok(s) => {
-                        tracing::info!("DRM backend: scanout live on primary GPU");
-                        Some(s)
+                match open_all_scanouts(&mut scanout_session, path) {
+                    Ok(b) => {
+                        tracing::info!(
+                            count = b.len(),
+                            "DRM backend: scanout live on primary GPU"
+                        );
+                        b
                     }
                     Err(e) => {
                         tracing::warn!("DRM backend: scanout setup failed ({e}); running headless");
-                        None
+                        Vec::new()
                     }
                 }
             }
-            None => None,
+            None => Vec::new(),
         };
+        let have_scanouts = !scanout_builds.is_empty();
 
         // 2.5. Connector enumeration on the GPUs scanout does NOT own
-        //      (the primary is held open above). Failures here are logged
-        //      and skipped rather than aborting the boot.
+        //      (the primary is held open above). Driving connectors on
+        //      *secondary* GPUs needs a second card fd + cross-GPU buffer
+        //      handling and is a documented follow-up, so this pass is
+        //      diagnostic-only for now (it logs what's attached). Failures
+        //      here are logged and skipped rather than aborting the boot.
         //
         //      `LibSeatSession` is cheap to clone (internal `Arc`), so
         //      we hand a borrow to the enumeration helper.
-        let enum_gpus: Vec<PathBuf> = if scanout.is_some() {
+        let enum_gpus: Vec<PathBuf> = if have_scanouts {
             kms_gpus
                 .iter()
                 .filter(|p| Some((*p).clone()) != primary_gpu)
@@ -243,7 +282,7 @@ impl DrmRuntime {
         let connectors = enumerate_connectors(&mut session_for_enum, &enum_gpus);
         tracing::info!(
             count = connectors.len(),
-            "DRM backend: enumerated DRM connectors"
+            "DRM backend: enumerated DRM connectors on secondary GPUs (diagnostic; not yet driven)"
         );
 
         // 3. libinput. The session-interface adapter routes
@@ -321,8 +360,10 @@ impl DrmRuntime {
                     state.pointer = (x, y);
                     // Reposition the hardware cursor plane immediately —
                     // no framebuffer redraw needed for a cursor move.
-                    if let Some(c) = &state.hw_cursor {
-                        c.move_to(x as i32, y as i32);
+                    // `CursorPlanes` routes the global position to the
+                    // plane of the output under the pointer.
+                    if let Some(c) = state.hw_cursor.as_mut() {
+                        c.move_to(x, y);
                     }
                     state.push(BackendEvent::Input(cursor_moved_event(x, y)));
                 }
@@ -334,8 +375,8 @@ impl DrmRuntime {
                     let x = (state.pointer.0 + event.delta_x()).clamp(0.0, max_x);
                     let y = (state.pointer.1 + event.delta_y()).clamp(0.0, max_y);
                     state.pointer = (x, y);
-                    if let Some(c) = &state.hw_cursor {
-                        c.move_to(x as i32, y as i32);
+                    if let Some(c) = state.hw_cursor.as_mut() {
+                        c.move_to(x, y);
                     }
                     state.push(BackendEvent::Input(cursor_moved_event(x, y)));
                 }
@@ -369,34 +410,76 @@ impl DrmRuntime {
             })
             .map_err(|e| DrmBackendError::Calloop(format!("{e}")))?;
 
+        // Turn the per-connector scanouts into the public output set
+        // (Track B3). Each is interned into the registry by
+        // `(device, connector)` so its `OutputId` is stable across
+        // re-enumeration; outputs are laid out side-by-side. The first
+        // connector gets `OutputId(0)` (the registry mints from 0), so it
+        // is the primary the frame loop targets — preserving the pre-B3
+        // "primary == OutputId(0)" contract.
         let mut outputs = OutputRegistry::new();
-        let populated = outputs.populate(&connectors);
-        let mut output_meta: HashMap<OutputId, Output> = populated.into_iter().collect();
-
-        // The scanout-driven primary is the canonical output the frame
-        // loop paints into (`submit_frame` targets `outputs().first()`).
-        // Expose it at the lowest id so it sorts first.
-        if let Some(s) = &scanout {
-            let (w, h) = s.size();
+        let positions = side_by_side_layout(
+            &scanout_builds
+                .iter()
+                .map(|b| b.scanout.size())
+                .collect::<Vec<_>>(),
+        );
+        let mut output_meta: HashMap<OutputId, Output> = HashMap::new();
+        let mut scanouts: Vec<ScanoutEntry> = Vec::new();
+        for (build, position) in scanout_builds.into_iter().zip(positions) {
+            let (w, h) = build.scanout.size();
+            let id = outputs.intern(DrmOutputKey {
+                device: build.device_id,
+                connector: build.connector_id,
+            });
             output_meta.insert(
-                OutputId(0),
+                id,
                 Output {
-                    id: OutputId(0),
-                    position: (0, 0),
+                    id,
+                    position,
                     size: (w, h),
                     scale: 1.0,
                 },
             );
+            scanouts.push(ScanoutEntry {
+                id,
+                position,
+                scanout: build.scanout,
+            });
         }
+        scanouts.sort_by_key(|e| e.id.0);
 
-        // Seed pointer state from the scanout's mode so absolute-motion
-        // transforms and cursor clamping use the right output size; start
-        // the cursor centered.
-        let (ow, oh) = scanout.as_ref().map(|s| s.size()).unwrap_or((0, 0));
-        // Grab a hardware-cursor mover so the libinput motion handlers can
-        // reposition the plane at input rate. `None` if the cursor plane
-        // isn't active (software-cursor fallback in the scanout).
-        let hw_cursor = scanout.as_ref().and_then(|s| s.cursor_mover());
+        // Pointer / cursor-clamp coordinates live in the combined output
+        // space, so absolute-motion transforms and relative-motion
+        // clamping use the full multi-output extent. For a single output
+        // this equals that output's size (pre-B3 behaviour).
+        let (ow, oh) = scanouts.iter().fold((0i32, 0i32), |(w, h), e| {
+            let (sw, sh) = e.scanout.size();
+            (
+                w.max(e.position.0 + sw as i32),
+                h.max(e.position.1 + sh as i32),
+            )
+        });
+
+        // Build the hardware-cursor multiplexer from each output's mover +
+        // its rect in combined coords; libinput motion routes through it.
+        // Outputs whose cursor plane is inactive are absent (they use the
+        // per-output software cursor in `present`). `None` when no output
+        // has a hardware cursor at all.
+        let cursor_outputs: Vec<_> = scanouts
+            .iter()
+            .filter_map(|e| {
+                e.scanout.cursor_mover().map(|mover| {
+                    let (w, h) = e.scanout.size();
+                    CursorPlanes::output_cursor((e.position.0, e.position.1, w, h), mover)
+                })
+            })
+            .collect();
+        let hw_cursor = if cursor_outputs.is_empty() {
+            None
+        } else {
+            Some(CursorPlanes::new(cursor_outputs))
+        };
 
         // Compile the xkb keymap once at startup from the session's
         // `XKB_DEFAULT_*` environment (installer-seeded, PAM-exported).
@@ -416,7 +499,7 @@ impl DrmRuntime {
             events: Vec::new(),
             output_meta,
             pointer: (ow as f64 / 2.0, oh as f64 / 2.0),
-            output_size: (ow as i32, oh as i32),
+            output_size: (ow, oh),
             hw_cursor,
             keyboard,
         };
@@ -426,7 +509,7 @@ impl DrmRuntime {
             dispatch,
             _session: session,
             primary_gpu,
-            scanout,
+            scanouts,
         })
     }
 
@@ -1106,6 +1189,26 @@ mod tests {
             }
             other => panic!("expected KeyboardInput, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn side_by_side_layout_single_output_at_origin() {
+        // The single-output case must place the one output at (0, 0) —
+        // byte-identical to pre-B3.
+        let positions = side_by_side_layout(&[(1920, 1080)]);
+        assert_eq!(positions, vec![(0, 0)]);
+    }
+
+    #[test]
+    fn side_by_side_layout_places_outputs_left_to_right() {
+        // Each output's x is the sum of prior widths; y stays 0.
+        let positions = side_by_side_layout(&[(1920, 1080), (1280, 1024), (2560, 1440)]);
+        assert_eq!(positions, vec![(0, 0), (1920, 0), (3200, 0)]);
+    }
+
+    #[test]
+    fn side_by_side_layout_empty_is_empty() {
+        assert!(side_by_side_layout(&[]).is_empty());
     }
 
     #[test]
