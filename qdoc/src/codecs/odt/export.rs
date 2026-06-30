@@ -236,11 +236,33 @@ fn push_escaped(out: &mut String, c: char) {
     }
 }
 
+/// A note-id → `&NoteView` lookup for resolving body reference markers on export.
+type NoteIndex<'a> = std::collections::BTreeMap<String, &'a crate::snapshot::NoteView>;
+
+fn note_index(snap: &DocSnapshot) -> NoteIndex<'_> {
+    snap.notes.iter().map(|n| (n.id.clone(), n)).collect()
+}
+
+/// The note id of a `note-ref` mark covering exactly `[i, i+1)`, if any.
+fn note_ref_at(marks: &[MarkSpan], i: usize) -> Option<String> {
+    marks
+        .iter()
+        .find(|m| m.name == crate::schema::MARK_NOTE_REF && m.start == i && m.end == i + 1)
+        .and_then(|m| m.value.as_str().map(|s| s.to_string()))
+}
+
 /// Render a block's text with `text:a` hyperlinks (outer) and `text:span` style
 /// wrappers (inner) for its marks. The link wrapper and the span set are each
 /// closed and re-opened whenever they change, so the output is always
-/// well-nested even for overlapping marks.
-fn render_inline(text: &str, marks: &[MarkSpan], used: &mut std::collections::BTreeMap<String, String>) -> String {
+/// well-nested even for overlapping marks. A placeholder covered by a `note-ref`
+/// mark is emitted as the referenced inline `text:note` (advancing `note_ctr`).
+fn render_inline(
+    text: &str,
+    marks: &[MarkSpan],
+    used: &mut std::collections::BTreeMap<String, String>,
+    notes: &NoteIndex,
+    note_ctr: &mut usize,
+) -> String {
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();
     let mut out = String::new();
@@ -283,6 +305,17 @@ fn render_inline(text: &str, marks: &[MarkSpan], used: &mut std::collections::BT
             for name in &want {
                 out.push_str(&format!(r#"<text:span text:style-name="{name}">"#));
                 open.push(name.clone());
+            }
+        }
+        // A placeholder carrying a `note-ref` mark renders as the inline note.
+        if chars[i] == crate::schema::FIELD_PLACEHOLDER {
+            if let Some(note_id) = note_ref_at(marks, i) {
+                if let Some(note) = notes.get(&note_id) {
+                    *note_ctr += 1;
+                    out.push_str(&super::notes::render_inline_note(note, *note_ctr));
+                }
+                // A note-ref placeholder is consumed by the note; emit nothing else.
+                continue;
             }
         }
         push_escaped(&mut out, chars[i]);
@@ -625,6 +658,10 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
     // numbering (format/start), emitted into automatic-styles.
     let mut list_styles: Vec<ListStyle> = Vec::new();
     let list_styles = &mut list_styles;
+    // Footnotes/endnotes referenced from body text, numbered 1.. in reference order.
+    let notes = note_index(snap);
+    let mut note_ctr = 0usize;
+    let note_ctr = &mut note_ctr;
     let mut style_attr = |b: &BlockView| -> String { resolve_para_style(b, &snap.styles, &mut pstyles, &mut named_refs) };
     let mut i = 0;
     while i < snap.blocks.len() {
@@ -638,7 +675,7 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
                 let sa = style_attr(b);
                 body.push_str(&format!(
                     r#"<text:h text:outline-level="{level}"{sa}>{}</text:h>"#,
-                    render_inline(&b.text, &b.marks, &mut used)
+                    render_inline(&b.text, &b.marks, &mut used, &notes, note_ctr)
                 ));
                 i += 1;
             }
@@ -683,7 +720,7 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
                         }
                     }
                     let sa = style_attr(li);
-                    body.push_str(&format!(r#"<text:list-item><text:p{sa}>{}</text:p>"#, render_inline(&li.text, &li.marks, &mut used)));
+                    body.push_str(&format!(r#"<text:list-item><text:p{sa}>{}</text:p>"#, render_inline(&li.text, &li.marks, &mut used, &notes, note_ctr)));
                     item_open = true;
                     i += 1;
                 }
@@ -733,7 +770,7 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
                         let cell = cells.iter().find(|cl| snap_cell_rc(cl) == (r, c));
                         // The cell's alignment lives on the inner paragraph in ODF.
                         let sa = cell.map(|cl| style_attr(cl)).unwrap_or_default();
-                        let inner = cell.map(|cl| render_inline(&cl.text, &cl.marks, &mut used)).unwrap_or_default();
+                        let inner = cell.map(|cl| render_inline(&cl.text, &cl.marks, &mut used, &notes, note_ctr)).unwrap_or_default();
                         body.push_str(&format!(r#"<table:table-cell><text:p{sa}>{inner}</text:p></table:table-cell>"#));
                     }
                     body.push_str("</table:table-row>");
@@ -744,7 +781,7 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
                 let sa = style_attr(b);
                 body.push_str(&format!(
                     r#"<text:p{sa}>{}</text:p>"#,
-                    render_inline(&b.text, &b.marks, &mut used)
+                    render_inline(&b.text, &b.marks, &mut used, &notes, note_ctr)
                 ));
                 i += 1;
             }
@@ -794,7 +831,7 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
 
 #[cfg(test)]
 mod tests {
-    use super::super::container::{minimal_odt_styled, OdtContainer};
+    use super::super::container::{minimal_odt, minimal_odt_styled, OdtContainer};
     use super::super::OdtCodec;
     use crate::{AttrVal, DocSnapshot, Document, FormatProvider};
     use std::collections::BTreeMap;
@@ -1372,6 +1409,101 @@ mod tests {
         let styles_out = std::str::from_utf8(out.get("styles.xml").unwrap()).unwrap();
         assert!(styles_out.contains(r#"style:page-layout-name="pm1""#), "page-layout reference preserved: {styles_out}");
         assert!(styles_out.contains("New Header") && !styles_out.contains("Old Header"), "header updated: {styles_out}");
+    }
+
+    #[test]
+    fn footnote_imports_from_inline_text_note() {
+        use crate::document::MarkValue;
+        use crate::schema::{FIELD_PLACEHOLDER, MARK_NOTE_REF};
+        // A paragraph "see ref" with an inline footnote right after "see ": the body
+        // gets a `note-ref` marker over a placeholder, and the note's body becomes a
+        // note in the `notes` container.
+        let body = concat!(
+            r#"<text:p>see <text:note text:id="ftn1" text:note-class="footnote">"#,
+            r#"<text:note-citation>1</text:note-citation>"#,
+            r#"<text:note-body><text:p>the footnote text</text:p></text:note-body>"#,
+            r#"</text:note>ref</text:p>"#,
+        );
+        let odt = minimal_odt(body);
+        let mut d = Document::new();
+        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        let snap = d.materialize();
+
+        // Body paragraph carries the placeholder + a note-ref mark over it.
+        let p = &snap.blocks[0];
+        assert_eq!(p.text, format!("see {}ref", FIELD_PLACEHOLDER), "placeholder spliced inline: {:?}", p.text);
+        let nref = p.marks.iter().find(|m| m.name == MARK_NOTE_REF).expect("note-ref mark present");
+        assert_eq!((nref.start, nref.end), (4, 5), "marker covers exactly the placeholder: {:?}", p.marks);
+        let nid = match &nref.value {
+            MarkValue::Str(s) => s.clone(),
+            other => panic!("note-ref value is the note id, got {other:?}"),
+        };
+
+        // The note exists with the right kind + body text.
+        assert_eq!(snap.notes.len(), 1, "one note: {:?}", snap.notes);
+        let note = &snap.notes[0];
+        assert_eq!(note.id, nid, "marker references the note by id");
+        assert_eq!(note.kind, "footnote");
+        assert_eq!(note.blocks.len(), 1);
+        assert_eq!(note.blocks[0].text, "the footnote text");
+    }
+
+    #[test]
+    fn footnote_and_endnote_roundtrip_through_odt() {
+        use crate::document::MarkValue;
+        use crate::schema::MARK_NOTE_REF;
+        // Build from scratch: a paragraph "see ref" with a footnote after "see ", and
+        // a second paragraph with an endnote. Both must export as inline text:note
+        // and re-import as the same markers + note bodies + kinds.
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "see ref");
+        let fid = d.insert_footnote(&p, 4); // after "see "
+        let fb = d.insert_note_block(&fid, None, "paragraph").unwrap();
+        d.splice_note_text(&fid, &fb, 0, 0, "a footnote");
+
+        let p2 = d.insert_block(Some(&p), "paragraph");
+        d.splice_text(&p2, 0, 0, "tail");
+        let eid = d.insert_endnote(&p2, 4); // at the end
+        let eb = d.insert_note_block(&eid, None, "paragraph").unwrap();
+        d.splice_note_text(&eid, &eb, 0, 0, "an endnote");
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let cont = OdtContainer::read(&exported).unwrap();
+        let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
+        assert!(content.contains(r#"text:note-class="footnote""#), "footnote emitted inline: {content}");
+        assert!(content.contains(r#"text:note-class="endnote""#), "endnote emitted inline: {content}");
+        assert!(content.contains("a footnote") && content.contains("an endnote"), "note bodies emitted: {content}");
+
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+        // Body text + markers survive.
+        assert_eq!(snap.blocks[0].text.chars().filter(|c| *c != '\u{FFFC}').collect::<String>(), "see ref");
+        let nref = snap.blocks[0].marks.iter().find(|m| m.name == MARK_NOTE_REF).expect("footnote marker survives");
+        let f_id = match &nref.value {
+            MarkValue::Str(s) => s.clone(),
+            _ => panic!("note-ref value"),
+        };
+        // Notes survive with kinds + bodies.
+        assert_eq!(snap.notes.len(), 2, "both notes survive: {:?}", snap.notes);
+        let foot = snap.notes.iter().find(|n| n.id == f_id).expect("footnote note present by id");
+        assert_eq!(foot.kind, "footnote");
+        assert_eq!(foot.blocks[0].text, "a footnote");
+        let end = snap.notes.iter().find(|n| n.kind == "endnote").expect("endnote present");
+        assert_eq!(end.blocks[0].text, "an endnote");
+
+        // Idempotent across a second round-trip (ids volatile; compare on kind+text).
+        let exported2 = OdtCodec.export(d2.as_ref()).unwrap();
+        let mut d3 = Document::new();
+        OdtCodec.import(&exported2, &mut d3.as_mut()).unwrap();
+        let kinds_texts = |snap: &DocSnapshot| {
+            let mut v: Vec<(String, String)> =
+                snap.notes.iter().map(|n| (n.kind.clone(), n.blocks.iter().map(|b| b.text.clone()).collect())).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(kinds_texts(&d2.materialize()), kinds_texts(&d3.materialize()), "notes stable across a second round-trip");
     }
 
     #[test]

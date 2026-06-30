@@ -20,6 +20,24 @@ pub const KEY_BLOBS: &str = "blobs"; // Map<blake3_hex, Bytes>  (content-address
 pub const KEY_HEADER: &str = "header"; // Map<block_id, block>
 pub const KEY_FOOTER: &str = "footer"; // Map<block_id, block>
 
+// Footnotes / endnotes. A `notes` root map holds `Map<note_id, note>`, where each
+// note is a sub-map carrying its `kind` ("footnote"|"endnote") and a `blocks`
+// child map (the note's content — same shape as the body `blocks`, with
+// fractional order keys). The note is *referenced* from body text by an inline
+// `note-ref` mark over a single placeholder character (U+FFFC), whose value is the
+// note id; the mark merges with concurrent text edits and round-trips through the
+// codecs. Created lazily on first write and opened optionally so documents
+// authored before notes existed still open (they then read as having no notes).
+pub const KEY_NOTES: &str = "notes"; // Map<note_id, note>
+pub const NOTE_KIND: &str = "kind"; // Str ("footnote"|"endnote")
+pub const NOTE_BLOCKS: &str = "blocks"; // Map<block_id, block> (the note body)
+pub const NOTE_KIND_FOOTNOTE: &str = "footnote";
+pub const NOTE_KIND_ENDNOTE: &str = "endnote";
+/// The inline mark naming a note reference. Covers exactly the single placeholder
+/// character (U+FFFC) standing in for the citation; its value is the referenced
+/// note id (a `Str`). Renderers substitute the computed citation number.
+pub const MARK_NOTE_REF: &str = "note-ref"; // Str — the referenced note id
+
 // Document properties / metadata. A `props` sub-map under `meta` holding the
 // well-known document-level fields (title/author/…) as plain strings. Isolated
 // from other `meta` keys (page margins, stylesheet) and created lazily so

@@ -8,6 +8,7 @@ pub mod content;
 pub mod export;
 pub mod headers;
 pub mod meta;
+pub mod notes;
 pub mod styles;
 
 use crate::format::{CodecError, Confidence, FormatProvider};
@@ -45,7 +46,18 @@ impl FormatProvider for DocxCodec {
         if let Some(numbering_xml) = container.get("word/numbering.xml") {
             styles::parse_numbering(numbering_xml, &mut reg);
         }
-        content::parse_body(&document, &reg, doc)?;
+        // Footnotes/endnotes live in separate parts; parse them first so the body
+        // parser can wire each `w:footnoteReference`/`w:endnoteReference` (by docx
+        // id) onto the canonical note via the returned `docx-id → note-id` maps.
+        let mut foot_map = std::collections::BTreeMap::new();
+        let mut end_map = std::collections::BTreeMap::new();
+        if let Some(xml) = container.get("word/footnotes.xml") {
+            foot_map = notes::import_notes_part(xml, crate::model::NoteKind::Footnote, doc);
+        }
+        if let Some(xml) = container.get("word/endnotes.xml") {
+            end_map = notes::import_notes_part(xml, crate::model::NoteKind::Endnote, doc);
+        }
+        content::parse_body(&document, &reg, &foot_map, &end_map, doc)?;
         // Document properties: parse `docProps/core.xml` (dc:title, dc:creator, …)
         // + `docProps/app.xml` (Application = generator) into `meta.props`.
         if let Some(core_xml) = container.get("docProps/core.xml") {

@@ -18,8 +18,8 @@ pub use codecs::{builtin_registry, is_supported_ext, supported_extensions, DocxC
 pub use document::{DocError, Document, MarkSpan};
 pub use format::{CodecError, Confidence, FormatProvider, ProviderTier, Registry};
 pub use history::VersionMeta;
-pub use model::{Containers, DocMut, DocRef, IdGen};
-pub use snapshot::{AttrVal, BlockView, DocSnapshot};
+pub use model::{Containers, DocMut, DocRef, IdGen, NoteKind, Region};
+pub use snapshot::{AttrVal, BlockView, DocSnapshot, NoteView};
 
 #[cfg(test)]
 mod smoke {

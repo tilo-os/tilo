@@ -11,6 +11,7 @@ use super::styles::{attr_val, StyleRegistry};
 use crate::document::MarkValue;
 use crate::format::CodecError;
 use crate::model::DocMut;
+use crate::schema::{FIELD_PLACEHOLDER, MARK_NOTE_REF};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 
@@ -159,6 +160,12 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
 
     let mut capture: Option<(usize, i32)> = None; // (start byte, open depth) of a fidelity atom
     let mut frame: Option<FrameState> = None; // an in-progress draw:frame (image or fidelity)
+    // An in-progress inline `text:note` (footnote/endnote): its raw-XML start byte,
+    // open depth, and the (block, index) at which to anchor its reference marker.
+    // Deferred so the marker is added after all text is in place (exact position).
+    let mut note: Option<(usize, i32, Option<String>, usize)> = None;
+    // (block, char index, note id) reference markers, applied after all text is in.
+    let mut note_refs: Vec<(String, usize, String)> = Vec::new();
 
     // Flush the current block's paragraph-style marks over its full text range.
     macro_rules! flush_para_marks {
@@ -273,8 +280,37 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
             continue;
         }
 
+        // Inside an inline `text:note`: collect its raw XML until it closes, then
+        // parse it into a note + record a reference marker at the captured position.
+        if let Some((start, depth, block, idx)) = note.as_mut() {
+            match &ev {
+                Event::Start(_) => *depth += 1,
+                Event::End(_) => {
+                    *depth -= 1;
+                    if *depth == 0 {
+                        let raw = s[*start..reader.buffer_position() as usize].to_string();
+                        if let (Some(b), Some(nid)) = (block.clone(), super::notes::import_note(&raw, doc)) {
+                            note_refs.push((b, *idx, nid));
+                        }
+                        note = None;
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+
         match ev {
             Event::Start(e) => match e.name().as_ref() {
+                b"text:note" if in_text && cur.is_some() => {
+                    // A footnote/endnote reference: splice the placeholder char now
+                    // (so later text in this paragraph lands after it), capture the
+                    // whole element verbatim, and defer the `note-ref` mark until all
+                    // text is in place. The note's body is parsed on close.
+                    let idx = cur_len;
+                    append(doc, &cur, &mut cur_len, &FIELD_PLACEHOLDER.to_string());
+                    note = Some((pos_before, 1, cur.clone(), idx));
+                }
                 b"office:text" => in_text = true,
                 b"text:h" if in_text => {
                     let style = attr_val(&e, b"text:style-name");
@@ -543,6 +579,11 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
             MarkValue::Int(n) => doc.add_mark(&b, start, end, &name, n),
             MarkValue::Str(s) => doc.add_mark(&b, start, end, &name, s.as_str()),
         }
+    }
+    // Note-reference markers: cover the placeholder spliced when each `text:note`
+    // opened with a `note-ref` mark valued with the note id.
+    for (b, idx, nid) in note_refs {
+        doc.add_mark(&b, idx, idx + 1, MARK_NOTE_REF, nid.as_str());
     }
     Ok(())
 }

@@ -10,9 +10,11 @@ use super::styles::{attr_val, mark_from_rpr_child, map_jc, StyleRegistry};
 use crate::document::MarkValue;
 use crate::format::CodecError;
 use crate::model::DocMut;
+use crate::schema::{FIELD_PLACEHOLDER, MARK_NOTE_REF};
 
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
+use std::collections::BTreeMap;
 
 /// Open a fresh top-level block anchored after the previous one.
 fn start_block(doc: &mut DocMut, prev: &mut Option<String>, cur: &mut Option<String>, cur_len: &mut usize, kind: &str) -> String {
@@ -33,7 +35,13 @@ fn append(doc: &mut DocMut, cur: &Option<String>, cur_len: &mut usize, txt: &str
     }
 }
 
-pub(crate) fn parse_body(document_xml: &[u8], reg: &StyleRegistry, doc: &mut DocMut) -> Result<(), CodecError> {
+pub(crate) fn parse_body(
+    document_xml: &[u8],
+    reg: &StyleRegistry,
+    foot_map: &BTreeMap<String, String>,
+    end_map: &BTreeMap<String, String>,
+    doc: &mut DocMut,
+) -> Result<(), CodecError> {
     let s = std::str::from_utf8(document_xml).map_err(|e| CodecError::Parse(e.to_string()))?;
     let mut reader = Reader::from_str(s);
 
@@ -61,6 +69,8 @@ pub(crate) fn parse_body(document_xml: &[u8], reg: &StyleRegistry, doc: &mut Doc
     let mut pending_marks: Vec<(String, usize, usize, String, MarkValue)> = Vec::new();
     // Paragraph-style inline marks for the current block, applied over [0, len].
     let mut cur_para_marks: Vec<(String, MarkValue)> = Vec::new();
+    // (block, char index, note id) reference markers, applied after all text is in.
+    let mut note_refs: Vec<(String, usize, String)> = Vec::new();
 
     // Table state: cells become consecutive `cell` blocks tagged table/row/col.
     let mut table_id: Option<String> = None;
@@ -232,6 +242,22 @@ pub(crate) fn parse_body(document_xml: &[u8], reg: &StyleRegistry, doc: &mut Doc
                 b"w:numId" if in_numpr => p_numid = attr_val(&e, b"w:val"),
                 b"w:tab" if in_run => append(doc, &cur, &mut cur_len, "\t"),
                 b"w:br" | b"w:cr" if in_run => append(doc, &cur, &mut cur_len, "\n"),
+                b"w:footnoteReference" | b"w:endnoteReference" if in_run => {
+                    // A note reference: resolve its docx id to a qdoc note id (via the
+                    // pre-parsed parts), splice a placeholder, and defer the `note-ref`
+                    // marker until all text is present.
+                    let is_foot = e.name().as_ref() == b"w:footnoteReference";
+                    let map = if is_foot { foot_map } else { end_map };
+                    if let Some(docx_id) = attr_val(&e, b"w:id") {
+                        if let Some(note_id) = map.get(&docx_id) {
+                            if let Some(b) = cur.clone() {
+                                let idx = cur_len;
+                                append(doc, &cur, &mut cur_len, &FIELD_PLACEHOLDER.to_string());
+                                note_refs.push((b, idx, note_id.clone()));
+                            }
+                        }
+                    }
+                }
                 _ if in_rpr => {
                     if let Some((k, v)) = mark_from_rpr_child(&e) {
                         run_marks.retain(|(k2, _)| k2 != &k);
@@ -313,6 +339,10 @@ pub(crate) fn parse_body(document_xml: &[u8], reg: &StyleRegistry, doc: &mut Doc
             MarkValue::Int(n) => doc.add_mark(&b, start, end, &name, n),
             MarkValue::Str(s) => doc.add_mark(&b, start, end, &name, s.as_str()),
         }
+    }
+    // Note-reference markers over the placeholder spliced at each reference element.
+    for (b, idx, nid) in note_refs {
+        doc.add_mark(&b, idx, idx + 1, MARK_NOTE_REF, nid.as_str());
     }
     Ok(())
 }

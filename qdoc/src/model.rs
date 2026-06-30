@@ -33,6 +33,10 @@ pub struct Containers {
     /// Page-footer block container (same shape as `blocks`). `None` / lazily
     /// created, mirroring `header`.
     pub footer: Option<ObjId>,
+    /// Footnote/endnote container (`Map<note_id, note>`). `None` for documents
+    /// authored before notes existed; created lazily on the first note insert so
+    /// older documents migrate transparently. Mirrors `header`/`footer`.
+    pub notes: Option<ObjId>,
 }
 
 /// Which page region a block container refers to. The body is the canonical
@@ -42,6 +46,34 @@ pub enum Region {
     Body,
     Header,
     Footer,
+}
+
+/// Which kind of note: a footnote (rendered at the bottom of its page) or an
+/// endnote (rendered at the end of the document). Stored as the note's `kind`
+/// scalar and round-tripped through the codecs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoteKind {
+    Footnote,
+    Endnote,
+}
+
+impl NoteKind {
+    /// The canonical schema string (`"footnote"`/`"endnote"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NoteKind::Footnote => NOTE_KIND_FOOTNOTE,
+            NoteKind::Endnote => NOTE_KIND_ENDNOTE,
+        }
+    }
+    /// Parse a schema string back into a [`NoteKind`] (`endnote` → `Endnote`,
+    /// anything else → `Footnote`, the default).
+    pub fn from_str(s: &str) -> Self {
+        if s == NOTE_KIND_ENDNOTE {
+            NoteKind::Endnote
+        } else {
+            NoteKind::Footnote
+        }
+    }
 }
 
 /// Per-replica, collision-free block id generator: `{actor_hex}.{counter}`.
@@ -72,11 +104,29 @@ impl IdGen {
 pub fn next_counter_for(doc: &AutoCommit, c: &Containers, actor_hex: &str) -> u64 {
     let prefix = format!("{actor_hex}.");
     let mut next = 0u64;
-    for id in blocks_in_order(doc, c) {
+    let mut bump = |id: &str| {
         if let Some(rest) = id.strip_prefix(&prefix) {
             if let Ok(n) = rest.parse::<u64>() {
                 next = next.max(n + 1);
             }
+        }
+    };
+    for id in blocks_in_order(doc, c) {
+        bump(&id);
+    }
+    // Header/footer blocks, note ids, and note-body blocks all draw from the same
+    // per-replica generator, so a generator seeded over a reloaded document must
+    // scan them too — otherwise it could re-mint (and overwrite) an existing note
+    // or region block.
+    for region in [Region::Header, Region::Footer] {
+        for id in region_blocks_in_order(doc, c, region) {
+            bump(&id);
+        }
+    }
+    for nid in note_ids(doc, c) {
+        bump(&nid);
+        for bid in note_blocks_in_order(doc, c, &nid) {
+            bump(&bid);
         }
     }
     next
@@ -98,9 +148,16 @@ pub fn init(doc: &mut AutoCommit, root: &ObjId) -> Containers {
     let preserved = doc.put_object(root, KEY_PRESERVED, ObjType::Map).unwrap();
     let meta = doc.put_object(root, KEY_META, ObjType::Map).unwrap();
     let blobs = doc.put_object(root, KEY_BLOBS, ObjType::Map).unwrap();
+    // The notes container is created eagerly (like blocks/styles) so two replicas
+    // that concurrently add a footnote share ONE container object and converge —
+    // a lazily-created map would be a per-replica object, and automerge's
+    // concurrent-object-creation conflict would drop one replica's notes. Documents
+    // authored before the notes map existed still open (it reads as `None` and is
+    // created lazily on first write — see `notes_container`).
+    let notes = doc.put_object(root, KEY_NOTES, ObjType::Map).unwrap();
     // Header/footer regions are created lazily on first write (a fresh document has
     // neither), so they stay `None` here.
-    Containers { root: root.clone(), blocks, styles, preserved, meta, blobs: Some(blobs), header: None, footer: None }
+    Containers { root: root.clone(), blocks, styles, preserved, meta, blobs: Some(blobs), header: None, footer: None, notes: Some(notes) }
 }
 
 /// Resolve existing containers under `root`. The blobs map is optional so
@@ -115,6 +172,7 @@ pub fn open(doc: &AutoCommit, root: &ObjId) -> Result<Containers, DocError> {
         blobs: opt_map_at(doc, root, KEY_BLOBS),
         header: opt_map_at(doc, root, KEY_HEADER),
         footer: opt_map_at(doc, root, KEY_FOOTER),
+        notes: opt_map_at(doc, root, KEY_NOTES),
     })
 }
 
@@ -168,6 +226,85 @@ pub fn materialize_region(doc: &AutoCommit, c: &Containers, region: Region) -> V
         Some(obj) => ordered_keys(doc, &obj).into_iter().map(|id| materialize_block(doc, &obj, &id)).collect(),
         None => Vec::new(),
     }
+}
+
+/// Resolve the notes container object, preferring the cached id and falling back to
+/// a fresh root lookup (so a lazily-created notes map is still found via reads).
+fn notes_obj(doc: &AutoCommit, c: &Containers) -> Option<ObjId> {
+    c.notes.clone().or_else(|| opt_map_at(doc, &c.root, KEY_NOTES))
+}
+
+/// Resolve a single note's sub-map object by id.
+fn note_obj(doc: &AutoCommit, c: &Containers, id: &str) -> Option<ObjId> {
+    let notes = notes_obj(doc, c)?;
+    match doc.get(&notes, id) {
+        Ok(Some((Value::Object(ObjType::Map), oid))) => Some(oid),
+        _ => None,
+    }
+}
+
+/// Resolve a note's block container (`note.blocks`) sub-map object.
+fn note_blocks_obj(doc: &AutoCommit, c: &Containers, id: &str) -> Option<ObjId> {
+    let note = note_obj(doc, c, id)?;
+    match doc.get(&note, NOTE_BLOCKS) {
+        Ok(Some((Value::Object(ObjType::Map), bid))) => Some(bid),
+        _ => None,
+    }
+}
+
+/// The note ids present in the document, in a stable (sorted) order. The order is
+/// canonical so two replicas converge byte-identically; the citation order in the
+/// body text is recovered separately from the `note-ref` mark positions.
+pub fn note_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
+    match notes_obj(doc, c) {
+        Some(notes) => {
+            let mut ids: Vec<String> = doc
+                .keys(&notes)
+                .filter(|id| matches!(doc.get(&notes, id), Ok(Some((Value::Object(ObjType::Map), _)))))
+                .collect();
+            ids.sort();
+            ids
+        }
+        None => Vec::new(),
+    }
+}
+
+/// A single note's kind (`Footnote`/`Endnote`), or `None` if the id is unknown.
+pub fn note_kind(doc: &AutoCommit, c: &Containers, id: &str) -> Option<NoteKind> {
+    let note = note_obj(doc, c, id)?;
+    match doc.get(&note, NOTE_KIND) {
+        Ok(Some((v, _))) => v.to_str().map(NoteKind::from_str),
+        _ => None,
+    }
+}
+
+/// Materialize a note's block sequence (empty if the note has no blocks / is
+/// unknown).
+pub fn materialize_note_blocks(doc: &AutoCommit, c: &Containers, id: &str) -> Vec<BlockView> {
+    match note_blocks_obj(doc, c, id) {
+        Some(obj) => ordered_keys(doc, &obj).into_iter().map(|bid| materialize_block(doc, &obj, &bid)).collect(),
+        None => Vec::new(),
+    }
+}
+
+/// The ordered block ids of a note's content (empty if absent).
+pub fn note_blocks_in_order(doc: &AutoCommit, c: &Containers, id: &str) -> Vec<String> {
+    match note_blocks_obj(doc, c, id) {
+        Some(obj) => ordered_keys(doc, &obj),
+        None => Vec::new(),
+    }
+}
+
+/// Materialize every note into a [`crate::snapshot::NoteView`] (sorted by note id).
+pub fn materialize_notes(doc: &AutoCommit, c: &Containers) -> Vec<crate::snapshot::NoteView> {
+    note_ids(doc, c)
+        .into_iter()
+        .map(|id| crate::snapshot::NoteView {
+            kind: note_kind(doc, c, &id).unwrap_or(NoteKind::Footnote).as_str().to_string(),
+            blocks: materialize_note_blocks(doc, c, &id),
+            id,
+        })
+        .collect()
 }
 
 /// Fetch a content-addressed blob by its blake3 hex hash.
@@ -375,6 +512,7 @@ pub fn materialize(doc: &AutoCommit, c: &Containers) -> DocSnapshot {
         properties: doc_props(doc, c),
         header: materialize_region(doc, c, Region::Header),
         footer: materialize_region(doc, c, Region::Footer),
+        notes: materialize_notes(doc, c),
     }
 }
 
@@ -584,6 +722,111 @@ impl<'a> DocMut<'a> {
     pub fn insert_page_number_field(&mut self, region: Region, block_id: &str, idx: usize) {
         self.splice_text_in(region, block_id, idx, 0, &FIELD_PLACEHOLDER.to_string());
         self.add_mark_in(region, block_id, idx, idx + 1, MARK_FIELD, FIELD_PAGE_NUMBER);
+    }
+
+    // ---- footnotes / endnotes ---------------------------------------------
+
+    /// Resolve-or-create the `notes` root container (created lazily on the first
+    /// note insert so older documents migrate transparently).
+    fn notes_container(&mut self) -> ObjId {
+        if let Some(obj) = self.c.notes.clone() {
+            return obj;
+        }
+        if let Some(obj) = opt_map_at(self.doc, &self.c.root, KEY_NOTES) {
+            return obj;
+        }
+        self.doc.put_object(&self.c.root, KEY_NOTES, ObjType::Map).unwrap()
+    }
+
+    /// Create a new note (footnote/endnote) with an empty block sequence and return
+    /// its freshly-minted id. The note's content is then filled via
+    /// [`Self::insert_note_block`] + [`Self::splice_note_text`]. The id is minted
+    /// from the same per-replica generator as body/region blocks, so it never
+    /// collides with them.
+    pub fn insert_note(&mut self, kind: NoteKind) -> String {
+        let notes = self.notes_container();
+        let id = self.ids.mint();
+        let note = self.doc.put_object(&notes, id.as_str(), ObjType::Map).unwrap();
+        self.doc.put(&note, NOTE_KIND, kind.as_str()).unwrap();
+        self.doc.put_object(&note, NOTE_BLOCKS, ObjType::Map).unwrap();
+        id
+    }
+
+    /// Place a note reference marker at `idx` in a body block: splice the
+    /// placeholder character and cover it with a `note-ref` mark valued with the
+    /// note id. The marker then merges with concurrent text edits and round-trips
+    /// through the codecs (inverse of import, which re-creates both the note and
+    /// its marker).
+    pub fn insert_note_ref(&mut self, block_id: &str, idx: usize, note_id: &str) {
+        self.splice_text(block_id, idx, 0, &FIELD_PLACEHOLDER.to_string());
+        self.add_mark(block_id, idx, idx + 1, MARK_NOTE_REF, note_id);
+    }
+
+    /// Convenience: create a footnote, place its reference marker at `idx` in
+    /// `block_id`, and return the new note id (its content is filled separately).
+    pub fn insert_footnote(&mut self, block_id: &str, idx: usize) -> String {
+        let id = self.insert_note(NoteKind::Footnote);
+        self.insert_note_ref(block_id, idx, &id);
+        id
+    }
+
+    /// Convenience: create an endnote, place its reference marker at `idx` in
+    /// `block_id`, and return the new note id.
+    pub fn insert_endnote(&mut self, block_id: &str, idx: usize) -> String {
+        let id = self.insert_note(NoteKind::Endnote);
+        self.insert_note_ref(block_id, idx, &id);
+        id
+    }
+
+    /// Resolve-or-create a note's block container (`note.blocks`).
+    fn note_blocks_container(&mut self, note_id: &str) -> Option<ObjId> {
+        let note = note_obj(self.doc, self.c, note_id)?;
+        match self.doc.get(&note, NOTE_BLOCKS) {
+            Ok(Some((Value::Object(ObjType::Map), bid))) => Some(bid),
+            _ => self.doc.put_object(&note, NOTE_BLOCKS, ObjType::Map).ok(),
+        }
+    }
+
+    /// Insert a block into a note's content (created lazily); returns its id, or
+    /// `None` if the note id is unknown.
+    pub fn insert_note_block(&mut self, note_id: &str, after: Option<&str>, kind: &str) -> Option<String> {
+        let container = self.note_blocks_container(note_id)?;
+        let key = self.order_after_in(&container, after);
+        let id = self.ids.mint();
+        let obj = self.doc.put_object(&container, id.as_str(), ObjType::Map).unwrap();
+        self.doc.put(&obj, BLOCK_ORDER, ScalarValue::Bytes(key)).unwrap();
+        self.doc.put(&obj, BLOCK_KIND, kind).unwrap();
+        self.doc.put_object(&obj, BLOCK_ATTRS, ObjType::Map).unwrap();
+        Some(id)
+    }
+
+    /// Resolve-or-create the Text object of a note's block.
+    fn note_text_obj(&mut self, note_id: &str, block_id: &str) -> Option<ObjId> {
+        let container = self.note_blocks_container(note_id)?;
+        let obj = block_obj(self.doc, &container, block_id)?;
+        let existing = match self.doc.get(&obj, BLOCK_TEXT) {
+            Ok(Some((Value::Object(ObjType::Text), tid))) => Some(tid),
+            _ => None,
+        };
+        if let Some(tid) = existing {
+            return Some(tid);
+        }
+        self.doc.put_object(&obj, BLOCK_TEXT, ObjType::Text).ok()
+    }
+
+    /// Splice text into a note's block.
+    pub fn splice_note_text(&mut self, note_id: &str, block_id: &str, idx: usize, del: isize, ins: &str) {
+        if let Some(tid) = self.note_text_obj(note_id, block_id) {
+            let _ = self.doc.splice_text(&tid, idx, del, ins);
+        }
+    }
+
+    /// Add an inline mark over a note's block text.
+    pub fn add_note_mark(&mut self, note_id: &str, block_id: &str, start: usize, end: usize, name: &str, value: impl Into<ScalarValue>) {
+        if let Some(tid) = self.note_text_obj(note_id, block_id) {
+            let mark = Mark::new(name.to_string(), value, start, end);
+            let _ = self.doc.mark(&tid, mark, ExpandMark::After);
+        }
     }
 
     /// Remove every block from a region (clearing a header/footer).
@@ -905,6 +1148,92 @@ mod region_tests {
         let snap = materialize(&doc, &c);
         assert_eq!(snap.header[0].text, "Title");
         assert_eq!(snap.footer.len(), 1);
+    }
+
+    #[test]
+    fn notes_container_is_empty_on_fresh_doc_and_backward_compatible() {
+        use automerge::transaction::Transactable;
+        // A fresh doc has an (empty) notes container — created eagerly so concurrent
+        // footnote inserts converge on one shared object.
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        assert!(c.notes.is_some(), "notes container present on a fresh doc");
+        assert!(note_ids(&doc, &c).is_empty(), "but empty");
+        assert!(materialize_notes(&doc, &c).is_empty());
+
+        // Backward-compat: a document authored before the notes map existed (no
+        // root.notes) must still open and read as having no notes.
+        let mut old = AutoCommit::new();
+        let oc = init(&mut old, &ROOT);
+        let _ = oc; // simulate the old schema by deleting the eagerly-created map
+        old.delete(&ROOT, KEY_NOTES).unwrap();
+        let bytes = old.save();
+        let reloaded = AutoCommit::load(&bytes).unwrap();
+        let c2 = open(&reloaded, &ROOT).unwrap();
+        assert!(c2.notes.is_none(), "old-schema doc opens with no notes container");
+        assert!(note_ids(&reloaded, &c2).is_empty());
+    }
+
+    #[test]
+    fn footnote_marker_and_note_content() {
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        let mut ids = IdGen::new(doc.get_actor().to_hex_string());
+        let (pid, nid, nb);
+        {
+            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            pid = dm.insert_block(None, "paragraph");
+            dm.splice_text(&pid, 0, 0, "see ref");
+            nid = dm.insert_footnote(&pid, 4); // after "see "
+            nb = dm.insert_note_block(&nid, None, "paragraph").unwrap();
+            dm.splice_note_text(&nid, &nb, 0, 0, "the note");
+        }
+        // Body carries the placeholder + a note-ref mark over it valued with the id.
+        let p = materialize_block(&doc, &c.blocks, &pid);
+        assert_eq!(p.text, format!("see {}ref", FIELD_PLACEHOLDER), "placeholder spliced inline");
+        let nref = p.marks.iter().find(|m| m.name == MARK_NOTE_REF).expect("note-ref mark present");
+        assert_eq!((nref.start, nref.end), (4, 5));
+        assert_eq!(nref.value, crate::document::MarkValue::Str(nid.clone()));
+        // The note exists with kind + content.
+        assert_eq!(note_kind(&doc, &c, &nid), Some(NoteKind::Footnote));
+        let blocks = materialize_note_blocks(&doc, &c, &nid);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].text, "the note");
+        // The snapshot surfaces the note.
+        let snap = materialize(&doc, &c);
+        assert_eq!(snap.notes.len(), 1);
+        assert_eq!(snap.notes[0].kind, "footnote");
+        assert_eq!(snap.notes[0].blocks[0].text, "the note");
+    }
+
+    #[test]
+    fn seeded_id_gen_does_not_remint_note_ids() {
+        // A generator seeded over a reloaded doc must skip past note + note-block ids,
+        // otherwise it would re-mint (and overwrite) an existing note.
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        let mut ids = IdGen::new(doc.get_actor().to_hex_string());
+        let (pid, nid);
+        {
+            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            pid = dm.insert_block(None, "paragraph");
+            dm.splice_text(&pid, 0, 0, "x");
+            nid = dm.insert_footnote(&pid, 1);
+            let nb = dm.insert_note_block(&nid, None, "paragraph").unwrap();
+            dm.splice_note_text(&nid, &nb, 0, 0, "note");
+        }
+        // Re-seed over the same doc (as load() does) and add another note.
+        let mut ids2 = seeded_id_gen(&doc, &c);
+        let nid2;
+        {
+            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids2 };
+            nid2 = dm.insert_footnote(&pid, 0);
+            let nb2 = dm.insert_note_block(&nid2, None, "paragraph").unwrap();
+            dm.splice_note_text(&nid2, &nb2, 0, 0, "second");
+        }
+        assert_ne!(nid, nid2, "second note id must not collide with the first");
+        let snap = materialize(&doc, &c);
+        assert_eq!(snap.notes.len(), 2, "both notes survive (no overwrite): {:?}", snap.notes);
     }
 
     #[test]
