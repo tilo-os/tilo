@@ -72,6 +72,9 @@ pub enum WpFormat {
     /// RTF — **export only** (rendered via the `docrtf` crate). Importing RTF is
     /// not supported and returns a clear error.
     Rtf,
+    /// EPUB — **export only** (rendered via the `docepub` crate). Importing EPUB
+    /// is not supported and returns a clear error.
+    Epub,
 }
 
 impl WpFormat {
@@ -83,6 +86,7 @@ impl WpFormat {
             Some("pdf") => WpFormat::Pdf,
             Some("html") | Some("htm") => WpFormat::Html,
             Some("rtf") => WpFormat::Rtf,
+            Some("epub") => WpFormat::Epub,
             _ => WpFormat::Markdown,
         }
     }
@@ -101,6 +105,9 @@ impl WpFormat {
             )),
             WpFormat::Rtf => Err(qdoc::CodecError::Unsupported(
                 "opening RTF documents is not supported (RTF is export-only)".to_string(),
+            )),
+            WpFormat::Epub => Err(qdoc::CodecError::Unsupported(
+                "opening EPUB documents is not supported (EPUB is export-only)".to_string(),
             )),
         }
     }
@@ -127,6 +134,13 @@ impl WpFormat {
             WpFormat::Rtf => {
                 let snap = dr.materialize();
                 Ok(docrtf::render_rtf(&snap).into_bytes())
+            }
+            // EPUB isn't a `FormatProvider` codec either — it assembles an OCF
+            // ZIP container from the materialized snapshot via `docepub`. Map its
+            // error into the shared `CodecError`.
+            WpFormat::Epub => {
+                let snap = dr.materialize();
+                docepub::render_epub(&snap).map_err(|e| qdoc::CodecError::Export(e.to_string()))
             }
         }
     }
@@ -312,6 +326,54 @@ mod tests {
         );
     }
 
+    /// Saving to a `*.epub` path routes through `docepub` and writes a valid
+    /// EPUB OCF container: the bytes are a ZIP archive (`PK` magic) whose first
+    /// entry is the literal `mimetype` member. EPUB is export-only.
+    #[test]
+    fn save_document_to_epub_writes_epub() {
+        let mut s = ui::State::new();
+        let mut ed = EditorDoc::bind(&mut s.doc, &s.root);
+        {
+            let mut dm = ed.edit(&mut s.doc);
+            MarkdownCodec.import(b"# Title\n\nHello world\n", &mut dm).unwrap();
+        }
+
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("editor-epub-test-{}.epub", std::process::id()));
+        assert_eq!(WpFormat::from_path(&path), WpFormat::Epub, ".epub extension picks the Epub format");
+
+        save_document(&s, &path, WpFormat::Epub).expect("save to epub");
+        let bytes = std::fs::read(&path).expect("read back the epub");
+        let _ = std::fs::remove_file(&path);
+
+        // ZIP magic: every EPUB is an OCF ZIP container.
+        assert!(
+            bytes.starts_with(b"PK"),
+            "output begins with the ZIP signature: {:?}",
+            &bytes[..bytes.len().min(8)]
+        );
+        // OCF requires the first archive entry to be the literal `mimetype`
+        // member (stored uncompressed). The local-file-header filename starts at
+        // offset 30; assert it is `mimetype`.
+        assert!(bytes.len() >= 38, "epub is at least one local file header long");
+        assert_eq!(
+            &bytes[30..38],
+            b"mimetype",
+            "first zip entry is the OCF `mimetype` member"
+        );
+    }
+
+    /// EPUB import is unsupported and surfaces a clear error.
+    #[test]
+    fn epub_import_is_unsupported() {
+        let mut s = ui::State::new();
+        let containers = qdoc::model::init(&mut s.doc, &s.root);
+        let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
+        let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &containers, ids: &mut ids };
+        let err = WpFormat::Epub.import(b"PK\x03\x04", &mut dm).unwrap_err();
+        assert!(matches!(err, qdoc::CodecError::Unsupported(_)), "got {err:?}");
+    }
+
     /// `WpFormat::from_path` maps the export-only extensions to their formats,
     /// including the `.htm` alias for HTML.
     #[test]
@@ -321,6 +383,8 @@ mod tests {
         assert_eq!(WpFormat::from_path(Path::new("doc.HTML")), WpFormat::Html, "case-insensitive");
         assert_eq!(WpFormat::from_path(Path::new("doc.rtf")), WpFormat::Rtf);
         assert_eq!(WpFormat::from_path(Path::new("doc.RTF")), WpFormat::Rtf, "case-insensitive");
+        assert_eq!(WpFormat::from_path(Path::new("doc.epub")), WpFormat::Epub);
+        assert_eq!(WpFormat::from_path(Path::new("doc.EPUB")), WpFormat::Epub, "case-insensitive");
     }
 
     /// HTML and RTF import are unsupported and surface a clear error.
