@@ -23,11 +23,12 @@ use ui::icons::{self, Icon};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{SplitLayout, Widget};
 
 use crate::charts::{self, with_alpha, Series};
 use crate::model::{fmt_bytes, fmt_rate, fmt_uptime, MonitorModel, ProcessInfo};
 use crate::prefs::Prefs;
+use crate::responsive::{ProcPane, ProcPush, RailFlap};
 use crate::sampler::Sampler;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -84,6 +85,12 @@ struct Hit {
     kill_btn: Rect,
     modal_kill: Rect,
     modal_cancel: Rect,
+    /// Hamburger / close affordance summoning the rail when it isn't docked.
+    rail_toggle: Rect,
+    /// The dimming scrim behind an open overlay rail (tap to dismiss).
+    rail_scrim: Rect,
+    /// Back affordance returning from the pushed detail to the table (narrow).
+    detail_back: Rect,
 }
 
 impl Hit {
@@ -99,6 +106,9 @@ impl Hit {
             kill_btn: Rect::ZERO,
             modal_kill: Rect::ZERO,
             modal_cancel: Rect::ZERO,
+            rail_toggle: Rect::ZERO,
+            rail_scrim: Rect::ZERO,
+            detail_back: Rect::ZERO,
         }
     }
 }
@@ -117,6 +127,13 @@ pub struct MonitorApp {
     selected_pid: Option<u32>,
     scroll_off: f32,
     confirm_kill: Option<u32>,
+
+    // responsive layout
+    /// The system rail: docked beside content when wide, an overlay flap
+    /// (closed by default, hamburger-summoned) when narrow.
+    rail: RailFlap,
+    /// The Processes master-detail push flow used only when narrow.
+    proc_push: ProcPush,
 
     // frame caches
     rect: Rect,
@@ -154,6 +171,8 @@ impl MonitorApp {
             selected_pid,
             scroll_off: 0.0,
             confirm_kill: None,
+            rail: RailFlap::default(),
+            proc_push: ProcPush::default(),
             rect: Rect::ZERO,
             last_cursor: Point::ZERO,
             // Set to "now" so the first (screenshot) frame skips the live
@@ -273,6 +292,46 @@ impl MonitorApp {
             .map(|d| d.as_secs())
             .unwrap_or(0);
         format!("{:02}:{:02}:{:02}", (secs / 3600) % 24, (secs / 60) % 60, secs % 60)
+    }
+
+    // ---- responsive helpers ----------------------------------------------
+    /// Resolve the rail's split layout from the current allocated width.
+    fn rail_layout(&self) -> SplitLayout {
+        RailFlap::layout(self.rect.width())
+    }
+
+    /// `true` when the window is narrow enough for the overlay rail + the
+    /// single-pane Processes push flow.
+    fn is_narrow(&self) -> bool {
+        crate::responsive::is_narrow(self.rect.width())
+    }
+
+    /// Whether the hamburger / close toggle is currently shown over the
+    /// content — whenever the rail isn't fully docked-open, so a collapsed
+    /// rail can be summoned and an open overlay rail dismissed.
+    fn show_rail_toggle(&self) -> bool {
+        self.rail_layout() == SplitLayout::Overlay || self.rail.reveal() < 0.999
+    }
+
+    // ---- headless screenshot scenarios -----------------------------------
+    /// Seed a deterministic interaction state for a headless `--shots` frame.
+    /// `--shots` renders a single frame with no event loop, so a scenario that
+    /// would normally require live input (an open overlay rail, a pushed
+    /// detail pane) is snapped here instead. Unknown names render the default
+    /// frame — at a narrow viewport that is the closed-rail process table.
+    ///
+    /// Recognised scenarios:
+    /// * `"rail"`   — force the overlay rail open so a narrow shot shows the
+    ///   slid-in rail above its dimming scrim.
+    /// * `"detail"` — snap the narrow Processes push flow to the pushed detail
+    ///   pane (otherwise a narrow frame opens to the table, as a fresh window
+    ///   would).
+    pub fn seed_shot_scenario(&mut self, scenario: &str) {
+        match scenario {
+            "rail" => self.rail.snap(true),
+            "detail" => self.proc_push.snap(ProcPane::Detail),
+            _ => {}
+        }
     }
 }
 
@@ -473,16 +532,138 @@ impl MonitorApp {
         }
     }
 
-    fn draw_processes(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, r: Rect) {
+    /// Position and paint the system rail for the current split layout. Docked
+    /// mode draws the rail in place (the content is already inset for it).
+    /// Overlay mode dims the body behind a scrim that fades with the reveal
+    /// and floats the rail in from the left edge over the content, exactly
+    /// like an Adwaita flap. Records the scrim hit rect for tap-to-dismiss.
+    fn draw_rail_region(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rail_docked: Rect,
+        layout: SplitLayout,
+    ) {
         let c = &theme.tokens.colors;
-        // Toolbar.
-        let toolbar = Rect::new(r.x0, r.y0, r.x1, r.y0 + 36.0);
-        self.draw_toolbar(scene, t, tr, theme, toolbar);
+        let reveal = self.rail.reveal();
 
-        // Table panel below toolbar, above detail strip.
-        let table_top = toolbar.y1 + GAP;
-        let table_bottom = r.y1 - DETAIL_H - GAP;
-        let table_panel = Rect::new(r.x0, table_top, r.x1, table_bottom);
+        match layout {
+            SplitLayout::Docked => {
+                // Fully collapsed (mid hide-animation, content not yet
+                // reclaimed) — nothing to paint.
+                if reveal <= 0.001 {
+                    return;
+                }
+                self.draw_rail(scene, t, tr, theme, rail_docked);
+            }
+            SplitLayout::Overlay => {
+                if reveal <= 0.001 {
+                    return; // fully collapsed overlay — nothing to paint
+                }
+                // Dim the whole app behind the flap; tap dismisses it.
+                let scrim = with_alpha(c.surfaces.overlay, (reveal * 178.0) as u8);
+                scene.fill(Fill::NonZero, t, scrim, None, &self.rect);
+                self.hit.rail_scrim = self.rect;
+
+                // Float the rail in from off-screen-left as the slide eases.
+                let slide = self.rail.slide();
+                let rail_w = rail_docked.width();
+                let x0 = rail_docked.x0 - (rail_w + OUTER_PAD) * (1.0 - slide);
+                let panel = Rect::new(x0, rail_docked.y0, x0 + rail_w, rail_docked.y1);
+                // Opaque backing so the rail floats clearly over the content.
+                charts::fill_rrect(scene, t, panel, theme.tokens.radii.md as f64 + 2.0, c.surfaces.raised);
+                charts::stroke_rrect(scene, t, panel, theme.tokens.radii.md as f64 + 2.0, c.border_standard, 1.0);
+                self.draw_rail(scene, t, tr, theme, panel);
+            }
+        }
+    }
+
+    /// The hamburger / close toggle in the content's top-left corner. Shown
+    /// whenever the rail isn't fully docked-open, so a collapsed rail can be
+    /// summoned and an open overlay rail dismissed. Records its hit rect.
+    fn draw_rail_toggle(&mut self, scene: &mut Scene, t: Affine, theme: &Theme, content: Rect) {
+        let c = &theme.tokens.colors;
+        let size = 34.0;
+        let bx = content.x0;
+        let by = content.y0;
+        let btn = Rect::new(bx, by, bx + size, by + size);
+        charts::fill_rrect(scene, t, btn, theme.tokens.radii.md as f64, c.surfaces.raised);
+        charts::stroke_rrect(scene, t, btn, theme.tokens.radii.md as f64, c.border_standard, 1.0);
+
+        let cx = btn.x0 + size / 2.0;
+        let open = self.rail.reveal() > 0.5;
+        if open {
+            // An "X" / close affordance when the rail is showing.
+            let rr = 6.0;
+            let cyc = btn.y0 + size / 2.0;
+            scene.stroke(&Stroke::new(1.8), t, c.text_primary, None, &Line::new((cx - rr, cyc - rr), (cx + rr, cyc + rr)));
+            scene.stroke(&Stroke::new(1.8), t, c.text_primary, None, &Line::new((cx + rr, cyc - rr), (cx - rr, cyc + rr)));
+        } else {
+            // Three-line hamburger.
+            let line_w = 14.0;
+            for i in 0..3 {
+                let ly = btn.y0 + 11.0 + i as f64 * 6.0;
+                scene.stroke(&Stroke::new(1.8), t, c.text_primary, None, &Line::new((cx - line_w / 2.0, ly), (cx + line_w / 2.0, ly)));
+            }
+        }
+        self.hit.rail_toggle = btn;
+    }
+
+    /// The Processes tab. Wide: a toolbar, the process table, and the selected
+    /// process's detail strip stacked top to bottom. Narrow: single-pane push
+    /// — the toolbar+table OR the detail, sliding horizontally as one swaps for
+    /// the other (driven by [`ProcPush`]). Selecting a row pushes the detail in
+    /// with a Back affordance; Back (or Esc) slides the table back.
+    fn draw_processes(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, r: Rect) {
+        if !self.is_narrow() {
+            // Wide: toolbar, table, detail strip stacked.
+            let toolbar = Rect::new(r.x0, r.y0, r.x1, r.y0 + 36.0);
+            self.draw_toolbar(scene, t, tr, theme, toolbar);
+            let table_top = toolbar.y1 + GAP;
+            let table_bottom = r.y1 - DETAIL_H - GAP;
+            let table_panel = Rect::new(r.x0, table_top, r.x1, table_bottom);
+            self.draw_process_table(scene, t, tr, theme, table_panel);
+            let detail = Rect::new(r.x0, table_bottom + GAP, r.x1, r.y1);
+            self.draw_detail(scene, t, tr, theme, detail);
+            return;
+        }
+
+        // Narrow: single-pane push. The table slab and detail slab each fill
+        // the whole content area and slide horizontally; `slide` (0 = table,
+        // 1 = detail) offsets both, so the panes glide as one swaps for the
+        // other. Clip to the content so the off-screen slab stays hidden.
+        let slide = self.proc_push.slide();
+        let table_x = r.x0 - r.width() * slide; // slides off to the left
+        let detail_x = r.x0 + r.width() * (1.0 - slide); // slides in from the right
+        let table_slab = Rect::new(table_x, r.y0, table_x + r.width(), r.y1);
+        let detail_slab = Rect::new(detail_x, r.y0, detail_x + r.width(), r.y1);
+
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &r);
+
+        // Table slab: toolbar + full-height table (no detail reservation —
+        // the detail is its own pushed pane on narrow).
+        if slide < 0.999 {
+            let toolbar = Rect::new(table_slab.x0, table_slab.y0, table_slab.x1, table_slab.y0 + 36.0);
+            self.draw_toolbar(scene, t, tr, theme, toolbar);
+            let table_panel = Rect::new(table_slab.x0, toolbar.y1 + GAP, table_slab.x1, table_slab.y1);
+            self.draw_process_table(scene, t, tr, theme, table_panel);
+        }
+
+        // Detail slab: a Back affordance header above a full-area detail card.
+        if slide > 0.001 {
+            self.draw_detail_pane(scene, t, tr, theme, detail_slab);
+        }
+
+        scene.pop_layer();
+    }
+
+    /// Draw the process table (header row + scrollable rows + scrollbar) into
+    /// `table_panel`. Shared by the wide stacked layout and the narrow push
+    /// table slab; records the sort-header and row hit rects.
+    fn draw_process_table(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, table_panel: Rect) {
+        let c = &theme.tokens.colors;
         let ti = charts::panel(scene, t, table_panel, theme, 0.0);
         let pad = 12.0;
         let cols_x0 = ti.x0 + pad;
@@ -587,9 +768,32 @@ impl MonitorApp {
             let ty0 = track.y0 + (track.height() - thumb_h) * pos;
             charts::fill_rrect(scene, t, Rect::new(track.x0, ty0, track.x1, ty0 + thumb_h), 2.0, with_alpha(c.text_dim, 160));
         }
+    }
 
-        // Detail strip.
-        let detail = Rect::new(r.x0, table_bottom + GAP, r.x1, r.y1);
+    /// The narrow push detail pane: a Back affordance row above a full-area
+    /// detail card. Returning Back (or Esc) slides the table back. Records the
+    /// Back hit rect.
+    fn draw_detail_pane(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, r: Rect) {
+        let c = &theme.tokens.colors;
+        let bar_h = 36.0;
+
+        // Back chip: chevron + "Processes". Indented past the rail's hamburger
+        // toggle (which also lives in the top-left corner) so the two don't
+        // overlap.
+        let label = "Processes";
+        let fs = theme.tokens.typography.scale.sm;
+        let (lw, lh) = tr.measure_weighted(label, fs, None, TextWeight::Semibold);
+        let back_x0 = r.x0 + 34.0 + GAP;
+        let back = Rect::new(back_x0, r.y0, back_x0 + 34.0 + lw as f64 + 14.0, r.y0 + bar_h - 4.0);
+        charts::fill_rrect(scene, t, back, theme.tokens.radii.md as f64, c.surfaces.raised);
+        charts::stroke_rrect(scene, t, back, theme.tokens.radii.md as f64, c.border_standard, 1.0);
+        let chev = Rect::new(back.x0 + 8.0, back.center().y - 8.0, back.x0 + 24.0, back.center().y + 8.0);
+        icons::draw_icon(scene, t, chev, Icon::ChevronLeft, c.text_primary, 1.8);
+        tr.draw_text_weighted(scene, label, fs, c.text_primary, t * Affine::translate((chev.x1 + 4.0, back.center().y - lh as f64 / 2.0)), None, TextWeight::Semibold);
+        self.hit.detail_back = back;
+
+        // Full-area detail card below the Back bar.
+        let detail = Rect::new(r.x0, r.y0 + bar_h, r.x1, r.y1);
         self.draw_detail(scene, t, tr, theme, detail);
     }
 
@@ -825,9 +1029,35 @@ impl MonitorApp {
             return;
         }
 
+        // The rail flap and its scrim float above everything else, so they
+        // claim the click first. The hamburger toggle is painted on top of the
+        // scrim, so test it before the scrim.
+        let layout = self.rail_layout();
+        if self.show_rail_toggle() && self.hit.rail_toggle.contains(p) {
+            self.search_focused = false;
+            self.rail.toggle(layout);
+            *handled = true;
+            return;
+        }
+        // An open overlay rail dims the content; tapping the scrim (anywhere
+        // outside the floated rail) dismisses it and swallows the click.
+        if layout == SplitLayout::Overlay && self.rail.is_open(layout) {
+            self.search_focused = false;
+            self.rail.close();
+            *handled = true;
+            return;
+        }
+
         // Lose search focus unless the search box itself is clicked.
         let clicked_search = self.hit.search.contains(p);
         self.search_focused = clicked_search;
+
+        // Back affordance in the narrow pushed detail pane → return to table.
+        if self.hit.detail_back.contains(p) {
+            self.proc_push.show_table();
+            *handled = true;
+            return;
+        }
 
         if self.hit.tab_proc.contains(p) {
             self.tab = Tab::Processes;
@@ -875,6 +1105,11 @@ impl MonitorApp {
             for (pid, rect) in self.hit.rows.clone() {
                 if rect.contains(p) {
                     self.selected_pid = Some(pid);
+                    // On narrow windows the detail is its own pushed pane;
+                    // selecting a row slides it in.
+                    if self.is_narrow() {
+                        self.proc_push.show_detail();
+                    }
                     *handled = true;
                     return;
                 }
@@ -965,6 +1200,18 @@ impl MonitorApp {
 
         // Global keys.
         match key {
+            // Esc unwinds the responsive stack: dismiss an open overlay rail
+            // first, otherwise pop a pushed detail pane back to the table.
+            Key::Named(NamedKey::Escape) => {
+                let layout = self.rail_layout();
+                if layout == SplitLayout::Overlay && self.rail.is_open(layout) {
+                    self.rail.close();
+                    *handled = true;
+                } else if self.is_narrow() && self.proc_push.pane() == ProcPane::Detail {
+                    self.proc_push.show_table();
+                    *handled = true;
+                }
+            }
             Key::Named(NamedKey::Tab) => {
                 self.tab = self.tab.other();
                 *handled = true;
@@ -1064,17 +1311,48 @@ impl Widget for MonitorApp {
         // App background.
         scene.fill(Fill::NonZero, t, theme.tokens.colors.surfaces.base, None, &r);
 
+        // Resolve the rail layout from the allocated width and advance the
+        // eased flaps once per frame (the redraw loop keeps pumping while
+        // `needs_animation_frame` is true).
+        let layout = self.rail_layout();
+        self.rail.reconcile(layout);
+        self.rail.tick(layout);
+        self.proc_push.tick();
+
         let content = Rect::new(r.x0 + OUTER_PAD, r.y0 + OUTER_PAD, r.x1 - OUTER_PAD, r.y1 - OUTER_PAD);
         let header = Rect::new(content.x0, content.y0, content.x1, content.y0 + HEADER_H);
         let body_top = header.y1 + GAP;
-        let rail = Rect::new(content.x0, body_top, content.x0 + RAIL_W, content.y1);
-        let main = Rect::new(rail.x1 + GAP, body_top, content.x1, content.y1);
+        let body = Rect::new(content.x0, body_top, content.x1, content.y1);
+
+        // The rail's docked footprint at full reveal, and the content column
+        // beside it. Docked: the content is inset by the rail's *revealed*
+        // width so it animates with the slide. Overlay: the content uses the
+        // full body width and the rail floats over it.
+        let rail_docked = Rect::new(body.x0, body.y0, body.x0 + RAIL_W, body.y1);
+        let main = match layout {
+            SplitLayout::Docked => {
+                let inset = (RAIL_W + GAP) * self.rail.reveal();
+                Rect::new(body.x0 + inset, body.y0, body.x1, body.y1)
+            }
+            SplitLayout::Overlay => body,
+        };
 
         self.draw_header(scene, t, text_renderer, theme, header);
-        self.draw_rail(scene, t, text_renderer, theme, rail);
+
+        // Content first; the overlay rail (if any) paints on top of it.
         match self.tab {
             Tab::Processes => self.draw_processes(scene, t, text_renderer, theme, main),
             Tab::Resources => self.draw_resources(scene, t, text_renderer, theme, main),
+        }
+
+        // The system rail: docked beside the content, or an overlay flap that
+        // slides in over it behind a dimming scrim.
+        self.draw_rail_region(scene, t, text_renderer, theme, rail_docked, layout);
+
+        // Hamburger / close affordance over the content's top-left corner,
+        // shown whenever the rail isn't fully docked-open.
+        if self.show_rail_toggle() {
+            self.draw_rail_toggle(scene, t, theme, main);
         }
 
         if let Some(pid) = self.confirm_kill {

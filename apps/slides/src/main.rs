@@ -19,13 +19,23 @@ use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
+/// Narrow viewport used by the responsive `--shots` capture (`SLIDES_SHOT=narrow`).
+/// Just below the rail's collapse breakpoint, so the rail becomes an overlay
+/// flap while the rest of the editor stays legible.
+const NARROW_SHOTS_VIEWPORT: (u32, u32) = (820, 800);
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
-        render_shot_to_png(slides::app_root(), DEFAULT_SHOTS_VIEWPORT, &out)?;
+        // The narrow-layout capture renders at a phone-ish width so the shot
+        // shows the collapsed rail as an overlay flap (see `SLIDES_SHOT`).
+        let viewport = match std::env::var("SLIDES_SHOT").as_deref() {
+            Ok("narrow") | Ok("narrow_closed") => NARROW_SHOTS_VIEWPORT,
+            _ => DEFAULT_SHOTS_VIEWPORT,
+        };
+        render_shot_to_png(slides::app_root(), viewport, &out)?;
         return Ok(());
     }
 
