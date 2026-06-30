@@ -9,20 +9,32 @@
 //!
 //! ## Integration seams
 //!
-//! * **Text injection (client half, WIRED HERE):** the live path builds a
-//!   [`TextInjector`] (real `virtual-keyboard-v1` backend, else a no-op
-//!   [`NullInjector`]) and sets it as the widget's `on_key` callback, so every
-//!   committed [`osk::KeyAction`] is typed into the focused surface as the user
-//!   taps/swipes. This is the same approach `wtype` uses: synthesise an XKB
-//!   keymap on the fly, then press/release keycodes via a virtual keyboard. See
-//!   [`osk::inject`] for the keymap-generation details and the manual-test
+//! * **Auto-show via input-method-v2 (WIRED HERE):** when the compositor
+//!   advertises `zwp_input_method_manager_v2` (the qOS compositor does), the OSK
+//!   becomes an input-method client: it starts hidden, appears when a text field
+//!   is focused, picks the layout from the field's content purpose, hides when
+//!   focus leaves, and types via `commit_string` (the clean IM path) rather than
+//!   synthetic key events. The input-method client runs on its own Wayland
+//!   connection ([`osk::imclient`]); a background thread turns its events into
+//!   show/hide/purpose commands delivered to the winit loop through the
+//!   `EventLoopProxy`, where the widget reacts via `on_external_event`. Use
+//!   `--no-input-method` to force the always-visible path; `--input-method`
+//!   requires the protocol (errors if absent).
+//!
+//! * **Text injection (client half, fallback):** when there is no input method,
+//!   the live path builds a [`TextInjector`] (real `virtual-keyboard-v1`
+//!   backend, else a no-op [`NullInjector`]) and sets it as the widget's
+//!   `on_key` callback, so every committed [`osk::KeyAction`] is typed into the
+//!   focused surface as the user taps/swipes — the same approach `wtype` uses.
+//!   See [`osk::inject`] for the keymap-generation details and the manual-test
 //!   recipe.
 //!
 //! * **Layer-shell (server half, still a seam):** in production the OSK
 //!   runs as a `wlr-layer-shell` surface (overlay layer, bottom-anchored,
 //!   exclusive zone). `ui::App` does not yet create a layer-shell surface, so
-//!   today this binary opens a normal window; swap the surface role in here
-//!   when that lands — the widget and the injector are unchanged.
+//!   today this binary opens a normal window and collapses the keyboard to zero
+//!   height when hidden; swap the surface role in here when that lands — the
+//!   widget, the injector, and the input-method client are unchanged.
 //!
 //! * **FUTO swipe + prediction:** a swipe decoder will consume the
 //!   pointer path during a press-drag, normalise it against
@@ -32,11 +44,15 @@
 //!   No swipe code is linked here.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use osk::InputPurpose;
 use osk::OskWidget;
+use osk::imclient::{ImState, InputMethodClient, try_input_method};
 use osk::inject::default_injector;
+use osk::input_purpose_name;
 use taffy::prelude::*;
+use ui::app::UserEvent;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -68,10 +84,43 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // --- build the text injector and wire it to the widget's per-key
-    // callback. `default_injector` returns the real virtual-keyboard-v1 backend
-    // when the compositor supports it, else a no-op NullInjector — so the OSK
-    // runs everywhere and types into the focused app where it can. ---
+    // --- pick the input path. Prefer auto-show via input-method-v2 when the
+    // compositor supports it: the keyboard appears on text focus, follows the
+    // field's content purpose, hides on blur, and commits text via the IM. Fall
+    // back to the always-visible keyboard + virtual-keyboard injection
+    // otherwise. ---
+    let im_pref = parse_input_method_pref(&args);
+    let im = match im_pref {
+        // Force the always-visible path; never try the input method.
+        InputMethodPref::Off => None,
+        // Try; fail loudly if explicitly requested but unavailable.
+        InputMethodPref::Require => match try_input_method() {
+            Some(im) => Some(im),
+            None => {
+                return Err(
+                    "osk: --input-method requested but the compositor does not advertise \
+                     zwp_input_method_manager_v2"
+                        .into(),
+                );
+            }
+        },
+        // Default: use it if present, otherwise degrade silently.
+        InputMethodPref::Auto => try_input_method(),
+    };
+
+    if let Some(im) = im {
+        tracing::info!("osk: auto-show via input-method-v2");
+        run_auto_show(im, purpose);
+    } else {
+        run_always_visible(purpose);
+    }
+    Ok(())
+}
+
+/// The always-visible keyboard: it fills its surface and types into the focused
+/// app via `virtual-keyboard-v1` (or a no-op when that protocol is absent). This
+/// is the path when there is no input method to drive auto-show.
+fn run_always_visible(purpose: Option<InputPurpose>) {
     let mut injector = default_injector();
     tracing::info!("osk: text-injection backend = {}", injector.backend_name());
     let mut widget = OskWidget::new().on_key(move |action| {
@@ -88,7 +137,119 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = ui::State::new();
     let app = ui::App::new(state, Box::new(widget));
     app.run();
-    Ok(())
+}
+
+/// The auto-show keyboard, driven by an `input-method-v2` client.
+///
+/// The keyboard starts hidden. A background thread blocks on the input-method
+/// connection; each focus event is folded through an [`ImState`] reducer into a
+/// minimal show/hide/purpose command, which it sends to the winit loop via the
+/// `EventLoopProxy` as a [`UserEvent::External`] string the widget understands
+/// (`osk:show`, `osk:hide`, `osk:purpose:<name>`). Typed/swiped text is committed
+/// back to the focused app via the same input method (`commit_string`).
+fn run_auto_show(im: InputMethodClient, purpose: Option<InputPurpose>) {
+    // The IM client is shared: the winit thread's `on_key` callback commits
+    // typed text through it, while the background thread reads focus events.
+    let im = Arc::new(Mutex::new(im));
+
+    let im_for_keys = Arc::clone(&im);
+    let mut widget = OskWidget::new().hidden().on_key(move |action| {
+        // Turn the committed action into the text to insert and send it via the
+        // input method. State-only actions (shift/symbols/layout) and backspace
+        // produce no commit string here — backspace is handled by the host's
+        // surrounding-text editing, not by inserting a character.
+        if let Some(text) = osk::inject::action_symbols(&action)
+            .iter()
+            .map(symbol_to_commit_text)
+            .collect::<Option<String>>()
+            && !text.is_empty()
+            && let Ok(mut im) = im_for_keys.lock()
+        {
+            im.commit_text(&text);
+        }
+    });
+    // A `--purpose` override still applies as the initial layout; the field's
+    // content_type will replace it once focus lands.
+    if let Some(p) = purpose {
+        widget.set_purpose(p);
+    }
+
+    let state = ui::State::new();
+    let app = ui::App::new(state, Box::new(widget));
+
+    // Spawn the input-method reader once the event loop proxy exists, so it can
+    // push show/hide/purpose commands into the loop.
+    let im_for_reader = Arc::clone(&im);
+    app.run_with_setup(move |proxy| {
+        std::thread::spawn(move || {
+            let mut model = ImState::new();
+            loop {
+                // Poll without blocking, then release the lock immediately so the
+                // winit thread's `on_key` callback can take it to commit typed
+                // text. (Blocking on the socket while holding the lock would
+                // deadlock against that callback.) Focus changes are rare and
+                // not latency-critical, so a short sleep between polls is fine.
+                let events = {
+                    let Ok(mut im) = im_for_reader.lock() else {
+                        break;
+                    };
+                    im.poll()
+                };
+                for ev in events {
+                    let t = model.reduce(ev);
+                    if let Some(visible) = t.visibility_changed {
+                        let cmd = if visible { "osk:show" } else { "osk:hide" };
+                        if proxy.send_event(UserEvent::External(cmd.to_string())).is_err() {
+                            return; // event loop gone
+                        }
+                    }
+                    if let Some(p) = t.purpose_changed {
+                        let cmd = format!("osk:purpose:{}", input_purpose_name(p));
+                        if proxy.send_event(UserEvent::External(cmd)).is_err() {
+                            return;
+                        }
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(16));
+            }
+        });
+    });
+}
+
+/// The text a single [`osk::Symbol`] inserts when committed through the input
+/// method, or `None` for symbols that aren't a plain inserted character (so the
+/// whole commit is skipped — e.g. backspace, handled by surrounding-text edits).
+fn symbol_to_commit_text(sym: &osk::Symbol) -> Option<char> {
+    match sym {
+        osk::Symbol::Unicode(c) => Some(*c),
+        osk::Symbol::Space => Some(' '),
+        osk::Symbol::Return => Some('\n'),
+        osk::Symbol::Tab => Some('\t'),
+        osk::Symbol::BackSpace => None,
+    }
+}
+
+/// How the binary should treat the input method.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InputMethodPref {
+    /// Use the input method if the compositor offers it, else fall back.
+    Auto,
+    /// Require it — error out if the compositor doesn't offer it.
+    Require,
+    /// Never use it — always-visible keyboard.
+    Off,
+}
+
+/// Read the input-method preference from the args. `--no-input-method` forces it
+/// off; `--input-method` requires it; absence means auto-detect.
+fn parse_input_method_pref(args: &[String]) -> InputMethodPref {
+    if args.iter().any(|a| a == "--no-input-method") {
+        InputMethodPref::Off
+    } else if args.iter().any(|a| a == "--input-method") {
+        InputMethodPref::Require
+    } else {
+        InputMethodPref::Auto
+    }
 }
 
 /// Returns `Some(path)` if `--shots <path>` (or `--shots=<path>`) appears
