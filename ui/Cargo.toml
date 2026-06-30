@@ -55,6 +55,49 @@ qos-collab-types = { path = "../qos-collab-types" }
 # without reaching into the qos-collab-types private module path. Pinned
 # to the same major as `qos-collab-types`.
 ed25519-dalek = { version = "2", features = ["rand_core"] }
+# Phase 8 identity-flow widgets: FROST threshold identity engine. The
+# screens in `widget::identity_flow` drive `ThresholdIdentity::bootstrap_single_device`,
+# `begin_enrolment`, `adopt_dkg_outcome`, and `export_recovery_share`.
+qos-threshold-identity = { path = "../qos-threshold-identity" }
+# Phase 8 identity-flow QR widget: `widget::qr` encodes both the
+# pairing-channel JSON payload (screen 3) and the `qos://invite/...`
+# URL (screen 5). `qrcode` is a small (no transitive deps), pure-Rust
+# QR encoder that produces a module-matrix we paint with Vello.
+qrcode = { version = "0.14", default-features = false }
+# Phase 8 invite encoding: the `qos://invite/<base32>` URL packs a
+# postcard-encoded payload as base32 (RFC 4648 alphabet, no padding)
+# so it stays URL-safe and case-insensitive when read aloud.
+base32 = "0.5"
+# Phase 8 pairing one-time MAC: derived from the 6-digit code so the
+# host can authenticate the pairer's DKG round-2 reply without a
+# pre-shared long-term key. SHA-512 is already a transitive via
+# `qos-threshold-identity`, so direct pin keeps the lock single-copy.
+sha2 = "0.10"
+# Phase 8 pairing-channel encryption (placeholder; in-memory shim for
+# the v1 widget tests). HMAC is used as a one-time pairing MAC over
+# the round-1 broadcast keyed by the 6-digit code's full nonce.
+hmac = "0.12"
+# Identity-flow encode helpers — canonical-bytes for the invite
+# envelope's owner signature view, hex for the pairing-channel JSON
+# payload's binary fields, serde_bytes for the postcard-friendly
+# delegation-secret representation, thiserror for the flow-local
+# error type.
+postcard = { version = "1", features = ["alloc"] }
+hex = "0.4"
+serde_bytes = "0.11"
+thiserror = "1"
+# `widget::identity_flow::recovery_share` generates a deterministic
+# placeholder mnemonic on first-run (single-device mode has no real
+# recovery share — see the module-level note). Already a transitive
+# via `qos-threshold-identity`; the direct pin keeps Cargo collapsing
+# to a single copy.
+bip39 = "2"
+# Phase 8 identity-flow needs a `CryptoRng + RngCore` compatible with
+# `frost-ed25519` 3.x (which still consumes `rand_core` 0.6). ui's
+# top-level `rand` dep is on 0.10 and dropped the OsRng re-export, so
+# the identity_flow screens depend on `rand_core` 0.6 directly for
+# `OsRng`.
+rand_core = { version = "0.6", features = ["getrandom"] }
 
 [dev-dependencies]
 regex = "1"
