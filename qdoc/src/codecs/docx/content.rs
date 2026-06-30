@@ -91,18 +91,46 @@ pub(crate) fn parse_body(document_xml: &[u8], reg: &StyleRegistry, doc: &mut Doc
                 if let Some(numid) = p_numid.clone() {
                     doc.set_kind(&id, "list_item");
                     doc.set_attr(&id, "ordered", reg.num_ordered.get(&numid).copied().unwrap_or(false));
+                    // Direct `w:jc` wins; otherwise inherit alignment from the style.
+                    let align = p_align.clone().or_else(|| p_style.as_deref().and_then(|s| reg.para_align(s)));
+                    if let Some(a) = align {
+                        doc.set_attr(&id, "align", a.as_str());
+                    }
                 } else if let Some(l) = level {
                     doc.set_kind(&id, "heading");
                     doc.set_attr(&id, "level", l);
-                }
-                // Direct `w:jc` wins; otherwise inherit alignment from the style.
-                let align = p_align.clone().or_else(|| p_style.as_deref().and_then(|s| reg.para_align(s)));
-                if let Some(a) = align {
-                    doc.set_attr(&id, "align", a.as_str());
-                }
-                if level.is_none() && p_numid.is_none() {
-                    if let Some(st) = p_style.clone() {
-                        cur_para_marks = reg.para_text_marks(&st);
+                    let align = p_align.clone().or_else(|| p_style.as_deref().and_then(|s| reg.para_align(s)));
+                    if let Some(a) = align {
+                        doc.set_attr(&id, "align", a.as_str());
+                    }
+                } else {
+                    // A plain paragraph. A *named* (non-heading, non-list) paragraph
+                    // style → a real CRDT-native style: lift its definition into the
+                    // styles container (keyed by the `w:styleId`) and point the block
+                    // at it via an explicit `style` attr, so the editor resolves the
+                    // real named style. The style now supplies the block's alignment +
+                    // formatting, so those are not *also* lifted onto the block (keeps
+                    // the round-trip idempotent). A *direct* `w:jc` override still
+                    // rides on the block as an `align` attr. Built-in heading/list
+                    // mapping is handled above and untouched.
+                    let lifted = p_style
+                        .as_deref()
+                        .filter(|s| reg.is_named_para(s))
+                        .and_then(|s| reg.style_props(s).map(|props| (s.to_string(), props)));
+                    if let Some((sid, props)) = lifted {
+                        doc.set_style(&sid, &props);
+                        doc.set_attr(&id, "style", sid.as_str());
+                        if let Some(a) = p_align.clone() {
+                            doc.set_attr(&id, "align", a.as_str());
+                        }
+                    } else {
+                        let align = p_align.clone().or_else(|| p_style.as_deref().and_then(|s| reg.para_align(s)));
+                        if let Some(a) = align {
+                            doc.set_attr(&id, "align", a.as_str());
+                        }
+                        if let Some(st) = p_style.clone() {
+                            cur_para_marks = reg.para_text_marks(&st);
+                        }
                     }
                 }
             }
@@ -435,5 +463,41 @@ mod tests {
             other => panic!("fidelity atom missing xml attr: {other:?}"),
         };
         assert!(raw.starts_with("<w:sdt") && raw.contains("boxed") && raw.ends_with("</w:sdt>"), "captured raw: {raw}");
+    }
+
+    #[test]
+    fn imports_named_paragraph_style_into_container() {
+        // A custom (non-heading, non-list) paragraph style carrying formatting →
+        // a CRDT-native style in the styles container, with the block pointing at
+        // it via its `w:styleId` rather than the formatting being baked onto the
+        // block. Mirrors the `.odt` named-style import.
+        let styles = concat!(
+            r##"<w:style w:type="paragraph" w:styleId="Fancy"><w:name w:val="Fancy"/>"##,
+            r##"<w:pPr><w:jc w:val="center"/><w:spacing w:after="180"/><w:ind w:left="360"/></w:pPr>"##,
+            r##"<w:rPr><w:rFonts w:ascii="Times New Roman"/><w:b/><w:i/><w:color w:val="FF0000"/><w:sz w:val="40"/></w:rPr></w:style>"##,
+        );
+        let body = r#"<w:p><w:pPr><w:pStyle w:val="Fancy"/></w:pPr><w:r><w:t>hi</w:t></w:r></w:p>"#;
+        let docx = minimal_docx_styled(styles, body);
+        let mut d = Document::new();
+        DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
+        let snap = d.materialize();
+        let b = &snap.blocks[0];
+        assert_eq!(b.kind, "paragraph");
+        assert_eq!(b.text, "hi");
+        assert_eq!(b.attrs.get("style"), Some(&AttrVal::Str("Fancy".into())), "block points at the styleId: {:?}", b.attrs);
+        // The formatting lives in the style, not directly on the block.
+        assert_eq!(b.attrs.get("align"), None, "alignment comes from the style, not a direct attr: {:?}", b.attrs);
+        assert!(b.marks.is_empty(), "style formatting not lifted as inline marks: {:?}", b.marks);
+
+        let st = snap.styles.get("Fancy").expect("style lifted into container");
+        assert_eq!(st.get("name"), Some(&AttrVal::Str("Fancy".into())));
+        assert_eq!(st.get("bold"), Some(&AttrVal::Bool(true)));
+        assert_eq!(st.get("italic"), Some(&AttrVal::Bool(true)));
+        assert_eq!(st.get("color"), Some(&AttrVal::Str("#ff0000".into())), "w:color FF0000 → #ff0000");
+        assert_eq!(st.get("align"), Some(&AttrVal::Str("center".into())));
+        assert_eq!(st.get("size"), Some(&AttrVal::Float(20.0)), "w:sz 40 half-points → 20pt");
+        assert_eq!(st.get("font"), Some(&AttrVal::Str("serif".into())), "Times New Roman → serif");
+        assert_eq!(st.get("space_after"), Some(&AttrVal::Float(12.0)), "180 twips → 12px");
+        assert_eq!(st.get("indent"), Some(&AttrVal::Float(24.0)), "360 twips → 24px");
     }
 }
