@@ -66,6 +66,15 @@ else
   warn "no sigstoreSigned policy for qOS images"
 fi
 
+# systemd-homed available (per-user encrypted homes; homed users get a
+# LUKS-backed home unlocked at login). The default account is traditional;
+# additional users created with `homectl` are per-user-encrypted.
+if systemctl is-active systemd-homed >/dev/null 2>&1; then
+  ok "systemd-homed active (per-user encrypted homes available)"
+else
+  note "systemd-homed not active (per-user encrypted homes unavailable)"
+fi
+
 # Display server is Wayland (no X11 keylogging surface)
 note "display server: Wayland (compositor: shell --backend drm)"
 
