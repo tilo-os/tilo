@@ -156,6 +156,11 @@ pub struct ActivityTimeline {
     /// Reverse-chronological display order. Defaults to `true`
     /// (newest at top); host can flip it.
     newest_first: bool,
+    /// Last-drawn chip rects, in (kind, rect) order. Populated by
+    /// `draw_filter_strip` so the click handler can hit-test without
+    /// re-measuring text. Empty until the first paint — clicks land
+    /// in the strip before that are no-ops.
+    chip_rects: Vec<(ChipKind, Rect)>,
     dirty: bool,
 }
 
@@ -182,6 +187,7 @@ impl ActivityTimeline {
             on_revert: None,
             now_override: None,
             newest_first: true,
+            chip_rects: Vec::new(),
             dirty: true,
         }
     }
@@ -601,7 +607,7 @@ impl ActivityTimeline {
     /// input box — the typeahead is keyboard-only — but the rect is
     /// kept available for future polish).
     fn draw_filter_strip(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -615,6 +621,10 @@ impl ActivityTimeline {
         let active_text = theme.tokens.colors.text_primary;
         let idle_text = theme.tokens.colors.text_dim;
 
+        // Rebuild the chip-rect cache every frame so click hit-testing
+        // (`handle_event`) lines up with what was just painted.
+        self.chip_rects.clear();
+
         let mut x = strip.x0;
         for chip in ChipKind::ALL {
             let label = chip.label();
@@ -623,6 +633,7 @@ impl ActivityTimeline {
             let chip_h = (strip.height() - 8.0).max(20.0);
             let cy = (strip.y0 + strip.y1) / 2.0;
             let chip_rect = Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
+            self.chip_rects.push((chip, chip_rect));
             let active = self.active_chip == chip;
             let body = if active { active_fill } else { idle_fill };
             let text_color = if active { active_text } else { idle_text };
@@ -841,15 +852,24 @@ impl Widget for ActivityTimeline {
             } => {
                 // Check whether the press landed on a chip first —
                 // the chip strip steals the click before falling
-                // through to the row hit-test.
+                // through to the row hit-test. `chip_rects` is
+                // populated by `draw_filter_strip` so the hit-zones
+                // match what's painted byte-for-byte.
                 let strip = self.filter_strip_rect();
                 if strip.contains(self.last_cursor) {
-                    // No-op fallback: only the timeline's tests poke
-                    // chips directly via `set_active_chip` — for now
-                    // we don't paint chip hover hot-zones, so the
-                    // click does nothing here. Future polish: walk
-                    // the chip rects from `draw_filter_strip` and
-                    // toggle on hit.
+                    for (kind, rect) in &self.chip_rects {
+                        if rect.contains(self.last_cursor) {
+                            if self.active_chip != *kind {
+                                self.active_chip = *kind;
+                                self.rebuild();
+                                self.dirty = true;
+                            }
+                            *handled = true;
+                            return;
+                        }
+                    }
+                    // Click inside the strip but not on a chip — eat
+                    // it so the row hit-test below doesn't fire.
                     return;
                 }
                 if let Some(i) = self.hover_row
@@ -1123,6 +1143,59 @@ mod tests {
         assert_eq!(t.visible_len(), 1, "Governance chip narrows to govern row");
         t.set_active_chip(ChipKind::All);
         assert_eq!(t.visible_len(), 2);
+    }
+
+    #[test]
+    fn chip_strip_click_toggles_active_chip() {
+        // Phase 1 follow-up (task #291): chip strip click hit-testing.
+        // Without a real paint pass the chip_rects cache stays empty,
+        // so seed it directly with a synthetic layout matching what
+        // `draw_filter_strip` would have produced — five 60×24 chips
+        // packed horizontally at the top of the widget.
+        let entries = vec![
+            entry(OpClass::Splice, "Alice", 1, 1),
+            entry(OpClass::Comment, "Bob", 2, 2),
+            entry(OpClass::Govern, "Carol", 3, 3),
+        ];
+        let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), entries);
+
+        // Synthesize chip rects (paint normally populates these).
+        let mut x = PADDING;
+        let cy = PADDING + FILTER_STRIP_HEIGHT / 2.0;
+        for chip in ChipKind::ALL {
+            let rect = Rect::new(x, cy - 12.0, x + 60.0, cy + 12.0);
+            t.chip_rects.push((chip, rect));
+            x += 66.0;
+        }
+
+        // ChipKind::ALL order: All, Edits, Comments, Governance, ....
+        // Click on the "Comments" chip — index 2, x range 132..192.
+        // Move cursor first so handle_event has a valid last_cursor.
+        dispatch(&mut t, &cursor_moved(162.0, cy));
+        dispatch(&mut t, &mouse_press());
+        assert_eq!(
+            t.active_chip(),
+            ChipKind::Comments,
+            "clicking the Comments chip should activate it",
+        );
+        // visible should narrow to Comment-only rows.
+        assert_eq!(t.visible_len(), 1, "narrowed to the one Comment row");
+
+        // Click on the "All" chip — index 0, x range 0..60.
+        dispatch(&mut t, &cursor_moved(30.0, cy));
+        dispatch(&mut t, &mouse_press());
+        assert_eq!(t.active_chip(), ChipKind::All);
+        assert_eq!(t.visible_len(), 3, "All restores every row");
+
+        // Click inside the strip but between chips (gap at x=62..66) —
+        // active_chip stays put.
+        dispatch(&mut t, &cursor_moved(63.0, cy));
+        dispatch(&mut t, &mouse_press());
+        assert_eq!(
+            t.active_chip(),
+            ChipKind::All,
+            "click in the gap between chips is a no-op",
+        );
     }
 
     #[test]
