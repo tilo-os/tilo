@@ -57,12 +57,14 @@ ENV CARGO_HOME=/build/.cargo-home \
     SCCACHE_DIR=/build/.sccache
 
 # Compile the binaries the OS images need. Cache mounts persist cargo's
-# registry + git checkouts (CARGO_HOME), the target dir, and the sccache store
-# across rebuilds. A cache-mounted target/ is NOT part of any image layer, so
-# the freshly built binaries are copied to /out (a real path) inside the same
-# RUN for the final stage to COPY.
+# registry + git checkouts (CARGO_HOME) and the sccache store across rebuilds.
+# NOTE: target/ is deliberately NOT a cache mount. Under buildkit (the CI's
+# docker/build-push-action) a `COPY --from=builder /out/<bin>` whose contents
+# were cp'd out of a cache-mounted target/ fails with "failed to compute cache
+# key: /out/<bin>: not found" (it works under podman/buildah locally — the
+# trap). Keeping target/ a real layer dir makes /out a reliable artifact;
+# sccache still gives fast recompiles.
 RUN --mount=type=cache,target=/build/.cargo-home \
-    --mount=type=cache,target=/build/target \
     --mount=type=cache,target=/build/.sccache \
     cargo build --release \
         -p shell -p fs -p terminal -p file-explorer -p greeter -p installer \
