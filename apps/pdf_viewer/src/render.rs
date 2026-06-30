@@ -87,6 +87,80 @@ pub fn page_card_rect(origin: Point, scale: f64) -> Rect {
     Rect::new(origin.x, origin.y, origin.x + PAGE_W * scale, origin.y + PAGE_H * scale)
 }
 
+/// One laid-out line of body text, in **page-point** space (origin =
+/// page top-left, independent of zoom and scroll). The smart highlight
+/// tool snaps a drag onto these bands so a marker sticks to text exactly
+/// where the glyphs sit.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextLine {
+    /// Index of the source block on the page (for de-duping / debugging).
+    pub block: usize,
+    /// Left edge of the text column for this line, in page points.
+    pub x: f64,
+    /// Right edge of the actual glyphs on this line (text extent, not the
+    /// full column), in page points.
+    pub x_end: f64,
+    /// Baseline-box top in page points.
+    pub y: f64,
+    /// Line height in page points.
+    pub h: f64,
+}
+
+impl TextLine {
+    pub fn rect(&self) -> Rect {
+        Rect::new(self.x, self.y, self.x_end, self.y + self.h)
+    }
+}
+
+/// Replay [`draw_page`]'s block layout *without drawing* to recover the
+/// page-point rectangle of every rendered text line. The text engine
+/// (`tr`) is needed because line wrapping depends on real glyph advances,
+/// so this must run where a [`TextRenderer`] is available (the draw pass).
+/// Keeping it as a pure function next to `draw_page` guarantees the snap
+/// geometry matches the painted glyphs.
+pub fn collect_text_lines(tr: &mut TextRenderer, theme: &Theme, page: &Page) -> Vec<TextLine> {
+    let content_x = MARGIN;
+    let content_w = PAGE_W - 2.0 * MARGIN;
+    let mut y = 0.0f64; // running page-point top, mirrors draw_page's `y`
+    let mut out = Vec::new();
+    for (bi, block) in page.blocks.iter().enumerate() {
+        match block {
+            Block::Spacer(h) => y += h,
+            Block::Divider => y += 16.0,
+            Block::Figure { height, label } => {
+                y += height + 4.0;
+                let csize = 9.5f32;
+                let (_, ch) = tr.measure(label, csize, Some(content_w as f32));
+                y += ch as f64 + 8.0;
+            }
+            _ => {
+                let Some(spec) = body_spec(block, theme) else { continue };
+                let text = block.search_text().unwrap_or("");
+                let size = spec.size; // page-point size (scale == 1 here)
+                let max_w = content_w as f32;
+                let (line_w, th) = tr.measure(text, size, Some(max_w));
+                // Quote blocks indent their text past a left rule.
+                let x = if matches!(block, Block::Quote(_)) { content_x + 14.0 } else { content_x };
+                let line_h = (size * 1.25) as f64;
+                let n_lines = if line_h > 0.0 { (th as f64 / line_h).round().max(1.0) as usize } else { 1 };
+                for li in 0..n_lines {
+                    // The final wrapped line is usually shorter; only its
+                    // measured width is known precisely, so the last line
+                    // uses `line_w` and full lines span the column.
+                    let x_end = if li == n_lines - 1 {
+                        (x + line_w as f64).min(content_x + content_w)
+                    } else {
+                        content_x + content_w
+                    };
+                    out.push(TextLine { block: bi, x, x_end, y: y + li as f64 * line_h, h: line_h });
+                }
+                y += th as f64 + spec.after;
+            }
+        }
+    }
+    out
+}
+
 /// Draw one page: paper card, drop shadow, content, search bands, then
 /// the annotations + signatures that live on it.
 #[allow(clippy::too_many_arguments)]
@@ -477,5 +551,28 @@ pub fn draw_thumbnail(
         let d = 5.0;
         let dot = Circle::new((rect.x1 - d - 2.0, rect.y0 + d + 2.0), d);
         scene.fill(Fill::NonZero, base, theme.tokens.colors.semantic.warning, None, &dot);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::sample_document;
+
+    #[test]
+    fn collect_text_lines_produces_bands_inside_the_page() {
+        let mut tr = TextRenderer::new();
+        let theme = Theme::dark();
+        let doc = sample_document();
+        let page = doc.page(1).unwrap();
+        let lines = collect_text_lines(&mut tr, &theme, page);
+        assert!(!lines.is_empty(), "page 1 has body text -> some lines");
+        for l in &lines {
+            // Bands sit within the page's text column and below the top.
+            assert!(l.x >= MARGIN - 0.5, "line left {} inside margin", l.x);
+            assert!(l.x_end <= PAGE_W - MARGIN + 0.5, "line right {} inside margin", l.x_end);
+            assert!(l.y >= 0.0 && l.y + l.h <= PAGE_H, "line within page height");
+            assert!(l.h > 0.0);
+        }
     }
 }
