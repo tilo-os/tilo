@@ -11,6 +11,8 @@
 //!
 //! - [`categories`] — the sidebar's [`categories::Section`]s and
 //!   [`categories::Category`]s.
+//! - [`sidebar`] — the cohesive navigation sidebar surface and its
+//!   full-width, click-to-select [`sidebar::SidebarRow`].
 //! - [`panes`] — one module per category content pane.
 //! - [`widgets`] — small composition helpers (card, setting row, caption)
 //!   shared across panels.
@@ -27,6 +29,7 @@ pub mod panes;
 pub mod region;
 pub mod settings_app;
 pub mod shots;
+pub mod sidebar;
 pub mod widgets;
 
 pub use settings_app::SettingsApp;
