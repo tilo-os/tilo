@@ -9,12 +9,14 @@
 //! cached in [`Hit`] and consulted by `handle_event` on the next input —
 //! the same pattern the toolkit's `DataTable` uses for its column rects.
 
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
+use vello::kurbo::{Affine, BezPath, Line, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -23,6 +25,7 @@ use ui::icons::{self, Icon};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{SplitLayout, Widget};
 
 use crate::charts::{self, with_alpha, Series};
@@ -30,7 +33,21 @@ use crate::layout;
 use crate::model::{fmt_bytes, fmt_rate, fmt_uptime, MonitorModel, ProcessInfo};
 use crate::prefs::Prefs;
 use crate::responsive::{ProcPane, ProcPush, RailFlap};
-use crate::sampler::Sampler;
+use crate::sampler::{Sampler, StopKind};
+use crate::tree::{FlattenOpts, Forest, Row, SumMode};
+
+/// A row action chosen from the right-click context menu. The menu's action
+/// callbacks are `Fn()` with no access to `&mut self`, so they record the
+/// chosen action into a shared cell that `on_click` drains and applies after
+/// dispatch. This is the consumer-side routing the self-routing context menu
+/// expects (`ContextMenu::handle_event` is a no-op primitive).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProcAction {
+    Stop(u32),
+    Kill(u32),
+    CopyPid(u32),
+    ShowDetails(u32),
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tab {
@@ -73,6 +90,18 @@ const GAP: f64 = 14.0;
 const ROW_H: f64 = 22.0;
 const TABLE_HEADER_H: f64 = 26.0;
 const DETAIL_H: f64 = 96.0;
+/// Per-depth indentation of a tree row's NAME column.
+const TREE_INDENT: f64 = 16.0;
+/// Width of the clickable expand/collapse triangle hit target.
+const TWISTY_W: f64 = 16.0;
+
+// `ui::widget::ContextMenu` lays itself out with private constants; we mirror
+// them here so the app's hit-testing + on-screen-nudge match the primitive's
+// drawn geometry exactly. Keep in sync with `context_menu.rs`.
+const CONTEXT_MENU_W: f64 = 220.0;
+const CONTEXT_MENU_ROW_H: f64 = 28.0;
+const CONTEXT_MENU_SEP_H: f64 = 9.0;
+const CONTEXT_MENU_PAD: f64 = 6.0;
 
 /// Hit rectangles recorded during `draw`, consumed by `handle_event`.
 struct Hit {
@@ -83,7 +112,15 @@ struct Hit {
     kernel_toggle: Rect,
     sort_headers: Vec<(SortKey, Rect)>,
     rows: Vec<(u32, Rect)>,
+    /// Expand/collapse triangles in the tree's NAME column, per parent pid.
+    twisties: Vec<(u32, Rect)>,
+    /// The "Sum subtree / Per-process" toggle pill in the toolbar.
+    sum_toggle: Rect,
+    /// The "Tree / Flat" view toggle pill in the toolbar.
+    tree_toggle: Rect,
     kill_btn: Rect,
+    /// Context-menu item rects, recorded while the menu is open.
+    menu_items: Vec<(usize, Rect)>,
     modal_kill: Rect,
     modal_cancel: Rect,
     /// Hamburger / close affordance summoning the rail when it isn't docked.
@@ -104,7 +141,11 @@ impl Hit {
             kernel_toggle: Rect::ZERO,
             sort_headers: Vec::new(),
             rows: Vec::new(),
+            twisties: Vec::new(),
+            sum_toggle: Rect::ZERO,
+            tree_toggle: Rect::ZERO,
             kill_btn: Rect::ZERO,
+            menu_items: Vec::new(),
             modal_kill: Rect::ZERO,
             modal_cancel: Rect::ZERO,
             rail_toggle: Rect::ZERO,
@@ -138,7 +179,35 @@ pub struct MonitorApp {
     /// wheel + clamp can run in `handle_event` without re-deriving layout.
     content_h: f64,
     viewport_h: f64,
-    confirm_kill: Option<u32>,
+    /// A pending confirmation: the process and which stop signal it will get.
+    /// Set only for the `Kill` (SIGKILL) path; `Stop` (SIGTERM) never gates.
+    confirm_stop: Option<(u32, StopKind)>,
+
+    // process tree
+    /// Tree view (parent→child with twisties) vs a flat sorted list.
+    tree_mode: bool,
+    /// Whether a parent row shows its summed subtree usage or only its own.
+    /// Defaults to [`SumMode::SumSubtree`] per the spec.
+    sum_mode: SumMode,
+    /// pids the user has expanded in the tree (collapsed otherwise).
+    expanded: HashSet<u32>,
+    /// Right-click action menu over a process row (the self-routing
+    /// `ui::widget::ContextMenu`; this app supplies the input routing).
+    context: ContextMenu,
+    /// The pid the open context menu targets.
+    context_pid: Option<u32>,
+    /// Shared sink the menu's `Fn()` callbacks write the chosen action into;
+    /// drained + applied by `on_click` after dispatch (see [`ProcAction`]).
+    /// `Arc<Mutex<..>>` because `ContextMenu` requires `Send + Sync` actions.
+    pending_action: Arc<Mutex<Option<ProcAction>>>,
+    /// The pid most recently "Copy PID"'d — observable by tests and surfaced
+    /// briefly as a toast-style caption (the OS clipboard protocol isn't wired
+    /// to this app yet, so the copy is recorded here).
+    copied_pid: Option<u32>,
+    /// A `--shots` request to open the context menu over a pid once its row
+    /// has been laid out (the anchor isn't known until `draw` computes the row
+    /// rects). Consumed on the first frame that finds the row.
+    context_menu_seed: Option<u32>,
 
     // responsive layout
     /// The system rail: docked beside content when wide, an overlay flap
@@ -160,6 +229,13 @@ pub struct MonitorApp {
     /// exceeds the table viewport width a horizontal scrollbar appears and
     /// `table_scroll_x` can range over the overflow.
     table_content_w: f64,
+    /// The *columns* viewport width — the padded inner band the columns are
+    /// drawn into (`table_viewport.width() − 2·TABLE_PAD`). The horizontal
+    /// scroll clamps against `table_content_w − table_cols_w` so the final
+    /// column (plus its right padding) scrolls fully into view; using the
+    /// un-padded `table_viewport.width()` here left the last `2·TABLE_PAD`
+    /// unreachable (the h-scroll bug).
+    table_cols_w: f64,
     hit: Hit,
 }
 
@@ -194,7 +270,15 @@ impl MonitorApp {
             view_scroll_y: 0.0,
             content_h: 0.0,
             viewport_h: 0.0,
-            confirm_kill: None,
+            confirm_stop: None,
+            tree_mode: true,
+            sum_mode: SumMode::SumSubtree,
+            expanded: HashSet::new(),
+            context: ContextMenu::new(),
+            context_pid: None,
+            pending_action: Arc::new(Mutex::new(None)),
+            copied_pid: None,
+            context_menu_seed: None,
             rail: RailFlap::default(),
             proc_push: ProcPush::default(),
             rect: Rect::ZERO,
@@ -205,6 +289,7 @@ impl MonitorApp {
             rows_per_page: 1,
             table_viewport: Rect::ZERO,
             table_content_w: 0.0,
+            table_cols_w: 0.0,
             hit: Hit::new(),
         }
     }
@@ -259,10 +344,69 @@ impl MonitorApp {
         self.model.processes.iter().find(|p| p.pid == pid).cloned()
     }
 
+    /// Build the rows the process table renders this frame. In tree mode this
+    /// is the flattened parent→child forest (honoring collapse state, the
+    /// sum/per-process mode, sort, kernel pref and filter); in flat mode it's
+    /// the sorted list rendered at depth 0 with no twisties. Both paths share
+    /// the same [`Row`] shape so `draw_process_table` is mode-agnostic.
+    fn visible_rows(&self) -> Vec<Row> {
+        if self.tree_mode {
+            let forest = Forest::build(&self.model.processes);
+            let filter = self.filter.to_lowercase();
+            forest.flatten(&FlattenOpts {
+                sum_mode: self.sum_mode,
+                sort_key: self.sort_key,
+                sort_desc: self.sort_desc,
+                filter: &filter,
+                expanded: &self.expanded,
+                show_kernel: self.prefs.show_kernel_threads,
+            })
+        } else {
+            // Flat: the same sorted/filtered list the old table showed, but
+            // expressed as depth-0 rows. Per-process always in flat mode (no
+            // parent to sum into).
+            self.visible_processes()
+                .into_iter()
+                .map(|p| Row {
+                    pid: p.pid,
+                    name: p.name,
+                    user: p.user,
+                    cpu: p.cpu,
+                    mem_bytes: p.mem_bytes,
+                    threads: p.threads,
+                    status: p.status,
+                    depth: 0,
+                    has_children: false,
+                    expanded: false,
+                    descendants: 0,
+                })
+                .collect()
+        }
+    }
+
     fn clamp_scroll(&mut self) {
-        let n = self.visible_processes().len();
+        let n = self.visible_rows().len();
         let max = n.saturating_sub(self.rows_per_page) as f32;
         self.scroll_off = self.scroll_off.clamp(0.0, max);
+    }
+
+    /// Toggle a parent pid's expand/collapse state.
+    fn toggle_expand(&mut self, pid: u32) {
+        if !self.expanded.insert(pid) {
+            self.expanded.remove(&pid);
+        }
+        self.clamp_scroll();
+    }
+
+    /// Whether `pid` has at least one child in the current process set —
+    /// honoring the kernel-thread pref so a parent whose only children are
+    /// hidden kernel threads doesn't claim a twisty.
+    fn row_has_children(&self, pid: u32) -> bool {
+        self.model.processes.iter().any(|c| {
+            c.ppid == Some(pid)
+                && c.pid != pid
+                && (self.prefs.show_kernel_threads || !c.kernel)
+        })
     }
 
     fn set_sort(&mut self, key: SortKey) {
@@ -274,23 +418,205 @@ impl MonitorApp {
         }
     }
 
+    /// Request a hard **Kill** (SIGKILL). Gated by the confirm-kill pref,
+    /// since SIGKILL is un-catchable and loses unsaved work.
     fn request_kill(&mut self, pid: u32, doc: &mut AutoCommit, _path: &ObjId) {
         if self.prefs.confirm_kill {
-            self.confirm_kill = Some(pid);
+            self.confirm_stop = Some((pid, StopKind::Kill));
         } else {
-            self.do_kill(pid, doc);
+            self.do_stop(pid, StopKind::Kill, doc);
         }
     }
 
-    fn do_kill(&mut self, pid: u32, _doc: &mut AutoCommit) {
-        // Live: dispatch SIGKILL. Sample/offscreen: just drop the row.
-        let _ = self.sampler.kill(pid);
+    /// **Stop** a process (SIGTERM) — the polite, catchable termination
+    /// request. Never gated by a confirm dialog: it lets the process clean
+    /// up, so it's safe as a one-click action.
+    fn request_stop(&mut self, pid: u32, doc: &mut AutoCommit) {
+        self.do_stop(pid, StopKind::Term, doc);
+    }
+
+    /// Dispatch the real signal and reflect it in the local model. Live: the
+    /// sampler sends the actual SIGTERM/SIGKILL via the process handle.
+    /// Sample/offscreen: the signal call is a no-op (the pid isn't a real
+    /// process), but we still drop the row so the UI responds — the next live
+    /// refresh would do the same once the process actually exits.
+    fn do_stop(&mut self, pid: u32, kind: StopKind, _doc: &mut AutoCommit) {
+        let _ = self.sampler.signal(pid, kind);
+        // SIGKILL removes the row immediately (it cannot survive); SIGTERM is
+        // a request, so on a *live* system we'd wait for the next refresh —
+        // but in the seeded/offscreen model there's no live refresh, so we
+        // drop it here too to keep the action observable.
         self.model.processes.retain(|p| p.pid != pid);
         if self.selected_pid == Some(pid) {
             self.selected_pid = None;
         }
-        self.confirm_kill = None;
+        self.confirm_stop = None;
         self.clamp_scroll();
+    }
+
+    // ---- right-click context menu ----------------------------------------
+    /// Open the row action menu for `pid`, anchored at `pos`. Builds the
+    /// item list fresh each time so the labels carry the target process's
+    /// name, and wires each action's `Fn()` callback to record a
+    /// [`ProcAction`] into the shared `pending_action` cell that `on_click`
+    /// drains after dispatch.
+    fn open_context_menu(&mut self, pid: u32, pos: Point) {
+        let name = self
+            .model
+            .processes
+            .iter()
+            .find(|p| p.pid == pid)
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| "process".into());
+
+        let mut menu = ContextMenu::new();
+        let sink = &self.pending_action;
+        let set = |a: ProcAction| {
+            let s = sink.clone();
+            move || {
+                if let Ok(mut g) = s.lock() {
+                    *g = Some(a);
+                }
+            }
+        };
+        menu.push(MenuItem::action("Show details", set(ProcAction::ShowDetails(pid))));
+        menu.push(MenuItem::action("Copy PID", set(ProcAction::CopyPid(pid))));
+        menu.push(MenuItem::separator());
+        menu.push(MenuItem::action(format!("Stop {name}  (SIGTERM)"), set(ProcAction::Stop(pid))));
+        menu.push(MenuItem::action(format!("Kill {name}  (SIGKILL)"), set(ProcAction::Kill(pid))));
+
+        // Anchor so the menu stays on-screen: nudge left/up if it would spill
+        // past the app's right/bottom edge.
+        let mh = Self::context_menu_height(&menu);
+        let mw = CONTEXT_MENU_W;
+        let mut x = pos.x;
+        let mut y = pos.y;
+        if x + mw > self.rect.x1 {
+            x = (self.rect.x1 - mw).max(self.rect.x0);
+        }
+        if y + mh > self.rect.y1 {
+            y = (self.rect.y1 - mh).max(self.rect.y0);
+        }
+        menu.open_at([x as f32, y as f32]);
+        self.context = menu;
+        self.context_pid = Some(pid);
+        self.selected_pid = Some(pid);
+        self.layout_context_menu();
+    }
+
+    /// Run the `ContextMenu` primitive's own `build_layout`/`apply_layout`
+    /// passes against a throwaway one-node taffy tree so its internal `rect`
+    /// matches the anchored position. The menu is a hand-drawn child of this
+    /// app (it isn't in the host's widget tree), so we drive its layout
+    /// contract here — honoring the primitive rather than poking its private
+    /// rect — before drawing it or hit-testing its rows.
+    fn layout_context_menu(&mut self) {
+        use std::collections::HashMap;
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = self.context.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        let _ = taffy.compute_layout(
+            node,
+            Size {
+                width: taffy::AvailableSpace::Definite(CONTEXT_MENU_W as f32),
+                height: taffy::AvailableSpace::MaxContent,
+            },
+        );
+        // `apply_layout` prefers the open menu's stored anchor over the taffy
+        // origin, so the origin we pass is irrelevant when open.
+        self.context.apply_layout(&taffy, node, Point::ZERO);
+    }
+
+    fn close_context_menu(&mut self) {
+        self.context.close();
+        self.context_pid = None;
+    }
+
+    // ---- shot-scenario seed helpers --------------------------------------
+    /// Expand every process whose name is in `names` (for the tree-expanded
+    /// shots). Matches on the live model names so the seed survives a relabel.
+    fn expand_by_name(&mut self, names: &[&str]) {
+        let pids: Vec<u32> = self
+            .model
+            .processes
+            .iter()
+            .filter(|p| names.contains(&p.name.as_str()))
+            .map(|p| p.pid)
+            .collect();
+        self.expanded.extend(pids);
+    }
+
+    /// The pid of the busiest process with this exact name, if present.
+    fn busiest_pid_named(&self, name: &str) -> Option<u32> {
+        self.model
+            .processes
+            .iter()
+            .filter(|p| p.name == name)
+            .max_by(|a, b| a.cpu.total_cmp(&b.cpu))
+            .map(|p| p.pid)
+    }
+
+    /// The busiest process pid currently visible in the tree.
+    fn busiest_visible_pid(&self) -> Option<u32> {
+        self.visible_rows()
+            .into_iter()
+            .max_by(|a, b| a.cpu.total_cmp(&b.cpu))
+            .map(|r| r.pid)
+    }
+
+    /// Apply a [`ProcAction`] the context menu recorded. Returns nothing; the
+    /// CopyPid path writes to the clipboard-bridge field (a no-op stub until
+    /// the OS clipboard protocol lands — recorded so it's observable in tests).
+    fn apply_action(&mut self, action: ProcAction, doc: &mut AutoCommit, path: &ObjId) {
+        match action {
+            ProcAction::Stop(pid) => self.request_stop(pid, doc),
+            ProcAction::Kill(pid) => self.request_kill(pid, doc, path),
+            ProcAction::CopyPid(pid) => {
+                self.copied_pid = Some(pid);
+                self.selected_pid = Some(pid);
+            }
+            ProcAction::ShowDetails(pid) => {
+                self.selected_pid = Some(pid);
+                if self.is_narrow() {
+                    self.proc_push.show_detail();
+                }
+            }
+        }
+    }
+
+    /// Per-item rects of the open context menu, mirroring the primitive's own
+    /// fixed geometry (`ROW_HEIGHT`/`SEPARATOR_HEIGHT`/`PADDING`) so a click
+    /// maps to the row under the cursor. Returns `(item_index, rect)` for
+    /// action rows only (separators aren't clickable).
+    fn context_menu_item_rects(&self) -> Vec<(usize, Rect)> {
+        let r = self.context.get_rect();
+        let mut out = Vec::new();
+        let mut y = r.y0 + CONTEXT_MENU_PAD;
+        for (idx, item) in self.context.items().iter().enumerate() {
+            match item {
+                MenuItem::Action { .. } => {
+                    out.push((idx, Rect::new(r.x0, y, r.x1, y + CONTEXT_MENU_ROW_H)));
+                    y += CONTEXT_MENU_ROW_H;
+                }
+                MenuItem::Separator => y += CONTEXT_MENU_SEP_H,
+            }
+        }
+        out
+    }
+
+    /// Total height the menu occupies — mirrors the primitive's `build_layout`
+    /// height math so the on-screen-nudge in `open_context_menu` is accurate.
+    fn context_menu_height(menu: &ContextMenu) -> f64 {
+        let items: f64 = menu
+            .items()
+            .iter()
+            .map(|i| match i {
+                MenuItem::Action { .. } => CONTEXT_MENU_ROW_H,
+                MenuItem::Separator => CONTEXT_MENU_SEP_H,
+            })
+            .sum::<f64>()
+            .max(CONTEXT_MENU_ROW_H);
+        CONTEXT_MENU_PAD * 2.0 + items
     }
 
     // ---- text helpers ----------------------------------------------------
@@ -409,6 +735,45 @@ impl MonitorApp {
             "rail" => self.rail.snap(true),
             "detail" => self.proc_push.snap(ProcPane::Detail),
             "resources" => self.tab = Tab::Resources,
+            // ---- process-tree scenarios -----------------------------------
+            // The default frame is already the tree COLLAPSED with summed
+            // parent totals (tree_mode on, expanded empty, Sum default). The
+            // scenarios below snap the other states a single headless frame
+            // can't reach through live input.
+            "tree-collapsed" => {
+                // Explicit: collapse everything, Sum mode (the default), so a
+                // shot shows parents carrying their full subtree totals.
+                self.expanded.clear();
+                self.sum_mode = SumMode::SumSubtree;
+            }
+            "tree-expanded" => {
+                // Expand the heavy app subtrees so children appear with their
+                // OWN usage beneath the (still-summed) parents.
+                self.sum_mode = SumMode::SumSubtree;
+                self.expand_by_name(&["shell", "browser", "code", "cargo", "systemd"]);
+            }
+            "per-process" => {
+                // Same expanded tree, but Per-process: every row (parent or
+                // child) shows only its own usage.
+                self.sum_mode = SumMode::PerProcess;
+                self.expand_by_name(&["shell", "browser", "code", "cargo", "systemd"]);
+            }
+            "per-process-collapsed" => {
+                // Collapsed + Per-process: parents show ONLY their own usage,
+                // so the same rows as "tree-collapsed" read much lower.
+                self.expanded.clear();
+                self.sum_mode = SumMode::PerProcess;
+            }
+            "context-menu" => {
+                // Open the right-click action menu over the busiest expanded
+                // child so the menu + a populated tree both show. Expand cargo
+                // too so the seeded `rustc` row is actually visible.
+                self.sum_mode = SumMode::SumSubtree;
+                self.expand_by_name(&["shell", "browser", "code", "cargo"]);
+                // Seed by name when visible, else the busiest visible row.
+                self.context_menu_seed =
+                    self.busiest_pid_named("rustc").or_else(|| self.busiest_visible_pid());
+            }
             "resources-many" => {
                 self.tab = Tab::Resources;
                 // 24 cores so the grid wraps to several rows — the card must
@@ -816,6 +1181,11 @@ impl MonitorApp {
         let columns = layout::process_columns(avail_w);
         let content_w = layout::process_columns_total_w(&columns);
         self.table_content_w = content_w;
+        // The columns' viewport width is the padded band (`avail_w`), NOT the
+        // card's full inner width — the wheel handler clamps the horizontal
+        // scroll against `content_w − table_cols_w`, so recording the padded
+        // width here is what makes the final column reachable.
+        self.table_cols_w = avail_w;
         // Reserve a sliver at the bottom for a horizontal scrollbar when the
         // columns overflow, so rows don't draw under it.
         let h_overflow = (content_w - avail_w).max(0.0);
@@ -863,8 +1233,8 @@ impl MonitorApp {
         // Rows region (above any horizontal scrollbar).
         let view = Rect::new(ti.x0, hdr.y1, ti.x1, ti.y1 - hbar_h);
         self.rows_per_page = (view.height() / ROW_H).floor().max(1.0) as usize;
-        let procs = self.visible_processes();
-        let max_scroll = procs.len().saturating_sub(self.rows_per_page) as f32;
+        let rows = self.visible_rows();
+        let max_scroll = rows.len().saturating_sub(self.rows_per_page) as f32;
         self.scroll_off = self.scroll_off.clamp(0.0, max_scroll);
         let start = self.scroll_off as usize;
         // Record the viewport so wheel routing can tell table-scroll from
@@ -876,10 +1246,11 @@ impl MonitorApp {
         let rows_clip = Rect::new(band.x0, view.y0, band.x1, view.y1);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &rows_clip);
         self.hit.rows.clear();
+        self.hit.twisties.clear();
         let fs = theme.tokens.typography.scale.sm;
         for i in 0..self.rows_per_page {
             let idx = start + i;
-            let Some(p) = procs.get(idx) else { break };
+            let Some(p) = rows.get(idx) else { break };
             let y0 = view.y0 + i as f64 * ROW_H;
             let row = Rect::new(view.x0, y0, view.x1, y0 + ROW_H);
             let selected = self.selected_pid == Some(p.pid);
@@ -904,9 +1275,32 @@ impl MonitorApp {
                 tr.draw_text_weighted(scene, &s, fs, color, t * Affine::translate((x, ty)), None, weight);
             };
             cell(tr, scene, &p.pid.to_string(), &columns[0], txt, TextWeight::Regular);
-            cell(tr, scene, &p.name, &columns[1], name_color, TextWeight::Medium);
+
+            // NAME column: tree indent + twisty + name, all in the NAME band.
+            let name_col = &columns[1];
+            let indent = p.depth as f64 * TREE_INDENT;
+            let name_x0 = col_abs(name_col.x0) + 2.0 + indent;
+            if self.tree_mode && p.has_children {
+                // Expand/collapse triangle (▸ collapsed, ▾ expanded).
+                let tw = Rect::new(name_x0, row.y0, name_x0 + TWISTY_W, row.y1);
+                Self::draw_twisty(scene, t, tw, p.expanded, if selected { c.text_primary } else { c.text_dim });
+                // Hit rect for the twisty (clamped to the visible band).
+                let hx0 = tw.x0.max(band.x0);
+                let hx1 = tw.x1.min(band.x1);
+                if hx1 > hx0 {
+                    self.hit.twisties.push((p.pid, Rect::new(hx0, row.y0, hx1, row.y1)));
+                }
+            }
+            let text_x0 = name_x0 + if self.tree_mode { TWISTY_W } else { 0.0 };
+            // Width left for the name text after the indent + twisty.
+            let name_avail = (col_abs(name_col.x0) + name_col.w - text_x0 - 4.0).max(8.0);
+            let label = Self::truncate(tr, &p.name, fs, name_avail);
+            tr.draw_text_weighted(scene, &label, fs, name_color, t * Affine::translate((text_x0, ty)), None, TextWeight::Medium);
+
             cell(tr, scene, &p.user, &columns[2], txt, TextWeight::Regular);
-            // CPU% coloured by load.
+            // CPU% coloured by load. A collapsed parent's summed total can
+            // exceed 100% (multi-core); colour against a single core's scale
+            // but clamp the hue so a hot subtree reads as fully loaded.
             let cpu_frac = (p.cpu / 100.0).clamp(0.0, 1.0);
             let cpu_col = if p.cpu >= 1.0 { charts::load_color(theme, cpu_frac) } else { txt };
             cell(tr, scene, &format!("{:.1}", p.cpu), &columns[3], cpu_col, TextWeight::Medium);
@@ -918,12 +1312,12 @@ impl MonitorApp {
         scene.pop_layer();
 
         // Vertical row scrollbar.
-        if procs.len() > self.rows_per_page {
+        if rows.len() > self.rows_per_page {
             let track = Rect::new(view.x1 - 5.0, view.y0, view.x1 - 1.0, view.y1);
             charts::fill_rrect(scene, t, track, 2.0, with_alpha(c.border_standard, 90));
-            let frac_v = self.rows_per_page as f64 / procs.len() as f64;
+            let frac_v = self.rows_per_page as f64 / rows.len() as f64;
             let thumb_h = (track.height() * frac_v).max(24.0);
-            let max_off = (procs.len() - self.rows_per_page) as f64;
+            let max_off = (rows.len() - self.rows_per_page) as f64;
             let pos = if max_off > 0.0 { self.scroll_off as f64 / max_off } else { 0.0 };
             let ty0 = track.y0 + (track.height() - thumb_h) * pos;
             charts::fill_rrect(scene, t, Rect::new(track.x0, ty0, track.x1, ty0 + thumb_h), 2.0, with_alpha(c.text_dim, 160));
@@ -941,6 +1335,28 @@ impl MonitorApp {
             let tx0 = track.x0 + (track.width() - thumb_w) * pos;
             charts::fill_rrect(scene, t, Rect::new(tx0, track.y0, tx0 + thumb_w, track.y1), 2.0, with_alpha(c.text_dim, 160));
         }
+    }
+
+    /// Draw a small expand/collapse triangle centred in `r`. Points right (▸)
+    /// when collapsed, down (▾) when expanded — the standard tree affordance.
+    fn draw_twisty(scene: &mut Scene, t: Affine, r: Rect, expanded: bool, color: Color) {
+        let cx = r.center().x;
+        let cy = r.center().y;
+        let s = 3.6; // half-extent of the glyph
+        let mut path = BezPath::new();
+        if expanded {
+            // ▾ pointing down.
+            path.move_to((cx - s, cy - s * 0.7));
+            path.line_to((cx + s, cy - s * 0.7));
+            path.line_to((cx, cy + s * 0.9));
+        } else {
+            // ▸ pointing right.
+            path.move_to((cx - s * 0.7, cy - s));
+            path.line_to((cx + s * 0.9, cy));
+            path.line_to((cx - s * 0.7, cy + s));
+        }
+        path.close_path();
+        scene.fill(Fill::NonZero, t, color, None, &path);
     }
 
     /// The narrow push detail pane: a Back affordance row above a full-area
@@ -1012,13 +1428,52 @@ impl MonitorApp {
         tr.draw_text(scene, kt_label, fs, if on { c.text_primary } else { c.text_dim }, t * Affine::translate((knob_track.x1 + 6.0, kt_r.center().y - fs as f64 / 2.0 - 1.0)), None);
         self.hit.kernel_toggle = kt_r;
 
-        // Count label between search and toggle.
+        // Sum-mode pill, left of the kernel toggle: "Σ Sum subtree" /
+        // "Σ Per-process". Active (Sum) is accent-filled. Hidden in flat
+        // mode (there's nothing to sum into when there's no tree).
+        let mut next_x1 = kt_r.x0 - 10.0;
+        if self.tree_mode {
+            let sum_label = self.sum_mode.label();
+            let sum_text = format!("Σ {sum_label}");
+            let sw = tr.measure(&sum_text, fs, None).0 as f64 + 24.0;
+            let sum_r = Rect::new(next_x1 - sw, r.y0 + 2.0, next_x1, r.y1 - 2.0);
+            let summing = self.sum_mode == SumMode::SumSubtree;
+            charts::fill_rrect(scene, t, sum_r, sum_r.height() / 2.0, if summing { with_alpha(c.accent[5], 60) } else { c.surface_white_5 });
+            charts::stroke_rrect(scene, t, sum_r, sum_r.height() / 2.0, if summing { c.accent[5] } else { c.border_standard }, 1.0);
+            let (stw, _) = tr.measure(&sum_text, fs, None);
+            tr.draw_text(scene, &sum_text, fs, if summing { c.text_primary } else { c.text_dim }, t * Affine::translate((sum_r.center().x - stw as f64 / 2.0, sum_r.center().y - fs as f64 / 2.0 - 1.0)), None);
+            self.hit.sum_toggle = sum_r;
+            next_x1 = sum_r.x0 - 10.0;
+        } else {
+            self.hit.sum_toggle = Rect::ZERO;
+        }
+
+        // Tree/Flat view pill, left of the sum pill.
+        let tree_text = if self.tree_mode { "⊟ Tree" } else { "≣ Flat" };
+        let tw_ = tr.measure(tree_text, fs, None).0 as f64 + 24.0;
+        let tree_r = Rect::new(next_x1 - tw_, r.y0 + 2.0, next_x1, r.y1 - 2.0);
+        charts::fill_rrect(scene, t, tree_r, tree_r.height() / 2.0, if self.tree_mode { with_alpha(c.accent[5], 60) } else { c.surface_white_5 });
+        charts::stroke_rrect(scene, t, tree_r, tree_r.height() / 2.0, if self.tree_mode { c.accent[5] } else { c.border_standard }, 1.0);
+        let (ttw, _) = tr.measure(tree_text, fs, None);
+        tr.draw_text(scene, tree_text, fs, if self.tree_mode { c.text_primary } else { c.text_dim }, t * Affine::translate((tree_r.center().x - ttw as f64 / 2.0, tree_r.center().y - fs as f64 / 2.0 - 1.0)), None);
+        self.hit.tree_toggle = tree_r;
+
+        // Count label between search and the toggle cluster.
         let total = self.model.processes.iter().filter(|p| self.prefs.show_kernel_threads || !p.kernel).count();
-        let shown = self.visible_processes().len();
-        let count = format!("{shown} of {total} processes");
+        let shown = self.visible_rows().len();
+        let count = if let Some(pid) = self.copied_pid {
+            format!("PID {pid} copied  ·  {shown} of {total} shown")
+        } else {
+            format!("{shown} of {total} shown")
+        };
         let (cw, _) = tr.measure(&count, fs, None);
-        let cxx = (search_r.x1 + kt_r.x0) / 2.0 - cw as f64 / 2.0;
-        tr.draw_text(scene, &count, fs, c.text_dim, t * Affine::translate((cxx.max(search_r.x1 + 10.0), r.center().y - fs as f64 / 2.0 - 1.0)), None);
+        let cluster_left = tree_r.x0;
+        let cxx = (search_r.x1 + cluster_left) / 2.0 - cw as f64 / 2.0;
+        // Only draw the count when it actually fits between the search box and
+        // the toggle cluster, so it never overlaps a pill on a narrow toolbar.
+        if cluster_left - (search_r.x1 + 10.0) > cw as f64 + 8.0 {
+            tr.draw_text(scene, &count, fs, c.text_dim, t * Affine::translate((cxx.max(search_r.x1 + 10.0), r.center().y - fs as f64 / 2.0 - 1.0)), None);
+        }
     }
 
     fn draw_detail(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, r: Rect) {
@@ -1146,11 +1601,15 @@ impl MonitorApp {
         );
     }
 
-    fn draw_modal(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, pid: u32) {
+    fn draw_modal(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, pid: u32, kind: StopKind) {
         let c = &theme.tokens.colors;
         // Scrim.
         scene.fill(Fill::NonZero, t, Color::from_rgba8(0, 0, 0, 150), None, &self.rect);
         let name = self.model.processes.iter().find(|p| p.pid == pid).map(|p| p.name.clone()).unwrap_or_else(|| "process".into());
+        let (title, signal_name) = match kind {
+            StopKind::Term => ("Stop process?", "SIGTERM"),
+            StopKind::Kill => ("Kill process?", "SIGKILL"),
+        };
 
         let w = 400.0;
         let h = 168.0;
@@ -1164,8 +1623,8 @@ impl MonitorApp {
         // Danger glyph + title.
         let icon_r = Rect::new(inner.x0, inner.y0, inner.x0 + 22.0, inner.y0 + 22.0);
         icons::draw_icon(scene, t, icon_r, Icon::Power, c.semantic.danger, 1.8);
-        tr.draw_text_weighted(scene, "Kill process?", theme.tokens.typography.scale.lg, c.text_primary, t * Affine::translate((icon_r.x1 + 10.0, inner.y0)), None, TextWeight::Bold);
-        let body = format!("{} (PID {}) will be sent SIGKILL. Unsaved work will be lost.", name, pid);
+        tr.draw_text_weighted(scene, title, theme.tokens.typography.scale.lg, c.text_primary, t * Affine::translate((icon_r.x1 + 10.0, inner.y0)), None, TextWeight::Bold);
+        let body = format!("{} (PID {}) will be sent {}. Unsaved work will be lost.", name, pid, signal_name);
         let body = Self::truncate(tr, &body, theme.tokens.typography.scale.sm, inner.width());
         tr.draw_text(scene, &body, theme.tokens.typography.scale.sm, c.text_dim, t * Affine::translate((inner.x0, inner.y0 + 36.0)), None);
 
@@ -1179,9 +1638,13 @@ impl MonitorApp {
         charts::fill_rrect(scene, t, cancel_r, radius, c.surface_white_5);
         charts::stroke_rrect(scene, t, cancel_r, radius, c.border_standard, 1.0);
         Self::center_label(scene, t, tr, theme, cancel_r, "Cancel", c.text_primary);
-        // Kill.
+        // Confirm (danger) — labelled for the signal being sent.
+        let confirm_label = match kind {
+            StopKind::Term => "Stop",
+            StopKind::Kill => "Kill",
+        };
         charts::fill_rrect(scene, t, kill_r, radius, c.semantic.danger);
-        Self::center_label(scene, t, tr, theme, kill_r, "Kill", Color::WHITE);
+        Self::center_label(scene, t, tr, theme, kill_r, confirm_label, Color::WHITE);
         self.hit.modal_kill = kill_r;
         self.hit.modal_cancel = cancel_r;
     }
@@ -1199,16 +1662,40 @@ impl MonitorApp {
 impl MonitorApp {
     fn on_click(&mut self, p: Point, doc: &mut AutoCommit, path: &ObjId, handled: &mut bool) {
         // Modal takes priority.
-        if let Some(pid) = self.confirm_kill {
+        if let Some((pid, kind)) = self.confirm_stop {
             if self.hit.modal_kill.contains(p) {
-                self.do_kill(pid, doc);
+                self.do_stop(pid, kind, doc);
                 *handled = true;
             } else if self.hit.modal_cancel.contains(p) {
-                self.confirm_kill = None;
+                self.confirm_stop = None;
                 *handled = true;
             } else {
                 *handled = true; // swallow clicks behind the scrim
             }
+            return;
+        }
+
+        // An open context menu floats above the rest of the content. A click
+        // on one of its action rows dispatches the action (and the action's
+        // callback records a `ProcAction` we then drain + apply); a click
+        // anywhere else dismisses it. Either way the click is consumed.
+        if self.context.is_open() {
+            let mut hit_idx = None;
+            for (idx, rect) in self.context_menu_item_rects() {
+                if rect.contains(p) {
+                    hit_idx = Some(idx);
+                    break;
+                }
+            }
+            if let Some(idx) = hit_idx {
+                self.context.click_item(idx); // fires the callback → pending_action
+                let action = self.pending_action.lock().ok().and_then(|mut g| g.take());
+                if let Some(action) = action {
+                    self.apply_action(action, doc, path);
+                }
+            }
+            self.close_context_menu();
+            *handled = true;
             return;
         }
 
@@ -1277,6 +1764,20 @@ impl MonitorApp {
                 *handled = true;
                 return;
             }
+            // Tree/Flat view toggle.
+            if self.hit.tree_toggle.contains(p) {
+                self.tree_mode = !self.tree_mode;
+                self.scroll_off = 0.0;
+                self.clamp_scroll();
+                *handled = true;
+                return;
+            }
+            // Sum subtree / Per-process toggle (tree mode only).
+            if self.tree_mode && self.hit.sum_toggle.contains(p) {
+                self.sum_mode = self.sum_mode.toggled();
+                *handled = true;
+                return;
+            }
             for (key, rect) in self.hit.sort_headers.clone() {
                 if rect.contains(p) {
                     self.set_sort(key);
@@ -1290,6 +1791,15 @@ impl MonitorApp {
                 }
                 *handled = true;
                 return;
+            }
+            // Expand/collapse triangles take precedence over the row body, so
+            // clicking a twisty toggles the subtree without selecting/pushing.
+            for (pid, rect) in self.hit.twisties.clone() {
+                if rect.contains(p) {
+                    self.toggle_expand(pid);
+                    *handled = true;
+                    return;
+                }
             }
             for (pid, rect) in self.hit.rows.clone() {
                 if rect.contains(p) {
@@ -1306,8 +1816,28 @@ impl MonitorApp {
         }
     }
 
+    /// A right-click (secondary button) over a process row opens the action
+    /// context menu anchored at the cursor. Right-clicking empty space (or
+    /// off the Processes tab) is ignored. Returns whether it was consumed.
+    fn on_right_click(&mut self, p: Point, _doc: &mut AutoCommit, _path: &ObjId, handled: &mut bool) {
+        // A right-click anywhere first dismisses an open menu.
+        if self.context.is_open() {
+            self.close_context_menu();
+        }
+        if self.tab != Tab::Processes {
+            return;
+        }
+        for (pid, rect) in self.hit.rows.clone() {
+            if rect.contains(p) {
+                self.open_context_menu(pid, p);
+                *handled = true;
+                return;
+            }
+        }
+    }
+
     fn move_selection(&mut self, delta: i32) {
-        let procs = self.visible_processes();
+        let procs = self.visible_rows();
         if procs.is_empty() {
             return;
         }
@@ -1350,15 +1880,24 @@ impl MonitorApp {
             }
         }
 
+        // Context menu open: Esc dismisses it, everything else is swallowed.
+        if self.context.is_open() {
+            if matches!(key, Key::Named(NamedKey::Escape)) {
+                self.close_context_menu();
+            }
+            *handled = true;
+            return;
+        }
+
         // Modal.
-        if let Some(pid) = self.confirm_kill {
+        if let Some((pid, kind)) = self.confirm_stop {
             match key {
                 Key::Named(NamedKey::Enter) => {
-                    self.do_kill(pid, doc);
+                    self.do_stop(pid, kind, doc);
                     *handled = true;
                 }
                 Key::Named(NamedKey::Escape) => {
-                    self.confirm_kill = None;
+                    self.confirm_stop = None;
                     *handled = true;
                 }
                 _ => *handled = true,
@@ -1427,6 +1966,28 @@ impl MonitorApp {
                 self.move_selection(1);
                 *handled = true;
             }
+            // Right/Left expand/collapse the selected tree node (when it has
+            // children); a no-op in flat mode.
+            Key::Named(NamedKey::ArrowRight)
+                if self.tab == Tab::Processes && self.tree_mode =>
+            {
+                if let Some(pid) = self.selected_pid {
+                    if self.row_has_children(pid) && self.expanded.insert(pid) {
+                        self.clamp_scroll();
+                    }
+                    *handled = true;
+                }
+            }
+            Key::Named(NamedKey::ArrowLeft)
+                if self.tab == Tab::Processes && self.tree_mode =>
+            {
+                if let Some(pid) = self.selected_pid {
+                    if self.expanded.remove(&pid) {
+                        self.clamp_scroll();
+                    }
+                    *handled = true;
+                }
+            }
             Key::Named(NamedKey::Enter) if self.tab == Tab::Processes => {
                 if let Some(pid) = self.selected_pid {
                     self.request_kill(pid, doc, path);
@@ -1451,6 +2012,25 @@ impl MonitorApp {
                     "m" | "M" => self.set_sort(SortKey::Mem),
                     "p" | "P" => self.set_sort(SortKey::Pid),
                     "n" | "N" => self.set_sort(SortKey::Name),
+                    // "s" sends SIGTERM (Stop) to the selection; "g" toggles
+                    // the subtree-sum mode; "t" toggles tree/flat.
+                    "s" | "S" => {
+                        if self.tab == Tab::Processes {
+                            if let Some(pid) = self.selected_pid {
+                                self.request_stop(pid, doc);
+                            }
+                        }
+                    }
+                    "g" | "G" => {
+                        if self.tree_mode {
+                            self.sum_mode = self.sum_mode.toggled();
+                        }
+                    }
+                    "t" | "T" => {
+                        self.tree_mode = !self.tree_mode;
+                        self.scroll_off = 0.0;
+                        self.clamp_scroll();
+                    }
                     _ => return,
                 }
                 *handled = true;
@@ -1627,8 +2207,49 @@ impl Widget for MonitorApp {
             self.draw_rail_toggle(scene, t, theme, main_full);
         }
 
-        if let Some(pid) = self.confirm_kill {
-            self.draw_modal(scene, t, text_renderer, theme, pid);
+        // A `--shots` request to open the context menu over a seeded pid: now
+        // that the table rows are laid out (`hit.rows` is populated), anchor
+        // the menu at that row and clear the seed. If the seeded pid isn't a
+        // visible row this frame, fall back to the first laid-out row so the
+        // shot still demonstrates the menu.
+        if let Some(seed) = self.context_menu_seed.take() {
+            let target = self
+                .hit
+                .rows
+                .iter()
+                .find(|(rp, _)| *rp == seed)
+                .or_else(|| self.hit.rows.first())
+                .map(|(rp, rect)| (*rp, *rect));
+            if let Some((pid, rect)) = target {
+                let anchor = Point::new(rect.x0 + 60.0, rect.y0 + ROW_H);
+                self.last_cursor = Point::new(anchor.x + 20.0, anchor.y + CONTEXT_MENU_ROW_H * 3.5);
+                self.open_context_menu(pid, anchor);
+            }
+        }
+
+        // The right-click action menu floats above the content (but below the
+        // confirm modal). The primitive renders itself at its stored anchor;
+        // we draw it directly here, the same hand-drawn way as the rest of the
+        // app, then record its item hit rects for `on_click` routing.
+        if self.context.is_open() {
+            self.context.draw(scene, t, text_renderer, theme, _presence);
+            self.hit.menu_items = self.context_menu_item_rects();
+            // Highlight the row under the cursor for affordance.
+            let cur = self.last_cursor;
+            let c = &theme.tokens.colors;
+            for (_idx, rect) in &self.hit.menu_items {
+                if rect.contains(cur) {
+                    charts::fill_rrect(scene, t, *rect, 4.0, with_alpha(c.accent[5], 70));
+                }
+            }
+            // Re-draw labels over the highlight so they stay legible.
+            self.context.draw(scene, t, text_renderer, theme, _presence);
+        } else {
+            self.hit.menu_items.clear();
+        }
+
+        if let Some((pid, kind)) = self.confirm_stop {
+            self.draw_modal(scene, t, text_renderer, theme, pid, kind);
         }
     }
 
@@ -1649,7 +2270,7 @@ impl Widget for MonitorApp {
                 self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                if self.confirm_kill.is_some() {
+                if self.confirm_stop.is_some() {
                     return;
                 }
                 // Pixels of scroll this notch represents (≈60px/line desktop
@@ -1668,7 +2289,10 @@ impl Widget for MonitorApp {
                     // vertical wheel scrolls the rows.
                     if shift || px_x.abs() > px_y.abs() {
                         let dx = if shift && px_x == 0.0 { px_y } else { px_x };
-                        let max_x = (self.table_content_w - self.table_viewport.width()).max(0.0) as f32;
+                        // Clamp against the *columns* viewport (`table_cols_w`,
+                        // the padded band), NOT the card's full inner width, so
+                        // the final column + its right padding scroll into view.
+                        let max_x = (self.table_content_w - self.table_cols_w).max(0.0) as f32;
                         self.table_scroll_x = (self.table_scroll_x + dx).clamp(0.0, max_x);
                     } else {
                         let rows = px_y / ROW_H as f32;
@@ -1694,6 +2318,14 @@ impl Widget for MonitorApp {
             } => {
                 let p = self.last_cursor;
                 self.on_click(p, doc, path, handled);
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } => {
+                let p = self.last_cursor;
+                self.on_right_click(p, doc, path, handled);
             }
             WindowEvent::KeyboardInput { event: ke, .. }
                 if ke.state == ElementState::Pressed =>
@@ -1734,9 +2366,26 @@ impl Widget for MonitorApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::text_render::TextRenderer;
 
     fn app() -> MonitorApp {
         MonitorApp::new()
+    }
+
+    /// Lay the app out at `(w, h)` and run one real `draw` so the frame caches
+    /// (`table_content_w`, `table_cols_w`, `table_viewport`, the hit rects)
+    /// are populated exactly as the live renderer would. No GPU — `draw` only
+    /// writes into a CPU `Scene`.
+    fn draw_at(a: &mut MonitorApp, w: f64, h: f64) {
+        a.rect = Rect::new(0.0, 0.0, w, h);
+        // Settle the rail flap for this width so the layout is stable.
+        let layout = a.rail_layout();
+        a.rail.reconcile(layout);
+        let theme = Theme::dark();
+        let presence = PresenceCtx::empty();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        a.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     }
 
     #[test]
@@ -1793,10 +2442,32 @@ mod tests {
         let pid = a.selected_pid.unwrap();
         let before = a.model.processes.len();
         let mut doc = AutoCommit::new();
-        a.do_kill(pid, &mut doc);
+        a.do_stop(pid, StopKind::Kill, &mut doc);
         assert_eq!(a.model.processes.len(), before - 1);
         assert!(a.selected_pid.is_none());
         assert!(a.model.processes.iter().all(|p| p.pid != pid));
+    }
+
+    /// Stop (SIGTERM) and Kill (SIGKILL) are distinct actions: Stop is never
+    /// gated by a confirm, while Kill is gated by the confirm-kill pref.
+    #[test]
+    fn stop_is_ungated_kill_is_gated() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        a.prefs.confirm_kill = true;
+        let pid = a.visible_rows()[0].pid;
+
+        // Stop (SIGTERM) goes through immediately, no modal.
+        a.selected_pid = Some(pid);
+        a.request_stop(pid, &mut doc);
+        assert!(a.confirm_stop.is_none(), "Stop must not pop a confirm");
+        assert!(a.model.processes.iter().all(|p| p.pid != pid), "Stop dropped the row");
+
+        // Kill (SIGKILL) pops the confirm dialog while the pref is on.
+        let pid2 = a.visible_rows()[0].pid;
+        a.request_kill(pid2, &mut doc, &root);
+        assert_eq!(a.confirm_stop, Some((pid2, StopKind::Kill)), "Kill is gated");
     }
 
     #[test]
@@ -1807,20 +2478,21 @@ mod tests {
         let root = automerge::ROOT;
         a.prefs.confirm_kill = true;
         a.request_kill(pid, &mut doc, &root);
-        assert_eq!(a.confirm_kill, Some(pid));
+        assert_eq!(a.confirm_stop, Some((pid, StopKind::Kill)));
         // Direct kill when confirmation is off.
-        a.confirm_kill = None;
+        a.confirm_stop = None;
         a.prefs.confirm_kill = false;
         a.request_kill(pid, &mut doc, &root);
-        assert!(a.confirm_kill.is_none());
+        assert!(a.confirm_stop.is_none());
         assert!(a.model.processes.iter().all(|p| p.pid != pid));
     }
 
     #[test]
     fn arrow_navigation_moves_selection() {
         let mut a = app();
+        a.tree_mode = false; // flat list so visible_rows order == sorted list
         a.rows_per_page = 10;
-        let v = a.visible_processes();
+        let v = a.visible_rows();
         a.selected_pid = Some(v[0].pid);
         a.move_selection(1);
         assert_eq!(a.selected_pid, Some(v[1].pid));
@@ -1960,5 +2632,300 @@ mod tests {
         assert!(handled);
         assert_eq!(a.tab, Tab::Processes);
         assert_eq!(a.view_scroll_y, 0.0, "tab switch must reset the page scroll");
+    }
+
+    // ---- new features: h-scroll, tree, sum, context menu ----------------
+
+    /// Bug fix: the horizontal scroll must reach the FULL table width so the
+    /// final column (plus its right padding) scrolls into view. The wheel
+    /// handler clamps against `table_content_w − table_cols_w` (the padded
+    /// columns viewport), so at max scroll the last column's right edge lands
+    /// exactly at the right of the visible band — not `2·TABLE_PAD` short, the
+    /// bug. This asserts on the exact clamp the production wheel path uses.
+    #[test]
+    fn h_scroll_reaches_the_last_column() {
+        let mut a = app();
+        // Simulate a narrow table the renderer would record: content wider
+        // than the padded columns viewport.
+        a.table_content_w = 528.0; // sum of the six min columns
+        a.table_cols_w = 300.0; // padded band (narrow window)
+        let max_x = (a.table_content_w - a.table_cols_w).max(0.0) as f32; // 228
+        // The OLD (buggy) clamp used the un-padded viewport width, which is
+        // 2·TABLE_PAD wider, leaving the last 24px unreachable. Prove the new
+        // max exceeds that buggy bound by exactly 2·TABLE_PAD.
+        let buggy_max = (a.table_content_w - (a.table_cols_w + 2.0 * layout::TABLE_PAD)).max(0.0) as f32;
+        assert!(max_x > buggy_max, "fixed clamp {max_x} must exceed buggy {buggy_max}");
+        assert!((max_x - buggy_max - (2.0 * layout::TABLE_PAD) as f32).abs() < 0.01);
+        // Over-scroll clamps to exactly max_x — the last column reachable.
+        a.table_scroll_x = (a.table_scroll_x + 9999.0).clamp(0.0, max_x);
+        assert_eq!(a.table_scroll_x, max_x);
+        // At max scroll, the last column's content-space right edge maps to
+        // the right of the columns band (within rounding): full width shown.
+        let cols = layout::process_columns(a.table_cols_w);
+        let content_w = layout::process_columns_total_w(&cols);
+        let last_right_in_view = content_w - a.table_scroll_x as f64; // relative to band left
+        assert!(
+            (last_right_in_view - a.table_cols_w).abs() < 1.0,
+            "last column right edge {last_right_in_view} must align to band width {}",
+            a.table_cols_w
+        );
+    }
+
+    /// End-to-end h-scroll: lay the app out narrow (so the six columns
+    /// overflow), draw a real frame, then drive the production wheel handler
+    /// with a big shift-scroll. The table must scroll until the final column's
+    /// right edge reaches the visible band's right edge — the whole table
+    /// width, including the last column, becomes reachable.
+    #[test]
+    fn h_scroll_drive_reaches_last_column_end_to_end() {
+        let mut a = app();
+        // Narrow enough that the columns overflow the table card.
+        draw_at(&mut a, 520.0, 700.0);
+        assert!(
+            a.table_content_w > a.table_cols_w + 1.0,
+            "columns must overflow at this width ({} vs {})",
+            a.table_content_w,
+            a.table_cols_w
+        );
+        // Park the cursor over the table so the wheel routes to h-scroll.
+        a.last_cursor = a.table_viewport.center();
+        let modifiers = winit::event::Modifiers::default();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy::NodeId::new(0);
+        // A horizontal wheel (x delta dominant) drives the column scroll
+        // through the real `handle_event` path. Drive it hard enough to pin
+        // the clamp ceiling.
+        for _ in 0..40 {
+            let ev = WindowEvent::MouseWheel {
+                device_id: unsafe { winit::event::DeviceId::dummy() },
+                delta: MouseScrollDelta::LineDelta(-50.0, 0.0),
+                phase: winit::event::TouchPhase::Moved,
+            };
+            let mut handled = false;
+            let mut focus = None;
+            a.handle_event(&ev, 1.0, &modifiers, &mut doc, &root, &mut handled, &mut focus, node, &taffy);
+        }
+        // The real clamp ceiling from this frame's metrics:
+        let max_x = (a.table_content_w - a.table_cols_w).max(0.0) as f32;
+        assert_eq!(a.table_scroll_x, max_x, "wheel drove scroll to its ceiling");
+        // At the ceiling, the last column's content-space right edge maps to
+        // the right of the columns band (within 1px rounding).
+        let cols = layout::process_columns(a.table_cols_w);
+        let content_w = layout::process_columns_total_w(&cols);
+        let last_right_in_band = content_w - a.table_scroll_x as f64;
+        assert!(
+            (last_right_in_band - a.table_cols_w).abs() < 1.0,
+            "last column right edge {last_right_in_band} reaches band width {}",
+            a.table_cols_w
+        );
+    }
+
+    /// The tree defaults on, Sum subtree by default, and collapsed — so the
+    /// first frame shows parents carrying their full subtree totals.
+    #[test]
+    fn tree_defaults_collapsed_summed() {
+        let a = app();
+        assert!(a.tree_mode, "tree on by default");
+        assert_eq!(a.sum_mode, SumMode::SumSubtree, "Sum is the default");
+        assert!(a.expanded.is_empty(), "collapsed by default");
+        // A collapsed parent (shell) shows MORE than its own CPU because it
+        // sums its subtree.
+        let rows = a.visible_rows();
+        let shell = rows.iter().find(|r| r.name == "shell").unwrap();
+        let own = a.model.processes.iter().find(|p| p.name == "shell").unwrap().cpu;
+        assert!(shell.cpu > own + 1.0, "collapsed shell {} sums subtree (own {own})", shell.cpu);
+        assert!(shell.has_children && !shell.expanded);
+    }
+
+    /// Clicking a twisty (via the production `on_click` path) expands the node
+    /// and its children appear in the next `visible_rows`.
+    #[test]
+    fn clicking_twisty_expands_and_children_appear() {
+        let mut a = app();
+        let shell_pid = a.model.processes.iter().find(|p| p.name == "shell").unwrap().pid;
+        // Seat the twisty hit rect the renderer would record and click it.
+        a.hit.twisties = vec![(shell_pid, Rect::new(0.0, 0.0, 16.0, 22.0))];
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut handled = false;
+        let before = a.visible_rows().len();
+        a.on_click(Point::new(8.0, 11.0), &mut doc, &root, &mut handled);
+        assert!(handled, "twisty click consumed");
+        assert!(a.expanded.contains(&shell_pid), "shell expanded");
+        let rows = a.visible_rows();
+        assert!(rows.len() > before, "expanding reveals children");
+        // A direct child of shell (e.g. browser) now appears at depth 1.
+        let browser = rows.iter().find(|r| r.name == "browser");
+        assert!(browser.is_some(), "browser child visible after expand");
+        assert_eq!(browser.unwrap().depth, 1, "child indented one level");
+    }
+
+    /// Toggling Sum→Per-process changes a collapsed parent's displayed total
+    /// (its summed subtree usage drops to its own usage). Drives the exact
+    /// production toggle path `on_click` runs for the sum pill.
+    #[test]
+    fn toggling_sum_changes_parent_total() {
+        let mut a = app();
+        let shell_summed = {
+            let rows = a.visible_rows();
+            rows.iter().find(|r| r.name == "shell").unwrap().cpu
+        };
+        // Click the sum-toggle pill via on_click.
+        a.hit.sum_toggle = Rect::new(0.0, 0.0, 120.0, 30.0);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut handled = false;
+        a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut handled);
+        assert!(handled);
+        assert_eq!(a.sum_mode, SumMode::PerProcess);
+        let shell_own = a.visible_rows().iter().find(|r| r.name == "shell").unwrap().cpu;
+        assert!(
+            shell_summed > shell_own + 1.0,
+            "summed total {shell_summed} must exceed per-process {shell_own}"
+        );
+        let real_own = a.model.processes.iter().find(|p| p.name == "shell").unwrap().cpu;
+        assert!((shell_own - real_own).abs() < 1e-3, "per-process == own usage");
+    }
+
+    /// A right-click over a process row opens the action context menu anchored
+    /// at the cursor, targeting that row's pid.
+    #[test]
+    fn right_click_opens_context_menu_for_row() {
+        let mut a = app();
+        a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let pid = a.model.processes[5].pid;
+        a.hit.rows = vec![(pid, Rect::new(100.0, 200.0, 600.0, 222.0))];
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut handled = false;
+        a.on_right_click(Point::new(150.0, 210.0), &mut doc, &root, &mut handled);
+        assert!(handled, "right-click on a row consumed");
+        assert!(a.context.is_open(), "menu opened");
+        assert_eq!(a.context_pid, Some(pid), "menu targets the right pid");
+        // The menu has the expected actions (5 items incl. a separator).
+        let labels: Vec<String> = a
+            .context
+            .items()
+            .iter()
+            .filter_map(|i| i.label().map(|s| s.to_string()))
+            .collect();
+        assert!(labels.iter().any(|l| l.starts_with("Stop")), "has Stop: {labels:?}");
+        assert!(labels.iter().any(|l| l.starts_with("Kill")), "has Kill: {labels:?}");
+        assert!(labels.iter().any(|l| l == "Copy PID"), "has Copy PID");
+        assert!(labels.iter().any(|l| l == "Show details"), "has Show details");
+    }
+
+    /// Clicking the "Stop" item in the open menu dispatches a SIGTERM via the
+    /// production action path (the menu callback records the action, on_click
+    /// drains + applies it). Stop is ungated, so the row drops with no modal.
+    #[test]
+    fn context_menu_stop_dispatches_sigterm() {
+        let mut a = app();
+        a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let pid = a.model.processes[5].pid;
+        a.hit.rows = vec![(pid, Rect::new(100.0, 200.0, 600.0, 222.0))];
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut h = false;
+        a.on_right_click(Point::new(150.0, 210.0), &mut doc, &root, &mut h);
+        // Find the "Stop" item's rect from the production geometry and click it.
+        let stop_idx = a
+            .context
+            .items()
+            .iter()
+            .position(|i| i.label().map(|l| l.starts_with("Stop")).unwrap_or(false))
+            .unwrap();
+        let rect = a
+            .context_menu_item_rects()
+            .into_iter()
+            .find(|(idx, _)| *idx == stop_idx)
+            .map(|(_, r)| r)
+            .unwrap();
+        let mut h2 = false;
+        a.on_click(rect.center(), &mut doc, &root, &mut h2);
+        assert!(h2, "menu item click consumed");
+        assert!(!a.context.is_open(), "menu closed after action");
+        assert!(a.confirm_stop.is_none(), "Stop (SIGTERM) is ungated");
+        assert!(a.model.processes.iter().all(|p| p.pid != pid), "process stopped");
+    }
+
+    /// Clicking "Kill" in the menu routes through the gated path: with the
+    /// confirm pref on, it pops the SIGKILL confirm modal.
+    #[test]
+    fn context_menu_kill_gated_by_confirm() {
+        let mut a = app();
+        a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        a.prefs.confirm_kill = true;
+        let pid = a.model.processes[5].pid;
+        a.hit.rows = vec![(pid, Rect::new(100.0, 200.0, 600.0, 222.0))];
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut h = false;
+        a.on_right_click(Point::new(150.0, 210.0), &mut doc, &root, &mut h);
+        let kill_idx = a
+            .context
+            .items()
+            .iter()
+            .position(|i| i.label().map(|l| l.starts_with("Kill")).unwrap_or(false))
+            .unwrap();
+        let rect = a
+            .context_menu_item_rects()
+            .into_iter()
+            .find(|(idx, _)| *idx == kill_idx)
+            .map(|(_, r)| r)
+            .unwrap();
+        let mut h2 = false;
+        a.on_click(rect.center(), &mut doc, &root, &mut h2);
+        assert_eq!(a.confirm_stop, Some((pid, StopKind::Kill)), "Kill popped the confirm");
+        // The process is NOT yet gone — the modal must be confirmed first.
+        assert!(a.model.processes.iter().any(|p| p.pid == pid), "not killed until confirmed");
+    }
+
+    /// Copy PID records the pid (clipboard bridge) and is observable.
+    #[test]
+    fn context_menu_copy_pid_records_pid() {
+        let mut a = app();
+        a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let pid = a.model.processes[3].pid;
+        a.hit.rows = vec![(pid, Rect::new(100.0, 200.0, 600.0, 222.0))];
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut h = false;
+        a.on_right_click(Point::new(150.0, 210.0), &mut doc, &root, &mut h);
+        let idx = a
+            .context
+            .items()
+            .iter()
+            .position(|i| i.label() == Some("Copy PID"))
+            .unwrap();
+        let rect = a
+            .context_menu_item_rects()
+            .into_iter()
+            .find(|(i, _)| *i == idx)
+            .map(|(_, r)| r)
+            .unwrap();
+        let mut h2 = false;
+        a.on_click(rect.center(), &mut doc, &root, &mut h2);
+        assert_eq!(a.copied_pid, Some(pid), "Copy PID recorded");
+    }
+
+    /// Search/filter still works over the tree: filtering to a deep child
+    /// keeps its ancestors visible (so the match is reachable) and prunes
+    /// unrelated branches.
+    #[test]
+    fn filter_works_over_the_tree() {
+        let mut a = app();
+        a.filter = "rustc".into();
+        let rows = a.visible_rows();
+        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert!(names.contains(&"rustc"), "match present: {names:?}");
+        // rustc's ancestor chain (cargo → code → shell) is force-shown.
+        assert!(names.contains(&"cargo"), "ancestor cargo kept: {names:?}");
+        assert!(names.contains(&"code"), "ancestor code kept: {names:?}");
+        assert!(names.contains(&"shell"), "ancestor shell kept: {names:?}");
+        // An unrelated branch (systemd's services) is pruned.
+        assert!(!names.contains(&"chronyd"), "unrelated branch pruned: {names:?}");
     }
 }
