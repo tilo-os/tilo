@@ -84,6 +84,32 @@ impl HistoryAuthor {
     }
 }
 
+/// Phase 9: redaction-display metadata attached to a [`HistoryEntry`]
+/// whose op was redacted. Optional on the entry — when present, the
+/// widget renders the row with the struck-through summary, suppresses
+/// the `[Revert]` chip, and exposes the redactor + reason on hover.
+///
+/// Source: the broker's `RedactionRecord` (see
+/// `shell/src/shell/collab_broker.rs`). The producer projects the
+/// redactor's identity to a short display string + lifts the `reason`
+/// onto this struct; the widget never sees the original ciphertext or
+/// the underlying pubkey.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RedactionDisplay {
+    /// Short display label for the redactor, e.g.
+    /// `"alice@example.com"` or `"Alice (Owner)"`. The producer picks
+    /// the format; the widget renders it verbatim.
+    pub redactor_label: String,
+    /// Free-text reason as recorded by the owner at redact time.
+    /// Capped at 512 bytes upstream (the
+    /// `qos_collab_types::MAX_REDACTION_REASON_BYTES` bound).
+    pub reason: String,
+    /// When the redaction was issued. The widget renders this with
+    /// the same relative-time helper used for the row's own
+    /// timestamp.
+    pub redacted_at: SystemTime,
+}
+
 /// One entry in an artifact's audit timeline.
 ///
 /// Source-agnostic by design: the widget never asks where this came
@@ -121,6 +147,12 @@ pub struct HistoryEntry {
     /// because some entries (Govern ops, pure metadata edits) have
     /// no per-entry payload to preview.
     pub diff_payload: Option<Vec<u8>>,
+    /// Phase 9: if the op corresponding to this entry has been
+    /// redacted, the chrome attaches a [`RedactionDisplay`] payload
+    /// here. `None` means "not redacted; render the summary as
+    /// normal". Producers default to `None` for backward compat with
+    /// pre-Phase-9 callers.
+    pub redaction: Option<RedactionDisplay>,
 }
 
 /// Predicate the activity timeline applies to each [`HistoryEntry`]
@@ -210,8 +242,11 @@ pub fn op_class_is_revertible(op: OpClass) -> bool {
         // design: it asserts a snapshot horizon for the channel and
         // "reverting" it would mean un-evicting bytes the local cache
         // may no longer hold. Owners issue a new checkpoint rather
-        // than reverting an old one.
-        OpClass::Comment | OpClass::Govern | OpClass::Compaction => false,
+        // than reverting an old one. Phase 9's `Redact` is similarly
+        // non-revertible — un-redacting is not a concept; an owner
+        // who issued a Redact in error must own that record and reach
+        // for off-band recovery.
+        OpClass::Comment | OpClass::Govern | OpClass::Compaction | OpClass::Redact => false,
     }
 }
 
@@ -229,6 +264,10 @@ pub fn op_class_glyph(op: OpClass) -> &'static str {
         OpClass::Restore => "\u{21b6}",    // ↶
         OpClass::Govern => "\u{2605}",     // ★
         OpClass::Compaction => "\u{2702}", // ✂ — host-driven horizon
+        // Phase 9: a "circled ring operator" reads as a compliance
+        // seal; pictographic emoji (e.g. U+1F512 lock) are banned by
+        // the project convention.
+        OpClass::Redact => "\u{229A}",     // ⊚ — redaction seal
     }
 }
 
@@ -302,6 +341,7 @@ mod tests {
             timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(ts_offset_secs),
             summary: "test entry".into(),
             diff_payload: None,
+            redaction: None,
         }
     }
 
@@ -365,8 +405,8 @@ mod tests {
         // Pin the revertibility table — a future regression that
         // accidentally makes Comment revertible would silently paint
         // a confusing chip on every comment row. The table mirrors
-        // the spec's permission-table prose: only Comment + Govern
-        // are non-revertible.
+        // the spec's permission-table prose: Comment, Govern,
+        // Compaction, and Redact are non-revertible (the rest are).
         assert!(op_class_is_revertible(OpClass::Splice));
         assert!(op_class_is_revertible(OpClass::Move));
         assert!(op_class_is_revertible(OpClass::EditMeta));
@@ -374,6 +414,31 @@ mod tests {
         assert!(op_class_is_revertible(OpClass::Restore));
         assert!(!op_class_is_revertible(OpClass::Comment));
         assert!(!op_class_is_revertible(OpClass::Govern));
+        assert!(!op_class_is_revertible(OpClass::Compaction));
+        assert!(!op_class_is_revertible(OpClass::Redact));
+    }
+
+    #[test]
+    fn redacted_entry_is_non_revertible_regardless_of_op_class() {
+        // The widget gates the [Revert] chip on a combination of
+        // `op_class_is_revertible` and `entry.redaction.is_none()`;
+        // a Splice that has since been redacted MUST NOT show the
+        // chip. This test pins the predicate at the data-layer so
+        // a future regression that silently re-enabled the chip on
+        // redacted rows trips the unit pass.
+        let mut e = entry(OpClass::Splice, "Alice", 0);
+        e.redaction = Some(RedactionDisplay {
+            redactor_label: "owner@example".into(),
+            reason: "GDPR".into(),
+            redacted_at: SystemTime::UNIX_EPOCH,
+        });
+        // op_class is still Splice (revertible by class) but the
+        // entry-level predicate must veto the chip.
+        assert!(op_class_is_revertible(e.op_class));
+        assert!(
+            e.redaction.is_some(),
+            "the chrome reads `entry.redaction.is_some()` as the veto",
+        );
     }
 
     #[test]
@@ -389,6 +454,8 @@ mod tests {
             OpClass::Tombstone,
             OpClass::Restore,
             OpClass::Govern,
+            OpClass::Compaction,
+            OpClass::Redact,
         ] {
             let g = op_class_glyph(op);
             assert!(!g.is_empty(), "glyph for {:?} must not be empty", op);
