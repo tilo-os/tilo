@@ -795,6 +795,16 @@ impl RecoveryChallenge {
         Ok(Self { positions, expected })
     }
 
+    /// Expected word at slot index `0..3`. Used by the verify screen
+    /// to colour the slot's border green when the user has typed the
+    /// correct word.
+    pub fn expected_word(&self, slot: usize) -> String {
+        self.expected
+            .get(slot)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// Check the user's typed answers (case-insensitive, whitespace
     /// trimmed). Returns `true` iff all three match.
     pub fn check(&self, answers: &[&str; 3]) -> bool {
@@ -805,6 +815,388 @@ impl RecoveryChallenge {
         }
         true
     }
+}
+
+/// Single-line text edit state shared by the identity-flow inline
+/// inputs (`create_identity` display name, `recovery_verify` blank
+/// slots, etc.). Owns the buffer, byte cursor, and optional selection
+/// anchor. The `apply_key` method handles every keyboard shortcut the
+/// user is likely to reach for — arrow movement, word jumps with
+/// Ctrl, selection extension with Shift, plus the standard
+/// Ctrl+A/C/X/V/Home/End/Backspace/Delete.
+///
+/// Screens reach in for `text` to render and call `apply_key` from
+/// their `handle_event`. They render the caret at `cursor` and a
+/// selection band over `selection_range()` if present.
+#[derive(Clone, Debug, Default)]
+pub struct LineEditState {
+    pub text: String,
+    /// Byte index into `text`. Always on a char boundary.
+    pub cursor: usize,
+    /// Anchor end of the selection. `None` when nothing is selected.
+    pub selection_anchor: Option<usize>,
+}
+
+impl LineEditState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_text(text: impl Into<String>) -> Self {
+        let text = text.into();
+        let cursor = text.len();
+        Self {
+            text,
+            cursor,
+            selection_anchor: None,
+        }
+    }
+
+    /// Active selection as a byte-index pair `(lo, hi)`, both on char
+    /// boundaries.
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        let anchor = self.selection_anchor?;
+        if anchor == self.cursor {
+            None
+        } else if anchor < self.cursor {
+            Some((anchor, self.cursor))
+        } else {
+            Some((self.cursor, anchor))
+        }
+    }
+
+    /// `text` of the active selection (empty if none).
+    pub fn selected_text(&self) -> &str {
+        match self.selection_range() {
+            Some((lo, hi)) => &self.text[lo..hi],
+            None => "",
+        }
+    }
+
+    /// Move cursor to byte position `pos`. If `extend`, keep the
+    /// existing anchor; otherwise clear the anchor. `pos` is clamped
+    /// to the string bounds + snapped to the next char boundary.
+    pub fn move_cursor(&mut self, pos: usize, extend: bool) {
+        let mut pos = pos.min(self.text.len());
+        while pos > 0 && !self.text.is_char_boundary(pos) {
+            pos -= 1;
+        }
+        if extend {
+            self.selection_anchor.get_or_insert(self.cursor);
+        } else {
+            self.selection_anchor = None;
+        }
+        self.cursor = pos;
+    }
+
+    /// Drop the current selection by replacing with an empty string.
+    /// Returns `true` if anything was removed.
+    pub fn delete_selection(&mut self) -> bool {
+        let Some((lo, hi)) = self.selection_range() else {
+            return false;
+        };
+        self.text.replace_range(lo..hi, "");
+        self.cursor = lo;
+        self.selection_anchor = None;
+        true
+    }
+
+    /// Insert `s` at the cursor, replacing the current selection.
+    pub fn insert_str(&mut self, s: &str) {
+        let _ = self.delete_selection();
+        self.text.insert_str(self.cursor, s);
+        self.cursor += s.len();
+        self.selection_anchor = None;
+    }
+
+    /// Step the cursor one *char* (Unicode scalar) left.
+    fn prev_char_boundary(&self) -> usize {
+        if self.cursor == 0 {
+            return 0;
+        }
+        let mut p = self.cursor - 1;
+        while p > 0 && !self.text.is_char_boundary(p) {
+            p -= 1;
+        }
+        p
+    }
+
+    fn next_char_boundary(&self) -> usize {
+        if self.cursor >= self.text.len() {
+            return self.text.len();
+        }
+        let mut p = self.cursor + 1;
+        while p < self.text.len() && !self.text.is_char_boundary(p) {
+            p += 1;
+        }
+        p
+    }
+
+    /// Word-boundary search to the left of the cursor. A word boundary
+    /// is the first position where a non-alphanumeric char meets an
+    /// alphanumeric one going leftward — like every code editor does.
+    fn prev_word_boundary(&self) -> usize {
+        let bytes = self.text.as_bytes();
+        let mut p = self.cursor;
+        // Skip any whitespace immediately before the cursor.
+        while p > 0 && !bytes[p - 1].is_ascii_alphanumeric() {
+            p -= 1;
+        }
+        // Then skip the word characters themselves.
+        while p > 0 && bytes[p - 1].is_ascii_alphanumeric() {
+            p -= 1;
+        }
+        p
+    }
+
+    fn next_word_boundary(&self) -> usize {
+        let bytes = self.text.as_bytes();
+        let len = bytes.len();
+        let mut p = self.cursor;
+        while p < len && bytes[p].is_ascii_alphanumeric() {
+            p += 1;
+        }
+        while p < len && !bytes[p].is_ascii_alphanumeric() {
+            p += 1;
+        }
+        p
+    }
+
+    /// Apply a keyboard event. Returns `true` if any state changed.
+    /// `text_input` is the `KeyEvent::text` field (the printable
+    /// text the OS associates with the key, if any).
+    pub fn apply_key(
+        &mut self,
+        key: &winit::keyboard::Key,
+        modifiers: &winit::event::Modifiers,
+        text_input: Option<&str>,
+    ) -> bool {
+        use winit::event::Modifiers;
+        use winit::keyboard::{Key, NamedKey};
+        let ctrl = modifiers.state().control_key();
+        let shift = modifiers.state().shift_key();
+        let _ = Modifiers::default(); // silence unused-import lint in some compositions
+
+        match key {
+            Key::Named(NamedKey::ArrowLeft) => {
+                let target = if ctrl {
+                    self.prev_word_boundary()
+                } else {
+                    self.prev_char_boundary()
+                };
+                self.move_cursor(target, shift);
+                true
+            }
+            Key::Named(NamedKey::ArrowRight) => {
+                let target = if ctrl {
+                    self.next_word_boundary()
+                } else {
+                    self.next_char_boundary()
+                };
+                self.move_cursor(target, shift);
+                true
+            }
+            Key::Named(NamedKey::Home) => {
+                self.move_cursor(0, shift);
+                true
+            }
+            Key::Named(NamedKey::End) => {
+                self.move_cursor(self.text.len(), shift);
+                true
+            }
+            Key::Named(NamedKey::Backspace) => {
+                if self.delete_selection() {
+                    return true;
+                }
+                if self.cursor == 0 {
+                    return false;
+                }
+                let target = if ctrl {
+                    self.prev_word_boundary()
+                } else {
+                    self.prev_char_boundary()
+                };
+                self.text.replace_range(target..self.cursor, "");
+                self.cursor = target;
+                true
+            }
+            Key::Named(NamedKey::Delete) => {
+                if self.delete_selection() {
+                    return true;
+                }
+                if self.cursor >= self.text.len() {
+                    return false;
+                }
+                let target = if ctrl {
+                    self.next_word_boundary()
+                } else {
+                    self.next_char_boundary()
+                };
+                self.text.replace_range(self.cursor..target, "");
+                true
+            }
+            Key::Character(s) if ctrl => {
+                // Lower-case the literal so Ctrl+A and Ctrl+a both work.
+                match s.to_lowercase().as_str() {
+                    "a" => {
+                        self.selection_anchor = Some(0);
+                        self.cursor = self.text.len();
+                        true
+                    }
+                    "c" => {
+                        let sel = self.selected_text();
+                        let bytes = if sel.is_empty() {
+                            self.text.clone()
+                        } else {
+                            sel.to_string()
+                        };
+                        crate::text_selection::clipboard_copy(&bytes);
+                        true
+                    }
+                    "x" => {
+                        if self.selection_range().is_some() {
+                            let sel = self.selected_text().to_string();
+                            crate::text_selection::clipboard_copy(&sel);
+                            self.delete_selection();
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    "v" => {
+                        if let Some(pasted) = crate::text_selection::clipboard_paste() {
+                            // Strip newlines for single-line inputs.
+                            let cleaned: String = pasted
+                                .chars()
+                                .filter(|c| !c.is_control())
+                                .collect();
+                            self.insert_str(&cleaned);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    _ => false,
+                }
+            }
+            _ => {
+                // Plain character entry — winit hands us the printable
+                // text already; insert as-is (skipping control codes,
+                // which arrive as zero-width characters in the text
+                // field on some platforms).
+                if let Some(t) = text_input {
+                    let cleaned: String = t.chars().filter(|c| !c.is_control()).collect();
+                    if !cleaned.is_empty() {
+                        self.insert_str(&cleaned);
+                        return true;
+                    }
+                }
+                false
+            }
+        }
+    }
+}
+
+/// Render the terminal "Done" success card so the user has something
+/// to see after the ceremony completes instead of a blank backdrop.
+/// Reads the most recent record from the store for personalisation
+/// (display name + avatar colour); falls back to a generic message if
+/// the store can't be read.
+fn draw_done_card(
+    store: &dyn IdentityStore,
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    viewport: Rect,
+) {
+    use vello::kurbo::{RoundedRect, Stroke};
+    use vello::peniko::{Color, Fill};
+    // Backdrop matches the other screens.
+    let backdrop = Color::from_rgba8(0, 0, 0, 180);
+    scene.fill(Fill::NonZero, transform, backdrop, None, &viewport);
+    let card_w = 480.0;
+    let card_h = 280.0;
+    let card_x = viewport.x0 + (viewport.width() - card_w) / 2.0;
+    let card_y = viewport.y0 + (viewport.height() - card_h) / 2.0;
+    let card = Rect::new(card_x, card_y, card_x + card_w, card_y + card_h);
+    let radius = 12.0;
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        theme.tokens.colors.surfaces.raised,
+        None,
+        &RoundedRect::from_rect(card, radius),
+    );
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        theme.tokens.colors.border_standard,
+        None,
+        &RoundedRect::from_rect(card, radius),
+    );
+    let pad = 32.0;
+    // Avatar disc (using stored colour or a sensible default).
+    let (display_name, avatar) = match store.load() {
+        Ok(Some(rec)) => (rec.display_name.clone(), rec.avatar_color),
+        _ => ("Your identity".to_string(), [120, 120, 200]),
+    };
+    let avatar_d = 56.0;
+    let avatar_cx = card.x0 + pad + avatar_d / 2.0;
+    let avatar_cy = card.y0 + pad + avatar_d / 2.0;
+    let avatar_color = Color::from_rgb8(avatar[0], avatar[1], avatar[2]);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        avatar_color,
+        None,
+        &vello::kurbo::Circle::new((avatar_cx, avatar_cy), avatar_d / 2.0),
+    );
+    // Initial in white.
+    let initial: String = display_name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
+    let (iw, _) = text_renderer.measure(&initial, 28.0, None);
+    text_renderer.draw_text(
+        scene,
+        &initial,
+        28.0,
+        Color::from_rgb8(255, 255, 255),
+        transform * Affine::translate((avatar_cx - iw as f64 / 2.0, avatar_cy - 16.0)),
+        None,
+    );
+    // Title.
+    text_renderer.draw_text(
+        scene,
+        "You're all set",
+        22.0,
+        theme.tokens.colors.text_primary,
+        transform * Affine::translate((card.x0 + pad + avatar_d + 16.0, card.y0 + pad + 4.0)),
+        None,
+    );
+    text_renderer.draw_text(
+        scene,
+        &format!("Signed in as {display_name}"),
+        14.0,
+        theme.tokens.colors.text_dim,
+        transform * Affine::translate((card.x0 + pad + avatar_d + 16.0, card.y0 + pad + 32.0)),
+        None,
+    );
+    // Explanation.
+    text_renderer.draw_text(
+        scene,
+        "Your identity is saved. You can close this window.",
+        13.0,
+        theme.tokens.colors.text_dim,
+        transform * Affine::translate((card.x0 + pad, card.y0 + pad + avatar_d + 32.0)),
+        None,
+    );
+    text_renderer.draw_text(
+        scene,
+        "Start the desktop from a terminal to begin collaborating.",
+        13.0,
+        theme.tokens.colors.text_dim,
+        transform * Affine::translate((card.x0 + pad, card.y0 + pad + avatar_d + 56.0)),
+        None,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1039,7 +1431,10 @@ impl Widget for IdentityFlow {
             IdentityFlowScreen::PairDevice => self.pair_device.apply_layout(taffy, node, origin),
             IdentityFlowScreen::InviteMint => self.invite_mint.apply_layout(taffy, node, origin),
             IdentityFlowScreen::InviteAccept => self.invite_accept.apply_layout(taffy, node, origin),
-            IdentityFlowScreen::Done => {}
+            IdentityFlowScreen::Done => {
+                // No inner screen — self.rect is already populated by
+                // the apply_layout common path above.
+            }
         }
     }
 
@@ -1059,7 +1454,14 @@ impl Widget for IdentityFlow {
             IdentityFlowScreen::PairDevice => self.pair_device.draw(scene, transform, text_renderer, theme, presence),
             IdentityFlowScreen::InviteMint => self.invite_mint.draw(scene, transform, text_renderer, theme, presence),
             IdentityFlowScreen::InviteAccept => self.invite_accept.draw(scene, transform, text_renderer, theme, presence),
-            IdentityFlowScreen::Done => {}
+            IdentityFlowScreen::Done => {
+                // Terminal state — render a small success confirmation
+                // so the user knows the ceremony completed and isn't
+                // staring at a blank backdrop. Pulls the just-persisted
+                // identity from the store for personalisation; falls
+                // back to a generic label if the store can't be read.
+                draw_done_card(self.store.as_ref(), scene, transform, text_renderer, theme, self.rect);
+            }
         }
     }
 
