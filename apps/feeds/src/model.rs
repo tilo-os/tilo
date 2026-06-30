@@ -121,6 +121,139 @@ pub enum Filter {
     Feed(Id),
 }
 
+// ---------------------------------------------------------------------
+// Reading settings (article reader pane)
+//
+// Mirrors the ebook reader's reading-mode model so the two apps stay
+// consistent. The *page tint* (light/sepia/dark) is deliberately distinct
+// from the OS theme: people read on warm "paper" even in a dark desktop. All
+// chrome reads from the OS `Theme`; only the reader pane uses these.
+// ---------------------------------------------------------------------
+
+/// Page tint for the article reader. Distinct from the OS theme on purpose.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadTheme {
+    Light,
+    Sepia,
+    Dark,
+}
+
+impl ReadTheme {
+    pub const ALL: [ReadTheme; 3] = [ReadTheme::Light, ReadTheme::Sepia, ReadTheme::Dark];
+    pub fn label(self) -> &'static str {
+        match self {
+            ReadTheme::Light => "Light",
+            ReadTheme::Sepia => "Sepia",
+            ReadTheme::Dark => "Dark",
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReadTheme::Light => "light",
+            ReadTheme::Sepia => "sepia",
+            ReadTheme::Dark => "dark",
+        }
+    }
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "sepia" => ReadTheme::Sepia,
+            "dark" => ReadTheme::Dark,
+            _ => ReadTheme::Light,
+        }
+    }
+}
+
+/// Reading face. Unlike the ebook reader (which only offered Sans/Mono because
+/// it draws through the proportional/monospace `draw_text_styled` path), the
+/// feeds reader renders the body through `ui::richtext::RichTextLayout`, which
+/// exposes a real `FontFamily::Serif`. So we offer a genuine serif option for
+/// long-form reading, plus the proportional sans and a fixed-width mono.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadFont {
+    Sans,
+    Serif,
+    Mono,
+}
+
+impl ReadFont {
+    pub const ALL: [ReadFont; 3] = [ReadFont::Sans, ReadFont::Serif, ReadFont::Mono];
+    pub fn label(self) -> &'static str {
+        match self {
+            ReadFont::Sans => "Sans",
+            ReadFont::Serif => "Serif",
+            ReadFont::Mono => "Mono",
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReadFont::Sans => "sans",
+            ReadFont::Serif => "serif",
+            ReadFont::Mono => "mono",
+        }
+    }
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "serif" => ReadFont::Serif,
+            "mono" => ReadFont::Mono,
+            _ => ReadFont::Sans,
+        }
+    }
+    /// Cycle Sans → Serif → Mono → Sans (for the cycle button).
+    pub fn next(self) -> Self {
+        match self {
+            ReadFont::Sans => ReadFont::Serif,
+            ReadFont::Serif => ReadFont::Mono,
+            ReadFont::Mono => ReadFont::Sans,
+        }
+    }
+}
+
+/// Article-reader preferences. Persisted in the CRDT so collaborators reading
+/// together (and the same user across sessions) share a consistent layout.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ReadSettings {
+    /// Body font-size multiplier; 1.0 == `BASE_SIZE` px. Clamped to [0.8, 1.8].
+    pub font_scale: f32,
+    pub font: ReadFont,
+    pub theme: ReadTheme,
+}
+
+impl Default for ReadSettings {
+    fn default() -> Self {
+        Self {
+            font_scale: 1.0,
+            font: ReadFont::Sans,
+            theme: ReadTheme::Dark,
+        }
+    }
+}
+
+impl ReadSettings {
+    pub const FONT_MIN: f32 = 0.8;
+    pub const FONT_MAX: f32 = 1.8;
+    /// Base body size in logical px before the scale multiplier.
+    pub const BASE_SIZE: f32 = 16.0;
+
+    pub fn body_size(&self) -> f32 {
+        Self::BASE_SIZE * self.font_scale
+    }
+    /// Heading sizes scale with the body so a larger body keeps proportion.
+    pub fn heading_size(&self, level: u8) -> f32 {
+        let mult = match level {
+            1 => 1.7,
+            2 => 1.35,
+            _ => 1.12,
+        };
+        (Self::BASE_SIZE * mult * self.font_scale).round()
+    }
+    pub fn clamped(mut self) -> Self {
+        self.font_scale = self.font_scale.clamp(Self::FONT_MIN, Self::FONT_MAX);
+        self
+    }
+}
+
 /// The working copy of all feed state.
 #[derive(Clone, Debug, Default)]
 pub struct Store {
@@ -451,6 +584,30 @@ mod tests {
         let mut a2 = a.clone();
         a2.id = Uuid::new_v4();
         assert!(!s.insert_article_dedup(a2), "same url is a dup");
+    }
+
+    #[test]
+    fn read_settings_round_trip_strings_and_clamp() {
+        for t in ReadTheme::ALL {
+            assert_eq!(ReadTheme::from_str(t.as_str()), t);
+        }
+        for f in ReadFont::ALL {
+            assert_eq!(ReadFont::from_str(f.as_str()), f);
+        }
+        // Serif is a first-class option (the differentiator vs the ebook reader).
+        assert_eq!(ReadFont::from_str("serif"), ReadFont::Serif);
+        // Cycle visits all three faces.
+        assert_eq!(ReadFont::Sans.next(), ReadFont::Serif);
+        assert_eq!(ReadFont::Serif.next(), ReadFont::Mono);
+        assert_eq!(ReadFont::Mono.next(), ReadFont::Sans);
+        // Clamp keeps font_scale inside bounds.
+        let s = ReadSettings { font_scale: 5.0, ..Default::default() }.clamped();
+        assert_eq!(s.font_scale, ReadSettings::FONT_MAX);
+        let s = ReadSettings { font_scale: 0.1, ..Default::default() }.clamped();
+        assert_eq!(s.font_scale, ReadSettings::FONT_MIN);
+        // Body size scales with the multiplier.
+        let s = ReadSettings { font_scale: 1.5, ..Default::default() };
+        assert!((s.body_size() - ReadSettings::BASE_SIZE * 1.5).abs() < 0.01);
     }
 
     #[test]

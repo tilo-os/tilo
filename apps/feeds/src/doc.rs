@@ -19,7 +19,7 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
 use crate::model::{
-    Article, ContentBlock, Feed, FeedKind, Folder, Id, Store,
+    Article, ContentBlock, Feed, FeedKind, Folder, Id, ReadFont, ReadSettings, ReadTheme, Store,
 };
 
 pub struct FeedsDoc;
@@ -73,6 +73,17 @@ impl FeedsDoc {
                 _ => false,
             },
             _ => false,
+        }
+    }
+    fn get_f64(doc: &AutoCommit, obj: &ObjId, key: &str, default: f64) -> f64 {
+        match doc.get(obj, key) {
+            Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
+                ScalarValue::F64(f) => *f,
+                ScalarValue::Int(i) => *i as f64,
+                ScalarValue::Uint(u) => *u as f64,
+                _ => default,
+            },
+            _ => default,
         }
     }
 
@@ -189,6 +200,45 @@ impl FeedsDoc {
         for a in &store.articles {
             Self::upsert_article(doc, a);
         }
+    }
+
+    // --- reading settings ------------------------------------------------
+    //
+    // Stored under a `settings` map so concurrent edits merge field-level
+    // (last-writer-wins per key). These are the article-reader preferences
+    // (font size / family / page tint); they ride in the same CRDT so a
+    // collaborator reading the same cluster sees a consistent layout.
+
+    /// True once the reading settings have been written at least once.
+    pub fn has_settings(doc: &AutoCommit) -> bool {
+        matches!(doc.get(&ROOT, "settings"), Ok(Some((Value::Object(ObjType::Map), _))))
+    }
+
+    pub fn write_settings(doc: &mut AutoCommit, s: &ReadSettings) {
+        let obj = Self::map_field(doc, "settings");
+        let _ = doc.put(&obj, "font_scale", s.font_scale as f64);
+        let _ = doc.put(&obj, "font", s.font.as_str());
+        let _ = doc.put(&obj, "theme", s.theme.as_str());
+    }
+
+    pub fn read_settings(doc: &AutoCommit) -> ReadSettings {
+        let default = ReadSettings::default();
+        let obj = match doc.get(&ROOT, "settings") {
+            Ok(Some((Value::Object(ObjType::Map), o))) => o,
+            _ => return default,
+        };
+        ReadSettings {
+            font_scale: Self::get_f64(doc, &obj, "font_scale", default.font_scale as f64) as f32,
+            font: {
+                let s = Self::get_str(doc, &obj, "font");
+                if s.is_empty() { default.font } else { ReadFont::from_str(&s) }
+            },
+            theme: {
+                let s = Self::get_str(doc, &obj, "theme");
+                if s.is_empty() { default.theme } else { ReadTheme::from_str(&s) }
+            },
+        }
+        .clamped()
     }
 
     // --- reader ----------------------------------------------------------
@@ -355,6 +405,23 @@ mod tests {
         FeedsDoc::set_read(&mut doc, id, true);
         let loaded = FeedsDoc::load(&doc);
         assert!(loaded.articles[0].read);
+    }
+
+    #[test]
+    fn reading_settings_round_trip() {
+        use crate::model::{ReadFont, ReadTheme};
+        let mut doc = AutoCommit::new();
+        assert!(!FeedsDoc::has_settings(&doc));
+        // Defaults read back even before any write.
+        assert_eq!(FeedsDoc::read_settings(&doc), ReadSettings::default());
+
+        let s = ReadSettings { font_scale: 1.3, font: ReadFont::Serif, theme: ReadTheme::Sepia };
+        FeedsDoc::write_settings(&mut doc, &s);
+        assert!(FeedsDoc::has_settings(&doc));
+        let loaded = FeedsDoc::read_settings(&doc);
+        assert_eq!(loaded.font, ReadFont::Serif);
+        assert_eq!(loaded.theme, ReadTheme::Sepia);
+        assert!((loaded.font_scale - 1.3).abs() < 0.001);
     }
 
     #[test]
