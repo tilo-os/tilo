@@ -6,7 +6,8 @@
 //! inline marks; tabs/breaks, alignment, fonts and tables all map onto the model.
 //! Unmodeled body-level elements are captured verbatim as fidelity atoms.
 
-use super::styles::{attr_val, mark_from_rpr_child, map_jc, StyleRegistry};
+use super::container::DocxContainer;
+use super::styles::{attr_val, line_spacing_from_spacing, mark_from_rpr_child, map_jc, StyleRegistry};
 use crate::document::MarkValue;
 use crate::format::CodecError;
 use crate::model::DocMut;
@@ -15,6 +16,60 @@ use crate::schema::{FIELD_PLACEHOLDER, MARK_COMMENT, MARK_NOTE_REF};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use std::collections::BTreeMap;
+
+/// EMUs per CSS pixel (914400 EMU/inch ÷ 96 px/inch). Used to convert OOXML
+/// `wp:extent` sizes to the model's pixel width/height.
+const EMU_PER_PX: f64 = 914400.0 / 96.0;
+
+/// Build a `rId → media bytes` map from `word/_rels/document.xml.rels`, resolving
+/// each image relationship's `Target` against the package. So the body parser can
+/// turn an `a:blip r:embed="rIdN"` into a stored image blob.
+pub(crate) fn build_image_map(container: &DocxContainer) -> BTreeMap<String, Vec<u8>> {
+    let mut out = BTreeMap::new();
+    let Some(rels) = container.get("word/_rels/document.xml.rels") else { return out };
+    let Ok(s) = std::str::from_utf8(rels) else { return out };
+    let mut reader = Reader::from_str(s);
+    loop {
+        let ev = match reader.read_event() {
+            Ok(e) => e,
+            Err(_) => break,
+        };
+        match ev {
+            Event::Empty(e) | Event::Start(e) if e.name().as_ref() == b"Relationship" => {
+                let id = attr_val(&e, b"Id");
+                let target = attr_val(&e, b"Target");
+                if let (Some(id), Some(target)) = (id, target) {
+                    // Targets are relative to `word/` (e.g. `media/image1.png`);
+                    // absolute (`/word/...`) targets are de-slashed.
+                    let t = target.trim_start_matches('/');
+                    let part = if t.starts_with("word/") { t.to_string() } else { format!("word/{t}") };
+                    if let Some(bytes) = container.get(&part) {
+                        out.insert(id, bytes.to_vec());
+                    }
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    out
+}
+
+/// In-progress `w:drawing` capture: an embedded image with size + positioning.
+#[derive(Default)]
+struct DrawingState {
+    /// `false` = `wp:inline` (inline), `true` = `wp:anchor` (floating).
+    floating: bool,
+    /// Display size in px from `wp:extent` (cx/cy in EMU).
+    width: Option<i64>,
+    height: Option<i64>,
+    /// Model wrap (`none`|`left`|`right`|`both`) from the wrap element.
+    wrap: Option<String>,
+    /// Model anchor (`page` if positioned relative to the page, else `paragraph`).
+    page_relative: bool,
+    /// The `r:embed` rel id of the `a:blip` referencing the media part.
+    rel: Option<String>,
+}
 
 /// Open a fresh top-level block anchored after the previous one.
 fn start_block(doc: &mut DocMut, prev: &mut Option<String>, cur: &mut Option<String>, cur_len: &mut usize, kind: &str) -> String {
@@ -41,6 +96,7 @@ pub(crate) fn parse_body(
     foot_map: &BTreeMap<String, String>,
     end_map: &BTreeMap<String, String>,
     comment_map: &BTreeMap<String, String>,
+    image_map: &BTreeMap<String, Vec<u8>>,
     doc: &mut DocMut,
 ) -> Result<(), CodecError> {
     let s = std::str::from_utf8(document_xml).map_err(|e| CodecError::Parse(e.to_string()))?;
@@ -57,6 +113,7 @@ pub(crate) fn parse_body(
     let mut p_style: Option<String> = None;
     let mut p_align: Option<String> = None;
     let mut p_numid: Option<String> = None;
+    let mut p_line_spacing: Option<f64> = None;
 
     // Run state. Marks are collected for the run's `w:rPr` and applied over the
     // run's text range at `</w:r>` (so later text doesn't expand the mark).
@@ -78,6 +135,20 @@ pub(crate) fn parse_body(
     // (block, start, end, comment id) anchor marks, applied after all text is in.
     let mut comment_ranges: Vec<(String, usize, usize, String)> = Vec::new();
 
+    // Open bookmark ranges keyed by the OOXML `w:id`: `w:id → (block, start char index,
+    // name)`, awaiting their matching `w:bookmarkEnd` (matched by id). The name comes
+    // from the `w:bookmarkStart`'s `w:name`.
+    let mut open_bookmarks: BTreeMap<String, (String, usize, String)> = BTreeMap::new();
+    // (block, start, end, bookmark name) anchor marks, applied after all text is in.
+    let mut bookmark_ranges: Vec<(String, usize, usize, String)> = Vec::new();
+
+    // In-progress `w:hyperlink w:anchor="name"` (an internal cross-reference): the
+    // anchor target + the char index at which its run group begins. The runs inside
+    // splice text normally; a `link` mark valued `#name` is applied at the close.
+    let mut hyperlink: Option<(String, Option<String>, usize)> = None;
+    // (block, start, end, `#target` value) cross-ref `link` marks, applied after text.
+    let mut cross_refs: Vec<(String, usize, usize, String)> = Vec::new();
+
     // In-progress tracked change `<w:ins>`/`<w:del>` wrapper: its qdoc change id, kind,
     // anchor block, and the char index at which the changed range begins. The runs
     // inside splice text normally; the `ins`/`del` mark is applied at the close. Deleted
@@ -93,6 +164,11 @@ pub(crate) fn parse_body(
     let mut table_seq: usize = 0;
 
     let mut capture: Option<(usize, i32)> = None; // (start byte, open depth) of a fidelity atom
+
+    // In-progress `w:drawing` (image). Collected as we descend its children; the
+    // image becomes its own `image` block at `</w:drawing>` (replacing the enclosing
+    // empty paragraph, mirroring how the ODT codec lifts an image-only paragraph).
+    let mut drawing: Option<DrawingState> = None;
 
     macro_rules! flush_para_marks {
         () => {
@@ -111,6 +187,13 @@ pub(crate) fn parse_body(
     macro_rules! finalize_ppr {
         () => {
             if let Some(id) = cur.clone() {
+                // Line spacing rides as a direct `line_spacing` Float attr regardless
+                // of the block kind (paragraph/heading/list_item). A direct `w:spacing`
+                // wins; otherwise inherit it from the paragraph style.
+                let line_spacing = p_line_spacing.or_else(|| p_style.as_deref().and_then(|s| reg.para_line_spacing(s)));
+                if let Some(ls) = line_spacing {
+                    doc.set_attr(&id, "line_spacing", ls);
+                }
                 let level = p_style.as_deref().and_then(|s| reg.heading_level(s));
                 if let Some(numid) = p_numid.clone() {
                     doc.set_kind(&id, "list_item");
@@ -205,6 +288,93 @@ pub(crate) fn parse_body(
             continue;
         }
 
+        // Inside a `w:drawing`: collect inline-vs-anchor, extent, wrap, and the blip
+        // rel, then materialise an `image` block on `</w:drawing>`.
+        if let Some(dr) = drawing.as_mut() {
+            match &ev {
+                Event::Start(e) | Event::Empty(e) => match e.name().as_ref() {
+                    b"wp:inline" => dr.floating = false,
+                    b"wp:anchor" => dr.floating = true,
+                    b"wp:extent" => {
+                        if let Some(cx) = attr_val(e, b"cx").and_then(|v| v.parse::<f64>().ok()) {
+                            dr.width = Some((cx / EMU_PER_PX).round() as i64);
+                        }
+                        if let Some(cy) = attr_val(e, b"cy").and_then(|v| v.parse::<f64>().ok()) {
+                            dr.height = Some((cy / EMU_PER_PX).round() as i64);
+                        }
+                    }
+                    // Wrap modes. `wrapNone`/`wrapTopAndBottom` don't flow text beside
+                    // the image → `none`; `wrapSquare`/`wrapTight`/`wrapThrough` use the
+                    // `wrapText` side (`left`/`right`/`bothSides`→both, default both).
+                    b"wp:wrapNone" | b"wp:wrapTopAndBottom" => dr.wrap = Some("none".to_string()),
+                    b"wp:wrapSquare" | b"wp:wrapTight" | b"wp:wrapThrough" => {
+                        let side = attr_val(e, b"wrapText");
+                        dr.wrap = Some(match side.as_deref() {
+                            Some("left") => "left",
+                            Some("right") => "right",
+                            _ => "both", // "bothSides" | "largest" | absent
+                        }
+                        .to_string());
+                    }
+                    // Page-relative horizontal/vertical positioning marks a page anchor.
+                    b"wp:positionH" | b"wp:positionV" => {
+                        if attr_val(e, b"relativeFrom").as_deref() == Some("page") {
+                            dr.page_relative = true;
+                        }
+                    }
+                    b"a:blip" => {
+                        if dr.rel.is_none() {
+                            dr.rel = attr_val(e, b"r:embed").or_else(|| attr_val(e, b"r:link"));
+                        }
+                    }
+                    _ => {}
+                },
+                Event::End(e) if e.name().as_ref() == b"w:drawing" => {
+                    let dr = drawing.take().unwrap();
+                    let bytes = dr.rel.as_deref().and_then(|r| image_map.get(r));
+                    if let Some(bytes) = bytes {
+                        let hash = doc.put_blob(bytes);
+                        // Reuse the enclosing (image-only) paragraph if it holds no text,
+                        // else open a fresh block. Either way it becomes an `image`.
+                        let id = if let (Some(c), 0) = (cur.clone(), cur_len) {
+                            doc.set_kind(&c, "image");
+                            c
+                        } else {
+                            start_block(doc, &mut prev, &mut cur, &mut cur_len, "image")
+                        };
+                        doc.set_attr(&id, "blob", hash.as_str());
+                        let anchor = if !dr.floating {
+                            "inline"
+                        } else if dr.page_relative {
+                            "page"
+                        } else {
+                            "paragraph"
+                        };
+                        doc.set_attr(&id, "anchor", anchor);
+                        if let Some(w) = dr.width {
+                            if w > 0 {
+                                doc.set_attr(&id, "width", w);
+                            }
+                        }
+                        if let Some(h) = dr.height {
+                            if h > 0 {
+                                doc.set_attr(&id, "height", h);
+                            }
+                        }
+                        if let Some(w) = dr.wrap {
+                            doc.set_attr(&id, "wrap", w.as_str());
+                        }
+                        // An image block isn't a text container; close it.
+                        prev = Some(id);
+                        cur = None;
+                    }
+                    in_run = false;
+                }
+                _ => {}
+            }
+            continue;
+        }
+
         match ev {
             Event::Start(e) => match e.name().as_ref() {
                 b"w:body" => in_body = true,
@@ -215,6 +385,7 @@ pub(crate) fn parse_body(
                     p_style = None;
                     p_align = None;
                     p_numid = None;
+                    p_line_spacing = None;
                     cur_para_marks.clear();
                 }
                 b"w:pPr" if table_id.is_none() => in_ppr = true,
@@ -234,12 +405,26 @@ pub(crate) fn parse_body(
                     let cid = doc.insert_change(kind, &author, &date);
                     change = Some((cid, kind, cur.clone(), cur_len));
                 }
+                b"w:hyperlink" if in_body && cur.is_some() => {
+                    // An internal cross-reference (`w:anchor="name"`): remember the
+                    // target + current char index; the runs inside splice text normally
+                    // and a `link` mark valued `#name` is applied at `</w:hyperlink>`.
+                    // (`r:id`-based external links aren't modeled by this codec.)
+                    if let Some(anchor) = attr_val(&e, b"w:anchor") {
+                        hyperlink = Some((format!("{}{anchor}", crate::schema::CROSS_REF_PREFIX), cur.clone(), cur_len));
+                    }
+                }
                 b"w:r" if in_body => {
                     in_run = true;
                     run_start = cur_len;
                     run_marks.clear();
                 }
                 b"w:rPr" if in_run => in_rpr = true,
+                // An embedded image: begin collecting the drawing's size/positioning/
+                // blip until `</w:drawing>`. (`in_run` is always true here in practice.)
+                b"w:drawing" if in_body => {
+                    drawing = Some(DrawingState::default());
+                }
                 b"w:t" if in_run => in_t = true,
                 // Deleted text inside a `<w:del>` run uses `<w:delText>`; treat it like
                 // `<w:t>` so the retained-but-struck content lands in the model.
@@ -271,6 +456,12 @@ pub(crate) fn parse_body(
                 }
                 b"w:pStyle" if in_ppr => p_style = attr_val(&e, b"w:val"),
                 b"w:jc" if in_ppr => p_align = attr_val(&e, b"w:val").map(|v| map_jc(&v)),
+                // Paragraph line spacing: `<w:spacing w:line w:lineRule="auto">`.
+                b"w:spacing" if in_ppr => {
+                    if let Some(ls) = line_spacing_from_spacing(&e) {
+                        p_line_spacing = Some(ls);
+                    }
+                }
                 b"w:numId" if in_numpr => p_numid = attr_val(&e, b"w:val"),
                 b"w:tab" if in_run => append(doc, &cur, &mut cur_len, "\t"),
                 b"w:br" | b"w:cr" if in_run => append(doc, &cur, &mut cur_len, "\n"),
@@ -308,6 +499,25 @@ pub(crate) fn parse_body(
                     if let Some(docx_id) = attr_val(&e, b"w:id") {
                         if let Some((cid, b, start)) = open_comments.remove(&docx_id) {
                             comment_ranges.push((b, start, cur_len, cid));
+                        }
+                    }
+                }
+                b"w:bookmarkStart" if in_body && cur.is_some() => {
+                    // Opens a bookmark's range: remember the name + current char index;
+                    // the matching `w:bookmarkEnd` (by `w:id`) records the end. Word's
+                    // built-in `_GoBack` bookmark carries no useful name → skip it.
+                    if let (Some(id), Some(name), Some(b)) = (attr_val(&e, b"w:id"), attr_val(&e, b"w:name"), cur.clone()) {
+                        if name != "_GoBack" {
+                            open_bookmarks.insert(id, (b, cur_len, name));
+                        }
+                    }
+                }
+                b"w:bookmarkEnd" if in_body => {
+                    // Closes a bookmark's range: anchor a `bookmark` mark valued with the
+                    // name over `[start, cur_len)` for the matching `w:id`.
+                    if let Some(id) = attr_val(&e, b"w:id") {
+                        if let Some((b, start, name)) = open_bookmarks.remove(&id) {
+                            bookmark_ranges.push((b, start, cur_len, name));
                         }
                     }
                 }
@@ -362,6 +572,15 @@ pub(crate) fn parse_body(
                         }
                     }
                     run_marks.clear();
+                }
+                b"w:hyperlink" => {
+                    // Close the cross-reference: anchor a `link` mark valued `#name` over
+                    // `[start, cur_len)` (applied after all text is in).
+                    if let Some((value, block, start)) = hyperlink.take() {
+                        if let Some(b) = block {
+                            cross_refs.push((b, start, cur_len, value));
+                        }
+                    }
                 }
                 b"w:p" if table_id.is_none() => {
                     flush_para_marks!();
@@ -432,6 +651,25 @@ pub(crate) fn parse_body(
     for (b, start, end, kind, cid) in change_ranges {
         if end > start {
             doc.add_change_mark(kind, &b, start, end, &cid);
+        }
+    }
+    // Any bookmark whose `w:bookmarkEnd` never arrived still anchors at its start,
+    // extending to the block's end so it has a non-empty range when content follows.
+    for (_id, (b, start, name)) in std::mem::take(&mut open_bookmarks) {
+        let end = doc_block_len(doc, &b).max(start);
+        bookmark_ranges.push((b, start, end, name));
+    }
+    // Bookmark anchor marks: cover each bookmarked range with a `bookmark` mark valued
+    // with the name. A zero-width (point) range is widened to one character (see
+    // `add_bookmark`).
+    for (b, start, end, name) in bookmark_ranges {
+        doc.add_bookmark(&b, start, end, &name);
+    }
+    // Cross-reference `link` marks (internal hyperlinks): cover each linked range with a
+    // `link` mark valued `#target`.
+    for (b, start, end, value) in cross_refs {
+        if end > start {
+            doc.add_mark(&b, start, end, crate::schema::MARK_LINK, value.as_str());
         }
     }
     Ok(())
@@ -646,5 +884,69 @@ mod tests {
         assert_eq!(st.get("font"), Some(&AttrVal::Str("serif".into())), "Times New Roman → serif");
         assert_eq!(st.get("space_after"), Some(&AttrVal::Float(12.0)), "180 twips → 12px");
         assert_eq!(st.get("indent"), Some(&AttrVal::Float(24.0)), "360 twips → 24px");
+    }
+
+    #[test]
+    fn imports_run_language_as_mark() {
+        use crate::document::MarkValue;
+        // A run carrying `<w:lang w:val="fr"/>` → a `lang` run mark with the tag.
+        let body = concat!(
+            r#"<w:p>"#,
+            r#"<w:r><w:t xml:space="preserve">a </w:t></w:r>"#,
+            r#"<w:r><w:rPr><w:lang w:val="fr"/></w:rPr><w:t>bonjour</w:t></w:r>"#,
+            r#"</w:p>"#,
+        );
+        let docx = minimal_docx(body);
+        let mut d = Document::new();
+        DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
+        let p = &d.materialize().blocks[0];
+        assert_eq!(p.text, "a bonjour");
+        assert!(
+            p.marks.iter().any(|m| m.name == "lang" && m.start == 2 && m.end == 9 && m.value == MarkValue::Str("fr".into())),
+            "lang mark over 'bonjour': {:?}",
+            p.marks
+        );
+    }
+
+    #[test]
+    fn imports_document_default_language() {
+        // A `docDefaults > rPrDefault > rPr > w:lang` in styles.xml → the document
+        // default language. The style block carries its own (different) `w:lang` to
+        // prove only the *run default* is read.
+        let styles = concat!(
+            r#"<w:docDefaults><w:rPrDefault><w:rPr><w:lang w:val="de-DE"/></w:rPr></w:rPrDefault></w:docDefaults>"#,
+            r#"<w:style w:type="paragraph" w:styleId="Body"><w:rPr><w:lang w:val="en-US"/></w:rPr></w:style>"#,
+        );
+        let body = r#"<w:p><w:r><w:t>hi</w:t></w:r></w:p>"#;
+        let docx = minimal_docx_styled(styles, body);
+        let mut d = Document::new();
+        DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
+        assert_eq!(d.materialize().language.as_deref(), Some("de-DE"), "document default language from docDefaults");
+    }
+
+    #[test]
+    fn document_and_run_language_roundtrip() {
+        use crate::document::MarkValue;
+        // Author a document with a `de-DE` default language and a `fr`-marked run,
+        // export to `.docx`, re-import: both survive (codes preserved verbatim).
+        let mut d = Document::new();
+        d.set_language("de-DE");
+        let id = d.insert_block(None, "paragraph");
+        d.splice_text(&id, 0, 0, "bonjour monde");
+        d.add_mark(&id, 0, 7, "lang", "fr");
+
+        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let mut d2 = Document::new();
+        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+
+        assert_eq!(snap.language.as_deref(), Some("de-DE"), "document default language survives: {:?}", snap.language);
+        let b = &snap.blocks[0];
+        assert_eq!(b.text, "bonjour monde");
+        assert!(
+            b.marks.iter().any(|m| m.name == "lang" && m.start == 0 && m.end == 7 && m.value == MarkValue::Str("fr".into())),
+            "run lang mark `fr` survives over 'bonjour': {:?}",
+            b.marks
+        );
     }
 }
