@@ -1,0 +1,10 @@
+[package]
+name = "dochtml"
+version = "0.1.0"
+edition = "2024"
+description = "Semantic HTML export/preview for qdoc DocSnapshot documents (qOS)"
+
+[dependencies]
+qdoc = { path = "../qdoc" }
+# No base64 crate: data-URI encoding is hand-rolled in `base64.rs` (~30 LOC) so
+# adding dochtml stays lockfile-stable, matching docpdf's "no new deps" stance.
