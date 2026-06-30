@@ -476,10 +476,126 @@ impl PermissionSet {
         }
     }
 
+    /// Impose an explicit top-to-bottom precedence order on the roles.
+    ///
+    /// `ordered` is the *visible* order with the **strongest role first**
+    /// (top of the sidebar). Positions are reassigned so that the first
+    /// entry gets the highest position and the last gets the lowest —
+    /// making the visible order *be* the precedence the resolver honors
+    /// ([`roles_of`](Self::roles_of) sorts highest-position-first). Any
+    /// role not present in `ordered` keeps its relative order below the
+    /// listed ones (defensive; the editor always passes the full set).
+    pub fn set_role_order(&mut self, ordered: &[RoleId]) {
+        // Roles not named in `ordered` are appended (lowest), preserving
+        // their existing relative order so a partial list never drops a
+        // role's precedence to an arbitrary value.
+        let mut full: Vec<RoleId> = ordered.to_vec();
+        let mut leftovers: Vec<&Role> = self
+            .roles
+            .iter()
+            .filter(|r| !ordered.contains(&r.id))
+            .collect();
+        leftovers.sort_by(|a, b| b.position.cmp(&a.position));
+        full.extend(leftovers.into_iter().map(|r| r.id));
+
+        // First listed = strongest = highest position. Assign descending
+        // contiguous positions from the top.
+        let top = full.len() as i64 - 1;
+        for (i, rid) in full.iter().enumerate() {
+            if let Some(r) = self.role_mut(*rid) {
+                r.position = top - i as i64;
+            }
+        }
+    }
+
+    /// Duplicate a role: a deep copy with a fresh id, a "(copy)" name, and
+    /// a position **just below** the original so it lands directly under
+    /// it in the visible list. All grants (including context-scoped ones)
+    /// are copied. Returns the new role's id, or `None` if `id` is unknown.
+    pub fn duplicate_role(&mut self, id: RoleId) -> Option<RoleId> {
+        let src = self.role(id)?.clone();
+        let new_id = RoleId::new();
+        let mut copy = Role {
+            id: new_id,
+            name: format!("{} (copy)", src.name),
+            color: src.color,
+            position: src.position, // temporary; fixed up below
+            grants: src.grants.clone(),
+        };
+        // Insert just below the original in precedence: shift everyone
+        // *strictly below* the source down by one (the source itself stays
+        // put), opening the slot at `src_pos - 1` for the copy.
+        let src_pos = src.position;
+        for r in &mut self.roles {
+            if r.position < src_pos {
+                r.position -= 1;
+            }
+        }
+        copy.position = src_pos - 1;
+        self.roles.push(copy);
+        Some(new_id)
+    }
+
     pub fn remove_role(&mut self, id: RoleId) {
         self.roles.retain(|r| r.id != id);
         for m in &mut self.members {
             m.role_ids.retain(|r| *r != id);
         }
+    }
+
+    /// Rename a role in place. Returns `false` if the id is unknown.
+    pub fn rename_role(&mut self, id: RoleId, name: impl Into<String>) -> bool {
+        if let Some(r) = self.role_mut(id) {
+            r.name = name.into();
+            true
+        } else {
+            false
+        }
+    }
+}
+
+#[cfg(test)]
+mod model_order_tests {
+    use super::*;
+
+    fn roles3() -> (PermissionSet, RoleId, RoleId, RoleId) {
+        let mut set = PermissionSet::default();
+        let a = Role::new("A", 0, 2);
+        let b = Role::new("B", 0, 1);
+        let c = Role::new("C", 0, 0);
+        let (ai, bi, ci) = (a.id, b.id, c.id);
+        set.roles.extend([a, b, c]);
+        (set, ai, bi, ci)
+    }
+
+    #[test]
+    fn set_role_order_makes_visible_order_the_precedence() {
+        let (mut set, a, b, c) = roles3();
+        // Reorder to C, A, B (top-to-bottom, strongest first).
+        set.set_role_order(&[c, a, b]);
+        // C is now strongest (highest position), B weakest.
+        assert!(set.role(c).unwrap().position > set.role(a).unwrap().position);
+        assert!(set.role(a).unwrap().position > set.role(b).unwrap().position);
+    }
+
+    #[test]
+    fn duplicate_role_inserts_a_copy_just_below_original() {
+        let (mut set, a, _b, _c) = roles3();
+        let before = set.roles.len();
+        let copy = set.duplicate_role(a).unwrap();
+        assert_eq!(set.roles.len(), before + 1);
+        assert_eq!(set.role(copy).unwrap().name, "A (copy)");
+        // The copy sits directly below the original in precedence.
+        assert!(set.role(a).unwrap().position > set.role(copy).unwrap().position);
+        // Nothing else is now between them.
+        let gap = set.role(a).unwrap().position - set.role(copy).unwrap().position;
+        assert_eq!(gap, 1, "copy lands immediately under the source");
+    }
+
+    #[test]
+    fn rename_role_changes_the_name() {
+        let (mut set, a, _b, _c) = roles3();
+        assert!(set.rename_role(a, "Renamed"));
+        assert_eq!(set.role(a).unwrap().name, "Renamed");
     }
 }
