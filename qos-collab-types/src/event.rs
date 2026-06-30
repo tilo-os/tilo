@@ -130,6 +130,59 @@ pub enum ChannelEvent {
         /// Detached signature by `signed_by`.
         signature: Signature,
     },
+    /// Phase 7: a new member was admitted to the channel's MLS
+    /// group.
+    ///
+    /// Carries the MLS `Welcome` message (TLS-serialised by
+    /// `qos_channel_crypto`) so a peer rejoining the channel later
+    /// can replay the governance log + the matching Welcome to
+    /// reconstruct membership. The broker stores both the
+    /// channel-event log AND the per-recipient Welcome on disk; this
+    /// variant carries the latter for the candidate member.
+    ///
+    /// The `welcome` bytes are opaque to the validator — only the
+    /// recipient (whose `KeyPackage` is referenced by the Welcome)
+    /// can decrypt them. The signature is over (tag, welcome,
+    /// signed_by) so the broker can verify the addition was issued
+    /// by a member authorised to add (channel owner / delegate).
+    MemberAdded {
+        /// TLS-serialised MLS `Welcome` message bytes. Opaque to
+        /// non-recipients.
+        welcome: Vec<u8>,
+        /// Identity that issued the addition. Must be authorised to
+        /// add members (typically the channel owner, or a delegate
+        /// holding the equivalent `Govern` grant — the validator
+        /// enforces this via the role table when the inclusion is
+        /// replayed).
+        signed_by: Ed25519PublicKey,
+        /// Detached signature by `signed_by` over the canonical
+        /// view of this variant minus this field.
+        signature: Signature,
+    },
+    /// Phase 7.1 stub: a member was removed from the channel's MLS
+    /// group.
+    ///
+    /// Carries the MLS commit bytes that surviving members must
+    /// process to advance their epoch (the removal does not produce
+    /// a Welcome — only the survivors get a commit). The shape
+    /// mirrors [`MemberAdded`] so the broker code path can be
+    /// symmetric.
+    ///
+    /// **Not implemented end-to-end in Phase 7.**
+    /// `qos_channel_crypto::ChannelGroup::remove_member` is a
+    /// documented `todo!()`; this variant exists so the wire format
+    /// can land alongside the Phase-7 crate without a second
+    /// breaking change when Phase 7.1 enables removal.
+    MemberRemoved {
+        /// TLS-serialised MLS commit bytes that advance the
+        /// survivors' epoch. Opaque to anyone outside the group.
+        removal: Vec<u8>,
+        /// Identity that issued the removal.
+        signed_by: Ed25519PublicKey,
+        /// Detached signature by `signed_by` over the canonical
+        /// view of this variant minus this field.
+        signature: Signature,
+    },
 }
 
 impl ChannelEvent {
@@ -253,6 +306,42 @@ impl ChannelEvent {
                     signed_by,
                 })
             }
+            ChannelEvent::MemberAdded {
+                welcome,
+                signed_by,
+                signature: _,
+            } => {
+                #[derive(Serialize)]
+                struct View<'a> {
+                    tag: u8,
+                    #[serde(with = "serde_bytes")]
+                    welcome: &'a [u8],
+                    signed_by: &'a Ed25519PublicKey,
+                }
+                canonical_bytes(&View {
+                    tag: 6,
+                    welcome,
+                    signed_by,
+                })
+            }
+            ChannelEvent::MemberRemoved {
+                removal,
+                signed_by,
+                signature: _,
+            } => {
+                #[derive(Serialize)]
+                struct View<'a> {
+                    tag: u8,
+                    #[serde(with = "serde_bytes")]
+                    removal: &'a [u8],
+                    signed_by: &'a Ed25519PublicKey,
+                }
+                canonical_bytes(&View {
+                    tag: 7,
+                    removal,
+                    signed_by,
+                })
+            }
         }
     }
 
@@ -269,6 +358,8 @@ impl ChannelEvent {
             ChannelEvent::OwnershipTransfer { signed_by, .. } => *signed_by,
             ChannelEvent::Rename { signed_by, .. } => *signed_by,
             ChannelEvent::SettingsUpdate { signed_by, .. } => *signed_by,
+            ChannelEvent::MemberAdded { signed_by, .. } => *signed_by,
+            ChannelEvent::MemberRemoved { signed_by, .. } => *signed_by,
         }
     }
 
@@ -281,6 +372,8 @@ impl ChannelEvent {
             ChannelEvent::OwnershipTransfer { signature, .. } => signature,
             ChannelEvent::Rename { signature, .. } => signature,
             ChannelEvent::SettingsUpdate { signature, .. } => signature,
+            ChannelEvent::MemberAdded { signature, .. } => signature,
+            ChannelEvent::MemberRemoved { signature, .. } => signature,
         }
     }
 }
@@ -342,5 +435,73 @@ mod tests {
             signature: Signature::from_bytes([0u8; 64]),
         };
         assert_eq!(v1.signer(), k);
+    }
+
+    #[test]
+    fn member_added_round_trip() {
+        let (_, k) = generate_keypair();
+        let ev = ChannelEvent::MemberAdded {
+            welcome: vec![0xde, 0xad, 0xbe, 0xef],
+            signed_by: k,
+            signature: Signature::from_bytes([0u8; 64]),
+        };
+        let bytes = canonical_bytes(&ev).unwrap();
+        let back: ChannelEvent = from_canonical_bytes(&bytes).unwrap();
+        assert_eq!(ev, back);
+        assert_eq!(back.signer(), k);
+    }
+
+    #[test]
+    fn member_added_sign_and_verify() {
+        let (sk, pk) = generate_keypair();
+        let mut ev = ChannelEvent::MemberAdded {
+            welcome: vec![1, 2, 3, 4, 5],
+            signed_by: pk,
+            signature: Signature::from_bytes([0u8; 64]),
+        };
+        let bytes = ev.signing_bytes().unwrap();
+        let sig = sign_event(&bytes, &sk).unwrap();
+        if let ChannelEvent::MemberAdded { signature, .. } = &mut ev {
+            *signature = sig;
+        }
+        let view = ev.signing_bytes().unwrap();
+        assert!(verify_event(&view, &sig, &pk).is_ok());
+    }
+
+    #[test]
+    fn member_removed_round_trip() {
+        let (_, k) = generate_keypair();
+        let ev = ChannelEvent::MemberRemoved {
+            removal: vec![0xca, 0xfe, 0xba, 0xbe],
+            signed_by: k,
+            signature: Signature::from_bytes([0u8; 64]),
+        };
+        let bytes = canonical_bytes(&ev).unwrap();
+        let back: ChannelEvent = from_canonical_bytes(&bytes).unwrap();
+        assert_eq!(ev, back);
+        assert_eq!(back.signer(), k);
+    }
+
+    #[test]
+    fn member_added_and_removed_have_distinct_signing_bytes() {
+        // Same payload byte sequence; different tag must give
+        // different signing bytes so a peer cannot replay one
+        // signature on the other variant.
+        let (_, k) = generate_keypair();
+        let bytes = vec![7u8; 16];
+        let added = ChannelEvent::MemberAdded {
+            welcome: bytes.clone(),
+            signed_by: k,
+            signature: Signature::from_bytes([0u8; 64]),
+        };
+        let removed = ChannelEvent::MemberRemoved {
+            removal: bytes,
+            signed_by: k,
+            signature: Signature::from_bytes([0u8; 64]),
+        };
+        assert_ne!(
+            added.signing_bytes().unwrap(),
+            removed.signing_bytes().unwrap()
+        );
     }
 }
