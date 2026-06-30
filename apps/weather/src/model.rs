@@ -201,13 +201,44 @@ impl WeatherModel {
     }
 
     /// Remove the location at `idx` (and its cached snapshot). Keeps the
-    /// selection valid.
+    /// selection valid by tracking the *identity* of the selected place,
+    /// not its index — so deleting an entry above the selection doesn't
+    /// silently shift which place is in view.
     pub fn remove_location(&mut self, idx: usize) {
         if idx >= self.locations.len() {
             return;
         }
+        let selected_id = self.selected_location().map(|l| l.id);
         let removed = self.locations.remove(idx);
         self.snapshots.remove(&removed.id);
+        self.reselect_by_id(selected_id);
+    }
+
+    /// Move the location at `from` to sit at `to`, shifting the rest. The
+    /// selection follows the *place* it was on, not the slot index, so a
+    /// reorder never changes which forecast is shown. No-op for invalid or
+    /// equal indices. Returns true if the order actually changed.
+    pub fn move_location(&mut self, from: usize, to: usize) -> bool {
+        let n = self.locations.len();
+        if from >= n || to >= n || from == to {
+            return false;
+        }
+        let selected_id = self.selected_location().map(|l| l.id);
+        let moved = self.locations.remove(from);
+        self.locations.insert(to, moved);
+        self.reselect_by_id(selected_id);
+        true
+    }
+
+    /// Restore `selected` to point at the place with `id` after the list
+    /// was mutated, clamping if it's gone.
+    fn reselect_by_id(&mut self, id: Option<LocationId>) {
+        if let Some(id) = id {
+            if let Some(pos) = self.locations.iter().position(|l| l.id == id) {
+                self.selected = pos;
+                return;
+            }
+        }
         if self.locations.is_empty() {
             self.selected = 0;
         } else if self.selected >= self.locations.len() {
@@ -275,5 +306,46 @@ mod tests {
         m.remove_location(1);
         assert_eq!(m.selected, 0);
         assert_eq!(m.locations.len(), 1);
+    }
+
+    #[test]
+    fn remove_above_selection_keeps_same_place_in_view() {
+        let mut m = WeatherModel::default();
+        let a = SavedLocation::new("A", "", "C", "CC", 1.0, 1.0, "auto");
+        let b = SavedLocation::new("B", "", "C", "CC", 2.0, 2.0, "auto");
+        let c = SavedLocation::new("C", "", "C", "CC", 3.0, 3.0, "auto");
+        let c_id = c.id;
+        m.locations = vec![a, b, c];
+        m.selected = 2; // "C" is in view.
+        m.remove_location(0); // delete "A" above it.
+        assert_eq!(m.selected_location().unwrap().id, c_id, "selection tracks the place, not the slot");
+    }
+
+    #[test]
+    fn move_location_reorders_and_keeps_selection_on_place() {
+        let mut m = WeatherModel::default();
+        let a = SavedLocation::new("A", "", "C", "CC", 1.0, 1.0, "auto");
+        let b = SavedLocation::new("B", "", "C", "CC", 2.0, 2.0, "auto");
+        let c = SavedLocation::new("C", "", "C", "CC", 3.0, 3.0, "auto");
+        let (a_id, c_id) = (a.id, c.id);
+        m.locations = vec![a, b, c];
+        m.selected = 0; // "A" in view.
+        // Drag "A" (idx 0) to the end (idx 2): order becomes B, C, A.
+        assert!(m.move_location(0, 2));
+        assert_eq!(m.locations[0].id, m.locations[0].id);
+        assert_eq!(m.locations[2].id, a_id, "A landed at the end");
+        assert_eq!(m.selected_location().unwrap().id, a_id, "view still on A");
+        // Moving C to the front.
+        let c_pos = m.locations.iter().position(|l| l.id == c_id).unwrap();
+        assert!(m.move_location(c_pos, 0));
+        assert_eq!(m.locations[0].id, c_id);
+    }
+
+    #[test]
+    fn move_location_rejects_out_of_range() {
+        let mut m = WeatherModel::default();
+        m.locations.push(loc());
+        assert!(!m.move_location(0, 5));
+        assert!(!m.move_location(0, 0));
     }
 }

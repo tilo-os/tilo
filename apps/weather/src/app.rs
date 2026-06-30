@@ -1,25 +1,36 @@
 //! Root widget for the weather app.
 //!
-//! Layout is done **manually** in `draw` from a single root rect (the
-//! whole window): a fixed-width left rail (search + saved locations +
-//! units) and a flexible main column (header, current-conditions hero,
-//! metric tiles, the 24h temperature chart, and the 7-day list). Because
-//! everything is positioned arithmetically from `self.rect`, a freshly
-//! fetched snapshot needs no taffy rebuild — the next `draw` simply reads
-//! the new model.
+//! Layout is done **manually** in `draw` from a single root rect (the whole
+//! window). The two regions are:
+//!
+//! * a **flap sidebar** (app title + saved places + unit toggles) that is
+//!   either docked beside the content or overlaid over it, depending on the
+//!   window width (see [`crate::sidebar`]); and
+//! * a flexible **content column** (header, current-conditions hero, metric
+//!   tiles, the 24h temperature chart, and the 7-day list).
+//!
+//! Because everything is positioned arithmetically from `self.rect`, a
+//! freshly fetched snapshot needs no taffy rebuild — the next `draw` simply
+//! reads the new model.
+//!
+//! ## Direct manipulation of saved places
+//! The saved-place chips support drag-to-reorder, swipe-left-to-delete, a
+//! drag-onto-a-trash drop zone, and a right-click context menu. That state
+//! lives in [`crate::interaction`]; this widget advances it from raw winit
+//! events (it has no child-widget tree) and renders it each frame.
 //!
 //! ## The `--shots` / live split
 //! `--shots` renders exactly one offscreen frame with no event loop and no
-//! Tokio runtime, so it can't await a network fetch. The widget is
-//! therefore seeded with bundled [`crate::sample`] data and renders that
-//! immediately. The background [`crate::net::WeatherService`] is spawned
-//! **lazily on the first real input event** — which `--shots` never
-//! delivers — so a screenshot is fully populated and completely offline,
-//! while the live binary fetches real Open-Meteo data and overwrites the
-//! sample snapshots in place.
+//! Tokio runtime, so it can't await a network fetch. The widget is therefore
+//! seeded with bundled [`crate::sample`] data and renders that immediately.
+//! The background [`crate::net::WeatherService`] is spawned **lazily on the
+//! first real input event** — which `--shots` never delivers — so a
+//! screenshot is fully populated and completely offline, while the live
+//! binary fetches real Open-Meteo data and overwrites the sample snapshots
+//! in place.
 
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -30,6 +41,7 @@ use winit::event::WindowEvent;
 
 use ui::Widget;
 use ui::color_compat::ColorCompat;
+use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
@@ -38,14 +50,23 @@ use ui::theme::Theme;
 use crate::chart::{self, ChartPoint};
 use crate::doc::WeatherDoc;
 use crate::icon;
+use crate::interaction::{
+    ContextMenu, EntryAction, PointerPress, SWIPE_COMMIT_DX,
+};
 use crate::model::WeatherModel;
 use crate::net::{Request, Response, WeatherService};
+use crate::sidebar::{SidebarMode, SidebarState, RAIL_W};
 use crate::units::{self, TempUnit, WindUnit};
 use crate::wxcode::Sky;
 
-const RAIL_W: f64 = 300.0;
 const PAD: f64 = 28.0;
 const RP: f64 = 20.0; // rail inner padding
+const CHIP_H: f64 = 62.0; // saved-place chip height
+const CHIP_GAP: f64 = 8.0;
+/// How long a recently-typed query stays "fresh" before we fire a geocode.
+/// Short enough to feel instant, long enough to coalesce fast typing into a
+/// single request.
+const GEOCODE_DEBOUNCE: Duration = Duration::from_millis(220);
 
 /// A click target rebuilt every `draw` and hit-tested in `handle_event`.
 struct Hotspot {
@@ -56,11 +77,18 @@ struct Hotspot {
 #[derive(Clone)]
 enum Action {
     SelectLocation(usize),
-    RemoveLocation(usize),
     SetTemp(TempUnit),
     SetWind(WindUnit),
     FocusSearch,
     PickResult(usize),
+    ToggleSidebar,
+    /// Tapping the scrim (overlay mode) dismisses the rail.
+    DismissOverlay,
+    /// A context-menu row resolving to a per-entry action.
+    MenuItem(usize, EntryAction),
+    /// Begin a potential press on a saved-place chip (may become a
+    /// click, a reorder drag, or a swipe).
+    PressChip(usize),
 }
 
 pub struct WeatherApp {
@@ -70,16 +98,33 @@ pub struct WeatherApp {
     last_mouse: Point,
     hotspots: Vec<Hotspot>,
 
+    // Sidebar (Adwaita flap).
+    sidebar: SidebarState,
+
+    // Saved-place direct manipulation.
+    press: Option<PointerPress>,
+    menu: Option<ContextMenu>,
+    /// Index a reorder drag would currently drop the entry at (for the
+    /// insertion indicator). `None` when not reordering.
+    drop_index: Option<usize>,
+
     // Search state (ephemeral UI — not collaborative).
     search_query: String,
     search_focused: bool,
     search_results: Vec<crate::model::SavedLocation>,
     search_seq: u64,
+    /// Set on each keystroke; once it's older than [`GEOCODE_DEBOUNCE`] the
+    /// next frame fires the geocode. `None` once a request has been sent.
+    pending_query_at: Option<Instant>,
+    /// Recent geocode results keyed by the trimmed lowercase query. Lets a
+    /// re-typed or backspaced query show instantly without a round trip.
+    geocode_cache: HashMap<String, Vec<crate::model::SavedLocation>>,
 
     // Networking (live only; None until first input event).
     service: Option<WeatherService>,
     initial_fetch_done: bool,
     inflight: usize,
+    geocode_inflight: bool,
     last_request_at: Instant,
     status: String,
 
@@ -96,13 +141,20 @@ impl WeatherApp {
             root_node: None,
             last_mouse: Point::ZERO,
             hotspots: Vec::new(),
+            sidebar: SidebarState::default(),
+            press: None,
+            menu: None,
+            drop_index: None,
             search_query: String::new(),
             search_focused: false,
             search_results: Vec::new(),
             search_seq: 0,
+            pending_query_at: None,
+            geocode_cache: HashMap::new(),
             service: None,
             initial_fetch_done: false,
             inflight: 0,
+            geocode_inflight: false,
             last_request_at: Instant::now(),
             status: "Sample data — live updates on launch".to_string(),
             seeded_doc: false,
@@ -152,18 +204,71 @@ impl WeatherApp {
         self.status = "Updating…".to_string();
     }
 
-    fn trigger_geocode(&mut self) {
+    fn refresh_location(&mut self, idx: usize) {
+        let Some(svc) = self.service.as_ref() else { return };
+        let Some(loc) = self.model.locations.get(idx) else { return };
+        svc.request(Request::Forecast {
+            location_id: loc.id,
+            lat: loc.latitude,
+            lon: loc.longitude,
+            units: self.model.units,
+        });
+        self.inflight += 1;
+        self.last_request_at = Instant::now();
+        self.status = "Updating…".to_string();
+    }
+
+    // ---- geocoding (debounced + cached + background) -----------------
+
+    /// Record a keystroke and either show a cached result instantly or arm
+    /// the debounce timer. Never blocks; the network call is deferred to a
+    /// later frame so typing stays responsive.
+    fn on_query_changed(&mut self) {
+        let key = self.search_query.trim().to_lowercase();
+        if key.is_empty() {
+            self.search_results.clear();
+            self.pending_query_at = None;
+            self.status = "Sample data — live updates on launch".to_string();
+            return;
+        }
+        // Instant feedback from the cache, if we've seen this query.
+        if let Some(hit) = self.geocode_cache.get(&key) {
+            self.search_results = hit.clone();
+            self.status = format!("{} matches", hit.len());
+        } else {
+            self.status = "Typing…".to_string();
+        }
+        // (Re)arm the debounce; the actual request fires once typing pauses.
+        self.pending_query_at = Some(Instant::now());
+    }
+
+    /// If the debounce window has elapsed since the last keystroke, fire the
+    /// geocode request now. Called once per frame. Returns true if a request
+    /// was dispatched (so the caller keeps animating for the response).
+    fn maybe_fire_geocode(&mut self) -> bool {
+        let Some(at) = self.pending_query_at else { return false };
+        if at.elapsed() < GEOCODE_DEBOUNCE {
+            return false;
+        }
+        self.pending_query_at = None;
         let q = self.search_query.trim().to_string();
         if q.is_empty() {
-            self.search_results.clear();
-            return;
+            return false;
+        }
+        // A cache hit needs no network call (it's already shown).
+        let key = q.to_lowercase();
+        if self.geocode_cache.contains_key(&key) {
+            return false;
         }
         self.ensure_service();
         if let Some(svc) = self.service.as_ref() {
             self.search_seq += 1;
+            self.geocode_inflight = true;
             svc.request(Request::Geocode { seq: self.search_seq, query: q });
             self.status = "Searching…".to_string();
+            return true;
         }
+        false
     }
 
     /// Drain any ready network responses into the model. Returns true if
@@ -186,6 +291,12 @@ impl WeatherApp {
                 }
                 Response::Geocode { seq, results } => {
                     if seq == self.search_seq {
+                        self.geocode_inflight = false;
+                        // Cache for instant re-display next time.
+                        let key = self.search_query.trim().to_lowercase();
+                        if !key.is_empty() {
+                            self.geocode_cache.insert(key, results.clone());
+                        }
                         self.search_results = results;
                         self.status = if self.search_results.is_empty() {
                             "No matches".to_string()
@@ -197,12 +308,64 @@ impl WeatherApp {
                 }
                 Response::Error(e) => {
                     self.inflight = self.inflight.saturating_sub(1);
+                    self.geocode_inflight = false;
                     self.status = format!("Offline · {e}");
                     changed = true;
                 }
             }
         }
         changed
+    }
+
+    // ---- per-entry actions (swipe ⇔ menu parity) ---------------------
+
+    /// Resolve a per-entry [`EntryAction`] against the model. The single
+    /// place both the swipe gesture and the context menu funnel into, so the
+    /// two stay in lockstep. Returns true if the model changed.
+    fn apply_entry_action(&mut self, index: usize, action: EntryAction) -> bool {
+        match action {
+            EntryAction::Delete => {
+                if index < self.model.locations.len() {
+                    self.model.remove_location(index);
+                    true
+                } else {
+                    false
+                }
+            }
+            EntryAction::MoveToTop => self.model.move_location(index, 0),
+            EntryAction::Refresh => {
+                self.refresh_location(index);
+                false // a fetch in flight isn't a model change yet
+            }
+        }
+    }
+
+    // ---- geometry ----------------------------------------------------
+
+    /// Resolve the current sidebar mode from the *allocated* width.
+    fn sidebar_mode(&self) -> SidebarMode {
+        SidebarMode::from_width(self.rect.width())
+    }
+
+    /// The content column's rect, given the current sidebar mode + reveal.
+    /// Docked: content is inset by the revealed rail width. Overlay: content
+    /// always spans the full width (the rail floats over it).
+    fn content_rect(&self) -> Rect {
+        match self.sidebar_mode() {
+            SidebarMode::Docked => {
+                let inset = RAIL_W * self.sidebar.reveal();
+                Rect::new(self.rect.x0 + inset, self.rect.y0, self.rect.x1, self.rect.y1)
+            }
+            SidebarMode::Overlay => self.rect,
+        }
+    }
+
+    /// The rail's current on-screen rect. Slides in from the left edge by the
+    /// eased reveal amount; fully off-screen at reveal 0.
+    fn rail_rect(&self) -> Rect {
+        let slide = self.sidebar.slide();
+        let x0 = self.rect.x0 - RAIL_W * (1.0 - slide);
+        Rect::new(x0, self.rect.y0, x0 + RAIL_W, self.rect.y1)
     }
 
     /// Day/night accent: a touch lighter & cooler at night so the curve and
@@ -246,6 +409,48 @@ impl WeatherApp {
         scene.fill(Fill::NonZero, t, &Brush::Gradient(grad), None, &self.rect);
     }
 
+    /// The hamburger / close toggle in the content's top-left corner. Shown
+    /// whenever the rail isn't fully docked-open, so a collapsed rail can be
+    /// summoned and an overlay rail dismissed. Returns its rect for layout.
+    fn draw_sidebar_toggle(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        theme: &Theme,
+        content: Rect,
+        hot: &mut Vec<Hotspot>,
+    ) {
+        let c = &theme.tokens.colors;
+        let size = 34.0;
+        let bx = content.x0 + PAD;
+        let by = content.y0 + PAD;
+        let btn = Rect::new(bx, by, bx + size, by + size);
+        let shape = RoundedRect::from_rect(btn, theme.tokens.radii.md as f64);
+        scene.fill(Fill::NonZero, t, c.surfaces.raised.with_alpha_factor(0.9), None, &shape);
+        scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
+
+        let cx = btn.x0 + size / 2.0;
+        let line_w = 14.0;
+        let open = self.sidebar.reveal() > 0.5;
+        if open {
+            // An "X"/close affordance when the rail is showing.
+            let r = 6.0;
+            let cyc = btn.y0 + size / 2.0;
+            scene.stroke(&Stroke::new(1.8), t, c.text_primary, None,
+                &Line::new(Point::new(cx - r, cyc - r), Point::new(cx + r, cyc + r)));
+            scene.stroke(&Stroke::new(1.8), t, c.text_primary, None,
+                &Line::new(Point::new(cx + r, cyc - r), Point::new(cx - r, cyc + r)));
+        } else {
+            // Three-line hamburger.
+            for i in 0..3 {
+                let ly = btn.y0 + 11.0 + i as f64 * 6.0;
+                scene.stroke(&Stroke::new(1.8), t, c.text_primary, None,
+                    &Line::new(Point::new(cx - line_w / 2.0, ly), Point::new(cx + line_w / 2.0, ly)));
+            }
+        }
+        hot.push(Hotspot { rect: btn, action: Action::ToggleSidebar });
+    }
+
     fn draw_left_rail(
         &self,
         scene: &mut Scene,
@@ -255,10 +460,26 @@ impl WeatherApp {
         hot: &mut Vec<Hotspot>,
     ) {
         let c = &theme.tokens.colors;
-        let rail = Rect::new(self.rect.x0, self.rect.y0, self.rect.x0 + RAIL_W, self.rect.y1);
+        let mode = self.sidebar_mode();
+        let reveal = self.sidebar.reveal();
+        if reveal <= 0.001 && mode == SidebarMode::Overlay {
+            return; // fully collapsed overlay — nothing to paint
+        }
+
+        // Overlay mode dims the content behind a scrim that fades with the
+        // reveal (Adwaita's flap dimming), and the rail floats above it.
+        if mode == SidebarMode::Overlay {
+            let scrim = c.surfaces.overlay.with_alpha_factor((reveal * 0.6) as f32);
+            scene.fill(Fill::NonZero, t, scrim, None, &self.rect);
+            hot.push(Hotspot { rect: self.rect, action: Action::DismissOverlay });
+        }
+
+        let rail = self.rail_rect();
         // Rail panel — a translucent raised surface separating it from the
-        // gradient content area.
-        scene.fill(Fill::NonZero, t, c.surfaces.raised.with_alpha_factor(0.92), None, &rail);
+        // gradient content area. Overlay mode is opaque (it floats over
+        // content); docked mode is lightly translucent.
+        let panel_alpha = if mode == SidebarMode::Overlay { 0.98 } else { 0.92 };
+        scene.fill(Fill::NonZero, t, c.surfaces.raised.with_alpha_factor(panel_alpha), None, &rail);
         scene.stroke(
             &Stroke::new(1.0),
             t,
@@ -270,9 +491,20 @@ impl WeatherApp {
         let x = rail.x0 + RP;
         let w = RAIL_W - 2.0 * RP;
 
-        // Title.
+        // Title — kept at the very top of the rail (decoration-less OS, and
+        // mobile-compatible). A small close affordance sits at the right edge
+        // so an overlay rail can be dismissed without reaching the scrim.
         text_left(scene, tr, "Weather", x, rail.y0 + 24.0, 22.0, TextWeight::Bold, c.text_primary);
         text_left(scene, tr, "Open-Meteo · qOS", x, rail.y0 + 52.0, 12.0, TextWeight::Regular, c.text_dim);
+        {
+            let cs = 26.0;
+            let close = Rect::new(rail.x1 - RP - cs, rail.y0 + 18.0, rail.x1 - RP, rail.y0 + 18.0 + cs);
+            if close.contains(self.last_mouse) {
+                scene.fill(Fill::NonZero, t, c.neutral[2], None, &RoundedRect::from_rect(close, 6.0));
+            }
+            Icon::X.draw(scene, t, close.inset(-6.0), c.text_dim);
+            hot.push(Hotspot { rect: close, action: Action::ToggleSidebar });
+        }
 
         // Search field.
         let sy = rail.y0 + 78.0;
@@ -319,7 +551,8 @@ impl WeatherApp {
 
         let mut y = sy + sh + 12.0;
 
-        // Search results (live only; empty in --shots).
+        // Search results (live or cached). A tiny spinner-dot communicates an
+        // in-flight request while still showing any cached rows underneath.
         if self.search_focused && !self.search_results.is_empty() {
             for (i, r) in self.search_results.iter().take(6).enumerate() {
                 let rh = 34.0;
@@ -333,70 +566,239 @@ impl WeatherApp {
                 y += rh + 2.0;
             }
             y += 6.0;
+        } else if self.search_focused && self.geocode_inflight {
+            text_left(scene, tr, "Searching…", x + 4.0, y, 12.0, TextWeight::Regular, c.text_dim);
+            y += 24.0;
         }
 
-        // Saved locations.
+        // Saved-places list — its bottom is bounded so the drag/unit panel at
+        // the rail foot never overlaps it.
         text_left(scene, tr, "SAVED PLACES", x, y, 10.0, TextWeight::Semibold, c.text_dim);
         y += 22.0;
-        let units = self.model.units;
-        for (i, loc) in self.model.locations.iter().enumerate() {
-            let ch = 62.0;
-            let chip = Rect::new(x, y, x + w, y + ch);
-            let selected = i == self.model.selected;
-            let bg = if selected {
-                lerp_color(c.surfaces.base, self.accent(theme), 0.18)
-            } else if chip.contains(self.last_mouse) {
-                c.neutral[2]
-            } else {
-                c.surfaces.base
-            };
-            let shape = RoundedRect::from_rect(chip, theme.tokens.radii.md as f64);
-            scene.fill(Fill::NonZero, t, bg, None, &shape);
-            if selected {
-                scene.stroke(&Stroke::new(1.5), t, self.accent(theme), None, &shape);
-            }
-            // Icon.
-            if let Some(snap) = self.model.snapshot_for(loc.id) {
-                let sky = Sky::from_code(snap.current.weather_code);
-                icon::draw_icon(
-                    scene,
-                    t,
-                    sky,
-                    snap.current.is_day,
-                    Rect::new(chip.x0 + 10.0, chip.y0 + 11.0, chip.x0 + 50.0, chip.y0 + 51.0),
-                    theme,
-                );
-            }
-            text_left(scene, tr, &loc.name, chip.x0 + 58.0, chip.y0 + 13.0, 15.0, TextWeight::Semibold, c.text_primary);
-            text_left(scene, tr, &loc.country, chip.x0 + 58.0, chip.y0 + 35.0, 12.0, TextWeight::Regular, c.text_dim);
-            if let Some(snap) = self.model.snapshot_for(loc.id) {
-                let temp = snap.temp_in(snap.current.temperature, units).round() as i64;
-                text_right(
-                    scene,
-                    tr,
-                    &format!("{temp}°"),
-                    chip.x1 - 14.0,
-                    chip.y0 + 18.0,
-                    24.0,
-                    TextWeight::Bold,
-                    c.text_primary,
-                );
-            }
-            hot.push(Hotspot { rect: chip, action: Action::SelectLocation(i) });
-            // Remove affordance (only when more than one place).
-            if self.model.locations.len() > 1 && chip.contains(self.last_mouse) {
-                let rm = Rect::new(chip.x1 - 22.0, chip.y0 + 4.0, chip.x1 - 6.0, chip.y0 + 20.0);
-                let cxp = (rm.x0 + rm.x1) / 2.0;
-                let cyp = (rm.y0 + rm.y1) / 2.0;
-                scene.stroke(&Stroke::new(1.4), t, c.text_dim, None, &Line::new(Point::new(cxp - 4.0, cyp - 4.0), Point::new(cxp + 4.0, cyp + 4.0)));
-                scene.stroke(&Stroke::new(1.4), t, c.text_dim, None, &Line::new(Point::new(cxp + 4.0, cyp - 4.0), Point::new(cxp - 4.0, cyp + 4.0)));
-                hot.push(Hotspot { rect: rm, action: Action::RemoveLocation(i) });
-            }
-            y += ch + 8.0;
+        self.draw_saved_places(scene, t, tr, theme, rail, x, w, y, hot);
+
+        // Foot of the rail: either the unit toggles (normal) or the big
+        // Delete drop zone (while a reorder drag is in progress).
+        if self.is_reorder_active() {
+            self.draw_delete_dropzone(scene, t, tr, theme, rail, hot);
+        } else {
+            self.draw_units(scene, t, tr, theme, rail, hot);
         }
 
-        // Units + status anchored to the bottom of the rail.
-        self.draw_units(scene, t, tr, theme, rail, hot);
+        // The context menu paints last so it sits above the chips. (Kept in
+        // `draw` rather than `draw_overlay` so the `--shots` path, which only
+        // runs the normal draw pass, still captures it.)
+        if self.menu.is_some() {
+            self.draw_context_menu(scene, t, tr, theme, hot);
+        }
+    }
+
+    /// Draw the saved-place chips, honouring an in-progress drag (the dragged
+    /// chip follows the cursor; a gap opens at the drop index) or swipe (the
+    /// swiped chip slides left over a red delete backing).
+    #[allow(clippy::too_many_arguments)]
+    fn draw_saved_places(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rail: Rect,
+        x: f64,
+        w: f64,
+        list_top: f64,
+        hot: &mut Vec<Hotspot>,
+    ) {
+        let c = &theme.tokens.colors;
+        let units = self.model.units;
+        let n = self.model.locations.len();
+        let dragging = self.dragged_index();
+        let drop_at = self.drop_index;
+
+        // Base slot y for entry i (without drag displacement).
+        let slot_y = |i: usize| list_top + i as f64 * (CHIP_H + CHIP_GAP);
+
+        // Insertion indicator while reordering.
+        if let (Some(_), Some(di)) = (dragging, drop_at) {
+            let gy = slot_y(di) - CHIP_GAP / 2.0;
+            scene.fill(
+                Fill::NonZero,
+                t,
+                self.accent(theme),
+                None,
+                &RoundedRect::new(x, gy - 1.5, x + w, gy + 1.5, 1.5),
+            );
+        }
+
+        for (i, loc) in self.model.locations.iter().enumerate() {
+            // The actively-dragged chip is drawn last (on top), skip here.
+            if Some(i) == dragging {
+                continue;
+            }
+            let y = slot_y(i);
+            let chip = Rect::new(x, y, x + w, y + CHIP_H);
+
+            // Swipe-left: reveal a red delete backing, slide the chip.
+            let swipe_dx = self.swipe_dx_for(i);
+            if swipe_dx > 0.0 {
+                self.draw_swipe_backing(scene, t, theme, chip);
+            }
+            let chip_t = t * Affine::translate((-swipe_dx, 0.0));
+
+            self.draw_chip(scene, chip_t, tr, theme, chip, loc, i, units);
+            // Hotspot is the un-slid chip position (press starts the gesture).
+            hot.push(Hotspot { rect: chip, action: Action::PressChip(i) });
+        }
+
+        // Trailing gap indicator (dropping at the end).
+        if let (Some(_), Some(di)) = (dragging, drop_at) {
+            if di == n {
+                let gy = slot_y(n) - CHIP_GAP / 2.0;
+                scene.fill(
+                    Fill::NonZero,
+                    t,
+                    self.accent(theme),
+                    None,
+                    &RoundedRect::new(x, gy - 1.5, x + w, gy + 1.5, 1.5),
+                );
+            }
+        }
+
+        // Finally the floating dragged chip under the cursor.
+        if let Some(i) = dragging {
+            if let Some(loc) = self.model.locations.get(i) {
+                let dy = self.last_mouse.y - CHIP_H / 2.0;
+                let chip = Rect::new(x, dy, x + w, dy + CHIP_H);
+                // Soft shadow so it reads as lifted.
+                let sh = RoundedRect::from_rect(chip.inset(-2.0), theme.tokens.radii.md as f64 + 2.0);
+                scene.fill(Fill::NonZero, t, Color::from_rgba8(0, 0, 0, 60), None, &sh);
+                self.draw_chip(scene, t, tr, theme, chip, loc, i, units);
+            }
+        }
+
+        let _ = rail;
+        let _ = c;
+    }
+
+    /// Paint one saved-place chip (icon + name + temperature). `index` drives
+    /// the selected highlight.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_chip(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        chip: Rect,
+        loc: &crate::model::SavedLocation,
+        index: usize,
+        units: crate::units::Units,
+    ) {
+        let c = &theme.tokens.colors;
+        let selected = index == self.model.selected;
+        let hovered = chip.contains(self.last_mouse);
+        let bg = if selected {
+            lerp_color(c.surfaces.base, self.accent(theme), 0.18)
+        } else if hovered {
+            c.neutral[2]
+        } else {
+            c.surfaces.base
+        };
+        let shape = RoundedRect::from_rect(chip, theme.tokens.radii.md as f64);
+        scene.fill(Fill::NonZero, t, bg, None, &shape);
+        if selected {
+            scene.stroke(&Stroke::new(1.5), t, self.accent(theme), None, &shape);
+        }
+        if let Some(snap) = self.model.snapshot_for(loc.id) {
+            let sky = Sky::from_code(snap.current.weather_code);
+            icon::draw_icon(
+                scene,
+                t,
+                sky,
+                snap.current.is_day,
+                Rect::new(chip.x0 + 10.0, chip.y0 + 11.0, chip.x0 + 50.0, chip.y0 + 51.0),
+                theme,
+            );
+        }
+        text_left(scene, tr, &loc.name, chip.x0 + 58.0, chip.y0 + 13.0, 15.0, TextWeight::Semibold, c.text_primary);
+        text_left(scene, tr, &loc.country, chip.x0 + 58.0, chip.y0 + 35.0, 12.0, TextWeight::Regular, c.text_dim);
+        if let Some(snap) = self.model.snapshot_for(loc.id) {
+            let temp = snap.temp_in(snap.current.temperature, units).round() as i64;
+            text_right(
+                scene,
+                tr,
+                &format!("{temp}°"),
+                chip.x1 - 14.0,
+                chip.y0 + 18.0,
+                24.0,
+                TextWeight::Bold,
+                c.text_primary,
+            );
+        }
+        // A subtle grip affordance on hover hints the chip is draggable.
+        if hovered && !selected {
+            let gx = chip.x1 - 16.0;
+            for r in 0..2 {
+                for d in 0..3 {
+                    let p = Point::new(gx + r as f64 * 4.0, chip.y1 - 18.0 + d as f64 * 4.0);
+                    scene.fill(Fill::NonZero, t, c.text_dim.with_alpha_factor(0.5), None, &Circle::new(p, 1.0));
+                }
+            }
+        }
+    }
+
+    /// The red backing revealed under a chip as it's swiped left — a trash
+    /// glyph on the danger colour, foreshadowing the delete.
+    fn draw_swipe_backing(&self, scene: &mut Scene, t: Affine, theme: &Theme, chip: Rect) {
+        let c = &theme.tokens.colors;
+        let shape = RoundedRect::from_rect(chip, theme.tokens.radii.md as f64);
+        scene.fill(Fill::NonZero, t, c.semantic.danger, None, &shape);
+        let icon_r = Rect::new(chip.x1 - 42.0, chip.y0 + 17.0, chip.x1 - 14.0, chip.y0 + 45.0);
+        Icon::Trash.draw(scene, t, icon_r, Color::WHITE);
+    }
+
+    /// The big "Delete" drop surface shown at the rail foot while a reorder
+    /// drag is active — a red, rounded, dashed-outline target with a trash
+    /// icon. Dropping a chip here deletes it (handled on release).
+    fn draw_delete_dropzone(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rail: Rect,
+        _hot: &mut [Hotspot],
+    ) {
+        let c = &theme.tokens.colors;
+        let x = rail.x0 + RP;
+        let w = RAIL_W - 2.0 * RP;
+        let h = 96.0;
+        let zone = Rect::new(x, rail.y1 - h - RP, x + w, rail.y1 - RP);
+        let armed = self.delete_zone_rect_armed(zone);
+
+        let shape = RoundedRect::from_rect(zone, theme.tokens.radii.lg as f64);
+        // Fill brightens when the cursor is over it (armed to delete).
+        let fill = if armed {
+            c.semantic.danger
+        } else {
+            c.semantic.danger.with_alpha_factor(0.16)
+        };
+        scene.fill(Fill::NonZero, t, fill, None, &shape);
+        // Dashed / dotted ("punctuated") danger outline so it's unmistakably
+        // a different kind of target than the solid unit controls.
+        let dash = Stroke::new(2.0).with_dashes(0.0, [6.0, 5.0]);
+        scene.stroke(&dash, t, c.semantic.danger, None, &shape);
+
+        let icon_color = if armed { Color::WHITE } else { c.semantic.danger };
+        let icon_r = Rect::new(
+            zone.x0 + w / 2.0 - 16.0,
+            zone.y0 + 14.0,
+            zone.x0 + w / 2.0 + 16.0,
+            zone.y0 + 46.0,
+        );
+        Icon::Trash.draw_with_stroke(scene, t, icon_r, icon_color, 2.0);
+        let label_color = if armed { Color::WHITE } else { c.semantic.danger };
+        text_center(scene, tr, "Delete", zone.x0 + w / 2.0, zone.y1 - 26.0, 14.0, TextWeight::Bold, label_color);
     }
 
     fn draw_units(
@@ -470,17 +872,73 @@ impl WeatherApp {
         text_left(scene, tr, &self.status, x, rail.y1 - 22.0, 11.0, TextWeight::Regular, c.text_dim);
     }
 
+    /// Draw the open per-entry context menu at its anchor and register a
+    /// hotspot per row.
+    fn draw_context_menu(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        hot: &mut Vec<Hotspot>,
+    ) {
+        let Some(menu) = self.menu.as_ref() else { return };
+        let c = &theme.tokens.colors;
+        let mw = 184.0;
+        let row_h = 34.0;
+        let pad = 6.0;
+        let mh = pad * 2.0 + menu.items.len() as f64 * row_h;
+        // Keep the menu on-screen.
+        let mx = menu.anchor.x.min(self.rect.x1 - mw - 4.0).max(self.rect.x0 + 4.0);
+        let my = menu.anchor.y.min(self.rect.y1 - mh - 4.0).max(self.rect.y0 + 4.0);
+        let panel = Rect::new(mx, my, mx + mw, my + mh);
+        let shape = RoundedRect::from_rect(panel, theme.tokens.radii.md as f64);
+        // Drop shadow + raised panel.
+        scene.fill(Fill::NonZero, t, Color::from_rgba8(0, 0, 0, 80), None,
+            &RoundedRect::from_rect(panel.inset(-3.0), theme.tokens.radii.md as f64 + 3.0));
+        scene.fill(Fill::NonZero, t, c.surfaces.overlay.with_alpha_factor(0.98), None, &shape);
+        scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
+
+        for (i, action) in menu.items.iter().enumerate() {
+            let ry = my + pad + i as f64 * row_h;
+            let row = Rect::new(mx + pad, ry, mx + mw - pad, ry + row_h);
+            let hovered = row.contains(self.last_mouse);
+            if hovered {
+                let hl = if action.is_destructive() {
+                    c.semantic.danger.with_alpha_factor(0.22)
+                } else {
+                    c.neutral[2]
+                };
+                scene.fill(Fill::NonZero, t, hl, None, &RoundedRect::from_rect(row, 6.0));
+            }
+            let text_color = if action.is_destructive() { c.semantic.danger } else { c.text_primary };
+            // Leading icon.
+            let icon_r = Rect::new(row.x0 + 6.0, row.y0 + 8.0, row.x0 + 24.0, row.y0 + 26.0);
+            match action {
+                EntryAction::Delete => Icon::Trash.draw(scene, t, icon_r, text_color),
+                EntryAction::MoveToTop => Icon::ChevronUp.draw(scene, t, icon_r, text_color),
+                EntryAction::Refresh => Icon::Refresh.draw(scene, t, icon_r, text_color),
+            }
+            text_left(scene, tr, action.label(), row.x0 + 32.0, row.y0 + row_h / 2.0 - 8.0, 13.0, TextWeight::Medium, text_color);
+            hot.push(Hotspot { rect: row, action: Action::MenuItem(menu.index, *action) });
+        }
+    }
+
     fn draw_main(
         &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        content: Rect,
     ) {
         let c = &theme.tokens.colors;
-        let main = Rect::new(self.rect.x0 + RAIL_W, self.rect.y0, self.rect.x1, self.rect.y1);
-        let mx = main.x0 + PAD;
-        let mw = main.width() - 2.0 * PAD;
+        let main = content;
+        // When the toggle button is shown (rail not fully docked-open) the
+        // header is nudged right so the title clears the button.
+        let toggle_inset = if self.show_toggle() { 46.0 } else { 0.0 };
+        let mx = main.x0 + PAD + toggle_inset;
+        let mw = main.width() - 2.0 * PAD - toggle_inset;
         let right = main.x1 - PAD;
         let accent = self.accent(theme);
 
@@ -772,6 +1230,69 @@ impl WeatherApp {
         text_right(scene, tr, sunset, area.x1 - 4.0, baseline + 20.0, 13.0, TextWeight::Medium, c.text_primary);
     }
 
+    // ---- drag / swipe helpers ----------------------------------------
+
+    /// True while a vertical reorder drag is in progress (the foot of the
+    /// rail shows the Delete drop zone in this state).
+    fn is_reorder_active(&self) -> bool {
+        self.press.map(|p| p.is_reorder()).unwrap_or(false)
+    }
+
+    /// Index of the chip currently being lifted by a reorder drag.
+    fn dragged_index(&self) -> Option<usize> {
+        self.press.filter(|p| p.is_reorder()).map(|p| p.index)
+    }
+
+    /// Leftward swipe distance to apply to chip `i` (0 unless it's the chip
+    /// under an active horizontal swipe).
+    fn swipe_dx_for(&self, i: usize) -> f64 {
+        match self.press {
+            Some(p) if p.is_swipe() && p.index == i => p.swipe_dx(),
+            _ => 0.0,
+        }
+    }
+
+    /// Whether the cursor is over the delete drop zone (so it renders armed).
+    fn delete_zone_rect_armed(&self, zone: Rect) -> bool {
+        self.is_reorder_active() && zone.contains(self.last_mouse)
+    }
+
+    /// The delete drop zone's rect at the rail foot (recomputed for hit-test).
+    fn delete_zone_rect(&self) -> Rect {
+        let rail = self.rail_rect();
+        let x = rail.x0 + RP;
+        let w = RAIL_W - 2.0 * RP;
+        let h = 96.0;
+        Rect::new(x, rail.y1 - h - RP, x + w, rail.y1 - RP)
+    }
+
+    /// Compute the drop index for a reorder drag from the cursor's y. Returns
+    /// an insertion index in `0..=len`.
+    fn reorder_drop_index(&self, list_top: f64) -> usize {
+        let n = self.model.locations.len();
+        let rel = (self.last_mouse.y - list_top) / (CHIP_H + CHIP_GAP);
+        ((rel.round()).max(0.0) as usize).min(n)
+    }
+
+    /// The y at which the saved-places list begins (mirrors `draw_left_rail`).
+    fn saved_places_top(&self) -> f64 {
+        let rail = self.rail_rect();
+        let mut y = rail.y0 + 78.0 + 38.0 + 12.0; // title block + search field
+        if self.search_focused && !self.search_results.is_empty() {
+            y += self.search_results.len().min(6) as f64 * 36.0 + 6.0;
+        } else if self.search_focused && self.geocode_inflight {
+            y += 24.0;
+        }
+        y += 22.0; // "SAVED PLACES" header
+        y
+    }
+
+    /// Whether the hamburger toggle is currently shown (rail not fully
+    /// docked-open).
+    fn show_toggle(&self) -> bool {
+        self.sidebar_mode() == SidebarMode::Overlay || self.sidebar.reveal() < 0.999
+    }
+
     // ---- events ------------------------------------------------------
 
     /// Apply a hotspot action. Returns true if the model changed (persist).
@@ -780,10 +1301,10 @@ impl WeatherApp {
             Action::SelectLocation(i) => {
                 self.model.select(i);
                 self.refresh_selected();
-                true
-            }
-            Action::RemoveLocation(i) => {
-                self.model.remove_location(i);
+                // In overlay mode, picking a place closes the flap (Adwaita).
+                if self.sidebar_mode() == SidebarMode::Overlay {
+                    self.sidebar.close();
+                }
                 true
             }
             Action::SetTemp(u) => {
@@ -813,10 +1334,60 @@ impl WeatherApp {
                     self.search_focused = false;
                     self.search_query.clear();
                     self.search_results.clear();
+                    self.pending_query_at = None;
                     return true;
                 }
                 false
             }
+            Action::ToggleSidebar => {
+                self.sidebar.toggle(self.sidebar_mode());
+                false
+            }
+            Action::DismissOverlay => {
+                self.sidebar.close();
+                false
+            }
+            Action::MenuItem(index, action) => {
+                self.menu = None;
+                self.apply_entry_action(index, action)
+            }
+            Action::PressChip(_) => false, // press handled in mouse-down path
+        }
+    }
+}
+
+impl WeatherApp {
+    /// Seed a deterministic interaction state for a headless screenshot.
+    /// `--shots` renders a single frame with no event loop, so a scenario
+    /// that would normally require live input (an in-progress drag, an open
+    /// flap) is staged here instead. Unknown names render the default frame.
+    ///
+    /// Recognised scenarios:
+    /// * `"drag"` — a reorder drag of the second saved place is in flight,
+    ///   the cursor parked low so the rail foot shows the red dashed Delete
+    ///   drop surface.
+    /// * `"overlay"` — a narrow-window flap opened over the content with its
+    ///   dimming scrim (best paired with a narrow viewport).
+    pub fn seed_shot_scenario(&mut self, scenario: &str) {
+        match scenario {
+            "drag" => {
+                // Lift the 2nd chip and classify the press as a vertical
+                // reorder. Park the cursor mid-list (NOT over the drop zone)
+                // so the lifted chip floats clearly and the Delete surface
+                // shows its un-armed dashed outline.
+                let mut press = PointerPress::new(1, Point::new(150.0, 250.0));
+                press.update(Point::new(150.0, 470.0)); // mostly-vertical → reorder
+                self.last_mouse = Point::new(150.0, 470.0);
+                self.drop_index = Some(self.model.locations.len());
+                self.press = Some(press);
+            }
+            "overlay" => {
+                // Force the flap open; mode resolves to overlay at narrow
+                // widths during layout, so this shows the scrim + float.
+                self.sidebar.toggle(SidebarMode::Overlay);
+                self.last_mouse = Point::new(150.0, 250.0);
+            }
+            _ => {}
         }
     }
 }
@@ -884,6 +1455,10 @@ impl Widget for WeatherApp {
                 origin.y + layout.location.y as f64 + layout.size.height as f64,
             );
         }
+        // Mode is now known from the allocated width — reconcile the flap so a
+        // breakpoint crossing adopts the new default (wide ⇒ open, narrow ⇒
+        // closed) before the next draw.
+        self.sidebar.reconcile(self.sidebar_mode());
     }
 
     fn draw(
@@ -898,10 +1473,19 @@ impl Widget for WeatherApp {
         // this frame even if `sync` hasn't run (the live event loop keeps
         // redrawing while `needs_animation_frame` is true).
         self.poll_service();
+        // Advance the flap transition and fire any due geocode.
+        self.sidebar.reconcile(self.sidebar_mode());
+        self.sidebar.tick(self.sidebar_mode());
+        self.maybe_fire_geocode();
 
+        let content = self.content_rect();
         let mut hot: Vec<Hotspot> = Vec::new();
         self.draw_background(scene, transform, theme);
-        self.draw_main(scene, transform, text_renderer, theme);
+        self.draw_main(scene, transform, text_renderer, theme, content);
+        // The hamburger/close toggle lives over the content's corner.
+        if self.show_toggle() {
+            self.draw_sidebar_toggle(scene, transform, theme, content, &mut hot);
+        }
         self.draw_left_rail(scene, transform, text_renderer, theme, &mut hot);
         self.hotspots = hot;
     }
@@ -929,24 +1513,95 @@ impl Widget for WeatherApp {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+                // Advance an in-progress press (classify click/reorder/swipe).
+                if let Some(press) = self.press.as_mut() {
+                    press.update(self.last_mouse);
+                    if press.is_reorder() {
+                        let top = self.saved_places_top();
+                        self.drop_index = Some(self.reorder_drop_index(top));
+                    }
+                }
+            }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } => {
+                // Right-click on a saved-place chip opens the context menu
+                // (winit's MouseInput carries no coords — we use the cached
+                // cursor position).
+                if let Some(idx) = self.chip_at(self.last_mouse) {
+                    self.menu = Some(ContextMenu::for_entry(idx, self.last_mouse));
+                    *handled = true;
+                } else if self.menu.is_some() {
+                    self.menu = None;
+                    *handled = true;
+                }
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
-                // Topmost matching hotspot wins (rail results/remove are
-                // pushed after the chips, so later entries take priority).
-                let hit = self
-                    .hotspots
-                    .iter()
-                    .rev()
-                    .find(|h| h.rect.contains(self.last_mouse))
-                    .map(|h| h.action.clone());
-                if let Some(action) = hit {
-                    model_changed = self.apply_action(action);
+                // A click while a menu is open: a menu row consumes it,
+                // anything else dismisses the menu.
+                if self.menu.is_some() {
+                    let hit = self
+                        .hotspots
+                        .iter()
+                        .rev()
+                        .find(|h| matches!(h.action, Action::MenuItem(..)) && h.rect.contains(self.last_mouse))
+                        .map(|h| h.action.clone());
+                    if let Some(action) = hit {
+                        model_changed = self.apply_action(action);
+                    } else {
+                        self.menu = None;
+                    }
                     *handled = true;
                 } else {
-                    // Click outside the search field unfocuses it.
-                    if self.search_focused {
-                        self.search_focused = false;
-                        *handled = true;
+                    // Topmost matching hotspot wins.
+                    let hit = self
+                        .hotspots
+                        .iter()
+                        .rev()
+                        .find(|h| h.rect.contains(self.last_mouse))
+                        .map(|h| h.action.clone());
+                    match hit {
+                        Some(Action::PressChip(i)) => {
+                            // Arm a press; classification happens on move.
+                            self.press = Some(PointerPress::new(i, self.last_mouse));
+                            self.drop_index = None;
+                            *handled = true;
+                        }
+                        Some(action) => {
+                            model_changed = self.apply_action(action);
+                            *handled = true;
+                        }
+                        None => {
+                            if self.search_focused {
+                                self.search_focused = false;
+                                *handled = true;
+                            }
+                        }
+                    }
+                }
+            }
+            WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
+                if let Some(press) = self.press.take() {
+                    self.drop_index = None;
+                    *handled = true;
+                    if press.is_reorder() {
+                        // Drop on the delete zone → delete; else reorder.
+                        if self.delete_zone_rect().contains(self.last_mouse) {
+                            model_changed = self.apply_entry_action(press.index, EntryAction::Delete);
+                        } else {
+                            let top = self.saved_places_top();
+                            let mut to = self.reorder_drop_index(top);
+                            // Inserting after the original slot shifts by one.
+                            if to > press.index {
+                                to -= 1;
+                            }
+                            model_changed = self.model.move_location(press.index, to);
+                        }
+                    } else if press.is_swipe() {
+                        if press.swipe_dx() >= SWIPE_COMMIT_DX {
+                            model_changed = self.apply_entry_action(press.index, EntryAction::swipe_left());
+                        }
+                    } else {
+                        // Treated as a plain click → select.
+                        model_changed = self.apply_action(Action::SelectLocation(press.index));
                     }
                 }
             }
@@ -960,14 +1615,17 @@ impl Widget for WeatherApp {
                             self.search_focused = false;
                             self.search_query.clear();
                             self.search_results.clear();
+                            self.pending_query_at = None;
                             *handled = true;
                         }
                         Key::Named(NamedKey::Backspace) => {
                             self.search_query.pop();
+                            self.on_query_changed();
                             *handled = true;
                         }
                         Key::Named(NamedKey::Enter) => {
-                            self.trigger_geocode();
+                            // Enter skips the debounce — fire immediately.
+                            self.pending_query_at = Some(Instant::now() - GEOCODE_DEBOUNCE);
                             *handled = true;
                         }
                         _ => {
@@ -975,6 +1633,7 @@ impl Widget for WeatherApp {
                                 let s = txt.as_str();
                                 if !s.is_empty() && !s.chars().any(|ch| ch.is_control()) {
                                     self.search_query.push_str(s);
+                                    self.on_query_changed();
                                     *handled = true;
                                 }
                             }
@@ -994,6 +1653,16 @@ impl Widget for WeatherApp {
                             model_changed = true;
                             *handled = true;
                         }
+                        Key::Named(NamedKey::Escape) => {
+                            // Esc closes a menu or an overlay flap.
+                            if self.menu.is_some() {
+                                self.menu = None;
+                                *handled = true;
+                            } else if self.sidebar_mode() == SidebarMode::Overlay {
+                                self.sidebar.close();
+                                *handled = true;
+                            }
+                        }
                         Key::Character(ch) => match ch.as_str() {
                             "u" | "U" => {
                                 self.model.toggle_temp_unit();
@@ -1009,8 +1678,17 @@ impl Widget for WeatherApp {
                                 self.refresh_all();
                                 *handled = true;
                             }
+                            "b" | "B" => {
+                                // Toggle the sidebar flap.
+                                self.sidebar.toggle(self.sidebar_mode());
+                                *handled = true;
+                            }
                             "/" => {
                                 self.search_focused = true;
+                                // Opening search in overlay mode reveals the rail.
+                                if self.sidebar_mode() == SidebarMode::Overlay {
+                                    self.sidebar.toggle(self.sidebar_mode());
+                                }
                                 *handled = true;
                             }
                             _ => {}
@@ -1036,10 +1714,15 @@ impl Widget for WeatherApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep the event loop pumping frames while a fetch is in flight (so
-        // results surface promptly), but stop after a deadline so a dead
-        // network doesn't spin the CPU forever.
-        self.inflight > 0 && self.last_request_at.elapsed().as_secs() < 12
+        // Keep the event loop pumping frames while:
+        //  * a fetch is in flight (so results surface promptly), bounded so a
+        //    dead network doesn't spin the CPU forever;
+        //  * the sidebar flap is mid-transition;
+        //  * a geocode debounce is pending (so it fires without an extra event).
+        let fetching = self.inflight > 0 && self.last_request_at.elapsed().as_secs() < 12;
+        let animating = (self.sidebar.reveal() - if self.sidebar.is_open(self.sidebar_mode()) { 1.0 } else { 0.0 }).abs() > 0.001;
+        let debouncing = self.pending_query_at.is_some();
+        fetching || animating || debouncing
     }
 
     fn draw_with_presence(
@@ -1053,6 +1736,28 @@ impl Widget for WeatherApp {
     ) {
         // Root fills the window — never cull.
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl WeatherApp {
+    /// The saved-place chip index under `p`, if any. Used for right-click and
+    /// to distinguish chip presses. Mirrors the chip layout in `draw`.
+    fn chip_at(&self, p: Point) -> Option<usize> {
+        let rail = self.rail_rect();
+        // Only chips inside a revealed rail are hittable.
+        if self.sidebar.reveal() <= 0.01 {
+            return None;
+        }
+        let x = rail.x0 + RP;
+        let w = RAIL_W - 2.0 * RP;
+        let top = self.saved_places_top();
+        for i in 0..self.model.locations.len() {
+            let y = top + i as f64 * (CHIP_H + CHIP_GAP);
+            if Rect::new(x, y, x + w, y + CHIP_H).contains(p) {
+                return Some(i);
+            }
+        }
+        None
     }
 }
 
