@@ -24,6 +24,9 @@ pub struct Checkbox {
     enabled: bool,
     /// Optional override for `Widget::test_id()`. Defaults to `"checkbox"`.
     id_override: Option<String>,
+    /// Spoken name for a checkbox with no adjacent text label. When unset
+    /// the checkbox relies on a sibling label resolved by the tree builder.
+    accessible_name: Option<String>,
 }
 
 impl Checkbox {
@@ -39,6 +42,7 @@ impl Checkbox {
             permission_scope: None,
             enabled: true,
             id_override: None,
+            accessible_name: None,
         }
     }
 
@@ -67,6 +71,13 @@ impl Checkbox {
     /// by focus, rejects input and renders dimmed. Default `true`.
     pub fn with_enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
+        self
+    }
+
+    /// Give a label-less checkbox a spoken name so a screen reader
+    /// announces what it controls rather than just "checkbox, checked".
+    pub fn with_accessible_name(mut self, name: &str) -> Self {
+        self.accessible_name = Some(name.to_string());
         self
     }
 
@@ -208,17 +219,25 @@ impl Widget for Checkbox {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        // The checkbox's own label is a sibling `Text`, so it has no intrinsic
-        // accessible name here; the tree builder resolves the label-for
-        // relationship. The checked state is the load-bearing semantic.
+        // The checkbox's own label is usually a sibling `Text`, resolved by
+        // the tree builder; an explicit accessible name covers the label-less
+        // case so the control isn't anonymous. The checked state is the
+        // load-bearing semantic.
+        let name = self
+            .accessible_name
+            .as_ref()
+            .map(|n| crate::i18n!(n))
+            .filter(|n| !n.is_empty());
         Some(
-            AccessNode::new(Role::Checkbox).with_state(AccessState {
-                focusable: self.is_focusable(),
-                focused: self.is_focused(),
-                disabled: !self.is_enabled(),
-                checked: Some(self.is_checked),
-                ..Default::default()
-            }),
+            AccessNode::new(Role::Checkbox)
+                .with_optional_name(name)
+                .with_state(AccessState {
+                    focusable: self.is_focusable(),
+                    focused: self.is_focused(),
+                    disabled: !self.is_enabled(),
+                    checked: Some(self.is_checked),
+                    ..Default::default()
+                }),
         )
     }
 
@@ -329,6 +348,20 @@ mod tests {
         assert_eq!(node.state.checked, Some(false));
         assert!(!node.state.disabled);
         assert!(node.state.focusable);
+    }
+
+    #[test]
+    fn accessibility_uses_accessible_name_when_set() {
+        // No name by default (the label is usually a sibling); the explicit
+        // accessible name names a checkbox that stands alone.
+        let plain = Checkbox::new("any", "path");
+        assert_eq!(Widget::accessibility(&plain).unwrap().name, None);
+
+        let named = Checkbox::new("any", "path").with_accessible_name("Remember me");
+        assert_eq!(
+            Widget::accessibility(&named).unwrap().name.as_deref(),
+            Some("Remember me"),
+        );
     }
 
     #[test]
