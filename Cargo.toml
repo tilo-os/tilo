@@ -16,6 +16,7 @@ members = [
     "qos-collab-types",
     "qos-threshold-identity",
     "qos-channel-crypto",
+    "qos-collab-link",
     "qos-relay",
     "apps/file-explorer",
     "apps/terminal",

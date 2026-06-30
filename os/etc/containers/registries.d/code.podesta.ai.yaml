@@ -1,0 +1,7 @@
+# cosign stores the image signature as a sigstore OCI *attachment* in the same
+# registry repo (not in a separate signature store). Tell the containers stack
+# (which bootc uses to verify before `upgrade`) to look for it there, so the
+# sigstoreSigned policy in /etc/containers/policy.json can find + check it.
+docker:
+  code.podesta.ai/qos/qos:
+    use-sigstore-attachments: true
