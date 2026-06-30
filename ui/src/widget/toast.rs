@@ -359,18 +359,20 @@ impl Widget for ToastStack {
     fn get_rect(&self) -> Rect { self.rect }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+        use crate::a11y::{AccessNode, Politeness, Role};
         // The stack is a live region of transient notifications. Expose it as a
-        // named group; mark it busy while any toast is on screen so an AT can
-        // announce that activity is in progress.
-        Some(
-            AccessNode::new(Role::Group)
-                .with_name("Notifications")
-                .with_state(AccessState {
-                    busy: !self.toasts.is_empty(),
-                    ..Default::default()
-                }),
-        )
+        // named group whose value is the most recent toast's text, and mark it
+        // an assertive live region so a freshly-shown toast announces itself
+        // immediately (without stealing keyboard focus). The stable `name`
+        // ("Notifications") is the identity the host diffs across frames.
+        let latest = self.toasts.last().map(|t| t.text.clone());
+        let mut node = AccessNode::new(Role::Group)
+            .with_name("Notifications")
+            .with_live(Politeness::Assertive);
+        if let Some(text) = latest {
+            node = node.with_value(text);
+        }
+        Some(node)
     }
 }
 
@@ -422,20 +424,24 @@ mod tests {
     }
 
     #[test]
-    fn accessibility_reports_group_role_and_busy_when_active() {
-        use crate::a11y::Role;
-        // Empty stack: a named group that is not busy.
+    fn accessibility_reports_assertive_live_region_with_latest_toast() {
+        use crate::a11y::{Politeness, Role};
+        // Empty stack: a named, assertive live region with no value yet.
         let s = ToastStack::new();
         let node = Widget::accessibility(&s).expect("toast stack is not presentational");
         assert_eq!(node.role, Role::Group);
         assert_eq!(node.name.as_deref(), Some("Notifications"));
-        assert!(!node.state.busy, "an empty stack is not busy");
+        assert_eq!(node.live, Some(Politeness::Assertive));
+        assert_eq!(node.value, None, "an empty stack has no current toast");
 
-        // With a live toast the stack reports busy.
+        // With a live toast the stack surfaces the most recent text as value,
+        // so the host's live-region scan announces it.
         let mut s = ToastStack::new();
         s.push("hello", ToastKind::Info);
+        s.push("world", ToastKind::Error);
         let node = Widget::accessibility(&s).unwrap();
-        assert!(node.state.busy, "a stack with active toasts is busy");
+        assert_eq!(node.value.as_deref(), Some("world"), "value is the newest toast");
+        assert_eq!(node.live, Some(Politeness::Assertive));
     }
 
     #[test]

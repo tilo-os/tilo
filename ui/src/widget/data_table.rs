@@ -749,12 +749,10 @@ impl<Row: 'static> Widget for DataTable<Row> {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        // Selection is by display index (indices into `view`); a screen reader
-        // wants something concrete, so surface the primary selected row's
-        // 1-based position out of the visible row count.
-        let value = self.selection.primary().map(|i| {
-            format!("row {} of {}", i + 1, self.view.len())
-        });
+        // Selection is by display index (indices into `view`). Surface the
+        // primary selected row's 1-based position as structured position info so
+        // the reader renders a consistent "N of M".
+        let selected_pos = self.selection.primary();
         // Describe the active sort using the column's human header (not its
         // internal key) so the announcement reads naturally.
         let description = self.sort_state().map(|(key, ascending)| {
@@ -768,12 +766,14 @@ impl<Row: 'static> Widget for DataTable<Row> {
             format!("sorted by {header} {dir}")
         });
         let mut node = AccessNode::new(Role::Table)
-            .with_optional_value(value)
             .with_state(AccessState {
                 focusable: self.is_focusable(),
                 focused: self.is_focused(),
                 ..Default::default()
             });
+        if let Some(i) = selected_pos {
+            node = node.with_position(i + 1, self.view.len());
+        }
         if let Some(desc) = description {
             node = node.with_description(desc);
         }
@@ -898,7 +898,10 @@ mod tests {
         assert_eq!(node.role, Role::Table);
         assert!(node.state.focusable);
         assert!(!node.state.focused);
-        assert_eq!(node.value.as_deref(), Some("row 2 of 4"));
+        // The selected row's position is structured (rendered as "2 of 4" by
+        // the reader) rather than baked into the value string.
+        assert_eq!(node.pos_in_set, Some(2));
+        assert_eq!(node.set_size, Some(4));
         assert_eq!(node.description.as_deref(), Some("sorted by Name ascending"));
     }
 
@@ -907,7 +910,9 @@ mod tests {
         let t = DataTable::<R>::new(sample_cols());
         let node = Widget::accessibility(&t).unwrap();
         assert_eq!(node.value, None, "no selection → no value");
-        assert_eq!(node.description, None, "no active sort → no description");
+        assert_eq!(node.pos_in_set, None, "no selection → no position");
+        assert_eq!(node.set_size, None, "no selection → no set size");
+        assert_eq!(node.description, None, "no active sort → no active sort description");
     }
 
     // --- Selection / interaction tests --------------------------------

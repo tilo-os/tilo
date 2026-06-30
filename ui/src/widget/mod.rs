@@ -139,6 +139,18 @@ pub trait Widget {
     fn get_state(&self) -> Option<String> { None }
     fn set_state(&mut self, _state: &str) {}
 
+    /// Caret-review snapshot for the screen reader: `(caret_byte, text)` for an
+    /// editable text widget that currently holds the caret, or `None` for every
+    /// other widget (the default).
+    ///
+    /// The host ([`crate::app::App`]) reads this on the focused widget *before*
+    /// and *after* an event. When the text is unchanged but the caret moved
+    /// (arrow keys, Home/End), the reader announces the character or word the
+    /// caret landed on — so a user can review existing content, not just typing
+    /// echo. `caret_byte` is a UTF-8 byte offset into `text`, always on a char
+    /// boundary.
+    fn text_review(&self) -> Option<(usize, String)> { None }
+
     /// Deliver an out-of-band string payload injected by the host
     /// application via [`crate::app::UserEvent::External`]. The default
     /// is a no-op, so existing widgets are unaffected. Apps that drive a

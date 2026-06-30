@@ -1403,6 +1403,15 @@ impl Widget for TextInput {
         }
     }
 
+    fn text_review(&self) -> Option<(usize, String)> {
+        // Only the focused field is being reviewed; a secret field never
+        // surfaces its contents, so no caret review either.
+        if !self.is_focused || self.secret {
+            return None;
+        }
+        Some((self.cursor_pos, self.text.clone()))
+    }
+
     fn presence_key(&self) -> Option<PresenceKey> {
         if self.path.is_empty() {
             None
