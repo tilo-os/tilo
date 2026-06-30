@@ -2,8 +2,22 @@
 //! panels (gallery / preview / customizer) and the top bar, and runs the
 //! per-frame reconciliation that keeps the CRDT, the editor controls and
 //! the selected [`ThemeSpec`] in sync.
+//!
+//! ## Responsive layout
+//!
+//! The gallery is the app's **primary navigation sidebar**. On a wide window
+//! it stays docked beside the preview + customizer (the original
+//! side-by-side studio layout). When the window is narrower than
+//! [`BREAKPOINT`] the gallery collapses into an overlay *flap*: the preview +
+//! customizer take the full width and the gallery, closed by default, slides
+//! in over a dimming scrim when summoned by the top-bar hamburger. The
+//! breakpoint is driven by the app's own allocated width and the eased
+//! reveal uses the shared [`FlapState`] kernel (the same algorithm every
+//! other adaptive-sidebar app in the suite shares), so no collapse logic is
+//! hand-rolled here.
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::length;
@@ -11,10 +25,12 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{FlapState, SplitLayout, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
+use vello::peniko::Fill;
+use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 use crate::customizer::Customizer;
 use crate::doc;
@@ -27,6 +43,17 @@ use crate::widgets::{Btn, BtnVariant};
 const TOPBAR_H: f32 = 56.0;
 const GALLERY_W: f32 = 272.0;
 const CUSTOMIZER_W: f32 = 344.0;
+
+/// Allocated-width breakpoint (logical px). At or above this the gallery is a
+/// docked sidebar beside the preview + customizer; below it the gallery
+/// becomes an overlay flap. Chosen so the gallery, a usable preview, and the
+/// customizer stop fitting side by side (`GALLERY_W + CUSTOMIZER_W` plus a
+/// readable preview column).
+const BREAKPOINT: f64 = 840.0;
+
+/// The hamburger / close toggle that summons or dismisses the overlay gallery.
+/// Lives at the left of the top bar; only shown when the gallery is collapsed.
+const TOGGLE_SIZE: f64 = 34.0;
 
 pub struct ThemesApp {
     catalog: Vec<ThemeSpec>,
@@ -42,6 +69,26 @@ pub struct ThemesApp {
     gallery_node: Option<NodeId>,
     preview_node: Option<NodeId>,
     customizer_node: Option<NodeId>,
+
+    /// Eased open/closed state of the gallery sidebar (shared toolkit kernel).
+    gallery_flap: FlapState,
+    /// Layout class resolved last frame, used to detect breakpoint crossings
+    /// and to know whether to rebuild the taffy tree.
+    last_layout: Option<SplitLayout>,
+    /// Width fed into the *next* `build_layout`. Comes from the previous
+    /// frame's allocated width (live) or a shots viewport seed (headless), so
+    /// the taffy structure can collapse the gallery column before its rect is
+    /// known.
+    build_width: f64,
+    /// Wall-clock of the last reveal tick (frame-rate-independent easing).
+    last_tick: Instant,
+    /// On-screen rect of the hamburger toggle (overlay mode only), for hit
+    /// testing.
+    toggle_rect: Rect,
+    /// On-screen rect of the gallery flap while it overlays the content.
+    gallery_overlay_rect: Rect,
+    /// Last known cursor position, for hit-testing the toggle + scrim.
+    last_cursor: Point,
 
     bound_key: Option<(String, TokenId)>,
     status: String,
@@ -67,9 +114,87 @@ impl ThemesApp {
             gallery_node: None,
             preview_node: None,
             customizer_node: None,
+            // Open-when-docked is the natural navigation-sidebar default: the
+            // gallery shows on a wide window and is closed (overlay) when narrow.
+            gallery_flap: FlapState::open_when_docked(),
+            last_layout: None,
+            // Seed wide so the first frame (and the default 1280px shot) builds
+            // the docked layout without a structure round-trip.
+            build_width: BREAKPOINT,
+            last_tick: Instant::now(),
+            toggle_rect: Rect::ZERO,
+            gallery_overlay_rect: Rect::ZERO,
+            last_cursor: Point::ZERO,
             bound_key: None,
             status: String::new(),
             structure_dirty: false,
+        }
+    }
+
+    /// Seed the responsive state for a deterministic headless screenshot.
+    /// `--shots` renders a single frame with no event loop, so the layout
+    /// class (which normally settles over the first live frame) is seeded from
+    /// the requested viewport width here, and the flap is snapped to its
+    /// endpoint so the overlay shows without an in-flight animation.
+    ///
+    /// * width `>= BREAKPOINT` → docked gallery (the wide studio layout).
+    /// * width `<  BREAKPOINT` → overlay gallery, snapped **open** so the shot
+    ///   captures the collapsed sidebar floating over the scrim.
+    pub fn seed_shot_viewport(&mut self, width: f64) {
+        self.build_width = width;
+        let layout = SplitLayout::from_width(width, BREAKPOINT);
+        self.last_layout = Some(layout);
+        // Snap the gallery open at its endpoint: docked shows it beside the
+        // content (the natural wide default); overlay floats it over the scrim
+        // so the narrow shot captures the revealed flap.
+        self.gallery_flap.snap(true);
+    }
+
+    /// Resolve the current layout class purely from allocated width.
+    fn layout_class(&self) -> SplitLayout {
+        SplitLayout::from_width(self.rect.width(), BREAKPOINT)
+    }
+
+    /// Whether the hamburger toggle should be shown: only when the gallery is
+    /// collapsible (overlay mode).
+    fn show_toggle(&self) -> bool {
+        SplitLayout::from_width(self.build_width, BREAKPOINT) == SplitLayout::Overlay
+    }
+
+    /// Draw the hamburger / close toggle at the left of the top bar and record
+    /// its rect for hit testing. Shows a hamburger when the gallery is hidden
+    /// and a close "X" once it's revealed.
+    fn draw_toggle(&mut self, scene: &mut Scene, t: Affine, _tr: &mut TextRenderer, theme: &Theme, tb: Rect) {
+        let s = TOGGLE_SIZE;
+        let bx = tb.x0 + 16.0;
+        let by = tb.center().y - s / 2.0;
+        let btn = Rect::new(bx, by, bx + s, by + s);
+        self.toggle_rect = btn;
+
+        draw::fill_rrect(scene, t, btn, theme.tokens.radii.md as f64, theme.bg_app);
+        draw::stroke_rrect(scene, t, btn, theme.tokens.radii.md as f64, theme.border_standard, 1.0);
+
+        let cx = btn.center().x;
+        let cy = btn.center().y;
+        let open = self.gallery_flap.reveal() > 0.5;
+        if open {
+            // Close "X".
+            let r = 6.0;
+            draw::line(scene, t, Point::new(cx - r, cy - r), Point::new(cx + r, cy + r), theme.text_primary, 1.8);
+            draw::line(scene, t, Point::new(cx - r, cy + r), Point::new(cx + r, cy - r), theme.text_primary, 1.8);
+        } else {
+            // Three-line hamburger.
+            let w = 7.0;
+            for dy in [-5.0, 0.0, 5.0] {
+                draw::line(
+                    scene,
+                    t,
+                    Point::new(cx - w, cy + dy),
+                    Point::new(cx + w, cy + dy),
+                    theme.text_primary,
+                    1.8,
+                );
+            }
         }
     }
 
@@ -287,7 +412,11 @@ impl Widget for ThemesApp {
             .unwrap();
         self.topbar_node = Some(topbar);
 
-        // Panes.
+        // Panes. The gallery is the primary sidebar: docked in the content row
+        // on a wide window, or pulled out into a fixed-width overlay subtree on
+        // a narrow one so the preview + customizer can take the full width.
+        let overlay = SplitLayout::from_width(self.build_width, BREAKPOINT) == SplitLayout::Overlay;
+
         let gallery = self.gallery.build_layout(taffy, theme, node_map);
         let _ = taffy.set_style(
             gallery,
@@ -313,6 +442,14 @@ impl Widget for ThemesApp {
         );
         self.customizer_node = Some(customizer);
 
+        // Docked: [gallery | preview | customizer]. Overlay: [preview |
+        // customizer], with the gallery laid out as a sibling that floats over
+        // the content (positioned in `apply_layout` from the eased reveal).
+        let content_children: Vec<NodeId> = if overlay {
+            vec![preview, customizer]
+        } else {
+            vec![gallery, preview, customizer]
+        };
         let content = taffy
             .new_with_children(
                 Style {
@@ -323,11 +460,28 @@ impl Widget for ThemesApp {
                     flex_basis: length(0.0),
                     ..Default::default()
                 },
-                &[gallery, preview, customizer],
+                &content_children,
             )
             .unwrap();
         self.content_node = Some(content);
 
+        let root_children: Vec<NodeId> = if overlay {
+            // The overlay gallery is a root sibling so it isn't constrained by
+            // the content row; it's a fixed-width full-height strip that
+            // `apply_layout` slides on/off the left edge.
+            let _ = taffy.set_style(
+                gallery,
+                Style {
+                    size: Size { width: Dimension::length(GALLERY_W), height: Dimension::percent(1.0) },
+                    position: taffy::Position::Absolute,
+                    flex_shrink: 0.0,
+                    ..taffy.style(gallery).cloned().unwrap_or_default()
+                },
+            );
+            vec![topbar, content, gallery]
+        } else {
+            vec![topbar, content]
+        };
         let root = taffy
             .new_with_children(
                 Style {
@@ -336,7 +490,7 @@ impl Widget for ThemesApp {
                     size: Size { width: Dimension::percent(1.0), height: Dimension::percent(1.0) },
                     ..Default::default()
                 },
-                &[topbar, content],
+                &root_children,
             )
             .unwrap();
         node_map.insert(root, self as *mut dyn Widget);
@@ -353,6 +507,23 @@ impl Widget for ThemesApp {
         );
         let o = Point::new(self.rect.x0, self.rect.y0);
 
+        // Resolve this frame's layout class and reconcile the flap. A
+        // breakpoint crossing drops a stale user toggle (back to the natural
+        // default) and rebuilds the taffy tree next frame so the gallery moves
+        // between the docked column and the overlay subtree.
+        let layout = self.layout_class();
+        self.gallery_flap.reconcile(layout);
+        let new_build_width = self.rect.width();
+        let class_changed =
+            SplitLayout::from_width(self.build_width, BREAKPOINT) != layout && self.rect.width() > 0.0;
+        if class_changed {
+            self.structure_dirty = true;
+        }
+        if self.rect.width() > 0.0 {
+            self.build_width = new_build_width;
+        }
+        self.last_layout = Some(layout);
+
         if let (Some(tb), Some(actions)) = (self.topbar_node, self.topbar_actions_node) {
             let tbl = taffy.layout(tb).unwrap();
             let tb_o = Point::new(o.x + tbl.location.x as f64, o.y + tbl.location.y as f64);
@@ -368,8 +539,10 @@ impl Widget for ThemesApp {
         if let Some(content) = self.content_node {
             let cl = taffy.layout(content).unwrap();
             let c_o = Point::new(o.x + cl.location.x as f64, o.y + cl.location.y as f64);
-            if let Some(n) = self.gallery_node {
-                self.gallery.apply_layout(taffy, n, c_o);
+            if layout == SplitLayout::Docked {
+                if let Some(n) = self.gallery_node {
+                    self.gallery.apply_layout(taffy, n, c_o);
+                }
             }
             if let Some(n) = self.preview_node {
                 self.preview.apply_layout(taffy, n, c_o);
@@ -378,24 +551,79 @@ impl Widget for ThemesApp {
                 self.customizer.apply_layout(taffy, n, c_o);
             }
         }
+
+        // Overlay: place the gallery flap sliding in from the left edge by the
+        // eased reveal (fully off-screen at reveal 0). Its origin is below the
+        // top bar so the hamburger stays reachable.
+        if layout == SplitLayout::Overlay {
+            let slide = self.gallery_flap.slide();
+            let gw = GALLERY_W as f64;
+            let x0 = self.rect.x0 - gw * (1.0 - slide);
+            let y0 = self.rect.y0 + TOPBAR_H as f64;
+            self.gallery_overlay_rect = Rect::new(x0, y0, x0 + gw, self.rect.y1);
+            if let Some(n) = self.gallery_node {
+                self.gallery
+                    .apply_layout(taffy, n, Point::new(self.gallery_overlay_rect.x0, self.gallery_overlay_rect.y0));
+            }
+        } else {
+            self.gallery_overlay_rect = Rect::ZERO;
+        }
     }
 
     fn draw(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, p: &PresenceCtx) {
+        // Advance the reveal animation (frame-rate-independent; `needs_redraw`
+        // keeps frames flowing while it settles).
+        let layout = self.layout_class();
+        let now = Instant::now();
+        let dt = (now - self.last_tick).as_secs_f64();
+        self.last_tick = now;
+        self.gallery_flap.tick(layout, dt);
+
         draw::fill_rect(scene, t, self.rect, theme.bg_app);
 
-        // Panes.
-        self.gallery.draw(scene, t, tr, theme, p);
+        // Content panes. In overlay mode the gallery floats above the scrim, so
+        // it's drawn after the scrim below.
         self.preview.draw(scene, t, tr, theme, p);
         self.customizer.draw(scene, t, tr, theme, p);
+        if layout == SplitLayout::Docked {
+            self.gallery.draw(scene, t, tr, theme, p);
+        }
+
+        // Overlay: a dimming scrim fades in with the reveal, then the gallery
+        // flap slides over it. The scrim covers the content below the top bar.
+        if layout == SplitLayout::Overlay {
+            let reveal = self.gallery_flap.reveal();
+            if reveal > 0.001 {
+                use ui::color_compat::ColorCompat;
+                let scrim_rect = Rect::new(
+                    self.rect.x0,
+                    self.rect.y0 + TOPBAR_H as f64,
+                    self.rect.x1,
+                    self.rect.y1,
+                );
+                let scrim = theme.tokens.colors.surfaces.overlay.with_alpha_factor((reveal * 0.6) as f32);
+                scene.fill(Fill::NonZero, t, scrim, None, &scrim_rect);
+                self.gallery.draw(scene, t, tr, theme, p);
+            }
+        }
 
         // Top bar over the panes.
         let tb = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y0 + TOPBAR_H as f64);
         draw::fill_rect(scene, t, tb, theme.bg_primary);
         draw::line(scene, t, Point::new(tb.x0, tb.y1), Point::new(tb.x1, tb.y1), theme.border_standard, 1.0);
-        draw::circle(scene, t, Point::new(tb.x0 + 26.0, tb.center().y), 9.0, theme.accent_primary);
-        draw::circle(scene, t, Point::new(tb.x0 + 26.0, tb.center().y), 4.0, ui_on_accent(theme));
-        draw::text_w(tr, scene, t, "Themes", 18.0, theme.text_primary, tb.x0 + 46.0, tb.y0 + 11.0, TextWeight::Bold);
-        draw::text(tr, scene, t, "Theme studio", 11.0, theme.text_dim, tb.x0 + 46.0, tb.y0 + 33.0);
+
+        // Hamburger / close toggle (overlay only) sits at the far left and
+        // shifts the logo right to make room.
+        let logo_x = if self.show_toggle() {
+            self.draw_toggle(scene, t, tr, theme, tb);
+            tb.x0 + 16.0 + TOGGLE_SIZE + 12.0
+        } else {
+            tb.x0 + 16.0
+        };
+        draw::circle(scene, t, Point::new(logo_x + 10.0, tb.center().y), 9.0, theme.accent_primary);
+        draw::circle(scene, t, Point::new(logo_x + 10.0, tb.center().y), 4.0, ui_on_accent(theme));
+        draw::text_w(tr, scene, t, "Themes", 18.0, theme.text_primary, logo_x + 30.0, tb.y0 + 11.0, TextWeight::Bold);
+        draw::text(tr, scene, t, "Theme studio", 11.0, theme.text_dim, logo_x + 30.0, tb.y0 + 33.0);
 
         for b in &mut self.topbar_buttons {
             b.draw(scene, t, tr, theme, p);
@@ -424,6 +652,44 @@ impl Widget for ThemesApp {
             return;
         }
 
+        // Track the cursor for the toggle + scrim hit tests.
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.last_cursor = Point::new(position.x / scale, position.y / scale);
+        }
+
+        let overlay = self.layout_class() == SplitLayout::Overlay;
+        let gallery_open = overlay && self.gallery_flap.is_open(SplitLayout::Overlay);
+
+        // Esc dismisses an open overlay gallery before anything else sees it.
+        if overlay && gallery_open {
+            if let WindowEvent::KeyboardInput { event: key_event, .. } = event {
+                if key_event.state == ElementState::Pressed
+                    && key_event.logical_key == Key::Named(NamedKey::Escape)
+                {
+                    self.gallery_flap.close();
+                    *handled = true;
+                    return;
+                }
+            }
+        }
+
+        // The hamburger toggle (overlay only) summons / dismisses the gallery.
+        if overlay {
+            if let WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } = event {
+                if self.toggle_rect.contains(self.last_cursor) {
+                    self.gallery_flap.toggle(SplitLayout::Overlay);
+                    *handled = true;
+                    return;
+                }
+                // Tapping the scrim (content, outside the flap) dismisses it.
+                if gallery_open && !self.gallery_overlay_rect.contains(self.last_cursor) {
+                    self.gallery_flap.close();
+                    *handled = true;
+                    return;
+                }
+            }
+        }
+
         for (b, c) in self.topbar_buttons.iter_mut().zip(
             self.topbar_actions_node
                 .and_then(|n| taffy.children(n).ok())
@@ -435,10 +701,30 @@ impl Widget for ThemesApp {
                 return;
             }
         }
-        if let Some(n) = self.gallery_node {
-            self.gallery.handle_event(event, scale, m, state, path, handled, focus_target, n, taffy);
-            if *handled {
-                return;
+
+        // The gallery only receives events when docked, or when its overlay
+        // flap is open. While open, any pointer press landing inside the flap
+        // is consumed so it can't fall through to the content beneath.
+        if !overlay || gallery_open {
+            if let Some(n) = self.gallery_node {
+                self.gallery.handle_event(event, scale, m, state, path, handled, focus_target, n, taffy);
+                if *handled {
+                    // Selecting a theme from the open flap dismisses it so the
+                    // narrow window returns to the preview + customizer (the
+                    // master→detail return).
+                    if overlay {
+                        self.gallery_flap.close();
+                    }
+                    return;
+                }
+                if overlay {
+                    if let WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } = event {
+                        if self.gallery_overlay_rect.contains(self.last_cursor) {
+                            *handled = true;
+                            return;
+                        }
+                    }
+                }
             }
         }
         if let Some(n) = self.customizer_node {

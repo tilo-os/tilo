@@ -33,3 +33,19 @@ use ui::widget::Widget;
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(MusicApp::new())
 }
+
+/// Like [`app_root`] but staged for a named `--shots` scenario. `--shots`
+/// renders a single offscreen frame with no event loop, so a state that would
+/// normally need live input (an opened overlay sidebar) is pre-snapped here.
+///
+/// Recognised scenarios:
+/// * `"sidebar"` — the navigation sidebar snapped fully open. Paired with a
+///   narrow `--viewport`, this captures the overlay flap + dimming scrim;
+///   at a wide viewport it simply shows the docked sidebar.
+pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
+    let mut app = MusicApp::new();
+    if scenario == "sidebar" {
+        app.snap_sidebar(true);
+    }
+    Box::new(app)
+}
