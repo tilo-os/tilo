@@ -11,6 +11,13 @@ use crate::dnd::DragPayload;
 
 use std::collections::HashMap;
 
+/// Group opacity applied to a widget's painted output when it is
+/// disabled (`Widget::is_enabled() == false`). Kept in one place so the
+/// dimmed look is consistent across Button / Checkbox / Toggle / Slider /
+/// Dropdown — wrap the widget's draw output in a
+/// `scene.push_layer(.., DISABLED_ALPHA, ..)` / `pop_layer()` pair.
+pub const DISABLED_ALPHA: f32 = 0.45;
+
 pub trait Widget {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId);
     fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool { false }
@@ -36,9 +43,46 @@ pub trait Widget {
     /// not `TextInput`).
     fn test_id(&self) -> Option<&str> { None }
     fn get_rect(&self) -> vello::kurbo::Rect;
+
+    /// Resolve the OS cursor shape this widget wants while the pointer
+    /// hovers `point` (in **logical** coordinates — the same space as
+    /// [`Widget::get_rect`]). Return `None` to defer to the host's
+    /// default arrow cursor.
+    ///
+    /// The default is `None`: a widget claims a cursor only by opting in.
+    /// Leaf widgets override this to request a shape over their interactive
+    /// area — e.g. [`TextInput`] returns [`winit::window::CursorIcon::Text`]
+    /// over its editable text, [`Button`] returns `CursorIcon::Pointer`,
+    /// and [`ResizeHandle`] / [`resizable_split::ResizableSplit`] return
+    /// `CursorIcon::EwResize` / `NsResize` over their divider.
+    ///
+    /// Container widgets need not override this. The host
+    /// ([`crate::app::App`]) hit-tests the whole widget tree by sweeping
+    /// its `node_map` — every laid-out widget registers itself there in
+    /// `build_layout`, regardless of whether it exposes [`Widget::children`]
+    /// (the shell's `GroupRow` / `WindowGroup` don't) — and picks the
+    /// smallest-area widget under `point` that claims a shape, i.e. the
+    /// deepest / most-specific one. A container that *does* expose
+    /// `children` may still walk them and return the first child's
+    /// `Some(..)` to short-circuit, but it is not required to.
+    fn cursor_shape(&self, _point: vello::kurbo::Point) -> Option<winit::window::CursorIcon> {
+        None
+    }
     fn is_focusable(&self) -> bool { false }
     fn set_focus(&mut self, _focused: bool) {}
     fn is_focused(&self) -> bool { false }
+
+    /// Whether this widget is interactive. The default is `true`.
+    ///
+    /// A disabled widget (`false`) must be skipped by keyboard focus
+    /// traversal — `App::update_focusable_order` excludes it from
+    /// `focusable_order` — and must reject input in `handle_event`
+    /// (no state mutation, no CRDT write, no callback). Disabled
+    /// interactive widgets also render a dimmed, no-hover/no-press
+    /// look (see [`DISABLED_ALPHA`]). Implementors back this with a
+    /// stored `enabled: bool` set via a `with_enabled`/`set_enabled`
+    /// builder; non-interactive widgets inherit the default.
+    fn is_enabled(&self) -> bool { true }
     fn needs_commit(&self) -> bool { false }
     fn on_commit(&mut self) {}
     fn get_state(&self) -> Option<String> { None }

@@ -1,0 +1,138 @@
+//! Offscreen render guard for [`Scrollable`]'s visual scrollbar: drives
+//! the full build_layout → measure → apply_layout → draw pipeline with a
+//! tall child and asserts the scrollbar actually paints along the right
+//! edge. A differential render with the scrollbar disabled proves the
+//! painted pixels come from the bar, not from the content.
+//!
+//! Skips gracefully when no wgpu adapter is available, matching the other
+//! offscreen tests. Set `QUICK_UI_SCREENSHOT_DIR=<path>` to dump a PNG.
+
+mod support;
+
+use std::collections::HashMap;
+use support::offscreen::OffscreenRenderer;
+use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use vello::kurbo::{Affine, Point};
+use vello::peniko::Color;
+use vello::Scene;
+
+use ui::presence::PresenceCtx;
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::widget::{Column, Scrollable, Text, Widget};
+
+const W: u32 = 400;
+const H: u32 = 300;
+const BG: [u8; 4] = [0x0f, 0x17, 0x2a, 0xff];
+
+fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| OffscreenRenderer::new(w, h))).ok()
+}
+
+/// Tall column of left-aligned text, far taller than the viewport so the
+/// vertical scrollbar must appear.
+fn tall_child() -> Box<dyn Widget> {
+    let mut col = Column::new().with_intrinsic_height();
+    for i in 0..60 {
+        col = col.push(Box::new(Text::new(&format!("Row number {i} of the scrolling list"))));
+    }
+    Box::new(col)
+}
+
+/// Drive the 5-pass pipeline and return the rendered RGBA buffer.
+fn render(scrollable: &mut Scrollable, renderer: &mut OffscreenRenderer) -> Vec<u8> {
+    let theme = Theme::dark();
+    let mut taffy = TaffyTree::<()>::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let mut tr = TextRenderer::new();
+
+    let root = scrollable.build_layout(&mut taffy, &theme, &mut node_map);
+    taffy
+        .compute_layout_with_measure(
+            root,
+            Size {
+                width: AvailableSpace::Definite(W as f32),
+                height: AvailableSpace::Definite(H as f32),
+            },
+            |known, available, node_id, _, _| {
+                if let Some(&ptr) = node_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, available, &mut tr) }
+                } else {
+                    Size::ZERO
+                }
+            },
+        )
+        .expect("taffy compute_layout");
+    scrollable.apply_layout(&taffy, root, Point::ORIGIN);
+
+    let presence = PresenceCtx::default();
+    let mut scene = Scene::new();
+    scrollable.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    renderer.render(&scene, Color::from_rgb8(BG[0], BG[1], BG[2]))
+}
+
+/// Count pixels differing from the background in the rightmost `strip`
+/// columns — where the vertical scrollbar lives.
+fn right_edge_non_bg(rgba: &[u8], strip: u32) -> usize {
+    let mut count = 0;
+    for y in 0..H {
+        for x in (W - strip)..W {
+            let idx = ((y * W + x) * 4) as usize;
+            if rgba[idx..idx + 4] != BG {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+#[test]
+fn scrollbar_paints_along_right_edge() {
+    let Some(mut renderer) = try_new_renderer(W, H) else {
+        eprintln!("no wgpu adapter — skipping scrollbar_paints_along_right_edge");
+        return;
+    };
+
+    // With the scrollbar (default on).
+    let mut with_bar = Scrollable::new_vertical().with_child(tall_child());
+    let rgba_with = render(&mut with_bar, &mut renderer);
+
+    // Same content, scrollbar suppressed.
+    let mut without_bar = Scrollable::new_vertical()
+        .with_child(tall_child())
+        .with_scrollbar(false);
+    let rgba_without = render(&mut without_bar, &mut renderer);
+
+    // The right-edge strip (where the bar is drawn) must light up only
+    // when the scrollbar is enabled. Content is left-aligned text, so the
+    // no-bar render leaves this strip on the background.
+    let with_px = right_edge_non_bg(&rgba_with, 12);
+    let without_px = right_edge_non_bg(&rgba_without, 12);
+
+    assert!(
+        with_px > 100,
+        "scrollbar should paint substantial pixels on the right edge, got {with_px}",
+    );
+    assert!(
+        with_px > without_px * 4 + 50,
+        "scrollbar render must add far more right-edge pixels than the bar-less render \
+         (with={with_px}, without={without_px})",
+    );
+
+    if let Ok(dir) = std::env::var("QUICK_UI_SCREENSHOT_DIR") {
+        let _ = std::fs::create_dir_all(&dir);
+        for (name, buf) in [("scrollbar_on", &rgba_with), ("scrollbar_off", &rgba_without)] {
+            let path = format!("{dir}/{name}.png");
+            let mut png = Vec::new();
+            {
+                let mut enc = png::Encoder::new(&mut png, W, H);
+                enc.set_color(png::ColorType::Rgba);
+                enc.set_depth(png::BitDepth::Eight);
+                let mut writer = enc.write_header().unwrap();
+                writer.write_image_data(buf).unwrap();
+            }
+            std::fs::write(&path, png).unwrap();
+            eprintln!("wrote {path}");
+        }
+    }
+}
