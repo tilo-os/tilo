@@ -146,6 +146,14 @@ impl Image {
         self.intrinsic_size
     }
 
+    /// Paint the image into `scene` at `rect` under `transform`, without a
+    /// surrounding layout pass — for consumers (e.g. the word processor's inline
+    /// images) that position images themselves rather than via taffy.
+    pub fn paint_at(&mut self, scene: &mut Scene, transform: Affine, rect: Rect) {
+        self.rect = rect;
+        self.paint(scene, transform);
+    }
+
     /// Test-only helper: paint the widget into `scene` at `rect` with
     /// no surrounding layout pass. Mirrors the path the real `App`
     /// frame loop takes (apply_layout → draw) but skips taffy.
