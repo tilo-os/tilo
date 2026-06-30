@@ -97,6 +97,15 @@ pub struct DocSnapshot {
     /// `style:column-gap` and the `.docx` `w:cols w:space`.
     #[serde(default)]
     pub column_gap: Option<f32>,
+    /// The document default language as a BCP-47 tag (`en-US`, `de-DE`, `fr`), or
+    /// `None` when the document declares no default language (the consumer then falls
+    /// back to its own locale). Per-run overrides ride as a `lang` mark on the relevant
+    /// `BlockView`. Round-trips through the `.odt` default-paragraph-style
+    /// `fo:language`/`fo:country` and the `.docx` `docDefaults` `w:lang`. Supports
+    /// spell-check locale selection and accessibility/screen-reader language. Absent in
+    /// snapshots authored before this field existed.
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
 /// The default column count for a [`DocSnapshot`] — a single column. Used both as
@@ -126,6 +135,7 @@ impl Default for DocSnapshot {
             bookmarks: Vec::default(),
             columns: default_columns(),
             column_gap: None,
+            language: None,
         }
     }
 }
