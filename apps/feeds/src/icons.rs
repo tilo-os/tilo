@@ -165,6 +165,34 @@ pub fn external_link(
     scene.stroke(&stroke, transform, color, None, &head);
 }
 
+/// A three-line "hamburger" glyph used to summon the collapsed sidebar.
+pub fn hamburger(scene: &mut Scene, transform: Affine, center: Point, half: f64, color: Color) {
+    let stroke = Stroke::new(1.8);
+    for i in -1..=1 {
+        let y = center.y + i as f64 * (half * 0.62);
+        scene.stroke(
+            &stroke,
+            transform,
+            color,
+            None,
+            &Line::new(
+                Point::new(center.x - half, y),
+                Point::new(center.x + half, y),
+            ),
+        );
+    }
+}
+
+/// A left-pointing "back" chevron used to return from a pushed detail pane.
+pub fn back_arrow(scene: &mut Scene, transform: Affine, center: Point, size: f64, color: Color) {
+    let stroke = Stroke::new(1.8);
+    let mut path = BezPath::new();
+    path.move_to(Point::new(center.x + size * 0.5, center.y - size));
+    path.line_to(Point::new(center.x - size * 0.5, center.y));
+    path.line_to(Point::new(center.x + size * 0.5, center.y + size));
+    scene.stroke(&stroke, transform, color, None, &path);
+}
+
 /// A double-check "mark all read" glyph.
 pub fn check(scene: &mut Scene, transform: Affine, center: Point, half: f64, color: Color) {
     let stroke = Stroke::new(1.8);

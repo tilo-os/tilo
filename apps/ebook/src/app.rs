@@ -35,7 +35,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{FlapState, SplitLayout, Widget};
 use ui::ColorCompat;
 
 use crate::content::load_library;
@@ -52,6 +52,17 @@ const BOTTOM_BAR: f64 = 58.0;
 const TOC_W: f64 = 244.0;
 const NOTES_W: f64 = 326.0;
 const PAGE_MAX_W: f64 = 680.0;
+
+/// Below this allocated width (logical px) the **contents** rail (the primary
+/// navigation sidebar) switches from docked-beside-the-page to an overlay flap
+/// that slides over the page behind a dimming scrim. Chosen so the rail + a
+/// readable page column stop fitting comfortably side by side.
+const TOC_BREAKPOINT: f64 = 760.0;
+
+/// Below this (wider) width the **annotations** rail also goes overlay. Set
+/// higher than the contents breakpoint so a medium window keeps the contents
+/// docked but floats the annotations panel rather than crushing the page.
+const NOTES_BREAKPOINT: f64 = 1040.0;
 
 /// Which screen is showing. Per-peer, never persisted.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -77,6 +88,11 @@ enum Action {
     GotoChapter(usize),
     ToggleToc,
     ToggleNotes,
+    /// Dismiss any open overlay flap (scrim tap on a narrow window).
+    DismissOverlay,
+    /// Absorb a click without acting — used to stop a tap on an overlay rail's
+    /// own body from falling through to the dismissing scrim behind it.
+    Swallow,
     ToggleBookmark,
     FontInc,
     FontDec,
@@ -118,8 +134,14 @@ pub struct BooksApp {
     book_idx: usize,
     chapter: usize,
     page: usize,
-    toc_open: bool,
-    notes_open: bool,
+    /// Contents rail — the primary navigation sidebar. Docked beside the page
+    /// on a wide window, an overlay flap (closed by default, summoned by the
+    /// hamburger) on a narrow one. The shared toolkit kernel owns the eased
+    /// reveal + scrim so the app never hand-rolls collapse logic.
+    toc_flap: FlapState,
+    /// Annotations rail — a secondary inspector. Summoned on demand even when
+    /// docked, and floats as an overlay flap below [`NOTES_BREAKPOINT`].
+    notes_flap: FlapState,
     selected_block: Option<usize>,
     hi_color: HiColor,
     cursor: Point,
@@ -161,8 +183,8 @@ impl BooksApp {
             book_idx: 0,
             chapter: 0,
             page: 0,
-            toc_open: true,
-            notes_open: true,
+            toc_flap: FlapState::open_when_docked(),
+            notes_flap: FlapState::open_when_docked(),
             selected_block: Some(2),
             hi_color: HiColor::Yellow,
             cursor: Point::ZERO,
@@ -187,6 +209,66 @@ impl BooksApp {
             .get(self.book_idx)
             .map(|b| b.chapters.len())
             .unwrap_or(0)
+    }
+
+    // ======================================================================
+    // Responsive layout — the contents / annotations rails collapse to
+    // overlay flaps on a narrow window, driven entirely by the allocated
+    // width against the breakpoints. The shared `FlapState` kernel owns the
+    // eased reveal + scrim; the app only resolves which mode applies.
+    // ======================================================================
+
+    /// Resolve the contents rail's layout from the allocated width.
+    fn toc_layout(&self) -> SplitLayout {
+        SplitLayout::from_width(self.rect.width(), TOC_BREAKPOINT)
+    }
+
+    /// Resolve the annotations rail's layout from the allocated width.
+    fn notes_layout(&self) -> SplitLayout {
+        SplitLayout::from_width(self.rect.width(), NOTES_BREAKPOINT)
+    }
+
+    /// Whether the contents rail is currently open (preference vs. mode default).
+    fn toc_open(&self) -> bool {
+        self.toc_flap.is_open(self.toc_layout())
+    }
+
+    /// Whether the annotations rail is currently open.
+    fn notes_open(&self) -> bool {
+        self.notes_flap.is_open(self.notes_layout())
+    }
+
+    /// Reconcile both flaps with the current width (drop a stale user
+    /// preference when the window crosses a breakpoint) and advance their
+    /// eased reveal. Returns true while either is still animating. Called once
+    /// per frame from `draw` so a resize returns to the auto behaviour.
+    fn reconcile_flaps(&mut self) {
+        let (tl, nl) = (self.toc_layout(), self.notes_layout());
+        self.toc_flap.reconcile(tl);
+        self.notes_flap.reconcile(nl);
+    }
+
+    /// True while either rail's eased reveal is still settling toward its
+    /// target — drives the host's "request another frame" decision.
+    fn flaps_animating(&self) -> bool {
+        self.toc_flap.is_animating(self.toc_layout())
+            || self.notes_flap.is_animating(self.notes_layout())
+    }
+
+    /// Stage a named interaction state for the single-frame `--shots`
+    /// renderer (which can't reach these states through live input). The
+    /// flaps are *snapped* (no animation) so the captured frame is settled.
+    ///
+    /// Recognised scenarios:
+    /// * `narrow` — summon the contents rail as an overlay flap over the page
+    ///   behind a scrim, the state a narrow window shows after the hamburger.
+    pub fn seed_shot_scenario(&mut self, scenario: &str) {
+        if scenario == "narrow" {
+            // Open the contents rail; the annotations rail stays closed so the
+            // scrimmed overlay flap reads clearly against the page.
+            self.toc_flap.snap(true);
+            self.notes_flap.snap(false);
+        }
     }
 
     // ======================================================================
@@ -346,8 +428,23 @@ impl BooksApp {
                 self.selected_block = None;
                 self.layout = None;
             }
-            Action::ToggleToc => self.toc_open = !self.toc_open,
-            Action::ToggleNotes => self.notes_open = !self.notes_open,
+            Action::ToggleToc => {
+                let layout = self.toc_layout();
+                self.toc_flap.toggle(layout);
+            }
+            Action::ToggleNotes => {
+                let layout = self.notes_layout();
+                self.notes_flap.toggle(layout);
+            }
+            Action::DismissOverlay => {
+                if self.toc_layout() == SplitLayout::Overlay && self.toc_open() {
+                    self.toc_flap.close();
+                }
+                if self.notes_layout() == SplitLayout::Overlay && self.notes_open() {
+                    self.notes_flap.close();
+                }
+            }
+            Action::Swallow => {}
             Action::ToggleBookmark => self.toggle_bookmark(doc),
             Action::FontInc => self.bump_setting(doc, |s| {
                 s.font_scale = (s.font_scale + 0.1).clamp(Settings::FONT_MIN, Settings::FONT_MAX)
@@ -396,12 +493,12 @@ impl BooksApp {
                     let aid = a.id;
                     BooksDoc::upsert_annotation(doc, &a);
                     self.composing = Some(aid);
-                    self.notes_open = true;
+                    self.notes_flap.open();
                 }
             }
             Action::EditNote(id) => {
                 self.composing = Some(id);
-                self.notes_open = true;
+                self.notes_flap.open();
             }
             Action::JumpTo(id) => {
                 if let Some(a) = self.annotations.iter().find(|a| a.id == id).cloned() {
@@ -566,6 +663,10 @@ impl Widget for BooksApp {
             origin.x + layout.location.x as f64 + layout.size.width as f64,
             origin.y + layout.location.y as f64 + layout.size.height as f64,
         );
+        // The allocated width is now known — reconcile both rails so a
+        // breakpoint crossing adopts the new default (docked ⇒ open, overlay ⇒
+        // closed) before the next draw.
+        self.reconcile_flaps();
     }
 
     fn draw(
@@ -577,6 +678,12 @@ impl Widget for BooksApp {
         _presence: &ui::presence::PresenceCtx,
     ) {
         self.hits.clear();
+        // Advance the rail flap transitions (reconcile first so a resize this
+        // frame uses the right mode default) before laying anything out.
+        self.reconcile_flaps();
+        let dt = 1.0 / 60.0;
+        self.toc_flap.tick(self.toc_layout(), dt);
+        self.notes_flap.tick(self.notes_layout(), dt);
         // App-base fill so nothing shows through.
         paint::fill_rect(scene, transform, self.rect, theme.tokens.colors.surfaces.base);
         match self.view {
@@ -652,7 +759,13 @@ impl Widget for BooksApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty
+        self.dirty || self.flaps_animating()
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        // Keep the event loop pumping frames while either rail flap is
+        // mid-slide so the overlay reveal + scrim fade are smooth.
+        self.flaps_animating()
     }
 
     fn mark_drawn(&mut self) {
@@ -717,7 +830,16 @@ impl BooksApp {
                 true
             }
             Key::Named(NamedKey::Escape) => {
-                self.dispatch(Action::Back, doc);
+                // Esc first dismisses an open overlay flap (narrow window);
+                // only when none is floating does it leave the book.
+                let toc_overlay = self.toc_layout() == SplitLayout::Overlay && self.toc_open();
+                let notes_overlay =
+                    self.notes_layout() == SplitLayout::Overlay && self.notes_open();
+                if toc_overlay || notes_overlay {
+                    self.dispatch(Action::DismissOverlay, doc);
+                } else {
+                    self.dispatch(Action::Back, doc);
+                }
                 true
             }
             Key::Character(c) => {
@@ -1044,8 +1166,18 @@ impl BooksApp {
         self.chapter = self.chapter.min(nchap.saturating_sub(1));
 
         // ---- geometry of the three columns ------------------------------
-        let toc_w = if self.toc_open { TOC_W } else { 0.0 };
-        let notes_w = if self.notes_open { NOTES_W } else { 0.0 };
+        // Each rail insets the page only while it is *docked* — an overlay rail
+        // floats over a full-width page behind a scrim, so it contributes no
+        // inset. The eased reveal makes the inset grow/shrink smoothly as a
+        // docked rail is summoned or dismissed.
+        let toc_w = match self.toc_layout() {
+            SplitLayout::Docked => TOC_W * self.toc_flap.reveal(),
+            SplitLayout::Overlay => 0.0,
+        };
+        let notes_w = match self.notes_layout() {
+            SplitLayout::Docked => NOTES_W * self.notes_flap.reveal(),
+            SplitLayout::Overlay => 0.0,
+        };
         let center_x0 = r.x0 + toc_w;
         let center_x1 = r.x1 - notes_w;
         let body_y0 = r.y0 + TOP_BAR;
@@ -1332,14 +1464,74 @@ impl BooksApp {
         // ---- chrome: top bar, bottom bar, drawers -----------------------
         self.draw_reader_topbar(scene, t, tr, theme, &lib, &c);
         self.draw_reader_bottombar(scene, t, tr, theme, &c);
-        if self.toc_open {
-            self.draw_toc(scene, t, tr, theme, &lib, body_y0, body_y1, &c);
-        }
-        if self.notes_open {
-            self.draw_notes(scene, t, tr, theme, body_y0, body_y1, &c);
-        }
+        self.draw_rails(scene, t, tr, theme, &lib, body_y0, body_y1, &c);
 
         self.library = lib;
+    }
+
+    /// Paint the contents + annotations rails. Each rail is either docked
+    /// (flush against its edge, the page already inset to make room) or an
+    /// overlay flap that slides in over a full-width page behind a single
+    /// dimming scrim. The shared [`FlapState`] kernel supplies the eased
+    /// `reveal` (scrim alpha + docked inset) and `slide` (overlay offset).
+    #[allow(clippy::too_many_arguments)]
+    fn draw_rails(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        lib: &[Book],
+        body_y0: f64,
+        body_y1: f64,
+        c: &ui::tokens::colors::Colors,
+    ) {
+        use vello::peniko::Fill;
+        let r = self.rect;
+        let toc_layout = self.toc_layout();
+        let notes_layout = self.notes_layout();
+        let toc_reveal = self.toc_flap.reveal();
+        let notes_reveal = self.notes_flap.reveal();
+
+        // A single scrim dims the page whenever either rail is floating open in
+        // overlay mode. Its alpha follows the stronger of the two reveals, and
+        // a tap anywhere on it dismisses the open flap(s).
+        let toc_overlay_open = toc_layout == SplitLayout::Overlay && toc_reveal > 0.001;
+        let notes_overlay_open = notes_layout == SplitLayout::Overlay && notes_reveal > 0.001;
+        if toc_overlay_open || notes_overlay_open {
+            let a = toc_reveal.max(notes_reveal) * 0.5;
+            let scrim = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor(a as f32);
+            scene.fill(Fill::NonZero, t, scrim, None, &r);
+            // The scrim is a dismiss target behind the rails (recorded first so
+            // the rail bodies, pushed later, win the topmost hit-test).
+            self.push_hit(r, Action::DismissOverlay);
+        }
+
+        // Contents rail: docked rails sit flush at the left edge; an overlay
+        // rail slides in from off-screen by its eased `slide`.
+        if toc_layout == SplitLayout::Docked {
+            if toc_reveal > 0.001 {
+                self.draw_toc(scene, t, tr, theme, lib, r.x0, body_y0, body_y1, c);
+            }
+        } else if toc_reveal > 0.001 {
+            let x0 = r.x0 - TOC_W * (1.0 - self.toc_flap.slide());
+            // Swallow taps on the rail body so they don't reach the scrim;
+            // pushed first so the chapter-row hits land on top of it.
+            self.push_hit(Rect::new(x0, body_y0, x0 + TOC_W, body_y1), Action::Swallow);
+            self.draw_toc(scene, t, tr, theme, lib, x0, body_y0, body_y1, c);
+        }
+
+        // Annotations rail: docked at the right edge, or an overlay flap that
+        // slides in from the right.
+        if notes_layout == SplitLayout::Docked {
+            if notes_reveal > 0.001 {
+                self.draw_notes(scene, t, tr, theme, r.x1 - NOTES_W, body_y0, body_y1, c);
+            }
+        } else if notes_reveal > 0.001 {
+            let x0 = r.x1 - NOTES_W * self.notes_flap.slide();
+            self.push_hit(Rect::new(x0, body_y0, x0 + NOTES_W, body_y1), Action::Swallow);
+            self.draw_notes(scene, t, tr, theme, x0, body_y0, body_y1, c);
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1367,7 +1559,8 @@ impl BooksApp {
         let cy = r.y0 + (TOP_BAR - s) / 2.0;
         let mut x = r.x0 + 14.0;
         x += self.icon_button(scene, t, theme, x, cy, s, Ico::Back, false, Action::Back) + 6.0;
-        self.icon_button(scene, t, theme, x, cy, s, Ico::Toc, self.toc_open, Action::ToggleToc);
+        let toc_active = self.toc_open();
+        self.icon_button(scene, t, theme, x, cy, s, Ico::Toc, toc_active, Action::ToggleToc);
 
         // centre: title + author
         if let Some(book) = lib.get(self.book_idx) {
@@ -1401,7 +1594,8 @@ impl BooksApp {
             a.kind == AnnoKind::Bookmark && a.chapter == self.chapter && a.block == self.page_top_block
         });
         let mut rx = r.x1 - 14.0 - s;
-        self.icon_button(scene, t, theme, rx, cy, s, Ico::Notes, self.notes_open, Action::ToggleNotes);
+        let notes_active = self.notes_open();
+        self.icon_button(scene, t, theme, rx, cy, s, Ico::Notes, notes_active, Action::ToggleNotes);
         rx -= s + 6.0;
         self.icon_button(
             scene,
@@ -1506,6 +1700,8 @@ impl BooksApp {
         }
     }
 
+    /// `panel_x0` is the rail's left edge — `r.x0` when docked, or a slid
+    /// position when it floats as an overlay flap.
     #[allow(clippy::too_many_arguments)]
     fn draw_toc(
         &mut self,
@@ -1514,20 +1710,20 @@ impl BooksApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         lib: &[Book],
+        panel_x0: f64,
         y0: f64,
         y1: f64,
         c: &ui::tokens::colors::Colors,
     ) {
-        let r = self.rect;
-        let panel = Rect::new(r.x0, y0, r.x0 + TOC_W, y1);
+        let panel = Rect::new(panel_x0, y0, panel_x0 + TOC_W, y1);
         paint::fill_rect(scene, t, panel, c.surfaces.base);
-        paint::line(scene, t, Point::new(r.x0 + TOC_W, y0), Point::new(r.x0 + TOC_W, y1), c.border_standard, 1.0);
+        paint::line(scene, t, Point::new(panel_x0 + TOC_W, y0), Point::new(panel_x0 + TOC_W, y1), c.border_standard, 1.0);
         tr.draw_text_weighted(
             scene,
             "CONTENTS",
             11.0,
             c.text_dim,
-            t * Affine::translate((r.x0 + 22.0, y0 + 18.0)),
+            t * Affine::translate((panel_x0 + 22.0, y0 + 18.0)),
             None,
             TextWeight::Semibold,
         );
@@ -1541,7 +1737,7 @@ impl BooksApp {
             if y + row_h > y1 {
                 break;
             }
-            let row = Rect::new(r.x0 + 10.0, y, r.x0 + TOC_W - 10.0, y + row_h - 6.0);
+            let row = Rect::new(panel_x0 + 10.0, y, panel_x0 + TOC_W - 10.0, y + row_h - 6.0);
             let active = i == self.chapter;
             let hover = self.is_hover(row);
             if active {
@@ -1575,6 +1771,8 @@ impl BooksApp {
         }
     }
 
+    /// `panel_x0` is the rail's left edge — `r.x1 - NOTES_W` when docked, or a
+    /// slid position when it floats as an overlay flap from the right.
     #[allow(clippy::too_many_arguments)]
     fn draw_notes(
         &mut self,
@@ -1582,14 +1780,15 @@ impl BooksApp {
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        panel_x0: f64,
         y0: f64,
         y1: f64,
         c: &ui::tokens::colors::Colors,
     ) {
         let annos = self.annotations.clone();
-        let r = self.rect;
-        let x0 = r.x1 - NOTES_W;
-        let panel = Rect::new(x0, y0, r.x1, y1);
+        let x0 = panel_x0;
+        let panel_x1 = panel_x0 + NOTES_W;
+        let panel = Rect::new(x0, y0, panel_x1, y1);
         paint::fill_rect(scene, t, panel, c.surfaces.base);
         paint::line(scene, t, Point::new(x0, y0), Point::new(x0, y1), c.border_standard, 1.0);
         tr.draw_text_weighted(
@@ -1611,7 +1810,7 @@ impl BooksApp {
         let add_y = y0 + 42.0;
         let has_sel = self.selected_block.is_some();
         let add_label = if has_sel { "+ Note on selection" } else { "Select a paragraph to annotate" };
-        let add_rect = Rect::new(x0 + 16.0, add_y, r.x1 - 16.0, add_y + 30.0);
+        let add_rect = Rect::new(x0 + 16.0, add_y, panel_x1 - 16.0, add_y + 30.0);
         let hover = has_sel && self.is_hover(add_rect);
         paint::fill_round(
             scene,
@@ -1636,7 +1835,7 @@ impl BooksApp {
         // list
         let mut y = add_y + 46.0;
         let card_x0 = x0 + 16.0;
-        let card_x1 = r.x1 - 16.0;
+        let card_x1 = panel_x1 - 16.0;
         let inner_w = (card_x1 - card_x0 - 28.0) as f32;
         let list = annos.clone();
         for a in &list {

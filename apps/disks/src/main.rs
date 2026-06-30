@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 
+use disks::DisksApp;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -19,13 +20,25 @@ use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
+/// A phone-width capture used to exercise the responsive overlay flap. Below
+/// the app's 900px breakpoint the drive list collapses to an overlay.
+const NARROW_SHOTS_VIEWPORT: (u32, u32) = (640, 800);
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
-        render_shot_to_png(disks::app_root(), DEFAULT_SHOTS_VIEWPORT, &out)?;
+        // `--narrow` (or a sub-breakpoint `--viewport WxH`) renders the
+        // collapsed layout with the drive-list flap revealed over its scrim.
+        let narrow = args.iter().any(|a| a == "--narrow")
+            || parse_viewport_arg(&args).is_some_and(|(w, _)| (w as f64) < 900.0);
+        let viewport = parse_viewport_arg(&args).unwrap_or(if narrow {
+            NARROW_SHOTS_VIEWPORT
+        } else {
+            DEFAULT_SHOTS_VIEWPORT
+        });
+        render_shot_to_png(DisksApp::new(), viewport, narrow, &out)?;
         return Ok(());
     }
 
@@ -55,11 +68,34 @@ fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
     None
 }
 
-/// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
+/// Parse an optional `--viewport WIDTHxHEIGHT` (or `--viewport=WxH`) shots
+/// override so a caller can pick any capture size. Returns `None` if absent
+/// or malformed.
+fn parse_viewport_arg(args: &[String]) -> Option<(u32, u32)> {
+    let mut iter = args.iter().skip(1);
+    let parse = |s: &str| -> Option<(u32, u32)> {
+        let (w, h) = s.split_once(['x', 'X'])?;
+        Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+    };
+    while let Some(arg) = iter.next() {
+        if arg == "--viewport" {
+            return iter.next().and_then(|s| parse(s));
+        }
+        if let Some(rest) = arg.strip_prefix("--viewport=") {
+            return parse(rest);
+        }
+    }
+    None
+}
+
+/// Run one offscreen frame against the app and write RGBA to `out` as PNG.
 /// Mirrors `ui::App`'s cycle: sync → build_layout → compute_layout → apply_layout → draw.
+/// `narrow` snaps the drive-list flap open *after* layout so the collapsed
+/// overlay is captured settled rather than mid-animation.
 fn render_shot_to_png(
-    mut widget: Box<dyn Widget>,
+    mut widget: DisksApp,
     viewport: (u32, u32),
+    narrow: bool,
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
@@ -104,6 +140,11 @@ fn render_shot_to_png(
         )?;
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);
+    // After layout the width (hence the docked/overlay split) is settled, so
+    // snapping the flap here lands a fully-revealed overlay for the capture.
+    if narrow {
+        widget.snap_sidebar(true);
+    }
 
     let mut scene = Scene::new();
     widget.draw_with_presence(

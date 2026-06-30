@@ -23,7 +23,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{FlapState, SplitLayout, Widget, DEFAULT_BREAKPOINT};
 use ui::ColorCompat;
 
 use crate::chrome;
@@ -38,6 +38,14 @@ const TOOLBAR_H: f64 = 56.0;
 const RAIL_W: f64 = 212.0;
 const INSPECTOR_W: f64 = 296.0;
 const HANDLE: f64 = 9.0;
+
+/// Below this allocated width (logical px) the editor switches from the
+/// docked side-by-side layout to a narrow layout where the slide rail
+/// collapses into an overlay flap. The slide canvas plus both side panels
+/// (rail + inspector) only fit comfortably above this width.
+const NARROW_BREAKPOINT: f64 = DEFAULT_BREAKPOINT;
+/// Size of the toolbar hamburger toggle that summons the collapsed rail.
+const HAMBURGER: f64 = 34.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -136,6 +144,8 @@ enum Hit {
     SetBackground(Background),
     SetPalette(PaletteKind),
     EditNotes,
+    /// Toggle the collapsible slide rail (narrow-window hamburger).
+    ToggleRail,
 }
 
 #[derive(Clone, Copy)]
@@ -178,6 +188,8 @@ enum ButtonKind {
         kind: PaletteKind,
         selected: bool,
     },
+    /// Three-line "hamburger" that summons the collapsed slide rail.
+    Hamburger,
 }
 
 #[derive(Clone)]
@@ -189,6 +201,9 @@ struct UiButton {
 
 struct Chrome {
     toolbar: Rect,
+    /// The rail's painted rect. When the rail is an overlay flap this slides
+    /// in from the left edge (off-screen when closed); when docked it is the
+    /// permanent left column.
     rail: Rect,
     inspector: Rect,
     slide_dest: Rect,
@@ -197,6 +212,13 @@ struct Chrome {
     buttons: Vec<UiButton>,
     labels: Vec<Label>,
     notes_box: Option<Rect>,
+    /// How the rail resolves at the current width (docked beside content, or
+    /// an overlay flap over it).
+    layout: SplitLayout,
+    /// Dimming scrim behind an open overlay flap (empty when docked/closed).
+    scrim: Rect,
+    /// Eased reveal `0..=1` of the rail, for the scrim opacity.
+    reveal: f64,
 }
 
 pub struct SlidesApp {
@@ -231,6 +253,22 @@ pub struct SlidesApp {
     last_mouse: Point,
     drag: Drag,
     needs_commit: bool,
+
+    /// Responsive slide-rail flap. On a wide window the rail is docked beside
+    /// the canvas; on a narrow window it collapses to an overlay flap behind a
+    /// scrim, closed by default and summoned by the toolbar hamburger. This is
+    /// the shared toolkit easing kernel ([`FlapState`]).
+    rail_flap: FlapState,
+    /// Last instant the flap animation advanced, for frame-rate-independent
+    /// easing across `draw` calls.
+    last_flap_tick: std::time::Instant,
+    /// Cleared after the first layout is resolved; until then the flap's eased
+    /// reveal is snapped to the resolved default so the very first frame at a
+    /// narrow width shows the (closed) flap without a one-frame flash.
+    flap_uninitialised: bool,
+    /// Width breakpoint between the docked and overlay rail layouts. A field
+    /// (not a constant) so `--shots` can force a narrow layout deterministically.
+    breakpoint: f64,
 }
 
 impl Default for SlidesApp {
@@ -263,6 +301,10 @@ impl SlidesApp {
             last_mouse: Point::ZERO,
             drag: Drag::None,
             needs_commit: false,
+            rail_flap: FlapState::open_when_docked(),
+            last_flap_tick: std::time::Instant::now(),
+            flap_uninitialised: true,
+            breakpoint: NARROW_BREAKPOINT,
         };
         // Optional headless-screenshot hook: pick an initial screen so
         // `--shots` can capture each mode. No effect on normal launch.
@@ -279,10 +321,57 @@ impl SlidesApp {
                     app.present_started = Some(std::time::Instant::now());
                 }
                 "help" => app.show_help = true,
+                // Narrow-layout capture (rendered at a phone-ish viewport, so
+                // the rail resolves to an overlay flap from the width). `narrow`
+                // snaps the flap open to show the summoned rail + scrim;
+                // `narrow_closed` leaves it collapsed behind the hamburger. The
+                // explicit snap is an intentional preference, so suppress the
+                // first-frame default snap.
+                "narrow" => {
+                    app.rail_flap.snap(true);
+                    app.flap_uninitialised = false;
+                }
+                "narrow_closed" => {
+                    app.rail_flap.snap(false);
+                    app.flap_uninitialised = false;
+                }
                 _ => {}
             }
         }
         app
+    }
+
+    /// The rail layout resolved from the current allocated width. Overview and
+    /// present modes are full-window and never show the rail, but the editor
+    /// (`Mode::Edit`) consults this every frame.
+    fn rail_layout(&self) -> SplitLayout {
+        SplitLayout::from_width(self.rect.width(), self.breakpoint)
+    }
+
+    /// Whether the rail is currently revealed (resolving the user's toggle
+    /// against the layout default: docked ⇒ open, overlay ⇒ closed).
+    fn rail_open(&self) -> bool {
+        self.rail_flap.is_open(self.rail_layout())
+    }
+
+    /// Reconcile the rail flap with the current width and advance its eased
+    /// reveal. On the very first resolved layout the reveal is snapped to the
+    /// resolved default so a narrow first frame shows the (closed) flap with no
+    /// one-frame flash. Returns the resolved layout. Called once per frame
+    /// before `compute_chrome`.
+    fn sync_rail_flap(&mut self, dt: f64) -> SplitLayout {
+        let layout = self.rail_layout();
+        self.rail_flap.reconcile(layout);
+        if self.flap_uninitialised {
+            self.rail_flap.snap(self.rail_flap.is_open(layout));
+            // `snap` records a user preference; clear it so width changes still
+            // fall back to the layout default. Re-resolving via reconcile after
+            // a fresh open_when_docked would re-snap, so instead just mark done.
+            self.flap_uninitialised = false;
+        } else {
+            self.rail_flap.tick(layout, dt);
+        }
+        layout
     }
 
     // --- CRDT mirror --------------------------------------------------------
@@ -339,9 +428,39 @@ impl SlidesApp {
     fn compute_chrome(&self) -> Chrome {
         let r = self.rect;
         let toolbar = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOOLBAR_H);
-        let rail = Rect::new(r.x0, toolbar.y1, r.x0 + RAIL_W, r.y1);
-        let inspector = Rect::new(r.x1 - INSPECTOR_W, toolbar.y1, r.x1, r.y1);
-        let canvas_area = Rect::new(rail.x1, toolbar.y1, inspector.x0, r.y1);
+
+        // Resolve the responsive rail layout from the allocated width. When
+        // docked the rail is a permanent left column that insets the canvas;
+        // when narrow it becomes an overlay flap, so the canvas + inspector
+        // span the full width and the rail slides over them behind a scrim.
+        let layout = self.rail_layout();
+        let reveal = self.rail_flap.reveal();
+        let body_top = toolbar.y1;
+        let (rail, canvas_left, scrim) = match layout {
+            SplitLayout::Docked => {
+                // Eased inset so the rail reveals/collapses smoothly when the
+                // user toggles it even while docked.
+                let inset = RAIL_W * reveal;
+                let rail = Rect::new(r.x0, body_top, r.x0 + inset, r.y1);
+                (rail, r.x0 + inset, Rect::ZERO)
+            }
+            SplitLayout::Overlay => {
+                // Slide the rail in from the left edge; ease-out so it
+                // decelerates into place. Closed ⇒ fully off-screen.
+                let slide = self.rail_flap.slide();
+                let x0 = r.x0 - RAIL_W * (1.0 - slide);
+                let rail = Rect::new(x0, body_top, x0 + RAIL_W, r.y1);
+                let scrim = if reveal > 0.001 {
+                    Rect::new(r.x0, body_top, r.x1, r.y1)
+                } else {
+                    Rect::ZERO
+                };
+                // Canvas takes the full width behind the flap.
+                (rail, r.x0, scrim)
+            }
+        };
+        let inspector = Rect::new(r.x1 - INSPECTOR_W, body_top, r.x1, r.y1);
+        let canvas_area = Rect::new(canvas_left, body_top, inspector.x0, r.y1);
 
         // Fit the 16:9 slide inside the canvas area with padding + caption room.
         let pad = 30.0;
@@ -359,15 +478,31 @@ impl SlidesApp {
         let mut labels = Vec::new();
 
         // Toolbar -----------------------------------------------------------
+        // When the rail can collapse (it's an overlay flap, or docked but
+        // closed) a hamburger summons it. It sits at the far left; the title
+        // block then shifts right to make room.
+        let rail_collapsible = layout == SplitLayout::Overlay || reveal < 0.999;
+        let title_x = if rail_collapsible {
+            let hy = toolbar.y0 + (TOOLBAR_H - HAMBURGER) / 2.0;
+            let hb = Rect::new(toolbar.x0 + 14.0, hy, toolbar.x0 + 14.0 + HAMBURGER, hy + HAMBURGER);
+            buttons.push(UiButton {
+                rect: hb,
+                kind: ButtonKind::Hamburger,
+                hit: Hit::ToggleRail,
+            });
+            hb.x1 + 14.0
+        } else {
+            toolbar.x0 + 18.0
+        };
         labels.push(Label {
-            pos: Point::new(toolbar.x0 + 18.0, toolbar.y0 + 11.0),
+            pos: Point::new(title_x, toolbar.y0 + 11.0),
             text: self.deck.title.clone(),
             font: 17.0,
             color: LabelColor::Primary,
             weight: TextWeight::Bold,
         });
         labels.push(Label {
-            pos: Point::new(toolbar.x0 + 18.0, toolbar.y0 + 33.0),
+            pos: Point::new(title_x, toolbar.y0 + 33.0),
             text: format!(
                 "Slide {} of {}  ·  {}",
                 self.cur_slide + 1,
@@ -379,8 +514,9 @@ impl SlidesApp {
             weight: TextWeight::Regular,
         });
 
-        // Tool group, centred-ish after the title block.
-        let mut bx = toolbar.x0 + 320.0_f64.min(toolbar.width() * 0.34);
+        // Tool group, centred-ish after the title block. Anchored past the
+        // title (which shifts right when the hamburger is present).
+        let mut bx = (title_x + 196.0).max(toolbar.x0 + 320.0_f64.min(toolbar.width() * 0.34));
         let by = toolbar.y0 + (TOOLBAR_H - 34.0) / 2.0;
         let bh = 34.0;
         let mut add_icontext = |bx: &mut f64, icon: Icon, label: &str, accent: bool, hit: Hit| {
@@ -546,6 +682,9 @@ impl SlidesApp {
             buttons,
             labels,
             notes_box,
+            layout,
+            scrim,
+            reveal,
         }
     }
 
@@ -936,6 +1075,7 @@ impl SlidesApp {
                 self.editing_text = false;
                 self.notes_caret = self.slide().map(|s| s.notes.chars().count()).unwrap_or(0);
             }
+            Hit::ToggleRail => self.rail_flap.toggle(self.rail_layout()),
         }
         self.reload(doc);
     }
@@ -1167,16 +1307,23 @@ impl SlidesApp {
     ) {
         let pal = self.palette(theme);
         let c = &theme.tokens.colors;
+        let overlay = chrome.layout == SplitLayout::Overlay;
 
         // Panels.
         chrome::fill_rect(scene, t, self.rect, c.surfaces.base);
-        chrome::fill_rect(scene, t, chrome.rail, c.surfaces.raised);
+        // The rail column is painted with the body content below (so an open
+        // overlay flap can slide over a scrim). Docked: it's part of the base.
+        if !overlay {
+            chrome::fill_rect(scene, t, chrome.rail, c.surfaces.raised);
+        }
         chrome::fill_rect(scene, t, chrome.inspector, c.surfaces.raised);
         chrome::fill_rect(scene, t, chrome.toolbar, mix_panel(c.surfaces.raised, c.surfaces.base));
         // Divider lines.
         let div = c.border_standard;
         stroke_line(scene, t, chrome.toolbar.x0, chrome.toolbar.y1, chrome.toolbar.x1, chrome.toolbar.y1, div);
-        stroke_line(scene, t, chrome.rail.x1, chrome.rail.y0, chrome.rail.x1, chrome.rail.y1, div);
+        if !overlay {
+            stroke_line(scene, t, chrome.rail.x1, chrome.rail.y0, chrome.rail.x1, chrome.rail.y1, div);
+        }
         stroke_line(scene, t, chrome.inspector.x0, chrome.inspector.y0, chrome.inspector.x0, chrome.inspector.y1, div);
 
         // Canvas slide.
@@ -1230,7 +1377,46 @@ impl SlidesApp {
             );
         }
 
-        // Thumbnails.
+        // The rail (thumbnails + its buttons/labels) is content that lives
+        // inside the rail column. In overlay mode it must paint on top of the
+        // dimming scrim, so the whole rail group is deferred to a final pass.
+        // Membership is geometric: below the toolbar and within the rail's
+        // (possibly off-screen / sliding) x-span.
+        let in_rail = |center: Point| -> bool {
+            center.y >= chrome.rail.y0
+                && center.x >= chrome.rail.x0 - 0.5
+                && center.x <= chrome.rail.x1 + 0.5
+        };
+
+        // Non-rail buttons (toolbar + inspector) in the base layer.
+        for b in &chrome.buttons {
+            if !in_rail(b.rect.center()) {
+                self.draw_button(scene, t, tr, theme, &pal, b);
+            }
+        }
+        // Notes content over its box (inspector — base layer).
+        if let (Some(nb), Some(slide)) = (chrome.notes_box, self.slide()) {
+            self.draw_notes(scene, t, tr, theme, nb, &slide.notes);
+        }
+        // Non-rail labels.
+        for l in &chrome.labels {
+            if !in_rail(Point::new(l.pos.x, l.pos.y)) {
+                self.draw_label(scene, t, tr, theme, &pal, l);
+            }
+        }
+
+        // Scrim behind an open overlay flap, dimming the editor body.
+        if overlay && chrome.scrim.width() > 0.0 {
+            let alpha = (chrome.reveal * 0.5) as f32;
+            chrome::fill_rect(scene, t, chrome.scrim, render::with_alpha(Color::BLACK, (alpha * 255.0) as u8));
+        }
+
+        // Rail group on top: panel fill (overlay only), thumbnails, then the
+        // rail's own buttons + labels.
+        if overlay && chrome.reveal > 0.001 {
+            chrome::fill_rect(scene, t, chrome.rail, c.surfaces.raised);
+            stroke_line(scene, t, chrome.rail.x1, chrome.rail.y0, chrome.rail.x1, chrome.rail.y1, div);
+        }
         for (i, rect) in &chrome.thumbs {
             if let Some(slide) = self.deck.slides.get(*i) {
                 render::draw_slide(scene, t, tr, theme, &pal, slide, *rect, 6.0);
@@ -1239,27 +1425,37 @@ impl SlidesApp {
                 chrome::stroke_rrect(scene, t, *rect, 6.0, ring, w);
             }
         }
-
-        // Buttons + labels.
         for b in &chrome.buttons {
-            self.draw_button(scene, t, tr, theme, &pal, b);
-        }
-        // Notes content over its box.
-        if let (Some(nb), Some(slide)) = (chrome.notes_box, self.slide()) {
-            self.draw_notes(scene, t, tr, theme, nb, &slide.notes);
+            if in_rail(b.rect.center()) {
+                self.draw_button(scene, t, tr, theme, &pal, b);
+            }
         }
         for l in &chrome.labels {
-            let col = self.label_color(l.color, theme, &pal);
-            tr.draw_text_weighted(
-                scene,
-                &l.text,
-                l.font,
-                col,
-                t * Affine::translate((l.pos.x, l.pos.y)),
-                None,
-                l.weight,
-            );
+            if in_rail(Point::new(l.pos.x, l.pos.y)) {
+                self.draw_label(scene, t, tr, theme, &pal, l);
+            }
         }
+    }
+
+    fn draw_label(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        pal: &Palette,
+        l: &Label,
+    ) {
+        let col = self.label_color(l.color, theme, pal);
+        tr.draw_text_weighted(
+            scene,
+            &l.text,
+            l.font,
+            col,
+            t * Affine::translate((l.pos.x, l.pos.y)),
+            None,
+            l.weight,
+        );
     }
 
     fn label_color(&self, lc: LabelColor, theme: &Theme, pal: &Palette) -> Color {
@@ -1349,6 +1545,20 @@ impl SlidesApp {
                 chrome::fill_rrect(scene, t, dot, 6.0, col);
                 if b.rect.width() > 40.0 {
                     chrome::text_vcenter(scene, t, tr, kind.label(), b.rect, dot.x1 + 6.0, 12.0, c.text_primary, TextWeight::Semibold);
+                }
+            }
+            ButtonKind::Hamburger => {
+                let active = self.rail_open();
+                let bg = if active { pal.accent } else { c.surfaces.base };
+                let fg = if active { Color::WHITE } else { c.text_primary };
+                chrome::fill_rrect(scene, t, b.rect, 8.0, bg);
+                chrome::stroke_rrect(scene, t, b.rect, 8.0, render::with_alpha(c.text_primary, 30), 1.0);
+                // Three evenly-spaced horizontal lines.
+                let cx0 = b.rect.x0 + 9.0;
+                let cx1 = b.rect.x1 - 9.0;
+                let cy = b.rect.center().y;
+                for dy in [-5.0, 0.0, 5.0] {
+                    stroke_line(scene, t, cx0, cy + dy, cx1, cy + dy, fg);
                 }
             }
         }
@@ -1864,6 +2074,13 @@ impl Widget for SlidesApp {
                 self.transition = None;
             }
         }
+        // Reconcile the rail flap with the current width (so resizing across
+        // the breakpoint returns to the layout default) and advance its eased
+        // reveal using real elapsed time, frame-rate independent.
+        let now = std::time::Instant::now();
+        let dt = (now - self.last_flap_tick).as_secs_f64().min(0.1);
+        self.last_flap_tick = now;
+        self.sync_rail_flap(dt);
         match self.mode {
             Mode::Edit => {
                 let chrome = self.compute_chrome();
@@ -1878,9 +2095,11 @@ impl Widget for SlidesApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep frames pumping while the speaker timer is live or a slide
-        // cross-fade is mid-flight, so both update smoothly.
-        self.mode == Mode::Present || self.transition.is_some()
+        // Keep frames pumping while the speaker timer is live, a slide
+        // cross-fade is mid-flight, or the rail flap is sliding open/closed.
+        self.mode == Mode::Present
+            || self.transition.is_some()
+            || self.rail_flap.is_animating(self.rail_layout())
     }
 
     fn draw_with_presence(
@@ -2120,7 +2339,8 @@ impl SlidesApp {
         }
         let chrome = self.compute_chrome();
 
-        // Buttons first.
+        // Buttons first (the hamburger toggle lives here, so it wins over the
+        // scrim dismissal below).
         for b in &chrome.buttons {
             if b.rect.contains(p) {
                 let hit = b.hit.clone();
@@ -2129,10 +2349,26 @@ impl SlidesApp {
                 return;
             }
         }
-        // Thumbnails.
+        // Scrim dismissal: with the rail open as an overlay flap, a click in
+        // the dimmed body (outside the rail itself) closes it — like tapping
+        // the scrim in Adwaita's flap.
+        if chrome.layout == SplitLayout::Overlay
+            && self.rail_open()
+            && chrome.scrim.contains(p)
+            && !chrome.rail.contains(p)
+        {
+            self.rail_flap.close();
+            *handled = true;
+            return;
+        }
+        // Thumbnails. Selecting one on a narrow window also dismisses the
+        // overlay flap so the chosen slide is revealed.
         for (i, rect) in &chrome.thumbs {
             if rect.contains(p) {
                 self.apply_hit(doc, Hit::SelectSlide(*i));
+                if chrome.layout == SplitLayout::Overlay {
+                    self.rail_flap.close();
+                }
                 *handled = true;
                 return;
             }
@@ -2269,6 +2505,19 @@ impl SlidesApp {
                     return;
                 }
             }
+        }
+
+        // Esc dismisses an open overlay flap first (when not editing text).
+        if self.mode == Mode::Edit
+            && !self.editing_text
+            && !self.editing_notes
+            && matches!(key, Key::Named(NamedKey::Escape))
+            && self.rail_layout() == SplitLayout::Overlay
+            && self.rail_open()
+        {
+            self.rail_flap.close();
+            *handled = true;
+            return;
         }
 
         // Overview (slide-sorter) navigation.
@@ -2562,5 +2811,107 @@ mod tests {
         let app = SlidesApp::new();
         // No presentation started → 0:00.
         assert_eq!(app.present_clock(), "0:00");
+    }
+
+    // --- responsive slide rail ---------------------------------------------
+
+    /// Build an app at a fixed allocated width and run one frame's flap sync
+    /// (the real per-frame path) so `compute_chrome` resolves the rail layout
+    /// and eased reveal exactly as it would live.
+    fn app_sized(w: f64) -> SlidesApp {
+        let mut s = Slide::new(Layout::TitleContent);
+        s.add(Element::text("hello", 96.0, 90.0, 1088.0, 100.0, 54.0));
+        let mut a = app_with(s);
+        a.rect = Rect::new(0.0, 0.0, w, 800.0);
+        a.sync_rail_flap(0.0);
+        a
+    }
+
+    #[test]
+    fn wide_window_docks_the_rail_beside_the_canvas() {
+        let app = app_sized(NARROW_BREAKPOINT + 200.0);
+        assert_eq!(app.rail_layout(), SplitLayout::Docked);
+        assert!(app.rail_open(), "docked rail is open by default");
+        let chrome = app.compute_chrome();
+        assert_eq!(chrome.layout, SplitLayout::Docked);
+        // The rail occupies the full left column and the canvas starts past it.
+        assert!((chrome.rail.x0 - app.rect.x0).abs() < 1e-6);
+        assert!(chrome.rail.width() > RAIL_W - 1.0, "docked rail is full width");
+        assert!(
+            chrome.slide_dest.x0 > chrome.rail.x1 - 1.0,
+            "canvas sits to the right of the docked rail"
+        );
+        assert_eq!(chrome.scrim.width(), 0.0, "no scrim while docked");
+        // No hamburger when the rail is docked + fully open.
+        assert!(
+            !chrome.buttons.iter().any(|b| matches!(b.kind, ButtonKind::Hamburger)),
+            "no hamburger needed when the rail is docked open"
+        );
+    }
+
+    #[test]
+    fn narrow_window_collapses_rail_to_a_closed_overlay() {
+        let app = app_sized(NARROW_BREAKPOINT - 200.0);
+        assert_eq!(app.rail_layout(), SplitLayout::Overlay);
+        assert!(!app.rail_open(), "overlay rail is closed by default");
+        let chrome = app.compute_chrome();
+        assert_eq!(chrome.layout, SplitLayout::Overlay);
+        // Canvas spans the full width (rail no longer insets it).
+        assert!(
+            (chrome.slide_dest.x0 - app.rect.x0) < (RAIL_W * 0.5),
+            "narrow canvas reclaims the rail's column"
+        );
+        // The closed flap is fully off the left edge, and no scrim shows.
+        assert!(chrome.rail.x1 <= app.rect.x0 + 1.0, "closed flap is off-screen left");
+        assert_eq!(chrome.scrim.width(), 0.0, "no scrim while the flap is closed");
+        // A hamburger is offered to summon it.
+        assert!(
+            chrome.buttons.iter().any(|b| matches!(b.kind, ButtonKind::Hamburger)),
+            "narrow layout offers a hamburger to summon the rail"
+        );
+    }
+
+    #[test]
+    fn opening_the_overlay_flap_reveals_the_rail_over_a_scrim() {
+        let mut app = app_sized(NARROW_BREAKPOINT - 200.0);
+        // Summon via the production toggle path, then settle the animation.
+        app.rail_flap.toggle(app.rail_layout());
+        app.rail_flap.snap(true);
+        assert!(app.rail_open());
+        let chrome = app.compute_chrome();
+        assert_eq!(chrome.layout, SplitLayout::Overlay);
+        // Fully revealed: the flap is flush with the left edge over a scrim.
+        assert!((chrome.rail.x0 - app.rect.x0).abs() < 1.0, "open flap is flush left");
+        assert!(chrome.scrim.width() > 0.0, "an open overlay flap dims the body");
+    }
+
+    #[test]
+    fn hamburger_hit_toggles_the_overlay_flap() {
+        let mut app = app_sized(NARROW_BREAKPOINT - 200.0);
+        let mut doc = AutoCommit::new();
+        assert!(!app.rail_open());
+        // Drive the real action dispatcher, not a private setter.
+        app.apply_hit(&mut doc, Hit::ToggleRail);
+        assert!(app.rail_open(), "ToggleRail opens the collapsed flap");
+        app.apply_hit(&mut doc, Hit::ToggleRail);
+        assert!(!app.rail_open(), "ToggleRail closes it again");
+    }
+
+    #[test]
+    fn resizing_across_the_breakpoint_returns_to_the_layout_default() {
+        let mut app = app_sized(NARROW_BREAKPOINT - 200.0);
+        // User opens the flap while narrow.
+        app.rail_flap.reconcile(app.rail_layout());
+        app.apply_hit(&mut AutoCommit::new(), Hit::ToggleRail);
+        assert!(app.rail_open());
+        // Widen past the breakpoint: the stale preference drops and the rail
+        // adopts the docked default (open). Then narrow again → closed default.
+        app.rect = Rect::new(0.0, 0.0, NARROW_BREAKPOINT + 200.0, 800.0);
+        app.rail_flap.reconcile(app.rail_layout());
+        assert_eq!(app.rail_layout(), SplitLayout::Docked);
+        assert!(app.rail_open(), "docked default is open");
+        app.rect = Rect::new(0.0, 0.0, NARROW_BREAKPOINT - 200.0, 800.0);
+        app.rail_flap.reconcile(app.rail_layout());
+        assert!(!app.rail_open(), "overlay default is closed after re-narrowing");
     }
 }
