@@ -1,0 +1,15 @@
+[Unit]
+Description=qOS: harden /proc with hidepid (hide other users' processes)
+Documentation=https://github.com/nirios/quickdesktop
+# Remount is safe at any time; run late so it can't interfere with early boot.
+After=local-fs.target
+
+[Service]
+Type=oneshot
+# hidepid=invisible (2): non-root users see only their own processes. root
+# (systemd, logind, polkit) is exempt, so privileged services are unaffected.
+ExecStart=/usr/bin/mount -o remount,hidepid=invisible /proc
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
