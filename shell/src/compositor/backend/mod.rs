@@ -95,6 +95,17 @@ pub trait Backend {
     fn submit_frame(&mut self, scene: &Scene, output: OutputId);
     fn poll_events(&mut self, callback: &mut dyn FnMut(BackendEvent));
     fn outputs(&self) -> &[Output];
+
+    /// Power the physical display(s) on (`true`) or off (`false`) for
+    /// idle / session-lock blanking (Track D2).
+    ///
+    /// Default no-op: backends with no real output — [`WinitBackend`]
+    /// (the host owns power management) and [`HeadlessBackend`] (no
+    /// display at all) — are unaffected. Only [`DrmBackend`] overrides
+    /// this, where it stops scanout and toggles the connector's DPMS
+    /// state. Idempotent: redundant calls (off-while-off, on-while-on)
+    /// are harmless.
+    fn set_dpms(&mut self, _on: bool) {}
 }
 
 #[cfg(test)]

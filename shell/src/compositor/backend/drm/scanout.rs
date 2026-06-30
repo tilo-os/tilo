@@ -451,6 +451,80 @@ impl DrmScanout {
             Some(self.mode),
         );
     }
+
+    /// Power the connected display on (`true`) or off (`false`) for the
+    /// idle / session-lock blanking path (Track D2).
+    ///
+    /// Two mechanisms are applied for robustness:
+    ///
+    /// 1. **Legacy DPMS property** — `0 = On`, `3 = Off` per
+    ///    `drm_mode.h`. This is what asks real hardware to enter its
+    ///    low-power state. virtio-gpu (the VM target) may not honour it.
+    /// 2. **CRTC toggle** — disabling the CRTC (`set_crtc` with no
+    ///    framebuffer / connector) stops scanout entirely; re-enabling
+    ///    it re-modesets the saved framebuffer + mode. This is the
+    ///    reliable "screen goes dark" path across drivers, including the
+    ///    VM, and is what gates whether anything reaches the panel.
+    ///
+    /// Both steps are best-effort: any failure is logged, never panics,
+    /// so a quirky driver can't crash the compositor on blank/restore.
+    /// The backend additionally skips [`Self::present`] while blanked, so
+    /// no frame races the disabled CRTC.
+    pub fn set_dpms(&mut self, on: bool) {
+        self.set_dpms_property(on);
+        if on {
+            // Restore: re-modeset the saved framebuffer + mode so the
+            // last frame is back on screen; the next `present` resumes
+            // normal blitting.
+            if let Err(e) = self.card.set_crtc(
+                self.crtc,
+                Some(self.fbs[self.front]),
+                (0, 0),
+                &[self.connector],
+                Some(self.mode),
+            ) {
+                tracing::warn!("DRM scanout: set_dpms(on) restore set_crtc failed: {e}");
+            } else {
+                tracing::info!("DRM scanout: display restored (DPMS on)");
+            }
+        } else {
+            // Blank: detach the CRTC so nothing is scanned out.
+            if let Err(e) = self.card.set_crtc(self.crtc, None, (0, 0), &[], None) {
+                tracing::warn!("DRM scanout: set_dpms(off) disable set_crtc failed: {e}");
+            } else {
+                tracing::info!("DRM scanout: display blanked (DPMS off)");
+            }
+        }
+    }
+
+    /// Best-effort legacy DPMS connector property toggle. Walks the
+    /// connector's properties for one named `"DPMS"` and sets it to
+    /// `On` (0) / `Off` (3). Absence of the property (some atomic-only
+    /// drivers) or any ioctl error is logged at debug level and ignored
+    /// — the CRTC toggle in [`Self::set_dpms`] is the load-bearing path.
+    fn set_dpms_property(&self, on: bool) {
+        // `drm_mode.h`: DRM_MODE_DPMS_ON = 0, DRM_MODE_DPMS_OFF = 3.
+        let value: u64 = if on { 0 } else { 3 };
+        let props = match self.card.get_properties(self.connector) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::debug!("DRM scanout: get_properties for DPMS failed: {e}");
+                return;
+            }
+        };
+        for (handle, _current) in props.iter() {
+            match self.card.get_property(*handle) {
+                Ok(info) if info.name().to_str() == Ok("DPMS") => {
+                    if let Err(e) = self.card.set_property(self.connector, *handle, value) {
+                        tracing::debug!("DRM scanout: set DPMS property failed: {e}");
+                    }
+                    return;
+                }
+                Ok(_) => {}
+                Err(e) => tracing::debug!("DRM scanout: get_property failed: {e}"),
+            }
+        }
+    }
 }
 
 /// Choose a scanout mode. The kernel lists the EDID-preferred mode first
