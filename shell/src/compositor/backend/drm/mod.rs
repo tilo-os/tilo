@@ -51,7 +51,9 @@ pub mod session;
 
 use vello::Scene;
 
-use super::{Backend, BackendEvent, Output, OutputId};
+use paint::swizzle_subrect_rgba_to_xrgb8888;
+
+use super::{combined_geometry, Backend, BackendEvent, Output, OutputId};
 pub use runtime::DrmBackendError;
 
 /// Public-facing handle. Wraps [`runtime::DrmRuntime`] which owns the
@@ -103,27 +105,30 @@ impl DrmBackend {
 
 impl Backend for DrmBackend {
     fn submit_frame(&mut self, scene: &Scene, _output: OutputId) {
-        // Track D2: while blanked the CRTC is disabled — painting +
-        // presenting would either be wasted work or re-light the panel
+        // Track D2: while blanked the CRTCs are disabled — painting +
+        // presenting would either be wasted work or re-light the panels
         // out from under the idle/lock logic. Skip entirely until
         // `set_dpms(true)` restores scanout.
         if self.blanked {
             return;
         }
-        // Lazily allocate the bridge once we have an output size to
-        // target. If we don't know any outputs (the dev machine has
-        // construction failing earlier — we'd never reach here), we
-        // skip rather than panic.
-        let target_size = match self.outputs.first() {
-            Some(o) => o.size,
-            None => {
-                // No outputs known: nothing to paint into. Skip
-                // silently — this branch is unreachable on real
-                // hardware because construction would have failed.
-                return;
-            }
-        };
+        // No live outputs (modeset failed at construction): nothing to
+        // paint into. The compositor still serves its wayland socket
+        // headless.
+        if self.inner.scanouts.is_empty() {
+            return;
+        }
 
+        // The compositor paints one scene spanning the bounding box of
+        // every output; each output then presents its own sub-rect. For a
+        // single output this equals that output's size, so the bridge is
+        // sized exactly as before B3.
+        let target_size = combined_geometry(&self.outputs);
+        if target_size.0 == 0 || target_size.1 == 0 {
+            return;
+        }
+
+        // Lazily (re)allocate the bridge to the combined geometry.
         if self.paint.is_none() {
             match paint::VelloDrmBridge::new(target_size.0, target_size.1) {
                 Ok(b) => self.paint = Some(b),
@@ -133,29 +138,92 @@ impl Backend for DrmBackend {
                 }
             }
         }
-        let bridge = self.paint.as_mut().expect("paint just initialised");
-        if bridge.size() != target_size {
-            if let Err(e) = bridge.resize(target_size.0, target_size.1) {
-                tracing::error!("DRM backend: VelloDrmBridge::resize: {e}");
-                return;
+        {
+            let bridge = self.paint.as_mut().expect("paint just initialised");
+            if bridge.size() != target_size {
+                if let Err(e) = bridge.resize(target_size.0, target_size.1) {
+                    tracing::error!("DRM backend: VelloDrmBridge::resize: {e}");
+                    return;
+                }
             }
         }
 
-        // Present the frame. The renderer swizzles vello's RGBA straight
-        // into the scanout's back dumb buffer (XRGB8888) — fused, so the
-        // intermediate tight-RGBA copy of the old `paint()` path is gone
-        // — then the scanout page-flips to it (or dirty_framebuffers as a
-        // fallback). The cursor position is only consulted by the
-        // software-cursor fallback; when the hardware cursor plane is
-        // active the scanout ignores it. If modeset failed at
-        // construction (`scanout` is `None`) we drop the frame — the
-        // compositor still serves its wayland socket headless.
-        let cursor = Some(self.inner.dispatch.pointer);
-        if let Some(scanout) = self.inner.scanout.as_mut() {
-            scanout.present_into(cursor, |dst, pitch| {
-                if let Err(e) = bridge.paint_into_xrgb8888(scene, dst, pitch) {
-                    tracing::error!("DRM backend: paint_into_xrgb8888: {e}");
-                }
+        // Single-output fast path (Track B1, unchanged): render the scene
+        // and swizzle it straight into the one scanout's back dumb buffer
+        // (XRGB8888) in a single fused pass — no intermediate tight-RGBA
+        // copy — then page-flip (or dirty_framebuffer fallback). The
+        // cursor is only consulted by the software-cursor fallback; the
+        // hardware cursor plane composites itself. This path is
+        // byte-identical to before multi-output landed.
+        if self.inner.scanouts.len() == 1 {
+            let bridge = self.paint.as_mut().expect("paint allocated above");
+            let cursor = Some(self.inner.dispatch.pointer);
+            self.inner.scanouts[0]
+                .scanout
+                .present_into(cursor, |dst, pitch| {
+                    if let Err(e) = bridge.paint_into_xrgb8888(scene, dst, pitch) {
+                        tracing::error!("DRM backend: paint_into_xrgb8888: {e}");
+                    }
+                });
+            return;
+        }
+
+        // Multi-output path (Track B3). All per-connector scanouts dup the
+        // one card fd, so every crtc's page-flip completion lands on a
+        // single event stream: drain it ONCE (on the primary) and route
+        // each completion to its owning scanout by crtc. Draining per
+        // scanout would let the primary swallow its siblings' completions
+        // and wedge their `flip_pending`.
+        let completed = self.inner.scanouts[0].scanout.poll_flip_completions();
+        for c in &completed {
+            for e in self.inner.scanouts.iter_mut() {
+                e.scanout.mark_flip_complete(*c);
+            }
+        }
+
+        // Render the combined scene ONCE into a tight RGBA buffer, then
+        // reuse it: swizzle each output's sub-rect into its own scanout's
+        // dumb buffer (the fused single-pass swizzle, per output).
+        let bridge = self.paint.as_mut().expect("paint allocated above");
+        let rgba = match bridge.paint(scene) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!("DRM backend: paint (combined): {e}");
+                return;
+            }
+        };
+        let pointer = self.inner.dispatch.pointer;
+        let (cw, ch) = (target_size.0 as usize, target_size.1 as usize);
+        for e in self.inner.scanouts.iter_mut() {
+            let (px, py) = e.position;
+            let (ow, oh) = e.scanout.size();
+            // Software-cursor fallback only: draw the cursor (in output-
+            // local coords) on the output it's over. The hardware cursor
+            // plane, when active, ignores this and is driven from the
+            // input path via `CursorPlanes`.
+            let local_cursor = if pointer.0 >= px as f64
+                && pointer.0 < (px + ow as i32) as f64
+                && pointer.1 >= py as f64
+                && pointer.1 < (py + oh as i32) as f64
+            {
+                Some((pointer.0 - px as f64, pointer.1 - py as f64))
+            } else {
+                None
+            };
+            let sx = px.max(0) as usize;
+            let sy = py.max(0) as usize;
+            e.scanout.present_no_drain(local_cursor, |dst, pitch| {
+                swizzle_subrect_rgba_to_xrgb8888(
+                    rgba,
+                    cw,
+                    ch,
+                    sx,
+                    sy,
+                    dst,
+                    pitch,
+                    ow as usize,
+                    oh as usize,
+                );
             });
         }
     }
@@ -171,16 +239,16 @@ impl Backend for DrmBackend {
         &self.outputs
     }
 
-    /// Track D2: power the primary connector on / off. Delegates to
+    /// Track D2: power **every** connected output on / off. Delegates to
     /// [`scanout::DrmScanout::set_dpms`] (legacy DPMS property + CRTC
-    /// toggle) and flips the `blanked` gate that `submit_frame` reads.
-    /// No scanout (modeset failed at construction) → only the gate
-    /// flips, so a headless DRM run still tracks the state without a
-    /// panel.
+    /// toggle) for each scanout and flips the `blanked` gate that
+    /// `submit_frame` reads. No scanouts (modeset failed at construction)
+    /// → only the gate flips, so a headless DRM run still tracks the
+    /// state without a panel.
     fn set_dpms(&mut self, on: bool) {
         self.blanked = !on;
-        if let Some(scanout) = self.inner.scanout.as_mut() {
-            scanout.set_dpms(on);
+        for e in self.inner.scanouts.iter_mut() {
+            e.scanout.set_dpms(on);
         }
     }
 }

@@ -388,6 +388,161 @@ impl VelloDrmBridge {
     }
 }
 
+/// Swizzle a sub-rectangle of a tight-packed RGBA source buffer
+/// (`[R, G, B, A]`, row stride `src_w * 4`) into an XRGB8888 destination
+/// (`[B, G, R, X]`, row stride `dst_pitch`).
+///
+/// This is the per-output present primitive for the multi-monitor path
+/// (Track B3): the compositor renders one scene spanning the combined
+/// output geometry into `src_rgba` (via [`VelloDrmBridge::paint`]), then
+/// each output presents the sub-rect at its `Output.position` /
+/// `Output.size` into its own scanout dumb buffer. `(src_x, src_y)` is
+/// the sub-rect's top-left in the source (the output's global position);
+/// `out_w`×`out_h` is the output's size.
+///
+/// Rows/cols outside the source bounds or the destination buffer are
+/// skipped, so a short `dst` or an output that overhangs the combined
+/// scene is clamped rather than panicking — matching the scanout's
+/// defensive contract. For a single output at the origin whose size
+/// equals the combined geometry this copies every pixel with the same
+/// `R,G,B → B,G,R,0xFF` swizzle as
+/// [`VelloDrmBridge::paint_into_xrgb8888`], so the single-output path is
+/// byte-for-byte unchanged.
+pub fn swizzle_subrect_rgba_to_xrgb8888(
+    src_rgba: &[u8],
+    src_w: usize,
+    src_h: usize,
+    src_x: usize,
+    src_y: usize,
+    dst: &mut [u8],
+    dst_pitch: usize,
+    out_w: usize,
+    out_h: usize,
+) {
+    if dst_pitch == 0 {
+        return;
+    }
+    let max_rows = (dst.len() / dst_pitch).min(out_h);
+    let cols = (dst_pitch / 4).min(out_w);
+    for row in 0..max_rows {
+        let sy = src_y + row;
+        if sy >= src_h {
+            break;
+        }
+        let d_start = row * dst_pitch;
+        let drow = &mut dst[d_start..d_start + cols * 4];
+        for col in 0..cols {
+            let sx = src_x + col;
+            if sx >= src_w {
+                continue;
+            }
+            let s = (sy * src_w + sx) * 4;
+            if s + 4 > src_rgba.len() {
+                continue;
+            }
+            let d = col * 4;
+            drow[d] = src_rgba[s + 2]; // B
+            drow[d + 1] = src_rgba[s + 1]; // G
+            drow[d + 2] = src_rgba[s]; // R
+            drow[d + 3] = 0xFF; // X
+        }
+    }
+}
+
+#[cfg(test)]
+mod subrect_tests {
+    //! Pure-CPU tests for the sub-rect swizzle — no wgpu/GPU needed, so
+    //! they run everywhere `cargo test -p shell --lib` runs.
+    use super::swizzle_subrect_rgba_to_xrgb8888;
+
+    /// Build a `w×h` tight RGBA buffer where pixel `(x,y)` is
+    /// `(x, y, 0, 0xFF)` so the test can identify which source pixel
+    /// landed where after the swizzle.
+    fn ramp_rgba(w: usize, h: usize) -> Vec<u8> {
+        let mut v = vec![0u8; w * h * 4];
+        for y in 0..h {
+            for x in 0..w {
+                let o = (y * w + x) * 4;
+                v[o] = x as u8;
+                v[o + 1] = y as u8;
+                v[o + 2] = 0;
+                v[o + 3] = 0xFF;
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn whole_buffer_swizzles_like_paint_into_xrgb8888() {
+        // A single output at the origin: src_x = src_y = 0, out size ==
+        // src size. Every pixel is swizzled R,G,B -> B,G,R,0xFF, which is
+        // exactly what the fused single-output path produces.
+        let (w, h) = (4usize, 3usize);
+        let src = ramp_rgba(w, h);
+        let pitch = w * 4;
+        let mut dst = vec![0u8; pitch * h];
+        swizzle_subrect_rgba_to_xrgb8888(&src, w, h, 0, 0, &mut dst, pitch, w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let s = (y * w + x) * 4;
+                let d = y * pitch + x * 4;
+                assert_eq!(dst[d], src[s + 2], "B at ({x},{y})");
+                assert_eq!(dst[d + 1], src[s + 1], "G at ({x},{y})");
+                assert_eq!(dst[d + 2], src[s], "R at ({x},{y})");
+                assert_eq!(dst[d + 3], 0xFF, "X at ({x},{y})");
+            }
+        }
+    }
+
+    #[test]
+    fn offset_subrect_picks_the_right_source_region() {
+        // Combined scene 6x2; the second output is a 2x2 region whose
+        // global position is (4, 0). The swizzle must pull source columns
+        // 4 and 5, not 0 and 1.
+        let (cw, ch) = (6usize, 2usize);
+        let src = ramp_rgba(cw, ch);
+        let (ow, oh) = (2usize, 2usize);
+        let pitch = ow * 4;
+        let mut dst = vec![0u8; pitch * oh];
+        swizzle_subrect_rgba_to_xrgb8888(&src, cw, ch, 4, 0, &mut dst, pitch, ow, oh);
+        // dst pixel (0,0) must be source pixel (4,0): R channel == 4.
+        assert_eq!(dst[2], 4, "dst(0,0).R should be source column 4");
+        // dst pixel (1,1) must be source pixel (5,1): R==5, G==1.
+        let d = pitch + 4;
+        assert_eq!(dst[d + 2], 5, "dst(1,1).R should be source column 5");
+        assert_eq!(dst[d + 1], 1, "dst(1,1).G should be source row 1");
+    }
+
+    #[test]
+    fn destination_pitch_padding_is_untouched() {
+        // A DRM dumb buffer's pitch usually exceeds out_w*4. The trailing
+        // padding bytes must stay as they were.
+        let (w, h) = (2usize, 2usize);
+        let src = ramp_rgba(w, h);
+        let pitch = 16; // > 2*4 = 8
+        let mut dst = vec![0xEEu8; pitch * h];
+        swizzle_subrect_rgba_to_xrgb8888(&src, w, h, 0, 0, &mut dst, pitch, w, h);
+        for row in 0..h {
+            // Padding after the 2 written pixels (offset 8..) stays 0xEE.
+            assert_eq!(dst[row * pitch + 8], 0xEE, "row {row} padding untouched");
+        }
+    }
+
+    #[test]
+    fn overhanging_output_is_clamped_not_panicking() {
+        // Output wider/taller than the source region remaining: must clamp.
+        let (w, h) = (3usize, 3usize);
+        let src = ramp_rgba(w, h);
+        let (ow, oh) = (4usize, 4usize); // overhangs
+        let pitch = ow * 4;
+        let mut dst = vec![0u8; pitch * oh];
+        // src_x=2 leaves only 1 valid source column; must not panic.
+        swizzle_subrect_rgba_to_xrgb8888(&src, w, h, 2, 0, &mut dst, pitch, ow, oh);
+        // Column 0 maps to source column 2 (valid); R==2.
+        assert_eq!(dst[2], 2);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! These tests need a working wgpu adapter (llvmpipe inside the
