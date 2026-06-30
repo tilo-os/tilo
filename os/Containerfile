@@ -346,7 +346,8 @@ RUN systemctl enable greetd.service && \
 RUN systemctl enable chronyd.service && \
     systemctl enable firewalld.service && \
     systemctl enable bluetooth.service && \
-    systemctl enable power-profiles-daemon.service
+    systemctl enable power-profiles-daemon.service && \
+    systemctl enable systemd-homed.service
 
 # §11 hardening services: hidepid remount + the boot security self-check.
 RUN systemctl enable qos-hidepid.service && \
