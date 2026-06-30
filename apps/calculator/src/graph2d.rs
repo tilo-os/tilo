@@ -11,6 +11,7 @@ use vello::peniko::Color;
 
 use crate::draw::{self, Align};
 use crate::engine;
+use crate::mathfield::MathField;
 use crate::model::{CalcModel, View2d};
 
 /// Distinct, theme-derived colour for plot series `i`.
@@ -31,8 +32,11 @@ pub struct Graph2dScreen {
     pub canvas: Rect,
     row_rects: Vec<Rect>,
     vis_rects: Vec<Rect>,
+    edit_rects: Vec<Rect>,
     add_rect: Rect,
     pub hovered_row: Option<usize>,
+    /// One real math editor per function row, kept in sync with `model.funcs`.
+    fields: Vec<MathField>,
 }
 
 impl Default for Graph2dScreen {
@@ -42,8 +46,10 @@ impl Default for Graph2dScreen {
             canvas: Rect::ZERO,
             row_rects: Vec::new(),
             vis_rects: Vec::new(),
+            edit_rects: Vec::new(),
             add_rect: Rect::ZERO,
             hovered_row: None,
+            fields: Vec::new(),
         }
     }
 }
@@ -58,16 +64,66 @@ impl Graph2dScreen {
 
         self.row_rects.clear();
         self.vis_rects.clear();
+        self.edit_rects.clear();
         let list_top = self.panel.y0 + 64.0;
         for i in 0..model.funcs.len() {
             let y0 = list_top + i as f64 * ROW_H;
             let r = Rect::new(self.panel.x0 + 12.0, y0, self.panel.x1 - 12.0, y0 + ROW_H - 8.0);
-            self.vis_rects
-                .push(Rect::new(r.x1 - 34.0, r.y0 + r.height() / 2.0 - 11.0, r.x1 - 12.0, r.y0 + r.height() / 2.0 + 11.0));
+            let vis = Rect::new(r.x1 - 34.0, r.y0 + r.height() / 2.0 - 11.0, r.x1 - 12.0, r.y0 + r.height() / 2.0 + 11.0);
+            // Editor area: a "y =" label sits at the left, the math field fills
+            // the rest up to the visibility dot.
+            let edit = Rect::new(r.x0 + 60.0, r.y0 + 2.0, vis.x0 - 8.0, r.y1 - 2.0);
+            self.vis_rects.push(vis);
+            self.edit_rects.push(edit);
             self.row_rects.push(r);
         }
         let add_y = list_top + model.funcs.len() as f64 * ROW_H + 4.0;
         self.add_rect = Rect::new(self.panel.x0 + 12.0, add_y, self.panel.x1 - 12.0, add_y + 36.0);
+    }
+
+    /// Reconcile the per-row [`MathField`]s with `model.funcs`: build one
+    /// field per row and feed it the row's current expression. Local edits are
+    /// preserved because `set_source` is a no-op when the string is unchanged.
+    pub fn sync_fields(&mut self, model: &CalcModel) {
+        if self.fields.len() != model.funcs.len() {
+            self.fields = model
+                .funcs
+                .iter()
+                .map(|f| MathField::new(&f.expr).with_size(20.0))
+                .collect();
+            // Seed the active row's caret inside a structure so a fresh frame
+            // (incl. the headless screenshot) shows a real 2D caret in place.
+            // `QOS_CALC_SELECTION_DEMO` instead seeds a selection band, for the
+            // drag-selection screenshot.
+            if let Some(field) = self.fields.get_mut(model.active_fn) {
+                if std::env::var_os("QOS_CALC_SELECTION_DEMO").is_some() {
+                    field.park_demo_selection();
+                } else {
+                    field.park_caret_in_structure();
+                }
+            }
+        } else {
+            for (field, f) in self.fields.iter_mut().zip(&model.funcs) {
+                field.set_source(&f.expr);
+            }
+        }
+    }
+
+    /// The math field for the active function row, if any.
+    pub fn active_field_mut(&mut self, active: usize) -> Option<&mut MathField> {
+        self.fields.get_mut(active)
+    }
+
+    /// The row index whose editor rect contains `p`.
+    pub fn field_at(&mut self, p: Point) -> Option<usize> {
+        self.edit_rects.iter().position(|r| r.contains(p))
+    }
+
+    /// End any in-progress drag-selection in every row's field.
+    pub fn release_fields(&mut self) {
+        for f in &mut self.fields {
+            f.on_release();
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -102,7 +158,10 @@ impl Graph2dScreen {
         let sub = Rect::new(self.panel.x0 + 16.0, self.panel.y0 + 36.0, self.panel.x1 - 16.0, self.panel.y0 + 56.0);
         draw::text_in(scene, tr, t, sub, "y = f(x)  ·  click to edit", 12.0, c.text_dim, Align::Left, TextWeight::Regular);
 
-        for (i, f) in model.funcs.iter().enumerate() {
+        // Keep the editors in lock-step with the model before painting them.
+        self.sync_fields(model);
+        for i in 0..model.funcs.len() {
+            let f = &model.funcs[i];
             let r = self.row_rects[i];
             let active = i == model.active_fn;
             if active {
@@ -115,15 +174,21 @@ impl Graph2dScreen {
             let sw = Rect::new(r.x0 + 12.0, r.center().y - 7.0, r.x0 + 26.0, r.center().y + 7.0);
             let col = series_color(theme, i);
             draw::fill_rrect(scene, t, sw, 3.0, if f.visible { col } else { draw::with_alpha(col, 80) });
-            // expression
-            let label = if f.expr.trim().is_empty() { "—".to_string() } else { engine::prettify(&f.expr) };
-            let mut shown = format!("y = {label}");
-            if active {
-                shown.push('|'); // caret
-            }
-            let txt_r = Rect::new(r.x0 + 34.0, r.y0, self.vis_rects[i].x0 - 6.0, r.y1);
+            // "y =" prefix (upright label), then the 2D math editor.
             let txt_col = if f.visible { c.text_primary } else { c.text_dim };
-            draw::text_in(scene, tr, t, txt_r, &shown, 14.0, txt_col, Align::Left, TextWeight::Medium);
+            let prefix = Rect::new(r.x0 + 34.0, r.y0, r.x0 + 60.0, r.y1);
+            draw::text_in(scene, tr, t, prefix, "y =", 14.0, txt_col, Align::Left, TextWeight::Medium);
+            let edit = self.edit_rects[i];
+            let visible = f.visible;
+            let empty = self.fields[i].is_empty();
+            if empty && !active {
+                let pr = Rect::new(edit.x0 + 4.0, edit.y0, edit.x1, edit.y1);
+                draw::text_in(scene, tr, t, pr, "f(x)", 14.0, c.text_dim, Align::Left, TextWeight::Regular);
+            } else {
+                self.fields[i].set_rect(edit, tr);
+                let fld_col = if visible { txt_col } else { c.text_dim };
+                self.fields[i].draw(scene, t, tr, theme, fld_col, active);
+            }
             // visibility dot
             let vr = self.vis_rects[i];
             let vis_col = if f.visible { col } else { c.neutral[3] };

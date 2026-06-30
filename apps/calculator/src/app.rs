@@ -43,6 +43,11 @@ pub struct CalculatorApp {
     mouse: Point,
     dragging: bool,
     drag_last: Point,
+    /// A drag-select is in progress inside a math field.
+    field_dragging: bool,
+    /// Time + position of the last press, for double-click detection.
+    last_click: Option<std::time::Instant>,
+    last_click_pos: Point,
 
     seeded: bool,
     model_dirty: bool,
@@ -65,6 +70,9 @@ impl CalculatorApp {
             mouse: Point::ZERO,
             dragging: false,
             drag_last: Point::ZERO,
+            field_dragging: false,
+            last_click: None,
+            last_click_pos: Point::ZERO,
             seeded: false,
             model_dirty: false,
             node: None,
@@ -172,11 +180,25 @@ impl CalculatorApp {
             return;
         }
 
+        // Double-click detection (≤400 ms, within 5 px).
+        let now = std::time::Instant::now();
+        let double = self
+            .last_click
+            .is_some_and(|t| now.duration_since(t).as_millis() <= 400)
+            && (self.last_click_pos - p).hypot() <= 5.0;
+        self.last_click = Some(now);
+        self.last_click_pos = p;
+
         match self.model.mode {
             Mode::Calc => self.on_press_calc(p),
-            Mode::Graph2d => self.on_press_g2(p),
+            Mode::Graph2d => self.on_press_g2(p, double),
             Mode::Graph3d => {
-                if self.g3.canvas_contains(p) {
+                if self.g3.expr_contains(p) {
+                    self.g3.sync_field(&self.model);
+                    self.g3.field_mut().on_press_cached(p, double);
+                    self.field_dragging = true;
+                    self.model_dirty = true;
+                } else if self.g3.canvas_contains(p) {
                     self.dragging = true;
                     self.drag_last = p;
                 }
@@ -206,7 +228,7 @@ impl CalculatorApp {
         }
     }
 
-    fn on_press_g2(&mut self, p: Point) {
+    fn on_press_g2(&mut self, p: Point, double: bool) {
         if self.g2.add_at(p) {
             self.model.funcs.push(PlotFn { expr: String::new(), visible: true });
             self.model.active_fn = self.model.funcs.len() - 1;
@@ -216,12 +238,44 @@ impl CalculatorApp {
                 f.visible = !f.visible;
                 self.model_dirty = true;
             }
+        } else if let Some(i) = self.g2.field_at(p) {
+            // Click landed in row i's editor: activate it and place the caret.
+            self.model.active_fn = i;
+            self.g2.sync_fields(&self.model);
+            self.field_press_g2(i, p, double);
+            self.model_dirty = true;
         } else if let Some(i) = self.g2.row_at(p) {
             self.model.active_fn = i;
             self.model_dirty = true;
         } else if self.g2.canvas_contains(p) {
             self.dragging = true;
             self.drag_last = p;
+        }
+    }
+
+    fn field_press_g2(&mut self, i: usize, p: Point, double: bool) {
+        // Borrow the renderer-free press path: MathField needs a TextRenderer
+        // to lay out for hit-testing. We don't have one here, so the field
+        // relays out lazily on the next draw; press uses the cached layout.
+        if let Some(field) = self.g2.active_field_mut(i) {
+            field.on_press_cached(p, double);
+            self.field_dragging = true;
+        }
+    }
+
+    /// Extend a math-field drag-selection to the current pointer position.
+    fn on_field_drag(&mut self, p: Point) {
+        match self.model.mode {
+            Mode::Graph2d => {
+                let a = self.model.active_fn;
+                if let Some(field) = self.g2.active_field_mut(a) {
+                    field.on_drag_cached(p);
+                }
+            }
+            Mode::Graph3d => {
+                self.g3.field_mut().on_drag_cached(p);
+            }
+            Mode::Calc => {}
         }
     }
 
@@ -272,7 +326,45 @@ impl CalculatorApp {
 
     // -- keyboard ------------------------------------------------------------
 
-    fn on_key(&mut self, key: &WKey, ctrl: bool) {
+    fn on_key(&mut self, key: &WKey, modifiers: &winit::event::Modifiers) {
+        let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
+
+        // Ctrl+digit always switches mode, from any screen.
+        if ctrl {
+            if let WKey::Character(s) = key {
+                match s.as_str() {
+                    "1" => {
+                        self.set_mode(Mode::Calc);
+                        return;
+                    }
+                    "2" => {
+                        self.set_mode(Mode::Graph2d);
+                        return;
+                    }
+                    "3" => {
+                        self.set_mode(Mode::Graph3d);
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // The graph editors own a real math field; route their input there.
+        match self.model.mode {
+            Mode::Graph2d => {
+                if self.on_key_g2(key, modifiers) {
+                    return;
+                }
+            }
+            Mode::Graph3d => {
+                if self.on_key_g3(key, modifiers) {
+                    return;
+                }
+            }
+            Mode::Calc => {}
+        }
+
         match key {
             WKey::Named(NamedKey::Enter) => {
                 if self.model.mode == Mode::Calc {
@@ -281,19 +373,10 @@ impl CalculatorApp {
                 }
             }
             WKey::Named(NamedKey::Backspace) => {
-                match self.model.mode {
-                    Mode::Calc => model::apply_key(&mut self.model, &model::Key::Backspace),
-                    Mode::Graph2d => {
-                        let a = self.model.active_fn;
-                        if let Some(f) = self.model.funcs.get_mut(a) {
-                            f.expr.pop();
-                        }
-                    }
-                    Mode::Graph3d => {
-                        self.model.surface.pop();
-                    }
+                if self.model.mode == Mode::Calc {
+                    model::apply_key(&mut self.model, &model::Key::Backspace);
+                    self.model_dirty = true;
                 }
-                self.model_dirty = true;
             }
             WKey::Named(NamedKey::Escape) | WKey::Named(NamedKey::Delete) => {
                 if self.model.mode == Mode::Calc {
@@ -301,63 +384,58 @@ impl CalculatorApp {
                     self.model_dirty = true;
                 }
             }
-            WKey::Named(NamedKey::ArrowLeft) => self.arrow(-1.0, 0.0),
-            WKey::Named(NamedKey::ArrowRight) => self.arrow(1.0, 0.0),
-            WKey::Named(NamedKey::ArrowUp) => self.arrow(0.0, 1.0),
-            WKey::Named(NamedKey::ArrowDown) => self.arrow(0.0, -1.0),
             WKey::Character(s) => {
                 if ctrl {
-                    match s.as_str() {
-                        "1" => self.set_mode(Mode::Calc),
-                        "2" => self.set_mode(Mode::Graph2d),
-                        "3" => self.set_mode(Mode::Graph3d),
-                        _ => {}
-                    }
                     return;
                 }
-                for ch in s.chars() {
-                    self.type_char(ch);
+                if self.model.mode == Mode::Calc {
+                    for ch in s.chars() {
+                        model::type_char(&mut self.model, ch);
+                    }
+                    self.model_dirty = true;
                 }
-                self.model_dirty = true;
             }
             _ => {}
         }
     }
 
-    fn type_char(&mut self, ch: char) {
-        match self.model.mode {
-            Mode::Calc => model::type_char(&mut self.model, ch),
-            Mode::Graph2d => {
-                if accept_expr_char(ch) {
-                    let a = self.model.active_fn;
-                    if let Some(f) = self.model.funcs.get_mut(a) {
-                        f.expr.push(ch.to_ascii_lowercase());
-                    }
-                }
-            }
-            Mode::Graph3d => {
-                if accept_expr_char(ch) {
-                    self.model.surface.push(ch.to_ascii_lowercase());
-                }
-            }
+    /// Route a key to the active Graph 2D function field. Returns whether the
+    /// key was consumed by the field.
+    fn on_key_g2(&mut self, key: &WKey, modifiers: &winit::event::Modifiers) -> bool {
+        self.g2.sync_fields(&self.model);
+        let a = self.model.active_fn;
+        let Some(field) = self.g2.active_field_mut(a) else {
+            return false;
+        };
+        // Only consume keys the field actually handles (so e.g. mode switches
+        // and unhandled named keys fall through).
+        if !field_handles(key, modifiers) {
+            return false;
         }
+        let changed = field.handle_key(key, modifiers);
+        if changed {
+            let linear = field.current_linear();
+            if let Some(f) = self.model.funcs.get_mut(a) {
+                f.expr = linear;
+            }
+            self.model_dirty = true;
+        }
+        true
     }
 
-    fn arrow(&mut self, dx: f64, dy: f64) {
-        match self.model.mode {
-            Mode::Graph2d => {
-                let step = 48.0 / self.model.view2d.scale;
-                self.model.view2d.cx += dx * step;
-                self.model.view2d.cy += dy * step;
-                self.model_dirty = true;
-            }
-            Mode::Graph3d => {
-                self.model.view3d.yaw += dx * 0.12;
-                self.model.view3d.pitch = (self.model.view3d.pitch + dy * 0.12).clamp(-1.5, 1.5);
-                self.model_dirty = true;
-            }
-            Mode::Calc => {}
+    /// Route a key to the Graph 3D surface field.
+    fn on_key_g3(&mut self, key: &WKey, modifiers: &winit::event::Modifiers) -> bool {
+        self.g3.sync_field(&self.model);
+        let field = self.g3.field_mut();
+        if !field_handles(key, modifiers) {
+            return false;
         }
+        let changed = field.handle_key(key, modifiers);
+        if changed {
+            self.model.surface = field.current_linear();
+            self.model_dirty = true;
+        }
+        true
     }
 }
 
@@ -367,8 +445,36 @@ impl Default for CalculatorApp {
     }
 }
 
-fn accept_expr_char(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || "+-*/^(),. %".contains(ch)
+/// Whether a key is one the math field acts on (so the app knows to route it
+/// there and consume it, vs. letting it fall through to mode-level handling).
+fn field_handles(key: &WKey, modifiers: &winit::event::Modifiers) -> bool {
+    let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
+    match key {
+        WKey::Named(
+            NamedKey::ArrowLeft
+            | NamedKey::ArrowRight
+            | NamedKey::ArrowUp
+            | NamedKey::ArrowDown
+            | NamedKey::Home
+            | NamedKey::End
+            | NamedKey::Backspace
+            | NamedKey::Delete
+            | NamedKey::Space,
+        ) => true,
+        WKey::Character(s) if ctrl => {
+            matches!(s.as_str(), "a" | "A" | "c" | "C" | "x" | "X" | "v" | "V")
+        }
+        WKey::Character(s) => s.chars().any(field_accepts),
+        _ => false,
+    }
+}
+
+fn field_accepts(ch: char) -> bool {
+    ch.is_ascii_alphanumeric()
+        || "+-*/^(),. %!·π√".contains(ch)
+        || ch == '×'
+        || ch == '÷'
+        || ch == '−'
 }
 
 impl Widget for CalculatorApp {
@@ -483,7 +589,9 @@ impl Widget for CalculatorApp {
                     }
                     Mode::Graph3d => {}
                 }
-                if self.dragging {
+                if self.field_dragging {
+                    self.on_field_drag(p);
+                } else if self.dragging {
                     let d = p - self.drag_last;
                     self.on_drag(d);
                     self.drag_last = p;
@@ -496,6 +604,9 @@ impl Widget for CalculatorApp {
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
                 self.dragging = false;
+                self.field_dragging = false;
+                self.g2.release_fields();
+                self.g3.field_mut().on_release();
                 self.calc.pressed_key = None;
                 *handled = true;
             }
@@ -510,9 +621,7 @@ impl Widget for CalculatorApp {
             WindowEvent::KeyboardInput { event: key_event, .. }
                 if key_event.state == ElementState::Pressed =>
             {
-                let m = modifiers.state();
-                let ctrl = m.control_key() || m.super_key();
-                self.on_key(&key_event.logical_key, ctrl);
+                self.on_key(&key_event.logical_key, modifiers);
                 *handled = true;
             }
             _ => {}
@@ -560,7 +669,33 @@ mod tests {
     #[test]
     fn ctrl_digit_switches_mode() {
         let mut app = CalculatorApp::new();
-        app.on_key(&WKey::Character("3".into()), true);
+        let ctrl = winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+        app.on_key(&WKey::Character("3".into()), &ctrl);
         assert_eq!(app.model.mode, Mode::Graph3d);
+    }
+
+    #[test]
+    fn typing_into_graph2d_field_updates_active_func() {
+        let mut app = CalculatorApp::new();
+        app.set_mode(Mode::Graph2d);
+        // start from a clean active row
+        app.model.funcs = vec![crate::model::PlotFn { expr: String::new(), visible: true }];
+        app.model.active_fn = 0;
+        let none = winit::event::Modifiers::default();
+        for ch in ["2", "*", "x"] {
+            app.on_key(&WKey::Character(ch.into()), &none);
+        }
+        assert_eq!(app.model.funcs[0].expr, "2*x");
+    }
+
+    #[test]
+    fn backspace_in_graph3d_field_edits_surface() {
+        let mut app = CalculatorApp::new();
+        app.set_mode(Mode::Graph3d);
+        app.model.surface = "x+y".into();
+        // on_key_g3 resyncs the field to the surface before editing.
+        let none = winit::event::Modifiers::default();
+        app.on_key(&WKey::Named(NamedKey::Backspace), &none);
+        assert_eq!(app.model.surface, "x+");
     }
 }
