@@ -350,7 +350,7 @@ impl Widget for ImageViewer {
         "ImageViewer"
     }
 
-    /// Accessibility (W3): the viewer presents a single image; `Role::Image`.
+    /// Accessibility: the viewer presents a single image; `Role::Image`.
     /// There is no alt-text field on the viewer (it's a pan/zoom canvas around
     /// raw `ImageData`), so the node carries no intrinsic name — a host that
     /// knows the source can supply one via its own wrapping `Image`.
