@@ -177,6 +177,10 @@ impl Widget for Toggle {
                     // CRDT Mutation
                     let new_val = !self.is_checked;
                     let _ = state.put(root, self.on_toggle_path.as_str(), automerge::ScalarValue::Boolean(new_val));
+                    // Update the local cache now so accessibility() reflects the
+                    // new state this same frame — otherwise the focus narration
+                    // triggered by this click would speak the pre-click state.
+                    self.is_checked = new_val;
                 }
             }
             _ => {}
@@ -197,6 +201,35 @@ impl Widget for Toggle {
     fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
     fn is_focused(&self) -> bool { self.is_focused }
     fn is_enabled(&self) -> bool { self.enabled }
+
+    /// Keyboard / AT activation: Enter, Space, or an AccessKit `Activate` /
+    /// `ToggleCheck` flips the switch — the same mutation the mouse path does.
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        use crate::a11y::Action;
+        if !self.enabled {
+            return false;
+        }
+        match action {
+            Action::ToggleCheck | Action::Activate => {
+                let new_val = !self.is_checked;
+                let _ = state.put(
+                    path,
+                    self.on_toggle_path.as_str(),
+                    automerge::ScalarValue::Boolean(new_val),
+                );
+                // Keep accessibility() consistent within this frame (mirrors
+                // the optimistic update the next sync would apply).
+                self.is_checked = new_val;
+                true
+            }
+            _ => false,
+        }
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
