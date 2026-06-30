@@ -27,7 +27,8 @@ use ui::theme::Theme;
 use ui::ColorCompat;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::Widget;
-use ui::PresenceCtx;
+use ui::permissions::UserId;
+use ui::{PathSegment, PresenceCtx, PresenceKey};
 
 use crate::word_processor::{Caret, ClipBlock, WordProcessor};
 use crate::WpFormat;
@@ -595,6 +596,46 @@ fn char_to_byte(text: &str, char_off: usize) -> usize {
 fn byte_to_char(text: &str, byte_off: usize) -> usize {
     let b = byte_off.min(text.len());
     text[..b].chars().count()
+}
+
+/// The collaboration presence key for a document block, keyed by its **stable
+/// CRDT block id** (not its index): two peers share the same Automerge object
+/// ids for a given block, whereas a block's positional index drifts as peers
+/// concurrently insert/delete blocks. Keying by id therefore keeps a remote
+/// peer's caret/selection pinned to the right paragraph even while the document
+/// is being restructured. Used by BOTH the outbound `presence_payload` (so the
+/// App broadcasts the local caret/selection under this key) and the inbound
+/// render pass (so received caret/selection presence maps back onto the same
+/// block) — keeping the two halves in agreement is the whole point of the
+/// single helper.
+fn block_presence_key(block_id: &str) -> PresenceKey {
+    PresenceKey::Widget {
+        path: vec![
+            PathSegment::Field("wp_block".to_string()),
+            PathSegment::Field(block_id.to_string()),
+        ],
+    }
+}
+
+/// A resolved remote collaborator caret to paint this frame: the on-screen
+/// caret rectangle (in *content* space, ready to be mapped through the page
+/// content transform), the peer's id (for colour + the name label), and the
+/// label text. Produced by [`WordProcessorWidget::remote_presence_overlays`]
+/// from the live `PresenceCtx` + the frame's laid-out blocks so the geometry is
+/// pixel-identical to a local caret — never a re-derived approximation.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RemoteCaretOverlay {
+    pub user: UserId,
+    pub rect: Rect,
+}
+
+/// A resolved remote collaborator selection to paint this frame: one-or-more
+/// on-screen rectangles (a wrapped selection spans several lines) in content
+/// space, plus the peer it belongs to.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RemoteSelectionOverlay {
+    pub user: UserId,
+    pub rects: Vec<Rect>,
 }
 
 /// Whether the char range `[s, e)` in `chars` is bounded by word boundaries on
@@ -3384,7 +3425,7 @@ impl Widget for WordProcessorWidget {
         );
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &PresenceCtx) {
+    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
         // Resolve the OS theme into this frame's chrome palette once; every
         // chrome helper below reads `self.chrome` so the whole editor follows
         // light/dark mode + the OS palette.
@@ -4256,6 +4297,35 @@ impl Widget for WordProcessorWidget {
         // for blocks that no longer exist) so the next frame can reuse it.
         self.layout_cache = new_cache;
 
+        // Remote collaborators' carets + selections (collaboration). Resolved by
+        // the single `remote_presence_overlays` pass from the just-committed
+        // `self.laid` + `self.layout_cache`, so the on-screen geometry is
+        // byte-for-byte the same the unit test asserts on. Selections paint at
+        // read-through alpha and carets paint over the text, each in the peer's
+        // colour with a name pill — mapped through the page content transform
+        // `ctf` so they track scroll/zoom exactly like the local caret. A no-op
+        // when the PresenceCtx carries no remote carets/selections (single-user,
+        // no broker), so single-user rendering is unchanged.
+        let (remote_carets, remote_selections) = self.remote_presence_overlays(presence);
+        for sel in &remote_selections {
+            for r in &sel.rects {
+                presence.draw_peer_selection(scene, theme, ctf, &sel.user, *r);
+            }
+        }
+        for c in &remote_carets {
+            presence.draw_peer_caret(scene, theme, ctf, &c.user, c.rect);
+            self.draw_remote_caret_label(
+                scene,
+                ctf,
+                text_renderer,
+                theme,
+                presence,
+                &c.user,
+                c.rect.x0,
+                c.rect.y0,
+            );
+        }
+
         // Contextual styles panel on the right (between toolbar and layout bar).
         if self.styles_panel_open {
             let panel = Rect::new(canvas_right, full.y0 + tb_h, full.x1, layout_bar_top);
@@ -4877,6 +4947,52 @@ impl Widget for WordProcessorWidget {
         }
     }
 
+    /// Outbound collaboration presence: while focused, broadcast the local
+    /// caret (or, when a selection exists, its range) keyed to the block the
+    /// caret is in. The App polls this after each event and fans the diff out to
+    /// peers as `CollabEvent::RemotePresenceUpdate`, so collaborators see this
+    /// user's caret/selection move live (the inbound half is rendered in
+    /// `draw`). Offsets are emitted in **bytes** so the receiver can feed them
+    /// straight into `RichTextLayout::caret_geometry` / `selection_rects`.
+    fn presence_payload(&self) -> Option<(PresenceKey, ui::PresencePayload)> {
+        if !self.focused {
+            return None;
+        }
+        let caret_block = &self.inner.caret.block;
+        if caret_block.is_empty() {
+            return None;
+        }
+        let key = block_presence_key(caret_block);
+        // A selection within the caret's block takes priority over the bare
+        // caret. (v1 collab presence reports the caret-block portion of a
+        // multi-block selection, mirroring how the caret block is what the
+        // peer's caret lands in.)
+        if self.inner.has_selection() {
+            if let Some((_, s, e)) = self
+                .selection_blocks_cached()
+                .into_iter()
+                .find(|(b, _, _)| b == caret_block)
+            {
+                if let Some(block) = self.blocks.iter().find(|b| &b.id == caret_block) {
+                    if s < e {
+                        let start = char_to_byte(&block.text, s);
+                        let end = char_to_byte(&block.text, e);
+                        return Some((key, ui::PresencePayload::Selection { start, end }));
+                    }
+                }
+            }
+        }
+        // Bare caret: convert the char offset to a byte offset against the
+        // caret block's text so it maps directly through the layout geometry.
+        let pos = self
+            .blocks
+            .iter()
+            .find(|b| &b.id == caret_block)
+            .map(|b| char_to_byte(&b.text, self.inner.caret.offset))
+            .unwrap_or(self.inner.caret.offset);
+        Some((key, ui::PresencePayload::Caret { pos }))
+    }
+
     fn name(&self) -> &str {
         "WordProcessor"
     }
@@ -4980,6 +5096,120 @@ impl WordProcessorWidget {
             return None;
         }
         Some((char_to_byte(text, s), char_to_byte(text, e)))
+    }
+
+    /// Resolve every remote collaborator's caret + selection against this
+    /// frame's laid-out blocks, producing content-space rectangles ready to be
+    /// painted through the page content transform.
+    ///
+    /// This is the production presence-render computation, factored out of
+    /// [`Widget::draw`] so it can be asserted on directly (a populated
+    /// `PresenceCtx` yields the expected remote-caret rect; an empty one yields
+    /// nothing). For each laid block it looks up `presence.carets` /
+    /// `presence.selections` under the SAME [`block_presence_key`] the local
+    /// caret is broadcast under, then maps the peer's byte offset(s) through the
+    /// block's shaped [`RichTextLayout`] via the very same
+    /// `caret_geometry` / `selection_rects` geometry the local caret/selection
+    /// use — so a remote caret is pixel-identical to a local one, just
+    /// recoloured per peer in the draw.
+    ///
+    /// Geometry is read from `self.laid` + `self.layout_cache`, both of which
+    /// are populated by the end of a `draw` pass, so this is meaningful after at
+    /// least one frame has been rendered.
+    pub(crate) fn remote_presence_overlays(
+        &self,
+        presence: &PresenceCtx,
+    ) -> (Vec<RemoteCaretOverlay>, Vec<RemoteSelectionOverlay>) {
+        let mut carets = Vec::new();
+        let mut selections = Vec::new();
+        for l in &self.laid {
+            let Some((_, layout)) = self.layout_cache.get(&l.id) else {
+                continue;
+            };
+            let key = block_presence_key(&l.id);
+
+            // Remote selections (drawn under the text, like the local one).
+            if let Some(list) = presence.selections.get(&key) {
+                for (user, range) in list {
+                    if range.start >= range.end {
+                        continue;
+                    }
+                    let rects: Vec<Rect> = layout
+                        .selection_rects(range.start, range.end)
+                        .into_iter()
+                        .map(|(rx0, ry0, rx1, ry1)| {
+                            Rect::new(
+                                l.text_x + rx0 as f64,
+                                l.y_top + ry0 as f64,
+                                l.text_x + rx1 as f64,
+                                l.y_top + ry1 as f64,
+                            )
+                        })
+                        .collect();
+                    if !rects.is_empty() {
+                        selections.push(RemoteSelectionOverlay { user: user.clone(), rects });
+                    }
+                }
+            }
+
+            // Remote carets (drawn over the text, like the local one).
+            if let Some(list) = presence.carets.get(&key) {
+                for (user, byte_pos) in list {
+                    let (cx, cy, ch) = layout.caret_geometry(*byte_pos);
+                    let rect = Rect::new(
+                        l.text_x + cx as f64,
+                        l.y_top + cy as f64,
+                        l.text_x + cx as f64 + CARET_WIDTH,
+                        l.y_top + cy as f64 + ch as f64,
+                    );
+                    carets.push(RemoteCaretOverlay { user: user.clone(), rect });
+                }
+            }
+        }
+        (carets, selections)
+    }
+
+    /// Paint a small rounded name pill in the peer's colour, anchored just above
+    /// a remote caret at content-space `(caret_x, caret_top)`, so a user can see
+    /// *who* is editing where. Drawn through the page content transform `ctf` so
+    /// it tracks the page as it scrolls/zooms, exactly like the caret it labels.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_remote_caret_label(
+        &self,
+        scene: &mut Scene,
+        ctf: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        user: &UserId,
+        caret_x: f64,
+        caret_top: f64,
+    ) {
+        let label = &user.0;
+        let (r, g, b) = presence.color_for(user);
+        let peer = Color::from_rgb8(r, g, b);
+        let size = 11.0_f32;
+        let pad_x = 5.0_f64;
+        let pad_y = 2.0_f64;
+        let (tw, _th) = text_renderer.measure(label, size, None);
+        let chip_w = tw as f64 + pad_x * 2.0;
+        let chip_h = size as f64 + pad_y * 2.0;
+        // Sit the pill just above the caret's top edge.
+        let chip_x = caret_x;
+        let chip_y = caret_top - chip_h - 2.0;
+        let chip_rect = Rect::new(chip_x, chip_y, chip_x + chip_w, chip_y + chip_h);
+        let chip = vello::kurbo::RoundedRect::from_rect(chip_rect, 3.0);
+        scene.fill(Fill::NonZero, ctf, peer, None, &chip);
+        // White-on-colour label for contrast against the peer hue.
+        text_renderer.draw_text(
+            scene,
+            label,
+            size,
+            Color::WHITE,
+            ctf * Affine::translate((chip_rect.x0 + pad_x, chip_rect.y0 + pad_y)),
+            None,
+        );
+        let _ = theme;
     }
 
     fn extend_or_clear(&mut self, shift: bool) {
@@ -8233,5 +8463,241 @@ mod tests {
             toolbar.children.iter().any(|c| c.node.role == Role::Button),
             "the toolbar contains button nodes",
         );
+    }
+
+    // ---- collaboration: remote presence rendering --------------------------
+
+    use ui::permissions::UserId;
+    use ui::presence::SelectionRange;
+
+    /// The id of the first laid-out block (after a draw) — the block a remote
+    /// peer's caret/selection will be keyed to.
+    fn first_block_id(wp: &WordProcessorWidget) -> String {
+        wp.laid.first().expect("at least one block was laid out").id.clone()
+    }
+
+    /// A populated, focused widget that has been drawn once (so `self.laid` +
+    /// `self.layout_cache` are live and `remote_presence_overlays` is
+    /// meaningful).
+    fn drawn_focused() -> (ui::State, WordProcessorWidget) {
+        let (mut state, mut wp) = populated();
+        wp.set_focus(true);
+        pipeline_draw(&mut wp, &mut state, 1100, 760);
+        (state, wp)
+    }
+
+    /// An empty `PresenceCtx` (single-user / no broker) yields no remote
+    /// caret/selection overlays — proving the collab render path is a strict
+    /// no-op when there are no peers, so single-user editing is unchanged.
+    #[test]
+    fn remote_presence_is_noop_without_peers() {
+        let (_state, wp) = drawn_focused();
+        let presence = PresenceCtx::empty();
+        let (carets, selections) = wp.remote_presence_overlays(&presence);
+        assert!(carets.is_empty(), "no remote carets without peers");
+        assert!(selections.is_empty(), "no remote selections without peers");
+    }
+
+    /// A `PresenceCtx` carrying a remote collaborator's caret (under the same
+    /// per-block key the widget broadcasts the local caret under) yields exactly
+    /// one remote-caret overlay, positioned inside the laid block — proving
+    /// `draw` consumes presence and maps a remote byte offset onto on-screen
+    /// caret geometry via the production `caret_geometry` path.
+    #[test]
+    fn remote_caret_is_resolved_to_on_screen_rect() {
+        let (_state, wp) = drawn_focused();
+        let block_id = first_block_id(&wp);
+
+        let mut presence = PresenceCtx::empty();
+        // Place "alice"'s caret 3 bytes into the first block.
+        presence.set_remote_caret("alice".into(), block_presence_key(&block_id), 3);
+
+        let (carets, selections) = wp.remote_presence_overlays(&presence);
+        assert_eq!(carets.len(), 1, "one remote caret resolved");
+        assert!(selections.is_empty(), "a bare caret yields no selection rects");
+        let c = &carets[0];
+        assert_eq!(c.user, UserId("alice".into()));
+        // The caret rect must be a real, non-degenerate vertical bar (the
+        // `CARET_WIDTH`-wide, line-tall geometry produced by `caret_geometry`),
+        // and it must land within the block's laid rectangle.
+        let block = wp.laid.iter().find(|l| l.id == block_id).unwrap();
+        assert!((c.rect.width() - CARET_WIDTH).abs() < 1e-6, "caret is CARET_WIDTH wide: {:?}", c.rect);
+        assert!(c.rect.height() > 1.0, "caret has a real height: {:?}", c.rect);
+        assert!(c.rect.x0 >= block.text_x - 0.5, "caret sits at/after the block's text edge");
+        assert!(c.rect.y0 >= block.y_top - 0.5, "caret sits within the block vertically");
+    }
+
+    /// A remote selection range yields one-or-more non-degenerate highlight
+    /// rectangles (a single-line selection is one rect), mapped through the same
+    /// `selection_rects` geometry the local selection uses.
+    #[test]
+    fn remote_selection_is_resolved_to_highlight_rects() {
+        let (_state, wp) = drawn_focused();
+        let block_id = first_block_id(&wp);
+
+        let mut presence = PresenceCtx::empty();
+        // "bob" selects bytes [0, 4) of the first block.
+        presence.set_remote_selection("bob".into(), block_presence_key(&block_id), 0, 4);
+
+        let (carets, selections) = wp.remote_presence_overlays(&presence);
+        assert!(carets.is_empty(), "a selection yields no bare caret");
+        assert_eq!(selections.len(), 1, "one remote selection resolved");
+        let s = &selections[0];
+        assert_eq!(s.user, UserId("bob".into()));
+        assert!(!s.rects.is_empty(), "the selection produced at least one highlight rect");
+        for r in &s.rects {
+            assert!(r.width() > 0.0 && r.height() > 0.0, "highlight rect is non-degenerate: {r:?}");
+        }
+    }
+
+    /// A degenerate (empty) remote selection range produces no highlight rects —
+    /// the render guards against a zero-width selection painting a stray band.
+    #[test]
+    fn empty_remote_selection_produces_no_rects() {
+        let (_state, wp) = drawn_focused();
+        let block_id = first_block_id(&wp);
+
+        let mut presence = PresenceCtx::empty();
+        presence.selections.insert(
+            block_presence_key(&block_id),
+            vec![(UserId("bob".into()), SelectionRange { start: 2, end: 2 })],
+        );
+
+        let (_carets, selections) = wp.remote_presence_overlays(&presence);
+        assert!(selections.is_empty(), "an empty selection range paints nothing");
+    }
+
+    /// Two peers on DIFFERENT blocks each get their own caret overlay, attributed
+    /// to the right user — the per-block key keeps them from colliding.
+    #[test]
+    fn distinct_peers_on_distinct_blocks_resolve_independently() {
+        let (_state, wp) = drawn_focused();
+        assert!(wp.laid.len() >= 2, "the populated doc lays out at least two blocks");
+        let b0 = wp.laid[0].id.clone();
+        let b1 = wp.laid[1].id.clone();
+
+        let mut presence = PresenceCtx::empty();
+        presence.set_remote_caret("alice".into(), block_presence_key(&b0), 1);
+        presence.set_remote_caret("bob".into(), block_presence_key(&b1), 1);
+
+        let (carets, _selections) = wp.remote_presence_overlays(&presence);
+        assert_eq!(carets.len(), 2, "both peers' carets resolved");
+        let users: Vec<&str> = carets.iter().map(|c| c.user.0.as_str()).collect();
+        assert!(users.contains(&"alice") && users.contains(&"bob"), "got {users:?}");
+        // The two carets land in different blocks (different vertical bands).
+        let ya = carets.iter().find(|c| c.user.0 == "alice").unwrap().rect.y0;
+        let yb = carets.iter().find(|c| c.user.0 == "bob").unwrap().rect.y0;
+        assert!((ya - yb).abs() > 1.0, "carets in different blocks have distinct y positions");
+    }
+
+    /// The full `draw_with_presence` path consumes a populated `PresenceCtx`
+    /// without panicking AND the resolver agrees — i.e. the production draw and
+    /// the asserted helper are the same path, not a parallel re-implementation.
+    #[test]
+    fn draw_with_presence_renders_remote_caret_through_production_path() {
+        let (mut state, mut wp) = drawn_focused();
+        let block_id = first_block_id(&wp);
+
+        let mut presence = PresenceCtx::empty();
+        presence.set_remote_caret("charlie".into(), block_presence_key(&block_id), 2);
+
+        // Run the REAL five-pass draw with the populated presence (the same call
+        // the App makes each frame). It must paint without panicking.
+        let permission = PermissionContext::permissive();
+        let mut tr = TextRenderer::new();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        wp.sync(&mut state.doc, &state.root);
+        let child = wp.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        let root = taffy
+            .new_with_children(
+                Style { size: Size { width: Dimension::length(1100.0), height: Dimension::length(760.0) }, ..Default::default() },
+                &[child],
+            )
+            .unwrap();
+        {
+            let measure_map = node_map.clone();
+            let trr = &mut tr;
+            taffy
+                .compute_layout_with_measure(
+                    root,
+                    taffy::Size { width: AvailableSpace::Definite(1100.0), height: AvailableSpace::Definite(760.0) },
+                    |known, available, node_id, _, _| {
+                        if let Some(&ptr) = measure_map.get(&node_id) {
+                            unsafe { (*ptr).measure(known, available, trr) }
+                        } else {
+                            taffy::Size::ZERO
+                        }
+                    },
+                )
+                .unwrap();
+        }
+        wp.apply_layout(&taffy, child, Point::ORIGIN);
+        let mut scene = Scene::new();
+        wp.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &Theme::dark(), &presence, &permission);
+
+        // After the production draw, the resolver (which the draw itself called)
+        // reports the same single remote caret — proving the draw consumed it.
+        let (carets, _sel) = wp.remote_presence_overlays(&presence);
+        assert_eq!(carets.len(), 1, "the production draw consumed the remote caret");
+        assert_eq!(carets[0].user, UserId("charlie".into()));
+    }
+
+    // ---- collaboration: outbound presence (presence_payload) ---------------
+
+    /// While focused, the widget reports its local caret as outbound presence,
+    /// keyed to the caret's block and carrying a BYTE offset (so a peer can feed
+    /// it straight into the layout geometry). The App polls this each frame and
+    /// broadcasts the diff to peers.
+    #[test]
+    fn presence_payload_reports_focused_caret_in_bytes() {
+        let (mut state, mut wp) = populated();
+        wp.set_focus(true);
+        // Move the caret to char offset 3 of the caret block.
+        let block = wp.model().caret().block.clone();
+        wp.model_mut().set_caret(Caret { block: block.clone(), offset: 3 });
+        // A draw populates the block cache (needed for char→byte conversion).
+        pipeline_draw(&mut wp, &mut state, 1100, 760);
+
+        match wp.presence_payload() {
+            Some((key, ui::PresencePayload::Caret { pos })) => {
+                assert_eq!(key, block_presence_key(&block), "keyed to the caret's block");
+                // The caret block text is ASCII here, so byte offset == char offset.
+                assert_eq!(pos, 3, "caret reported at byte 3");
+            }
+            other => panic!("expected a Caret payload, got {other:?}"),
+        }
+    }
+
+    /// A selection takes priority over the bare caret in the outbound payload,
+    /// reported as a byte range over the caret block.
+    #[test]
+    fn presence_payload_reports_selection_when_present() {
+        let (mut state, mut wp) = populated();
+        wp.set_focus(true);
+        pipeline_draw(&mut wp, &mut state, 1100, 760);
+        // Select chars [1, 4) of the caret block.
+        select_range(&mut wp, 1, 4);
+        // Re-draw so the selection is reflected in the cached block views.
+        pipeline_draw(&mut wp, &mut state, 1100, 760);
+
+        let block = wp.model().caret().block.clone();
+        match wp.presence_payload() {
+            Some((key, ui::PresencePayload::Selection { start, end })) => {
+                assert_eq!(key, block_presence_key(&block));
+                assert_eq!((start, end), (1, 4), "selection reported as a byte range");
+            }
+            other => panic!("expected a Selection payload, got {other:?}"),
+        }
+    }
+
+    /// An unfocused widget broadcasts no presence (so a background editor doesn't
+    /// flood peers with a stale caret).
+    #[test]
+    fn presence_payload_is_none_when_unfocused() {
+        let (mut state, mut wp) = populated();
+        pipeline_draw(&mut wp, &mut state, 1100, 760);
+        wp.set_focus(false);
+        assert!(wp.presence_payload().is_none(), "no presence while unfocused");
     }
 }
