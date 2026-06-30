@@ -12,6 +12,13 @@ pub const KEY_STYLES: &str = "styles"; // Map<style_id, style def>
 pub const KEY_PRESERVED: &str = "preserved"; // Map<part_name, Bytes>  (preservation layer)
 pub const KEY_META: &str = "meta"; // Map (actor->user, etc.)
 pub const KEY_BLOBS: &str = "blobs"; // Map<blake3_hex, Bytes>  (content-addressed image/binary store)
+// Page header / footer regions. Each is a `Map<block_id, block>` with the exact
+// same shape as `blocks` (fractional order keys, same block fields), holding the
+// ordered paragraph sequence rendered at the top/bottom of every page. Created
+// lazily on first write and opened optionally, so documents authored before the
+// regions existed still open (they then read as having no header/footer).
+pub const KEY_HEADER: &str = "header"; // Map<block_id, block>
+pub const KEY_FOOTER: &str = "footer"; // Map<block_id, block>
 
 // Document properties / metadata. A `props` sub-map under `meta` holding the
 // well-known document-level fields (title/author/…) as plain strings. Isolated
@@ -31,6 +38,18 @@ pub const PROP_GENERATOR: &str = "generator"; // Str — meta:generator / app.xm
 /// The canonical well-known document-property names, in a stable order.
 pub const DOC_PROP_KEYS: [&str; 7] =
     [PROP_TITLE, PROP_AUTHOR, PROP_SUBJECT, PROP_KEYWORDS, PROP_CREATED, PROP_MODIFIED, PROP_GENERATOR];
+
+// Inline field markers. A "field" is an inline placeholder whose rendered text is
+// computed at layout time (e.g. the current page number). It is modeled as a
+// single placeholder character in the block text covered by a `field` mark whose
+// value names the field kind. This rides the existing inline-mark machinery, so a
+// field merges with concurrent text edits and round-trips through the codecs.
+pub const MARK_FIELD: &str = "field"; // Str — the field kind (see FIELD_PAGE_NUMBER)
+pub const FIELD_PAGE_NUMBER: &str = "page-number"; // a `field` mark value
+/// The single placeholder character a field occupies in block text (Unicode
+/// OBJECT REPLACEMENT CHARACTER, U+FFFC). The `field` mark covers exactly this
+/// character; renderers substitute the computed value (e.g. the page number).
+pub const FIELD_PLACEHOLDER: char = '\u{FFFC}';
 
 // Block fields
 pub const BLOCK_ORDER: &str = "order"; // Bytes (fractional key)
