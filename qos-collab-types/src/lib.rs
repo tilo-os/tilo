@@ -73,6 +73,7 @@ pub mod crypto;
 pub mod event;
 pub mod identity;
 pub mod op;
+pub mod redaction;
 pub mod role;
 pub mod space;
 pub mod validator;
@@ -96,6 +97,10 @@ pub use crypto::{
 pub use event::{ChannelEvent, RoleAttestation};
 pub use identity::{Attestation, AttestationId, Claim, Clearance, Identity};
 pub use op::{EncryptionMetadata, SignedOp};
+pub use redaction::{
+    MAX_REDACTION_REASON_BYTES, OpId, RedactRequest, RedactedMarker, RedactionError,
+    encode_redact_payload, hash_target_op, parse_redact_payload,
+};
 pub use role::{ArtifactKind, OpClass, Role, role_permits};
 pub use space::{Space, SpaceId};
 pub use validator::{ChannelState, ValidationError, validate_inbound_op};

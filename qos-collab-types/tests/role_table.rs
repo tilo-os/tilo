@@ -19,7 +19,7 @@ fn all_artifact_kinds() -> [ArtifactKind; 5] {
     ]
 }
 
-fn all_op_classes() -> [OpClass; 8] {
+fn all_op_classes() -> [OpClass; 9] {
     [
         OpClass::Splice,
         OpClass::Move,
@@ -29,6 +29,7 @@ fn all_op_classes() -> [OpClass; 8] {
         OpClass::Restore,
         OpClass::Govern,
         OpClass::Compaction,
+        OpClass::Redact,
     ]
 }
 
@@ -56,6 +57,7 @@ fn matrix_editor() {
         assert!(role_permits(Role::Editor, kind, OpClass::Restore));
         assert!(!role_permits(Role::Editor, kind, OpClass::Govern));
         assert!(!role_permits(Role::Editor, kind, OpClass::Compaction));
+        assert!(!role_permits(Role::Editor, kind, OpClass::Redact));
     }
 }
 
@@ -71,6 +73,7 @@ fn matrix_commenter() {
         assert!(!role_permits(Role::Commenter, kind, OpClass::Restore));
         assert!(!role_permits(Role::Commenter, kind, OpClass::Govern));
         assert!(!role_permits(Role::Commenter, kind, OpClass::Compaction));
+        assert!(!role_permits(Role::Commenter, kind, OpClass::Redact));
     }
 }
 
@@ -112,7 +115,8 @@ fn full_matrix_table_driven() {
         (Role::Owner, OpClass::Restore, true),
         (Role::Owner, OpClass::Govern, true),
         (Role::Owner, OpClass::Compaction, true),
-        // Editor -> all except Govern + Compaction
+        (Role::Owner, OpClass::Redact, true),
+        // Editor -> all except Govern + Compaction + Redact
         (Role::Editor, OpClass::Splice, true),
         (Role::Editor, OpClass::Move, true),
         (Role::Editor, OpClass::EditMeta, true),
@@ -121,6 +125,7 @@ fn full_matrix_table_driven() {
         (Role::Editor, OpClass::Restore, true),
         (Role::Editor, OpClass::Govern, false),
         (Role::Editor, OpClass::Compaction, false),
+        (Role::Editor, OpClass::Redact, false),
         // Commenter -> Comment only
         (Role::Commenter, OpClass::Splice, false),
         (Role::Commenter, OpClass::Move, false),
@@ -130,6 +135,7 @@ fn full_matrix_table_driven() {
         (Role::Commenter, OpClass::Restore, false),
         (Role::Commenter, OpClass::Govern, false),
         (Role::Commenter, OpClass::Compaction, false),
+        (Role::Commenter, OpClass::Redact, false),
         // Viewer -> nothing
         (Role::Viewer, OpClass::Splice, false),
         (Role::Viewer, OpClass::Move, false),
@@ -139,6 +145,7 @@ fn full_matrix_table_driven() {
         (Role::Viewer, OpClass::Restore, false),
         (Role::Viewer, OpClass::Govern, false),
         (Role::Viewer, OpClass::Compaction, false),
+        (Role::Viewer, OpClass::Redact, false),
         // Denied -> nothing
         (Role::Denied, OpClass::Splice, false),
         (Role::Denied, OpClass::Move, false),
@@ -148,6 +155,7 @@ fn full_matrix_table_driven() {
         (Role::Denied, OpClass::Restore, false),
         (Role::Denied, OpClass::Govern, false),
         (Role::Denied, OpClass::Compaction, false),
+        (Role::Denied, OpClass::Redact, false),
     ];
     for kind in all_artifact_kinds() {
         for (role, op, expected) in cases.iter().copied() {
