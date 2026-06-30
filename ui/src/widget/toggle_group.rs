@@ -69,6 +69,12 @@ pub struct ToggleGroup {
     cache_dirty: bool,
     cache_rect: Rect,
     last_selected: usize,
+    /// Whether the control holds keyboard focus. Drives the focus ring drawn
+    /// in place of the standard outer border, so the group reads as focused.
+    is_focused: bool,
+    /// `is_focused` at the last cache emit, so a focus change invalidates the
+    /// cached scene and the ring repaints.
+    last_focused: bool,
 }
 
 impl ToggleGroup {
@@ -90,6 +96,8 @@ impl ToggleGroup {
             cache_dirty: true,
             cache_rect: Rect::ZERO,
             last_selected: usize::MAX,
+            is_focused: false,
+            last_focused: false,
         }
     }
 
@@ -193,6 +201,10 @@ impl Widget for ToggleGroup {
             self.cache_dirty = true;
             self.last_selected = self.selected;
         }
+        if self.is_focused != self.last_focused {
+            self.cache_dirty = true;
+            self.last_focused = self.is_focused;
+        }
         let needs_emit = self.cache_dirty || self.cache_rect == Rect::ZERO;
         if !needs_emit {
             let dx = self.rect.x0 - self.cache_rect.x0;
@@ -261,11 +273,18 @@ impl Widget for ToggleGroup {
         }
 
         // Outer border — stroke the rounded rect so the entire control
-        // reads as one chunk against the surrounding canvas.
+        // reads as one chunk against the surrounding canvas. While focused
+        // it becomes the focus ring: the prominent focus colour at a 2px
+        // weight, consistent with every other focusable control.
+        let (border_w, border_c) = if self.is_focused {
+            (2.0, colors.border_focus)
+        } else {
+            (1.0, colors.border_standard)
+        };
         scene.stroke(
-            &Stroke::new(1.0),
+            &Stroke::new(border_w),
             transform,
-            colors.border_standard,
+            border_c,
             None,
             &outer_shape,
         );
@@ -298,7 +317,9 @@ impl Widget for ToggleGroup {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.cache_dirty || self.selected != self.last_selected
+        self.cache_dirty
+            || self.selected != self.last_selected
+            || self.is_focused != self.last_focused
     }
 
     fn mark_drawn(&mut self) { self.cache_dirty = false; }
@@ -368,6 +389,8 @@ impl Widget for ToggleGroup {
     }
 
     fn is_focusable(&self) -> bool { true }
+    fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
+    fn is_focused(&self) -> bool { self.is_focused }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
@@ -536,6 +559,44 @@ mod tests {
         assert!(
             colour_tags >= 2,
             "3-segment ToggleGroup must emit >= 2 colour draw-tags for separator lines (got {colour_tags})"
+        );
+    }
+
+    /// Render a freshly-laid-out group against `theme` and return the encoded
+    /// colour stream (`draw_data`). A focus change swaps the outer border
+    /// colour, so the stream differs between focused and unfocused renders.
+    fn group_draw_data(focused: bool, theme: &Theme) -> Vec<u32> {
+        let mut g = ToggleGroup::new(
+            vec![Segment::new("a"), Segment::new("b")],
+            0,
+        );
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = g.build_layout(&mut taffy, theme, &mut node_map);
+        let root = taffy.new_with_children(Style::default(), &[node]).unwrap();
+        taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
+        g.apply_layout(&taffy, node, Point::ZERO);
+        g.set_focus(focused);
+
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        let mut scene = Scene::new();
+        g.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+        scene.encoding().draw_data.clone()
+    }
+
+    /// A focused segmented control swaps its outer border to the prominent
+    /// focus colour, so the encoded colour stream differs from the unfocused
+    /// render. Uses high contrast (yellow focus vs white border) so the two
+    /// colours are unambiguously different.
+    #[test]
+    fn focused_toggle_group_uses_the_focus_colour() {
+        let theme = Theme::high_contrast();
+        let unfocused = group_draw_data(false, &theme);
+        let focused = group_draw_data(true, &theme);
+        assert_ne!(
+            unfocused, focused,
+            "focusing the group must change the border colour in the encoded scene",
         );
     }
 

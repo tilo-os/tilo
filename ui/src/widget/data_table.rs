@@ -603,6 +603,18 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 }
             }
         }
+
+        // Keyboard-focus ring around the whole table, so arrow-key row
+        // navigation reads as a focused control and not just a striped grid.
+        if self.is_focused {
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                theme.border_focus,
+                None,
+                &self.rect,
+            );
+        }
     }
 
     fn handle_event(
@@ -777,6 +789,36 @@ impl<Row: 'static> Widget for DataTable<Row> {
         if let Some(desc) = description {
             node = node.with_description(desc);
         }
+        // Expose the grid structure: each display row is a `Row` carrying its
+        // 1-based position, with one `Cell` per column. The cell content comes
+        // from an opaque closure renderer, so a cell's accessible name is its
+        // column header — enough for an AT to say "row 2, Name column" and
+        // pair it with the text the reader reads off the screen.
+        let row_count = self.view.len();
+        let col_count = self.columns.len();
+        let rows: Vec<AccessNode> = (0..row_count)
+            .map(|ri| {
+                let selected = self.selectable && self.selection.is_selected(ri);
+                let cells: Vec<AccessNode> = self
+                    .columns
+                    .iter()
+                    .enumerate()
+                    .map(|(ci, col)| {
+                        AccessNode::new(Role::Cell)
+                            .with_name(col.header.clone())
+                            .with_position(ci + 1, col_count)
+                    })
+                    .collect();
+                AccessNode::new(Role::Row)
+                    .with_position(ri + 1, row_count)
+                    .with_state(AccessState {
+                        selected,
+                        ..Default::default()
+                    })
+                    .with_children(cells)
+            })
+            .collect();
+        node = node.with_children(rows);
         Some(node)
     }
 }
@@ -913,6 +955,33 @@ mod tests {
         assert_eq!(node.pos_in_set, None, "no selection → no position");
         assert_eq!(node.set_size, None, "no selection → no set size");
         assert_eq!(node.description, None, "no active sort → no active sort description");
+    }
+
+    #[test]
+    fn accessibility_exposes_per_row_and_cell_structure() {
+        use crate::a11y::Role;
+        let mut t = DataTable::<R>::new(sample_cols()).selectable(true);
+        t.set_rows(rows4());
+        t.selection_mut().select_only(2);
+        let node = Widget::accessibility(&t).unwrap();
+
+        // One Row child per display row, each numbered "N of 4".
+        assert_eq!(node.children.len(), 4, "a row node per display row");
+        for (i, row) in node.children.iter().enumerate() {
+            assert_eq!(row.role, Role::Row);
+            assert_eq!(row.pos_in_set, Some(i + 1));
+            assert_eq!(row.set_size, Some(4));
+            // Every row exposes one cell per column, named by the column header.
+            assert_eq!(row.children.len(), 2, "two cells per row (two columns)");
+            assert_eq!(row.children[0].role, Role::Cell);
+            assert_eq!(row.children[0].name.as_deref(), Some("Name"));
+            assert_eq!(row.children[0].pos_in_set, Some(1));
+            assert_eq!(row.children[1].name.as_deref(), Some("X"));
+            assert_eq!(row.children[1].pos_in_set, Some(2));
+        }
+        // The selected display row carries the selected flag on its node.
+        assert!(node.children[2].state.selected, "row 3 (index 2) is selected");
+        assert!(!node.children[0].state.selected);
     }
 
     // --- Selection / interaction tests --------------------------------
@@ -1082,5 +1151,43 @@ mod tests {
         // visible window also starts around row 10 (minus overscan).
         let (start, _end) = t.visible_row_range();
         assert!(start <= 10 && start >= 8, "window starts near the scroll position: {start}");
+    }
+
+    fn table_color_fills(t: &mut DataTable<R>) -> usize {
+        use vello::Scene;
+        use vello_encoding::DrawTag;
+        let _laid = lay_out(t);
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        let mut scene = Scene::new();
+        t.draw(&mut scene, vello::kurbo::Affine::IDENTITY, &mut tr, &theme, &presence);
+        scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|tag| **tag == DrawTag::COLOR)
+            .count()
+    }
+
+    /// A focused table paints a focus ring around its rect — one extra stroke
+    /// over the unfocused render. Asserts on the production `draw` path.
+    #[test]
+    fn focused_table_paints_a_focus_ring() {
+        let mut unfocused = DataTable::<R>::new(sample_cols()).selectable(true);
+        unfocused.set_rows(rows4());
+        unfocused.set_focus(false);
+        let without = table_color_fills(&mut unfocused);
+
+        let mut focused = DataTable::<R>::new(sample_cols()).selectable(true);
+        focused.set_rows(rows4());
+        focused.set_focus(true);
+        let with = table_color_fills(&mut focused);
+
+        assert_eq!(
+            with,
+            without + 1,
+            "a focused table must add exactly one focus-ring stroke ({with} vs {without})",
+        );
     }
 }

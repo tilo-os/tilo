@@ -332,6 +332,14 @@ pub struct AccessNode {
     /// Hierarchy depth, 1-based (a top-level tree row is `1`). Read out as
     /// "level N" for nested structures. `None` for flat elements.
     pub level: Option<usize>,
+    /// Synthetic accessible children that have no backing
+    /// [`Widget`](crate::widget::Widget) of their own. A widget that owns a
+    /// structure too fine-grained to model as separate widgets — a table's
+    /// rows and cells, a virtualized list's items — describes that structure
+    /// here. The export layer emits these as the node's children, nested as
+    /// deeply as needed (rows containing cells). Empty (the default) for the
+    /// common case where the subtree comes entirely from real child widgets.
+    pub children: Vec<AccessNode>,
 }
 
 impl AccessNode {
@@ -348,6 +356,7 @@ impl AccessNode {
             set_size: None,
             pos_in_set: None,
             level: None,
+            children: Vec::new(),
         }
     }
 
@@ -409,6 +418,14 @@ impl AccessNode {
     /// "level N" for nested structures like trees.
     pub fn with_level(mut self, level: usize) -> Self {
         self.level = Some(level);
+        self
+    }
+
+    /// Attach synthetic [`children`](Self::children) — accessible elements
+    /// with no backing widget (a table's rows/cells). The export layer
+    /// emits them as this node's subtree.
+    pub fn with_children(mut self, children: Vec<AccessNode>) -> Self {
+        self.children = children;
         self
     }
 }

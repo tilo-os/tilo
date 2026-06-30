@@ -303,11 +303,37 @@ pub struct App {
     /// entry here and announces the change — without moving focus. Only
     /// populated when the reader is active; cleared when it's disabled.
     live_region_last: std::collections::HashMap<String, String>,
+
+    /// Whether a modal currently traps keyboard focus (some widget in the tree
+    /// returns [`Widget::traps_focus`] true). While set, `focusable_order` is
+    /// restricted to the modal's subtree. Tracked across frames so the App can
+    /// detect the open→close transition and restore focus.
+    focus_trap_active: bool,
+    /// The element that held focus the moment a focus trap appeared. Restored
+    /// when the trap goes away (the modal closes), so the keyboard lands back
+    /// where the user was. `None` when no trap is active or nothing was focused.
+    focus_before_trap: Option<NodeId>,
+
+    /// The base (non-high-contrast) colour theme. Kept separate from the live
+    /// [`Self::theme`] so toggling high contrast off restores the user's
+    /// original colours rather than a hard-coded default. Text scale and the
+    /// reduced-motion flag are re-applied on top of this whenever either
+    /// preference changes.
+    base_theme: Theme,
+    /// Low-vision preferences (high contrast + reduced motion) the active
+    /// theme is derived from. The screen-reader flag is mirrored separately by
+    /// [`Self::screen_reader`]; this struct's `screen_reader` field is kept in
+    /// sync so a single value can be handed back to callers.
+    a11y: crate::a11y::A11ySettings,
+    /// Global text-size multiplier (`1.0` = default). Folded into the active
+    /// theme so every widget that reads its font size from the theme scales
+    /// together; layout grows to fit so nothing clips.
+    text_scale: f32,
 }
 
 impl App {
     pub fn new(state: State, root_widget: Box<dyn Widget>) -> Self {
-        Self {
+        let mut app = Self {
             state,
             root_widget,
             text_renderer: TextRenderer::new(),
@@ -317,6 +343,9 @@ impl App {
             layout_dirty: true,
             structure_dirty: false,
             needs_sync: true,
+            // Theme is finalised right after this struct literal — the env-
+            // driven low-vision preferences are folded in once all the
+            // fields they depend on (base_theme, a11y, text_scale) exist.
             theme: Theme::dark(),
             debug_mode: std::env::var("QUICK_UI_DEBUG").is_ok(),
             focused_node: None,
@@ -346,7 +375,30 @@ impl App {
             },
             screen_reader_modifier_down: false,
             live_region_last: std::collections::HashMap::new(),
-        }
+            focus_trap_active: false,
+            focus_before_trap: None,
+            base_theme: Theme::dark(),
+            a11y: crate::a11y::A11ySettings::default(),
+            text_scale: 1.0,
+        };
+
+        // Seed the low-vision preferences from the environment so a sandbox
+        // the shell launched with `QOS_A11Y_*` set comes up already themed —
+        // matching how the screen reader auto-enables above.
+        app.a11y.high_contrast = Self::high_contrast_env_enabled();
+        app.a11y.reduce_motion = Self::reduce_motion_env_enabled();
+        app.a11y.screen_reader = app.screen_reader.is_some();
+        app.text_scale = Self::text_scale_env().unwrap_or(1.0);
+        app.rebuild_theme();
+        app
+    }
+
+    /// Re-derive the live [`Self::theme`] from the base colour theme, the
+    /// current low-vision settings, and the text-scale factor. Called whenever
+    /// any of those inputs change so widgets always draw against a theme that
+    /// reflects every active preference.
+    fn rebuild_theme(&mut self) {
+        self.theme = self.base_theme.clone().with_a11y(&self.a11y, self.text_scale);
     }
 
     /// Whether the environment opts the screen reader on at startup. Reads
@@ -363,6 +415,128 @@ impl App {
             }
         }
         false
+    }
+
+    /// Whether a `QOS_A11Y_*` env var (and its short alias) is set to a
+    /// truthy value: non-empty, not `"0"`, not `"false"` (case-insensitive).
+    /// The single gate the boolean low-vision env flags share.
+    fn bool_env(keys: &[&str]) -> bool {
+        for key in keys {
+            if let Ok(v) = std::env::var(key) {
+                let v = v.trim();
+                if !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false") {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Whether the environment opts high contrast on at startup
+    /// (`QOS_A11Y_HIGH_CONTRAST` / `QOS_HIGH_CONTRAST`).
+    fn high_contrast_env_enabled() -> bool {
+        Self::bool_env(&["QOS_A11Y_HIGH_CONTRAST", "QOS_HIGH_CONTRAST"])
+    }
+
+    /// Whether the environment opts reduced motion on at startup
+    /// (`QOS_A11Y_REDUCE_MOTION` / `QOS_REDUCE_MOTION`).
+    fn reduce_motion_env_enabled() -> bool {
+        Self::bool_env(&["QOS_A11Y_REDUCE_MOTION", "QOS_REDUCE_MOTION"])
+    }
+
+    /// Text-scale factor from the environment (`QOS_A11Y_TEXT_SCALE` /
+    /// `QOS_TEXT_SCALE`), or `None` if unset / unparseable. A bad value is
+    /// ignored rather than crashing the app at startup.
+    fn text_scale_env() -> Option<f32> {
+        for key in ["QOS_A11Y_TEXT_SCALE", "QOS_TEXT_SCALE"] {
+            if let Ok(v) = std::env::var(key) {
+                if let Ok(f) = v.trim().parse::<f32>() {
+                    if f.is_finite() && f > 0.0 {
+                        return Some(f);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// The active low-vision preferences (high contrast + reduced motion +
+    /// screen reader). The screen-reader flag tracks
+    /// [`Self::screen_reader_enabled`].
+    pub fn a11y_settings(&self) -> crate::a11y::A11ySettings {
+        let mut s = self.a11y;
+        s.screen_reader = self.screen_reader.is_some();
+        s
+    }
+
+    /// The global text-size multiplier currently in effect (`1.0` = default).
+    pub fn text_scale(&self) -> f32 {
+        self.text_scale
+    }
+
+    /// Set the global text-size multiplier and re-theme. Every widget that
+    /// reads its font size from the theme scales together on the next frame,
+    /// and layout grows to fit so text never clips. The value is clamped to a
+    /// sane range by the theme. Used by the shell when the user changes the
+    /// text-size preference, and by examples/tests via `QOS_A11Y_TEXT_SCALE`.
+    pub fn set_text_scale(&mut self, factor: f32) {
+        self.text_scale = factor;
+        self.rebuild_theme();
+        self.layout_dirty = true;
+        self.structure_dirty = true;
+    }
+
+    /// Whether the high-contrast colour track is currently active.
+    pub fn high_contrast(&self) -> bool {
+        self.a11y.high_contrast
+    }
+
+    /// Turn the high-contrast colour track on or off at runtime and re-theme.
+    /// Off restores the user's original colours (the base theme captured at
+    /// construction / via [`Self::set_theme`]), not a hard-coded default. The
+    /// text-scale factor and reduced-motion flag are preserved across the swap.
+    pub fn set_high_contrast(&mut self, on: bool) {
+        if self.a11y.high_contrast == on {
+            return;
+        }
+        self.a11y.high_contrast = on;
+        self.rebuild_theme();
+        self.layout_dirty = true;
+        self.structure_dirty = true;
+    }
+
+    /// Flip the high-contrast colour track and return the new state.
+    pub fn toggle_high_contrast(&mut self) -> bool {
+        self.set_high_contrast(!self.a11y.high_contrast);
+        self.a11y.high_contrast
+    }
+
+    /// Whether reduced motion is currently in effect.
+    pub fn reduce_motion(&self) -> bool {
+        self.a11y.reduce_motion
+    }
+
+    /// Turn reduced motion on or off at runtime and re-theme. Animated
+    /// widgets consult the theme's reduced-motion flag and snap to their
+    /// resting state when it is set; the App also stops pumping the perpetual
+    /// animation-frame loop.
+    pub fn set_reduce_motion(&mut self, on: bool) {
+        if self.a11y.reduce_motion == on {
+            return;
+        }
+        self.a11y.reduce_motion = on;
+        self.rebuild_theme();
+    }
+
+    /// Replace the base colour theme (the shell sets this when the user picks
+    /// a theme). The high-contrast track, text scale, and reduced-motion flag
+    /// are re-applied on top, so changing the base theme doesn't discard the
+    /// user's low-vision preferences.
+    pub fn set_theme(&mut self, theme: Theme) {
+        self.base_theme = theme;
+        self.rebuild_theme();
+        self.layout_dirty = true;
+        self.structure_dirty = true;
     }
 
     /// Enable or disable the built-in screen reader at runtime. The shell calls
@@ -943,9 +1117,80 @@ impl App {
                 }
             }
         }
-        if let Some(root) = self.root_node {
+        // Locate the focusables of an open modal's subtree, if one is up. The
+        // deepest trapping widget wins (a modal opened from within a modal).
+        fn find_trap_focusables(
+            node_id: NodeId,
+            widget: &dyn Widget,
+            taffy: &TaffyTree<()>,
+        ) -> Option<Vec<NodeId>> {
+            let children = widget.children();
+            let child_nodes = taffy.children(node_id).ok();
+            // Recurse first so a nested trap takes precedence.
+            if let Some(child_nodes) = &child_nodes {
+                for (child_widget, &child_node) in children.iter().zip(child_nodes.iter()) {
+                    if let Some(inner) = find_trap_focusables(child_node, *child_widget, taffy) {
+                        return Some(inner);
+                    }
+                }
+            }
+            if widget.traps_focus() {
+                let mut order = Vec::new();
+                collect_focusable(node_id, widget, taffy, &mut order);
+                return Some(order);
+            }
+            None
+        }
+
+        let Some(root) = self.root_node else { return };
+
+        let trap = find_trap_focusables(root, self.root_widget.as_ref(), &self.taffy);
+        let trap_active = trap.is_some();
+
+        if let Some(trapped) = trap {
+            // Confine keyboard focus to the modal's focusables.
+            self.focusable_order = trapped;
+        } else {
             collect_focusable(root, self.root_widget.as_ref(), &self.taffy, &mut self.focusable_order);
         }
+
+        // Manage the trap open/close transition for focus restore.
+        match (self.focus_trap_active, trap_active) {
+            (false, true) => {
+                // A modal just opened: remember where focus was, then move it
+                // into the modal so Tab cycles inside it and the dialog (or its
+                // first field) is announced.
+                self.focus_before_trap = self.focused_node;
+                if let Some(&first) = self.focusable_order.first() {
+                    self.set_focused_node(Some(first));
+                } else {
+                    // Modal has no focusable content — drop focus so Tab can't
+                    // reach the content behind the backdrop.
+                    self.set_focused_node(None);
+                }
+            }
+            (true, false) => {
+                // The modal closed: return focus to where the user was, as long
+                // as that element still exists in the rebuilt tree.
+                let restore = self
+                    .focus_before_trap
+                    .take()
+                    .filter(|id| self.focusable_order.contains(id));
+                self.set_focused_node(restore);
+            }
+            (true, true) => {
+                // Still trapped: if focus drifted outside the modal (a rebuild
+                // dropped the focused element), pull it back to the first member.
+                let inside = self
+                    .focused_node
+                    .is_some_and(|id| self.focusable_order.contains(&id));
+                if !inside {
+                    self.set_focused_node(self.focusable_order.first().copied());
+                }
+            }
+            (false, false) => {}
+        }
+        self.focus_trap_active = trap_active;
     }
 
     fn apply_remote_presence(
@@ -1396,6 +1641,17 @@ impl App {
         });
     }
 
+    /// Re-run the per-frame focus pass: pull widget state via `sync` (so a
+    /// modal's open flag updates) then re-evaluate the focusable order and any
+    /// focus trap. This is what the event loop does after handling input that
+    /// changed widget state without rebuilding the tree; exposed (doc-hidden)
+    /// so headless tests can drive modal open/close without a winit loop.
+    #[doc(hidden)]
+    pub fn refresh_focus_order(&mut self) {
+        self.root_widget.sync(&mut self.state.doc, &self.state.root);
+        self.update_focusable_order();
+    }
+
     /// Rebuild the taffy tree from the current widget tree after a
     /// structural mutation, re-establishing keyboard focus.
     ///
@@ -1449,7 +1705,10 @@ impl App {
         self.layout_dirty = true;
         self.update_focusable_order();
 
-        if self.autofocus_on_structure_change {
+        // A focus trap (open modal) already placed focus inside its subtree in
+        // `update_focusable_order`; the structure-change autofocus must not
+        // override that and let focus escape the modal.
+        if self.autofocus_on_structure_change && !self.focus_trap_active {
             if focus_reset {
                 // Step / phase transition: hand focus to the first field of
                 // the freshly-built tree. No caret restore — the focused
@@ -2681,7 +2940,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // a single post-click redraw renders the first eased
         // frame at t≈0 and then stalls — the overview would
         // appear to "not work" because the fade never plays.
-        if app.root_widget.needs_animation_frame() {
+        //
+        // Reduced motion stops the perpetual pump: widgets already paint
+        // their resting state (a still spinner, a static bar), so there is
+        // nothing left to animate and we let the loop go idle.
+        if !app.theme.reduce_motion && app.root_widget.needs_animation_frame() {
             window.request_redraw();
         }
 
@@ -3556,5 +3819,380 @@ mod screen_reader_tests {
             app.text_review_snapshot().is_none(),
             "a button has no caret to review"
         );
+    }
+}
+
+/// Modal focus-trap wiring. Proves that while an open modal is in the tree the
+/// App confines keyboard focus to the modal's subtree (so Tab can't reach the
+/// content behind the backdrop), and restores the previously-focused element
+/// when the modal closes. The modal's open flag is a state change (no
+/// structural rebuild), so node ids stay stable and `refresh_focus_order` —
+/// the per-frame focus pass — re-evaluates the trap.
+#[cfg(test)]
+mod focus_trap_tests {
+    use super::*;
+    use crate::widget::modal_dialog::ModalDialog;
+    use crate::widget::{Button, Widget};
+    use std::cell::Cell;
+    use std::collections::HashMap;
+    use std::rc::Rc;
+
+    /// A tiny container of two focusable buttons used as the modal body.
+    struct TwoKids {
+        kids: Vec<Box<dyn Widget>>,
+    }
+    impl TwoKids {
+        fn new() -> Self {
+            Self {
+                kids: vec![
+                    Box::new(Button::new("ok", "OK", None)),
+                    Box::new(Button::new("cancel", "Cancel", None)),
+                ],
+            }
+        }
+    }
+    impl Widget for TwoKids {
+        fn sync(&mut self, s: &mut automerge::AutoCommit, p: &automerge::ObjId) {
+            for c in &mut self.kids {
+                c.sync(s, p);
+            }
+        }
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let kids: Vec<_> = self
+                .kids
+                .iter_mut()
+                .map(|c| c.build_layout(taffy, theme, node_map))
+                .collect();
+            let node = taffy.new_with_children(taffy::Style::default(), &kids).unwrap();
+            node_map.insert(node, self as *mut dyn Widget);
+            node
+        }
+        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
+        fn draw(
+            &mut self,
+            _s: &mut Scene,
+            _t: Affine,
+            _tr: &mut TextRenderer,
+            _th: &Theme,
+            _p: &PresenceCtx,
+        ) {
+        }
+        fn handle_event(
+            &mut self,
+            _e: &WindowEvent,
+            _sf: f64,
+            _m: &winit::event::Modifiers,
+            _s: &mut automerge::AutoCommit,
+            _p: &automerge::ObjId,
+            _h: &mut bool,
+            _ft: &mut Option<NodeId>,
+            _ni: NodeId,
+            _t: &TaffyTree<()>,
+        ) {
+        }
+        fn children(&self) -> Vec<&dyn Widget> {
+            self.kids.iter().map(|c| c.as_ref()).collect()
+        }
+        fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+            self.kids.iter_mut().map(|c| &mut **c as &mut (dyn Widget + '_)).collect()
+        }
+        fn name(&self) -> &str {
+            "two-kids"
+        }
+        fn get_rect(&self) -> KurboRect {
+            KurboRect::ZERO
+        }
+    }
+
+    /// A root with two always-present outer buttons plus a modal whose body is
+    /// two more buttons. A shared `want_open` cell flips the modal's state in
+    /// `sync` — modelling a host that opens/closes the dialog in response to a
+    /// click, without rebuilding the widget tree.
+    struct ModalHost {
+        outer: Vec<Box<dyn Widget>>,
+        modal: ModalDialog<TwoKids>,
+        want_open: Rc<Cell<bool>>,
+    }
+    impl ModalHost {
+        fn new(want_open: Rc<Cell<bool>>) -> Self {
+            Self {
+                outer: vec![
+                    Box::new(Button::new("a", "Open", None)),
+                    Box::new(Button::new("b", "Other", None)),
+                ],
+                modal: ModalDialog::new("Confirm", TwoKids::new()),
+                want_open,
+            }
+        }
+    }
+    impl Widget for ModalHost {
+        fn sync(&mut self, s: &mut automerge::AutoCommit, p: &automerge::ObjId) {
+            self.modal.set_open(self.want_open.get());
+            for c in &mut self.outer {
+                c.sync(s, p);
+            }
+            self.modal.sync(s, p);
+        }
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            // Reflect the requested open state before building so the trap query
+            // sees it on the freshly-built tree.
+            self.modal.set_open(self.want_open.get());
+            let mut kids: Vec<_> = self
+                .outer
+                .iter_mut()
+                .map(|c| c.build_layout(taffy, theme, node_map))
+                .collect();
+            kids.push(self.modal.build_layout(taffy, theme, node_map));
+            let node = taffy.new_with_children(taffy::Style::default(), &kids).unwrap();
+            node_map.insert(node, self as *mut dyn Widget);
+            node
+        }
+        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
+        fn draw(
+            &mut self,
+            _s: &mut Scene,
+            _t: Affine,
+            _tr: &mut TextRenderer,
+            _th: &Theme,
+            _p: &PresenceCtx,
+        ) {
+        }
+        fn handle_event(
+            &mut self,
+            _e: &WindowEvent,
+            _sf: f64,
+            _m: &winit::event::Modifiers,
+            _s: &mut automerge::AutoCommit,
+            _p: &automerge::ObjId,
+            _h: &mut bool,
+            _ft: &mut Option<NodeId>,
+            _ni: NodeId,
+            _t: &TaffyTree<()>,
+        ) {
+        }
+        fn children(&self) -> Vec<&dyn Widget> {
+            let mut v: Vec<&dyn Widget> = self.outer.iter().map(|c| c.as_ref()).collect();
+            v.push(&self.modal);
+            v
+        }
+        fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+            let mut v: Vec<&mut (dyn Widget + '_)> = self
+                .outer
+                .iter_mut()
+                .map(|c| &mut **c as &mut (dyn Widget + '_))
+                .collect();
+            v.push(&mut self.modal as &mut (dyn Widget + '_));
+            v
+        }
+        fn name(&self) -> &str {
+            "modal-host"
+        }
+        fn get_rect(&self) -> KurboRect {
+            KurboRect::ZERO
+        }
+    }
+
+    /// Stand up an App over the modal host and return it plus the open-flag
+    /// cell. The tree is built closed; flipping the cell + calling
+    /// `refresh_focus_order` models the per-frame re-evaluation.
+    fn host_app() -> (App, Rc<Cell<bool>>) {
+        let cell = Rc::new(Cell::new(false));
+        let app = App::new(State::new(), Box::new(ModalHost::new(cell.clone())));
+        (app, cell)
+    }
+
+    #[test]
+    fn closed_modal_does_not_trap_focus() {
+        let (mut app, _open) = host_app();
+        app.init_layout();
+        assert!(!app.focus_trap_active, "no trap while the modal is closed");
+        // Outer buttons plus the (closed) modal body are all reachable.
+        assert!(
+            app.focusable_order.len() >= 3,
+            "all focusables reachable when nothing traps"
+        );
+    }
+
+    #[test]
+    fn open_modal_confines_focus_order_to_its_subtree() {
+        let (mut app, open) = host_app();
+        app.init_layout();
+        let full = app.focusable_order.len();
+
+        // Open the modal (a state flip) and re-run the per-frame focus pass.
+        open.set(true);
+        app.refresh_focus_order();
+
+        assert!(app.focus_trap_active, "an open modal traps focus");
+        assert_eq!(
+            app.focusable_order.len(),
+            2,
+            "focus is confined to the modal's two buttons (was {full})"
+        );
+        assert!(
+            app.focused_node
+                .is_some_and(|id| app.focusable_order.contains(&id)),
+            "focus moves into the modal when it opens"
+        );
+    }
+
+    #[test]
+    fn tab_wraps_within_the_trapped_modal() {
+        let (mut app, open) = host_app();
+        app.init_layout();
+        open.set(true);
+        app.refresh_focus_order();
+        assert_eq!(app.focusable_order.len(), 2);
+
+        let first = app.focusable_order[0];
+        let second = app.focusable_order[1];
+        app.set_focused_node(Some(first));
+        // Emulate the Tab cycle the window-event handler performs over the
+        // (now-restricted) focusable_order.
+        let next = (app.focusable_order.iter().position(|&x| x == first).unwrap() + 1)
+            % app.focusable_order.len();
+        app.set_focused_node(Some(app.focusable_order[next]));
+        assert_eq!(app.focused_node, Some(second));
+        let wrap = (app.focusable_order.iter().position(|&x| x == second).unwrap() + 1)
+            % app.focusable_order.len();
+        app.set_focused_node(Some(app.focusable_order[wrap]));
+        assert_eq!(app.focused_node, Some(first), "Tab from last wraps to first inside the modal");
+    }
+
+    #[test]
+    fn closing_modal_restores_prior_focus() {
+        let (mut app, open) = host_app();
+        app.init_layout();
+        // Focus an outer button before opening the modal.
+        let outer = app.focusable_order[0];
+        app.set_focused_node(Some(outer));
+
+        // Open: focus moves into the modal, prior focus is remembered.
+        open.set(true);
+        app.refresh_focus_order();
+        assert!(app.focus_trap_active);
+        assert_ne!(app.focused_node, Some(outer), "focus moved into the modal");
+
+        // Close: focus returns to the outer button it left.
+        open.set(false);
+        app.refresh_focus_order();
+        assert!(!app.focus_trap_active, "trap released when the modal closes");
+        assert_eq!(
+            app.focused_node,
+            Some(outer),
+            "focus is restored to where it was before the modal opened"
+        );
+    }
+
+    #[test]
+    fn modal_exposes_dialog_role_with_title_as_name() {
+        use crate::a11y::Role;
+        let m = ModalDialog::new("Delete file?", TwoKids::new()).open(true);
+        let node = Widget::accessibility(&m).expect("an open dialog is in the tree");
+        assert_eq!(node.role, Role::Dialog);
+        assert_eq!(node.name.as_deref(), Some("Delete file?"));
+        assert!(node.state.modal, "an open modal traps focus → modal flag");
+        assert!(!node.state.hidden);
+    }
+}
+
+#[cfg(test)]
+mod low_vision_tests {
+    use super::*;
+    use crate::a11y::contrast_ratio;
+
+    fn app() -> App {
+        App::new(State::new(), Box::new(crate::widget::Text::new("t")))
+    }
+
+    #[test]
+    fn defaults_are_off() {
+        let a = app();
+        assert!(!a.high_contrast());
+        assert!(!a.reduce_motion());
+        assert_eq!(a.text_scale(), 1.0);
+        // The live theme starts on the plain (non-high-contrast) track.
+        assert!(!a.theme.reduce_motion);
+        assert_eq!(a.theme.text_scale, 1.0);
+    }
+
+    #[test]
+    fn toggle_high_contrast_swaps_the_theme() {
+        let mut a = app();
+        let plain_ratio = contrast_ratio(a.theme.text_primary, a.theme.bg_app);
+
+        let now_on = a.toggle_high_contrast();
+        assert!(now_on);
+        assert!(a.high_contrast());
+        let hc_ratio = contrast_ratio(a.theme.text_primary, a.theme.bg_app);
+        assert!(
+            hc_ratio > plain_ratio,
+            "high contrast must raise fg/bg contrast ({hc_ratio:.1} vs {plain_ratio:.1})",
+        );
+        assert_eq!(a.theme.name, "High Contrast");
+
+        // Toggling back restores the original colours.
+        let now_off = a.toggle_high_contrast();
+        assert!(!now_off);
+        assert!(!a.high_contrast());
+        let restored = contrast_ratio(a.theme.text_primary, a.theme.bg_app);
+        assert!((restored - plain_ratio).abs() < 1e-6, "off restores base colours");
+    }
+
+    #[test]
+    fn text_scale_setter_scales_the_theme_type_size() {
+        let mut a = app();
+        let base = a.theme.tokens.typography.scale.base;
+        a.set_text_scale(2.0);
+        assert_eq!(a.text_scale(), 2.0);
+        assert!((a.theme.tokens.typography.scale.base - base * 2.0).abs() < 1e-3);
+        // A scale change must re-run layout so the larger text doesn't clip.
+        assert!(a.layout_dirty);
+    }
+
+    #[test]
+    fn text_scale_survives_a_high_contrast_toggle() {
+        let mut a = app();
+        a.set_text_scale(1.5);
+        let hc_base = Theme::high_contrast().tokens.typography.scale.base;
+        a.set_high_contrast(true);
+        assert_eq!(a.text_scale(), 1.5, "scale preference is preserved across the swap");
+        assert!((a.theme.tokens.typography.scale.base - hc_base * 1.5).abs() < 1e-3);
+        assert_eq!(a.theme.name, "High Contrast");
+    }
+
+    #[test]
+    fn reduce_motion_setter_threads_onto_the_theme() {
+        let mut a = app();
+        assert!(!a.theme.reduce_motion);
+        a.set_reduce_motion(true);
+        assert!(a.reduce_motion());
+        assert!(a.theme.reduce_motion, "the flag reaches the theme widgets draw against");
+        a.set_reduce_motion(false);
+        assert!(!a.theme.reduce_motion);
+    }
+
+    #[test]
+    fn set_theme_keeps_low_vision_preferences() {
+        let mut a = app();
+        a.set_text_scale(1.25);
+        a.set_reduce_motion(true);
+        a.set_high_contrast(true);
+        // Swap the *base* theme — the a11y layer must re-apply on top.
+        a.set_theme(Theme::light());
+        assert!(a.theme.reduce_motion);
+        assert_eq!(a.text_scale(), 1.25);
+        // High contrast still wins over the freshly-set light base.
+        assert_eq!(a.theme.name, "High Contrast");
     }
 }

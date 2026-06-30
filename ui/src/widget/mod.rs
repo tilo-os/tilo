@@ -72,6 +72,18 @@ pub trait Widget {
     fn set_focus(&mut self, _focused: bool) {}
     fn is_focused(&self) -> bool { false }
 
+    /// Whether this widget is an **open modal** that should trap keyboard
+    /// focus. While any widget in the tree returns `true`, the host
+    /// ([`crate::app::App`]) restricts Tab/Shift+Tab and directional focus to
+    /// the focusables inside this subtree — Tab from the last wraps to the
+    /// first, so focus can't escape to the content behind the backdrop. The
+    /// host also remembers the focused element before the trap appeared and
+    /// restores it once the modal closes (this method goes back to `false`).
+    ///
+    /// Default `false`: ordinary widgets never trap. A modal dialog overrides
+    /// it to return whether it is currently open.
+    fn traps_focus(&self) -> bool { false }
+
     /// Local accessibility semantics for THIS widget — its semantic
     /// [`Role`](crate::a11y::Role), accessible name/description/value, and
     /// [`AccessState`](crate::a11y::AccessState).

@@ -299,13 +299,17 @@ impl Widget for TileHost {
                 self.spawned_at = None;
             }
         }
-        // Spawn-fade branch: compose the concept-parity
-        // `initial={{ scale: 0.95, opacity: 0 }}` →
-        // `animate={{ scale: 1, opacity: 1 }}` curve by wrapping the
-        // steady-state paint in a single alpha layer + centre-pivot
-        // scale. The whole tile (shadow sprites + card + content) is
-        // scaled and faded together so the motion reads as one unit,
-        // matching `WindowTile.tsx`'s top-level `<motion.div>`.
+        // Reduced motion: a new tile appears at its resting opacity and
+        // scale with no fade-in. Drop the timestamp so the steady-state
+        // branch below runs and we stop requesting animation frames.
+        if theme.reduce_motion {
+            self.spawned_at = None;
+        }
+        // Spawn-fade branch: compose the fade + uniform-scale curve by
+        // wrapping the steady-state paint in a single alpha layer +
+        // centre-pivot scale. The whole tile (shadow sprites + card +
+        // content) is scaled and faded together so the motion reads as
+        // one arriving unit.
         if self.spawn_in_flight() {
             let started = self.spawned_at.expect("spawn_in_flight guards Some");
             let elapsed = started.elapsed().as_millis() as f32;
