@@ -18,6 +18,7 @@ pub mod dnd;
 pub mod animation;
 pub mod overlay;
 pub mod icons;
+pub mod selection;
 pub mod offscreen;
 pub mod render_thread;
 
@@ -26,6 +27,7 @@ pub use color_compat::ColorCompat;
 pub use state::{State, UndoEntry};
 pub use theme::Theme;
 pub use caps_lock::CapsLockEstimate;
+pub use selection::SelectionModel;
 
 pub use widget::{Widget, Element};
 pub use widget::{AppCommand, AppKind, AppWidget, IconDescriptor};
