@@ -72,6 +72,12 @@ pub struct RecoveryShareScreen {
     copy_rect: Rect,
     continue_rect: Rect,
     ack_rect: Rect,
+    /// Click target spanning the checkbox AND its label, so the user
+    /// can tap anywhere on the "I've written them down somewhere safe"
+    /// row to tick the box (matching every other form on the planet).
+    /// `ack_rect` stays the visual checkbox geometry; this rect is
+    /// the structural hit target.
+    ack_hit_rect: Rect,
     last_cursor: Point,
     /// Most recent clipboard write status — surfaced so a sandbox
     /// failure ("clipboard owner refused") doesn't fail silently.
@@ -88,6 +94,7 @@ impl RecoveryShareScreen {
             continue_hovered: false,
             copy_rect: Rect::ZERO,
             continue_rect: Rect::ZERO,
+            ack_hit_rect: Rect::ZERO,
             ack_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
             clipboard_message: None,
@@ -132,13 +139,32 @@ impl RecoveryShareScreen {
         self.mnemonic.split_whitespace().collect()
     }
 
-    /// Write the mnemonic to the OS clipboard.
+    /// Write the mnemonic to the OS clipboard as 6 rows of 4 words,
+    /// each row prefixed with its starting position number. Survives
+    /// non-monospace pastes intact:
+    ///
+    /// ```text
+    ///  1 square mask film brisk
+    ///  5 section glory valley better
+    ///  9 night raccoon diamond balance
+    /// 13 duty own pull glad
+    /// 17 medal cargo crazy grass
+    /// 21 three upper matrix decade
+    /// ```
     pub fn copy_to_clipboard(&mut self) {
         if self.mnemonic.is_empty() {
             self.clipboard_message = Some("nothing to copy".to_string());
             return;
         }
-        clipboard_copy(&self.mnemonic);
+        let words: Vec<&str> = self.mnemonic.split_whitespace().take(24).collect();
+        let mut formatted = String::new();
+        for (row, chunk) in words.chunks(4).enumerate() {
+            if row > 0 {
+                formatted.push('\n');
+            }
+            formatted.push_str(&format!("{:>2} {}", row * 4 + 1, chunk.join(" ")));
+        }
+        clipboard_copy(&formatted);
         self.clipboard_message = Some("Copied to clipboard.".to_string());
     }
 
@@ -181,7 +207,7 @@ impl RecoveryShareScreen {
                     self.copy_to_clipboard();
                     return ScreenOutcome::Stay;
                 }
-                if self.ack_rect.contains(self.last_cursor) {
+                if self.ack_hit_rect.contains(self.last_cursor) {
                     *handled = true;
                     self.acknowledged = !self.acknowledged;
                     return ScreenOutcome::Stay;
@@ -241,11 +267,22 @@ impl Widget for RecoveryShareScreen {
             card.y0 + pad + 36.0,
         );
         // Acknowledgement checkbox + label band, bottom of card.
+        // The 18×18 visible square is the *visual* checkbox; the row
+        // it sits on is the *clickable* region — anywhere on the
+        // label or its checkbox toggles. ~360 px label width is
+        // generous enough for any reasonable translation of
+        // "I've written them down somewhere safe".
         self.ack_rect = Rect::new(
             card.x0 + pad,
             card.y1 - pad - 80.0,
             card.x0 + pad + 18.0,
             card.y1 - pad - 80.0 + 18.0,
+        );
+        self.ack_hit_rect = Rect::new(
+            self.ack_rect.x0,
+            self.ack_rect.y0 - 4.0,
+            self.ack_rect.x1 + 360.0,
+            self.ack_rect.y1 + 4.0,
         );
         // Continue button, bottom-right.
         self.continue_rect = Rect::new(
