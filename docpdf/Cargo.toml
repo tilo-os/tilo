@@ -1,0 +1,16 @@
+[package]
+name = "docpdf"
+version = "0.1.0"
+edition = "2024"
+description = "Paginated PDF export for qdoc DocSnapshot documents (qOS)"
+
+[dependencies]
+qdoc = { path = "../qdoc" }
+# Image decode for `image` blocks. Pinned to the version already in the
+# workspace lockfile (transitively via the UI render stack) so adding docpdf
+# does not churn the resolve. Default features cover PNG/JPEG, which is all the
+# embed path needs.
+image = "0.25"
+# Flate compression for image XObject pixel data (keeps PDFs reasonably small).
+# Already in the workspace lockfile.
+flate2 = "1"
