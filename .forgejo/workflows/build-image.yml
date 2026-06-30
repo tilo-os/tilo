@@ -1,9 +1,10 @@
-name: Build & push qOS image
+name: Build qOS image (publish on tags + dispatch)
 
-# Builds the bootc OS container image (multi-stage: compiles the Rust
-# workspace in-image, see os/Containerfile) and pushes it to the
-# code.podesta.ai registry so installed systems can `bootc upgrade` from
-# code.podesta.ai/qos/qos:latest.
+# Builds the bootc OS container image (multi-stage, see os/Containerfile).
+# CADENCE: pushes to main and PRs BUILD ONLY (verify it builds + is
+# reproducible — no registry churn, no queue flooding). The signed image is
+# pushed to code.podesta.ai/qos/qos:latest ONLY on a version tag (v*) or a
+# manual run, so `bootc upgrade` tracks deliberate releases, not every commit.
 
 on:
   push:
@@ -34,7 +35,7 @@ jobs:
       # Only log in when we actually push (not on PRs — keep creds out of
       # untrusted PR contexts; PRs build-only to catch Containerfile breakage).
       - name: Log in to the code.podesta.ai registry
-        if: github.event_name != 'pull_request'
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
         uses: docker/login-action@v3
         with:
           registry: code.podesta.ai
@@ -61,7 +62,7 @@ jobs:
       # Build the multi-stage bootc image. Context is the repo root so the
       # builder stage can COPY the whole workspace (incl. submodules); the
       # Containerfile lives in os/. push:false on PRs discards the image.
-      - name: Build (and push if not a PR) the qOS image
+      - name: Build the qOS image (push only on tags/dispatch)
         id: build
         uses: docker/build-push-action@v5
         env:
@@ -69,7 +70,7 @@ jobs:
         with:
           context: .
           file: os/Containerfile
-          push: ${{ github.event_name != 'pull_request' }}
+          push: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
@@ -84,11 +85,11 @@ jobs:
       # digest so the signature is bound to the exact image, not a mutable tag.
       # Skipped on PRs (the image isn't pushed; nothing to sign).
       - name: Install cosign
-        if: github.event_name != 'pull_request'
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
         uses: sigstore/cosign-installer@v3
 
       - name: Sign the published image
-        if: github.event_name != 'pull_request'
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
@@ -105,7 +106,7 @@ jobs:
       # attach it as a SIGNED in-toto attestation, so consumers can audit exactly
       # what shipped + verify it came from us.
       - name: Generate SBOM (syft → SPDX)
-        if: github.event_name != 'pull_request'
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
         uses: anchore/sbom-action@v0
         with:
           image: code.podesta.ai/qos/qos@${{ steps.build.outputs.digest }}
@@ -113,7 +114,7 @@ jobs:
           output-file: sbom.spdx.json
 
       - name: Attest the SBOM to the image (signed)
-        if: github.event_name != 'pull_request'
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
