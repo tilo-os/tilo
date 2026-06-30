@@ -189,6 +189,66 @@ impl Document {
         crate::model::materialize(&self.doc, &self.c)
     }
 
+    // ---- page header / footer regions -------------------------------------
+
+    /// The ordered block ids of the page header (empty if no header is set).
+    pub fn header_blocks_in_order(&self) -> Vec<String> {
+        crate::model::region_blocks_in_order(&self.doc, &self.c, crate::model::Region::Header)
+    }
+
+    /// The ordered block ids of the page footer (empty if no footer is set).
+    pub fn footer_blocks_in_order(&self) -> Vec<String> {
+        crate::model::region_blocks_in_order(&self.doc, &self.c, crate::model::Region::Footer)
+    }
+
+    /// Materialize the page header's blocks (empty if none).
+    pub fn header(&self) -> Vec<crate::snapshot::BlockView> {
+        crate::model::materialize_region(&self.doc, &self.c, crate::model::Region::Header)
+    }
+
+    /// Materialize the page footer's blocks (empty if none).
+    pub fn footer(&self) -> Vec<crate::snapshot::BlockView> {
+        crate::model::materialize_region(&self.doc, &self.c, crate::model::Region::Footer)
+    }
+
+    /// Insert a block into the page header (created lazily); returns its id.
+    pub fn insert_header_block(&mut self, after: Option<&str>, kind: &str) -> String {
+        let id = self.as_mut().insert_block_in(crate::model::Region::Header, after, kind);
+        self.doc.commit();
+        id
+    }
+
+    /// Insert a block into the page footer (created lazily); returns its id.
+    pub fn insert_footer_block(&mut self, after: Option<&str>, kind: &str) -> String {
+        let id = self.as_mut().insert_block_in(crate::model::Region::Footer, after, kind);
+        self.doc.commit();
+        id
+    }
+
+    /// Splice text into a header block.
+    pub fn splice_header_text(&mut self, block_id: &str, char_idx: usize, del: isize, ins: &str) {
+        self.as_mut().splice_text_in(crate::model::Region::Header, block_id, char_idx, del, ins);
+        self.doc.commit();
+    }
+
+    /// Splice text into a footer block.
+    pub fn splice_footer_text(&mut self, block_id: &str, char_idx: usize, del: isize, ins: &str) {
+        self.as_mut().splice_text_in(crate::model::Region::Footer, block_id, char_idx, del, ins);
+        self.doc.commit();
+    }
+
+    /// Insert a page-number field at `char_idx` in a header block.
+    pub fn insert_header_page_number(&mut self, block_id: &str, char_idx: usize) {
+        self.as_mut().insert_page_number_field(crate::model::Region::Header, block_id, char_idx);
+        self.doc.commit();
+    }
+
+    /// Insert a page-number field at `char_idx` in a footer block.
+    pub fn insert_footer_page_number(&mut self, block_id: &str, char_idx: usize) {
+        self.as_mut().insert_page_number_field(crate::model::Region::Footer, block_id, char_idx);
+        self.doc.commit();
+    }
+
     /// Timeline of authored changes (oldest first).
     pub fn versions(&mut self) -> Vec<crate::history::VersionMeta> {
         crate::history::versions(&mut self.doc)
