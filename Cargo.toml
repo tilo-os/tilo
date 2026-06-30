@@ -32,6 +32,12 @@ members = [
     "apps/themes",
     "apps/backups",
     "apps/software_store",
+    "apps/tube",
+    "apps/music",
+    "apps/video_editor",
+    "apps/maps",
+    "apps/chat",
+    "apps/camera",
     "greeter",
     "installer",
 ]
