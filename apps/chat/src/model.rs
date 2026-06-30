@@ -86,15 +86,46 @@ pub struct Workspace {
     pub order: u32,
 }
 
+/// A collapsible group of channels within a workspace (Discord-style
+/// "category"). Channels carry a `category` id; the special empty id `""`
+/// means "uncategorised" and renders above the first named category.
+#[derive(Clone, Debug)]
+pub struct Category {
+    pub id: Id,
+    pub workspace: Id,
+    pub name: String,
+    pub order: u32,
+    /// Collapsed categories hide their channels in the sidebar (the
+    /// active channel still shows so you never lose your place).
+    pub collapsed: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct Channel {
     pub id: Id,
     pub workspace: Id,
+    /// Owning category id, or `""` for uncategorised.
+    pub category: Id,
     pub name: String,
     pub topic: String,
     pub kind: ChannelKind,
     pub order: u32,
     pub unread: u32,
+}
+
+/// One person currently connected to a voice channel, with their live
+/// audio state. Rendered both under the channel in the sidebar and as a
+/// tile/chip in the call overlay.
+#[derive(Clone, Debug)]
+pub struct VoiceMember {
+    pub user: Id,
+    /// True while this person's mic is transmitting above the speaking
+    /// threshold — drives the speaking ring in both surfaces.
+    pub talking: bool,
+    pub muted: bool,
+    pub deafened: bool,
+    /// Camera off / audio-only participant.
+    pub audio_only: bool,
 }
 
 #[derive(Clone, Debug)]
