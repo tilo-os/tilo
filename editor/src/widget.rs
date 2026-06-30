@@ -320,6 +320,9 @@ enum ToolAction {
     ToggleOutline,
     /// Generate (or regenerate) a table of contents from the document headings.
     InsertToc,
+    /// Open the "New ▾" template picker menu (lists every [`crate::Template`];
+    /// a selection replaces the open document with the chosen template in place).
+    NewMenu,
 }
 
 /// A clickable control in the Find & Replace bar.
@@ -1355,7 +1358,59 @@ pub struct WordProcessorWidget {
     /// hard-coded colours, so the editor honours light/dark mode + the OS
     /// palette. Initialised to the dark theme's mapping for off-frame use.
     chrome: ChromeColors,
+    // ---- autosave / crash-recovery ----------------------------------------
+    /// Document-modifying edits accumulated since the last recovery write. When
+    /// it reaches [`AUTOSAVE_EDIT_THRESHOLD`] a recovery copy is written and this
+    /// resets to 0. Drives the "every N edits" autosave debounce (no wall clock
+    /// is available in the headless test path, so the trigger is edit-count based).
+    edits_since_autosave: u32,
+    /// A pending crash-recovery offer: a newer recovery copy was found on disk for
+    /// the open document. Surfaced as a banner with Restore / Discard. `None` when
+    /// there is nothing to recover (the common case).
+    recovery: Option<RecoveryOffer>,
+    /// Clickable recovery-banner controls this frame: `(action, rect)`.
+    recovery_buttons: Vec<(RecoveryAction, Rect)>,
+    /// Test/override base directory for recovery copies. When set it takes
+    /// precedence over the `$QOS_WP_RECOVERY_DIR` / `$XDG_STATE_HOME` resolution so
+    /// a test can point recovery at a temp dir without touching the real home.
+    recovery_base: Option<PathBuf>,
+    // ---- new-from-template picker -----------------------------------------
+    /// The "New ▾" template picker menu (reuses the shared [`ContextMenu`]). Open
+    /// only while the user is choosing a template; a selection replaces the open
+    /// document's content with the chosen template in place.
+    new_menu: ContextMenu,
+    /// The [`crate::Template`] parallel to `new_menu`'s rows (selection dispatch).
+    new_menu_templates: Vec<crate::Template>,
 }
+
+/// A crash-recovery offer: a recovery copy exists on disk for the open document
+/// and is newer than (or present without) a clean save. Holds the recovery
+/// file's path + the Markdown to restore so Restore is a pure in-memory re-import.
+#[derive(Clone, Debug)]
+struct RecoveryOffer {
+    /// The on-disk recovery file (deleted on Discard / a successful real save).
+    path: PathBuf,
+    /// The recovered document's Markdown bytes (re-imported in place on Restore).
+    markdown: Vec<u8>,
+}
+
+/// A clickable control in the crash-recovery banner.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum RecoveryAction {
+    /// Re-import the recovery copy over the current (just-opened) document.
+    Restore,
+    /// Dismiss the banner and delete the recovery copy.
+    Discard,
+}
+
+/// Write a recovery copy after this many document-modifying edits. Small enough
+/// that little work is lost on a crash, large enough that the codec export isn't
+/// run on literally every keystroke.
+const AUTOSAVE_EDIT_THRESHOLD: u32 = 24;
+
+/// Height of the crash-recovery banner (drawn just under the toolbar, like the
+/// Find bar).
+const RECOVERY_BANNER_H: f64 = 40.0;
 
 /// One process-wide built-in dictionary, shared across every word-processor
 /// widget so the ~75k-word list is parsed at most once per process.
@@ -1442,6 +1497,12 @@ impl WordProcessorWidget {
             outline_hits: Vec::new(),
             // Overwritten at the top of every `draw` from the live theme.
             chrome: ChromeColors::for_theme(&Theme::dark()),
+            edits_since_autosave: 0,
+            recovery: None,
+            recovery_buttons: Vec::new(),
+            recovery_base: None,
+            new_menu: ContextMenu::new(),
+            new_menu_templates: Vec::new(),
         }
     }
 
@@ -1554,6 +1615,7 @@ impl WordProcessorWidget {
             self.path = Some(std::path::PathBuf::from(home).join("Untitled.md"));
             self.format = Some(WpFormat::Markdown);
         }
+        let mut saved = false;
         if let (Some(path), Some(format), Some(c)) =
             (self.path.as_ref(), self.format, self.inner.containers.as_ref())
         {
@@ -1561,8 +1623,14 @@ impl WordProcessorWidget {
             if let Ok(bytes) = format.export(dr) {
                 if std::fs::write(path, bytes).is_ok() {
                     self.modified = false;
+                    saved = true;
                 }
             }
+        }
+        // A successful real save supersedes any recovery copy — drop it so a later
+        // session doesn't re-offer stale unsaved changes.
+        if saved {
+            self.clear_recovery();
         }
     }
 
@@ -2621,15 +2689,24 @@ impl Widget for WordProcessorWidget {
         } else {
             full.x0
         };
-        // Reserve the Find bar (when open) out of the canvas top.
+        // Reserve the crash-recovery banner (when an offer is staged) directly
+        // under the toolbar — above the Find bar and the canvas.
+        let recovery_h = if self.recovery.is_some() { RECOVERY_BANNER_H } else { 0.0 };
+        if recovery_h > 0.0 {
+            let rbar = Rect::new(canvas_left, full.y0 + tb_h, canvas_right, full.y0 + tb_h + recovery_h);
+            self.draw_recovery_banner(scene, transform, text_renderer, theme, rbar);
+        } else {
+            self.recovery_buttons.clear();
+        }
+        // Reserve the Find bar (when open) out of the canvas top (below the banner).
         let find_h = if self.find_open { FIND_BAR_H } else { 0.0 };
         if find_h > 0.0 {
-            let fbar = Rect::new(canvas_left, full.y0 + tb_h, canvas_right, full.y0 + tb_h + find_h);
+            let fbar = Rect::new(canvas_left, full.y0 + tb_h + recovery_h, canvas_right, full.y0 + tb_h + recovery_h + find_h);
             self.draw_find_bar(scene, transform, text_renderer, theme, fbar);
         } else {
             self.find_buttons.clear();
         }
-        let canvas = Rect::new(canvas_left, full.y0 + tb_h + find_h, canvas_right, layout_bar_top);
+        let canvas = Rect::new(canvas_left, full.y0 + tb_h + recovery_h + find_h, canvas_right, layout_bar_top);
         scene.fill(Fill::NonZero, transform, self.chrome.canvas, None, &canvas);
 
         // Zoom anchor: the canvas top, horizontally centered. The page+content
@@ -3575,10 +3652,38 @@ impl Widget for WordProcessorWidget {
                     *handled = true;
                     return;
                 }
+                // Likewise route the press to the "New ▾" template menu when open:
+                // a row applies that template; a click elsewhere dismisses it.
+                if self.new_menu.is_open() {
+                    let point = [self.pointer.x, self.pointer.y];
+                    if let Some(idx) = self.new_menu.item_at(point) {
+                        self.dispatch_new_menu(idx, state);
+                    } else {
+                        self.new_menu.close();
+                    }
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
                 if !self.rect.contains(self.pointer) {
                     return;
                 }
                 self.focused = true;
+                // Crash-recovery banner (just under the toolbar): a click on
+                // Restore / Discard resolves the offer before any other hit-test.
+                if self.recovery.is_some() {
+                    if let Some(action) =
+                        self.recovery_buttons.iter().find(|(_, r)| r.contains(self.pointer)).map(|(a, _)| *a)
+                    {
+                        match action {
+                            RecoveryAction::Restore => self.restore_recovery(state),
+                            RecoveryAction::Discard => self.discard_recovery(),
+                        }
+                        self.dirty = true;
+                        *handled = true;
+                        return;
+                    }
+                }
                 // A press anywhere commits a pending typed numeric edit.
                 if self.editing_field.is_some() {
                     self.commit_num_edit(state);
@@ -3603,9 +3708,13 @@ impl Widget for WordProcessorWidget {
                     return;
                 }
                 // Find bar (when open): dispatch clicks on its fields + controls.
+                // The recovery banner (when shown) sits above the find bar, so the
+                // find band starts below it.
                 if self.find_open {
-                    let fbar_bot = self.rect.y0 + tb_h + FIND_BAR_H;
-                    if self.pointer.y >= self.rect.y0 + tb_h && self.pointer.y < fbar_bot {
+                    let recovery_h = if self.recovery.is_some() { RECOVERY_BANNER_H } else { 0.0 };
+                    let fbar_top = self.rect.y0 + tb_h + recovery_h;
+                    let fbar_bot = fbar_top + FIND_BAR_H;
+                    if self.pointer.y >= fbar_top && self.pointer.y < fbar_bot {
                         if let Some(action) = self.find_buttons.iter().find(|(_, r)| r.contains(self.pointer)).map(|(a, _)| *a) {
                             self.find_action(state, action);
                         }
@@ -3622,10 +3731,15 @@ impl Widget for WordProcessorWidget {
                         self.apply_tool(state, action);
                         self.refresh_blocks(state);
                         self.dirty = true;
-                        // View toggles (panels) are not undo points; everything
-                        // else (including TOC generation) is.
-                        if !matches!(action, ToolAction::ToggleStyles | ToolAction::ToggleOutline) {
+                        // View toggles (panels) + opening the New menu are not undo
+                        // points; everything else (including TOC generation) is.
+                        if !matches!(
+                            action,
+                            ToolAction::ToggleStyles | ToolAction::ToggleOutline | ToolAction::NewMenu
+                        ) {
                             self.needs_commit = true;
+                            self.modified = true;
+                            self.note_edit_for_autosave(state);
                         }
                     }
                     *handled = true;
@@ -3877,6 +3991,8 @@ impl Widget for WordProcessorWidget {
                         self.refresh_blocks(state);
                         self.dirty = true;
                         self.needs_commit = true;
+                        self.modified = true;
+                        self.note_edit_for_autosave(state);
                         *handled = true;
                         return;
                     }
@@ -3954,6 +4070,10 @@ impl Widget for WordProcessorWidget {
                     if !motion {
                         // editing consumes/collapses any selection
                         self.inner.clear_anchor();
+                        // A real content edit (not caret motion) advances the
+                        // autosave debounce — may write a recovery copy.
+                        self.modified = true;
+                        self.note_edit_for_autosave(state);
                     }
                     self.refresh_blocks(state);
                     self.dirty = true;
@@ -3977,6 +4097,9 @@ impl Widget for WordProcessorWidget {
     ) {
         if self.context_menu.is_open() {
             Widget::draw(&mut self.context_menu, scene, transform, text_renderer, theme, presence);
+        }
+        if self.new_menu.is_open() {
+            Widget::draw(&mut self.new_menu, scene, transform, text_renderer, theme, presence);
         }
     }
 
@@ -4159,6 +4282,7 @@ impl WordProcessorWidget {
             ToolAction::ToggleStyles => self.styles_panel_open = !self.styles_panel_open,
             ToolAction::ToggleOutline => self.outline_open = !self.outline_open,
             ToolAction::InsertToc => self.generate_toc(state),
+            ToolAction::NewMenu => self.open_new_menu(),
         }
     }
 
@@ -4568,6 +4692,202 @@ impl WordProcessorWidget {
         true
     }
 
+    // ---- new-from-template picker -----------------------------------------
+
+    /// Open the "New ▾" template picker: build a [`ContextMenu`] listing every
+    /// [`crate::Template`] by `title()`, anchored just under the toolbar's leading
+    /// edge. A selection (left-click on a row) replaces the open document's
+    /// content with the chosen template in place (see [`Self::apply_template`]).
+    fn open_new_menu(&mut self) {
+        let mut menu = ContextMenu::new();
+        let mut templates = Vec::new();
+        for &t in crate::Template::all() {
+            menu.push(MenuItem::action(t.title(), || {}));
+            templates.push(t);
+        }
+        // Anchor below the toolbar's left edge (where the "New ▾" button lives).
+        let anchor_x = self.toolbar.first().map(|(_, r)| r.x0).unwrap_or(self.rect.x0 + 8.0);
+        let anchor_y = self.rect.y0 + self.toolbar_height(self.rect.width());
+        menu.open_at([anchor_x as f32, anchor_y as f32]);
+        self.new_menu = menu;
+        self.new_menu_templates = templates;
+        self.dirty = true;
+    }
+
+    /// Replace the open document's content with `template`'s Markdown, **in place**
+    /// on the live `state` (preserving the host `ui::State` and its undo history /
+    /// collaboration session). Re-seats the caret, refreshes the view, flags an
+    /// undo point, and counts as a document-modifying edit (so autosave still
+    /// protects the freshly-templated content).
+    fn apply_template(&mut self, state: &mut AutoCommit, template: crate::Template) {
+        if self.inner.replace_with_markdown(state, template.content().as_bytes()) {
+            self.refresh_blocks(state);
+            // The whole body changed; per-block caches keyed by id/text are stale.
+            self.layout_cache.clear();
+            self.spell_cache.clear();
+            self.modified = true;
+            self.needs_commit = true;
+            self.dirty = true;
+            // A wholesale content swap is a strong autosave trigger.
+            self.note_edit_for_autosave(state);
+        }
+    }
+
+    /// Dispatch the new-menu row at `idx`: apply the chosen template, then close
+    /// the menu. Out-of-range rows are ignored.
+    fn dispatch_new_menu(&mut self, idx: usize, state: &mut AutoCommit) {
+        if let Some(&t) = self.new_menu_templates.get(idx) {
+            self.apply_template(state, t);
+        }
+        self.new_menu.close();
+        self.dirty = true;
+    }
+
+    // ---- autosave / crash-recovery ----------------------------------------
+
+    /// The recovery base directory this widget uses: the per-instance override if
+    /// set (tests), else the library default ([`crate::recovery::base_dir`]).
+    fn recovery_dir(&self) -> PathBuf {
+        self.recovery_base.clone().unwrap_or_else(crate::recovery::base_dir)
+    }
+
+    /// The recovery file path for the open document (stable per document path; a
+    /// single shared slot for an untitled doc). Honours the per-instance override.
+    fn recovery_path(&self) -> PathBuf {
+        let name = crate::recovery::recovery_path_for(self.path.as_deref());
+        // Re-root onto this widget's base dir so the override applies even though
+        // `recovery_path_for` only consults the env/default.
+        match name.file_name() {
+            Some(f) => self.recovery_dir().join(f),
+            None => name,
+        }
+    }
+
+    /// Point this widget's recovery store at `dir` (used by tests + callers that
+    /// want to relocate the store). Takes effect immediately for the next write.
+    pub fn set_recovery_dir(&mut self, dir: PathBuf) {
+        self.recovery_base = Some(dir);
+    }
+
+    /// Count one document-modifying edit toward the autosave debounce; when the
+    /// running count crosses [`AUTOSAVE_EDIT_THRESHOLD`], write a recovery copy and
+    /// reset. Best-effort — a failed write never disturbs editing.
+    fn note_edit_for_autosave(&mut self, state: &AutoCommit) {
+        self.edits_since_autosave = self.edits_since_autosave.saturating_add(1);
+        if self.edits_since_autosave >= AUTOSAVE_EDIT_THRESHOLD {
+            self.write_recovery(state);
+        }
+    }
+
+    /// Write a recovery copy of the current document (Markdown) to the stable
+    /// recovery path and reset the edit counter. Best-effort: no panic if the
+    /// directory is unwritable or the document has no schema yet.
+    fn write_recovery(&mut self, state: &AutoCommit) {
+        self.edits_since_autosave = 0;
+        let Some(c) = self.inner.containers.as_ref() else {
+            return;
+        };
+        let dr = qdoc::DocRef { doc: state, c };
+        let Ok(bytes) = WpFormat::Markdown.export(dr) else {
+            return;
+        };
+        let path = self.recovery_path();
+        if let Some(parent) = path.parent() {
+            if std::fs::create_dir_all(parent).is_err() {
+                return;
+            }
+        }
+        let _ = std::fs::write(&path, bytes);
+    }
+
+    /// Delete the recovery copy for the open document (called after a successful
+    /// real save — the on-disk file is now authoritative). Resets the autosave
+    /// counter so the next edit starts a fresh debounce window.
+    fn clear_recovery(&mut self) {
+        let _ = std::fs::remove_file(self.recovery_path());
+        self.edits_since_autosave = 0;
+    }
+
+    /// Check for an existing recovery copy of the open document and, if one is
+    /// present (a previous session crashed before saving), stage a recovery offer
+    /// so the banner surfaces with Restore / Discard. Idempotent and best-effort.
+    /// Call after binding a freshly-opened document. Returns whether an offer was
+    /// staged.
+    pub fn check_for_recovery(&mut self) -> bool {
+        let path = self.recovery_path();
+        match std::fs::read(&path) {
+            Ok(markdown) if !markdown.is_empty() => {
+                self.recovery = Some(RecoveryOffer { path, markdown });
+                self.dirty = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Restore the staged recovery copy: re-import its Markdown over the open
+    /// document in place, mark the document modified (the restored content is not
+    /// yet on disk), dismiss the banner, and delete the recovery file (the live
+    /// document now holds its content).
+    fn restore_recovery(&mut self, state: &mut AutoCommit) {
+        let Some(offer) = self.recovery.take() else {
+            return;
+        };
+        if self.inner.replace_with_markdown(state, &offer.markdown) {
+            self.refresh_blocks(state);
+            self.layout_cache.clear();
+            self.spell_cache.clear();
+            self.modified = true;
+            self.needs_commit = true;
+        }
+        let _ = std::fs::remove_file(&offer.path);
+        self.dirty = true;
+    }
+
+    /// Discard the staged recovery copy: dismiss the banner and delete the file
+    /// (the user prefers the on-disk document as opened).
+    fn discard_recovery(&mut self) {
+        if let Some(offer) = self.recovery.take() {
+            let _ = std::fs::remove_file(&offer.path);
+        }
+        self.dirty = true;
+    }
+
+    /// Draw the crash-recovery banner (a prominent strip under the toolbar with
+    /// Restore / Discard buttons), registering its controls for hit-testing.
+    fn draw_recovery_banner(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, bar: Rect) {
+        self.recovery_buttons.clear();
+        let cc = self.chrome;
+        let accent = theme.accent_primary;
+        // A tinted strip so it reads as a transient notice, not chrome.
+        scene.fill(Fill::NonZero, transform, with_alpha(accent, 0x22), None, &bar);
+        scene.fill(Fill::NonZero, transform, cc.border, None, &Rect::new(bar.x0, bar.y1 - 1.0, bar.x1, bar.y1));
+        let cy = (bar.y0 + bar.y1) / 2.0;
+        tr.draw_text(
+            scene,
+            "Recovered unsaved changes from a previous session.",
+            13.0,
+            cc.text,
+            transform * Affine::translate((bar.x0 + 14.0, cy - 8.0)),
+            None,
+        );
+        // Right-aligned Restore / Discard buttons.
+        let mut x = bar.x1 - 12.0;
+        for (action, label, w, primary) in [
+            (RecoveryAction::Discard, "Discard", 80.0, false),
+            (RecoveryAction::Restore, "Restore", 80.0, true),
+        ] {
+            x -= w;
+            let r = Rect::new(x, cy - 13.0, x + w, cy + 13.0);
+            let (bg, fg) = if primary { (accent, cc.on_accent) } else { (cc.chip, cc.text) };
+            scene.fill(Fill::NonZero, transform, bg, None, &vello::kurbo::RoundedRect::from_rect(r, 6.0));
+            let tx = r.x0 + (w - label.chars().count() as f64 * 7.4).max(6.0) / 2.0;
+            tr.draw_text(scene, label, 13.0, fg, transform * Affine::translate((tx, cy - 8.0)), None);
+            self.recovery_buttons.push((action, r));
+            x -= 8.0;
+        }
+    }
+
     /// Act on a tracked-change / comment review affordance (from a margin-card
     /// button or a context-menu row): accept/reject a change, accept/reject all,
     /// or resolve (delete) a comment. Refreshes the materialized blocks +
@@ -4693,13 +5013,15 @@ impl WordProcessorWidget {
             _ => LabelCue::None,
         };
         let group_start = |a: ToolAction| {
-            matches!(a, ToolAction::H1 | ToolAction::AlignLeft | ToolAction::LineSpacing | ToolAction::FontCycle | ToolAction::InsertTable | ToolAction::InsertImage | ToolAction::TableRowAdd | ToolAction::ToggleStyles | ToolAction::ToggleOutline)
+            matches!(a, ToolAction::NewMenu | ToolAction::Bold | ToolAction::H1 | ToolAction::AlignLeft | ToolAction::LineSpacing | ToolAction::FontCycle | ToolAction::InsertTable | ToolAction::InsertImage | ToolAction::TableRowAdd | ToolAction::ToggleStyles | ToolAction::ToggleOutline)
         };
         let panel_open = self.styles_panel_open;
         let mut specs: Vec<(ToolAction, ToolbarItem)> = Vec::new();
         let mut add = |a: ToolAction, label: &str, w: f64, active: bool| {
             specs.push((a, ToolbarItem::new(label, w).active(active).cue(cue(a)).group_start(group_start(a))));
         };
+        // New-from-template picker (leads the toolbar). Active while its menu is open.
+        add(ToolAction::NewMenu, "New ▾", 64.0, self.new_menu.is_open());
         add(ToolAction::Bold, "B", 34.0, bold_a);
         add(ToolAction::Italic, "I", 30.0, italic_a);
         add(ToolAction::Underline, "U", 32.0, under_a);
@@ -4801,6 +5123,7 @@ impl WordProcessorWidget {
     fn toolbar_item_widths(&self) -> Vec<f64> {
         let (kind, _) = self.current_block_style();
         let mut w = vec![
+            64.0, // New ▾
             34.0, 30.0, 32.0, 30.0, // B I U S
             34.0, 34.0, // x² x₂
             42.0, 42.0, 58.0, 66.0, // H1 H2 Body • List
@@ -4826,7 +5149,8 @@ impl WordProcessorWidget {
         let (kind, _) = self.current_block_style();
         // Indices that start a group in `draw_toolbar` (see `group_start`).
         let mut g = vec![
-            false, false, false, false, // B I U S
+            true, // New ▾ (group)
+            true, false, false, false, // B(group) I U S
             false, false, // x² x₂
             true, false, false, false, // H1(group) H2 Body • List
             true, false, false, false, // L(group) C R J
@@ -6481,5 +6805,249 @@ mod tests {
         assert_eq!(toc_count, heading_count, "regenerating replaces the prior TOC (no duplicate)");
         // The headings themselves are untouched (still derive the same outline).
         assert_eq!(wp.outline_entries().len(), heading_count, "headings unchanged by TOC regeneration");
+    }
+
+    // ---- new-from-template picker -----------------------------------------
+
+    /// The materialized first block of the document in `state`.
+    fn first_block(wp: &WordProcessorWidget, state: &ui::State) -> Option<BlockView> {
+        let c = wp.model().containers.clone()?;
+        qdoc::model::materialize(&state.doc, &c).blocks.into_iter().next()
+    }
+
+    /// A blank, bound widget over a fresh `ui::State`.
+    fn bound() -> (ui::State, WordProcessorWidget) {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        (state, wp)
+    }
+
+    /// The "New ▾" toolbar button is present and registered as a click target.
+    #[test]
+    fn new_menu_button_is_in_the_toolbar() {
+        let (mut state, mut wp) = bound();
+        pipeline_draw(&mut wp, &mut state, 1200, 700);
+        assert!(
+            wp.toolbar.iter().any(|(a, _)| *a == ToolAction::NewMenu),
+            "the New ▾ button is a registered toolbar action"
+        );
+    }
+
+    /// Opening the "New ▾" menu lists every template by title; selecting one
+    /// replaces the document content with that template's first heading — driven
+    /// through the production `apply_tool` → menu → `dispatch_new_menu` path.
+    #[test]
+    fn selecting_a_template_replaces_the_document_content() {
+        let (mut state, mut wp) = bound();
+        // Author some pre-existing content so we can prove it's actually replaced.
+        wp.model_mut().insert_str(&mut state.doc, "Pre-existing rough draft");
+        wp.refresh_blocks(&state.doc);
+        assert_eq!(
+            first_block(&wp, &state).map(|b| b.text),
+            Some("Pre-existing rough draft".to_string()),
+            "the document starts with the user's own text"
+        );
+
+        // Open the picker via the real toolbar action.
+        wp.apply_tool(&mut state.doc, ToolAction::NewMenu);
+        assert!(wp.new_menu.is_open(), "the New ▾ menu opens");
+        let labels: Vec<String> =
+            wp.new_menu.items().iter().filter_map(|i| i.label().map(str::to_string)).collect();
+        let titles: Vec<&str> = crate::Template::all().iter().map(|t| t.title()).collect();
+        assert_eq!(labels, titles, "the menu lists every template by title, in order");
+
+        // Select "Report" (its first heading is a known, stable string).
+        let report_idx = crate::Template::all().iter().position(|t| *t == crate::Template::Report).unwrap();
+        wp.dispatch_new_menu(report_idx, &mut state.doc);
+        assert!(!wp.new_menu.is_open(), "the menu closes after a selection");
+
+        let first = first_block(&wp, &state).expect("the templated document has a first block");
+        assert_eq!(first.kind, "heading", "the report template opens with a heading");
+        assert_eq!(first.text, "Report Title", "content is replaced by the template's first heading");
+        // The old draft text is gone — the body is the template, not an append.
+        let c = wp.model().containers.clone().unwrap();
+        let all_text: String =
+            qdoc::model::materialize(&state.doc, &c).blocks.iter().map(|b| b.text.clone()).collect();
+        assert!(!all_text.contains("rough draft"), "the prior content was replaced, not appended");
+        assert!(wp.modified, "a template swap marks the document modified");
+    }
+
+    // ---- autosave / crash-recovery ----------------------------------------
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "editor-wp-recovery-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    /// Drive a real keypress (single typed character) through the production
+    /// `handle_event` keyboard path. winit's `KeyEvent` has a private
+    /// `platform_specific` field, so (per the shell's `e2e_shell_flows` pattern)
+    /// zero-init the whole struct and overwrite the public fields we read.
+    fn type_char(wp: &mut WordProcessorWidget, state: &mut ui::State, ch: char) {
+        use winit::keyboard::{NativeKeyCode, PhysicalKey, SmolStr};
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let node = NodeId::new(0);
+        let mods = Modifiers::default();
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        // SAFETY: identical to the shell's KeyEvent synthesis — all public fields
+        // tolerate the zero bit pattern (Option → None, enums → first variant),
+        // and we overwrite the ones `handle_event` reads (`logical_key`/`text`/
+        // `state`). The private `platform_specific` field is plain/zero-sized.
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        ev.logical_key = Key::Character(SmolStr::new(ch.to_string()));
+        ev.text = Some(SmolStr::new(ch.to_string()));
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        wp.handle_event(
+            &WindowEvent::KeyboardInput {
+                device_id: unsafe { std::mem::zeroed() },
+                event: ev,
+                is_synthetic: false,
+            },
+            1.0, &mods, &mut state.doc, &state.root, &mut handled, &mut focus, node, &taffy,
+        );
+    }
+
+    /// Autosave: typing past the edit threshold (through the production keyboard
+    /// path) writes a recovery copy to the widget's recovery dir. A real save then
+    /// clears it. Asserts on file existence (the production path), not pixels.
+    #[test]
+    fn autosave_writes_recovery_then_save_clears_it() {
+        let dir = temp_dir("autosave");
+        let (mut state, mut wp) = bound();
+        wp.set_recovery_dir(dir.clone());
+        // Point the document at a real (temp) save target so `save` succeeds and
+        // `recovery_path` is keyed off a stable document path.
+        let doc_path = dir.join("doc.md");
+        wp.set_file(doc_path.clone(), WpFormat::Markdown);
+
+        let recovery_path = wp.recovery_path();
+        assert!(!recovery_path.exists(), "no recovery file before any edits");
+
+        // Type more than AUTOSAVE_EDIT_THRESHOLD characters through `handle_event`.
+        for _ in 0..(AUTOSAVE_EDIT_THRESHOLD as usize + 2) {
+            type_char(&mut wp, &mut state, 'x');
+        }
+        assert!(
+            recovery_path.exists(),
+            "a recovery copy is written once the edit threshold is crossed ({})",
+            recovery_path.display()
+        );
+        // The recovery copy is a faithful Markdown snapshot (re-imports our text).
+        let recovered = std::fs::read(&recovery_path).expect("read recovery copy");
+        assert!(
+            String::from_utf8_lossy(&recovered).contains('x'),
+            "the recovery copy holds the typed content"
+        );
+
+        // A real save supersedes and removes the recovery copy.
+        wp.save(&state.doc);
+        assert!(doc_path.exists(), "the document saved to its real path");
+        assert!(!recovery_path.exists(), "a successful save clears the recovery copy");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `check_for_recovery` surfaces the banner (Restore/Discard) when a recovery
+    /// copy exists for the open document; Restore re-imports its content in place.
+    #[test]
+    fn check_for_recovery_surfaces_banner_and_restore_loads_it() {
+        let dir = temp_dir("restore");
+        let (mut state, mut wp) = bound();
+        wp.set_recovery_dir(dir.clone());
+        let doc_path = dir.join("notes.md");
+        wp.set_file(doc_path.clone(), WpFormat::Markdown);
+
+        // Stage a recovery copy on disk (as a previous, crashed session would).
+        let rp = wp.recovery_path();
+        std::fs::create_dir_all(rp.parent().unwrap()).unwrap();
+        std::fs::write(&rp, b"# Recovered Heading\n\nUnsaved work\n").unwrap();
+
+        assert!(wp.check_for_recovery(), "a present recovery copy stages an offer");
+        assert!(wp.recovery.is_some(), "the recovery banner is now active");
+
+        // Draw so the banner's Restore/Discard buttons are registered, then click
+        // Restore through the production handler.
+        pipeline_draw(&mut wp, &mut state, 1200, 700);
+        let (_, rrect) = wp
+            .recovery_buttons
+            .iter()
+            .find(|(a, _)| *a == RecoveryAction::Restore)
+            .expect("Restore button is drawn")
+            .clone();
+        left_click(&mut wp, &mut state, Point::new((rrect.x0 + rrect.x1) / 2.0, (rrect.y0 + rrect.y1) / 2.0));
+
+        assert!(wp.recovery.is_none(), "the banner is dismissed after Restore");
+        assert_eq!(
+            first_block(&wp, &state).map(|b| b.text),
+            Some("Recovered Heading".to_string()),
+            "Restore re-imported the recovery copy into the live document"
+        );
+        assert!(!rp.exists(), "the recovery file is consumed by Restore");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Discard dismisses the banner and deletes the recovery file without touching
+    /// the document.
+    #[test]
+    fn discard_recovery_removes_the_file_and_banner() {
+        let dir = temp_dir("discard");
+        let (mut state, mut wp) = bound();
+        wp.set_recovery_dir(dir.clone());
+        wp.set_file(dir.join("d.md"), WpFormat::Markdown);
+        wp.model_mut().insert_str(&mut state.doc, "Keep me");
+        wp.refresh_blocks(&state.doc);
+
+        let rp = wp.recovery_path();
+        std::fs::create_dir_all(rp.parent().unwrap()).unwrap();
+        std::fs::write(&rp, b"# Stale\n").unwrap();
+        assert!(wp.check_for_recovery());
+
+        pipeline_draw(&mut wp, &mut state, 1200, 700);
+        let (_, drect) = wp
+            .recovery_buttons
+            .iter()
+            .find(|(a, _)| *a == RecoveryAction::Discard)
+            .expect("Discard button is drawn")
+            .clone();
+        left_click(&mut wp, &mut state, Point::new((drect.x0 + drect.x1) / 2.0, (drect.y0 + drect.y1) / 2.0));
+
+        assert!(wp.recovery.is_none(), "Discard dismisses the banner");
+        assert!(!rp.exists(), "Discard deletes the recovery file");
+        assert_eq!(
+            first_block(&wp, &state).map(|b| b.text),
+            Some("Keep me".to_string()),
+            "Discard leaves the open document untouched"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The recovery path is stable for a given document and distinct per document.
+    #[test]
+    fn widget_recovery_path_is_stable_and_per_document() {
+        let dir = temp_dir("stable");
+        let mut a = WordProcessorWidget::new();
+        a.set_recovery_dir(dir.clone());
+        a.set_file(std::path::PathBuf::from("/docs/a.md"), WpFormat::Markdown);
+        let pa1 = a.recovery_path();
+        let pa2 = a.recovery_path();
+        assert_eq!(pa1, pa2, "stable across calls for the same document");
+        assert!(pa1.starts_with(&dir), "honours the widget's recovery dir override");
+
+        let mut b = WordProcessorWidget::new();
+        b.set_recovery_dir(dir.clone());
+        b.set_file(std::path::PathBuf::from("/docs/b.md"), WpFormat::Markdown);
+        assert_ne!(pa1, b.recovery_path(), "different documents get different recovery files");
     }
 }
