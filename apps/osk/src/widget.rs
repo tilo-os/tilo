@@ -8,14 +8,14 @@
 //! the taffy tree a single node.
 //!
 //! ## Output channels (two ways, mirroring `FilePicker`)
-//! Compositor text injection (W7, `input-method-v2`) is **not** wired here.
+//! Compositor text injection (`input-method-v2`) is **not** wired here.
 //! Until it is, what the user "types" is observable two ways:
 //! * [`OskWidget::on_key`] — an imperative callback fired per activation.
 //! * [`OskWidget::pending_text`] / [`OskWidget::take_pending_text`] — a
 //!   buffer of the resulting text (peek + drain, like
 //!   `FilePicker::outcome` / `FilePicker::take_outcome`).
 //!
-//! ## W9 — swipe-to-type + prediction (wired here)
+//! ## Swipe-to-type + prediction (wired here)
 //! The widget captures each pointer drag as a path. On release a short,
 //! near-stationary path stays a normal **key tap** (existing behaviour); a
 //! path that travelled across multiple keys is treated as a **swipe** and run
@@ -25,12 +25,12 @@
 //! commits (space, swipe, or chip), [`crate::predict`] fills the bar with
 //! next-word predictions; tapping a next-word chip inserts the word + a space.
 //!
-//! ## Seams for later workstreams
-//! * **W7 (IM injection):** a host will drain [`OskWidget::take_pending_text`]
+//! ## Seams for later work
+//! * **IM injection:** a host will drain [`OskWidget::take_pending_text`]
 //!   (and observe [`OskWidget::on_key`]) and forward commit-strings through a
 //!   `zwp_input_method_v2` client to the focused surface. Nothing in this
 //!   widget assumes a particular sink.
-//! * **W9 (neural swipe):** the decoder is behind the
+//! * **Neural swipe:** the decoder is behind the
 //!   [`crate::swipe::SwipeModel`] trait. The shipping model is the geometric
 //!   [`crate::swipe::GeometricSwipeModel`]; a future FUTO/ExecuTorch
 //!   `FutoSwipeModel` implementing the same trait can be swapped in via
@@ -122,7 +122,7 @@ pub struct OskWidget {
     hovered_sugg: Option<usize>,
     pressed_sugg: Option<usize>,
 
-    // --- swipe / prediction (W9) ---
+    // --- swipe / prediction ---
     /// Decoder behind the [`SwipeModel`] seam (geometric today; FUTO later).
     swipe_model: Box<dyn SwipeModel>,
     /// Offline next-word predictor.
@@ -278,7 +278,7 @@ impl OskWidget {
     }
 
     /// Drain the accumulated typed text (mirror of
-    /// `FilePicker::take_outcome`). The host (W7) calls this and injects the
+    /// `FilePicker::take_outcome`). The host calls this and injects the
     /// returned string into the focused surface.
     pub fn take_pending_text(&mut self) -> String {
         std::mem::take(&mut self.pending_text)
@@ -1286,7 +1286,7 @@ mod tests {
         assert_eq!(osk.pending_text(), "a");
     }
 
-    // --- W9: swipe + prediction + suggestion bar -----------------------
+    // --- swipe + prediction + suggestion bar -----------------------
 
     /// Build a dense pointer path through the live key centres of `word`,
     /// using the widget's own laid-out geometry (the same source of truth the
