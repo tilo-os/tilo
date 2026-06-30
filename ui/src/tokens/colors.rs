@@ -14,6 +14,14 @@ pub const ACCENT_PRIMARY_IDX: usize = 5;
 /// coherent with [`ACCENT_PRIMARY_IDX`].
 pub const ACCENT_HOVER_IDX: usize = 4;
 
+/// Translucent black scrim painted over an interactive widget whose
+/// [`PermissionScope`](crate::permissions::PermissionScope) is denied, to
+/// signal it is not actionable. Single source of truth so the dim is
+/// identical across Button / Checkbox / Toggle / Slider / Container / …
+/// (it was previously a `Color::from_rgba8(0,0,0,77)` literal copy-pasted
+/// into 13 widgets).
+pub const PERMISSION_DENIED_SCRIM: Color = Color::from_rgba8(0, 0, 0, 77);
+
 #[derive(Clone, Debug)]
 pub struct ColorRamp { pub stops: [Color; 11] }
 
