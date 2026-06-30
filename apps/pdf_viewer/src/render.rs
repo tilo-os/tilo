@@ -1,0 +1,481 @@
+//! Page rendering: lays a [`crate::model::Page`] out with the toolkit's
+//! text engine and paints it onto a white "paper" card, then overlays
+//! annotations and signatures.
+//!
+//! Coordinate convention: page geometry is in PDF points; `scale` is
+//! pixels-per-point (1.0 == 100% zoom). A point `(px, py)` on the page
+//! maps to screen `origin + (px, py) * scale`, then the caller's `base`
+//! affine is applied (it is identity for the full-window root and the
+//! offscreen shot harness, but threading it keeps the renderer correct if
+//! the host ever offsets the widget).
+//!
+//! The page *paper* (white) and *ink* (dark) deliberately do not follow
+//! the OS theme — they represent the document's own content, exactly as a
+//! real rasterised PDF renders dark glyphs on white paper regardless of
+//! the desktop palette. Everything that is *chrome* is fully theme-driven;
+//! see `app_draw.rs`.
+
+use std::collections::HashSet;
+
+use vello::Scene;
+use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
+use vello::peniko::{BlendMode, Color, Fill};
+
+use ui::ColorCompat;
+use ui::text_render::{TextRenderer, TextWeight};
+use ui::theme::Theme;
+
+use crate::model::{
+    AnnoKind, Annotation, Block, Page, Signature, Swatch, MARGIN, PAGE_H, PAGE_W,
+};
+
+pub fn ink() -> Color {
+    Color::from_rgb8(28, 33, 47)
+}
+pub fn ink_soft() -> Color {
+    Color::from_rgb8(71, 85, 105)
+}
+pub fn ink_faint() -> Color {
+    Color::from_rgb8(148, 163, 184)
+}
+pub fn paper(theme: &Theme) -> Color {
+    theme.tokens.colors.surfaces.window_card
+}
+
+/// Resolve an annotation swatch into a concrete colour. Pulls from the
+/// theme's semantic + accent ramps so a palette swap keeps markup
+/// coherent with the rest of the UI.
+pub fn swatch_color(theme: &Theme, s: Swatch) -> Color {
+    let c = &theme.tokens.colors;
+    match s {
+        Swatch::Yellow => c.semantic.warning,
+        Swatch::Green => c.semantic.success,
+        Swatch::Pink => c.semantic.danger,
+        Swatch::Blue => c.semantic.info,
+        Swatch::Purple => c.accent[ACCENT_PURPLE],
+    }
+}
+const ACCENT_PURPLE: usize = 6; // indigo-400, reads as a violet ink
+
+pub fn alpha(c: Color, a: u8) -> Color {
+    Color::from_rgba8(c.r(), c.g(), c.b(), a)
+}
+
+/// Per-block typographic spec, in points.
+struct Spec {
+    size: f32,
+    weight: TextWeight,
+    italic: bool,
+    color: Color,
+    after: f64,
+}
+
+fn body_spec(block: &Block, theme: &Theme) -> Option<Spec> {
+    Some(match block {
+        Block::Title(_) => Spec { size: 24.0, weight: TextWeight::Bold, italic: false, color: ink(), after: 6.0 },
+        Block::H1(_) => Spec { size: 17.0, weight: TextWeight::Semibold, italic: false, color: ink(), after: 5.0 },
+        Block::H2(_) => Spec { size: 13.5, weight: TextWeight::Semibold, italic: false, color: ink(), after: 3.0 },
+        Block::Body(_) => Spec { size: 10.5, weight: TextWeight::Regular, italic: false, color: ink_soft(), after: 6.0 },
+        Block::Caption(_) => Spec { size: 9.5, weight: TextWeight::Regular, italic: false, color: ink_faint(), after: 4.0 },
+        Block::Quote(_) => Spec { size: 12.0, weight: TextWeight::Regular, italic: true, color: theme.accent_hover, after: 8.0 },
+        _ => return None,
+    })
+}
+
+/// The drawn screen rect for the page card.
+pub fn page_card_rect(origin: Point, scale: f64) -> Rect {
+    Rect::new(origin.x, origin.y, origin.x + PAGE_W * scale, origin.y + PAGE_H * scale)
+}
+
+/// Draw one page: paper card, drop shadow, content, search bands, then
+/// the annotations + signatures that live on it.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_page(
+    scene: &mut Scene,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    base: Affine,
+    page: &Page,
+    origin: Point,
+    scale: f64,
+    matched_blocks: &HashSet<usize>,
+    active_block: Option<usize>,
+    annotations: &[Annotation],
+    signatures: &[Signature],
+    selected_anno: Option<&str>,
+) {
+    let card = page_card_rect(origin, scale);
+
+    // Soft drop shadow (two offset translucent slabs).
+    for (off, a) in [(7.0, 22u8), (3.0, 30u8)] {
+        let s = RoundedRect::new(card.x0, card.y0 + off, card.x1, card.y1 + off, 3.0);
+        scene.fill(Fill::NonZero, base, Color::from_rgba8(0, 0, 0, a), None, &s);
+    }
+    let card_rr = RoundedRect::from_rect(card, 3.0);
+    scene.fill(Fill::NonZero, base, paper(theme), None, &card_rr);
+
+    // Clip content to the paper.
+    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, base, &card_rr);
+
+    let content_x = origin.x + MARGIN * scale;
+    let content_w = (PAGE_W - 2.0 * MARGIN) * scale;
+    let mut y = origin.y; // running screen-space top
+
+    for (bi, block) in page.blocks.iter().enumerate() {
+        match block {
+            Block::Spacer(h) => {
+                y += h * scale;
+            }
+            Block::Divider => {
+                let dy = y + 7.0 * scale;
+                let line = Line::new((content_x, dy), (content_x + content_w, dy));
+                scene.stroke(&Stroke::new(1.0), base, ink_faint(), None, &line);
+                y += 16.0 * scale;
+            }
+            Block::Figure { height, label } => {
+                let h = height * scale;
+                let box_rect = Rect::new(content_x, y, content_x + content_w, y + h);
+                scene.fill(Fill::NonZero, base, Color::from_rgb8(241, 245, 249), None, &RoundedRect::from_rect(box_rect, 2.0));
+                scene.stroke(&Stroke::new(1.0), base, ink_faint(), None, &RoundedRect::from_rect(box_rect, 2.0));
+                draw_figure_glyph(scene, theme, base, box_rect);
+                y += h + 4.0 * scale;
+                let csize = 9.5 * scale as f32;
+                tr.draw_text_styled(
+                    scene,
+                    label,
+                    csize,
+                    ink_faint(),
+                    base * Affine::translate((content_x, y)),
+                    Some(content_w as f32),
+                    TextWeight::Regular,
+                    true,
+                    false,
+                );
+                let (_, ch) = tr.measure(label, csize, Some(content_w as f32));
+                y += ch as f64 + 8.0 * scale;
+            }
+            _ => {
+                let Some(spec) = body_spec(block, theme) else { continue };
+                let text = block.search_text().unwrap_or("");
+                let size = spec.size * scale as f32;
+                let max_w = content_w as f32;
+                let (_, th) = tr.measure(text, size, Some(max_w));
+
+                if matched_blocks.contains(&bi) {
+                    let band = Rect::new(
+                        content_x - 4.0 * scale,
+                        y - 1.0 * scale,
+                        content_x + content_w + 4.0 * scale,
+                        y + th as f64 + 1.0 * scale,
+                    );
+                    let is_active = active_block == Some(bi);
+                    let fill = if is_active {
+                        alpha(theme.accent_primary, 64)
+                    } else {
+                        alpha(theme.accent_primary, 26)
+                    };
+                    scene.fill(Fill::NonZero, base, fill, None, &RoundedRect::from_rect(band, 2.0));
+                    if is_active {
+                        let bar = Rect::new(band.x0, band.y0, band.x0 + 2.5 * scale, band.y1);
+                        scene.fill(Fill::NonZero, base, theme.accent_primary, None, &bar);
+                    }
+                }
+
+                let mut x = content_x;
+                if matches!(block, Block::Quote(_)) {
+                    let bar = Rect::new(content_x, y, content_x + 3.0 * scale, y + th as f64);
+                    scene.fill(Fill::NonZero, base, theme.accent_primary, None, &bar);
+                    x += 14.0 * scale;
+                }
+                tr.draw_text_styled(
+                    scene,
+                    text,
+                    size,
+                    spec.color,
+                    base * Affine::translate((x, y)),
+                    Some(max_w),
+                    spec.weight,
+                    spec.italic,
+                    false,
+                );
+                y += th as f64 + spec.after * scale;
+            }
+        }
+    }
+
+    for a in annotations.iter().filter(|a| a.page == page.number) {
+        draw_annotation(scene, tr, theme, base, a, origin, scale, selected_anno == Some(a.id.as_str()));
+    }
+    for s in signatures.iter().filter(|s| s.page == page.number) {
+        draw_signature(scene, tr, theme, base, s, origin, scale);
+    }
+
+    scene.pop_layer();
+
+    scene.stroke(&Stroke::new(1.0), base, Color::from_rgb8(203, 213, 225), None, &card_rr);
+}
+
+fn draw_figure_glyph(scene: &mut Scene, theme: &Theme, base: Affine, b: Rect) {
+    let cy = (b.y0 + b.y1) / 2.0;
+    let w = b.width();
+    let r = (b.height().min(w) * 0.16).max(8.0);
+    let lx = b.x0 + w * 0.32;
+    let rx = b.x0 + w * 0.68;
+    let conn = Line::new((lx + r, cy), (rx - r, cy));
+    scene.stroke(&Stroke::new(2.0), base, theme.accent_primary, None, &conn);
+    for cx in [lx, rx] {
+        let node = Rect::new(cx - r, cy - r, cx + r, cy + r);
+        scene.fill(Fill::NonZero, base, alpha(theme.accent_primary, 46), None, &RoundedRect::from_rect(node, 4.0));
+        scene.stroke(&Stroke::new(1.5), base, theme.accent_primary, None, &RoundedRect::from_rect(node, 4.0));
+    }
+}
+
+fn pt(origin: Point, scale: f64, x: f64, y: f64) -> Point {
+    Point::new(origin.x + x * scale, origin.y + y * scale)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_annotation(
+    scene: &mut Scene,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    base: Affine,
+    a: &Annotation,
+    origin: Point,
+    scale: f64,
+    selected: bool,
+) {
+    let col = swatch_color(theme, a.color);
+    match &a.kind {
+        AnnoKind::Highlight { rect } => {
+            let p0 = pt(origin, scale, rect.x, rect.y);
+            let r = Rect::new(p0.x, p0.y, p0.x + rect.w * scale, p0.y + rect.h * scale);
+            scene.fill(Fill::NonZero, base, alpha(col, 92), None, &r);
+            if selected {
+                scene.stroke(&Stroke::new(1.5), base, col, None, &r);
+                draw_handles(scene, theme, base, r);
+            }
+        }
+        AnnoKind::Ink { points } => {
+            if points.len() < 2 {
+                return;
+            }
+            let mut path = BezPath::new();
+            let first = pt(origin, scale, points[0].0, points[0].1);
+            path.move_to(first);
+            for w in points.windows(2) {
+                let a0 = pt(origin, scale, w[0].0, w[0].1);
+                let b0 = pt(origin, scale, w[1].0, w[1].1);
+                let mid = Point::new((a0.x + b0.x) / 2.0, (a0.y + b0.y) / 2.0);
+                path.quad_to(a0, mid);
+            }
+            let last = pt(origin, scale, points[points.len() - 1].0, points[points.len() - 1].1);
+            path.line_to(last);
+            scene.stroke(&Stroke::new((2.4 * scale).max(1.5)), base, col, None, &path);
+        }
+        AnnoKind::Note { x, y } => {
+            let p = pt(origin, scale, *x, *y);
+            draw_note_marker(scene, base, p, col, scale, selected);
+            let _ = tr;
+        }
+    }
+}
+
+fn draw_note_marker(scene: &mut Scene, base: Affine, p: Point, col: Color, scale: f64, selected: bool) {
+    let s = (22.0 * scale).max(16.0);
+    let r = Rect::new(p.x, p.y, p.x + s, p.y + s);
+    scene.fill(Fill::NonZero, base, col, None, &RoundedRect::from_rect(r, 3.0));
+    let fold = {
+        let mut path = BezPath::new();
+        path.move_to((r.x1 - s * 0.36, r.y1));
+        path.line_to((r.x1, r.y1 - s * 0.36));
+        path.line_to((r.x1, r.y1));
+        path.close_path();
+        path
+    };
+    scene.fill(Fill::NonZero, base, Color::from_rgba8(0, 0, 0, 46), None, &fold);
+    for i in 0..3 {
+        let ly = r.y0 + s * (0.32 + i as f64 * 0.18);
+        let line = Line::new((r.x0 + s * 0.2, ly), (r.x1 - s * 0.2, ly));
+        scene.stroke(&Stroke::new((1.2 * scale).max(0.8)), base, Color::from_rgba8(255, 255, 255, 220), None, &line);
+    }
+    if selected {
+        let ring = RoundedRect::from_rect(r.inflate(2.5, 2.5), 5.0);
+        scene.stroke(&Stroke::new(2.0), base, Color::WHITE, None, &ring);
+    }
+}
+
+fn draw_handles(scene: &mut Scene, theme: &Theme, base: Affine, r: Rect) {
+    let hs = 3.0;
+    for (cx, cy) in [(r.x0, r.y0), (r.x1, r.y0), (r.x0, r.y1), (r.x1, r.y1)] {
+        let h = Rect::new(cx - hs, cy - hs, cx + hs, cy + hs);
+        scene.fill(Fill::NonZero, base, Color::WHITE, None, &h);
+        scene.stroke(&Stroke::new(1.0), base, theme.accent_primary, None, &h);
+    }
+}
+
+fn draw_signature(
+    scene: &mut Scene,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    base: Affine,
+    s: &Signature,
+    origin: Point,
+    scale: f64,
+) {
+    let p0 = pt(origin, scale, s.rect.x, s.rect.y);
+    let r = Rect::new(p0.x, p0.y, p0.x + s.rect.w * scale, p0.y + s.rect.h * scale);
+    scene.fill(Fill::NonZero, base, alpha(theme.accent_primary, 16), None, &RoundedRect::from_rect(r, 3.0));
+    scene.stroke(&Stroke::new(1.2), base, alpha(theme.accent_primary, 150), None, &RoundedRect::from_rect(r, 3.0));
+
+    let stroke_area = Rect::new(
+        r.x0 + r.width() * 0.06,
+        r.y0 + r.height() * 0.12,
+        r.x1 - r.width() * 0.06,
+        r.y0 + r.height() * 0.58,
+    );
+    draw_signature_glyph(scene, base, ink(), stroke_area, s.style);
+
+    let base_y = r.y0 + r.height() * 0.62;
+    let baseline = Line::new((r.x0 + 8.0, base_y), (r.x1 - 8.0, base_y));
+    scene.stroke(&Stroke::new(1.0), base, ink_faint(), None, &baseline);
+
+    let name_size = (8.5 * scale).max(8.0) as f32;
+    tr.draw_text_weighted(
+        scene,
+        &s.signer,
+        name_size,
+        ink_soft(),
+        base * Affine::translate((r.x0 + 8.0, base_y + 3.0)),
+        Some((r.width() - 16.0) as f32),
+        TextWeight::Semibold,
+    );
+    let date_label = format!("Signed {}", s.date);
+    tr.draw_text(
+        scene,
+        &date_label,
+        (7.5 * scale).max(7.0) as f32,
+        ink_faint(),
+        base * Affine::translate((r.x0 + 8.0, base_y + 3.0 + name_size as f64 + 2.0)),
+        Some((r.width() - 16.0) as f32),
+    );
+}
+
+/// Public wrapper to draw just the handwriting glyph (no field chrome),
+/// used by the signatures sidebar for previews.
+pub fn draw_signature_preview(scene: &mut Scene, base: Affine, color: Color, area: Rect, style: u8) {
+    draw_signature_glyph(scene, base, color, area, style);
+}
+
+/// Four bundled signature stroke styles — a fixed bezier "handwriting"
+/// scaled into `area`. Deterministic so a placed signature is stable.
+fn draw_signature_glyph(scene: &mut Scene, base: Affine, color: Color, area: Rect, style: u8) {
+    let w = area.width();
+    let h = area.height();
+    let x = |t: f64| area.x0 + t * w;
+    let y = |t: f64| area.y0 + t * h;
+    let mut path = BezPath::new();
+    match style % 4 {
+        0 => {
+            path.move_to((x(0.02), y(0.7)));
+            path.curve_to((x(0.10), y(0.0)), (x(0.18), y(1.0)), (x(0.26), y(0.4)));
+            path.curve_to((x(0.34), y(-0.1)), (x(0.40), y(0.9)), (x(0.50), y(0.5)));
+            path.curve_to((x(0.62), y(0.05)), (x(0.72), y(1.0)), (x(0.86), y(0.35)));
+            path.curve_to((x(0.92), y(0.15)), (x(0.98), y(0.6)), (x(1.0), y(0.45)));
+        }
+        1 => {
+            path.move_to((x(0.0), y(0.55)));
+            path.curve_to((x(0.15), y(-0.2)), (x(0.30), y(1.1)), (x(0.45), y(0.5)));
+            path.curve_to((x(0.55), y(0.1)), (x(0.60), y(0.95)), (x(0.70), y(0.55)));
+            path.curve_to((x(0.80), y(0.2)), (x(0.95), y(0.8)), (x(1.0), y(0.4)));
+        }
+        2 => {
+            path.move_to((x(0.02), y(0.5)));
+            path.quad_to((x(0.2), y(-0.05)), (x(0.38), y(0.6)));
+            path.quad_to((x(0.52), y(1.05)), (x(0.66), y(0.45)));
+            path.quad_to((x(0.82), y(-0.05)), (x(1.0), y(0.5)));
+        }
+        _ => {
+            path.move_to((x(0.0), y(0.6)));
+            path.curve_to((x(0.2), y(0.0)), (x(0.3), y(0.9)), (x(0.5), y(0.45)));
+            path.curve_to((x(0.7), y(0.0)), (x(0.85), y(1.0)), (x(1.0), y(0.5)));
+        }
+    }
+    scene.stroke(&Stroke::new((area.height() * 0.10).clamp(1.4, 3.0)), base, color, None, &path);
+}
+
+// ----------------------------------------------------------------------
+// Thumbnails — abstract bar representation (fast, readable at small size)
+// ----------------------------------------------------------------------
+
+pub fn draw_thumbnail(
+    scene: &mut Scene,
+    theme: &Theme,
+    base: Affine,
+    page: &Page,
+    rect: Rect,
+    is_current: bool,
+    has_markup: bool,
+) {
+    scene.fill(Fill::NonZero, base, paper(theme), None, &RoundedRect::from_rect(rect, 2.0));
+    let scale = rect.width() / PAGE_W;
+    let cx = rect.x0 + MARGIN * scale;
+    let cw = (PAGE_W - 2.0 * MARGIN) * scale;
+    let mut y = rect.y0;
+    let line_col = Color::from_rgb8(203, 213, 225);
+    let head_col = Color::from_rgb8(100, 116, 139);
+    let bar = |scene: &mut Scene, y: f64, hgt: f64, x: f64, w: f64, color: Color| {
+        let r = Rect::new(x, y, x + w, y + hgt);
+        scene.fill(Fill::NonZero, base, color, None, &r);
+    };
+    for block in &page.blocks {
+        match block {
+            Block::Spacer(h) => y += h * scale,
+            Block::Divider => {
+                bar(scene, y + 3.0 * scale, 1.0, cx, cw, line_col);
+                y += 16.0 * scale;
+            }
+            Block::Figure { height, .. } => {
+                let h = height * scale;
+                bar(scene, y, h, cx, cw, Color::from_rgb8(226, 232, 240));
+                y += h + 10.0 * scale;
+            }
+            Block::Title(_) => {
+                bar(scene, y + 2.0 * scale, (16.0 * scale).max(2.5), cx, cw * 0.85, head_col);
+                y += 30.0 * scale;
+            }
+            Block::H1(_) | Block::H2(_) => {
+                bar(scene, y + 1.0 * scale, (8.0 * scale).max(2.0), cx, cw * 0.55, head_col);
+                y += 18.0 * scale;
+            }
+            Block::Quote(t) | Block::Body(t) | Block::Caption(t) => {
+                let lines = (t.len() / 52).clamp(1, 8);
+                let lh = 6.0 * scale;
+                let indent = if matches!(block, Block::Quote(_)) { 10.0 * scale } else { 0.0 };
+                for i in 0..lines {
+                    let w = if i == lines - 1 { cw * 0.6 } else { cw - indent };
+                    bar(scene, y, (2.2 * scale).max(1.0), cx + indent, w, line_col);
+                    y += lh;
+                }
+                y += 6.0 * scale;
+            }
+        }
+        if y > rect.y1 {
+            break;
+        }
+    }
+
+    let border = if is_current {
+        theme.accent_primary
+    } else {
+        theme.tokens.colors.border_standard
+    };
+    let stroke_w = if is_current { 2.0 } else { 1.0 };
+    scene.stroke(&Stroke::new(stroke_w), base, border, None, &RoundedRect::from_rect(rect, 2.0));
+
+    if has_markup {
+        let d = 5.0;
+        let dot = Circle::new((rect.x1 - d - 2.0, rect.y0 + d + 2.0), d);
+        scene.fill(Fill::NonZero, base, theme.tokens.colors.semantic.warning, None, &dot);
+    }
+}
