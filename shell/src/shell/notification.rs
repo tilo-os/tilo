@@ -79,6 +79,15 @@ pub enum NotificationIconKind {
 /// override via [`Notification::with_dismiss_after`].
 pub const DEFAULT_DISMISS_AFTER: Duration = Duration::from_secs(5);
 
+/// Effective "never auto-expire" dwell used for `expire_timeout == 0`
+/// notifications and for `critical`-urgency notifications (which the
+/// freedesktop spec says must not time out). We model "persistent" as a
+/// very long finite duration rather than a separate `Option<Duration>`
+/// variant so the expiry / animation arithmetic in [`Notification`] and
+/// [`NotificationStack`] stays a single code path — a day is far longer
+/// than any session and the user can always dismiss the toast by hand.
+pub const PERSISTENT_DISMISS: Duration = Duration::from_secs(24 * 3600);
+
 /// In/out animation duration. 220 ms is comfortable on the
 /// human-perception side and matches the modal entry timing already
 /// in `overlay_host.rs`.
@@ -93,7 +102,11 @@ fn next_id() -> u64 {
     COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
-/// A single transient notification. Ids are unique per process.
+/// A single transient notification. The `id` is a process-unique
+/// internal token (used by `dismiss(id)`); the optional `dbus_id` is the
+/// freedesktop `org.freedesktop.Notifications` id used to address the
+/// originating app via the `NotificationClosed` / `ActionInvoked`
+/// signals.
 #[derive(Clone, Debug)]
 pub struct Notification {
     pub id: u64,
@@ -103,6 +116,19 @@ pub struct Notification {
     pub severity: NotificationSeverity,
     pub created_at: Instant,
     pub dismiss_after: Duration,
+    /// freedesktop notification id, set when this toast originated from a
+    /// D-Bus `Notify` call. `None` for shell-internal notifications
+    /// (workspace-switch toasts, permission results, etc.).
+    pub dbus_id: Option<u32>,
+    /// Sending application's display name (the `Notify` `app_name` arg).
+    /// Rendered as a caption above the title when present.
+    pub app_name: Option<String>,
+    /// Workspace the sending app belongs to, for attribution. `None` for
+    /// shell-internal notifications or unattributable senders.
+    pub source_workspace: Option<u64>,
+    /// `(action_key, action_label)` pairs from the `Notify` call.
+    /// Activating the toast invokes the default (or first) action.
+    pub actions: Vec<(String, String)>,
 }
 
 impl Notification {
@@ -118,7 +144,76 @@ impl Notification {
             severity: NotificationSeverity::default(),
             created_at: Instant::now(),
             dismiss_after: DEFAULT_DISMISS_AFTER,
+            dbus_id: None,
+            app_name: None,
+            source_workspace: None,
+            actions: Vec::new(),
         }
+    }
+
+    /// Build a toast from a D-Bus [`IncomingNotification`].
+    ///
+    /// Mapping:
+    /// - `summary` → title, `body` → body, `app_name` → caption,
+    /// - `urgency` 2 (critical) → [`NotificationSeverity::Error`], else
+    ///   `Info`,
+    /// - `expire_timeout`: `-1` → [`DEFAULT_DISMISS_AFTER`], `0` →
+    ///   [`PERSISTENT_DISMISS`], `> 0` → that many milliseconds. Critical
+    ///   notifications are forced persistent regardless of `expire_timeout`
+    ///   (spec: critical must not auto-expire).
+    pub fn from_incoming(inc: crate::notifications::IncomingNotification) -> Self {
+        let severity = match inc.urgency {
+            2 => NotificationSeverity::Error,
+            _ => NotificationSeverity::Info,
+        };
+        let dismiss_after = if inc.urgency == 2 {
+            PERSISTENT_DISMISS
+        } else {
+            match inc.expire_timeout {
+                t if t < 0 => DEFAULT_DISMISS_AFTER,
+                0 => PERSISTENT_DISMISS,
+                ms => Duration::from_millis(ms as u64),
+            }
+        };
+        Self {
+            id: next_id(),
+            title: inc.summary,
+            body: inc.body,
+            icon_kind: NotificationIconKind::default(),
+            severity,
+            created_at: Instant::now(),
+            dismiss_after,
+            dbus_id: Some(inc.dbus_id),
+            app_name: if inc.app_name.is_empty() {
+                None
+            } else {
+                Some(inc.app_name)
+            },
+            source_workspace: inc.caller.as_ref().map(|c| c.workspace_id.0),
+            actions: inc.actions,
+        }
+    }
+
+    /// The action key to invoke when the toast is activated (clicked):
+    /// the `"default"` action if present, else the first action, else
+    /// `None`.
+    pub fn default_action_key(&self) -> Option<String> {
+        if let Some((k, _)) = self.actions.iter().find(|(k, _)| k == "default") {
+            return Some(k.clone());
+        }
+        self.actions.first().map(|(k, _)| k.clone())
+    }
+
+    /// Attach a sending-app display name (caption).
+    pub fn with_app_name(mut self, app: impl Into<String>) -> Self {
+        self.app_name = Some(app.into());
+        self
+    }
+
+    /// Attach a freedesktop notification id.
+    pub fn with_dbus_id(mut self, id: u32) -> Self {
+        self.dbus_id = Some(id);
+        self
     }
 
     pub fn with_severity(mut self, severity: NotificationSeverity) -> Self {
@@ -174,6 +269,18 @@ const CLOSE_BUTTON_SIZE: f64 = 16.0;
 /// entries are dropped from the front when the cap is exceeded — same
 /// FIFO behaviour as `ui::widget::toast::ToastStack`.
 pub const MAX_NOTIFICATIONS: usize = 6;
+
+/// Lock-screen redaction label: shown in place of the entire toast stack
+/// while the session is locked, so only the *count* leaks (never an app
+/// name, summary, or body). Pure helper so the redaction contract is
+/// unit-testable without rendering a scene.
+pub fn lock_suppressed_label(count: usize) -> String {
+    match count {
+        0 => String::new(),
+        1 => "1 notification".to_string(),
+        n => format!("{n} notifications"),
+    }
+}
 
 /// Top-right notification stack widget. The widget itself is a thin
 /// renderer over [`ChromeState::notifications`] — the chrome owns the
@@ -309,9 +416,9 @@ impl Widget for NotificationStack {
         }
 
         let now = Instant::now();
-        let snapshot: Vec<Notification> = {
+        let (snapshot, locked): (Vec<Notification>, bool) = {
             let ch = self.chrome.borrow();
-            ch.notifications().iter().cloned().collect()
+            (ch.notifications().iter().cloned().collect(), ch.session_locked())
         };
         if snapshot.is_empty() {
             self.rect = Rect::ZERO;
@@ -324,6 +431,50 @@ impl Widget for NotificationStack {
 
         let x0_rest = self.viewport.x1 - EDGE_INSET - TOAST_WIDTH;
         let mut y = self.viewport.y0 + EDGE_INSET;
+
+        // Lock-suppression (consistent with Track D2): while the session
+        // is locked, withhold every notification's app name / summary /
+        // body so secrets never render on (or near) the lock screen.
+        // Collapse the whole stack into a single redacted card that shows
+        // only the count, and register no dismiss hit-rects (the toast
+        // can't be acted on while locked). The native compositor already
+        // paints the lock overlay *instead* of the chrome while locked,
+        // so this is belt-and-suspenders for any path that mounts the
+        // stack directly (e.g. hosted mode).
+        if locked {
+            let card_rect =
+                Rect::new(x0_rest, y, x0_rest + TOAST_WIDTH, y + TOAST_HEIGHT);
+            let shape = RoundedRect::from_rect(card_rect, radius);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.raised,
+                None,
+                &shape,
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                theme.tokens.colors.border_standard,
+                None,
+                &shape,
+            );
+            let label = lock_suppressed_label(snapshot.len());
+            text_renderer.draw_text(
+                scene,
+                &label,
+                title_size,
+                theme.tokens.colors.text_dim,
+                transform
+                    * Affine::translate((
+                        card_rect.x0 + CARD_PADDING_X,
+                        card_rect.y0 + (TOAST_HEIGHT - title_size as f64) / 2.0,
+                    )),
+                Some((TOAST_WIDTH - CARD_PADDING_X * 2.0) as f32),
+            );
+            self.rect = card_rect;
+            return;
+        }
 
         let mut stack_min_y = f64::INFINITY;
         let mut stack_max_y = f64::NEG_INFINITY;
@@ -389,31 +540,60 @@ impl Widget for NotificationStack {
                 &Circle::new(Point::new(dot_cx, dot_cy), DOT_RADIUS),
             );
 
-            // Title (bold).
+            // Text column: optional app-name caption, then the title
+            // (semibold), then the body (dim). The caption shifts the
+            // start up a touch so all three lines fit the fixed card
+            // height.
             let text_x = card_rect.x0 + CARD_PADDING_X + DOT_RADIUS * 2.0 + DOT_GAP;
-            let title_y = card_rect.y0 + CARD_PADDING_Y;
+            let width_avail =
+                (TOAST_WIDTH - (text_x - card_rect.x0) - CLOSE_BUTTON_SIZE - 8.0) as f32;
             let title_color = theme.tokens.colors.text_primary.with_alpha(alpha);
+            let body_color = theme.tokens.colors.text_dim.with_alpha(alpha);
+
+            let mut text_y = if n.app_name.is_some() {
+                card_rect.y0 + 8.0
+            } else {
+                card_rect.y0 + CARD_PADDING_Y
+            };
+
+            // App-name caption (attribution): the sending app's name in
+            // uppercase, dim.
+            if let Some(app) = n.app_name.as_ref() {
+                text_renderer.draw_text_weighted(
+                    scene,
+                    &app.to_uppercase(),
+                    body_size,
+                    body_color,
+                    transform * Affine::translate((text_x, text_y)),
+                    Some(width_avail),
+                    TextWeight::Semibold,
+                );
+                text_y += body_size as f64 + 2.0;
+            }
+
+            // Title (bold).
             text_renderer.draw_text_weighted(
                 scene,
                 &n.title,
                 title_size,
                 title_color,
-                transform * Affine::translate((text_x, title_y)),
-                Some((TOAST_WIDTH - (text_x - card_rect.x0) - CLOSE_BUTTON_SIZE - 8.0) as f32),
+                transform * Affine::translate((text_x, text_y)),
+                Some(width_avail),
                 TextWeight::Semibold,
             );
+            text_y += title_size as f64 + 4.0;
 
             // Body (dim).
-            let body_y = title_y + title_size as f64 + 4.0;
-            let body_color = theme.tokens.colors.text_dim.with_alpha(alpha);
-            text_renderer.draw_text(
-                scene,
-                &n.body,
-                body_size,
-                body_color,
-                transform * Affine::translate((text_x, body_y)),
-                Some((TOAST_WIDTH - (text_x - card_rect.x0) - CLOSE_BUTTON_SIZE - 8.0) as f32),
-            );
+            if !n.body.is_empty() {
+                text_renderer.draw_text(
+                    scene,
+                    &n.body,
+                    body_size,
+                    body_color,
+                    transform * Affine::translate((text_x, text_y)),
+                    Some(width_avail),
+                );
+            }
 
             // Close (X) button at the top-right.
             let cx0 = card_rect.x1 - CLOSE_BUTTON_SIZE - 6.0;
@@ -442,6 +622,32 @@ impl Widget for NotificationStack {
                     Point::new(close_rect.x0 + inset, close_rect.y1 - inset),
                 ),
             );
+
+            // Actionable indicator: a severity-tinted chevron at the
+            // bottom-right when the notification carries actions. The
+            // whole card is the activate hit-target — clicking it invokes
+            // the default (or first) action and emits `ActionInvoked`.
+            // Per-action buttons are a documented follow-up.
+            if !n.actions.is_empty() {
+                let chev_color = n.severity.color(theme).with_alpha(alpha);
+                let chx = card_rect.x1 - 16.0;
+                let chy = card_rect.y1 - 12.0;
+                let chev_stroke = Stroke::new(1.6);
+                scene.stroke(
+                    &chev_stroke,
+                    transform,
+                    chev_color,
+                    None,
+                    &Line::new(Point::new(chx, chy - 4.0), Point::new(chx + 4.0, chy)),
+                );
+                scene.stroke(
+                    &chev_stroke,
+                    transform,
+                    chev_color,
+                    None,
+                    &Line::new(Point::new(chx + 4.0, chy), Point::new(chx, chy + 4.0)),
+                );
+            }
 
             self.hit_rects.push((n.id, card_rect, close_rect));
             y += TOAST_HEIGHT + TOAST_GAP;
@@ -509,25 +715,23 @@ impl NotificationStack {
     /// duplicate the cursor cache here. Returns `true` if the click
     /// was consumed (i.e. landed on a toast).
     pub fn notify_click_at(&mut self, p: Point) -> bool {
-        let dismissed = {
-            // Iterate copy of hit rects so we don't hold a borrow
-            // across the chrome mutation below.
-            let hits = self.hit_rects.clone();
-            let mut id_to_dismiss = None;
-            for (id, full, close) in hits {
-                if close.contains(p) || full.contains(p) {
-                    id_to_dismiss = Some(id);
-                    break;
-                }
-            }
-            if let Some(id) = id_to_dismiss {
+        // Iterate a copy of the hit rects so we don't hold a borrow
+        // across the chrome mutation below. Clicking the explicit close
+        // (X) glyph always just dismisses; clicking anywhere else on the
+        // card *activates* it — invoking the default/first action (and
+        // emitting `ActionInvoked`) if the notification carries any.
+        let hits = self.hit_rects.clone();
+        for (id, full, close) in hits {
+            if close.contains(p) {
                 self.chrome.borrow_mut().dismiss_notification(id);
-                true
-            } else {
-                false
+                return true;
             }
-        };
-        dismissed
+            if full.contains(p) {
+                self.chrome.borrow_mut().activate_notification(id);
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -641,6 +845,196 @@ mod tests {
         assert!(
             last_title.to_lowercase().contains("workspace"),
             "title should mention the workspace, got: {last_title}"
+        );
+    }
+
+    // ---------- Track D1: D-Bus bridge wiring ----------
+
+    use crate::notifications::{CloseReason, IncomingNotification, NotificationBridge};
+    use crate::portal::PortalCaller;
+    use crate::shell::state::WorkspaceId;
+
+    fn incoming(dbus_id: u32, urgency: u8, expire: i32) -> IncomingNotification {
+        IncomingNotification {
+            dbus_id,
+            app_name: "Mailer".into(),
+            summary: "New mail".into(),
+            body: "secret subject".into(),
+            actions: vec![("default".into(), "Open".into())],
+            expire_timeout: expire,
+            urgency,
+            caller: Some(PortalCaller::new(WorkspaceId(9), "org.mail")),
+        }
+    }
+
+    #[test]
+    fn from_incoming_maps_fields_and_urgency() {
+        let n = Notification::from_incoming(incoming(3, 2, -1));
+        assert_eq!(n.title, "New mail");
+        assert_eq!(n.body, "secret subject");
+        assert_eq!(n.dbus_id, Some(3));
+        assert_eq!(n.app_name.as_deref(), Some("Mailer"));
+        assert_eq!(n.source_workspace, Some(9));
+        // Critical urgency → Error severity + persistent dwell.
+        assert_eq!(n.severity, NotificationSeverity::Error);
+        assert_eq!(n.dismiss_after, PERSISTENT_DISMISS);
+        assert_eq!(n.default_action_key().as_deref(), Some("default"));
+    }
+
+    #[test]
+    fn from_incoming_expire_timeout_mapping() {
+        // -1 = server default.
+        assert_eq!(
+            Notification::from_incoming(incoming(1, 1, -1)).dismiss_after,
+            DEFAULT_DISMISS_AFTER
+        );
+        // 0 = never expire (modelled as PERSISTENT_DISMISS).
+        assert_eq!(
+            Notification::from_incoming(incoming(1, 1, 0)).dismiss_after,
+            PERSISTENT_DISMISS
+        );
+        // >0 = milliseconds.
+        assert_eq!(
+            Notification::from_incoming(incoming(1, 1, 2500)).dismiss_after,
+            Duration::from_millis(2500)
+        );
+    }
+
+    #[test]
+    fn pump_dbus_notifications_creates_attributed_toast() {
+        let chrome = new_chrome();
+        let bridge = NotificationBridge::new();
+        chrome
+            .borrow_mut()
+            .set_notification_bridge(bridge.clone());
+        bridge.push_incoming(incoming(11, 1, 5000));
+        chrome.borrow_mut().pump_dbus_notifications();
+        let ch = chrome.borrow();
+        assert_eq!(ch.notifications().len(), 1);
+        let toast = &ch.notifications()[0];
+        assert_eq!(toast.dbus_id, Some(11));
+        assert_eq!(toast.source_workspace, Some(9));
+        assert_eq!(toast.app_name.as_deref(), Some("Mailer"));
+    }
+
+    #[test]
+    fn replaces_id_supersedes_existing_toast_via_pump() {
+        let chrome = new_chrome();
+        let bridge = NotificationBridge::new();
+        chrome
+            .borrow_mut()
+            .set_notification_bridge(bridge.clone());
+        bridge.push_incoming(incoming(5, 1, 5000));
+        chrome.borrow_mut().pump_dbus_notifications();
+        // Same dbus_id replaces, not appends.
+        let mut second = incoming(5, 1, 5000);
+        second.summary = "Updated".into();
+        bridge.push_incoming(second);
+        chrome.borrow_mut().pump_dbus_notifications();
+        let ch = chrome.borrow();
+        assert_eq!(ch.notifications().len(), 1, "replaces_id must supersede");
+        assert_eq!(ch.notifications()[0].title, "Updated");
+    }
+
+    #[test]
+    fn expire_emits_notification_closed_event() {
+        let chrome = new_chrome();
+        let bridge = NotificationBridge::new();
+        chrome
+            .borrow_mut()
+            .set_notification_bridge(bridge.clone());
+        chrome.borrow_mut().push_notification_full(
+            Notification::from_incoming(incoming(21, 1, 5000))
+                .with_dismiss_after(Duration::from_millis(10)),
+        );
+        let future = Instant::now() + Duration::from_millis(200);
+        chrome
+            .borrow_mut()
+            .update_notification_lifecycle(future);
+        assert_eq!(
+            bridge.drain_closed_events(),
+            vec![(21, CloseReason::Expired)],
+            "an expired D-Bus toast must emit NotificationClosed(reason=Expired)"
+        );
+    }
+
+    #[test]
+    fn dismiss_emits_closed_event() {
+        let chrome = new_chrome();
+        let bridge = NotificationBridge::new();
+        chrome
+            .borrow_mut()
+            .set_notification_bridge(bridge.clone());
+        let id = chrome
+            .borrow_mut()
+            .push_notification_full(Notification::from_incoming(incoming(31, 1, 5000)));
+        chrome.borrow_mut().dismiss_notification(id);
+        assert_eq!(
+            bridge.drain_closed_events(),
+            vec![(31, CloseReason::Dismissed)]
+        );
+    }
+
+    #[test]
+    fn activate_invokes_default_action_then_closes() {
+        let chrome = new_chrome();
+        let bridge = NotificationBridge::new();
+        chrome
+            .borrow_mut()
+            .set_notification_bridge(bridge.clone());
+        let id = chrome
+            .borrow_mut()
+            .push_notification_full(Notification::from_incoming(incoming(41, 1, 5000)));
+        assert!(chrome.borrow_mut().activate_notification(id));
+        assert!(chrome.borrow().notifications().is_empty());
+        assert_eq!(bridge.drain_action_events(), vec![(41, "default".to_string())]);
+        assert_eq!(
+            bridge.drain_closed_events(),
+            vec![(41, CloseReason::Dismissed)]
+        );
+    }
+
+    #[test]
+    fn close_request_pump_removes_and_emits_closed() {
+        let chrome = new_chrome();
+        let bridge = NotificationBridge::new();
+        chrome
+            .borrow_mut()
+            .set_notification_bridge(bridge.clone());
+        bridge.push_incoming(incoming(51, 1, 5000));
+        chrome.borrow_mut().pump_dbus_notifications();
+        assert_eq!(chrome.borrow().notifications().len(), 1);
+        // App calls CloseNotification(51).
+        bridge.request_close(51);
+        chrome.borrow_mut().pump_dbus_notifications();
+        assert!(chrome.borrow().notifications().is_empty());
+        assert_eq!(bridge.drain_closed_events(), vec![(51, CloseReason::Closed)]);
+    }
+
+    #[test]
+    fn internal_notifications_never_emit_dbus_signals() {
+        // A shell-internal toast (no dbus_id) must not emit any signal
+        // when dismissed — only D-Bus-originated toasts do.
+        let chrome = new_chrome();
+        let bridge = NotificationBridge::new();
+        chrome
+            .borrow_mut()
+            .set_notification_bridge(bridge.clone());
+        let id = chrome.borrow_mut().push_notification("internal", "");
+        chrome.borrow_mut().dismiss_notification(id);
+        assert!(bridge.drain_closed_events().is_empty());
+    }
+
+    #[test]
+    fn session_lock_suppression_label() {
+        let chrome = new_chrome();
+        chrome.borrow_mut().push_notification("a", "b");
+        chrome.borrow_mut().push_notification("c", "d");
+        chrome.borrow_mut().set_session_locked(true);
+        assert!(chrome.borrow().session_locked());
+        assert_eq!(
+            lock_suppressed_label(chrome.borrow().notification_count()),
+            "2 notifications"
         );
     }
 }
