@@ -90,6 +90,20 @@ pub(super) fn twips_to_px(v: &str) -> Option<f64> {
     Some(((n / 15.0).max(0.0) * 100.0).round() / 100.0)
 }
 
+/// Line spacing from a `<w:spacing>` element: an `auto`-rule `w:line` is in 240ths
+/// of a line (1.5 → 360), which maps onto the model's unitless multiple. Other
+/// `w:lineRule` values (`exact`/`atLeast`) are fixed lengths in twips and have no
+/// clean unitless multiple, so they're left unset (`None`).
+pub(super) fn line_spacing_from_spacing(e: &BytesStart) -> Option<f64> {
+    let line = attr_val(e, b"w:line").and_then(|v| v.trim().parse::<f64>().ok())?;
+    let rule = attr_val(e, b"w:lineRule").unwrap_or_else(|| "auto".to_string());
+    if rule == "auto" && line > 0.0 {
+        Some((line / 240.0 * 1000.0).round() / 1000.0)
+    } else {
+        None
+    }
+}
+
 /// Inline marks implied by a single `w:rPr` child element.
 pub(super) fn mark_from_rpr_child(e: &BytesStart) -> Option<(String, MarkValue)> {
     match e.name().as_ref() {
@@ -102,8 +116,91 @@ pub(super) fn mark_from_rpr_child(e: &BytesStart) -> Option<(String, MarkValue)>
             .or_else(|| attr_val(e, b"w:hAnsi"))
             .map(|f| ("fontFamily".into(), MarkValue::Str(generic_font(&f)))),
         b"w:color" => attr_val(e, b"w:val").and_then(|v| normalize_color(&v)).map(|c| ("color".into(), MarkValue::Str(c))),
+        // Per-run language override. `w:lang w:val` is already a BCP-47 tag (`fr`,
+        // `de-DE`), so it passes straight through to a `lang` mark. Supports per-span
+        // spell-check locale and screen-reader language.
+        b"w:lang" => attr_val(e, b"w:val").filter(|v| !v.is_empty()).map(|v| ("lang".into(), MarkValue::Str(v))),
+        // Text background (highlight). Prefer `w:shd w:fill` (arbitrary hex);
+        // `w:highlight` carries a named colour (`yellow`, …) mapped to its hex.
+        b"w:shd" => attr_val(e, b"w:fill")
+            .filter(|v| !v.eq_ignore_ascii_case("auto"))
+            .and_then(|v| normalize_color(&v))
+            .map(|c| ("highlight".into(), MarkValue::Str(c))),
+        b"w:highlight" => attr_val(e, b"w:val")
+            .filter(|v| !v.eq_ignore_ascii_case("none"))
+            .and_then(|v| highlight_name_to_hex(&v))
+            .map(|c| ("highlight".into(), MarkValue::Str(c))),
+        // Vertical alignment: `w:vertAlign w:val="superscript"|"subscript"`.
+        b"w:vertAlign" => match attr_val(e, b"w:val").as_deref() {
+            Some("superscript") => Some(("super".into(), MarkValue::Bool(true))),
+            Some("subscript") => Some(("sub".into(), MarkValue::Bool(true))),
+            _ => None,
+        },
         _ => None,
     }
+}
+
+/// The document default language declared in `word/styles.xml` under
+/// `<w:docDefaults><w:rPrDefault><w:rPr><w:lang w:val="…"/>`, the home Word reads for
+/// the document's default spell-check / screen-reader locale. Returns the BCP-47 tag
+/// (e.g. `de-DE`) or `None` if the part declares no default language. Only the run
+/// default (`w:rPrDefault`) is inspected — never a `<w:style>`'s own `<w:lang>`.
+pub(super) fn doc_default_language(styles_xml: &[u8]) -> Option<String> {
+    let s = std::str::from_utf8(styles_xml).ok()?;
+    let mut reader = Reader::from_str(s);
+    // Track whether we're inside the `docDefaults > rPrDefault > rPr` subtree; only a
+    // `<w:lang>` there is the document default (a `<w:lang>` inside a `<w:style>`'s rPr
+    // is a *style's* language, not the document default).
+    let (mut in_doc_defaults, mut in_rpr_default, mut in_rpr) = (false, false, false);
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) => match e.name().as_ref() {
+                b"w:docDefaults" => in_doc_defaults = true,
+                b"w:rPrDefault" if in_doc_defaults => in_rpr_default = true,
+                b"w:rPr" if in_rpr_default => in_rpr = true,
+                _ => {}
+            },
+            Ok(Event::Empty(e)) if in_rpr && e.name().as_ref() == b"w:lang" => {
+                if let Some(v) = attr_val(&e, b"w:val").filter(|v| !v.is_empty()) {
+                    return Some(v);
+                }
+            }
+            Ok(Event::End(e)) => match e.name().as_ref() {
+                b"w:rPr" => in_rpr = false,
+                b"w:rPrDefault" => in_rpr_default = false,
+                b"w:docDefaults" => return None, // default block closed without a lang
+                _ => {}
+            },
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Map an OOXML `w:highlight` named colour to a canonical `#rrggbb`. The OOXML
+/// highlight palette is a fixed set of 16 names; unknown names yield `None`.
+pub(super) fn highlight_name_to_hex(name: &str) -> Option<String> {
+    let hex = match name.trim().to_ascii_lowercase().as_str() {
+        "black" => "#000000",
+        "blue" => "#0000ff",
+        "cyan" => "#00ffff",
+        "green" => "#008000",
+        "magenta" => "#ff00ff",
+        "red" => "#ff0000",
+        "yellow" => "#ffff00",
+        "white" => "#ffffff",
+        "darkblue" => "#000080",
+        "darkcyan" => "#008080",
+        "darkgreen" => "#003300",
+        "darkmagenta" => "#800080",
+        "darkred" => "#800000",
+        "darkyellow" => "#808000",
+        "darkgray" => "#808080",
+        "lightgray" => "#c0c0c0",
+        _ => return None,
+    };
+    Some(hex.to_string())
 }
 
 #[derive(Default, Clone)]
@@ -130,6 +227,8 @@ pub(super) struct ParaStyle {
     pub space_before: Option<f64>,
     pub space_after: Option<f64>,
     pub indent: Option<f64>,
+    /// Line spacing as a unitless multiple (1.5), from `w:spacing w:line` (auto).
+    pub line_spacing: Option<f64>,
 }
 
 /// Map an OOXML `w:numFmt w:val` onto the model's canonical numbering format
@@ -198,6 +297,21 @@ impl StyleRegistry {
             let p = self.para.get(&n)?;
             if let Some(a) = &p.align {
                 return Some(a.clone());
+            }
+            cur = p.parent.clone();
+        }
+        None
+    }
+
+    /// Line spacing (`w:spacing w:line`, auto) a paragraph style applies, following
+    /// the `basedOn` chain (most-derived first).
+    pub(super) fn para_line_spacing(&self, name: &str) -> Option<f64> {
+        let mut cur = Some(name.to_string());
+        for _ in 0..8 {
+            let n = cur?;
+            let p = self.para.get(&n)?;
+            if let Some(ls) = p.line_spacing {
+                return Some(ls);
             }
             cur = p.parent.clone();
         }
@@ -322,6 +436,7 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry) {
     let mut space_before: Option<f64> = None;
     let mut space_after: Option<f64> = None;
     let mut indent: Option<f64> = None;
+    let mut line_spacing: Option<f64> = None;
     let mut in_ppr = false;
     let mut in_rpr = false;
 
@@ -336,13 +451,17 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry) {
                 b"w:outlineLvl" if in_ppr => {
                     outline = attr_val(&e, b"w:val").and_then(|v| v.parse::<i64>().ok()).map(|n| n + 1)
                 }
-                // Paragraph spacing (twips) → px space_before/space_after.
+                // Paragraph spacing (twips) → px space_before/space_after; an
+                // auto-rule `w:line` → the unitless line_spacing multiple.
                 b"w:spacing" if in_ppr => {
                     if let Some(v) = attr_val(&e, b"w:before") {
                         space_before = twips_to_px(&v);
                     }
                     if let Some(v) = attr_val(&e, b"w:after") {
                         space_after = twips_to_px(&v);
+                    }
+                    if let Some(ls) = line_spacing_from_spacing(&e) {
+                        line_spacing = Some(ls);
                     }
                 }
                 // Left indent (twips, `w:left`/`w:start`) → px indent.
@@ -406,6 +525,7 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry) {
                     space_before = None;
                     space_after = None;
                     indent = None;
+                    line_spacing = None;
                     in_ppr = false;
                     in_rpr = false;
                 }
@@ -450,6 +570,7 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry) {
                                         space_before: space_before.take(),
                                         space_after: space_after.take(),
                                         indent: indent.take(),
+                                        line_spacing: line_spacing.take(),
                                     },
                                 );
                             }
@@ -470,6 +591,7 @@ pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry) {
                     space_before = None;
                     space_after = None;
                     indent = None;
+                    line_spacing = None;
                 }
                 _ => {}
             },

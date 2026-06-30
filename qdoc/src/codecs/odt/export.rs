@@ -15,6 +15,11 @@ use crate::snapshot::{AttrVal, DocSnapshot};
 use std::collections::{BTreeMap, BTreeSet};
 
 const MIMETYPE: &[u8] = b"application/vnd.oasis.opendocument.text";
+/// A minimal `styles.xml` skeleton (automatic-styles + master-styles wired to a
+/// `pm1` page-layout) used as the splice target when a multi-column document had no
+/// `styles.xml` of its own. Mirrors the namespaces the column splice needs.
+const MINIMAL_STYLES: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"><office:automatic-styles><style:page-layout style:name="pm1"><style:page-layout-properties/></style:page-layout></office:automatic-styles><office:master-styles><style:master-page style:name="Standard" style:page-layout-name="pm1"/></office:master-styles></office:document-styles>"#;
 const MANIFEST: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
 <manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0">
 <manifest:file-entry manifest:full-path="/" manifest:media-type="application/vnd.oasis.opendocument.text"/>
@@ -69,6 +74,45 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
         c.set("styles.xml", styles_xml);
         if is_new {
             had_styles = true;
+        }
+    }
+    // Multi-column section layout → `styles.xml` page-layout: splice the document's
+    // `style:columns` (count + gap) into the first page-layout properties, preserving
+    // the rest of the page-layout. Operates on whatever `styles.xml` exists at this
+    // point (the preserved original or the header/footer-augmented copy above), or a
+    // synthesised minimal one when the document is multi-column but had no styles.xml.
+    // Only runs when the document has more than one column, so a single-column doc
+    // leaves `styles.xml` untouched (or absent).
+    {
+        let base = c
+            .get("styles.xml")
+            .map(|b| b.to_vec())
+            .unwrap_or_else(|| MINIMAL_STYLES.to_vec());
+        if let Some(styles_xml) = super::columns::export_page_layout_columns(&doc, &base) {
+            let is_new = !had_styles;
+            c.set("styles.xml", styles_xml);
+            if is_new {
+                had_styles = true;
+            }
+        }
+    }
+    // Document default language → `styles.xml` paragraph default-style: splice the
+    // document's `fo:language`/`fo:country` (split from the BCP-47 tag) into a
+    // `<style:default-style style:family="paragraph">` in `<office:styles>`,
+    // synthesising the section / a minimal styles.xml when the source had none. Only
+    // runs when the document declares a default language, so a doc without one leaves
+    // `styles.xml` untouched (or absent).
+    {
+        let base = c
+            .get("styles.xml")
+            .map(|b| b.to_vec())
+            .unwrap_or_else(|| MINIMAL_STYLES.to_vec());
+        if let Some(styles_xml) = super::language::export_default_language(&doc, &base) {
+            let is_new = !had_styles;
+            c.set("styles.xml", styles_xml);
+            if is_new {
+                had_styles = true;
+            }
         }
     }
     // Document properties → `meta.xml`: regenerate the part from the canonical
@@ -193,6 +237,22 @@ fn mark_style(m: &MarkSpan) -> Option<(String, String)> {
         "fontSize" => m.value.as_int().map(|n| (format!("qdoc-fs-{n}"), format!(r#"fo:font-size="{n}pt""#))),
         "fontFamily" => m.value.as_str().map(|f| (format!("qdoc-ff-{f}"), format!(r#"style:font-name="{}""#, font_name(f)))),
         "color" => m.value.as_str().map(|c| (format!("qdoc-color-{}", color_token(c)), format!(r#"fo:color="{}""#, c))),
+        // Text background (highlight): ODF `fo:background-color`.
+        "highlight" => m
+            .value
+            .as_str()
+            .map(|c| (format!("qdoc-hl-{}", color_token(c)), format!(r#"fo:background-color="{}""#, c))),
+        // Vertical alignment: ODF `style:text-position` (keyword + 58% font height,
+        // matching what LibreOffice writes for menu super/subscript).
+        "super" => Some(("qdoc-super".into(), r#"style:text-position="super 58%""#.into())),
+        "sub" => Some(("qdoc-sub".into(), r#"style:text-position="sub 58%""#.into())),
+        // Per-run language override: split BCP-47 `de-DE` into ODF
+        // `fo:language="de" fo:country="DE"` text-properties.
+        "lang" => m
+            .value
+            .as_str()
+            .filter(|c| !c.is_empty())
+            .map(|c| (format!("qdoc-lang-{}", lang_token(c)), lang_text_props(c))),
         _ => None,
     }
 }
@@ -201,6 +261,24 @@ fn mark_style(m: &MarkSpan) -> Option<(String, String)> {
 /// generated automatic-style name a valid XML name.
 fn color_token(c: &str) -> String {
     c.chars().filter(|ch| ch.is_ascii_alphanumeric()).collect()
+}
+
+/// A style-name-safe token for a BCP-47 tag (`de-DE` → `deDE`); keeps the generated
+/// automatic-style name a valid XML name.
+fn lang_token(c: &str) -> String {
+    c.chars().filter(|ch| ch.is_ascii_alphanumeric()).collect()
+}
+
+/// The ODF `style:text-properties` attribute string for a BCP-47 language tag: split
+/// `xx-YY` into `fo:language="xx" fo:country="YY"` (an `xx`-only tag emits just
+/// `fo:language`). Re-imported by `styles::marks_from_text_props` / `reassemble_bcp47`.
+fn lang_text_props(code: &str) -> String {
+    match code.split_once('-') {
+        Some((lang, country)) if !country.is_empty() => {
+            format!(r#"fo:language="{}" fo:country="{}""#, escape_attr(lang), escape_attr(country))
+        }
+        _ => format!(r#"fo:language="{}""#, escape_attr(code)),
+    }
 }
 
 /// Escape a string for use inside a double-quoted XML attribute value.
@@ -281,6 +359,28 @@ fn comment_ends_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
     v
 }
 
+/// The bookmark names whose anchoring `bookmark` mark starts exactly at `i` / ends
+/// exactly at `i` (i.e. `mark.end == i`), sorted for deterministic output.
+fn bookmark_starts_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
+    let mut v: Vec<String> = marks
+        .iter()
+        .filter(|m| m.name == crate::schema::MARK_BOOKMARK && m.start == i)
+        .filter_map(|m| m.value.as_str().map(|s| s.to_string()))
+        .collect();
+    v.sort();
+    v
+}
+
+fn bookmark_ends_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
+    let mut v: Vec<String> = marks
+        .iter()
+        .filter(|m| m.name == crate::schema::MARK_BOOKMARK && m.end == i)
+        .filter_map(|m| m.value.as_str().map(|s| s.to_string()))
+        .collect();
+    v.sort();
+    v
+}
+
 /// The tracked-change ids (any `ins`/`del` mark) starting / ending exactly at `i`,
 /// sorted for deterministic output.
 fn change_starts_at(marks: &[MarkSpan], i: usize) -> Vec<String> {
@@ -355,6 +455,28 @@ fn render_inline(
             }
         }
     };
+    // Emit `text:bookmark-end`/`text:bookmark-start` markers at `i`, closing spans/link
+    // first so each marker is a clean sibling of the surrounding inline content (ODF
+    // bookmark markers are empty elements that sit between runs).
+    let emit_bookmark_boundaries = |out: &mut String, open: &mut Vec<String>, cur_link: &mut Option<String>, i: usize| {
+        let ends = bookmark_ends_at(marks, i);
+        let starts = bookmark_starts_at(marks, i);
+        if ends.is_empty() && starts.is_empty() {
+            return;
+        }
+        close_spans(out, open);
+        if cur_link.is_some() {
+            out.push_str("</text:a>");
+            *cur_link = None;
+        }
+        // Ends before starts so an adjacent bookmark's end closes before the next opens.
+        for name in ends {
+            out.push_str(&format!(r#"<text:bookmark-end text:name="{}"/>"#, escape_attr(&name)));
+        }
+        for name in starts {
+            out.push_str(&format!(r#"<text:bookmark-start text:name="{}"/>"#, escape_attr(&name)));
+        }
+    };
     // Emit tracked-change `text:change-end`/`text:change-start` markers at `i`, closing
     // spans/link first so each marker is a clean sibling of the surrounding content.
     let emit_change_boundaries = |out: &mut String, open: &mut Vec<String>, cur_link: &mut Option<String>, i: usize| {
@@ -378,6 +500,7 @@ fn render_inline(
     };
     for i in 0..n {
         emit_comment_boundaries(&mut out, &mut open, &mut cur_link, i);
+        emit_bookmark_boundaries(&mut out, &mut open, &mut cur_link, i);
         emit_change_boundaries(&mut out, &mut open, &mut cur_link, i);
         let link = link_at(marks, i);
         if link != cur_link {
@@ -428,6 +551,11 @@ fn render_inline(
     if cur_link.is_some() {
         out.push_str("</text:a>");
     }
+    // A bookmark ending exactly at the block's end (`mark.end == n`) emits its
+    // `text:bookmark-end` after the last char.
+    for name in bookmark_ends_at(marks, n) {
+        out.push_str(&format!(r#"<text:bookmark-end text:name="{}"/>"#, escape_attr(&name)));
+    }
     // A comment ending exactly at the block's end (`mark.end == n`) emits its
     // annotation-end after the last char.
     for id in comment_ends_at(marks, n) {
@@ -466,6 +594,12 @@ fn para_props(b: &BlockView) -> Option<(String, String)> {
             pp.push_str(&format!(r#" fo:text-align="{v}""#));
         }
     }
+    // Line spacing → `fo:line-height` percent (1.5 → "150%").
+    if let Some(AttrVal::Float(ls)) = b.attrs.get("line_spacing") {
+        if *ls > 0.0 {
+            pp.push_str(&format!(r#" fo:line-height="{}%""#, fmt_num(ls * 100.0)));
+        }
+    }
     if pp.is_empty() {
         None
     } else {
@@ -473,18 +607,53 @@ fn para_props(b: &BlockView) -> Option<(String, String)> {
     }
 }
 
+/// The model `anchor` value of an image block (default `inline`).
+fn image_anchor(b: &BlockView) -> &str {
+    match b.attrs.get("anchor") {
+        Some(AttrVal::Str(s)) => s.as_str(),
+        _ => "inline",
+    }
+}
+
+/// The model `wrap` value of an image block (default `none`).
+fn image_wrap(b: &BlockView) -> &str {
+    match b.attrs.get("wrap") {
+        Some(AttrVal::Str(s)) => s.as_str(),
+        _ => "none",
+    }
+}
+
 /// Build the `draw:frame` XML for an `image` block, or `None` if its blob is
 /// absent from the document. The `xlink:href` matches the `Pictures/<hash>.<ext>`
-/// part `export()` writes for the same blob.
-fn image_frame_xml(b: &BlockView, snap: &DocSnapshot) -> Option<String> {
+/// part `export()` writes for the same blob. When the image is floating (anchor
+/// other than `inline`) and/or wraps text, a per-image graphic automatic style is
+/// pushed onto `graphic_styles` (name, `style:wrap` value) and referenced via
+/// `draw:style-name`.
+fn image_frame_xml(b: &BlockView, snap: &DocSnapshot, graphic_styles: &mut Vec<(String, String)>) -> Option<String> {
     let hash = match b.attrs.get("blob") {
         Some(AttrVal::Str(h)) => h,
         _ => return None,
     };
     let bytes = snap.blobs.get(hash)?;
     let href = picture_href(hash, bytes);
+    let anchor = image_anchor(b);
+    let wrap = image_wrap(b);
     let mut frame = String::from("<draw:frame");
     frame.push_str(&format!(r#" draw:name="{}""#, escape_attr(&b.id)));
+    // ODF anchor type: inline → as-char; page → page; everything else → paragraph.
+    let anchor_type = match anchor {
+        "inline" => "as-char",
+        "page" => "page",
+        _ => "paragraph",
+    };
+    frame.push_str(&format!(r#" text:anchor-type="{anchor_type}""#));
+    // A graphic automatic style carries the wrap; only emit it when meaningful
+    // (a floating frame, since `as-char` ignores wrap in ODF anyway).
+    if anchor != "inline" {
+        let gname = format!("gr{}", graphic_styles.len() + 1);
+        graphic_styles.push((gname.clone(), super::styles::model_wrap_to_odf(wrap).to_string()));
+        frame.push_str(&format!(r#" draw:style-name="{gname}""#));
+    }
     if let Some(AttrVal::Int(w)) = b.attrs.get("width") {
         if *w > 0 {
             frame.push_str(&format!(r#" svg:width="{w}px""#));
@@ -773,6 +942,9 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
     // numbering (format/start), emitted into automatic-styles.
     let mut list_styles: Vec<ListStyle> = Vec::new();
     let list_styles = &mut list_styles;
+    // Per-image graphic automatic styles (name, `style:wrap` value) for floating
+    // images, emitted into automatic-styles and referenced by `draw:style-name`.
+    let mut graphic_styles: Vec<(String, String)> = Vec::new();
     // Footnotes/endnotes referenced from body text, numbered 1.. in reference order.
     let notes = note_index(snap);
     let mut note_ctr = 0usize;
@@ -861,7 +1033,7 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
                 // Emit a top-level `draw:frame` referencing the blob written as a
                 // `Pictures/<hash>.<ext>` part. Size (svg:width/height in px) and
                 // alt (svg:title) round-trip when present.
-                if let Some(frame) = image_frame_xml(b, snap) {
+                if let Some(frame) = image_frame_xml(b, snap, &mut graphic_styles) {
                     body.push_str(&frame);
                 }
                 i += 1;
@@ -936,6 +1108,12 @@ fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>
     // Reconstructed list-styles (numbering format + start) for ordered lists.
     for ls in list_styles.iter() {
         styles.push_str(&ls.xml);
+    }
+    // Per-image graphic styles carrying the frame wrap (`style:wrap`).
+    for (name, wrap) in &graphic_styles {
+        styles.push_str(&format!(
+            r#"<style:style style:name="{name}" style:family="graphic"><style:graphic-properties style:wrap="{wrap}"/></style:style>"#
+        ));
     }
 
     // Declare the common ODF namespaces so re-emitted fidelity atoms (tables,
@@ -1035,6 +1213,68 @@ mod tests {
     }
 
     #[test]
+    fn highlight_super_and_line_spacing_roundtrip() {
+        use crate::document::MarkValue;
+        // A run with `highlight` + a `super` run + a paragraph-level `line_spacing`
+        // attr must all survive the .odt export → import cycle.
+        let mut d = Document::new();
+        let id = d.insert_block(None, "paragraph");
+        d.splice_text(&id, 0, 0, "E=mc2");
+        {
+            let mut dm = d.as_mut();
+            dm.add_mark(&id, 0, 5, "highlight", "#ffff00"); // whole run highlighted
+            dm.add_mark(&id, 4, 5, "super", true); // the exponent
+            dm.set_attr(&id, "line_spacing", 1.5_f64);
+        }
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        // The export carries the ODF properties we expect.
+        let c = OdtContainer::read(&exported).unwrap();
+        let content = std::str::from_utf8(c.get("content.xml").unwrap()).unwrap();
+        assert!(content.contains(r##"fo:background-color="#ffff00""##), "highlight bg: {content}");
+        assert!(content.contains(r#"style:text-position="super"#), "super position: {content}");
+        assert!(content.contains(r#"fo:line-height="150%""#), "line-height: {content}");
+
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+        let b = &snap.blocks[0];
+        assert_eq!(b.text, "E=mc2");
+        assert!(
+            b.marks.iter().any(|m| m.name == "highlight" && m.value == MarkValue::Str("#ffff00".into()) && m.start == 0 && m.end == 5),
+            "highlight mark: {:?}",
+            b.marks
+        );
+        assert!(
+            b.marks.iter().any(|m| m.name == "super" && m.value == MarkValue::Bool(true) && m.start == 4 && m.end == 5),
+            "super mark: {:?}",
+            b.marks
+        );
+        assert_eq!(b.attrs.get("line_spacing"), Some(&AttrVal::Float(1.5)), "line_spacing attr: {:?}", b.attrs);
+    }
+
+    #[test]
+    fn subscript_roundtrips_through_odt() {
+        use crate::document::MarkValue;
+        // A `sub` run exports as `style:text-position="sub …"` and re-imports as `sub`.
+        let mut d = Document::new();
+        let id = d.insert_block(None, "paragraph");
+        d.splice_text(&id, 0, 0, "H2O");
+        d.as_mut().add_mark(&id, 1, 2, "sub", true);
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+        let b = &snap.blocks[0];
+        assert!(
+            b.marks.iter().any(|m| m.name == "sub" && m.value == MarkValue::Bool(true) && m.start == 1 && m.end == 2),
+            "sub mark: {:?}",
+            b.marks
+        );
+    }
+
+    #[test]
     fn hyperlink_roundtrips() {
         use crate::document::MarkValue;
         // A `link` mark exports as `text:a` and re-imports as the same mark+href.
@@ -1058,6 +1298,47 @@ mod tests {
         let link = b.marks.iter().find(|m| m.name == "link").expect("link survives round-trip");
         assert_eq!((link.start, link.end), (3, 7), "{:?}", b.marks);
         assert_eq!(link.value, MarkValue::Str("https://qos.dev/".into()));
+    }
+
+    #[test]
+    fn bookmark_and_cross_reference_roundtrip() {
+        use crate::document::MarkValue;
+        // A bookmark "intro" over a word + a cross-reference pointing at it must survive
+        // an `.odt` export+import with both names and ranges intact.
+        let mut d = Document::new();
+        let target = d.insert_block(None, "paragraph");
+        d.splice_text(&target, 0, 0, "the intro section");
+        d.add_bookmark(&target, 4, 9, "intro"); // over "intro"
+        let src = d.insert_block(Some(&target), "paragraph");
+        d.splice_text(&src, 0, 0, "see above");
+        d.add_cross_ref(&src, 4, 9, "intro"); // "above" → #intro
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let c = OdtContainer::read(&exported).unwrap();
+        let content = std::str::from_utf8(c.get("content.xml").unwrap()).unwrap();
+        // Bookmark markers + the cross-ref `text:a` href appear in the markup.
+        assert!(content.contains(r#"<text:bookmark-start text:name="intro"/>"#), "bookmark-start emitted: {content}");
+        assert!(content.contains(r#"<text:bookmark-end text:name="intro"/>"#), "bookmark-end emitted: {content}");
+        assert!(content.contains(r##"<text:a xlink:href="#intro">above</text:a>"##), "cross-ref text:a emitted: {content}");
+
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+        // The bookmark survives with its name + range.
+        assert_eq!(snap.bookmarks.len(), 1, "one bookmark survives: {:?}", snap.bookmarks);
+        let bm = &snap.bookmarks[0];
+        assert_eq!(bm.name, "intro");
+        assert_eq!((bm.range.1, bm.range.2), (4, 9), "bookmark range over 'intro': {:?}", bm);
+        // The bookmarked block carries the `bookmark` mark.
+        let tb = snap.blocks.iter().find(|b| b.text == "the intro section").unwrap();
+        let mark = tb.marks.iter().find(|m| m.name == crate::schema::MARK_BOOKMARK).expect("bookmark mark present");
+        assert_eq!((mark.start, mark.end), (4, 9));
+        assert_eq!(mark.value, MarkValue::Str("intro".into()));
+        // The cross-reference survives as a `link` mark valued `#intro`.
+        let sb = snap.blocks.iter().find(|b| b.text == "see above").unwrap();
+        let link = sb.marks.iter().find(|m| m.name == "link").expect("cross-ref link mark present");
+        assert_eq!((link.start, link.end), (4, 9), "cross-ref over 'above': {:?}", sb.marks);
+        assert_eq!(link.value, MarkValue::Str("#intro".into()));
     }
 
     #[test]
@@ -1195,6 +1476,44 @@ mod tests {
         assert_eq!(bytes.as_slice(), &TINY_PNG[..], "image bytes survive the round-trip");
         // And the read-side accessor returns them too.
         assert_eq!(d2.blob(&blob_hash).as_deref(), Some(&TINY_PNG[..]));
+    }
+
+    #[test]
+    fn image_positioning_roundtrips_through_odt() {
+        // A floating, paragraph-anchored image that wraps text on its right, with an
+        // explicit display size, must survive an .odt round-trip with anchor + wrap +
+        // size intact (and the wrap carried on a real graphic style).
+        let mut d = Document::new();
+        let p1 = d.insert_block(None, "paragraph");
+        d.splice_text(&p1, 0, 0, "text");
+        let img = d.insert_block(Some(&p1), "image");
+        let hash = d.put_blob(&TINY_PNG);
+        {
+            let mut dm = d.as_mut();
+            dm.set_attr(&img, "blob", hash.as_str());
+            dm.set_attr(&img, "anchor", "paragraph");
+            dm.set_attr(&img, "wrap", "right");
+            dm.set_attr(&img, "width", 120_i64);
+            dm.set_attr(&img, "height", 80_i64);
+        }
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let cont = OdtContainer::read(&exported).unwrap();
+        let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
+        assert!(content.contains(r#"text:anchor-type="paragraph""#), "anchor-type emitted: {content}");
+        assert!(
+            content.contains(r#"style:family="graphic""#) && content.contains(r#"style:wrap="right""#),
+            "graphic style with wrap emitted: {content}"
+        );
+
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+        let im = snap.blocks.iter().find(|b| b.kind == "image").expect("image block present");
+        assert_eq!(im.attrs.get("anchor"), Some(&AttrVal::Str("paragraph".into())), "{:?}", im.attrs);
+        assert_eq!(im.attrs.get("wrap"), Some(&AttrVal::Str("right".into())), "{:?}", im.attrs);
+        assert_eq!(im.attrs.get("width"), Some(&AttrVal::Int(120)), "{:?}", im.attrs);
+        assert_eq!(im.attrs.get("height"), Some(&AttrVal::Int(80)), "{:?}", im.attrs);
     }
 
     #[test]
@@ -1810,5 +2129,185 @@ mod tests {
         );
         assert_eq!(out.parts[0].0, "mimetype", "mimetype still first");
         assert!(out.get("content.xml").is_some(), "content regenerated");
+    }
+
+    #[test]
+    fn columns_roundtrip_synthesised_styles() {
+        // A freshly-authored 2-column document (no styles.xml) must synthesise one
+        // carrying the page-layout `style:columns`, and re-import the count + gap.
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "flows across columns");
+        d.set_columns(2, Some(48.0)); // 48 px ≈ 1.27 cm
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let out = OdtContainer::read(&exported).unwrap();
+        let styles = std::str::from_utf8(out.get("styles.xml").expect("styles.xml synthesised")).unwrap();
+        assert!(styles.contains(r#"style:column-count="2""#), "column-count in page-layout: {styles}");
+        assert!(styles.contains("style:column-gap="), "column-gap emitted: {styles}");
+
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let (count, gap) = d2.columns();
+        assert_eq!(count, 2, "column count survives .odt round-trip");
+        // The gap round-trips through px → cm → px; allow a small unit-conversion epsilon.
+        let gap = gap.expect("gap present");
+        assert!((gap - 48.0).abs() < 0.5, "column gap ≈ 48 px after round-trip, got {gap}");
+        assert_eq!(d2.materialize().columns, 2, "snapshot surfaces the column count");
+    }
+
+    #[test]
+    fn columns_preserve_existing_page_layout() {
+        // An imported styles.xml whose page-layout carries page-size/margins must
+        // keep them when `style:columns` is injected; only the columns change.
+        let styles_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0"><office:automatic-styles><style:page-layout style:name="pm1"><style:page-layout-properties fo:page-width="21cm" fo:margin-left="2cm"/></style:page-layout></office:automatic-styles></office:document-styles>"#;
+        let base = minimal_odt_styled("", "<text:p>hi</text:p>");
+        let mut c = OdtContainer::read(&base).unwrap();
+        c.set("styles.xml", styles_xml.as_bytes().to_vec());
+        let odt = c.write().unwrap();
+
+        let mut d = Document::new();
+        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        assert_eq!(d.columns(), (1, None), "no columns initially");
+        d.set_columns(3, None);
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let out = OdtContainer::read(&exported).unwrap();
+        let styles_out = std::str::from_utf8(out.get("styles.xml").unwrap()).unwrap();
+        assert!(styles_out.contains(r#"fo:page-width="21cm""#), "page size preserved: {styles_out}");
+        assert!(styles_out.contains(r#"fo:margin-left="2cm""#), "margin preserved: {styles_out}");
+        assert!(styles_out.contains(r#"style:column-count="3""#), "columns injected: {styles_out}");
+
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        assert_eq!(d2.columns().0, 3, "column count survives alongside the page-layout");
+    }
+
+    #[test]
+    fn columns_replace_existing_style_columns() {
+        // A page-layout that already declares a `style:columns` must have it replaced
+        // (not duplicated) by the document's setting.
+        let styles_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0"><office:automatic-styles><style:page-layout style:name="pm1"><style:page-layout-properties><style:columns style:column-count="4"/></style:page-layout-properties></style:page-layout></office:automatic-styles></office:document-styles>"#;
+        let base = minimal_odt_styled("", "<text:p>hi</text:p>");
+        let mut c = OdtContainer::read(&base).unwrap();
+        c.set("styles.xml", styles_xml.as_bytes().to_vec());
+        let odt = c.write().unwrap();
+
+        let mut d = Document::new();
+        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        assert_eq!(d.columns().0, 4, "imported 4 columns");
+        d.set_columns(2, None);
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let out = OdtContainer::read(&exported).unwrap();
+        let styles_out = std::str::from_utf8(out.get("styles.xml").unwrap()).unwrap();
+        assert_eq!(styles_out.matches("<style:columns").count(), 1, "exactly one style:columns: {styles_out}");
+        assert!(styles_out.contains(r#"style:column-count="2""#), "count updated to 2: {styles_out}");
+    }
+
+    /// Build a `.odt` whose preserved `styles.xml` holds two independent top-level
+    /// style atoms — the canonical "two unmodeled regions in one part" shape.
+    fn odt_with_two_style_atoms() -> Vec<u8> {
+        let styles_xml = concat!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>"#,
+            "\n",
+            r#"<office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0"><office:styles>"#,
+            r#"<style:style style:name="Quote" style:family="paragraph"><style:text-properties style:font-name="QuoteFont"/></style:style>"#,
+            r#"<style:style style:name="Caption" style:family="paragraph"><style:text-properties style:font-name="CaptionFont"/></style:style>"#,
+            r#"</office:styles></office:document-styles>"#,
+        );
+        let base = minimal_odt_styled("", "<text:p>hi</text:p>");
+        let mut c = OdtContainer::read(&base).unwrap();
+        c.set("styles.xml", styles_xml.as_bytes().to_vec());
+        c.write().unwrap()
+    }
+
+    /// The id + current bytes of the preserved `styles.xml` atom containing `needle`.
+    fn atom_containing(d: &Document, needle: &str) -> (String, Vec<u8>) {
+        let r = d.as_ref();
+        crate::model::preserved_atoms(r.doc, r.c, "odt/part/styles.xml")
+            .into_iter()
+            .find(|(_, b)| String::from_utf8_lossy(b).contains(needle))
+            .unwrap_or_else(|| panic!("no preserved styles.xml atom contains {needle:?}"))
+    }
+
+    /// Round-trip fidelity: a preserved multi-atom `styles.xml` re-emits verbatim
+    /// through the full import→export codec path even though it is now stored as
+    /// per-atom segments rather than one opaque blob.
+    #[test]
+    fn preserved_multi_atom_part_round_trips_verbatim() {
+        let odt = odt_with_two_style_atoms();
+        let original_styles = OdtContainer::read(&odt).unwrap().get("styles.xml").unwrap().to_vec();
+
+        let mut d = Document::new();
+        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let out = OdtContainer::read(&exported).unwrap();
+        assert_eq!(
+            out.get("styles.xml").unwrap(),
+            original_styles.as_slice(),
+            "segmented styles.xml re-emits byte-for-byte"
+        );
+        // It really is stored segmented (two style atoms are addressable).
+        let r = d.as_ref();
+        assert!(
+            crate::model::preserved_atoms(r.doc, r.c, "odt/part/styles.xml").len() >= 2,
+            "styles.xml stored as multiple per-atom segments"
+        );
+    }
+
+    /// THE convergence win, through the real `.odt` codec path: two replicas import
+    /// the same document, each rewrites a DIFFERENT preserved style atom, merge —
+    /// and BOTH edits survive in the exported `styles.xml`. Under the old whole-part
+    /// `Bytes` scalar this clobbered (last-writer-wins on the entire part).
+    #[test]
+    fn different_preserved_atom_edits_converge_through_codec() {
+        let odt = odt_with_two_style_atoms();
+
+        // Replica A imports; replica B forks A (so they share atom ids).
+        let mut a = Document::new();
+        OdtCodec.import(&odt, &mut a.as_mut()).unwrap();
+        let mut b = a.fork();
+
+        // The two style atoms have the SAME stable ids on both replicas.
+        let (id_quote, quote_bytes) = atom_containing(&a, "QuoteFont");
+        let (id_caption, caption_bytes) = atom_containing(&a, "CaptionFont");
+        assert_eq!(id_quote, atom_containing(&b, "QuoteFont").0, "fork shares atom ids");
+        assert_eq!(id_caption, atom_containing(&b, "CaptionFont").0, "fork shares atom ids");
+        assert_ne!(id_quote, id_caption, "distinct atoms have distinct ids");
+
+        // A rewrites ONLY the Quote atom; B rewrites ONLY the Caption atom. Each is
+        // a read-modify-write that keeps the atom's framing (the prologue/root-open
+        // tags that ride on the first atom, the close tags on the last) — mirroring
+        // how a codec re-models one region in place.
+        let edited_quote = String::from_utf8(quote_bytes).unwrap().replace("QuoteFont", "QuoteFont-EDITED");
+        let edited_caption = String::from_utf8(caption_bytes).unwrap().replace("CaptionFont", "CaptionFont-EDITED");
+        a.as_mut().set_preserved_atom_bytes("odt/part/styles.xml", &id_quote, edited_quote.as_bytes());
+        b.as_mut().set_preserved_atom_bytes("odt/part/styles.xml", &id_caption, edited_caption.as_bytes());
+
+        // Cross-merge.
+        a.merge(&mut b);
+        b.merge(&mut a);
+
+        // Both replicas export an identical styles.xml that carries BOTH edits.
+        for (d, who) in [(&a, "A"), (&b, "B")] {
+            let exported = OdtCodec.export(d.as_ref()).unwrap();
+            let out = OdtContainer::read(&exported).unwrap();
+            let styles = String::from_utf8(out.get("styles.xml").unwrap().to_vec()).unwrap();
+            assert!(styles.contains("QuoteFont-EDITED"), "replica {who} kept A's Quote edit: {styles}");
+            assert!(styles.contains("CaptionFont-EDITED"), "replica {who} kept B's Caption edit: {styles}");
+            // Order + structure intact (Quote before Caption, root tags present).
+            assert!(
+                styles.find("QuoteFont-EDITED").unwrap() < styles.find("CaptionFont-EDITED").unwrap(),
+                "replica {who} kept atom order: {styles}"
+            );
+            assert!(styles.contains("<office:styles>") && styles.contains("</office:document-styles>"));
+        }
+        // Convergence: identical exported styles.xml on both replicas.
+        let sa = OdtContainer::read(&OdtCodec.export(a.as_ref()).unwrap()).unwrap().get("styles.xml").unwrap().to_vec();
+        let sb = OdtContainer::read(&OdtCodec.export(b.as_ref()).unwrap()).unwrap().get("styles.xml").unwrap().to_vec();
+        assert_eq!(sa, sb, "replicas converge on identical styles.xml");
     }
 }
