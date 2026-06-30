@@ -26,6 +26,7 @@ use winit::keyboard::{Key, NamedKey};
 use ui::ColorCompat;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
+use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{FlapState, SplitLayout, Widget};
@@ -34,8 +35,10 @@ use crate::doc::FeedsDoc;
 use crate::fetch::{FetchRequest, FetchResult, FetchWorker};
 use crate::icons;
 use crate::model::{
-    relative_time, Article, BlockKind, Feed, FeedKind, Filter, Id, Store,
+    relative_time, Article, BlockKind, Feed, FeedKind, Filter, Id, ReadFont, ReadSettings,
+    ReadTheme, Store,
 };
+use crate::reader_theme::ReaderPalette;
 use crate::{opml, sample};
 
 const SIDEBAR_W: f64 = 256.0;
@@ -43,6 +46,9 @@ const LIST_W: f64 = 400.0;
 const HEADER_H: f64 = 56.0;
 const SIDE_ROW_H: f64 = 34.0;
 const LIST_ROW_H: f64 = 88.0;
+/// Height of the refresh-progress strip shown below the list header while a
+/// "Refresh all" is in flight (and briefly after, as a summary).
+const REFRESH_STRIP_H: f64 = 52.0;
 
 /// Below this allocated width (logical px) the three panes stop fitting side
 /// by side: the subscriptions sidebar collapses to an overlay flap and the
@@ -96,6 +102,15 @@ struct ToolbarButton {
     tip: &'static str,
 }
 
+/// A control inside the reader's reading-settings popover.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum SettingsAction {
+    FontDec,
+    FontInc,
+    SetFont(ReadFont),
+    SetTheme(ReadTheme),
+}
+
 #[derive(Clone, Debug)]
 struct ListRow {
     rect: Rect,
@@ -106,6 +121,63 @@ struct ListRow {
 /// A transient modal overlay.
 enum Modal {
     AddSubscription { input: String },
+}
+
+/// Live progress for an in-flight (or just-finished) "Refresh all". Shown as a
+/// real progress strip in the list header — per-feed counts, a bar, and a
+/// completion summary — rather than a one-line toast, because a refresh is a
+/// meaningful, multi-second action.
+#[derive(Clone, Debug, Default)]
+struct RefreshState {
+    /// Feeds queued in this refresh batch.
+    total: usize,
+    /// Feeds that have reported back (success or failure).
+    done: usize,
+    /// Feeds that returned at least one *new* article.
+    updated_feeds: usize,
+    /// Feeds that failed to fetch/parse.
+    failed_feeds: usize,
+    /// Total new articles across the batch.
+    new_items: usize,
+    /// True once `done == total`; drives the summary state + auto-expiry.
+    finished_at: Option<Instant>,
+}
+
+impl RefreshState {
+    fn fraction(&self) -> f64 {
+        if self.total == 0 {
+            0.0
+        } else {
+            (self.done as f64 / self.total as f64).clamp(0.0, 1.0)
+        }
+    }
+    fn in_progress(&self) -> bool {
+        self.total > 0 && self.finished_at.is_none()
+    }
+    /// Whether the strip should still be shown (in-progress, or a summary that
+    /// hasn't aged out yet).
+    fn visible(&self) -> bool {
+        if self.in_progress() {
+            return true;
+        }
+        match self.finished_at {
+            Some(t) => t.elapsed().as_secs_f32() < 6.0,
+            None => false,
+        }
+    }
+}
+
+/// A change the live (doc-less) `draw`-time drain produced that still needs to
+/// be persisted into the Automerge document. Draining happens during `draw`
+/// (which has no `&mut AutoCommit`), so the CRDT writes are queued here and
+/// flushed on the next pass that *does* hold the doc (`sync` / `handle_event`).
+/// This is what lets a refresh land live — updating the visible store on every
+/// animation frame — without ever blocking the UI thread on the network or
+/// waiting for an input event to drain.
+#[derive(Clone, Debug)]
+enum DocWrite {
+    Article(Article),
+    Feed(Feed),
 }
 
 pub struct FeedsApp {
@@ -134,6 +206,22 @@ pub struct FeedsApp {
     last_mouse: Point,
     modal: Option<Modal>,
     toast: Option<(String, Instant)>,
+
+    // --- article reading settings (reader pane) -------------------------
+    settings: ReadSettings,
+    /// Whether the reader's reading-settings popover is open.
+    show_reader_settings: bool,
+    /// Gear button (toggles the popover) + popover hit rects, recomputed each
+    /// draw. Empty when the reader has no article / the popover is closed.
+    settings_btn_rect: Rect,
+    settings_hits: Vec<(Rect, SettingsAction)>,
+
+    // --- refresh progress + non-blocking drain --------------------------
+    /// Live refresh progress shown in the list header.
+    refresh: RefreshState,
+    /// CRDT writes produced by the doc-less `draw`-time drain, flushed on the
+    /// next pass that holds the document.
+    pending_doc_writes: Vec<DocWrite>,
 
     // Responsive chrome. `sidebar` is the eased open/closed state of the
     // subscriptions flap (docked beside the content on a wide window; an
@@ -190,6 +278,12 @@ impl FeedsApp {
             last_mouse: Point::ZERO,
             modal: None,
             toast: None,
+            settings: ReadSettings::default(),
+            show_reader_settings: false,
+            settings_btn_rect: Rect::ZERO,
+            settings_hits: Vec::new(),
+            refresh: RefreshState::default(),
+            pending_doc_writes: Vec::new(),
             sidebar: FlapState::open_when_docked(),
             detail_pushed: false,
             settled_once: false,
@@ -228,6 +322,36 @@ impl FeedsApp {
         self.detail_pushed = true;
     }
 
+    /// Open the reading-settings popover (for the `--shots` reader-settings
+    /// scenario, which the single-frame renderer can't reach via live input).
+    pub fn force_reader_settings_open(&mut self) {
+        self.show_reader_settings = true;
+    }
+
+    /// Stage a refresh as mid-flight so the single-frame `--shots` renderer can
+    /// capture the per-feed progress strip. Mirrors the live state a real
+    /// "Refresh all" produces partway through: total queued, some done, a mix
+    /// of updated and failed feeds, and a running new-item count.
+    pub fn force_refresh_in_progress(&mut self) {
+        self.refresh = RefreshState {
+            total: 12,
+            done: 4,
+            updated_feeds: 3,
+            failed_feeds: 1,
+            new_items: 7,
+            finished_at: None,
+        };
+    }
+
+    /// Set the reading theme directly (for `--shots` of sepia/light pages).
+    pub fn set_read_theme(&mut self, theme: ReadTheme) {
+        self.settings.theme = theme;
+    }
+    /// Set the reading font directly (for `--shots` of the serif body).
+    pub fn set_read_font(&mut self, font: ReadFont) {
+        self.settings.font = font;
+    }
+
     /// Choose an interesting article to open on launch (the richest unread
     /// one) so the offline screenshot lands on a fully-rendered body.
     fn select_featured(&mut self) {
@@ -259,6 +383,17 @@ impl FeedsApp {
             self.worker = Some(FetchWorker::spawn());
         }
         self.worker.as_mut().unwrap()
+    }
+
+    /// Install a thread-less test worker and return the sender half of its
+    /// result channel, so a test can inject `FetchResult`s exactly as the real
+    /// worker thread would — proving the non-blocking drain path without any
+    /// network I/O.
+    #[cfg(test)]
+    fn install_test_worker(&mut self) -> std::sync::mpsc::Sender<FetchResult> {
+        let (w, tx) = FetchWorker::for_test();
+        self.worker = Some(w);
+        tx
     }
 
     // --- filter / selection helpers -------------------------------------
@@ -382,8 +517,52 @@ impl FeedsApp {
         }
     }
 
+    // --- reading settings -----------------------------------------------
+
+    /// Mutate the reading settings and persist them to the CRDT (so the change
+    /// survives restarts and converges with collaborators). All reader-settings
+    /// changes funnel through here.
+    fn bump_setting(&mut self, doc: &mut AutoCommit, f: impl FnOnce(&mut ReadSettings)) {
+        let mut s = self.settings;
+        f(&mut s);
+        s = s.clamped();
+        self.settings = s;
+        FeedsDoc::write_settings(doc, &s);
+    }
+
+    fn apply_settings_action(&mut self, action: SettingsAction, doc: &mut AutoCommit) {
+        match action {
+            SettingsAction::FontDec => {
+                self.bump_setting(doc, |s| s.font_scale -= 0.1);
+            }
+            SettingsAction::FontInc => {
+                self.bump_setting(doc, |s| s.font_scale += 0.1);
+            }
+            SettingsAction::SetFont(f) => {
+                self.bump_setting(doc, |s| s.font = f);
+            }
+            SettingsAction::SetTheme(th) => {
+                self.bump_setting(doc, |s| s.theme = th);
+            }
+        }
+    }
+
+    /// The font family the reader body uses, derived from the setting.
+    fn reader_family(&self) -> FontFamily {
+        match self.settings.font {
+            ReadFont::Sans => FontFamily::Sans,
+            ReadFont::Serif => FontFamily::Serif,
+            ReadFont::Mono => FontFamily::Mono,
+        }
+    }
+
     // --- fetch integration ----------------------------------------------
 
+    /// Kick off a refresh of every subscription. This ONLY enqueues requests on
+    /// the background worker's channel and returns immediately — it performs no
+    /// network I/O and never blocks the UI thread. Results arrive asynchronously
+    /// on the worker's result channel and are drained, non-blocking, every
+    /// animation frame (see [`Self::drain_fetches_live`]).
     fn refresh_all(&mut self) {
         let reqs: Vec<FetchRequest> = self
             .store
@@ -403,7 +582,9 @@ impl FeedsApp {
         for r in reqs {
             w.send(r);
         }
-        self.set_toast(format!("Refreshing {n} feeds…"));
+        // Start fresh progress for this batch (replacing any lingering summary).
+        self.refresh = RefreshState { total: n, ..Default::default() };
+        self.toast = None;
     }
 
     fn subscribe(&mut self, url: String) {
@@ -429,53 +610,105 @@ impl FeedsApp {
         }
     }
 
-    /// Drain any results the fetch worker produced and fold them into the
-    /// store + document.
-    fn drain_fetches(&mut self, doc: &mut AutoCommit) {
+    /// Drain results the fetch worker produced, folding them into the in-memory
+    /// store **and** updating live refresh progress — WITHOUT touching the
+    /// Automerge document. This is safe to call from `draw` (which has no doc
+    /// handle), so refreshed articles appear the instant they arrive even while
+    /// the user is idle. CRDT persistence is deferred: each applied change is
+    /// queued in `pending_doc_writes` and flushed by [`Self::flush_doc_writes`]
+    /// on the next pass that holds the document. Returns true if anything
+    /// changed (so the caller can request a redraw).
+    fn drain_fetches_live(&mut self) -> bool {
         let results = match &mut self.worker {
             Some(w) => w.poll(),
-            None => return,
+            None => return false,
         };
+        if results.is_empty() {
+            return false;
+        }
         for r in results {
             match r {
                 FetchResult::Articles { feed_id, title, articles } => {
-                    if let (Some(t), Some(f)) =
-                        (title, self.store.feeds.iter_mut().find(|f| f.id == feed_id))
-                    {
+                    let mut feed_changed = false;
+                    if let Some(t) = title {
                         if !t.is_empty() {
-                            f.title = t;
+                            if let Some(f) = self.store.feeds.iter_mut().find(|f| f.id == feed_id) {
+                                if f.title != t {
+                                    f.title = t;
+                                    feed_changed = true;
+                                }
+                            }
                         }
                     }
                     let mut added = 0;
                     for a in articles {
                         if self.store.insert_article_dedup(a.clone()) {
-                            FeedsDoc::upsert_article(doc, &a);
+                            self.pending_doc_writes.push(DocWrite::Article(a));
                             added += 1;
                         }
                     }
-                    if let Some(f) = self.store.feed(feed_id) {
-                        FeedsDoc::upsert_feed(doc, &f.clone());
+                    if feed_changed {
+                        if let Some(f) = self.store.feed(feed_id) {
+                            self.pending_doc_writes.push(DocWrite::Feed(f.clone()));
+                        }
                     }
+                    // Progress accounting for this feed.
+                    self.refresh.done += 1;
                     if added > 0 {
-                        self.set_toast(format!("{added} new articles"));
+                        self.refresh.updated_feeds += 1;
+                        self.refresh.new_items += added;
                     }
+                    self.maybe_finish_refresh();
                 }
                 FetchResult::Subscribed { feed, articles } => {
                     let mut feed = feed;
                     feed.order = self.store.next_feed_order(feed.folder);
                     self.store.upsert_feed(feed.clone());
-                    FeedsDoc::upsert_feed(doc, &feed);
+                    self.pending_doc_writes.push(DocWrite::Feed(feed.clone()));
                     for a in articles {
                         if self.store.insert_article_dedup(a.clone()) {
-                            FeedsDoc::upsert_article(doc, &a);
+                            self.pending_doc_writes.push(DocWrite::Article(a));
                         }
                     }
                     self.set_toast(format!("Subscribed to {}", feed.title));
                     self.set_filter(Filter::Feed(feed.id));
                 }
-                FetchResult::Failed { message, .. } => {
-                    self.set_toast(format!("Fetch failed: {message}"));
+                FetchResult::Failed { feed_id, message } => {
+                    if feed_id.is_some() {
+                        // A refresh failure for a known feed counts toward the batch.
+                        self.refresh.done += 1;
+                        self.refresh.failed_feeds += 1;
+                        self.maybe_finish_refresh();
+                    } else {
+                        self.set_toast(format!("Fetch failed: {message}"));
+                    }
                 }
+            }
+        }
+        true
+    }
+
+    /// Mark the refresh finished once every queued feed has reported back.
+    fn maybe_finish_refresh(&mut self) {
+        if self.refresh.total > 0
+            && self.refresh.done >= self.refresh.total
+            && self.refresh.finished_at.is_none()
+        {
+            self.refresh.finished_at = Some(Instant::now());
+        }
+    }
+
+    /// Persist any changes the live drain queued. Called from passes that hold
+    /// the document (`sync` / `handle_event`). Idempotent: dedup already
+    /// happened in the live drain, so these are straight upserts.
+    fn flush_doc_writes(&mut self, doc: &mut AutoCommit) {
+        if self.pending_doc_writes.is_empty() {
+            return;
+        }
+        for w in self.pending_doc_writes.drain(..) {
+            match w {
+                DocWrite::Article(a) => FeedsDoc::upsert_article(doc, &a),
+                DocWrite::Feed(f) => FeedsDoc::upsert_feed(doc, &f),
             }
         }
     }
@@ -545,6 +778,24 @@ impl FeedsApp {
         self.build_list_rows();
         self.build_toolbar();
         self.build_back_affordance();
+    }
+
+    /// Extra left margin for the sidebar's "Feeds" wordmark so it never sits
+    /// under the expand/collapse toggle. The toggle is pinned to the content
+    /// toolbar's top-left and is drawn over the panes; when the sidebar is open
+    /// as an overlay it slides flush to the left edge, so the toggle lands over
+    /// the sidebar header. In that case (and only then) push the wordmark right
+    /// past the toggle's right edge. Returns 0 when the toggle can't reach the
+    /// sidebar header (docked-open, or sidebar slid off-screen).
+    fn sidebar_title_inset(&self) -> f64 {
+        let toggle_over_header = self.hamburger_rect.area() > 0.0
+            && self.hamburger_rect.x0 < self.sidebar_rect.x1
+            && self.hamburger_rect.x1 > self.sidebar_rect.x0;
+        if toggle_over_header {
+            (self.hamburger_rect.x1 - self.sidebar_rect.x0 + 12.0).max(0.0)
+        } else {
+            0.0
+        }
     }
 
     /// The hamburger / close toggle rect, pinned to the top-left of the
@@ -697,9 +948,15 @@ impl FeedsApp {
         self.sidebar_rows = rows;
     }
 
+    /// Height of the refresh-progress strip below the list header, or 0 when no
+    /// refresh is in progress / recently finished.
+    fn refresh_strip_h(&self) -> f64 {
+        if self.refresh.visible() { REFRESH_STRIP_H } else { 0.0 }
+    }
+
     fn build_list_rows(&mut self) {
         let mut rows = Vec::new();
-        let content_top = self.list_rect.y0 + HEADER_H;
+        let content_top = self.list_rect.y0 + HEADER_H + self.refresh_strip_h();
         let x0 = self.list_rect.x0;
         let x1 = self.list_rect.x1;
         let articles: Vec<Id> =
@@ -741,6 +998,15 @@ impl FeedsApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
+        // Drain background-fetch results LIVE, every frame. `draw` has no
+        // document handle, so this updates the in-memory store + progress and
+        // queues the CRDT writes for the next doc-holding pass. This is the
+        // crux of the non-blocking refresh: because `needs_animation_frame`
+        // keeps frames flowing while a fetch is in flight, results land here
+        // without the user having to move the mouse — and nothing on this path
+        // ever calls the blocking network fetch.
+        self.drain_fetches_live();
+
         // Advance the sidebar flap transition with real elapsed time, then
         // recompute the eased geometry so the slide is reflected this frame.
         let now = Instant::now();
@@ -768,19 +1034,24 @@ impl FeedsApp {
         draw_list(
             scene, t, tr, theme, &self.list_rect, &self.list_rows, &self.store, self.selected,
             self.now, &self.filter_title(), self.store.count_for(self.filter), list_inset,
+            &self.refresh,
         );
         let reader_inset = if overlay && self.detail_pushed { 46.0 } else { 0.0 };
+        let palette = ReaderPalette::resolve(self.settings.theme, theme);
+        let has_article = self.selected.and_then(|id| self.store.article(id)).is_some();
         let (links, open_rect, content_h) = draw_reader(
             scene,
             t,
             tr,
-            theme,
             &self.reader_rect,
             self.selected.and_then(|id| self.store.article(id)),
             self.selected.and_then(|id| self.store.article(id)).and_then(|a| self.store.feed(a.feed_id)),
             self.reader_scroll,
             self.now,
             reader_inset,
+            self.settings,
+            palette,
+            self.reader_family(),
         );
         self.reader_links = links;
         self.reader_open_rect = open_rect;
@@ -793,6 +1064,9 @@ impl FeedsApp {
         }
 
         draw_toolbar(scene, t, tr, theme, &self.toolbar_rect, &self.toolbar_buttons);
+
+        // Reading-settings gear + popover (only when an article is showing).
+        self.draw_reader_settings(scene, t, tr, theme, &palette, has_article);
 
         // Narrow Back affordance (return from the pushed reader to the list).
         if self.back_rect.area() > 0.0 {
@@ -812,7 +1086,13 @@ impl FeedsApp {
         if self.sidebar_rect.area() > 0.0 {
             scene.fill(Fill::NonZero, t, sidebar_bg, None, &self.sidebar_rect);
             vline(scene, t, self.sidebar_rect.x1, self.rect.y0, self.rect.y1, divider);
-            draw_sidebar(scene, t, tr, theme, &self.sidebar_rect, &self.sidebar_rows);
+            // The "Feeds" wordmark and the expand/collapse toggle share the
+            // sidebar's top-left corner whenever the toggle can sit over the
+            // open sidebar (overlay mode). Inset the wordmark past the toggle
+            // footprint so the title and the toggle never overlap — keeping the
+            // praised sidebar look otherwise untouched.
+            let title_inset = self.sidebar_title_inset();
+            draw_sidebar(scene, t, tr, theme, &self.sidebar_rect, &self.sidebar_rows, title_inset);
         }
 
         // The hamburger / close toggle sits over the content's top-left, drawn
@@ -832,6 +1112,178 @@ impl FeedsApp {
         if let Some(Modal::AddSubscription { input }) = &self.modal {
             draw_add_modal(scene, t, tr, theme, &self.rect, input);
         }
+    }
+
+    /// Draw the reading-settings gear in the reader header and, when open, the
+    /// settings popover (font size, font family incl. serif, reading theme).
+    /// Recomputes `settings_btn_rect` + `settings_hits` for hit-testing. Chrome
+    /// reads from the OS theme; only the reader page uses the reading palette.
+    fn draw_reader_settings(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        _palette: &ReaderPalette,
+        has_article: bool,
+    ) {
+        self.settings_hits.clear();
+        if !has_article {
+            self.settings_btn_rect = Rect::ZERO;
+            self.show_reader_settings = false;
+            return;
+        }
+        let c = &theme.tokens.colors;
+
+        // Gear button: top-right of the reader pane header, left of nothing
+        // (the shared toolbar actions live over the list/content toolbar, so
+        // the reader header's right edge is free).
+        let size = 36.0;
+        let bx1 = self.reader_rect.x1 - 12.0;
+        let cy = self.reader_rect.y0 + HEADER_H / 2.0;
+        let btn = Rect::new(bx1 - size, cy - size / 2.0, bx1, cy + size / 2.0);
+        self.settings_btn_rect = btn;
+
+        let shape = RoundedRect::from_rect(btn, 9.0);
+        let hovered = btn.contains(self.last_mouse);
+        let bg = if self.show_reader_settings {
+            c.accent[5]
+        } else if hovered {
+            c.neutral[3]
+        } else {
+            c.surfaces.raised
+        };
+        scene.fill(Fill::NonZero, t, bg.with_alpha_factor(0.96), None, &shape);
+        scene.stroke(&Stroke::new(1.0), t, alpha(c.border_standard, 150), None, &shape);
+        let glyph_col = if self.show_reader_settings { Color::WHITE } else { c.text_primary };
+        icons::gear(scene, t, btn.center(), 6.5, glyph_col);
+
+        if !self.show_reader_settings {
+            return;
+        }
+
+        // --- popover ----------------------------------------------------
+        // Right-align under the gear, but clamp inside the reader pane so the
+        // controls never spill off the edge on a narrow reader column.
+        let ph = 196.0;
+        let pw = 268.0_f64.min(self.reader_rect.width() - 16.0).max(180.0);
+        let px1 = btn.x1.min(self.reader_rect.x1 - 8.0);
+        let px0 = (px1 - pw).max(self.reader_rect.x0 + 8.0);
+        let py0 = btn.y1 + 8.0;
+        let card = Rect::new(px0, py0, px0 + pw, py0 + ph);
+        scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &RoundedRect::from_rect(card, 12.0));
+        scene.stroke(&Stroke::new(1.0), t, alpha(c.border_standard, 180), None, &RoundedRect::from_rect(card, 12.0));
+
+        let lx = card.x0 + 16.0;
+        let rx = card.x1 - 16.0;
+        let mut y = card.y0 + 16.0;
+
+        tr.draw_text_weighted(
+            scene, "Reading", 13.0, c.text_primary,
+            t * Affine::translate((lx, y)), None, TextWeight::Bold,
+        );
+        y += 26.0;
+
+        // Font size row: −  Aa NNN%  +
+        tr.draw_text(scene, "Text size", 12.5, c.text_dim, t * Affine::translate((lx, y + 6.0)), None);
+        let bsz = 26.0;
+        let plus = Rect::new(rx - bsz, y, rx, y + bsz);
+        let pct = format!("{}%", (self.settings.font_scale * 100.0).round() as i32);
+        let pctw = measure_w(tr, &pct, 12.5);
+        let minus = Rect::new(plus.x0 - 8.0 - pctw - 8.0 - bsz, y, plus.x0 - 8.0 - pctw - 8.0, y + bsz);
+        self.step_button(scene, t, tr, theme, &minus, "−", SettingsAction::FontDec);
+        tr.draw_text(
+            scene, &pct, 12.5, c.text_primary,
+            t * Affine::translate((minus.x1 + 8.0, y + 5.0)), None,
+        );
+        self.step_button(scene, t, tr, theme, &plus, "+", SettingsAction::FontInc);
+        y += bsz + 14.0;
+
+        // Font family segmented control (Sans / Serif / Mono).
+        tr.draw_text(scene, "Font", 12.5, c.text_dim, t * Affine::translate((lx, y + 6.0)), None);
+        let seg_x0 = lx + 52.0;
+        let seg_w = rx - seg_x0;
+        let n = ReadFont::ALL.len();
+        let cellw = seg_w / n as f64;
+        for (i, f) in ReadFont::ALL.iter().enumerate() {
+            let cell = Rect::new(seg_x0 + i as f64 * cellw, y, seg_x0 + (i + 1) as f64 * cellw, y + bsz);
+            let active = self.settings.font == *f;
+            self.seg_cell(scene, t, tr, theme, &cell, f.label(), active, SettingsAction::SetFont(*f));
+        }
+        y += bsz + 14.0;
+
+        // Reading theme segmented control (Light / Sepia / Dark).
+        tr.draw_text(scene, "Theme", 12.5, c.text_dim, t * Affine::translate((lx, y + 6.0)), None);
+        let n = ReadTheme::ALL.len();
+        let cellw = seg_w / n as f64;
+        for (i, th) in ReadTheme::ALL.iter().enumerate() {
+            let cell = Rect::new(seg_x0 + i as f64 * cellw, y, seg_x0 + (i + 1) as f64 * cellw, y + bsz);
+            let active = self.settings.theme == *th;
+            self.seg_cell(scene, t, tr, theme, &cell, th.label(), active, SettingsAction::SetTheme(*th));
+        }
+    }
+
+    /// A small square stepper button ("−"/"+") for the settings popover.
+    #[allow(clippy::too_many_arguments)]
+    fn step_button(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rect: &Rect,
+        glyph: &str,
+        action: SettingsAction,
+    ) {
+        let c = &theme.tokens.colors;
+        let hovered = rect.contains(self.last_mouse);
+        let bg = if hovered { c.neutral[3] } else { c.neutral[1] };
+        scene.fill(Fill::NonZero, t, bg, None, &RoundedRect::from_rect(*rect, 7.0));
+        scene.stroke(&Stroke::new(1.0), t, alpha(c.border_standard, 140), None, &RoundedRect::from_rect(*rect, 7.0));
+        let gw = measure_w(tr, glyph, 16.0);
+        tr.draw_text_weighted(
+            scene, glyph, 16.0, c.text_primary,
+            t * Affine::translate((rect.center().x - gw / 2.0, rect.y0 + 3.0)),
+            None, TextWeight::Semibold,
+        );
+        self.settings_hits.push((*rect, action));
+    }
+
+    /// One cell of a segmented control in the settings popover.
+    #[allow(clippy::too_many_arguments)]
+    fn seg_cell(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rect: &Rect,
+        label: &str,
+        active: bool,
+        action: SettingsAction,
+    ) {
+        let c = &theme.tokens.colors;
+        let inner = Rect::new(rect.x0 + 2.0, rect.y0, rect.x1 - 2.0, rect.y1);
+        let hovered = rect.contains(self.last_mouse);
+        let bg = if active {
+            c.accent[5]
+        } else if hovered {
+            c.neutral[3]
+        } else {
+            c.neutral[1]
+        };
+        scene.fill(Fill::NonZero, t, bg, None, &RoundedRect::from_rect(inner, 7.0));
+        if !active {
+            scene.stroke(&Stroke::new(1.0), t, alpha(c.border_standard, 120), None, &RoundedRect::from_rect(inner, 7.0));
+        }
+        let col = if active { Color::WHITE } else { c.text_primary };
+        let lw = measure_w(tr, label, 12.0);
+        tr.draw_text(
+            scene, label, 12.0, col,
+            t * Affine::translate((inner.center().x - lw / 2.0, inner.y0 + 6.0)),
+            None,
+        );
+        self.settings_hits.push((*rect, action));
     }
 
     // --- hit testing -----------------------------------------------------
@@ -862,6 +1314,25 @@ impl FeedsApp {
             && !self.sidebar_rect.contains(p)
         {
             self.sidebar.close();
+            return true;
+        }
+
+        // Reading-settings gear toggles the popover.
+        if self.settings_btn_rect.area() > 0.0 && self.settings_btn_rect.contains(p) {
+            self.show_reader_settings = !self.show_reader_settings;
+            return true;
+        }
+        // Open popover: apply a control, or dismiss on an outside click.
+        if self.show_reader_settings {
+            for (rect, action) in self.settings_hits.clone() {
+                if rect.contains(p) {
+                    self.apply_settings_action(action, doc);
+                    return true;
+                }
+            }
+            // Click outside the controls closes the popover (without falling
+            // through to select an article behind it).
+            self.show_reader_settings = false;
             return true;
         }
 
@@ -1016,6 +1487,9 @@ fn draw_sidebar(
     theme: &Theme,
     rect: &Rect,
     rows: &[SidebarRow],
+    // Extra left margin for the wordmark so it clears the expand/collapse
+    // toggle when the toggle can sit over the open sidebar header.
+    title_inset: f64,
 ) {
     let c = &theme.tokens.colors;
     // Header / wordmark.
@@ -1025,7 +1499,7 @@ fn draw_sidebar(
         "Feeds",
         20.0,
         c.text_primary,
-        t * Affine::translate((rect.x0 + 18.0, rect.y0 + 18.0)),
+        t * Affine::translate((rect.x0 + 18.0 + title_inset, rect.y0 + 18.0)),
         None,
         TextWeight::Bold,
     );
@@ -1132,6 +1606,7 @@ fn draw_list(
     title: &str,
     count: usize,
     header_inset: f64,
+    refresh: &RefreshState,
 ) {
     let c = &theme.tokens.colors;
     // Header. `header_inset` shifts the title right of the hamburger toggle
@@ -1156,8 +1631,15 @@ fn draw_list(
         t * Affine::translate((title_x + title_w0 + 10.0, rect.y0 + 19.0)),
         None,
     );
-    let content = Rect::new(rect.x0, rect.y0 + HEADER_H, rect.x1, rect.y1);
-    hline(scene, t, rect.x0, rect.x1, content.y0, alpha(c.border_standard, 120));
+    let header_bottom = rect.y0 + HEADER_H;
+    hline(scene, t, rect.x0, rect.x1, header_bottom, alpha(c.border_standard, 120));
+
+    // Refresh-progress strip (per-feed progress + a bar; a summary once done).
+    let strip_h = if refresh.visible() { REFRESH_STRIP_H } else { 0.0 };
+    if strip_h > 0.0 {
+        draw_refresh_strip(scene, t, tr, theme, rect, header_bottom, refresh);
+    }
+    let content = Rect::new(rect.x0, header_bottom + strip_h, rect.x1, rect.y1);
 
     if rows.is_empty() {
         tr.draw_text(
@@ -1253,12 +1735,111 @@ fn draw_list(
     scene.pop_layer();
 }
 
+/// Draw the refresh-progress strip: a status line ("Refreshing 3/12…" or a
+/// completion summary), a determinate progress bar, and a tiny breakdown of
+/// updated / failed feeds + new-item count. Replaces the previous one-line
+/// toast for refreshes with real, legible progress.
+fn draw_refresh_strip(
+    scene: &mut Scene,
+    t: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    rect: &Rect,
+    top: f64,
+    refresh: &RefreshState,
+) {
+    let c = &theme.tokens.colors;
+    let band = Rect::new(rect.x0, top, rect.x1, top + REFRESH_STRIP_H);
+    // Subtle raised band so the strip reads as chrome distinct from the rows.
+    scene.fill(Fill::NonZero, t, alpha(c.accent[5], 18), None, &band);
+    hline(scene, t, band.x0, band.x1, band.y1, alpha(c.border_standard, 120));
+
+    let pad = 18.0;
+    let in_prog = refresh.in_progress();
+
+    // Status line.
+    let status = if in_prog {
+        format!("Refreshing {}/{}…", refresh.done, refresh.total)
+    } else {
+        // Completion summary.
+        let mut parts: Vec<String> = Vec::new();
+        if refresh.updated_feeds > 0 {
+            parts.push(format!(
+                "{} feed{} updated",
+                refresh.updated_feeds,
+                if refresh.updated_feeds == 1 { "" } else { "s" }
+            ));
+        }
+        if refresh.new_items > 0 {
+            parts.push(format!(
+                "{} new item{}",
+                refresh.new_items,
+                if refresh.new_items == 1 { "" } else { "s" }
+            ));
+        }
+        if refresh.failed_feeds > 0 {
+            parts.push(format!("{} failed", refresh.failed_feeds));
+        }
+        if parts.is_empty() {
+            "Up to date — no new items".to_string()
+        } else {
+            format!("Refresh complete · {}", parts.join(" · "))
+        }
+    };
+    tr.draw_text_weighted(
+        scene,
+        &status,
+        13.5,
+        c.text_primary,
+        t * Affine::translate((band.x0 + pad, band.y0 + 8.0)),
+        None,
+        TextWeight::Semibold,
+    );
+
+    // Right-aligned live counts while in progress (updated / failed so far).
+    if in_prog && (refresh.updated_feeds > 0 || refresh.failed_feeds > 0) {
+        let mut chips: Vec<String> = Vec::new();
+        if refresh.updated_feeds > 0 {
+            chips.push(format!("✓ {}", refresh.updated_feeds));
+        }
+        if refresh.failed_feeds > 0 {
+            chips.push(format!("✕ {}", refresh.failed_feeds));
+        }
+        let line = chips.join("   ");
+        let lw = measure_w(tr, &line, 12.5);
+        tr.draw_text(
+            scene,
+            &line,
+            12.5,
+            c.text_dim,
+            t * Affine::translate((band.x1 - pad - lw, band.y0 + 9.0)),
+            None,
+        );
+    }
+
+    // Progress bar.
+    let bar_y = band.y0 + 32.0;
+    let bar_h = 6.0;
+    let track = Rect::new(band.x0 + pad, bar_y, band.x1 - pad, bar_y + bar_h);
+    scene.fill(Fill::NonZero, t, alpha(c.neutral[3], 200), None, &RoundedRect::from_rect(track, bar_h / 2.0));
+    let frac = if in_prog { refresh.fraction() } else { 1.0 };
+    let fill_w = (track.width() * frac).max(if frac > 0.0 { bar_h } else { 0.0 });
+    if fill_w > 0.0 {
+        let fill_color = if refresh.failed_feeds > 0 && !in_prog {
+            c.semantic.warning
+        } else {
+            c.accent[5]
+        };
+        let fill = Rect::new(track.x0, bar_y, track.x0 + fill_w, bar_y + bar_h);
+        scene.fill(Fill::NonZero, t, fill_color, None, &RoundedRect::from_rect(fill, bar_h / 2.0));
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_reader(
     scene: &mut Scene,
     t: Affine,
     tr: &mut TextRenderer,
-    theme: &Theme,
     rect: &Rect,
     article: Option<&Article>,
     feed: Option<&Feed>,
@@ -1266,18 +1847,26 @@ fn draw_reader(
     now: i64,
     // Extra left margin so the body clears a narrow-mode Back affordance.
     header_inset: f64,
+    settings: ReadSettings,
+    palette: ReaderPalette,
+    family: FontFamily,
 ) -> (Vec<(Rect, String)>, Option<Rect>, f64) {
-    let c = &theme.tokens.colors;
     let mut links = Vec::new();
     let mut open_rect = None;
+
+    // The reader PAGE uses the reading palette (light/sepia/dark paper), which
+    // is deliberately independent of the OS theme. Chrome (toolbar/sidebar)
+    // still reads from the OS theme.
+    let page = Rect::new(rect.x0, rect.y0 + HEADER_H, rect.x1, rect.y1);
+    scene.fill(Fill::NonZero, t, palette.page, None, &page);
 
     let Some(a) = article else {
         tr.draw_text(
             scene,
             "Select an article to read",
             16.0,
-            c.text_dim,
-            t * Affine::translate((rect.x0 + 48.0 + header_inset, rect.y0 + 64.0)),
+            palette.ink_dim,
+            t * Affine::translate((rect.x0 + 48.0 + header_inset, rect.y0 + HEADER_H + 36.0)),
             None,
         );
         return (links, open_rect, 0.0);
@@ -1288,7 +1877,7 @@ fn draw_reader(
     let content_w = (rect.width() - pad * 2.0).max(120.0) as f32;
     // The shared toolbar bar occupies the top HEADER_H of this pane, so the
     // article body begins beneath it. Clip the scrolling content to the
-    // area below the toolbar.
+    // area below the toolbar. Articles are infinite-scroll (no page modes).
     let top = rect.y0 + HEADER_H;
     let body = Rect::new(rect.x0, top, rect.x1, rect.y1);
     let content_top = top + 24.0;
@@ -1302,7 +1891,7 @@ fn draw_reader(
             scene,
             &kicker,
             11.5,
-            c.accent[6],
+            palette.accent,
             t * Affine::translate((content_x, y)),
             None,
             TextWeight::Semibold,
@@ -1312,22 +1901,26 @@ fn draw_reader(
         let tw = measure_w(tr, tag, 10.5);
         let tagx = rect.x1 - pad - tw - 14.0;
         let tag_rect = Rect::new(tagx, y - 2.0, tagx + tw + 14.0, y + 16.0);
-        scene.fill(Fill::NonZero, t, alpha(c.neutral[3], 150), None, &RoundedRect::from_rect(tag_rect, 6.0));
-        tr.draw_text(scene, tag, 10.5, c.text_dim, t * Affine::translate((tagx + 7.0, y)), None);
+        scene.fill(Fill::NonZero, t, palette.code_bg, None, &RoundedRect::from_rect(tag_rect, 6.0));
+        tr.draw_text(scene, tag, 10.5, palette.ink_dim, t * Affine::translate((tagx + 7.0, y)), None);
         y += 24.0;
     }
 
-    // Title.
-    let (_tw, th) = tr.measure_weighted(&a.title, 26.0, Some(content_w), TextWeight::Bold);
-    tr.draw_text_weighted(
-        scene,
-        &a.title,
-        26.0,
-        c.text_primary,
-        t * Affine::translate((content_x, y)),
-        Some(content_w),
-        TextWeight::Bold,
+    // Title — sized relative to the reading font scale, in the chosen family.
+    let title_size = settings.heading_size(1) + 6.0;
+    let title_layout = RichTextLayout::shape(
+        &mut tr.font_system,
+        &[RichSpan::new(a.title.clone()).bold(true)],
+        true,
+        title_size,
+        content_w,
+        TextAlign::Left,
+        family,
+        vec![],
+        vec![],
     );
+    let th = title_layout.height();
+    tr.draw_rich(scene, &title_layout, t * Affine::translate((content_x, y)), palette.ink);
     y += th as f64 + 10.0;
 
     // Byline.
@@ -1343,24 +1936,26 @@ fn draw_reader(
         byline.push_str(&date);
     }
     if !byline.is_empty() {
-        tr.draw_text(scene, &byline, 13.0, c.text_dim, t * Affine::translate((content_x, y)), None);
+        tr.draw_text(scene, &byline, 13.0, palette.ink_dim, t * Affine::translate((content_x, y)), None);
     }
     // "Open original" affordance on the right.
     if !a.url.is_empty() {
         let label = "Open original";
         let lw = measure_w(tr, label, 13.0);
         let ox = rect.x1 - pad - lw - 22.0;
-        tr.draw_text(scene, label, 13.0, c.accent[6], t * Affine::translate((ox, y)), None);
-        icons::external_link(scene, t, Point::new(rect.x1 - pad - 7.0, y + 7.0), 5.0, c.accent[6]);
+        tr.draw_text(scene, label, 13.0, palette.accent, t * Affine::translate((ox, y)), None);
+        icons::external_link(scene, t, Point::new(rect.x1 - pad - 7.0, y + 7.0), 5.0, palette.accent);
         open_rect = Some(Rect::new(ox - 4.0, y - 4.0, rect.x1 - pad + 4.0, y + 20.0));
     }
     y += 24.0;
-    hline(scene, t, content_x, rect.x1 - pad, y, alpha(c.border_standard, 140));
+    hline(scene, t, content_x, rect.x1 - pad, y, palette.rule);
     y += 22.0;
 
-    // Body blocks.
+    // Body blocks — rendered with the reader's chosen family, size, and palette.
     for block in &a.blocks {
-        y = draw_block(scene, t, tr, theme, block, content_x, content_w, y, rect, &mut links);
+        y = draw_block(
+            scene, t, tr, block, content_x, content_w, y, rect, &mut links, settings, &palette, family,
+        );
     }
     y += 40.0;
     scene.pop_layer();
@@ -1369,119 +1964,114 @@ fn draw_reader(
     (links, open_rect, content_h)
 }
 
+/// Render one body block through `RichTextLayout` so the reader's chosen font
+/// family (incl. a genuine serif) is honoured. Body ink/rules come from the
+/// reading palette; sizes scale with the reading font setting.
 #[allow(clippy::too_many_arguments)]
 fn draw_block(
     scene: &mut Scene,
     t: Affine,
     tr: &mut TextRenderer,
-    theme: &Theme,
     block: &crate::model::ContentBlock,
     x: f64,
     w: f32,
     y: f64,
     pane: &Rect,
     links: &mut Vec<(Rect, String)>,
+    settings: ReadSettings,
+    palette: &ReaderPalette,
+    family: FontFamily,
 ) -> f64 {
-    let c = &theme.tokens.colors;
+    let body_size = settings.body_size();
+
+    // Lay out `text` in `fam` at `size` within width `width`, returning height.
+    let lay = |tr: &mut TextRenderer, text: &str, size: f32, width: f32, fam: FontFamily, bold: bool| {
+        RichTextLayout::shape(
+            &mut tr.font_system,
+            &[RichSpan::new(text.to_string()).bold(bold)],
+            bold,
+            size,
+            width,
+            TextAlign::Left,
+            fam,
+            vec![],
+            vec![],
+        )
+    };
+
     match block.kind {
         BlockKind::Heading1 | BlockKind::Heading2 | BlockKind::Heading3 => {
-            let size = match block.kind {
-                BlockKind::Heading1 => 22.0,
-                BlockKind::Heading2 => 19.0,
-                _ => 16.0,
+            let level = match block.kind {
+                BlockKind::Heading1 => 1,
+                BlockKind::Heading2 => 2,
+                _ => 3,
             };
-            let (_w, h) = tr.measure_weighted(&block.text, size, Some(w), TextWeight::Semibold);
-            tr.draw_text_weighted(
-                scene,
-                &block.text,
-                size,
-                c.text_primary,
-                t * Affine::translate((x, y + 6.0)),
-                Some(w),
-                TextWeight::Semibold,
-            );
+            let size = settings.heading_size(level);
+            let layout = lay(tr, &block.text, size, w, family, true);
+            let h = layout.height();
+            tr.draw_rich(scene, &layout, t * Affine::translate((x, y + 6.0)), palette.ink);
             y + h as f64 + 12.0
         }
         BlockKind::Paragraph => {
-            let (_w, h) = tr.measure(&block.text, 15.0, Some(w));
-            tr.draw_text(
-                scene,
-                &block.text,
-                15.0,
-                alpha(c.text_primary, 224),
-                t * Affine::translate((x, y)),
-                Some(w),
-            );
+            let layout = lay(tr, &block.text, body_size, w, family, false);
+            let h = layout.height();
+            tr.draw_rich(scene, &layout, t * Affine::translate((x, y)), palette.ink);
             y + h as f64 + 14.0
         }
         BlockKind::Bullet => {
-            icons::dot(scene, t, Point::new(x + 6.0, y + 8.0), 2.5, c.accent[6]);
+            icons::dot(scene, t, Point::new(x + 6.0, y + 8.0), 2.5, palette.accent);
             let tw = w - 22.0;
-            let (_w, h) = tr.measure(&block.text, 15.0, Some(tw));
-            tr.draw_text(
-                scene,
-                &block.text,
-                15.0,
-                alpha(c.text_primary, 224),
-                t * Affine::translate((x + 22.0, y)),
-                Some(tw),
-            );
+            let layout = lay(tr, &block.text, body_size, tw, family, false);
+            let h = layout.height();
+            tr.draw_rich(scene, &layout, t * Affine::translate((x + 22.0, y)), palette.ink);
             y + h as f64 + 8.0
         }
         BlockKind::Quote => {
             let tw = w - 24.0;
-            let (_w, h) = tr.measure_styled(&block.text, 15.0, Some(tw), TextWeight::Regular, true, false);
-            let bar = Rect::new(x, y, x + 3.0, y + h as f64 + 4.0);
-            scene.fill(Fill::NonZero, t, c.accent[5], None, &bar);
-            tr.draw_text_styled(
-                scene,
-                &block.text,
-                15.0,
-                c.text_dim,
-                t * Affine::translate((x + 18.0, y)),
-                Some(tw),
-                TextWeight::Regular,
-                true,
+            // Quotes are italic — render via the styled (italic) span.
+            let layout = RichTextLayout::shape(
+                &mut tr.font_system,
+                &[RichSpan::new(block.text.clone()).italic(true)],
                 false,
+                body_size,
+                tw,
+                TextAlign::Left,
+                family,
+                vec![],
+                vec![],
             );
+            let h = layout.height();
+            let bar = Rect::new(x, y, x + 3.0, y + h as f64 + 4.0);
+            scene.fill(Fill::NonZero, t, palette.accent, None, &bar);
+            tr.draw_rich(scene, &layout, t * Affine::translate((x + 18.0, y)), palette.ink_dim);
             y + h as f64 + 16.0
         }
         BlockKind::Code => {
             let inner = w - 28.0;
-            let (_w, h) = tr.measure_styled(&block.text, 13.0, Some(inner), TextWeight::Regular, false, true);
+            // Code is always monospace regardless of the reading face.
+            let layout = lay(tr, &block.text, body_size - 2.0, inner, FontFamily::Mono, false);
+            let h = layout.height();
             let box_rect = Rect::new(x, y, x + w as f64, y + h as f64 + 20.0);
-            scene.fill(Fill::NonZero, t, c.neutral[0], None, &RoundedRect::from_rect(box_rect, 8.0));
-            scene.stroke(&Stroke::new(1.0), t, alpha(c.border_standard, 120), None, &RoundedRect::from_rect(box_rect, 8.0));
-            tr.draw_text_styled(
-                scene,
-                &block.text,
-                13.0,
-                alpha(c.text_primary, 230),
-                t * Affine::translate((x + 14.0, y + 10.0)),
-                Some(inner),
-                TextWeight::Regular,
-                false,
-                true,
-            );
+            scene.fill(Fill::NonZero, t, palette.code_bg, None, &RoundedRect::from_rect(box_rect, 8.0));
+            scene.stroke(&Stroke::new(1.0), t, palette.rule, None, &RoundedRect::from_rect(box_rect, 8.0));
+            tr.draw_rich(scene, &layout, t * Affine::translate((x + 14.0, y + 10.0)), palette.ink);
             y + h as f64 + 30.0
         }
         BlockKind::Link => {
-            let label = &block.text;
-            let (lw, h) = tr.measure(label, 15.0, Some(w));
-            tr.draw_text(
-                scene,
-                label,
-                15.0,
-                theme.tokens.colors.accent[6],
-                t * Affine::translate((x, y)),
-                Some(w),
-            );
-            // Underline.
-            let uw = (lw as f64).min(w as f64);
-            hline(scene, t, x, x + uw, y + h as f64 - 1.0, theme.tokens.colors.accent[6]);
+            let layout = lay(tr, &block.text, body_size, w, family, false);
+            let h = layout.height();
+            tr.draw_rich(scene, &layout, t * Affine::translate((x, y)), palette.accent);
+            // Underline the link.
+            let uw = layout
+                .selection_rects(0, block.text.len())
+                .iter()
+                .map(|r| r.2)
+                .fold(0.0f32, f32::max)
+                .min(w);
+            let uw = if uw > 0.0 { uw as f64 } else { w as f64 };
+            hline(scene, t, x, x + uw, y + h as f64 - 1.0, palette.accent);
             if let Some(href) = &block.href {
                 let rect = Rect::new(x, y, x + uw, y + h as f64);
-                // Only register if visible within the pane.
                 if rect.y1 > pane.y0 && rect.y0 < pane.y1 {
                     links.push((rect, href.clone()));
                 }
@@ -1489,7 +2079,7 @@ fn draw_block(
             y + h as f64 + 10.0
         }
         BlockKind::Divider => {
-            hline(scene, t, x, x + w as f64, y + 8.0, alpha(c.border_standard, 160));
+            hline(scene, t, x, x + w as f64, y + 8.0, palette.rule);
             y + 24.0
         }
     }
@@ -1727,9 +2317,20 @@ impl Widget for FeedsApp {
                     self.select_featured();
                 }
             }
+            // Seed reading settings on first run; otherwise adopt the persisted
+            // (and possibly collaborator-updated) preferences.
+            if !FeedsDoc::has_settings(state) {
+                FeedsDoc::write_settings(state, &self.settings);
+            } else {
+                self.settings = FeedsDoc::read_settings(state);
+            }
             self.synced = true;
         }
-        self.drain_fetches(state);
+        // Persist anything the live (doc-less) drain queued, then drain again
+        // here so an input-driven sync also picks up fresh results promptly.
+        self.flush_doc_writes(state);
+        self.drain_fetches_live();
+        self.flush_doc_writes(state);
     }
 
     fn build_layout(
@@ -1811,6 +2412,9 @@ impl Widget for FeedsApp {
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
+        // Persist anything the live drain queued since the last doc-holding
+        // pass (keeps the CRDT current without waiting for `sync`).
+        self.flush_doc_writes(state);
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -1835,7 +2439,10 @@ impl Widget for FeedsApp {
                     let max = (self.reader_content_h - visible + 60.0).max(0.0);
                     self.reader_scroll = (self.reader_scroll - dy).clamp(0.0, max);
                 } else if self.list_rect.contains(self.last_mouse) {
-                    let max = (self.list_content_h - (self.list_rect.height() - HEADER_H)).max(0.0);
+                    // The refresh strip (when visible) eats into the row viewport.
+                    let view_h =
+                        (self.list_rect.height() - HEADER_H - self.refresh_strip_h()).max(0.0);
+                    let max = (self.list_content_h - view_h).max(0.0);
                     self.list_scroll = (self.list_scroll - dy).clamp(0.0, max);
                 }
                 *handled = true;
@@ -1859,10 +2466,14 @@ impl Widget for FeedsApp {
 
     fn needs_animation_frame(&self) -> bool {
         // Keep frames flowing while the sidebar flap is mid-slide, while
-        // network fetches are outstanding so the `sync` drain runs, and
-        // briefly while a toast is visible.
+        // network fetches are outstanding (so the per-frame `draw` drain keeps
+        // running until every result has landed), while the refresh progress
+        // strip is visible, while CRDT writes await a flush, and briefly while
+        // a toast is visible.
         self.sidebar.is_animating(self.nav_layout())
             || self.worker.as_ref().map(|w| w.pending() > 0).unwrap_or(false)
+            || self.refresh.visible()
+            || !self.pending_doc_writes.is_empty()
             || self
                 .toast
                 .as_ref()
@@ -1990,9 +2601,156 @@ impl FeedsApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use uuid::Uuid;
 
     fn app() -> FeedsApp {
         FeedsApp::new()
+    }
+
+    // --- async refresh (non-blocking) ------------------------------------
+
+    /// Proves the refresh path is fully async: `refresh_all` only enqueues (no
+    /// network, returns instantly); results arrive via the worker's channel;
+    /// the draw-time drain (`drain_fetches_live`) applies them to the store +
+    /// progress WITHOUT a document handle and WITHOUT calling the blocking
+    /// fetch; and the queued CRDT writes are flushed by a doc-holding pass. The
+    /// UI passes that run every frame (`draw`/`handle_event` → drain) never
+    /// touch the network.
+    #[test]
+    fn refresh_is_async_and_drains_without_blocking() {
+        use std::time::Instant;
+
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+
+        // Swap in a thread-less worker so we control results deterministically
+        // and never hit the network.
+        let tx = a.install_test_worker();
+
+        // Kick off a refresh. This must return immediately — it only enqueues.
+        let start = Instant::now();
+        a.refresh_all();
+        assert!(start.elapsed().as_millis() < 50, "refresh_all must not block on the network");
+        assert!(a.refresh.in_progress(), "a refresh is now in progress");
+        assert!(a.refresh.total > 0);
+        // Nothing has been drained yet — no input, no draw has run.
+        assert_eq!(a.refresh.done, 0);
+
+        // A worker "completes" one feed: post a result onto the channel exactly
+        // as the real background thread would.
+        let feed_id = a.store.feeds[0].id;
+        let new_article = Article {
+            id: Uuid::new_v4(),
+            feed_id,
+            title: "Fresh from the worker".into(),
+            author: String::new(),
+            url: "https://example.com/brand-new".into(),
+            published: a.now,
+            summary: String::new(),
+            blocks: vec![],
+            read: false,
+            starred: false,
+        };
+        let before = a.store.articles.len();
+        tx.send(FetchResult::Articles {
+            feed_id,
+            title: None,
+            articles: vec![new_article.clone()],
+        })
+        .unwrap();
+
+        // The *draw-time* drain (no document handle) applies the result live.
+        let changed = a.drain_fetches_live();
+        assert!(changed, "live drain reports a change");
+        assert_eq!(a.store.articles.len(), before + 1, "new article folded into the store");
+        assert_eq!(a.refresh.done, 1, "progress advanced");
+        assert_eq!(a.refresh.new_items, 1, "new-item count tracked");
+        assert_eq!(a.refresh.updated_feeds, 1, "feed counted as updated");
+        // The CRDT write was queued (deferred), not yet persisted.
+        assert!(!a.pending_doc_writes.is_empty(), "doc write queued for the next doc pass");
+
+        // A doc-holding pass flushes the queue into the Automerge document.
+        a.flush_doc_writes(&mut doc);
+        assert!(a.pending_doc_writes.is_empty(), "queue drained after flush");
+        let persisted = FeedsDoc::load(&doc)
+            .articles
+            .iter()
+            .any(|x| x.id == new_article.id);
+        assert!(persisted, "the new article is now persisted in the CRDT");
+
+        // A failure for another feed advances progress + failure count.
+        tx.send(FetchResult::Failed {
+            feed_id: Some(a.store.feeds[1].id),
+            message: "boom".into(),
+        })
+        .unwrap();
+        a.drain_fetches_live();
+        assert_eq!(a.refresh.done, 2);
+        assert_eq!(a.refresh.failed_feeds, 1);
+
+        // While the batch is incomplete, the widget keeps requesting frames so
+        // the drain keeps running without user input — this is what makes the
+        // refresh land while idle instead of appearing to "block".
+        assert!(a.needs_animation_frame(), "frames keep flowing until the batch finishes");
+    }
+
+    /// `refresh_all` enqueues exactly one request per feed and finishes only
+    /// once every feed has reported back (success or failure).
+    #[test]
+    fn refresh_progress_finishes_when_all_feeds_report() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        let tx = a.install_test_worker();
+        a.refresh_all();
+        let total = a.refresh.total;
+        assert_eq!(total, a.store.feeds.len());
+
+        // Every feed reports back (alternating success / failure).
+        for (i, f) in a.store.feeds.clone().iter().enumerate() {
+            if i % 2 == 0 {
+                tx.send(FetchResult::Articles { feed_id: f.id, title: None, articles: vec![] }).unwrap();
+            } else {
+                tx.send(FetchResult::Failed { feed_id: Some(f.id), message: "x".into() }).unwrap();
+            }
+        }
+        a.drain_fetches_live();
+        assert_eq!(a.refresh.done, total);
+        assert!(!a.refresh.in_progress(), "batch finished");
+        assert!(a.refresh.finished_at.is_some(), "completion timestamped");
+        // The completion summary lingers briefly, then frames can stop.
+        assert!(a.refresh.visible());
+    }
+
+    /// Changing a reading setting applies it (and persists), proving the
+    /// settings affect the reader. Drives the production action path.
+    #[test]
+    fn reading_settings_apply_and_persist() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+
+        // Default is Sans; switch to Serif via the production action.
+        assert_eq!(a.settings.font, ReadFont::Sans);
+        a.apply_settings_action(SettingsAction::SetFont(ReadFont::Serif), &mut doc);
+        assert_eq!(a.settings.font, ReadFont::Serif);
+        assert_eq!(a.reader_family(), FontFamily::Serif, "reader renders in serif");
+
+        // Theme switch.
+        a.apply_settings_action(SettingsAction::SetTheme(ReadTheme::Sepia), &mut doc);
+        assert_eq!(a.settings.theme, ReadTheme::Sepia);
+
+        // Font size step changes the body size and clamps.
+        let base = a.settings.body_size();
+        a.apply_settings_action(SettingsAction::FontInc, &mut doc);
+        assert!(a.settings.body_size() > base, "text size increased");
+
+        // All of it persisted to the CRDT.
+        let loaded = FeedsDoc::read_settings(&doc);
+        assert_eq!(loaded.font, ReadFont::Serif);
+        assert_eq!(loaded.theme, ReadTheme::Sepia);
+        assert!(loaded.font_scale > 1.0);
     }
 
     #[test]
@@ -2149,6 +2907,41 @@ mod tests {
         let p = Point::new(a.rect.x1 - 20.0, 400.0);
         assert!(a.click(p, &mut doc), "scrim click is consumed");
         assert!(!a.sidebar.is_open(SplitLayout::Overlay), "scrim click closes the flap");
+    }
+
+    #[test]
+    fn sidebar_title_clears_the_toggle_when_overlay_open() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        lay_out(&mut a, 560.0, 800.0);
+        // Open the overlay sidebar so it slides flush to the left edge — the
+        // toggle now sits over the sidebar header (this was the overlap).
+        let p = a.hamburger_rect.center();
+        assert!(a.click(p, &mut doc));
+        a.snap_sidebar_open(true);
+        lay_out_keep(&mut a, 560.0, 800.0);
+
+        // The toggle overlaps the sidebar header band horizontally...
+        assert!(a.hamburger_rect.x0 < a.sidebar_rect.x1);
+        assert!(a.hamburger_rect.x1 > a.sidebar_rect.x0);
+        // ...so the wordmark must be inset past the toggle's right edge.
+        let inset = a.sidebar_title_inset();
+        let title_x = a.sidebar_rect.x0 + 18.0 + inset;
+        assert!(
+            title_x >= a.hamburger_rect.x1,
+            "the 'Feeds' wordmark (x={title_x}) must start at/after the toggle's right edge (x={})",
+            a.hamburger_rect.x1
+        );
+    }
+
+    #[test]
+    fn sidebar_title_not_inset_when_docked_open() {
+        let mut a = app();
+        lay_out(&mut a, 1280.0, 800.0);
+        // Docked-open: no toggle is shown over the sidebar, so no inset is
+        // needed and the praised look is unchanged.
+        assert_eq!(a.hamburger_rect.area(), 0.0);
+        assert_eq!(a.sidebar_title_inset(), 0.0);
     }
 
     #[test]

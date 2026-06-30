@@ -193,6 +193,25 @@ pub fn back_arrow(scene: &mut Scene, transform: Affine, center: Point, size: f64
     scene.stroke(&stroke, transform, color, None, &path);
 }
 
+/// A reading-glasses / "Aa" style gear glyph for reading settings: a small
+/// cog (ring + short teeth). Kept tiny and theme-coloured like the rest.
+pub fn gear(scene: &mut Scene, transform: Affine, center: Point, radius: f64, color: Color) {
+    let stroke = Stroke::new(1.5);
+    // Outer ring.
+    scene.stroke(&stroke, transform, color, None, &Circle::new(center, radius));
+    // Hub.
+    scene.fill(Fill::NonZero, transform, color, None, &Circle::new(center, radius * 0.34));
+    // Teeth.
+    let teeth = 8;
+    for i in 0..teeth {
+        let a = i as f64 * (2.0 * PI / teeth as f64);
+        let (sx, sy) = (a.cos(), a.sin());
+        let p0 = Point::new(center.x + sx * radius, center.y + sy * radius);
+        let p1 = Point::new(center.x + sx * (radius + radius * 0.42), center.y + sy * (radius + radius * 0.42));
+        scene.stroke(&stroke, transform, color, None, &Line::new(p0, p1));
+    }
+}
+
 /// A double-check "mark all read" glyph.
 pub fn check(scene: &mut Scene, transform: Affine, center: Point, half: f64, color: Color) {
     let stroke = Stroke::new(1.8);
