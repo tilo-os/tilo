@@ -67,6 +67,11 @@ pub struct DrmBackend {
     /// is known (we can't allocate the offscreen texture without a
     /// size). Lazily constructed in `submit_frame`.
     paint: Option<paint::VelloDrmBridge>,
+    /// Track D2: when `true` the display is DPMS-off / scanout is
+    /// stopped, so [`Backend::submit_frame`] short-circuits (no paint,
+    /// no present) until [`Backend::set_dpms`] turns it back on. Avoids
+    /// racing a frame against the disabled CRTC.
+    blanked: bool,
 }
 
 impl DrmBackend {
@@ -82,6 +87,7 @@ impl DrmBackend {
             inner,
             outputs,
             paint: None,
+            blanked: false,
         })
     }
 
@@ -97,6 +103,13 @@ impl DrmBackend {
 
 impl Backend for DrmBackend {
     fn submit_frame(&mut self, scene: &Scene, _output: OutputId) {
+        // Track D2: while blanked the CRTC is disabled — painting +
+        // presenting would either be wasted work or re-light the panel
+        // out from under the idle/lock logic. Skip entirely until
+        // `set_dpms(true)` restores scanout.
+        if self.blanked {
+            return;
+        }
         // Lazily allocate the bridge once we have an output size to
         // target. If we don't know any outputs (the dev machine has
         // construction failing earlier — we'd never reach here), we
@@ -128,23 +141,22 @@ impl Backend for DrmBackend {
             }
         }
 
-        let bytes = match bridge.paint(scene) {
-            Ok(b) => b,
-            Err(e) => {
-                tracing::error!("DRM backend: VelloDrmBridge::paint: {e}");
-                return;
-            }
-        };
-
-        // Push the painted RGBA frame onto the physical display. The
-        // scanout converts to the framebuffer's XRGB8888 and flushes
-        // (dirtyfb). If modeset failed at construction (`scanout` is
-        // `None`) we simply drop the frame — the compositor still
-        // serves its wayland socket headless.
-        let (w, h) = target_size;
+        // Present the frame. The renderer swizzles vello's RGBA straight
+        // into the scanout's back dumb buffer (XRGB8888) — fused, so the
+        // intermediate tight-RGBA copy of the old `paint()` path is gone
+        // — then the scanout page-flips to it (or dirty_framebuffers as a
+        // fallback). The cursor position is only consulted by the
+        // software-cursor fallback; when the hardware cursor plane is
+        // active the scanout ignores it. If modeset failed at
+        // construction (`scanout` is `None`) we drop the frame — the
+        // compositor still serves its wayland socket headless.
         let cursor = Some(self.inner.dispatch.pointer);
         if let Some(scanout) = self.inner.scanout.as_mut() {
-            scanout.present(bytes, w, h, cursor);
+            scanout.present_into(cursor, |dst, pitch| {
+                if let Err(e) = bridge.paint_into_xrgb8888(scene, dst, pitch) {
+                    tracing::error!("DRM backend: paint_into_xrgb8888: {e}");
+                }
+            });
         }
     }
 
@@ -157,6 +169,19 @@ impl Backend for DrmBackend {
 
     fn outputs(&self) -> &[Output] {
         &self.outputs
+    }
+
+    /// Track D2: power the primary connector on / off. Delegates to
+    /// [`scanout::DrmScanout::set_dpms`] (legacy DPMS property + CRTC
+    /// toggle) and flips the `blanked` gate that `submit_frame` reads.
+    /// No scanout (modeset failed at construction) → only the gate
+    /// flips, so a headless DRM run still tracks the state without a
+    /// panel.
+    fn set_dpms(&mut self, on: bool) {
+        self.blanked = !on;
+        if let Some(scanout) = self.inner.scanout.as_mut() {
+            scanout.set_dpms(on);
+        }
     }
 }
 
@@ -199,8 +224,8 @@ mod tests {
     #[test]
     fn drm_backend_outputs_returns_populated_list_when_runtime_has_outputs() {
         let synthesized = vec![
-            (OutputId(0), Output { id: OutputId(0), size: (1920, 1080), scale: 1.0 }),
-            (OutputId(1), Output { id: OutputId(1), size: (1280, 720), scale: 1.0 }),
+            (OutputId(0), Output::new(OutputId(0), (1920, 1080), 1.0)),
+            (OutputId(1), Output::new(OutputId(1), (1280, 720), 1.0)),
         ];
         let dispatch = runtime::DrmRuntime::synthesize_for_tests(synthesized.clone());
 
