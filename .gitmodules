@@ -1,12 +1,12 @@
 [submodule "fs"]
 	path = fs
-	url = ssh://git@code.sandbox.example/qos/fs.git
+	url = ../fs.git
 [submodule "shell"]
 	path = shell
-	url = ssh://git@code.sandbox.example/qos/shell.git
+	url = ../shell.git
 [submodule "ui"]
 	path = ui
-	url = ssh://git@code.sandbox.example/qos/ui.git
+	url = ../ui.git
 [submodule "apps"]
 	path = apps
-	url = ssh://git@code.sandbox.example/qos/apps.git
+	url = ../apps.git

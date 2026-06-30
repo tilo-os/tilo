@@ -7,8 +7,12 @@ use super::container::OdtContainer;
 use crate::document::MarkSpan;
 use crate::format::CodecError;
 use crate::model::DocRef;
+use crate::schema::{
+    STYLE_ALIGN, STYLE_BOLD, STYLE_COLOR, STYLE_FONT, STYLE_INDENT, STYLE_ITALIC, STYLE_NAME, STYLE_SIZE, STYLE_SPACE_AFTER,
+    STYLE_SPACE_BEFORE,
+};
 use crate::snapshot::{AttrVal, DocSnapshot};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 const MIMETYPE: &[u8] = b"application/vnd.oasis.opendocument.text";
 const MANIFEST: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
@@ -19,14 +23,24 @@ const MANIFEST: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
 
 pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     let snap = doc.materialize();
-    let content = build_content_xml(&snap);
+    let preserved = crate::model::preserved_parts(doc.doc, doc.c);
+    // Named styles already defined in a preserved `styles.xml` must not be
+    // re-emitted into `content.xml` (that would duplicate the definition); we
+    // only reference them. Freshly-authored styles (not in any styles.xml) are
+    // emitted into content.xml's automatic-styles.
+    let existing_style_names = preserved
+        .iter()
+        .find(|(k, _)| k == "odt/part/styles.xml")
+        .map(|(_, b)| style_names_in(b))
+        .unwrap_or_default();
+    let content = build_content_xml(&snap, &existing_style_names);
 
     let mut c = OdtContainer { parts: Vec::new() };
     // Re-emit every preserved part verbatim (styles.xml, settings.xml, images,
     // the original manifest/mimetype, …).
     let mut had_mimetype = false;
     let mut had_manifest = false;
-    for (key, bytes) in crate::model::preserved_parts(doc.doc, doc.c) {
+    for (key, bytes) in preserved {
         if let Some(name) = key.strip_prefix("odt/part/") {
             had_mimetype |= name == "mimetype";
             had_manifest |= name == "META-INF/manifest.xml";
@@ -324,28 +338,151 @@ fn snap_cell_rc(b: &BlockView) -> (usize, usize) {
     (g("row"), g("col"))
 }
 
-/// Get-or-create a paragraph automatic style name for these props.
-fn register_para_style(styles: &mut Vec<(String, String)>, props: (String, String)) -> String {
-    if let Some(i) = styles.iter().position(|p| p == &props) {
+/// Get-or-create a paragraph automatic style for `(parent, paragraph-props,
+/// text-props)`, returning its `P{n}` name. Dedups identical styles.
+fn register_auto(styles: &mut Vec<(Option<String>, String, String)>, key: (Option<String>, String, String)) -> String {
+    if let Some(i) = styles.iter().position(|p| p == &key) {
         format!("P{}", i + 1)
     } else {
-        styles.push(props);
+        styles.push(key);
         format!("P{}", styles.len())
     }
 }
 
-use crate::snapshot::BlockView;
-
-fn build_content_xml(snap: &DocSnapshot) -> String {
-    let mut body = String::new();
-    let mut used: BTreeMap<String, String> = BTreeMap::new();
-    let mut pstyles: Vec<(String, String)> = Vec::new();
-    let mut style_attr = |b: &BlockView| -> String {
-        match para_props(b) {
-            Some(props) => format!(r#" text:style-name="{}""#, register_para_style(&mut pstyles, props)),
-            None => String::new(),
+/// The ` text:style-name="…"` attribute for a block, resolving an explicit named
+/// style (from the styles container) and/or an alignment override. Registers any
+/// referenced named style + derived automatic style as a side effect.
+fn resolve_para_style(
+    b: &BlockView,
+    styles: &BTreeMap<String, BTreeMap<String, AttrVal>>,
+    auto: &mut Vec<(Option<String>, String, String)>,
+    named_refs: &mut BTreeSet<String>,
+) -> String {
+    let named = match b.attrs.get("style") {
+        Some(AttrVal::Str(s)) if styles.contains_key(s) => Some(s.clone()),
+        _ => None,
+    };
+    let align = para_props(b).map(|(pp, _)| pp);
+    let name = match (named, align) {
+        (None, None) => return String::new(),
+        (None, Some(pp)) => register_auto(auto, (None, pp, String::new())),
+        (Some(id), None) => {
+            let enc = super::styles::encode_style_name(&id);
+            named_refs.insert(id);
+            enc
+        }
+        (Some(id), Some(pp)) => {
+            let parent = super::styles::encode_style_name(&id);
+            named_refs.insert(id);
+            register_auto(auto, (Some(parent), pp, String::new()))
         }
     };
+    format!(r#" text:style-name="{name}""#)
+}
+
+/// Format a float for ODF: integral values without a trailing `.0`.
+fn fmt_num(f: f64) -> String {
+    if f.fract() == 0.0 {
+        format!("{}", f as i64)
+    } else {
+        let s = format!("{f:.2}");
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    }
+}
+
+/// Style names (`style:name="…"`) already declared in a preserved `styles.xml`,
+/// so the exporter can reference rather than redefine them.
+fn style_names_in(xml: &[u8]) -> BTreeSet<String> {
+    let s = String::from_utf8_lossy(xml);
+    let mut out = BTreeSet::new();
+    let needle = "style:name=\"";
+    let mut rest = s.as_ref();
+    while let Some(p) = rest.find(needle) {
+        rest = &rest[p + needle.len()..];
+        if let Some(end) = rest.find('"') {
+            out.insert(rest[..end].to_string());
+            rest = &rest[end + 1..];
+        } else {
+            break;
+        }
+    }
+    out
+}
+
+/// An ODF `style:style` definition (family paragraph) for a CRDT styles-container
+/// style, so LibreOffice renders the document's named styles.
+fn named_style_def_xml(id: &str, props: &BTreeMap<String, AttrVal>) -> String {
+    let name = super::styles::encode_style_name(id);
+    let getf = |k: &str| match props.get(k) {
+        Some(AttrVal::Float(f)) => Some(*f),
+        Some(AttrVal::Int(n)) => Some(*n as f64),
+        _ => None,
+    };
+    let gets = |k: &str| match props.get(k) {
+        Some(AttrVal::Str(s)) => Some(s.as_str()),
+        _ => None,
+    };
+    let getb = |k: &str| matches!(props.get(k), Some(AttrVal::Bool(true)));
+
+    let mut tp = String::new();
+    if getb(STYLE_BOLD) {
+        tp.push_str(r#" fo:font-weight="bold""#);
+    }
+    if getb(STYLE_ITALIC) {
+        tp.push_str(r#" fo:font-style="italic""#);
+    }
+    if let Some(sz) = getf(STYLE_SIZE) {
+        tp.push_str(&format!(r#" fo:font-size="{}pt""#, fmt_num(sz)));
+    }
+    if let Some(f) = gets(STYLE_FONT) {
+        tp.push_str(&format!(r#" style:font-name="{}""#, font_name(f)));
+    }
+    if let Some(c) = gets(STYLE_COLOR) {
+        tp.push_str(&format!(r#" fo:color="{}""#, escape_attr(c)));
+    }
+
+    let mut pp = String::new();
+    if let Some(a) = gets(STYLE_ALIGN) {
+        let v = match a {
+            "center" => "center",
+            "right" => "end",
+            _ => "",
+        };
+        if !v.is_empty() {
+            pp.push_str(&format!(r#" fo:text-align="{v}""#));
+        }
+    }
+    if let Some(v) = getf(STYLE_SPACE_BEFORE) {
+        if v != 0.0 {
+            pp.push_str(&format!(r#" fo:margin-top="{}px""#, fmt_num(v)));
+        }
+    }
+    if let Some(v) = getf(STYLE_SPACE_AFTER) {
+        if v != 0.0 {
+            pp.push_str(&format!(r#" fo:margin-bottom="{}px""#, fmt_num(v)));
+        }
+    }
+    if let Some(v) = getf(STYLE_INDENT) {
+        if v != 0.0 {
+            pp.push_str(&format!(r#" fo:margin-left="{}px""#, fmt_num(v)));
+        }
+    }
+    let display = gets(STYLE_NAME)
+        .map(|n| format!(r#" style:display-name="{}""#, escape_attr(n)))
+        .unwrap_or_default();
+    format!(
+        r#"<style:style style:name="{name}" style:family="paragraph"{display}><style:paragraph-properties{pp}/><style:text-properties{tp}/></style:style>"#
+    )
+}
+
+use crate::snapshot::BlockView;
+
+fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>) -> String {
+    let mut body = String::new();
+    let mut used: BTreeMap<String, String> = BTreeMap::new();
+    let mut pstyles: Vec<(Option<String>, String, String)> = Vec::new();
+    let mut named_refs: BTreeSet<String> = BTreeSet::new();
+    let mut style_attr = |b: &BlockView| -> String { resolve_para_style(b, &snap.styles, &mut pstyles, &mut named_refs) };
     let mut i = 0;
     while i < snap.blocks.len() {
         let b = &snap.blocks[i];
@@ -467,9 +604,21 @@ fn build_content_xml(snap: &DocSnapshot) -> String {
             r#"<style:style style:name="{name}" style:family="text"><style:text-properties {props}/></style:style>"#
         ));
     }
-    for (idx, (pp, tp)) in pstyles.iter().enumerate() {
+    // Named (common) styles referenced by a block's `style` attr — emitted unless
+    // already declared in a preserved styles.xml. These make the document's CRDT
+    // styles render in LibreOffice as real ODF named styles.
+    for id in &named_refs {
+        if existing_style_names.contains(&super::styles::encode_style_name(id)) {
+            continue;
+        }
+        if let Some(props) = snap.styles.get(id) {
+            styles.push_str(&named_style_def_xml(id, props));
+        }
+    }
+    for (idx, (parent, pp, tp)) in pstyles.iter().enumerate() {
+        let parent_attr = parent.as_ref().map(|p| format!(r#" style:parent-style-name="{p}""#)).unwrap_or_default();
         styles.push_str(&format!(
-            r#"<style:style style:name="P{}" style:family="paragraph"><style:paragraph-properties{pp}/><style:text-properties{tp}/></style:style>"#,
+            r#"<style:style style:name="P{}" style:family="paragraph"{parent_attr}><style:paragraph-properties{pp}/><style:text-properties{tp}/></style:style>"#,
             idx + 1
         ));
     }
@@ -757,6 +906,63 @@ mod tests {
             vec![("a".into(), 0i64), ("b".into(), 0), ("nested".into(), 1), ("c".into(), 0)],
             "levels round-trip through nested ODF lists"
         );
+    }
+
+    #[test]
+    fn named_paragraph_style_roundtrips_through_odt() {
+        // A paragraph that references a custom CRDT-native named style must export
+        // as a real ODF `style:style` (family paragraph) + `text:style-name`, and
+        // re-import with the style intact and still applied to the block.
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "fancy");
+        {
+            let mut dm = d.as_mut();
+            let mut props = BTreeMap::new();
+            props.insert("name".to_string(), AttrVal::Str("Fancy".into()));
+            props.insert("font".to_string(), AttrVal::Str("serif".into()));
+            props.insert("size".to_string(), AttrVal::Float(20.0));
+            props.insert("bold".to_string(), AttrVal::Bool(true));
+            props.insert("italic".to_string(), AttrVal::Bool(true));
+            props.insert("color".to_string(), AttrVal::Str("#ff0000".into()));
+            props.insert("align".to_string(), AttrVal::Str("center".into()));
+            props.insert("space_after".to_string(), AttrVal::Float(12.0));
+            dm.set_style("Fancy", &props);
+            dm.set_attr(&p, "style", "Fancy");
+        }
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let cont = OdtContainer::read(&exported).unwrap();
+        let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
+        assert!(content.contains(r#"text:style-name="Fancy""#), "paragraph references the named style: {content}");
+        assert!(
+            content.contains(r#"<style:style style:name="Fancy" style:family="paragraph""#),
+            "named style defined as ODF style:style: {content}"
+        );
+        assert!(content.contains(r#"fo:font-weight="bold""#) && content.contains(r#"fo:font-size="20pt""#), "props emitted: {content}");
+
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+        let b = &snap.blocks[0];
+        assert_eq!(b.text, "fancy");
+        assert_eq!(b.attrs.get("style"), Some(&AttrVal::Str("Fancy".into())), "block keeps its style ref: {:?}", b.attrs);
+
+        let st = snap.styles.get("Fancy").expect("style present in container after round-trip");
+        assert_eq!(st.get("name"), Some(&AttrVal::Str("Fancy".into())));
+        assert_eq!(st.get("font"), Some(&AttrVal::Str("serif".into())));
+        assert_eq!(st.get("size"), Some(&AttrVal::Float(20.0)));
+        assert_eq!(st.get("bold"), Some(&AttrVal::Bool(true)));
+        assert_eq!(st.get("italic"), Some(&AttrVal::Bool(true)));
+        assert_eq!(st.get("color"), Some(&AttrVal::Str("#ff0000".into())));
+        assert_eq!(st.get("align"), Some(&AttrVal::Str("center".into())));
+        assert_eq!(st.get("space_after"), Some(&AttrVal::Float(12.0)));
+
+        // The round-trip is idempotent: exporting d2 yields the same model again.
+        let exported2 = OdtCodec.export(d2.as_ref()).unwrap();
+        let mut d3 = Document::new();
+        OdtCodec.import(&exported2, &mut d3.as_mut()).unwrap();
+        assert_eq!(norm(&d2.materialize()), norm(&d3.materialize()), "named-style model is stable across a second round-trip");
     }
 
     #[test]

@@ -268,6 +268,7 @@ fn read_attrs(doc: &AutoCommit, block_obj: &ObjId) -> BTreeMap<String, AttrVal> 
                 ScalarValue::Uint(u) => AttrVal::Int(*u as i64),
                 ScalarValue::Boolean(b) => AttrVal::Bool(*b),
                 ScalarValue::Str(st) => AttrVal::Str(st.to_string()),
+                ScalarValue::F64(f) => AttrVal::Float(*f),
                 _ => continue,
             };
             out.insert(key, val);
@@ -281,7 +282,61 @@ pub fn materialize(doc: &AutoCommit, c: &Containers) -> DocSnapshot {
         .into_iter()
         .map(|id| materialize_block(doc, &c.blocks, &id))
         .collect();
-    DocSnapshot { schema: SCHEMA_ID.to_string(), schema_version: SCHEMA_VERSION, blocks, blobs: blobs(doc, c) }
+    DocSnapshot {
+        schema: SCHEMA_ID.to_string(),
+        schema_version: SCHEMA_VERSION,
+        blocks,
+        blobs: blobs(doc, c),
+        styles: all_styles(doc, c),
+    }
+}
+
+// ---- styles container ------------------------------------------------------
+
+/// Read a style sub-map's scalar properties into an [`AttrVal`] map.
+fn read_style_props(doc: &AutoCommit, style_obj: &ObjId) -> BTreeMap<String, AttrVal> {
+    let mut out = BTreeMap::new();
+    for key in doc.keys(style_obj) {
+        if let Ok(Some((Value::Scalar(s), _))) = doc.get(style_obj, &key) {
+            let val = match s.as_ref() {
+                ScalarValue::Int(i) => AttrVal::Int(*i),
+                ScalarValue::Uint(u) => AttrVal::Int(*u as i64),
+                ScalarValue::Boolean(b) => AttrVal::Bool(*b),
+                ScalarValue::Str(st) => AttrVal::Str(st.to_string()),
+                ScalarValue::F64(f) => AttrVal::Float(*f),
+                _ => continue,
+            };
+            out.insert(key, val);
+        }
+    }
+    out
+}
+
+/// Style ids defined in the document's styles container (e.g. `body`,
+/// `heading1`, or an imported ODF named-style name).
+pub fn style_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
+    doc.keys(&c.styles)
+        .filter(|id| matches!(doc.get(&c.styles, id), Ok(Some((Value::Object(ObjType::Map), _)))))
+        .collect()
+}
+
+/// The scalar properties of a single style (`name`/`font`/`size`/… → value), or
+/// an empty map if the style id is unknown.
+pub fn style_props(doc: &AutoCommit, c: &Containers, id: &str) -> BTreeMap<String, AttrVal> {
+    match doc.get(&c.styles, id) {
+        Ok(Some((Value::Object(ObjType::Map), obj))) => read_style_props(doc, &obj),
+        _ => BTreeMap::new(),
+    }
+}
+
+/// Every style in the container (`style_id → (property → value)`).
+pub fn all_styles(doc: &AutoCommit, c: &Containers) -> BTreeMap<String, BTreeMap<String, AttrVal>> {
+    let mut out = BTreeMap::new();
+    for id in style_ids(doc, c) {
+        let props = style_props(doc, c, &id);
+        out.insert(id, props);
+    }
+    out
 }
 
 fn materialize_block(doc: &AutoCommit, container: &ObjId, id: &str) -> BlockView {
@@ -426,6 +481,30 @@ impl<'a> DocMut<'a> {
         let _ = self.doc.put(&self.c.meta, key, value);
     }
 
+    /// Upsert a named style into the styles container. Each property is written
+    /// as its own scalar register *into the existing sub-map* (not a fresh map),
+    /// so two replicas editing different properties of the same style field-level
+    /// merge rather than clobbering each other.
+    pub fn set_style(&mut self, id: &str, props: &BTreeMap<String, AttrVal>) {
+        let obj = match self.doc.get(&self.c.styles, id) {
+            Ok(Some((Value::Object(ObjType::Map), o))) => o,
+            _ => self.doc.put_object(&self.c.styles, id, ObjType::Map).unwrap(),
+        };
+        for (k, v) in props {
+            let _ = match v {
+                AttrVal::Int(n) => self.doc.put(&obj, k.as_str(), *n),
+                AttrVal::Bool(b) => self.doc.put(&obj, k.as_str(), *b),
+                AttrVal::Str(s) => self.doc.put(&obj, k.as_str(), s.as_str()),
+                AttrVal::Float(f) => self.doc.put(&obj, k.as_str(), *f),
+            };
+        }
+    }
+
+    /// Remove a named style from the styles container.
+    pub fn remove_style(&mut self, id: &str) {
+        let _ = self.doc.delete(&self.c.styles, id);
+    }
+
     /// Change a block's kind (e.g. `paragraph` ↔ `heading` ↔ `list_item`).
     pub fn set_kind(&mut self, block_id: &str, kind: &str) {
         if let Some(obj) = block_obj(self.doc, &self.c.blocks, block_id) {
@@ -458,5 +537,72 @@ impl<'a> DocMut<'a> {
         };
         let _ = self.doc.put(&blobs, hash.as_str(), ScalarValue::Bytes(bytes.to_vec()));
         hash
+    }
+}
+
+#[cfg(test)]
+mod style_tests {
+    use super::*;
+    use crate::schema::*;
+    use automerge::{AutoCommit, ROOT};
+
+    fn props(name: &str, size: f64, bold: bool) -> BTreeMap<String, AttrVal> {
+        let mut m = BTreeMap::new();
+        m.insert(STYLE_NAME.to_string(), AttrVal::Str(name.into()));
+        m.insert(STYLE_SIZE.to_string(), AttrVal::Float(size));
+        m.insert(STYLE_BOLD.to_string(), AttrVal::Bool(bold));
+        m.insert(STYLE_COLOR.to_string(), AttrVal::Str("#112233".into()));
+        m
+    }
+
+    #[test]
+    fn styles_container_crud_and_snapshot() {
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        let mut ids = IdGen::new(doc.get_actor().to_hex_string());
+        {
+            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            dm.set_style("body", &props("Body", 16.5, false));
+            dm.set_style("h1", &props("Heading 1", 30.0, true));
+        }
+
+        let mut got = style_ids(&doc, &c);
+        got.sort();
+        assert_eq!(got, vec!["body".to_string(), "h1".to_string()]);
+
+        let bp = style_props(&doc, &c, "body");
+        assert_eq!(bp.get(STYLE_SIZE), Some(&AttrVal::Float(16.5)), "fractional size stored as F64");
+        assert_eq!(bp.get(STYLE_NAME), Some(&AttrVal::Str("Body".into())));
+        assert_eq!(bp.get(STYLE_BOLD), Some(&AttrVal::Bool(false)));
+
+        // The snapshot exposes the full styles map.
+        let snap = materialize(&doc, &c);
+        assert_eq!(snap.styles.len(), 2);
+        assert_eq!(snap.styles["h1"].get(STYLE_BOLD), Some(&AttrVal::Bool(true)));
+    }
+
+    #[test]
+    fn set_style_is_field_level_upsert() {
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        let mut ids = IdGen::new(doc.get_actor().to_hex_string());
+        {
+            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            dm.set_style("h1", &props("Heading 1", 30.0, true));
+            // Touch only one property; the others must survive (field-level merge).
+            let mut one = BTreeMap::new();
+            one.insert(STYLE_SIZE.to_string(), AttrVal::Float(40.0));
+            dm.set_style("h1", &one);
+        }
+        let h1 = style_props(&doc, &c, "h1");
+        assert_eq!(h1.get(STYLE_SIZE), Some(&AttrVal::Float(40.0)), "updated property");
+        assert_eq!(h1.get(STYLE_BOLD), Some(&AttrVal::Bool(true)), "untouched property preserved");
+        assert_eq!(h1.get(STYLE_NAME), Some(&AttrVal::Str("Heading 1".into())));
+
+        {
+            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            dm.remove_style("h1");
+        }
+        assert!(style_ids(&doc, &c).is_empty(), "style removed");
     }
 }
