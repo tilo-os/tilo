@@ -57,8 +57,18 @@ COPY . /build
 # Keep cargo's home and sccache's cache under /build (which exists via WORKDIR/
 # COPY). The fedora-bootc base has no /root, so nesting cache mounts there fails
 # ("stat /root: no such file or directory"); single subdirs of /build are safe.
+# Deterministic compile (reproducible builds): no incremental state in output,
+# remap the build path so binaries don't embed /build, fixed locale/timezone so
+# any sorted/formatted output is stable. SOURCE_DATE_EPOCH (passed by the build
+# scripts as a build-arg, default 0) is honoured by tools that timestamp output.
+ARG SOURCE_DATE_EPOCH=0
 ENV CARGO_HOME=/build/.cargo-home \
-    SCCACHE_DIR=/build/.sccache
+    SCCACHE_DIR=/build/.sccache \
+    CARGO_INCREMENTAL=0 \
+    RUSTFLAGS=--remap-path-prefix=/build=. \
+    SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
+    LC_ALL=C.UTF-8 \
+    TZ=UTC
 
 # Compile the binaries the OS images need. Cache mounts persist cargo's
 # registry + git checkouts (CARGO_HOME), the target dir, and the sccache store
