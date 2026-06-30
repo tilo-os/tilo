@@ -106,6 +106,32 @@ impl EditorView {
         }
     }
 
+    /// Build an editor pre-seeded with the sample set + identity model and a
+    /// chosen tab + selected role/member index, ready to render a single
+    /// deterministic `--shots` frame (the live app seeds lazily on first
+    /// `sync`; for a screenshot we need the state populated up front so a
+    /// specific role/member can be selected). `nth_role` selects the nth
+    /// *visible* (strongest-first) role; `nth_member` the nth visible member.
+    pub fn seeded_sample(tab: EditorTab, nth_role: usize, nth_member: usize) -> Self {
+        let mut v = Self::build(sample::sample_registry(), sample::sample_set(), tab);
+        {
+            let mut s = v.shared.borrow_mut();
+            s.identities = sample::sample_identities();
+            let roles = s.visible_roles();
+            if let Some(rid) = roles.get(nth_role).copied() {
+                s.selected_role = Some(rid);
+            }
+            let members = s.visible_members();
+            if let Some(mid) = members.get(nth_member).copied() {
+                s.selected_member = Some(mid);
+            }
+            s.ensure_selection();
+        }
+        // Already populated — don't let the first `sync` overwrite it.
+        v.seeded = true;
+        v
+    }
+
     /// Construct from a [`EditorIntent`] — the shared entry point used by
     /// the standalone app and every in-context host.
     pub fn from_intent(intent: EditorIntent) -> Self {
@@ -135,6 +161,26 @@ impl EditorView {
     pub fn with_registry(self, registry: PermissionRegistry) -> Self {
         self.shared.borrow_mut().registry = registry;
         self
+    }
+
+    /// Inject the live identity roster — the production seam to the
+    /// collaboration/identity layer. A host builds this from the
+    /// [`ui::collaboration::CollabEvent::Context`] roster via
+    /// [`crate::identity::IdentitySource::from_collaborators`]; until that is
+    /// available the editor uses the sample identity model. Members resolve
+    /// their display name + colour through this on the next frame.
+    pub fn with_identities(self, identities: crate::identity::IdentitySource) -> Self {
+        self.shared.borrow_mut().set_identities(identities);
+        self
+    }
+
+    /// Push an updated live roster mid-session (e.g. a peer joined/left, or
+    /// `CollabEvent::Context` re-delivered the collaborators). Marks the
+    /// member views dirty so names/colours re-resolve.
+    pub fn update_identities(&mut self, identities: crate::identity::IdentitySource) {
+        self.shared.borrow_mut().set_identities(identities);
+        self.dirty = true;
+        self.relayout = true;
     }
 
     // Read-only access for tests/hosts.
@@ -279,14 +325,14 @@ impl Widget for EditorView {
         if let WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } = event {
             let p = self.last_mouse;
             if self.tab_roles.contains(p) {
-                self.shared.borrow_mut().tab = EditorTab::Roles;
+                self.shared.borrow_mut().select_tab(EditorTab::Roles);
                 self.dirty = true;
                 self.relayout = true;
                 *handled = true;
                 return;
             }
             if self.tab_members.contains(p) {
-                self.shared.borrow_mut().tab = EditorTab::Members;
+                self.shared.borrow_mut().select_tab(EditorTab::Members);
                 self.dirty = true;
                 self.relayout = true;
                 *handled = true;
@@ -310,14 +356,23 @@ impl Widget for EditorView {
         self.split.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, node_id, taffy);
 
         // Any pane mutation marks the shared state dirty / pending; flush
-        // and propagate the redraw/relayout signal up.
+        // and propagate the redraw/relayout signal up. We read BOTH the
+        // shared dirty flag (set by `bump()` on every selection + mutation —
+        // the primary signal) AND the panes' own layout-dirty/redraw flags
+        // via the split's child recursion (belt-and-suspenders, so a pane
+        // that only sets its local flags — e.g. an inline rename field
+        // resizing — still propagates up). The earlier code read ONLY
+        // `s.dirty`, which a bare selection assignment never set — that was
+        // the "clicking a role doesn't switch" bug.
         let (d, w) = {
             let s = self.shared.borrow();
             (s.dirty, s.pending_write)
         };
-        if d {
-            self.dirty = true;
+        if d || self.split.is_layout_dirty() {
             self.relayout = true;
+        }
+        if d || self.split.needs_redraw() {
+            self.dirty = true;
         }
         if w {
             self.flush(state);
@@ -375,6 +430,86 @@ mod tests {
         let _ = &scene;
     }
 
+    /// A persistent-doc harness: one `AutoCommit` + one taffy tree reused
+    /// across frames + events, exactly like the live `ui::App` loop. Returns
+    /// the laid-out taffy/child so events can be dispatched against the real
+    /// node. `relayout()` re-runs the layout pass (what the App does when
+    /// `is_layout_dirty()` is true after a handled event).
+    struct Harness {
+        view: EditorView,
+        doc: AutoCommit,
+        w: f64,
+        h: f64,
+    }
+
+    impl Harness {
+        fn new(w: f64, h: f64) -> Self {
+            let mut h_ = Harness { view: EditorView::new(), doc: AutoCommit::new(), w, h };
+            h_.frame();
+            h_
+        }
+
+        /// Run sync → build → compute → apply → draw, like one App frame.
+        fn frame(&mut self) {
+            let theme = Theme::dark();
+            let presence = PresenceCtx::empty();
+            let permission = PermissionContext::permissive();
+            let mut tr = TextRenderer::new();
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            self.view.sync(&mut self.doc, &ROOT);
+            let child = self.view.build_layout(&mut taffy, &theme, &mut node_map);
+            let root = taffy
+                .new_with_children(Style { size: Size { width: Dimension::length(self.w as f32), height: Dimension::length(self.h as f32) }, ..Default::default() }, &[child])
+                .unwrap();
+            taffy.compute_layout(root, Size { width: AvailableSpace::Definite(self.w as f32), height: AvailableSpace::Definite(self.h as f32) }).unwrap();
+            self.view.apply_layout(&taffy, child, Point::ORIGIN);
+            let mut scene = Scene::new();
+            self.view.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence, &permission);
+        }
+
+        /// Dispatch a full left-click at `p` through the REAL top-level
+        /// `EditorView::handle_event` path (cursor-move then press), then —
+        /// if the editor reported it needs a relayout (the App's gate) —
+        /// re-run the layout/draw frame so the grid reflects the new state.
+        /// Returns whether a relayout was requested (the bug's tell: a
+        /// selection click must request one).
+        fn click(&mut self, p: Point) -> bool {
+            let mut handled = false;
+            let mut ft = None;
+            let empty = TaffyTree::new();
+            let mv = WindowEvent::CursorMoved { device_id: unsafe { std::mem::zeroed() }, position: winit::dpi::PhysicalPosition::new(p.x, p.y) };
+            self.view.handle_event(&mv, 1.0, &Default::default(), &mut self.doc, &ROOT, &mut handled, &mut ft, NodeId::new(0), &empty);
+            let ev = WindowEvent::MouseInput { device_id: unsafe { std::mem::zeroed() }, state: ElementState::Pressed, button: MouseButton::Left };
+            self.view.handle_event(&ev, 1.0, &Default::default(), &mut self.doc, &ROOT, &mut handled, &mut ft, NodeId::new(0), &empty);
+            // Release so a role press doesn't leave an armed drag.
+            let rel = WindowEvent::MouseInput { device_id: unsafe { std::mem::zeroed() }, state: ElementState::Released, button: MouseButton::Left };
+            self.view.handle_event(&rel, 1.0, &Default::default(), &mut self.doc, &ROOT, &mut handled, &mut ft, NodeId::new(0), &empty);
+            let needs_relayout = self.view.is_layout_dirty();
+            if needs_relayout {
+                self.frame();
+            }
+            needs_relayout
+        }
+
+        /// Center of the docked sidebar's nth role row, from the same layout
+        /// constants the sidebar uses (docked sidebar sits flush left below
+        /// the tab bar). Wide layout only (docked).
+        fn role_row_center(&self, n: usize) -> Point {
+            let sidebar_x0 = self.view.rect.x0;
+            let sidebar_top = self.view.rect.y0 + TABBAR_H; // split band top
+            // sidebar HEADER_H = 56, body pad 8, ROW_H = 52, row inset top 0,
+            // row height ROW_H-6 = 46.
+            let body_top = sidebar_top + 56.0 + 8.0;
+            let y = body_top + n as f64 * 52.0 + (52.0 - 6.0) / 2.0;
+            // x at the colour-dot region (x0+16), LEFT of the name region
+            // (x0+30) — a press here always plain-selects and never arms the
+            // second-click-on-name inline rename, so the test exercises pure
+            // selection switching.
+            Point::new(sidebar_x0 + 16.0, y)
+        }
+    }
+
     #[test]
     fn seeds_sample_set_on_first_sync() {
         let mut v = EditorView::new();
@@ -382,6 +517,52 @@ mod tests {
         v.sync(&mut doc, &ROOT);
         assert!(!v.set().roles.is_empty(), "sample roles seeded");
         assert!(v.shared.borrow().selected_role.is_some(), "a role auto-selected");
+    }
+
+    /// THE BUG: clicking a different role in the sidebar must switch the
+    /// selection AND make the editor relayout/redraw so the grid follows.
+    /// We click EACH role in turn and assert the selection moved to it and
+    /// the click requested a relayout (the missing signal that froze the
+    /// grid). Several roles, not one.
+    #[test]
+    fn clicking_each_role_switches_selection_and_relayouts() {
+        let mut h = Harness::new(1280.0, 800.0);
+        // The visible (strongest-first) role order the sidebar draws.
+        let order = h.view.shared.borrow().visible_roles();
+        assert!(order.len() >= 3, "need several roles to prove the switch");
+
+        let mut switched = 0;
+        for (n, rid) in order.iter().enumerate() {
+            let pre = h.view.shared.borrow().selected_role;
+            let relaid = h.click(h.role_row_center(n));
+            let now = h.view.shared.borrow().selected_role;
+            assert_eq!(now, Some(*rid), "click on row {n} selects that exact role");
+            if pre != Some(*rid) {
+                assert!(relaid, "selecting a DIFFERENT role (row {n}) must request a relayout — this is the bug");
+                switched += 1;
+            }
+        }
+        assert!(switched >= 2, "proved the switch for multiple distinct roles (switched {switched})");
+
+        // And the detail grid now reflects the LAST selected role: the
+        // DetailPane's selected role (which the grid draws from) equals it.
+        let last = *order.last().unwrap();
+        assert_eq!(h.view.shared.borrow().selected_role, Some(last));
+    }
+
+    /// Switching back and forth between two roles must keep landing on the
+    /// right one every time (no "stuck" selection across repeats).
+    #[test]
+    fn role_selection_is_not_sticky_across_repeats() {
+        let mut h = Harness::new(1280.0, 800.0);
+        let order = h.view.shared.borrow().visible_roles();
+        let (a, b) = (order[0], order[1]);
+        for _ in 0..3 {
+            h.click(h.role_row_center(0));
+            assert_eq!(h.view.shared.borrow().selected_role, Some(a));
+            h.click(h.role_row_center(1));
+            assert_eq!(h.view.shared.borrow().selected_role, Some(b));
+        }
     }
 
     #[test]
