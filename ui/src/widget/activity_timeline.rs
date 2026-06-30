@@ -39,7 +39,7 @@ use std::time::SystemTime;
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Color;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
@@ -511,10 +511,28 @@ impl ActivityTimeline {
         );
         let _ = glyph_w; // measured for symmetry; not used here
 
-        // Summary fills the centre of the row.
+        // Summary fills the centre of the row. Phase 9: if the entry
+        // has been redacted, the producer-supplied `summary` is
+        // suppressed in favour of a struck-through "[redacted by …]"
+        // label so the original content never re-renders, even
+        // accidentally, on the audit pane.
         let summary_x = glyph_x + 24.0;
         let summary_x_end = row.x1 - TIME_SLOT_W - REVERT_CHIP_W - 12.0;
-        let summary = entry.summary.as_str();
+        let (summary_owned, is_redacted_row): (String, bool) =
+            if let Some(redaction) = entry.redaction.as_ref() {
+                (
+                    format!(
+                        "[redacted by {} on {} \u{2014} {:?}]",
+                        redaction.redactor_label,
+                        format_relative_time(redaction.redacted_at, now),
+                        redaction.reason,
+                    ),
+                    true,
+                )
+            } else {
+                (entry.summary.clone(), false)
+            };
+        let summary = summary_owned.as_str();
         // Crude width clip — drop chars from the end until it fits.
         // `text_renderer.measure` is cheap; for the typical short
         // "+12 -3 chars" summary it never trips.
@@ -538,14 +556,36 @@ impl ActivityTimeline {
         } else {
             summary.to_string()
         };
+        let summary_color = if is_redacted_row {
+            theme.tokens.colors.text_dim
+        } else {
+            theme.tokens.colors.text_primary
+        };
         text_renderer.draw_text(
             scene,
             &drawn_summary,
             text_size,
-            theme.tokens.colors.text_primary,
+            summary_color,
             transform * Affine::translate((summary_x, cy - text_size as f64 / 2.0)),
             None,
         );
+        // Strike-through line through the centre of the rendered
+        // summary. Drawn after the text so a future regression that
+        // forgets to gate on `is_redacted_row` paints a visible mark.
+        if is_redacted_row {
+            let (dw, _) = text_renderer.measure(&drawn_summary, text_size, None);
+            let strike = Line::new(
+                Point::new(summary_x, cy),
+                Point::new(summary_x + dw as f64, cy),
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                theme.tokens.colors.text_dim,
+                None,
+                &strike,
+            );
+        }
 
         // Relative timestamp slot, right-aligned within its width.
         let rel = format_relative_time(entry.timestamp, now);
@@ -560,8 +600,12 @@ impl ActivityTimeline {
             None,
         );
 
-        // `[Revert]` chip on hover, only for revertible op classes.
-        if is_hovered && op_class_is_revertible(entry.op_class) {
+        // `[Revert]` chip on hover. Two veto conditions:
+        //   - op-class non-revertibility (Comment/Govern/Compaction/Redact);
+        //   - Phase 9: the entry has been redacted — the chip's
+        //     payload is forbidden by policy. We never offer "revert"
+        //     across a redaction boundary.
+        if is_hovered && op_class_is_revertible(entry.op_class) && !is_redacted_row {
             let chip_h = ROW_HEIGHT - 16.0;
             let chip_rect = Rect::new(
                 row.x1 - REVERT_CHIP_W - 6.0,
@@ -950,6 +994,7 @@ mod tests {
             timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(ts),
             summary: format!("op {} by {}", id, author),
             diff_payload: None,
+            redaction: None,
         }
     }
 
