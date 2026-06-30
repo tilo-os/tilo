@@ -245,13 +245,21 @@ pub fn build_tree_update(
     root_node.set_children(root_children);
     nodes.push((ROOT_ID, root_node));
 
+    // AccessKit requires `focus` to reference a node that exists in this update,
+    // or it panics the consuming assistive tech. The focused taffy id can be
+    // stale (taffy reassigns ids across relayouts) or point at a node the walk
+    // collapsed, so only honor it when that node was actually emitted; otherwise
+    // fall back to the synthetic window root.
+    let focus = match focused_ak {
+        Some(id) if nodes.iter().any(|(nid, _)| *nid == id) => id,
+        _ => ROOT_ID,
+    };
+
     TreeUpdate {
         nodes,
         tree: Some(Tree::new(ROOT_ID)),
         tree_id: accesskit::TreeId::ROOT,
-        // AccessKit requires `focus` to be a node that exists in the tree; the
-        // synthetic window root is the safe fallback when nothing is focused.
-        focus: focused_ak.unwrap_or(ROOT_ID),
+        focus,
     }
 }
 
@@ -810,6 +818,26 @@ mod tests {
         let (_taffy, node_map, _root_node) = lay_out(&mut root);
         let update = build_tree_update(&root, &node_map, None, 1.0);
         assert_eq!(update.focus, ROOT_ID);
+    }
+
+    #[test]
+    fn focus_falls_back_to_root_when_focused_id_is_stale() {
+        // A focused taffy id that isn't in the current tree (e.g. left over
+        // from before a relayout, since taffy reassigns ids) must NOT be
+        // forwarded as the tree focus — AccessKit panics the assistive tech if
+        // `focus` references a node that wasn't emitted.
+        let btn = TestWidget::new(Some(
+            AccessNode::new(Role::Button)
+                .with_name("Save")
+                .with_state(AccessState::new().focusable(true)),
+        ));
+        let mut root = TestWidget::new(None).with_child(Box::new(btn));
+        let (_taffy, node_map, _root_node) = lay_out(&mut root);
+        let stale = taffy::NodeId::from(u64::MAX - 7);
+        let update = build_tree_update(&root, &node_map, Some(stale), 1.0);
+        assert_eq!(update.focus, ROOT_ID);
+        // The focus is always a node that exists in the update.
+        assert!(update.nodes.iter().any(|(id, _)| *id == update.focus));
     }
 
     #[test]
