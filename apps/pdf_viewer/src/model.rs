@@ -316,25 +316,53 @@ pub struct Match {
     pub len: usize,
 }
 
-/// Case-insensitive substring search across all renderable text. The
-/// content is ASCII so lowercase preserves byte offsets — `start` indexes
-/// directly into the original block text.
-pub fn search(doc: &Document, query: &str) -> Vec<Match> {
+/// Standard find-bar toggles. Both default off, matching the historical
+/// case-insensitive substring behaviour.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SearchOptions {
+    /// Match only when the query is bounded by non-word characters on both
+    /// sides (so "ink" doesn't match inside "thinking").
+    pub whole_word: bool,
+    /// Match the query's letter case exactly.
+    pub case_sensitive: bool,
+}
+
+/// True when the byte at `idx` (or just before it) is part of a "word":
+/// ASCII letters, digits and underscore. Used for whole-word boundaries.
+fn is_word_byte(bytes: &[u8], idx: usize) -> bool {
+    bytes
+        .get(idx)
+        .map(|b| b.is_ascii_alphanumeric() || *b == b'_')
+        .unwrap_or(false)
+}
+
+/// Substring search across all renderable text, honouring the find-bar
+/// [`SearchOptions`]. The content is ASCII, so lower-casing preserves byte
+/// offsets and `start` indexes directly into the original block text.
+pub fn search(doc: &Document, query: &str, opts: SearchOptions) -> Vec<Match> {
     let mut out = Vec::new();
-    let q = query.trim().to_lowercase();
-    if q.is_empty() {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
         return out;
     }
+    let needle = if opts.case_sensitive { trimmed.to_string() } else { trimmed.to_lowercase() };
     for page in &doc.pages {
         for (bi, block) in page.blocks.iter().enumerate() {
             let Some(text) = block.search_text() else { continue };
-            let lower = text.to_lowercase();
+            let hay = if opts.case_sensitive { text.to_string() } else { text.to_lowercase() };
+            let hay_bytes = hay.as_bytes();
             let mut from = 0usize;
-            while from <= lower.len() {
-                let Some(rel) = lower[from..].find(&q) else { break };
+            while from <= hay.len() {
+                let Some(rel) = hay[from..].find(&needle) else { break };
                 let start = from + rel;
-                out.push(Match { page: page.number, block: bi, start, len: q.len() });
-                from = start + q.len();
+                let end = start + needle.len();
+                let boundary_ok = !opts.whole_word
+                    || (!is_word_byte(hay_bytes, start.wrapping_sub(1))
+                        && !is_word_byte(hay_bytes, end));
+                if boundary_ok {
+                    out.push(Match { page: page.number, block: bi, start, len: needle.len() });
+                }
+                from = start + needle.len().max(1);
             }
         }
     }
@@ -558,7 +586,7 @@ mod tests {
     #[test]
     fn search_finds_known_term_case_insensitively() {
         let d = sample_document();
-        let hits = search(&d, "sandbox");
+        let hits = search(&d, "sandbox", SearchOptions::default());
         assert!(!hits.is_empty(), "expected to find 'sandbox'");
         // Page 2 discusses sandboxing.
         assert!(hits.iter().any(|m| m.page == 2));
@@ -572,8 +600,8 @@ mod tests {
     #[test]
     fn search_empty_query_returns_nothing() {
         let d = sample_document();
-        assert!(search(&d, "   ").is_empty());
-        assert!(search(&d, "").is_empty());
+        assert!(search(&d, "   ", SearchOptions::default()).is_empty());
+        assert!(search(&d, "", SearchOptions::default()).is_empty());
     }
 
     #[test]
@@ -587,11 +615,48 @@ mod tests {
             pages: vec![Page { number: 1, blocks: vec![Block::Body("aaaa".into())] }],
             outline: vec![],
         };
-        let hits = search(&d, "aa");
+        let hits = search(&d, "aa", SearchOptions::default());
         // "aaaa" -> matches at 0 and 2 (non-overlapping stepping).
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].start, 0);
         assert_eq!(hits[1].start, 2);
+    }
+
+    #[test]
+    fn search_case_sensitive_distinguishes_case() {
+        let d = Document {
+            title: "t".into(),
+            author: "a".into(),
+            subject: "s".into(),
+            pages: vec![Page {
+                number: 1,
+                blocks: vec![Block::Body("The qOS shell. the OS.".into())],
+            }],
+            outline: vec![],
+        };
+        let insensitive = search(&d, "the", SearchOptions { case_sensitive: false, ..Default::default() });
+        assert_eq!(insensitive.len(), 2, "case-insensitive matches both 'The' and 'the'");
+        let sensitive = search(&d, "the", SearchOptions { case_sensitive: true, ..Default::default() });
+        assert_eq!(sensitive.len(), 1, "case-sensitive matches only lowercase 'the'");
+        assert_eq!(sensitive[0].start, 15);
+    }
+
+    #[test]
+    fn search_whole_word_rejects_substrings() {
+        let d = Document {
+            title: "t".into(),
+            author: "a".into(),
+            subject: "s".into(),
+            pages: vec![Page {
+                number: 1,
+                blocks: vec![Block::Body("ink is thinking and ink.".into())],
+            }],
+            outline: vec![],
+        };
+        let any = search(&d, "ink", SearchOptions::default());
+        assert_eq!(any.len(), 3, "substring search finds 'ink' three times");
+        let words = search(&d, "ink", SearchOptions { whole_word: true, ..Default::default() });
+        assert_eq!(words.len(), 2, "whole-word skips the 'ink' inside 'thinking'");
     }
 
     #[test]
