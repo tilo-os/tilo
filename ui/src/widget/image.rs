@@ -91,6 +91,10 @@ pub struct Image {
     fit: ImageFit,
     rect: Rect,
     cached_image: Option<PenikoImage>,
+    /// Optional alternative text describing the image's content. Surfaced as
+    /// the accessible name in [`Widget::accessibility`]; `None` leaves the
+    /// image unnamed (decorative).
+    alt: Option<String>,
 }
 
 impl Image {
@@ -104,6 +108,7 @@ impl Image {
             fit: ImageFit::Contain,
             rect: Rect::ZERO,
             cached_image: None,
+            alt: None,
         }
     }
 
@@ -121,6 +126,7 @@ impl Image {
             fit: ImageFit::Contain,
             rect: Rect::ZERO,
             cached_image: None,
+            alt: None,
         }
     }
 
@@ -137,6 +143,19 @@ impl Image {
     pub fn with_fit(mut self, fit: ImageFit) -> Self {
         self.fit = fit;
         self
+    }
+
+    /// Set the alternative text describing the image. Surfaced as the
+    /// accessible name in [`Widget::accessibility`]. Omitting it leaves the
+    /// image unnamed (treated as decorative by assistive technology).
+    pub fn with_alt(mut self, alt: impl Into<String>) -> Self {
+        self.alt = Some(alt.into());
+        self
+    }
+
+    /// The alternative text describing the image, if any.
+    pub fn alt(&self) -> Option<&str> {
+        self.alt.as_deref()
     }
 
     /// The image's intrinsic pixel dimensions. Returns `(0, 0)` for
@@ -462,6 +481,13 @@ impl Widget for Image {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Role};
+        // The caller-supplied alt text is the accessible name; without it the
+        // image is treated as decorative (unnamed).
+        Some(AccessNode::new(Role::Image).with_optional_name(self.alt.clone()))
+    }
 }
 
 #[cfg(test)]
@@ -535,6 +561,27 @@ mod tests {
         // Source must have flipped to `Failed` so subsequent draws
         // also paint the error state instead of retrying disk I/O.
         assert!(matches!(img.source, Source::Failed));
+    }
+
+    #[test]
+    fn accessibility_alt_text_surfaces_as_accessible_name() {
+        use crate::a11y::Role;
+        let img = Image::from_rgba(Arc::from(vec![255u8; 16 * 16 * 4]), 16, 16)
+            .with_alt("A red square");
+        assert_eq!(img.alt(), Some("A red square"));
+        let node = Widget::accessibility(&img).expect("image is not presentational");
+        assert_eq!(node.role, Role::Image);
+        assert_eq!(node.name.as_deref(), Some("A red square"));
+    }
+
+    #[test]
+    fn accessibility_without_alt_has_no_name() {
+        use crate::a11y::Role;
+        let img = Image::from_rgba(Arc::from(vec![255u8; 16 * 16 * 4]), 16, 16);
+        assert_eq!(img.alt(), None, "an image defaults to no alt text");
+        let node = Widget::accessibility(&img).unwrap();
+        assert_eq!(node.role, Role::Image);
+        assert_eq!(node.name, None, "a decorative image has no accessible name");
     }
 
     #[test]

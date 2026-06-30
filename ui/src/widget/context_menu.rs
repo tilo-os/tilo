@@ -300,4 +300,45 @@ impl Widget for ContextMenu {
     fn name(&self) -> &str { "ContextMenu" }
 
     fn get_rect(&self) -> Rect { self.rect }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        // The menu items are drawn rows (not child widgets), so the container
+        // carries the semantics. `expanded` mirrors the open state and a
+        // closed menu is `hidden` so it collapses out of the focus order.
+        Some(
+            AccessNode::new(Role::Menu).with_state(AccessState {
+                expanded: Some(self.open),
+                hidden: !self.open,
+                ..Default::default()
+            }),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widget::Widget;
+
+    #[test]
+    fn accessibility_reports_menu_role_and_collapsed_when_closed() {
+        use crate::a11y::Role;
+        let mut menu = ContextMenu::new();
+        menu.push(MenuItem::action("Open", || {}));
+        let node = Widget::accessibility(&menu).expect("menu is not presentational");
+        assert_eq!(node.role, Role::Menu);
+        assert_eq!(node.state.expanded, Some(false), "closed menu is not expanded");
+        assert!(node.state.hidden, "closed menu is hidden from the tree");
+    }
+
+    #[test]
+    fn accessibility_open_menu_is_expanded_and_visible() {
+        let mut menu = ContextMenu::new();
+        menu.push(MenuItem::action("Open", || {}));
+        menu.open_at([10.0, 20.0]);
+        let node = Widget::accessibility(&menu).unwrap();
+        assert_eq!(node.state.expanded, Some(true), "open menu is expanded");
+        assert!(!node.state.hidden, "open menu is visible");
+    }
 }

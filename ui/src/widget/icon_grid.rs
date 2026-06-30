@@ -420,6 +420,27 @@ impl Widget for IconGrid {
     fn is_focused(&self) -> bool {
         self.is_focused
     }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        // A grid of icon cells is a list of items; the items are drawn (not
+        // child widgets), so the container carries the semantics. Surface the
+        // primary-selected cell's label as the current value.
+        let value = self
+            .selection
+            .primary()
+            .and_then(|i| self.items.get(i))
+            .map(|item| item.label.clone());
+        Some(
+            AccessNode::new(Role::List)
+                .with_optional_value(value)
+                .with_state(AccessState {
+                    focusable: self.is_focusable(),
+                    focused: self.is_focused(),
+                    ..Default::default()
+                }),
+        )
+    }
 }
 
 /// Trim `text` (adding an ellipsis) until it measures within `max_w`.
@@ -514,5 +535,20 @@ mod tests {
         feed(&mut g, WindowEvent::MouseInput { device_id: device, state: ElementState::Pressed, button: MouseButton::Left });
         assert!(g.selection().is_selected(4));
         assert_eq!(*log.borrow(), vec![(4, false, false)]);
+    }
+
+    #[test]
+    fn accessibility_reports_list_role_and_selected_label() {
+        use crate::a11y::Role;
+        let mut g = IconGrid::new(items(6));
+        let node = Widget::accessibility(&g).expect("grid is not presentational");
+        assert_eq!(node.role, Role::List);
+        assert!(node.state.focusable);
+        assert_eq!(node.value, None, "no selection → no value");
+
+        // Selecting an item surfaces its label as the value.
+        g.selection.select_only(4);
+        let node = Widget::accessibility(&g).unwrap();
+        assert_eq!(node.value.as_deref(), Some("f4"));
     }
 }
