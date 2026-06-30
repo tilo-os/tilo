@@ -33,6 +33,7 @@
 
 use std::collections::HashMap;
 
+use osk::InputPurpose;
 use osk::OskWidget;
 use osk::inject::default_injector;
 use taffy::prelude::*;
@@ -55,8 +56,14 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
     let args: Vec<String> = std::env::args().collect();
+    // A `--purpose <kind>` selects the field-specific layout (number pad,
+    // dialpad, email, …) so a human (or a snapshot) can eyeball each one.
+    let purpose = parse_purpose_arg(&args);
     if let Some(out) = parse_shots_arg(&args) {
-        let widget = OskWidget::new();
+        let mut widget = OskWidget::new();
+        if let Some(p) = purpose {
+            widget.set_purpose(p);
+        }
         render_shot_to_png(Box::new(widget), DEFAULT_SHOTS_VIEWPORT, &out)?;
         return Ok(());
     }
@@ -67,9 +74,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // runs everywhere and types into the focused app where it can. ---
     let mut injector = default_injector();
     tracing::info!("osk: text-injection backend = {}", injector.backend_name());
-    let widget = OskWidget::new().on_key(move |action| {
+    let mut widget = OskWidget::new().on_key(move |action| {
         injector.key_action(&action);
     });
+    if let Some(p) = purpose {
+        widget.set_purpose(p);
+    }
 
     // NOTE: in production this surface is a wlr-layer-shell overlay; for now it
     // is a plain ui::App window. `ui::App::run()` owns the event loop, so the
@@ -94,6 +104,41 @@ fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
         }
     }
     None
+}
+
+/// Returns the [`InputPurpose`] requested by `--purpose <kind>` (or
+/// `--purpose=<kind>`), or `None` when absent. An unrecognised kind is ignored
+/// (the keyboard falls back to plain text) so a typo doesn't abort launch.
+fn parse_purpose_arg(args: &[String]) -> Option<InputPurpose> {
+    let mut iter = args.iter().skip(1);
+    let raw = loop {
+        let arg = iter.next()?;
+        if arg == "--purpose" {
+            break iter.next()?.clone();
+        }
+        if let Some(rest) = arg.strip_prefix("--purpose=") {
+            break rest.to_string();
+        }
+    };
+    purpose_from_str(&raw)
+}
+
+/// Map a `--purpose` value to an [`InputPurpose`]. Accepts both the short
+/// spellings a user is likely to type and the enum-ish names.
+fn purpose_from_str(s: &str) -> Option<InputPurpose> {
+    Some(match s.to_ascii_lowercase().as_str() {
+        "text" => InputPurpose::Text,
+        "number" | "numeric" => InputPurpose::Number,
+        "decimal" => InputPurpose::Decimal,
+        "phone" | "tel" | "telephone" => InputPurpose::Telephone,
+        "url" => InputPurpose::Url,
+        "email" => InputPurpose::Email,
+        "pin" => InputPurpose::Pin,
+        "password" | "pass" => InputPurpose::Password,
+        "date" => InputPurpose::Date,
+        "time" => InputPurpose::Time,
+        _ => return None,
+    })
 }
 
 /// Run one offscreen frame against `widget` at `viewport` and write the
