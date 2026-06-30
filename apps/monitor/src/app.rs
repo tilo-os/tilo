@@ -26,12 +26,13 @@ use ui::theme::Theme;
 use ui::widget::{SplitLayout, Widget};
 
 use crate::charts::{self, with_alpha, Series};
+use crate::layout;
 use crate::model::{fmt_bytes, fmt_rate, fmt_uptime, MonitorModel, ProcessInfo};
 use crate::prefs::Prefs;
 use crate::responsive::{ProcPane, ProcPush, RailFlap};
 use crate::sampler::Sampler;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tab {
     Processes,
     Resources,
@@ -46,7 +47,7 @@ impl Tab {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SortKey {
     Pid,
     Name,
@@ -126,6 +127,17 @@ pub struct MonitorApp {
     search_focused: bool,
     selected_pid: Option<u32>,
     scroll_off: f32,
+    /// Horizontal scroll of the process table, in logical px, when its
+    /// columns are wider than the viewport (clamped to the overflow).
+    table_scroll_x: f32,
+    /// Vertical scroll of the *whole* view, in logical px, when the laid-out
+    /// content (rail card column on the Resources tab, the chart grid, etc.)
+    /// is taller than the body viewport. Clamped each frame to the overflow.
+    view_scroll_y: f32,
+    /// Last frame's content/viewport heights, recorded during `draw` so
+    /// wheel + clamp can run in `handle_event` without re-deriving layout.
+    content_h: f64,
+    viewport_h: f64,
     confirm_kill: Option<u32>,
 
     // responsive layout
@@ -140,6 +152,14 @@ pub struct MonitorApp {
     last_cursor: Point,
     last_refresh: Instant,
     rows_per_page: usize,
+    /// The process table's clipped row viewport — wheel events over it scroll
+    /// the rows/columns; outside it (and on the Resources tab) the wheel
+    /// scrolls the whole page. Recorded during `draw_process_table`.
+    table_viewport: Rect,
+    /// Intrinsic content width of the process table's columns. When it
+    /// exceeds the table viewport width a horizontal scrollbar appears and
+    /// `table_scroll_x` can range over the overflow.
+    table_content_w: f64,
     hit: Hit,
 }
 
@@ -170,6 +190,10 @@ impl MonitorApp {
             search_focused: false,
             selected_pid,
             scroll_off: 0.0,
+            table_scroll_x: 0.0,
+            view_scroll_y: 0.0,
+            content_h: 0.0,
+            viewport_h: 0.0,
             confirm_kill: None,
             rail: RailFlap::default(),
             proc_push: ProcPush::default(),
@@ -179,6 +203,8 @@ impl MonitorApp {
             // refresh and renders the seeded sample untouched.
             last_refresh: Instant::now(),
             rows_per_page: 1,
+            table_viewport: Rect::ZERO,
+            table_content_w: 0.0,
             hit: Hit::new(),
         }
     }
@@ -313,6 +339,53 @@ impl MonitorApp {
         self.rail_layout() == SplitLayout::Overlay || self.rail.reveal() < 0.999
     }
 
+    // ---- content-height helpers (drive the whole-view vertical scroll) ---
+    /// Natural height of the system rail's stacked cards (ring, memory,
+    /// sparklines, info). The info card is laid out to a fixed footprint so
+    /// the rail has a definite intrinsic height the page scroll can use.
+    fn rail_natural_h(&self) -> f64 {
+        let info_h = 112.0; // host/kernel/cores/uptime + cpu brand line
+        layout::RAIL_RING_H
+            + GAP
+            + layout::RAIL_MEM_H
+            + GAP
+            + layout::rail_spark_panel_h()
+            + GAP
+            + info_h
+    }
+
+    /// Natural height of the Resources tab body for `n` cores at content
+    /// width `w`: the per-core card (sized to its row count) + the 2×2 chart
+    /// grid with a legible minimum chart height.
+    fn resources_natural_h(&self, w: f64) -> f64 {
+        let n = self.model.metrics.cores.len().max(1);
+        let grid = layout::per_core_grid(n, w - 2.0 * layout::RAIL_CARD_PAD);
+        let core_h = layout::per_core_card_h(grid);
+        let min_chart_h = 150.0;
+        let charts_h = 2.0 * min_chart_h + GAP;
+        core_h + GAP + charts_h
+    }
+
+    /// The wider of the rail column and the active tab's body — the page's
+    /// intrinsic content height, against which `view_scroll_y` is clamped.
+    /// `main_w` is the content column width (right of any docked rail).
+    fn content_natural_h(&self, main_w: f64) -> f64 {
+        let body = match self.tab {
+            // Processes is a self-contained, internally-scrolling table; its
+            // body fills the viewport and never drives the page scroll.
+            Tab::Processes => 0.0,
+            Tab::Resources => self.resources_natural_h(main_w),
+        };
+        // The docked rail can be taller than a short Resources body, so the
+        // page must scroll to reach the rail's info card too.
+        let rail = if self.rail_layout() == SplitLayout::Docked && self.rail.reveal() > 0.5 {
+            self.rail_natural_h()
+        } else {
+            0.0
+        };
+        body.max(rail)
+    }
+
     // ---- headless screenshot scenarios -----------------------------------
     /// Seed a deterministic interaction state for a headless `--shots` frame.
     /// `--shots` renders a single frame with no event loop, so a scenario that
@@ -326,10 +399,27 @@ impl MonitorApp {
     /// * `"detail"` — snap the narrow Processes push flow to the pushed detail
     ///   pane (otherwise a narrow frame opens to the table, as a fresh window
     ///   would).
+    /// * `"resources"`      — switch to the Resources tab so a shot shows the
+    ///   per-core grid + 2×2 charts (the fitted per-core card).
+    /// * `"resources-many"` — Resources tab seeded with a high core count so a
+    ///   short/narrow shot demonstrates the per-core card growing to fit every
+    ///   core and the whole view becoming vertically scrollable.
     pub fn seed_shot_scenario(&mut self, scenario: &str) {
         match scenario {
             "rail" => self.rail.snap(true),
             "detail" => self.proc_push.snap(ProcPane::Detail),
+            "resources" => self.tab = Tab::Resources,
+            "resources-many" => {
+                self.tab = Tab::Resources;
+                // 24 cores so the grid wraps to several rows — the card must
+                // grow to hold them and the page must scroll on a short shot.
+                self.model.metrics.cores = (0..24)
+                    .map(|i| {
+                        let t = i as f32;
+                        (30.0 + 55.0 * (t * 0.7).sin() + 20.0 * (t * 0.3).cos()).clamp(2.0, 99.0)
+                    })
+                    .collect();
+            }
             _ => {}
         }
     }
@@ -342,10 +432,37 @@ impl MonitorApp {
     fn draw_header(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, r: Rect) {
         let c = &theme.tokens.colors;
         let inner = charts::panel(scene, t, r, theme, 12.0);
+        let xs = theme.tokens.typography.scale.xs;
+        let seg_h = 30.0;
+        let cy = inner.y0 + (inner.height() - seg_h) / 2.0;
 
-        // Brand: monitor glyph + title.
+        // The header lays out three groups left→right: brand, centred tabs,
+        // and the clock/interval block — and they must never overlap, however
+        // narrow the window. We measure each group, then shrink the least
+        // essential parts (the subtitle, the uptime caption, finally the tab
+        // labels → icon-only pills) until they fit. The brand glyph, the tab
+        // control and the clock+interval are always present.
+        let header_narrow = inner.width() < 560.0;
+
+        // ---- right block: clock (top) + uptime caption (bottom) + pill ----
+        let clock = Self::clock();
+        let cs = theme.tokens.typography.scale.lg;
+        let (clw, _) = tr.measure_weighted(&clock, cs, None, TextWeight::Bold);
+        let up = fmt_uptime(self.model.metrics.uptime_secs);
+        let up_caption = format!("uptime {up}");
+        let (upw, _) = tr.measure(&up_caption, xs, None);
+        let right_block_w = (clw as f64).max(upw as f64);
+        let right_block_x0 = inner.x1 - right_block_w;
+
+        let il = format!("⟳ {}", self.prefs.interval_label());
+        let iw = tr.measure_weighted(&il, xs, None, TextWeight::Medium).0 as f64 + 22.0;
+        let pill_x1 = right_block_x0 - 16.0;
+        let pill_x0 = pill_x1 - iw;
+
+        // ---- brand: glyph + title (+ subtitle when there's room) ----------
         let glyph = Rect::new(inner.x0, inner.y0 + 2.0, inner.x0 + 26.0, inner.y0 + 28.0);
         icons::draw_icon(scene, t, glyph, Icon::Monitor, c.accent[5], 1.8);
+        let (titw, _) = tr.measure_weighted("Monitor", theme.tokens.typography.scale.xl, None, TextWeight::Bold);
         tr.draw_text_weighted(
             scene,
             "Monitor",
@@ -355,31 +472,47 @@ impl MonitorApp {
             None,
             TextWeight::Bold,
         );
-        tr.draw_text(
-            scene,
-            "System Activity",
-            theme.tokens.typography.scale.xs,
-            c.text_dim,
-            t * Affine::translate((glyph.x1 + 11.0, inner.y0 + 20.0)),
-            None,
-        );
+        if !header_narrow {
+            tr.draw_text(
+                scene,
+                "System Activity",
+                xs,
+                c.text_dim,
+                t * Affine::translate((glyph.x1 + 11.0, inner.y0 + 20.0)),
+                None,
+            );
+        }
+        let brand_right = glyph.x1 + 10.0 + titw as f64;
 
-        // Centre: tab segmented control.
-        let seg_w = 124.0;
-        let seg_h = 30.0;
-        let cy = inner.y0 + (inner.height() - seg_h) / 2.0;
-        let cx = (inner.x0 + inner.x1) / 2.0 - seg_w;
+        // ---- centre tab segmented control ---------------------------------
+        // Tabs want a comfortable width; clamp them into the gap between the
+        // brand and the interval pill, and fall back to icon-only pills when
+        // even the clamped width can't seat the labels.
+        let gap_l = brand_right + 16.0;
+        let gap_r = pill_x0 - 16.0;
+        let avail_tabs = (gap_r - gap_l).max(0.0);
+        let want_seg_w = 124.0_f64;
+        let compact = avail_tabs < 2.0 * 96.0 + 6.0;
+        let seg_w = if compact {
+            ((avail_tabs - 6.0) / 2.0).clamp(40.0, 64.0)
+        } else {
+            want_seg_w.min((avail_tabs - 6.0) / 2.0)
+        };
+        let pair_w = 2.0 * seg_w + 6.0;
+        // Centre the pair in the gap, but never let it cross either edge.
+        let centre = (inner.x0 + inner.x1) / 2.0;
+        let cx = (centre - pair_w / 2.0).clamp(gap_l, (gap_r - pair_w).max(gap_l));
         let proc_r = Rect::new(cx, cy, cx + seg_w, cy + seg_h);
         let res_r = Rect::new(cx + seg_w + 6.0, cy, cx + 2.0 * seg_w + 6.0, cy + seg_h);
-        self.draw_tab_pill(scene, t, tr, theme, proc_r, Icon::Layers, "Processes", self.tab == Tab::Processes);
-        self.draw_tab_pill(scene, t, tr, theme, res_r, Icon::BarChart, "Resources", self.tab == Tab::Resources);
+        self.draw_tab_pill_ex(scene, t, tr, theme, proc_r, Icon::Layers, "Processes", self.tab == Tab::Processes, compact);
+        self.draw_tab_pill_ex(scene, t, tr, theme, res_r, Icon::BarChart, "Resources", self.tab == Tab::Resources, compact);
         self.hit.tab_proc = proc_r;
         self.hit.tab_res = res_r;
 
-        // Right: refresh-interval pill + clock.
-        let clock = Self::clock();
-        let cs = theme.tokens.typography.scale.lg;
-        let (clw, _) = tr.measure_weighted(&clock, cs, None, TextWeight::Bold);
+        // Uptime caption only when it clears the tab control on its line.
+        let show_uptime = !header_narrow && right_block_x0 > res_r.x1 + 16.0;
+
+        // Clock (always shown, top line, right-aligned in the block).
         tr.draw_text_weighted(
             scene,
             &clock,
@@ -389,30 +522,20 @@ impl MonitorApp {
             None,
             TextWeight::Bold,
         );
-        tr.draw_text(
-            scene,
-            "uptime",
-            theme.tokens.typography.scale.xs,
-            c.text_dim,
-            t * Affine::translate((inner.x1 - clw as f64, inner.y0 + 22.0)),
-            None,
-        );
-        let up = fmt_uptime(self.model.metrics.uptime_secs);
-        let (uw, _) = tr.measure(&up, theme.tokens.typography.scale.xs, None);
-        tr.draw_text(
-            scene,
-            &up,
-            theme.tokens.typography.scale.xs,
-            c.text_dim,
-            t * Affine::translate((inner.x1 - clw as f64 - uw as f64 - 8.0, inner.y0 + 22.0)),
-            None,
-        );
+        // Uptime caption (second line) — dropped when space is tight.
+        if show_uptime {
+            tr.draw_text(
+                scene,
+                &up_caption,
+                xs,
+                c.text_dim,
+                t * Affine::translate((inner.x1 - upw as f64, inner.y0 + 22.0)),
+                None,
+            );
+        }
 
-        // Interval pill, left of the clock block.
-        let il = format!("⟳ {}", self.prefs.interval_label());
-        let iw = tr.measure_weighted(&il, theme.tokens.typography.scale.sm, None, TextWeight::Medium).0 as f64 + 22.0;
-        let pill_x1 = inner.x1 - clw.max(70.0) as f64 - 24.0;
-        let interval_r = Rect::new(pill_x1 - iw, cy + 1.0, pill_x1, cy + seg_h - 1.0);
+        // Interval pill, left of the right block.
+        let interval_r = Rect::new(pill_x0, cy + 1.0, pill_x1, cy + seg_h - 1.0);
         charts::fill_rrect(scene, t, interval_r, seg_h / 2.0, c.surface_white_5);
         charts::stroke_rrect(scene, t, interval_r, seg_h / 2.0, c.border_standard, 1.0);
         let (tw, th) = tr.measure_weighted(&il, theme.tokens.typography.scale.sm, None, TextWeight::Medium);
@@ -428,7 +551,10 @@ impl MonitorApp {
         self.hit.interval = interval_r;
     }
 
-    fn draw_tab_pill(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, r: Rect, icon: Icon, label: &str, active: bool) {
+    /// Draw a tab pill. `compact` draws an icon-only pill (the label is
+    /// dropped) so the tab control still fits when the header is narrow.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_tab_pill_ex(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, r: Rect, icon: Icon, label: &str, active: bool, compact: bool) {
         let c = &theme.tokens.colors;
         let radius = r.height() / 2.0;
         if active {
@@ -438,6 +564,12 @@ impl MonitorApp {
             charts::stroke_rrect(scene, t, r, radius, c.border_standard, 1.0);
         }
         let text_color = if active { Color::WHITE } else { c.text_dim };
+        if compact {
+            // Centre the icon; no label.
+            let icon_r = Rect::new(r.center().x - 8.0, r.center().y - 8.0, r.center().x + 8.0, r.center().y + 8.0);
+            icons::draw_icon(scene, t, icon_r, icon, text_color, 1.6);
+            return;
+        }
         let icon_r = Rect::new(r.x0 + 14.0, r.center().y - 8.0, r.x0 + 30.0, r.center().y + 8.0);
         icons::draw_icon(scene, t, icon_r, icon, text_color, 1.6);
         let fs = theme.tokens.typography.scale.sm;
@@ -491,27 +623,35 @@ impl MonitorApp {
             theme, m.swap_frac(), c.accent[5], "Swap", &swap_label,
         );
 
-        // Section 3: net + disk sparklines.
+        // Section 3: net + disk sparklines. The card height is derived from
+        // the three stacked sparkline rows (label + 32px chart each) plus the
+        // card padding, so the last (Disk) row sits *inside* the card instead
+        // of spilling below it. See `layout::rail_spark_panel_h`.
         let sp_y = mem_panel.y1 + GAP;
-        let sp_panel = Rect::new(r.x0, sp_y, r.x1, sp_y + 150.0);
-        let si = charts::panel(scene, t, sp_panel, theme, 12.0);
+        let sp_panel = Rect::new(r.x0, sp_y, r.x1, sp_y + layout::rail_spark_panel_h());
+        let si = charts::panel(scene, t, sp_panel, theme, layout::RAIL_CARD_PAD);
         let spark = |scene: &mut Scene, tr: &mut TextRenderer, y: f64, label: &str, val: &str, data: &[f32], color: Color| {
             tr.draw_text_weighted(scene, label, theme.tokens.typography.scale.xs, c.text_primary, t * Affine::translate((si.x0, y)), None, TextWeight::Medium);
             let (vw, _) = tr.measure(val, theme.tokens.typography.scale.xs, None);
             tr.draw_text(scene, val, theme.tokens.typography.scale.xs, c.text_dim, t * Affine::translate((si.x1 - vw as f64, y)), None);
-            let sr = Rect::new(si.x0, y + 14.0, si.x1, y + 46.0);
+            let sr = Rect::new(si.x0, y + 14.0, si.x1, y + layout::SPARK_ROW_EXTENT);
             let mx = data.iter().copied().fold(0.0_f32, f32::max).max(1.0);
             charts::sparkline(scene, t, sr, data, mx, color);
         };
         spark(scene, tr, si.y0, "Net ↓", &fmt_rate(m.net_rx), m.net_rx_hist.as_slice(), c.semantic.info);
-        spark(scene, tr, si.y0 + 52.0, "Net ↑", &fmt_rate(m.net_tx), m.net_tx_hist.as_slice(), c.accent[6]);
-        spark(scene, tr, si.y0 + 104.0, "Disk", &format!("{} / {}", fmt_rate(m.disk_read), fmt_rate(m.disk_write)), m.disk_read_hist.as_slice(), c.semantic.warning);
+        spark(scene, tr, si.y0 + layout::SPARK_ROW_STRIDE, "Net ↑", &fmt_rate(m.net_tx), m.net_tx_hist.as_slice(), c.accent[6]);
+        spark(scene, tr, si.y0 + 2.0 * layout::SPARK_ROW_STRIDE, "Disk", &format!("{} / {}", fmt_rate(m.disk_read), fmt_rate(m.disk_write)), m.disk_read_hist.as_slice(), c.semantic.warning);
 
-        // Section 4: system info text.
+        // Section 4: system info text. Drawn to a fixed footprint (not the
+        // remaining `r.y1` slack) so the rail has a definite intrinsic height
+        // the whole-view scroll can reveal in full. When the rail is taller
+        // than the viewport the page scroll brings this card into view.
         let info_y = sp_panel.y1 + GAP;
-        if info_y + 40.0 < r.y1 {
-            let info_panel = Rect::new(r.x0, info_y, r.x1, r.y1);
-            let ii = charts::panel(scene, t, info_panel, theme, 12.0);
+        let info_h = 112.0;
+        let info_bottom = (info_y + info_h).min(r.y1.max(info_y + info_h));
+        {
+            let info_panel = Rect::new(r.x0, info_y, r.x1, info_bottom);
+            let ii = charts::panel(scene, t, info_panel, theme, layout::RAIL_CARD_PAD);
             let mut y = ii.y0;
             let fs = theme.tokens.typography.scale.xs;
             let line = |scene: &mut Scene, tr: &mut TextRenderer, y: &mut f64, k: &str, v: String| {
@@ -665,26 +805,30 @@ impl MonitorApp {
     fn draw_process_table(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, table_panel: Rect) {
         let c = &theme.tokens.colors;
         let ti = charts::panel(scene, t, table_panel, theme, 0.0);
-        let pad = 12.0;
-        let cols_x0 = ti.x0 + pad;
-        let cols_x1 = ti.x1 - pad;
+        let pad = layout::TABLE_PAD;
+        // The columns' content viewport: the card inner box minus left/right
+        // padding. Columns are laid out in *content space* (x from 0) and the
+        // whole strip is shifted left by `table_scroll_x` when it overflows.
+        let cols_left = ti.x0 + pad;
+        let cols_right = ti.x1 - pad;
+        let avail_w = (cols_right - cols_left).max(1.0);
 
-        // Column layout.
-        let pid_w = 60.0;
-        let user_w = 116.0;
-        let cpu_w = 72.0;
-        let mem_w = 96.0;
-        let thr_w = 52.0;
-        let name_w = (cols_x1 - cols_x0 - pid_w - user_w - cpu_w - mem_w - thr_w).max(80.0);
-        // (key, header, x0, width, right_align)
-        let columns: [(SortKey, &str, f64, f64, bool); 6] = [
-            (SortKey::Pid, "PID", cols_x0, pid_w, true),
-            (SortKey::Name, "NAME", cols_x0 + pid_w, name_w, false),
-            (SortKey::User, "USER", cols_x0 + pid_w + name_w, user_w, false),
-            (SortKey::Cpu, "CPU%", cols_x0 + pid_w + name_w + user_w, cpu_w, true),
-            (SortKey::Mem, "MEM", cols_x0 + pid_w + name_w + user_w + cpu_w, mem_w, true),
-            (SortKey::Threads, "THR", cols_x0 + pid_w + name_w + user_w + cpu_w + mem_w, thr_w, true),
-        ];
+        let columns = layout::process_columns(avail_w);
+        let content_w = layout::process_columns_total_w(&columns);
+        self.table_content_w = content_w;
+        // Reserve a sliver at the bottom for a horizontal scrollbar when the
+        // columns overflow, so rows don't draw under it.
+        let h_overflow = (content_w - avail_w).max(0.0);
+        let hbar_h = if h_overflow > 0.5 { 7.0 } else { 0.0 };
+        self.table_scroll_x = self.table_scroll_x.clamp(0.0, h_overflow as f32);
+        let sx = self.table_scroll_x as f64;
+        // Absolute x of a content-space column edge after the horizontal scroll.
+        let col_abs = |x: f64| cols_left + x - sx;
+
+        // The horizontal clip: header text and row cells are clipped to the
+        // padded column band so an overflowing column (e.g. THR when narrow)
+        // is hidden past the right edge instead of overlapping the border.
+        let band = Rect::new(cols_left, ti.y0, cols_right, ti.y1);
 
         // Header row.
         let hdr = Rect::new(ti.x0, ti.y0, ti.x1, ti.y0 + TABLE_HEADER_H);
@@ -692,30 +836,45 @@ impl MonitorApp {
         scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &Line::new((hdr.x0, hdr.y1), (hdr.x1, hdr.y1)));
         let hfs = theme.tokens.typography.scale.xs;
         self.hit.sort_headers.clear();
-        for (key, label, x0, w, right) in columns {
-            let active = self.sort_key == key;
+        let hdr_clip = Rect::new(band.x0, hdr.y0, band.x1, hdr.y1);
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &hdr_clip);
+        for col in columns {
+            let x0 = col_abs(col.x0);
+            let active = self.sort_key == col.key;
             let color = if active { c.text_primary } else { c.text_dim };
-            let mut text = label.to_string();
+            let mut text = col.header.to_string();
             if active {
                 text.push(' ');
                 text.push(if self.sort_desc { '▼' } else { '▲' });
             }
             let (lw, lh) = tr.measure_weighted(&text, hfs, None, TextWeight::Semibold);
-            let tx = if right { x0 + w - lw as f64 - 6.0 } else { x0 + 2.0 };
+            let tx = if col.right { x0 + col.w - lw as f64 - 6.0 } else { x0 + 2.0 };
             tr.draw_text_weighted(scene, &text, hfs, color, t * Affine::translate((tx, hdr.center().y - lh as f64 / 2.0)), None, TextWeight::Semibold);
-            self.hit.sort_headers.push((key, Rect::new(x0, hdr.y0, x0 + w, hdr.y1)));
+            // Hit rect clamped to the visible band so a click maps to the
+            // column under the cursor, not its off-screen extent.
+            let hx0 = x0.max(band.x0);
+            let hx1 = (x0 + col.w).min(band.x1);
+            if hx1 > hx0 {
+                self.hit.sort_headers.push((col.key, Rect::new(hx0, hdr.y0, hx1, hdr.y1)));
+            }
         }
+        scene.pop_layer();
 
-        // Rows region.
-        let view = Rect::new(ti.x0, hdr.y1, ti.x1, ti.y1);
+        // Rows region (above any horizontal scrollbar).
+        let view = Rect::new(ti.x0, hdr.y1, ti.x1, ti.y1 - hbar_h);
         self.rows_per_page = (view.height() / ROW_H).floor().max(1.0) as usize;
         let procs = self.visible_processes();
         let max_scroll = procs.len().saturating_sub(self.rows_per_page) as f32;
         self.scroll_off = self.scroll_off.clamp(0.0, max_scroll);
         let start = self.scroll_off as usize;
+        // Record the viewport so wheel routing can tell table-scroll from
+        // page-scroll.
+        self.table_viewport = view;
 
-        // Clip rows to the view.
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &view);
+        // Clip rows to the view (both axes — vertical for row scroll, and the
+        // padded band horizontally so overflowing columns stay inside).
+        let rows_clip = Rect::new(band.x0, view.y0, band.x1, view.y1);
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &rows_clip);
         self.hit.rows.clear();
         let fs = theme.tokens.typography.scale.sm;
         for i in 0..self.rows_per_page {
@@ -736,28 +895,29 @@ impl MonitorApp {
             let txt = if selected { c.text_primary } else { c.text_dim };
             let name_color = c.text_primary;
 
-            // helper to draw a cell
-            let cell = |tr: &mut TextRenderer, scene: &mut Scene, s: &str, x0: f64, w: f64, right: bool, color: Color, weight: TextWeight| {
-                let s = Self::truncate(tr, s, fs, w - 8.0);
+            // helper to draw a cell at a content-space column.
+            let cell = |tr: &mut TextRenderer, scene: &mut Scene, s: &str, col: &layout::Column, color: Color, weight: TextWeight| {
+                let x0 = col_abs(col.x0);
+                let s = Self::truncate(tr, s, fs, col.w - 8.0);
                 let (sw, _) = tr.measure_weighted(&s, fs, None, weight);
-                let x = if right { x0 + w - sw as f64 - 6.0 } else { x0 + 2.0 };
+                let x = if col.right { x0 + col.w - sw as f64 - 6.0 } else { x0 + 2.0 };
                 tr.draw_text_weighted(scene, &s, fs, color, t * Affine::translate((x, ty)), None, weight);
             };
-            cell(tr, scene, &p.pid.to_string(), columns[0].2, columns[0].3, true, txt, TextWeight::Regular);
-            cell(tr, scene, &p.name, columns[1].2, columns[1].3, false, name_color, TextWeight::Medium);
-            cell(tr, scene, &p.user, columns[2].2, columns[2].3, false, txt, TextWeight::Regular);
+            cell(tr, scene, &p.pid.to_string(), &columns[0], txt, TextWeight::Regular);
+            cell(tr, scene, &p.name, &columns[1], name_color, TextWeight::Medium);
+            cell(tr, scene, &p.user, &columns[2], txt, TextWeight::Regular);
             // CPU% coloured by load.
             let cpu_frac = (p.cpu / 100.0).clamp(0.0, 1.0);
             let cpu_col = if p.cpu >= 1.0 { charts::load_color(theme, cpu_frac) } else { txt };
-            cell(tr, scene, &format!("{:.1}", p.cpu), columns[3].2, columns[3].3, true, cpu_col, TextWeight::Medium);
-            cell(tr, scene, &fmt_bytes(p.mem_bytes), columns[4].2, columns[4].3, true, txt, TextWeight::Regular);
-            cell(tr, scene, &p.threads.to_string(), columns[5].2, columns[5].3, true, txt, TextWeight::Regular);
+            cell(tr, scene, &format!("{:.1}", p.cpu), &columns[3], cpu_col, TextWeight::Medium);
+            cell(tr, scene, &fmt_bytes(p.mem_bytes), &columns[4], txt, TextWeight::Regular);
+            cell(tr, scene, &p.threads.to_string(), &columns[5], txt, TextWeight::Regular);
 
             self.hit.rows.push((p.pid, row));
         }
         scene.pop_layer();
 
-        // Scrollbar.
+        // Vertical row scrollbar.
         if procs.len() > self.rows_per_page {
             let track = Rect::new(view.x1 - 5.0, view.y0, view.x1 - 1.0, view.y1);
             charts::fill_rrect(scene, t, track, 2.0, with_alpha(c.border_standard, 90));
@@ -767,6 +927,19 @@ impl MonitorApp {
             let pos = if max_off > 0.0 { self.scroll_off as f64 / max_off } else { 0.0 };
             let ty0 = track.y0 + (track.height() - thumb_h) * pos;
             charts::fill_rrect(scene, t, Rect::new(track.x0, ty0, track.x1, ty0 + thumb_h), 2.0, with_alpha(c.text_dim, 160));
+        }
+
+        // Horizontal scrollbar — appears only when the columns overflow the
+        // viewport (a narrow window), so THR no longer overlaps the border:
+        // the user scrolls right to reach it instead.
+        if h_overflow > 0.5 {
+            let track = Rect::new(band.x0, ti.y1 - hbar_h + 1.0, band.x1, ti.y1 - 1.0);
+            charts::fill_rrect(scene, t, track, 2.0, with_alpha(c.border_standard, 90));
+            let frac_h = (avail_w / content_w).clamp(0.0, 1.0);
+            let thumb_w = (track.width() * frac_h).max(24.0);
+            let pos = (sx / h_overflow).clamp(0.0, 1.0);
+            let tx0 = track.x0 + (track.width() - thumb_w) * pos;
+            charts::fill_rrect(scene, t, Rect::new(tx0, track.y0, tx0 + thumb_w, track.y1), 2.0, with_alpha(c.text_dim, 160));
         }
     }
 
@@ -891,25 +1064,31 @@ impl MonitorApp {
         self.hit.kill_btn = kr;
     }
 
-    fn draw_resources(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, r: Rect) {
+    fn draw_resources(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, r: Rect) {
         let c = &theme.tokens.colors;
-        let m = &self.model.metrics;
+        let n = self.model.metrics.cores.len().max(1);
 
-        // Per-core grid panel.
-        let n = m.cores.len().max(1);
-        let cols = ((r.width() / 220.0).floor() as usize).clamp(1, 8).min(n);
-        let rows_n = n.div_ceil(cols);
-        let core_panel_h = (28.0 + rows_n as f64 * 30.0 + 14.0).min(r.height() * 0.42);
+        // Per-core grid panel. Columns fit the width; rows wrap to however
+        // many the core count needs, and the card grows to hold *every* row
+        // (`layout::per_core_card_h`) so the last cores never render below
+        // the card background. The whole view scrolls when this pushes the
+        // content past the viewport, so the card is sized to its content
+        // rather than clamped to a fraction of the viewport.
+        let grid_inner_w = r.width() - 2.0 * layout::RAIL_CARD_PAD;
+        let grid = layout::per_core_grid(n, grid_inner_w);
+        let core_panel_h = layout::per_core_card_h(grid);
         let core_panel = Rect::new(r.x0, r.y0, r.x1, r.y0 + core_panel_h);
-        let ci = charts::panel(scene, t, core_panel, theme, 12.0);
+        let ci = charts::panel(scene, t, core_panel, theme, layout::RAIL_CARD_PAD);
         tr.draw_text_weighted(scene, &format!("Per-Core Utilisation  ·  {} threads", n), theme.tokens.typography.scale.sm, c.text_primary, t * Affine::translate((ci.x0, ci.y0)), None, TextWeight::Semibold);
-        let grid_top = ci.y0 + 22.0;
-        let cell_w = (ci.width() - (cols as f64 - 1.0) * 14.0) / cols as f64;
-        for (i, &usage) in m.cores.iter().enumerate() {
+        let grid_top = ci.y0 + layout::CORE_TITLE_H;
+        let cols = grid.cols;
+        let cell_w = (ci.width() - (cols as f64 - 1.0) * layout::CORE_GAP) / cols as f64;
+        let cores = self.model.metrics.cores.clone();
+        for (i, &usage) in cores.iter().enumerate() {
             let col = i % cols;
             let rowi = i / cols;
-            let x0 = ci.x0 + col as f64 * (cell_w + 14.0);
-            let y0 = grid_top + rowi as f64 * 30.0;
+            let x0 = ci.x0 + col as f64 * (cell_w + layout::CORE_GAP);
+            let y0 = grid_top + rowi as f64 * layout::CORE_ROW_STRIDE;
             charts::bar_gauge(
                 scene, t, tr,
                 Rect::new(x0, y0, x0 + cell_w, y0 + 22.0),
@@ -918,9 +1097,13 @@ impl MonitorApp {
             );
         }
 
-        // 2×2 chart grid below.
+        // 2×2 chart grid below. Give each chart a sensible minimum height so
+        // it stays legible; when the viewport is short the page scrolls.
         let charts_top = core_panel.y1 + GAP;
-        let area = Rect::new(r.x0, charts_top, r.x1, r.y1);
+        let m = &self.model.metrics;
+        let min_chart_h = 150.0;
+        let avail_h = (r.y1 - charts_top).max(2.0 * min_chart_h + GAP);
+        let area = Rect::new(r.x0, charts_top, r.x1, charts_top + avail_h);
         let cw = (area.width() - GAP) / 2.0;
         let ch = (area.height() - GAP) / 2.0;
         let cell = |row: usize, col: usize| {
@@ -1060,11 +1243,17 @@ impl MonitorApp {
         }
 
         if self.hit.tab_proc.contains(p) {
+            if self.tab != Tab::Processes {
+                self.view_scroll_y = 0.0;
+            }
             self.tab = Tab::Processes;
             *handled = true;
             return;
         }
         if self.hit.tab_res.contains(p) {
+            if self.tab != Tab::Resources {
+                self.view_scroll_y = 0.0;
+            }
             self.tab = Tab::Resources;
             *handled = true;
             return;
@@ -1146,7 +1335,21 @@ impl MonitorApp {
         self.clamp_scroll();
     }
 
-    fn on_key(&mut self, key: &Key, text: Option<&str>, doc: &mut AutoCommit, path: &ObjId, handled: &mut bool) {
+    fn on_key(&mut self, key: &Key, text: Option<&str>, ctrl: bool, doc: &mut AutoCommit, path: &ObjId, handled: &mut bool) {
+        // Global-search seam: leave Ctrl+K (and Ctrl+/) untouched so the
+        // forthcoming shared global-search framework can claim it. We do NOT
+        // build a bespoke search here — just refuse to swallow the chord so
+        // it bubbles up unhandled. (Bare "/" still focuses the local process
+        // filter below; only the Ctrl-modified chord is reserved.)
+        if ctrl {
+            if let Key::Character(s) = key {
+                if matches!(s.as_str(), "k" | "K" | "/") {
+                    // `handled` stays false → event propagates to the host.
+                    return;
+                }
+            }
+        }
+
         // Modal.
         if let Some(pid) = self.confirm_kill {
             match key {
@@ -1329,30 +1532,99 @@ impl Widget for MonitorApp {
         // width so it animates with the slide. Overlay: the content uses the
         // full body width and the rail floats over it.
         let rail_docked = Rect::new(body.x0, body.y0, body.x0 + RAIL_W, body.y1);
-        let main = match layout {
+        let main_full = match layout {
             SplitLayout::Docked => {
                 let inset = (RAIL_W + GAP) * self.rail.reveal();
                 Rect::new(body.x0 + inset, body.y0, body.x1, body.y1)
             }
             SplitLayout::Overlay => body,
         };
+        // When the hamburger toggle floats over the content's top-left corner
+        // (narrow overlay), inset the content column past it so the first row
+        // — the search toolbar, or the per-core card title — clears the
+        // toggle instead of rendering under it. The toggle itself is still
+        // painted at `main_full`'s corner.
+        let main = if self.show_rail_toggle() && layout == SplitLayout::Overlay {
+            Rect::new(main_full.x0 + 34.0 + GAP, main_full.y0, main_full.x1, main_full.y1)
+        } else {
+            main_full
+        };
 
         self.draw_header(scene, t, text_renderer, theme, header);
 
+        // ---- whole-view vertical scroll -------------------------------
+        // The body (rail column + active tab) can be taller than its
+        // viewport — a docked rail's info card, or the Resources tab's
+        // per-core grid + 2×2 charts on a large machine / short window.
+        // Mirror `ui::widget::Scrollable`'s model: draw the body content at
+        // `(… − offset)` inside a clip layer the size of the viewport, clamp
+        // the offset to `content − viewport`, and paint a scrollbar. The
+        // header stays pinned above the scroll. The Processes tab manages its
+        // own internal row scroll, so it reports zero page-content height and
+        // never page-scrolls.
+        let viewport_h = body.height();
+        let content_natural_h = self.content_natural_h(main.width());
+        let page_overflow = (content_natural_h - viewport_h).max(0.0);
+        self.content_h = content_natural_h.max(viewport_h);
+        self.viewport_h = viewport_h;
+        self.view_scroll_y = self.view_scroll_y.clamp(0.0, page_overflow as f32);
+        let dy = self.view_scroll_y as f64;
+
+        // Body content is laid out from `body.y0 − dy` and clipped to the
+        // body viewport. Shifting the *rects* (rather than the transform)
+        // keeps the hit rectangles the draw functions record in real screen
+        // space, so clicks land correctly while scrolled. The draw functions
+        // receive rects extended to the natural content height so nothing
+        // they lay out gets truncated by the viewport — the clip is what
+        // hides the off-screen part.
+        let scrolling = page_overflow > 0.5;
+        if scrolling {
+            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &body);
+        }
+        let top = body.y0 - dy;
+        let content_bottom = top + self.content_h;
+        let main_scrolled = Rect::new(main.x0, top, main.x1, content_bottom);
+        let rail_scrolled = Rect::new(rail_docked.x0, top, rail_docked.x1, content_bottom);
+
         // Content first; the overlay rail (if any) paints on top of it.
         match self.tab {
-            Tab::Processes => self.draw_processes(scene, t, text_renderer, theme, main),
-            Tab::Resources => self.draw_resources(scene, t, text_renderer, theme, main),
+            Tab::Processes => self.draw_processes(scene, t, text_renderer, theme, main_scrolled),
+            Tab::Resources => self.draw_resources(scene, t, text_renderer, theme, main_scrolled),
         }
 
-        // The system rail: docked beside the content, or an overlay flap that
-        // slides in over it behind a dimming scrim.
-        self.draw_rail_region(scene, t, text_renderer, theme, rail_docked, layout);
+        // The system rail: docked beside the content (scrolls with the page),
+        // or an overlay flap that slides in over it behind a dimming scrim
+        // (pinned — overlays never page-scroll, so it uses the un-shifted
+        // footprint and paints after the clip is popped).
+        if layout == SplitLayout::Docked {
+            self.draw_rail_region(scene, t, text_renderer, theme, rail_scrolled, layout);
+        }
+
+        if scrolling {
+            scene.pop_layer();
+            // Page scrollbar down the right edge of the body viewport.
+            let track = Rect::new(body.x1 - 5.0, body.y0, body.x1 - 1.0, body.y1);
+            let c = &theme.tokens.colors;
+            charts::fill_rrect(scene, t, track, 2.0, with_alpha(c.border_standard, 90));
+            let frac_v = (viewport_h / self.content_h).clamp(0.0, 1.0);
+            let thumb_h = (track.height() * frac_v).max(24.0);
+            let pos = if page_overflow > 0.0 { dy / page_overflow } else { 0.0 };
+            let ty0 = track.y0 + (track.height() - thumb_h) * pos;
+            charts::fill_rrect(scene, t, Rect::new(track.x0, ty0, track.x1, ty0 + thumb_h), 2.0, with_alpha(c.text_dim, 160));
+        }
+
+        // The overlay rail flap floats above the (now-popped) scroll clip and
+        // the page scrollbar, pinned to the un-shifted body so it never
+        // page-scrolls.
+        if layout == SplitLayout::Overlay {
+            self.draw_rail_region(scene, t, text_renderer, theme, rail_docked, layout);
+        }
 
         // Hamburger / close affordance over the content's top-left corner,
-        // shown whenever the rail isn't fully docked-open.
+        // shown whenever the rail isn't fully docked-open. Pinned (not
+        // scrolled) so it stays reachable.
         if self.show_rail_toggle() {
-            self.draw_rail_toggle(scene, t, theme, main);
+            self.draw_rail_toggle(scene, t, theme, main_full);
         }
 
         if let Some(pid) = self.confirm_kill {
@@ -1364,7 +1636,7 @@ impl Widget for MonitorApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
+        modifiers: &winit::event::Modifiers,
         doc: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -1377,14 +1649,42 @@ impl Widget for MonitorApp {
                 self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                if self.tab == Tab::Processes && self.confirm_kill.is_none() {
-                    let rows = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => -y * 3.0,
-                        MouseScrollDelta::PixelDelta(pos) => -(pos.y as f32 / ROW_H as f32),
-                    };
-                    self.scroll_off = (self.scroll_off + rows).max(0.0);
-                    self.clamp_scroll();
+                if self.confirm_kill.is_some() {
+                    return;
+                }
+                // Pixels of scroll this notch represents (≈60px/line desktop
+                // convention; touchpad pixel deltas pass through 1×).
+                let (px_x, px_y) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => (-x * 60.0, -y * 60.0),
+                    MouseScrollDelta::PixelDelta(pos) => (-(pos.x as f32), -(pos.y as f32)),
+                };
+                let shift = modifiers.state().shift_key();
+                let over_table = self.tab == Tab::Processes
+                    && self.proc_push.slide() < 0.5
+                    && self.table_viewport.contains(self.last_cursor);
+                if over_table {
+                    // Shift-wheel (or a horizontal touchpad delta) scrolls the
+                    // table sideways through its overflowing columns; a plain
+                    // vertical wheel scrolls the rows.
+                    if shift || px_x.abs() > px_y.abs() {
+                        let dx = if shift && px_x == 0.0 { px_y } else { px_x };
+                        let max_x = (self.table_content_w - self.table_viewport.width()).max(0.0) as f32;
+                        self.table_scroll_x = (self.table_scroll_x + dx).clamp(0.0, max_x);
+                    } else {
+                        let rows = px_y / ROW_H as f32;
+                        self.scroll_off = (self.scroll_off + rows).max(0.0);
+                        self.clamp_scroll();
+                    }
                     *handled = true;
+                } else {
+                    // Anywhere else (Resources tab, the rail column, the
+                    // toolbar) scrolls the whole page.
+                    let max_y = (self.content_h - self.viewport_h).max(0.0) as f32;
+                    let before = self.view_scroll_y;
+                    self.view_scroll_y = (self.view_scroll_y + px_y).clamp(0.0, max_y);
+                    if (self.view_scroll_y - before).abs() > f32::EPSILON {
+                        *handled = true;
+                    }
                 }
             }
             WindowEvent::MouseInput {
@@ -1399,7 +1699,14 @@ impl Widget for MonitorApp {
                 if ke.state == ElementState::Pressed =>
             {
                 let text = ke.text.as_ref().map(|s| s.as_str());
-                self.on_key(&ke.logical_key, text, doc, path, handled);
+                let ctrl = modifiers.state().control_key();
+                let prev_tab = self.tab;
+                self.on_key(&ke.logical_key, text, ctrl, doc, path, handled);
+                // Switching tabs resets the page scroll so the new tab opens
+                // at the top rather than inheriting a stale offset.
+                if self.tab != prev_tab {
+                    self.view_scroll_y = 0.0;
+                }
             }
             _ => {}
         }
@@ -1519,5 +1826,139 @@ mod tests {
         assert_eq!(a.selected_pid, Some(v[1].pid));
         a.move_selection(-1);
         assert_eq!(a.selected_pid, Some(v[0].pid));
+    }
+
+    // ---- responsive layout fixes (issues 1-5) ---------------------------
+
+    /// Issue 4: the per-core card the renderer sizes (`resources_natural_h`
+    /// uses `per_core_card_h`) must hold a cell for *every* core in the
+    /// model, for a range of core counts — not just the default 8. Assert on
+    /// the production grid the draw path computes, so the last cores can
+    /// never land below the card background.
+    #[test]
+    fn per_core_grid_fits_every_core_for_varied_counts() {
+        for n in [1usize, 4, 8, 16, 32, 48] {
+            let mut a = app();
+            a.model.metrics.cores = (0..n).map(|i| (i as f32 * 3.0) % 100.0).collect();
+            // The grid the renderer lays out (same width math as draw_resources).
+            let w = 900.0;
+            let grid = layout::per_core_grid(a.model.metrics.cores.len(), w - 2.0 * layout::RAIL_CARD_PAD);
+            assert!(
+                grid.cells() >= n,
+                "grid must hold every core: n={n} cells={}",
+                grid.cells()
+            );
+            // The card the renderer sizes holds the last grid row inside it.
+            let card_h = layout::per_core_card_h(grid);
+            let last_row_bottom = layout::CORE_TITLE_H + grid.rows as f64 * layout::CORE_ROW_STRIDE;
+            assert!(
+                last_row_bottom <= card_h + 0.001,
+                "n={n}: last core row {last_row_bottom} spills past card {card_h}"
+            );
+        }
+    }
+
+    /// Issue 4 + 5: more cores ⇒ a taller Resources body. The natural height
+    /// the page-scroll clamps against must grow with the core count, proving
+    /// the grid drives the page height rather than being clipped.
+    #[test]
+    fn resources_height_grows_with_core_count() {
+        let mut a8 = app();
+        a8.model.metrics.cores = vec![10.0; 8];
+        let mut a64 = app();
+        a64.model.metrics.cores = vec![10.0; 64];
+        assert!(
+            a64.resources_natural_h(900.0) > a8.resources_natural_h(900.0),
+            "64-core Resources body must be taller than 8-core"
+        );
+    }
+
+    /// Issue 5: on a short viewport the Resources content exceeds the body,
+    /// so `content_natural_h` reports more than the viewport height — the
+    /// signal the page scrollbar + wheel routing key off.
+    #[test]
+    fn short_viewport_makes_resources_page_scrollable() {
+        let mut a = app();
+        a.tab = Tab::Resources;
+        a.model.metrics.cores = vec![10.0; 32];
+        let main_w = 900.0;
+        let natural = a.content_natural_h(main_w);
+        let short_viewport = 300.0;
+        assert!(
+            natural > short_viewport,
+            "32-core Resources ({natural}px) must overflow a {short_viewport}px viewport"
+        );
+    }
+
+    /// Issue 2: a narrow table viewport makes the columns overflow, so the
+    /// horizontal scroll has a non-zero range and the THR column lives in
+    /// scrollable space rather than overlapping the border.
+    #[test]
+    fn narrow_table_has_horizontal_scroll_range() {
+        // The content area inside the card, minus padding, is what the
+        // renderer hands to `process_columns`. A ~360px content width can't
+        // seat all six minimum columns.
+        let avail = 360.0 - 2.0 * layout::TABLE_PAD;
+        let cols = layout::process_columns(avail);
+        let total = layout::process_columns_total_w(&cols);
+        assert!(
+            total > avail,
+            "narrow table columns ({total}) must overflow the viewport ({avail}) \
+             so a horizontal scrollbar appears"
+        );
+    }
+
+    /// Issue 5: page-scroll offset clamps to the overflow — it can't scroll
+    /// past the content or above the top. Drives the same clamp the wheel
+    /// handler uses.
+    #[test]
+    fn page_scroll_clamps_to_overflow() {
+        let mut a = app();
+        a.content_h = 1000.0;
+        a.viewport_h = 400.0;
+        let max_y = (a.content_h - a.viewport_h) as f32; // 600
+        // Over-scroll down is clamped to max.
+        a.view_scroll_y = (a.view_scroll_y + 5000.0).clamp(0.0, max_y);
+        assert_eq!(a.view_scroll_y, 600.0);
+        // Over-scroll up is clamped to 0.
+        a.view_scroll_y = (a.view_scroll_y - 5000.0).clamp(0.0, max_y);
+        assert_eq!(a.view_scroll_y, 0.0);
+    }
+
+    /// Issue 6: Ctrl+K is left for the global-search framework — `on_key`
+    /// must NOT consume it (so it bubbles up), while a bare "/" still focuses
+    /// the local process filter.
+    #[test]
+    fn ctrl_k_is_left_unhandled_for_global_search() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let key = Key::Character("k".into());
+        let mut handled = false;
+        a.on_key(&key, Some("k"), true, &mut doc, &root, &mut handled);
+        assert!(!handled, "Ctrl+K must bubble up to the global-search seam");
+        // A bare "/" (no ctrl) still drives the local filter focus.
+        let slash = Key::Character("/".into());
+        let mut handled2 = false;
+        a.on_key(&slash, Some("/"), false, &mut doc, &root, &mut handled2);
+        assert!(handled2 && a.search_focused, "bare / still focuses local search");
+    }
+
+    /// Switching tabs via the production click path resets the page scroll so
+    /// the new tab opens at the top rather than inheriting a stale offset.
+    #[test]
+    fn clicking_a_tab_resets_page_scroll() {
+        let mut a = app();
+        a.tab = Tab::Resources;
+        a.view_scroll_y = 250.0;
+        // Seat the Processes tab hit rect and click inside it via on_click.
+        a.hit.tab_proc = Rect::new(0.0, 0.0, 100.0, 30.0);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut handled = false;
+        a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut handled);
+        assert!(handled);
+        assert_eq!(a.tab, Tab::Processes);
+        assert_eq!(a.view_scroll_y, 0.0, "tab switch must reset the page scroll");
     }
 }
