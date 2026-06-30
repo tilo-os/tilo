@@ -1,14 +1,3 @@
-# Standalone-workspace marker. The host repo is a Cargo workspace
-# whose members include unpopulated git submodules; in a sparse
-# worktree those manifests cannot be loaded, so we declare a
-# self-contained workspace for this crate + its qos-collab-types
-# path dependency. On landing into main, the orchestrator removes
-# this block and adds `qos-channel-crypto` to the root workspace's
-# `members` list.
-[workspace]
-members = ["."]
-resolver = "2"
-
 [package]
 name = "qos-channel-crypto"
 version = "0.1.0"
