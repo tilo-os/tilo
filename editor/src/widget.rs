@@ -583,6 +583,8 @@ fn block_runs(b: &BlockView) -> (Vec<RichSpan>, Vec<(usize, usize)>, Vec<(usize,
             size: size_bits.map(f32::from_bits),
             family,
             color,
+            background: None,
+            baseline: ui::richtext::BaselineShift::None,
         });
         i = j;
     }
@@ -662,6 +664,8 @@ fn block_runs_markup(b: &BlockView, show_markup: bool) -> (Vec<RichSpan>, Vec<(u
             size: size_bits.map(f32::from_bits),
             family,
             color,
+            background: None,
+            baseline: ui::richtext::BaselineShift::None,
         });
         i = j;
     }
@@ -768,6 +772,8 @@ fn running_head_runs(b: &BlockView, page_no: usize) -> Vec<RichSpan> {
             size: size_bits.map(f32::from_bits),
             family,
             color,
+            background: None,
+            baseline: ui::richtext::BaselineShift::None,
         });
         i = j;
     }
@@ -1793,7 +1799,7 @@ impl WordProcessorWidget {
                 align,
                 FontFamily::Sans,
                 vec![],
-                vec![],
+                vec![], 1.0
             );
             total_h += layout.height() as f64;
             shaped.push(layout);
@@ -2313,7 +2319,7 @@ impl Widget for WordProcessorWidget {
                                         align,
                                         FontFamily::Sans,
                                         underlines,
-                                        strikes,
+                                        strikes, 1.0
                                     )
                                 }
                             };
@@ -2382,7 +2388,7 @@ impl Widget for WordProcessorWidget {
                 // Image blocks carry a trivial empty layout (used only so pointer
                 // hit-testing resolves to offset 0); it is cheap, so just re-shape
                 // it every frame rather than caching it incrementally.
-                let empty = RichTextLayout::shape(&mut text_renderer.font_system, &[RichSpan::new("")], false, 16.0, content_w, TextAlign::Left, FontFamily::Sans, vec![], vec![]);
+                let empty = RichTextLayout::shape(&mut text_renderer.font_system, &[RichSpan::new("")], false, 16.0, content_w, TextAlign::Left, FontFamily::Sans, vec![], vec![], 1.0);
                 new_cache.insert(b.id.clone(), (0, empty));
                 // Break to the next page on a manual page break, or if the image
                 // would not fit.
@@ -2462,7 +2468,7 @@ impl Widget for WordProcessorWidget {
                             align,
                             family,
                             underlines,
-                            strikes,
+                            strikes, 1.0
                         )
                     }
                 };
@@ -2846,7 +2852,7 @@ impl Widget for WordProcessorWidget {
                     TextAlign::Left,
                     FontFamily::Sans,
                     vec![],
-                    vec![],
+                    vec![], 1.0
                 );
                 let body_h = body_layout.height() as f64;
                 let card_top = anchor_y.max(next_card_y);
