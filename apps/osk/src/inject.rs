@@ -1,5 +1,4 @@
-//! Text-injection backends for the on-screen keyboard (workstream **W7**,
-//! client half).
+//! Text-injection backends for the on-screen keyboard (client half).
 //!
 //! The widget ([`crate::OskWidget`]) accumulates typed/swiped/committed input
 //! and surfaces it two ways: as a flattened string ([`OskWidget::take_pending_text`])
