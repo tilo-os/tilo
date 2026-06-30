@@ -318,6 +318,14 @@ RUN dnf install -y compiler-rt && dnf clean all && \
       > /usr/lib/systemd/system/fs.service.d/10-hardened-malloc.conf && \
     echo "scudo wired: $scudo"
 
+# Confine the collaborative filesystem daemon in its own SELinux domain
+# (qos_fs_t) instead of unconfined_service_t. Shipped permissive so it can't
+# break the working daemon; tightens to enforcing from captured AVCs (see the
+# module header). The drop-in runs fs.service in the domain via SELinuxContext.
+COPY os/usr/share/qos/selinux/qos-base.cil /usr/share/qos/selinux/qos-base.cil
+COPY os/usr/lib/systemd/system/fs.service.d/20-selinux.conf /usr/lib/systemd/system/fs.service.d/20-selinux.conf
+RUN semodule -i /usr/share/qos/selinux/qos-base.cil && echo "qos-base SELinux module loaded"
+
 # ---------------------------------------------------------------------------
 # Enable services
 # ---------------------------------------------------------------------------

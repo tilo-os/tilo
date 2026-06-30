@@ -50,6 +50,15 @@ else
   warn "scudo allocator NOT detected in fs.service"
 fi
 
+# fs daemon SELinux confinement (its own domain, not unconfined_service_t)
+fsctx="$(ps -eo label,comm 2>/dev/null | awk '$2=="fs"{print $1; exit}')"
+case "$fsctx" in
+  *qos_fs_t*) ok "fs.service confined: $fsctx" ;;
+  *unconfined_service_t*) warn "fs.service is unconfined_service_t (qos_fs_t not applied)" ;;
+  "" ) note "fs.service not running; SELinux domain unknown" ;;
+  *) note "fs.service domain: $fsctx" ;;
+esac
+
 # Image signature enforcement (verify-before-update)
 if grep -q 'sigstoreSigned' /etc/containers/policy.json 2>/dev/null; then
   ok "container signature policy requires signed qOS images"
