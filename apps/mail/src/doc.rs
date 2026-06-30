@@ -117,6 +117,35 @@ impl MailDoc {
         let _ = doc.put(&ui, "selected", message_id.unwrap_or(""));
     }
 
+    /// Persist the compose body format choice ("html" | "text") so the user's
+    /// preference is remembered across compose windows and sessions.
+    pub fn set_compose_format(doc: &mut AutoCommit, key: &str) {
+        let ui = Self::ui(doc);
+        let _ = doc.put(&ui, "compose_format", key);
+    }
+
+    pub fn get_compose_format(doc: &AutoCommit) -> Option<String> {
+        match doc.get(&ROOT, "ui") {
+            Ok(Some((Value::Object(ObjType::Map), ui))) => Self::read_str(doc, &ui, "compose_format"),
+            _ => None,
+        }
+    }
+
+    /// Persist which account is active in the sidebar.
+    pub fn set_active_account(doc: &mut AutoCommit, idx: usize) {
+        let ui = Self::ui(doc);
+        let _ = doc.put(&ui, "active_account", idx as i64);
+    }
+
+    pub fn get_active_account(doc: &AutoCommit) -> Option<usize> {
+        match doc.get(&ROOT, "ui") {
+            Ok(Some((Value::Object(ObjType::Map), ui))) => {
+                Self::read_i64(doc, &ui, "active_account").map(|v| v.max(0) as usize)
+            }
+            _ => None,
+        }
+    }
+
     pub fn get_selected(doc: &AutoCommit) -> Option<String> {
         match doc.get(&ROOT, "ui") {
             Ok(Some((Value::Object(ObjType::Map), ui))) => {
@@ -214,6 +243,9 @@ impl MailDoc {
         let _ = doc.put(&d, "bcc", draft.bcc.as_str());
         let _ = doc.put(&d, "subject", draft.subject.as_str());
         let _ = doc.put(&d, "body", draft.body.as_str());
+        if let Some(html) = &draft.html_body {
+            let _ = doc.put(&d, "html_body", html.as_str());
+        }
     }
 
     pub fn load_draft(doc: &AutoCommit) -> Draft {
@@ -227,6 +259,7 @@ impl MailDoc {
             bcc: Self::read_str(doc, &d, "bcc").unwrap_or_default(),
             subject: Self::read_str(doc, &d, "subject").unwrap_or_default(),
             body: Self::read_str(doc, &d, "body").unwrap_or_default(),
+            html_body: Self::read_str(doc, &d, "html_body"),
             attachments: Vec::new(),
             in_reply_to: None,
         }
