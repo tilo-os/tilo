@@ -31,6 +31,7 @@ use ui::widget::Widget;
 use ui::permissions::UserId;
 use ui::{PathSegment, PresenceCtx, PresenceKey};
 
+use crate::i18n::{arg, t, t_args};
 use crate::word_processor::{Caret, ClipBlock, WordProcessor};
 use crate::WpFormat;
 
@@ -553,13 +554,13 @@ impl NumField {
             _ => 2.0,
         }
     }
-    fn label(self) -> &'static str {
-        match self {
-            NumField::Size => "Size",
-            NumField::SpaceBefore => "Space before",
-            NumField::SpaceAfter => "Space after",
-            NumField::Indent => "Indent",
-        }
+    fn label(self) -> String {
+        t(match self {
+            NumField::Size => "panel-num-size",
+            NumField::SpaceBefore => "panel-num-space-before",
+            NumField::SpaceAfter => "panel-num-space-after",
+            NumField::Indent => "panel-num-indent",
+        })
     }
 }
 
@@ -2058,7 +2059,7 @@ impl WordProcessorWidget {
         let mut x = bar.x0 + 12.0;
 
         let fr = Rect::new(x, fy0, x + 188.0, fy0 + 26.0);
-        draw_field_box(scene, transform, tr, &cc, fr, &self.find_query, "Find", !self.find_on_replace);
+        draw_field_box(scene, transform, tr, &cc, fr, &self.find_query, &t("find-find"), !self.find_on_replace);
         // A subtle danger ring when a regex query fails to compile.
         if self.find_regex && self.find_regex_error {
             scene.stroke(&vello::kurbo::Stroke::new(1.5), transform, danger, None, &vello::kurbo::RoundedRect::from_rect(fr, 5.0));
@@ -2087,33 +2088,40 @@ impl WordProcessorWidget {
         x += 8.0;
 
         let rr = Rect::new(x, fy0, x + 188.0, fy0 + 26.0);
-        draw_field_box(scene, transform, tr, &cc, rr, &self.replace_query, "Replace with", self.find_on_replace);
+        draw_field_box(scene, transform, tr, &cc, rr, &self.replace_query, &t("find-replace-with"), self.find_on_replace);
         self.find_buttons.push((FindAction::FocusReplace, rr));
         x += 196.0;
 
         let (count, count_col) = if self.find_query.is_empty() {
             (String::new(), cc.text_dim)
         } else if self.find_regex && self.find_regex_error {
-            ("Bad pattern".to_string(), danger)
+            (t("find-bad-pattern"), danger)
         } else if self.find_matches.is_empty() {
-            ("No results".to_string(), cc.text_dim)
+            (t("find-no-results"), cc.text_dim)
         } else {
-            (format!("{} / {}", self.find_idx + 1, self.find_matches.len()), cc.text_dim)
+            (
+                t_args(
+                    "find-count",
+                    &[arg("cur", (self.find_idx + 1) as i64), arg("total", self.find_matches.len() as i64)],
+                ),
+                cc.text_dim,
+            )
         };
         tr.draw_text(scene, &count, 12.5, count_col, transform * Affine::translate((x, cy - 7.0)), None);
         x += 78.0;
 
+        // Arrows / ✕ stay as glyphs; "Replace" / "All" are localized words.
         for (action, label, w) in [
-            (FindAction::Prev, "↑", 28.0),
-            (FindAction::Next, "↓", 28.0),
-            (FindAction::Replace, "Replace", 72.0),
-            (FindAction::ReplaceAll, "All", 40.0),
-            (FindAction::Close, "✕", 28.0),
+            (FindAction::Prev, "↑".to_string(), 28.0),
+            (FindAction::Next, "↓".to_string(), 28.0),
+            (FindAction::Replace, t("find-replace"), 72.0),
+            (FindAction::ReplaceAll, t("find-replace-all"), 40.0),
+            (FindAction::Close, "✕".to_string(), 28.0),
         ] {
             let r = Rect::new(x, fy0, x + w, fy0 + 26.0);
             scene.fill(Fill::NonZero, transform, cc.chip, None, &vello::kurbo::RoundedRect::from_rect(r, 5.0));
             let tx = r.x0 + (w - label.chars().count() as f64 * 7.2).max(6.0) / 2.0;
-            tr.draw_text(scene, label, 13.0, cc.text, transform * Affine::translate((tx, cy - 8.0)), None);
+            tr.draw_text(scene, &label, 13.0, cc.text, transform * Affine::translate((tx, cy - 8.0)), None);
             self.find_buttons.push((action, r));
             x += w + 6.0;
         }
@@ -2431,13 +2439,13 @@ impl WordProcessorWidget {
             None,
             &pad,
         );
-        let label = if self.inner.region() == Region::Header { "Header" } else { "Footer" };
+        let label = if self.inner.region() == Region::Header { t("band-header") } else { t("band-footer") };
         let approx = label.chars().count() as f64 * 6.4 + 12.0;
         let tab = Rect::new(band.x0 - 2.0, band.y0 - 15.0, band.x0 - 2.0 + approx, band.y0 - 1.0);
         scene.fill(Fill::NonZero, ctf, ACTIVE_BAND_EDGE, None, &vello::kurbo::RoundedRect::from_rect(tab, 2.0));
         // White label on the blue accent tab (a fixed contrast pair, not theme ink,
         // since the tab colour is fixed).
-        tr.draw_text(scene, label, 10.0, Color::WHITE, ctf * Affine::translate((tab.x0 + 6.0, tab.y0 + 1.5)), None);
+        tr.draw_text(scene, &label, 10.0, Color::WHITE, ctf * Affine::translate((tab.x0 + 6.0, tab.y0 + 1.5)), None);
     }
 
     /// Render the caret (and any selection highlight) inside the active
@@ -3047,14 +3055,14 @@ impl WordProcessorWidget {
         let cy = (bar.y0 + bar.y1) / 2.0;
         let mut x = bar.x0 + 12.0;
         self.layout_chips.clear();
-        for (mode, label) in [(LayoutMode::Margins, "Margins"), (LayoutMode::Spacing, "Spacing")] {
+        for (mode, label) in [(LayoutMode::Margins, t("layout-margins")), (LayoutMode::Spacing, t("layout-spacing"))] {
             let w = 16.0 + label.chars().count() as f64 * 7.6;
             let r = Rect::new(x, bar.y0 + 5.0, x + w, bar.y1 - 5.0);
             let active = self.layout_mode == mode;
             let bg = if active { cc.accent } else { cc.chip };
             let fg = if active { cc.on_accent } else { cc.text_dim };
             scene.fill(Fill::NonZero, transform, bg, None, &vello::kurbo::RoundedRect::from_rect(r, 6.0));
-            tr.draw_text(scene, label, 13.0, fg, transform * Affine::translate((x + 8.0, cy - 8.0)), None);
+            tr.draw_text(scene, &label, 13.0, fg, transform * Affine::translate((x + 8.0, cy - 8.0)), None);
             self.layout_chips.push((mode, r));
             x += w + 8.0;
         }
@@ -3068,7 +3076,7 @@ impl WordProcessorWidget {
                 let name = self.focused_style_key().map(|k| self.sheet.get(&k).name).unwrap_or_else(|| "Body".into());
                 format!("{} spacing  {} px   ·   drag the handle — every “{}” block follows", name, self.focused_space_after().round(), name)
             }
-            LayoutMode::None => "Page layout — pick Margins or Spacing, then drag on the page".to_string(),
+            LayoutMode::None => t("layout-none-hint"),
         };
         tr.draw_text(scene, &readout, 12.5, cc.text_dim, transform * Affine::translate((x + 12.0, cy - 8.0)), None);
     }
@@ -3092,11 +3100,11 @@ impl WordProcessorWidget {
         let inner_w = right - x0;
         let mut y = panel.y0 + 14.0;
 
-        tr.draw_text(scene, "STYLE", 10.5, cc.text_dim, transform * Affine::translate((x0, y)), None);
+        tr.draw_text(scene, &t("panel-style"), 10.5, cc.text_dim, transform * Affine::translate((x0, y)), None);
         y += 16.0;
 
         let Some(key) = self.focused_style_key() else {
-            tr.draw_text(scene, "Place the caret in a paragraph", 12.5, cc.text_dim, transform * Affine::translate((x0, y)), Some(inner_w as f32));
+            tr.draw_text(scene, &t("panel-caret-hint"), 12.5, cc.text_dim, transform * Affine::translate((x0, y)), Some(inner_w as f32));
             scene.pop_layer();
             return;
         };
@@ -3109,7 +3117,7 @@ impl WordProcessorWidget {
         y += 12.0;
 
         // ---- Style picker -------------------------------------------------
-        tr.draw_text(scene, "PARAGRAPH STYLES", 10.5, cc.text_dim, transform * Affine::translate((x0, y)), None);
+        tr.draw_text(scene, &t("panel-paragraph-styles"), 10.5, cc.text_dim, transform * Affine::translate((x0, y)), None);
         y += 16.0;
         let order = self.sheet.order();
         let gap = 6.0;
@@ -3131,31 +3139,31 @@ impl WordProcessorWidget {
         y += 12.0;
 
         // ---- Editable style properties ------------------------------------
-        tr.draw_text(scene, "STYLE PROPERTIES", 10.5, cc.text_dim, transform * Affine::translate((x0, y)), None);
+        tr.draw_text(scene, &t("panel-style-properties"), 10.5, cc.text_dim, transform * Affine::translate((x0, y)), None);
         y += 18.0;
 
         // Font (cycles sans → serif → mono).
         {
-            tr.draw_text(scene, "Font", 12.5, cc.text, transform * Affine::translate((x0, y + 5.0)), None);
-            let fl = match st.font.as_str() {
-                "serif" => "Serif",
-                "mono" => "Mono",
-                _ => "Sans",
-            };
+            tr.draw_text(scene, &t("panel-font"), 12.5, cc.text, transform * Affine::translate((x0, y + 5.0)), None);
+            let fl = t(match st.font.as_str() {
+                "serif" => "panel-font-serif",
+                "mono" => "panel-font-mono",
+                _ => "panel-font-sans",
+            });
             let r = Rect::new(right - 96.0, y, right, y + 24.0);
-            draw_btn(scene, transform, tr, &cc, r, fl, false, true);
+            draw_btn(scene, transform, tr, &cc, r, &fl, false, true);
             self.panel_hits.push((r, PanelHit::CycleFont));
             y += 30.0;
         }
 
         // Weight: Bold / Italic toggles.
         {
-            tr.draw_text(scene, "Weight", 12.5, cc.text, transform * Affine::translate((x0, y + 5.0)), None);
+            tr.draw_text(scene, &t("panel-weight"), 12.5, cc.text, transform * Affine::translate((x0, y + 5.0)), None);
             let bw = 60.0;
             let rb = Rect::new(right - bw * 2.0 - 6.0, y, right - bw - 6.0, y + 24.0);
             let ri = Rect::new(right - bw, y, right, y + 24.0);
-            draw_btn(scene, transform, tr, &cc, rb, "Bold", st.bold, true);
-            draw_btn(scene, transform, tr, &cc, ri, "Italic", st.italic, true);
+            draw_btn(scene, transform, tr, &cc, rb, &t("panel-bold"), st.bold, true);
+            draw_btn(scene, transform, tr, &cc, ri, &t("panel-italic"), st.italic, true);
             self.panel_hits.push((rb, PanelHit::ToggleBold));
             self.panel_hits.push((ri, PanelHit::ToggleItalic));
             y += 30.0;
@@ -3163,7 +3171,7 @@ impl WordProcessorWidget {
 
         // Colour: a palette of swatches.
         {
-            tr.draw_text(scene, "Colour", 12.5, cc.text, transform * Affine::translate((x0, y + 5.0)), None);
+            tr.draw_text(scene, &t("panel-colour"), 12.5, cc.text, transform * Affine::translate((x0, y + 5.0)), None);
             let n = STYLE_PALETTE.len();
             let sw_gap = 5.0;
             // Leave room on the left for the "Colour" label.
@@ -3185,7 +3193,7 @@ impl WordProcessorWidget {
 
         // Alignment: L / C / R.
         {
-            tr.draw_text(scene, "Align", 12.5, cc.text, transform * Affine::translate((x0, y + 5.0)), None);
+            tr.draw_text(scene, &t("panel-align"), 12.5, cc.text, transform * Affine::translate((x0, y + 5.0)), None);
             let bw = 40.0;
             let gap = 6.0;
             for (i, (label, val)) in [("L", "left"), ("C", "center"), ("R", "right")].iter().enumerate() {
@@ -3209,7 +3217,7 @@ impl WordProcessorWidget {
         // New style from this.
         {
             let r = Rect::new(x0, y, right, y + 26.0);
-            draw_btn(scene, transform, tr, &cc, r, "+ New style from this", false, true);
+            draw_btn(scene, transform, tr, &cc, r, &t("panel-new-style"), false, true);
             self.panel_hits.push((r, PanelHit::NewStyle));
         }
 
@@ -3220,7 +3228,7 @@ impl WordProcessorWidget {
     /// click-to-type / drag-to-scrub; the steppers nudge by `field.step()`.
     fn draw_num_row(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, field: NumField, value: f32, x0: f64, right: f64, y: f64) {
         let cc = self.chrome;
-        tr.draw_text(scene, field.label(), 12.5, cc.text, transform * Affine::translate((x0, y + 5.0)), None);
+        tr.draw_text(scene, &field.label(), 12.5, cc.text, transform * Affine::translate((x0, y + 5.0)), None);
         let plus = Rect::new(right - 24.0, y, right, y + 24.0);
         let vb = Rect::new(plus.x0 - 60.0, y, plus.x0 - 2.0, y + 24.0);
         let minus = Rect::new(vb.x0 - 26.0, y, vb.x0 - 2.0, y + 24.0);
@@ -3309,12 +3317,12 @@ impl WordProcessorWidget {
         let inner_w = (right - x0).max(40.0);
         let mut y = panel.y0 + 14.0;
 
-        tr.draw_text(scene, "OUTLINE", 10.5, cc.text_dim, transform * Affine::translate((x0, y)), None);
+        tr.draw_text(scene, &t("outline-header"), 10.5, cc.text_dim, transform * Affine::translate((x0, y)), None);
         y += 18.0;
 
         let entries = self.outline_entries();
         if entries.is_empty() {
-            tr.draw_text(scene, "No headings yet", 12.5, cc.text_dim, transform * Affine::translate((x0, y)), Some(inner_w as f32));
+            tr.draw_text(scene, &t("outline-empty"), 12.5, cc.text_dim, transform * Affine::translate((x0, y)), Some(inner_w as f32));
             scene.pop_layer();
             return;
         }
@@ -3338,7 +3346,7 @@ impl WordProcessorWidget {
                 2 => (12.5, cc.text),
                 _ => (11.5, if is_active { cc.text } else { cc.text_dim }),
             };
-            let label = if h.text.trim().is_empty() { "(untitled)".to_string() } else { h.text.trim().to_string() };
+            let label = if h.text.trim().is_empty() { t("outline-untitled") } else { h.text.trim().to_string() };
             tr.draw_text(scene, &label, size, ink, transform * Affine::translate((x0 + indent, y + 4.0)), Some((inner_w - indent).max(20.0) as f32));
             self.outline_hits.push((r, h.id.clone()));
             y += row_h;
@@ -3417,52 +3425,58 @@ impl A11yTreeNode {
 /// toolbar labels are terse glyphs ("B", "H1", "🖼 Image") tuned for sighted
 /// users; a screen reader needs the spelled-out verb instead.
 fn tool_action_a11y_label(a: ToolAction) -> String {
-    let s = match a {
-        ToolAction::Bold => "Bold",
-        ToolAction::Italic => "Italic",
-        ToolAction::Underline => "Underline",
-        ToolAction::Strike => "Strikethrough",
-        ToolAction::Super => "Superscript",
-        ToolAction::Sub => "Subscript",
-        ToolAction::H1 => "Heading 1",
-        ToolAction::H2 => "Heading 2",
-        ToolAction::Body => "Body text",
-        ToolAction::Bullet => "Bulleted list",
-        ToolAction::AlignLeft => "Align left",
-        ToolAction::AlignCenter => "Align center",
-        ToolAction::AlignRight => "Align right",
-        ToolAction::AlignJustify => "Justify",
-        ToolAction::LineSpacing => "Line spacing",
-        ToolAction::FontCycle => "Font",
-        ToolAction::SizeUp => "Increase font size",
-        ToolAction::SizeDown => "Decrease font size",
-        ToolAction::SizeShow => "Font size",
-        ToolAction::InsertImage => "Insert image",
-        ToolAction::InsertTable => "Insert table",
-        ToolAction::TableRowAdd => "Add table row",
-        ToolAction::TableRowDel => "Delete table row",
-        ToolAction::TableColAdd => "Add table column",
-        ToolAction::TableColDel => "Delete table column",
-        ToolAction::TableDelete => "Delete table",
-        ToolAction::ToggleStyles => "Styles panel",
-        ToolAction::ToggleRuler => "Ruler",
-        ToolAction::ToggleOutline => "Document outline",
-        ToolAction::InsertToc => "Insert table of contents",
-        ToolAction::NewMenu => "New from template",
+    let key = match a {
+        ToolAction::Bold => "a11y-bold",
+        ToolAction::Italic => "a11y-italic",
+        ToolAction::Underline => "a11y-underline",
+        ToolAction::Strike => "a11y-strikethrough",
+        ToolAction::Super => "a11y-superscript",
+        ToolAction::Sub => "a11y-subscript",
+        ToolAction::H1 => "a11y-heading1",
+        ToolAction::H2 => "a11y-heading2",
+        ToolAction::Body => "a11y-body-text",
+        ToolAction::Bullet => "a11y-bulleted-list",
+        ToolAction::AlignLeft => "a11y-align-left",
+        ToolAction::AlignCenter => "a11y-align-center",
+        ToolAction::AlignRight => "a11y-align-right",
+        ToolAction::AlignJustify => "a11y-justify",
+        ToolAction::LineSpacing => "a11y-line-spacing",
+        ToolAction::FontCycle => "a11y-font",
+        ToolAction::SizeUp => "a11y-size-up",
+        ToolAction::SizeDown => "a11y-size-down",
+        ToolAction::SizeShow => "a11y-font-size",
+        ToolAction::InsertImage => "a11y-insert-image",
+        ToolAction::InsertTable => "a11y-insert-table",
+        ToolAction::TableRowAdd => "a11y-table-row-add",
+        ToolAction::TableRowDel => "a11y-table-row-del",
+        ToolAction::TableColAdd => "a11y-table-col-add",
+        ToolAction::TableColDel => "a11y-table-col-del",
+        ToolAction::TableDelete => "a11y-table-delete",
+        ToolAction::ToggleStyles => "a11y-styles-panel",
+        ToolAction::ToggleRuler => "a11y-ruler",
+        ToolAction::ToggleOutline => "a11y-document-outline",
+        ToolAction::InsertToc => "a11y-insert-toc",
+        ToolAction::NewMenu => "a11y-new-from-template",
         ToolAction::TextColor(c) => {
             return match c {
-                Some(rgb) => format!("Text color #{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]),
-                None => "Default text color".to_string(),
+                Some(rgb) => {
+                    let hex = format!("{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]);
+                    t_args("a11y-text-color", &[arg("hex", hex)])
+                }
+                None => t("a11y-text-color-default"),
             };
         }
         ToolAction::Highlight(c) => {
             return match c {
-                Some(rgb) => format!("Highlight #{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]),
-                None => "Clear highlight".to_string(),
+                Some(rgb) => {
+                    let hex = format!("{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]);
+                    t_args("a11y-highlight", &[arg("hex", hex)])
+                }
+                None => t("a11y-highlight-clear"),
             };
         }
     };
-    s.to_string()
+    t(key)
 }
 
 impl WordProcessorWidget {
@@ -3537,7 +3551,7 @@ impl WordProcessorWidget {
             })
             .collect();
         Some(A11yTreeNode {
-            node: AccessNode::new(Role::Toolbar).with_name("Formatting"),
+            node: AccessNode::new(Role::Toolbar).with_name(t("a11y-group-formatting")),
             children: buttons,
         })
     }
@@ -4071,7 +4085,7 @@ impl Widget for WordProcessorWidget {
             }
             // Default page indicator in the gap — only when no footer was drawn.
             if !drew_footer && !foot_editing {
-                let label = format!("Page {page_no}");
+                let label = t_args("page-indicator", &[arg("n", page_no as i64)]);
                 let approx = label.chars().count() as f64 * 6.4;
                 let lx = (sheet.x0 + sheet.x1) / 2.0 - approx / 2.0;
                 let ly = sheet.y1 + PAGE_GAP / 2.0 - 6.0;
@@ -4373,7 +4387,8 @@ impl Widget for WordProcessorWidget {
                 scene.fill(Fill::NonZero, ctf, COMMENT_TAB, None, &vello::kurbo::RoundedRect::from_rect(tab, 1.5));
 
                 // Author + content (comment bodies are a small block sequence).
-                let author = if cv.author.is_empty() { "Comment" } else { cv.author.as_str() };
+                let comment_label = t("review-comment");
+                let author = if cv.author.is_empty() { comment_label.as_str() } else { cv.author.as_str() };
                 let body: String = {
                     let parts: Vec<&str> = cv.blocks.iter().map(|b| b.text.as_str()).filter(|t| !t.is_empty()).collect();
                     parts.join(" ")
@@ -4407,7 +4422,7 @@ impl Widget for WordProcessorWidget {
                 let resolve = Rect::new(card_x + COMMENT_CARD_W - 64.0, btn_y, card_x + COMMENT_CARD_W - 8.0, btn_y + REVIEW_BTN);
                 scene.fill(Fill::NonZero, ctf, REVIEW_ACCEPT_BG, None, &vello::kurbo::RoundedRect::from_rect(resolve, 4.0));
                 scene.stroke(&vello::kurbo::Stroke::new(1.0), ctf, COMMENT_CARD_EDGE, None, &vello::kurbo::RoundedRect::from_rect(resolve, 4.0));
-                text_renderer.draw_text(scene, "✓ Resolve", 10.5, REVIEW_ACCEPT_INK, ctf * Affine::translate((resolve.x0 + 5.0, resolve.y0 + 2.5)), None);
+                text_renderer.draw_text(scene, &t("review-resolve"), 10.5, REVIEW_ACCEPT_INK, ctf * Affine::translate((resolve.x0 + 5.0, resolve.y0 + 2.5)), None);
                 self.review_hits.push((resolve, CtxAction::ResolveComment(cid.clone())));
                 next_card_y = card_top + card_h + 6.0;
             }
@@ -4425,8 +4440,8 @@ impl Widget for WordProcessorWidget {
             for (cid, anchor_y, _range_right) in &change_markers {
                 let Some(cv) = self.changes.iter().find(|c| &c.id == cid) else { continue };
                 let (label, kind_color) = match cv.kind {
-                    qdoc::snapshot::ChangeKind::Ins => ("Insertion", TRACK_INS),
-                    qdoc::snapshot::ChangeKind::Del => ("Deletion", TRACK_DEL),
+                    qdoc::snapshot::ChangeKind::Ins => (t("review-insertion"), TRACK_INS),
+                    qdoc::snapshot::ChangeKind::Del => (t("review-deletion"), TRACK_DEL),
                 };
                 let author = if cv.author.is_empty() { String::new() } else { format!(" · {}", cv.author) };
                 let heading = format!("{label}{author}");
@@ -5894,23 +5909,25 @@ impl WordProcessorWidget {
                     }
                     let Some(id) = m.value.as_str().map(|s| s.to_string()) else { continue };
                     if m.name == qdoc::schema::MARK_INS || m.name == qdoc::schema::MARK_DEL {
-                        let kind = if m.name == qdoc::schema::MARK_INS { "insertion" } else { "deletion" };
-                        menu.push(MenuItem::action(format!("Accept {kind}"), || {}));
+                        let is_ins = m.name == qdoc::schema::MARK_INS;
+                        let accept_key = if is_ins { "review-accept-insertion" } else { "review-accept-deletion" };
+                        let reject_key = if is_ins { "review-reject-insertion" } else { "review-reject-deletion" };
+                        menu.push(MenuItem::action(t(accept_key), || {}));
                         actions.push(Some(CtxAction::AcceptChange(id.clone())));
-                        menu.push(MenuItem::action(format!("Reject {kind}"), || {}));
+                        menu.push(MenuItem::action(t(reject_key), || {}));
                         actions.push(Some(CtxAction::RejectChange(id.clone())));
                         review_rows = true;
                     } else if m.name == qdoc::schema::MARK_COMMENT {
-                        menu.push(MenuItem::action("Resolve comment", || {}));
+                        menu.push(MenuItem::action(t("review-resolve-comment"), || {}));
                         actions.push(Some(CtxAction::ResolveComment(id.clone())));
                         review_rows = true;
                     }
                 }
             }
             if !self.changes.is_empty() {
-                menu.push(MenuItem::action("Accept all changes", || {}));
+                menu.push(MenuItem::action(t("review-accept-all"), || {}));
                 actions.push(Some(CtxAction::AcceptAllChanges));
-                menu.push(MenuItem::action("Reject all changes", || {}));
+                menu.push(MenuItem::action(t("review-reject-all"), || {}));
                 actions.push(Some(CtxAction::RejectAllChanges));
                 review_rows = true;
             }
@@ -5932,7 +5949,7 @@ impl WordProcessorWidget {
                         replacement: sug.clone(),
                     }));
                 }
-                menu.push(MenuItem::action("Add to dictionary", || {}));
+                menu.push(MenuItem::action(t("menu-add-to-dictionary"), || {}));
                 actions.push(Some(CtxAction::AddToDictionary(word.clone())));
                 menu.push(MenuItem::separator());
                 actions.push(None);
@@ -5945,20 +5962,20 @@ impl WordProcessorWidget {
             .and_then(|mut cb| cb.get_text().ok())
             .is_some_and(|s| !s.is_empty());
         if has_sel {
-            menu.push(MenuItem::action("Cut", || {}));
+            menu.push(MenuItem::action(t("menu-cut"), || {}));
             actions.push(Some(CtxAction::Cut));
-            menu.push(MenuItem::action("Copy", || {}));
+            menu.push(MenuItem::action(t("menu-copy"), || {}));
             actions.push(Some(CtxAction::Copy));
         }
         if can_paste {
-            menu.push(MenuItem::action("Paste", || {}));
+            menu.push(MenuItem::action(t("menu-paste"), || {}));
             actions.push(Some(CtxAction::Paste));
         }
         if !menu.items().is_empty() {
             menu.push(MenuItem::separator());
             actions.push(None);
         }
-        menu.push(MenuItem::action("Select All", || {}));
+        menu.push(MenuItem::action(t("menu-select-all"), || {}));
         actions.push(Some(CtxAction::SelectAll));
 
         menu.open_at(pos);
@@ -6025,9 +6042,9 @@ impl WordProcessorWidget {
     fn open_new_menu(&mut self) {
         let mut menu = ContextMenu::new();
         let mut templates = Vec::new();
-        for &t in crate::Template::all() {
-            menu.push(MenuItem::action(t.title(), || {}));
-            templates.push(t);
+        for &tpl in crate::Template::all() {
+            menu.push(MenuItem::action(tpl.display_title(), || {}));
+            templates.push(tpl);
         }
         // Anchor below the toolbar's left edge (where the "New ▾" button lives).
         let anchor_x = self.toolbar.first().map(|(_, r)| r.x0).unwrap_or(self.rect.x0 + 8.0);
@@ -6189,7 +6206,7 @@ impl WordProcessorWidget {
         let cy = (bar.y0 + bar.y1) / 2.0;
         tr.draw_text(
             scene,
-            "Recovered unsaved changes from a previous session.",
+            &t("recovery-banner"),
             13.0,
             cc.text,
             transform * Affine::translate((bar.x0 + 14.0, cy - 8.0)),
@@ -6198,15 +6215,15 @@ impl WordProcessorWidget {
         // Right-aligned Restore / Discard buttons.
         let mut x = bar.x1 - 12.0;
         for (action, label, w, primary) in [
-            (RecoveryAction::Discard, "Discard", 80.0, false),
-            (RecoveryAction::Restore, "Restore", 80.0, true),
+            (RecoveryAction::Discard, t("recovery-discard"), 80.0, false),
+            (RecoveryAction::Restore, t("recovery-restore"), 80.0, true),
         ] {
             x -= w;
             let r = Rect::new(x, cy - 13.0, x + w, cy + 13.0);
             let (bg, fg) = if primary { (accent, cc.on_accent) } else { (cc.chip, cc.text) };
             scene.fill(Fill::NonZero, transform, bg, None, &vello::kurbo::RoundedRect::from_rect(r, 6.0));
             let tx = r.x0 + (w - label.chars().count() as f64 * 7.4).max(6.0) / 2.0;
-            tr.draw_text(scene, label, 13.0, fg, transform * Affine::translate((tx, cy - 8.0)), None);
+            tr.draw_text(scene, &label, 13.0, fg, transform * Affine::translate((tx, cy - 8.0)), None);
             self.recovery_buttons.push((action, r));
             x -= 8.0;
         }
@@ -6253,17 +6270,23 @@ impl WordProcessorWidget {
     fn draw_status_bar(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, bar: Rect) {
         let words: usize = self.blocks.iter().map(|b| b.text.split_whitespace().count()).sum();
         let chars: usize = self.blocks.iter().map(|b| b.text.chars().count()).sum();
-        let left = format!("{words} words    {chars} characters");
-        let fname = self.path.as_ref().and_then(|p| p.file_name()).and_then(|n| n.to_str()).unwrap_or("Untitled");
+        let left = t_args("status-count", &[arg("words", words as i64), arg("chars", chars as i64)]);
+        let untitled = t("status-untitled");
+        let fname = self
+            .path
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or(&untitled);
         let kind = match self.format {
-            Some(WpFormat::Odt) => "ODF Text",
-            Some(WpFormat::Docx) => "Word Document",
-            Some(WpFormat::Markdown) => "Markdown",
-            Some(WpFormat::Pdf) => "PDF",
-            Some(WpFormat::Html) => "HTML",
-            Some(WpFormat::Rtf) => "Rich Text",
-            Some(WpFormat::Epub) => "EPUB",
-            None => "",
+            Some(WpFormat::Odt) => t("format-odt"),
+            Some(WpFormat::Docx) => t("format-docx"),
+            Some(WpFormat::Markdown) => t("format-markdown"),
+            Some(WpFormat::Pdf) => t("format-pdf"),
+            Some(WpFormat::Html) => t("format-html"),
+            Some(WpFormat::Rtf) => t("format-rtf"),
+            Some(WpFormat::Epub) => t("format-epub"),
+            None => String::new(),
         };
         let dot = if self.modified { "●  " } else { "" };
         let right = if kind.is_empty() {
@@ -6345,7 +6368,10 @@ impl WordProcessorWidget {
             specs.push((a, ToolbarItem::new(label, w).active(active).cue(cue(a)).group_start(group_start(a))));
         };
         // New-from-template picker (leads the toolbar). Active while its menu is open.
-        add(ToolAction::NewMenu, "New ▾", 64.0, self.new_menu.is_open());
+        // Single-glyph faces (B/I/U/S, x²/x₂, H1/H2, L/C/R/J, A−/A+, ✕) are symbols,
+        // not words, and stay as literals; the spelled-out names live in the a11y
+        // labels (see `tool_action_a11y_label`).
+        add(ToolAction::NewMenu, &t("toolbar-new"), 64.0, self.new_menu.is_open());
         add(ToolAction::Bold, "B", 34.0, bold_a);
         add(ToolAction::Italic, "I", 30.0, italic_a);
         add(ToolAction::Underline, "U", 32.0, under_a);
@@ -6354,8 +6380,8 @@ impl WordProcessorWidget {
         add(ToolAction::Sub, "x₂", 34.0, sub_a);
         add(ToolAction::H1, "H1", 42.0, kind == "heading" && level == Some(1));
         add(ToolAction::H2, "H2", 42.0, kind == "heading" && level == Some(2));
-        add(ToolAction::Body, "Body", 58.0, kind == "paragraph");
-        add(ToolAction::Bullet, "• List", 66.0, kind == "list_item");
+        add(ToolAction::Body, &t("toolbar-body"), 58.0, kind == "paragraph");
+        add(ToolAction::Bullet, &t("toolbar-list"), 66.0, kind == "list_item");
         add(ToolAction::AlignLeft, "L", 30.0, align == "left");
         add(ToolAction::AlignCenter, "C", 30.0, align == "center");
         add(ToolAction::AlignRight, "R", 30.0, align == "right");
@@ -6368,20 +6394,20 @@ impl WordProcessorWidget {
         add(ToolAction::SizeUp, "A+", 34.0, false);
         // Contextual table section: editing controls inside a cell, else insert.
         if kind == "cell" {
-            add(ToolAction::TableRowAdd, "+Row", 54.0, false);
-            add(ToolAction::TableRowDel, "−Row", 54.0, false);
-            add(ToolAction::TableColAdd, "+Col", 52.0, false);
-            add(ToolAction::TableColDel, "−Col", 52.0, false);
+            add(ToolAction::TableRowAdd, &t("toolbar-row-add"), 54.0, false);
+            add(ToolAction::TableRowDel, &t("toolbar-row-del"), 54.0, false);
+            add(ToolAction::TableColAdd, &t("toolbar-col-add"), 52.0, false);
+            add(ToolAction::TableColDel, &t("toolbar-col-del"), 52.0, false);
             add(ToolAction::TableDelete, "✕", 30.0, false);
         } else {
-            add(ToolAction::InsertTable, "⊞ Table", 78.0, false);
+            add(ToolAction::InsertTable, &t("toolbar-table"), 78.0, false);
         }
-        add(ToolAction::InsertImage, "🖼 Image", 80.0, false);
-        add(ToolAction::ToggleStyles, "Styles", 64.0, panel_open);
-        add(ToolAction::ToggleRuler, "Ruler", 60.0, self.ruler_on);
+        add(ToolAction::InsertImage, &t("toolbar-image"), 80.0, false);
+        add(ToolAction::ToggleStyles, &t("toolbar-styles"), 64.0, panel_open);
+        add(ToolAction::ToggleRuler, &t("toolbar-ruler"), 60.0, self.ruler_on);
         // Navigation: outline pane toggle + table-of-contents generator.
-        add(ToolAction::ToggleOutline, "Outline", 72.0, self.outline_open);
-        add(ToolAction::InsertToc, "TOC", 48.0, false);
+        add(ToolAction::ToggleOutline, &t("toolbar-outline"), 72.0, self.outline_open);
+        add(ToolAction::InsertToc, &t("toolbar-toc"), 48.0, false);
         drop(add);
 
         let items: Vec<ToolbarItem> = specs.iter().map(|(_, item)| item.clone()).collect();
@@ -8327,7 +8353,12 @@ mod tests {
         assert!(wp.new_menu.is_open(), "the New ▾ menu opens");
         let labels: Vec<String> =
             wp.new_menu.items().iter().filter_map(|i| i.label().map(str::to_string)).collect();
-        let titles: Vec<&str> = crate::Template::all().iter().map(|t| t.title()).collect();
+        // The menu lists every template by its localized display title (the real
+        // production path), in order. Under the default (en-US) locale these
+        // match `title()`, but we assert against `display_title()` so the test
+        // tracks the production code, not a hard-coded English literal.
+        let titles: Vec<String> =
+            crate::Template::all().iter().map(|tpl| tpl.display_title()).collect();
         assert_eq!(labels, titles, "the menu lists every template by title, in order");
 
         // Select "Report" (its first heading is a known, stable string).

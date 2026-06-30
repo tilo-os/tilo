@@ -1,0 +1,148 @@
+# Word processor — German (de) locale.
+#
+# Any key omitted here transparently falls back to the en-US string (see
+# editor/src/i18n.rs). Glyph-only faces are not keyed and stay as in code.
+
+## Toolbar button faces
+toolbar-new = Neu ▾
+toolbar-body = Fließtext
+toolbar-list = • Liste
+toolbar-table = ⊞ Tabelle
+toolbar-image = 🖼 Bild
+toolbar-styles = Stile
+toolbar-ruler = Lineal
+toolbar-outline = Gliederung
+toolbar-toc = IVZ
+toolbar-row-add = +Zeile
+toolbar-row-del = −Zeile
+toolbar-col-add = +Spalte
+toolbar-col-del = −Spalte
+
+## Toolbar accessibility names / tooltips
+a11y-group-formatting = Formatierung
+a11y-bold = Fett
+a11y-italic = Kursiv
+a11y-underline = Unterstrichen
+a11y-strikethrough = Durchgestrichen
+a11y-superscript = Hochgestellt
+a11y-subscript = Tiefgestellt
+a11y-heading1 = Überschrift 1
+a11y-heading2 = Überschrift 2
+a11y-body-text = Fließtext
+a11y-bulleted-list = Aufzählungsliste
+a11y-align-left = Linksbündig
+a11y-align-center = Zentriert
+a11y-align-right = Rechtsbündig
+a11y-justify = Blocksatz
+a11y-line-spacing = Zeilenabstand
+a11y-font = Schriftart
+a11y-size-up = Schrift vergrößern
+a11y-size-down = Schrift verkleinern
+a11y-font-size = Schriftgröße
+a11y-insert-image = Bild einfügen
+a11y-insert-table = Tabelle einfügen
+a11y-table-row-add = Tabellenzeile hinzufügen
+a11y-table-row-del = Tabellenzeile löschen
+a11y-table-col-add = Tabellenspalte hinzufügen
+a11y-table-col-del = Tabellenspalte löschen
+a11y-table-delete = Tabelle löschen
+a11y-styles-panel = Stil-Panel
+a11y-ruler = Lineal
+a11y-document-outline = Dokumentgliederung
+a11y-insert-toc = Inhaltsverzeichnis einfügen
+a11y-new-from-template = Neu aus Vorlage
+a11y-text-color = Textfarbe #{ $hex }
+a11y-text-color-default = Standard-Textfarbe
+a11y-highlight = Hervorhebung #{ $hex }
+a11y-highlight-clear = Hervorhebung entfernen
+
+## Crash-recovery banner
+recovery-banner = Nicht gespeicherte Änderungen aus einer früheren Sitzung wiederhergestellt.
+recovery-restore = Wiederherstellen
+recovery-discard = Verwerfen
+
+## Status bar
+status-count = { $words } Wörter    { $chars } Zeichen
+status-untitled = Unbenannt
+format-odt = ODF-Text
+format-docx = Word-Dokument
+format-markdown = Markdown
+format-pdf = PDF
+format-html = HTML
+format-rtf = Rich Text
+format-epub = EPUB
+
+## Header / footer edit-mode tabs
+band-header = Kopfzeile
+band-footer = Fußzeile
+
+## Find / find-and-replace bar
+find-find = Suchen
+find-replace-with = Ersetzen durch
+find-bad-pattern = Ungültiges Muster
+find-no-results = Keine Treffer
+find-count = { $cur } / { $total }
+find-replace = Ersetzen
+find-replace-all = Alle
+
+## Review — context-menu rows
+review-accept-insertion = Einfügung annehmen
+review-reject-insertion = Einfügung ablehnen
+review-accept-deletion = Löschung annehmen
+review-reject-deletion = Löschung ablehnen
+review-resolve-comment = Kommentar auflösen
+review-accept-all = Alle Änderungen annehmen
+review-reject-all = Alle Änderungen ablehnen
+
+## Review / comment margin cards
+review-comment = Kommentar
+review-resolve = ✓ Auflösen
+review-insertion = Einfügung
+review-deletion = Löschung
+
+## Edit context-menu (clipboard + spell)
+menu-add-to-dictionary = Zum Wörterbuch hinzufügen
+menu-cut = Ausschneiden
+menu-copy = Kopieren
+menu-paste = Einfügen
+menu-select-all = Alles auswählen
+
+## Templates (New ▾ menu)
+template-blank = Leer
+template-letter = Brief
+template-report = Bericht
+template-resume = Lebenslauf
+template-meeting-notes = Besprechungsnotizen
+
+## Styles panel
+panel-style = STIL
+panel-caret-hint = Cursor in einen Absatz setzen
+panel-paragraph-styles = ABSATZSTILE
+panel-style-properties = STILEIGENSCHAFTEN
+panel-font = Schriftart
+panel-font-serif = Serif
+panel-font-mono = Mono
+panel-font-sans = Sans
+panel-weight = Stärke
+panel-bold = Fett
+panel-italic = Kursiv
+panel-colour = Farbe
+panel-align = Ausrichtung
+panel-new-style = + Neuer Stil hieraus
+panel-num-size = Größe
+panel-num-space-before = Abstand davor
+panel-num-space-after = Abstand danach
+panel-num-indent = Einzug
+
+## Outline / navigation pane
+outline-header = GLIEDERUNG
+outline-empty = Noch keine Überschriften
+outline-untitled = (unbenannt)
+
+## Page layout (ruler) bottom bar
+layout-margins = Ränder
+layout-spacing = Abstände
+layout-none-hint = Seitenlayout — Ränder oder Abstände wählen, dann auf der Seite ziehen
+
+## Canvas
+page-indicator = Seite { $n }
