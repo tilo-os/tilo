@@ -490,16 +490,24 @@ impl<T: 'static> Widget for TreeView<T> {
             .selected
             .and_then(|id| Self::find_node(&self.root, id))
             .map(|n| n.label.clone());
-        Some(
-            AccessNode::new(Role::Tree)
-                .with_optional_value(value)
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.is_focused(),
-                    disabled: !self.is_enabled(),
-                    ..Default::default()
-                }),
-        )
+        let mut node = AccessNode::new(Role::Tree)
+            .with_optional_value(value)
+            .with_state(AccessState {
+                focusable: self.is_focusable(),
+                focused: self.is_focused(),
+                disabled: !self.is_enabled(),
+                ..Default::default()
+            });
+        // Surface the selected row's ordinal among the visible rows and its
+        // depth, so the reader can say "3 of 7, level 2".
+        if let Some(sel) = self.selected {
+            let rows = self.visible_rows();
+            if let Some(idx) = rows.iter().position(|(id, _, _)| *id == sel) {
+                node = node.with_position(idx + 1, rows.len());
+                node = node.with_level(rows[idx].2 + 1);
+            }
+        }
+        Some(node)
     }
 }
 

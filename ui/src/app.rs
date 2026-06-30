@@ -88,6 +88,79 @@ fn perf_enabled() -> bool {
     })
 }
 
+/// The next UTF-8 char boundary at or after `byte` in `s` (clamped to the
+/// length). Used by caret-review to recognise a single-character move.
+fn next_boundary(s: &str, byte: usize) -> usize {
+    let mut b = byte.min(s.len());
+    loop {
+        if b >= s.len() {
+            return s.len();
+        }
+        b += 1;
+        if s.is_char_boundary(b) {
+            return b;
+        }
+    }
+}
+
+/// The previous UTF-8 char boundary before `byte` in `s` (clamped to 0).
+fn prev_boundary(s: &str, byte: usize) -> usize {
+    let mut b = byte.min(s.len());
+    loop {
+        if b == 0 {
+            return 0;
+        }
+        b -= 1;
+        if s.is_char_boundary(b) {
+            return b;
+        }
+    }
+}
+
+/// The whitespace-delimited word the caret at `byte` sits in (or just after),
+/// for caret-review word announcements. Returns `None` when the caret is in
+/// whitespace / at a gap with no adjacent word.
+fn word_at(s: &str, byte: usize) -> Option<String> {
+    let b = byte.min(s.len());
+    // A word spans the run of non-whitespace bytes covering the caret. When the
+    // caret is exactly on a boundary (between two words or at the end), prefer
+    // the word immediately to the left so Home/End reads a real word.
+    let is_ws = |c: char| c.is_whitespace();
+    let on_word = s[b..].chars().next().is_some_and(|c| !is_ws(c));
+    let anchor = if on_word {
+        b
+    } else {
+        // Caret not on a word char (gap or end) — back up to the word on the
+        // left, if any.
+        let left = prev_boundary(s, b);
+        if s[left..].chars().next().is_some_and(|c| !is_ws(c)) {
+            left
+        } else {
+            return None;
+        }
+    };
+    // Expand left to the word start.
+    let mut start = anchor;
+    while start > 0 {
+        let prev = prev_boundary(s, start);
+        if s[prev..].chars().next().is_some_and(is_ws) {
+            break;
+        }
+        start = prev;
+    }
+    // Expand right to the word end.
+    let mut end = anchor;
+    while end < s.len() {
+        let next = next_boundary(s, end);
+        if s[end..].chars().next().is_some_and(is_ws) {
+            break;
+        }
+        end = next;
+    }
+    let word = &s[start..end];
+    if word.is_empty() { None } else { Some(word.to_string()) }
+}
+
 /// Minimum gap between two outbound pointer presence broadcasts, in
 /// milliseconds. Winit delivers `CursorMoved` at vsync rate or higher; at
 /// 120 Hz the raw event stream is ~8 ms per delta, which would saturate
@@ -224,6 +297,12 @@ pub struct App {
     /// command layer without colliding with normal navigation (Tab, Alt+arrows,
     /// Ctrl shortcuts). Only meaningful when [`Self::screen_reader`] is `Some`.
     screen_reader_modifier_down: bool,
+    /// Last spoken text of every [live region](crate::a11y::AccessNode::live)
+    /// seen in the tree, keyed by the region's name (its stable identity across
+    /// frames). Each frame the reader compares a live node's current text to its
+    /// entry here and announces the change — without moving focus. Only
+    /// populated when the reader is active; cleared when it's disabled.
+    live_region_last: std::collections::HashMap<String, String>,
 }
 
 impl App {
@@ -266,6 +345,7 @@ impl App {
                 None
             },
             screen_reader_modifier_down: false,
+            live_region_last: std::collections::HashMap::new(),
         }
     }
 
@@ -306,6 +386,7 @@ impl App {
                     sr.stop();
                 }
                 self.screen_reader = None;
+                self.live_region_last.clear();
             }
             _ => {}
         }
@@ -366,6 +447,10 @@ impl App {
     /// | `Insert + Right` | **Read next** — step the reading cursor forward and speak it |
     /// | `Insert + Left`  | **Read previous** — step the reading cursor back and speak it |
     /// | `Insert + Up`    | **Where am I** — re-announce the currently-focused widget |
+    /// | `Insert + H`     | **Next heading** — jump the reading cursor to the next heading |
+    /// | `Insert + Shift + H` | **Previous heading** — jump to the previous heading |
+    /// | `Insert + F`     | **Next form field** — jump to the next interactive control |
+    /// | `Insert + Shift + F` | **Previous form field** — jump to the previous control |
     /// | `Insert + Escape`| **Stop** — silence speech and clear the queue |
     ///
     /// The `Insert` key itself is swallowed (so a stray Insert never types) but
@@ -393,6 +478,40 @@ impl App {
         // Only act on presses while the reader modifier is held.
         if ke.state != ElementState::Pressed || !self.screen_reader_modifier_down {
             return false;
+        }
+
+        // Quick navigation by element type: jump the reading cursor to the
+        // next/previous heading (H) or form field (F). Shift reverses
+        // direction. winit delivers these as character keys, so handle them
+        // before the named-key arm. The reading direction is the only thing
+        // Shift changes here, so we read it off the live modifier state.
+        if let Key::Character(ref c) = ke.logical_key {
+            let shift = self.modifiers.state().shift_key();
+            // Split-borrow: `root_widget` and `screen_reader` are disjoint
+            // fields, so pass the root in inline (mirrors the arrow-key arms).
+            match c.to_ascii_lowercase().as_str() {
+                "h" => {
+                    if let Some(sr) = self.screen_reader.as_mut() {
+                        if shift {
+                            sr.read_prev_heading(self.root_widget.as_ref());
+                        } else {
+                            sr.read_next_heading(self.root_widget.as_ref());
+                        }
+                    }
+                    return true;
+                }
+                "f" => {
+                    if let Some(sr) = self.screen_reader.as_mut() {
+                        if shift {
+                            sr.read_prev_control(self.root_widget.as_ref());
+                        } else {
+                            sr.read_next_control(self.root_widget.as_ref());
+                        }
+                    }
+                    return true;
+                }
+                _ => {}
+            }
         }
 
         let Key::Named(named) = ke.logical_key else {
@@ -1023,6 +1142,124 @@ impl App {
         }
     }
 
+    /// Snapshot the focused widget's caret-review state `(caret_byte, text)`
+    /// *before* an event is dispatched, so [`announce_text_review`] can tell a
+    /// caret move (arrow / Home / End over existing content) from an edit. Cheap
+    /// no-op when the reader is off or the focused widget isn't an editable text
+    /// field.
+    fn text_review_snapshot(&self) -> Option<(NodeId, usize, String)> {
+        self.screen_reader.as_ref()?;
+        let id = self.focused_node?;
+        let &w_ptr = self.node_map.get(&id)?;
+        let (caret, text) = unsafe { (*w_ptr).text_review() }?;
+        Some((id, caret, text))
+    }
+
+    /// If the focused text field's caret moved over **unchanged** text since
+    /// `pre`, announce what the caret landed on: the single character for a
+    /// one-step move (arrow keys), or the word for a longer jump (Home/End,
+    /// word-wise move). Typing (which changes the text) is left to the widget's
+    /// own echo, so this never double-speaks an edit. No-op when the reader is
+    /// off, focus moved, or the field isn't editable text.
+    fn announce_text_review(&mut self, pre: Option<(NodeId, usize, String)>) {
+        let Some((pre_id, pre_caret, pre_text)) = pre else { return };
+        if self.focused_node != Some(pre_id) {
+            return;
+        }
+        if self.screen_reader.is_none() {
+            return;
+        }
+        let Some(&w_ptr) = self.node_map.get(&pre_id) else { return };
+        let Some((now_caret, now_text)) = (unsafe { (*w_ptr).text_review() }) else {
+            return;
+        };
+        // Only a pure caret move over identical text is a "review"; an edit
+        // changed the text and is echoed by the widget itself.
+        if now_text != pre_text || now_caret == pre_caret {
+            return;
+        }
+        // One char-boundary step → speak the character; a longer jump → speak
+        // the word the caret now sits in.
+        let single_step = next_boundary(&now_text, pre_caret) == now_caret
+            || prev_boundary(&now_text, pre_caret) == now_caret;
+        if single_step {
+            // The character the caret is now on (to its right). At the very end
+            // there's nothing to the right, so fall back to the char to the left.
+            let ch = now_text[now_caret..]
+                .chars()
+                .next()
+                .or_else(|| now_text[..now_caret].chars().next_back());
+            if let (Some(ch), Some(sr)) = (ch, self.screen_reader.as_mut()) {
+                sr.echo_char(ch);
+            }
+        } else if let Some(word) = word_at(&now_text, now_caret) {
+            if let Some(sr) = self.screen_reader.as_mut() {
+                sr.echo_word(&word);
+            }
+        }
+    }
+
+    /// Scan the tree for [live regions](crate::a11y::AccessNode::live) whose
+    /// spoken text changed since the last frame and announce each change —
+    /// **without moving focus**. A toast appearing, a status line updating, a
+    /// progress step all narrate themselves this way. Politeness picks the
+    /// priority: assertive interrupts; polite waits for a pause. Run once per
+    /// frame after `sync`, so the text reflects the freshly-pulled CRDT state.
+    /// A cheap no-op when the reader is off.
+    fn scan_live_regions(&mut self) {
+        if self.screen_reader.is_none() {
+            return;
+        }
+        // Collect (identity, politeness, current text) for every live region,
+        // then diff against the stored snapshot. The identity is the region's
+        // accessible name — a live region without a name can't be tracked
+        // stably across frames, so it's skipped.
+        let mut seen: Vec<(String, crate::a11y::Politeness, String)> = Vec::new();
+        fn visit(
+            w: &dyn Widget,
+            out: &mut Vec<(String, crate::a11y::Politeness, String)>,
+        ) {
+            if let Some(node) = w.accessibility() {
+                if let (Some(politeness), Some(name)) = (node.live, node.name.clone()) {
+                    out.push((name, politeness, crate::screen_reader::describe(&node)));
+                }
+            }
+            for child in w.children() {
+                visit(child, out);
+            }
+        }
+        visit(self.root_widget.as_ref(), &mut seen);
+
+        let mut current_keys = std::collections::HashSet::new();
+        let mut to_announce: Vec<(crate::a11y::Politeness, String)> = Vec::new();
+        for (key, politeness, text) in seen {
+            current_keys.insert(key.clone());
+            let changed = self.live_region_last.get(&key) != Some(&text);
+            // Record the new text first so we never re-announce the same value.
+            self.live_region_last.insert(key, text.clone());
+            // Announce only meaningful (non-empty) text. Clearing a region to
+            // empty updates the snapshot silently.
+            if changed && !text.is_empty() {
+                to_announce.push((politeness, text));
+            }
+        }
+        // Drop snapshots for regions that left the tree, so a region that
+        // reappears with the same text announces afresh.
+        self.live_region_last.retain(|k, _| current_keys.contains(k));
+
+        if let Some(sr) = self.screen_reader.as_mut() {
+            for (politeness, text) in to_announce {
+                let (priority, interrupt) = match politeness {
+                    // Assertive cuts in; polite is queued at notification
+                    // priority and never interrupts in-flight speech.
+                    crate::a11y::Politeness::Assertive => (qos_tts::Priority::Important, true),
+                    crate::a11y::Politeness::Polite => (qos_tts::Priority::Notification, false),
+                };
+                sr.announce(text, priority, interrupt);
+            }
+        }
+    }
+
     fn navigate_focus(&mut self, direction: Direction) {
         let current_id = match self.focused_node {
             Some(id) => id,
@@ -1612,6 +1849,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     app.needs_sync = false;
                 }
 
+                // Live regions: after the tree reflects the freshly-synced
+                // state, announce any live region whose spoken text changed —
+                // a new toast, an updated status line — without moving focus.
+                app.scan_live_regions();
+
                 // Poll the tree for structural mutations that
                 // happened since the last frame (e.g. a tab
                 // split that inserted a brand-new WindowGroup
@@ -1977,6 +2219,16 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     None
                 };
 
+                // Snapshot the focused text field's caret BEFORE dispatch, so we
+                // can announce the char/word a caret move (arrow / Home / End)
+                // lands on once the widget has processed the key. Only keyboard
+                // events can move a caret over existing content.
+                let review_pre = if matches!(event, WindowEvent::KeyboardInput { .. }) {
+                    app.text_review_snapshot()
+                } else {
+                    None
+                };
+
                 if !handled {
                 if let WindowEvent::KeyboardInput {
                     event:
@@ -2282,6 +2534,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // Space), speak the new state. When focus moved instead,
                 // `set_focused_node` already narrated it, and this is a no-op.
                 app.announce_state_change(state_pre);
+
+                // If the caret moved over unchanged text (review, not typing),
+                // speak the character / word it landed on.
+                app.announce_text_review(review_pre);
 
                 if handled {
                     let mut should_commit = !is_undo_redo;
@@ -3086,5 +3342,219 @@ mod screen_reader_tests {
             device_id: unsafe { std::mem::zeroed() },
         };
         assert!(!app.handle_screen_reader_key(&ev));
+    }
+
+    // ----- Live regions -----
+
+    /// A widget exposing one live region whose spoken value is mutable, so a
+    /// test can change it between frames and prove the App announces the change.
+    struct LiveWidget {
+        name: String,
+        value: Rc<RefCell<String>>,
+        politeness: crate::a11y::Politeness,
+    }
+    impl LiveWidget {
+        fn new(name: &str, politeness: crate::a11y::Politeness) -> Self {
+            Self {
+                name: name.to_string(),
+                value: Rc::new(RefCell::new(String::new())),
+                politeness,
+            }
+        }
+    }
+    impl Widget for LiveWidget {
+        fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = taffy.new_leaf(taffy::Style::default()).unwrap();
+            node_map.insert(node, self as *mut dyn Widget);
+            node
+        }
+        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
+        fn draw(
+            &mut self,
+            _s: &mut Scene,
+            _t: Affine,
+            _tr: &mut TextRenderer,
+            _th: &Theme,
+            _p: &PresenceCtx,
+        ) {
+        }
+        fn handle_event(
+            &mut self,
+            _e: &WindowEvent,
+            _sf: f64,
+            _m: &winit::event::Modifiers,
+            _s: &mut automerge::AutoCommit,
+            _p: &automerge::ObjId,
+            _h: &mut bool,
+            _ft: &mut Option<NodeId>,
+            _ni: NodeId,
+            _t: &TaffyTree<()>,
+        ) {
+        }
+        fn children(&self) -> Vec<&dyn Widget> {
+            vec![]
+        }
+        fn name(&self) -> &str {
+            "live-widget"
+        }
+        fn get_rect(&self) -> KurboRect {
+            KurboRect::ZERO
+        }
+        fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+            let v = self.value.borrow().clone();
+            let mut node = crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+                .with_name(self.name.clone())
+                .with_live(self.politeness);
+            if !v.is_empty() {
+                node = node.with_value(v);
+            }
+            Some(node)
+        }
+    }
+
+    fn app_with_reader_over(root: Box<dyn Widget>) -> (App, SharedRecorder) {
+        let rec = SharedRecorder::default();
+        let mut app = App::new(State::new(), root);
+        app.set_screen_reader(Some(ScreenReader::with_speaker(Box::new(rec.clone()))));
+        app.init_layout();
+        (app, rec)
+    }
+
+    #[test]
+    fn live_region_change_announces_without_moving_focus() {
+        let live = LiveWidget::new("Notifications", crate::a11y::Politeness::Assertive);
+        let val = live.value.clone();
+        let (mut app, rec) = app_with_reader_over(Box::new(live));
+        let focus_before = app.focused_node;
+
+        // Seed the snapshot with the first scan, then forget what was recorded
+        // so we assert purely on the *change* below.
+        app.scan_live_regions();
+        rec.0.borrow_mut().reset();
+
+        // A change appears in the live region (e.g. a toast text).
+        *val.borrow_mut() = "File saved".to_string();
+        app.scan_live_regions();
+        assert_eq!(
+            rec.0.borrow().last(),
+            Some("Notifications, group, File saved"),
+            "the changed live text is announced (name, role, value)"
+        );
+        // Focus was never moved by the announcement.
+        assert_eq!(app.focused_node, focus_before, "live region must not move focus");
+
+        // Re-scanning with the SAME text announces nothing further.
+        rec.0.borrow_mut().reset();
+        app.scan_live_regions();
+        assert!(
+            rec.0.borrow().spoken().is_empty(),
+            "unchanged live text is not re-announced"
+        );
+    }
+
+    #[test]
+    fn assertive_live_region_uses_important_interrupting_priority() {
+        let live = LiveWidget::new("Errors", crate::a11y::Politeness::Assertive);
+        let val = live.value.clone();
+        let (mut app, rec) = app_with_reader_over(Box::new(live));
+        *val.borrow_mut() = "Permission denied".to_string();
+        app.scan_live_regions();
+        let recref = rec.0.borrow();
+        let last = recref.utterances().last().expect("an utterance was recorded");
+        assert_eq!(last.priority, qos_tts::Priority::Important);
+        assert!(last.interrupt, "assertive live regions interrupt");
+    }
+
+    #[test]
+    fn polite_live_region_uses_notification_non_interrupting_priority() {
+        let live = LiveWidget::new("Status", crate::a11y::Politeness::Polite);
+        let val = live.value.clone();
+        let (mut app, rec) = app_with_reader_over(Box::new(live));
+        *val.borrow_mut() = "Uploading, 40%".to_string();
+        app.scan_live_regions();
+        let recref = rec.0.borrow();
+        let last = recref.utterances().last().expect("an utterance was recorded");
+        assert_eq!(last.priority, qos_tts::Priority::Notification);
+        assert!(!last.interrupt, "polite live regions do not interrupt");
+    }
+
+    #[test]
+    fn live_region_scan_is_noop_when_reader_off() {
+        let live = LiveWidget::new("Notifications", crate::a11y::Politeness::Assertive);
+        let val = live.value.clone();
+        let mut app = App::new(State::new(), Box::new(live));
+        app.init_layout();
+        assert!(!app.screen_reader_enabled());
+        *val.borrow_mut() = "anything".to_string();
+        // Must not panic and must record nothing (no reader).
+        app.scan_live_regions();
+    }
+
+    // ----- Text review (caret movement over existing content) -----
+
+    fn app_with_focused_input(initial: &str) -> (App, SharedRecorder, NodeId) {
+        let rec = SharedRecorder::default();
+        let input = crate::widget::TextInput::local().with_initial_value(initial);
+        let mut app = App::new(State::new(), Box::new(input));
+        app.set_screen_reader(Some(ScreenReader::with_speaker(Box::new(rec.clone()))));
+        app.autofocus_first = true;
+        app.init_layout();
+        let id = app.focused_node.expect("the input is focused at startup");
+        (app, rec, id)
+    }
+
+    #[test]
+    fn caret_move_one_char_announces_the_character() {
+        // "abc" with caret parked at end (3). Snapshot, move caret left to 2,
+        // then announce — the char now under the caret is 'c'.
+        let (mut app, rec, id) = app_with_focused_input("abc");
+        let pre = app.text_review_snapshot();
+        assert!(pre.is_some(), "focused text input yields a review snapshot");
+        rec.0.borrow_mut().reset(); // forget the autofocus narration
+        // Move the caret one char left (no edit).
+        unsafe { (*(*app.node_map.get(&id).unwrap())).set_state("2"); }
+        app.announce_text_review(pre);
+        assert_eq!(rec.0.borrow().last(), Some("c"), "single-step move echoes the char");
+    }
+
+    #[test]
+    fn caret_jump_to_start_announces_the_word() {
+        // "hello world", caret at end. Jump to start (0): a multi-step move, so
+        // the word under the caret ("hello") is announced.
+        let (mut app, rec, id) = app_with_focused_input("hello world");
+        let pre = app.text_review_snapshot();
+        rec.0.borrow_mut().reset(); // forget the autofocus narration
+        unsafe { (*(*app.node_map.get(&id).unwrap())).set_state("0"); }
+        app.announce_text_review(pre);
+        assert_eq!(rec.0.borrow().last(), Some("hello"), "a long jump echoes the word");
+    }
+
+    #[test]
+    fn no_caret_move_announces_nothing() {
+        // Caret unchanged between snapshot and announce → silence.
+        let (mut app, rec, _id) = app_with_focused_input("abc");
+        let pre = app.text_review_snapshot();
+        rec.0.borrow_mut().reset(); // forget the autofocus narration
+        app.announce_text_review(pre);
+        assert!(rec.0.borrow().spoken().is_empty(), "no move, no announcement");
+    }
+
+    #[test]
+    fn text_review_snapshot_is_none_for_non_text_widget() {
+        // A button (no text_review) yields no snapshot, so review never fires.
+        let (mut app, _rec) = app_with_reader();
+        app.autofocus_first = true;
+        app.init_layout();
+        assert!(app.focused_node.is_some());
+        assert!(
+            app.text_review_snapshot().is_none(),
+            "a button has no caret to review"
+        );
     }
 }

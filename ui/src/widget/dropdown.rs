@@ -701,18 +701,21 @@ impl Widget for Dropdown {
             None
         };
         let value = (!self.selected.is_empty()).then(|| self.selected.clone());
-        Some(
-            AccessNode::new(Role::ComboBox)
-                .with_optional_name(name)
-                .with_optional_value(value)
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.is_focused(),
-                    disabled: !self.is_enabled(),
-                    expanded: Some(self.open),
-                    ..Default::default()
-                }),
-        )
+        let mut node = AccessNode::new(Role::ComboBox)
+            .with_optional_name(name)
+            .with_optional_value(value)
+            .with_state(AccessState {
+                focusable: self.is_focusable(),
+                focused: self.is_focused(),
+                disabled: !self.is_enabled(),
+                expanded: Some(self.open),
+                ..Default::default()
+            });
+        // Surface the chosen option's ordinal so the reader can say "2 of 5".
+        if let Some(idx) = self.options.iter().position(|o| *o == self.selected) {
+            node = node.with_position(idx + 1, self.options.len());
+        }
+        Some(node)
     }
 
     /// While open the dropdown grabs every event so its out-of-layout

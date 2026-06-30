@@ -1847,21 +1847,21 @@ impl Widget for TabBar {
         // accessible node and we expose the *active* tab's title as `value`
         // so an AT announces the current tab. Titles are runtime strings, not
         // FTL keys, so no `i18n!` wrap. No intrinsic label → name None.
-        let value = self
-            .tabs
-            .iter()
-            .find(|t| t.id == self.active_id)
-            .map(|t| t.title.clone());
-        Some(
-            AccessNode::new(Role::TabBar)
-                .with_optional_value(value)
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.is_focused(),
-                    disabled: !self.is_enabled(),
-                    ..Default::default()
-                }),
-        )
+        let active_idx = self.tabs.iter().position(|t| t.id == self.active_id);
+        let value = active_idx.map(|i| self.tabs[i].title.clone());
+        let mut node = AccessNode::new(Role::TabBar)
+            .with_optional_value(value)
+            .with_state(AccessState {
+                focusable: self.is_focusable(),
+                focused: self.is_focused(),
+                disabled: !self.is_enabled(),
+                ..Default::default()
+            });
+        // Surface the active tab's ordinal so the reader can say "2 of 4".
+        if let Some(i) = active_idx {
+            node = node.with_position(i + 1, self.tabs.len());
+        }
+        Some(node)
     }
 
     fn get_rect(&self) -> Rect { self.rect }

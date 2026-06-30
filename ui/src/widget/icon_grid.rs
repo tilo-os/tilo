@@ -426,20 +426,24 @@ impl Widget for IconGrid {
         // A grid of icon cells is a list of items; the items are drawn (not
         // child widgets), so the container carries the semantics. Surface the
         // primary-selected cell's label as the current value.
-        let value = self
-            .selection
-            .primary()
+        let primary = self.selection.primary();
+        let value = primary
             .and_then(|i| self.items.get(i))
             .map(|item| item.label.clone());
-        Some(
-            AccessNode::new(Role::List)
-                .with_optional_value(value)
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.is_focused(),
-                    ..Default::default()
-                }),
-        )
+        let mut node = AccessNode::new(Role::List)
+            .with_optional_value(value)
+            .with_state(AccessState {
+                focusable: self.is_focusable(),
+                focused: self.is_focused(),
+                ..Default::default()
+            });
+        // Surface the selected cell's ordinal so the reader can say "2 of 9".
+        if let Some(i) = primary {
+            if i < self.items.len() {
+                node = node.with_position(i + 1, self.items.len());
+            }
+        }
+        Some(node)
     }
 }
 

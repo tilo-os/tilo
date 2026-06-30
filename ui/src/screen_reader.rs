@@ -150,8 +150,22 @@ mod phrase {
         format!("heading level {level}")
     }
 
+    /// "N of M" — an item's position within its collection.
+    pub fn position_word(pos: usize, size: usize) -> String {
+        format!("{pos} of {size}")
+    }
+
+    /// "level N" — hierarchy depth for nested structures (tree rows).
+    pub fn level_word(level: usize) -> String {
+        format!("level {level}")
+    }
+
     // --- Reading-command / live-region phrases ---
     pub const DELETED: &str = "deleted";
+    /// Spoken when quick-nav finds no further matching element ahead.
+    pub const NO_NEXT: &str = "no more";
+    /// Spoken when quick-nav finds no matching element behind.
+    pub const NO_PREV: &str = "no previous";
 }
 
 /// Compose the spoken phrase for an accessible node — the **pure, heavily
@@ -168,7 +182,9 @@ mod phrase {
 ///    "heading level N"; plain text/labels contribute no role word);
 /// 4. **states** in priority order: checked/on/off, mixed, selected,
 ///    expanded/collapsed, required, invalid, read-only, busy, and finally
-///    **dimmed** (disabled) last.
+///    **dimmed** (disabled) last;
+/// 5. **position** in its collection ("2 of 4") and hierarchy **level**
+///    ("level 3"), if the node carries them.
 ///
 /// Empty segments are dropped, so a bare unnamed `Generic` node yields `""`.
 ///
@@ -220,6 +236,16 @@ pub fn describe(node: &AccessNode) -> String {
 
     // 4. States, in spoken priority order.
     push_state_words(node, &mut parts);
+
+    // 5. Position in set ("2 of 4") and hierarchy level ("level 3"), last —
+    //    they orient the user within a collection after the control itself is
+    //    fully described.
+    if let (Some(pos), Some(size)) = (node.pos_in_set, node.set_size) {
+        parts.push(phrase::position_word(pos, size));
+    }
+    if let Some(level) = node.level {
+        parts.push(phrase::level_word(level));
+    }
 
     parts.join(", ")
 }
@@ -569,6 +595,124 @@ impl ScreenReader {
     pub fn cursor(&self) -> Option<usize> {
         self.cursor
     }
+
+    // --- Quick navigation: jump the reading cursor by element type ---
+
+    /// Move the reading cursor forward to the next node satisfying `pred` and
+    /// speak it. Re-walks `root` so the order is live. Returns the landed-on
+    /// node, or `None` (speaking a short "no more" cue) when none remains ahead.
+    /// The shared engine behind [`read_next_heading`](Self::read_next_heading)
+    /// and [`read_next_control`](Self::read_next_control).
+    pub fn read_next_matching(
+        &mut self,
+        root: &dyn Widget,
+        pred: impl Fn(&AccessNode) -> bool,
+    ) -> Option<AccessNode> {
+        self.reading_order = flatten_reading_order(root);
+        if self.reading_order.is_empty() {
+            self.cursor = None;
+            return None;
+        }
+        let start = self.cursor.map(|i| i + 1).unwrap_or(0);
+        let found = (start..self.reading_order.len()).find(|&i| pred(&self.reading_order[i]));
+        match found {
+            Some(i) => {
+                self.cursor = Some(i);
+                let node = self.reading_order[i].clone();
+                let text = describe(&node);
+                if !text.is_empty() {
+                    self.enqueue(Utterance::new(text));
+                }
+                Some(node)
+            }
+            None => {
+                self.enqueue(Utterance::new(phrase::NO_NEXT.to_string()));
+                None
+            }
+        }
+    }
+
+    /// Move the reading cursor backward to the previous node satisfying `pred`
+    /// and speak it. Mirror of [`read_next_matching`](Self::read_next_matching).
+    pub fn read_prev_matching(
+        &mut self,
+        root: &dyn Widget,
+        pred: impl Fn(&AccessNode) -> bool,
+    ) -> Option<AccessNode> {
+        self.reading_order = flatten_reading_order(root);
+        if self.reading_order.is_empty() {
+            self.cursor = None;
+            return None;
+        }
+        // Search strictly before the cursor; from an unset cursor, scan from the
+        // end so the first jump lands on the last matching element.
+        let end = self.cursor.unwrap_or(self.reading_order.len());
+        let found = (0..end).rev().find(|&i| pred(&self.reading_order[i]));
+        match found {
+            Some(i) => {
+                self.cursor = Some(i);
+                let node = self.reading_order[i].clone();
+                let text = describe(&node);
+                if !text.is_empty() {
+                    self.enqueue(Utterance::new(text));
+                }
+                Some(node)
+            }
+            None => {
+                self.enqueue(Utterance::new(phrase::NO_PREV.to_string()));
+                None
+            }
+        }
+    }
+
+    /// Jump to the next heading and speak it ("Insert + H").
+    pub fn read_next_heading(&mut self, root: &dyn Widget) -> Option<AccessNode> {
+        self.read_next_matching(root, |n| is_heading(n))
+    }
+
+    /// Jump to the previous heading and speak it ("Insert + Shift + H").
+    pub fn read_prev_heading(&mut self, root: &dyn Widget) -> Option<AccessNode> {
+        self.read_prev_matching(root, |n| is_heading(n))
+    }
+
+    /// Jump to the next form field / interactive control and speak it
+    /// ("Insert + F").
+    pub fn read_next_control(&mut self, root: &dyn Widget) -> Option<AccessNode> {
+        self.read_next_matching(root, |n| is_form_field(n))
+    }
+
+    /// Jump to the previous form field / interactive control and speak it
+    /// ("Insert + Shift + F").
+    pub fn read_prev_control(&mut self, root: &dyn Widget) -> Option<AccessNode> {
+        self.read_prev_matching(root, |n| is_form_field(n))
+    }
+}
+
+/// Whether a node is a heading (any level) — the predicate behind heading
+/// quick-navigation.
+pub fn is_heading(node: &AccessNode) -> bool {
+    matches!(node.role, Role::Heading { .. })
+}
+
+/// Whether a node is a "form field" — an interactive control a user can edit or
+/// activate. The predicate behind form-field quick-navigation. Deliberately
+/// covers the editable + actionable controls (buttons, toggles, inputs, ranges,
+/// selectors) but not structural containers or static content.
+pub fn is_form_field(node: &AccessNode) -> bool {
+    matches!(
+        node.role,
+        Role::Button
+            | Role::ToggleButton
+            | Role::Checkbox
+            | Role::RadioButton
+            | Role::Switch
+            | Role::Slider
+            | Role::SpinButton
+            | Role::ComboBox
+            | Role::TextInput
+            | Role::MultilineTextInput
+            | Role::Link
+    )
 }
 
 /// Flatten the widget tree into a DFS reading order of [`AccessNode`]s,
@@ -792,6 +936,36 @@ mod tests {
     fn describe_empty_generic_is_empty_string() {
         let node = n(Role::Generic);
         assert_eq!(describe(&node), "");
+    }
+
+    #[test]
+    fn describe_appends_position_in_set() {
+        // "Inbox, tab, selected, 2 of 4".
+        let node = n(Role::Tab)
+            .with_name("Inbox")
+            .with_state(AccessState::new().selected(true))
+            .with_position(2, 4);
+        assert_eq!(describe(&node), "Inbox, tab, selected, 2 of 4");
+    }
+
+    #[test]
+    fn describe_appends_level_for_tree_depth() {
+        // A nested tree row reads its depth after position: "Src, tree item,
+        // 3 of 7, level 2".
+        let node = n(Role::TreeItem)
+            .with_name("Src")
+            .with_position(3, 7)
+            .with_level(2);
+        assert_eq!(describe(&node), "Src, tree item, 3 of 7, level 2");
+    }
+
+    #[test]
+    fn describe_position_requires_both_pos_and_size() {
+        // A lone pos_in_set (or set_size) with no partner is dropped — "N of M"
+        // is only spoken when both are present.
+        let mut node = n(Role::ListItem).with_name("Item");
+        node.pos_in_set = Some(2);
+        assert_eq!(describe(&node), "Item, list item");
     }
 
     // ----- ScreenReader narration via NullSpeaker -----
@@ -1190,5 +1364,115 @@ mod tests {
         let root = sample_tree();
         let mut r = recording_reader().0;
         assert_eq!(r.seed_reading_order(&root), 5);
+    }
+
+    // ----- Quick navigation: jump by element type -----
+
+    /// root(None) -> [ H1 "Top", para "intro", H2 "Body", button "Go",
+    ///                 text "Name", H2 "Footer" ]
+    fn quicknav_tree() -> TW {
+        TW::new(None)
+            .child(Box::new(TW::new(Some(
+                n(Role::Heading { level: 1 }).with_name("Top"),
+            ))))
+            .child(Box::new(TW::new(Some(
+                n(Role::Paragraph).with_name("intro"),
+            ))))
+            .child(Box::new(TW::new(Some(
+                n(Role::Heading { level: 2 }).with_name("Body"),
+            ))))
+            .child(Box::new(TW::new(Some(n(Role::Button).with_name("Go")))))
+            .child(Box::new(TW::new(Some(
+                n(Role::TextInput).with_name("Name"),
+            ))))
+            .child(Box::new(TW::new(Some(
+                n(Role::Heading { level: 2 }).with_name("Footer"),
+            ))))
+    }
+
+    #[test]
+    fn read_next_heading_lands_on_each_heading() {
+        let root = quicknav_tree();
+        let mut r = recording_reader().0;
+        // From an unset cursor, jump to the first heading.
+        let a = r.read_next_heading(&root).unwrap();
+        assert_eq!(a.role, Role::Heading { level: 1 });
+        assert_eq!(a.name.as_deref(), Some("Top"));
+        // Next skips the paragraph and the controls, landing on the next H2.
+        let b = r.read_next_heading(&root).unwrap();
+        assert_eq!(b.role, Role::Heading { level: 2 });
+        assert_eq!(b.name.as_deref(), Some("Body"));
+        let c = r.read_next_heading(&root).unwrap();
+        assert_eq!(c.name.as_deref(), Some("Footer"));
+        // No more headings ahead.
+        assert!(r.read_next_heading(&root).is_none());
+    }
+
+    #[test]
+    fn read_prev_heading_walks_backward() {
+        let root = quicknav_tree();
+        let mut r = recording_reader().0;
+        // Unset cursor → previous-heading starts from the end (last heading).
+        let last = r.read_prev_heading(&root).unwrap();
+        assert_eq!(last.name.as_deref(), Some("Footer"));
+        let mid = r.read_prev_heading(&root).unwrap();
+        assert_eq!(mid.name.as_deref(), Some("Body"));
+        let first = r.read_prev_heading(&root).unwrap();
+        assert_eq!(first.name.as_deref(), Some("Top"));
+        assert!(r.read_prev_heading(&root).is_none());
+    }
+
+    #[test]
+    fn read_next_control_skips_non_interactive() {
+        let root = quicknav_tree();
+        let mut r = recording_reader().0;
+        // First control is the button (headings/paragraph are skipped).
+        let a = r.read_next_control(&root).unwrap();
+        assert_eq!(a.role, Role::Button);
+        assert_eq!(a.name.as_deref(), Some("Go"));
+        // Next control is the text input.
+        let b = r.read_next_control(&root).unwrap();
+        assert_eq!(b.role, Role::TextInput);
+        // No further controls.
+        assert!(r.read_next_control(&root).is_none());
+    }
+
+    #[test]
+    fn read_prev_control_from_end_walks_backward() {
+        let root = quicknav_tree();
+        let mut r = recording_reader().0;
+        let last = r.read_prev_control(&root).unwrap();
+        assert_eq!(last.role, Role::TextInput);
+        let prev = r.read_prev_control(&root).unwrap();
+        assert_eq!(prev.role, Role::Button);
+        assert!(r.read_prev_control(&root).is_none());
+    }
+
+    #[test]
+    fn quick_nav_speaks_a_no_more_cue_when_nothing_matches() {
+        // A tree with no headings: read_next_heading speaks the "no more" cue.
+        let root = TW::new(None).child(Box::new(TW::new(Some(n(Role::Button).with_name("Solo")))));
+        let (mut r, rec) = recording_reader();
+        assert!(r.read_next_heading(&root).is_none());
+        assert_eq!(rec.0.borrow().last(), Some(phrase::NO_NEXT));
+    }
+
+    #[test]
+    fn is_heading_and_is_form_field_predicates() {
+        assert!(is_heading(&n(Role::Heading { level: 1 })));
+        assert!(!is_heading(&n(Role::Button)));
+        for role in [
+            Role::Button,
+            Role::Checkbox,
+            Role::Switch,
+            Role::Slider,
+            Role::ComboBox,
+            Role::TextInput,
+            Role::Link,
+        ] {
+            assert!(is_form_field(&n(role)), "{role:?} should be a form field");
+        }
+        assert!(!is_form_field(&n(Role::StaticText)));
+        assert!(!is_form_field(&n(Role::Group)));
     }
 }
