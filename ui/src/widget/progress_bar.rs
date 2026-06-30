@@ -243,6 +243,23 @@ impl Widget for ProgressBar {
 
     fn get_rect(&self) -> Rect { self.rect }
 
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        // Determinate bars expose a percentage value; indeterminate bars have
+        // no meaningful value, so omit it and mark the node busy instead.
+        if self.indeterminate {
+            Some(
+                AccessNode::new(Role::ProgressBar).with_state(AccessState {
+                    busy: true,
+                    ..Default::default()
+                }),
+            )
+        } else {
+            let pct = (self.progress.clamp(0.0, 1.0) * 100.0).round() as i64;
+            Some(AccessNode::new(Role::ProgressBar).with_value(format!("{pct}%")))
+        }
+    }
+
     /// Indeterminate bars must keep the redraw loop pumping so the
     /// segment continues to advance — without this, the animation
     /// would freeze on the first frame after an unrelated event.
@@ -415,6 +432,24 @@ mod tests {
             "at progress=0.5 the fill width must be track_width/2 ± 1 px \
              (expected={expected}, got={fill_width})",
         );
+    }
+
+    /// A determinate bar reports its progress as a percentage value with no
+    /// busy flag; an indeterminate bar omits the value and is marked busy.
+    #[test]
+    fn accessibility_reports_progressbar_role_value_and_busy() {
+        use crate::a11y::Role;
+        let half = ProgressBar::new(0.5);
+        let node = Widget::accessibility(&half).expect("progress bar is not presentational");
+        assert_eq!(node.role, Role::ProgressBar);
+        assert_eq!(node.value.as_deref(), Some("50%"));
+        assert!(!node.state.busy, "a determinate bar is not busy");
+
+        let indet = ProgressBar::indeterminate();
+        let node = Widget::accessibility(&indet).unwrap();
+        assert_eq!(node.role, Role::ProgressBar);
+        assert_eq!(node.value, None, "an indeterminate bar exposes no value");
+        assert!(node.state.busy, "an indeterminate bar is busy");
     }
 
     /// Indeterminate bars must opt into the redraw loop via

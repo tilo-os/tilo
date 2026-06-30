@@ -1368,6 +1368,24 @@ impl Widget for ChannelBrowser {
         "ChannelBrowser"
     }
 
+    /// Accessibility (W3): a filterable channel list. `Role::List` named
+    /// "Channels", with the count of currently-visible (post-filter) channels
+    /// in the description, and the focus state derived from the search input's
+    /// focus.
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        Some(
+            AccessNode::new(Role::List)
+                .with_name("Channels")
+                .with_description(format!("{} channels", self.visible.len()))
+                .with_state(AccessState {
+                    focusable: true,
+                    focused: self.is_focused,
+                    ..Default::default()
+                }),
+        )
+    }
+
     fn test_id(&self) -> Option<&str> {
         Some("channel_browser")
     }
@@ -1435,6 +1453,25 @@ mod tests {
         b.rect = rect;
         b.set_now_for_test(SystemTime::UNIX_EPOCH + Duration::from_secs(10_000_000));
         b
+    }
+
+    #[test]
+    fn accessibility_reports_list_role_name_and_focus() {
+        use crate::a11y::Role;
+        let entries = vec![
+            entry("general", "Team", 120.0, 1_000, 0, false, None),
+            entry("random", "Team", 200.0, 2_000, 3, true, Some("admin")),
+        ];
+        let mut b = browser_at(Rect::new(0.0, 0.0, 320.0, 480.0), entries);
+        let node = Widget::accessibility(&b).expect("browser is not presentational");
+        assert_eq!(node.role, Role::List);
+        assert_eq!(node.name.as_deref(), Some("Channels"));
+        assert_eq!(node.description.as_deref(), Some("2 channels"));
+        assert!(node.state.focusable);
+        assert!(!node.state.focused);
+
+        b.set_focus(true);
+        assert!(Widget::accessibility(&b).unwrap().state.focused);
     }
 
     /// Synthesise a `WindowEvent::KeyboardInput` carrying `logical_key`

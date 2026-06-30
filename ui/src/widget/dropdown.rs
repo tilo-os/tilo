@@ -686,6 +686,35 @@ impl Widget for Dropdown {
         self.enabled
     }
 
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        // ComboBox: the accessible name + value is the current selection;
+        // when nothing is chosen yet we fall back to the placeholder so an
+        // AT still announces what the control is for. `selected` /
+        // `placeholder` are runtime strings (host-provided option text), not
+        // FTL keys, so no `i18n!` wrap. `expanded` mirrors the `open` field.
+        let name = if !self.selected.is_empty() {
+            Some(self.selected.clone())
+        } else if !self.placeholder.is_empty() {
+            Some(self.placeholder.clone())
+        } else {
+            None
+        };
+        let value = (!self.selected.is_empty()).then(|| self.selected.clone());
+        Some(
+            AccessNode::new(Role::ComboBox)
+                .with_optional_name(name)
+                .with_optional_value(value)
+                .with_state(AccessState {
+                    focusable: self.is_focusable(),
+                    focused: self.is_focused(),
+                    disabled: !self.is_enabled(),
+                    expanded: Some(self.open),
+                    ..Default::default()
+                }),
+        )
+    }
+
     /// While open the dropdown grabs every event so its out-of-layout
     /// list is hit-testable and click-outside dismissal works.
     fn wants_pointer_capture(&self) -> bool {
@@ -915,5 +944,46 @@ mod tests {
         assert!(!dd.is_open(), "disabled dropdown must not open");
         assert!(!handled, "disabled dropdown must not swallow input");
         assert_eq!(dd.selected(), "UTC", "disabled dropdown must not change the value");
+    }
+
+    #[test]
+    fn accessibility_reports_combobox_role_value_and_collapsed() {
+        use crate::a11y::Role;
+        let mut dd = Dropdown::new(opts(), "tz");
+        let (mut doc, root) = doc_with_tz("Asia/Tokyo");
+        dd.sync(&mut doc, &root);
+        let node = Widget::accessibility(&dd).expect("dropdown is not presentational");
+        assert_eq!(node.role, Role::ComboBox);
+        assert_eq!(node.name.as_deref(), Some("Asia/Tokyo"));
+        assert_eq!(node.value.as_deref(), Some("Asia/Tokyo"));
+        assert_eq!(node.state.expanded, Some(false), "closed dropdown is collapsed");
+        assert!(node.state.focusable);
+        assert!(!node.state.disabled);
+    }
+
+    #[test]
+    fn accessibility_unselected_uses_placeholder_name_and_no_value() {
+        use crate::a11y::Role;
+        let dd = Dropdown::new(opts(), "tz").with_placeholder("Pick a zone");
+        let node = Widget::accessibility(&dd).unwrap();
+        assert_eq!(node.role, Role::ComboBox);
+        assert_eq!(node.name.as_deref(), Some("Pick a zone"), "placeholder is the name when unset");
+        assert_eq!(node.value, None, "no value until something is selected");
+    }
+
+    #[test]
+    fn accessibility_reflects_open_and_disabled() {
+        let mut dd = Dropdown::new(opts(), "tz");
+        let (mut doc, root) = doc_with_tz("UTC");
+        dd.sync(&mut doc, &root);
+        dd.set_focus(true);
+        dd.do_open();
+        let node = Widget::accessibility(&dd).unwrap();
+        assert_eq!(node.state.expanded, Some(true), "open dropdown is expanded");
+        assert!(node.state.focused);
+
+        let dd2 = Dropdown::new(opts(), "tz").with_enabled(false);
+        let node2 = Widget::accessibility(&dd2).unwrap();
+        assert!(node2.state.disabled);
     }
 }

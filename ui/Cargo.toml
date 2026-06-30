@@ -98,6 +98,15 @@ bip39 = "2"
 # the identity_flow screens depend on `rand_core` 0.6 directly for
 # `OsRng`.
 rand_core = { version = "0.6", features = ["getrandom"] }
+# Accessibility (W4): AccessKit is the cross-platform a11y schema; the winit
+# adapter bridges our exported tree into the event loop and, via its default
+# `accesskit_unix` feature on Linux, publishes it over AT-SPI2 so standard ATs
+# (Orca, braille) read every `ui` app. `accesskit_winit` 0.33.1 targets
+# winit 0.30.x — the same pin as the `winit` dep above. See
+# `ui/src/accesskit_bridge.rs` (tree builder + role/action mapping) and the
+# adapter wiring in `ui/src/app.rs`.
+accesskit = "0.24.1"
+accesskit_winit = "0.33.1"
 
 [dev-dependencies]
 regex = "1"
