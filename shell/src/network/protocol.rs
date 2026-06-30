@@ -84,6 +84,35 @@ pub enum NeighbourMsg {
         /// untouched.
         data: Vec<u8>,
     },
+    /// Phase 3 of the spaces+channels spec: a signed CRDT envelope
+    /// crossing the libp2p boundary. Recipients route the envelope
+    /// into their local broker, which runs the validation pipeline
+    /// (`qos_collab_types::validate_inbound_op`) before fanning the
+    /// payload to any locally-connected app.
+    ///
+    /// The legacy `AppCrdtIncremental` variant is kept alongside this
+    /// one so legacy peers on the same mesh continue to publish + see
+    /// unsigned updates while their owners migrate. A peer that has
+    /// upgraded keeps emitting `AppCrdtIncrementalSigned`; receiving
+    /// shells fall back to the legacy fan-out for `AppCrdtIncremental`
+    /// (no validation, advisory only).
+    ///
+    /// The envelope is boxed so the `NeighbourMsg` enum's stack size
+    /// stays in the same ballpark as the other variants. Postcard's
+    /// on-wire shape ignores the Box — it sees only the underlying
+    /// `SignedOp` bytes.
+    AppCrdtIncrementalSigned {
+        /// Hashed libp2p PeerId of the publisher. Mirrors the `peer`
+        /// field on the legacy variant; used by receiving shells to
+        /// filter out self-publishes when they observe their own
+        /// gossipsub echoes.
+        peer: PeerId,
+        /// The signed-op envelope. The validator on the receiving
+        /// shell consults its channel state to decide whether to
+        /// fan the payload out to local apps or to drop it with an
+        /// audit-log entry.
+        envelope: Box<qos_collab_types::SignedOp>,
+    },
 }
 
 #[cfg(test)]
@@ -178,5 +207,54 @@ mod tests {
             cluster_id: "00000000-0000-0000-0000-000000000000".into(),
             data: vec![0x01, 0x02, 0x03, 0x04],
         });
+    }
+
+    /// Build a syntactically-correct (but cryptographically empty)
+    /// envelope for postcard round-trip exercising. The bytes don't
+    /// need to verify — only the framing has to survive a
+    /// serialise/deserialise cycle.
+    fn dummy_envelope() -> Box<qos_collab_types::SignedOp> {
+        use qos_collab_types::{
+            ArtifactId, AttestationId, Ed25519PublicKey, OpClass, SignedOp,
+        };
+        use std::time::SystemTime;
+        Box::new(SignedOp::new_unsigned(
+            vec![0xDE, 0xAD, 0xBE, 0xEF],
+            ArtifactId::new(),
+            Ed25519PublicKey::from_bytes([7u8; 32]),
+            AttestationId::new(),
+            OpClass::Splice,
+            SystemTime::UNIX_EPOCH,
+            42,
+        ))
+    }
+
+    #[test]
+    fn app_crdt_incremental_signed_round_trips_serde_json() {
+        // The actor still encodes `NeighbourMsg` with `serde_json` for
+        // historical reasons; the new variant must survive the same
+        // pipeline. (postcard round-trip is exercised separately so
+        // that future wire-format experiments can swap the codec
+        // without touching this test.)
+        round_trip(NeighbourMsg::AppCrdtIncrementalSigned {
+            peer: 0xABCDEF,
+            envelope: dummy_envelope(),
+        });
+    }
+
+    #[test]
+    fn app_crdt_incremental_signed_round_trips_postcard() {
+        // Postcard is the canonical-bytes format used by
+        // `qos_collab_types` for signing; verifying that
+        // `NeighbourMsg::AppCrdtIncrementalSigned` round-trips through
+        // postcard guards against a future wire-format experiment
+        // accidentally dropping the new variant.
+        let msg = NeighbourMsg::AppCrdtIncrementalSigned {
+            peer: 0x1234,
+            envelope: dummy_envelope(),
+        };
+        let bytes = postcard::to_allocvec(&msg).expect("postcard serialize");
+        let back: NeighbourMsg = postcard::from_bytes(&bytes).expect("postcard deserialize");
+        assert_eq!(msg, back);
     }
 }

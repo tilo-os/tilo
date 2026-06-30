@@ -27,6 +27,8 @@
 //!   "peer-<src_id>", key, payload }`
 //! - `Hello { .. }` → swallowed (no fan-out; the hello is a no-op handshake)
 
+use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
@@ -35,9 +37,72 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use qos_collab_types::{
+    ArtifactId, ChannelState, SignedOp, ValidationError, validate_inbound_op,
+};
 use ui::collaboration::{CollabEvent, CollabRequest};
 
 use crate::shell::network::ShellNetwork;
+
+/// Maximum number of audit-log entries retained per channel before
+/// the in-memory ring buffer evicts its oldest entry. Persistence
+/// (and per-channel retention policy) is a Phase 3.5 follow-up —
+/// the in-memory record is enough for current debugging and tests
+/// that want to assert "this op was dropped".
+const AUDIT_LOG_RING_CAPACITY: usize = 256;
+
+/// One entry in the per-channel audit log. The full envelope is
+/// captured by reference (cloned out) so that the operator can pick
+/// over the dropped op later — author, declared op class, payload
+/// length — without having to re-parse the wire.
+#[derive(Clone, Debug)]
+pub struct AuditEntry {
+    /// The signed envelope that triggered the entry. Successful ops
+    /// also surface here when explicitly recorded (currently only
+    /// failures are logged, but the type carries the same shape so
+    /// the writer can be extended without a breaking API change).
+    pub envelope: Box<SignedOp>,
+    /// Why the entry was logged. `None` is a successful op recorded
+    /// for tracing; `Some(reason)` is a rejection.
+    pub rejection: Option<ValidationError>,
+    /// Wall-clock time the entry was minted on this host. Used by
+    /// the chrome's "Activity pane" widget (Phase 1) to render the
+    /// timeline.
+    pub at: std::time::SystemTime,
+}
+
+/// Per-channel audit log, fixed-capacity ring buffer.
+///
+/// Keyed by [`ArtifactId`] because a `SignedOp` carries an artifact
+/// id but not a channel id directly — and the broker's v1 channel
+/// state is keyed by artifact id too (see the
+/// [`Broker::channel_state_for`] note below). Phase 3.5 reshapes
+/// this to a true channel-id keyed map.
+#[derive(Default)]
+pub struct AuditLog {
+    pub entries: HashMap<ArtifactId, VecDeque<AuditEntry>>,
+}
+
+impl AuditLog {
+    /// Append `entry` to the ring buffer for `artifact`, evicting the
+    /// oldest entry if the buffer is at capacity.
+    pub fn record(&mut self, artifact: ArtifactId, entry: AuditEntry) {
+        let buf = self.entries.entry(artifact).or_default();
+        if buf.len() >= AUDIT_LOG_RING_CAPACITY {
+            buf.pop_front();
+        }
+        buf.push_back(entry);
+    }
+
+    /// Read-only view of the entries logged for one artifact. Mostly
+    /// used by tests.
+    pub fn for_artifact(&self, artifact: ArtifactId) -> Vec<AuditEntry> {
+        self.entries
+            .get(&artifact)
+            .map(|q| q.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+}
 
 /// Per-peer entry in the broker's fan-out table.
 struct Peer {
@@ -60,6 +125,56 @@ struct Peer {
 struct PeerIdentity {
     app_id: String,
     cluster_id: String,
+}
+
+/// Phase 3 channel-state cache.
+///
+/// The broker keeps one [`ChannelState`] per artifact id (a v1
+/// proxy — see the TODO inside `state_for`). Reader threads acquire
+/// the lock for the duration of one validation, which is cheap (the
+/// validator only mutates `last_seq_per_author` on success).
+///
+/// Bootstrap policy: the first time an artifact is touched, we create
+/// a default `ChannelState` with empty `authorised_signers`. That
+/// makes every signed op fail step 2 of the validator
+/// ([`ValidationError::UnauthorisedAttestation`]) — which is the
+/// **correct, secure** default for an artifact whose role table the
+/// broker has never been told about. Tests (and the eventual Phase 3.5
+/// bootstrap path) populate the state via
+/// [`Broker::register_channel_state`] before driving traffic through
+/// the broker. The audit log records the rejection so an operator can
+/// see that an envelope was dropped because the channel was
+/// un-bootstrapped vs. genuinely-invalid.
+///
+/// TODO(phase-3.5): wire the channel state up from the persisted
+/// `Workspace.collaborators` + governance log so production traffic
+/// no longer needs the bootstrap dance.
+#[derive(Default)]
+pub struct BrokerChannels {
+    /// Per-artifact channel state. v1 keys on artifact id rather than
+    /// channel id because the wire only carries artifact id; the
+    /// 3.5 follow-up adds a real artifact→channel resolver.
+    pub states: HashMap<ArtifactId, ChannelState>,
+    /// Per-artifact audit log, fixed-capacity.
+    pub audit: AuditLog,
+}
+
+impl BrokerChannels {
+    /// Look up the [`ChannelState`] for `artifact`, lazily inserting
+    /// a default. The lazy default has empty `authorised_signers` so
+    /// every signed op fails step 2 of the validator until a test
+    /// or the eventual Phase 3.5 bootstrap fills it in.
+    pub fn state_for(&mut self, artifact: ArtifactId) -> &mut ChannelState {
+        self.states.entry(artifact).or_default()
+    }
+
+    /// Inject a populated [`ChannelState`] for `artifact`, replacing
+    /// any existing entry. Tests use this to set up role tables; the
+    /// eventual Phase 3.5 bootstrap path calls the same helper from
+    /// the persisted workspace metadata.
+    pub fn register_channel_state(&mut self, artifact: ArtifactId, state: ChannelState) {
+        self.states.insert(artifact, state);
+    }
 }
 
 /// Shared registry of connected peers. Reader threads call
@@ -147,7 +262,11 @@ fn write_frame(writer: &Mutex<UnixStream>, bytes: &[u8]) -> std::io::Result<()> 
 /// Translate one `CollabRequest` (already deserialized off the wire)
 /// to the `CollabEvent` peers should observe. Returns `None` for
 /// `Hello` (which is swallowed — see module docs).
-fn translate(src_id: u64, req: CollabRequest) -> Option<CollabEvent> {
+fn translate(
+    src_id: u64,
+    req: CollabRequest,
+    channels: &Arc<Mutex<BrokerChannels>>,
+) -> Option<CollabEvent> {
     match req {
         CollabRequest::Hello { .. } => None,
         CollabRequest::SyncIncremental { data } => Some(CollabEvent::CRDTIncremental { data }),
@@ -157,6 +276,46 @@ fn translate(src_id: u64, req: CollabRequest) -> Option<CollabEvent> {
             key,
             payload,
         }),
+        CollabRequest::SignedSyncIncremental { envelope } => {
+            // Phase 3 hot path: validate the envelope against the
+            // per-artifact `ChannelState` before fanning out. Default
+            // state has empty `authorised_signers`, so a freshly-
+            // touched artifact rejects every signed op until its
+            // role table is registered (the secure default).
+            let artifact = envelope.artifact;
+            let validation = {
+                let Ok(mut ch) = channels.lock() else {
+                    return None;
+                };
+                let state = ch.state_for(artifact);
+                validate_inbound_op(&envelope, state)
+            };
+            match validation {
+                Ok(()) => Some(CollabEvent::SignedCRDTIncremental {
+                    envelope,
+                    from_user_id: format!("peer-{src_id}"),
+                }),
+                Err(reason) => {
+                    tracing::warn!(
+                        artifact = ?artifact,
+                        author = ?envelope.author,
+                        seq = envelope.seq,
+                        "collab_broker: dropping invalid signed op: {reason}",
+                    );
+                    if let Ok(mut ch) = channels.lock() {
+                        ch.audit.record(
+                            artifact,
+                            AuditEntry {
+                                envelope,
+                                rejection: Some(reason),
+                                at: std::time::SystemTime::now(),
+                            },
+                        );
+                    }
+                    None
+                }
+            }
+        }
     }
 }
 
@@ -173,6 +332,7 @@ fn reader_loop(
     mut stream: UnixStream,
     table: Arc<PeerTable>,
     peer_sync: Option<Arc<ShellNetwork>>,
+    channels: Arc<Mutex<BrokerChannels>>,
 ) {
     while let Some(frame) = read_frame(&mut stream) {
         let Ok(req) = serde_json::from_slice::<CollabRequest>(&frame) else {
@@ -212,7 +372,7 @@ fn reader_loop(
                 .unwrap_or_else(|| (String::new(), String::new()));
             net.publish_app_crdt_incremental(app_id, cluster_id, data.clone());
         }
-        if let Some(event) = translate(peer.id, req) {
+        if let Some(event) = translate(peer.id, req, &channels) {
             table.fanout_except(&event, peer.id);
         }
     }
@@ -242,6 +402,11 @@ pub struct BrokerHandle {
     /// fan a remote event in to every locally-connected peer.
     #[allow(dead_code)]
     peers: Arc<PeerTable>,
+    /// Phase 3 channel-state cache + audit log. Reader threads pull
+    /// the lock for the duration of one validation; tests + the
+    /// eventual Phase 3.5 bootstrap path mutate the state map to
+    /// register role attestations before traffic flows.
+    channels: Arc<Mutex<BrokerChannels>>,
 }
 
 impl BrokerHandle {
@@ -267,6 +432,38 @@ impl BrokerHandle {
     /// a real libp2p mesh.
     pub fn fanout_event(&self, event: &CollabEvent, except: Option<u64>) {
         self.peers.fanout_except(event, except.unwrap_or(u64::MAX));
+    }
+
+    /// Shared handle to the broker's per-channel state + audit log.
+    /// Tests use this to install a [`ChannelState`] *before* sending
+    /// signed envelopes through the broker. The eventual Phase 3.5
+    /// bootstrap path is the production caller.
+    pub fn channels(&self) -> Arc<Mutex<BrokerChannels>> {
+        Arc::clone(&self.channels)
+    }
+
+    /// Convenience: install a populated [`ChannelState`] for one
+    /// artifact id. Equivalent to
+    /// `self.channels().lock()?.register_channel_state(...)` but
+    /// avoids the lock-and-unwrap dance at every call site.
+    pub fn register_channel_state(
+        &self,
+        artifact: ArtifactId,
+        state: ChannelState,
+    ) {
+        if let Ok(mut ch) = self.channels.lock() {
+            ch.register_channel_state(artifact, state);
+        }
+    }
+
+    /// Snapshot the audit-log entries logged for one artifact. Used by
+    /// tests to assert that a dropped envelope landed in the right
+    /// rejection bucket.
+    pub fn audit_for(&self, artifact: ArtifactId) -> Vec<AuditEntry> {
+        self.channels
+            .lock()
+            .map(|g| g.audit.for_artifact(artifact))
+            .unwrap_or_default()
     }
 }
 
@@ -330,9 +527,16 @@ pub fn spawn_with_peer_sync(
 
     let table = Arc::new(PeerTable::new());
     let peer_id_counter = Arc::new(AtomicU64::new(0));
+    // Phase 3 per-artifact channel state + audit log. Created here so
+    // every reader thread gets the same `Arc`, and so the
+    // `BrokerHandle::channels()` accessor returns a handle to the
+    // same instance reader threads consult during validation.
+    let channels: Arc<Mutex<BrokerChannels>> =
+        Arc::new(Mutex::new(BrokerChannels::default()));
 
     let listener_table = Arc::clone(&table);
     let listener_peer_sync = peer_sync.clone();
+    let listener_channels = Arc::clone(&channels);
     let listener_thread = std::thread::Builder::new()
         .name("qos-collab-broker-listener".into())
         .spawn(move || {
@@ -362,10 +566,17 @@ pub fn spawn_with_peer_sync(
                         let reader_table = Arc::clone(&listener_table);
                         let reader_peer = Arc::clone(&peer);
                         let reader_peer_sync = listener_peer_sync.clone();
+                        let reader_channels = Arc::clone(&listener_channels);
                         if let Err(e) = std::thread::Builder::new()
                             .name(format!("qos-collab-broker-peer-{id}"))
                             .spawn(move || {
-                                reader_loop(reader_peer, stream, reader_table, reader_peer_sync);
+                                reader_loop(
+                                    reader_peer,
+                                    stream,
+                                    reader_table,
+                                    reader_peer_sync,
+                                    reader_channels,
+                                );
                             })
                         {
                             tracing::warn!(
@@ -423,6 +634,7 @@ pub fn spawn_with_peer_sync(
         drain_thread,
         drain_quit,
         peers: table,
+        channels,
     })
 }
 
