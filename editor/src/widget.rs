@@ -71,6 +71,9 @@ const STATUS_H: f64 = ui::chrome::STATUS_BAR_HEIGHT;
 const LAYOUT_BAR_H: f64 = 32.0;
 /// Width of the contextual styles panel reserved on the right of the canvas.
 const STYLES_PANEL_W: f64 = 250.0;
+/// Width of the document outline / navigation pane reserved on the LEFT of the
+/// canvas (mirrors the styles panel on the right).
+const OUTLINE_PANEL_W: f64 = 230.0;
 const FIND_BAR_H: f64 = 42.0;
 /// Find-match highlight (amber, semi-transparent).
 const FIND_HL: Color = Color::from_rgba8(0xff, 0xc8, 0x4a, 0x80);
@@ -187,6 +190,10 @@ enum ToolAction {
     TableColDel,
     TableDelete,
     ToggleStyles,
+    /// Toggle the document outline / navigation pane (left side).
+    ToggleOutline,
+    /// Generate (or regenerate) a table of contents from the document headings.
+    InsertToc,
 }
 
 /// A clickable control in the Find & Replace bar.
@@ -1188,6 +1195,15 @@ pub struct WordProcessorWidget {
     /// Whether comment + tracked-change markup is drawn (default ON, like
     /// spell-check). View-only — never mutates the document.
     show_markup: bool,
+    /// Whether the document outline / navigation pane is shown (left side).
+    /// Toggled via the toolbar "Outline" button. Default OFF so existing layouts
+    /// are unchanged until the user opens it.
+    outline_open: bool,
+    /// The outline pane rect in screen space, cached each frame for hit-testing.
+    outline_rect: Rect,
+    /// Clickable outline entries this frame: `(rect, heading_block_id)`. A click
+    /// scrolls that heading into view.
+    outline_hits: Vec<(Rect, String)>,
 }
 
 /// One process-wide built-in dictionary, shared across every word-processor
@@ -1269,6 +1285,9 @@ impl WordProcessorWidget {
             comments: Vec::new(),
             changes: Vec::new(),
             show_markup: true,
+            outline_open: false,
+            outline_rect: Rect::ZERO,
+            outline_hits: Vec::new(),
         }
     }
 
@@ -2223,6 +2242,128 @@ impl WordProcessorWidget {
         self.panel_hits.push((minus, PanelHit::NumDelta(field, -field.step())));
         self.panel_hits.push((plus, PanelHit::NumDelta(field, field.step())));
     }
+
+    // ---- document outline / navigation pane -------------------------------
+
+    /// The document outline: one entry per `heading` block (in document order),
+    /// derived from the live block set. Mirrors `WordProcessor::headings`, but the
+    /// widget reads its already-materialized `self.blocks` so it works mid-frame
+    /// without re-materializing the doc. Excludes generated TOC lines.
+    fn outline_entries(&self) -> Vec<crate::word_processor::Heading> {
+        self.blocks
+            .iter()
+            .filter(|b| b.kind == "heading" && !crate::word_processor::block_is_toc(b))
+            .map(|b| {
+                let level = match b.attrs.get("level") {
+                    Some(AttrVal::Int(n)) if *n >= 1 => *n,
+                    _ => 1,
+                };
+                crate::word_processor::Heading { id: b.id.clone(), level, text: b.text.clone() }
+            })
+            .collect()
+    }
+
+    /// The heading nearest (at or just above) the current scroll position — the
+    /// one to highlight in the outline as "where you are". Uses the last frame's
+    /// laid geometry (`y_top` is screen-space post-scroll; recover content space).
+    /// Returns the heading block id, or `None` when there are no headings laid.
+    fn active_outline_block(&self) -> Option<String> {
+        // Content-space top of the visible canvas region.
+        let view_top = self.scroll_y;
+        let mut best: Option<(f64, String)> = None; // (content_y, id)
+        let mut first: Option<(f64, String)> = None;
+        for l in &self.laid {
+            if l.kind != "heading" {
+                continue;
+            }
+            let cy = l.y_top + self.scroll_y; // content-space top
+            if first.as_ref().map(|(y, _)| cy < *y).unwrap_or(true) {
+                first = Some((cy, l.id.clone()));
+            }
+            // The deepest heading whose top is at/above the viewport top.
+            if cy <= view_top + 1.0 && best.as_ref().map(|(y, _)| cy >= *y).unwrap_or(true) {
+                best = Some((cy, l.id.clone()));
+            }
+        }
+        best.or(first).map(|(_, id)| id)
+    }
+
+    /// The document outline / navigation pane: a scroll-anchored list of every
+    /// heading, indented by level. Clicking an entry scrolls it into view; the
+    /// heading nearest the current scroll is highlighted. Mirrors the styles
+    /// panel's chrome (background, left/right edge, clipped content).
+    fn draw_outline_pane(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, panel: Rect) {
+        self.outline_rect = panel;
+        self.outline_hits.clear();
+        scene.fill(Fill::NonZero, transform, PANEL_BG, None, &panel);
+        // Right border (the pane sits on the canvas's left edge).
+        scene.fill(Fill::NonZero, transform, PANEL_EDGE, None, &Rect::new(panel.x1 - 1.0, panel.y0, panel.x1, panel.y1));
+        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &panel);
+
+        let pad = 14.0;
+        let x0 = panel.x0 + pad;
+        let right = panel.x1 - pad;
+        let inner_w = (right - x0).max(40.0);
+        let mut y = panel.y0 + 14.0;
+
+        tr.draw_text(scene, "OUTLINE", 10.5, PANEL_MUTED, transform * Affine::translate((x0, y)), None);
+        y += 18.0;
+
+        let entries = self.outline_entries();
+        if entries.is_empty() {
+            tr.draw_text(scene, "No headings yet", 12.5, PANEL_MUTED, transform * Affine::translate((x0, y)), Some(inner_w as f32));
+            scene.pop_layer();
+            return;
+        }
+        let active = self.active_outline_block();
+        let row_h = 24.0;
+        for h in &entries {
+            if y > panel.y1 - 4.0 {
+                break; // beyond the pane; the list is unscrolled for v1
+            }
+            let indent = ((h.level.max(1) - 1) as f64) * 14.0;
+            let r = Rect::new(x0, y, right, y + row_h);
+            let is_active = active.as_deref() == Some(h.id.as_str());
+            if is_active {
+                scene.fill(Fill::NonZero, transform, PANEL_CHIP, None, &vello::kurbo::RoundedRect::from_rect(r, 5.0));
+            }
+            // A small level cue: deeper headings render dimmer + smaller.
+            let (size, ink) = match h.level {
+                1 => (13.5, if is_active { Color::WHITE } else { PANEL_FG }),
+                2 => (12.5, if is_active { Color::WHITE } else { PANEL_FG }),
+                _ => (11.5, if is_active { Color::WHITE } else { PANEL_MUTED }),
+            };
+            let label = if h.text.trim().is_empty() { "(untitled)".to_string() } else { h.text.trim().to_string() };
+            tr.draw_text(scene, &label, size, ink, transform * Affine::translate((x0 + indent, y + 4.0)), Some((inner_w - indent).max(20.0) as f32));
+            self.outline_hits.push((r, h.id.clone()));
+            y += row_h;
+        }
+        scene.pop_layer();
+    }
+
+    /// Generate (or regenerate) the table of contents from the document headings.
+    /// Page numbers are read from the last frame's laid geometry (`Laid::page`);
+    /// a heading not yet laid out falls back to page 1. Delegates the block
+    /// mutation to the model so the insert/replace logic stays testable.
+    fn generate_toc(&mut self, state: &mut AutoCommit) {
+        // Map heading block id → 1-based page from the last laid-out frame.
+        let page_of: HashMap<&str, usize> = self.laid.iter().map(|l| (l.id.as_str(), l.page + 1)).collect();
+        let entries: Vec<crate::word_processor::TocEntry> = self
+            .outline_entries()
+            .into_iter()
+            .map(|h| {
+                let page = page_of.get(h.id.as_str()).copied();
+                crate::word_processor::TocEntry { level: h.level, text: h.text, page }
+            })
+            .collect();
+        if entries.is_empty() {
+            return; // nothing to build a TOC from
+        }
+        self.inner.generate_toc(state, &entries);
+        self.refresh_blocks(state);
+        self.needs_commit = true;
+        self.dirty = true;
+    }
 }
 
 /// A horizontal 1px divider line inside the panel.
@@ -2303,15 +2444,23 @@ impl Widget for WordProcessorWidget {
         } else {
             full.x1
         };
+        // Reserve the outline / navigation pane out of the canvas LEFT (mirrors the
+        // styles panel on the right) so the page re-centers and scrolled content
+        // never paints under the pane.
+        let canvas_left = if self.outline_open {
+            (full.x0 + OUTLINE_PANEL_W).min(canvas_right - 1.0)
+        } else {
+            full.x0
+        };
         // Reserve the Find bar (when open) out of the canvas top.
         let find_h = if self.find_open { FIND_BAR_H } else { 0.0 };
         if find_h > 0.0 {
-            let fbar = Rect::new(full.x0, full.y0 + tb_h, canvas_right, full.y0 + tb_h + find_h);
+            let fbar = Rect::new(canvas_left, full.y0 + tb_h, canvas_right, full.y0 + tb_h + find_h);
             self.draw_find_bar(scene, transform, text_renderer, theme, fbar);
         } else {
             self.find_buttons.clear();
         }
-        let canvas = Rect::new(full.x0, full.y0 + tb_h + find_h, canvas_right, layout_bar_top);
+        let canvas = Rect::new(canvas_left, full.y0 + tb_h + find_h, canvas_right, layout_bar_top);
         scene.fill(Fill::NonZero, transform, CANVAS, None, &canvas);
 
         // Zoom anchor: the canvas top, horizontally centered. The page+content
@@ -3052,6 +3201,17 @@ impl Widget for WordProcessorWidget {
             self.panel_hits.clear();
         }
 
+        // Document outline / navigation pane on the left (between toolbar and
+        // layout bar). Drawn after `self.laid` is set so the active-heading
+        // highlight reflects this frame's pagination.
+        if self.outline_open {
+            let pane = Rect::new(full.x0, full.y0 + tb_h, canvas_left, layout_bar_top);
+            self.draw_outline_pane(scene, transform, text_renderer, pane);
+        } else {
+            self.outline_rect = Rect::ZERO;
+            self.outline_hits.clear();
+        }
+
         let lbar = Rect::new(full.x0, layout_bar_top, full.x1, status_top);
         self.draw_layout_bar(scene, transform, text_renderer, theme, lbar);
 
@@ -3150,7 +3310,8 @@ impl Widget for WordProcessorWidget {
                 self.focused = true;
                 let in_chrome = self.pointer.y < self.rect.y0 + tb_h
                     || self.pointer.y > self.rect.y1 - STATUS_H
-                    || (self.styles_panel_open && self.panel_rect.contains(self.pointer));
+                    || (self.styles_panel_open && self.panel_rect.contains(self.pointer))
+                    || (self.outline_open && self.outline_rect.contains(self.pointer));
                 if !in_chrome {
                     let cp = self.pointer_to_content(self.pointer);
                     let pos = [self.pointer.x as f32, self.pointer.y as f32];
@@ -3191,6 +3352,16 @@ impl Widget for WordProcessorWidget {
                     *handled = true;
                     return;
                 }
+                // Outline / navigation pane (left side): a click on an entry
+                // scrolls that heading into view.
+                if self.outline_open && self.outline_rect.contains(self.pointer) {
+                    if let Some(bid) = self.outline_hits.iter().find(|(r, _)| r.contains(self.pointer)).map(|(_, b)| b.clone()) {
+                        self.scroll_to_block(&bid);
+                    }
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
                 // Find bar (when open): dispatch clicks on its fields + controls.
                 if self.find_open {
                     let fbar_bot = self.rect.y0 + tb_h + FIND_BAR_H;
@@ -3211,7 +3382,9 @@ impl Widget for WordProcessorWidget {
                         self.apply_tool(state, action);
                         self.refresh_blocks(state);
                         self.dirty = true;
-                        if action != ToolAction::ToggleStyles {
+                        // View toggles (panels) are not undo points; everything
+                        // else (including TOC generation) is.
+                        if !matches!(action, ToolAction::ToggleStyles | ToolAction::ToggleOutline) {
                             self.needs_commit = true;
                         }
                     }
@@ -3734,6 +3907,8 @@ impl WordProcessorWidget {
             ToolAction::TableColDel => self.inner.table_del_col(state),
             ToolAction::TableDelete => self.inner.table_delete(state),
             ToolAction::ToggleStyles => self.styles_panel_open = !self.styles_panel_open,
+            ToolAction::ToggleOutline => self.outline_open = !self.outline_open,
+            ToolAction::InsertToc => self.generate_toc(state),
         }
     }
 
@@ -4185,7 +4360,7 @@ impl WordProcessorWidget {
             _ => LabelCue::None,
         };
         let group_start = |a: ToolAction| {
-            matches!(a, ToolAction::H1 | ToolAction::AlignLeft | ToolAction::LineSpacing | ToolAction::FontCycle | ToolAction::InsertTable | ToolAction::InsertImage | ToolAction::TableRowAdd | ToolAction::ToggleStyles)
+            matches!(a, ToolAction::H1 | ToolAction::AlignLeft | ToolAction::LineSpacing | ToolAction::FontCycle | ToolAction::InsertTable | ToolAction::InsertImage | ToolAction::TableRowAdd | ToolAction::ToggleStyles | ToolAction::ToggleOutline)
         };
         let panel_open = self.styles_panel_open;
         let mut specs: Vec<(ToolAction, ToolbarItem)> = Vec::new();
@@ -4224,6 +4399,9 @@ impl WordProcessorWidget {
         }
         add(ToolAction::InsertImage, "🖼 Image", 80.0, false);
         add(ToolAction::ToggleStyles, "Styles", 64.0, panel_open);
+        // Navigation: outline pane toggle + table-of-contents generator.
+        add(ToolAction::ToggleOutline, "Outline", 72.0, self.outline_open);
+        add(ToolAction::InsertToc, "TOC", 48.0, false);
         drop(add);
 
         let items: Vec<ToolbarItem> = specs.iter().map(|(_, item)| item.clone()).collect();
@@ -4302,6 +4480,8 @@ impl WordProcessorWidget {
         }
         w.push(80.0); // 🖼 Image
         w.push(64.0); // Styles
+        w.push(72.0); // Outline
+        w.push(48.0); // TOC
         w
     }
 
@@ -4325,6 +4505,8 @@ impl WordProcessorWidget {
         }
         g.push(true); // 🖼 Image starts a group
         g.push(true); // Styles starts a group
+        g.push(true); // Outline starts a group (navigation)
+        g.push(false); // TOC
         g
     }
 
@@ -5577,5 +5759,122 @@ mod tests {
             runs_off.iter().all(|r| r.color != Some(TRACK_INS_RGB)),
             "no review colour is applied while markup is hidden"
         );
+    }
+
+    // ---- outline / navigation pane + table of contents ----------------------
+
+    /// Build a document with several headings (some on later pages) interleaved
+    /// with body paragraphs, returning `(wp, state)` already drawn at `w×h`.
+    fn doc_with_headings(w: u32, h: u32) -> (WordProcessorWidget, ui::State) {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        let add_heading = |wp: &mut WordProcessorWidget, st: &mut ui::State, text: &str, level: i64| {
+            wp.model_mut().insert_str(&mut st.doc, text);
+            wp.model_mut().set_paragraph_style(&mut st.doc, "heading", Some(level), None);
+            wp.model_mut().enter(&mut st.doc);
+            wp.model_mut().set_paragraph_style(&mut st.doc, "paragraph", None, None);
+        };
+        add_heading(&mut wp, &mut state, "Introduction", 1);
+        for i in 0..30 {
+            wp.model_mut().insert_str(&mut state.doc, &format!("Intro body line {i} with enough words to fill the line."));
+            wp.model_mut().enter(&mut state.doc);
+        }
+        add_heading(&mut wp, &mut state, "Background", 2);
+        for i in 0..30 {
+            wp.model_mut().insert_str(&mut state.doc, &format!("Background body line {i} with enough words to fill it."));
+            wp.model_mut().enter(&mut state.doc);
+        }
+        add_heading(&mut wp, &mut state, "Conclusion", 1);
+        wp.model_mut().insert_str(&mut state.doc, "The end.");
+        pipeline_draw(&mut wp, &mut state, w, h);
+        (wp, state)
+    }
+
+    #[test]
+    fn outline_has_one_entry_per_heading_with_levels_in_order() {
+        let (wp, _state) = doc_with_headings(1000, 700);
+        let entries = wp.outline_entries();
+        assert_eq!(entries.iter().map(|e| e.text.as_str()).collect::<Vec<_>>(), vec!["Introduction", "Background", "Conclusion"], "one entry per heading in document order");
+        assert_eq!(entries.iter().map(|e| e.level).collect::<Vec<_>>(), vec![1, 2, 1], "levels preserved");
+    }
+
+    /// Drive a real left-click at `pt` through the production `handle_event`.
+    fn left_click(wp: &mut WordProcessorWidget, state: &mut ui::State, pt: Point) {
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let node = NodeId::new(0);
+        let mods = Modifiers::default();
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        // Move the pointer, then press.
+        wp.handle_event(
+            &WindowEvent::CursorMoved { device_id: unsafe { std::mem::zeroed() }, position: (pt.x, pt.y).into() },
+            1.0, &mods, &mut state.doc, &state.root, &mut handled, &mut focus, node, &taffy,
+        );
+        wp.handle_event(
+            &WindowEvent::MouseInput { device_id: unsafe { std::mem::zeroed() }, state: ElementState::Pressed, button: MouseButton::Left },
+            1.0, &mods, &mut state.doc, &state.root, &mut handled, &mut focus, node, &taffy,
+        );
+    }
+
+    #[test]
+    fn clicking_an_outline_entry_scrolls_the_heading_into_view() {
+        let (mut wp, mut state) = doc_with_headings(1000, 700);
+        // Open the outline pane and redraw so its clickable entries are built.
+        wp.apply_tool(&mut state.doc, ToolAction::ToggleOutline);
+        assert!(wp.outline_open, "outline toggled on");
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+
+        // The last heading ("Conclusion") is far down; it should be off-screen at
+        // the top of the document.
+        let concl = wp.outline_entries().into_iter().find(|h| h.text == "Conclusion").expect("conclusion heading");
+        let (rect, _) = wp.outline_hits.iter().find(|(_, id)| id == &concl.id).expect("conclusion has a clickable outline entry").clone();
+        assert_eq!(wp.scroll_y, 0.0, "starts scrolled to the top");
+
+        // Click the entry; the production handler scrolls that heading into view.
+        let pt = Point::new((rect.x0 + rect.x1) / 2.0, (rect.y0 + rect.y1) / 2.0);
+        left_click(&mut wp, &mut state, pt);
+        assert!(wp.scroll_y > 0.0, "clicking a far-down heading scrolls the document");
+
+        // After redrawing at the new scroll, the heading is laid within the canvas.
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let canvas_top = wp.toolbar_height(1000.0);
+        let canvas_bottom = wp.rect.y1 - STATUS_H - LAYOUT_BAR_H;
+        let laid = wp.laid.iter().find(|l| l.id == concl.id).expect("conclusion is laid out after scrolling to it");
+        assert!(laid.y_top >= canvas_top && laid.y_top <= canvas_bottom, "the clicked heading is visible in the canvas (y_top={}, canvas=[{canvas_top},{canvas_bottom}])", laid.y_top);
+    }
+
+    #[test]
+    fn generate_toc_inserts_one_marked_block_per_heading() {
+        let (mut wp, mut state) = doc_with_headings(1000, 700);
+        let heading_count = wp.outline_entries().len();
+        wp.apply_tool(&mut state.doc, ToolAction::InsertToc);
+
+        let c = wp.model().containers.clone().unwrap();
+        let snap = qdoc::model::materialize(&state.doc, &c);
+        let toc: Vec<_> = snap.blocks.iter().filter(|b| crate::word_processor::block_is_toc(b)).collect();
+        assert_eq!(toc.len(), heading_count, "one toc-marked block per heading (one line each)");
+        // The TOC sits at the document top, in heading order, each line carrying
+        // the heading text.
+        assert!(snap.blocks[0].text.contains("Introduction"), "TOC begins at the top with the first heading");
+        assert!(toc.iter().any(|b| b.text.contains("Conclusion")), "every heading is listed");
+        assert!(wp.needs_commit, "TOC generation is an undo point");
+    }
+
+    #[test]
+    fn regenerating_toc_replaces_rather_than_duplicating() {
+        let (mut wp, mut state) = doc_with_headings(1000, 700);
+        let heading_count = wp.outline_entries().len();
+        wp.apply_tool(&mut state.doc, ToolAction::InsertToc);
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        // Regenerate.
+        wp.apply_tool(&mut state.doc, ToolAction::InsertToc);
+
+        let c = wp.model().containers.clone().unwrap();
+        let snap = qdoc::model::materialize(&state.doc, &c);
+        let toc_count = snap.blocks.iter().filter(|b| crate::word_processor::block_is_toc(b)).count();
+        assert_eq!(toc_count, heading_count, "regenerating replaces the prior TOC (no duplicate)");
+        // The headings themselves are untouched (still derive the same outline).
+        assert_eq!(wp.outline_entries().len(), heading_count, "headings unchanged by TOC regeneration");
     }
 }
