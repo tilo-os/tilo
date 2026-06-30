@@ -70,6 +70,88 @@ struct PendingMark {
     value: Option<String>,
 }
 
+/// A styling mark parsed from an inline `<span style=…>` `(name, value)`, e.g.
+/// `("color", "#ff0000")`. The mark names match the editor's run marks so they
+/// merge with marks imported from `.odt`/`.docx`.
+fn marks_from_span_style(style: &str) -> Vec<(&'static str, String)> {
+    let mut out: Vec<(&'static str, String)> = Vec::new();
+    for decl in style.split(';') {
+        let Some((prop, val)) = decl.split_once(':') else { continue };
+        let prop = prop.trim().to_ascii_lowercase();
+        let val = val.trim();
+        match prop.as_str() {
+            "color" => {
+                out.push(("color", normalize_css_color(val)));
+            }
+            "font-size" => {
+                // Accept `20pt` / `20px` / bare number; the model stores whole pt.
+                let num = val.trim_end_matches(|c: char| c.is_ascii_alphabetic() || c == '%').trim();
+                if let Ok(f) = num.parse::<f64>() {
+                    out.push(("fontSize", (f.round() as i64).to_string()));
+                }
+            }
+            "font-family" => {
+                let g = generic_font_family(val);
+                out.push(("fontFamily", g.to_string()));
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Normalise a CSS colour value to the model's canonical `#rrggbb`. Hex colours
+/// lower-case; a handful of common CSS keywords map to their hex; anything else is
+/// passed through trimmed (so the round-trip is at worst lossless-as-written).
+fn normalize_css_color(v: &str) -> String {
+    let t = v.trim();
+    if let Some(hex) = t.strip_prefix('#') {
+        if hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            return format!("#{}", hex.to_ascii_lowercase());
+        }
+    }
+    match t.to_ascii_lowercase().as_str() {
+        "red" => "#ff0000".into(),
+        "green" => "#008000".into(),
+        "blue" => "#0000ff".into(),
+        "black" => "#000000".into(),
+        "white" => "#ffffff".into(),
+        "yellow" => "#ffff00".into(),
+        _ => t.to_string(),
+    }
+}
+
+/// Collapse a CSS `font-family` value onto one of the model's generic families.
+fn generic_font_family(val: &str) -> &'static str {
+    let v = val.to_ascii_lowercase();
+    if v.contains("mono") || v.contains("courier") || v.contains("consol") {
+        "mono"
+    } else if v.contains("serif") && !v.contains("sans") {
+        "serif"
+    } else if v.contains("times") || v.contains("georgia") || v.contains("garamond") {
+        "serif"
+    } else {
+        "sans"
+    }
+}
+
+/// Extract the value of the first `style="…"` (or `style='…'`) attribute in a raw
+/// HTML start tag, e.g. `<span style="color: red">` → `color: red`.
+fn span_style_attr(tag: &str) -> Option<String> {
+    let lower = tag.to_ascii_lowercase();
+    let idx = lower.find("style")?;
+    let rest = &tag[idx + "style".len()..];
+    let rest = rest.trim_start();
+    let rest = rest.strip_prefix('=')?.trim_start();
+    let quote = rest.chars().next()?;
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+    let after = &rest[1..];
+    let end = after.find(quote)?;
+    Some(after[..end].to_string())
+}
+
 fn import_md(src: &str, doc: &mut DocMut) {
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_TABLES);
@@ -84,6 +166,8 @@ fn import_md(src: &str, doc: &mut DocMut) {
     let mut ordered_stack: Vec<bool> = Vec::new();
     let mut mark_stack: Vec<(&'static str, usize)> = Vec::new();
     let mut link_stack: Vec<(String, usize)> = Vec::new(); // (href, start char)
+    // Open inline `<span style=…>` wrappers: (parsed (name,value) marks, start char).
+    let mut span_stack: Vec<(Vec<(&'static str, String)>, usize)> = Vec::new();
     let mut pending_marks: Vec<PendingMark> = Vec::new();
 
     // Table state: cells become consecutive `cell` blocks tagged table/row/col.
@@ -223,12 +307,34 @@ fn import_md(src: &str, doc: &mut DocMut) {
                     cur_len += 1;
                 }
             }
+            // Inline HTML carries colour/size/font marks Markdown can't express
+            // natively, as `<span style=…>…</span>` (emitted by `render_inline`).
+            // Each tag is its own event; track open spans on a stack.
+            Event::InlineHtml(html) | Event::Html(html) => {
+                let t = html.trim();
+                if t.eq_ignore_ascii_case("</span>") {
+                    if let (Some((marks, start)), Some(b)) = (span_stack.pop(), cur.as_ref()) {
+                        for (name, value) in marks {
+                            pending_marks.push(PendingMark { block: b.clone(), start, end: cur_len, name, value: Some(value) });
+                        }
+                    }
+                } else if t.to_ascii_lowercase().starts_with("<span") {
+                    let marks = span_style_attr(t).map(|s| marks_from_span_style(&s)).unwrap_or_default();
+                    span_stack.push((marks, cur_len));
+                }
+            }
             _ => {}
         }
     }
 
     for pm in pending_marks {
         match pm.value {
+            // `fontSize` is an integer mark (points); other valued marks are strings.
+            Some(v) if pm.name == "fontSize" => {
+                if let Ok(n) = v.parse::<i64>() {
+                    doc.add_mark(&pm.block, pm.start, pm.end, pm.name, n);
+                }
+            }
             Some(v) => doc.add_mark(&pm.block, pm.start, pm.end, pm.name, v.as_str()),
             None => doc.add_mark(&pm.block, pm.start, pm.end, pm.name, true),
         }
@@ -382,6 +488,46 @@ fn mark_delim(m: &MarkSpan) -> Option<&'static str> {
     }
 }
 
+/// Markdown has no native syntax for text colour, font size, or (non-mono) font
+/// family, so these run marks are carried as a minimal inline `<span style=…>` on
+/// export and parsed back on import. This keeps `.md` lossless for the same marks
+/// the `.odt`/`.docx` codecs round-trip. `fontFamily=mono` is excluded — it stays
+/// the inline-code backtick form.
+///
+/// The CSS declaration for a styling mark covering character `i`, or `None` if the
+/// mark isn't a (span-carried) styling mark.
+fn span_decl(m: &MarkSpan) -> Option<String> {
+    match m.name.as_str() {
+        "color" => m.value.as_str().map(|c| format!("color: {c}")),
+        "fontSize" => m.value.as_int().map(|n| format!("font-size: {n}pt")),
+        "fontFamily" => match m.value.as_str() {
+            // mono stays the backtick form (handled as inline code); sans/serif map
+            // to a generic CSS family.
+            Some("serif") => Some("font-family: serif".into()),
+            Some("sans") => Some("font-family: sans-serif".into()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The combined `style="…"` value for all styling marks covering character `i`,
+/// or `None` if none apply. Declarations are sorted for a stable, idempotent
+/// round-trip.
+fn span_style_at(marks: &[MarkSpan], i: usize) -> Option<String> {
+    let mut decls: Vec<String> = marks
+        .iter()
+        .filter(|m| i >= m.start && i < m.end)
+        .filter_map(span_decl)
+        .collect();
+    if decls.is_empty() {
+        return None;
+    }
+    decls.sort();
+    decls.dedup();
+    Some(decls.join("; "))
+}
+
 /// The active `link` href covering char index `i`, if any.
 fn link_href(marks: &[MarkSpan], i: usize) -> Option<&str> {
     marks
@@ -412,12 +558,21 @@ fn render_inline(text: &str, marks: &[MarkSpan]) -> String {
     }
     let mut out = String::new();
     let mut cur_link: Option<&str> = None;
+    let mut cur_span: Option<String> = None;
     for i in 0..=n {
         for d in &close_at[i] {
             out.push_str(d);
         }
+        // The span (colour/size/font) wrapper sits inside the link and around the
+        // toggle marks. Close it before a link transition; reopen after.
+        let span = if i < n { span_style_at(marks, i) } else { None };
         let link = if i < n { link_href(marks, i) } else { None };
-        if link != cur_link {
+        let link_changing = link != cur_link;
+        if (link_changing || span != cur_span) && cur_span.is_some() {
+            out.push_str("</span>");
+            cur_span = None;
+        }
+        if link_changing {
             if let Some(href) = cur_link {
                 out.push_str("](");
                 out.push_str(href);
@@ -426,6 +581,12 @@ fn render_inline(text: &str, marks: &[MarkSpan]) -> String {
             cur_link = link;
             if cur_link.is_some() {
                 out.push('[');
+            }
+        }
+        if cur_span.is_none() {
+            if let Some(style) = &span {
+                out.push_str(&format!(r#"<span style="{style}">"#));
+                cur_span = Some(style.clone());
             }
         }
         for d in &open_at[i] {
@@ -610,6 +771,49 @@ mod tests {
         let out = export(src);
         assert!(out.contains("```rust\nlet x = 1;\nlet y = 2;\n```"), "code block lost: {out:?}");
         assert_eq!(export(&out), out, "fenced-code export idempotent");
+    }
+
+    #[test]
+    fn span_carries_color_size_font_through_markdown() {
+        // Markdown has no native colour/size/font syntax, so these run marks ride
+        // as an inline `<span style=…>` on export and parse back on import.
+        let mut d = Document::new();
+        let id = d.insert_block(None, "paragraph");
+        d.splice_text(&id, 0, 0, "styled word");
+        {
+            let mut dm = d.as_mut();
+            dm.add_mark(&id, 0, 6, "color", "#ff0000");
+            dm.add_mark(&id, 0, 6, "fontSize", 20_i64);
+            dm.add_mark(&id, 0, 6, "fontFamily", "serif");
+        }
+        let out = String::from_utf8(MarkdownCodec.export(d.as_ref()).unwrap()).unwrap();
+        assert!(out.contains("<span style="), "emits an inline span: {out:?}");
+        assert!(out.contains("color: #ff0000"), "colour decl: {out:?}");
+        assert!(out.contains("font-size: 20pt"), "size decl: {out:?}");
+        assert!(out.contains("font-family: serif"), "font decl: {out:?}");
+
+        let mut d2 = Document::new();
+        MarkdownCodec.import(out.as_bytes(), &mut d2.as_mut()).unwrap();
+        let b = &d2.materialize().blocks[0];
+        assert_eq!(b.text, "styled word");
+        assert!(
+            b.marks.iter().any(|m| m.name == "color" && m.value == MarkValue::Str("#ff0000".into()) && m.start == 0 && m.end == 6),
+            "colour mark survives: {:?}",
+            b.marks
+        );
+        assert!(
+            b.marks.iter().any(|m| m.name == "fontSize" && m.value == MarkValue::Int(20) && m.start == 0 && m.end == 6),
+            "size mark survives as Int: {:?}",
+            b.marks
+        );
+        assert!(
+            b.marks.iter().any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into()) && m.start == 0 && m.end == 6),
+            "font mark survives: {:?}",
+            b.marks
+        );
+
+        // Idempotent under re-export.
+        assert_eq!(export(&out), out, "span export idempotent");
     }
 
     #[test]

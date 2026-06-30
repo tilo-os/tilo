@@ -64,6 +64,7 @@ pub(super) fn map_jc(v: &str) -> String {
     match v {
         "center" => "center".into(),
         "end" | "right" => "right".into(),
+        "both" | "distribute" | "justify" => "justify".into(),
         _ => "left".into(),
     }
 }
@@ -100,6 +101,7 @@ pub(super) fn mark_from_rpr_child(e: &BytesStart) -> Option<(String, MarkValue)>
         b"w:rFonts" => attr_val(e, b"w:ascii")
             .or_else(|| attr_val(e, b"w:hAnsi"))
             .map(|f| ("fontFamily".into(), MarkValue::Str(generic_font(&f)))),
+        b"w:color" => attr_val(e, b"w:val").and_then(|v| normalize_color(&v)).map(|c| ("color".into(), MarkValue::Str(c))),
         _ => None,
     }
 }
@@ -130,6 +132,29 @@ pub(super) struct ParaStyle {
     pub indent: Option<f64>,
 }
 
+/// Map an OOXML `w:numFmt w:val` onto the model's canonical numbering format
+/// (`decimal|lower-roman|upper-roman|lower-alpha|upper-alpha`). Bullet/none have
+/// no format. Unknown ordered formats fall back to `decimal`.
+pub(super) fn map_num_format(v: &str) -> Option<&'static str> {
+    match v {
+        "bullet" | "none" => None,
+        "lowerRoman" => Some("lower-roman"),
+        "upperRoman" => Some("upper-roman"),
+        "lowerLetter" => Some("lower-alpha"),
+        "upperLetter" => Some("upper-alpha"),
+        _ => Some("decimal"), // "decimal" and other ordered formats
+    }
+}
+
+/// The captured level-0 numbering of a `w:numId`: ordered-ness + canonical format
+/// + start value, for fidelity preservation of ordered lists.
+#[derive(Clone, Default)]
+pub(super) struct NumDef {
+    pub ordered: bool,
+    pub num_format: Option<&'static str>,
+    pub num_start: Option<i64>,
+}
+
 #[derive(Default)]
 pub(super) struct StyleRegistry {
     /// `character`-family style id → inline marks.
@@ -138,6 +163,8 @@ pub(super) struct StyleRegistry {
     pub para: HashMap<String, ParaStyle>,
     /// `w:numId` → is the list numbered (ordered) rather than bulleted?
     pub num_ordered: HashMap<String, bool>,
+    /// `w:numId` → its level-0 numbering (format + start) for fidelity.
+    pub num_def: HashMap<String, NumDef>,
 }
 
 impl StyleRegistry {
@@ -458,7 +485,9 @@ pub(super) fn parse_numbering(xml: &[u8], reg: &mut StyleRegistry) {
     let Ok(s) = std::str::from_utf8(xml) else { return };
     let mut reader = Reader::from_str(s);
 
-    let mut abstract_ordered: HashMap<String, bool> = HashMap::new();
+    // abstractNumId → its level-0 numbering (format string + start), and which
+    // numId maps to which abstractNum.
+    let mut abstract_def: HashMap<String, NumDef> = HashMap::new();
     let mut num_to_abstract: HashMap<String, String> = HashMap::new();
 
     let mut cur_abstract: Option<String> = None;
@@ -473,7 +502,16 @@ pub(super) fn parse_numbering(xml: &[u8], reg: &mut StyleRegistry) {
                 b"w:numFmt" => {
                     if cur_ilvl.as_deref() == Some("0") {
                         if let (Some(abs), Some(fmt)) = (cur_abstract.clone(), attr_val(&e, b"w:val")) {
-                            abstract_ordered.insert(abs, fmt != "bullet" && fmt != "none");
+                            let entry = abstract_def.entry(abs).or_default();
+                            entry.num_format = map_num_format(&fmt);
+                            entry.ordered = entry.num_format.is_some();
+                        }
+                    }
+                }
+                b"w:start" => {
+                    if cur_ilvl.as_deref() == Some("0") {
+                        if let (Some(abs), Some(st)) = (cur_abstract.clone(), attr_val(&e, b"w:val").and_then(|v| v.parse::<i64>().ok())) {
+                            abstract_def.entry(abs).or_default().num_start = Some(st);
                         }
                     }
                 }
@@ -515,8 +553,9 @@ pub(super) fn parse_numbering(xml: &[u8], reg: &mut StyleRegistry) {
     }
 
     for (num, abs) in num_to_abstract {
-        let ordered = abstract_ordered.get(&abs).copied().unwrap_or(false);
-        reg.num_ordered.insert(num, ordered);
+        let def = abstract_def.get(&abs).cloned().unwrap_or_default();
+        reg.num_ordered.insert(num.clone(), def.ordered);
+        reg.num_def.insert(num, def);
     }
 }
 

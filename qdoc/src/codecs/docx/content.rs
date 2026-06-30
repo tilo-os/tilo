@@ -90,7 +90,29 @@ pub(crate) fn parse_body(document_xml: &[u8], reg: &StyleRegistry, doc: &mut Doc
                 let level = p_style.as_deref().and_then(|s| reg.heading_level(s));
                 if let Some(numid) = p_numid.clone() {
                     doc.set_kind(&id, "list_item");
-                    doc.set_attr(&id, "ordered", reg.num_ordered.get(&numid).copied().unwrap_or(false));
+                    let ordered = reg.num_ordered.get(&numid).copied().unwrap_or(false);
+                    doc.set_attr(&id, "ordered", ordered);
+                    // Numbering fidelity (ordered lists only): preserve the format +
+                    // start so the list re-exports with its numbering intact. A plain
+                    // decimal-from-1 list adds no extra attrs (minimal cross-codec
+                    // attr set).
+                    if ordered {
+                        if let Some(def) = reg.num_def.get(&numid) {
+                            if let Some(f) = def.num_format {
+                                if f != "decimal" {
+                                    doc.set_attr(&id, "num_format", f);
+                                }
+                            }
+                            if let Some(s) = def.num_start {
+                                if s != 1 {
+                                    doc.set_attr(&id, "num_start", s);
+                                    // OOXML numbering restarts by default; a non-1
+                                    // start implies a restart at that value.
+                                    doc.set_attr(&id, "num_restart", true);
+                                }
+                            }
+                        }
+                    }
                     // Direct `w:jc` wins; otherwise inherit alignment from the style.
                     let align = p_align.clone().or_else(|| p_style.as_deref().and_then(|s| reg.para_align(s)));
                     if let Some(a) = align {

@@ -146,6 +146,10 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
     let mut cur_para_marks: Vec<(String, MarkValue)> = Vec::new();
     // Nested list ordered-ness, from each list's list-style.
     let mut list_stack: Vec<bool> = Vec::new();
+    // Per-open-list captured numbering for fidelity preservation: the level-0
+    // `(num_format, num_start, restart)` derived from the list-style + the
+    // `text:list` element's own `text:start-value`/`text:continue-numbering`.
+    let mut list_num_stack: Vec<(Option<&'static str>, Option<i64>, bool)> = Vec::new();
 
     // Table state: cells become consecutive `cell` blocks tagged table/row/col.
     let mut table_id: Option<String> = None;
@@ -290,20 +294,64 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                     // A nested `text:list` often omits its own style-name, continuing
                     // the parent list's style at the deeper level — so inherit the
                     // parent's ordered-ness instead of defaulting to bulleted.
-                    let ordered = attr_val(&e, b"text:style-name")
-                        .and_then(|s| reg.list_ordered.get(&s).copied())
+                    let style = attr_val(&e, b"text:style-name");
+                    let ordered = style
+                        .as_deref()
+                        .and_then(|s| reg.list_ordered.get(s).copied())
                         .unwrap_or_else(|| *list_stack.last().unwrap_or(&false));
                     list_stack.push(ordered);
+                    // Numbering fidelity: format + start from the list-style; the
+                    // list's own `text:start-value` overrides the style start, and
+                    // `text:continue-numbering="true"` means this list continues
+                    // (no restart) rather than restarting its count.
+                    let numbering = style.as_deref().and_then(|s| reg.list_numbering.get(s));
+                    let mut num_format = numbering.and_then(|n| n.num_format);
+                    let mut num_start = numbering.and_then(|n| n.num_start);
+                    if let Some(s) = attr_val(&e, b"text:start-value").and_then(|v| v.parse::<i64>().ok()) {
+                        num_start = Some(s);
+                    }
+                    let continuing = attr_val(&e, b"text:continue-numbering")
+                        .map(|v| v == "true" || v == "1")
+                        .unwrap_or(false);
+                    // A list that doesn't continue restarts; an explicit start-value
+                    // also implies a restart at that value.
+                    let restart = !continuing || num_start.is_some();
+                    if ordered && num_format.is_none() {
+                        num_format = Some("decimal");
+                    }
+                    list_num_stack.push((num_format, num_start, restart));
                 }
                 b"text:list-item" if in_text => {
                     let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "list_item");
-                    doc.set_attr(&id, "ordered", *list_stack.last().unwrap_or(&false));
+                    let ordered = *list_stack.last().unwrap_or(&false);
+                    doc.set_attr(&id, "ordered", ordered);
                     // 0-based nesting depth (each open `text:list` is one level).
                     // Match the markdown codec: only emit `level` when nested, so a
                     // top-level item's attr set stays identical across codecs.
                     let level = (list_stack.len() as i64 - 1).max(0);
                     if level > 0 {
                         doc.set_attr(&id, "level", level);
+                    }
+                    // Numbering fidelity preservation (ordered lists only): carry the
+                    // format + start + restart so the list re-exports with its
+                    // numbering intact. A plain decimal-from-1 list adds no extra
+                    // attrs, so the cross-codec attr set stays minimal.
+                    if ordered {
+                        if let Some((fmt, start, restart)) = list_num_stack.last().copied() {
+                            if let Some(f) = fmt {
+                                if f != "decimal" {
+                                    doc.set_attr(&id, "num_format", f);
+                                }
+                            }
+                            if let Some(s) = start {
+                                if s != 1 {
+                                    doc.set_attr(&id, "num_start", s);
+                                    if restart {
+                                        doc.set_attr(&id, "num_restart", true);
+                                    }
+                                }
+                            }
+                        }
                     }
                     in_item = true;
                 }
@@ -428,6 +476,7 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                 }
                 b"text:list" => {
                     list_stack.pop();
+                    list_num_stack.pop();
                 }
                 b"table:table" => {
                     table_id = None;
