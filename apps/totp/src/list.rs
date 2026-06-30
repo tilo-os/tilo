@@ -1,0 +1,670 @@
+//! The scrollable account list — the app's main screen.
+//!
+//! A custom `Widget` that owns the entire row presentation: a coloured
+//! initials avatar, the issuer + account label, the large rotating code,
+//! and a [`CountdownRing`] showing seconds left in the period. Rows are
+//! laid out by hand (fixed height) from the widget's rect so the rich,
+//! mixed-size content stays pixel-aligned, and the list manages its own
+//! vertical scroll.
+//!
+//! Interaction is reported back to the app as [`ListEvent`]s (drained via
+//! [`AccountList::take_events`]): clicking a code copies it; clicking a
+//! row selects it; the per-row reorder chevrons and delete control move
+//! and remove accounts. Codes and ring fractions are recomputed every
+//! frame from the live wall clock in [`AccountList::draw`], so the list
+//! animates without any external timer plumbing.
+
+use std::collections::HashMap;
+
+use automerge::{AutoCommit, ObjId};
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
+use vello::peniko::{BlendMode, Color, Fill};
+use vello::Scene;
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+
+use ui::color_compat::ColorCompat;
+use ui::presence::PresenceCtx;
+use ui::text_render::{TextRenderer, TextWeight};
+use ui::theme::Theme;
+use ui::widget::Widget;
+
+use crate::model::{account_color, Account, AccountId};
+use crate::ring::CountdownRing;
+use crate::totp;
+
+const ROW_HEIGHT: f64 = 88.0;
+const ROW_GAP: f64 = 10.0;
+const PAD: f64 = 16.0;
+const AVATAR_R: f64 = 24.0;
+const RING_R: f64 = 22.0;
+const ACTION_W: f64 = 26.0;
+const COPY_ZONE_W: f64 = 210.0;
+
+/// What the user did in the list, drained by the app each frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListEvent {
+    Copy(AccountId),
+    Select(AccountId),
+    MoveUp(AccountId),
+    MoveDown(AccountId),
+    Delete(AccountId),
+}
+
+/// Which sub-region of a row the pointer is over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Zone {
+    Body,
+    Copy,
+    Up,
+    Down,
+    Delete,
+}
+
+pub struct AccountList {
+    rect: Rect,
+    accounts: Vec<Account>,
+    selected: Option<AccountId>,
+    scroll: f64,
+    hover_row: Option<usize>,
+    hover_zone: Option<Zone>,
+    last_mouse: Point,
+    events: Vec<ListEvent>,
+    ring: CountdownRing,
+    /// Set to the empty-reason the app wants shown (e.g. "No matches for
+    /// …") so the empty state is contextual.
+    empty_message: String,
+}
+
+impl Default for AccountList {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AccountList {
+    pub fn new() -> Self {
+        Self {
+            rect: Rect::ZERO,
+            accounts: Vec::new(),
+            selected: None,
+            scroll: 0.0,
+            hover_row: None,
+            hover_zone: None,
+            last_mouse: Point::ZERO,
+            events: Vec::new(),
+            ring: CountdownRing::new(),
+            empty_message: String::new(),
+        }
+    }
+
+    /// Replace the visible (already-filtered, already-ordered) account
+    /// set the list renders.
+    pub fn set_accounts(&mut self, accounts: Vec<Account>) {
+        self.accounts = accounts;
+        self.clamp_scroll();
+    }
+
+    pub fn set_selected(&mut self, selected: Option<AccountId>) {
+        self.selected = selected;
+    }
+
+    pub fn selected(&self) -> Option<AccountId> {
+        self.selected
+    }
+
+    pub fn set_empty_message(&mut self, msg: impl Into<String>) {
+        self.empty_message = msg.into();
+    }
+
+    pub fn set_viewport(&mut self, rect: Rect) {
+        self.rect = rect;
+        self.clamp_scroll();
+    }
+
+    pub fn take_events(&mut self) -> Vec<ListEvent> {
+        std::mem::take(&mut self.events)
+    }
+
+    /// The account at visible index `i`, if any.
+    pub fn account_at(&self, i: usize) -> Option<&Account> {
+        self.accounts.get(i)
+    }
+
+    pub fn len(&self) -> usize {
+        self.accounts.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.accounts.is_empty()
+    }
+
+    fn content_height(&self) -> f64 {
+        self.accounts.len() as f64 * (ROW_HEIGHT + ROW_GAP)
+    }
+
+    fn max_scroll(&self) -> f64 {
+        (self.content_height() - self.rect.height()).max(0.0)
+    }
+
+    fn clamp_scroll(&mut self) {
+        self.scroll = self.scroll.clamp(0.0, self.max_scroll());
+    }
+
+    /// Bounding rect of visible row `i` (in absolute coords, scrolled).
+    fn row_rect(&self, i: usize) -> Rect {
+        let y0 = self.rect.y0 + ROW_GAP / 2.0 + i as f64 * (ROW_HEIGHT + ROW_GAP) - self.scroll;
+        Rect::new(self.rect.x0 + PAD, y0, self.rect.x1 - PAD, y0 + ROW_HEIGHT)
+    }
+
+    /// Geometry landmarks within a row, derived once and shared by draw +
+    /// hit-test so they never drift.
+    fn row_layout(&self, r: Rect) -> RowLayout {
+        let actions_x1 = r.x1 - 12.0;
+        let actions_x0 = actions_x1 - ACTION_W;
+        let ring_cx = actions_x0 - 16.0 - RING_R;
+        let ring_cy = r.center().y;
+        let code_right = ring_cx - RING_R - 18.0;
+        let avatar_c = Point::new(r.x0 + 18.0 + AVATAR_R, r.center().y);
+        let text_x = avatar_c.x + AVATAR_R + 16.0;
+        RowLayout {
+            actions_x0,
+            actions_x1,
+            ring_c: Point::new(ring_cx, ring_cy),
+            code_right,
+            avatar_c,
+            text_x,
+        }
+    }
+
+    /// Which row + zone is under the absolute point `p`.
+    fn hit(&self, p: Point) -> Option<(usize, Zone)> {
+        if !self.rect.contains(p) {
+            return None;
+        }
+        for i in 0..self.accounts.len() {
+            let r = self.row_rect(i);
+            if !r.contains(p) {
+                continue;
+            }
+            let l = self.row_layout(r);
+            // Action column (3 stacked zones) takes priority.
+            if p.x >= l.actions_x0 && p.x <= l.actions_x1 {
+                let third = r.height() / 3.0;
+                let zone = if p.y < r.y0 + third {
+                    Zone::Up
+                } else if p.y < r.y0 + 2.0 * third {
+                    Zone::Down
+                } else {
+                    Zone::Delete
+                };
+                return Some((i, zone));
+            }
+            // Copy zone: the code area, just left of the ring.
+            let copy_x0 = (l.code_right - COPY_ZONE_W).max(l.text_x);
+            if p.x >= copy_x0 && p.x <= l.code_right + 8.0 {
+                return Some((i, Zone::Copy));
+            }
+            return Some((i, Zone::Body));
+        }
+        None
+    }
+
+    // ---- drawing -----------------------------------------------------
+
+    fn draw_avatar(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        center: Point,
+        account: &Account,
+    ) {
+        let color = account_color(theme, account.color);
+        let circle = Circle::new(center, AVATAR_R);
+        scene.fill(Fill::NonZero, transform, color, None, &circle);
+        let initials = account.initials();
+        if initials.is_empty() {
+            return;
+        }
+        let size = (AVATAR_R * 0.85) as f32;
+        let (w, h) = text_renderer.measure_weighted(&initials, size, None, TextWeight::Bold);
+        let tx = center.x - w as f64 / 2.0;
+        let ty = center.y - h as f64 / 2.0;
+        text_renderer.draw_text_weighted(
+            scene,
+            &initials,
+            size,
+            Color::WHITE,
+            transform * Affine::translate((tx, ty)),
+            None,
+            TextWeight::Bold,
+        );
+    }
+
+    fn draw_action_icons(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        l: &RowLayout,
+        r: Rect,
+        hovered_zone: Option<Zone>,
+    ) {
+        use vello::kurbo::BezPath;
+        let cx = (l.actions_x0 + l.actions_x1) / 2.0;
+        let third = r.height() / 3.0;
+        let centers = [
+            (Zone::Up, r.y0 + third * 0.5),
+            (Zone::Down, r.y0 + third * 1.5),
+            (Zone::Delete, r.y0 + third * 2.5),
+        ];
+        for (zone, cy) in centers {
+            let active = hovered_zone == Some(zone);
+            let color = if active {
+                if zone == Zone::Delete {
+                    theme.tokens.colors.semantic.danger
+                } else {
+                    theme.tokens.colors.text_primary
+                }
+            } else {
+                theme.tokens.colors.text_dim.with_alpha_factor(0.7)
+            };
+            let s = 4.0;
+            let mut path = BezPath::new();
+            match zone {
+                Zone::Up => {
+                    path.move_to((cx - s, cy + s * 0.6));
+                    path.line_to((cx, cy - s * 0.6));
+                    path.line_to((cx + s, cy + s * 0.6));
+                    scene.stroke(&stroke(1.6), transform, color, None, &path);
+                }
+                Zone::Down => {
+                    path.move_to((cx - s, cy - s * 0.6));
+                    path.line_to((cx, cy + s * 0.6));
+                    path.line_to((cx + s, cy - s * 0.6));
+                    scene.stroke(&stroke(1.6), transform, color, None, &path);
+                }
+                Zone::Delete => {
+                    // a small trash glyph: lid + body lines
+                    path.move_to((cx - s, cy - s * 0.7));
+                    path.line_to((cx + s, cy - s * 0.7));
+                    path.move_to((cx - s * 0.7, cy - s * 0.7));
+                    path.line_to((cx - s * 0.55, cy + s));
+                    path.line_to((cx + s * 0.55, cy + s));
+                    path.line_to((cx + s * 0.7, cy - s * 0.7));
+                    scene.stroke(&stroke(1.6), transform, color, None, &path);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn draw_row(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        i: usize,
+        now: f64,
+    ) {
+        let account = self.accounts[i].clone();
+        let r = self.row_rect(i);
+        // Cull rows scrolled outside the viewport.
+        if r.y1 < self.rect.y0 || r.y0 > self.rect.y1 {
+            return;
+        }
+        let l = self.row_layout(r);
+        let is_selected = self.selected == Some(account.id);
+        let is_hovered = self.hover_row == Some(i);
+        let hovered_zone = if is_hovered { self.hover_zone } else { None };
+
+        // Row card.
+        let card = RoundedRect::from_rect(r, theme.tokens.radii.lg as f64);
+        let bg = if is_selected {
+            theme.tokens.colors.surface_white_10
+        } else if is_hovered {
+            theme.tokens.colors.surface_white_5
+        } else {
+            theme.tokens.colors.surfaces.raised.with_alpha_factor(0.55)
+        };
+        scene.fill(Fill::NonZero, transform, bg, None, &card);
+        if is_selected {
+            // accent left-edge marker
+            let marker = RoundedRect::new(r.x0, r.y0 + 10.0, r.x0 + 3.0, r.y1 - 10.0, 2.0);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                account_color(theme, account.color),
+                None,
+                &marker,
+            );
+        }
+
+        // Avatar.
+        self.draw_avatar(scene, transform, text_renderer, theme, l.avatar_c, &account);
+
+        // Issuer + label.
+        let issuer = account.title().to_string();
+        text_renderer.draw_text_weighted(
+            scene,
+            &issuer,
+            16.0,
+            theme.tokens.colors.text_primary,
+            transform * Affine::translate((l.text_x, r.y0 + 22.0)),
+            Some((l.code_right - COPY_ZONE_W - l.text_x).max(60.0) as f32),
+            TextWeight::Semibold,
+        );
+        if !account.label.trim().is_empty() {
+            text_renderer.draw_text(
+                scene,
+                &account.label,
+                13.0,
+                theme.tokens.colors.text_dim,
+                transform * Affine::translate((l.text_x, r.y0 + 46.0)),
+                Some((l.code_right - COPY_ZONE_W - l.text_x).max(60.0) as f32),
+            );
+        }
+        // Algorithm / digits chip line.
+        let meta = format!("{} · {} digits", account.algorithm.as_str(), account.digits);
+        text_renderer.draw_text(
+            scene,
+            &meta,
+            11.0,
+            theme.tokens.colors.text_dim.with_alpha_factor(0.7),
+            transform * Affine::translate((l.text_x, r.y0 + 64.0)),
+            None,
+        );
+
+        // The big rotating code, right-aligned to `code_right`.
+        let raw = totp::code_at(&account, now);
+        let grouped = totp::group_code(&raw);
+        let code_size = 30.0;
+        let (code_w, code_h) =
+            text_renderer.measure_styled(&grouped, code_size, None, TextWeight::Bold, false, true);
+        let copy_hot = is_hovered && self.hover_zone == Some(Zone::Copy);
+        let code_color = if copy_hot {
+            account_color(theme, account.color)
+        } else {
+            theme.tokens.colors.text_primary
+        };
+        let code_x = l.code_right - code_w as f64;
+        let code_y = r.center().y - code_h as f64 / 2.0;
+        text_renderer.draw_text_styled(
+            scene,
+            &grouped,
+            code_size,
+            code_color,
+            transform * Affine::translate((code_x, code_y)),
+            None,
+            TextWeight::Bold,
+            false,
+            true,
+        );
+        // "Copy" affordance under the code on hover.
+        if copy_hot {
+            text_renderer.draw_text(
+                scene,
+                "click to copy",
+                10.0,
+                theme.tokens.colors.text_dim,
+                transform * Affine::translate((code_x, code_y + code_h as f64 + 2.0)),
+                None,
+            );
+        }
+
+        // Countdown ring.
+        let frac = totp::period_progress(&account, now);
+        let secs = totp::seconds_remaining(&account, now);
+        self.ring
+            .place(l.ring_c, RING_R)
+            .set_fraction(frac)
+            .set_seconds(secs)
+            .set_color(account_color(theme, account.color));
+        self.ring.draw_arc(scene, transform, text_renderer, theme);
+
+        // Hover action icons.
+        if is_hovered {
+            self.draw_action_icons(scene, transform, theme, &l, r, hovered_zone);
+        }
+    }
+
+    fn draw_empty(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let msg = if self.empty_message.is_empty() {
+            "No accounts yet".to_string()
+        } else {
+            self.empty_message.clone()
+        };
+        let size = 16.0;
+        let (w, _h) = text_renderer.measure(&msg, size, None);
+        let cx = self.rect.center().x - w as f64 / 2.0;
+        let cy = self.rect.center().y - 30.0;
+        text_renderer.draw_text(
+            scene,
+            &msg,
+            size,
+            theme.tokens.colors.text_dim,
+            transform * Affine::translate((cx, cy)),
+            None,
+        );
+        let hint = "Press the + button or Ctrl+N to add one";
+        let (hw, _hh) = text_renderer.measure(hint, 13.0, None);
+        text_renderer.draw_text(
+            scene,
+            hint,
+            13.0,
+            theme.tokens.colors.text_dim.with_alpha_factor(0.7),
+            transform * Affine::translate((self.rect.center().x - hw as f64 / 2.0, cy + 28.0)),
+            None,
+        );
+    }
+}
+
+struct RowLayout {
+    actions_x0: f64,
+    actions_x1: f64,
+    ring_c: Point,
+    code_right: f64,
+    avatar_c: Point,
+    text_x: f64,
+}
+
+fn stroke(w: f64) -> vello::kurbo::Stroke {
+    vello::kurbo::Stroke::new(w)
+        .with_caps(vello::kurbo::Cap::Round)
+        .with_join(vello::kurbo::Join::Round)
+}
+
+impl Widget for AccountList {
+    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy
+            .new_leaf(Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
+                flex_grow: 1.0,
+                ..Default::default()
+            })
+            .unwrap();
+        node_map.insert(node, self as *mut dyn Widget);
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let layout = taffy.layout(node).unwrap();
+        let x0 = origin.x + layout.location.x as f64;
+        let y0 = origin.y + layout.location.y as f64;
+        self.rect = Rect::new(
+            x0,
+            y0,
+            x0 + layout.size.width as f64,
+            y0 + layout.size.height as f64,
+        );
+        self.clamp_scroll();
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
+            return;
+        }
+        if self.accounts.is_empty() {
+            self.draw_empty(scene, transform, text_renderer, theme);
+            return;
+        }
+        let now = totp::unix_now();
+        // Clip to the viewport so scrolled rows don't bleed into chrome.
+        let clip = RoundedRect::from_rect(self.rect, 0.0);
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &clip);
+        for i in 0..self.accounts.len() {
+            self.draw_row(scene, transform, text_renderer, theme, i, now);
+        }
+        scene.pop_layer();
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        _modifiers: &winit::event::Modifiers,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+        handled: &mut bool,
+        _focus_target: &mut Option<NodeId>,
+        _node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_mouse = p;
+                let hit = self.hit(p);
+                let (row, zone) = match hit {
+                    Some((r, z)) => (Some(r), Some(z)),
+                    None => (None, None),
+                };
+                if row != self.hover_row || zone != self.hover_zone {
+                    self.hover_row = row;
+                    self.hover_zone = zone;
+                    *handled = true;
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if let Some((i, zone)) = self.hit(self.last_mouse) {
+                    if let Some(account) = self.accounts.get(i) {
+                        let id = account.id;
+                        let ev = match zone {
+                            Zone::Copy => ListEvent::Copy(id),
+                            Zone::Up => ListEvent::MoveUp(id),
+                            Zone::Down => ListEvent::MoveDown(id),
+                            Zone::Delete => ListEvent::Delete(id),
+                            Zone::Body => ListEvent::Select(id),
+                        };
+                        if matches!(zone, Zone::Body | Zone::Copy) {
+                            self.selected = Some(id);
+                        }
+                        self.events.push(ev);
+                        *handled = true;
+                    }
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                if self.rect.contains(self.last_mouse) && self.max_scroll() > 0.0 {
+                    let dy = match delta {
+                        MouseScrollDelta::LineDelta(_, y) => *y as f64 * 48.0,
+                        MouseScrollDelta::PixelDelta(pos) => pos.y / scale_factor,
+                    };
+                    self.scroll = (self.scroll - dy).clamp(0.0, self.max_scroll());
+                    *handled = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn name(&self) -> &str {
+        "AccountList"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    /// Codes + rings refresh every frame from the wall clock.
+    fn needs_animation_frame(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::demo_accounts;
+
+    fn list_with_demo() -> AccountList {
+        let mut l = AccountList::new();
+        l.set_viewport(Rect::new(0.0, 0.0, 600.0, 800.0));
+        l.set_accounts(demo_accounts());
+        l
+    }
+
+    #[test]
+    fn rows_stack_without_overlap() {
+        let l = list_with_demo();
+        let r0 = l.row_rect(0);
+        let r1 = l.row_rect(1);
+        assert!(r1.y0 >= r0.y1, "row 1 must start at/after row 0 ends");
+    }
+
+    #[test]
+    fn copy_zone_and_action_zones_hit_test_correctly() {
+        let l = list_with_demo();
+        let r = l.row_rect(0);
+        let layout = l.row_layout(r);
+        // Just left of the ring → copy zone.
+        let copy_p = Point::new(layout.code_right - 20.0, r.center().y);
+        assert_eq!(l.hit(copy_p), Some((0, Zone::Copy)));
+        // The avatar/text area → body (select).
+        let body_p = Point::new(layout.text_x + 4.0, r.center().y);
+        assert_eq!(l.hit(body_p), Some((0, Zone::Body)));
+        // Top of the action column → reorder-up.
+        let up_p = Point::new((layout.actions_x0 + layout.actions_x1) / 2.0, r.y0 + 6.0);
+        assert_eq!(l.hit(up_p), Some((0, Zone::Up)));
+        // Bottom of the action column → delete.
+        let del_p = Point::new((layout.actions_x0 + layout.actions_x1) / 2.0, r.y1 - 6.0);
+        assert_eq!(l.hit(del_p), Some((0, Zone::Delete)));
+    }
+
+    #[test]
+    fn empty_list_reports_empty() {
+        let mut l = AccountList::new();
+        l.set_viewport(Rect::new(0.0, 0.0, 600.0, 800.0));
+        assert!(l.is_empty());
+    }
+}

@@ -1,0 +1,514 @@
+//! Pure data model for the Authenticator vault.
+//!
+//! An [`Account`] is one 2FA entry: the issuer + account label shown in
+//! the list, plus the cryptographic parameters needed to derive a
+//! rotating TOTP code (secret, algorithm, digits, period). The list of
+//! accounts is the source of truth; it is mirrored into the Automerge
+//! document by [`crate::doc::AuthDoc`] so undo/redo and live
+//! collaboration come for free.
+//!
+//! This module is pure logic — no IO, no rendering, no crypto. Code
+//! generation lives in [`crate::totp`]; CRDT persistence in
+//! [`crate::doc`].
+
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+use vello::peniko::Color;
+
+use ui::theme::Theme;
+
+/// Stable identifier for one account. Backs every cross-reference and
+/// the per-account Map key in the CRDT.
+pub type AccountId = Uuid;
+
+/// HMAC hash used by the TOTP construction. Mirrors the `algorithm`
+/// parameter of an `otpauth://` URI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Algorithm {
+    Sha1,
+    Sha256,
+    Sha512,
+}
+
+impl Algorithm {
+    /// Canonical otpauth spelling (`SHA1` / `SHA256` / `SHA512`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Algorithm::Sha1 => "SHA1",
+            Algorithm::Sha256 => "SHA256",
+            Algorithm::Sha512 => "SHA512",
+        }
+    }
+
+    /// Parse the otpauth spelling, case-insensitively. Unknown values
+    /// fall back to the spec default `SHA1`.
+    pub fn parse(s: &str) -> Algorithm {
+        match s.trim().to_ascii_uppercase().as_str() {
+            "SHA256" => Algorithm::Sha256,
+            "SHA512" => Algorithm::Sha512,
+            _ => Algorithm::Sha1,
+        }
+    }
+
+    /// All three, in selector order — for the algorithm chip row.
+    pub const ALL: [Algorithm; 3] = [Algorithm::Sha1, Algorithm::Sha256, Algorithm::Sha512];
+
+    pub fn index(self) -> usize {
+        match self {
+            Algorithm::Sha1 => 0,
+            Algorithm::Sha256 => 1,
+            Algorithm::Sha512 => 2,
+        }
+    }
+}
+
+impl Default for Algorithm {
+    fn default() -> Self {
+        Algorithm::Sha1
+    }
+}
+
+/// One 2FA account.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Account {
+    pub id: AccountId,
+    /// Service name, e.g. "GitHub". Drives the avatar initials + colour.
+    pub issuer: String,
+    /// Account label, e.g. "ada@example.com".
+    pub label: String,
+    /// Base32 (RFC 4648) secret, normalised upper-case, no spaces/padding.
+    pub secret: String,
+    pub algorithm: Algorithm,
+    /// Number of digits in the generated code (6 or 8 in practice).
+    pub digits: u8,
+    /// Rotation period in seconds (almost always 30).
+    pub period: u32,
+    /// Index into the theme-derived account palette (see
+    /// [`account_palette`]). Wraps modulo the palette length.
+    pub color: u8,
+    /// Position in the list (smaller = earlier). Re-densified on
+    /// reorder / delete.
+    pub order: u32,
+}
+
+impl Account {
+    /// A blank account with spec defaults, ready to be filled by the
+    /// add form. `order` is set by the vault on insert.
+    pub fn blank(id: AccountId) -> Self {
+        Account {
+            id,
+            issuer: String::new(),
+            label: String::new(),
+            secret: String::new(),
+            algorithm: Algorithm::Sha1,
+            digits: 6,
+            period: 30,
+            color: 0,
+            order: 0,
+        }
+    }
+
+    /// Two-letter avatar initials derived from the issuer (falling back
+    /// to the label). Upper-cased, ≤ 2 chars.
+    pub fn initials(&self) -> String {
+        let source = if !self.issuer.trim().is_empty() {
+            self.issuer.trim()
+        } else {
+            self.label.trim()
+        };
+        let mut out = String::new();
+        for word in source.split_whitespace().take(2) {
+            if let Some(c) = word.chars().next() {
+                out.push(c);
+            }
+        }
+        if out.is_empty() {
+            if let Some(c) = source.chars().next() {
+                out.push(c);
+            }
+        }
+        out.to_uppercase().chars().take(2).collect()
+    }
+
+    /// Human display title: "Issuer" or, when there is no issuer, the
+    /// label. Never empty for a well-formed account.
+    pub fn title(&self) -> &str {
+        if !self.issuer.trim().is_empty() {
+            &self.issuer
+        } else {
+            &self.label
+        }
+    }
+
+    /// True when the secret decodes to a non-empty key — a cheap
+    /// validity gate the add form uses to enable Save.
+    pub fn secret_is_valid(&self) -> bool {
+        crate::totp::decode_secret(&self.secret)
+            .map(|b| !b.is_empty())
+            .unwrap_or(false)
+    }
+}
+
+/// In-memory vault: an ordered list of accounts plus the runtime ops the
+/// UI needs (add / delete / reorder). Pure logic; the app mirrors it to
+/// the CRDT.
+#[derive(Clone, Debug, Default)]
+pub struct Vault {
+    pub accounts: Vec<Account>,
+}
+
+impl Vault {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Accounts sorted by `order`.
+    pub fn ordered(&self) -> Vec<Account> {
+        let mut v = self.accounts.clone();
+        v.sort_by_key(|a| a.order);
+        v
+    }
+
+    pub fn get(&self, id: AccountId) -> Option<&Account> {
+        self.accounts.iter().find(|a| a.id == id)
+    }
+
+    pub fn len(&self) -> usize {
+        self.accounts.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.accounts.is_empty()
+    }
+
+    /// Insert (appending at the end) or replace an account by id. The
+    /// `order` of a brand-new account is set to the current end; an
+    /// existing account keeps its slot.
+    pub fn upsert(&mut self, mut acc: Account) {
+        if let Some(existing) = self.accounts.iter_mut().find(|a| a.id == acc.id) {
+            acc.order = existing.order;
+            *existing = acc;
+        } else {
+            acc.order = self.next_order();
+            self.accounts.push(acc);
+        }
+    }
+
+    fn next_order(&self) -> u32 {
+        self.accounts.iter().map(|a| a.order).max().map(|m| m + 1).unwrap_or(0)
+    }
+
+    /// Remove an account and re-densify the remaining order values.
+    pub fn delete(&mut self, id: AccountId) {
+        self.accounts.retain(|a| a.id != id);
+        self.renumber();
+    }
+
+    /// Swap an account one slot earlier (towards index 0). No-op at the
+    /// top. Returns true if anything moved.
+    pub fn move_up(&mut self, id: AccountId) -> bool {
+        let mut ord = self.ordered();
+        let Some(pos) = ord.iter().position(|a| a.id == id) else { return false };
+        if pos == 0 {
+            return false;
+        }
+        ord.swap(pos, pos - 1);
+        self.apply_order(&ord);
+        true
+    }
+
+    /// Swap an account one slot later. No-op at the bottom.
+    pub fn move_down(&mut self, id: AccountId) -> bool {
+        let mut ord = self.ordered();
+        let Some(pos) = ord.iter().position(|a| a.id == id) else { return false };
+        if pos + 1 >= ord.len() {
+            return false;
+        }
+        ord.swap(pos, pos + 1);
+        self.apply_order(&ord);
+        true
+    }
+
+    fn apply_order(&mut self, ordered: &[Account]) {
+        for (i, a) in ordered.iter().enumerate() {
+            if let Some(target) = self.accounts.iter_mut().find(|x| x.id == a.id) {
+                target.order = i as u32;
+            }
+        }
+    }
+
+    /// Rewrite `order` to a contiguous 0..n sequence preserving the
+    /// current relative order.
+    pub fn renumber(&mut self) {
+        let ord = self.ordered();
+        self.apply_order(&ord);
+    }
+
+    /// Filter accounts by a free-text query against issuer + label,
+    /// case-insensitive. Empty query returns everything (ordered).
+    pub fn search(&self, query: &str) -> Vec<Account> {
+        let q = query.trim().to_lowercase();
+        let ordered = self.ordered();
+        if q.is_empty() {
+            return ordered;
+        }
+        ordered
+            .into_iter()
+            .filter(|a| {
+                a.issuer.to_lowercase().contains(&q) || a.label.to_lowercase().contains(&q)
+            })
+            .collect()
+    }
+}
+
+/// Parse an `otpauth://totp/...` URI into an [`Account`]. Returns
+/// `Err(reason)` on malformed input. Handles:
+///
+/// * `otpauth://totp/Issuer:account@host?secret=...&issuer=...&...`
+/// * percent-encoded label / issuer
+/// * `secret` (required), `issuer`, `algorithm`, `digits`, `period`
+/// * issuer taken from the query param, else from the `Issuer:` label
+///   prefix.
+///
+/// `hotp://` (counter-based) is rejected with a clear message — this
+/// app is time-based only.
+pub fn parse_otpauth_uri(uri: &str, new_id: AccountId) -> Result<Account, String> {
+    let uri = uri.trim();
+    let rest = uri
+        .strip_prefix("otpauth://")
+        .ok_or_else(|| "not an otpauth:// URI".to_string())?;
+
+    // type / label-and-query
+    let (otp_type, after_type) = match rest.split_once('/') {
+        Some((t, r)) => (t.to_ascii_lowercase(), r),
+        None => (rest.to_ascii_lowercase(), ""),
+    };
+    if otp_type == "hotp" {
+        return Err("counter-based hotp:// is not supported — TOTP only".to_string());
+    }
+    if otp_type != "totp" {
+        return Err(format!("unsupported otpauth type '{otp_type}'"));
+    }
+
+    let (label_raw, query_raw) = match after_type.split_once('?') {
+        Some((l, q)) => (l, q),
+        None => (after_type, ""),
+    };
+    let label = percent_decode(label_raw);
+
+    // Query params.
+    let mut secret = String::new();
+    let mut issuer_param = String::new();
+    let mut algorithm = Algorithm::Sha1;
+    let mut digits: u8 = 6;
+    let mut period: u32 = 30;
+    for pair in query_raw.split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        let key = k.to_ascii_lowercase();
+        let val = percent_decode(v);
+        match key.as_str() {
+            "secret" => secret = normalise_secret(&val),
+            "issuer" => issuer_param = val,
+            "algorithm" => algorithm = Algorithm::parse(&val),
+            "digits" => digits = val.parse().unwrap_or(6).clamp(4, 10),
+            "period" => period = val.parse().unwrap_or(30).clamp(5, 300),
+            _ => {}
+        }
+    }
+
+    if secret.is_empty() {
+        return Err("otpauth URI is missing the required 'secret' param".to_string());
+    }
+
+    // Split "Issuer:account" label. The issuer query param wins when set.
+    let (label_issuer, account_label) = match label.split_once(':') {
+        Some((iss, acc)) => (iss.trim().to_string(), acc.trim().to_string()),
+        None => (String::new(), label.trim().to_string()),
+    };
+    let issuer = if !issuer_param.trim().is_empty() {
+        issuer_param.trim().to_string()
+    } else {
+        label_issuer
+    };
+
+    Ok(Account {
+        id: new_id,
+        issuer,
+        label: account_label,
+        secret,
+        algorithm,
+        digits,
+        period,
+        color: 0,
+        order: 0,
+    })
+}
+
+/// Normalise a base32 secret: strip whitespace + padding, upper-case.
+pub fn normalise_secret(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_whitespace() && *c != '=')
+        .collect::<String>()
+        .to_uppercase()
+}
+
+/// Minimal RFC 3986 percent-decoder (also maps `+` → space, matching how
+/// authenticator QR codes encode labels). Invalid escapes are passed
+/// through verbatim rather than erroring — robustness over strictness.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                let hi = hex_val(bytes[i + 1]);
+                let lo = hex_val(bytes[i + 2]);
+                if let (Some(h), Some(l)) = (hi, lo) {
+                    out.push(h << 4 | l);
+                    i += 3;
+                } else {
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// The per-account colour palette, sourced entirely from the active
+/// [`Theme`]'s tokens — no hard-coded literals — so it tracks the OS
+/// theme. Picks visually-distinct hues from the semantic + accent ramps
+/// so a roster of accounts reads as a varied palette rather than a wall
+/// of indigo.
+pub fn account_palette(theme: &Theme) -> Vec<Color> {
+    let c = &theme.tokens.colors;
+    vec![
+        c.accent[5],       // indigo-500
+        c.semantic.success, // emerald
+        c.semantic.warning, // amber
+        c.semantic.danger,  // red
+        c.semantic.info,    // blue
+        c.accent[7],       // indigo-300 (lighter violet)
+        c.neutral[6],      // slate-400
+    ]
+}
+
+/// Resolve an account's avatar colour from its `color` index against the
+/// theme palette (wrapping).
+pub fn account_color(theme: &Theme, color_index: u8) -> Color {
+    let palette = account_palette(theme);
+    palette[(color_index as usize) % palette.len()]
+}
+
+/// First-run demo vault: a handful of recognisable services with real,
+/// valid base32 secrets so the list renders live-looking codes + rings
+/// out of the box (and so the `--shots` frame is populated). These are
+/// throwaway demo secrets, not real credentials.
+pub fn demo_accounts() -> Vec<Account> {
+    let specs: [(&str, &str, &str, Algorithm, u8, u32, u8); 5] = [
+        ("GitHub", "ada@example.com", "JBSWY3DPEHPK3PXP", Algorithm::Sha1, 6, 30, 0),
+        ("Google", "ada.lovelace@gmail.com", "GEZDGNBVGY3TQOJQGEZDGNBV", Algorithm::Sha1, 6, 30, 4),
+        ("AWS", "iam/ada-ops", "NB2W45DFOIZA====", Algorithm::Sha256, 6, 30, 2),
+        ("Dropbox", "ada@work.io", "KRSXG5CTMVRXEZLU", Algorithm::Sha1, 8, 30, 1),
+        ("Discord", "ada#4242", "MFRGGZDFMZTWQ2LK", Algorithm::Sha512, 6, 30, 3),
+    ];
+    specs
+        .iter()
+        .enumerate()
+        .map(|(i, (issuer, label, secret, alg, digits, period, color))| Account {
+            id: Uuid::new_v4(),
+            issuer: issuer.to_string(),
+            label: label.to_string(),
+            secret: normalise_secret(secret),
+            algorithm: *alg,
+            digits: *digits,
+            period: *period,
+            color: *color,
+            order: i as u32,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_full_otpauth_uri() {
+        let uri = "otpauth://totp/GitHub:ada%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=GitHub&algorithm=SHA256&digits=8&period=60";
+        let acc = parse_otpauth_uri(uri, Uuid::new_v4()).unwrap();
+        assert_eq!(acc.issuer, "GitHub");
+        assert_eq!(acc.label, "ada@example.com");
+        assert_eq!(acc.secret, "JBSWY3DPEHPK3PXP");
+        assert_eq!(acc.algorithm, Algorithm::Sha256);
+        assert_eq!(acc.digits, 8);
+        assert_eq!(acc.period, 60);
+    }
+
+    #[test]
+    fn parse_uri_issuer_from_label_prefix() {
+        let uri = "otpauth://totp/ACME%20Co:bob?secret=JBSWY3DPEHPK3PXP";
+        let acc = parse_otpauth_uri(uri, Uuid::new_v4()).unwrap();
+        assert_eq!(acc.issuer, "ACME Co");
+        assert_eq!(acc.label, "bob");
+        // spec defaults
+        assert_eq!(acc.algorithm, Algorithm::Sha1);
+        assert_eq!(acc.digits, 6);
+        assert_eq!(acc.period, 30);
+    }
+
+    #[test]
+    fn parse_rejects_hotp_and_missing_secret() {
+        assert!(parse_otpauth_uri("otpauth://hotp/x?secret=AAAA", Uuid::new_v4()).is_err());
+        assert!(parse_otpauth_uri("otpauth://totp/x?issuer=y", Uuid::new_v4()).is_err());
+        assert!(parse_otpauth_uri("https://example.com", Uuid::new_v4()).is_err());
+    }
+
+    #[test]
+    fn vault_reorder_renumbers() {
+        let mut v = Vault::new();
+        for a in demo_accounts() {
+            v.upsert(a);
+        }
+        let first = v.ordered()[0].id;
+        let second = v.ordered()[1].id;
+        assert!(v.move_down(first));
+        assert_eq!(v.ordered()[0].id, second);
+        assert_eq!(v.ordered()[1].id, first);
+        // orders stay contiguous
+        for (i, a) in v.ordered().iter().enumerate() {
+            assert_eq!(a.order, i as u32);
+        }
+    }
+
+    #[test]
+    fn initials_are_two_upper_chars() {
+        let mut a = Account::blank(Uuid::new_v4());
+        a.issuer = "GitHub".into();
+        assert_eq!(a.initials(), "GI");
+        a.issuer = "Amazon Web".into();
+        assert_eq!(a.initials(), "AW");
+    }
+}
