@@ -152,6 +152,23 @@ impl Document {
         crate::model::blob(&self.doc, &self.c, hash)
     }
 
+    /// Set a document property (`title`/`author`/`subject`/`keywords`/`created`/
+    /// `modified`/`generator`). Round-trips through `.odt`/`.docx`.
+    pub fn set_doc_prop(&mut self, name: &str, value: &str) {
+        self.as_mut().set_doc_prop(name, value);
+        self.doc.commit();
+    }
+
+    /// Read a single document property, or `None` if unset.
+    pub fn doc_prop(&self, name: &str) -> Option<String> {
+        crate::model::doc_prop(&self.doc, &self.c, name)
+    }
+
+    /// All document properties (`name → value`).
+    pub fn doc_props(&self) -> std::collections::BTreeMap<String, String> {
+        crate::model::doc_props(&self.doc, &self.c)
+    }
+
     pub fn blocks_in_order(&self) -> Vec<String> {
         crate::model::blocks_in_order(&self.doc, &self.c)
     }
@@ -170,6 +187,268 @@ impl Document {
 
     pub fn materialize(&self) -> crate::snapshot::DocSnapshot {
         crate::model::materialize(&self.doc, &self.c)
+    }
+
+    // ---- page header / footer regions -------------------------------------
+
+    /// The ordered block ids of the page header (empty if no header is set).
+    pub fn header_blocks_in_order(&self) -> Vec<String> {
+        crate::model::region_blocks_in_order(&self.doc, &self.c, crate::model::Region::Header)
+    }
+
+    /// The ordered block ids of the page footer (empty if no footer is set).
+    pub fn footer_blocks_in_order(&self) -> Vec<String> {
+        crate::model::region_blocks_in_order(&self.doc, &self.c, crate::model::Region::Footer)
+    }
+
+    /// Materialize the page header's blocks (empty if none).
+    pub fn header(&self) -> Vec<crate::snapshot::BlockView> {
+        crate::model::materialize_region(&self.doc, &self.c, crate::model::Region::Header)
+    }
+
+    /// Materialize the page footer's blocks (empty if none).
+    pub fn footer(&self) -> Vec<crate::snapshot::BlockView> {
+        crate::model::materialize_region(&self.doc, &self.c, crate::model::Region::Footer)
+    }
+
+    /// Insert a block into the page header (created lazily); returns its id.
+    pub fn insert_header_block(&mut self, after: Option<&str>, kind: &str) -> String {
+        let id = self.as_mut().insert_block_in(crate::model::Region::Header, after, kind);
+        self.doc.commit();
+        id
+    }
+
+    /// Insert a block into the page footer (created lazily); returns its id.
+    pub fn insert_footer_block(&mut self, after: Option<&str>, kind: &str) -> String {
+        let id = self.as_mut().insert_block_in(crate::model::Region::Footer, after, kind);
+        self.doc.commit();
+        id
+    }
+
+    /// Splice text into a header block.
+    pub fn splice_header_text(&mut self, block_id: &str, char_idx: usize, del: isize, ins: &str) {
+        self.as_mut().splice_text_in(crate::model::Region::Header, block_id, char_idx, del, ins);
+        self.doc.commit();
+    }
+
+    /// Splice text into a footer block.
+    pub fn splice_footer_text(&mut self, block_id: &str, char_idx: usize, del: isize, ins: &str) {
+        self.as_mut().splice_text_in(crate::model::Region::Footer, block_id, char_idx, del, ins);
+        self.doc.commit();
+    }
+
+    /// Insert a page-number field at `char_idx` in a header block.
+    pub fn insert_header_page_number(&mut self, block_id: &str, char_idx: usize) {
+        self.as_mut().insert_page_number_field(crate::model::Region::Header, block_id, char_idx);
+        self.doc.commit();
+    }
+
+    /// Insert a page-number field at `char_idx` in a footer block.
+    pub fn insert_footer_page_number(&mut self, block_id: &str, char_idx: usize) {
+        self.as_mut().insert_page_number_field(crate::model::Region::Footer, block_id, char_idx);
+        self.doc.commit();
+    }
+
+    // ---- footnotes / endnotes ---------------------------------------------
+
+    /// The note ids present in the document (sorted, canonical order).
+    pub fn note_ids(&self) -> Vec<String> {
+        crate::model::note_ids(&self.doc, &self.c)
+    }
+
+    /// A note's kind (`Footnote`/`Endnote`), or `None` if the id is unknown.
+    pub fn note_kind(&self, id: &str) -> Option<crate::model::NoteKind> {
+        crate::model::note_kind(&self.doc, &self.c, id)
+    }
+
+    /// Materialize a note's content blocks (empty if the id is unknown).
+    pub fn note_blocks(&self, id: &str) -> Vec<crate::snapshot::BlockView> {
+        crate::model::materialize_note_blocks(&self.doc, &self.c, id)
+    }
+
+    /// The ordered block ids of a note's content (empty if absent).
+    pub fn note_blocks_in_order(&self, id: &str) -> Vec<String> {
+        crate::model::note_blocks_in_order(&self.doc, &self.c, id)
+    }
+
+    /// Materialize every note into a [`crate::snapshot::NoteView`].
+    pub fn notes(&self) -> Vec<crate::snapshot::NoteView> {
+        crate::model::materialize_notes(&self.doc, &self.c)
+    }
+
+    /// Create a footnote, place its reference marker at `char_idx` in `block_id`,
+    /// and return the new note id (its content is filled via [`Self::insert_note_block`]
+    /// + [`Self::splice_note_text`]).
+    pub fn insert_footnote(&mut self, block_id: &str, char_idx: usize) -> String {
+        let id = self.as_mut().insert_footnote(block_id, char_idx);
+        self.doc.commit();
+        id
+    }
+
+    /// Create an endnote, place its reference marker at `char_idx` in `block_id`,
+    /// and return the new note id.
+    pub fn insert_endnote(&mut self, block_id: &str, char_idx: usize) -> String {
+        let id = self.as_mut().insert_endnote(block_id, char_idx);
+        self.doc.commit();
+        id
+    }
+
+    /// Insert a block into a note's content; returns its id (or `None` if the note
+    /// id is unknown).
+    pub fn insert_note_block(&mut self, note_id: &str, after: Option<&str>, kind: &str) -> Option<String> {
+        let id = self.as_mut().insert_note_block(note_id, after, kind);
+        self.doc.commit();
+        id
+    }
+
+    /// Splice text into a note's block.
+    pub fn splice_note_text(&mut self, note_id: &str, block_id: &str, char_idx: usize, del: isize, ins: &str) {
+        self.as_mut().splice_note_text(note_id, block_id, char_idx, del, ins);
+        self.doc.commit();
+    }
+
+    /// Add an inline mark over a note's block text.
+    pub fn add_note_mark(&mut self, note_id: &str, block_id: &str, start: usize, end: usize, name: &str, value: impl Into<automerge::ScalarValue>) {
+        self.as_mut().add_note_mark(note_id, block_id, start, end, name, value);
+        self.doc.commit();
+    }
+
+    // ---- comments / annotations -------------------------------------------
+
+    /// The comment ids present in the document (sorted, canonical order).
+    pub fn comment_ids(&self) -> Vec<String> {
+        crate::model::comment_ids(&self.doc, &self.c)
+    }
+
+    /// A comment's author display name, or `None` if the id is unknown.
+    pub fn comment_author(&self, id: &str) -> Option<String> {
+        crate::model::comment_author(&self.doc, &self.c, id)
+    }
+
+    /// A comment's date / timestamp string, or `None` if the id is unknown.
+    pub fn comment_date(&self, id: &str) -> Option<String> {
+        crate::model::comment_date(&self.doc, &self.c, id)
+    }
+
+    /// Materialize a comment's content blocks (empty if the id is unknown).
+    pub fn comment_blocks(&self, id: &str) -> Vec<crate::snapshot::BlockView> {
+        crate::model::materialize_comment_blocks(&self.doc, &self.c, id)
+    }
+
+    /// The ordered block ids of a comment's content (empty if absent).
+    pub fn comment_blocks_in_order(&self, id: &str) -> Vec<String> {
+        crate::model::comment_blocks_in_order(&self.doc, &self.c, id)
+    }
+
+    /// The anchored body range `(block_id, start, end)` of a comment, or `None` if its
+    /// anchoring `comment` mark is absent.
+    pub fn comment_range(&self, id: &str) -> Option<(String, usize, usize)> {
+        crate::model::comment_range(&self.doc, &self.c, id)
+    }
+
+    /// Materialize every comment into a [`crate::snapshot::CommentView`].
+    pub fn comments(&self) -> Vec<crate::snapshot::CommentView> {
+        crate::model::materialize_comments(&self.doc, &self.c)
+    }
+
+    /// Create a comment authored by `author` with body `text`, anchored to the body
+    /// range `[start, end)` of `block_id`; returns the new comment id.
+    pub fn add_comment(&mut self, block_id: &str, start: usize, end: usize, author: &str, text: &str) -> String {
+        let id = self.as_mut().add_comment(block_id, start, end, author, text);
+        self.doc.commit();
+        id
+    }
+
+    /// Create an empty comment (author + date) with no anchor; fill its content via
+    /// [`Self::insert_comment_block`] + [`Self::splice_comment_text`] and anchor it via
+    /// [`Self::add_comment_mark`]. Returns the new comment id.
+    pub fn insert_comment(&mut self, author: &str, date: &str) -> String {
+        let id = self.as_mut().insert_comment(author, date);
+        self.doc.commit();
+        id
+    }
+
+    /// Anchor an existing comment to the body range `[start, end)` of `block_id`.
+    pub fn add_comment_mark(&mut self, block_id: &str, start: usize, end: usize, comment_id: &str) {
+        self.as_mut().add_comment_mark(block_id, start, end, comment_id);
+        self.doc.commit();
+    }
+
+    /// Insert a block into a comment's content; returns its id (or `None` if the
+    /// comment id is unknown).
+    pub fn insert_comment_block(&mut self, comment_id: &str, after: Option<&str>, kind: &str) -> Option<String> {
+        let id = self.as_mut().insert_comment_block(comment_id, after, kind);
+        self.doc.commit();
+        id
+    }
+
+    /// Splice text into a comment's block.
+    pub fn splice_comment_text(&mut self, comment_id: &str, block_id: &str, char_idx: usize, del: isize, ins: &str) {
+        self.as_mut().splice_comment_text(comment_id, block_id, char_idx, del, ins);
+        self.doc.commit();
+    }
+
+    // ---- tracked changes / revision marks ---------------------------------
+
+    /// The tracked-change ids present in the document (sorted, canonical order).
+    pub fn change_ids(&self) -> Vec<String> {
+        crate::model::change_ids(&self.doc, &self.c)
+    }
+
+    /// A change's kind (`Ins`/`Del`), or `None` if the id is unknown.
+    pub fn change_kind(&self, id: &str) -> Option<crate::snapshot::ChangeKind> {
+        crate::model::change_kind(&self.doc, &self.c, id)
+    }
+
+    /// A change's author display name, or `None` if the id is unknown.
+    pub fn change_author(&self, id: &str) -> Option<String> {
+        crate::model::change_author(&self.doc, &self.c, id)
+    }
+
+    /// A change's date / timestamp string, or `None` if the id is unknown.
+    pub fn change_date(&self, id: &str) -> Option<String> {
+        crate::model::change_date(&self.doc, &self.c, id)
+    }
+
+    /// The anchored body range `(block_id, start, end)` of a change, or `None` if its
+    /// anchoring `ins`/`del` mark is absent.
+    pub fn change_range(&self, id: &str) -> Option<(String, usize, usize)> {
+        crate::model::change_range(&self.doc, &self.c, id)
+    }
+
+    /// Materialize every tracked change into a [`crate::snapshot::ChangeView`].
+    pub fn changes(&self) -> Vec<crate::snapshot::ChangeView> {
+        crate::model::materialize_changes(&self.doc, &self.c)
+    }
+
+    /// Track a **insertion**: splice `text` into `block_id` at `char_idx`, flagging the
+    /// inserted range as a tracked insertion authored by `author` (dated `date`).
+    /// Returns the new change id.
+    pub fn track_insert(&mut self, block_id: &str, char_idx: usize, text: &str, author: &str, date: &str) -> String {
+        let id = self.as_mut().track_insert(block_id, char_idx, text, author, date);
+        self.doc.commit();
+        id
+    }
+
+    /// Track a **deletion**: flag the existing body range `[start, end)` of `block_id` as
+    /// a tracked deletion (retained-but-struck) authored by `author` (dated `date`).
+    /// Returns the new change id.
+    pub fn track_delete(&mut self, block_id: &str, start: usize, end: usize, author: &str, date: &str) -> String {
+        let id = self.as_mut().track_delete(block_id, start, end, author, date);
+        self.doc.commit();
+        id
+    }
+
+    /// Accept a tracked change (insertion: keep text, drop mark; deletion: remove text).
+    pub fn accept_change(&mut self, change_id: &str) {
+        self.as_mut().accept_change(change_id);
+        self.doc.commit();
+    }
+
+    /// Reject a tracked change (insertion: remove text; deletion: keep text, drop mark).
+    pub fn reject_change(&mut self, change_id: &str) {
+        self.as_mut().reject_change(change_id);
+        self.doc.commit();
     }
 
     /// Timeline of authored changes (oldest first).
@@ -352,6 +631,133 @@ mod tests {
         assert_eq!(snap.blocks.len(), 2, "must not overwrite the existing block");
         assert_eq!(snap.blocks[0].text, "first");
         assert_eq!(snap.blocks[1].text, "second");
+    }
+
+    #[test]
+    fn footnote_accessors_and_snapshot() {
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "see ref");
+        let nid = d.insert_footnote(&p, 4);
+        let nb = d.insert_note_block(&nid, None, "paragraph").unwrap();
+        d.splice_note_text(&nid, &nb, 0, 0, "footnote body");
+
+        // Accessors agree with the snapshot.
+        assert_eq!(d.note_ids(), vec![nid.clone()]);
+        assert_eq!(d.note_kind(&nid), Some(crate::model::NoteKind::Footnote));
+        assert_eq!(d.note_blocks(&nid)[0].text, "footnote body");
+        let snap = d.materialize();
+        assert_eq!(snap.notes.len(), 1);
+        assert_eq!(snap.notes[0].id, nid);
+        // The note-ref marker survives a save/load round-trip (seeded id gen).
+        let bytes = d.save();
+        let d2 = Document::load(&bytes).unwrap();
+        assert_eq!(d2.note_blocks(&nid)[0].text, "footnote body");
+        assert!(d2.materialize().blocks[0].marks.iter().any(|m| m.name == crate::schema::MARK_NOTE_REF));
+    }
+
+    #[test]
+    fn notes_converge_across_replicas() {
+        // Two replicas each add a note to the same document; after merge both
+        // converge with both notes present (CRDT-native).
+        let mut a = Document::new();
+        let p = a.insert_block(None, "paragraph");
+        a.splice_text(&p, 0, 0, "base");
+        let mut b = a.fork();
+        let na = a.insert_footnote(&p, 4);
+        let nab = a.insert_note_block(&na, None, "paragraph").unwrap();
+        a.splice_note_text(&na, &nab, 0, 0, "from A");
+        let nb = b.insert_endnote(&p, 0);
+        let nbb = b.insert_note_block(&nb, None, "paragraph").unwrap();
+        b.splice_note_text(&nb, &nbb, 0, 0, "from B");
+        a.merge(&mut b);
+        b.merge(&mut a);
+        assert_eq!(a.materialize(), b.materialize(), "replicas converge with notes");
+        assert_eq!(a.materialize().notes.len(), 2, "both notes present after merge");
+    }
+
+    #[test]
+    fn comment_accessors_and_snapshot() {
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "review this paragraph");
+        let cid = d.add_comment(&p, 7, 11, "Grace", "note: fix"); // over "this"
+
+        // Accessors agree with the snapshot.
+        assert_eq!(d.comment_ids(), vec![cid.clone()]);
+        assert_eq!(d.comment_author(&cid).as_deref(), Some("Grace"));
+        assert_eq!(d.comment_blocks(&cid)[0].text, "note: fix");
+        assert_eq!(d.comment_range(&cid), Some((p.clone(), 7, 11)));
+        let snap = d.materialize();
+        assert_eq!(snap.comments.len(), 1);
+        assert_eq!(snap.comments[0].id, cid);
+        assert_eq!(snap.comments[0].range, Some((p.clone(), 7, 11)));
+        // The comment mark + content survive a save/load round-trip (seeded id gen).
+        let bytes = d.save();
+        let d2 = Document::load(&bytes).unwrap();
+        assert_eq!(d2.comment_blocks(&cid)[0].text, "note: fix");
+        assert!(d2.materialize().blocks[0].marks.iter().any(|m| m.name == crate::schema::MARK_COMMENT));
+    }
+
+    #[test]
+    fn comments_converge_across_replicas() {
+        // Two replicas each add a comment to the same document; after merge both
+        // converge with both comments present (CRDT-native).
+        let mut a = Document::new();
+        let p = a.insert_block(None, "paragraph");
+        a.splice_text(&p, 0, 0, "base text here");
+        let mut b = a.fork();
+        a.add_comment(&p, 0, 4, "A", "from A"); // over "base"
+        b.add_comment(&p, 5, 9, "B", "from B"); // over "text"
+        a.merge(&mut b);
+        b.merge(&mut a);
+        assert_eq!(a.materialize(), b.materialize(), "replicas converge with comments");
+        assert_eq!(a.materialize().comments.len(), 2, "both comments present after merge");
+    }
+
+    #[test]
+    fn tracked_change_accessors_and_save_load() {
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "the quick fox");
+        // Track an insertion of "brown " before "fox" (idx 10).
+        let ins = d.track_insert(&p, 10, "brown ", "Grace", "2021-05-06");
+        // Track a deletion of "quick " (chars 4..10).
+        let del = d.track_delete(&p, 4, 10, "Hopper", "2021-07-08");
+
+        // Accessors agree.
+        let mut want = vec![ins.clone(), del.clone()];
+        want.sort();
+        assert_eq!(d.change_ids(), want);
+        assert_eq!(d.change_kind(&ins), Some(crate::snapshot::ChangeKind::Ins));
+        assert_eq!(d.change_kind(&del), Some(crate::snapshot::ChangeKind::Del));
+        assert_eq!(d.change_author(&ins).as_deref(), Some("Grace"));
+        assert_eq!(d.change_date(&del).as_deref(), Some("2021-07-08"));
+        assert!(d.materialize().changes.len() == 2);
+
+        // Marks + records survive a save/load round-trip (seeded id gen).
+        let bytes = d.save();
+        let d2 = Document::load(&bytes).unwrap();
+        let snap = d2.materialize();
+        assert_eq!(snap.changes.len(), 2, "changes survive save/load");
+        assert!(snap.blocks[0].marks.iter().any(|m| m.name == crate::schema::MARK_INS));
+        assert!(snap.blocks[0].marks.iter().any(|m| m.name == crate::schema::MARK_DEL));
+    }
+
+    #[test]
+    fn tracked_changes_converge_across_replicas() {
+        // Two replicas each track a change on the same document; after merge both
+        // converge with both changes present (CRDT-native).
+        let mut a = Document::new();
+        let p = a.insert_block(None, "paragraph");
+        a.splice_text(&p, 0, 0, "shared base text");
+        let mut b = a.fork();
+        a.track_delete(&p, 0, 6, "A", ""); // "shared"
+        b.track_insert(&p, 16, "!", "B", "");
+        a.merge(&mut b);
+        b.merge(&mut a);
+        assert_eq!(a.materialize(), b.materialize(), "replicas converge with tracked changes");
+        assert_eq!(a.materialize().changes.len(), 2, "both changes present after merge");
     }
 
     #[test]

@@ -11,8 +11,11 @@ use super::styles::{attr_val, StyleRegistry};
 use crate::document::MarkValue;
 use crate::format::CodecError;
 use crate::model::DocMut;
+use crate::schema::{FIELD_PLACEHOLDER, MARK_COMMENT, MARK_NOTE_REF};
+use crate::snapshot::ChangeKind;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
+use std::collections::BTreeMap;
 
 /// Parse an ODF length (`svg:width`/`svg:height`, e.g. `"3cm"`, `"96px"`, `"1in"`)
 /// to an integer pixel count. `px` (and bare numbers) round-trip exactly; other
@@ -146,6 +149,10 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
     let mut cur_para_marks: Vec<(String, MarkValue)> = Vec::new();
     // Nested list ordered-ness, from each list's list-style.
     let mut list_stack: Vec<bool> = Vec::new();
+    // Per-open-list captured numbering for fidelity preservation: the level-0
+    // `(num_format, num_start, restart)` derived from the list-style + the
+    // `text:list` element's own `text:start-value`/`text:continue-numbering`.
+    let mut list_num_stack: Vec<(Option<&'static str>, Option<i64>, bool)> = Vec::new();
 
     // Table state: cells become consecutive `cell` blocks tagged table/row/col.
     let mut table_id: Option<String> = None;
@@ -155,6 +162,34 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
 
     let mut capture: Option<(usize, i32)> = None; // (start byte, open depth) of a fidelity atom
     let mut frame: Option<FrameState> = None; // an in-progress draw:frame (image or fidelity)
+    // An in-progress inline `text:note` (footnote/endnote): its raw-XML start byte,
+    // open depth, and the (block, index) at which to anchor its reference marker.
+    // Deferred so the marker is added after all text is in place (exact position).
+    let mut note: Option<(usize, i32, Option<String>, usize)> = None;
+    // (block, char index, note id) reference markers, applied after all text is in.
+    let mut note_refs: Vec<(String, usize, String)> = Vec::new();
+    // An in-progress inline `office:annotation` (comment): its raw-XML start byte,
+    // open depth, and the (block, start char index) at which the commented range
+    // begins. Deferred so the `comment` mark is added after all text is in place.
+    let mut annotation: Option<(usize, i32, Option<String>, usize)> = None;
+    // Pending comment ranges keyed by the ODF `office:name`: `name → (comment id,
+    // block, start char index)`, awaiting their matching `office:annotation-end`.
+    let mut open_comments: BTreeMap<String, (String, String, usize)> = BTreeMap::new();
+    // (block, start, end, comment id) anchor marks, applied after all text is in.
+    let mut comment_ranges: Vec<(String, usize, usize, String)> = Vec::new();
+
+    // An in-progress `text:tracked-changes` declaration block: its raw-XML start byte +
+    // open depth. Captured whole, then parsed into change records on close.
+    let mut tracked: Option<(usize, i32)> = None;
+    // ODF `xml:id` → (qdoc change id, kind), from the parsed tracked-changes block. The
+    // body's `text:change-start`/`-end`/`text:change` markers reference changes by this
+    // id; the `ins`/`del` mark is applied over the marked range.
+    let mut change_decls: BTreeMap<String, (String, ChangeKind)> = BTreeMap::new();
+    // Open tracked-change ranges keyed by ODF `xml:id`: `xml:id → (change id, kind,
+    // block, start char index)`, awaiting their matching `text:change-end`.
+    let mut open_changes: BTreeMap<String, (String, ChangeKind, String, usize)> = BTreeMap::new();
+    // (block, start, end, kind, change id) anchor marks, applied after all text is in.
+    let mut change_ranges: Vec<(String, usize, usize, ChangeKind, String)> = Vec::new();
 
     // Flush the current block's paragraph-style marks over its full text range.
     macro_rules! flush_para_marks {
@@ -269,8 +304,103 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
             continue;
         }
 
+        // Inside an inline `text:note`: collect its raw XML until it closes, then
+        // parse it into a note + record a reference marker at the captured position.
+        if let Some((start, depth, block, idx)) = note.as_mut() {
+            match &ev {
+                Event::Start(_) => *depth += 1,
+                Event::End(_) => {
+                    *depth -= 1;
+                    if *depth == 0 {
+                        let raw = s[*start..reader.buffer_position() as usize].to_string();
+                        if let (Some(b), Some(nid)) = (block.clone(), super::notes::import_note(&raw, doc)) {
+                            note_refs.push((b, *idx, nid));
+                        }
+                        note = None;
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+
+        // Inside an inline `office:annotation` (comment): collect its raw XML until it
+        // closes, parse it into a comment, and remember the start of the commented
+        // range so the matching `office:annotation-end` (or, for a point comment, the
+        // same position) anchors a `comment` mark.
+        if let Some((start, depth, block, idx)) = annotation.as_mut() {
+            match &ev {
+                Event::Start(_) => *depth += 1,
+                Event::End(_) => {
+                    *depth -= 1;
+                    if *depth == 0 {
+                        let raw = s[*start..reader.buffer_position() as usize].to_string();
+                        if let (Some(b), Some((name, cid))) = (block.clone(), super::comments::import_annotation(&raw, doc)) {
+                            match name {
+                                // A ranged comment: stash it until its annotation-end.
+                                Some(n) => {
+                                    open_comments.insert(n, (cid, b, *idx));
+                                }
+                                // A point comment (no office:name): anchor a 1-char
+                                // range at the insertion point if there's a character
+                                // there, else a zero-width range that import drops.
+                                None => comment_ranges.push((b, *idx, *idx, cid)),
+                            }
+                        }
+                        annotation = None;
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+
+        // Inside the `text:tracked-changes` declaration block: capture its raw XML until
+        // it closes, then parse the changed-region declarations into change records and
+        // record an `xml:id → (change id, kind)` map for the body markers.
+        if let Some((start, depth)) = tracked.as_mut() {
+            match &ev {
+                Event::Start(_) => *depth += 1,
+                Event::End(_) => {
+                    *depth -= 1;
+                    if *depth == 0 {
+                        let raw = s[*start..reader.buffer_position() as usize].to_string();
+                        for decl in super::changes::import_tracked_changes(&raw) {
+                            let cid = doc.insert_change(decl.kind, &decl.author, &decl.date);
+                            change_decls.insert(decl.xml_id, (cid, decl.kind));
+                        }
+                        tracked = None;
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+
         match ev {
             Event::Start(e) => match e.name().as_ref() {
+                b"text:note" if in_text && cur.is_some() => {
+                    // A footnote/endnote reference: splice the placeholder char now
+                    // (so later text in this paragraph lands after it), capture the
+                    // whole element verbatim, and defer the `note-ref` mark until all
+                    // text is in place. The note's body is parsed on close.
+                    let idx = cur_len;
+                    append(doc, &cur, &mut cur_len, &FIELD_PLACEHOLDER.to_string());
+                    note = Some((pos_before, 1, cur.clone(), idx));
+                }
+                b"office:annotation" if in_text && cur.is_some() => {
+                    // A comment anchored to a range: the annotation sits at the *start*
+                    // of the commented text (no placeholder — it spans real chars).
+                    // Capture the whole element verbatim and remember the current char
+                    // index; the matching `office:annotation-end` records the range end.
+                    let idx = cur_len;
+                    annotation = Some((pos_before, 1, cur.clone(), idx));
+                }
+                b"text:tracked-changes" if in_text => {
+                    // The up-front tracked-change declaration block: capture it whole and
+                    // parse it into change records (see the capture handler above).
+                    tracked = Some((pos_before, 1));
+                }
                 b"office:text" => in_text = true,
                 b"text:h" if in_text => {
                     let style = attr_val(&e, b"text:style-name");
@@ -290,20 +420,64 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                     // A nested `text:list` often omits its own style-name, continuing
                     // the parent list's style at the deeper level — so inherit the
                     // parent's ordered-ness instead of defaulting to bulleted.
-                    let ordered = attr_val(&e, b"text:style-name")
-                        .and_then(|s| reg.list_ordered.get(&s).copied())
+                    let style = attr_val(&e, b"text:style-name");
+                    let ordered = style
+                        .as_deref()
+                        .and_then(|s| reg.list_ordered.get(s).copied())
                         .unwrap_or_else(|| *list_stack.last().unwrap_or(&false));
                     list_stack.push(ordered);
+                    // Numbering fidelity: format + start from the list-style; the
+                    // list's own `text:start-value` overrides the style start, and
+                    // `text:continue-numbering="true"` means this list continues
+                    // (no restart) rather than restarting its count.
+                    let numbering = style.as_deref().and_then(|s| reg.list_numbering.get(s));
+                    let mut num_format = numbering.and_then(|n| n.num_format);
+                    let mut num_start = numbering.and_then(|n| n.num_start);
+                    if let Some(s) = attr_val(&e, b"text:start-value").and_then(|v| v.parse::<i64>().ok()) {
+                        num_start = Some(s);
+                    }
+                    let continuing = attr_val(&e, b"text:continue-numbering")
+                        .map(|v| v == "true" || v == "1")
+                        .unwrap_or(false);
+                    // A list that doesn't continue restarts; an explicit start-value
+                    // also implies a restart at that value.
+                    let restart = !continuing || num_start.is_some();
+                    if ordered && num_format.is_none() {
+                        num_format = Some("decimal");
+                    }
+                    list_num_stack.push((num_format, num_start, restart));
                 }
                 b"text:list-item" if in_text => {
                     let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "list_item");
-                    doc.set_attr(&id, "ordered", *list_stack.last().unwrap_or(&false));
+                    let ordered = *list_stack.last().unwrap_or(&false);
+                    doc.set_attr(&id, "ordered", ordered);
                     // 0-based nesting depth (each open `text:list` is one level).
                     // Match the markdown codec: only emit `level` when nested, so a
                     // top-level item's attr set stays identical across codecs.
                     let level = (list_stack.len() as i64 - 1).max(0);
                     if level > 0 {
                         doc.set_attr(&id, "level", level);
+                    }
+                    // Numbering fidelity preservation (ordered lists only): carry the
+                    // format + start + restart so the list re-exports with its
+                    // numbering intact. A plain decimal-from-1 list adds no extra
+                    // attrs, so the cross-codec attr set stays minimal.
+                    if ordered {
+                        if let Some((fmt, start, restart)) = list_num_stack.last().copied() {
+                            if let Some(f) = fmt {
+                                if f != "decimal" {
+                                    doc.set_attr(&id, "num_format", f);
+                                }
+                            }
+                            if let Some(s) = start {
+                                if s != 1 {
+                                    doc.set_attr(&id, "num_start", s);
+                                    if restart {
+                                        doc.set_attr(&id, "num_restart", true);
+                                    }
+                                }
+                            }
+                        }
                     }
                     in_item = true;
                 }
@@ -393,6 +567,43 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                     doc.set_attr(&id, "level", lvl);
                     cur = None;
                 }
+                b"office:annotation-end" if in_text => {
+                    // Closes a comment's range: match by `office:name` to the open
+                    // annotation and anchor a `comment` mark over `[start, cur_len)`.
+                    if let Some(name) = attr_val(&e, b"office:name") {
+                        if let Some((cid, b, start)) = open_comments.remove(&name) {
+                            comment_ranges.push((b, start, cur_len, cid));
+                        }
+                    }
+                }
+                b"text:change-start" if in_text && cur.is_some() => {
+                    // Opens a tracked-change range: remember the current char index; the
+                    // matching `text:change-end` records the end.
+                    if let Some(id) = super::changes::marker_change_id(&e) {
+                        if let (Some((cid, kind)), Some(b)) = (change_decls.get(&id).cloned(), cur.clone()) {
+                            open_changes.insert(id, (cid, kind, b, cur_len));
+                        }
+                    }
+                }
+                b"text:change-end" if in_text => {
+                    // Closes a tracked-change range: anchor an `ins`/`del` mark over
+                    // `[start, cur_len)` for the matching change id.
+                    if let Some(id) = super::changes::marker_change_id(&e) {
+                        if let Some((cid, kind, b, start)) = open_changes.remove(&id) {
+                            change_ranges.push((b, start, cur_len, kind, cid));
+                        }
+                    }
+                }
+                b"text:change" if in_text && cur.is_some() => {
+                    // A point change marker (a deletion with no retained body text, or a
+                    // collapsed insertion). Anchor a 1-char range if there's a character
+                    // after it (widened on apply), else a zero-width range that drops.
+                    if let Some(id) = super::changes::marker_change_id(&e) {
+                        if let (Some((cid, kind)), Some(b)) = (change_decls.get(&id).cloned(), cur.clone()) {
+                            change_ranges.push((b, cur_len, cur_len, kind, cid));
+                        }
+                    }
+                }
                 b"text:tab" if in_text => append(doc, &cur, &mut cur_len, "\t"),
                 b"text:line-break" if in_text => append(doc, &cur, &mut cur_len, "\n"),
                 b"text:s" if in_text => {
@@ -428,6 +639,7 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                 }
                 b"text:list" => {
                     list_stack.pop();
+                    list_num_stack.pop();
                 }
                 b"table:table" => {
                     table_id = None;
@@ -495,7 +707,56 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
             MarkValue::Str(s) => doc.add_mark(&b, start, end, &name, s.as_str()),
         }
     }
+    // Note-reference markers: cover the placeholder spliced when each `text:note`
+    // opened with a `note-ref` mark valued with the note id.
+    for (b, idx, nid) in note_refs {
+        doc.add_mark(&b, idx, idx + 1, MARK_NOTE_REF, nid.as_str());
+    }
+    // Any annotation whose `office:annotation-end` never arrived (a point comment, or
+    // a malformed range) still anchors at its start: extend to the block's end so the
+    // comment has a non-empty range when content follows, else leave it where it sits.
+    for (name, (cid, b, start)) in std::mem::take(&mut open_comments) {
+        let _ = name;
+        let end = doc_block_len(doc, &b).max(start);
+        comment_ranges.push((b, start, end, cid));
+    }
+    // Comment anchor marks: cover the commented range with a `comment` mark valued
+    // with the comment id. A zero-width range can't carry a mark, so widen it to one
+    // character when the block has text after the anchor.
+    for (b, start, mut end, cid) in comment_ranges {
+        if end <= start {
+            let blen = doc_block_len(doc, &b);
+            end = (start + 1).min(blen);
+        }
+        if end > start {
+            doc.add_mark(&b, start, end, MARK_COMMENT, cid.as_str());
+        }
+    }
+    // Any tracked change whose `text:change-end` never arrived still anchors at its
+    // start, extending to the block's end so it has a non-empty range when content
+    // follows.
+    for (_id, (cid, kind, b, start)) in std::mem::take(&mut open_changes) {
+        let end = doc_block_len(doc, &b).max(start);
+        change_ranges.push((b, start, end, kind, cid));
+    }
+    // Tracked-change anchor marks: cover each changed range with the `ins`/`del` mark
+    // matching the change's kind, valued with the change id. A zero-width range can't
+    // carry a mark, so widen it to one character when the block has text after it.
+    for (b, start, mut end, kind, cid) in change_ranges {
+        if end <= start {
+            let blen = doc_block_len(doc, &b);
+            end = (start + 1).min(blen);
+        }
+        if end > start {
+            doc.add_change_mark(kind, &b, start, end, &cid);
+        }
+    }
     Ok(())
+}
+
+/// The character length of a body block's text (0 if absent).
+fn doc_block_len(doc: &DocMut, block_id: &str) -> usize {
+    crate::model::block_text(doc.doc, doc.c, block_id).map(|t| t.chars().count()).unwrap_or(0)
 }
 
 #[cfg(test)]
