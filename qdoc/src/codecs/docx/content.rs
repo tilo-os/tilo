@@ -10,9 +10,11 @@ use super::styles::{attr_val, mark_from_rpr_child, map_jc, StyleRegistry};
 use crate::document::MarkValue;
 use crate::format::CodecError;
 use crate::model::DocMut;
+use crate::schema::{FIELD_PLACEHOLDER, MARK_COMMENT, MARK_NOTE_REF};
 
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
+use std::collections::BTreeMap;
 
 /// Open a fresh top-level block anchored after the previous one.
 fn start_block(doc: &mut DocMut, prev: &mut Option<String>, cur: &mut Option<String>, cur_len: &mut usize, kind: &str) -> String {
@@ -33,7 +35,14 @@ fn append(doc: &mut DocMut, cur: &Option<String>, cur_len: &mut usize, txt: &str
     }
 }
 
-pub(crate) fn parse_body(document_xml: &[u8], reg: &StyleRegistry, doc: &mut DocMut) -> Result<(), CodecError> {
+pub(crate) fn parse_body(
+    document_xml: &[u8],
+    reg: &StyleRegistry,
+    foot_map: &BTreeMap<String, String>,
+    end_map: &BTreeMap<String, String>,
+    comment_map: &BTreeMap<String, String>,
+    doc: &mut DocMut,
+) -> Result<(), CodecError> {
     let s = std::str::from_utf8(document_xml).map_err(|e| CodecError::Parse(e.to_string()))?;
     let mut reader = Reader::from_str(s);
 
@@ -61,6 +70,21 @@ pub(crate) fn parse_body(document_xml: &[u8], reg: &StyleRegistry, doc: &mut Doc
     let mut pending_marks: Vec<(String, usize, usize, String, MarkValue)> = Vec::new();
     // Paragraph-style inline marks for the current block, applied over [0, len].
     let mut cur_para_marks: Vec<(String, MarkValue)> = Vec::new();
+    // (block, char index, note id) reference markers, applied after all text is in.
+    let mut note_refs: Vec<(String, usize, String)> = Vec::new();
+    // Open comment ranges keyed by docx id: `docx_id → (comment id, block, start char
+    // index)`, awaiting their matching `w:commentRangeEnd`.
+    let mut open_comments: BTreeMap<String, (String, String, usize)> = BTreeMap::new();
+    // (block, start, end, comment id) anchor marks, applied after all text is in.
+    let mut comment_ranges: Vec<(String, usize, usize, String)> = Vec::new();
+
+    // In-progress tracked change `<w:ins>`/`<w:del>` wrapper: its qdoc change id, kind,
+    // anchor block, and the char index at which the changed range begins. The runs
+    // inside splice text normally; the `ins`/`del` mark is applied at the close. Deleted
+    // runs carry `<w:delText>` instead of `<w:t>` (treated identically on import).
+    let mut change: Option<(String, crate::snapshot::ChangeKind, Option<String>, usize)> = None;
+    // (block, start, end, kind, change id) anchor marks, applied after all text is in.
+    let mut change_ranges: Vec<(String, usize, usize, crate::snapshot::ChangeKind, String)> = Vec::new();
 
     // Table state: cells become consecutive `cell` blocks tagged table/row/col.
     let mut table_id: Option<String> = None;
@@ -90,7 +114,29 @@ pub(crate) fn parse_body(document_xml: &[u8], reg: &StyleRegistry, doc: &mut Doc
                 let level = p_style.as_deref().and_then(|s| reg.heading_level(s));
                 if let Some(numid) = p_numid.clone() {
                     doc.set_kind(&id, "list_item");
-                    doc.set_attr(&id, "ordered", reg.num_ordered.get(&numid).copied().unwrap_or(false));
+                    let ordered = reg.num_ordered.get(&numid).copied().unwrap_or(false);
+                    doc.set_attr(&id, "ordered", ordered);
+                    // Numbering fidelity (ordered lists only): preserve the format +
+                    // start so the list re-exports with its numbering intact. A plain
+                    // decimal-from-1 list adds no extra attrs (minimal cross-codec
+                    // attr set).
+                    if ordered {
+                        if let Some(def) = reg.num_def.get(&numid) {
+                            if let Some(f) = def.num_format {
+                                if f != "decimal" {
+                                    doc.set_attr(&id, "num_format", f);
+                                }
+                            }
+                            if let Some(s) = def.num_start {
+                                if s != 1 {
+                                    doc.set_attr(&id, "num_start", s);
+                                    // OOXML numbering restarts by default; a non-1
+                                    // start implies a restart at that value.
+                                    doc.set_attr(&id, "num_restart", true);
+                                }
+                            }
+                        }
+                    }
                     // Direct `w:jc` wins; otherwise inherit alignment from the style.
                     let align = p_align.clone().or_else(|| p_style.as_deref().and_then(|s| reg.para_align(s)));
                     if let Some(a) = align {
@@ -173,6 +219,21 @@ pub(crate) fn parse_body(document_xml: &[u8], reg: &StyleRegistry, doc: &mut Doc
                 }
                 b"w:pPr" if table_id.is_none() => in_ppr = true,
                 b"w:numPr" if in_ppr => in_numpr = true,
+                // A tracked-change wrapper around the runs it covers. Create the change
+                // record now (author/date from attrs) and remember the start char index;
+                // the runs inside splice text, and the `ins`/`del` mark is applied over
+                // `[start, cur_len)` at the close.
+                b"w:ins" | b"w:del" if in_body && cur.is_some() => {
+                    let kind = if e.name().as_ref() == b"w:ins" {
+                        crate::snapshot::ChangeKind::Ins
+                    } else {
+                        crate::snapshot::ChangeKind::Del
+                    };
+                    let author = attr_val(&e, b"w:author").unwrap_or_default();
+                    let date = attr_val(&e, b"w:date").unwrap_or_default();
+                    let cid = doc.insert_change(kind, &author, &date);
+                    change = Some((cid, kind, cur.clone(), cur_len));
+                }
                 b"w:r" if in_body => {
                     in_run = true;
                     run_start = cur_len;
@@ -180,6 +241,9 @@ pub(crate) fn parse_body(document_xml: &[u8], reg: &StyleRegistry, doc: &mut Doc
                 }
                 b"w:rPr" if in_run => in_rpr = true,
                 b"w:t" if in_run => in_t = true,
+                // Deleted text inside a `<w:del>` run uses `<w:delText>`; treat it like
+                // `<w:t>` so the retained-but-struck content lands in the model.
+                b"w:delText" if in_run => in_t = true,
                 b"w:tbl" if in_body => {
                     table_seq += 1;
                     table_id = Some(format!("t{table_seq}"));
@@ -210,6 +274,45 @@ pub(crate) fn parse_body(document_xml: &[u8], reg: &StyleRegistry, doc: &mut Doc
                 b"w:numId" if in_numpr => p_numid = attr_val(&e, b"w:val"),
                 b"w:tab" if in_run => append(doc, &cur, &mut cur_len, "\t"),
                 b"w:br" | b"w:cr" if in_run => append(doc, &cur, &mut cur_len, "\n"),
+                b"w:footnoteReference" | b"w:endnoteReference" if in_run => {
+                    // A note reference: resolve its docx id to a qdoc note id (via the
+                    // pre-parsed parts), splice a placeholder, and defer the `note-ref`
+                    // marker until all text is present.
+                    let is_foot = e.name().as_ref() == b"w:footnoteReference";
+                    let map = if is_foot { foot_map } else { end_map };
+                    if let Some(docx_id) = attr_val(&e, b"w:id") {
+                        if let Some(note_id) = map.get(&docx_id) {
+                            if let Some(b) = cur.clone() {
+                                let idx = cur_len;
+                                append(doc, &cur, &mut cur_len, &FIELD_PLACEHOLDER.to_string());
+                                note_refs.push((b, idx, note_id.clone()));
+                            }
+                        }
+                    }
+                }
+                b"w:commentRangeStart" if in_body && cur.is_some() => {
+                    // The start of a commented range: remember the current char index;
+                    // the matching `w:commentRangeEnd` records the end. The range marks
+                    // sit at body level (between runs), so `cur_len` is the boundary.
+                    if let Some(docx_id) = attr_val(&e, b"w:id") {
+                        if let Some(cid) = comment_map.get(&docx_id) {
+                            if let Some(b) = cur.clone() {
+                                open_comments.insert(docx_id, (cid.clone(), b, cur_len));
+                            }
+                        }
+                    }
+                }
+                b"w:commentRangeEnd" if in_body => {
+                    // Closes a commented range: anchor a `comment` mark over
+                    // `[start, cur_len)` for the matching docx id.
+                    if let Some(docx_id) = attr_val(&e, b"w:id") {
+                        if let Some((cid, b, start)) = open_comments.remove(&docx_id) {
+                            comment_ranges.push((b, start, cur_len, cid));
+                        }
+                    }
+                }
+                // `w:commentReference` (the citation marker run child) carries no
+                // range info — the range is defined by start/end — so it is ignored.
                 _ if in_rpr => {
                     if let Some((k, v)) = mark_from_rpr_child(&e) {
                         run_marks.retain(|(k2, _)| k2 != &k);
@@ -241,6 +344,16 @@ pub(crate) fn parse_body(document_xml: &[u8], reg: &StyleRegistry, doc: &mut Doc
                 b"w:numPr" => in_numpr = false,
                 b"w:rPr" => in_rpr = false,
                 b"w:t" => in_t = false,
+                b"w:delText" => in_t = false,
+                b"w:ins" | b"w:del" => {
+                    // Close the tracked-change wrapper: anchor an `ins`/`del` mark over
+                    // `[start, cur_len)` for the change (applied after all text is in).
+                    if let Some((cid, kind, block, start)) = change.take() {
+                        if let Some(b) = block {
+                            change_ranges.push((b, start, cur_len, kind, cid));
+                        }
+                    }
+                }
                 b"w:r" => {
                     in_run = false;
                     if let Some(b) = cur.as_ref() {
@@ -292,7 +405,41 @@ pub(crate) fn parse_body(document_xml: &[u8], reg: &StyleRegistry, doc: &mut Doc
             MarkValue::Str(s) => doc.add_mark(&b, start, end, &name, s.as_str()),
         }
     }
+    // Note-reference markers over the placeholder spliced at each reference element.
+    for (b, idx, nid) in note_refs {
+        doc.add_mark(&b, idx, idx + 1, MARK_NOTE_REF, nid.as_str());
+    }
+    // A comment whose `w:commentRangeEnd` never arrived still anchors at its start,
+    // extending to the block's end so it has a non-empty range when content follows.
+    for (_docx_id, (cid, b, start)) in std::mem::take(&mut open_comments) {
+        let end = doc_block_len(doc, &b).max(start);
+        comment_ranges.push((b, start, end, cid));
+    }
+    // Comment anchor marks: cover each commented range with a `comment` mark valued
+    // with the comment id. A zero-width range can't carry a mark, so widen it to one
+    // character when the block has text after the anchor.
+    for (b, start, mut end, cid) in comment_ranges {
+        if end <= start {
+            let blen = doc_block_len(doc, &b);
+            end = (start + 1).min(blen);
+        }
+        if end > start {
+            doc.add_mark(&b, start, end, MARK_COMMENT, cid.as_str());
+        }
+    }
+    // Tracked-change anchor marks: cover each changed range with the `ins`/`del` mark
+    // matching the change's kind, valued with the change id.
+    for (b, start, end, kind, cid) in change_ranges {
+        if end > start {
+            doc.add_change_mark(kind, &b, start, end, &cid);
+        }
+    }
     Ok(())
+}
+
+/// The character length of a body block's text (0 if absent).
+fn doc_block_len(doc: &DocMut, block_id: &str) -> usize {
+    crate::model::block_text(doc.doc, doc.c, block_id).map(|t| t.chars().count()).unwrap_or(0)
 }
 
 #[cfg(test)]
