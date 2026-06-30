@@ -66,7 +66,10 @@ impl FormatProvider for DocxCodec {
         if let Some(xml) = container.get(comments::COMMENTS_PART) {
             comment_map = comments::import_comments_part(xml, doc);
         }
-        content::parse_body(&document, &reg, &foot_map, &end_map, &comment_map, doc)?;
+        // Image relationships: resolve each `r:embed` rel id to the bytes of its
+        // referenced media part so the body parser can store image blobs.
+        let image_map = content::build_image_map(&container);
+        content::parse_body(&document, &reg, &foot_map, &end_map, &comment_map, &image_map, doc)?;
         // Document properties: parse `docProps/core.xml` (dc:title, dc:creator, …)
         // + `docProps/app.xml` (Application = generator) into `meta.props`.
         if let Some(core_xml) = container.get("docProps/core.xml") {

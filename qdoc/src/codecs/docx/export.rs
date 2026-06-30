@@ -70,10 +70,11 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     let notes = super::notes::export_notes(&doc);
     // Comments part + the qdoc-id → docx-id map the body's range markers reference.
     let comments = super::comments::export_comments(&doc);
-    let (document, named_refs, numbering) =
+    let (document, named_refs, numbering, images) =
         build_document_xml(&snap, &sectpr, &notes.id_map, &notes.kind_map, &comments.id_map);
     let has_lists = snap.blocks.iter().any(|b| b.kind == "list_item");
     let has_styles = !named_refs.is_empty();
+    let has_images = !images.images.is_empty();
 
     let mut c = DocxContainer { parts: Vec::new() };
     // Re-emit every preserved part verbatim (styles.xml, settings.xml, the
@@ -117,6 +118,12 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     }
 
     c.set("word/document.xml", document.into_bytes());
+
+    // Image media parts. Each exported drawing references a `word/media/imageN.<ext>`
+    // part by a synthesised relationship; the bytes are written here.
+    for img in &images.images {
+        c.set(&img.part, img.bytes.clone());
+    }
 
     // Page header/footer parts. Written under the fixed `word/header1.xml` /
     // `word/footer1.xml` names (the `w:sectPr` built above references them by the
@@ -223,6 +230,9 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
         if comments.comments_xml.is_some() {
             ct.push_str(COMMENTS_OVERRIDE);
         }
+        for def in images.content_type_defaults() {
+            ct.push_str(&def);
+        }
         ct.push_str("</Types>");
         c.set("[Content_Types].xml", ct.into_bytes());
     } else {
@@ -254,12 +264,22 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
         if need_comments_wireup {
             overrides.push(("/word/comments.xml", COMMENTS_OVERRIDE));
         }
-        if !overrides.is_empty() {
+        let image_defaults = images.content_type_defaults();
+        if !overrides.is_empty() || !image_defaults.is_empty() {
             if let Some(ct) = c.get("[Content_Types].xml") {
                 let mut s = String::from_utf8_lossy(ct).into_owned();
                 for (part, ovr) in overrides {
                     if !s.contains(part) {
                         inject_before(&mut s, "</Types>", ovr);
+                    }
+                }
+                // Image content-type `Default`s — dedup on `Extension="<ext>"`.
+                for img in &images.images {
+                    let probe = format!(r#"Extension="{}""#, img.ext);
+                    if !s.contains(&probe) {
+                        let (_, media) = image_ext_and_media(&img.bytes);
+                        let def = format!(r#"<Default Extension="{}" ContentType="{}"/>"#, img.ext, media);
+                        inject_before(&mut s, "</Types>", &def);
                     }
                 }
                 c.set("[Content_Types].xml", s.into_bytes());
@@ -301,6 +321,7 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
         || need_footnotes_wireup
         || need_endnotes_wireup
         || need_comments_wireup
+        || has_images
     {
         if !had_doc_rels {
             let mut inner = String::new();
@@ -325,6 +346,7 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
             if need_comments_wireup {
                 inner.push_str(COMMENTS_REL);
             }
+            inner.push_str(&images.relationships());
             let rels = format!(
                 r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{inner}</Relationships>"#
@@ -352,6 +374,19 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
             }
             if need_comments_wireup && !s.contains("Target=\"comments.xml\"") {
                 inject_before(&mut s, "</Relationships>", COMMENTS_REL);
+            }
+            // Image rels — unique ids (`rIdImgN`), so a simple id-presence check dedups.
+            for img in &images.images {
+                if !s.contains(&format!(r#"Id="{}""#, img.rel_id)) {
+                    inject_before(
+                        &mut s,
+                        "</Relationships>",
+                        &format!(
+                            r#"<Relationship Id="{}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="{}"/>"#,
+                            img.rel_id, img.target
+                        ),
+                    );
+                }
             }
             c.set("word/_rels/document.xml.rels", s.into_bytes());
         }
@@ -990,6 +1025,155 @@ impl Numbering {
     }
 }
 
+/// EMUs per CSS pixel (914400 EMU/inch ÷ 96 px/inch).
+const EMU_PER_PX: f64 = 914400.0 / 96.0;
+
+/// A media part + relationship synthesised for an exported image block.
+struct ExportedImage {
+    /// Relationship id (e.g. `rIdImg1`) referenced by the drawing's `a:blip`.
+    rel_id: String,
+    /// Package part name, e.g. `word/media/image1.png`.
+    part: String,
+    /// `Target` written into the document rels (relative to `word/`).
+    target: String,
+    /// File extension (`png`/`jpg`/…) for the content-type `Default`.
+    ext: &'static str,
+    /// Image bytes.
+    bytes: Vec<u8>,
+}
+
+/// Accumulator threaded through the body build: assigns rel ids + media part names
+/// to image blocks and remembers their bytes so `export()` can write the parts +
+/// wire the relationships and content-type defaults.
+#[derive(Default)]
+struct ImageExport {
+    images: Vec<ExportedImage>,
+}
+
+impl ImageExport {
+    /// The distinct `<Default Extension="…" ContentType="…"/>` rows the exported
+    /// media parts need in `[Content_Types].xml`.
+    fn content_type_defaults(&self) -> Vec<String> {
+        let mut seen = BTreeSet::new();
+        let mut out = Vec::new();
+        for img in &self.images {
+            if seen.insert(img.ext) {
+                let (_, media) = image_ext_and_media(&img.bytes);
+                out.push(format!(r#"<Default Extension="{}" ContentType="{}"/>"#, img.ext, media));
+            }
+        }
+        out
+    }
+
+    /// The `<Relationship>` rows wiring each media part into the document rels.
+    fn relationships(&self) -> String {
+        let mut s = String::new();
+        for img in &self.images {
+            s.push_str(&format!(
+                r#"<Relationship Id="{}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="{}"/>"#,
+                img.rel_id, img.target
+            ));
+        }
+        s
+    }
+
+    /// Register an image blob, returning its relationship id. The same blob is
+    /// stored once per occurrence (Word references each drawing by its own rel).
+    fn add(&mut self, bytes: &[u8]) -> String {
+        let n = self.images.len() + 1;
+        let (ext, _) = image_ext_and_media(bytes);
+        let rel_id = format!("rIdImg{n}");
+        let target = format!("media/image{n}.{ext}");
+        self.images.push(ExportedImage {
+            rel_id: rel_id.clone(),
+            part: format!("word/{target}"),
+            target,
+            ext,
+            bytes: bytes.to_vec(),
+        });
+        rel_id
+    }
+}
+
+/// Sniff an image's extension + media type from its magic bytes.
+fn image_ext_and_media(bytes: &[u8]) -> (&'static str, &'static str) {
+    if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
+        ("png", "image/png")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        ("jpg", "image/jpeg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        ("gif", "image/gif")
+    } else {
+        ("bin", "application/octet-stream")
+    }
+}
+
+/// The model `anchor` value of an image block (default `inline`).
+fn image_anchor(b: &BlockView) -> &str {
+    match b.attrs.get("anchor") {
+        Some(AttrVal::Str(s)) => s.as_str(),
+        _ => "inline",
+    }
+}
+
+/// The model `wrap` value of an image block (default `none`).
+fn image_wrap(b: &BlockView) -> &str {
+    match b.attrs.get("wrap") {
+        Some(AttrVal::Str(s)) => s.as_str(),
+        _ => "none",
+    }
+}
+
+/// An image block's display size in EMU (`width`/`height` px → EMU), defaulting to
+/// a 1-inch square when unset so Word still renders something.
+fn image_extent_emu(b: &BlockView) -> (i64, i64) {
+    let px = |k: &str, dflt: i64| match b.attrs.get(k) {
+        Some(AttrVal::Int(n)) if *n > 0 => *n,
+        _ => dflt,
+    };
+    let cx = (px("width", 96) as f64 * EMU_PER_PX).round() as i64;
+    let cy = (px("height", 96) as f64 * EMU_PER_PX).round() as i64;
+    (cx, cy)
+}
+
+/// Build the `w:drawing` XML for an image block, registering its blob with `imgs`.
+/// Returns `None` if the blob is absent. Inline images emit `wp:inline`; floating
+/// images emit `wp:anchor` with the appropriate `wp:wrap*` element + a position.
+fn image_drawing_xml(b: &BlockView, snap: &DocSnapshot, imgs: &mut ImageExport) -> Option<String> {
+    let hash = match b.attrs.get("blob") {
+        Some(AttrVal::Str(h)) => h,
+        _ => return None,
+    };
+    let bytes = snap.blobs.get(hash)?;
+    let rel_id = imgs.add(bytes);
+    let (cx, cy) = image_extent_emu(b);
+    let docpr_id = imgs.images.len(); // unique per drawing
+    let name = escape_attr(&b.id);
+    // The graphic payload (blip + shape) is shared by inline and anchored drawings.
+    let graphic = format!(
+        r#"<wp:docPr id="{docpr_id}" name="{name}"/><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="{docpr_id}" name="{name}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="{rel_id}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic>"#
+    );
+    let anchor = image_anchor(b);
+    if anchor == "inline" {
+        Some(format!(
+            r#"<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="{cx}" cy="{cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/>{graphic}</wp:inline></w:drawing></w:r>"#
+        ))
+    } else {
+        // Floating: positioned relative to the column (paragraph anchor) or page.
+        let rel_from = if anchor == "page" { "page" } else { "column" };
+        let rel_from_v = if anchor == "page" { "page" } else { "paragraph" };
+        let wrap = match image_wrap(b) {
+            "left" => r#"<wp:wrapSquare wrapText="left"/>"#.to_string(),
+            "right" => r#"<wp:wrapSquare wrapText="right"/>"#.to_string(),
+            "both" => r#"<wp:wrapSquare wrapText="bothSides"/>"#.to_string(),
+            _ => r#"<wp:wrapNone/>"#.to_string(),
+        };
+        Some(format!(
+            r#"<w:r><w:drawing><wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="0" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="{rel_from}"><wp:posOffset>0</wp:posOffset></wp:positionH><wp:positionV relativeFrom="{rel_from_v}"><wp:posOffset>0</wp:posOffset></wp:positionV><wp:extent cx="{cx}" cy="{cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/>{wrap}{graphic}</wp:anchor></w:drawing></w:r>"#
+        ))
+    }
+}
+
 /// Build `word/document.xml` and collect the set of CRDT styles-container styleIds
 /// referenced by a `<w:pStyle>` (so the caller can emit their definitions), plus
 /// the list-numbering plan (so the caller can write a matching numbering.xml).
@@ -1001,10 +1185,11 @@ fn build_document_xml(
     note_ids: &BTreeMap<String, i64>,
     note_kinds: &BTreeMap<String, crate::model::NoteKind>,
     comment_ids: &BTreeMap<String, i64>,
-) -> (String, BTreeSet<String>, Numbering) {
+) -> (String, BTreeSet<String>, Numbering, ImageExport) {
     let mut body = String::new();
     let mut named_refs: BTreeSet<String> = BTreeSet::new();
     let mut numbering = Numbering::default();
+    let mut imgs = ImageExport::default();
     // Tracked changes: a `<w:ins>`/`<w:del>` wrapper carries an integer revision id.
     // Assigned from 0 in canonical (sorted) order — independent of comment ids.
     let changes = change_index(snap);
@@ -1036,6 +1221,13 @@ fn build_document_xml(
                     spacing_xml(b),
                     render_runs(&b.text, &b.marks, note_ids, note_kinds, comment_ids, changes, change_ids)
                 ));
+                i += 1;
+            }
+            "image" => {
+                // Wrap the drawing run in a paragraph (Word images live in a `w:p`).
+                if let Some(drawing) = image_drawing_xml(b, snap, &mut imgs) {
+                    body.push_str(&format!("<w:p>{drawing}</w:p>"));
+                }
                 i += 1;
             }
             "fidelity" => {
@@ -1101,7 +1293,7 @@ fn build_document_xml(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="{W_NS}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w10="urn:schemas-microsoft-com:office:word" xmlns:wne="http://schemas.microsoft.com/office/word/2006/wordml"><w:body>{body}{sectpr}</w:body></w:document>"#
     );
-    (document, named_refs, numbering)
+    (document, named_refs, numbering, imgs)
 }
 
 #[cfg(test)]
@@ -1159,6 +1351,100 @@ mod tests {
         DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
         let m2 = norm(&d2.materialize());
         assert_eq!(m1, m2, "model round-trips through .docx export then import");
+    }
+
+    // A 1×1 PNG, used as image blob bytes in the image round-trip test.
+    const TINY_PNG: [u8; 69] = [
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+        0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
+        0x00, 0x03, 0x01, 0x01, 0x00, 0xf7, 0x03, 0x41, 0x43, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
+        0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    #[test]
+    fn image_inline_roundtrips_through_docx() {
+        // A plain inline image with an explicit display size must round-trip with
+        // its blob bytes, `anchor=inline`, and size intact — plus emit a real
+        // `wp:inline` drawing, a media part, a relationship and a content-type.
+        let mut d = Document::new();
+        let p1 = d.insert_block(None, "paragraph");
+        d.splice_text(&p1, 0, 0, "before");
+        let img = d.insert_block(Some(&p1), "image");
+        let p3 = d.insert_block(Some(&img), "paragraph");
+        d.splice_text(&p3, 0, 0, "after");
+        let hash = d.put_blob(&TINY_PNG);
+        {
+            let mut dm = d.as_mut();
+            dm.set_attr(&img, "blob", hash.as_str());
+            dm.set_attr(&img, "width", 64_i64);
+            dm.set_attr(&img, "height", 48_i64);
+        }
+
+        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let cont = DocxContainer::read(&exported).unwrap();
+        // Media part + relationship + content-type default written.
+        let media = cont
+            .parts
+            .iter()
+            .find(|(n, _)| n.starts_with("word/media/") && n.ends_with(".png"))
+            .expect("media part written");
+        assert_eq!(media.1, &TINY_PNG[..], "image bytes written verbatim");
+        let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
+        assert!(document.contains("<wp:inline"), "inline drawing emitted: {document}");
+        let rels = std::str::from_utf8(cont.get("word/_rels/document.xml.rels").unwrap()).unwrap();
+        assert!(rels.contains(r#"Target="media/image1.png""#), "image rel wired: {rels}");
+        let ct = std::str::from_utf8(cont.get("[Content_Types].xml").unwrap()).unwrap();
+        assert!(ct.contains(r#"Extension="png""#), "png content-type default: {ct}");
+
+        let mut d2 = Document::new();
+        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+        let im = snap.blocks.iter().find(|b| b.kind == "image").expect("image block present");
+        let blob_hash = match im.attrs.get("blob") {
+            Some(AttrVal::Str(h)) => h.clone(),
+            other => panic!("image missing blob attr: {other:?}"),
+        };
+        assert_eq!(blob_hash, hash, "blake3 hash stable across round-trip");
+        assert_eq!(snap.blobs.get(&blob_hash).map(|b| b.as_slice()), Some(&TINY_PNG[..]), "blob bytes survive");
+        assert_eq!(im.attrs.get("anchor"), Some(&AttrVal::Str("inline".into())), "{:?}", im.attrs);
+        assert_eq!(im.attrs.get("width"), Some(&AttrVal::Int(64)), "{:?}", im.attrs);
+        assert_eq!(im.attrs.get("height"), Some(&AttrVal::Int(48)), "{:?}", im.attrs);
+    }
+
+    #[test]
+    fn image_positioning_roundtrips_through_docx() {
+        // A floating, paragraph-anchored image that wraps text on its right, with an
+        // explicit display size, must survive a .docx round-trip with anchor + wrap +
+        // size intact (emitting a `wp:anchor` + `wp:wrapSquare wrapText="right"`).
+        let mut d = Document::new();
+        let p1 = d.insert_block(None, "paragraph");
+        d.splice_text(&p1, 0, 0, "text");
+        let img = d.insert_block(Some(&p1), "image");
+        let hash = d.put_blob(&TINY_PNG);
+        {
+            let mut dm = d.as_mut();
+            dm.set_attr(&img, "blob", hash.as_str());
+            dm.set_attr(&img, "anchor", "paragraph");
+            dm.set_attr(&img, "wrap", "right");
+            dm.set_attr(&img, "width", 120_i64);
+            dm.set_attr(&img, "height", 80_i64);
+        }
+
+        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let cont = DocxContainer::read(&exported).unwrap();
+        let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
+        assert!(document.contains("<wp:anchor"), "anchor drawing emitted: {document}");
+        assert!(document.contains(r#"<wp:wrapSquare wrapText="right"/>"#), "right wrap emitted: {document}");
+
+        let mut d2 = Document::new();
+        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+        let im = snap.blocks.iter().find(|b| b.kind == "image").expect("image block present");
+        assert_eq!(im.attrs.get("anchor"), Some(&AttrVal::Str("paragraph".into())), "{:?}", im.attrs);
+        assert_eq!(im.attrs.get("wrap"), Some(&AttrVal::Str("right".into())), "{:?}", im.attrs);
+        assert_eq!(im.attrs.get("width"), Some(&AttrVal::Int(120)), "{:?}", im.attrs);
+        assert_eq!(im.attrs.get("height"), Some(&AttrVal::Int(80)), "{:?}", im.attrs);
     }
 
     #[test]
