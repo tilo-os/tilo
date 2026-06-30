@@ -25,7 +25,15 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
-        render_shot_to_png(mail::app_root(), DEFAULT_SHOTS_VIEWPORT, &out)?;
+        // Optional `--scenario <name>` selects a pre-seeded state + viewport so
+        // a single offscreen frame can showcase a specific feature
+        // (e.g. `compose`, `narrow`). Default renders the plain mailbox.
+        let scenario = parse_scenario_arg(&args);
+        let (root, viewport) = match scenario.as_deref() {
+            Some(name) => (mail::app_root_scenario(name), mail::shot_viewport(name)),
+            None => (mail::app_root(), DEFAULT_SHOTS_VIEWPORT),
+        };
+        render_shot_to_png(root, viewport, &out)?;
         return Ok(());
     }
 
@@ -43,6 +51,19 @@ fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
         }
         if let Some(rest) = arg.strip_prefix("--shots=") {
             return Some(std::path::PathBuf::from(rest));
+        }
+    }
+    None
+}
+
+fn parse_scenario_arg(args: &[String]) -> Option<String> {
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == "--scenario" {
+            return iter.next().cloned();
+        }
+        if let Some(rest) = arg.strip_prefix("--scenario=") {
+            return Some(rest.to_string());
         }
     }
     None

@@ -8,6 +8,7 @@
 
 use uuid::Uuid;
 
+use crate::account::{Account, AccountStore};
 use crate::model::{AccountConfig, Addr, Attachment, Folder, Mailbox, Message};
 use crate::transport::parse_eml;
 
@@ -261,6 +262,43 @@ is definitely not a scam.",
     }
 
     mb
+}
+
+/// A bundled multi-account store so the sidebar shows more than one account
+/// offline (`--shots`). The first account owns the sample [`Mailbox`]; the
+/// second is a plausible work account (collapsed by default) so the
+/// collapsible-per-account sidebar behaviour is visible in a single frame.
+pub fn sample_account_store() -> AccountStore {
+    let personal = AccountConfig {
+        display_name: "You".into(),
+        email: "you@qos.example".into(),
+        imap_host: "imap.qos.example".into(),
+        imap_port: 993,
+        imap_tls: true,
+        smtp_host: "smtp.qos.example".into(),
+        smtp_port: 465,
+        smtp_tls: true,
+        username: "you@qos.example".into(),
+        password: "********".into(),
+    };
+    let work = AccountConfig {
+        display_name: "You at Hooli".into(),
+        email: "you@hooli.example".into(),
+        imap_host: "imap.hooli.example".into(),
+        imap_port: 993,
+        imap_tls: true,
+        smtp_host: "smtp.hooli.example".into(),
+        smtp_port: 587,
+        smtp_tls: true,
+        username: "you@hooli.example".into(),
+        password: "********".into(),
+    };
+    let mut a0 = Account::new(personal);
+    a0.tint = 0;
+    let mut a1 = Account::new(work);
+    a1.tint = 3;
+    a1.collapsed = true;
+    AccountStore { accounts: vec![a0, a1], active: 0 }
 }
 
 /// A plain text/plain message, parsed live by mail-parser.

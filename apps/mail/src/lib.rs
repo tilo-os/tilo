@@ -28,12 +28,16 @@
 //! attachments, two of them hydrated through the **real** `mail-parser` path.
 //! The live app does real IMAP/SMTP instead.
 
+pub mod account;
 pub mod app;
+pub mod compose;
 pub mod doc;
+pub mod engine;
 pub mod model;
 pub mod sample;
 pub mod transport;
 pub mod util;
+pub mod wysiwyg;
 
 pub use app::MailApp;
 
@@ -43,4 +47,26 @@ use ui::widget::Widget;
 /// `--shots` offscreen renderer.
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(MailApp::new_sample())
+}
+
+/// The viewport a named `--shots` scenario should render at.
+pub fn shot_viewport(scenario: &str) -> (u32, u32) {
+    match scenario {
+        // Narrow single-pane responsive layout.
+        "narrow" => (560, 860),
+        _ => (1280, 800),
+    }
+}
+
+/// Build the root widget for a named `--shots` scenario, pre-seeded so a single
+/// offscreen frame shows the feature in question. The same widget the live app
+/// uses — only the initial state differs.
+pub fn app_root_scenario(scenario: &str) -> Box<dyn Widget> {
+    let mut app = MailApp::new_sample();
+    match scenario {
+        "compose" => app.prime_compose_shot(),
+        "narrow" => app.prime_narrow_shot(),
+        _ => {}
+    }
+    Box::new(app)
 }

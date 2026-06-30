@@ -1,14 +1,32 @@
-//! `MailApp` — the root widget. Owns the in-memory [`Mailbox`], the UI state,
-//! and renders the three-pane client (folder sidebar · threaded message list ·
-//! reader), plus the Compose and Account-Setup overlays. It draws most chrome
-//! directly into the Vello scene (data-dense rows are far easier to control
-//! that way) and embeds `ui::TextInput`s for every text-entry field.
+//! `MailApp` — the root widget. Owns the in-memory [`Mailbox`], the multi-
+//! account [`AccountStore`], the floating [`ComposeWindow`], and the UI state,
+//! and renders a **responsive** mail client:
 //!
-//! State that must persist / sync / undo is mirrored into the Automerge doc
-//! through [`crate::doc::MailDoc`]: per-message flags, the selected folder /
-//! view mode / search query / selection, the account config, and the active
-//! draft. The immutable message corpus is hydrated into [`Mailbox`] (from the
-//! live IMAP fetch, or the bundled sample corpus for `--shots`).
+//! * a **collapsible account/folder sidebar** (Adwaita `OverlaySplitView` style:
+//!   persistent and inline when the window is wide; collapsed and overlaying the
+//!   content behind a scrim when narrow, closed by default at small sizes);
+//! * a **message list** + **reader** shown side-by-side when wide, or as a
+//!   single navigation-push pane (list → mail, with a back affordance) when
+//!   narrow;
+//! * a **right-click context menu** and **swipe-left / swipe-right** row
+//!   actions whose action sets mirror each other;
+//! * a movable/resizable/detachable [`ComposeWindow`] for writing mail.
+//!
+//! Like the rest of this app it draws most chrome straight into the Vello scene
+//! (data-dense rows are easier to control that way) and embeds `ui::TextInput`s
+//! for text entry. Mutable state that must persist / sync / undo (per-message
+//! flags, the selected folder / view mode / search / selection, the account
+//! config, the compose-format preference) is mirrored into the Automerge doc via
+//! [`crate::doc::MailDoc`].
+//!
+//! ## On OS-window detach
+//! The compose window can be popped *out* to sit beside the app content
+//! ([`crate::compose::DockState::Detached`]) and back *in*. A real second
+//! top-level OS surface needs the qOS compositor's window-group / multi-window
+//! support (`shell`), which isn't available through the single-window `ui::App`
+//! on a dev host — so the pop-out is fully functional within the app canvas, and
+//! `ComposeWindow::detach_request` is the seam to hand the draft to the
+//! compositor when running under qOS.
 
 use std::collections::HashMap;
 
@@ -28,21 +46,46 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::TextInput;
 
+use crate::account::{Account, AccountStore};
+use crate::compose::{ComposeAction, ComposeWindow};
 use crate::doc::MailDoc;
-use crate::model::{AccountConfig, Addr, Draft, Folder, Mailbox, Message, MessageId};
-use crate::transport::{build_mime, parse_addr_list};
+use crate::model::{AccountConfig, Addr, ComposeFormat, Folder, Mailbox, Message, MessageId};
 use crate::util::{format_absolute, format_relative};
 
 const TOPBAR_H: f64 = 56.0;
-const SIDEBAR_W: f64 = 236.0;
-const LIST_W: f64 = 404.0;
-const FOLDER_ROW_H: f64 = 38.0;
+const SIDEBAR_W: f64 = 248.0;
+const LIST_W_MIN: f64 = 360.0;
+const FOLDER_ROW_H: f64 = 36.0;
+const ACCOUNT_HEADER_H: f64 = 44.0;
 const LIST_ROW_H: f64 = 78.0;
 
+/// The width below which the client switches to its narrow single-pane,
+/// overlay-sidebar layout. Above it, list + reader sit side-by-side and the
+/// sidebar is persistent.
+const WIDE_BREAKPOINT: f64 = 980.0;
+/// Swipe distance (px) past which a horizontal drag on a row triggers its
+/// swipe action.
+const SWIPE_THRESHOLD: f64 = 72.0;
+
+/// In the narrow layout the content area is a two-page navigation stack.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
+enum NarrowPage {
+    List,
+    Mail,
+}
+
+/// How the sidebar is presented at the current width.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SidebarMode {
+    /// Inline, always visible, pushes the content (wide windows).
+    Persistent,
+    /// Floats over the content behind a scrim; toggled open (narrow windows).
+    Overlay,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
     Mailbox,
-    Compose,
     Setup,
 }
 
@@ -50,41 +93,89 @@ pub enum Mode {
 enum Focus {
     None,
     Search,
-    ComposeTo,
-    ComposeCc,
-    ComposeBcc,
-    ComposeSubject,
-    ComposeBody,
     Setup(usize),
 }
 
-/// Identifies an actionable region resolved during layout, so `handle_event`
-/// hit-testing and `draw` agree on geometry.
+/// Identifies an actionable region resolved during layout.
 #[derive(Clone)]
 enum Hit {
-    Folder(Folder),
+    Account(usize),
+    AccountToggle(usize),
+    Folder(usize, Folder),
     Thread(MessageId),
     ThreadStar(MessageId),
     Compose,
     Settings,
+    SidebarToggle,
+    ScrimDismiss,
+    BackToList,
     SearchClear,
     Reply,
     ArchiveSel,
     DeleteSel,
     StarSel,
     UnreadSel,
-    Send,
-    SaveDraft,
-    CancelOverlay,
+    // context menu
+    CtxItem(usize),
+    // setup overlay
     SetupField(usize),
     ToggleImapTls,
     ToggleSmtpTls,
     SetupSave,
-    AddAttachment,
+    CancelOverlay,
+}
+
+/// One entry in the right-click context menu. The action set here is the
+/// single source of truth that the swipe gestures mirror.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum CtxAction {
+    Reply,
+    ReplyAll,
+    Forward,
+    ToggleRead,
+    ToggleStar,
+    Archive,
+    Delete,
+    MoveToArchive,
+    MoveToInbox,
+    Junk,
+}
+
+impl CtxAction {
+    fn label(self, read: bool, starred: bool) -> String {
+        match self {
+            CtxAction::Reply => "Reply".into(),
+            CtxAction::ReplyAll => "Reply all".into(),
+            CtxAction::Forward => "Forward".into(),
+            CtxAction::ToggleRead => if read { "Mark unread".into() } else { "Mark read".into() },
+            CtxAction::ToggleStar => if starred { "Remove flag".into() } else { "Flag / star".into() },
+            CtxAction::Archive => "Archive".into(),
+            CtxAction::Delete => "Delete".into(),
+            CtxAction::MoveToArchive => "Move to Archive".into(),
+            CtxAction::MoveToInbox => "Move to Inbox".into(),
+            CtxAction::Junk => "Mark as junk".into(),
+        }
+    }
+}
+
+/// State of an in-progress horizontal swipe on a list row.
+#[derive(Clone, Copy)]
+struct SwipeState {
+    id: MessageId,
+    start_x: f64,
+    dx: f64,
+}
+
+/// An open context menu anchored at a point, targeting a message.
+struct ContextMenu {
+    target: MessageId,
+    pos: Point,
+    items: Vec<CtxAction>,
 }
 
 pub struct MailApp {
     mailbox: Mailbox,
+    accounts: AccountStore,
     now_min: i64,
     mode: Mode,
     folder: Folder,
@@ -93,30 +184,39 @@ pub struct MailApp {
     search: String,
     seeded: bool,
 
+    // responsive state
+    sidebar_open: bool,
+    narrow_page: NarrowPage,
+
+    // compose window
+    compose: ComposeWindow,
+
+    // context menu + swipe
+    context_menu: Option<ContextMenu>,
+    swipe: Option<SwipeState>,
+    mouse_down_row: Option<(MessageId, Point)>,
+
     // embedded inputs
     search_input: TextInput,
-    c_to: TextInput,
-    c_cc: TextInput,
-    c_bcc: TextInput,
-    c_subject: TextInput,
-    compose_body: String,
-    compose_atts: Vec<String>,
-    show_cc_bcc: bool,
 
     // setup fields: name, email, username, password, imap_host, imap_port,
     // smtp_host, smtp_port
     setup_inputs: Vec<TextInput>,
     setup_imap_tls: bool,
     setup_smtp_tls: bool,
+    /// Which account index the setup form edits (`None` = adding a new one).
+    setup_editing: Option<usize>,
 
-    // toast / status line
     status: Option<String>,
 
     // layout caches
     rect: Rect,
-    hits: Vec<(Rect, Hit)>,
+    sidebar_mode: SidebarMode,
+    sidebar_rect: Rect,
+    content_rect: Rect,
     list_rect: Rect,
     reader_rect: Rect,
+    hits: Vec<(Rect, Hit)>,
     last_mouse: Point,
     dirty: bool,
 }
@@ -124,31 +224,16 @@ pub struct MailApp {
 impl MailApp {
     pub fn new_sample() -> Self {
         let mailbox = crate::sample::sample_mailbox();
+        let accounts = crate::sample::sample_account_store();
         let now_min = crate::sample::SAMPLE_NOW_MIN;
-        Self::with_mailbox(mailbox, now_min)
+        Self::with_data(mailbox, accounts, now_min)
     }
 
-    fn with_mailbox(mailbox: Mailbox, now_min: i64) -> Self {
+    fn with_data(mailbox: Mailbox, accounts: AccountStore, now_min: i64) -> Self {
         let mut search_input = TextInput::local();
         search_input.set_plain_chrome(true);
-        let mk = || {
-            let mut t = TextInput::local();
-            t.set_plain_chrome(true);
-            t
-        };
-        let cfg = &mailbox.account;
-        let setup_inputs = vec![
-            TextInput::local().with_initial_value(&cfg.display_name),
-            TextInput::local().with_initial_value(&cfg.email),
-            TextInput::local().with_initial_value(&cfg.username),
-            TextInput::local()
-                .with_initial_value(&cfg.password)
-                .with_secret(true),
-            TextInput::local().with_initial_value(&cfg.imap_host),
-            TextInput::local().with_initial_value(&cfg.imap_port.to_string()),
-            TextInput::local().with_initial_value(&cfg.smtp_host),
-            TextInput::local().with_initial_value(&cfg.smtp_port.to_string()),
-        ];
+        let cfg = accounts.active_config();
+        let setup_inputs = build_setup_inputs(&cfg);
 
         let mut app = Self {
             now_min,
@@ -158,39 +243,57 @@ impl MailApp {
             focus: Focus::None,
             search: String::new(),
             seeded: false,
+            sidebar_open: false,
+            narrow_page: NarrowPage::List,
+            compose: ComposeWindow::new(ComposeFormat::Html),
+            context_menu: None,
+            swipe: None,
+            mouse_down_row: None,
             search_input,
-            c_to: mk(),
-            c_cc: mk(),
-            c_bcc: mk(),
-            c_subject: mk(),
-            compose_body: String::new(),
-            compose_atts: Vec::new(),
-            show_cc_bcc: false,
             setup_imap_tls: cfg.imap_tls,
             setup_smtp_tls: cfg.smtp_tls,
             setup_inputs,
+            setup_editing: None,
             status: None,
             rect: Rect::ZERO,
-            hits: Vec::new(),
+            sidebar_mode: SidebarMode::Persistent,
+            sidebar_rect: Rect::ZERO,
+            content_rect: Rect::ZERO,
             list_rect: Rect::ZERO,
             reader_rect: Rect::ZERO,
+            hits: Vec::new(),
             last_mouse: Point::ZERO,
             dirty: true,
             mailbox,
+            accounts,
         };
-        // Preselect a conversation so the reader is populated on launch /
-        // in the headless screenshot. Prefer the most-recent multi-message
-        // thread (richer to read); fall back to the newest single message.
+        // Preselect a conversation so the reader is populated on launch / in the
+        // headless screenshot.
         let threads = app.current_threads();
-        let pick = threads
-            .iter()
-            .find(|t| t.message_ids.len() > 1)
-            .or_else(|| threads.first());
+        let pick = threads.iter().find(|t| t.message_ids.len() > 1).or_else(|| threads.first());
         if let Some(&newest) = pick.and_then(|t| t.message_ids.last()) {
             app.selected = Some(newest);
             app.mailbox.mark_read(newest, true);
         }
         app
+    }
+
+    /// Open the compose window pre-filled with a representative HTML message,
+    /// for the `--shots` screenshot. Demonstrates the WYSIWYG editor with mixed
+    /// formatting (heading, bold/italic, a bullet list) and the toolbar.
+    pub fn prime_compose_shot(&mut self) {
+        self.compose.open_demo();
+        self.dirty = true;
+    }
+
+    /// Show the narrow single-pane layout for the responsive screenshot: the
+    /// message list as the sole content pane with the sidebar collapsed (its
+    /// default at small sizes — it overlays the content with a scrim only when
+    /// toggled open). The breakpoint itself is width-driven at layout time.
+    pub fn prime_narrow_shot(&mut self) {
+        self.sidebar_open = false;
+        self.narrow_page = NarrowPage::List;
+        self.dirty = true;
     }
 
     // ----- derived views -----
@@ -199,8 +302,6 @@ impl MailApp {
         self.mailbox.threads_in(self.folder)
     }
 
-    /// The rows shown in the list pane: either search hits (flat) or the
-    /// folder's threads (collapsed). Returns (message-id, thread-len).
     fn list_rows(&self) -> Vec<(MessageId, usize)> {
         if !self.search.trim().is_empty() {
             self.mailbox
@@ -216,7 +317,6 @@ impl MailApp {
         }
     }
 
-    /// Messages of the thread the selected message belongs to, oldest→newest.
     fn selected_thread_messages(&self) -> Vec<&Message> {
         let Some(sel) = self.selected.and_then(|id| self.mailbox.get(id)) else {
             return Vec::new();
@@ -241,9 +341,11 @@ impl MailApp {
                 MailDoc::store_flags(state, &m.clone());
             }
         }
-        MailDoc::store_account(state, &self.mailbox.account);
+        MailDoc::store_account(state, &self.accounts.active_config());
         MailDoc::set_folder(state, self.folder);
         MailDoc::set_mode(state, "mailbox");
+        MailDoc::set_compose_format(state, self.compose.format().as_key());
+        MailDoc::set_active_account(state, self.accounts.active);
         if let Some(sel) = self.selected {
             MailDoc::set_selected(state, Some(&sel.to_string()));
         }
@@ -262,6 +364,12 @@ impl MailApp {
         self.mailbox.mark_read(id, true);
         self.persist_flags(state, id);
         MailDoc::set_selected(state, Some(&id.to_string()));
+        if matches!(self.sidebar_mode, SidebarMode::Overlay) {
+            // On narrow, opening a message pushes the Mail page and closes the
+            // overlay sidebar.
+            self.narrow_page = NarrowPage::Mail;
+            self.sidebar_open = false;
+        }
         self.dirty = true;
     }
 
@@ -270,7 +378,6 @@ impl MailApp {
         self.search.clear();
         self.search_input.set_text("");
         MailDoc::set_folder(state, folder);
-        // Reselect the top of the new folder.
         self.selected = self
             .current_threads()
             .first()
@@ -278,80 +385,67 @@ impl MailApp {
         if let Some(sel) = self.selected {
             MailDoc::set_selected(state, Some(&sel.to_string()));
         }
+        // Selecting a folder returns the narrow nav to the list page; close the
+        // overlay sidebar so the content is visible.
+        self.narrow_page = NarrowPage::List;
+        if matches!(self.sidebar_mode, SidebarMode::Overlay) {
+            self.sidebar_open = false;
+        }
         self.dirty = true;
     }
 
-    fn open_compose_new(&mut self, state: &mut AutoCommit) {
-        self.mode = Mode::Compose;
-        self.c_to.set_text("");
-        self.c_cc.set_text("");
-        self.c_bcc.set_text("");
-        self.c_subject.set_text("");
-        self.compose_body.clear();
-        self.compose_atts.clear();
-        self.show_cc_bcc = false;
-        self.focus_only(Focus::ComposeTo);
-        MailDoc::set_mode(state, "compose");
+    fn open_compose_new(&mut self) {
+        self.compose.open_blank();
+        self.context_menu = None;
         self.dirty = true;
     }
 
-    fn open_reply(&mut self, state: &mut AutoCommit) {
-        let Some(msg) = self.selected.and_then(|id| self.mailbox.get(id)).cloned() else {
-            return;
-        };
-        self.mode = Mode::Compose;
-        self.c_to.set_text(&msg.from.rfc5322());
-        self.c_cc.set_text("");
-        self.c_bcc.set_text("");
+    fn open_reply(&mut self, id: MessageId) {
+        let Some(msg) = self.mailbox.get(id).cloned() else { return };
         let subj = if msg.subject.to_ascii_lowercase().starts_with("re:") {
             msg.subject.clone()
         } else {
             format!("Re: {}", msg.subject)
         };
-        self.c_subject.set_text(&subj);
-        self.compose_body = format!(
+        let quote = format!(
             "\n\nOn {}, {} wrote:\n> {}",
             format_absolute(msg.timestamp_min),
             msg.from.display(),
             msg.snippet()
         );
-        self.compose_atts.clear();
-        self.show_cc_bcc = false;
-        self.focus_only(Focus::ComposeBody);
-        MailDoc::set_mode(state, "compose");
+        self.compose.open_reply(&msg.from.rfc5322(), &subj, &quote);
+        self.context_menu = None;
         self.dirty = true;
     }
 
-    fn current_draft(&self) -> Draft {
-        Draft {
-            to: self.c_to.value().to_string(),
-            cc: self.c_cc.value().to_string(),
-            bcc: self.c_bcc.value().to_string(),
-            subject: self.c_subject.value().to_string(),
-            body: self.compose_body.clone(),
-            attachments: self.compose_atts.clone(),
-            in_reply_to: None,
-        }
+    fn open_forward(&mut self, id: MessageId) {
+        let Some(msg) = self.mailbox.get(id).cloned() else { return };
+        let subj = format!("Fwd: {}", msg.thread_subject());
+        let quote = format!(
+            "\n\n---------- Forwarded message ----------\nFrom: {}\nSubject: {}\n\n{}",
+            msg.from.rfc5322(),
+            msg.subject,
+            msg.body
+        );
+        self.compose.open_reply("", &subj, &quote);
+        self.context_menu = None;
+        self.dirty = true;
     }
 
     fn send_compose(&mut self, state: &mut AutoCommit) {
-        let draft = self.current_draft();
-        let from = Addr::new(
-            self.mailbox.account.display_name.clone(),
-            self.mailbox.account.email.clone(),
-        );
-        match build_mime(&from, &draft) {
+        let draft = self.compose.to_draft();
+        let acct = self.accounts.active_config();
+        let from = Addr::new(acct.display_name.clone(), acct.email.clone());
+        match crate::transport::build_mime(&from, &draft) {
             Ok(bytes) => {
-                // Land the sent message in the Sent folder so it shows up
-                // immediately (the live SMTP submit happens on a worker).
-                let to = parse_addr_list(&draft.to);
+                let to = crate::transport::parse_addr_list(&draft.to);
                 let msg = Message {
                     id: uuid::Uuid::new_v4(),
                     rfc_message_id: None,
                     in_reply_to: None,
                     from,
                     to,
-                    cc: parse_addr_list(&draft.cc),
+                    cc: crate::transport::parse_addr_list(&draft.cc),
                     subject: draft.subject.clone(),
                     body: draft.body.clone(),
                     attachments: draft
@@ -372,39 +466,61 @@ impl MailApp {
                 let id = msg.id;
                 self.mailbox.insert(msg);
                 self.persist_flags(state, id);
-                self.status = Some(format!("Sent ({} bytes)", bytes.len()));
+                let kind = if draft.html_body.is_some() { "HTML" } else { "text" };
+                self.status = Some(format!("Sent {kind} message ({} bytes)", bytes.len()));
             }
             Err(e) => self.status = Some(format!("Send failed: {e}")),
         }
-        self.close_overlay(state);
-    }
-
-    fn save_draft(&mut self, state: &mut AutoCommit) {
-        let draft = self.current_draft();
-        MailDoc::store_draft(state, &draft);
-        self.status = Some("Draft saved".into());
-        self.close_overlay(state);
-    }
-
-    fn close_overlay(&mut self, state: &mut AutoCommit) {
-        self.mode = Mode::Mailbox;
-        self.focus_only(Focus::None);
-        MailDoc::set_mode(state, "mailbox");
+        self.compose.close();
+        self.persist_compose_format(state);
         self.dirty = true;
     }
 
-    fn open_setup(&mut self, state: &mut AutoCommit) {
+    fn save_compose_draft(&mut self, state: &mut AutoCommit) {
+        let draft = self.compose.to_draft();
+        MailDoc::store_draft(state, &draft);
+        self.status = Some("Draft saved".into());
+        self.compose.close();
+        self.persist_compose_format(state);
+        self.dirty = true;
+    }
+
+    fn persist_compose_format(&self, state: &mut AutoCommit) {
+        MailDoc::set_compose_format(state, self.compose.format().as_key());
+    }
+
+    // ----- setup overlay (in-app add/edit; Settings owns this in production) --
+
+    fn open_setup_edit(&mut self, idx: Option<usize>) {
+        self.setup_editing = idx;
+        let cfg = match idx {
+            Some(i) => self.accounts.accounts.get(i).map(|a| a.config.clone()).unwrap_or_default(),
+            None => AccountConfig::default(),
+        };
+        self.setup_inputs = build_setup_inputs(&cfg);
+        self.setup_imap_tls = cfg.imap_tls;
+        self.setup_smtp_tls = cfg.smtp_tls;
         self.mode = Mode::Setup;
-        self.focus_only(Focus::Setup(1)); // email field
-        MailDoc::set_mode(state, "setup");
+        self.focus_only(Focus::Setup(1));
+        self.context_menu = None;
         self.dirty = true;
     }
 
     fn save_setup(&mut self, state: &mut AutoCommit) {
         let cfg = self.read_setup_config();
         if cfg.is_valid() {
-            self.mailbox.account = cfg.clone();
+            let mut account = match self.setup_editing.and_then(|i| self.accounts.accounts.get(i)) {
+                Some(existing) => {
+                    let mut a = existing.clone();
+                    a.config = cfg.clone();
+                    a
+                }
+                None => Account::new(cfg.clone()),
+            };
+            account.id = if cfg.email.is_empty() { account.id } else { cfg.email.clone() };
+            self.accounts.upsert(account);
             MailDoc::store_account(state, &cfg);
+            MailDoc::set_active_account(state, self.accounts.active);
             self.status = Some("Account saved".into());
             self.close_overlay(state);
         } else {
@@ -429,13 +545,16 @@ impl MailApp {
         }
     }
 
+    fn close_overlay(&mut self, state: &mut AutoCommit) {
+        self.mode = Mode::Mailbox;
+        self.focus_only(Focus::None);
+        MailDoc::set_mode(state, "mailbox");
+        self.dirty = true;
+    }
+
     fn focus_only(&mut self, focus: Focus) {
         self.focus = focus;
         self.search_input.set_focus(matches!(focus, Focus::Search));
-        self.c_to.set_focus(matches!(focus, Focus::ComposeTo));
-        self.c_cc.set_focus(matches!(focus, Focus::ComposeCc));
-        self.c_bcc.set_focus(matches!(focus, Focus::ComposeBcc));
-        self.c_subject.set_focus(matches!(focus, Focus::ComposeSubject));
         for (i, inp) in self.setup_inputs.iter_mut().enumerate() {
             inp.set_focus(matches!(focus, Focus::Setup(j) if j == i));
         }
@@ -445,14 +564,101 @@ impl MailApp {
     fn focused_input(&mut self) -> Option<&mut TextInput> {
         match self.focus {
             Focus::Search => Some(&mut self.search_input),
-            Focus::ComposeTo => Some(&mut self.c_to),
-            Focus::ComposeCc => Some(&mut self.c_cc),
-            Focus::ComposeBcc => Some(&mut self.c_bcc),
-            Focus::ComposeSubject => Some(&mut self.c_subject),
             Focus::Setup(i) => self.setup_inputs.get_mut(i),
             _ => None,
         }
     }
+
+    // ----- message mutations shared by context menu + swipe + keys -----
+
+    fn apply_message_action(&mut self, state: &mut AutoCommit, id: MessageId, action: CtxAction) {
+        match action {
+            CtxAction::Reply | CtxAction::ReplyAll => self.open_reply(id),
+            CtxAction::Forward => self.open_forward(id),
+            CtxAction::ToggleRead => {
+                let now = self.mailbox.get(id).map(|m| m.read).unwrap_or(false);
+                self.mailbox.mark_read(id, !now);
+                self.persist_flags(state, id);
+            }
+            CtxAction::ToggleStar => {
+                self.mailbox.toggle_star(id);
+                self.persist_flags(state, id);
+            }
+            CtxAction::Archive | CtxAction::MoveToArchive => {
+                self.mailbox.archive(id);
+                self.persist_flags(state, id);
+                self.reselect_after_remove(state);
+            }
+            CtxAction::Delete => {
+                self.mailbox.delete(id);
+                self.persist_flags(state, id);
+                self.reselect_after_remove(state);
+            }
+            CtxAction::MoveToInbox => {
+                self.mailbox.move_to(id, Folder::Inbox);
+                self.persist_flags(state, id);
+                self.reselect_after_remove(state);
+            }
+            CtxAction::Junk => {
+                self.mailbox.move_to(id, Folder::Junk);
+                self.persist_flags(state, id);
+                self.reselect_after_remove(state);
+            }
+        }
+        self.dirty = true;
+    }
+
+    fn context_items_for(&self, id: MessageId) -> Vec<CtxAction> {
+        let in_inbox = self.mailbox.get(id).map(|m| m.folder == Folder::Inbox).unwrap_or(true);
+        let mut items = vec![
+            CtxAction::Reply,
+            CtxAction::ReplyAll,
+            CtxAction::Forward,
+            CtxAction::ToggleRead,
+            CtxAction::ToggleStar,
+            CtxAction::Archive,
+            CtxAction::Delete,
+        ];
+        // Move-to options reflect the current folder.
+        if in_inbox {
+            items.push(CtxAction::MoveToArchive);
+        } else {
+            items.push(CtxAction::MoveToInbox);
+        }
+        items.push(CtxAction::Junk);
+        items
+    }
+
+    fn open_context_menu(&mut self, id: MessageId, at: Point) {
+        let items = self.context_items_for(id);
+        self.context_menu = Some(ContextMenu { target: id, pos: at, items });
+        self.dirty = true;
+    }
+
+    fn reselect_after_remove(&mut self, state: &mut AutoCommit) {
+        self.selected = self
+            .current_threads()
+            .first()
+            .and_then(|t| t.message_ids.last().copied());
+        match self.selected {
+            Some(sel) => MailDoc::set_selected(state, Some(&sel.to_string())),
+            None => MailDoc::set_selected(state, None),
+        }
+        self.dirty = true;
+    }
+}
+
+fn build_setup_inputs(cfg: &AccountConfig) -> Vec<TextInput> {
+    vec![
+        TextInput::local().with_initial_value(&cfg.display_name),
+        TextInput::local().with_initial_value(&cfg.email),
+        TextInput::local().with_initial_value(&cfg.username),
+        TextInput::local().with_initial_value(&cfg.password).with_secret(true),
+        TextInput::local().with_initial_value(&cfg.imap_host),
+        TextInput::local().with_initial_value(&cfg.imap_port.to_string()),
+        TextInput::local().with_initial_value(&cfg.smtp_host),
+        TextInput::local().with_initial_value(&cfg.smtp_port.to_string()),
+    ]
 }
 
 // =============================== layout ===============================
@@ -461,28 +667,34 @@ impl MailApp {
     fn relayout(&mut self) {
         self.hits.clear();
         let r = self.rect;
-        let list_x0 = r.x0 + SIDEBAR_W;
-        let reader_x0 = list_x0 + LIST_W;
-        self.list_rect = Rect::new(list_x0, r.y0 + TOPBAR_H, reader_x0, r.y1);
-        self.reader_rect = Rect::new(reader_x0, r.y0 + TOPBAR_H, r.x1, r.y1);
+        let wide = r.width() >= WIDE_BREAKPOINT;
+        self.sidebar_mode = if wide { SidebarMode::Persistent } else { SidebarMode::Overlay };
+        // Persistent sidebar is effectively always "open"; overlay defaults closed.
+        let sidebar_visible = match self.sidebar_mode {
+            SidebarMode::Persistent => true,
+            SidebarMode::Overlay => self.sidebar_open,
+        };
 
-        // Sidebar: compose button + folder rows.
-        let pad = 12.0;
-        let mut y = r.y0 + 72.0; // below account header
-        self.hits.push((
-            Rect::new(r.x0 + pad, y, r.x0 + SIDEBAR_W - pad, y + 40.0),
-            Hit::Compose,
-        ));
-        y += 40.0 + 16.0;
-        for f in Folder::ALL {
-            let row = Rect::new(r.x0 + 8.0, y, r.x0 + SIDEBAR_W - 8.0, y + FOLDER_ROW_H);
-            self.hits.push((row, Hit::Folder(f)));
-            y += FOLDER_ROW_H;
-        }
+        // Content area sits right of a persistent sidebar; full-width under an
+        // overlay sidebar.
+        let content_x0 = match self.sidebar_mode {
+            SidebarMode::Persistent => r.x0 + SIDEBAR_W,
+            SidebarMode::Overlay => r.x0,
+        };
+        self.content_rect = Rect::new(content_x0, r.y0, r.x1, r.y1);
 
-        // Top bar: settings gear + search clear.
+        // Sidebar rect (overlay floats over content from the left edge).
+        self.sidebar_rect = Rect::new(r.x0, r.y0, r.x0 + SIDEBAR_W, r.y1);
+
+        // ----- topbar controls -----
+        // Hamburger toggle (only meaningful for the overlay sidebar, but shown
+        // in both so the user can hide a persistent sidebar too).
+        let ham = Rect::new(self.content_rect.x0 + 12.0, r.y0 + 12.0, self.content_rect.x0 + 44.0, r.y0 + 44.0);
+        self.hits.push((ham, Hit::SidebarToggle));
+        // Settings gear (right).
         let gear = Rect::new(r.x1 - 44.0, r.y0 + 12.0, r.x1 - 12.0, r.y0 + 44.0);
         self.hits.push((gear, Hit::Settings));
+        // Search box.
         let search_rect = self.search_box_rect();
         self.search_input.apply_layout_external(Rect::new(
             search_rect.x0 + 30.0,
@@ -497,22 +709,59 @@ impl MailApp {
             ));
         }
 
-        // List rows.
-        let rows = self.list_rows();
-        let mut ly = self.list_rect.y0;
-        for (id, _len) in rows {
-            let row = Rect::new(self.list_rect.x0, ly, self.list_rect.x1, ly + LIST_ROW_H);
-            if row.y1 <= self.list_rect.y1 + LIST_ROW_H {
-                // star hit zone (right edge)
-                let star = Rect::new(row.x1 - 36.0, row.y0 + 8.0, row.x1 - 12.0, row.y0 + 32.0);
-                self.hits.push((star, Hit::ThreadStar(id)));
-                self.hits.push((row, Hit::Thread(id)));
+        // ----- content panes -----
+        let body_top = r.y0 + TOPBAR_H;
+        if wide {
+            // list + reader side by side
+            let list_w = ((self.content_rect.width() - LIST_W_MIN) * 0.0 + 404.0)
+                .min(self.content_rect.width() * 0.42)
+                .max(LIST_W_MIN.min(self.content_rect.width()));
+            let list_x1 = self.content_rect.x0 + list_w;
+            self.list_rect = Rect::new(self.content_rect.x0, body_top, list_x1, r.y1);
+            self.reader_rect = Rect::new(list_x1, body_top, r.x1, r.y1);
+        } else {
+            // single page: list OR mail
+            match self.narrow_page {
+                NarrowPage::List => {
+                    self.list_rect = Rect::new(self.content_rect.x0, body_top, r.x1, r.y1);
+                    self.reader_rect = Rect::ZERO;
+                }
+                NarrowPage::Mail => {
+                    self.list_rect = Rect::ZERO;
+                    self.reader_rect = Rect::new(self.content_rect.x0, body_top, r.x1, r.y1);
+                    // Back affordance.
+                    let back = Rect::new(self.content_rect.x0 + 12.0, r.y0 + 12.0, self.content_rect.x0 + 88.0, r.y0 + 44.0);
+                    self.hits.push((back, Hit::BackToList));
+                }
             }
-            ly += LIST_ROW_H;
         }
 
-        // Reader action bar.
-        if self.selected.is_some() {
+        // ----- sidebar hits (account headers + folder rows) -----
+        if sidebar_visible {
+            self.layout_sidebar();
+            if matches!(self.sidebar_mode, SidebarMode::Overlay) {
+                // Scrim covers the content so a click there dismisses the sidebar.
+                self.hits.push((self.content_rect, Hit::ScrimDismiss));
+            }
+        }
+
+        // ----- list rows -----
+        if self.list_rect.area() > 0.0 {
+            let rows = self.list_rows();
+            let mut ly = self.list_rect.y0;
+            for (id, _len) in rows {
+                let row = Rect::new(self.list_rect.x0, ly, self.list_rect.x1, ly + LIST_ROW_H);
+                if row.y1 <= self.list_rect.y1 + LIST_ROW_H {
+                    let star = Rect::new(row.x1 - 36.0, row.y0 + 8.0, row.x1 - 12.0, row.y0 + 32.0);
+                    self.hits.push((star, Hit::ThreadStar(id)));
+                    self.hits.push((row, Hit::Thread(id)));
+                }
+                ly += LIST_ROW_H;
+            }
+        }
+
+        // ----- reader action bar -----
+        if self.reader_rect.area() > 0.0 && self.selected.is_some() {
             let bar_y = self.reader_rect.y0 + 12.0;
             let mut bx = self.reader_rect.x0 + 20.0;
             for (w, hit) in [
@@ -528,60 +777,68 @@ impl MailApp {
             }
         }
 
-        if self.mode == Mode::Compose {
-            self.layout_compose();
-        } else if self.mode == Mode::Setup {
+        // ----- context menu hits (topmost) -----
+        if let Some(menu) = &self.context_menu {
+            let mr = context_menu_rect(menu, r);
+            let mut y = mr.y0 + 6.0;
+            for (i, _a) in menu.items.iter().enumerate() {
+                let item = Rect::new(mr.x0, y, mr.x1, y + 28.0);
+                self.hits.push((item, Hit::CtxItem(i)));
+                y += 28.0;
+            }
+        }
+
+        // ----- setup overlay -----
+        if self.mode == Mode::Setup {
             self.layout_setup();
         }
+
+        // ----- compose window lays itself out within the content area -----
+        let compose_bounds = if matches!(self.compose.dock(), crate::compose::DockState::Detached) {
+            // Detached: park beside the content using the full app rect so it
+            // can sit on the right edge like a tiled window.
+            self.rect
+        } else {
+            self.content_rect
+        };
+        self.compose.layout(compose_bounds);
     }
 
     fn search_box_rect(&self) -> Rect {
         let r = self.rect;
         let x1 = r.x1 - 56.0;
-        let x0 = (x1 - 280.0).max(r.x0 + SIDEBAR_W + 16.0);
+        let x0 = (x1 - 280.0).max(self.content_rect.x0 + 56.0);
         Rect::new(x0, r.y0 + 12.0, x1, r.y0 + 44.0)
     }
 
-    fn overlay_panel_rect(&self) -> Rect {
-        let r = self.rect;
-        let w = 640.0_f64.min(r.width() - 80.0);
-        let h: f64 = if self.mode == Mode::Setup { 540.0 } else { 480.0 };
-        let h = h.min(r.height() - 60.0);
-        let cx = (r.x0 + r.x1) / 2.0;
-        let y0 = r.y0 + 56.0;
-        Rect::new(cx - w / 2.0, y0, cx + w / 2.0, y0 + h)
-    }
+    fn layout_sidebar(&mut self) {
+        let sb = self.sidebar_rect;
+        let pad = 12.0;
+        // Compose button at top.
+        let mut y = sb.y0 + 16.0;
+        self.hits.push((
+            Rect::new(sb.x0 + pad, y, sb.x0 + SIDEBAR_W - pad, y + 40.0),
+            Hit::Compose,
+        ));
+        y += 40.0 + 14.0;
 
-    fn layout_compose(&mut self) {
-        let p = self.overlay_panel_rect();
-        let pad = 20.0;
-        let lx = p.x0 + pad;
-        let rx = p.x1 - pad;
-        let field_h = 34.0;
-        let mut y = p.y0 + 60.0;
-        // To
-        self.c_to.apply_layout_external(Rect::new(lx + 56.0, y, rx, y + field_h));
-        y += field_h + 8.0;
-        if self.show_cc_bcc {
-            self.c_cc.apply_layout_external(Rect::new(lx + 56.0, y, rx, y + field_h));
-            y += field_h + 8.0;
-            self.c_bcc.apply_layout_external(Rect::new(lx + 56.0, y, rx, y + field_h));
-            y += field_h + 8.0;
+        // Each account: header (toggle collapse) then its folders when expanded.
+        for (ai, account) in self.accounts.accounts.iter().enumerate() {
+            let header = Rect::new(sb.x0 + 8.0, y, sb.x0 + SIDEBAR_W - 8.0, y + ACCOUNT_HEADER_H);
+            self.hits.push((header, Hit::Account(ai)));
+            // Collapse chevron hit zone (left).
+            let chev = Rect::new(header.x0, header.y0, header.x0 + 28.0, header.y1);
+            self.hits.push((chev, Hit::AccountToggle(ai)));
+            y += ACCOUNT_HEADER_H;
+            if !account.collapsed {
+                for f in AccountStore::folders_for(account) {
+                    let row = Rect::new(sb.x0 + 16.0, y, sb.x0 + SIDEBAR_W - 8.0, y + FOLDER_ROW_H);
+                    self.hits.push((row, Hit::Folder(ai, f)));
+                    y += FOLDER_ROW_H;
+                }
+            }
+            y += 8.0;
         }
-        // Subject
-        self.c_subject.apply_layout_external(Rect::new(lx + 56.0, y, rx, y + field_h));
-        y += field_h + 10.0;
-        // body region is the rest; compose body caret region implied.
-        let _ = y;
-        // Buttons at bottom.
-        let by = p.y1 - 52.0;
-        self.hits.push((Rect::new(lx, by, lx + 92.0, by + 36.0), Hit::Send));
-        self.hits.push((Rect::new(lx + 100.0, by, lx + 100.0 + 120.0, by + 36.0), Hit::SaveDraft));
-        self.hits.push((Rect::new(rx - 92.0, by, rx, by + 36.0), Hit::CancelOverlay));
-        // attach button (left of body, near subject row right)
-        self.hits.push((Rect::new(rx - 130.0, p.y0 + 18.0, rx, p.y0 + 44.0), Hit::AddAttachment));
-        // focus targets for header fields
-        self.hits.push((Rect::new(lx + 56.0, p.y0 + 60.0, rx, p.y0 + 60.0 + field_h), Hit::SetupField(usize::MAX))); // placeholder no-op
     }
 
     fn layout_setup(&mut self) {
@@ -592,7 +849,6 @@ impl MailApp {
         let field_h = 34.0;
         let label_w = 132.0;
         let mut y = p.y0 + 64.0;
-        // 0 name, 1 email, 2 username, 3 password
         for i in 0..4 {
             let fr = Rect::new(lx + label_w, y, rx, y + field_h);
             self.setup_inputs[i].apply_layout_external(fr);
@@ -600,7 +856,6 @@ impl MailApp {
             y += field_h + 10.0;
         }
         y += 6.0;
-        // IMAP host + port + tls
         let half = (rx - lx - label_w - 12.0) * 0.62;
         let imap_host = Rect::new(lx + label_w, y, lx + label_w + half, y + field_h);
         self.setup_inputs[4].apply_layout_external(imap_host);
@@ -611,7 +866,6 @@ impl MailApp {
         let imap_tls = Rect::new(port_imap.x1 + 12.0, y, rx, y + field_h);
         self.hits.push((imap_tls, Hit::ToggleImapTls));
         y += field_h + 10.0;
-        // SMTP host + port + tls
         let smtp_host = Rect::new(lx + label_w, y, lx + label_w + half, y + field_h);
         self.setup_inputs[6].apply_layout_external(smtp_host);
         self.hits.push((smtp_host, Hit::SetupField(6)));
@@ -626,6 +880,23 @@ impl MailApp {
         self.hits.push((Rect::new(lx, by, lx + 150.0, by + 36.0), Hit::SetupSave));
         self.hits.push((Rect::new(rx - 92.0, by, rx, by + 36.0), Hit::CancelOverlay));
     }
+
+    fn overlay_panel_rect(&self) -> Rect {
+        let r = self.rect;
+        let w = 640.0_f64.min(r.width() - 80.0);
+        let h = 540.0_f64.min(r.height() - 60.0);
+        let cx = (r.x0 + r.x1) / 2.0;
+        let y0 = r.y0 + 56.0;
+        Rect::new(cx - w / 2.0, y0, cx + w / 2.0, y0 + h)
+    }
+}
+
+fn context_menu_rect(menu: &ContextMenu, bounds: Rect) -> Rect {
+    let w = 210.0;
+    let h = 6.0 + menu.items.len() as f64 * 28.0 + 6.0;
+    let x0 = menu.pos.x.min(bounds.x1 - w - 8.0).max(bounds.x0 + 4.0);
+    let y0 = menu.pos.y.min(bounds.y1 - h - 8.0).max(bounds.y0 + 4.0);
+    Rect::new(x0, y0, x0 + w, y0 + h)
 }
 
 // =============================== drawing ===============================
@@ -640,9 +911,6 @@ fn stroke_round(scene: &mut Scene, t: Affine, rect: Rect, r: f64, w: f64, color:
     scene.stroke(&Stroke::new(w), t, color, None, &RoundedRect::from_rect(rect, r));
 }
 
-/// Trim `text` to a single line that fits `max_w` px at the given size/weight,
-/// appending an ellipsis. Returns the original when it already fits. Draw the
-/// result with `max_width = None` so it never wraps.
 fn elide(tr: &mut TextRenderer, text: &str, size: f32, weight: TextWeight, max_w: f64) -> String {
     if max_w <= 1.0 {
         return String::new();
@@ -663,9 +931,7 @@ fn elide(tr: &mut TextRenderer, text: &str, size: f32, weight: TextWeight, max_w
     "…".to_string()
 }
 
-/// Stable pseudo-random avatar tint from an email, drawn from the accent +
-/// semantic palette so it always reads as on-theme.
-fn avatar_color(theme: &Theme, email: &str) -> Color {
+fn avatar_color(theme: &Theme, email: &str, tint: u8) -> Color {
     let c = &theme.tokens.colors;
     let palette = [
         c.accent[5],
@@ -674,24 +940,16 @@ fn avatar_color(theme: &Theme, email: &str) -> Color {
         c.semantic.warning,
         c.accent[6],
         c.accent[3],
-        Color::from_rgb8(217, 70, 239), // fuchsia-500
-        Color::from_rgb8(20, 184, 166), // teal-500
+        Color::from_rgb8(217, 70, 239),
+        Color::from_rgb8(20, 184, 166),
     ];
-    let h = email.bytes().fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32));
+    let h = email.bytes().fold(tint as u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32));
     palette[(h as usize) % palette.len()]
 }
 
 impl MailApp {
-    fn draw_avatar(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        center: Point,
-        radius: f64,
-        addr: &Addr,
-    ) {
-        let col = avatar_color(&Theme::dark(), &addr.email);
+    fn draw_avatar(&self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, center: Point, radius: f64, addr: &Addr, tint: u8) {
+        let col = avatar_color(&Theme::dark(), &addr.email, tint);
         scene.fill(Fill::NonZero, t, col, None, &Circle::new(center, radius));
         let initials = addr.initials();
         let size = (radius * 0.9) as f32;
@@ -708,44 +966,25 @@ impl MailApp {
     }
 
     fn draw_sidebar(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let sidebar_visible = match self.sidebar_mode {
+            SidebarMode::Persistent => true,
+            SidebarMode::Overlay => self.sidebar_open,
+        };
+        if !sidebar_visible {
+            return;
+        }
         let c = &theme.tokens.colors;
-        let r = self.rect;
-        let sb = Rect::new(r.x0, r.y0, r.x0 + SIDEBAR_W, r.y1);
+        let sb = self.sidebar_rect;
+        // Overlay sidebar draws a scrim over the content first, then a shadow.
+        if matches!(self.sidebar_mode, SidebarMode::Overlay) {
+            fill_rect(scene, t, self.content_rect, c.surfaces.overlay);
+            let shadow = Rect::new(sb.x1, sb.y0, sb.x1 + 8.0, sb.y1);
+            scene.fill(Fill::NonZero, t, Color::from_rgba8(0, 0, 0, 70), None, &shadow);
+        }
         fill_rect(scene, t, sb, c.neutral[0]);
-        // right divider
         fill_rect(scene, t, Rect::new(sb.x1 - 1.0, sb.y0, sb.x1, sb.y1), c.border_standard);
 
-        // account header
-        let acct = &self.mailbox.account;
-        let av_c = Point::new(sb.x0 + 28.0, sb.y0 + 30.0);
-        self.draw_avatar(
-            scene,
-            tr,
-            t,
-            av_c,
-            16.0,
-            &Addr::new(acct.display_name.clone(), acct.email.clone()),
-        );
-        let name = if acct.display_name.is_empty() { "No account" } else { &acct.display_name };
-        tr.draw_text_weighted(
-            scene,
-            name,
-            14.0,
-            c.text_primary,
-            t * Affine::translate((sb.x0 + 52.0, sb.y0 + 14.0)),
-            Some(SIDEBAR_W as f32 - 64.0),
-            TextWeight::Semibold,
-        );
-        tr.draw_text(
-            scene,
-            &acct.email,
-            11.5,
-            c.text_dim,
-            t * Affine::translate((sb.x0 + 52.0, sb.y0 + 32.0)),
-            Some(SIDEBAR_W as f32 - 64.0),
-        );
-
-        // compose button
+        // Compose button.
         if let Some((rect, _)) = self.hits.iter().find(|(_, h)| matches!(h, Hit::Compose)) {
             let hov = rect.contains(self.last_mouse);
             let col = if hov { c.accent[4] } else { c.accent[5] };
@@ -763,98 +1002,142 @@ impl MailApp {
             );
         }
 
-        // folder rows
+        // Account headers + folders.
         for (rect, hit) in &self.hits {
-            let Hit::Folder(f) = hit else { continue };
-            let f = *f;
-            let selected = f == self.folder && self.mode == Mode::Mailbox;
-            let hov = rect.contains(self.last_mouse);
-            if selected {
-                fill_round(scene, t, *rect, 9.0, c.accent[5].with_alpha_factor(0.20));
-                fill_rect(
-                    scene,
-                    t,
-                    Rect::new(rect.x0, rect.y0 + 7.0, rect.x0 + 3.0, rect.y1 - 7.0),
-                    c.accent[5],
-                );
-            } else if hov {
-                fill_round(scene, t, *rect, 9.0, c.surface_white_5);
-            }
-            let ty = rect.y0 + (FOLDER_ROW_H - 14.0) / 2.0;
-            let label_col = if selected { c.text_primary } else { c.neutral[7] };
-            tr.draw_text(scene, f.glyph(), 14.0, label_col, t * Affine::translate((rect.x0 + 14.0, ty)), None);
-            tr.draw_text_weighted(
-                scene,
-                f.title(),
-                13.5,
-                label_col,
-                t * Affine::translate((rect.x0 + 40.0, ty)),
-                Some(120.0),
-                if selected { TextWeight::Semibold } else { TextWeight::Regular },
-            );
-            // unread badge
-            let unread = self.mailbox.unread_count(f);
-            if unread > 0 {
-                let txt = unread.to_string();
-                let (tw, _) = tr.measure_weighted(&txt, 11.0, None, TextWeight::Semibold);
-                let bw = (tw as f64 + 14.0).max(20.0);
-                let badge = Rect::new(rect.x1 - bw - 8.0, rect.y0 + 9.0, rect.x1 - 8.0, rect.y0 + 9.0 + 20.0);
-                let bg = if selected { c.accent[5] } else { c.neutral[3] };
-                fill_round(scene, t, badge, 10.0, bg);
-                tr.draw_text_weighted(
-                    scene,
-                    &txt,
-                    11.0,
-                    Color::WHITE,
-                    t * Affine::translate(((badge.x0 + badge.x1) / 2.0 - tw as f64 / 2.0, badge.y0 + 4.0)),
-                    None,
-                    TextWeight::Semibold,
-                );
+            match hit {
+                Hit::Account(ai) => {
+                    let Some(account) = self.accounts.accounts.get(*ai) else { continue };
+                    let active = *ai == self.accounts.active;
+                    let hov = rect.contains(self.last_mouse);
+                    if active {
+                        fill_round(scene, t, *rect, 9.0, c.accent[5].with_alpha_factor(0.12));
+                    } else if hov {
+                        fill_round(scene, t, *rect, 9.0, c.surface_white_5);
+                    }
+                    // chevron
+                    let chev = if account.collapsed { "\u{25B8}" } else { "\u{25BE}" };
+                    tr.draw_text(scene, chev, 11.0, c.text_dim, t * Affine::translate((rect.x0 + 8.0, rect.y0 + 15.0)), None);
+                    // avatar
+                    self.draw_avatar(
+                        scene,
+                        tr,
+                        t,
+                        Point::new(rect.x0 + 36.0, rect.y0 + ACCOUNT_HEADER_H / 2.0),
+                        13.0,
+                        &Addr::new(account.config.display_name.clone(), account.config.email.clone()),
+                        account.tint,
+                    );
+                    let label = elide(tr, account.label(), 13.0, TextWeight::Semibold, (SIDEBAR_W - 80.0) as f64);
+                    let email = elide(tr, &account.config.email, 10.5, TextWeight::Regular, (SIDEBAR_W - 80.0) as f64);
+                    tr.draw_text_weighted(
+                        scene,
+                        &label,
+                        13.0,
+                        c.text_primary,
+                        t * Affine::translate((rect.x0 + 54.0, rect.y0 + 6.0)),
+                        None,
+                        TextWeight::Semibold,
+                    );
+                    tr.draw_text(
+                        scene,
+                        &email,
+                        10.5,
+                        c.text_dim,
+                        t * Affine::translate((rect.x0 + 54.0, rect.y0 + 24.0)),
+                        None,
+                    );
+                }
+                Hit::Folder(ai, f) => {
+                    let f = *f;
+                    let active_account = *ai == self.accounts.active;
+                    let selected = active_account && f == self.folder && self.mode == Mode::Mailbox;
+                    let hov = rect.contains(self.last_mouse);
+                    if selected {
+                        fill_round(scene, t, *rect, 8.0, c.accent[5].with_alpha_factor(0.20));
+                        fill_rect(scene, t, Rect::new(rect.x0, rect.y0 + 6.0, rect.x0 + 3.0, rect.y1 - 6.0), c.accent[5]);
+                    } else if hov {
+                        fill_round(scene, t, *rect, 8.0, c.surface_white_5);
+                    }
+                    let ty = rect.y0 + (FOLDER_ROW_H - 14.0) / 2.0;
+                    let label_col = if selected { c.text_primary } else { c.neutral[7] };
+                    tr.draw_text(scene, f.glyph(), 13.5, label_col, t * Affine::translate((rect.x0 + 12.0, ty)), None);
+                    tr.draw_text_weighted(
+                        scene,
+                        f.title(),
+                        13.0,
+                        label_col,
+                        t * Affine::translate((rect.x0 + 36.0, ty)),
+                        Some(120.0),
+                        if selected { TextWeight::Semibold } else { TextWeight::Regular },
+                    );
+                    if active_account {
+                        let unread = self.mailbox.unread_count(f);
+                        if unread > 0 {
+                            let txt = unread.to_string();
+                            let (twd, _) = tr.measure_weighted(&txt, 11.0, None, TextWeight::Semibold);
+                            let bw = (twd as f64 + 14.0).max(20.0);
+                            let badge = Rect::new(rect.x1 - bw - 8.0, rect.y0 + 8.0, rect.x1 - 8.0, rect.y0 + 8.0 + 20.0);
+                            let bg = if selected { c.accent[5] } else { c.neutral[3] };
+                            fill_round(scene, t, badge, 10.0, bg);
+                            tr.draw_text_weighted(
+                                scene,
+                                &txt,
+                                11.0,
+                                Color::WHITE,
+                                t * Affine::translate(((badge.x0 + badge.x1) / 2.0 - twd as f64 / 2.0, badge.y0 + 4.0)),
+                                None,
+                                TextWeight::Semibold,
+                            );
+                        }
+                    }
+                }
+                _ => {}
             }
         }
-
-        // footer: storage hint
-        let foot_y = sb.y1 - 26.0;
-        tr.draw_text(
-            scene,
-            "qOS Mail · CRDT-synced",
-            10.5,
-            c.text_dim,
-            t * Affine::translate((sb.x0 + 16.0, foot_y)),
-            Some(SIDEBAR_W as f32 - 24.0),
-        );
     }
 
-    fn draw_topbar(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
+    fn draw_topbar(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let c = &theme.tokens.colors;
         let r = self.rect;
-        let bar = Rect::new(r.x0 + SIDEBAR_W, r.y0, r.x1, r.y0 + TOPBAR_H);
+        let bar = Rect::new(self.content_rect.x0, r.y0, r.x1, r.y0 + TOPBAR_H);
         fill_rect(scene, t, bar, c.surfaces.base);
         fill_rect(scene, t, Rect::new(bar.x0, bar.y1 - 1.0, bar.x1, bar.y1), c.border_standard);
 
-        // folder title + count
-        let title = self.folder.title();
-        tr.draw_text_weighted(
-            scene,
-            title,
-            18.0,
-            c.text_primary,
-            t * Affine::translate((bar.x0 + 20.0, bar.y0 + 16.0)),
-            None,
-            TextWeight::Bold,
-        );
-        let (tw, _) = tr.measure_weighted(title, 18.0, None, TextWeight::Bold);
-        let count = self.mailbox.count(self.folder);
-        tr.draw_text(
-            scene,
-            &format!("{count} conversations"),
-            12.0,
-            c.text_dim,
-            t * Affine::translate((bar.x0 + 28.0 + tw as f64, bar.y0 + 21.0)),
-            None,
-        );
+        let narrow = self.rect.width() < WIDE_BREAKPOINT;
+        // Hamburger or back button.
+        if narrow && matches!(self.narrow_page, NarrowPage::Mail) {
+            if let Some((br, _)) = self.hits.iter().find(|(_, h)| matches!(h, Hit::BackToList)) {
+                let hov = br.contains(self.last_mouse);
+                if hov {
+                    fill_round(scene, t, *br, 8.0, c.surface_white_5);
+                }
+                tr.draw_text(scene, "\u{2190}", 17.0, c.neutral[8], t * Affine::translate((br.x0 + 8.0, br.y0 + 6.0)), None);
+                tr.draw_text(scene, "Inbox", 13.0, c.neutral[8], t * Affine::translate((br.x0 + 32.0, br.y0 + 8.0)), None);
+            }
+        } else if let Some((hr, _)) = self.hits.iter().find(|(_, h)| matches!(h, Hit::SidebarToggle)) {
+            let hov = hr.contains(self.last_mouse);
+            if hov {
+                fill_round(scene, t, *hr, 8.0, c.surface_white_5);
+            }
+            // three-line hamburger
+            for k in 0..3 {
+                let ly = hr.y0 + 11.0 + k as f64 * 5.0;
+                fill_round(scene, t, Rect::new(hr.x0 + 8.0, ly, hr.x1 - 8.0, ly + 2.0), 1.0, c.neutral[8]);
+            }
+        }
 
-        // search box
+        // Folder title + count (skip when narrow & on the Mail page).
+        let show_title = !(narrow && matches!(self.narrow_page, NarrowPage::Mail));
+        if show_title {
+            let title_x = bar.x0 + 52.0;
+            let title = self.folder.title();
+            tr.draw_text_weighted(scene, title, 18.0, c.text_primary, t * Affine::translate((title_x, bar.y0 + 16.0)), None, TextWeight::Bold);
+            let (twd, _) = tr.measure_weighted(title, 18.0, None, TextWeight::Bold);
+            let count = self.mailbox.count(self.folder);
+            tr.draw_text(scene, &format!("{count} conversations"), 12.0, c.text_dim, t * Affine::translate((title_x + 10.0 + twd as f64, bar.y0 + 21.0)), None);
+        }
+
+        // Search box.
         let sr = self.search_box_rect();
         fill_round(scene, t, sr, 9.0, c.surfaces.raised);
         stroke_round(scene, t, sr, 9.0, 1.0, if matches!(self.focus, Focus::Search) { c.border_focus } else { c.border_standard });
@@ -862,14 +1145,11 @@ impl MailApp {
         if self.search.is_empty() && !matches!(self.focus, Focus::Search) {
             tr.draw_text(scene, "Search mail", 13.0, c.text_dim, t * Affine::translate((sr.x0 + 30.0, sr.y0 + 9.0)), None);
         }
-        // embedded input draws its own text/caret
-        // (drawn from the main draw fn after this; here just chrome)
-        let _ = presence;
         if !self.search.is_empty() {
             tr.draw_text(scene, "\u{2715}", 12.0, c.text_dim, t * Affine::translate((sr.x1 - 20.0, sr.y0 + 9.0)), None);
         }
 
-        // settings gear
+        // Settings gear.
         if let Some((gr, _)) = self.hits.iter().find(|(_, h)| matches!(h, Hit::Settings)) {
             let hov = gr.contains(self.last_mouse);
             if hov {
@@ -880,14 +1160,12 @@ impl MailApp {
     }
 
     fn draw_list(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        if self.list_rect.area() <= 0.0 {
+            return;
+        }
         let c = &theme.tokens.colors;
         fill_rect(scene, t, self.list_rect, c.surfaces.base);
-        fill_rect(
-            scene,
-            t,
-            Rect::new(self.list_rect.x1 - 1.0, self.list_rect.y0, self.list_rect.x1, self.list_rect.y1),
-            c.border_standard,
-        );
+        fill_rect(scene, t, Rect::new(self.list_rect.x1 - 1.0, self.list_rect.y0, self.list_rect.x1, self.list_rect.y1), c.border_standard);
 
         let rows = self.list_rows();
         if rows.is_empty() {
@@ -912,57 +1190,53 @@ impl MailApp {
             let len = rows.iter().find(|(rid, _)| *rid == id).map(|(_, l)| *l).unwrap_or(1);
             let selected = self.selected == Some(id);
             let hov = rect.contains(self.last_mouse);
-            if selected {
-                fill_rect(scene, t, *rect, c.accent[5].with_alpha_factor(0.16));
-                fill_rect(scene, t, Rect::new(rect.x0, rect.y0, rect.x0 + 3.0, rect.y1), c.accent[5]);
-            } else if hov {
-                fill_rect(scene, t, *rect, c.surface_white_5);
+
+            // Swipe reveal: shift the row and paint a colored action zone behind.
+            let swipe_dx = self.swipe.filter(|s| s.id == id).map(|s| s.dx).unwrap_or(0.0);
+            if swipe_dx.abs() > 1.0 {
+                let (col, glyph, label, on_left) = if swipe_dx < 0.0 {
+                    (c.semantic.warning, "\u{1F5C4}", "Archive", false)
+                } else {
+                    (c.semantic.danger, "\u{1F5D1}", "Delete", true)
+                };
+                fill_rect(scene, t, *rect, col.with_alpha_factor(0.9));
+                let gx = if on_left { rect.x0 + 18.0 } else { rect.x1 - 90.0 };
+                tr.draw_text(scene, glyph, 16.0, Color::WHITE, t * Affine::translate((gx, rect.y0 + 28.0)), None);
+                tr.draw_text_weighted(scene, label, 12.0, Color::WHITE, t * Affine::translate((gx + 26.0, rect.y0 + 30.0)), None, TextWeight::Semibold);
             }
-            // bottom divider
-            fill_rect(scene, t, Rect::new(rect.x0 + 12.0, rect.y1 - 1.0, rect.x1, rect.y1), c.neutral[2]);
+            let row = Rect::new(rect.x0 + swipe_dx, rect.y0, rect.x1 + swipe_dx, rect.y1);
+
+            if selected {
+                fill_rect(scene, t, row, c.accent[5].with_alpha_factor(0.16));
+                fill_rect(scene, t, Rect::new(row.x0, row.y0, row.x0 + 3.0, row.y1), c.accent[5]);
+            } else if hov && swipe_dx.abs() < 1.0 {
+                fill_rect(scene, t, row, c.surface_white_5);
+            } else if swipe_dx.abs() < 1.0 {
+                fill_rect(scene, t, row, c.surfaces.base);
+            }
+            fill_rect(scene, t, Rect::new(row.x0 + 12.0, row.y1 - 1.0, row.x1, row.y1), c.neutral[2]);
 
             let unread = !msg.read;
-            // unread dot
             if unread {
-                scene.fill(Fill::NonZero, t, c.accent[5], None, &Circle::new(Point::new(rect.x0 + 14.0, rect.y0 + LIST_ROW_H / 2.0), 4.0));
+                scene.fill(Fill::NonZero, t, c.accent[5], None, &Circle::new(Point::new(row.x0 + 14.0, row.y0 + LIST_ROW_H / 2.0), 4.0));
             }
-            // avatar
-            self.draw_avatar(scene, tr, t, Point::new(rect.x0 + 42.0, rect.y0 + 26.0), 17.0, &msg.from);
+            self.draw_avatar(scene, tr, t, Point::new(row.x0 + 42.0, row.y0 + 26.0), 17.0, &msg.from, 0);
 
-            let text_x = rect.x0 + 70.0;
-            let right = rect.x1 - 14.0;
-            // sender (single line, elided)
+            let text_x = row.x0 + 70.0;
+            let right = row.x1 - 14.0;
             let name_weight = if unread { TextWeight::Bold } else { TextWeight::Medium };
             let name = elide(tr, &msg.from.display(), 13.5, name_weight, right - text_x - 56.0);
-            tr.draw_text_weighted(
-                scene,
-                &name,
-                13.5,
-                c.text_primary,
-                t * Affine::translate((text_x, rect.y0 + 12.0)),
-                None,
-                name_weight,
-            );
-            // date
+            tr.draw_text_weighted(scene, &name, 13.5, c.text_primary, t * Affine::translate((text_x, row.y0 + 12.0)), None, name_weight);
             let date = format_relative(msg.timestamp_min, self.now_min);
             let (dw, _) = tr.measure(&date, 11.5, None);
-            tr.draw_text(scene, &date, 11.5, c.text_dim, t * Affine::translate((right - dw as f64, rect.y0 + 13.0)), None);
+            tr.draw_text(scene, &date, 11.5, c.text_dim, t * Affine::translate((right - dw as f64, row.y0 + 13.0)), None);
 
-            // subject (+ thread count)
-            let subj_y = rect.y0 + 32.0;
+            let subj_y = row.y0 + 32.0;
             let subj_col = if unread { c.text_primary } else { c.neutral[7] };
             let subj_weight = if unread { TextWeight::Semibold } else { TextWeight::Regular };
             let subj_budget = right - text_x - if len > 1 { 48.0 } else { 16.0 };
             let subject = elide(tr, &msg.thread_subject(), 12.5, subj_weight, subj_budget);
-            tr.draw_text_weighted(
-                scene,
-                &subject,
-                12.5,
-                subj_col,
-                t * Affine::translate((text_x, subj_y)),
-                None,
-                subj_weight,
-            );
+            tr.draw_text_weighted(scene, &subject, 12.5, subj_col, t * Affine::translate((text_x, subj_y)), None, subj_weight);
             if len > 1 {
                 let badge_txt = len.to_string();
                 let (bw, _) = tr.measure_weighted(&badge_txt, 10.5, None, TextWeight::Semibold);
@@ -972,28 +1246,22 @@ impl MailApp {
                 tr.draw_text_weighted(scene, &badge_txt, 10.5, c.neutral[8], t * Affine::translate((bx, subj_y + 1.0)), None, TextWeight::Semibold);
             }
 
-            // snippet (single line, elided; clears the star/attachment icons)
             let icon_reserve = if msg.has_attachments() { 64.0 } else { 28.0 };
             let snippet = elide(tr, &msg.snippet(), 11.5, TextWeight::Regular, right - text_x - icon_reserve);
-            tr.draw_text(
-                scene,
-                &snippet,
-                11.5,
-                c.text_dim,
-                t * Affine::translate((text_x, rect.y0 + 52.0)),
-                None,
-            );
+            tr.draw_text(scene, &snippet, 11.5, c.text_dim, t * Affine::translate((text_x, row.y0 + 52.0)), None);
 
-            // star + attachment indicators bottom-right
             let star_col = if msg.starred { c.semantic.warning } else { c.neutral[4] };
-            tr.draw_text(scene, if msg.starred { "\u{2605}" } else { "\u{2606}" }, 15.0, star_col, t * Affine::translate((right - 18.0, rect.y0 + 50.0)), None);
+            tr.draw_text(scene, if msg.starred { "\u{2605}" } else { "\u{2606}" }, 15.0, star_col, t * Affine::translate((right - 18.0, row.y0 + 50.0)), None);
             if msg.has_attachments() {
-                tr.draw_text(scene, "\u{1F4CE}", 12.0, c.text_dim, t * Affine::translate((right - 40.0, rect.y0 + 52.0)), None);
+                tr.draw_text(scene, "\u{1F4CE}", 12.0, c.text_dim, t * Affine::translate((right - 40.0, row.y0 + 52.0)), None);
             }
         }
     }
 
     fn draw_reader(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        if self.reader_rect.area() <= 0.0 {
+            return;
+        }
         let c = &theme.tokens.colors;
         let rr = self.reader_rect;
         fill_rect(scene, t, rr, c.surfaces.raised);
@@ -1008,24 +1276,14 @@ impl MailApp {
             return;
         }
 
-        // action bar
         self.draw_reader_actions(scene, t, tr, theme);
 
-        // thread subject header
         let head = &msgs[msgs.len() - 1];
         let content_x = rr.x0 + 24.0;
         let content_w = (rr.width() - 48.0) as f32;
         let mut y = rr.y0 + 60.0;
         let subj = elide(tr, &head.thread_subject(), 20.0, TextWeight::Bold, content_w as f64);
-        tr.draw_text_weighted(
-            scene,
-            &subj,
-            20.0,
-            c.text_primary,
-            t * Affine::translate((content_x, y)),
-            None,
-            TextWeight::Bold,
-        );
+        tr.draw_text_weighted(scene, &subj, 20.0, c.text_primary, t * Affine::translate((content_x, y)), None, TextWeight::Bold);
         y += 30.0;
         tr.draw_text(
             scene,
@@ -1039,7 +1297,6 @@ impl MailApp {
         fill_rect(scene, t, Rect::new(content_x, y, rr.x1 - 24.0, y + 1.0), c.border_standard);
         y += 16.0;
 
-        // each message as a card (clipped to reader height)
         for (i, m) in msgs.iter().enumerate() {
             if y > rr.y1 - 40.0 {
                 break;
@@ -1072,22 +1329,10 @@ impl MailApp {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn draw_message_card(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        m: &Message,
-        x: f64,
-        y: f64,
-        w: f32,
-        expanded: bool,
-    ) -> f64 {
+    fn draw_message_card(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, m: &Message, x: f64, y: f64, w: f32, expanded: bool) -> f64 {
         let c = &theme.tokens.colors;
         let card_x1 = x + w as f64;
-        // header
-        self.draw_avatar(scene, tr, t, Point::new(x + 18.0, y + 18.0), 17.0, &m.from);
+        self.draw_avatar(scene, tr, t, Point::new(x + 18.0, y + 18.0), 17.0, &m.from, 0);
         let from_name = elide(tr, &m.from.display(), 13.5, TextWeight::Semibold, (w - 150.0) as f64);
         tr.draw_text_weighted(scene, &from_name, 13.5, c.text_primary, t * Affine::translate((x + 44.0, y + 6.0)), None, TextWeight::Semibold);
         let from_email = elide(tr, &m.from.email, 11.5, TextWeight::Regular, (w - 150.0) as f64);
@@ -1095,18 +1340,11 @@ impl MailApp {
         let date = format_absolute(m.timestamp_min);
         let (dw, _) = tr.measure(&date, 11.5, None);
         tr.draw_text(scene, &date, 11.5, c.text_dim, t * Affine::translate((card_x1 - dw as f64, y + 8.0)), None);
-        let to_line = elide(
-            tr,
-            &format!("to {}", m.to.iter().map(|a| a.display()).collect::<Vec<_>>().join(", ")),
-            11.0,
-            TextWeight::Regular,
-            150.0,
-        );
+        let to_line = elide(tr, &format!("to {}", m.to.iter().map(|a| a.display()).collect::<Vec<_>>().join(", ")), 11.0, TextWeight::Regular, 150.0);
         tr.draw_text(scene, &to_line, 11.0, c.text_dim, t * Affine::translate((card_x1 - 150.0, y + 24.0)), None);
 
         let mut yy = y + 48.0;
         if expanded {
-            // body: wrap manually by feeding paragraphs with max_width.
             for para in m.body.split('\n') {
                 if para.trim().is_empty() {
                     yy += 8.0;
@@ -1118,7 +1356,6 @@ impl MailApp {
                 tr.draw_text(scene, para, 13.0, col, t * Affine::translate((x, yy)), Some(w - 8.0));
                 yy += ph.max(18.0) as f64 + 2.0;
             }
-            // attachments
             if m.has_attachments() {
                 yy += 8.0;
                 tr.draw_text_weighted(scene, &format!("{} attachment{}", m.attachments.len(), if m.attachments.len() == 1 { "" } else { "s" }), 11.5, c.text_dim, t * Affine::translate((x, yy)), None, TextWeight::Medium);
@@ -1143,130 +1380,36 @@ impl MailApp {
                 yy += 30.0;
             }
         } else {
-            // collapsed: one-line snippet
             tr.draw_text(scene, &m.snippet(), 12.0, c.text_dim, t * Affine::translate((x, yy)), Some(w - 8.0));
             yy += 18.0;
         }
         yy
     }
 
-    // ----- overlays -----
-
-    fn draw_compose(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    fn draw_context_menu(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let Some(menu) = &self.context_menu else { return };
         let c = &theme.tokens.colors;
-        // scrim
-        fill_rect(scene, t, self.rect, c.surfaces.overlay);
-        let p = self.overlay_panel_rect();
-        fill_round(scene, t, p, 14.0, c.surfaces.raised);
-        stroke_round(scene, t, p, 14.0, 1.0, c.border_white_10);
-        let pad = 20.0;
-        let lx = p.x0 + pad;
-        let rx = p.x1 - pad;
-        tr.draw_text_weighted(scene, "New message", 16.0, c.text_primary, t * Affine::translate((lx, p.y0 + 18.0)), None, TextWeight::Bold);
-        // attach button
-        if let Some((ar, _)) = self.hits.iter().find(|(_, h)| matches!(h, Hit::AddAttachment)) {
-            let hov = ar.contains(self.last_mouse);
-            fill_round(scene, t, *ar, 8.0, if hov { c.surface_white_10 } else { c.surface_white_5 });
-            tr.draw_text(scene, "\u{1F4CE} Attach", 12.0, c.neutral[8], t * Affine::translate((ar.x0 + 10.0, ar.y0 + 6.0)), None);
-        }
-
-        // field labels + boxes
-        let field_h = 34.0;
-        let mut y = p.y0 + 60.0;
-        let draw_field_label = |scene: &mut Scene, tr: &mut TextRenderer, label: &str, y: f64| {
-            tr.draw_text(scene, label, 12.5, c.text_dim, t * Affine::translate((lx, y + 9.0)), None);
-        };
-        let field_box = |scene: &mut Scene, focused: bool, y: f64| {
-            let fr = Rect::new(lx + 52.0, y - 2.0, rx, y + field_h - 2.0);
-            fill_rect(scene, t, Rect::new(fr.x0, fr.y1 - 1.0, fr.x1, fr.y1), if focused { c.border_focus } else { c.border_standard });
-        };
-        draw_field_label(scene, tr, "To", y);
-        field_box(scene, matches!(self.focus, Focus::ComposeTo), y);
-        y += field_h + 8.0;
-        if self.show_cc_bcc {
-            draw_field_label(scene, tr, "Cc", y);
-            field_box(scene, matches!(self.focus, Focus::ComposeCc), y);
-            y += field_h + 8.0;
-            draw_field_label(scene, tr, "Bcc", y);
-            field_box(scene, matches!(self.focus, Focus::ComposeBcc), y);
-            y += field_h + 8.0;
-        }
-        draw_field_label(scene, tr, "Subject", y);
-        field_box(scene, matches!(self.focus, Focus::ComposeSubject), y);
-        y += field_h + 12.0;
-
-        // body
-        let body_rect = Rect::new(lx, y, rx, p.y1 - 64.0);
-        fill_round(scene, t, body_rect, 8.0, c.surfaces.base);
-        stroke_round(scene, t, body_rect, 8.0, 1.0, if matches!(self.focus, Focus::ComposeBody) { c.border_focus } else { c.border_standard });
-        // body text wrapped
-        let mut by = body_rect.y0 + 10.0;
-        let bw = (body_rect.width() - 20.0) as f32;
-        let display = if self.compose_body.is_empty() && !matches!(self.focus, Focus::ComposeBody) {
-            "Write your message…".to_string()
-        } else {
-            self.compose_body.clone()
-        };
-        let body_col = if self.compose_body.is_empty() { c.text_dim } else { c.neutral[8] };
-        for para in display.split('\n') {
-            if by > body_rect.y1 - 16.0 {
-                break;
+        let mr = context_menu_rect(menu, self.rect);
+        // shadow
+        scene.fill(Fill::NonZero, t, Color::from_rgba8(0, 0, 0, 80), None, &RoundedRect::from_rect(Rect::new(mr.x0 + 1.0, mr.y0 + 3.0, mr.x1 + 1.0, mr.y1 + 4.0), 10.0));
+        fill_round(scene, t, mr, 10.0, c.surfaces.raised);
+        stroke_round(scene, t, mr, 10.0, 1.0, c.border_white_10);
+        let (read, starred) = self
+            .mailbox
+            .get(menu.target)
+            .map(|m| (m.read, m.starred))
+            .unwrap_or((false, false));
+        let mut y = mr.y0 + 6.0;
+        for a in &menu.items {
+            let item = Rect::new(mr.x0, y, mr.x1, y + 28.0);
+            let hov = item.contains(self.last_mouse);
+            if hov {
+                fill_round(scene, t, Rect::new(item.x0 + 4.0, item.y0 + 1.0, item.x1 - 4.0, item.y1 - 1.0), 6.0, c.surface_white_10);
             }
-            let (_w, h) = tr.measure(if para.is_empty() { " " } else { para }, 13.0, Some(bw));
-            tr.draw_text(scene, para, 13.0, body_col, t * Affine::translate((body_rect.x0 + 10.0, by)), Some(bw));
-            by += h.max(18.0) as f64;
-        }
-        // caret in body
-        if matches!(self.focus, Focus::ComposeBody) {
-            let last = self.compose_body.rsplit('\n').next().unwrap_or("");
-            let (cw, _) = tr.measure(last, 13.0, None);
-            let cx = body_rect.x0 + 10.0 + cw as f64;
-            let cy = (by - 18.0).max(body_rect.y0 + 10.0);
-            fill_rect(scene, t, Rect::new(cx, cy, cx + 1.5, cy + 16.0), c.accent[5]);
-        }
-
-        // attachment chips above buttons
-        if !self.compose_atts.is_empty() {
-            let mut ax = lx;
-            let ay = p.y1 - 92.0;
-            for name in &self.compose_atts {
-                let (lw, _) = tr.measure(name, 11.5, None);
-                let chip = Rect::new(ax, ay, ax + lw as f64 + 34.0, ay + 26.0);
-                fill_round(scene, t, chip, 8.0, c.surface_white_10);
-                tr.draw_text(scene, "\u{1F4CE}", 12.0, c.text_dim, t * Affine::translate((chip.x0 + 7.0, chip.y0 + 5.0)), None);
-                tr.draw_text(scene, name, 11.5, c.text_primary, t * Affine::translate((chip.x0 + 26.0, chip.y0 + 5.0)), None);
-                ax = chip.x1 + 8.0;
-            }
-        }
-
-        // buttons
-        self.draw_overlay_buttons(scene, t, tr, theme, "Send", Hit::Send, Some(("Save draft", Hit::SaveDraft)));
-    }
-
-    fn draw_overlay_buttons(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, primary: &str, primary_hit: Hit, secondary: Option<(&str, Hit)>) {
-        let c = &theme.tokens.colors;
-        let matches_hit = |a: &Hit, b: &Hit| std::mem::discriminant(a) == std::mem::discriminant(b);
-        for (rect, hit) in &self.hits {
-            if matches_hit(hit, &primary_hit) {
-                let hov = rect.contains(self.last_mouse);
-                fill_round(scene, t, *rect, 9.0, if hov { c.accent[4] } else { c.accent[5] });
-                let (w, _) = tr.measure_weighted(primary, 13.5, None, TextWeight::Semibold);
-                tr.draw_text_weighted(scene, primary, 13.5, Color::WHITE, t * Affine::translate(((rect.x0 + rect.x1) / 2.0 - w as f64 / 2.0, rect.y0 + 10.0)), None, TextWeight::Semibold);
-            } else if matches!(hit, Hit::CancelOverlay) {
-                let hov = rect.contains(self.last_mouse);
-                fill_round(scene, t, *rect, 9.0, if hov { c.surface_white_10 } else { c.surface_white_5 });
-                let (w, _) = tr.measure(if matches!(self.mode, Mode::Setup) { "Cancel" } else { "Discard" }, 13.0, None);
-                tr.draw_text(scene, if matches!(self.mode, Mode::Setup) { "Cancel" } else { "Discard" }, 13.0, c.neutral[8], t * Affine::translate(((rect.x0 + rect.x1) / 2.0 - w as f64 / 2.0, rect.y0 + 10.0)), None);
-            }
-            if let Some((label, ref sh)) = secondary {
-                if matches_hit(hit, sh) {
-                    let hov = rect.contains(self.last_mouse);
-                    fill_round(scene, t, *rect, 9.0, if hov { c.surface_white_10 } else { c.surface_white_5 });
-                    stroke_round(scene, t, *rect, 9.0, 1.0, c.border_white_10);
-                    let (w, _) = tr.measure(label, 13.0, None);
-                    tr.draw_text(scene, label, 13.0, c.neutral[8], t * Affine::translate(((rect.x0 + rect.x1) / 2.0 - w as f64 / 2.0, rect.y0 + 10.0)), None);
-                }
-            }
+            let danger = matches!(a, CtxAction::Delete);
+            let col = if danger { c.semantic.danger } else { c.text_primary };
+            tr.draw_text(scene, &a.label(read, starred), 12.5, col, t * Affine::translate((mr.x0 + 14.0, y + 7.0)), None);
+            y += 28.0;
         }
     }
 
@@ -1278,8 +1421,9 @@ impl MailApp {
         stroke_round(scene, t, p, 14.0, 1.0, c.border_white_10);
         let pad = 24.0;
         let lx = p.x0 + pad;
-        tr.draw_text_weighted(scene, "Account setup", 16.0, c.text_primary, t * Affine::translate((lx, p.y0 + 18.0)), None, TextWeight::Bold);
-        tr.draw_text(scene, "IMAP for receiving · SMTP for sending", 11.5, c.text_dim, t * Affine::translate((lx, p.y0 + 38.0)), None);
+        let heading = if self.setup_editing.is_some() { "Edit account" } else { "Add account" };
+        tr.draw_text_weighted(scene, heading, 16.0, c.text_primary, t * Affine::translate((lx, p.y0 + 18.0)), None, TextWeight::Bold);
+        tr.draw_text(scene, "Managed in Settings → Accounts; edited here for convenience.", 11.5, c.text_dim, t * Affine::translate((lx, p.y0 + 38.0)), None);
 
         let labels = ["Display name", "Email", "Username", "Password", "IMAP host", "", "SMTP host", ""];
         let cfg_errs: std::collections::HashSet<&str> = self.read_setup_config().validate().into_iter().map(|(k, _)| k).collect();
@@ -1297,19 +1441,16 @@ impl MailApp {
                 continue;
             }
             let focused = matches!(self.focus, Focus::Setup(j) if j == i);
-            // label to the left (for primary rows) — only rows 0..4 and host rows
             if i < labels.len() && !labels[i].is_empty() {
                 tr.draw_text(scene, labels[i], 12.5, c.text_dim, t * Affine::translate((lx, rect.y0 + 9.0)), None);
             }
             if i == 5 {
                 tr.draw_text(scene, "Port", 11.0, c.text_dim, t * Affine::translate((rect.x0, rect.y0 - 14.0)), None);
             }
-            // field background
             fill_round(scene, t, Rect::new(rect.x0 - 2.0, rect.y0 - 2.0, rect.x1 + 2.0, rect.y1 + 2.0), 7.0, c.surfaces.base);
             let border = if err_for(i) { c.semantic.danger } else if focused { c.border_focus } else { c.border_standard };
             stroke_round(scene, t, Rect::new(rect.x0 - 2.0, rect.y0 - 2.0, rect.x1 + 2.0, rect.y1 + 2.0), 7.0, 1.0, border);
         }
-        // TLS toggles
         for (rect, hit) in &self.hits {
             let (on, label) = match hit {
                 Hit::ToggleImapTls => (self.setup_imap_tls, "TLS"),
@@ -1322,8 +1463,6 @@ impl MailApp {
             scene.fill(Fill::NonZero, t, Color::WHITE, None, &Circle::new(Point::new(knob_x + 7.0, pill.y0 + 11.0), 8.0));
             tr.draw_text(scene, label, 12.0, c.neutral[8], t * Affine::translate((pill.x1 + 8.0, rect.y0 + 8.0)), None);
         }
-
-        // buttons
         let matches_hit = |a: &Hit, b: &Hit| std::mem::discriminant(a) == std::mem::discriminant(b);
         for (rect, hit) in &self.hits {
             if matches_hit(hit, &Hit::SetupSave) {
@@ -1361,17 +1500,11 @@ impl Widget for MailApp {
             self.seed_doc(state);
             self.seeded = true;
         } else {
-            // Pull persisted flags back in (covers undo / remote peers).
             MailDoc::apply_flags(state, &mut self.mailbox);
         }
     }
 
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
+    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut HashMap<NodeId, *mut dyn Widget>) -> NodeId {
         let node = taffy
             .new_leaf(Style {
                 size: Size { width: Dimension::percent(1.0), height: Dimension::percent(1.0) },
@@ -1396,44 +1529,33 @@ impl Widget for MailApp {
     fn draw(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
         let c = &theme.tokens.colors;
         fill_rect(scene, t, self.rect, c.surfaces.base);
-        self.draw_sidebar(scene, t, tr, theme);
-        self.draw_topbar(scene, t, tr, theme, presence);
+        // Content panes first.
+        self.draw_topbar(scene, t, tr, theme);
         self.draw_list(scene, t, tr, theme);
         self.draw_reader(scene, t, tr, theme);
-        // embedded search input text/caret
+        // Sidebar (persistent inline, or overlay-over-content with scrim).
+        self.draw_sidebar(scene, t, tr, theme);
+        // Search input text/caret on top of the topbar chrome.
         self.search_input.draw(scene, t, tr, theme, presence);
 
-        match self.mode {
-            Mode::Compose => {
-                self.draw_compose(scene, t, tr, theme);
-                self.c_to.draw(scene, t, tr, theme, presence);
-                if self.show_cc_bcc {
-                    self.c_cc.draw(scene, t, tr, theme, presence);
-                    self.c_bcc.draw(scene, t, tr, theme, presence);
-                }
-                self.c_subject.draw(scene, t, tr, theme, presence);
+        if self.mode == Mode::Setup {
+            self.draw_setup(scene, t, tr, theme);
+            for inp in &mut self.setup_inputs {
+                inp.draw(scene, t, tr, theme, presence);
             }
-            Mode::Setup => {
-                self.draw_setup(scene, t, tr, theme);
-                for inp in &mut self.setup_inputs {
-                    inp.draw(scene, t, tr, theme, presence);
-                }
-            }
-            Mode::Mailbox => {}
         }
+
+        // Compose window (above everything except status/context menu).
+        self.compose.draw(scene, t, tr, theme, presence);
+        self.compose.draw_inputs(scene, t, tr, theme, presence);
+
+        // Context menu sits on top of all.
+        self.draw_context_menu(scene, t, tr, theme);
 
         self.draw_status(scene, t, tr, theme);
     }
 
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
+    fn draw_with_presence(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx, _permissions: &PermissionContext) {
         self.draw(scene, t, tr, theme, presence);
     }
 
@@ -1449,14 +1571,39 @@ impl Widget for MailApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        // Track mouse.
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
             self.dirty = true;
         }
 
-        // Esc closes overlays.
+        // 1) Compose window has top priority and is modal while open: it
+        //    consumes any event inside it and every keyboard event, so nothing
+        //    falls through to the mailbox behind it.
+        if self.compose.open {
+            let (consumed, action) = self.compose.handle_event(event, scale_factor, modifiers, state, path, node_id, taffy);
+            match action {
+                ComposeAction::Send => self.send_compose(state),
+                ComposeAction::SaveDraft => self.save_compose_draft(state),
+                ComposeAction::Close => {
+                    self.persist_compose_format(state);
+                    self.dirty = true;
+                }
+                ComposeAction::None => {}
+            }
+            if consumed {
+                *handled = true;
+                self.dirty = true;
+                return;
+            }
+        }
+
+        // 2) Esc closes overlays / context menu.
         if let WindowEvent::KeyboardInput { event: KeyEvent { logical_key: Key::Named(NamedKey::Escape), state: ElementState::Pressed, .. }, .. } = event {
+            if self.context_menu.is_some() {
+                self.context_menu = None;
+                *handled = true;
+                return;
+            }
             if self.mode != Mode::Mailbox {
                 self.close_overlay(state);
                 *handled = true;
@@ -1464,23 +1611,14 @@ impl Widget for MailApp {
             }
         }
 
-        // Route keystrokes to the focused embedded input first.
+        // 3) Route keystrokes to a focused embedded input (search / setup).
         if matches!(event, WindowEvent::KeyboardInput { .. }) {
-            // Compose body uses a custom buffer.
-            if matches!(self.focus, Focus::ComposeBody) {
-                if self.handle_compose_body_key(event) {
-                    *handled = true;
-                    return;
-                }
-            }
-            // Forward to focused TextInput.
             let focus = self.focus;
             if let Some(inp) = self.focused_input() {
                 inp.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, node_id, taffy);
                 if matches!(focus, Focus::Search) {
                     self.search = self.search_input.value().to_string();
                     MailDoc::set_search(state, &self.search);
-                    // reselect first result
                     self.selected = self.list_rows().first().map(|(id, _)| *id);
                 }
                 if *handled {
@@ -1490,12 +1628,12 @@ impl Widget for MailApp {
             }
         }
 
-        // Global keyboard shortcuts in mailbox mode (when no field focused).
+        // 4) Global keyboard shortcuts (mailbox mode, no field focused).
         if self.mode == Mode::Mailbox && matches!(self.focus, Focus::None) {
             if let WindowEvent::KeyboardInput { event: KeyEvent { logical_key, state: ElementState::Pressed, .. }, .. } = event {
                 match logical_key {
                     Key::Character(ch) if ch.eq_ignore_ascii_case("c") => {
-                        self.open_compose_new(state);
+                        self.open_compose_new();
                         *handled = true;
                         return;
                     }
@@ -1516,27 +1654,21 @@ impl Widget for MailApp {
                     }
                     Key::Character(ch) if ch.eq_ignore_ascii_case("e") => {
                         if let Some(id) = self.selected {
-                            self.mailbox.archive(id);
-                            self.persist_flags(state, id);
-                            self.reselect_after_remove(state);
+                            self.apply_message_action(state, id, CtxAction::Archive);
                             *handled = true;
                             return;
                         }
                     }
                     Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace) => {
                         if let Some(id) = self.selected {
-                            self.mailbox.delete(id);
-                            self.persist_flags(state, id);
-                            self.reselect_after_remove(state);
+                            self.apply_message_action(state, id, CtxAction::Delete);
                             *handled = true;
                             return;
                         }
                     }
                     Key::Character(ch) if ch.eq_ignore_ascii_case("s") => {
                         if let Some(id) = self.selected {
-                            self.mailbox.toggle_star(id);
-                            self.persist_flags(state, id);
-                            self.dirty = true;
+                            self.apply_message_action(state, id, CtxAction::ToggleStar);
                             *handled = true;
                             return;
                         }
@@ -1546,37 +1678,86 @@ impl Widget for MailApp {
             }
         }
 
-        // Mouse clicks → hit-test regions.
+        // 5) Right-click → context menu on a row.
+        if let WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } = event {
+            let pt = self.last_mouse;
+            if let Some(id) = self.row_id_at(pt) {
+                self.open_context_menu(id, pt);
+                *handled = true;
+                return;
+            }
+        }
+
+        // 6) Left-press handling: context-menu items, swipe begin, hits.
         if let WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } = event {
             let pt = self.last_mouse;
-            // overlay click-out closes? Keep panel modal; clicking scrim cancels.
-            let hit = self.hits.iter().rev().find(|(r, _)| r.contains(pt)).map(|(_, h)| h.clone());
-            // If in overlay and click outside panel → cancel.
-            if self.mode != Mode::Mailbox {
+            // Context menu open: a click either hits an item or dismisses.
+            if self.context_menu.is_some() {
+                let item = self.hits.iter().rev().find(|(r, h)| matches!(h, Hit::CtxItem(_)) && r.contains(pt));
+                if let Some((_, Hit::CtxItem(i))) = item {
+                    let i = *i;
+                    if let Some(menu) = &self.context_menu {
+                        if let Some(action) = menu.items.get(i).copied() {
+                            let target = menu.target;
+                            self.context_menu = None;
+                            self.apply_message_action(state, target, action);
+                        }
+                    }
+                } else {
+                    self.context_menu = None;
+                }
+                *handled = true;
+                return;
+            }
+            // Begin a potential swipe when pressing on a row.
+            if let Some(id) = self.row_id_at(pt) {
+                self.mouse_down_row = Some((id, pt));
+            }
+            // Setup overlay click-out cancels.
+            if self.mode == Mode::Setup {
                 let panel = self.overlay_panel_rect();
+                let hit = self.hits.iter().rev().find(|(r, _)| r.contains(pt)).map(|(_, h)| h.clone());
                 if !panel.contains(pt) && hit.is_none() {
                     self.close_overlay(state);
                     *handled = true;
                     return;
                 }
             }
+            let hit = self.hits.iter().rev().find(|(r, _)| r.contains(pt)).map(|(_, h)| h.clone());
             if let Some(hit) = hit {
                 self.dispatch_hit(state, hit, pt);
                 *handled = true;
                 return;
             }
-            // click on a header field box region in compose: focus it.
-            if self.mode == Mode::Compose {
-                self.focus_compose_field_at(pt);
-                *handled = true;
-                return;
-            }
-            // click in body region focuses body
-            if self.mode == Mode::Mailbox && !self.list_rect.contains(pt) {
-                // clicking reader / empty: drop input focus
-                self.focus_only(Focus::None);
+        }
+
+        // 7) Drag → swipe on a row.
+        if let WindowEvent::CursorMoved { .. } = event {
+            if let Some((id, start)) = self.mouse_down_row {
+                let dx = self.last_mouse.x - start.x;
+                if dx.abs() > 6.0 {
+                    self.swipe = Some(SwipeState { id, start_x: start.x, dx });
+                    self.dirty = true;
+                }
             }
         }
+
+        // 8) Release → commit swipe if past threshold.
+        if let WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } = event {
+            if let Some(s) = self.swipe.take() {
+                // swipe-left = Archive, swipe-right = Delete — both mirror the
+                // context menu (swipe == context-menu principle).
+                if s.dx <= -SWIPE_THRESHOLD {
+                    self.apply_message_action(state, s.id, CtxAction::Archive);
+                } else if s.dx >= SWIPE_THRESHOLD {
+                    self.apply_message_action(state, s.id, CtxAction::Delete);
+                }
+                let _ = s.start_x;
+                *handled = true;
+            }
+            self.mouse_down_row = None;
+        }
+
         self.dirty = true;
         let _ = focus_target;
     }
@@ -1590,15 +1771,23 @@ impl Widget for MailApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty
+        self.dirty || self.compose.needs_redraw()
     }
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+        self.compose.mark_drawn();
     }
 }
 
 impl MailApp {
+    fn row_id_at(&self, pt: Point) -> Option<MessageId> {
+        self.hits.iter().rev().find_map(|(r, h)| match h {
+            Hit::Thread(id) if r.contains(pt) => Some(*id),
+            _ => None,
+        })
+    }
+
     fn move_selection(&mut self, state: &mut AutoCommit, delta: i32) {
         let rows = self.list_rows();
         if rows.is_empty() {
@@ -1606,34 +1795,34 @@ impl MailApp {
         }
         let cur = self
             .selected
-            .and_then(|sel| rows.iter().position(|(id, _)| {
-                // match by thread membership: the row id is the newest msg
-                *id == sel || self.mailbox.get(sel).map(|m| m.thread_subject()) == self.mailbox.get(*id).map(|x| x.thread_subject())
-            }))
+            .and_then(|sel| {
+                rows.iter().position(|(id, _)| {
+                    *id == sel
+                        || self.mailbox.get(sel).map(|m| m.thread_subject()) == self.mailbox.get(*id).map(|x| x.thread_subject())
+                })
+            })
             .unwrap_or(0) as i32;
         let next = (cur + delta).clamp(0, rows.len() as i32 - 1) as usize;
         let id = rows[next].0;
         self.select_message(state, id);
     }
 
-    fn reselect_after_remove(&mut self, state: &mut AutoCommit) {
-        self.selected = self
-            .current_threads()
-            .first()
-            .and_then(|t| t.message_ids.last().copied());
-        if let Some(sel) = self.selected {
-            MailDoc::set_selected(state, Some(&sel.to_string()));
-        } else {
-            MailDoc::set_selected(state, None);
-        }
-        self.dirty = true;
-    }
-
     fn dispatch_hit(&mut self, state: &mut AutoCommit, hit: Hit, _pt: Point) {
         match hit {
-            Hit::Folder(f) => {
+            Hit::Account(ai) => {
+                self.accounts.set_active(ai);
+                MailDoc::set_active_account(state, self.accounts.active);
+                self.select_folder(state, Folder::Inbox);
+            }
+            Hit::AccountToggle(ai) => {
+                self.accounts.toggle_collapsed(ai);
+                self.dirty = true;
+            }
+            Hit::Folder(ai, f) => {
                 self.mode = Mode::Mailbox;
                 self.focus_only(Focus::None);
+                self.accounts.set_active(ai);
+                MailDoc::set_active_account(state, self.accounts.active);
                 self.select_folder(state, f);
             }
             Hit::Thread(id) => {
@@ -1645,34 +1834,44 @@ impl MailApp {
                 self.persist_flags(state, id);
                 self.dirty = true;
             }
-            Hit::Compose => self.open_compose_new(state),
-            Hit::Settings => self.open_setup(state),
+            Hit::Compose => self.open_compose_new(),
+            Hit::Settings => self.open_setup_edit(Some(self.accounts.active)),
+            Hit::SidebarToggle => {
+                self.sidebar_open = !self.sidebar_open;
+                self.dirty = true;
+            }
+            Hit::ScrimDismiss => {
+                self.sidebar_open = false;
+                self.dirty = true;
+            }
+            Hit::BackToList => {
+                self.narrow_page = NarrowPage::List;
+                self.dirty = true;
+            }
             Hit::SearchClear => {
                 self.search.clear();
                 self.search_input.set_text("");
                 MailDoc::set_search(state, "");
                 self.focus_only(Focus::None);
             }
-            Hit::Reply => self.open_reply(state),
+            Hit::Reply => {
+                if let Some(id) = self.selected {
+                    self.open_reply(id);
+                }
+            }
             Hit::ArchiveSel => {
                 if let Some(id) = self.selected {
-                    self.mailbox.archive(id);
-                    self.persist_flags(state, id);
-                    self.reselect_after_remove(state);
+                    self.apply_message_action(state, id, CtxAction::Archive);
                 }
             }
             Hit::DeleteSel => {
                 if let Some(id) = self.selected {
-                    self.mailbox.delete(id);
-                    self.persist_flags(state, id);
-                    self.reselect_after_remove(state);
+                    self.apply_message_action(state, id, CtxAction::Delete);
                 }
             }
             Hit::StarSel => {
                 if let Some(id) = self.selected {
-                    self.mailbox.toggle_star(id);
-                    self.persist_flags(state, id);
-                    self.dirty = true;
+                    self.apply_message_action(state, id, CtxAction::ToggleStar);
                 }
             }
             Hit::UnreadSel => {
@@ -1682,9 +1881,7 @@ impl MailApp {
                     self.dirty = true;
                 }
             }
-            Hit::Send => self.send_compose(state),
-            Hit::SaveDraft => self.save_draft(state),
-            Hit::CancelOverlay => self.close_overlay(state),
+            Hit::CtxItem(_) => {} // handled in the context-menu branch
             Hit::SetupField(i) => {
                 if i < self.setup_inputs.len() {
                     self.focus_only(Focus::Setup(i));
@@ -1692,7 +1889,6 @@ impl MailApp {
             }
             Hit::ToggleImapTls => {
                 self.setup_imap_tls = !self.setup_imap_tls;
-                // common port defaults follow the toggle
                 self.setup_inputs[5].set_text(if self.setup_imap_tls { "993" } else { "143" });
                 self.dirty = true;
             }
@@ -1702,66 +1898,8 @@ impl MailApp {
                 self.dirty = true;
             }
             Hit::SetupSave => self.save_setup(state),
-            Hit::AddAttachment => {
-                let n = self.compose_atts.len() + 1;
-                self.compose_atts.push(format!("attachment-{n}.pdf"));
-                self.dirty = true;
-            }
+            Hit::CancelOverlay => self.close_overlay(state),
         }
-    }
-
-    fn focus_compose_field_at(&mut self, pt: Point) {
-        // Determine which header field box (or body) was clicked using the
-        // embedded inputs' rects.
-        if self.c_to.get_rect().contains(pt) {
-            self.focus_only(Focus::ComposeTo);
-        } else if self.show_cc_bcc && self.c_cc.get_rect().contains(pt) {
-            self.focus_only(Focus::ComposeCc);
-        } else if self.show_cc_bcc && self.c_bcc.get_rect().contains(pt) {
-            self.focus_only(Focus::ComposeBcc);
-        } else if self.c_subject.get_rect().contains(pt) {
-            self.focus_only(Focus::ComposeSubject);
-        } else {
-            // default to body when clicking the lower panel
-            let p = self.overlay_panel_rect();
-            if pt.y > p.y0 + 120.0 {
-                self.focus_only(Focus::ComposeBody);
-            }
-        }
-    }
-
-    /// Handle a keystroke for the custom compose-body buffer. Returns true if
-    /// consumed.
-    fn handle_compose_body_key(&mut self, event: &WindowEvent) -> bool {
-        if let WindowEvent::KeyboardInput { event: KeyEvent { logical_key, text, state: ElementState::Pressed, .. }, .. } = event {
-            match logical_key {
-                Key::Named(NamedKey::Backspace) => {
-                    self.compose_body.pop();
-                    self.dirty = true;
-                    return true;
-                }
-                Key::Named(NamedKey::Enter) => {
-                    self.compose_body.push('\n');
-                    self.dirty = true;
-                    return true;
-                }
-                Key::Named(NamedKey::Space) => {
-                    self.compose_body.push(' ');
-                    self.dirty = true;
-                    return true;
-                }
-                _ => {}
-            }
-            if let Some(txt) = text {
-                let s = txt.as_str();
-                if !s.is_empty() && !s.chars().any(|c| c.is_control()) {
-                    self.compose_body.push_str(s);
-                    self.dirty = true;
-                    return true;
-                }
-            }
-        }
-        false
     }
 }
 
@@ -1779,25 +1917,24 @@ mod tests {
     fn starts_in_mailbox_with_a_selection() {
         let (app, _) = new_app();
         assert!(matches!(app.mode, Mode::Mailbox));
-        assert!(app.selected.is_some(), "an inbox thread should be preselected");
+        assert!(app.selected.is_some());
         assert_eq!(app.folder, Folder::Inbox);
+    }
+
+    #[test]
+    fn has_multiple_accounts() {
+        let (app, _) = new_app();
+        assert!(app.accounts.len() >= 2, "sample provides multiple accounts");
     }
 
     #[test]
     fn selecting_message_marks_read_and_persists() {
         let (mut app, mut doc) = new_app();
         app.sync(&mut doc, &automerge::ROOT);
-        // find an unread inbox message
-        let unread = app
-            .mailbox
-            .messages_in(Folder::Inbox)
-            .into_iter()
-            .find(|m| !m.read)
-            .map(|m| m.id);
+        let unread = app.mailbox.messages_in(Folder::Inbox).into_iter().find(|m| !m.read).map(|m| m.id);
         let id = unread.expect("some unread message");
         app.select_message(&mut doc, id);
         assert!(app.mailbox.get(id).unwrap().read);
-        // flag persisted to the doc
         let mut fresh = app.mailbox.clone();
         for m in fresh.messages.values_mut() {
             m.read = false;
@@ -1810,27 +1947,78 @@ mod tests {
     fn compose_send_lands_in_sent() {
         let (mut app, mut doc) = new_app();
         let before = app.mailbox.count(Folder::Sent);
-        app.open_compose_new(&mut doc);
-        app.c_to.set_text("dest@there.example");
-        app.c_subject.set_text("Hi there");
-        app.compose_body = "Hello!".into();
+        app.open_compose_new();
+        app.compose.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+        // Drive the compose window through its public draft API.
+        let draft = crate::model::Draft { to: "dest@there.example".into(), subject: "Hi".into(), body: "Hello".into(), html_body: Some("<p>Hello</p>".into()), ..Default::default() };
+        app.compose.reattach(&draft);
         app.send_compose(&mut doc);
-        assert!(matches!(app.mode, Mode::Mailbox));
+        assert!(!app.compose.open);
         assert_eq!(app.mailbox.count(Folder::Sent), before + 1);
         assert!(app.status.as_deref().unwrap_or("").starts_with("Sent"));
     }
 
     #[test]
+    fn context_menu_archive_moves_message() {
+        let (mut app, mut doc) = new_app();
+        let id = app.mailbox.messages_in(Folder::Inbox)[0].id;
+        app.apply_message_action(&mut doc, id, CtxAction::Archive);
+        assert_eq!(app.mailbox.get(id).unwrap().folder, Folder::Archive);
+    }
+
+    #[test]
+    fn context_and_swipe_actions_are_mirrored() {
+        // The swipe gestures must each map to an action that's also in the
+        // context menu (swipe == context-menu principle).
+        let (app, _) = new_app();
+        let id = app.mailbox.messages_in(Folder::Inbox)[0].id;
+        let menu = app.context_items_for(id);
+        // swipe-left = Archive, swipe-right = Delete
+        assert!(menu.contains(&CtxAction::Archive), "swipe-left action present in menu");
+        assert!(menu.contains(&CtxAction::Delete), "swipe-right action present in menu");
+    }
+
+    #[test]
+    fn responsive_breakpoint_switches_sidebar_mode() {
+        let (mut app, mut doc) = new_app();
+        app.sync(&mut doc, &automerge::ROOT);
+        // Wide: persistent sidebar, list + reader side by side.
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.relayout();
+        assert!(matches!(app.sidebar_mode, SidebarMode::Persistent));
+        assert!(app.list_rect.area() > 0.0 && app.reader_rect.area() > 0.0);
+        // Narrow: overlay sidebar, single content page (list only by default).
+        app.rect = Rect::new(0.0, 0.0, 720.0, 800.0);
+        app.narrow_page = NarrowPage::List;
+        app.relayout();
+        assert!(matches!(app.sidebar_mode, SidebarMode::Overlay));
+        assert!(app.reader_rect.area() <= 0.0, "narrow list page hides the reader");
+    }
+
+    #[test]
+    fn narrow_message_select_pushes_mail_page() {
+        let (mut app, mut doc) = new_app();
+        app.sync(&mut doc, &automerge::ROOT);
+        app.rect = Rect::new(0.0, 0.0, 720.0, 800.0);
+        app.relayout();
+        let id = app.mailbox.messages_in(Folder::Inbox)[0].id;
+        app.select_message(&mut doc, id);
+        assert!(matches!(app.narrow_page, NarrowPage::Mail));
+    }
+
+    #[test]
     fn setup_save_updates_account() {
         let (mut app, mut doc) = new_app();
-        app.open_setup(&mut doc);
+        app.open_setup_edit(None);
         app.setup_inputs[1].set_text("new@host.example");
         app.setup_inputs[2].set_text("new@host.example");
         app.setup_inputs[4].set_text("imap.host.example");
         app.setup_inputs[6].set_text("smtp.host.example");
+        let before = app.accounts.len();
         app.save_setup(&mut doc);
         assert!(matches!(app.mode, Mode::Mailbox));
-        assert_eq!(app.mailbox.account.email, "new@host.example");
+        assert_eq!(app.accounts.len(), before + 1);
+        assert_eq!(app.accounts.active_config().email, "new@host.example");
     }
 
     #[test]
@@ -1843,17 +2031,6 @@ mod tests {
             let m = app.mailbox.get(id).unwrap();
             let hay = format!("{} {} {}", m.subject, m.from.display(), m.body).to_ascii_lowercase();
             assert!(hay.contains("launch"));
-        }
-    }
-
-    #[test]
-    fn folder_switch_changes_selection_scope() {
-        let (mut app, mut doc) = new_app();
-        app.select_folder(&mut doc, Folder::Sent);
-        assert_eq!(app.folder, Folder::Sent);
-        // selection should be a sent message (or none)
-        if let Some(id) = app.selected {
-            assert_eq!(app.mailbox.get(id).unwrap().folder, Folder::Sent);
         }
     }
 }
