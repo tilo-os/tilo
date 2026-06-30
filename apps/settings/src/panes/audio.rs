@@ -18,15 +18,22 @@ use os_actions::Dispatcher;
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
-use ui::widget::{Column, Row, Slider, Spacer, Text, Toggle, Widget};
+use ui::widget::{Button, Column, Row, Slider, Toggle, Widget};
 use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::dispatcher::dispatcher_or_real;
+use crate::widgets::{card, caption, rows, setting_row, El};
 
 pub const VOLUME_KEY: &str = "audio.volume";
 pub const MUTED_KEY: &str = "audio.muted";
+pub const INPUT_VOLUME_KEY: &str = "audio.input_volume";
+pub const OUTPUT_DEVICE_KEY: &str = "audio.output_device";
+pub const INPUT_DEVICE_KEY: &str = "audio.input_device";
+pub const EVENT_SOUNDS_KEY: &str = "audio.event_sounds";
+pub const CHAT_JOIN_KEY: &str = "audio.chat_join_sound";
+pub const CHAT_LEAVE_KEY: &str = "audio.chat_leave_sound";
 
 /// Audio pane widget.
 pub struct AudioPane {
@@ -75,39 +82,105 @@ impl AudioPane {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        let row = Row::new()
-            .push(Box::new(Text::new("Volume").with_size(12.0)))
-            .push(Box::new(Spacer::new()))
-            .push(Box::new(
-                Slider::new("settings.audio.volume", VOLUME_KEY).with_id("audio.volume"),
-            ));
-        let mute_row = Row::new()
-            .push(Box::new(Text::new("Mute").with_size(12.0)))
-            .push(Box::new(Spacer::new()))
-            .push(Box::new(
-                Toggle::new("settings.audio.mute", MUTED_KEY).with_id("audio.mute"),
-            ));
-        // Output device — single static row for now. Real enumeration is
-        // a wpctl-status parsing job we haven't wired yet; surfacing the
-        // row keeps the layout honest about where the picker will land.
-        let device_row = Row::new()
-            .push(Box::new(Text::new("Output device").with_size(12.0)))
-            .push(Box::new(Spacer::new()))
-            .push(Box::new(Text::new("Built-in audio").with_size(12.0)));
+        use ui::widget::Dropdown;
+
+        // --- Output card: device picker + volume + mute.
+        let output_devices = vec![
+            "Built-in Speakers".to_string(),
+            "Headphones".to_string(),
+            "HDMI / DisplayPort".to_string(),
+        ];
+        let output = card(
+            "Output",
+            rows(vec![
+                setting_row(
+                    "Device",
+                    Box::new(
+                        Dropdown::new(output_devices, OUTPUT_DEVICE_KEY)
+                            .with_id("audio.output_device")
+                            .with_placeholder("Built-in Speakers"),
+                    ),
+                ),
+                setting_row(
+                    "Volume",
+                    Box::new(
+                        Slider::new("settings.audio.volume", VOLUME_KEY).with_id("audio.volume"),
+                    ),
+                ),
+                setting_row(
+                    "Mute",
+                    Box::new(Toggle::new("settings.audio.mute", MUTED_KEY).with_id("audio.mute")),
+                ),
+            ]),
+        );
+
+        // --- Input card: microphone picker + input level.
+        let input_devices = vec![
+            "Built-in Microphone".to_string(),
+            "Headset Microphone".to_string(),
+        ];
+        let input = card(
+            "Input",
+            rows(vec![
+                setting_row(
+                    "Device",
+                    Box::new(
+                        Dropdown::new(input_devices, INPUT_DEVICE_KEY)
+                            .with_id("audio.input_device")
+                            .with_placeholder("Built-in Microphone"),
+                    ),
+                ),
+                setting_row(
+                    "Input level",
+                    Box::new(
+                        Slider::new("settings.audio.input_volume", INPUT_VOLUME_KEY)
+                            .with_id("audio.input_volume"),
+                    ),
+                ),
+            ]),
+        );
+
+        // --- System sounds card: master event-sound toggle + the
+        //     individual collaboration sounds (chat join / leave).
+        let sounds = card(
+            "System sounds",
+            rows(vec![
+                setting_row(
+                    "Event sounds",
+                    Box::new(
+                        Toggle::new("settings.audio.event_sounds", EVENT_SOUNDS_KEY)
+                            .with_id("audio.event_sounds"),
+                    ),
+                ),
+                event_sound_row("Someone joins a chat", CHAT_JOIN_KEY, "audio.chat_join"),
+                event_sound_row("Someone leaves a chat", CHAT_LEAVE_KEY, "audio.chat_leave"),
+                caption(
+                    "Collaboration sounds play when peers join or leave a \
+                     shared cluster or chat.",
+                ),
+            ]),
+        );
+
         Box::new(
             Column::new()
-                .push(Box::new(row))
-                .push(Box::new(mute_row))
-                .push(Box::new(device_row))
-                .push(Box::new(
-                    Text::new(
-                        "Volume drives the default PipeWire sink; device \
-                         enumeration is forthcoming.",
-                    )
-                    .with_size(11.0),
-                )),
+                .with_intrinsic_height()
+                .push(output)
+                .push(input)
+                .push(sounds),
         )
     }
+}
+
+/// A system-event-sound row: a label with a toggle and a "Play" preview
+/// button so the user can audition the sound.
+fn event_sound_row(label: &str, key: &str, id_base: &str) -> El {
+    let toggle_id = format!("settings.{id_base}.toggle");
+    let play_id = format!("settings.{id_base}.play");
+    let play_key = format!("{id_base}.play");
+    let controls = Row::new()
+        .push(Box::new(Button::new(&play_id, "\u{f040a}", Some(&play_key))))
+        .push(Box::new(Toggle::new(&toggle_id, key).with_id(id_base)));
+    setting_row(label, Box::new(controls))
 }
 
 pub fn build() -> Box<dyn Widget> {
@@ -171,7 +244,7 @@ impl Widget for AudioPane {
             flex_direction: taffy::FlexDirection::Column,
             size: taffy::Size {
                 width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::auto(),
             },
             ..Default::default()
         };
