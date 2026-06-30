@@ -107,6 +107,11 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 # adapter wiring in `ui/src/app.rs`.
 accesskit = "0.24.1"
 accesskit_winit = "0.33.1"
+# Accessibility (W6): the built-in screen reader (`ui::screen_reader`) speaks
+# focus / value / live-region narration through the offline qOS TTS engine.
+# `default_speaker()` never panics (falls back to `NullSpeaker` when no speech
+# stack is installed), so depending on this is safe in headless builds.
+qos-tts = { path = "../qos-tts" }
 
 [dev-dependencies]
 regex = "1"
