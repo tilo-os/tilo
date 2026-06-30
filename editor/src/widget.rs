@@ -2684,10 +2684,10 @@ impl Widget for WordProcessorWidget {
                 let mut motion = false;
                 match logical_key {
                     Key::Named(NamedKey::Tab) => {
-                        if let Some(next) = self.tab_cell(!shift) {
-                            self.inner.clear_anchor();
-                            self.inner.set_caret(Caret { block: next, offset: 0 });
-                            motion = true;
+                        // Inside a table, Tab/Shift-Tab walk cells (and Tab in the
+                        // last cell appends a row). Elsewhere Tab inserts spaces.
+                        if self.inner.tab_cell(state, !shift) {
+                            motion = true; // tab_cell already cleared any selection
                         } else {
                             self.inner.insert_str(state, "    ");
                         }
@@ -2707,12 +2707,18 @@ impl Widget for WordProcessorWidget {
                     }
                     Key::Named(NamedKey::ArrowUp) => {
                         self.extend_or_clear(shift);
-                        self.inner.move_block_relative(state, -1);
+                        // Inside a table, Up moves to the cell directly above; the
+                        // grid is block-granular so this matches block-relative motion.
+                        if !self.inner.cell_vertical(state, false) {
+                            self.inner.move_block_relative(state, -1);
+                        }
                         motion = true;
                     }
                     Key::Named(NamedKey::ArrowDown) => {
                         self.extend_or_clear(shift);
-                        self.inner.move_block_relative(state, 1);
+                        if !self.inner.cell_vertical(state, true) {
+                            self.inner.move_block_relative(state, 1);
+                        }
                         motion = true;
                     }
                     Key::Named(NamedKey::Home) => {
@@ -3038,17 +3044,6 @@ impl WordProcessorWidget {
     }
 
     /// The next/previous cell id within the caret cell's table, if any.
-    fn tab_cell(&self, forward: bool) -> Option<String> {
-        let idx = self.blocks.iter().position(|b| b.id == self.inner.caret.block)?;
-        let table = cell_table(&self.blocks[idx])?;
-        let same = |b: &BlockView| cell_table(b).as_deref() == Some(table.as_str());
-        if forward {
-            self.blocks[idx + 1..].iter().find(|b| same(b)).map(|b| b.id.clone())
-        } else {
-            self.blocks[..idx].iter().rev().find(|b| same(b)).map(|b| b.id.clone())
-        }
-    }
-
     /// The char position the toolbar reports font state for: just left of the
     /// caret (so it reflects the run you're typing into), else the caret.
     fn font_probe(&self) -> Option<(&BlockView, usize)> {
