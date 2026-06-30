@@ -1,7 +1,7 @@
 //! Cross-check `role_permits` against the spec's documented matrix
 //! for every (Role, ArtifactKind, OpClass) triple.
 //!
-//! The matrix has 5 roles × 5 artifact kinds × 7 op classes = 175
+//! The matrix has 5 roles × 5 artifact kinds × 8 op classes = 200
 //! entries. Most are derivable from a few rules ("Owner permits
 //! everything", "Viewer permits nothing"), but writing them out
 //! exhaustively means a code change that flips a single row will
@@ -19,7 +19,7 @@ fn all_artifact_kinds() -> [ArtifactKind; 5] {
     ]
 }
 
-fn all_op_classes() -> [OpClass; 7] {
+fn all_op_classes() -> [OpClass; 8] {
     [
         OpClass::Splice,
         OpClass::Move,
@@ -28,6 +28,7 @@ fn all_op_classes() -> [OpClass; 7] {
         OpClass::Tombstone,
         OpClass::Restore,
         OpClass::Govern,
+        OpClass::Compaction,
     ]
 }
 
@@ -46,7 +47,7 @@ fn matrix_owner() {
 #[test]
 fn matrix_editor() {
     for kind in all_artifact_kinds() {
-        // Editor permits everything except Govern.
+        // Editor permits everything except Govern + Compaction.
         assert!(role_permits(Role::Editor, kind, OpClass::Splice));
         assert!(role_permits(Role::Editor, kind, OpClass::Move));
         assert!(role_permits(Role::Editor, kind, OpClass::EditMeta));
@@ -54,6 +55,7 @@ fn matrix_editor() {
         assert!(role_permits(Role::Editor, kind, OpClass::Tombstone));
         assert!(role_permits(Role::Editor, kind, OpClass::Restore));
         assert!(!role_permits(Role::Editor, kind, OpClass::Govern));
+        assert!(!role_permits(Role::Editor, kind, OpClass::Compaction));
     }
 }
 
@@ -68,6 +70,7 @@ fn matrix_commenter() {
         assert!(!role_permits(Role::Commenter, kind, OpClass::Tombstone));
         assert!(!role_permits(Role::Commenter, kind, OpClass::Restore));
         assert!(!role_permits(Role::Commenter, kind, OpClass::Govern));
+        assert!(!role_permits(Role::Commenter, kind, OpClass::Compaction));
     }
 }
 
@@ -108,7 +111,8 @@ fn full_matrix_table_driven() {
         (Role::Owner, OpClass::Tombstone, true),
         (Role::Owner, OpClass::Restore, true),
         (Role::Owner, OpClass::Govern, true),
-        // Editor -> all except Govern
+        (Role::Owner, OpClass::Compaction, true),
+        // Editor -> all except Govern + Compaction
         (Role::Editor, OpClass::Splice, true),
         (Role::Editor, OpClass::Move, true),
         (Role::Editor, OpClass::EditMeta, true),
@@ -116,6 +120,7 @@ fn full_matrix_table_driven() {
         (Role::Editor, OpClass::Tombstone, true),
         (Role::Editor, OpClass::Restore, true),
         (Role::Editor, OpClass::Govern, false),
+        (Role::Editor, OpClass::Compaction, false),
         // Commenter -> Comment only
         (Role::Commenter, OpClass::Splice, false),
         (Role::Commenter, OpClass::Move, false),
@@ -124,6 +129,7 @@ fn full_matrix_table_driven() {
         (Role::Commenter, OpClass::Tombstone, false),
         (Role::Commenter, OpClass::Restore, false),
         (Role::Commenter, OpClass::Govern, false),
+        (Role::Commenter, OpClass::Compaction, false),
         // Viewer -> nothing
         (Role::Viewer, OpClass::Splice, false),
         (Role::Viewer, OpClass::Move, false),
@@ -132,6 +138,7 @@ fn full_matrix_table_driven() {
         (Role::Viewer, OpClass::Tombstone, false),
         (Role::Viewer, OpClass::Restore, false),
         (Role::Viewer, OpClass::Govern, false),
+        (Role::Viewer, OpClass::Compaction, false),
         // Denied -> nothing
         (Role::Denied, OpClass::Splice, false),
         (Role::Denied, OpClass::Move, false),
@@ -140,6 +147,7 @@ fn full_matrix_table_driven() {
         (Role::Denied, OpClass::Tombstone, false),
         (Role::Denied, OpClass::Restore, false),
         (Role::Denied, OpClass::Govern, false),
+        (Role::Denied, OpClass::Compaction, false),
     ];
     for kind in all_artifact_kinds() {
         for (role, op, expected) in cases.iter().copied() {
