@@ -134,10 +134,12 @@ impl CalcModel {
             HistoryEntry { expr: "2^10".into(), result: "1024".into() },
         ];
         m.funcs = vec![
-            PlotFn { expr: "sin(x)".into(), visible: true },
+            PlotFn { expr: "(x^2+1)/(x-3)".into(), visible: true },
             PlotFn { expr: "0.25*x^2-2".into(), visible: true },
-            PlotFn { expr: "1/x".into(), visible: true },
+            PlotFn { expr: "sqrt(x+6)".into(), visible: true },
+            PlotFn { expr: "sin(x)".into(), visible: true },
         ];
+        m.active_fn = 0;
         m.memory = 42.0;
         m
     }
