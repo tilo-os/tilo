@@ -22,11 +22,33 @@ use ui::gesture::{DragSelect, Granularity};
 use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::Widget;
 use ui::PresenceCtx;
 
 use crate::word_processor::{Caret, ClipBlock, WordProcessor};
 use crate::WpFormat;
+
+/// What a right-click context-menu row does. The shared [`ContextMenu`]'s
+/// `Arc<dyn Fn>` callbacks can't mutate the widget, so the widget keeps this
+/// parallel list and dispatches on the clicked row index.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CtxAction {
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
+    /// Add the right-clicked (misspelled) word to the user dictionary.
+    AddToDictionary(String),
+    /// Replace the right-clicked word's block span `[start,end)` (char offsets)
+    /// with a spelling suggestion.
+    ApplySuggestion {
+        block: String,
+        start: usize,
+        end: usize,
+        replacement: String,
+    },
+}
 
 // Document surface colors (a white page is the familiar word-processor look,
 // independent of the OS chrome theme).
@@ -906,16 +928,26 @@ pub struct WordProcessorWidget {
     /// Footnotes / endnotes (materialized from the doc), sorted by note id; the
     /// in-text numbering is derived from `note-ref` document order, not this order.
     notes: Vec<NoteView>,
-    /// The built-in English dictionary, loaded lazily on first spell-check pass
-    /// (it is ~75k words, so building it eagerly would slow every cold start). A
-    /// process-wide shared copy avoids re-parsing the word list per widget.
-    dict: Option<std::sync::Arc<spellcheck::Dictionary>>,
+    /// The English dictionary, loaded lazily on first spell-check pass (it is
+    /// ~75k words, so building it eagerly would slow every cold start). Cloned
+    /// once from the process-wide shared built-in list (parsed at most once per
+    /// process), then **owned** by this widget so "Add to dictionary" can splice
+    /// user words into it via [`spellcheck::Dictionary::add_word`]. Persisted
+    /// user words are layered in via `with_user_dict` on first build.
+    dict: Option<spellcheck::Dictionary>,
     /// Whether spell-checking (the red squiggles) is enabled. Default ON.
     spellcheck_on: bool,
     /// Per-block spell-check cache: block id → (text, misspelled byte spans). Keyed
     /// by the block's text so an edit (which changes the text) invalidates the
     /// entry and re-checks; an unchanged block reuses the spans for free.
     spell_cache: HashMap<String, (String, Vec<(usize, usize)>)>,
+    /// Right-click context menu (Cut / Copy / Paste / Select All, plus spell-check
+    /// "Add to dictionary" + suggestion rows when the clicked word is flagged).
+    /// Reuses the shared [`ContextMenu`] primitive; painted in the overlay pass.
+    context_menu: ContextMenu,
+    /// Per-row action parallel to `context_menu`'s items (separators map to
+    /// `None`). A left-click on a row dispatches by index through this list.
+    context_actions: Vec<Option<CtxAction>>,
 }
 
 /// One process-wide built-in dictionary, shared across every word-processor
@@ -992,12 +1024,21 @@ impl WordProcessorWidget {
             dict: None,
             spellcheck_on: true,
             spell_cache: HashMap::new(),
+            context_menu: ContextMenu::new(),
+            context_actions: Vec::new(),
         }
     }
 
-    /// Lazily build (once) and return the shared spell-check dictionary.
-    fn dictionary(&mut self) -> std::sync::Arc<spellcheck::Dictionary> {
-        self.dict.get_or_insert_with(shared_dictionary).clone()
+    /// Lazily build (once) the widget's owned spell-check dictionary: a clone of
+    /// the process-wide shared built-in list (parsed at most once per process)
+    /// with any persisted user words layered in. Owned so "Add to dictionary"
+    /// can mutate it.
+    fn dictionary(&mut self) -> &mut spellcheck::Dictionary {
+        self.dict.get_or_insert_with(|| {
+            let mut d = (*shared_dictionary()).clone();
+            d.load_user_dict();
+            d
+        })
     }
 
     /// Misspelled byte spans for a body block, using `spell_cache` (keyed by the
@@ -1009,7 +1050,7 @@ impl WordProcessorWidget {
             }
         }
         let dict = self.dictionary();
-        let spans = spell_spans(&dict, text);
+        let spans = spell_spans(dict, text);
         self.spell_cache.insert(id.to_string(), (text.to_string(), spans.clone()));
         spans
     }
@@ -2721,7 +2762,40 @@ impl Widget for WordProcessorWidget {
                     *handled = true;
                 }
             }
+            // Right (secondary) press opens the editing / spell-check context
+            // menu on the page body. Toolbar / panel / status-bar chrome ignore
+            // it (they have their own hit-testing on the left button).
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } => {
+                if !self.rect.contains(self.pointer) {
+                    return;
+                }
+                self.focused = true;
+                let in_chrome = self.pointer.y < self.rect.y0 + tb_h
+                    || self.pointer.y > self.rect.y1 - STATUS_H
+                    || (self.styles_panel_open && self.panel_rect.contains(self.pointer));
+                if !in_chrome {
+                    let cp = self.pointer_to_content(self.pointer);
+                    let pos = [self.pointer.x as f32, self.pointer.y as f32];
+                    self.open_context_menu(state, cp, pos);
+                    *handled = true;
+                }
+                return;
+            }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+                // While the context menu is open, route the left press to it: a
+                // row dispatches its action, a click outside dismisses it. Either
+                // way the click is consumed so it never reaches the page beneath.
+                if self.context_menu.is_open() {
+                    let point = [self.pointer.x, self.pointer.y];
+                    if let Some(idx) = self.context_menu.item_at(point) {
+                        self.dispatch_context_action(idx, state);
+                    } else {
+                        self.context_menu.close();
+                    }
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
                 if !self.rect.contains(self.pointer) {
                     return;
                 }
@@ -2860,6 +2934,15 @@ impl Widget for WordProcessorWidget {
             }
             WindowEvent::KeyboardInput { event: KeyEvent { state: ElementState::Pressed, logical_key, text, .. }, .. } => {
                 if !self.focused {
+                    return;
+                }
+                // Escape dismisses an open context menu before anything else.
+                if self.context_menu.is_open()
+                    && matches!(logical_key, Key::Named(NamedKey::Escape))
+                {
+                    self.context_menu.close();
+                    self.dirty = true;
+                    *handled = true;
                     return;
                 }
                 // While typing into a numeric style field, capture digits + editing
@@ -3067,6 +3150,21 @@ impl Widget for WordProcessorWidget {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Top-layer pass: paint the right-click context menu (when open) so it
+    /// floats above the page + chrome. Delegates to the shared [`ContextMenu`].
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if self.context_menu.is_open() {
+            Widget::draw(&mut self.context_menu, scene, transform, text_renderer, theme, presence);
         }
     }
 
@@ -3419,6 +3517,171 @@ impl WordProcessorWidget {
         self.inner.clear_anchor();
         self.inner.set_anchor();
         self.inner.move_end(state);
+    }
+
+    // ---- right-click context menu ------------------------------------------
+
+    /// Char span `(start, end)` of the word at char-offset `off` in `text`
+    /// (whitespace-delimited, matching `WordProcessor::select_word`). `start ==
+    /// end` means the offset sits on whitespace (no word).
+    fn word_span_at(text: &str, off: usize) -> (usize, usize) {
+        let chars: Vec<char> = text.chars().collect();
+        let off = off.min(chars.len());
+        let is_word = |c: char| !c.is_whitespace();
+        let mut s = off;
+        while s > 0 && is_word(chars[s - 1]) {
+            s -= 1;
+        }
+        let mut e = off;
+        while e < chars.len() && is_word(chars[e]) {
+            e += 1;
+        }
+        (s, e)
+    }
+
+    /// If the word at block-char-span `(s, e)` is flagged misspelled, return its
+    /// up-to-`max` spelling suggestions. Empty vec when the word is fine. Uses a
+    /// fresh `check` over just the word so it reflects the **current** dictionary
+    /// (including freshly-added user words), not the stale per-block cache.
+    fn suggestions_for_word(&mut self, word: &str) -> Option<Vec<String>> {
+        if word.is_empty() {
+            return None;
+        }
+        let dict = self.dictionary();
+        let flagged = spellcheck::check(dict, word);
+        // `check` skips numbers/URLs/acronyms; a flagged single-word input means
+        // the whole word is misspelled.
+        let m = flagged.into_iter().find(|m| m.word == word)?;
+        Some(m.suggestions)
+    }
+
+    /// Build + open the right-click context menu at screen `pos`.
+    ///
+    /// Selects the word under the click when nothing is selected (clicked-word
+    /// fallback), then assembles the rows: when the clicked word is flagged
+    /// misspelled, a few suggestion rows + "Add to dictionary" are prepended;
+    /// then Cut / Copy / Paste; a separator; Select All. The parallel
+    /// `context_actions` list drives left-click dispatch by row index.
+    fn open_context_menu(&mut self, state: &AutoCommit, content_pt: Point, pos: [f32; 2]) {
+        // Place the caret under the click; select the word when there's no
+        // selection so Cut/Copy act on something.
+        let had_selection = self.inner.has_selection();
+        self.caret_from_pointer(content_pt, false);
+        if !had_selection {
+            self.inner.select_word(state);
+        }
+
+        // Identify the clicked word's block + char span for spell-check actions.
+        let block = self.inner.caret.block.clone();
+        let block_text = self.inner.current_text(state);
+        let click_off = self.inner.caret.offset; // post-select_word: end of the word
+        let (wstart, wend) = Self::word_span_at(&block_text, click_off);
+        let word: String = block_text.chars().skip(wstart).take(wend - wstart).collect();
+
+        let mut menu = ContextMenu::new();
+        let mut actions: Vec<Option<CtxAction>> = Vec::new();
+
+        // Spell-check rows: only when the clicked word is currently flagged.
+        if self.spellcheck_on {
+            if let Some(suggestions) = self.suggestions_for_word(&word) {
+                for sug in suggestions.iter().take(3) {
+                    menu.push(MenuItem::action(sug.clone(), || {}));
+                    actions.push(Some(CtxAction::ApplySuggestion {
+                        block: block.clone(),
+                        start: wstart,
+                        end: wend,
+                        replacement: sug.clone(),
+                    }));
+                }
+                menu.push(MenuItem::action("Add to dictionary", || {}));
+                actions.push(Some(CtxAction::AddToDictionary(word.clone())));
+                menu.push(MenuItem::separator());
+                actions.push(None);
+            }
+        }
+
+        let has_sel = self.inner.has_selection();
+        let can_paste = arboard::Clipboard::new()
+            .ok()
+            .and_then(|mut cb| cb.get_text().ok())
+            .is_some_and(|s| !s.is_empty());
+        if has_sel {
+            menu.push(MenuItem::action("Cut", || {}));
+            actions.push(Some(CtxAction::Cut));
+            menu.push(MenuItem::action("Copy", || {}));
+            actions.push(Some(CtxAction::Copy));
+        }
+        if can_paste {
+            menu.push(MenuItem::action("Paste", || {}));
+            actions.push(Some(CtxAction::Paste));
+        }
+        if !menu.items().is_empty() {
+            menu.push(MenuItem::separator());
+            actions.push(None);
+        }
+        menu.push(MenuItem::action("Select All", || {}));
+        actions.push(Some(CtxAction::SelectAll));
+
+        menu.open_at(pos);
+        self.context_menu = menu;
+        self.context_actions = actions;
+        self.dirty = true;
+    }
+
+    /// Dispatch the context-menu row at `idx` against the widget, then close the
+    /// menu. Separator / out-of-range rows are ignored. Returns `true` when a
+    /// row ran.
+    fn dispatch_context_action(&mut self, idx: usize, state: &mut AutoCommit) -> bool {
+        let Some(Some(action)) = self.context_actions.get(idx).cloned() else {
+            return false;
+        };
+        match action {
+            CtxAction::Cut => {
+                self.clipboard_copy(state);
+                self.inner.delete_selection(state);
+                self.needs_commit = true;
+            }
+            CtxAction::Copy => self.clipboard_copy(state),
+            CtxAction::Paste => {
+                self.clipboard_paste(state);
+                self.needs_commit = true;
+            }
+            CtxAction::SelectAll => self.inner.select_all(state),
+            CtxAction::AddToDictionary(word) => {
+                let dict = self.dictionary();
+                if dict.add_word(&word) {
+                    // Persist best-effort, then drop the spell cache so every
+                    // block re-checks against the updated dictionary and the
+                    // squiggle clears on the next draw.
+                    let _ = dict.save_user_dict();
+                    self.spell_cache.clear();
+                }
+            }
+            CtxAction::ApplySuggestion { block, start, end, replacement } => {
+                self.inner.splice_block(state, &block, start, end, &replacement);
+                self.refresh_blocks(state);
+                // The block text changed; its cache entry is stale.
+                self.spell_cache.remove(&block);
+                self.needs_commit = true;
+            }
+        }
+        self.context_menu.close();
+        self.dirty = true;
+        true
+    }
+
+    /// Test-visible labels of the currently-open context menu's rows
+    /// (separators omitted), in order. Empty when the menu is closed.
+    #[cfg(test)]
+    fn context_menu_labels(&self) -> Vec<String> {
+        if !self.context_menu.is_open() {
+            return Vec::new();
+        }
+        self.context_menu
+            .items()
+            .iter()
+            .filter_map(|i| i.label().map(str::to_string))
+            .collect()
     }
 
     fn draw_status_bar(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, bar: Rect) {
@@ -4414,6 +4677,123 @@ mod tests {
         // OnceLock stays untouched for this widget — the per-widget handle is None).
         pipeline_draw(&mut wp, &mut state, 1000, 700);
         assert!(wp.dict.is_none(), "spell-check off skips dictionary construction");
+    }
+
+    // ---- right-click context menu -----------------------------------------
+
+    /// A content-space point at the very start of the first laid block's text
+    /// (so a right-click lands on its first word).
+    fn first_block_start_point(wp: &WordProcessorWidget) -> Point {
+        let l = wp.laid.first().expect("at least one laid block");
+        Point::new(l.text_x + 1.0, l.y_top + l.height / 2.0)
+    }
+
+    #[test]
+    fn right_click_on_misspelled_word_offers_add_to_dictionary_and_clears_squiggle() {
+        // Redirect the persisted user-dict to a throwaway dir so the test never
+        // writes the real `~/.config/qos/userdict.txt`. (The in-memory add is
+        // what the assertions below check; persistence is best-effort.)
+        let tmp = std::env::temp_dir().join(format!("qos-userdict-test-{}", std::process::id()));
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp); }
+
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        // "qwordz" is not a real word → flagged. Followed by a valid word.
+        wp.model_mut().insert_str(&mut state.doc, "qwordz quick");
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let id = wp.blocks[0].id.clone();
+        assert_eq!(
+            wp.block_spell_spans(&id, "qwordz quick"),
+            vec![(0usize, 6usize)],
+            "precondition: ‘qwordz’ is flagged"
+        );
+
+        // Right-click on the first word.
+        let pt = first_block_start_point(&wp);
+        wp.open_context_menu(&state.doc, pt, [pt.x as f32, pt.y as f32]);
+        let labels = wp.context_menu_labels();
+        assert!(
+            labels.iter().any(|l| l == "Add to dictionary"),
+            "misspelled word offers ‘Add to dictionary’, got {labels:?}"
+        );
+
+        // Invoke "Add to dictionary".
+        let add_idx = wp
+            .context_menu
+            .items()
+            .iter()
+            .position(|i| i.label() == Some("Add to dictionary"))
+            .unwrap();
+        assert_eq!(wp.context_actions[add_idx], Some(CtxAction::AddToDictionary("qwordz".to_string())));
+        wp.dispatch_context_action(add_idx, &mut state.doc);
+        assert!(!wp.context_menu.is_open(), "menu closed after dispatch");
+
+        // Re-check: the squiggle is gone (the cache was invalidated and the word
+        // is now in the user dictionary).
+        assert!(
+            wp.block_spell_spans(&id, "qwordz quick").is_empty(),
+            "after Add to dictionary, ‘qwordz’ is no longer flagged"
+        );
+        assert!(
+            wp.dictionary().contains("qwordz"),
+            "the word is recorded in the (owned) dictionary"
+        );
+    }
+
+    #[test]
+    fn right_click_suggestion_replaces_the_word() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        // "teh" suggests "the".
+        wp.model_mut().insert_str(&mut state.doc, "teh end");
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+
+        let pt = first_block_start_point(&wp);
+        wp.open_context_menu(&state.doc, pt, [pt.x as f32, pt.y as f32]);
+        // Find a suggestion row whose action replaces [0,3) with "the".
+        let the_idx = wp.context_actions.iter().position(|a| {
+            matches!(a, Some(CtxAction::ApplySuggestion { replacement, .. }) if replacement == "the")
+        });
+        let Some(idx) = the_idx else {
+            panic!("expected a ‘the’ suggestion row, labels: {:?}", wp.context_menu_labels());
+        };
+        wp.dispatch_context_action(idx, &mut state.doc);
+        // The block text now reads "the end".
+        let id = wp.blocks[0].id.clone();
+        let text = wp.model().block_texts(&state.doc);
+        assert_eq!(text[0], "the end", "suggestion replaced ‘teh’ with ‘the’ (block {id})");
+    }
+
+    #[test]
+    fn right_click_with_no_selection_selects_word_and_menu_has_copy() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "hello world");
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        assert!(!wp.model().has_selection(), "precondition: nothing selected");
+
+        let pt = first_block_start_point(&wp);
+        wp.open_context_menu(&state.doc, pt, [pt.x as f32, pt.y as f32]);
+        // The clicked-word fallback selected "hello".
+        assert!(wp.model().has_selection(), "a word was selected by the fallback");
+        assert_eq!(wp.model().selection_text(&state.doc), "hello");
+        // With a selection, the menu has Cut + Copy.
+        let labels = wp.context_menu_labels();
+        assert!(labels.contains(&"Copy".to_string()), "got {labels:?}");
+        assert!(labels.contains(&"Cut".to_string()), "got {labels:?}");
+        assert!(labels.contains(&"Select All".to_string()), "got {labels:?}");
+
+        // item_at + dispatch maps the Copy row to the Copy action.
+        let copy_idx = wp
+            .context_menu
+            .items()
+            .iter()
+            .position(|i| i.label() == Some("Copy"))
+            .unwrap();
+        assert_eq!(wp.context_actions[copy_idx], Some(CtxAction::Copy));
     }
 
     #[test]
