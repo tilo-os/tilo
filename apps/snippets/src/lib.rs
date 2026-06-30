@@ -27,3 +27,19 @@ use ui::widget::Widget;
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(SnippetsApp::new())
 }
+
+/// Like [`app_root`] but with a named interaction scenario staged for a
+/// single headless screenshot (the live `--shots` renderer paints one frame
+/// and can't reach toggled states through input). Recognised scenarios:
+///
+/// * `"narrow"` — pair with a sub-breakpoint `--viewport` to show the
+///   primary sidebar as an open overlay flap over the content + scrim.
+/// * `"detail"` — pair with a very-narrow `--viewport` to show the
+///   single-pane push stack on the detail with its Back affordance.
+///
+/// An empty / unknown name yields the same frame as [`app_root`].
+pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
+    let mut app = SnippetsApp::new();
+    app.seed_shot_scenario(scenario);
+    Box::new(app)
+}

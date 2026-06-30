@@ -8,7 +8,7 @@
 
 use ui::text_render::{TextRenderer, TextWeight};
 use vello::Scene;
-use vello::kurbo::{Affine, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 
 /// Fill a rounded rectangle.
@@ -26,6 +26,12 @@ pub fn fill_rect(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
 pub fn stroke_round(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, width: f64, color: Color) {
     let shape = RoundedRect::from_rect(rect, radius);
     scene.stroke(&Stroke::new(width), t, color, None, &shape);
+}
+
+/// Stroke a straight line between two points (toggle glyphs: hamburger,
+/// close-X, back chevron).
+pub fn stroke_line(scene: &mut Scene, t: Affine, a: Point, b: Point, width: f64, color: Color) {
+    scene.stroke(&Stroke::new(width), t, color, None, &Line::new(a, b));
 }
 
 /// Draw a single line of text at `(x, y)` (y is the top of the line).

@@ -4,6 +4,15 @@
 //!   * default        — run the live winit event loop via `ui::App`.
 //!   * `--shots PATH` — render one offscreen frame to a PNG and exit
 //!                       (headless screenshot; identical passes to the live app).
+//!
+//! Screenshot knobs (shots only):
+//!   * `--viewport WxH` — render at an explicit size instead of the default
+//!                        wide desktop. A width below the rail breakpoint puts
+//!                        the layout into its narrow (overlay) form.
+//!   * `--rail-open`    — snap the primary rail fully open before drawing, so a
+//!                        single offscreen frame captures the summoned overlay
+//!                        flap + scrim rather than a window that has not yet had
+//!                        the rail toggled.
 
 use std::collections::HashMap;
 
@@ -18,6 +27,8 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
+use api_tester::ApiTesterApp;
+
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -25,7 +36,15 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
-        render_shot_to_png(api_tester::app_root(), DEFAULT_SHOTS_VIEWPORT, &out)?;
+        let viewport = parse_viewport(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+        let mut app = ApiTesterApp::new();
+        // Snap the rail to a settled state so the single frame is
+        // deterministic: open it for the narrow overlay capture, otherwise
+        // leave the docked default (open) alone.
+        if parse_flag(&args, "--rail-open") {
+            app.snap_rail(true);
+        }
+        render_shot_to_png(Box::new(app), viewport, &out)?;
         return Ok(());
     }
 
@@ -46,6 +65,28 @@ fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
         }
     }
     None
+}
+
+/// Parse `--viewport WxH` (e.g. `--viewport 560x800`). Returns `None` if the
+/// flag is absent or malformed, so the caller falls back to the default size.
+fn parse_viewport(args: &[String]) -> Option<(u32, u32)> {
+    let mut iter = args.iter().skip(1);
+    let spec = loop {
+        let arg = iter.next()?;
+        if arg == "--viewport" {
+            break iter.next()?.clone();
+        }
+        if let Some(rest) = arg.strip_prefix("--viewport=") {
+            break rest.to_string();
+        }
+    };
+    let (w, h) = spec.split_once(['x', 'X'])?;
+    Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+}
+
+/// Whether a bare flag like `--rail-open` is present.
+fn parse_flag(args: &[String], flag: &str) -> bool {
+    args.iter().skip(1).any(|a| a == flag)
 }
 
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
