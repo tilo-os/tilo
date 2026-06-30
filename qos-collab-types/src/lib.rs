@@ -68,6 +68,7 @@
 
 pub mod canonical;
 pub mod channel;
+pub mod compaction;
 pub mod crypto;
 pub mod event;
 pub mod identity;
@@ -83,6 +84,10 @@ pub use canonical::{CanonicalError, canonical_bytes};
 pub use channel::{
     Artifact, ArtifactId, ArtifactRef, Channel, ChannelId, ChannelRef, ChannelSettingsDelta,
     DocumentHandle, MemberRef,
+};
+pub use compaction::{
+    CompactionCheckpoint, CompactionError, encode_compaction_payload, hash_op_prefix,
+    parse_compaction_payload,
 };
 pub use crypto::{
     Ed25519PublicKey, Signature, VerifyError, generate_keypair, sign_event, sign_op, verify_event,
