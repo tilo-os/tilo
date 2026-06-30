@@ -1,0 +1,51 @@
+[package]
+name = "qos-channel-crypto"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "qos_channel_crypto"
+path = "src/lib.rs"
+
+# Phase 7 of the `2026-06-29-spaces-channels-and-cryptographic-roles.md`
+# spec: per-channel MLS group encryption. Each channel = one MLS group;
+# the group key rotates on every membership change via openmls's
+# epoch counter. The crate wraps openmls in a narrow API focused on
+# the operations qOS needs (create / add member via Welcome / join /
+# encrypt / decrypt) and stays pure Rust + in-memory — persistence
+# and the broker-side wire layering are out of scope.
+
+[dependencies]
+# Sibling crate — re-uses `ChannelId` so the encrypted-metadata field
+# on `SignedOp` (added under Phase 7) names the same identifier this
+# crate keys its groups by.
+qos-collab-types = { path = "../qos-collab-types" }
+
+# OpenMLS itself. `0.8.x` is the current stable line on crates.io
+# (the spec's "0.6" predates the API reshape; verified via
+# `cargo search openmls` at landing time). We pin the minor so a
+# 0.9 / 0.x bump doesn't silently re-shape our public surface.
+openmls = "0.8"
+# Rust-Crypto-backed crypto provider for openmls. The provider owns
+# the in-memory key+state storage; we use it for both group state
+# and per-member signing-key persistence (via `SignatureKeyPair::store`).
+openmls_rust_crypto = "0.5"
+# Basic credential (= identity name) implementation; we don't ship
+# X.509 in Phase 7.
+openmls_basic_credential = "0.5"
+# Trait crate — pulled in for the `OpenMlsProvider` trait, needed to
+# call `.storage()` on `OpenMlsRustCrypto`.
+openmls_traits = "0.5"
+# TLS-codec for serialising MlsMessage{In,Out}: Welcome bytes ride
+# the wire as TLS-serialised opaque blobs.
+tls_codec = "0.4"
+
+thiserror = "1"
+
+[dev-dependencies]
+# Used in the integration test that wraps a ciphertext inside a
+# SignedOp envelope and verifies the signature round-trips.
+qos-collab-types = { path = "../qos-collab-types" }
+# Outer-signature path in the SignedOp test needs a concrete
+# `SigningKey` type. Same major version qos-collab-types is on.
+ed25519-dalek = { version = "2", features = ["serde"] }
