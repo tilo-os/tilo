@@ -4,8 +4,10 @@
 //! Proto wire, and the inotify hot-reload + main entry point.
 
 pub mod registry;
+pub mod runner;
 
 pub use registry::{ProviderEntry, Registry};
+pub use runner::{LoadedComponent, MAX_MEMORY_BYTES, MAX_WALLCLOCK};
 
 use std::path::PathBuf;
 
