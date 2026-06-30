@@ -8,7 +8,12 @@ use super::container::DocxContainer;
 use crate::document::MarkValue;
 use crate::format::CodecError;
 use crate::model::DocRef;
+use crate::schema::{
+    STYLE_ALIGN, STYLE_BOLD, STYLE_COLOR, STYLE_FONT, STYLE_INDENT, STYLE_ITALIC, STYLE_NAME, STYLE_SIZE, STYLE_SPACE_AFTER,
+    STYLE_SPACE_BEFORE,
+};
 use crate::snapshot::{AttrVal, BlockView, DocSnapshot};
+use std::collections::{BTreeMap, BTreeSet};
 
 const W_NS: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 
@@ -24,10 +29,16 @@ const NUMBERING_XML: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="
 const NUMBERING_OVERRIDE: &str = r#"<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>"#;
 const NUMBERING_REL: &str = r#"<Relationship Id="rIdQdocNum" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>"#;
 
+const STYLES_OVERRIDE: &str = r#"<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>"#;
+const STYLES_REL: &str = r#"<Relationship Id="rIdQdocStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>"#;
+const STYLES_XML_OPEN: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">"#;
+
 pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     let snap = doc.materialize();
-    let document = build_document_xml(&snap);
+    let (document, named_refs) = build_document_xml(&snap);
     let has_lists = snap.blocks.iter().any(|b| b.kind == "list_item");
+    let has_styles = !named_refs.is_empty();
 
     let mut c = DocxContainer { parts: Vec::new() };
     // Re-emit every preserved part verbatim (styles.xml, settings.xml, the
@@ -36,12 +47,14 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     let mut had_root_rels = false;
     let mut had_doc_rels = false;
     let mut had_numbering = false;
+    let mut had_styles_part = false;
     for (key, bytes) in crate::model::preserved_parts(doc.doc, doc.c) {
         if let Some(name) = key.strip_prefix("docx/part/") {
             had_content_types |= name == "[Content_Types].xml";
             had_root_rels |= name == "_rels/.rels";
             had_doc_rels |= name == "word/_rels/document.xml.rels";
             had_numbering |= name == "word/numbering.xml";
+            had_styles_part |= name == "word/styles.xml";
             c.set(name, bytes);
         }
     }
@@ -53,20 +66,46 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
         c.set("word/numbering.xml", NUMBERING_XML.as_bytes().to_vec());
     }
 
+    // word/styles.xml — merge the referenced CRDT styles into the preserved part
+    // (or synthesise a fresh one) as `w:style w:type="paragraph"` definitions so
+    // Word/LibreOffice render the document's named styles. Styles already declared
+    // in a preserved styles.xml are referenced, not redefined.
+    if has_styles {
+        let merged = merge_styles_xml(c.get("word/styles.xml"), &named_refs, &snap.styles);
+        c.set("word/styles.xml", merged);
+    }
+    // A styles part referenced for the first time still needs a content-type
+    // override + relationship (an imported docx already has both).
+    let need_styles_wireup = has_styles && !had_styles_part;
+
     // [Content_Types].xml — generate when absent; otherwise ensure overrides.
     if !had_content_types {
         let mut ct = CONTENT_TYPES_BASE.to_string();
         if has_lists {
             ct.push_str(NUMBERING_OVERRIDE);
         }
+        if has_styles {
+            ct.push_str(STYLES_OVERRIDE);
+        }
         ct.push_str("</Types>");
         c.set("[Content_Types].xml", ct.into_bytes());
-    } else if has_lists && !had_numbering {
-        if let Some(ct) = c.get("[Content_Types].xml") {
-            let mut s = String::from_utf8_lossy(ct).into_owned();
-            if !s.contains("/word/numbering.xml") {
-                inject_before(&mut s, "</Types>", NUMBERING_OVERRIDE);
-                c.set("[Content_Types].xml", s.into_bytes());
+    } else {
+        if has_lists && !had_numbering {
+            if let Some(ct) = c.get("[Content_Types].xml") {
+                let mut s = String::from_utf8_lossy(ct).into_owned();
+                if !s.contains("/word/numbering.xml") {
+                    inject_before(&mut s, "</Types>", NUMBERING_OVERRIDE);
+                    c.set("[Content_Types].xml", s.into_bytes());
+                }
+            }
+        }
+        if need_styles_wireup {
+            if let Some(ct) = c.get("[Content_Types].xml") {
+                let mut s = String::from_utf8_lossy(ct).into_owned();
+                if !s.contains("/word/styles.xml") {
+                    inject_before(&mut s, "</Types>", STYLES_OVERRIDE);
+                    c.set("[Content_Types].xml", s.into_bytes());
+                }
             }
         }
     }
@@ -75,24 +114,188 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
         c.set("_rels/.rels", ROOT_RELS.as_bytes().to_vec());
     }
 
-    // word/_rels/document.xml.rels — only needed once there's a numbering part.
-    if has_lists {
+    // word/_rels/document.xml.rels — needed once there's a numbering and/or a
+    // freshly-synthesised styles part.
+    if has_lists || need_styles_wireup {
         if !had_doc_rels {
+            let mut inner = String::new();
+            if need_styles_wireup {
+                inner.push_str(STYLES_REL);
+            }
+            if has_lists {
+                inner.push_str(NUMBERING_REL);
+            }
             let rels = format!(
                 r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{NUMBERING_REL}</Relationships>"#
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{inner}</Relationships>"#
             );
             c.set("word/_rels/document.xml.rels", rels.into_bytes());
         } else if let Some(rels) = c.get("word/_rels/document.xml.rels") {
             let mut s = String::from_utf8_lossy(rels).into_owned();
-            if !s.contains("Target=\"numbering.xml\"") {
+            if has_lists && !s.contains("Target=\"numbering.xml\"") {
                 inject_before(&mut s, "</Relationships>", NUMBERING_REL);
-                c.set("word/_rels/document.xml.rels", s.into_bytes());
             }
+            if need_styles_wireup && !s.contains("Target=\"styles.xml\"") {
+                inject_before(&mut s, "</Relationships>", STYLES_REL);
+            }
+            c.set("word/_rels/document.xml.rels", s.into_bytes());
         }
     }
 
     c.write()
+}
+
+/// Build or extend `word/styles.xml` with `<w:style w:type="paragraph">` defs for
+/// the referenced container styles. A style already declared (by `w:styleId`) in a
+/// preserved styles.xml is left untouched (no duplicate; the preserved bytes win).
+fn merge_styles_xml(existing: Option<&[u8]>, refs: &BTreeSet<String>, styles: &BTreeMap<String, BTreeMap<String, AttrVal>>) -> Vec<u8> {
+    match existing {
+        Some(bytes) => {
+            let present = style_ids_in(bytes);
+            let mut defs = String::new();
+            for id in refs {
+                if present.contains(id) {
+                    continue;
+                }
+                if let Some(props) = styles.get(id) {
+                    defs.push_str(&para_style_def_xml(id, props));
+                }
+            }
+            if defs.is_empty() {
+                return bytes.to_vec();
+            }
+            let mut s = String::from_utf8_lossy(bytes).into_owned();
+            inject_before(&mut s, "</w:styles>", &defs);
+            s.into_bytes()
+        }
+        None => {
+            let mut s = STYLES_XML_OPEN.to_string();
+            for id in refs {
+                if let Some(props) = styles.get(id) {
+                    s.push_str(&para_style_def_xml(id, props));
+                }
+            }
+            s.push_str("</w:styles>");
+            s.into_bytes()
+        }
+    }
+}
+
+/// The `w:styleId` values declared in a styles.xml, so existing styles aren't
+/// redefined when merging.
+fn style_ids_in(xml: &[u8]) -> BTreeSet<String> {
+    let s = String::from_utf8_lossy(xml);
+    let mut out = BTreeSet::new();
+    let needle = "w:styleId=\"";
+    let mut rest = s.as_ref();
+    while let Some(p) = rest.find(needle) {
+        rest = &rest[p + needle.len()..];
+        if let Some(end) = rest.find('"') {
+            out.insert(rest[..end].to_string());
+            rest = &rest[end + 1..];
+        } else {
+            break;
+        }
+    }
+    out
+}
+
+/// An OOXML `<w:style w:type="paragraph">` definition for a CRDT styles-container
+/// style (`w:pPr` alignment/spacing/indent + `w:rPr` font/bold/italic/colour/size),
+/// the inverse of `styles::parse_styles` + `styles::style_props`.
+fn para_style_def_xml(id: &str, props: &BTreeMap<String, AttrVal>) -> String {
+    let getf = |k: &str| match props.get(k) {
+        Some(AttrVal::Float(f)) => Some(*f),
+        Some(AttrVal::Int(n)) => Some(*n as f64),
+        _ => None,
+    };
+    let gets = |k: &str| match props.get(k) {
+        Some(AttrVal::Str(s)) => Some(s.as_str()),
+        _ => None,
+    };
+    let getb = |k: &str| matches!(props.get(k), Some(AttrVal::Bool(true)));
+
+    let mut pp = String::new();
+    if let Some(a) = gets(STYLE_ALIGN) {
+        let v = match a {
+            "center" => "center",
+            "right" => "right",
+            _ => "",
+        };
+        if !v.is_empty() {
+            pp.push_str(&format!(r#"<w:jc w:val="{v}"/>"#));
+        }
+    }
+    let before = getf(STYLE_SPACE_BEFORE).filter(|v| *v != 0.0);
+    let after = getf(STYLE_SPACE_AFTER).filter(|v| *v != 0.0);
+    if before.is_some() || after.is_some() {
+        pp.push_str("<w:spacing");
+        if let Some(v) = before {
+            pp.push_str(&format!(r#" w:before="{}""#, px_to_twips(v)));
+        }
+        if let Some(v) = after {
+            pp.push_str(&format!(r#" w:after="{}""#, px_to_twips(v)));
+        }
+        pp.push_str("/>");
+    }
+    if let Some(v) = getf(STYLE_INDENT).filter(|v| *v != 0.0) {
+        pp.push_str(&format!(r#"<w:ind w:left="{}"/>"#, px_to_twips(v)));
+    }
+
+    let mut rp = String::new();
+    if let Some(f) = gets(STYLE_FONT) {
+        let n = font_name(f);
+        rp.push_str(&format!(r#"<w:rFonts w:ascii="{n}" w:hAnsi="{n}"/>"#));
+    }
+    if getb(STYLE_BOLD) {
+        rp.push_str("<w:b/>");
+    }
+    if getb(STYLE_ITALIC) {
+        rp.push_str("<w:i/>");
+    }
+    if let Some(c) = gets(STYLE_COLOR) {
+        rp.push_str(&format!(r#"<w:color w:val="{}"/>"#, color_hex(c)));
+    }
+    if let Some(sz) = getf(STYLE_SIZE) {
+        let hp = (sz * 2.0).round() as i64;
+        rp.push_str(&format!(r#"<w:sz w:val="{hp}"/><w:szCs w:val="{hp}"/>"#));
+    }
+
+    let name = gets(STYLE_NAME).unwrap_or(id);
+    let ppr = if pp.is_empty() { String::new() } else { format!("<w:pPr>{pp}</w:pPr>") };
+    let rpr = if rp.is_empty() { String::new() } else { format!("<w:rPr>{rp}</w:rPr>") };
+    format!(
+        r#"<w:style w:type="paragraph" w:styleId="{}"><w:name w:val="{}"/>{ppr}{rpr}</w:style>"#,
+        escape_attr(id),
+        escape_attr(name)
+    )
+}
+
+/// Pixels (96 dpi) → OOXML twips (1/1440 inch): the inverse of
+/// `styles::twips_to_px`. 1 px = 15 twips.
+fn px_to_twips(px: f64) -> i64 {
+    (px * 15.0).round() as i64
+}
+
+/// `#rrggbb` → OOXML `RRGGBB` (no hash, upper-case as Word writes it). Re-imports
+/// to the same canonical `#rrggbb` via `styles::normalize_color`.
+fn color_hex(c: &str) -> String {
+    c.trim_start_matches('#').to_ascii_uppercase()
+}
+
+/// Escape a string for use inside a double-quoted XML attribute value.
+fn escape_attr(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 /// Insert `frag` immediately before the first occurrence of `needle`.
@@ -256,8 +459,11 @@ fn cell_rc(b: &BlockView) -> (usize, usize) {
     (g("row"), g("col"))
 }
 
-fn build_document_xml(snap: &DocSnapshot) -> String {
+/// Build `word/document.xml` and collect the set of CRDT styles-container styleIds
+/// referenced by a `<w:pStyle>` (so the caller can emit their definitions).
+fn build_document_xml(snap: &DocSnapshot) -> (String, BTreeSet<String>) {
     let mut body = String::new();
+    let mut named_refs: BTreeSet<String> = BTreeSet::new();
     let mut i = 0;
     while i < snap.blocks.len() {
         let b = &snap.blocks[i];
@@ -322,18 +528,29 @@ fn build_document_xml(snap: &DocSnapshot) -> String {
                 body.push_str("</w:tbl>");
             }
             _ => {
-                let jc = jc_xml(b);
-                let ppr = if jc.is_empty() { String::new() } else { format!("<w:pPr>{jc}</w:pPr>") };
+                // A plain paragraph. A `style` attr referencing a container style
+                // emits a `<w:pStyle>` (and registers the styleId for definition);
+                // a direct `align` attr still rides as a `<w:jc>`.
+                let mut ppr_inner = String::new();
+                if let Some(AttrVal::Str(sid)) = b.attrs.get("style") {
+                    if snap.styles.contains_key(sid) {
+                        ppr_inner.push_str(&format!(r#"<w:pStyle w:val="{}"/>"#, escape_attr(sid)));
+                        named_refs.insert(sid.clone());
+                    }
+                }
+                ppr_inner.push_str(&jc_xml(b));
+                let ppr = if ppr_inner.is_empty() { String::new() } else { format!("<w:pPr>{ppr_inner}</w:pPr>") };
                 body.push_str(&format!("<w:p>{ppr}{}</w:p>", render_runs(&b.text, &b.marks)));
                 i += 1;
             }
         }
     }
 
-    format!(
+    let document = format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="{W_NS}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w10="urn:schemas-microsoft-com:office:word" xmlns:wne="http://schemas.microsoft.com/office/word/2006/wordml"><w:body>{body}</w:body></w:document>"#
-    )
+    );
+    (document, named_refs)
 }
 
 #[cfg(test)]
@@ -461,6 +678,74 @@ mod tests {
         let id = &cells[0].id;
         d2.splice_text(id, 1, 0, "X");
         assert_eq!(d2.block_text(id).as_deref(), Some("aX"));
+    }
+
+    #[test]
+    fn named_paragraph_style_roundtrips_through_docx() {
+        // A paragraph that references a custom CRDT-native named style must export
+        // as a real OOXML `w:style w:type="paragraph"` + `w:pStyle`, and re-import
+        // with the style intact and still applied to the block. Mirrors the `.odt`
+        // named-style round-trip.
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "fancy");
+        {
+            let mut dm = d.as_mut();
+            let mut props = BTreeMap::new();
+            props.insert("name".to_string(), AttrVal::Str("Fancy".into()));
+            props.insert("font".to_string(), AttrVal::Str("serif".into()));
+            props.insert("size".to_string(), AttrVal::Float(20.0));
+            props.insert("bold".to_string(), AttrVal::Bool(true));
+            props.insert("italic".to_string(), AttrVal::Bool(true));
+            props.insert("color".to_string(), AttrVal::Str("#ff0000".into()));
+            props.insert("align".to_string(), AttrVal::Str("center".into()));
+            props.insert("space_after".to_string(), AttrVal::Float(12.0));
+            dm.set_style("Fancy", &props);
+            dm.set_attr(&p, "style", "Fancy");
+        }
+
+        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let cont = DocxContainer::read(&exported).unwrap();
+        let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
+        assert!(document.contains(r#"<w:pStyle w:val="Fancy"/>"#), "paragraph references the named style: {document}");
+        let styles = std::str::from_utf8(cont.get("word/styles.xml").unwrap()).unwrap();
+        assert!(
+            styles.contains(r#"<w:style w:type="paragraph" w:styleId="Fancy">"#),
+            "named style defined as OOXML w:style: {styles}"
+        );
+        assert!(
+            styles.contains("<w:b/>") && styles.contains("<w:i/>") && styles.contains(r#"<w:sz w:val="40"/>"#),
+            "props emitted: {styles}"
+        );
+        assert!(styles.contains(r#"<w:jc w:val="center"/>"#) && styles.contains(r#"<w:color w:val="FF0000"/>"#), "pPr/colour emitted: {styles}");
+        // The freshly-synthesised styles part is wired into content-types + rels.
+        let ct = std::str::from_utf8(cont.get("[Content_Types].xml").unwrap()).unwrap();
+        assert!(ct.contains("/word/styles.xml"), "styles override registered: {ct}");
+        let rels = std::str::from_utf8(cont.get("word/_rels/document.xml.rels").unwrap()).unwrap();
+        assert!(rels.contains(r#"Target="styles.xml""#), "styles relationship registered: {rels}");
+
+        let mut d2 = Document::new();
+        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+        let b = &snap.blocks[0];
+        assert_eq!(b.text, "fancy");
+        assert_eq!(b.attrs.get("style"), Some(&AttrVal::Str("Fancy".into())), "block keeps its style ref: {:?}", b.attrs);
+
+        let st = snap.styles.get("Fancy").expect("style present in container after round-trip");
+        assert_eq!(st.get("name"), Some(&AttrVal::Str("Fancy".into())));
+        assert_eq!(st.get("font"), Some(&AttrVal::Str("serif".into())));
+        assert_eq!(st.get("size"), Some(&AttrVal::Float(20.0)));
+        assert_eq!(st.get("bold"), Some(&AttrVal::Bool(true)));
+        assert_eq!(st.get("italic"), Some(&AttrVal::Bool(true)));
+        assert_eq!(st.get("color"), Some(&AttrVal::Str("#ff0000".into())));
+        assert_eq!(st.get("align"), Some(&AttrVal::Str("center".into())));
+        assert_eq!(st.get("space_after"), Some(&AttrVal::Float(12.0)));
+
+        // The round-trip is idempotent: exporting d2 yields the same model again.
+        let exported2 = DocxCodec.export(d2.as_ref()).unwrap();
+        let mut d3 = Document::new();
+        DocxCodec.import(&exported2, &mut d3.as_mut()).unwrap();
+        assert_eq!(norm(&d2.materialize()), norm(&d3.materialize()), "named-style model is stable across a second round-trip");
     }
 
     #[test]

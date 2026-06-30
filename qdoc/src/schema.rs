@@ -19,3 +19,19 @@ pub const BLOCK_KIND: &str = "kind"; // Str ("paragraph"|"heading"|"list_item"|"
 pub const BLOCK_TEXT: &str = "text"; // Text (present for text blocks)
 pub const BLOCK_ATTRS: &str = "attrs"; // Map (style_id, level, ...)
 pub const BLOCK_CHILDREN: &str = "children"; // Map<block_id, block> (containers)
+
+// Style fields — each style under `styles.<id>` is a sub-map of these scalar
+// properties (CRDT-native, so two replicas editing different properties of the
+// same style field-level-merge). These key names are the shared contract between
+// the qdoc styles container and the editor's `StyleProps`, and they map onto ODF
+// `style:style` named-style definitions on export/import.
+pub const STYLE_NAME: &str = "name"; // Str (display name, e.g. "Heading 1")
+pub const STYLE_FONT: &str = "font"; // Str ("sans"|"serif"|"mono")
+pub const STYLE_SIZE: &str = "size"; // F64 (pt)
+pub const STYLE_BOLD: &str = "bold"; // Bool
+pub const STYLE_ITALIC: &str = "italic"; // Bool
+pub const STYLE_COLOR: &str = "color"; // Str ("#rrggbb")
+pub const STYLE_ALIGN: &str = "align"; // Str ("left"|"center"|"right")
+pub const STYLE_SPACE_BEFORE: &str = "space_before"; // F64 (px)
+pub const STYLE_SPACE_AFTER: &str = "space_after"; // F64 (px)
+pub const STYLE_INDENT: &str = "indent"; // F64 (px, left indent)

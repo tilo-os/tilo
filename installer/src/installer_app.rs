@@ -88,6 +88,15 @@ fn disk_path(i: usize) -> String {
 fn fs_path(i: usize) -> String {
     format!("installer.fs.{i}")
 }
+/// Per-encryption-choice selection flag path: `installer.encrypt.<index>`
+/// (index 0 = off, 1 = on). Mirrors the filesystem segmented selector.
+fn encrypt_path(i: usize) -> String {
+    format!("installer.encrypt.{i}")
+}
+
+/// Labels for the encryption segmented selector, in display order. Index 0
+/// (off) is the default; index 1 enables TPM2-bound LUKS.
+pub const ENCRYPT_LABELS: [&str; 2] = ["No encryption", "Encrypt disk (LUKS)"];
 
 /// Default hostname seeded into the CRDT (and the installed system).
 const DEFAULT_HOSTNAME: &str = "qos";
@@ -106,6 +115,15 @@ fn fs_description(i: usize) -> &'static str {
         1 => "Ext4: simple and battle-tested; no snapshot support.",
         2 => "XFS: high throughput for large files; no snapshot support.",
         _ => "",
+    }
+}
+
+/// Explanation shown under the encryption chooser, reflecting the choice.
+fn encrypt_description(encrypt: bool) -> &'static str {
+    if encrypt {
+        "Encrypts the whole disk with LUKS, unlocked automatically by this computer's TPM2 security chip — no passphrase to type at boot. Requires a TPM2 device."
+    } else {
+        "The disk is not encrypted. Anyone with physical access can read your data."
     }
 }
 
@@ -440,6 +458,8 @@ pub struct InstallerApp {
     selected_disk: Option<usize>,
     /// Index into [`FILESYSTEMS`].
     selected_fs: usize,
+    /// Full-disk encryption (TPM2-bound LUKS) opt-in. Default `false`.
+    encrypt: bool,
     step: Step,
     install_state: InstallState,
     /// Streamed install output (also the success/failure summary).
@@ -498,6 +518,7 @@ impl InstallerApp {
             disks,
             selected_disk: None,
             selected_fs: 0,
+            encrypt: false,
             step: Step::Keyboard,
             install_state: InstallState::Idle,
             status_lines: Vec::new(),
@@ -615,6 +636,7 @@ impl InstallerApp {
             timezone: self.timezone.trim().to_string(),
             keymap: layout.xkb_layout.to_string(),
             keyvariant: layout.variant_or_empty().to_string(),
+            encrypt: self.encrypt,
         }
     }
 
@@ -670,6 +692,12 @@ impl InstallerApp {
         }
         for i in 0..FILESYSTEMS.len() {
             let p = fs_path(i);
+            if state.get(root, p.as_str()).ok().flatten().is_none() {
+                let _ = state.put(root, p.as_str(), false);
+            }
+        }
+        for i in 0..ENCRYPT_LABELS.len() {
+            let p = encrypt_path(i);
             if state.get(root, p.as_str()).ok().flatten().is_none() {
                 let _ = state.put(root, p.as_str(), false);
             }
@@ -939,6 +967,21 @@ impl InstallerApp {
                         .with_color(dim),
                 ));
 
+                children.push(Box::new(Text::new("Disk encryption").with_size(base)));
+                children.push(Box::new(
+                    SegChoice::new(
+                        ENCRYPT_LABELS.iter().map(|s| s.to_string()).collect(),
+                        (0..ENCRYPT_LABELS.len()).map(encrypt_path).collect(),
+                        if self.encrypt { 1 } else { 0 },
+                    )
+                    .with_test_id("encryption_choice"),
+                ));
+                children.push(Box::new(
+                    Text::new(encrypt_description(self.encrypt))
+                        .with_size(sm)
+                        .with_color(dim),
+                ));
+
                 children.push(Box::new(Text::new("Hostname").with_size(base)));
                 children.push(Box::new(
                     TextInput::new(Vec::new())
@@ -977,6 +1020,15 @@ impl InstallerApp {
                 };
                 children.push(summary_row(theme, "Disk", &disk_value));
                 children.push(summary_row(theme, "Filesystem", self.filesystem()));
+                children.push(summary_row(
+                    theme,
+                    "Encryption",
+                    if self.encrypt {
+                        "On (LUKS, TPM2-bound)"
+                    } else {
+                        "Off"
+                    },
+                ));
                 children.push(summary_row(theme, "Hostname", self.hostname.trim()));
                 children.push(summary_row(theme, "Time zone", self.timezone.trim()));
                 children.push(summary_row(theme, "Keyboard layout", self.keymap.trim()));
@@ -1201,6 +1253,17 @@ impl Widget for InstallerApp {
             if Self::read_flag(state, root, p.as_str()) {
                 let _ = state.put(root, p.as_str(), false);
                 self.selected_fs = i;
+                self.dirty_structure = true;
+            }
+        }
+
+        // Encryption-choice rising edges (Options step): index 0 = off,
+        // 1 = on. Same segmented-selector pattern as the filesystem choice.
+        for i in 0..ENCRYPT_LABELS.len() {
+            let p = encrypt_path(i);
+            if Self::read_flag(state, root, p.as_str()) {
+                let _ = state.put(root, p.as_str(), false);
+                self.encrypt = i == 1;
                 self.dirty_structure = true;
             }
         }
@@ -1645,6 +1708,31 @@ mod tests {
         assert_eq!(app.selected_fs, 2);
         assert_eq!(app.filesystem(), "xfs");
         assert!(!InstallerApp::read_flag(&doc, &root, fs_path(2).as_str()));
+    }
+
+    #[test]
+    fn encrypt_flag_threads_into_install_options() {
+        let mut app = InstallerApp::with_disks(sample());
+        app.step = Step::Options;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+        // Default: encryption off; install options omit it.
+        assert!(!app.encrypt);
+        assert!(!app.install_options().encrypt);
+
+        // Raise the "on" segment (index 1) → encryption enabled.
+        let _ = doc.put(&root, encrypt_path(1).as_str(), true);
+        app.sync(&mut doc, &root);
+        assert!(app.encrypt, "selecting the LUKS segment enables encryption");
+        assert!(app.install_options().encrypt);
+        assert!(!InstallerApp::read_flag(&doc, &root, encrypt_path(1).as_str()));
+
+        // Raise the "off" segment (index 0) → back to unencrypted.
+        let _ = doc.put(&root, encrypt_path(0).as_str(), true);
+        app.sync(&mut doc, &root);
+        assert!(!app.encrypt, "selecting the off segment disables encryption");
+        assert!(!app.install_options().encrypt);
     }
 
     #[test]

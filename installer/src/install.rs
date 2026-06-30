@@ -7,8 +7,16 @@
 //!     --disk <dev> --user <name> \
 //!     --filesystem <btrfs|ext4|xfs> \
 //!     --hostname <name> [--timezone <tz>] \
-//!     --keymap <xkb-layout> [--keyvariant <xkb-variant>] --yes
+//!     --keymap <xkb-layout> [--keyvariant <xkb-variant>] \
+//!     [--encrypt] --yes
 //! ```
+//!
+//! `--encrypt` opts into full-disk encryption: the backend passes
+//! `bootc install to-disk --block-setup tpm2-luks`, which encrypts the
+//! root with LUKS and binds unlock to the machine's TPM2 device (no
+//! passphrase prompt at boot). It requires a TPM2 device at install time;
+//! the backend refuses `--encrypt` if none is present. Omitting the flag
+//! keeps the default unencrypted (`direct`) layout.
 //!
 //! `--yes` is required because the backend has no tty here; the installer's
 //! Review screen is the user's "are you sure" gate. The account password is
@@ -67,6 +75,10 @@ pub struct InstallOptions {
     /// Optional xkb variant (e.g. `dvorak`, `colemak`). Empty ⇒ no
     /// variant; the flag is then omitted.
     pub keyvariant: String,
+    /// Full-disk encryption (LUKS, TPM2-bound). `true` ⇒ the backend is
+    /// passed `--encrypt`, which maps to `bootc install to-disk
+    /// --block-setup tpm2-luks`. Default `false` (unencrypted, `direct`).
+    pub encrypt: bool,
 }
 
 impl Default for InstallOptions {
@@ -77,6 +89,7 @@ impl Default for InstallOptions {
             timezone: String::new(),
             keymap: "us".to_string(),
             keyvariant: String::new(),
+            encrypt: false,
         }
     }
 }
@@ -118,6 +131,11 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
         if !opts.keyvariant.trim().is_empty() {
             cmd.arg("--keyvariant").arg(opts.keyvariant.trim());
         }
+    }
+    // Opt-in full-disk encryption (TPM2-bound LUKS). The backend maps this
+    // to `bootc install to-disk --block-setup tpm2-luks`.
+    if opts.encrypt {
+        cmd.arg("--encrypt");
     }
     cmd.arg("--yes");
     cmd
@@ -214,6 +232,7 @@ mod tests {
             timezone: "Europe/Amsterdam".to_string(),
             keymap: "de".to_string(),
             keyvariant: String::new(),
+            encrypt: false,
         };
         let cmd = install_command("/dev/sda", "quinten", &opts);
         assert_eq!(cmd.get_program(), INSTALL_BIN);
@@ -247,6 +266,7 @@ mod tests {
             timezone: String::new(),
             keymap: "us".to_string(),
             keyvariant: "dvorak".to_string(),
+            encrypt: false,
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
@@ -267,6 +287,7 @@ mod tests {
             timezone: String::new(),
             keymap: String::new(),
             keyvariant: String::new(),
+            encrypt: false,
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
@@ -291,11 +312,50 @@ mod tests {
             timezone: String::new(),
             keymap: String::new(),
             keyvariant: "dvorak".to_string(),
+            encrypt: false,
         };
         let cmd = install_command("/dev/vda", "qq", &opts);
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
         assert!(!args.iter().any(|a| *a == "--keyvariant"));
         assert!(!args.iter().any(|a| *a == "--keymap"));
+    }
+
+    #[test]
+    fn install_command_appends_encrypt_when_enabled() {
+        // Encryption on: a bare `--encrypt` flag is appended just before
+        // `--yes`; the backend maps it to `--block-setup tpm2-luks`.
+        let opts = InstallOptions {
+            filesystem: "btrfs".to_string(),
+            hostname: "qos".to_string(),
+            timezone: String::new(),
+            keymap: "us".to_string(),
+            keyvariant: String::new(),
+            encrypt: true,
+        };
+        let cmd = install_command("/dev/vda", "qq", &opts);
+        let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+        assert_eq!(
+            args,
+            vec![
+                "--disk", "/dev/vda", "--user", "qq", "--filesystem", "btrfs", "--hostname",
+                "qos", "--keymap", "us", "--encrypt", "--yes",
+            ]
+        );
+        // `--encrypt` is a bare flag (no value) and precedes `--yes`.
+        let enc = args.iter().position(|a| *a == "--encrypt").unwrap();
+        let yes = args.iter().position(|a| *a == "--yes").unwrap();
+        assert!(enc < yes, "--encrypt must precede --yes");
+    }
+
+    #[test]
+    fn install_command_omits_encrypt_by_default() {
+        let opts = InstallOptions::default();
+        let cmd = install_command("/dev/vda", "qq", &opts);
+        let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+        assert!(
+            !args.iter().any(|a| *a == "--encrypt"),
+            "default options must not request encryption"
+        );
     }
 
     #[test]
@@ -306,6 +366,7 @@ mod tests {
         assert!(o.timezone.is_empty());
         assert_eq!(o.keymap, "us");
         assert!(o.keyvariant.is_empty());
+        assert!(!o.encrypt, "encryption is opt-in (default off)");
     }
 
     #[test]

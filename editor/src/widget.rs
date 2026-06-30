@@ -40,6 +40,9 @@ const SELECTION: Color = Color::from_rgba8(0x46, 0x78, 0xe6, 0x4d);
 
 const PAGE_TOP: f64 = 28.0;
 const MAX_PAGE_W: f64 = 820.0;
+/// Vertical gap between consecutive discrete pages (the canvas shows through it),
+/// à la Google Docs. Together with `LETTER_RATIO` this drives true pagination.
+const PAGE_GAP: f64 = 22.0;
 const CARET_WIDTH: f64 = 2.0;
 const TOOLBAR_H: f64 = ui::chrome::TOOLBAR_HEIGHT;
 const STATUS_H: f64 = ui::chrome::STATUS_BAR_HEIGHT;
@@ -454,7 +457,51 @@ fn block_runs(b: &BlockView) -> (Vec<RichSpan>, Vec<(usize, usize)>, Vec<(usize,
     (runs, underlines, deco("strike"))
 }
 
-/// A block laid out for the current frame; kept for click hit-testing.
+/// Hash everything that feeds into `RichTextLayout::shape` into a single `u64`.
+///
+/// This is the cache key for the per-block incremental layout cache: if two
+/// frames produce the same key for a block, `shape` would produce a
+/// byte-identical layout, so the previously-shaped `RichTextLayout` can be
+/// reused verbatim. The inputs mirror `shape`'s arguments exactly — `spans`
+/// (text + per-run bold/italic/size/family/colour), the underline/strike byte
+/// ranges, the block-level bold/size/family/alignment, and the **wrap width**
+/// (so a window or margin resize re-shapes). Block-level ink is intentionally
+/// excluded: it is applied at draw time (`Laid::ink`), not baked into the
+/// buffer, so it can change without invalidating the shaped layout.
+fn shape_key(
+    spans: &[RichSpan],
+    underlines: &[(usize, usize)],
+    strikes: &[(usize, usize)],
+    base_bold: bool,
+    size: f32,
+    wrap_w: f32,
+    align: TextAlign,
+    family: FontFamily,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    spans.len().hash(&mut h);
+    for s in spans {
+        s.text.hash(&mut h);
+        s.bold.hash(&mut h);
+        s.italic.hash(&mut h);
+        s.size.map(f32::to_bits).hash(&mut h);
+        s.family.map(|f| f as u8).hash(&mut h);
+        s.color.hash(&mut h);
+    }
+    underlines.hash(&mut h);
+    strikes.hash(&mut h);
+    base_bold.hash(&mut h);
+    size.to_bits().hash(&mut h);
+    wrap_w.to_bits().hash(&mut h);
+    (align as u8).hash(&mut h);
+    (family as u8).hash(&mut h);
+    h.finish()
+}
+
+/// A block laid out for the current frame; kept for click hit-testing. The
+/// shaped `RichTextLayout` itself lives in `WordProcessorWidget::layout_cache`
+/// (keyed by `id`) so it can be reused across frames; look it up by `id`.
 struct Laid {
     id: String,
     text: String,
@@ -464,7 +511,6 @@ struct Laid {
     text_x: f64,
     width: f64,
     height: f64,
-    layout: RichTextLayout,
     bullet: Option<String>,
     /// Resolved text colour from the block's style.
     ink: Color,
@@ -547,6 +593,16 @@ pub struct WordProcessorWidget {
     hover_tool: Option<Rect>,
     blocks: Vec<BlockView>,
     laid: Vec<Laid>,
+    /// Incremental per-block shaped-text cache: block id → (shape key, shaped
+    /// layout). Reused across frames when the key (text + marks + resolved
+    /// style + wrap width) is unchanged, so only edited/resized blocks pay the
+    /// cosmic-text shaping cost instead of every block every frame. Pruned to
+    /// the live block set each frame (entries for deleted blocks are dropped).
+    layout_cache: HashMap<String, (u64, RichTextLayout)>,
+    /// Diagnostics for the layout cache, recomputed each `draw`: number of
+    /// blocks whose layout was reused (`hits`) vs re-shaped (`misses`).
+    dbg_layout_hits: usize,
+    dbg_layout_misses: usize,
     toolbar: Vec<(ToolAction, Rect)>,
     /// Last rich copy: `(plain_text, blocks)`. Paste uses it when the system
     /// clipboard still holds this exact plain text.
@@ -614,6 +670,9 @@ impl WordProcessorWidget {
             hover_tool: None,
             blocks: Vec::new(),
             laid: Vec::new(),
+            layout_cache: HashMap::new(),
+            dbg_layout_hits: 0,
+            dbg_layout_misses: 0,
             toolbar: Vec::new(),
             rich_clip: None,
             scroll_y: 0.0,
@@ -876,7 +935,11 @@ impl WordProcessorWidget {
                 None => p.y >= l.y_top && p.y < l.y_top + l.height,
             };
             if inside {
-                let byte = l.layout.hit((p.x - l.text_x) as f32, (p.y - l.y_top) as f32);
+                let byte = self
+                    .layout_cache
+                    .get(&l.id)
+                    .map(|(_, lay)| lay.hit((p.x - l.text_x) as f32, (p.y - l.y_top) as f32))
+                    .unwrap_or(0);
                 hit = Some((l.id.clone(), byte_to_char(&l.text, byte)));
                 break;
             }
@@ -890,7 +953,11 @@ impl WordProcessorWidget {
             }
             if hit.is_none() {
                 if let Some(l) = self.laid.last() {
-                    let byte = l.layout.hit((p.x - l.text_x) as f32, (l.height - 1.0) as f32);
+                    let byte = self
+                        .layout_cache
+                        .get(&l.id)
+                        .map(|(_, lay)| lay.hit((p.x - l.text_x) as f32, (l.height - 1.0) as f32))
+                        .unwrap_or(0);
                     hit = Some((l.id.clone(), byte_to_char(&l.text, byte)));
                 }
             }
@@ -959,6 +1026,12 @@ impl WordProcessorWidget {
     /// Toggle a layout-edit mode from a chip click.
     fn toggle_layout_mode(&mut self, mode: LayoutMode) {
         self.layout_mode = if self.layout_mode == mode { LayoutMode::None } else { mode };
+    }
+
+    /// Persist the current page margins into the document (page setup lives in the
+    /// document so it survives save/reopen). Called on margin-guide drag release.
+    fn persist_margins(&mut self, state: &mut AutoCommit) {
+        self.inner.set_page_margins(state, [self.margins.top, self.margins.right, self.margins.bottom, self.margins.left]);
     }
 
     /// The per-side measurement the active mode edits (the page margins).
@@ -1284,40 +1357,6 @@ impl WordProcessorWidget {
     }
 }
 
-/// Draw page-end markers down the (continuous) page sheet: a hairline at every
-/// US-Letter-height boundary plus a "Page N" pill tucked into the left margin so
-/// it never sits on top of body text (and stays visible even when the page is
-/// wider than the canvas). `page` is in screen space (already scroll-shifted);
-/// `left_margin` is the page's left inset in px.
-fn draw_page_breaks(scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, page: Rect, letter_h: f64, left_margin: f64) {
-    if letter_h < 2.0 {
-        return;
-    }
-    // Boundary colour: a soft slate that reads on white without fighting the text.
-    let line_col = Color::from_rgb8(0xc2, 0xc6, 0xce);
-    let mut k = 1usize;
-    loop {
-        let y = page.y0 + k as f64 * letter_h;
-        if y >= page.y1 - 2.0 {
-            break;
-        }
-        // Hairline across the page width (inset a touch from the paper edges).
-        let line = Rect::new(page.x0 + 6.0, y - 0.75, page.x1 - 6.0, y + 0.75);
-        scene.fill(Fill::NonZero, transform, line_col, None, &line);
-        // "Page N" pill in the left margin (the page below the break is page k+1).
-        let pw = 60.0_f64.min((left_margin - 10.0).max(40.0));
-        let ph = 18.0;
-        let px0 = page.x0 + 8.0;
-        let pill = Rect::new(px0, y - ph / 2.0, px0 + pw, y + ph / 2.0);
-        scene.fill(Fill::NonZero, transform, CANVAS, None, &vello::kurbo::RoundedRect::from_rect(pill, 9.0));
-        tr.draw_text(scene, &format!("Page {}", k + 1), 11.0, Color::from_rgb8(0xc6, 0xca, 0xd2), transform * Affine::translate((px0 + 9.0, y - 7.0)), None);
-        k += 1;
-        if k > 500 {
-            break;
-        }
-    }
-}
-
 /// A horizontal 1px divider line inside the panel.
 fn panel_divider(scene: &mut Scene, transform: Affine, x0: f64, x1: f64, y: f64) {
     scene.fill(Fill::NonZero, transform, PANEL_EDGE, None, &Rect::new(x0, y, x1, y + 1.0));
@@ -1344,6 +1383,14 @@ impl Widget for WordProcessorWidget {
         // into a panel field) — reloading would discard the live preview.
         if self.guide_drag.is_none() && self.scrub.is_none() && self.editing_field.is_none() {
             self.sheet = self.inner.stylesheet(state);
+        }
+        // Reload the persisted page margins (document-level page setup) unless a
+        // guide drag is mid-flight (which would clobber the live preview). Absent
+        // from the document → keep the current/default margins.
+        if self.guide_drag.is_none() {
+            if let Some([t, r, b, l]) = self.inner.page_margins(state) {
+                self.margins = Edges { top: t, right: r, bottom: b, left: l };
+            }
         }
         self.dirty = true;
     }
@@ -1403,12 +1450,35 @@ impl Widget for WordProcessorWidget {
         let page_top = canvas.y0 + PAGE_TOP;
         let content_x = page_x + m.left;
         let content_w = (page_w - m.left - m.right).max(80.0) as f32;
+        // True pagination: each page is a fixed US-Letter sheet (height `letter_h`)
+        // stacked with `PAGE_GAP` between sheets. A block lays into the current
+        // page's text band [content_top, content_bottom]; when the *next whole
+        // block* would not fit before the bottom text margin, the page advances and
+        // the block starts at the next page's top margin — content is never split,
+        // so a page-end never crosses a line of text.
+        let letter_h = page_w * LETTER_RATIO;
+        let page_pitch = letter_h + PAGE_GAP;
+        let page_content_top = |i: usize| page_top + i as f64 * page_pitch + m.top;
+        let page_content_bottom = |i: usize| page_top + i as f64 * page_pitch + letter_h - m.bottom;
 
         // Pass 1: shape blocks top-to-bottom. Runs of consecutive `cell` blocks
         // sharing a table id lay out as a grid; everything else stacks normally.
         let blocks = std::mem::take(&mut self.blocks);
         let mut laid: Vec<Laid> = Vec::with_capacity(blocks.len());
-        let mut y = page_top + m.top;
+        // Incremental layout cache: take last frame's shaped layouts so matching
+        // blocks can be reused, and build this frame's cache afresh. Any entry
+        // left in `old_cache` at the end (a block that no longer exists) is
+        // dropped — this is the per-frame prune that keeps memory bounded.
+        let mut old_cache = std::mem::take(&mut self.layout_cache);
+        let mut new_cache: HashMap<String, (u64, RichTextLayout)> = HashMap::with_capacity(blocks.len());
+        self.dbg_layout_hits = 0;
+        self.dbg_layout_misses = 0;
+        // Pagination cursor: current page index, whether anything has landed on it
+        // yet (the first item on a page never breaks, so an over-tall block simply
+        // overflows its own page — acceptable for v1), and the running content y.
+        let mut cur_page = 0usize;
+        let mut placed_on_page = false;
+        let mut y = page_content_top(0);
         // Per-level ordered-list counters (index = nesting level); reset when a
         // non-list block is reached or a shallower level re-enters.
         let mut ol_counts: Vec<u32> = Vec::new();
@@ -1426,40 +1496,69 @@ impl Widget for WordProcessorWidget {
                 let ncols = cells.iter().map(|c| cell_rc(c).1).max().unwrap_or(0) + 1;
                 let nrows = cells.iter().map(|c| cell_rc(c).0).max().unwrap_or(0) + 1;
                 let col_w = content_w as f64 / ncols as f64;
+                // Measure every row first so the whole table can paginate as one
+                // unit (it is never split mid-row across a page boundary).
+                let mut rows: Vec<(f64, Vec<(usize, f64, &BlockView)>)> = Vec::with_capacity(nrows);
                 for r in 0..nrows {
-                    let mut row_items: Vec<(usize, RichTextLayout, &BlockView)> = Vec::new();
+                    let mut row_items: Vec<(usize, f64, &BlockView)> = Vec::new();
                     let mut row_h = 26.0f64;
                     for c in 0..ncols {
                         if let Some(cell) = cells.iter().find(|cl| cell_rc(cl) == (r, c)) {
                             let (runs, underlines, strikes) = block_runs(cell);
-                            let layout = RichTextLayout::shape(
-                                &mut text_renderer.font_system,
-                                &runs,
-                                false,
-                                16.0,
-                                (col_w - 2.0 * cell_pad).max(24.0) as f32,
-                                block_align(cell, TextAlign::Left),
-                                FontFamily::Sans,
-                                underlines,
-                                strikes,
-                            );
-                            row_h = row_h.max(layout.height() as f64 + 2.0 * cell_pad);
-                            row_items.push((c, layout, cell));
+                            let wrap_w = (col_w - 2.0 * cell_pad).max(24.0) as f32;
+                            let align = block_align(cell, TextAlign::Left);
+                            let key = shape_key(&runs, &underlines, &strikes, false, 16.0, wrap_w, align, FontFamily::Sans);
+                            let layout = match old_cache.remove(&cell.id) {
+                                Some((k, lay)) if k == key => {
+                                    self.dbg_layout_hits += 1;
+                                    lay
+                                }
+                                _ => {
+                                    self.dbg_layout_misses += 1;
+                                    RichTextLayout::shape(
+                                        &mut text_renderer.font_system,
+                                        &runs,
+                                        false,
+                                        16.0,
+                                        wrap_w,
+                                        align,
+                                        FontFamily::Sans,
+                                        underlines,
+                                        strikes,
+                                    )
+                                }
+                            };
+                            let cell_h = layout.height() as f64;
+                            row_h = row_h.max(cell_h + 2.0 * cell_pad);
+                            new_cache.insert(cell.id.clone(), (key, layout));
+                            row_items.push((c, cell_h, cell));
                         }
                     }
-                    for (c, layout, cell) in row_items {
+                    rows.push((row_h, row_items));
+                }
+                let table_h: f64 = rows.iter().map(|(h, _)| *h).sum();
+                // Break to the next page if the whole table would not fit.
+                let item_top = if placed_on_page && y + table_h > page_content_bottom(cur_page) + 0.5 {
+                    cur_page += 1;
+                    page_content_top(cur_page)
+                } else {
+                    y
+                };
+                placed_on_page = true;
+                let mut ry = item_top;
+                for (r, (row_h, row_items)) in rows.into_iter().enumerate() {
+                    for (c, cell_h, cell) in row_items {
                         let cell_x = content_x + c as f64 * col_w;
-                        let cbox = Rect::new(cell_x, y, cell_x + col_w, y + row_h);
+                        let cbox = Rect::new(cell_x, ry, cell_x + col_w, ry + row_h);
                         laid.push(Laid {
                             id: cell.id.clone(),
                             text: cell.text.clone(),
                             kind: "cell".into(),
                             size: 16.0,
-                            y_top: y + cell_pad,
+                            y_top: ry + cell_pad,
                             text_x: cell_x + cell_pad,
                             width: col_w - 2.0 * cell_pad,
-                            height: layout.height() as f64,
-                            layout,
+                            height: cell_h,
                             bullet: None,
                             ink: INK,
                             image_hash: None,
@@ -1467,9 +1566,9 @@ impl Widget for WordProcessorWidget {
                             cell_row: Some(r),
                         });
                     }
-                    y += row_h;
+                    ry += row_h;
                 }
-                y += self.sheet.get("body").space_after as f64;
+                y = ry + self.sheet.get("body").space_after as f64;
             } else if b.kind == "image" {
                 ol_counts.clear();
                 let hash = match b.attrs.get("blob") {
@@ -1488,24 +1587,35 @@ impl Widget for WordProcessorWidget {
                     }
                     _ => ((content_w as f64).min(280.0), 90.0),
                 };
+                // Image blocks carry a trivial empty layout (used only so pointer
+                // hit-testing resolves to offset 0); it is cheap, so just re-shape
+                // it every frame rather than caching it incrementally.
                 let empty = RichTextLayout::shape(&mut text_renderer.font_system, &[RichSpan::new("")], false, 16.0, content_w, TextAlign::Left, FontFamily::Sans, vec![], vec![]);
+                new_cache.insert(b.id.clone(), (0, empty));
+                // Break to the next page if the image would not fit.
+                let item_top = if placed_on_page && y + draw_h > page_content_bottom(cur_page) + 0.5 {
+                    cur_page += 1;
+                    page_content_top(cur_page)
+                } else {
+                    y
+                };
+                placed_on_page = true;
                 laid.push(Laid {
                     id: b.id.clone(),
                     text: String::new(),
                     kind: "image".into(),
                     size: 16.0,
-                    y_top: y,
+                    y_top: item_top,
                     text_x: content_x,
                     width: draw_w,
                     height: draw_h,
-                    layout: empty,
                     bullet: None,
                     ink: INK,
                     image_hash: intrinsic.map(|_| hash),
                     cell_box: None,
                     cell_row: None,
                 });
-                y += draw_h + self.sheet.get("body").space_after as f64;
+                y = item_top + draw_h + self.sheet.get("body").space_after as f64;
                 bi += 1;
             } else {
                 // Resolve the block's style (component-instance model).
@@ -1534,46 +1644,75 @@ impl Widget for WordProcessorWidget {
                     ol_counts.clear();
                     (st.indent as f64, None)
                 };
-                y += st.space_before as f64;
                 let wrap_w = (content_w - indent as f32).max(40.0);
                 let (runs, underlines, strikes) = block_runs(b);
-                let layout = RichTextLayout::shape(
-                    &mut text_renderer.font_system,
-                    &runs,
-                    base_bold,
-                    size,
-                    wrap_w,
-                    block_align(b, style_align(&st.align)),
-                    parse_font(&st.font),
-                    underlines,
-                    strikes,
-                );
+                let align = block_align(b, style_align(&st.align));
+                let family = parse_font(&st.font);
+                let key = shape_key(&runs, &underlines, &strikes, base_bold, size, wrap_w, align, family);
+                // Reuse the shaped layout if nothing affecting shaping changed
+                // (text, marks, resolved style, or wrap width), else re-shape.
+                let layout = match old_cache.remove(&b.id) {
+                    Some((k, lay)) if k == key => {
+                        self.dbg_layout_hits += 1;
+                        lay
+                    }
+                    _ => {
+                        self.dbg_layout_misses += 1;
+                        RichTextLayout::shape(
+                            &mut text_renderer.font_system,
+                            &runs,
+                            base_bold,
+                            size,
+                            wrap_w,
+                            align,
+                            family,
+                            underlines,
+                            strikes,
+                        )
+                    }
+                };
+                let block_h = layout.height() as f64;
+                new_cache.insert(b.id.clone(), (key, layout));
+                // Place with the style's space-before as the leading gap, breaking
+                // to the next page when the whole block would not fit before the
+                // bottom text margin (the lead is dropped at the top of a fresh
+                // page so the first paragraph hugs the top margin).
+                let top_candidate = y + st.space_before as f64;
+                let item_top = if placed_on_page && top_candidate + block_h > page_content_bottom(cur_page) + 0.5 {
+                    cur_page += 1;
+                    page_content_top(cur_page)
+                } else {
+                    top_candidate
+                };
+                placed_on_page = true;
                 laid.push(Laid {
                     id: b.id.clone(),
                     text: b.text.clone(),
                     kind: b.kind.clone(),
                     size,
-                    y_top: y,
+                    y_top: item_top,
                     text_x: content_x + indent,
                     width: wrap_w as f64,
-                    height: layout.height() as f64,
-                    layout,
+                    height: block_h,
                     bullet,
                     ink: Color::from_rgb8(st.color[0], st.color[1], st.color[2]),
                     image_hash: None,
                     cell_box: None,
                     cell_row: None,
                 });
-                y += laid.last().unwrap().height + st.space_after as f64;
+                y = item_top + block_h + st.space_after as f64;
                 bi += 1;
             }
         }
-        let content_bottom = y + m.bottom;
-        let page_h = (content_bottom - page_top).max(canvas.height() - 2.0 * PAGE_TOP);
+        // Total document extent below `page_top`: the stacked page sheets + gaps,
+        // widened if an over-tall block overflowed its page's text band.
+        let num_pages = cur_page + 1;
+        let pages_extent = num_pages as f64 * letter_h + cur_page as f64 * PAGE_GAP;
+        let extent = pages_extent.max(y - page_top);
 
         // Scrolling: clamp the offset to the overflow, then shift the laid-out
-        // content (+ page) into screen space so hit-testing needs no offset.
-        self.max_scroll = (page_h + 2.0 * PAGE_TOP - canvas.height()).max(0.0);
+        // content (+ pages) into screen space so hit-testing needs no offset.
+        self.max_scroll = (extent + 2.0 * PAGE_TOP - canvas.height()).max(0.0);
         self.scroll_y = self.scroll_y.clamp(0.0, self.max_scroll);
         let sy = self.scroll_y;
         if sy != 0.0 {
@@ -1589,9 +1728,21 @@ impl Widget for WordProcessorWidget {
         // the toolbar / status bar.
         scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &canvas);
 
-        // Page shadow + paper (the document surface).
-        let page = Rect::new(page_x, page_top - sy, page_x + page_w, page_top + page_h - sy);
-        chrome::page::draw(scene, transform, page, PAPER, SHADOW);
+        // Discrete page sheets (shadow + paper) stacked with `PAGE_GAP`, each with
+        // a "Page N" label centered in the gap just below the sheet.
+        for i in 0..num_pages {
+            let ptop = page_top + i as f64 * page_pitch - sy;
+            let sheet = Rect::new(page_x, ptop, page_x + page_w, ptop + letter_h);
+            chrome::page::draw(scene, transform, sheet, PAPER, SHADOW);
+            let label = format!("Page {}", i + 1);
+            let approx = label.chars().count() as f64 * 6.4;
+            let lx = (sheet.x0 + sheet.x1) / 2.0 - approx / 2.0;
+            let ly = sheet.y1 + PAGE_GAP / 2.0 - 6.0;
+            text_renderer.draw_text(scene, &label, 11.0, Color::from_rgb8(0x9a, 0x9e, 0xa8), transform * Affine::translate((lx, ly)), None);
+        }
+        // The first page is the reference rect for the margin-guide overlay
+        // (margins apply to every page identically).
+        let page = Rect::new(page_x, page_top - sy, page_x + page_w, page_top + letter_h - sy);
         self.page_rect = page;
 
         // Restore the block cache before pass 2 so selection lookups resolve.
@@ -1637,12 +1788,19 @@ impl Widget for WordProcessorWidget {
                 text_renderer.draw_text(scene, bul, l.size, l.ink, transform * Affine::translate((l.text_x - BULLET_GAP, l.y_top)), None);
             }
 
+            // The shaped text lives in the layout cache (built in pass 1), keyed
+            // by block id. Every normal/cell entry was inserted there.
+            let layout = match new_cache.get(&l.id) {
+                Some((_, lay)) => lay,
+                None => continue,
+            };
+
             if let Some((b0, b1)) = self.selection_bytes_for(&l.id, &l.text) {
                 if let (Some(bx), true) = (l.cell_box, multi_sel) {
                     // Multi-cell selection: highlight the whole cell (spreadsheet-style).
                     scene.fill(Fill::NonZero, transform, SELECTION, None, &bx);
                 } else {
-                    for (rx0, ry0, rx1, ry1) in l.layout.selection_rects(b0, b1) {
+                    for (rx0, ry0, rx1, ry1) in layout.selection_rects(b0, b1) {
                         let r = Rect::new(l.text_x + rx0 as f64, l.y_top + ry0 as f64, l.text_x + rx1 as f64, l.y_top + ry1 as f64);
                         scene.fill(Fill::NonZero, transform, SELECTION, None, &r);
                     }
@@ -1655,18 +1813,18 @@ impl Widget for WordProcessorWidget {
                     if bid == &l.id {
                         let bs = char_to_byte(&l.text, *cs);
                         let be = char_to_byte(&l.text, *ce);
-                        for (rx0, ry0, rx1, ry1) in l.layout.selection_rects(bs, be) {
+                        for (rx0, ry0, rx1, ry1) in layout.selection_rects(bs, be) {
                             let r = Rect::new(l.text_x + rx0 as f64, l.y_top + ry0 as f64, l.text_x + rx1 as f64, l.y_top + ry1 as f64);
                             scene.fill(Fill::NonZero, transform, FIND_HL, None, &r);
                         }
                     }
                 }
             }
-            text_renderer.draw_rich(scene, &l.layout, transform * Affine::translate((l.text_x, l.y_top)), l.ink);
+            text_renderer.draw_rich(scene, layout, transform * Affine::translate((l.text_x, l.y_top)), l.ink);
 
             if self.focused && l.id == self.inner.caret.block && !self.inner.has_selection() {
                 let byte = char_to_byte(&l.text, self.inner.caret.offset);
-                let (cx, cy, ch) = l.layout.caret_geometry(byte);
+                let (cx, cy, ch) = layout.caret_geometry(byte);
                 let caret = Rect::new(l.text_x + cx as f64, l.y_top + cy as f64, l.text_x + cx as f64 + CARET_WIDTH, l.y_top + cy as f64 + ch as f64);
                 scene.fill(Fill::NonZero, transform, CARET_COLOR, None, &caret);
             }
@@ -1685,12 +1843,6 @@ impl Widget for WordProcessorWidget {
                 );
             }
         }
-
-        // Page-end markers (Google-Docs-style): a hairline + "Page N" label where
-        // each US-Letter-height page would break. Indicative only — content is not
-        // reflowed across pages. Uses the same px scale as the page width.
-        let letter_h = page_w * LETTER_RATIO;
-        draw_page_breaks(scene, transform, text_renderer, page, letter_h, m.left);
 
         // Layout-edit overlay: draggable guides + live value labels for the
         // active mode (drawn over the content, still inside the page clip).
@@ -1711,6 +1863,9 @@ impl Widget for WordProcessorWidget {
         }
 
         self.laid = laid;
+        // Adopt this frame's cache (dropping `old_cache`, i.e. pruning entries
+        // for blocks that no longer exist) so the next frame can reuse it.
+        self.layout_cache = new_cache;
 
         // Contextual styles panel on the right (between toolbar and layout bar).
         if self.styles_panel_open {
@@ -1888,11 +2043,19 @@ impl Widget for WordProcessorWidget {
                     self.dirty = true;
                     *handled = true;
                 } else if let Some(gd) = self.guide_drag.take() {
-                    // A style edit (spacing) persists into the document on release.
-                    if gd.mode == LayoutMode::Spacing {
-                        let sheet = self.sheet.clone();
-                        self.inner.set_stylesheet(state, &sheet);
-                        self.needs_commit = true;
+                    // A layout edit persists into the document on release: spacing
+                    // into the stylesheet, margins into the page-setup meta.
+                    match gd.mode {
+                        LayoutMode::Spacing => {
+                            let sheet = self.sheet.clone();
+                            self.inner.set_stylesheet(state, &sheet);
+                            self.needs_commit = true;
+                        }
+                        LayoutMode::Margins => {
+                            self.persist_margins(state);
+                            self.needs_commit = true;
+                        }
+                        LayoutMode::None => {}
                     }
                     self.dirty = true;
                     *handled = true;
@@ -2563,6 +2726,43 @@ mod tests {
     }
 
     #[test]
+    fn layout_cache_reuses_unchanged_blocks_and_reshapes_after_edit() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "First paragraph here");
+        wp.model_mut().enter(&mut state.doc);
+        wp.model_mut().insert_str(&mut state.doc, "Second paragraph here");
+
+        // Cold frame: the cache is empty, so every block is shaped (a miss).
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        assert_eq!(wp.dbg_layout_hits, 0, "cold draw cannot reuse anything");
+        assert_eq!(wp.dbg_layout_misses, 2, "both paragraphs shaped on the first frame");
+        assert_eq!(wp.layout_cache.len(), 2, "both blocks cached");
+
+        // Warm frame, no edits: every block's key matches, so all are reused and
+        // nothing is re-shaped — this is the per-frame O(n) shaping we eliminated.
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        assert_eq!(wp.dbg_layout_hits, 2, "unchanged re-draw reuses every cached layout");
+        assert_eq!(wp.dbg_layout_misses, 0, "no re-shaping on an unchanged frame");
+
+        // Edit one block (caret is in the 2nd paragraph): only that block's key
+        // changes, so only it re-shapes; the untouched block is still reused.
+        wp.model_mut().insert_str(&mut state.doc, "!");
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        assert_eq!(wp.dbg_layout_misses, 1, "only the edited block is re-shaped");
+        assert_eq!(wp.dbg_layout_hits, 1, "the untouched block is still reused");
+
+        // A margin change alters the wrap width (the page is fixed-width, so the
+        // window size does not — only the margins do). Wrap width is part of the
+        // key, so every block must re-shape at the new measure.
+        wp.margins = Edges::uniform(140.0);
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        assert_eq!(wp.dbg_layout_misses, 2, "a wrap-width change re-shapes every block");
+        assert_eq!(wp.dbg_layout_hits, 0, "no block can be reused at a new wrap width");
+    }
+
+    #[test]
     fn find_and_replace_all_works() {
         let mut state = ui::State::new();
         let mut wp = WordProcessorWidget::new();
@@ -2743,5 +2943,70 @@ mod tests {
         assert_eq!(num("two-b").as_deref(), Some("2."));
         // Returning to level 0 continues the outer numbering.
         assert_eq!(num("three").as_deref(), Some("3."));
+    }
+
+    #[test]
+    fn long_document_paginates_across_discrete_pages() {
+        // Geometry mirrors `draw`: a fresh widget keeps the default uniform 72px
+        // margins, find bar closed (find_h = 0), so canvas top = TOOLBAR_H.
+        let mar = 72.0;
+        let letter_h = MAX_PAGE_W * LETTER_RATIO;
+        let page_pitch = letter_h + PAGE_GAP;
+        let page_top = TOOLBAR_H + PAGE_TOP;
+        let pct = |i: usize| page_top + i as f64 * page_pitch + mar; // page content top
+        let pcb = |i: usize| page_top + i as f64 * page_pitch + letter_h - mar; // bottom margin
+        let page_of = |y: f64| ((y - page_top) / page_pitch).floor() as i64;
+
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        // Enough paragraphs to overflow a single US-Letter page.
+        for i in 0..120 {
+            wp.model_mut().insert_str(&mut state.doc, &format!("Paragraph number {i} carries enough words to fill a line."));
+            wp.model_mut().enter(&mut state.doc);
+        }
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+
+        // The content spans more than one page.
+        let max_page = wp.laid.iter().map(|l| page_of(l.y_top)).max().unwrap();
+        assert!(max_page >= 1, "a long document must occupy more than one page (got {max_page})");
+
+        // No laid block crosses a page boundary: each sits wholly within its page's
+        // text band, so a page-end never bisects a line of text.
+        for l in &wp.laid {
+            let i = page_of(l.y_top).max(0) as usize;
+            assert!(l.y_top >= pct(i) - 1.0, "block starts at/below its page's top margin");
+            assert!(l.y_top + l.height <= pcb(i) + 1.0, "block ends above its page's bottom margin (no straddle)");
+        }
+
+        // The first block that lands on page 2 starts exactly at the page-2 top
+        // margin, and the block before it (in document order) is still on page 1.
+        let idx = wp.laid.iter().position(|l| page_of(l.y_top) == 1).expect("some block lands on page 2");
+        assert!(idx > 0, "page 2 is preceded by page-1 content");
+        assert!((wp.laid[idx].y_top - pct(1)).abs() < 1.0, "the first page-2 block hugs the page-2 top margin");
+        assert_eq!(page_of(wp.laid[idx - 1].y_top), 0, "the block before it is on page 1");
+    }
+
+    #[test]
+    fn page_margins_persist_across_reload() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        // A document with no recorded page setup uses the default margins.
+        assert!((wp.margins.left - 72.0).abs() < 1e-6, "fresh doc uses default margins");
+
+        // Edit margins (as a margin-guide drag would) and persist via the same
+        // production path the drag-release handler uses.
+        wp.margins = Edges { top: 33.0, right: 44.0, bottom: 55.0, left: 66.0 };
+        wp.persist_margins(&mut state.doc);
+
+        // A fresh widget bound to the *same document* reloads the persisted page
+        // setup on sync — proving margins now live in the document, not the widget.
+        let mut wp2 = WordProcessorWidget::new();
+        wp2.sync(&mut state.doc, &state.root);
+        assert!((wp2.margins.top - 33.0).abs() < 1e-6, "top margin survived reload");
+        assert!((wp2.margins.right - 44.0).abs() < 1e-6, "right margin survived reload");
+        assert!((wp2.margins.bottom - 55.0).abs() < 1e-6, "bottom margin survived reload");
+        assert!((wp2.margins.left - 66.0).abs() < 1e-6, "left margin survived reload");
     }
 }
