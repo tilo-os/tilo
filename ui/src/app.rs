@@ -303,6 +303,16 @@ pub struct App {
     /// entry here and announces the change — without moving focus. Only
     /// populated when the reader is active; cleared when it's disabled.
     live_region_last: std::collections::HashMap<String, String>,
+
+    /// Whether a modal currently traps keyboard focus (some widget in the tree
+    /// returns [`Widget::traps_focus`] true). While set, `focusable_order` is
+    /// restricted to the modal's subtree. Tracked across frames so the App can
+    /// detect the open→close transition and restore focus.
+    focus_trap_active: bool,
+    /// The element that held focus the moment a focus trap appeared. Restored
+    /// when the trap goes away (the modal closes), so the keyboard lands back
+    /// where the user was. `None` when no trap is active or nothing was focused.
+    focus_before_trap: Option<NodeId>,
 }
 
 impl App {
@@ -346,6 +356,8 @@ impl App {
             },
             screen_reader_modifier_down: false,
             live_region_last: std::collections::HashMap::new(),
+            focus_trap_active: false,
+            focus_before_trap: None,
         }
     }
 
@@ -943,9 +955,80 @@ impl App {
                 }
             }
         }
-        if let Some(root) = self.root_node {
+        // Locate the focusables of an open modal's subtree, if one is up. The
+        // deepest trapping widget wins (a modal opened from within a modal).
+        fn find_trap_focusables(
+            node_id: NodeId,
+            widget: &dyn Widget,
+            taffy: &TaffyTree<()>,
+        ) -> Option<Vec<NodeId>> {
+            let children = widget.children();
+            let child_nodes = taffy.children(node_id).ok();
+            // Recurse first so a nested trap takes precedence.
+            if let Some(child_nodes) = &child_nodes {
+                for (child_widget, &child_node) in children.iter().zip(child_nodes.iter()) {
+                    if let Some(inner) = find_trap_focusables(child_node, *child_widget, taffy) {
+                        return Some(inner);
+                    }
+                }
+            }
+            if widget.traps_focus() {
+                let mut order = Vec::new();
+                collect_focusable(node_id, widget, taffy, &mut order);
+                return Some(order);
+            }
+            None
+        }
+
+        let Some(root) = self.root_node else { return };
+
+        let trap = find_trap_focusables(root, self.root_widget.as_ref(), &self.taffy);
+        let trap_active = trap.is_some();
+
+        if let Some(trapped) = trap {
+            // Confine keyboard focus to the modal's focusables.
+            self.focusable_order = trapped;
+        } else {
             collect_focusable(root, self.root_widget.as_ref(), &self.taffy, &mut self.focusable_order);
         }
+
+        // Manage the trap open/close transition for focus restore.
+        match (self.focus_trap_active, trap_active) {
+            (false, true) => {
+                // A modal just opened: remember where focus was, then move it
+                // into the modal so Tab cycles inside it and the dialog (or its
+                // first field) is announced.
+                self.focus_before_trap = self.focused_node;
+                if let Some(&first) = self.focusable_order.first() {
+                    self.set_focused_node(Some(first));
+                } else {
+                    // Modal has no focusable content — drop focus so Tab can't
+                    // reach the content behind the backdrop.
+                    self.set_focused_node(None);
+                }
+            }
+            (true, false) => {
+                // The modal closed: return focus to where the user was, as long
+                // as that element still exists in the rebuilt tree.
+                let restore = self
+                    .focus_before_trap
+                    .take()
+                    .filter(|id| self.focusable_order.contains(id));
+                self.set_focused_node(restore);
+            }
+            (true, true) => {
+                // Still trapped: if focus drifted outside the modal (a rebuild
+                // dropped the focused element), pull it back to the first member.
+                let inside = self
+                    .focused_node
+                    .is_some_and(|id| self.focusable_order.contains(&id));
+                if !inside {
+                    self.set_focused_node(self.focusable_order.first().copied());
+                }
+            }
+            (false, false) => {}
+        }
+        self.focus_trap_active = trap_active;
     }
 
     fn apply_remote_presence(
@@ -1396,6 +1479,17 @@ impl App {
         });
     }
 
+    /// Re-run the per-frame focus pass: pull widget state via `sync` (so a
+    /// modal's open flag updates) then re-evaluate the focusable order and any
+    /// focus trap. This is what the event loop does after handling input that
+    /// changed widget state without rebuilding the tree; exposed (doc-hidden)
+    /// so headless tests can drive modal open/close without a winit loop.
+    #[doc(hidden)]
+    pub fn refresh_focus_order(&mut self) {
+        self.root_widget.sync(&mut self.state.doc, &self.state.root);
+        self.update_focusable_order();
+    }
+
     /// Rebuild the taffy tree from the current widget tree after a
     /// structural mutation, re-establishing keyboard focus.
     ///
@@ -1449,7 +1543,10 @@ impl App {
         self.layout_dirty = true;
         self.update_focusable_order();
 
-        if self.autofocus_on_structure_change {
+        // A focus trap (open modal) already placed focus inside its subtree in
+        // `update_focusable_order`; the structure-change autofocus must not
+        // override that and let focus escape the modal.
+        if self.autofocus_on_structure_change && !self.focus_trap_active {
             if focus_reset {
                 // Step / phase transition: hand focus to the first field of
                 // the freshly-built tree. No caret restore — the focused
@@ -3556,5 +3653,289 @@ mod screen_reader_tests {
             app.text_review_snapshot().is_none(),
             "a button has no caret to review"
         );
+    }
+}
+
+/// Modal focus-trap wiring. Proves that while an open modal is in the tree the
+/// App confines keyboard focus to the modal's subtree (so Tab can't reach the
+/// content behind the backdrop), and restores the previously-focused element
+/// when the modal closes. The modal's open flag is a state change (no
+/// structural rebuild), so node ids stay stable and `refresh_focus_order` —
+/// the per-frame focus pass — re-evaluates the trap.
+#[cfg(test)]
+mod focus_trap_tests {
+    use super::*;
+    use crate::widget::modal_dialog::ModalDialog;
+    use crate::widget::{Button, Widget};
+    use std::cell::Cell;
+    use std::collections::HashMap;
+    use std::rc::Rc;
+
+    /// A tiny container of two focusable buttons used as the modal body.
+    struct TwoKids {
+        kids: Vec<Box<dyn Widget>>,
+    }
+    impl TwoKids {
+        fn new() -> Self {
+            Self {
+                kids: vec![
+                    Box::new(Button::new("ok", "OK", None)),
+                    Box::new(Button::new("cancel", "Cancel", None)),
+                ],
+            }
+        }
+    }
+    impl Widget for TwoKids {
+        fn sync(&mut self, s: &mut automerge::AutoCommit, p: &automerge::ObjId) {
+            for c in &mut self.kids {
+                c.sync(s, p);
+            }
+        }
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let kids: Vec<_> = self
+                .kids
+                .iter_mut()
+                .map(|c| c.build_layout(taffy, theme, node_map))
+                .collect();
+            let node = taffy.new_with_children(taffy::Style::default(), &kids).unwrap();
+            node_map.insert(node, self as *mut dyn Widget);
+            node
+        }
+        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
+        fn draw(
+            &mut self,
+            _s: &mut Scene,
+            _t: Affine,
+            _tr: &mut TextRenderer,
+            _th: &Theme,
+            _p: &PresenceCtx,
+        ) {
+        }
+        fn handle_event(
+            &mut self,
+            _e: &WindowEvent,
+            _sf: f64,
+            _m: &winit::event::Modifiers,
+            _s: &mut automerge::AutoCommit,
+            _p: &automerge::ObjId,
+            _h: &mut bool,
+            _ft: &mut Option<NodeId>,
+            _ni: NodeId,
+            _t: &TaffyTree<()>,
+        ) {
+        }
+        fn children(&self) -> Vec<&dyn Widget> {
+            self.kids.iter().map(|c| c.as_ref()).collect()
+        }
+        fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+            self.kids.iter_mut().map(|c| &mut **c as &mut (dyn Widget + '_)).collect()
+        }
+        fn name(&self) -> &str {
+            "two-kids"
+        }
+        fn get_rect(&self) -> KurboRect {
+            KurboRect::ZERO
+        }
+    }
+
+    /// A root with two always-present outer buttons plus a modal whose body is
+    /// two more buttons. A shared `want_open` cell flips the modal's state in
+    /// `sync` — modelling a host that opens/closes the dialog in response to a
+    /// click, without rebuilding the widget tree.
+    struct ModalHost {
+        outer: Vec<Box<dyn Widget>>,
+        modal: ModalDialog<TwoKids>,
+        want_open: Rc<Cell<bool>>,
+    }
+    impl ModalHost {
+        fn new(want_open: Rc<Cell<bool>>) -> Self {
+            Self {
+                outer: vec![
+                    Box::new(Button::new("a", "Open", None)),
+                    Box::new(Button::new("b", "Other", None)),
+                ],
+                modal: ModalDialog::new("Confirm", TwoKids::new()),
+                want_open,
+            }
+        }
+    }
+    impl Widget for ModalHost {
+        fn sync(&mut self, s: &mut automerge::AutoCommit, p: &automerge::ObjId) {
+            self.modal.set_open(self.want_open.get());
+            for c in &mut self.outer {
+                c.sync(s, p);
+            }
+            self.modal.sync(s, p);
+        }
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            // Reflect the requested open state before building so the trap query
+            // sees it on the freshly-built tree.
+            self.modal.set_open(self.want_open.get());
+            let mut kids: Vec<_> = self
+                .outer
+                .iter_mut()
+                .map(|c| c.build_layout(taffy, theme, node_map))
+                .collect();
+            kids.push(self.modal.build_layout(taffy, theme, node_map));
+            let node = taffy.new_with_children(taffy::Style::default(), &kids).unwrap();
+            node_map.insert(node, self as *mut dyn Widget);
+            node
+        }
+        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
+        fn draw(
+            &mut self,
+            _s: &mut Scene,
+            _t: Affine,
+            _tr: &mut TextRenderer,
+            _th: &Theme,
+            _p: &PresenceCtx,
+        ) {
+        }
+        fn handle_event(
+            &mut self,
+            _e: &WindowEvent,
+            _sf: f64,
+            _m: &winit::event::Modifiers,
+            _s: &mut automerge::AutoCommit,
+            _p: &automerge::ObjId,
+            _h: &mut bool,
+            _ft: &mut Option<NodeId>,
+            _ni: NodeId,
+            _t: &TaffyTree<()>,
+        ) {
+        }
+        fn children(&self) -> Vec<&dyn Widget> {
+            let mut v: Vec<&dyn Widget> = self.outer.iter().map(|c| c.as_ref()).collect();
+            v.push(&self.modal);
+            v
+        }
+        fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+            let mut v: Vec<&mut (dyn Widget + '_)> = self
+                .outer
+                .iter_mut()
+                .map(|c| &mut **c as &mut (dyn Widget + '_))
+                .collect();
+            v.push(&mut self.modal as &mut (dyn Widget + '_));
+            v
+        }
+        fn name(&self) -> &str {
+            "modal-host"
+        }
+        fn get_rect(&self) -> KurboRect {
+            KurboRect::ZERO
+        }
+    }
+
+    /// Stand up an App over the modal host and return it plus the open-flag
+    /// cell. The tree is built closed; flipping the cell + calling
+    /// `refresh_focus_order` models the per-frame re-evaluation.
+    fn host_app() -> (App, Rc<Cell<bool>>) {
+        let cell = Rc::new(Cell::new(false));
+        let app = App::new(State::new(), Box::new(ModalHost::new(cell.clone())));
+        (app, cell)
+    }
+
+    #[test]
+    fn closed_modal_does_not_trap_focus() {
+        let (mut app, _open) = host_app();
+        app.init_layout();
+        assert!(!app.focus_trap_active, "no trap while the modal is closed");
+        // Outer buttons plus the (closed) modal body are all reachable.
+        assert!(
+            app.focusable_order.len() >= 3,
+            "all focusables reachable when nothing traps"
+        );
+    }
+
+    #[test]
+    fn open_modal_confines_focus_order_to_its_subtree() {
+        let (mut app, open) = host_app();
+        app.init_layout();
+        let full = app.focusable_order.len();
+
+        // Open the modal (a state flip) and re-run the per-frame focus pass.
+        open.set(true);
+        app.refresh_focus_order();
+
+        assert!(app.focus_trap_active, "an open modal traps focus");
+        assert_eq!(
+            app.focusable_order.len(),
+            2,
+            "focus is confined to the modal's two buttons (was {full})"
+        );
+        assert!(
+            app.focused_node
+                .is_some_and(|id| app.focusable_order.contains(&id)),
+            "focus moves into the modal when it opens"
+        );
+    }
+
+    #[test]
+    fn tab_wraps_within_the_trapped_modal() {
+        let (mut app, open) = host_app();
+        app.init_layout();
+        open.set(true);
+        app.refresh_focus_order();
+        assert_eq!(app.focusable_order.len(), 2);
+
+        let first = app.focusable_order[0];
+        let second = app.focusable_order[1];
+        app.set_focused_node(Some(first));
+        // Emulate the Tab cycle the window-event handler performs over the
+        // (now-restricted) focusable_order.
+        let next = (app.focusable_order.iter().position(|&x| x == first).unwrap() + 1)
+            % app.focusable_order.len();
+        app.set_focused_node(Some(app.focusable_order[next]));
+        assert_eq!(app.focused_node, Some(second));
+        let wrap = (app.focusable_order.iter().position(|&x| x == second).unwrap() + 1)
+            % app.focusable_order.len();
+        app.set_focused_node(Some(app.focusable_order[wrap]));
+        assert_eq!(app.focused_node, Some(first), "Tab from last wraps to first inside the modal");
+    }
+
+    #[test]
+    fn closing_modal_restores_prior_focus() {
+        let (mut app, open) = host_app();
+        app.init_layout();
+        // Focus an outer button before opening the modal.
+        let outer = app.focusable_order[0];
+        app.set_focused_node(Some(outer));
+
+        // Open: focus moves into the modal, prior focus is remembered.
+        open.set(true);
+        app.refresh_focus_order();
+        assert!(app.focus_trap_active);
+        assert_ne!(app.focused_node, Some(outer), "focus moved into the modal");
+
+        // Close: focus returns to the outer button it left.
+        open.set(false);
+        app.refresh_focus_order();
+        assert!(!app.focus_trap_active, "trap released when the modal closes");
+        assert_eq!(
+            app.focused_node,
+            Some(outer),
+            "focus is restored to where it was before the modal opened"
+        );
+    }
+
+    #[test]
+    fn modal_exposes_dialog_role_with_title_as_name() {
+        use crate::a11y::Role;
+        let m = ModalDialog::new("Delete file?", TwoKids::new()).open(true);
+        let node = Widget::accessibility(&m).expect("an open dialog is in the tree");
+        assert_eq!(node.role, Role::Dialog);
+        assert_eq!(node.name.as_deref(), Some("Delete file?"));
+        assert!(node.state.modal, "an open modal traps focus → modal flag");
+        assert!(!node.state.hidden);
     }
 }
