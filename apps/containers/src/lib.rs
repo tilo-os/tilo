@@ -12,11 +12,13 @@
 //! loop and the headless `--shots` renderer.
 
 pub mod app;
+pub mod combobox;
 pub mod doc;
 pub mod draw;
 pub mod model;
 pub mod panels;
 pub mod podman;
+pub mod terminal;
 
 pub use app::ContainersApp;
 

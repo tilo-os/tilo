@@ -11,13 +11,15 @@
 //! so the UI always has something coherent to render, and lifecycle actions
 //! become no-ops rather than errors.
 
-use std::process::Command;
+use std::io::{BufRead, BufReader};
+use std::process::{Command, Stdio};
+use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 use serde::Deserialize;
 
 use crate::model::{
-    Container, ContainerStatus, DistroBox, Engine, Image, Mount, PortMapping, Stats,
+    Container, ContainerStatus, DistroBox, Engine, Image, Mount, PortMapping, Stats, Volume,
 };
 
 /// A lifecycle verb the UI can request against a container.
@@ -97,11 +99,13 @@ fn probe_live() -> Option<Engine> {
     }
     let containers = list_containers().unwrap_or_default();
     let images = list_images().unwrap_or_default();
+    let volumes = list_volumes().unwrap_or_default();
     let distroboxes = list_distroboxes();
     let connection = podman_connection_label();
     Some(Engine {
         containers,
         images,
+        volumes,
         distroboxes,
         connection,
         live: true,
@@ -338,6 +342,68 @@ fn split_reference(reference: &str) -> (String, String) {
     }
 }
 
+// --- podman volume ls ------------------------------------------------
+
+#[derive(Deserialize)]
+struct VolumeEntry {
+    #[serde(default, rename = "Name")]
+    name: String,
+    #[serde(default, rename = "Driver")]
+    driver: String,
+    #[serde(default, rename = "Mountpoint")]
+    mountpoint: String,
+    #[serde(default, rename = "CreatedAt")]
+    created_at: String,
+}
+
+fn list_volumes() -> Option<Vec<Volume>> {
+    let out = Command::new("podman")
+        .args(["volume", "ls", "--format", "json"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    // `podman volume ls --format json` yields an array of objects.
+    let entries: Vec<VolumeEntry> = serde_json::from_slice(&out.stdout).ok()?;
+    // Count usage from running+stopped containers' mounts (named-volume sources).
+    let usage = volume_usage();
+    let mut volumes: Vec<Volume> = entries
+        .into_iter()
+        .map(|e| {
+            let in_use_by = usage.iter().filter(|n| **n == e.name).count() as u32;
+            Volume {
+                name: e.name,
+                driver: if e.driver.is_empty() { "local".into() } else { e.driver },
+                mountpoint: e.mountpoint,
+                created: e.created_at,
+                in_use_by,
+            }
+        })
+        .collect();
+    volumes.sort_by(|a, b| a.name.cmp(&b.name));
+    Some(volumes)
+}
+
+/// Names of volumes referenced by any container (for the in-use count).
+fn volume_usage() -> Vec<String> {
+    let out = match Command::new("podman")
+        .args(["ps", "--all", "--format", "{{.Mounts}}"])
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return Vec::new(),
+    };
+    // `{{.Mounts}}` prints comma-separated mount sources; named volumes show
+    // as their bare name (no leading slash).
+    String::from_utf8_lossy(&out.stdout)
+        .split(|c| c == ',' || c == '\n' || c == ' ')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty() && !s.starts_with('/'))
+        .map(|s| s.to_string())
+        .collect()
+}
+
 // --- distrobox -------------------------------------------------------
 
 /// distrobox boxes are plain containers with the `manager:distrobox` label.
@@ -456,6 +522,207 @@ pub fn inspect_into(container: &mut Container) {
             .iter()
             .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
             .collect();
+    }
+}
+
+// =====================================================================
+// Image operations
+// =====================================================================
+
+/// A lifecycle verb the UI can request against an image.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImageAction {
+    Remove,
+}
+
+impl ImageAction {
+    pub fn is_destructive(self) -> bool {
+        matches!(self, ImageAction::Remove)
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            ImageAction::Remove => "Remove image",
+        }
+    }
+}
+
+/// Remove a local image by id or reference. `force` removes even when a
+/// stopped container references it. Returns stderr on failure.
+pub fn remove_image(reference: &str, force: bool) -> Result<(), String> {
+    if !engine_available() {
+        return Ok(());
+    }
+    let mut cmd = Command::new("podman");
+    cmd.args(["rmi"]);
+    if force {
+        cmd.arg("--force");
+    }
+    cmd.arg(reference);
+    finish(cmd)
+}
+
+/// Tag an existing image with a new reference. Returns stderr on failure.
+pub fn tag_image(source: &str, new_tag: &str) -> Result<(), String> {
+    if !engine_available() {
+        return Ok(());
+    }
+    let mut cmd = Command::new("podman");
+    cmd.args(["tag", source, new_tag]);
+    finish(cmd)
+}
+
+/// Full `podman image inspect` JSON (pretty) for an image reference. Empty
+/// on failure. Used by the image detail / inspect view.
+pub fn inspect_image(reference: &str) -> String {
+    if !engine_available() {
+        return String::new();
+    }
+    let out = Command::new("podman")
+        .args(["image", "inspect", reference])
+        .output();
+    match out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+        _ => String::new(),
+    }
+}
+
+// =====================================================================
+// Volume operations
+// =====================================================================
+
+/// Create a named volume. Returns stderr on failure.
+pub fn create_volume(name: &str) -> Result<(), String> {
+    if !engine_available() {
+        return Ok(());
+    }
+    let mut cmd = Command::new("podman");
+    cmd.args(["volume", "create", name]);
+    finish(cmd)
+}
+
+/// Remove a named volume. `force` removes even when in use. Returns stderr
+/// on failure.
+pub fn remove_volume(name: &str, force: bool) -> Result<(), String> {
+    if !engine_available() {
+        return Ok(());
+    }
+    let mut cmd = Command::new("podman");
+    cmd.args(["volume", "rm"]);
+    if force {
+        cmd.arg("--force");
+    }
+    cmd.arg(name);
+    finish(cmd)
+}
+
+// =====================================================================
+// Streaming operations (run OFF the UI thread; report progress lines)
+// =====================================================================
+
+/// A line of streamed output from a long-running podman op (pull / log
+/// follow). The terminal `Done`/`Failed` variants close the stream.
+#[derive(Clone, Debug)]
+pub enum StreamMsg {
+    Line(String),
+    Done,
+    Failed(String),
+}
+
+/// Spawn `podman <args>` and stream its merged stdout+stderr lines into
+/// `tx`, finishing with [`StreamMsg::Done`] or [`StreamMsg::Failed`]. Runs
+/// to completion on the calling thread — callers spawn it in a worker so the
+/// UI thread never blocks. No-op-success offline.
+pub fn stream_command(args: &[String], tx: Sender<StreamMsg>) {
+    if !engine_available() {
+        let _ = tx.send(StreamMsg::Done);
+        return;
+    }
+    let mut child = match Command::new("podman")
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = tx.send(StreamMsg::Failed(e.to_string()));
+            return;
+        }
+    };
+
+    // Merge stdout + stderr: pull writes progress to stderr, logs to stdout.
+    if let Some(out) = child.stdout.take() {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            for line in BufReader::new(out).lines().map_while(Result::ok) {
+                if tx.send(StreamMsg::Line(line)).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+    if let Some(err) = child.stderr.take() {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            for line in BufReader::new(err).lines().map_while(Result::ok) {
+                if tx.send(StreamMsg::Line(line)).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+
+    match child.wait() {
+        Ok(status) if status.success() => {
+            let _ = tx.send(StreamMsg::Done);
+        }
+        Ok(status) => {
+            let _ = tx.send(StreamMsg::Failed(format!("exited with {status}")));
+        }
+        Err(e) => {
+            let _ = tx.send(StreamMsg::Failed(e.to_string()));
+        }
+    }
+}
+
+/// The argument vector for streaming a `podman pull`. Pure for testing.
+pub fn pull_args(reference: &str) -> Vec<String> {
+    vec!["pull".to_string(), reference.to_string()]
+}
+
+/// The argument vector for following a container's logs. Pure for testing.
+pub fn log_follow_args(container_id: &str, tail: usize) -> Vec<String> {
+    vec![
+        "logs".to_string(),
+        "--follow".to_string(),
+        "--tail".to_string(),
+        tail.to_string(),
+        container_id.to_string(),
+    ]
+}
+
+// =====================================================================
+// Exec / terminal
+// =====================================================================
+
+/// Build the `podman exec -it <id> <shell>` argv used to attach an
+/// interactive shell. Pure so the terminal wiring is unit-testable.
+pub fn exec_args(container_id: &str, shell: &str) -> Vec<String> {
+    vec![
+        "exec".to_string(),
+        "-it".to_string(),
+        container_id.to_string(),
+        shell.to_string(),
+    ]
+}
+
+/// Run completion helper shared by the simple (non-streaming) ops.
+fn finish(mut cmd: Command) -> Result<(), String> {
+    let out = cmd.output().map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
     }
 }
 

@@ -12,14 +12,16 @@
 //! ```text
 //! root
 //! └── "view" (Map)
-//!     ├── "section"   (Str)   # "containers" | "images" | "distrobox"
+//!     ├── "section"   (Str)   # "containers" | "images" | "volumes" | "distrobox"
 //!     ├── "selected"  (Str)   # container id, or "" for none
 //!     ├── "tab"       (Str)   # "logs" | "stats" | "inspect" | "terminal"
 //!     ├── "search"    (Text)  # collaborative search box
 //!     └── "create"    (Map)   # the new-container form draft
-//!         ├── "name"  (Text)
-//!         ├── "image" (Text)
-//!         ├── "ports" (Text)
+//!         ├── "name"    (Text)
+//!         ├── "image"   (Text)
+//!         ├── "ports"   (Text)
+//!         ├── "env"     (Text)
+//!         ├── "volumes" (Text)
 //!         └── "command" (Text)
 //! ```
 
@@ -31,6 +33,7 @@ use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, ROOT};
 pub enum Section {
     Containers,
     Images,
+    Volumes,
     Distrobox,
 }
 
@@ -39,12 +42,14 @@ impl Section {
         match self {
             Section::Containers => "containers",
             Section::Images => "images",
+            Section::Volumes => "volumes",
             Section::Distrobox => "distrobox",
         }
     }
     pub fn parse(s: &str) -> Self {
         match s {
             "images" => Section::Images,
+            "volumes" => Section::Volumes,
             "distrobox" => Section::Distrobox,
             _ => Section::Containers,
         }
@@ -53,6 +58,7 @@ impl Section {
         match self {
             Section::Containers => "Containers",
             Section::Images => "Images",
+            Section::Volumes => "Volumes",
             Section::Distrobox => "Distrobox",
         }
     }
@@ -233,10 +239,18 @@ impl ViewDoc {
 
     /// Assemble the `podman run` argument vector from the current draft.
     /// Returns `None` when the image field is empty (the only required one).
+    ///
+    /// Translates the comma-separated Ports / Env / Volumes drafts into the
+    /// matching `-p` / `-e` / `-v` flags, then the image, then any trailing
+    /// command override. This is the single source of truth the live
+    /// `submit_create` shells out with — asserting on it (rather than a
+    /// helper copy) proves the create flow builds the right podman call.
     pub fn create_run_args(doc: &mut AutoCommit) -> Option<Vec<String>> {
         let name = Self::create_field(doc, CreateField::Name);
         let image = Self::create_field(doc, CreateField::Image);
         let ports = Self::create_field(doc, CreateField::Ports);
+        let env = Self::create_field(doc, CreateField::Env);
+        let volumes = Self::create_field(doc, CreateField::Volumes);
         let command = Self::create_field(doc, CreateField::Command);
         if image.trim().is_empty() {
             return None;
@@ -246,9 +260,17 @@ impl ViewDoc {
             args.push("--name".into());
             args.push(name.trim().to_string());
         }
-        for mapping in ports.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        for mapping in split_list(&ports) {
             args.push("-p".into());
-            args.push(mapping.to_string());
+            args.push(mapping);
+        }
+        for kv in split_list(&env) {
+            args.push("-e".into());
+            args.push(kv);
+        }
+        for mount in split_list(&volumes) {
+            args.push("-v".into());
+            args.push(mount);
         }
         args.push(image.trim().to_string());
         for token in command.split_whitespace() {
@@ -258,12 +280,22 @@ impl ViewDoc {
     }
 }
 
-/// The four editable fields of the create-container form.
+/// Split a comma-separated draft into trimmed, non-empty entries.
+fn split_list(s: &str) -> Vec<String> {
+    s.split(',')
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect()
+}
+
+/// The editable fields of the create-container form.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CreateField {
     Name,
     Image,
     Ports,
+    Env,
+    Volumes,
     Command,
 }
 
@@ -273,6 +305,8 @@ impl CreateField {
             CreateField::Name => "name",
             CreateField::Image => "image",
             CreateField::Ports => "ports",
+            CreateField::Env => "env",
+            CreateField::Volumes => "volumes",
             CreateField::Command => "command",
         }
     }
@@ -281,6 +315,8 @@ impl CreateField {
             CreateField::Name => "Name",
             CreateField::Image => "Image",
             CreateField::Ports => "Ports (host:container, comma-separated)",
+            CreateField::Env => "Environment (KEY=value, comma-separated)",
+            CreateField::Volumes => "Volumes (name:/path, comma-separated)",
             CreateField::Command => "Command (optional)",
         }
     }
@@ -289,15 +325,25 @@ impl CreateField {
             CreateField::Name => "my-service",
             CreateField::Image => "docker.io/library/nginx:alpine",
             CreateField::Ports => "8080:80, 8443:443",
+            CreateField::Env => "TZ=UTC, LOG_LEVEL=info",
+            CreateField::Volumes => "pgdata:/var/lib/data",
             CreateField::Command => "leave blank for image default",
         }
     }
-    pub const ALL: [CreateField; 4] = [
+    /// Index of this field in [`Self::ALL`].
+    pub fn index(self) -> usize {
+        Self::ALL.iter().position(|f| *f == self).unwrap_or(0)
+    }
+    pub const ALL: [CreateField; 6] = [
         CreateField::Name,
         CreateField::Image,
         CreateField::Ports,
+        CreateField::Env,
+        CreateField::Volumes,
         CreateField::Command,
     ];
+    /// Number of create-form fields.
+    pub const COUNT: usize = 6;
 }
 
 #[cfg(test)]
@@ -355,6 +401,32 @@ mod tests {
         assert!(args.contains(&"8080:80".to_string()));
         assert!(args.contains(&"8443:443".to_string()));
         assert!(args.contains(&"nginx:alpine".to_string()));
+    }
+
+    #[test]
+    fn create_run_args_includes_env_and_volumes() {
+        let mut doc = AutoCommit::new();
+        ViewDoc::set_create_field(&mut doc, CreateField::Image, "postgres:16");
+        ViewDoc::set_create_field(&mut doc, CreateField::Env, "POSTGRES_DB=app, TZ=UTC");
+        ViewDoc::set_create_field(&mut doc, CreateField::Volumes, "pgdata:/var/lib/postgresql/data");
+        let args = ViewDoc::create_run_args(&mut doc).unwrap();
+        // -e flags for each env entry, -v for the volume mount.
+        let e_count = args.iter().filter(|a| *a == "-e").count();
+        assert_eq!(e_count, 2, "one -e per env entry: {args:?}");
+        assert!(args.windows(2).any(|w| w[0] == "-e" && w[1] == "POSTGRES_DB=app"));
+        assert!(args.windows(2).any(|w| w[0] == "-e" && w[1] == "TZ=UTC"));
+        assert!(args.windows(2).any(|w| w[0] == "-v" && w[1] == "pgdata:/var/lib/postgresql/data"));
+        // The image comes after every flag, before any command.
+        let img_pos = args.iter().position(|a| a == "postgres:16").unwrap();
+        let last_flag = args.iter().rposition(|a| a == "-e" || a == "-v" || a == "-p").unwrap();
+        assert!(img_pos > last_flag, "image follows all flags: {args:?}");
+    }
+
+    #[test]
+    fn volumes_section_round_trips() {
+        let mut doc = AutoCommit::new();
+        ViewDoc::set_section(&mut doc, Section::Volumes);
+        assert_eq!(ViewDoc::section(&mut doc), Section::Volumes);
     }
 
     #[test]

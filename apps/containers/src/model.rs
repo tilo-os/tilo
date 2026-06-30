@@ -223,11 +223,35 @@ impl DistroBox {
     }
 }
 
+/// A named podman volume.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Volume {
+    pub name: String,
+    pub driver: String,
+    /// Host mountpoint of the volume (`.../volumes/<name>/_data`).
+    pub mountpoint: String,
+    pub created: String,
+    /// Number of containers currently mounting this volume.
+    pub in_use_by: u32,
+}
+
+impl Volume {
+    pub fn matches(&self, query: &str) -> bool {
+        if query.is_empty() {
+            return true;
+        }
+        let q = query.to_ascii_lowercase();
+        self.name.to_ascii_lowercase().contains(&q)
+            || self.driver.to_ascii_lowercase().contains(&q)
+    }
+}
+
 /// The complete, in-memory snapshot the UI renders from.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Engine {
     pub containers: Vec<Container>,
     pub images: Vec<Image>,
+    pub volumes: Vec<Volume>,
     pub distroboxes: Vec<DistroBox>,
     /// Identity string for the title bar — `podman` version / connection,
     /// or "sample data" when offline.
@@ -253,6 +277,21 @@ impl Engine {
 
     pub fn find(&self, id: &str) -> Option<&Container> {
         self.containers.iter().find(|c| c.id == id)
+    }
+
+    /// Local image references, sorted, for the create-form image combobox.
+    pub fn image_references(&self) -> Vec<String> {
+        let mut refs: Vec<String> = self.images.iter().map(|i| i.reference()).collect();
+        refs.sort();
+        refs.dedup();
+        refs
+    }
+
+    /// Local volume names, sorted, for the create-form volume picker.
+    pub fn volume_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.volumes.iter().map(|v| v.name.clone()).collect();
+        names.sort();
+        names
     }
 }
 
@@ -573,9 +612,48 @@ pub fn sample_engine() -> Engine {
         },
     ];
 
+    let volumes = vec![
+        Volume {
+            name: "pgdata".into(),
+            driver: "local".into(),
+            mountpoint: "/var/home/dev/.local/share/containers/storage/volumes/pgdata/_data".into(),
+            created: "5 days ago".into(),
+            in_use_by: 1,
+        },
+        Volume {
+            name: "api-data".into(),
+            driver: "local".into(),
+            mountpoint: "/var/home/dev/.local/share/containers/storage/volumes/api-data/_data".into(),
+            created: "5 days ago".into(),
+            in_use_by: 1,
+        },
+        Volume {
+            name: "grafana-storage".into(),
+            driver: "local".into(),
+            mountpoint: "/var/home/dev/.local/share/containers/storage/volumes/grafana-storage/_data".into(),
+            created: "2 days ago".into(),
+            in_use_by: 1,
+        },
+        Volume {
+            name: "minio-data".into(),
+            driver: "local".into(),
+            mountpoint: "/var/home/dev/.local/share/containers/storage/volumes/minio-data/_data".into(),
+            created: "5 days ago".into(),
+            in_use_by: 0,
+        },
+        Volume {
+            name: "nginx-conf".into(),
+            driver: "local".into(),
+            mountpoint: "/var/home/dev/.local/share/containers/storage/volumes/nginx-conf/_data".into(),
+            created: "4 hours ago".into(),
+            in_use_by: 1,
+        },
+    ];
+
     Engine {
         containers,
         images,
+        volumes,
         distroboxes,
         connection: "podman 5.1.1 · rootless · sample data".into(),
         live: false,
@@ -664,6 +742,37 @@ mod tests {
         assert!(nginx.matches("web"));
         assert!(!nginx.matches("postgres"));
         assert!(nginx.matches(""));
+    }
+
+    #[test]
+    fn sample_engine_has_volumes_and_references() {
+        let e = sample_engine();
+        assert!(!e.volumes.is_empty(), "sample carries named volumes");
+        // image_references feeds the create combobox dropdown.
+        let refs = e.image_references();
+        assert!(refs.iter().any(|r| r.contains("nginx")), "{refs:?}");
+        // sorted + deduped
+        let mut sorted = refs.clone();
+        sorted.sort();
+        assert_eq!(refs, sorted, "references come back sorted");
+        // volume names feed the volume picker.
+        let names = e.volume_names();
+        assert!(names.contains(&"pgdata".to_string()));
+    }
+
+    #[test]
+    fn volume_search_matches_name() {
+        let v = Volume {
+            name: "pgdata".into(),
+            driver: "local".into(),
+            mountpoint: "/x".into(),
+            created: "now".into(),
+            in_use_by: 1,
+        };
+        assert!(v.matches("pg"));
+        assert!(v.matches("local"));
+        assert!(!v.matches("redis"));
+        assert!(v.matches(""));
     }
 
     #[test]
