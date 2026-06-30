@@ -828,6 +828,68 @@ pub fn run() -> ! {
     // (defaults: blank after 5 min, no auto-lock).
     let mut session = SessionManager::new(IdleConfig::from_env(), Instant::now());
 
+    // Track D1: the `org.freedesktop.Notifications` D-Bus service. The
+    // compositor owns the notification daemon so sandboxed apps' toasts
+    // render as OS-drawn chrome. The bridge is the `Send + Sync` mailbox
+    // between the async zbus service (driven by a dedicated tokio
+    // runtime) and the synchronous chrome pump in this loop. Failure to
+    // reach the session bus (none present / another daemon owns the
+    // name) is downgraded to a warning — the compositor must keep
+    // running, and shell-internal notifications still work without the
+    // external service.
+    let notif_bridge = crate::notifications::NotificationBridge::new();
+    frame_builder.with_chrome(|st| st.set_notification_bridge(notif_bridge.clone()));
+    // Held for the lifetime of `run` so the runtime's worker threads keep
+    // driving zbus dispatch + the signal-emitter task in the background.
+    let mut _notif_runtime: Option<tokio::runtime::Runtime> = None;
+    let mut _notif_handle: Option<crate::notifications::ServerHandle> = None;
+    match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(1)
+        .thread_name("nirios-notify")
+        .build()
+    {
+        Ok(rt) => {
+            let bridge = notif_bridge.clone();
+            let res: Result<crate::notifications::ServerHandle, zbus::Error> =
+                rt.block_on(async move {
+                    let conn = zbus::ConnectionBuilder::session()?.build().await?;
+                    let service = crate::notifications::NotificationService::new(
+                        bridge.clone(),
+                        // v1: a fresh CallerMap. The per-workspace bridge
+                        // accept path populates unique-name → workspace
+                        // entries once that lands (same shape the portal's
+                        // CallerMap uses); until then unsandboxed callers
+                        // simply carry no workspace attribution.
+                        crate::portal::CallerMap::new(),
+                    );
+                    let handle =
+                        crate::notifications::serve_notifications(conn.clone(), service).await?;
+                    crate::notifications::spawn_signal_emitter(conn, bridge);
+                    Ok(handle)
+                });
+            match res {
+                Ok(h) => {
+                    tracing::info!(
+                        "notifications: serving {} on session bus",
+                        crate::notifications::BUS_NAME
+                    );
+                    _notif_handle = Some(h);
+                    _notif_runtime = Some(rt);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "notifications: serve failed ({e}); continuing with \
+                         shell-internal notifications only"
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!("notifications: tokio runtime build failed ({e}); D-Bus service off");
+        }
+    }
+
     let mut close_requested = false;
     let frame_period = Duration::from_millis(16);
     // Reused per-iteration scratch so backend events can be processed
@@ -902,13 +964,29 @@ pub fn run() -> ! {
             apply_session_transition(t, backend.as_mut());
         }
 
+        // Track D1: pump the D-Bus notification bridge into the live
+        // toast stack and mirror the lock state into the chrome so the
+        // stack can suppress content while locked. Cheap no-ops when no
+        // bridge is installed / state is unchanged.
+        frame_builder.with_chrome(|st| {
+            st.set_session_locked(session.is_locked());
+            st.pump_dbus_notifications();
+        });
+
         frame_builder.relayout();
         // When locked, paint the compositor-owned lock overlay instead
         // of the chrome — app content is never submitted while locked.
         let scene = if session.is_locked() {
             let theme = frame_builder.theme().clone();
             let viewport = frame_builder.viewport();
-            lock_screen::draw_lock_scene(viewport, &theme, frame_builder.text_renderer_mut())
+            // Count-only summary on the lock screen — no bodies leak.
+            let notif_count = frame_builder.chrome().notification_count();
+            lock_screen::draw_lock_scene(
+                viewport,
+                &theme,
+                frame_builder.text_renderer_mut(),
+                notif_count,
+            )
         } else {
             frame_builder.paint()
         };
