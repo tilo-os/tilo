@@ -73,7 +73,11 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     let (document, named_refs, numbering, images) =
         build_document_xml(&snap, &sectpr, &notes.id_map, &notes.kind_map, &comments.id_map);
     let has_lists = snap.blocks.iter().any(|b| b.kind == "list_item");
-    let has_styles = !named_refs.is_empty();
+    // The document default language (BCP-47) → a `<w:docDefaults>` block in
+    // word/styles.xml. Its presence forces styles.xml emission even when the document
+    // defines no named styles (so the default language always has a home).
+    let doc_lang = snap.language.clone();
+    let has_styles = !named_refs.is_empty() || doc_lang.is_some();
     let has_images = !images.images.is_empty();
 
     let mut c = DocxContainer { parts: Vec::new() };
@@ -193,7 +197,7 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     // Word/LibreOffice render the document's named styles. Styles already declared
     // in a preserved styles.xml are referenced, not redefined.
     if has_styles {
-        let merged = merge_styles_xml(c.get("word/styles.xml"), &named_refs, &snap.styles);
+        let merged = merge_styles_xml(c.get("word/styles.xml"), &named_refs, &snap.styles, doc_lang.as_deref());
         c.set("word/styles.xml", merged);
     }
     // A styles part referenced for the first time still needs a content-type
@@ -395,10 +399,24 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     c.write()
 }
 
+/// The `<w:docDefaults>` block declaring a document default language via
+/// `<w:rPrDefault><w:rPr><w:lang w:val="…"/>`, the home Word/LibreOffice read for a
+/// document's default spell-check/screen-reader locale. Re-imported by `parse_styles`.
+fn doc_defaults_lang_xml(lang: &str) -> String {
+    format!(
+        r#"<w:docDefaults><w:rPrDefault><w:rPr><w:lang w:val="{}"/></w:rPr></w:rPrDefault></w:docDefaults>"#,
+        escape_attr(lang)
+    )
+}
+
 /// Build or extend `word/styles.xml` with `<w:style w:type="paragraph">` defs for
 /// the referenced container styles. A style already declared (by `w:styleId`) in a
 /// preserved styles.xml is left untouched (no duplicate; the preserved bytes win).
-fn merge_styles_xml(existing: Option<&[u8]>, refs: &BTreeSet<String>, styles: &BTreeMap<String, BTreeMap<String, AttrVal>>) -> Vec<u8> {
+/// A `doc_lang` (the document default language, BCP-47) is emitted as a
+/// `<w:docDefaults>` block ahead of the styles — only when the part doesn't already
+/// carry a `<w:docDefaults>` (so a preserved one wins and we never corrupt the schema
+/// order, which requires docDefaults precede styles).
+fn merge_styles_xml(existing: Option<&[u8]>, refs: &BTreeSet<String>, styles: &BTreeMap<String, BTreeMap<String, AttrVal>>, doc_lang: Option<&str>) -> Vec<u8> {
     match existing {
         Some(bytes) => {
             let present = style_ids_in(bytes);
@@ -411,15 +429,30 @@ fn merge_styles_xml(existing: Option<&[u8]>, refs: &BTreeSet<String>, styles: &B
                     defs.push_str(&para_style_def_xml(id, props));
                 }
             }
-            if defs.is_empty() {
+            let has_doc_defaults = bytes.windows(b"<w:docDefaults".len()).any(|w| w == b"<w:docDefaults");
+            let defaults_inject = match doc_lang {
+                Some(lang) if !has_doc_defaults => doc_defaults_lang_xml(lang),
+                _ => String::new(),
+            };
+            if defs.is_empty() && defaults_inject.is_empty() {
                 return bytes.to_vec();
             }
             let mut s = String::from_utf8_lossy(bytes).into_owned();
-            inject_before(&mut s, "</w:styles>", &defs);
+            if !defs.is_empty() {
+                inject_before(&mut s, "</w:styles>", &defs);
+            }
+            // docDefaults must precede every `<w:style>`, so inject right after the
+            // `<w:styles …>` open tag rather than before the close.
+            if !defaults_inject.is_empty() {
+                inject_after_styles_open(&mut s, &defaults_inject);
+            }
             s.into_bytes()
         }
         None => {
             let mut s = STYLES_XML_OPEN.to_string();
+            if let Some(lang) = doc_lang {
+                s.push_str(&doc_defaults_lang_xml(lang));
+            }
             for id in refs {
                 if let Some(props) = styles.get(id) {
                     s.push_str(&para_style_def_xml(id, props));
@@ -427,6 +460,18 @@ fn merge_styles_xml(existing: Option<&[u8]>, refs: &BTreeSet<String>, styles: &B
             }
             s.push_str("</w:styles>");
             s.into_bytes()
+        }
+    }
+}
+
+/// Insert `frag` immediately after the `<w:styles …>` opening tag (just after its
+/// closing `>`), so a `<w:docDefaults>` block lands ahead of every `<w:style>` as the
+/// schema requires.
+fn inject_after_styles_open(s: &mut String, frag: &str) {
+    if let Some(open) = s.find("<w:styles") {
+        if let Some(rel_close) = s[open..].find('>') {
+            let pos = open + rel_close + 1;
+            s.insert_str(pos, frag);
         }
     }
 }
@@ -592,6 +637,8 @@ fn run_props(marks: &[(String, MarkValue)]) -> String {
     let mut font: Option<&str> = None;
     let mut color: Option<&str> = None;
     let mut highlight: Option<&str> = None;
+    // Per-run language override (BCP-47, e.g. `fr`/`de-DE`) → `w:lang w:val`.
+    let mut lang: Option<&str> = None;
     // Vertical alignment: `superscript`/`subscript` (super wins if both present).
     let mut vert_align: Option<&'static str> = None;
     for (name, val) in marks {
@@ -604,6 +651,7 @@ fn run_props(marks: &[(String, MarkValue)]) -> String {
             "fontFamily" => font = val.as_str(),
             "color" => color = val.as_str(),
             "highlight" => highlight = val.as_str(),
+            "lang" => lang = val.as_str(),
             "super" => vert_align = Some("superscript"),
             "sub" if vert_align.is_none() => vert_align = Some("subscript"),
             _ => {}
@@ -635,6 +683,11 @@ fn run_props(marks: &[(String, MarkValue)]) -> String {
     if let Some(n) = sz {
         let hp = n * 2;
         s.push_str(&format!(r#"<w:sz w:val="{hp}"/><w:szCs w:val="{hp}"/>"#));
+    }
+    // Per-run language (`w:lang w:val="de-DE"`). The value is a BCP-47 tag emitted
+    // verbatim; Word uses it for spell-check locale and screen-reader language.
+    if let Some(l) = lang {
+        s.push_str(&format!(r#"<w:lang w:val="{}"/>"#, escape_attr(l)));
     }
     if u {
         s.push_str(r#"<w:u w:val="single"/>"#);

@@ -885,4 +885,68 @@ mod tests {
         assert_eq!(st.get("space_after"), Some(&AttrVal::Float(12.0)), "180 twips → 12px");
         assert_eq!(st.get("indent"), Some(&AttrVal::Float(24.0)), "360 twips → 24px");
     }
+
+    #[test]
+    fn imports_run_language_as_mark() {
+        use crate::document::MarkValue;
+        // A run carrying `<w:lang w:val="fr"/>` → a `lang` run mark with the tag.
+        let body = concat!(
+            r#"<w:p>"#,
+            r#"<w:r><w:t xml:space="preserve">a </w:t></w:r>"#,
+            r#"<w:r><w:rPr><w:lang w:val="fr"/></w:rPr><w:t>bonjour</w:t></w:r>"#,
+            r#"</w:p>"#,
+        );
+        let docx = minimal_docx(body);
+        let mut d = Document::new();
+        DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
+        let p = &d.materialize().blocks[0];
+        assert_eq!(p.text, "a bonjour");
+        assert!(
+            p.marks.iter().any(|m| m.name == "lang" && m.start == 2 && m.end == 9 && m.value == MarkValue::Str("fr".into())),
+            "lang mark over 'bonjour': {:?}",
+            p.marks
+        );
+    }
+
+    #[test]
+    fn imports_document_default_language() {
+        // A `docDefaults > rPrDefault > rPr > w:lang` in styles.xml → the document
+        // default language. The style block carries its own (different) `w:lang` to
+        // prove only the *run default* is read.
+        let styles = concat!(
+            r#"<w:docDefaults><w:rPrDefault><w:rPr><w:lang w:val="de-DE"/></w:rPr></w:rPrDefault></w:docDefaults>"#,
+            r#"<w:style w:type="paragraph" w:styleId="Body"><w:rPr><w:lang w:val="en-US"/></w:rPr></w:style>"#,
+        );
+        let body = r#"<w:p><w:r><w:t>hi</w:t></w:r></w:p>"#;
+        let docx = minimal_docx_styled(styles, body);
+        let mut d = Document::new();
+        DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
+        assert_eq!(d.materialize().language.as_deref(), Some("de-DE"), "document default language from docDefaults");
+    }
+
+    #[test]
+    fn document_and_run_language_roundtrip() {
+        use crate::document::MarkValue;
+        // Author a document with a `de-DE` default language and a `fr`-marked run,
+        // export to `.docx`, re-import: both survive (codes preserved verbatim).
+        let mut d = Document::new();
+        d.set_language("de-DE");
+        let id = d.insert_block(None, "paragraph");
+        d.splice_text(&id, 0, 0, "bonjour monde");
+        d.add_mark(&id, 0, 7, "lang", "fr");
+
+        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let mut d2 = Document::new();
+        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+
+        assert_eq!(snap.language.as_deref(), Some("de-DE"), "document default language survives: {:?}", snap.language);
+        let b = &snap.blocks[0];
+        assert_eq!(b.text, "bonjour monde");
+        assert!(
+            b.marks.iter().any(|m| m.name == "lang" && m.start == 0 && m.end == 7 && m.value == MarkValue::Str("fr".into())),
+            "run lang mark `fr` survives over 'bonjour': {:?}",
+            b.marks
+        );
+    }
 }

@@ -677,6 +677,18 @@ pub fn columns(doc: &AutoCommit, c: &Containers) -> (u32, Option<f64>) {
     (count, gap)
 }
 
+/// The document default language as a BCP-47 tag (`en-US`, `de-DE`, `fr`), read from
+/// the `meta.language` register. `None` for documents that declare no default language
+/// (authored before this setting existed, or never set) — the consumer then falls back
+/// to its own locale default. Round-trips through the `.odt` default-paragraph-style
+/// `fo:language`/`fo:country` and the `.docx` `docDefaults` `w:lang`.
+pub fn language(doc: &AutoCommit, c: &Containers) -> Option<String> {
+    match doc.get(&c.meta, META_LANGUAGE) {
+        Ok(Some((v, _))) => v.to_str().filter(|s| !s.is_empty()).map(|s| s.to_string()),
+        _ => None,
+    }
+}
+
 /// Resolve the document-properties sub-map under `meta` (`meta.props`), if it
 /// exists. Created lazily on the first [`DocMut::set_doc_prop`], so documents
 /// authored before the props map existed simply read as having no properties.
@@ -1046,6 +1058,7 @@ pub fn materialize(doc: &AutoCommit, c: &Containers) -> DocSnapshot {
         bookmarks: bookmarks(doc, c),
         columns,
         column_gap: column_gap.map(|g| g as f32),
+        language: language(doc, c),
     }
 }
 
@@ -1721,6 +1734,20 @@ impl<'a> DocMut<'a> {
             None => {
                 let _ = self.doc.delete(&self.c.meta, META_COLUMN_GAP);
             }
+        }
+    }
+
+    /// Set the document default language as a BCP-47 tag (`en-US`, `de-DE`, `fr`).
+    /// Stored as a single `Str` register under `meta`, so two replicas changing the
+    /// document language field-level merge rather than clobbering each other. An empty
+    /// `code` clears the setting (the document then declares no default language).
+    /// Round-trips through `.odt`/`.docx`. Supports spell-check locale selection and
+    /// accessibility/screen-reader language.
+    pub fn set_language(&mut self, code: &str) {
+        if code.is_empty() {
+            let _ = self.doc.delete(&self.c.meta, META_LANGUAGE);
+        } else {
+            let _ = self.doc.put(&self.c.meta, META_LANGUAGE, code);
         }
     }
 
