@@ -136,13 +136,7 @@ pub fn build_with(status: &UpdateStatus) -> Box<dyn Widget> {
         )]),
     );
 
-    Box::new(
-        Column::new()
-            .with_intrinsic_height()
-            .push(status_card)
-            .push(detail)
-            .push(note),
-    )
+    crate::widgets::cards(vec![status_card, detail, note])
 }
 
 #[cfg(test)]

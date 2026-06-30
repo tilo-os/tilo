@@ -27,7 +27,7 @@ use os_actions::Dispatcher;
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
-use ui::widget::{Column, Slider, Toggle, Widget};
+use ui::widget::{Slider, Toggle, Widget};
 use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
 use winit::event::{Modifiers, WindowEvent};
@@ -195,13 +195,7 @@ impl DisplayPane {
             ]),
         );
 
-        Box::new(
-            Column::new()
-                .with_intrinsic_height()
-                .push(arrangement)
-                .push(resolution)
-                .push(brightness),
-        )
+        crate::widgets::cards(vec![arrangement, resolution, brightness])
     }
 }
 
