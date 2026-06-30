@@ -218,6 +218,15 @@ fn mark_style(m: &MarkSpan) -> Option<(String, String)> {
         "fontSize" => m.value.as_int().map(|n| (format!("qdoc-fs-{n}"), format!(r#"fo:font-size="{n}pt""#))),
         "fontFamily" => m.value.as_str().map(|f| (format!("qdoc-ff-{f}"), format!(r#"style:font-name="{}""#, font_name(f)))),
         "color" => m.value.as_str().map(|c| (format!("qdoc-color-{}", color_token(c)), format!(r#"fo:color="{}""#, c))),
+        // Text background (highlight): ODF `fo:background-color`.
+        "highlight" => m
+            .value
+            .as_str()
+            .map(|c| (format!("qdoc-hl-{}", color_token(c)), format!(r#"fo:background-color="{}""#, c))),
+        // Vertical alignment: ODF `style:text-position` (keyword + 58% font height,
+        // matching what LibreOffice writes for menu super/subscript).
+        "super" => Some(("qdoc-super".into(), r#"style:text-position="super 58%""#.into())),
+        "sub" => Some(("qdoc-sub".into(), r#"style:text-position="sub 58%""#.into())),
         _ => None,
     }
 }
@@ -489,6 +498,12 @@ fn para_props(b: &BlockView) -> Option<(String, String)> {
         };
         if !v.is_empty() {
             pp.push_str(&format!(r#" fo:text-align="{v}""#));
+        }
+    }
+    // Line spacing → `fo:line-height` percent (1.5 → "150%").
+    if let Some(AttrVal::Float(ls)) = b.attrs.get("line_spacing") {
+        if *ls > 0.0 {
+            pp.push_str(&format!(r#" fo:line-height="{}%""#, fmt_num(ls * 100.0)));
         }
     }
     if pp.is_empty() {
@@ -1057,6 +1072,68 @@ mod tests {
         assert_eq!(b.attrs.get("align"), Some(&AttrVal::Str("center".into())));
         assert!(b.marks.iter().any(|m| m.name == "fontSize" && m.value == MarkValue::Int(22)), "{:?}", b.marks);
         assert!(b.marks.iter().any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into())), "{:?}", b.marks);
+    }
+
+    #[test]
+    fn highlight_super_and_line_spacing_roundtrip() {
+        use crate::document::MarkValue;
+        // A run with `highlight` + a `super` run + a paragraph-level `line_spacing`
+        // attr must all survive the .odt export → import cycle.
+        let mut d = Document::new();
+        let id = d.insert_block(None, "paragraph");
+        d.splice_text(&id, 0, 0, "E=mc2");
+        {
+            let mut dm = d.as_mut();
+            dm.add_mark(&id, 0, 5, "highlight", "#ffff00"); // whole run highlighted
+            dm.add_mark(&id, 4, 5, "super", true); // the exponent
+            dm.set_attr(&id, "line_spacing", 1.5_f64);
+        }
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        // The export carries the ODF properties we expect.
+        let c = OdtContainer::read(&exported).unwrap();
+        let content = std::str::from_utf8(c.get("content.xml").unwrap()).unwrap();
+        assert!(content.contains(r##"fo:background-color="#ffff00""##), "highlight bg: {content}");
+        assert!(content.contains(r#"style:text-position="super"#), "super position: {content}");
+        assert!(content.contains(r#"fo:line-height="150%""#), "line-height: {content}");
+
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+        let b = &snap.blocks[0];
+        assert_eq!(b.text, "E=mc2");
+        assert!(
+            b.marks.iter().any(|m| m.name == "highlight" && m.value == MarkValue::Str("#ffff00".into()) && m.start == 0 && m.end == 5),
+            "highlight mark: {:?}",
+            b.marks
+        );
+        assert!(
+            b.marks.iter().any(|m| m.name == "super" && m.value == MarkValue::Bool(true) && m.start == 4 && m.end == 5),
+            "super mark: {:?}",
+            b.marks
+        );
+        assert_eq!(b.attrs.get("line_spacing"), Some(&AttrVal::Float(1.5)), "line_spacing attr: {:?}", b.attrs);
+    }
+
+    #[test]
+    fn subscript_roundtrips_through_odt() {
+        use crate::document::MarkValue;
+        // A `sub` run exports as `style:text-position="sub …"` and re-imports as `sub`.
+        let mut d = Document::new();
+        let id = d.insert_block(None, "paragraph");
+        d.splice_text(&id, 0, 0, "H2O");
+        d.as_mut().add_mark(&id, 1, 2, "sub", true);
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+        let b = &snap.blocks[0];
+        assert!(
+            b.marks.iter().any(|m| m.name == "sub" && m.value == MarkValue::Bool(true) && m.start == 1 && m.end == 2),
+            "sub mark: {:?}",
+            b.marks
+        );
     }
 
     #[test]

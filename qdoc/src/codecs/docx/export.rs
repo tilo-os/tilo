@@ -556,6 +556,9 @@ fn run_props(marks: &[(String, MarkValue)]) -> String {
     let mut sz: Option<i64> = None;
     let mut font: Option<&str> = None;
     let mut color: Option<&str> = None;
+    let mut highlight: Option<&str> = None;
+    // Vertical alignment: `superscript`/`subscript` (super wins if both present).
+    let mut vert_align: Option<&'static str> = None;
     for (name, val) in marks {
         match name.as_str() {
             "strong" => b = true,
@@ -565,6 +568,9 @@ fn run_props(marks: &[(String, MarkValue)]) -> String {
             "fontSize" => sz = val.as_int(),
             "fontFamily" => font = val.as_str(),
             "color" => color = val.as_str(),
+            "highlight" => highlight = val.as_str(),
+            "super" => vert_align = Some("superscript"),
+            "sub" if vert_align.is_none() => vert_align = Some("subscript"),
             _ => {}
         }
     }
@@ -585,12 +591,21 @@ fn run_props(marks: &[(String, MarkValue)]) -> String {
     if let Some(c) = color {
         s.push_str(&format!(r#"<w:color w:val="{}"/>"#, color_hex(c)));
     }
+    // Text background (highlight): `w:shd w:fill` carries the arbitrary hex
+    // (re-imported via `w:shd`), which round-trips any colour (unlike the named
+    // `w:highlight` palette).
+    if let Some(c) = highlight {
+        s.push_str(&format!(r#"<w:shd w:val="clear" w:color="auto" w:fill="{}"/>"#, color_hex(c)));
+    }
     if let Some(n) = sz {
         let hp = n * 2;
         s.push_str(&format!(r#"<w:sz w:val="{hp}"/><w:szCs w:val="{hp}"/>"#));
     }
     if u {
         s.push_str(r#"<w:u w:val="single"/>"#);
+    }
+    if let Some(va) = vert_align {
+        s.push_str(&format!(r#"<w:vertAlign w:val="{va}"/>"#));
     }
     s
 }
@@ -866,6 +881,19 @@ fn jc_xml(b: &BlockView) -> String {
     }
 }
 
+/// The `<w:spacing w:line w:lineRule="auto"/>` for a block's `line_spacing` attr
+/// (the multiple → 240ths: 1.5 → 360), or empty when unset/non-positive.
+/// Re-imports to the same `line_spacing` via `styles::line_spacing_from_spacing`.
+fn spacing_xml(b: &BlockView) -> String {
+    match b.attrs.get("line_spacing") {
+        Some(AttrVal::Float(ls)) if *ls > 0.0 => {
+            let line = (ls * 240.0).round() as i64;
+            format!(r#"<w:spacing w:line="{line}" w:lineRule="auto"/>"#)
+        }
+        _ => String::new(),
+    }
+}
+
 fn cell_table(b: &BlockView) -> Option<String> {
     match b.attrs.get("table") {
         Some(AttrVal::Str(s)) => Some(s.clone()),
@@ -993,8 +1021,9 @@ fn build_document_xml(
                     _ => 1,
                 };
                 body.push_str(&format!(
-                    r#"<w:p><w:pPr><w:pStyle w:val="Heading{level}"/>{}</w:pPr>{}</w:p>"#,
+                    r#"<w:p><w:pPr><w:pStyle w:val="Heading{level}"/>{}{}</w:pPr>{}</w:p>"#,
                     jc_xml(b),
+                    spacing_xml(b),
                     render_runs(&b.text, &b.marks, note_ids, note_kinds, comment_ids, changes, change_ids)
                 ));
                 i += 1;
@@ -1002,8 +1031,9 @@ fn build_document_xml(
             "list_item" => {
                 let numid = numbering.num_id(b);
                 body.push_str(&format!(
-                    r#"<w:p><w:pPr><w:pStyle w:val="ListParagraph"/><w:numPr><w:ilvl w:val="0"/><w:numId w:val="{numid}"/></w:numPr>{}</w:pPr>{}</w:p>"#,
+                    r#"<w:p><w:pPr><w:pStyle w:val="ListParagraph"/><w:numPr><w:ilvl w:val="0"/><w:numId w:val="{numid}"/></w:numPr>{}{}</w:pPr>{}</w:p>"#,
                     jc_xml(b),
+                    spacing_xml(b),
                     render_runs(&b.text, &b.marks, note_ids, note_kinds, comment_ids, changes, change_ids)
                 ));
                 i += 1;
@@ -1057,6 +1087,7 @@ fn build_document_xml(
                     }
                 }
                 ppr_inner.push_str(&jc_xml(b));
+                ppr_inner.push_str(&spacing_xml(b));
                 let ppr = if ppr_inner.is_empty() { String::new() } else { format!("<w:pPr>{ppr_inner}</w:pPr>") };
                 body.push_str(&format!("<w:p>{ppr}{}</w:p>", render_runs(&b.text, &b.marks, note_ids, note_kinds, comment_ids, changes, change_ids)));
                 i += 1;
@@ -1158,6 +1189,66 @@ mod tests {
         assert!(b.marks.iter().any(|m| m.name == "fontSize" && m.value == MarkValue::Int(22)), "{:?}", b.marks);
         assert!(b.marks.iter().any(|m| m.name == "fontFamily" && m.value == MarkValue::Str("serif".into())), "{:?}", b.marks);
         assert!(b.marks.iter().any(|m| m.name == "underline"), "{:?}", b.marks);
+    }
+
+    #[test]
+    fn highlight_super_and_line_spacing_roundtrip() {
+        // A run with `highlight` + a `super` run + a paragraph-level `line_spacing`
+        // attr must all survive the .docx export → import cycle.
+        let mut d = Document::new();
+        let id = d.insert_block(None, "paragraph");
+        d.splice_text(&id, 0, 0, "E=mc2");
+        {
+            let mut dm = d.as_mut();
+            dm.add_mark(&id, 0, 5, "highlight", "#ffff00");
+            dm.add_mark(&id, 4, 5, "super", true);
+            dm.set_attr(&id, "line_spacing", 1.5_f64);
+        }
+
+        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        // The export carries the OOXML properties we expect.
+        let c = DocxContainer::read(&exported).unwrap();
+        let xml = std::str::from_utf8(c.get("word/document.xml").unwrap()).unwrap();
+        assert!(xml.contains(r#"w:shd w:val="clear" w:color="auto" w:fill="FFFF00""#), "highlight shd: {xml}");
+        assert!(xml.contains(r#"<w:vertAlign w:val="superscript"/>"#), "super vertAlign: {xml}");
+        assert!(xml.contains(r#"<w:spacing w:line="360" w:lineRule="auto"/>"#), "line spacing: {xml}");
+
+        let mut d2 = Document::new();
+        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+        let b = &snap.blocks[0];
+        assert_eq!(b.text, "E=mc2");
+        assert!(
+            b.marks.iter().any(|m| m.name == "highlight" && m.value == MarkValue::Str("#ffff00".into()) && m.start == 0 && m.end == 5),
+            "highlight mark: {:?}",
+            b.marks
+        );
+        assert!(
+            b.marks.iter().any(|m| m.name == "super" && m.value == MarkValue::Bool(true) && m.start == 4 && m.end == 5),
+            "super mark: {:?}",
+            b.marks
+        );
+        assert_eq!(b.attrs.get("line_spacing"), Some(&AttrVal::Float(1.5)), "line_spacing attr: {:?}", b.attrs);
+    }
+
+    #[test]
+    fn subscript_roundtrips_through_docx() {
+        // A `sub` run exports as `<w:vertAlign w:val="subscript"/>` and re-imports as `sub`.
+        let mut d = Document::new();
+        let id = d.insert_block(None, "paragraph");
+        d.splice_text(&id, 0, 0, "H2O");
+        d.as_mut().add_mark(&id, 1, 2, "sub", true);
+
+        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let mut d2 = Document::new();
+        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+        let b = &snap.blocks[0];
+        assert!(
+            b.marks.iter().any(|m| m.name == "sub" && m.value == MarkValue::Bool(true) && m.start == 1 && m.end == 2),
+            "sub mark: {:?}",
+            b.marks
+        );
     }
 
     #[test]

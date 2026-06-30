@@ -83,6 +83,10 @@ fn marks_from_span_style(style: &str) -> Vec<(&'static str, String)> {
             "color" => {
                 out.push(("color", normalize_css_color(val)));
             }
+            // Text background (highlight): `background` / `background-color`.
+            "background" | "background-color" => {
+                out.push(("highlight", normalize_css_color(val)));
+            }
             "font-size" => {
                 // Accept `20pt` / `20px` / bare number; the model stores whole pt.
                 let num = val.trim_end_matches(|c: char| c.is_ascii_alphabetic() || c == '%').trim();
@@ -168,6 +172,9 @@ fn import_md(src: &str, doc: &mut DocMut) {
     let mut link_stack: Vec<(String, usize)> = Vec::new(); // (href, start char)
     // Open inline `<span style=…>` wrappers: (parsed (name,value) marks, start char).
     let mut span_stack: Vec<(Vec<(&'static str, String)>, usize)> = Vec::new();
+    // Open inline `<sup>`/`<sub>` wrappers: (boolean mark name, start char). These
+    // carry the super/subscript marks Markdown has no native syntax for.
+    let mut wrap_stack: Vec<(&'static str, usize)> = Vec::new();
     let mut pending_marks: Vec<PendingMark> = Vec::new();
 
     // Table state: cells become consecutive `cell` blocks tagged table/row/col.
@@ -312,15 +319,30 @@ fn import_md(src: &str, doc: &mut DocMut) {
             // Each tag is its own event; track open spans on a stack.
             Event::InlineHtml(html) | Event::Html(html) => {
                 let t = html.trim();
+                let lower = t.to_ascii_lowercase();
                 if t.eq_ignore_ascii_case("</span>") {
                     if let (Some((marks, start)), Some(b)) = (span_stack.pop(), cur.as_ref()) {
                         for (name, value) in marks {
                             pending_marks.push(PendingMark { block: b.clone(), start, end: cur_len, name, value: Some(value) });
                         }
                     }
-                } else if t.to_ascii_lowercase().starts_with("<span") {
+                } else if lower.starts_with("<span") {
                     let marks = span_style_attr(t).map(|s| marks_from_span_style(&s)).unwrap_or_default();
                     span_stack.push((marks, cur_len));
+                // `<sup>`/`<sub>` carry the super/subscript boolean marks.
+                } else if lower == "<sup>" {
+                    wrap_stack.push(("super", cur_len));
+                } else if lower == "<sub>" {
+                    wrap_stack.push(("sub", cur_len));
+                } else if lower == "</sup>" || lower == "</sub>" {
+                    let want = if lower == "</sup>" { "super" } else { "sub" };
+                    // Close the nearest matching open wrapper (robust to mis-nesting).
+                    if let Some(pos) = wrap_stack.iter().rposition(|(n, _)| *n == want) {
+                        let (name, start) = wrap_stack.remove(pos);
+                        if let Some(b) = cur.as_ref() {
+                            pending_marks.push(PendingMark { block: b.clone(), start, end: cur_len, name, value: None });
+                        }
+                    }
                 }
             }
             _ => {}
@@ -499,6 +521,9 @@ fn mark_delim(m: &MarkSpan) -> Option<&'static str> {
 fn span_decl(m: &MarkSpan) -> Option<String> {
     match m.name.as_str() {
         "color" => m.value.as_str().map(|c| format!("color: {c}")),
+        // Text background (highlight): `<mark>` has no colour control, so use a
+        // `background` declaration on the span (parsed back via `marks_from_span_style`).
+        "highlight" => m.value.as_str().map(|c| format!("background: {c}")),
         "fontSize" => m.value.as_int().map(|n| format!("font-size: {n}pt")),
         "fontFamily" => match m.value.as_str() {
             // mono stays the backtick form (handled as inline code); sans/serif map
@@ -526,6 +551,27 @@ fn span_style_at(marks: &[MarkSpan], i: usize) -> Option<String> {
     decls.sort();
     decls.dedup();
     Some(decls.join("; "))
+}
+
+/// The vertical-alignment wrapper tag (`sup`/`sub`) covering char `i`, if any.
+/// `super` wins if both somehow overlap (they shouldn't in the modeled case).
+fn vert_wrap_at(marks: &[MarkSpan], i: usize) -> Option<&'static str> {
+    let mut sup = false;
+    let mut sub = false;
+    for m in marks.iter().filter(|m| i >= m.start && i < m.end) {
+        match m.name.as_str() {
+            "super" => sup = true,
+            "sub" => sub = true,
+            _ => {}
+        }
+    }
+    if sup {
+        Some("sup")
+    } else if sub {
+        Some("sub")
+    } else {
+        None
+    }
 }
 
 /// The active `link` href covering char index `i`, if any.
@@ -559,15 +605,24 @@ fn render_inline(text: &str, marks: &[MarkSpan]) -> String {
     let mut out = String::new();
     let mut cur_link: Option<&str> = None;
     let mut cur_span: Option<String> = None;
+    // The active `<sup>`/`<sub>` wrapper (inside the span, around the toggle marks).
+    let mut cur_wrap: Option<&'static str> = None;
     for i in 0..=n {
         for d in &close_at[i] {
             out.push_str(d);
         }
-        // The span (colour/size/font) wrapper sits inside the link and around the
-        // toggle marks. Close it before a link transition; reopen after.
+        // The span (colour/size/font/background) wrapper sits inside the link and
+        // around the toggle marks. Close it before a link transition; reopen after.
+        // The `<sup>`/`<sub>` wrapper nests one level deeper (inside the span).
         let span = if i < n { span_style_at(marks, i) } else { None };
+        let wrap = if i < n { vert_wrap_at(marks, i) } else { None };
         let link = if i < n { link_href(marks, i) } else { None };
         let link_changing = link != cur_link;
+        // Close the vertical wrapper first (it's the innermost of the three) when
+        // it changes, the span changes, or the link changes.
+        if (link_changing || span != cur_span || wrap != cur_wrap) && cur_wrap.is_some() {
+            out.push_str(&format!("</{}>", cur_wrap.take().unwrap()));
+        }
         if (link_changing || span != cur_span) && cur_span.is_some() {
             out.push_str("</span>");
             cur_span = None;
@@ -587,6 +642,12 @@ fn render_inline(text: &str, marks: &[MarkSpan]) -> String {
             if let Some(style) = &span {
                 out.push_str(&format!(r#"<span style="{style}">"#));
                 cur_span = Some(style.clone());
+            }
+        }
+        if cur_wrap.is_none() {
+            if let Some(w) = wrap {
+                out.push_str(&format!("<{w}>"));
+                cur_wrap = Some(w);
             }
         }
         for d in &open_at[i] {
@@ -814,6 +875,48 @@ mod tests {
 
         // Idempotent under re-export.
         assert_eq!(export(&out), out, "span export idempotent");
+    }
+
+    #[test]
+    fn highlight_super_sub_carry_through_markdown_html_fallback() {
+        // Markdown has no native highlight/super/subscript syntax, so highlight
+        // rides as a `<span style="background: …">` and super/sub as `<sup>`/`<sub>`.
+        let mut d = Document::new();
+        let id = d.insert_block(None, "paragraph");
+        d.splice_text(&id, 0, 0, "x ab cd");
+        {
+            let mut dm = d.as_mut();
+            dm.add_mark(&id, 2, 4, "highlight", "#ffff00"); // "ab"
+            dm.add_mark(&id, 5, 6, "super", true); // "c"
+            dm.add_mark(&id, 6, 7, "sub", true); // "d"
+        }
+        let out = String::from_utf8(MarkdownCodec.export(d.as_ref()).unwrap()).unwrap();
+        assert!(out.contains(r#"<span style="background: #ffff00">"#), "highlight span: {out:?}");
+        assert!(out.contains("<sup>") && out.contains("</sup>"), "sup wrapper: {out:?}");
+        assert!(out.contains("<sub>") && out.contains("</sub>"), "sub wrapper: {out:?}");
+
+        let mut d2 = Document::new();
+        MarkdownCodec.import(out.as_bytes(), &mut d2.as_mut()).unwrap();
+        let b = &d2.materialize().blocks[0];
+        assert_eq!(b.text, "x ab cd");
+        assert!(
+            b.marks.iter().any(|m| m.name == "highlight" && m.value == MarkValue::Str("#ffff00".into()) && m.start == 2 && m.end == 4),
+            "highlight mark survives: {:?}",
+            b.marks
+        );
+        assert!(
+            b.marks.iter().any(|m| m.name == "super" && m.value == MarkValue::Bool(true) && m.start == 5 && m.end == 6),
+            "super mark survives: {:?}",
+            b.marks
+        );
+        assert!(
+            b.marks.iter().any(|m| m.name == "sub" && m.value == MarkValue::Bool(true) && m.start == 6 && m.end == 7),
+            "sub mark survives: {:?}",
+            b.marks
+        );
+
+        // Idempotent under re-export.
+        assert_eq!(export(&out), out, "highlight/super/sub export idempotent");
     }
 
     #[test]

@@ -100,6 +100,12 @@ fn open_para(doc: &mut DocMut, prev: &mut Option<String>, cur: &mut Option<Strin
     if let Some(l) = level {
         doc.set_attr(&id, "level", l);
     }
+    // Line spacing rides as a direct `line_spacing` Float attr (it isn't part of
+    // the CRDT named-style props, so it's always lifted onto the block — even when
+    // the paragraph references a named style below).
+    if let Some(lh) = style.and_then(|s| reg.para_line_height(s)) {
+        doc.set_attr(&id, "line_spacing", lh);
+    }
     // A *named* (common) non-heading paragraph style → a real CRDT-native style:
     // lift its definition into the styles container and point the block at it via
     // an explicit `style` attr (keyed by the decoded style name). The style now
