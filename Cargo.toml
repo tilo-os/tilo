@@ -4,6 +4,7 @@ members = [
     "qdoc",
     "docpdf",
     "dochtml",
+    "docrtf",
     "editor",
     "fs",
     "shell",
