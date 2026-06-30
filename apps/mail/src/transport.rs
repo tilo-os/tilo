@@ -76,6 +76,15 @@ pub fn build_mime(from: &Addr, draft: &Draft) -> std::io::Result<Vec<u8>> {
         .subject(draft.subject.clone())
         .text_body(draft.body.clone());
 
+    // When the draft was authored in WYSIWYG mode, attach the HTML body as the
+    // richer alternative. Receivers that render HTML show it; plain-text
+    // readers fall back to `text_body`. `mail-builder` assembles the
+    // `multipart/alternative` (and `multipart/mixed` when attachments are
+    // present) container for us.
+    if let Some(html) = &draft.html_body {
+        builder = builder.html_body(html.clone());
+    }
+
     if !to.is_empty() {
         builder = builder.to(addr_tuples(&to));
     }

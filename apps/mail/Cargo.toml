@@ -29,3 +29,17 @@ anyhow = "1.0"
 # compose output is genuinely serialized by mail-builder (see transport.rs).
 mail-parser = "0.11.4"
 mail-builder = "0.4.4"
+
+# Live IMAP (fetch/flag/move) and SMTP (submit) for the account engine. These
+# pull a TLS + async stack, so they are OPTIONAL and gated behind the `live`
+# feature (OFF by default). The default build — and `--shots` — uses the
+# offline stub backend in `engine.rs`, staying small, green, and deterministic.
+# The data types Mail already uses (AccountConfig/Draft/Message) are exactly the
+# shapes these crates consume and produce, so enabling `live` is a drop-in.
+async-imap = { version = "0.10", optional = true, default-features = false, features = ["runtime-tokio"] }
+lettre = { version = "0.11", optional = true, default-features = false, features = ["smtp-transport", "builder", "tokio1-rustls-tls", "tokio1"] }
+
+[features]
+# Compile the real IMAP/SMTP engine backend. Requires network + a TLS/async
+# stack; not used by the headless build or `--shots`.
+live = ["dep:async-imap", "dep:lettre"]

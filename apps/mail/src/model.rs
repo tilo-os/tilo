@@ -286,8 +286,10 @@ pub struct AccountConfig {
     pub smtp_port: u16,
     pub smtp_tls: bool,
     pub username: String,
-    /// Stored only in memory / the local CRDT in this slice; a real
-    /// deployment would push this to the OS secret store.
+    /// Stored only in memory in this slice; a real deployment pushes this to
+    /// the OS secret store. Never written to the shared settings JSON (the
+    /// Settings app injects it at connect time) — hence `serde(skip)`.
+    #[serde(skip)]
     pub password: String,
 }
 
@@ -381,6 +383,38 @@ impl AccountConfig {
     }
 }
 
+/// Which representation the compose body is authored in. Persisted so the
+/// user's choice is remembered across compose windows and sessions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ComposeFormat {
+    /// WYSIWYG rich text, serialised to an HTML MIME part on send.
+    Html,
+    /// Plain text, serialised to a `text/plain` MIME part on send.
+    Text,
+}
+
+impl Default for ComposeFormat {
+    fn default() -> Self {
+        ComposeFormat::Html
+    }
+}
+
+impl ComposeFormat {
+    pub fn as_key(self) -> &'static str {
+        match self {
+            ComposeFormat::Html => "html",
+            ComposeFormat::Text => "text",
+        }
+    }
+
+    pub fn from_key(s: &str) -> Self {
+        match s {
+            "text" => ComposeFormat::Text,
+            _ => ComposeFormat::Html,
+        }
+    }
+}
+
 /// A draft message being composed. Persisted to the CRDT so it survives a
 /// crash and syncs across peers.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -389,7 +423,12 @@ pub struct Draft {
     pub cc: String,
     pub bcc: String,
     pub subject: String,
+    /// Plain-text body (always populated; the canonical text alternative).
     pub body: String,
+    /// HTML body, set when the draft was authored in WYSIWYG mode. Sent as the
+    /// `text/html` part alongside `body` as the `text/plain` alternative.
+    #[serde(default)]
+    pub html_body: Option<String>,
     /// Filenames of attachments staged for this draft.
     pub attachments: Vec<String>,
     /// If this draft is a reply, the message it answers.
