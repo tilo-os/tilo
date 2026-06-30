@@ -181,6 +181,10 @@ impl Widget for Checkbox {
                     // CRDT Mutation
                     let new_val = !self.is_checked;
                     let _ = state.put(root, self.on_toggle_path.as_str(), automerge::ScalarValue::Boolean(new_val));
+                    // Update the local cache now so accessibility() reflects the
+                    // new state this same frame — otherwise the focus narration
+                    // triggered by this click would speak the pre-click state.
+                    self.is_checked = new_val;
                 }
             }
             _ => {}
@@ -205,7 +209,7 @@ impl Widget for Checkbox {
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         // The checkbox's own label is a sibling `Text`, so it has no intrinsic
-        // accessible name here; the tree builder (W4) resolves the label-for
+        // accessible name here; the tree builder resolves the label-for
         // relationship. The checked state is the load-bearing semantic.
         Some(
             AccessNode::new(Role::Checkbox).with_state(AccessState {
@@ -218,7 +222,7 @@ impl Widget for Checkbox {
         )
     }
 
-    /// Accessibility (W4): an AT toggles the checkbox with
+    /// Accessibility: an AT toggles the checkbox with
     /// [`Action::ToggleCheck`](crate::a11y::Action::ToggleCheck) or the generic
     /// [`Action::Activate`](crate::a11y::Action::Activate). Both flip the
     /// checked state through the exact CRDT write a real click performs. A
