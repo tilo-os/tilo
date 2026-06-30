@@ -40,6 +40,9 @@ const SELECTION: Color = Color::from_rgba8(0x46, 0x78, 0xe6, 0x4d);
 
 const PAGE_TOP: f64 = 28.0;
 const MAX_PAGE_W: f64 = 820.0;
+/// Vertical gap between consecutive discrete pages (the canvas shows through it),
+/// à la Google Docs. Together with `LETTER_RATIO` this drives true pagination.
+const PAGE_GAP: f64 = 22.0;
 const CARET_WIDTH: f64 = 2.0;
 const TOOLBAR_H: f64 = ui::chrome::TOOLBAR_HEIGHT;
 const STATUS_H: f64 = ui::chrome::STATUS_BAR_HEIGHT;
@@ -1025,6 +1028,12 @@ impl WordProcessorWidget {
         self.layout_mode = if self.layout_mode == mode { LayoutMode::None } else { mode };
     }
 
+    /// Persist the current page margins into the document (page setup lives in the
+    /// document so it survives save/reopen). Called on margin-guide drag release.
+    fn persist_margins(&mut self, state: &mut AutoCommit) {
+        self.inner.set_page_margins(state, [self.margins.top, self.margins.right, self.margins.bottom, self.margins.left]);
+    }
+
     /// The per-side measurement the active mode edits (the page margins).
     fn active_edges(&self) -> Option<Edges> {
         match self.layout_mode {
@@ -1348,40 +1357,6 @@ impl WordProcessorWidget {
     }
 }
 
-/// Draw page-end markers down the (continuous) page sheet: a hairline at every
-/// US-Letter-height boundary plus a "Page N" pill tucked into the left margin so
-/// it never sits on top of body text (and stays visible even when the page is
-/// wider than the canvas). `page` is in screen space (already scroll-shifted);
-/// `left_margin` is the page's left inset in px.
-fn draw_page_breaks(scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, page: Rect, letter_h: f64, left_margin: f64) {
-    if letter_h < 2.0 {
-        return;
-    }
-    // Boundary colour: a soft slate that reads on white without fighting the text.
-    let line_col = Color::from_rgb8(0xc2, 0xc6, 0xce);
-    let mut k = 1usize;
-    loop {
-        let y = page.y0 + k as f64 * letter_h;
-        if y >= page.y1 - 2.0 {
-            break;
-        }
-        // Hairline across the page width (inset a touch from the paper edges).
-        let line = Rect::new(page.x0 + 6.0, y - 0.75, page.x1 - 6.0, y + 0.75);
-        scene.fill(Fill::NonZero, transform, line_col, None, &line);
-        // "Page N" pill in the left margin (the page below the break is page k+1).
-        let pw = 60.0_f64.min((left_margin - 10.0).max(40.0));
-        let ph = 18.0;
-        let px0 = page.x0 + 8.0;
-        let pill = Rect::new(px0, y - ph / 2.0, px0 + pw, y + ph / 2.0);
-        scene.fill(Fill::NonZero, transform, CANVAS, None, &vello::kurbo::RoundedRect::from_rect(pill, 9.0));
-        tr.draw_text(scene, &format!("Page {}", k + 1), 11.0, Color::from_rgb8(0xc6, 0xca, 0xd2), transform * Affine::translate((px0 + 9.0, y - 7.0)), None);
-        k += 1;
-        if k > 500 {
-            break;
-        }
-    }
-}
-
 /// A horizontal 1px divider line inside the panel.
 fn panel_divider(scene: &mut Scene, transform: Affine, x0: f64, x1: f64, y: f64) {
     scene.fill(Fill::NonZero, transform, PANEL_EDGE, None, &Rect::new(x0, y, x1, y + 1.0));
@@ -1408,6 +1383,14 @@ impl Widget for WordProcessorWidget {
         // into a panel field) — reloading would discard the live preview.
         if self.guide_drag.is_none() && self.scrub.is_none() && self.editing_field.is_none() {
             self.sheet = self.inner.stylesheet(state);
+        }
+        // Reload the persisted page margins (document-level page setup) unless a
+        // guide drag is mid-flight (which would clobber the live preview). Absent
+        // from the document → keep the current/default margins.
+        if self.guide_drag.is_none() {
+            if let Some([t, r, b, l]) = self.inner.page_margins(state) {
+                self.margins = Edges { top: t, right: r, bottom: b, left: l };
+            }
         }
         self.dirty = true;
     }
@@ -1467,6 +1450,16 @@ impl Widget for WordProcessorWidget {
         let page_top = canvas.y0 + PAGE_TOP;
         let content_x = page_x + m.left;
         let content_w = (page_w - m.left - m.right).max(80.0) as f32;
+        // True pagination: each page is a fixed US-Letter sheet (height `letter_h`)
+        // stacked with `PAGE_GAP` between sheets. A block lays into the current
+        // page's text band [content_top, content_bottom]; when the *next whole
+        // block* would not fit before the bottom text margin, the page advances and
+        // the block starts at the next page's top margin — content is never split,
+        // so a page-end never crosses a line of text.
+        let letter_h = page_w * LETTER_RATIO;
+        let page_pitch = letter_h + PAGE_GAP;
+        let page_content_top = |i: usize| page_top + i as f64 * page_pitch + m.top;
+        let page_content_bottom = |i: usize| page_top + i as f64 * page_pitch + letter_h - m.bottom;
 
         // Pass 1: shape blocks top-to-bottom. Runs of consecutive `cell` blocks
         // sharing a table id lay out as a grid; everything else stacks normally.
@@ -1480,7 +1473,12 @@ impl Widget for WordProcessorWidget {
         let mut new_cache: HashMap<String, (u64, RichTextLayout)> = HashMap::with_capacity(blocks.len());
         self.dbg_layout_hits = 0;
         self.dbg_layout_misses = 0;
-        let mut y = page_top + m.top;
+        // Pagination cursor: current page index, whether anything has landed on it
+        // yet (the first item on a page never breaks, so an over-tall block simply
+        // overflows its own page — acceptable for v1), and the running content y.
+        let mut cur_page = 0usize;
+        let mut placed_on_page = false;
+        let mut y = page_content_top(0);
         // Per-level ordered-list counters (index = nesting level); reset when a
         // non-list block is reached or a shallower level re-enters.
         let mut ol_counts: Vec<u32> = Vec::new();
@@ -1498,6 +1496,9 @@ impl Widget for WordProcessorWidget {
                 let ncols = cells.iter().map(|c| cell_rc(c).1).max().unwrap_or(0) + 1;
                 let nrows = cells.iter().map(|c| cell_rc(c).0).max().unwrap_or(0) + 1;
                 let col_w = content_w as f64 / ncols as f64;
+                // Measure every row first so the whole table can paginate as one
+                // unit (it is never split mid-row across a page boundary).
+                let mut rows: Vec<(f64, Vec<(usize, f64, &BlockView)>)> = Vec::with_capacity(nrows);
                 for r in 0..nrows {
                     let mut row_items: Vec<(usize, f64, &BlockView)> = Vec::new();
                     let mut row_h = 26.0f64;
@@ -1533,15 +1534,28 @@ impl Widget for WordProcessorWidget {
                             row_items.push((c, cell_h, cell));
                         }
                     }
+                    rows.push((row_h, row_items));
+                }
+                let table_h: f64 = rows.iter().map(|(h, _)| *h).sum();
+                // Break to the next page if the whole table would not fit.
+                let item_top = if placed_on_page && y + table_h > page_content_bottom(cur_page) + 0.5 {
+                    cur_page += 1;
+                    page_content_top(cur_page)
+                } else {
+                    y
+                };
+                placed_on_page = true;
+                let mut ry = item_top;
+                for (r, (row_h, row_items)) in rows.into_iter().enumerate() {
                     for (c, cell_h, cell) in row_items {
                         let cell_x = content_x + c as f64 * col_w;
-                        let cbox = Rect::new(cell_x, y, cell_x + col_w, y + row_h);
+                        let cbox = Rect::new(cell_x, ry, cell_x + col_w, ry + row_h);
                         laid.push(Laid {
                             id: cell.id.clone(),
                             text: cell.text.clone(),
                             kind: "cell".into(),
                             size: 16.0,
-                            y_top: y + cell_pad,
+                            y_top: ry + cell_pad,
                             text_x: cell_x + cell_pad,
                             width: col_w - 2.0 * cell_pad,
                             height: cell_h,
@@ -1552,9 +1566,9 @@ impl Widget for WordProcessorWidget {
                             cell_row: Some(r),
                         });
                     }
-                    y += row_h;
+                    ry += row_h;
                 }
-                y += self.sheet.get("body").space_after as f64;
+                y = ry + self.sheet.get("body").space_after as f64;
             } else if b.kind == "image" {
                 ol_counts.clear();
                 let hash = match b.attrs.get("blob") {
@@ -1578,12 +1592,20 @@ impl Widget for WordProcessorWidget {
                 // it every frame rather than caching it incrementally.
                 let empty = RichTextLayout::shape(&mut text_renderer.font_system, &[RichSpan::new("")], false, 16.0, content_w, TextAlign::Left, FontFamily::Sans, vec![], vec![]);
                 new_cache.insert(b.id.clone(), (0, empty));
+                // Break to the next page if the image would not fit.
+                let item_top = if placed_on_page && y + draw_h > page_content_bottom(cur_page) + 0.5 {
+                    cur_page += 1;
+                    page_content_top(cur_page)
+                } else {
+                    y
+                };
+                placed_on_page = true;
                 laid.push(Laid {
                     id: b.id.clone(),
                     text: String::new(),
                     kind: "image".into(),
                     size: 16.0,
-                    y_top: y,
+                    y_top: item_top,
                     text_x: content_x,
                     width: draw_w,
                     height: draw_h,
@@ -1593,7 +1615,7 @@ impl Widget for WordProcessorWidget {
                     cell_box: None,
                     cell_row: None,
                 });
-                y += draw_h + self.sheet.get("body").space_after as f64;
+                y = item_top + draw_h + self.sheet.get("body").space_after as f64;
                 bi += 1;
             } else {
                 // Resolve the block's style (component-instance model).
@@ -1622,7 +1644,6 @@ impl Widget for WordProcessorWidget {
                     ol_counts.clear();
                     (st.indent as f64, None)
                 };
-                y += st.space_before as f64;
                 let wrap_w = (content_w - indent as f32).max(40.0);
                 let (runs, underlines, strikes) = block_runs(b);
                 let align = block_align(b, style_align(&st.align));
@@ -1652,12 +1673,24 @@ impl Widget for WordProcessorWidget {
                 };
                 let block_h = layout.height() as f64;
                 new_cache.insert(b.id.clone(), (key, layout));
+                // Place with the style's space-before as the leading gap, breaking
+                // to the next page when the whole block would not fit before the
+                // bottom text margin (the lead is dropped at the top of a fresh
+                // page so the first paragraph hugs the top margin).
+                let top_candidate = y + st.space_before as f64;
+                let item_top = if placed_on_page && top_candidate + block_h > page_content_bottom(cur_page) + 0.5 {
+                    cur_page += 1;
+                    page_content_top(cur_page)
+                } else {
+                    top_candidate
+                };
+                placed_on_page = true;
                 laid.push(Laid {
                     id: b.id.clone(),
                     text: b.text.clone(),
                     kind: b.kind.clone(),
                     size,
-                    y_top: y,
+                    y_top: item_top,
                     text_x: content_x + indent,
                     width: wrap_w as f64,
                     height: block_h,
@@ -1667,16 +1700,19 @@ impl Widget for WordProcessorWidget {
                     cell_box: None,
                     cell_row: None,
                 });
-                y += laid.last().unwrap().height + st.space_after as f64;
+                y = item_top + block_h + st.space_after as f64;
                 bi += 1;
             }
         }
-        let content_bottom = y + m.bottom;
-        let page_h = (content_bottom - page_top).max(canvas.height() - 2.0 * PAGE_TOP);
+        // Total document extent below `page_top`: the stacked page sheets + gaps,
+        // widened if an over-tall block overflowed its page's text band.
+        let num_pages = cur_page + 1;
+        let pages_extent = num_pages as f64 * letter_h + cur_page as f64 * PAGE_GAP;
+        let extent = pages_extent.max(y - page_top);
 
         // Scrolling: clamp the offset to the overflow, then shift the laid-out
-        // content (+ page) into screen space so hit-testing needs no offset.
-        self.max_scroll = (page_h + 2.0 * PAGE_TOP - canvas.height()).max(0.0);
+        // content (+ pages) into screen space so hit-testing needs no offset.
+        self.max_scroll = (extent + 2.0 * PAGE_TOP - canvas.height()).max(0.0);
         self.scroll_y = self.scroll_y.clamp(0.0, self.max_scroll);
         let sy = self.scroll_y;
         if sy != 0.0 {
@@ -1692,9 +1728,21 @@ impl Widget for WordProcessorWidget {
         // the toolbar / status bar.
         scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &canvas);
 
-        // Page shadow + paper (the document surface).
-        let page = Rect::new(page_x, page_top - sy, page_x + page_w, page_top + page_h - sy);
-        chrome::page::draw(scene, transform, page, PAPER, SHADOW);
+        // Discrete page sheets (shadow + paper) stacked with `PAGE_GAP`, each with
+        // a "Page N" label centered in the gap just below the sheet.
+        for i in 0..num_pages {
+            let ptop = page_top + i as f64 * page_pitch - sy;
+            let sheet = Rect::new(page_x, ptop, page_x + page_w, ptop + letter_h);
+            chrome::page::draw(scene, transform, sheet, PAPER, SHADOW);
+            let label = format!("Page {}", i + 1);
+            let approx = label.chars().count() as f64 * 6.4;
+            let lx = (sheet.x0 + sheet.x1) / 2.0 - approx / 2.0;
+            let ly = sheet.y1 + PAGE_GAP / 2.0 - 6.0;
+            text_renderer.draw_text(scene, &label, 11.0, Color::from_rgb8(0x9a, 0x9e, 0xa8), transform * Affine::translate((lx, ly)), None);
+        }
+        // The first page is the reference rect for the margin-guide overlay
+        // (margins apply to every page identically).
+        let page = Rect::new(page_x, page_top - sy, page_x + page_w, page_top + letter_h - sy);
         self.page_rect = page;
 
         // Restore the block cache before pass 2 so selection lookups resolve.
@@ -1795,12 +1843,6 @@ impl Widget for WordProcessorWidget {
                 );
             }
         }
-
-        // Page-end markers (Google-Docs-style): a hairline + "Page N" label where
-        // each US-Letter-height page would break. Indicative only — content is not
-        // reflowed across pages. Uses the same px scale as the page width.
-        let letter_h = page_w * LETTER_RATIO;
-        draw_page_breaks(scene, transform, text_renderer, page, letter_h, m.left);
 
         // Layout-edit overlay: draggable guides + live value labels for the
         // active mode (drawn over the content, still inside the page clip).
@@ -2001,11 +2043,19 @@ impl Widget for WordProcessorWidget {
                     self.dirty = true;
                     *handled = true;
                 } else if let Some(gd) = self.guide_drag.take() {
-                    // A style edit (spacing) persists into the document on release.
-                    if gd.mode == LayoutMode::Spacing {
-                        let sheet = self.sheet.clone();
-                        self.inner.set_stylesheet(state, &sheet);
-                        self.needs_commit = true;
+                    // A layout edit persists into the document on release: spacing
+                    // into the stylesheet, margins into the page-setup meta.
+                    match gd.mode {
+                        LayoutMode::Spacing => {
+                            let sheet = self.sheet.clone();
+                            self.inner.set_stylesheet(state, &sheet);
+                            self.needs_commit = true;
+                        }
+                        LayoutMode::Margins => {
+                            self.persist_margins(state);
+                            self.needs_commit = true;
+                        }
+                        LayoutMode::None => {}
                     }
                     self.dirty = true;
                     *handled = true;
@@ -2893,5 +2943,70 @@ mod tests {
         assert_eq!(num("two-b").as_deref(), Some("2."));
         // Returning to level 0 continues the outer numbering.
         assert_eq!(num("three").as_deref(), Some("3."));
+    }
+
+    #[test]
+    fn long_document_paginates_across_discrete_pages() {
+        // Geometry mirrors `draw`: a fresh widget keeps the default uniform 72px
+        // margins, find bar closed (find_h = 0), so canvas top = TOOLBAR_H.
+        let mar = 72.0;
+        let letter_h = MAX_PAGE_W * LETTER_RATIO;
+        let page_pitch = letter_h + PAGE_GAP;
+        let page_top = TOOLBAR_H + PAGE_TOP;
+        let pct = |i: usize| page_top + i as f64 * page_pitch + mar; // page content top
+        let pcb = |i: usize| page_top + i as f64 * page_pitch + letter_h - mar; // bottom margin
+        let page_of = |y: f64| ((y - page_top) / page_pitch).floor() as i64;
+
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        // Enough paragraphs to overflow a single US-Letter page.
+        for i in 0..120 {
+            wp.model_mut().insert_str(&mut state.doc, &format!("Paragraph number {i} carries enough words to fill a line."));
+            wp.model_mut().enter(&mut state.doc);
+        }
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+
+        // The content spans more than one page.
+        let max_page = wp.laid.iter().map(|l| page_of(l.y_top)).max().unwrap();
+        assert!(max_page >= 1, "a long document must occupy more than one page (got {max_page})");
+
+        // No laid block crosses a page boundary: each sits wholly within its page's
+        // text band, so a page-end never bisects a line of text.
+        for l in &wp.laid {
+            let i = page_of(l.y_top).max(0) as usize;
+            assert!(l.y_top >= pct(i) - 1.0, "block starts at/below its page's top margin");
+            assert!(l.y_top + l.height <= pcb(i) + 1.0, "block ends above its page's bottom margin (no straddle)");
+        }
+
+        // The first block that lands on page 2 starts exactly at the page-2 top
+        // margin, and the block before it (in document order) is still on page 1.
+        let idx = wp.laid.iter().position(|l| page_of(l.y_top) == 1).expect("some block lands on page 2");
+        assert!(idx > 0, "page 2 is preceded by page-1 content");
+        assert!((wp.laid[idx].y_top - pct(1)).abs() < 1.0, "the first page-2 block hugs the page-2 top margin");
+        assert_eq!(page_of(wp.laid[idx - 1].y_top), 0, "the block before it is on page 1");
+    }
+
+    #[test]
+    fn page_margins_persist_across_reload() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        // A document with no recorded page setup uses the default margins.
+        assert!((wp.margins.left - 72.0).abs() < 1e-6, "fresh doc uses default margins");
+
+        // Edit margins (as a margin-guide drag would) and persist via the same
+        // production path the drag-release handler uses.
+        wp.margins = Edges { top: 33.0, right: 44.0, bottom: 55.0, left: 66.0 };
+        wp.persist_margins(&mut state.doc);
+
+        // A fresh widget bound to the *same document* reloads the persisted page
+        // setup on sync — proving margins now live in the document, not the widget.
+        let mut wp2 = WordProcessorWidget::new();
+        wp2.sync(&mut state.doc, &state.root);
+        assert!((wp2.margins.top - 33.0).abs() < 1e-6, "top margin survived reload");
+        assert!((wp2.margins.right - 44.0).abs() < 1e-6, "right margin survived reload");
+        assert!((wp2.margins.bottom - 55.0).abs() < 1e-6, "bottom margin survived reload");
+        assert!((wp2.margins.left - 66.0).abs() < 1e-6, "left margin survived reload");
     }
 }
