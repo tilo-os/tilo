@@ -31,6 +31,10 @@ pub struct Button {
     on_click: Option<Box<dyn FnMut()>>,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
+    /// When `false` the button is disabled: skipped by focus, rejects
+    /// input (no `on_click`, no CRDT write, no hover/press feedback) and
+    /// renders dimmed. Default `true`.
+    enabled: bool,
     /// Scene cache. Holds the last emitted body / border / label
     /// primitives at *logical* coordinates; the App's transform
     /// is reapplied on `Scene::append`. See `widget::text` for the
@@ -61,6 +65,7 @@ impl Button {
             on_click: None,
             presence_path: Vec::new(),
             permission_scope: None,
+            enabled: true,
             cached: vello::Scene::new(),
             dirty: true,
             cache_rect: Rect::ZERO,
@@ -103,6 +108,22 @@ impl Button {
     pub fn with_size(mut self, width: f32, height: f32) -> Self {
         self.size = Some((width, height));
         self
+    }
+
+    /// Set the enabled state at build time. A disabled button is skipped
+    /// by focus, rejects clicks/keys and renders dimmed. Default `true`.
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// Imperatively flip the enabled state. Marks the scene cache dirty so
+    /// the dimmed/normal look is re-emitted on the next frame.
+    pub fn set_enabled(&mut self, enabled: bool) {
+        if self.enabled != enabled {
+            self.enabled = enabled;
+            self.dirty = true;
+        }
     }
 }
 
@@ -150,7 +171,15 @@ impl Widget for Button {
         if !needs_emit {
             let dx = self.rect.x0 - self.cache_rect.x0;
             let dy = self.rect.y0 - self.cache_rect.y0;
-            out_scene.append(&self.cached, Some(out_transform * Affine::translate((dx, dy))));
+            let inner = out_transform * Affine::translate((dx, dy));
+            if self.enabled {
+                out_scene.append(&self.cached, Some(inner));
+            } else {
+                let clip = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
+                out_scene.push_layer(vello::peniko::Fill::NonZero, vello::peniko::BlendMode::default(), crate::widget::DISABLED_ALPHA, out_transform, &clip);
+                out_scene.append(&self.cached, Some(inner));
+                out_scene.pop_layer();
+            }
             return;
         }
         // Re-emit at current absolute coords. cache_rect tracks
@@ -241,7 +270,14 @@ impl Widget for Button {
         // scene into the outer App scene with the host transform.
         // delta = 0 here since cache_rect was just set to self.rect.
         self.cache_rect = self.rect;
-        out_scene.append(&self.cached, Some(out_transform));
+        if self.enabled {
+            out_scene.append(&self.cached, Some(out_transform));
+        } else {
+            let clip = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
+            out_scene.push_layer(vello::peniko::Fill::NonZero, vello::peniko::BlendMode::default(), crate::widget::DISABLED_ALPHA, out_transform, &clip);
+            out_scene.append(&self.cached, Some(out_transform));
+            out_scene.pop_layer();
+        }
     }
 
     fn needs_redraw(&self) -> bool {
@@ -260,6 +296,9 @@ impl Widget for Button {
     fn is_layout_dirty(&self) -> bool { self.cache_rect == Rect::ZERO }
 
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, _modifiers: &winit::event::Modifiers, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, _taffy: &TaffyTree<()>) {
+        // Disabled: reject all input — no hover/press feedback, no CRDT
+        // write, no callback. Return without setting `handled`.
+        if !self.enabled { return; }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let logical_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -332,6 +371,7 @@ impl Widget for Button {
     fn is_focusable(&self) -> bool { true }
     fn set_focus(&mut self, focused: bool) { self.is_focused = focused; }
     fn is_focused(&self) -> bool { self.is_focused }
+    fn is_enabled(&self) -> bool { self.enabled }
 
     fn presence_key(&self) -> Option<PresenceKey> {
         if self.presence_path.is_empty() {
@@ -428,5 +468,65 @@ mod tests {
         assert_eq!(fired.get(), 0, "not fired until release");
         dispatch(&mut b, WindowEvent::MouseInput { device_id: device, state: ElementState::Released, button: MouseButton::Left });
         assert_eq!(fired.get(), 1, "fired once on release over the button");
+    }
+
+    #[test]
+    fn with_enabled_false_is_reported_by_is_enabled() {
+        let b = Button::new("id", "Go", None).with_enabled(false);
+        assert!(!Widget::is_enabled(&b));
+        let b2 = Button::new("id", "Go", None);
+        assert!(Widget::is_enabled(&b2), "default is enabled");
+    }
+
+    #[test]
+    fn disabled_button_rejects_input() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        use winit::event::{DeviceId, ElementState, MouseButton};
+
+        let fired = Rc::new(Cell::new(0u32));
+        let mut b = {
+            let fired = fired.clone();
+            Button::new("id", "Go", Some("clicked"))
+                .on_click(move || fired.set(fired.get() + 1))
+                .with_enabled(false)
+        };
+
+        let mut tree = TaffyTree::<()>::new();
+        let mut node_map = std::collections::HashMap::new();
+        let theme = Theme::dark();
+        let node = b.build_layout(&mut tree, &theme, &mut node_map);
+        tree.compute_layout(
+            node,
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(200.0),
+                height: taffy::AvailableSpace::Definite(60.0),
+            },
+        )
+        .unwrap();
+        b.apply_layout(&tree, node, Point::ZERO);
+
+        let device: DeviceId = unsafe { std::mem::zeroed() };
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mods = winit::event::Modifiers::default();
+        let mut focus = None;
+        let mut handled = false;
+
+        for ev in [
+            WindowEvent::CursorMoved { device_id: device, position: (10.0, 10.0).into() },
+            WindowEvent::MouseInput { device_id: device, state: ElementState::Pressed, button: MouseButton::Left },
+            WindowEvent::MouseInput { device_id: device, state: ElementState::Released, button: MouseButton::Left },
+        ] {
+            b.handle_event(&ev, 1.0, &mods, &mut doc, &root, &mut handled, &mut focus, node, &tree);
+        }
+
+        assert_eq!(fired.get(), 0, "disabled button must not fire on_click");
+        assert!(focus.is_none(), "disabled button must not request focus");
+        assert!(!handled, "disabled button must not swallow input");
+        assert!(
+            doc.get(&root, "clicked").unwrap().is_none(),
+            "disabled button must not write the CRDT path"
+        );
     }
 }

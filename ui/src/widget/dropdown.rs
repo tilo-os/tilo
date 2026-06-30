@@ -95,6 +95,11 @@ pub struct Dropdown {
     is_focused: bool,
     is_hovered: bool,
     last_cursor: Point,
+
+    /// When `false` the dropdown is disabled: skipped by focus, rejects
+    /// input (won't open, no selection, no hover feedback) and renders
+    /// dimmed. Default `true`.
+    enabled: bool,
 }
 
 impl Dropdown {
@@ -116,6 +121,7 @@ impl Dropdown {
             is_focused: false,
             is_hovered: false,
             last_cursor: Point::ZERO,
+            enabled: true,
         }
     }
 
@@ -129,6 +135,22 @@ impl Dropdown {
     pub fn with_placeholder(mut self, placeholder: &str) -> Self {
         self.placeholder = placeholder.to_string();
         self
+    }
+
+    /// Set the enabled state at build time. A disabled dropdown is skipped
+    /// by focus, won't open, rejects input and renders dimmed. Default `true`.
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// Imperatively flip the enabled state. Disabling an open dropdown
+    /// also closes it.
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+        if !enabled {
+            self.close();
+        }
     }
 
     /// Start opened. Used for headless `--shots` of the open state; the
@@ -335,6 +357,12 @@ impl Widget for Dropdown {
     ) {
         // --- Closed control (always painted, in the normal pass) ---
         let shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
+        // Disabled widgets paint their (forced-idle) look under a reduced
+        // group opacity so they read as non-interactive.
+        let disabled = !self.enabled;
+        if disabled {
+            scene.push_layer(Fill::NonZero, BlendMode::default(), crate::widget::DISABLED_ALPHA, transform, &shape);
+        }
         let bg = if self.open || self.is_focused {
             theme.bg_active
         } else {
@@ -383,6 +411,10 @@ impl Widget for Dropdown {
             chev.line_to((cx + 5.0, cy - 3.0));
         }
         scene.stroke(&Stroke::new(2.0), transform, theme.text_dim, None, &chev);
+
+        if disabled {
+            scene.pop_layer();
+        }
     }
 
     /// Top-layer pass: paint the open list above all later-drawn
@@ -483,6 +515,8 @@ impl Widget for Dropdown {
         node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
+        // Disabled: reject all input — won't open, no selection, no hover.
+        if !self.enabled { return; }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let pos = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -647,6 +681,9 @@ impl Widget for Dropdown {
     }
     fn is_focused(&self) -> bool {
         self.is_focused
+    }
+    fn is_enabled(&self) -> bool {
+        self.enabled
     }
 
     /// While open the dropdown grabs every event so its out-of-layout
@@ -859,5 +896,24 @@ mod tests {
         dd.sync(&mut doc, &root);
         assert!(dd.is_open());
         assert_eq!(dd.highlight_index(), 3, "highlight tracks the selected option");
+    }
+
+    #[test]
+    fn with_enabled_false_is_reported_by_is_enabled() {
+        let dd = Dropdown::new(opts(), "tz").with_enabled(false);
+        assert!(!Widget::is_enabled(&dd));
+        assert!(Widget::is_enabled(&Dropdown::new(opts(), "tz")), "default is enabled");
+    }
+
+    #[test]
+    fn disabled_dropdown_does_not_open() {
+        let mut dd = Dropdown::new(opts(), "tz").with_enabled(false);
+        let (mut doc, root) = doc_with_tz("UTC");
+        dd.sync(&mut doc, &root);
+        dd.set_focus(true);
+        let handled = feed_key(&mut dd, &key(Key::Named(NamedKey::ArrowDown), None), &mut doc, &root);
+        assert!(!dd.is_open(), "disabled dropdown must not open");
+        assert!(!handled, "disabled dropdown must not swallow input");
+        assert_eq!(dd.selected(), "UTC", "disabled dropdown must not change the value");
     }
 }
