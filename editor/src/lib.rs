@@ -8,6 +8,7 @@
 //! (undo, two-peer convergence, timeline, codec round-trip) against the real
 //! `ui::State` via tests.
 
+pub mod i18n;
 pub mod styles;
 pub mod widget;
 pub mod word_processor;
@@ -201,7 +202,9 @@ impl Template {
         ]
     }
 
-    /// A short, human-readable name for the template (for menus / pickers).
+    /// A short, **stable English** identifier for the template. Used as a
+    /// canonical name in code and tests; the user-facing menu label comes from
+    /// [`Self::display_title`] (which localizes via Fluent).
     pub fn title(self) -> &'static str {
         match self {
             Template::Blank => "Blank",
@@ -210,6 +213,19 @@ impl Template {
             Template::Resume => "Resume",
             Template::MeetingNotes => "Meeting Notes",
         }
+    }
+
+    /// The localized, user-facing title shown in the "New ▾" template picker.
+    /// Resolves through Fluent; under `en-US` it matches [`Self::title`].
+    pub fn display_title(self) -> String {
+        let key = match self {
+            Template::Blank => "template-blank",
+            Template::Letter => "template-letter",
+            Template::Report => "template-report",
+            Template::Resume => "template-resume",
+            Template::MeetingNotes => "template-meeting-notes",
+        };
+        crate::i18n::t(key)
     }
 
     /// The template's Markdown source, embedded at compile time.
