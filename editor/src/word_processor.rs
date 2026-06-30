@@ -54,6 +54,19 @@ pub(crate) fn block_is_toc(b: &qdoc::snapshot::BlockView) -> bool {
     matches!(b.attrs.get("toc"), Some(qdoc::AttrVal::Bool(true)))
 }
 
+/// Parse the comma-separated `tab_stops` attr into px positions, sorted ascending
+/// with near-duplicates collapsed. Blank / malformed entries are skipped.
+pub(crate) fn parse_tab_stops(raw: &str) -> Vec<f64> {
+    let mut v: Vec<f64> = raw
+        .split(',')
+        .filter_map(|s| s.trim().parse::<f64>().ok())
+        .filter(|p| *p >= 0.0)
+        .collect();
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    v.dedup_by(|a, b| (*a - *b).abs() < 0.5);
+    v
+}
+
 /// Render one TOC entry to its line text: a per-level indent, the heading text,
 /// then a dotted leader and the page number when known. Levels deeper than 1 are
 /// indented by two spaces each. An entry with no page just shows the text.
@@ -873,6 +886,140 @@ impl WordProcessor {
                 _ => 1.0,
             })
             .unwrap_or(1.0)
+    }
+
+    // ---- ruler: per-block indents + tab stops --------------------------------
+    //
+    // The horizontal ruler edits three per-paragraph measures, stored as block
+    // attrs (so they merge field-by-field and survive save/reload):
+    //   * `indent`            — left / hanging indent in px (added on top of the
+    //                           block style's indent; drives `text_x`/`wrap_w`).
+    //   * `first_line_indent` — extra indent applied to the paragraph's first line
+    //                           only (recorded + reflected by the ruler marker;
+    //                           first-line-only rendering is a v1 layout limitation).
+    //   * `tab_stops`         — a comma-separated list of px positions (measured
+    //                           from the left text margin). qdoc's attr map only
+    //                           stores scalars, so the list is encoded as one `Str`.
+
+    /// Read a numeric attr (`Float`/`Int`) off an arbitrary block by id, `0.0`
+    /// when absent. Shared by the indent getters below.
+    fn block_num_attr(&self, state: &AutoCommit, block: &str, key: &str) -> f64 {
+        let Some(c) = self.containers.as_ref() else {
+            return 0.0;
+        };
+        let snap = qdoc::model::materialize(state, c);
+        snap.blocks
+            .iter()
+            .find(|b| b.id == block)
+            .map(|b| match b.attrs.get(key) {
+                Some(qdoc::AttrVal::Float(f)) => *f,
+                Some(qdoc::AttrVal::Int(n)) => *n as f64,
+                _ => 0.0,
+            })
+            .unwrap_or(0.0)
+    }
+
+    /// The left / hanging indent (px) of an arbitrary block — the `indent` attr,
+    /// `0.0` when unset.
+    pub fn block_indent(&self, state: &AutoCommit, block: &str) -> f64 {
+        self.block_num_attr(state, block, "indent")
+    }
+
+    /// The first-line indent (px) of an arbitrary block — the `first_line_indent`
+    /// attr, `0.0` when unset.
+    pub fn block_first_line_indent(&self, state: &AutoCommit, block: &str) -> f64 {
+        self.block_num_attr(state, block, "first_line_indent")
+    }
+
+    /// Set the left / hanging indent (px) on `block`. Clamped non-negative.
+    pub fn set_block_indent(&mut self, state: &mut AutoCommit, block: &str, px: f64) {
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        let v = px.max(0.0);
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            dm.set_attr(block, "indent", v);
+        }
+    }
+
+    /// Set the first-line indent (px) on `block`. May be negative (a hanging
+    /// indent draws the first line back toward the margin).
+    pub fn set_block_first_line_indent(&mut self, state: &mut AutoCommit, block: &str, px: f64) {
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            dm.set_attr(block, "first_line_indent", px);
+        }
+    }
+
+    /// The tab stops (px positions from the left text margin) of an arbitrary
+    /// block, sorted ascending. Empty when the `tab_stops` attr is unset/blank.
+    pub fn block_tab_stops(&self, state: &AutoCommit, block: &str) -> Vec<f64> {
+        let Some(c) = self.containers.as_ref() else {
+            return vec![];
+        };
+        let snap = qdoc::model::materialize(state, c);
+        let raw = snap
+            .blocks
+            .iter()
+            .find(|b| b.id == block)
+            .and_then(|b| match b.attrs.get("tab_stops") {
+                Some(qdoc::AttrVal::Str(s)) => Some(s.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        parse_tab_stops(&raw)
+    }
+
+    /// Tab stops on the caret's block (convenience for the widget).
+    pub fn caret_tab_stops(&self, state: &AutoCommit) -> Vec<f64> {
+        self.block_tab_stops(state, &self.caret.block.clone())
+    }
+
+    /// Replace `block`'s tab stops with `stops` (deduplicated + sorted). An empty
+    /// list clears the attr to the empty string.
+    pub fn set_block_tab_stops(&mut self, state: &mut AutoCommit, block: &str, stops: &[f64]) {
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
+        let mut v: Vec<f64> = stops.iter().copied().filter(|p| *p >= 0.0).collect();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        v.dedup_by(|a, b| (*a - *b).abs() < 0.5);
+        let encoded = v.iter().map(|p| format!("{p:.1}")).collect::<Vec<_>>().join(",");
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut { doc: state, c: &containers, ids };
+            dm.set_attr(block, "tab_stops", encoded.as_str());
+        }
+    }
+
+    /// Add a tab stop at `px` (from the left text margin) on the caret's block.
+    pub fn add_tab_stop(&mut self, state: &mut AutoCommit, px: f64) {
+        let block = self.caret.block.clone();
+        let mut stops = self.block_tab_stops(state, &block);
+        // Ignore a stop that coincides with an existing one.
+        if stops.iter().any(|p| (*p - px).abs() < 2.0) {
+            return;
+        }
+        stops.push(px.max(0.0));
+        self.set_block_tab_stops(state, &block, &stops);
+    }
+
+    /// Tab key: advance the caret to the next tab stop on its block, if any.
+    /// Returns `true` when a stop existed and the caret advanced (the caller then
+    /// skips the legacy "insert spaces" fallback). The advance is recorded in the
+    /// document as a single tab character so it survives save/reload and reflows
+    /// with edits — the layout treats the run up to the next stop as the tab's
+    /// width (full per-stop glyph expansion is a v1 limitation).
+    pub fn tab_advance(&mut self, state: &mut AutoCommit) -> bool {
+        let stops = self.block_tab_stops(state, &self.caret.block.clone());
+        if stops.is_empty() {
+            return false;
+        }
+        self.insert_str(state, "\t");
+        true
     }
 
     /// Insert a `rows`×`cols` table after the caret block. Cells are modeled as
