@@ -86,11 +86,7 @@ impl HeadlessBackend {
                 .into())
             }
         };
-        let outputs = vec![Output {
-            id: OutputId(0),
-            size: (width, height),
-            scale: 1.0,
-        }];
+        let outputs = vec![Output::new(OutputId(0), (width, height), 1.0)];
         Ok(Self {
             renderer,
             outputs,
