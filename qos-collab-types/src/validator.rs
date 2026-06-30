@@ -39,16 +39,27 @@
 //! - the per-artifact classification override.
 
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::time::SystemTime;
 
 use thiserror::Error;
 
 use crate::channel::ArtifactId;
+use crate::compaction::{CompactionCheckpoint, CompactionError, hash_op_prefix};
 use crate::crypto::{Ed25519PublicKey, VerifyError, verify_event, verify_op};
 use crate::event::RoleAttestation;
 use crate::identity::{Attestation, AttestationId, Claim, Clearance};
 use crate::op::SignedOp;
 use crate::role::{ArtifactKind, role_permits};
+
+/// Default upper bound on the per-channel in-memory op log. Once the
+/// log exceeds this size the oldest op is evicted on the next push.
+/// 4096 strikes a balance between "enough scrollback to satisfy a
+/// rejoin" and "won't OOM a long-lived channel". The host's
+/// compaction-checkpoint cadence (every 200 ops in the spec) sits well
+/// below this so under normal operation the bound is irrelevant; it's
+/// a backstop for hosts that have gone silent.
+pub const DEFAULT_MAX_IN_MEMORY_OPS: usize = 4096;
 
 /// Errors produced by the inbound-op validator.
 ///
@@ -155,7 +166,7 @@ pub enum ValidationError {
 /// is a foundation crate and downstream code will compose these in
 /// ways we can't predict. The cost of public fields is balanced by
 /// the explicit documentation of each invariant below.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ChannelState {
     /// Channel-local attestations, keyed by id. These are
     /// "member of this channel has role X" grants. Identity-level
@@ -197,6 +208,41 @@ pub struct ChannelState {
     /// validation; callers that want a non-destructive validation
     /// pass `&mut clone()` and drop the clone.
     pub last_seq_per_author: HashMap<Ed25519PublicKey, u64>,
+
+    /// Phase 6: in-memory op log for the channel, bounded by
+    /// `max_in_memory_ops`. Validated ops are pushed in arrival order
+    /// (typically `seq` order but not guaranteed — out-of-order
+    /// arrivals stay where they land). When the log exceeds capacity
+    /// the oldest entry is evicted on the next push; when a
+    /// compaction checkpoint is applied, the matching prefix is
+    /// evicted en masse. The log lets a late-joining peer fetch
+    /// recent history via `CollabRequest::FetchScrollback` without
+    /// triggering a peer-to-peer cold fetch.
+    pub op_log: VecDeque<SignedOp>,
+
+    /// Upper bound on `op_log`. Defaults to
+    /// [`DEFAULT_MAX_IN_MEMORY_OPS`]. Configurable per channel because
+    /// a chat-log artifact and a kanban artifact have very different
+    /// op cadences; a single global default would either OOM the
+    /// chat or starve the kanban.
+    pub max_in_memory_ops: usize,
+}
+
+impl Default for ChannelState {
+    fn default() -> Self {
+        Self {
+            attestations: HashMap::new(),
+            authorised_signers: Vec::new(),
+            identity_attestations: HashMap::new(),
+            accepted_trust_roots: Vec::new(),
+            artifacts: HashMap::new(),
+            artifact_classifications: HashMap::new(),
+            channel_min_clearance: None,
+            last_seq_per_author: HashMap::new(),
+            op_log: VecDeque::new(),
+            max_in_memory_ops: DEFAULT_MAX_IN_MEMORY_OPS,
+        }
+    }
 }
 
 impl ChannelState {
@@ -205,6 +251,112 @@ impl ChannelState {
     /// an authorised signer. Used heavily by tests.
     pub fn register_attestation(&mut self, ra: RoleAttestation) {
         self.attestations.insert(ra.attestation.id, ra);
+    }
+
+    /// Phase 6: record a validated op into the in-memory log.
+    ///
+    /// Kept as a separate method from [`validate_inbound_op`] so the
+    /// validator stays pure (no log mutation on a successful
+    /// validation — callers opt in by calling this afterwards). The
+    /// broker's hot path calls it immediately after a green validation;
+    /// pure-validator unit tests don't call it at all.
+    ///
+    /// If the log is at capacity, the oldest entry is evicted before
+    /// the new one is pushed. v1 evicts strictly by arrival order
+    /// (FIFO); when compaction lands on a prefix, that supersedes
+    /// the FIFO bound by chopping a larger range in one shot.
+    pub fn record_validated_op(&mut self, op: SignedOp) {
+        if self.op_log.len() >= self.max_in_memory_ops && self.max_in_memory_ops > 0 {
+            self.op_log.pop_front();
+        }
+        self.op_log.push_back(op);
+    }
+
+    /// Phase 6: apply a host-emitted compaction checkpoint to this
+    /// channel's op log.
+    ///
+    /// Returns the number of ops evicted on success. Failure modes:
+    /// - [`CompactionError::PrefixHashMismatch`]: the hash recomputed
+    ///   from the local log's prefix-up-to-`up_to_seq` does NOT match
+    ///   the checkpoint's `prefix_hash`. The log is left untouched.
+    ///
+    /// The matching set is "every op in `op_log` with
+    /// `op.artifact == checkpoint.artifact && op.seq <= checkpoint.up_to_seq`".
+    /// Ops on other artifacts are unaffected (the broker keeps a
+    /// single log per artifact in v1, but the validator's contract is
+    /// "filter on artifact" so a future shared-log design doesn't
+    /// silently break).
+    ///
+    /// Ordering: the prefix hash is computed over the matching ops
+    /// sorted by `seq` ascending. A peer whose log is in `seq` order
+    /// (the broker's common case) sees zero overhead; an out-of-order
+    /// log pays a `Vec::sort_by_key` cost — negligible at v1 scale
+    /// (≤ 4096 ops).
+    pub fn apply_compaction(
+        &mut self,
+        checkpoint: &CompactionCheckpoint,
+    ) -> Result<usize, CompactionError> {
+        // Gather + sort the candidate prefix.
+        let mut prefix: Vec<SignedOp> = self
+            .op_log
+            .iter()
+            .filter(|op| {
+                op.artifact == checkpoint.artifact && op.seq <= checkpoint.up_to_seq
+            })
+            .cloned()
+            .collect();
+        prefix.sort_by_key(|op| op.seq);
+
+        let recomputed = hash_op_prefix(&prefix).map_err(CompactionError::Malformed)?;
+        if recomputed != checkpoint.prefix_hash {
+            return Err(CompactionError::PrefixHashMismatch);
+        }
+
+        // Evict in place.
+        let before = self.op_log.len();
+        self.op_log.retain(|op| {
+            !(op.artifact == checkpoint.artifact && op.seq <= checkpoint.up_to_seq)
+        });
+        Ok(before - self.op_log.len())
+    }
+
+    /// Phase 6: collect up to `max` ops from the in-memory log whose
+    /// `artifact` matches and `seq < before_seq`, returned in
+    /// ascending seq order. Used by the broker's `FetchScrollback`
+    /// handler.
+    ///
+    /// Also returns whether the log is "exhausted" for that artifact —
+    /// i.e. whether the caller has now seen every op the broker
+    /// holds for that artifact that's earlier than `before_seq`. The
+    /// caller (the requesting peer's broker) uses that flag to
+    /// decide whether to fall back to a peer-to-peer fetch.
+    pub fn scrollback_for(
+        &self,
+        artifact: ArtifactId,
+        before_seq: u64,
+        max: u16,
+    ) -> (Vec<SignedOp>, bool) {
+        let mut matching: Vec<SignedOp> = self
+            .op_log
+            .iter()
+            .filter(|op| op.artifact == artifact && op.seq < before_seq)
+            .cloned()
+            .collect();
+        matching.sort_by_key(|op| op.seq);
+        let total = matching.len();
+        if max == 0 {
+            // Caller asked for zero ops. `exhausted` is then "is the
+            // requested range empty?".
+            return (Vec::new(), total == 0);
+        }
+        let max_usize = max as usize;
+        // Take the highest-seq window — late joiners scroll backwards
+        // from "before this seq" so the most recent ops are the most
+        // useful first batch.
+        let start = total.saturating_sub(max_usize);
+        let ops: Vec<SignedOp> = matching[start..].to_vec();
+        let exhausted = ops.len() >= total;
+        (ops, exhausted)
     }
 }
 

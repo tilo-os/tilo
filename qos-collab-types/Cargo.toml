@@ -21,5 +21,10 @@ rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_bytes = "0.11"
 postcard = { version = "1", features = ["alloc"] }
+# Phase 6 compaction-checkpoint prefix hashing. We pick SHA-256
+# (already pulled in transitively by some libp2p features but kept
+# direct here so the dep is explicit) so the digest is 32 bytes
+# without needing a separate blake3 dep.
+sha2 = "0.10"
 thiserror = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
