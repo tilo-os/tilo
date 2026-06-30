@@ -33,6 +33,7 @@ use crate::geo::{self, Projection};
 use crate::model::{Category, MapModel, Panel, TransitMode, TravelMode};
 use crate::net::{self, NetMsg};
 use crate::sample::{self, Basemap};
+use crate::tiles::{GeoBounds, TileLayer};
 
 // --- Layout metrics (logical px) -------------------------------------------
 const MARGIN: f64 = 16.0;
@@ -63,6 +64,16 @@ enum Hit {
     ClearRoute,
     SwapEnds,
     Journey(usize),
+    /// Open the offline-download / manage-cache overlay.
+    OfflineOpen,
+    /// Close the overlay.
+    OfflineClose,
+    /// Adjust how many extra zoom levels the offline region covers (±1).
+    OfflineZoomDelta(i8),
+    /// Begin downloading the current viewport region for offline use.
+    OfflineDownload,
+    /// Delete the on-disk tile cache.
+    OfflineClearCache,
 }
 
 pub struct MapsApp {
@@ -92,6 +103,14 @@ pub struct MapsApp {
     net_tx: Sender<NetMsg>,
     net_rx: Receiver<NetMsg>,
     pending: u32,
+
+    // raster basemap (non-blocking OSM tiles)
+    tiles: TileLayer,
+
+    // offline-download / cache-management overlay
+    offline_open: bool,
+    offline_zoom_extra: u8,
+    cache_bytes: u64,
 }
 
 impl Default for MapsApp {
@@ -101,8 +120,22 @@ impl Default for MapsApp {
 }
 
 impl MapsApp {
+    /// Live app: spawns the background tile worker (network + decode off the
+    /// UI thread).
     pub fn new() -> Self {
+        Self::with_tiles(TileLayer::new())
+    }
+
+    /// Headless/offline variant used by `--shots` and tests: no worker thread,
+    /// no network. The stylised vector basemap stands in for raster imagery so
+    /// the screenshot is fully populated without ever touching the wire.
+    pub fn offline() -> Self {
+        Self::with_tiles(TileLayer::offline())
+    }
+
+    fn with_tiles(tiles: TileLayer) -> Self {
         let (net_tx, net_rx) = std::sync::mpsc::channel();
+        let cache_bytes = tiles.cache_bytes();
         Self {
             model: sample::default_model(),
             basemap: sample::basemap(),
@@ -124,6 +157,10 @@ impl MapsApp {
             net_tx,
             net_rx,
             pending: 0,
+            tiles,
+            offline_open: false,
+            offline_zoom_extra: 2,
+            cache_bytes,
         }
     }
 
@@ -163,6 +200,18 @@ impl MapsApp {
     fn locate_rect(&self) -> Rect {
         let r = self.zoom_out_rect();
         Rect::new(r.x0, r.y1 + GAP, r.x1, r.y1 + GAP + CTRL_SIZE)
+    }
+    fn download_rect(&self) -> Rect {
+        let r = self.locate_rect();
+        Rect::new(r.x0, r.y1 + GAP, r.x1, r.y1 + GAP + CTRL_SIZE)
+    }
+
+    /// The geographic bounds currently visible in the map viewport.
+    fn viewport_bounds(&self) -> GeoBounds {
+        let proj = self.projection();
+        let nw = proj.unproject(Point::new(self.rect.x0, self.rect.y0));
+        let se = proj.unproject(Point::new(self.rect.x1, self.rect.y1));
+        GeoBounds::new(nw, se)
     }
 
     // --- actions -----------------------------------------------------------
@@ -451,6 +500,27 @@ impl MapsApp {
                 self.model.transit_choice = *i;
                 self.mark_dirty();
             }
+            Hit::OfflineOpen => {
+                self.offline_open = true;
+                self.cache_bytes = self.tiles.cache_bytes();
+            }
+            Hit::OfflineClose => self.offline_open = false,
+            Hit::OfflineZoomDelta(d) => {
+                let v = self.offline_zoom_extra as i16 + *d as i16;
+                self.offline_zoom_extra = v.clamp(0, 6) as u8;
+            }
+            Hit::OfflineDownload => {
+                let base_z = TileLayer::tile_zoom(self.model.zoom);
+                let z1 = (base_z + self.offline_zoom_extra).min(19);
+                let bounds = self.viewport_bounds();
+                let n = self.tiles.start_download(bounds, base_z, z1);
+                self.model.status = format!("Downloading {n} tiles for offline use…");
+            }
+            Hit::OfflineClearCache => {
+                let freed = self.tiles.clear_cache();
+                self.cache_bytes = 0;
+                self.model.status = format!("Cleared {} of offline tiles", fmt_bytes(freed));
+            }
         }
     }
 }
@@ -474,6 +544,22 @@ fn keyword_match(needle: &str, cat: Category) -> bool {
 
 fn vmid(y: f64, h: f64, size: f32) -> f64 {
     y + (h - size as f64 * 1.25) / 2.0
+}
+
+/// Human-readable byte count for the cache-size readouts.
+fn fmt_bytes(n: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+    if n >= GB {
+        format!("{:.1} GB", n as f64 / GB as f64)
+    } else if n >= MB {
+        format!("{:.1} MB", n as f64 / MB as f64)
+    } else if n >= KB {
+        format!("{} KB", n / KB)
+    } else {
+        format!("{n} B")
+    }
 }
 
 fn transit_color(theme: &Theme, mode: TransitMode) -> Color {
@@ -504,8 +590,15 @@ impl MapsApp {
         let proj = self.projection();
         let clip = self.rect;
 
-        // Map layers.
-        canvas::draw_basemap(scene, t, clip, &proj, &self.basemap, &pal);
+        // Map layers. Real OSM raster tiles paint first (non-blocking); the
+        // stylised vector basemap is the fallback shown only until imagery is
+        // available (headless `--shots`, or the very first offline frame).
+        let view_center = self.view_center();
+        let painted_tiles =
+            canvas::draw_tiles(scene, t, clip, &mut self.tiles, &self.model, view_center, &pal);
+        if !painted_tiles {
+            canvas::draw_basemap(scene, t, clip, &proj, &self.basemap, &pal);
+        }
         if let Some(route) = &self.model.route {
             canvas::draw_route(scene, t, &proj, route, &pal);
         }
@@ -517,6 +610,9 @@ impl MapsApp {
         self.draw_panel(scene, t, tr, theme);
         self.draw_search(scene, t, tr, theme);
         self.draw_status(scene, t, tr, theme);
+        if self.offline_open {
+            self.draw_offline_overlay(scene, t, tr, theme);
+        }
     }
 
     fn draw_search(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
@@ -597,6 +693,113 @@ impl MapsApp {
             draw::line(scene, t, Point::new(ctr.x + dx * 0.7, ctr.y + dy * 0.7), Point::new(ctr.x + dx, ctr.y + dy), 2.0, theme.accent_primary);
         }
         self.click_targets.push((lc, Hit::Locate));
+
+        // Offline-download button: a downward arrow into a tray.
+        let dl = self.download_rect();
+        let dl_active = self.tiles.progress().is_active();
+        let dl_border = if dl_active { theme.accent_primary } else { c.border_standard };
+        draw::card(scene, t, dl, 10.0, c.surfaces.raised, dl_border);
+        let dc = dl.center();
+        draw::line(scene, t, Point::new(dc.x, dc.y - 8.0), Point::new(dc.x, dc.y + 3.0), 2.0, theme.text_primary);
+        draw::line(scene, t, Point::new(dc.x - 4.0, dc.y - 1.0), Point::new(dc.x, dc.y + 3.0), 2.0, theme.text_primary);
+        draw::line(scene, t, Point::new(dc.x + 4.0, dc.y - 1.0), Point::new(dc.x, dc.y + 3.0), 2.0, theme.text_primary);
+        draw::line(scene, t, Point::new(dc.x - 6.0, dc.y + 7.0), Point::new(dc.x + 6.0, dc.y + 7.0), 2.0, theme.text_primary);
+        if dl_active {
+            // A small accent ring tick as a busy hint.
+            draw::stroke_circle(scene, t, Point::new(dl.x1 - 7.0, dl.y0 + 7.0), 4.0, 2.0, theme.accent_primary);
+        }
+        self.click_targets.push((dl, Hit::OfflineOpen));
+    }
+
+    /// The offline-download + manage-cache overlay: a centred card with a
+    /// zoom-depth stepper, an estimated-tile/progress readout, and
+    /// download / clear-cache / close actions.
+    fn draw_offline_overlay(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let c = &theme.tokens.colors;
+        // Scrim — also swallows background clicks.
+        draw::fill_rect(scene, t, self.rect, draw::alpha(Color::BLACK, 0.45));
+        self.click_targets.push((self.rect, Hit::OfflineClose));
+
+        let w = 420.0_f64.min(self.rect.width() - 40.0);
+        let h = 318.0_f64;
+        let cx = (self.rect.x0 + self.rect.x1) / 2.0;
+        let cy = (self.rect.y0 + self.rect.y1) / 2.0;
+        let card = Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0);
+        draw::card(scene, t, card, 16.0, c.surfaces.raised, c.border_standard);
+        // Swallow clicks on the card itself.
+        self.click_targets.push((card, Hit::Consume));
+
+        let x = card.x0 + 22.0;
+        let right = card.x1 - 22.0;
+        let mut y = card.y0 + 20.0;
+        draw::text_w(scene, tr, t, "Offline maps", x, y, 18.0, theme.text_primary, TextWeight::Bold);
+        // Close (×).
+        let close = Rect::new(right - 26.0, card.y0 + 16.0, right, card.y0 + 42.0);
+        draw::text_center(scene, tr, t, "✕", close.x0, close.x1, vmid(close.y0, 26.0, 14.0), 14.0, theme.text_dim);
+        self.click_targets.push((close, Hit::OfflineClose));
+        y += 30.0;
+
+        draw::text(scene, tr, t, "Download the current map area for navigation without a connection.", x, y, 12.0, theme.text_dim);
+        y += 28.0;
+
+        // Zoom-depth stepper.
+        let base_z = TileLayer::tile_zoom(self.model.zoom);
+        let z0 = base_z;
+        let z1 = (base_z + self.offline_zoom_extra).min(19);
+        draw::text_w(scene, tr, t, "Detail (zoom levels)", x, y, 13.0, theme.text_primary, TextWeight::Semibold);
+        let minus = Rect::new(right - 84.0, y - 4.0, right - 58.0, y + 22.0);
+        let plus = Rect::new(right - 26.0, y - 4.0, right, y + 22.0);
+        draw::fill_rrect(scene, t, minus, 7.0, c.surfaces.base);
+        draw::fill_rrect(scene, t, plus, 7.0, c.surfaces.base);
+        draw::text_center(scene, tr, t, "–", minus.x0, minus.x1, vmid(minus.y0, 26.0, 18.0), 18.0, theme.text_primary);
+        draw::text_center(scene, tr, t, "+", plus.x0, plus.x1, vmid(plus.y0, 26.0, 18.0), 18.0, theme.text_primary);
+        draw::text_center(scene, tr, t, &format!("z{z0}–z{z1}"), minus.x1, plus.x0, vmid(y - 4.0, 26.0, 13.0), 13.0, theme.accent_primary);
+        self.click_targets.push((minus, Hit::OfflineZoomDelta(-1)));
+        self.click_targets.push((plus, Hit::OfflineZoomDelta(1)));
+        y += 34.0;
+
+        // Estimate / progress readout.
+        let bounds = self.viewport_bounds();
+        let est = TileLayer::estimate_download(bounds, z0, z1);
+        let prog = self.tiles.progress();
+        let readout = if prog.is_active() {
+            format!("Downloading {}/{} tiles…", prog.done, prog.total)
+        } else if prog.total > 0 && prog.done >= prog.total {
+            let failed = if prog.failed > 0 { format!(" ({} failed)", prog.failed) } else { String::new() };
+            format!("Downloaded {} tiles{failed}", prog.total)
+        } else {
+            format!("≈ {est} tiles ({})", fmt_bytes(est as u64 * 18_000))
+        };
+        draw::text(scene, tr, t, &readout, x, y, 12.0, theme.text_dim);
+        y += 22.0;
+
+        // Progress bar.
+        let bar = Rect::new(x, y, right, y + 8.0);
+        draw::fill_rrect(scene, t, bar, 4.0, c.surfaces.base);
+        let frac = if prog.total > 0 { prog.fraction() } else { 0.0 };
+        if frac > 0.0 {
+            let fill_w = (bar.width() * frac).max(4.0);
+            draw::fill_rrect(scene, t, Rect::new(bar.x0, bar.y0, bar.x0 + fill_w, bar.y1), 4.0, theme.accent_primary);
+        }
+        y += 24.0;
+
+        // Cache size line.
+        draw::text(scene, tr, t, &format!("Cached on disk: {}", fmt_bytes(self.cache_bytes)), x, y, 12.0, theme.text_primary);
+        y += 30.0;
+
+        // Action buttons: Download (primary) + Clear cache.
+        let bh = 38.0;
+        let gap = 10.0;
+        let bw = (right - x - gap) / 2.0;
+        let dl = Rect::new(x, y, x + bw, y + bh);
+        let clr = Rect::new(x + bw + gap, y, right, y + bh);
+        draw::fill_rrect(scene, t, dl, 9.0, theme.accent_primary);
+        draw::text_center(scene, tr, t, "Download this area", dl.x0, dl.x1, vmid(dl.y0, bh, 13.0), 13.0, Color::WHITE);
+        self.click_targets.push((dl, Hit::OfflineDownload));
+        draw::fill_rrect(scene, t, clr, 9.0, c.surfaces.base);
+        draw::stroke_rrect(scene, t, clr, 9.0, 1.0, c.border_standard);
+        draw::text_center(scene, tr, t, "Clear cache", clr.x0, clr.x1, vmid(clr.y0, bh, 13.0), 13.0, c.semantic.danger);
+        self.click_targets.push((clr, Hit::OfflineClearCache));
     }
 
     fn draw_status(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
@@ -978,6 +1181,18 @@ impl Widget for MapsApp {
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         // Pull any background network results into the model first.
         self.drain_net();
+        // Fold in any tiles / download progress the worker finished. This is a
+        // non-blocking try_recv drain — it never waits on the network.
+        let before = self.tiles.progress();
+        self.tiles.drain();
+        let after = self.tiles.progress();
+        if before != after && !after.is_active() && after.total > 0 {
+            // A download just finished — refresh the on-disk size readout.
+            self.cache_bytes = self.tiles.cache_bytes();
+            if self.model.status.contains("Downloading") {
+                self.model.status = format!("Offline area ready ({} tiles)", after.total);
+            }
+        }
 
         if !self.loaded {
             if let Some(loaded) = MapsDoc::load(state) {
@@ -1139,11 +1354,21 @@ impl Widget for MapsApp {
     }
 
     fn needs_idle_sync(&self) -> bool {
-        self.pending > 0 || !self.loaded
+        // Keep idling while anything is outstanding: net requests, the initial
+        // load, in-flight tiles, or an active offline download. This lets the
+        // app fold in worker results and repaint as imagery arrives without the
+        // user touching the input device.
+        self.pending > 0
+            || !self.loaded
+            || self.tiles.has_inflight()
+            || self.tiles.progress().is_active()
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.pending > 0 || self.search_focused
+        self.pending > 0
+            || self.search_focused
+            || self.tiles.has_inflight()
+            || self.tiles.progress().is_active()
     }
 
     fn draw_with_presence(
@@ -1252,8 +1477,19 @@ impl MapsApp {
                     true
                 }
                 Key::Named(NamedKey::Escape) => {
-                    self.model.selected = None;
-                    self.mark_dirty();
+                    if self.offline_open {
+                        self.offline_open = false;
+                    } else {
+                        self.model.selected = None;
+                        self.mark_dirty();
+                    }
+                    true
+                }
+                Key::Character(s) if s.eq_ignore_ascii_case("m") => {
+                    self.offline_open = !self.offline_open;
+                    if self.offline_open {
+                        self.cache_bytes = self.tiles.cache_bytes();
+                    }
                     true
                 }
                 _ => false,
@@ -1267,7 +1503,9 @@ mod tests {
     use super::*;
 
     fn app_at(w: f64, h: f64) -> MapsApp {
-        let mut a = MapsApp::new();
+        // Offline variant: no tile worker thread, no network — tests stay
+        // hermetic and never touch the wire.
+        let mut a = MapsApp::offline();
         a.rect = Rect::new(0.0, 0.0, w, h);
         a
     }
