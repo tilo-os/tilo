@@ -50,122 +50,170 @@
 //! ## i18n
 //!
 //! The narration vocabulary (role words like "checkbox", state words like
-//! "checked", "dimmed") is currently a set of **clear English constants** in
-//! this module. The toolkit's [`i18n!`](crate::i18n) bundles must be explicitly
-//! populated with FTL resources at runtime; until a `screen-reader.ftl` ships,
-//! routing these tiny words through `i18n!` would just echo the key back. The
-//! constants are centralized (see the `phrase` submodule) precisely so a future
-//! FTL migration is a single localized swap: FTL keys where the toolkit
-//! already wires them, otherwise clear English constants.
+//! "checked", "dimmed") is resolved through the toolkit's
+//! [`i18n!`](crate::i18n) bundles. Each word has a stable key (`sr-role-checkbox`,
+//! `sr-state-checked`, …); when the active locale has loaded a matching FTL
+//! resource the narration speaks the translated word, otherwise it falls back to
+//! the **clear English constant** baked into this module. So the default locale
+//! and headless builds (which load no resources) narrate exactly as before, and
+//! switching locale changes the spoken language without touching the reader
+//! logic. The constants live in the `phrase` submodule next to their keys.
 
 use qos_tts::{NullSpeaker, Priority, Speaker, SpeechQueue, Utterance, default_speaker};
 
 use crate::a11y::{AccessNode, Role};
 use crate::widget::Widget;
 
-/// Centralized narration vocabulary. Kept in one place so a future FTL
-/// migration (a `screen-reader.ftl` with `sr-role-checkbox = checkbox`, …) is a
-/// localized one-spot swap rather than a scatter of literals. Every word here
-/// is intentionally short and unambiguous when synthesized.
+/// Centralized narration vocabulary. Every word has a stable FTL key plus a
+/// clear English fallback. [`localized`] resolves the key through the toolkit's
+/// i18n bundles and uses the fallback when no resource is loaded for the active
+/// locale — so the default-locale and headless paths narrate in English while a
+/// loaded `screen-reader.ftl` localizes the same narration logic.
 mod phrase {
     use crate::a11y::Role;
+
+    /// Resolve `key` through i18n, falling back to `english` when no override is
+    /// loaded. [`crate::i18n::I18nManager::lookup`] returns the key verbatim for
+    /// an unknown message (no resource / no such key), which is exactly the
+    /// "nothing loaded" signal — we substitute the English default in that case.
+    pub fn localized(key: &str, english: &str) -> String {
+        let resolved = crate::i18n!(key);
+        if resolved == key {
+            english.to_string()
+        } else {
+            resolved
+        }
+    }
 
     /// A human-spoken word for a [`Role`]. Returns `""` for roles that read
     /// better with no role word at all (plain static text / labels / paragraphs
     /// — a screen reader saying "Hello, static text" is noise; it should just
     /// say "Hello").
-    pub fn role_word(role: Role) -> &'static str {
-        match role {
-            Role::Window => "window",
-            Role::Dialog => "dialog",
-            Role::Group => "group",
+    pub fn role_word(role: Role) -> String {
+        // (FTL key, English fallback). An empty fallback means "no role word".
+        let (key, english) = match role {
+            Role::Window => ("sr-role-window", "window"),
+            Role::Dialog => ("sr-role-dialog", "dialog"),
+            Role::Group => ("sr-role-group", "group"),
             // Generic / presentational containers contribute no role word.
-            Role::Generic => "",
-            Role::Toolbar => "toolbar",
-            Role::TabBar => "tab bar",
-            Role::Tab => "tab",
-            Role::TabPanel => "tab panel",
-            Role::List => "list",
-            Role::ListItem => "list item",
-            Role::Table => "table",
-            Role::Row => "row",
-            Role::Cell => "cell",
-            Role::Tree => "tree",
-            Role::TreeItem => "tree item",
-            Role::Menu => "menu",
-            Role::MenuItem => "menu item",
+            Role::Generic => ("", ""),
+            Role::Toolbar => ("sr-role-toolbar", "toolbar"),
+            Role::TabBar => ("sr-role-tab-bar", "tab bar"),
+            Role::Tab => ("sr-role-tab", "tab"),
+            Role::TabPanel => ("sr-role-tab-panel", "tab panel"),
+            Role::List => ("sr-role-list", "list"),
+            Role::ListItem => ("sr-role-list-item", "list item"),
+            Role::Table => ("sr-role-table", "table"),
+            Role::Row => ("sr-role-row", "row"),
+            Role::Cell => ("sr-role-cell", "cell"),
+            Role::Tree => ("sr-role-tree", "tree"),
+            Role::TreeItem => ("sr-role-tree-item", "tree item"),
+            Role::Menu => ("sr-role-menu", "menu"),
+            Role::MenuItem => ("sr-role-menu-item", "menu item"),
 
-            Role::Button => "button",
-            Role::ToggleButton => "toggle button",
-            Role::Checkbox => "checkbox",
-            Role::RadioButton => "radio button",
-            Role::Switch => "switch",
-            Role::Slider => "slider",
-            Role::SpinButton => "spin button",
-            Role::ComboBox => "combo box",
-            Role::TextInput => "edit text",
-            Role::MultilineTextInput => "multi-line edit text",
-            Role::Link => "link",
-            Role::ProgressBar => "progress bar",
-            Role::Spinner => "busy indicator",
-            Role::Tooltip => "tooltip",
+            Role::Button => ("sr-role-button", "button"),
+            Role::ToggleButton => ("sr-role-toggle-button", "toggle button"),
+            Role::Checkbox => ("sr-role-checkbox", "checkbox"),
+            Role::RadioButton => ("sr-role-radio-button", "radio button"),
+            Role::Switch => ("sr-role-switch", "switch"),
+            Role::Slider => ("sr-role-slider", "slider"),
+            Role::SpinButton => ("sr-role-spin-button", "spin button"),
+            Role::ComboBox => ("sr-role-combo-box", "combo box"),
+            Role::TextInput => ("sr-role-text-input", "edit text"),
+            Role::MultilineTextInput => ("sr-role-multiline-text-input", "multi-line edit text"),
+            Role::Link => ("sr-role-link", "link"),
+            Role::ProgressBar => ("sr-role-progress-bar", "progress bar"),
+            Role::Spinner => ("sr-role-spinner", "busy indicator"),
+            Role::Tooltip => ("sr-role-tooltip", "tooltip"),
 
-            Role::Image => "image",
+            Role::Image => ("sr-role-image", "image"),
             // Labels / static text / paragraphs read as their content only.
-            Role::Label => "",
-            Role::StaticText => "",
-            Role::Paragraph => "",
+            Role::Label => ("", ""),
+            Role::StaticText => ("", ""),
+            Role::Paragraph => ("", ""),
             // Heading word is produced specially (carries a level), so the
             // generic word is empty here; see `describe`.
-            Role::Heading { .. } => "",
-            Role::Document => "document",
-            Role::Canvas => "canvas",
-            Role::Unknown => "",
+            Role::Heading { .. } => ("", ""),
+            Role::Document => ("sr-role-document", "document"),
+            Role::Canvas => ("sr-role-canvas", "canvas"),
+            Role::Unknown => ("", ""),
+        };
+        if key.is_empty() {
+            String::new()
+        } else {
+            localized(key, english)
         }
     }
 
-    // --- State words ---
-    pub const CHECKED: &str = "checked";
-    pub const NOT_CHECKED: &str = "not checked";
-    pub const PARTIALLY_CHECKED: &str = "partially checked";
+    // --- State words. Each resolves its FTL key with the English fallback. ---
+    pub fn checked() -> String { localized("sr-state-checked", "checked") }
+    pub fn not_checked() -> String { localized("sr-state-not-checked", "not checked") }
+    pub fn partially_checked() -> String {
+        localized("sr-state-partially-checked", "partially checked")
+    }
     /// Switch-flavoured on/off (reads more naturally than "checked" for a
     /// toggle / switch).
-    pub const ON: &str = "on";
-    pub const OFF: &str = "off";
-    pub const SELECTED: &str = "selected";
-    pub const EXPANDED: &str = "expanded";
-    pub const COLLAPSED: &str = "collapsed";
+    pub fn on() -> String { localized("sr-state-on", "on") }
+    pub fn off() -> String { localized("sr-state-off", "off") }
+    pub fn selected() -> String { localized("sr-state-selected", "selected") }
+    pub fn expanded() -> String { localized("sr-state-expanded", "expanded") }
+    pub fn collapsed() -> String { localized("sr-state-collapsed", "collapsed") }
     /// "dimmed" is the long-standing screen-reader word for a disabled control
     /// (Orca / VoiceOver convention) — clearer than "disabled" when spoken.
-    pub const DIMMED: &str = "dimmed";
-    pub const READ_ONLY: &str = "read only";
-    pub const REQUIRED: &str = "required";
-    pub const INVALID: &str = "invalid entry";
-    pub const BUSY: &str = "busy";
+    pub fn dimmed() -> String { localized("sr-state-dimmed", "dimmed") }
+    pub fn read_only() -> String { localized("sr-state-read-only", "read only") }
+    pub fn required() -> String { localized("sr-state-required", "required") }
+    pub fn invalid() -> String { localized("sr-state-invalid", "invalid entry") }
+    pub fn busy() -> String { localized("sr-state-busy", "busy") }
     /// A protected (password) field — the value is never spoken.
-    pub const PROTECTED: &str = "protected";
+    pub fn protected() -> String { localized("sr-state-protected", "protected") }
 
-    /// "heading level N".
+    /// "heading level N". Localizable with a `$level` variable; falls back to
+    /// the English phrasing when no resource is loaded.
     pub fn heading_word(level: u8) -> String {
-        format!("heading level {level}")
+        let resolved = crate::i18n::I18nManager::format(
+            "sr-heading-level",
+            &[("level", (level as f64).into())],
+        );
+        if resolved == "sr-heading-level" {
+            format!("heading level {level}")
+        } else {
+            resolved
+        }
     }
 
     /// "N of M" — an item's position within its collection.
     pub fn position_word(pos: usize, size: usize) -> String {
-        format!("{pos} of {size}")
+        let resolved = crate::i18n::I18nManager::format(
+            "sr-position",
+            &[("pos", (pos as f64).into()), ("size", (size as f64).into())],
+        );
+        if resolved == "sr-position" {
+            format!("{pos} of {size}")
+        } else {
+            resolved
+        }
     }
 
     /// "level N" — hierarchy depth for nested structures (tree rows).
     pub fn level_word(level: usize) -> String {
-        format!("level {level}")
+        let resolved = crate::i18n::I18nManager::format(
+            "sr-level",
+            &[("level", (level as f64).into())],
+        );
+        if resolved == "sr-level" {
+            format!("level {level}")
+        } else {
+            resolved
+        }
     }
 
     // --- Reading-command / live-region phrases ---
-    pub const DELETED: &str = "deleted";
+    pub fn deleted() -> String { localized("sr-deleted", "deleted") }
     /// Spoken when quick-nav finds no further matching element ahead.
-    pub const NO_NEXT: &str = "no more";
+    pub fn no_next() -> String { localized("sr-no-next", "no more") }
     /// Spoken when quick-nav finds no matching element behind.
-    pub const NO_PREV: &str = "no previous";
+    pub fn no_prev() -> String { localized("sr-no-prev", "no previous") }
 }
 
 /// Compose the spoken phrase for an accessible node — the **pure, heavily
@@ -218,7 +266,7 @@ pub fn describe(node: &AccessNode) -> String {
         other => {
             let w = phrase::role_word(other);
             if !w.is_empty() {
-                parts.push(w.to_string());
+                parts.push(w);
             }
         }
     }
@@ -227,7 +275,7 @@ pub fn describe(node: &AccessNode) -> String {
     //    not be spoken); a protected field instead surfaces the word
     //    "protected" so the user knows a value exists without hearing it.
     if node.state.protected {
-        parts.push(phrase::PROTECTED.to_string());
+        parts.push(phrase::protected());
     } else if let Some(value) = node.value.as_deref() {
         if !value.is_empty() {
             parts.push(value.to_string());
@@ -258,7 +306,7 @@ pub fn describe(node: &AccessNode) -> String {
 pub fn describe_state(node: &AccessNode) -> String {
     let mut parts: Vec<String> = Vec::new();
     if node.state.protected {
-        parts.push(phrase::PROTECTED.to_string());
+        parts.push(phrase::protected());
     } else if let Some(value) = node.value.as_deref() {
         if !value.is_empty() {
             parts.push(value.to_string());
@@ -278,41 +326,41 @@ fn push_state_words(node: &AccessNode, parts: &mut Vec<String>) {
 
     // Checked / on / off — `mixed` wins (tri-state indeterminate).
     if s.mixed {
-        parts.push(phrase::PARTIALLY_CHECKED.to_string());
+        parts.push(phrase::partially_checked());
     } else if let Some(checked) = s.checked {
         if switchy {
-            parts.push(if checked { phrase::ON } else { phrase::OFF }.to_string());
+            parts.push(if checked { phrase::on() } else { phrase::off() });
         } else {
-            parts.push(if checked { phrase::CHECKED } else { phrase::NOT_CHECKED }.to_string());
+            parts.push(if checked { phrase::checked() } else { phrase::not_checked() });
         }
     }
 
     if s.selected {
-        parts.push(phrase::SELECTED.to_string());
+        parts.push(phrase::selected());
     }
 
     if let Some(expanded) = s.expanded {
-        parts.push(if expanded { phrase::EXPANDED } else { phrase::COLLAPSED }.to_string());
+        parts.push(if expanded { phrase::expanded() } else { phrase::collapsed() });
     }
 
     if s.required {
-        parts.push(phrase::REQUIRED.to_string());
+        parts.push(phrase::required());
     }
     if s.invalid {
-        parts.push(phrase::INVALID.to_string());
+        parts.push(phrase::invalid());
     }
     // Read-only only matters for editable controls; a static label is
     // trivially "read only" and saying so is noise.
     if s.read_only && is_editable_role(node.role) {
-        parts.push(phrase::READ_ONLY.to_string());
+        parts.push(phrase::read_only());
     }
     if s.busy {
-        parts.push(phrase::BUSY.to_string());
+        parts.push(phrase::busy());
     }
 
     // Disabled ("dimmed") is spoken LAST — it qualifies everything before it.
     if s.disabled {
-        parts.push(phrase::DIMMED.to_string());
+        parts.push(phrase::dimmed());
     }
 }
 
@@ -477,9 +525,9 @@ impl ScreenReader {
     /// single character it's spoken as "X deleted"; otherwise just "deleted".
     pub fn echo_deletion(&mut self, deleted: &str) {
         let text = match deleted.chars().count() {
-            0 => phrase::DELETED.to_string(),
-            1 => format!("{deleted} {}", phrase::DELETED),
-            _ => phrase::DELETED.to_string(),
+            0 => phrase::deleted(),
+            1 => format!("{deleted} {}", phrase::deleted()),
+            _ => phrase::deleted(),
         };
         self.enqueue(Utterance::new(text).with_priority(Priority::Text));
     }
@@ -626,7 +674,7 @@ impl ScreenReader {
                 Some(node)
             }
             None => {
-                self.enqueue(Utterance::new(phrase::NO_NEXT.to_string()));
+                self.enqueue(Utterance::new(phrase::no_next()));
                 None
             }
         }
@@ -659,7 +707,7 @@ impl ScreenReader {
                 Some(node)
             }
             None => {
-                self.enqueue(Utterance::new(phrase::NO_PREV.to_string()));
+                self.enqueue(Utterance::new(phrase::no_prev()));
                 None
             }
         }
@@ -1454,7 +1502,7 @@ mod tests {
         let root = TW::new(None).child(Box::new(TW::new(Some(n(Role::Button).with_name("Solo")))));
         let (mut r, rec) = recording_reader();
         assert!(r.read_next_heading(&root).is_none());
-        assert_eq!(rec.0.borrow().last(), Some(phrase::NO_NEXT));
+        assert_eq!(rec.0.borrow().last(), Some(phrase::no_next().as_str()));
     }
 
     #[test]
