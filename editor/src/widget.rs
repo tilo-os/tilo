@@ -121,7 +121,26 @@ enum FindAction {
     Replace,
     ReplaceAll,
     Close,
+    /// Toggle case-sensitive matching (the **Aa** chip).
+    ToggleCase,
+    /// Toggle whole-word matching (the **W** chip).
+    ToggleWord,
+    /// Toggle regular-expression matching (the **.*** chip).
+    ToggleRegex,
 }
+
+/// A clickable control in the status bar (currently the zoom stepper).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum StatusAction {
+    ZoomOut,
+    ZoomIn,
+    ZoomReset,
+}
+
+/// Zoom bounds + step for the page/content scale.
+const ZOOM_MIN: f64 = 0.5;
+const ZOOM_MAX: f64 = 3.0;
+const ZOOM_STEP: f64 = 0.1;
 
 /// Draw a text-input box (Find/Replace fields). A trailing `_` marks the focused
 /// field's caret; an empty field shows the placeholder.
@@ -316,6 +335,51 @@ fn char_to_byte(text: &str, char_off: usize) -> usize {
 fn byte_to_char(text: &str, byte_off: usize) -> usize {
     let b = byte_off.min(text.len());
     text[..b].chars().count()
+}
+
+/// Whether the char range `[s, e)` in `chars` is bounded by word boundaries on
+/// both sides — i.e. the char immediately before `s` and at `e` (if present) are
+/// not word characters. Used by the Find bar's whole-word toggle.
+fn is_word_match(chars: &[char], s: usize, e: usize) -> bool {
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    let left_ok = s == 0 || !is_word(chars[s - 1]);
+    let right_ok = e >= chars.len() || !is_word(chars[e]);
+    left_ok && right_ok
+}
+
+/// Left padding `chrome::toolbar::draw` applies before the first item.
+const TOOLBAR_PAD: f64 = 14.0;
+/// Gap `chrome::toolbar::draw` places after each item.
+const TOOLBAR_GAP: f64 = 6.0;
+/// Extra width a group separator inserts before a `group_start` item.
+const TOOLBAR_SEP: f64 = 14.0;
+/// Right margin reserved when packing rows (room for the colour-swatch strip /
+/// breathing space at the toolbar's right edge).
+const TOOLBAR_RIGHT_PAD: f64 = 18.0;
+
+/// Pack toolbar items into rows that each fit within `avail_w` (the toolbar's
+/// usable width). Returns the index ranges `[start, end)` for each row. The
+/// width model mirrors `chrome::toolbar::draw` exactly so a row that this packer
+/// admits is one that `draw` lays out without clipping. Every row holds at least
+/// one item (an over-wide single item simply occupies its own row).
+fn pack_toolbar_rows(widths: &[f64], group_starts: &[bool], avail_w: f64) -> Vec<(usize, usize)> {
+    let mut rows = Vec::new();
+    let usable = (avail_w - TOOLBAR_PAD - TOOLBAR_RIGHT_PAD).max(1.0);
+    let mut row_start = 0usize;
+    let mut x = 0.0f64; // running width consumed within the current row (post-pad)
+    for i in 0..widths.len() {
+        let sep = if group_starts[i] { TOOLBAR_SEP } else { 0.0 };
+        let item_w = sep + widths[i] + TOOLBAR_GAP;
+        // If this isn't the first item on the row and it would overflow, wrap.
+        if i > row_start && x + item_w > usable {
+            rows.push((row_start, i));
+            row_start = i;
+            x = 0.0;
+        }
+        x += item_w;
+    }
+    rows.push((row_start, widths.len()));
+    rows
 }
 
 /// `(font size, whole-block bold, left indent, optional bullet)`. Size is the
@@ -651,6 +715,27 @@ pub struct WordProcessorWidget {
     edit_buf: String,
     /// An active drag-to-scrub on a numeric field, if any.
     scrub: Option<ScrubState>,
+    /// Page+content zoom factor (1.0 = 100%). Applied to the page transform and
+    /// accounted for in hit-testing + scroll. Lives in widget state (a view
+    /// preference), not the document. Clamped to `[ZOOM_MIN, ZOOM_MAX]`.
+    zoom: f64,
+    /// The screen-space anchor used for the content zoom transform this frame
+    /// (top-center of the canvas). Cached so the event handler can map pointer
+    /// positions from screen space back into unscaled content space.
+    zoom_anchor: Point,
+    /// Find-bar match modifiers. Default-off reproduces the original
+    /// case-insensitive substring behaviour.
+    find_case: bool,
+    find_word: bool,
+    find_regex: bool,
+    /// Set when the current query is `find_regex` but does not compile — drives a
+    /// subtle "bad pattern" cue and yields zero matches (never panics).
+    find_regex_error: bool,
+    /// Clickable status-bar controls (the zoom stepper): `(action, rect)`.
+    status_buttons: Vec<(StatusAction, Rect)>,
+    /// Number of toolbar rows the controls wrapped into this frame (>=1). Drives
+    /// the canvas top offset so no control is ever clipped.
+    toolbar_rows: usize,
 }
 
 impl Default for WordProcessorWidget {
@@ -705,6 +790,14 @@ impl WordProcessorWidget {
             editing_field: None,
             edit_buf: String::new(),
             scrub: None,
+            zoom: 1.0,
+            zoom_anchor: Point::ZERO,
+            find_case: false,
+            find_word: false,
+            find_regex: false,
+            find_regex_error: false,
+            status_buttons: Vec::new(),
+            toolbar_rows: 1,
         }
     }
 
@@ -796,31 +889,128 @@ impl WordProcessorWidget {
         self.find_matches.clear();
     }
 
-    /// Recompute all (case-insensitive) matches for the current query.
+    // ---- Zoom ---------------------------------------------------------------
+
+    /// Set the zoom factor (clamped) and request a repaint. Returns whether it
+    /// changed.
+    fn set_zoom(&mut self, z: f64) -> bool {
+        let z = z.clamp(ZOOM_MIN, ZOOM_MAX);
+        if (z - self.zoom).abs() > 1e-6 {
+            self.zoom = z;
+            self.dirty = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn zoom_by(&mut self, delta: f64) -> bool {
+        // Round to the nearest step so the displayed percentage stays tidy.
+        let raw = self.zoom + delta;
+        let snapped = (raw / ZOOM_STEP).round() * ZOOM_STEP;
+        self.set_zoom(snapped)
+    }
+
+    /// The content (page) transform for this frame: a scale about the cached
+    /// top-center anchor. Everything inside the page clip draws through this so
+    /// the toolbar / find-bar / status bar stay unscaled.
+    fn content_transform(&self, base: Affine) -> Affine {
+        base * Affine::scale_about(self.zoom, self.zoom_anchor)
+    }
+
+    /// Map a screen-space pointer into the unscaled content coordinate space the
+    /// `Laid` rects live in (the inverse of `content_transform`'s scale-about).
+    fn pointer_to_content(&self, p: Point) -> Point {
+        let a = self.zoom_anchor;
+        Point::new(a.x + (p.x - a.x) / self.zoom, a.y + (p.y - a.y) / self.zoom)
+    }
+
+    /// Recompute all matches for the current query, honouring the case-sensitive,
+    /// whole-word, and regex toggles. Default (all off) = the original
+    /// case-insensitive substring scan. An invalid regex sets `find_regex_error`
+    /// and yields no matches (never panics).
     fn find_recompute(&mut self, state: &AutoCommit) {
         self.find_matches.clear();
-        let q: Vec<char> = self.find_query.to_lowercase().chars().collect();
-        if !q.is_empty() {
-            for b in &self.blocks {
-                let hay: Vec<char> = b.text.to_lowercase().chars().collect();
-                if q.len() > hay.len() {
-                    continue;
-                }
-                let mut i = 0;
-                while i + q.len() <= hay.len() {
-                    if hay[i..i + q.len()] == q[..] {
-                        self.find_matches.push((b.id.clone(), i, i + q.len()));
-                        i += q.len();
-                    } else {
-                        i += 1;
-                    }
-                }
-            }
+        self.find_regex_error = false;
+        if self.find_query.is_empty() {
+            self.find_idx = 0;
+            self.select_current_match(state);
+            return;
+        }
+        if self.find_regex {
+            self.find_recompute_regex();
+        } else {
+            self.find_recompute_literal();
         }
         if self.find_idx >= self.find_matches.len() {
             self.find_idx = 0;
         }
         self.select_current_match(state);
+    }
+
+    /// Literal substring scan over chars, honouring `find_case` and `find_word`.
+    fn find_recompute_literal(&mut self) {
+        // Build the comparison key once: lowercased when case-insensitive.
+        let q: Vec<char> = if self.find_case {
+            self.find_query.chars().collect()
+        } else {
+            self.find_query.to_lowercase().chars().collect()
+        };
+        if q.is_empty() {
+            return;
+        }
+        for b in &self.blocks {
+            // The haystack we *compare* against (possibly lowercased) and the raw
+            // chars we test word-boundaries against share indices 1:1.
+            let raw: Vec<char> = b.text.chars().collect();
+            let hay: Vec<char> = if self.find_case {
+                raw.clone()
+            } else {
+                b.text.to_lowercase().chars().collect()
+            };
+            if q.len() > hay.len() {
+                continue;
+            }
+            let mut i = 0;
+            while i + q.len() <= hay.len() {
+                if hay[i..i + q.len()] == q[..] && (!self.find_word || is_word_match(&raw, i, i + q.len())) {
+                    self.find_matches.push((b.id.clone(), i, i + q.len()));
+                    i += q.len();
+                } else {
+                    i += 1;
+                }
+            }
+        }
+    }
+
+    /// Regex scan. Compiles the query once (case-insensitive flag from
+    /// `find_case`, whole-word via `\b…\b`). On a compile error, records the error
+    /// and produces no matches.
+    fn find_recompute_regex(&mut self) {
+        let mut pattern = self.find_query.clone();
+        if self.find_word {
+            // Wrap in word boundaries so the whole-word toggle composes with regex.
+            pattern = format!(r"\b(?:{pattern})\b");
+        }
+        let re = match regex::RegexBuilder::new(&pattern).case_insensitive(!self.find_case).build() {
+            Ok(re) => re,
+            Err(_) => {
+                self.find_regex_error = true;
+                return;
+            }
+        };
+        for b in &self.blocks {
+            for m in re.find_iter(&b.text) {
+                // Empty matches (e.g. `a*` on a gap) would loop / select nothing;
+                // skip them so navigation stays meaningful.
+                if m.start() == m.end() {
+                    continue;
+                }
+                let cs = byte_to_char(&b.text, m.start());
+                let ce = byte_to_char(&b.text, m.end());
+                self.find_matches.push((b.id.clone(), cs, ce));
+            }
+        }
     }
 
     /// Select (so it highlights) + scroll to the active match.
@@ -883,6 +1073,18 @@ impl WordProcessorWidget {
             FindAction::Replace => self.replace_current(state),
             FindAction::ReplaceAll => self.replace_all(state),
             FindAction::Close => self.close_find(),
+            FindAction::ToggleCase => {
+                self.find_case = !self.find_case;
+                self.find_recompute(state);
+            }
+            FindAction::ToggleWord => {
+                self.find_word = !self.find_word;
+                self.find_recompute(state);
+            }
+            FindAction::ToggleRegex => {
+                self.find_regex = !self.find_regex;
+                self.find_recompute(state);
+            }
         }
     }
 
@@ -896,22 +1098,48 @@ impl WordProcessorWidget {
 
         let fr = Rect::new(x, fy0, x + 188.0, fy0 + 26.0);
         draw_field_box(scene, transform, tr, fr, &self.find_query, "Find", !self.find_on_replace);
+        // A subtle red ring when a regex query fails to compile.
+        if self.find_regex && self.find_regex_error {
+            scene.stroke(&vello::kurbo::Stroke::new(1.5), transform, Color::from_rgb8(0xd0, 0x52, 0x4a), None, &vello::kurbo::RoundedRect::from_rect(fr, 5.0));
+        }
         self.find_buttons.push((FindAction::FocusFind, fr));
         x += 196.0;
+
+        // Match-mode toggles: Aa (case), W (whole word), .* (regex).
+        for (action, label, w, on) in [
+            (FindAction::ToggleCase, "Aa", 30.0, self.find_case),
+            (FindAction::ToggleWord, "W", 26.0, self.find_word),
+            (FindAction::ToggleRegex, ".*", 30.0, self.find_regex),
+        ] {
+            let r = Rect::new(x, fy0, x + w, fy0 + 26.0);
+            let (bg, fg) = if on {
+                (GUIDE, Color::WHITE)
+            } else {
+                (Color::from_rgb8(0x2a, 0x2d, 0x36), Color::from_rgb8(0xb6, 0xba, 0xc4))
+            };
+            scene.fill(Fill::NonZero, transform, bg, None, &vello::kurbo::RoundedRect::from_rect(r, 5.0));
+            let tx = r.x0 + (w - label.chars().count() as f64 * 7.2).max(4.0) / 2.0;
+            tr.draw_text(scene, label, 12.5, fg, transform * Affine::translate((tx, cy - 8.0)), None);
+            self.find_buttons.push((action, r));
+            x += w + 5.0;
+        }
+        x += 8.0;
 
         let rr = Rect::new(x, fy0, x + 188.0, fy0 + 26.0);
         draw_field_box(scene, transform, tr, rr, &self.replace_query, "Replace with", self.find_on_replace);
         self.find_buttons.push((FindAction::FocusReplace, rr));
         x += 196.0;
 
-        let count = if self.find_query.is_empty() {
-            String::new()
+        let (count, count_col) = if self.find_query.is_empty() {
+            (String::new(), MUTED)
+        } else if self.find_regex && self.find_regex_error {
+            ("Bad pattern".to_string(), Color::from_rgb8(0xd0, 0x6a, 0x62))
         } else if self.find_matches.is_empty() {
-            "No results".to_string()
+            ("No results".to_string(), MUTED)
         } else {
-            format!("{} / {}", self.find_idx + 1, self.find_matches.len())
+            (format!("{} / {}", self.find_idx + 1, self.find_matches.len()), MUTED)
         };
-        tr.draw_text(scene, &count, 12.5, MUTED, transform * Affine::translate((x, cy - 7.0)), None);
+        tr.draw_text(scene, &count, 12.5, count_col, transform * Affine::translate((x, cy - 7.0)), None);
         x += 78.0;
 
         for (action, label, w) in [
@@ -1465,11 +1693,16 @@ impl Widget for WordProcessorWidget {
 
     fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &PresenceCtx) {
         let full = self.rect;
-        let tb = Rect::new(full.x0, full.y0, full.x1, full.y0 + TOOLBAR_H);
+        // The toolbar may wrap to several rows on a narrow window; reserve its
+        // actual (possibly multi-row) height so the canvas top sits below it and
+        // no control is clipped. `draw_toolbar` re-derives the same packing, so
+        // the reserved band and the drawn rows always agree.
+        let tb_h = self.toolbar_height(full.width());
+        let tb = Rect::new(full.x0, full.y0, full.x1, full.y0 + tb_h);
         self.draw_toolbar(scene, transform, text_renderer, theme, tb);
 
-        let status_top = (full.y1 - STATUS_H).max(full.y0 + TOOLBAR_H);
-        let layout_bar_top = (status_top - LAYOUT_BAR_H).max(full.y0 + TOOLBAR_H);
+        let status_top = (full.y1 - STATUS_H).max(full.y0 + tb_h);
+        let layout_bar_top = (status_top - LAYOUT_BAR_H).max(full.y0 + tb_h);
         // Reserve the styles panel out of the canvas so the page re-centers in the
         // remaining width (and scrolled content never paints under the panel).
         let canvas_right = if self.styles_panel_open {
@@ -1480,13 +1713,21 @@ impl Widget for WordProcessorWidget {
         // Reserve the Find bar (when open) out of the canvas top.
         let find_h = if self.find_open { FIND_BAR_H } else { 0.0 };
         if find_h > 0.0 {
-            let fbar = Rect::new(full.x0, full.y0 + TOOLBAR_H, canvas_right, full.y0 + TOOLBAR_H + find_h);
+            let fbar = Rect::new(full.x0, full.y0 + tb_h, canvas_right, full.y0 + tb_h + find_h);
             self.draw_find_bar(scene, transform, text_renderer, theme, fbar);
         } else {
             self.find_buttons.clear();
         }
-        let canvas = Rect::new(full.x0, full.y0 + TOOLBAR_H + find_h, canvas_right, layout_bar_top);
+        let canvas = Rect::new(full.x0, full.y0 + tb_h + find_h, canvas_right, layout_bar_top);
         scene.fill(Fill::NonZero, transform, CANVAS, None, &canvas);
+
+        // Zoom anchor: the canvas top, horizontally centered. The page+content
+        // transform scales about this point, so the page stays centered and the
+        // top of the (scrolled) content stays pinned to the canvas top as zoom
+        // changes. The toolbar/find-bar/status bar are drawn with the unscaled
+        // `transform` and are unaffected.
+        self.zoom_anchor = Point::new((canvas.x0 + canvas.x1) / 2.0, canvas.y0);
+        let ctf = self.content_transform(transform);
 
         // Per-side page geometry — every margin is independently customizable.
         // The page is a FIXED size (it does not resize with the window); the
@@ -1759,7 +2000,11 @@ impl Widget for WordProcessorWidget {
 
         // Scrolling: clamp the offset to the overflow, then shift the laid-out
         // content (+ pages) into screen space so hit-testing needs no offset.
-        self.max_scroll = (extent + 2.0 * PAGE_TOP - canvas.height()).max(0.0);
+        // `scroll_y` is an offset in unscaled content space; on screen the content
+        // is magnified by `zoom`, so the visible window covers `canvas.height() /
+        // zoom` of content — divide by zoom so the overflow (and thus max scroll)
+        // grows when zoomed in and shrinks when zoomed out.
+        self.max_scroll = (extent + 2.0 * PAGE_TOP - canvas.height() / self.zoom).max(0.0);
         self.scroll_y = self.scroll_y.clamp(0.0, self.max_scroll);
         let sy = self.scroll_y;
         if sy != 0.0 {
@@ -1776,16 +2021,17 @@ impl Widget for WordProcessorWidget {
         scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &canvas);
 
         // Discrete page sheets (shadow + paper) stacked with `PAGE_GAP`, each with
-        // a "Page N" label centered in the gap just below the sheet.
+        // a "Page N" label centered in the gap just below the sheet. Drawn through
+        // `ctf` (the zoom transform) so the page magnifies with the content.
         for i in 0..num_pages {
             let ptop = page_top + i as f64 * page_pitch - sy;
             let sheet = Rect::new(page_x, ptop, page_x + page_w, ptop + letter_h);
-            chrome::page::draw(scene, transform, sheet, PAPER, SHADOW);
+            chrome::page::draw(scene, ctf, sheet, PAPER, SHADOW);
             let label = format!("Page {}", i + 1);
             let approx = label.chars().count() as f64 * 6.4;
             let lx = (sheet.x0 + sheet.x1) / 2.0 - approx / 2.0;
             let ly = sheet.y1 + PAGE_GAP / 2.0 - 6.0;
-            text_renderer.draw_text(scene, &label, 11.0, Color::from_rgb8(0x9a, 0x9e, 0xa8), transform * Affine::translate((lx, ly)), None);
+            text_renderer.draw_text(scene, &label, 11.0, Color::from_rgb8(0x9a, 0x9e, 0xa8), ctf * Affine::translate((lx, ly)), None);
         }
         // The first page is the reference rect for the margin-guide overlay
         // (margins apply to every page identically).
@@ -1796,21 +2042,23 @@ impl Widget for WordProcessorWidget {
         self.blocks = blocks;
         let multi_sel = self.selection_blocks_cached().len() > 1;
 
-        // Pass 2: draw cell borders, bullets, selection, text, caret.
+        // Pass 2: draw cell borders, bullets, selection, text, caret. Everything
+        // here renders through `ctf` (the zoom transform) so page content scales
+        // while the surrounding chrome stays at 100%.
         for l in &laid {
             if l.kind == "image" {
                 let rect = Rect::new(l.text_x, l.y_top, l.text_x + l.width, l.y_top + l.height);
                 if let Some(hash) = &l.image_hash {
                     if let Some(slot) = self.image_cache.get_mut(hash) {
                         if let Some(img) = slot {
-                            img.paint_at(scene, transform, rect);
+                            img.paint_at(scene, ctf, rect);
                         }
                     }
                 } else {
                     // Missing or undecodable (e.g. non-PNG) image — placeholder.
-                    scene.fill(Fill::NonZero, transform, Color::from_rgb8(0xee, 0xee, 0xf2), None, &vello::kurbo::RoundedRect::from_rect(rect, 6.0));
-                    scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, Color::from_rgb8(0xcc, 0xce, 0xd6), None, &vello::kurbo::RoundedRect::from_rect(rect, 6.0));
-                    text_renderer.draw_text(scene, "🖼  image", 14.0, MUTED, transform * Affine::translate((rect.x0 + 12.0, rect.y0 + rect.height() / 2.0 - 8.0)), None);
+                    scene.fill(Fill::NonZero, ctf, Color::from_rgb8(0xee, 0xee, 0xf2), None, &vello::kurbo::RoundedRect::from_rect(rect, 6.0));
+                    scene.stroke(&vello::kurbo::Stroke::new(1.0), ctf, Color::from_rgb8(0xcc, 0xce, 0xd6), None, &vello::kurbo::RoundedRect::from_rect(rect, 6.0));
+                    text_renderer.draw_text(scene, "🖼  image", 14.0, MUTED, ctf * Affine::translate((rect.x0 + 12.0, rect.y0 + rect.height() / 2.0 - 8.0)), None);
                 }
                 continue;
             }
@@ -1820,19 +2068,19 @@ impl Widget for WordProcessorWidget {
                     Some(r) if r % 2 == 0 => Color::from_rgb8(0xf6, 0xf6, 0xf9), // zebra
                     _ => PAPER,
                 };
-                scene.fill(Fill::NonZero, transform, fill, None, &bx);
-                scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, Color::from_rgb8(0xc4, 0xc6, 0xcc), None, &bx);
+                scene.fill(Fill::NonZero, ctf, fill, None, &bx);
+                scene.stroke(&vello::kurbo::Stroke::new(1.0), ctf, Color::from_rgb8(0xc4, 0xc6, 0xcc), None, &bx);
             }
 
             if l.kind == "fidelity" {
                 let box_rect = Rect::new(l.text_x, l.y_top + 2.0, (page_x + page_w - m.right).min(l.text_x + 360.0), l.y_top + l.height - 2.0);
-                scene.fill(Fill::NonZero, transform, Color::from_rgb8(0xee, 0xee, 0xf2), None, &vello::kurbo::RoundedRect::from_rect(box_rect, 4.0));
-                text_renderer.draw_text(scene, "⟦ embedded content ⟧", 14.0, MUTED, transform * Affine::translate((l.text_x + 10.0, l.y_top + 6.0)), None);
+                scene.fill(Fill::NonZero, ctf, Color::from_rgb8(0xee, 0xee, 0xf2), None, &vello::kurbo::RoundedRect::from_rect(box_rect, 4.0));
+                text_renderer.draw_text(scene, "⟦ embedded content ⟧", 14.0, MUTED, ctf * Affine::translate((l.text_x + 10.0, l.y_top + 6.0)), None);
                 continue;
             }
 
             if let Some(bul) = &l.bullet {
-                text_renderer.draw_text(scene, bul, l.size, l.ink, transform * Affine::translate((l.text_x - BULLET_GAP, l.y_top)), None);
+                text_renderer.draw_text(scene, bul, l.size, l.ink, ctf * Affine::translate((l.text_x - BULLET_GAP, l.y_top)), None);
             }
 
             // The shaped text lives in the layout cache (built in pass 1), keyed
@@ -1845,11 +2093,11 @@ impl Widget for WordProcessorWidget {
             if let Some((b0, b1)) = self.selection_bytes_for(&l.id, &l.text) {
                 if let (Some(bx), true) = (l.cell_box, multi_sel) {
                     // Multi-cell selection: highlight the whole cell (spreadsheet-style).
-                    scene.fill(Fill::NonZero, transform, SELECTION, None, &bx);
+                    scene.fill(Fill::NonZero, ctf, SELECTION, None, &bx);
                 } else {
                     for (rx0, ry0, rx1, ry1) in layout.selection_rects(b0, b1) {
                         let r = Rect::new(l.text_x + rx0 as f64, l.y_top + ry0 as f64, l.text_x + rx1 as f64, l.y_top + ry1 as f64);
-                        scene.fill(Fill::NonZero, transform, SELECTION, None, &r);
+                        scene.fill(Fill::NonZero, ctf, SELECTION, None, &r);
                     }
                 }
             }
@@ -1862,18 +2110,18 @@ impl Widget for WordProcessorWidget {
                         let be = char_to_byte(&l.text, *ce);
                         for (rx0, ry0, rx1, ry1) in layout.selection_rects(bs, be) {
                             let r = Rect::new(l.text_x + rx0 as f64, l.y_top + ry0 as f64, l.text_x + rx1 as f64, l.y_top + ry1 as f64);
-                            scene.fill(Fill::NonZero, transform, FIND_HL, None, &r);
+                            scene.fill(Fill::NonZero, ctf, FIND_HL, None, &r);
                         }
                     }
                 }
             }
-            text_renderer.draw_rich(scene, layout, transform * Affine::translate((l.text_x, l.y_top)), l.ink);
+            text_renderer.draw_rich(scene, layout, ctf * Affine::translate((l.text_x, l.y_top)), l.ink);
 
             if self.focused && l.id == self.inner.caret.block && !self.inner.has_selection() {
                 let byte = char_to_byte(&l.text, self.inner.caret.offset);
                 let (cx, cy, ch) = layout.caret_geometry(byte);
                 let caret = Rect::new(l.text_x + cx as f64, l.y_top + cy as f64, l.text_x + cx as f64 + CARET_WIDTH, l.y_top + cy as f64 + ch as f64);
-                scene.fill(Fill::NonZero, transform, CARET_COLOR, None, &caret);
+                scene.fill(Fill::NonZero, ctf, CARET_COLOR, None, &caret);
             }
         }
 
@@ -1885,7 +2133,7 @@ impl Widget for WordProcessorWidget {
                     "Start writing…",
                     16.5,
                     Color::from_rgb8(0xbc, 0xbc, 0xc2),
-                    transform * Affine::translate((l.text_x, l.y_top)),
+                    ctf * Affine::translate((l.text_x, l.y_top)),
                     None,
                 );
             }
@@ -1894,7 +2142,7 @@ impl Widget for WordProcessorWidget {
         // Layout-edit overlay: draggable guides + live value labels for the
         // active mode (drawn over the content, still inside the page clip).
         if self.layout_mode != LayoutMode::None {
-            self.draw_layout_overlay(scene, transform, text_renderer, page);
+            self.draw_layout_overlay(scene, ctf, text_renderer, page);
         }
 
         scene.pop_layer();
@@ -1916,7 +2164,7 @@ impl Widget for WordProcessorWidget {
 
         // Contextual styles panel on the right (between toolbar and layout bar).
         if self.styles_panel_open {
-            let panel = Rect::new(canvas_right, full.y0 + TOOLBAR_H, full.x1, layout_bar_top);
+            let panel = Rect::new(canvas_right, full.y0 + tb_h, full.x1, layout_bar_top);
             self.draw_styles_panel(scene, transform, text_renderer, panel);
         } else {
             self.panel_rect = Rect::ZERO;
@@ -1933,6 +2181,9 @@ impl Widget for WordProcessorWidget {
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, modifiers: &Modifiers, state: &mut AutoCommit, _path: &ObjId, handled: &mut bool, _focus_target: &mut Option<NodeId>, _node_id: NodeId, _taffy: &TaffyTree<()>) {
         let shift = modifiers.state().shift_key();
         let ctrl = modifiers.state().control_key();
+        // The toolbar may have wrapped to several rows; hit-test against its
+        // actual bottom (`tb_h`), matching `draw`.
+        let tb_h = self.toolbar_height(self.rect.width());
         match event {
             // Drag-and-drop a file onto the window inserts it as an image at the
             // caret. This is the primary (portal-free) image-insert path.
@@ -1946,6 +2197,15 @@ impl Widget for WordProcessorWidget {
                     MouseScrollDelta::LineDelta(_, y) => *y as f64 * 48.0,
                     MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
                 };
+                if ctrl {
+                    // Ctrl + wheel zooms (a step per notch of scroll), the standard
+                    // editor gesture. Scroll-up (positive dy) zooms in.
+                    let step = if dy > 0.0 { ZOOM_STEP } else { -ZOOM_STEP };
+                    if self.zoom_by(step) {
+                        *handled = true;
+                    }
+                    return;
+                }
                 let new = (self.scroll_y - dy).clamp(0.0, self.max_scroll);
                 if new != self.scroll_y {
                     self.scroll_y = new;
@@ -1956,7 +2216,7 @@ impl Widget for WordProcessorWidget {
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
                 // Toolbar hover feedback — repaint only when the hovered button changes.
-                let new_hover = if self.pointer.y < self.rect.y0 + TOOLBAR_H {
+                let new_hover = if self.pointer.y < self.rect.y0 + tb_h {
                     self.toolbar.iter().find(|(_, r)| r.contains(self.pointer)).map(|(_, r)| *r)
                 } else {
                     None
@@ -1984,13 +2244,16 @@ impl Widget for WordProcessorWidget {
                     }
                     *handled = true;
                 } else if let Some(gd) = self.guide_drag {
-                    // Live-drag a layout guide (margin / border / spacing).
-                    self.apply_guide_drag(gd, self.pointer);
+                    // Live-drag a layout guide (margin / border / spacing). Guides
+                    // live in unscaled page space, so map the pointer through the
+                    // inverse zoom first.
+                    self.apply_guide_drag(gd, self.pointer_to_content(self.pointer));
                     self.dirty = true; // repaint every move so the preview is live
                     *handled = true;
                 } else if self.drag.drag().is_some() {
-                    // Extend the selection: keep the anchor, move the caret.
-                    self.caret_from_pointer(self.pointer, true);
+                    // Extend the selection: keep the anchor, move the caret. The
+                    // `Laid` rects are unscaled, so hit-test in content space.
+                    self.caret_from_pointer(self.pointer_to_content(self.pointer), true);
                     // Claim the move so the host App repaints (its redraw is gated
                     // behind `handled`).
                     *handled = true;
@@ -2016,8 +2279,8 @@ impl Widget for WordProcessorWidget {
                 }
                 // Find bar (when open): dispatch clicks on its fields + controls.
                 if self.find_open {
-                    let fbar_bot = self.rect.y0 + TOOLBAR_H + FIND_BAR_H;
-                    if self.pointer.y >= self.rect.y0 + TOOLBAR_H && self.pointer.y < fbar_bot {
+                    let fbar_bot = self.rect.y0 + tb_h + FIND_BAR_H;
+                    if self.pointer.y >= self.rect.y0 + tb_h && self.pointer.y < fbar_bot {
                         if let Some(action) = self.find_buttons.iter().find(|(_, r)| r.contains(self.pointer)).map(|(a, _)| *a) {
                             self.find_action(state, action);
                         }
@@ -2026,7 +2289,7 @@ impl Widget for WordProcessorWidget {
                         return;
                     }
                 }
-                if self.pointer.y < self.rect.y0 + TOOLBAR_H {
+                if self.pointer.y < self.rect.y0 + tb_h {
                     // Reverse so the colour swatches (pushed after the chrome
                     // buttons) win a hit-test on any overlap at a crowded edge.
                     let clicked = self.toolbar.iter().rev().find(|(_, r)| r.contains(self.pointer)).map(|(a, _)| *a);
@@ -2042,7 +2305,17 @@ impl Widget for WordProcessorWidget {
                     return;
                 }
                 if self.pointer.y > self.rect.y1 - STATUS_H {
-                    return; // status bar — not editable
+                    // Status bar: the only clickable controls are the zoom stepper.
+                    if let Some(action) = self.status_buttons.iter().find(|(_, r)| r.contains(self.pointer)).map(|(a, _)| *a) {
+                        match action {
+                            StatusAction::ZoomOut => self.zoom_by(-ZOOM_STEP),
+                            StatusAction::ZoomIn => self.zoom_by(ZOOM_STEP),
+                            StatusAction::ZoomReset => self.set_zoom(1.0),
+                        };
+                        self.dirty = true;
+                        *handled = true;
+                    }
+                    return; // status bar text itself — not editable
                 }
                 // Bottom layout bar (mode chips), just above the status bar.
                 let lbar_top = self.rect.y1 - STATUS_H - LAYOUT_BAR_H;
@@ -2054,10 +2327,13 @@ impl Widget for WordProcessorWidget {
                     *handled = true;
                     return;
                 }
+                // Page-content hit-tests work in unscaled content space; map the
+                // pointer through the inverse zoom transform once here.
+                let cp = self.pointer_to_content(self.pointer);
                 // In a layout-edit mode, grabbing a guide starts a drag instead of
                 // a text selection.
                 if self.layout_mode != LayoutMode::None {
-                    if let Some(side) = self.hit_guide(self.pointer) {
+                    if let Some(side) = self.hit_guide(cp) {
                         let kind = if ctrl {
                             DragKind::Proportional
                         } else if shift {
@@ -2074,7 +2350,7 @@ impl Widget for WordProcessorWidget {
                 // Selection gesture (ui::DragSelect): shift extends; double/triple
                 // click select word/paragraph; a plain press starts a fresh drag.
                 let intent = self.drag.press(self.pointer, shift);
-                self.caret_from_pointer(self.pointer, intent.extend);
+                self.caret_from_pointer(cp, intent.extend);
                 match intent.granularity {
                     Granularity::Word => self.inner.select_word(state),
                     Granularity::Line => self.select_all_in_block(state),
@@ -2181,6 +2457,27 @@ impl Widget for WordProcessorWidget {
                             *handled = true;
                             return;
                         }
+                        // Zoom: Ctrl+= / Ctrl++ (in), Ctrl+- (out), Ctrl+0 (reset
+                        // to 100%). These are view-only — they never mutate the doc,
+                        // so they return before the editing path below.
+                        match s.as_str() {
+                            "=" | "+" => {
+                                self.zoom_by(ZOOM_STEP);
+                                *handled = true;
+                                return;
+                            }
+                            "-" | "_" => {
+                                self.zoom_by(-ZOOM_STEP);
+                                *handled = true;
+                                return;
+                            }
+                            "0" => {
+                                self.set_zoom(1.0);
+                                *handled = true;
+                                return;
+                            }
+                            _ => {}
+                        }
                         match s.to_lowercase().as_str() {
                             "b" => self.inner.toggle_mark(state, "strong"),
                             "i" => self.inner.toggle_mark(state, "em"),
@@ -2194,11 +2491,11 @@ impl Widget for WordProcessorWidget {
                             "v" if shift => self.clipboard_paste_plain(state),
                             "v" => self.clipboard_paste(state),
                             "a" => self.inner.select_all(state),
-                            // Ctrl+1/2/3 → heading levels, Ctrl+0 → body paragraph.
+                            // Ctrl+1/2/3 → heading levels. (Ctrl+0 is zoom-reset;
+                            // Body paragraph is reachable via the toolbar / panel.)
                             "1" => self.inner.set_paragraph_style(state, "heading", Some(1), None),
                             "2" => self.inner.set_paragraph_style(state, "heading", Some(2), None),
                             "3" => self.inner.set_paragraph_style(state, "heading", Some(3), None),
-                            "0" => self.inner.set_paragraph_style(state, "paragraph", None, None),
                             // z / y (undo/redo) are handled by the host App.
                             _ => {}
                         }
@@ -2649,7 +2946,7 @@ impl WordProcessorWidget {
         self.inner.move_end(state);
     }
 
-    fn draw_status_bar(&self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, bar: Rect) {
+    fn draw_status_bar(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, bar: Rect) {
         let words: usize = self.blocks.iter().map(|b| b.text.split_whitespace().count()).sum();
         let chars: usize = self.blocks.iter().map(|b| b.text.chars().count()).sum();
         let left = format!("{words} words    {chars} characters");
@@ -2668,6 +2965,47 @@ impl WordProcessorWidget {
             format!("{dot}{fname}    ·    {kind}")
         };
         chrome::status_bar::draw(scene, transform, tr, theme, bar, &left, &right);
+        // Overlay the zoom stepper (− value + …%) on top of the status bar,
+        // centered. It's the only clickable status-bar control.
+        self.draw_zoom_control(scene, transform, tr, bar);
+    }
+
+    /// Draw the status-bar zoom control: a − button, the current percentage, a +
+    /// button, then a small "Reset" affordance when zoomed away from 100%. Each
+    /// button is registered in `self.status_buttons` for click hit-testing.
+    fn draw_zoom_control(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, bar: Rect) {
+        self.status_buttons.clear();
+        let cy = (bar.y0 + bar.y1) / 2.0;
+        let bw = 18.0;
+        let bh = 18.0;
+        let y0 = cy - bh / 2.0;
+        let pct = format!("{}%", (self.zoom * 100.0).round() as i32);
+        // Layout: [−] [ 100% ] [+]  — centered horizontally in the bar.
+        let val_w = 44.0;
+        let total = bw + 4.0 + val_w + 4.0 + bw;
+        let mut x = (bar.x0 + bar.x1) / 2.0 - total / 2.0;
+
+        let btn = |scene: &mut Scene, tr: &mut TextRenderer, x: f64, label: &str| -> Rect {
+            let r = Rect::new(x, y0, x + bw, y0 + bh);
+            scene.fill(Fill::NonZero, transform, Color::from_rgb8(0x33, 0x36, 0x40), None, &vello::kurbo::RoundedRect::from_rect(r, 4.0));
+            let tx = r.x0 + (bw - label.chars().count() as f64 * 6.5).max(2.0) / 2.0;
+            tr.draw_text(scene, label, 13.0, Color::from_rgb8(0xc8, 0xcc, 0xd4), transform * Affine::translate((tx, cy - 8.0)), None);
+            r
+        };
+
+        let minus = btn(scene, tr, x, "−");
+        self.status_buttons.push((StatusAction::ZoomOut, minus));
+        x += bw + 4.0;
+
+        // The percentage chip doubles as a reset target (click to return to 100%).
+        let vr = Rect::new(x, y0, x + val_w, y0 + bh);
+        let pw = pct.chars().count() as f64 * 6.8;
+        tr.draw_text(scene, &pct, 12.5, Color::from_rgb8(0xd6, 0xd9, 0xe0), transform * Affine::translate((x + (val_w - pw) / 2.0, cy - 8.0)), None);
+        self.status_buttons.push((StatusAction::ZoomReset, vr));
+        x += val_w + 4.0;
+
+        let plus = btn(scene, tr, x, "+");
+        self.status_buttons.push((StatusAction::ZoomIn, plus));
     }
 
     fn draw_toolbar(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, tb: Rect) {
@@ -2727,20 +3065,98 @@ impl WordProcessorWidget {
         drop(add);
 
         let items: Vec<ToolbarItem> = specs.iter().map(|(_, item)| item.clone()).collect();
-        let rects = chrome::toolbar::draw(scene, transform, tr, theme, tb, &items);
-        self.toolbar = specs.into_iter().map(|(a, _)| a).zip(rects).collect();
 
-        // Per-run text-colour swatch row, appended at the right of the toolbar.
-        // The chrome toolbar only draws text buttons, so the coloured squares are
-        // painted directly here (and registered as `TextColor` click targets) —
-        // no `ui` change needed. The leading neutral swatch clears the run colour.
-        self.draw_color_swatches(scene, transform, tr, tb);
+        // Responsive packing: when the controls don't fit `tb.width()`, wrap to
+        // additional rows so nothing is ever clipped or unreachable. The packer's
+        // width model mirrors `chrome::toolbar::draw`, so each row-slice it admits
+        // is drawn by `draw` without overflow. `tb` is the FULL multi-row toolbar
+        // rect (its height already reserves every row — see `toolbar_height`).
+        let widths: Vec<f64> = items.iter().map(|it| it.width).collect();
+        let starts: Vec<bool> = items.iter().map(|it| it.group_start).collect();
+        let rows = pack_toolbar_rows(&widths, &starts, tb.width());
+        self.toolbar_rows = rows.len();
+
+        // Fill the whole toolbar background once (so inter-row gaps are toned
+        // consistently), then draw each row's buttons at its own band.
+        scene.fill(Fill::NonZero, transform, theme.tokens.colors.surfaces.raised, None, &tb);
+
+        let row_h = TOOLBAR_H;
+        let mut all_rects: Vec<Rect> = Vec::with_capacity(items.len());
+        for (ri, (s, e)) in rows.iter().enumerate() {
+            let ry0 = tb.y0 + ri as f64 * row_h;
+            let row_rect = Rect::new(tb.x0, ry0, tb.x1, ry0 + row_h);
+            let rects = chrome::toolbar::draw(scene, transform, tr, theme, row_rect, &items[*s..*e]);
+            all_rects.extend(rects);
+        }
+        self.toolbar = specs.into_iter().map(|(a, _)| a).zip(all_rects).collect();
+
+        // Per-run text-colour swatch row, appended at the right of the LAST
+        // toolbar row. The chrome toolbar only draws text buttons, so the coloured
+        // squares are painted directly here (and registered as `TextColor` click
+        // targets) — no `ui` change needed. The leading neutral swatch clears the
+        // run colour.
+        let last_row_y = tb.y0 + (rows.len() as f64 - 1.0) * row_h;
+        let swatch_band = Rect::new(tb.x0, last_row_y, tb.x1, last_row_y + row_h);
+        self.draw_color_swatches(scene, transform, tr, swatch_band);
 
         // Subtle hover highlight over the button under the pointer.
         if let Some(hr) = self.hover_tool {
-            let pad = Rect::new(hr.x0 - 2.0, tb.y0 + 6.0, hr.x1 + 2.0, tb.y1 - 6.0);
+            let pad = Rect::new(hr.x0 - 2.0, hr.y0 + 1.0, hr.x1 + 2.0, hr.y1 - 1.0);
             scene.fill(Fill::NonZero, transform, Color::from_rgba8(0xff, 0xff, 0xff, 0x14), None, &vello::kurbo::RoundedRect::from_rect(pad, 6.0));
         }
+    }
+
+    /// The toolbar's full height for the current window width — `TOOLBAR_H` per
+    /// wrapped row. Computed from the same packer `draw_toolbar` uses so the
+    /// canvas top offset and the drawn rows always agree.
+    fn toolbar_height(&self, width: f64) -> f64 {
+        let widths: Vec<f64> = self.toolbar_item_widths();
+        let starts: Vec<bool> = self.toolbar_item_group_starts();
+        let rows = pack_toolbar_rows(&widths, &starts, width);
+        rows.len() as f64 * TOOLBAR_H
+    }
+
+    /// The per-item widths fed to the toolbar packer. Mirrors the `add(...)`
+    /// sequence in `draw_toolbar`; the contextual table/cell controls depend on
+    /// the caret block kind, so this resolves the same branch.
+    fn toolbar_item_widths(&self) -> Vec<f64> {
+        let (kind, _) = self.current_block_style();
+        let mut w = vec![
+            34.0, 30.0, 32.0, 30.0, // B I U S
+            42.0, 42.0, 58.0, 66.0, // H1 H2 Body • List
+            30.0, 30.0, 30.0, 30.0, // L C R J
+            58.0, // font
+            34.0, 40.0, 34.0, // A− value A+
+        ];
+        if kind == "cell" {
+            w.extend([54.0, 54.0, 52.0, 52.0, 30.0]); // +Row −Row +Col −Col ✕
+        } else {
+            w.push(78.0); // ⊞ Table
+        }
+        w.push(80.0); // 🖼 Image
+        w.push(64.0); // Styles
+        w
+    }
+
+    /// The per-item `group_start` flags, parallel to `toolbar_item_widths`.
+    fn toolbar_item_group_starts(&self) -> Vec<bool> {
+        let (kind, _) = self.current_block_style();
+        // Indices that start a group in `draw_toolbar` (see `group_start`).
+        let mut g = vec![
+            false, false, false, false, // B I U S
+            true, false, false, false, // H1(group) H2 Body • List
+            true, false, false, false, // L(group) C R J
+            true, // font(group)
+            false, false, false, // size stepper
+        ];
+        if kind == "cell" {
+            g.extend([true, false, false, false, false]); // +Row starts a group
+        } else {
+            g.push(true); // ⊞ Table starts a group
+        }
+        g.push(true); // 🖼 Image starts a group
+        g.push(true); // Styles starts a group
+        g
     }
 
     /// Draw the text-colour swatch row at the right edge of the toolbar and
@@ -3072,14 +3488,13 @@ mod tests {
     #[test]
     fn long_document_paginates_across_discrete_pages() {
         // Geometry mirrors `draw`: a fresh widget keeps the default uniform 72px
-        // margins, find bar closed (find_h = 0), so canvas top = TOOLBAR_H.
+        // margins, find bar closed (find_h = 0), so canvas top = the toolbar's
+        // actual (possibly multi-row) height. The toolbar wraps on a narrow
+        // window, so derive `page_top` from the same `toolbar_height` the
+        // production `draw` uses rather than hard-coding a single-row height.
         let mar = 72.0;
         let letter_h = MAX_PAGE_W * LETTER_RATIO;
         let page_pitch = letter_h + PAGE_GAP;
-        let page_top = TOOLBAR_H + PAGE_TOP;
-        let pct = |i: usize| page_top + i as f64 * page_pitch + mar; // page content top
-        let pcb = |i: usize| page_top + i as f64 * page_pitch + letter_h - mar; // bottom margin
-        let page_of = |y: f64| ((y - page_top) / page_pitch).floor() as i64;
 
         let mut state = ui::State::new();
         let mut wp = WordProcessorWidget::new();
@@ -3090,6 +3505,13 @@ mod tests {
             wp.model_mut().enter(&mut state.doc);
         }
         pipeline_draw(&mut wp, &mut state, 1000, 700);
+
+        // The canvas top sits below the (wrapped) toolbar — the real offset the
+        // pagination cursor starts from.
+        let page_top = wp.toolbar_height(1000.0) + PAGE_TOP;
+        let pct = |i: usize| page_top + i as f64 * page_pitch + mar; // page content top
+        let pcb = |i: usize| page_top + i as f64 * page_pitch + letter_h - mar; // bottom margin
+        let page_of = |y: f64| ((y - page_top) / page_pitch).floor() as i64;
 
         // The content spans more than one page.
         let max_page = wp.laid.iter().map(|l| page_of(l.y_top)).max().unwrap();
@@ -3154,5 +3576,246 @@ mod tests {
         wp.sync(&mut state.doc, &state.root);
         pipeline_draw(&mut wp, &mut state, 1000, 700);
         assert!(wp.laid.iter().any(|l| l.kind == "image"), "an image block was laid out");
+    }
+
+    // ---- Zoom ---------------------------------------------------------------
+
+    #[test]
+    fn zoom_scales_the_content_transform_about_the_anchor() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "zoom me");
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+
+        // At 100% the content transform is the identity scale (no magnification).
+        let base = Affine::IDENTITY;
+        let id_ctf = wp.content_transform(base);
+        assert!((id_ctf.as_coeffs()[0] - 1.0).abs() < 1e-9, "100% zoom does not scale");
+
+        // Zoom in: the content transform now scales by `zoom` about the anchor,
+        // so a point at the anchor is fixed and points below it move down.
+        assert!(wp.set_zoom(2.0));
+        let ctf = wp.content_transform(base);
+        let coeffs = ctf.as_coeffs();
+        assert!((coeffs[0] - 2.0).abs() < 1e-9 && (coeffs[3] - 2.0).abs() < 1e-9, "zoom doubles the scale");
+        // The anchor maps to itself.
+        let a = wp.zoom_anchor;
+        let mapped_anchor = ctf * a;
+        assert!((mapped_anchor.x - a.x).abs() < 1e-6 && (mapped_anchor.y - a.y).abs() < 1e-6, "the anchor is fixed under zoom");
+        // A point one content-unit below the anchor lands two screen-units below.
+        let p = Point::new(a.x, a.y + 100.0);
+        let mp = ctf * p;
+        assert!((mp.y - (a.y + 200.0)).abs() < 1e-6, "content below the anchor is magnified downward");
+    }
+
+    #[test]
+    fn click_maps_to_the_same_caret_under_zoom() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "first paragraph");
+        wp.model_mut().enter(&mut state.doc);
+        wp.model_mut().insert_str(&mut state.doc, "second paragraph");
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+
+        // A content-space point inside the second block (its `Laid` rect lives in
+        // unscaled content coordinates regardless of zoom).
+        let l2 = wp.laid.iter().find(|l| l.text == "second paragraph").expect("2nd block laid out");
+        let target_block = l2.id.clone();
+        let content_pt = Point::new(l2.text_x + 30.0, l2.y_top + l2.height / 2.0);
+
+        // Sanity: clicking that content point lands the caret in the 2nd block.
+        wp.caret_from_pointer(content_pt, false);
+        assert_eq!(wp.inner.caret.block, target_block, "baseline content-space click hits the 2nd block");
+        let off_unzoomed = wp.inner.caret.offset;
+
+        // Now zoom to 175%. The screen position of that same content point is the
+        // content transform applied to it. Feeding the screen point back through
+        // the production inverse (`pointer_to_content`) must recover the click,
+        // so `handle_event`'s caret hit-test lands on the same block + offset.
+        assert!(wp.set_zoom(1.75));
+        pipeline_draw(&mut wp, &mut state, 1000, 700); // recompute `zoom_anchor`
+        let screen_pt = wp.content_transform(Affine::IDENTITY) * content_pt;
+        let recovered = wp.pointer_to_content(screen_pt);
+        assert!((recovered.x - content_pt.x).abs() < 1e-6 && (recovered.y - content_pt.y).abs() < 1e-6, "inverse recovers the content point");
+        wp.caret_from_pointer(recovered, false);
+        assert_eq!(wp.inner.caret.block, target_block, "zoomed click still hits the 2nd block");
+        assert_eq!(wp.inner.caret.offset, off_unzoomed, "zoomed click lands on the same caret offset");
+    }
+
+    #[test]
+    fn zoom_clamps_and_resets() {
+        let mut wp = WordProcessorWidget::new();
+        assert!((wp.zoom - 1.0).abs() < 1e-9, "default zoom is 100%");
+        // Clamp at the bounds.
+        for _ in 0..100 {
+            wp.zoom_by(-ZOOM_STEP);
+        }
+        assert!((wp.zoom - ZOOM_MIN).abs() < 1e-6, "zoom clamps to the minimum");
+        for _ in 0..100 {
+            wp.zoom_by(ZOOM_STEP);
+        }
+        assert!((wp.zoom - ZOOM_MAX).abs() < 1e-6, "zoom clamps to the maximum");
+        wp.set_zoom(1.0);
+        assert!((wp.zoom - 1.0).abs() < 1e-9, "reset returns to 100%");
+    }
+
+    #[test]
+    fn zoom_in_grows_the_scrollable_range() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        for i in 0..40 {
+            wp.model_mut().insert_str(&mut state.doc, &format!("Paragraph {i} with several words to fill the line."));
+            wp.model_mut().enter(&mut state.doc);
+        }
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let scroll_1x = wp.max_scroll;
+        assert!(scroll_1x > 0.0, "the document already overflows at 100%");
+        wp.set_zoom(2.0);
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        assert!(wp.max_scroll > scroll_1x, "zooming in enlarges the content, so there is more to scroll");
+    }
+
+    // ---- Find toggles -------------------------------------------------------
+
+    #[test]
+    fn find_case_sensitive_excludes_wrong_case() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "Hello hello HELLO");
+        wp.refresh_blocks(&state.doc);
+
+        // Case-insensitive (default): all three forms match.
+        wp.find_query = "hello".to_string();
+        wp.find_recompute(&state.doc);
+        assert_eq!(wp.find_matches.len(), 3, "case-insensitive finds every form");
+
+        // Case-sensitive: only the exact-case "hello" matches.
+        wp.find_case = true;
+        wp.find_recompute(&state.doc);
+        assert_eq!(wp.find_matches.len(), 1, "case-sensitive excludes Hello and HELLO");
+        let (bid, s, e) = wp.find_matches[0].clone();
+        let block = wp.blocks.iter().find(|b| b.id == bid).unwrap();
+        let matched: String = block.text.chars().skip(s).take(e - s).collect();
+        assert_eq!(matched, "hello", "the single match is the exact-case form");
+    }
+
+    #[test]
+    fn find_whole_word_excludes_substrings() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "cat category catalog cat");
+        wp.refresh_blocks(&state.doc);
+
+        wp.find_query = "cat".to_string();
+        wp.find_recompute(&state.doc);
+        assert_eq!(wp.find_matches.len(), 4, "substring search matches inside category/catalog too");
+
+        wp.find_word = true;
+        wp.find_recompute(&state.doc);
+        assert_eq!(wp.find_matches.len(), 2, "whole-word matches only the standalone 'cat' tokens");
+    }
+
+    #[test]
+    fn find_regex_matches_and_bad_pattern_is_safe() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "a1 b22 c333");
+        wp.refresh_blocks(&state.doc);
+
+        wp.find_regex = true;
+        wp.find_query = r"\d+".to_string();
+        wp.find_recompute(&state.doc);
+        assert_eq!(wp.find_matches.len(), 3, "regex finds each digit run");
+        assert!(!wp.find_regex_error, "a valid pattern records no error");
+
+        // An invalid regex must not panic; it records the error and yields nothing.
+        wp.find_query = "(".to_string();
+        wp.find_recompute(&state.doc);
+        assert!(wp.find_matches.is_empty(), "an invalid pattern yields no matches");
+        assert!(wp.find_regex_error, "the invalid pattern is flagged");
+
+        // Toggling regex back off restores literal substring matching of "(".
+        wp.find_regex = false;
+        wp.model_mut().insert_str(&mut state.doc, ""); // no-op keep caret
+        wp.find_query = "1".to_string();
+        wp.find_recompute(&state.doc);
+        assert!(!wp.find_regex_error, "leaving regex mode clears the error flag");
+        assert_eq!(wp.find_matches.len(), 1, "literal search resumes");
+    }
+
+    #[test]
+    fn find_toggle_actions_recompute() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "Word word");
+        wp.refresh_blocks(&state.doc);
+        wp.find_query = "word".to_string();
+        wp.find_recompute(&state.doc);
+        assert_eq!(wp.find_matches.len(), 2);
+
+        // The production toggle action both flips the flag and recomputes.
+        wp.find_action(&mut state.doc, FindAction::ToggleCase);
+        assert!(wp.find_case, "the action flipped the case flag");
+        assert_eq!(wp.find_matches.len(), 1, "recompute ran with the new flag");
+    }
+
+    // ---- Responsive toolbar -------------------------------------------------
+
+    #[test]
+    fn toolbar_packs_into_one_row_when_it_fits() {
+        // A generous width fits every control on a single row.
+        let widths = vec![34.0, 30.0, 32.0, 30.0, 42.0, 42.0, 58.0];
+        let starts = vec![false, false, false, false, true, false, false];
+        let rows = pack_toolbar_rows(&widths, &starts, 1400.0);
+        assert_eq!(rows.len(), 1, "all items fit one row at 1400px");
+        assert_eq!(rows[0], (0, widths.len()));
+    }
+
+    #[test]
+    fn toolbar_wraps_to_more_than_one_row_when_items_exceed_width() {
+        // Items whose total far exceeds the available width must wrap.
+        let widths = vec![100.0; 12]; // 12 × 100 = 1200px of buttons + gaps + pads
+        let starts = vec![false; 12];
+        let rows = pack_toolbar_rows(&widths, &starts, 400.0);
+        assert!(rows.len() > 1, "items exceeding the width wrap to >1 row (got {})", rows.len());
+        // Every item is assigned exactly once, in order, with no gaps.
+        assert_eq!(rows.first().unwrap().0, 0);
+        assert_eq!(rows.last().unwrap().1, widths.len());
+        for w in rows.windows(2) {
+            assert_eq!(w[0].1, w[1].0, "row ranges are contiguous");
+        }
+        // No row's packed width exceeds the usable width (mirrors `draw`).
+        let usable = 400.0 - TOOLBAR_PAD - TOOLBAR_RIGHT_PAD;
+        for (s, e) in &rows {
+            let mut x = 0.0;
+            for i in *s..*e {
+                x += widths[i] + TOOLBAR_GAP + if starts[i] { TOOLBAR_SEP } else { 0.0 };
+            }
+            // A row is allowed to overflow only if it holds a single over-wide item.
+            assert!(x <= usable + 1.0 || e - s == 1, "row [{s},{e}) overflows usable width");
+        }
+    }
+
+    #[test]
+    fn real_toolbar_wraps_on_a_narrow_window_and_sets_canvas_offset() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "hi");
+        // The full inline-formatting toolbar is wide; on a 760px window it must
+        // wrap, and the reserved canvas-top height grows by whole rows.
+        let narrow = wp.toolbar_height(760.0);
+        let wide = wp.toolbar_height(1600.0);
+        assert!(narrow > wide, "a narrow window reserves a taller (wrapped) toolbar");
+        assert!((wide - TOOLBAR_H).abs() < 1e-9, "a wide window keeps a single-row toolbar");
+        assert_eq!(narrow % TOOLBAR_H, 0.0, "the toolbar height is a whole number of rows");
+        assert!(narrow >= 2.0 * TOOLBAR_H, "760px wraps to at least two rows");
     }
 }
