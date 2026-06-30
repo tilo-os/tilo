@@ -103,10 +103,30 @@ impl ContextMenu {
     /// Borrow the menu's full item list (actions and separators) in order.
     pub fn items(&self) -> &[MenuItem] { &self.items }
 
-    /// Open the menu anchored at logical position `[x, y]`.
+    /// Open the menu anchored at logical position `[x, y]`. Also computes the
+    /// menu's `rect` immediately (via [`layout_at_position`](Self::layout_at_position))
+    /// so [`item_at`](Self::item_at) / [`contains`](Self::contains) are usable
+    /// without first running a `draw`/`apply_layout` pass — needed by consumers
+    /// (like `TextInput`) that route a click to a row in the same input batch
+    /// the menu opened in.
     pub fn open_at(&mut self, position: [f32; 2]) {
         self.open = true;
         self.position = Some(position);
+        self.layout_at_position();
+    }
+
+    /// Recompute `self.rect` from the stored anchor position and the menu's
+    /// item heights, mirroring the `build_layout` + `apply_layout` geometry but
+    /// without a taffy round-trip. A no-op when the menu has never been
+    /// positioned. Lets a standalone consumer (one that owns a `ContextMenu` as
+    /// a field rather than as a tree node) hit-test and draw the menu directly.
+    pub fn layout_at_position(&mut self) {
+        let Some([px, py]) = self.position else { return };
+        let height =
+            PADDING * 2.0 + self.items.iter().map(item_height).sum::<f64>().max(ROW_HEIGHT);
+        let x0 = px as f64;
+        let y0 = py as f64;
+        self.rect = Rect::new(x0, y0, x0 + MENU_WIDTH, y0 + height);
     }
 
     /// Close the menu. Safe to call when already closed.
@@ -300,4 +320,45 @@ impl Widget for ContextMenu {
     fn name(&self) -> &str { "ContextMenu" }
 
     fn get_rect(&self) -> Rect { self.rect }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        // The menu items are drawn rows (not child widgets), so the container
+        // carries the semantics. `expanded` mirrors the open state and a
+        // closed menu is `hidden` so it collapses out of the focus order.
+        Some(
+            AccessNode::new(Role::Menu).with_state(AccessState {
+                expanded: Some(self.open),
+                hidden: !self.open,
+                ..Default::default()
+            }),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widget::Widget;
+
+    #[test]
+    fn accessibility_reports_menu_role_and_collapsed_when_closed() {
+        use crate::a11y::Role;
+        let mut menu = ContextMenu::new();
+        menu.push(MenuItem::action("Open", || {}));
+        let node = Widget::accessibility(&menu).expect("menu is not presentational");
+        assert_eq!(node.role, Role::Menu);
+        assert_eq!(node.state.expanded, Some(false), "closed menu is not expanded");
+        assert!(node.state.hidden, "closed menu is hidden from the tree");
+    }
+
+    #[test]
+    fn accessibility_open_menu_is_expanded_and_visible() {
+        let mut menu = ContextMenu::new();
+        menu.push(MenuItem::action("Open", || {}));
+        menu.open_at([10.0, 20.0]);
+        let node = Widget::accessibility(&menu).unwrap();
+        assert_eq!(node.state.expanded, Some(true), "open menu is expanded");
+        assert!(!node.state.hidden, "open menu is visible");
+    }
 }

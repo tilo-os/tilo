@@ -191,6 +191,18 @@ impl Widget for Spinner {
 
     fn get_rect(&self) -> Rect { self.rect }
 
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        // A spinner is a perpetual indeterminate-activity indicator with no
+        // text label, so it reports the busy state and no accessible name.
+        Some(
+            AccessNode::new(Role::Spinner).with_state(AccessState {
+                busy: true,
+                ..Default::default()
+            }),
+        )
+    }
+
     /// Spinners are perpetually animating — every visible spinner has
     /// to keep pumping redraws so the dots actually move. The host
     /// (`App`) polls this and schedules another redraw while it's
@@ -268,6 +280,19 @@ mod tests {
             Widget::needs_animation_frame(&s),
             "Spinner::with_size must also request animation frames"
         );
+    }
+
+    /// A spinner is an indeterminate activity indicator: it reports the
+    /// `Spinner` role, the busy state, and no accessible name (it carries no
+    /// text label).
+    #[test]
+    fn accessibility_reports_spinner_role_and_busy() {
+        use crate::a11y::Role;
+        let s = Spinner::new();
+        let node = Widget::accessibility(&s).expect("spinner is not presentational");
+        assert_eq!(node.role, Role::Spinner);
+        assert!(node.state.busy, "a spinner is always busy");
+        assert_eq!(node.name, None, "a spinner has no text label");
     }
 
     /// End-to-end scene check: a single `draw()` pass must emit

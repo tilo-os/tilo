@@ -275,6 +275,21 @@ impl Widget for Tooltip {
     fn name(&self) -> &str { "Tooltip" }
 
     fn get_rect(&self) -> Rect { self.rect }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        // The label is the tooltip's accessible name. While the reveal delay
+        // hasn't elapsed the tooltip is not on screen, so mark it hidden so it
+        // collapses out of the AT tree.
+        Some(
+            AccessNode::new(Role::Tooltip)
+                .with_name(self.label.clone())
+                .with_state(AccessState {
+                    hidden: !self.is_visible,
+                    ..Default::default()
+                }),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -318,6 +333,23 @@ mod tests {
         // Pending (not yet visible) → host must keep pumping frames.
         assert!(t.needs_animation_frame());
         assert!(!t.is_visible());
+    }
+
+    #[test]
+    fn accessibility_reports_tooltip_role_label_and_hidden() {
+        use crate::a11y::Role;
+        // A freshly-built tooltip is not yet visible → hidden from the tree.
+        let mut t = Tooltip::new("Save").with_delay(Duration::ZERO);
+        let node = Widget::accessibility(&t).expect("tooltip is not presentational");
+        assert_eq!(node.role, Role::Tooltip);
+        assert_eq!(node.name.as_deref(), Some("Save"));
+        assert!(node.state.hidden, "an unrevealed tooltip is hidden");
+
+        // Once revealed it is no longer hidden.
+        t.on_hover_enter(Duration::ZERO);
+        assert!(t.is_visible());
+        let node = Widget::accessibility(&t).unwrap();
+        assert!(!node.state.hidden, "a revealed tooltip is visible to the AT");
     }
 
     #[test]

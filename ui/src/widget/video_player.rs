@@ -480,6 +480,23 @@ impl Widget for VideoPlayer {
         "VideoPlayer"
     }
 
+    /// Accessibility (W3): a media player surface. `Role::Group` named "Video
+    /// player"; `busy` is set while playing so a screen reader can convey
+    /// whether playback is active. (Per-control nodes — the play/pause button,
+    /// scrub track — are painted, not child widgets, so the group is the single
+    /// accessible node.)
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        Some(
+            AccessNode::new(Role::Group)
+                .with_name("Video player")
+                .with_state(AccessState {
+                    busy: matches!(self.state, PlaybackState::Playing),
+                    ..Default::default()
+                }),
+        )
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -499,6 +516,22 @@ mod tests {
     fn video_player_starts_paused() {
         let vp = VideoPlayer::new();
         assert_eq!(vp.state(), PlaybackState::Paused);
+    }
+
+    #[test]
+    fn accessibility_reports_group_role_and_busy_while_playing() {
+        use crate::a11y::Role;
+        use crate::widget::Widget;
+        let mut vp = VideoPlayer::new();
+        let node = Widget::accessibility(&vp).expect("player is not presentational");
+        assert_eq!(node.role, Role::Group);
+        assert_eq!(node.name.as_deref(), Some("Video player"));
+        assert!(!node.state.busy, "a paused player is not busy");
+        vp.play();
+        assert!(
+            Widget::accessibility(&vp).unwrap().state.busy,
+            "a playing player reports busy"
+        );
     }
 
     /// Round-trip a tiny encoded frame through openh264's in-tree
