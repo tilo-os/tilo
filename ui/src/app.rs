@@ -42,6 +42,26 @@ pub enum UserEvent {
     /// thread) back into the App for rendering. The App requests a redraw
     /// + re-sync after dispatch so the new state surfaces next frame.
     External(String),
+    /// An accessibility event from the `accesskit_winit::Adapter`, delivered
+    /// through the same winit event-loop proxy the synthetic-input variants
+    /// use. Carries one of:
+    /// - `InitialTreeRequested` — an AT just connected; the App must push a
+    ///   full [`accesskit::TreeUpdate`] via `update_if_active`.
+    /// - `ActionRequested(req)` — the AT asks us to perform an action on a
+    ///   node; the App maps it back to our [`crate::a11y::Action`] and
+    ///   dispatches via [`crate::widget::Widget::perform_action`] (falling
+    ///   back to a synthetic click through the existing input path).
+    /// - `AccessibilityDeactivated` — all ATs disconnected.
+    ///
+    /// Defined as its own variant (rather than translated to a `WindowEvent`)
+    /// because accesskit events have no `WindowEvent` analogue.
+    AccessKit(accesskit_winit::WindowEvent),
+}
+
+impl From<accesskit_winit::Event> for UserEvent {
+    fn from(e: accesskit_winit::Event) -> Self {
+        UserEvent::AccessKit(e.window_event)
+    }
 }
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -182,6 +202,28 @@ pub struct App {
     /// changes — keeping the hot pointer path cheap and not perturbing
     /// the incremental-render gate.
     current_cursor: CursorIcon,
+
+    /// Built-in screen reader (W6). `Some` when
+    /// [`A11ySettings::screen_reader`](crate::a11y::A11ySettings::screen_reader)
+    /// is on (toggled via [`Self::set_screen_reader_enabled`], or auto-enabled
+    /// at construction when `QOS_A11Y_SCREEN_READER`/`QOS_SCREEN_READER` is set
+    /// in the environment — the env var the shell mirrors into sandboxes per
+    /// W2). When `None`, every narration call site short-circuits, so a build
+    /// with the reader off pays nothing and is byte-for-byte unaffected.
+    ///
+    /// The reader owns a `qos_tts` speaker (default backend, falling back to a
+    /// silent `NullSpeaker` when no TTS is installed — so enabling it never
+    /// panics). Focus narration flows from [`Self::set_focused_node`]; a
+    /// dedicated keyboard layer in `window_event` drives the reading-cursor
+    /// commands.
+    screen_reader: Option<crate::screen_reader::ScreenReader>,
+    /// Whether the screen-reader modifier key (the **Insert** key, the
+    /// NVDA/Orca convention) is currently held. winit does not expose Insert as
+    /// a [`Modifiers`](winit::event::Modifiers) bit, so we track its
+    /// press/release ourselves to implement the `Insert + <key>` reader
+    /// command layer without colliding with normal navigation (Tab, Alt+arrows,
+    /// Ctrl shortcuts). Only meaningful when [`Self::screen_reader`] is `Some`.
+    screen_reader_modifier_down: bool,
 }
 
 impl App {
@@ -215,6 +257,179 @@ impl App {
             presence_broadcast_sink: None,
             frame_tick: None,
             current_cursor: CursorIcon::Default,
+            // Auto-enable the screen reader if the environment opts in (the
+            // shell mirrors A11ySettings.screen_reader into spawned sandboxes
+            // via QOS_A11Y_* env vars — W2). Either var, non-empty, turns it on.
+            screen_reader: if Self::screen_reader_env_enabled() {
+                Some(crate::screen_reader::ScreenReader::new())
+            } else {
+                None
+            },
+            screen_reader_modifier_down: false,
+        }
+    }
+
+    /// Whether the environment opts the screen reader on at startup. Reads
+    /// `QOS_A11Y_SCREEN_READER` (the W2 sandbox-mirrored var) and the shorter
+    /// `QOS_SCREEN_READER` alias; either, non-empty and not `"0"`/`"false"`,
+    /// enables it.
+    fn screen_reader_env_enabled() -> bool {
+        for key in ["QOS_A11Y_SCREEN_READER", "QOS_SCREEN_READER"] {
+            if let Ok(v) = std::env::var(key) {
+                let v = v.trim();
+                if !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false") {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Enable or disable the built-in screen reader at runtime. The shell calls
+    /// this when the user toggles
+    /// [`A11ySettings::screen_reader`](crate::a11y::A11ySettings::screen_reader).
+    ///
+    /// Enabling constructs a [`ScreenReader`](crate::screen_reader::ScreenReader)
+    /// over the default `qos_tts` speaker (never panics; falls back to a silent
+    /// `NullSpeaker` when no TTS stack is present) and immediately announces the
+    /// currently-focused widget so the user gets oriented. Disabling stops any
+    /// in-flight speech and drops the reader, returning every narration call
+    /// site to a no-op.
+    pub fn set_screen_reader_enabled(&mut self, enabled: bool) {
+        match (enabled, self.screen_reader.is_some()) {
+            (true, false) => {
+                self.screen_reader = Some(crate::screen_reader::ScreenReader::new());
+                self.announce_current_focus();
+            }
+            (false, true) => {
+                if let Some(sr) = self.screen_reader.as_mut() {
+                    sr.stop();
+                }
+                self.screen_reader = None;
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether the built-in screen reader is currently active.
+    pub fn screen_reader_enabled(&self) -> bool {
+        self.screen_reader.is_some()
+    }
+
+    /// Install a caller-provided screen reader (e.g. one over a test
+    /// `NullSpeaker`, so a headless test can assert on the spoken phrases).
+    /// Passing `None` disables narration. Used by the headless tests and by a
+    /// host that wants a custom speech backend.
+    #[doc(hidden)]
+    pub fn set_screen_reader(&mut self, reader: Option<crate::screen_reader::ScreenReader>) {
+        self.screen_reader = reader;
+    }
+
+    /// Borrow the active screen reader, if any (tests inspect the recorded
+    /// utterances of an injected reader).
+    #[doc(hidden)]
+    pub fn screen_reader(&self) -> Option<&crate::screen_reader::ScreenReader> {
+        self.screen_reader.as_ref()
+    }
+
+    /// Announce the currently-focused widget through the screen reader, if both
+    /// the reader is active and a widget is focused. No-op otherwise. Called on
+    /// focus changes ([`Self::set_focused_node`]) and when the reader is first
+    /// enabled.
+    fn announce_current_focus(&mut self) {
+        let Some(id) = self.focused_node else { return };
+        let Some(&w_ptr) = self.node_map.get(&id) else { return };
+        // SAFETY: same node_map dereference invariant the rest of `App` relies
+        // on — pointers are valid for the duration of an event dispatch (the
+        // tree is only rebuilt between frames). Mirrors `navigate_focus`.
+        let node = unsafe { (*w_ptr).accessibility() };
+        if let (Some(node), Some(sr)) = (node, self.screen_reader.as_mut()) {
+            sr.announce_focus(&node);
+        }
+    }
+
+    /// The built-in screen reader's keyboard command layer.
+    ///
+    /// Returns `true` if the event was a reader command and was consumed (so
+    /// the caller skips normal dispatch). A no-op returning `false` when the
+    /// reader is disabled, so non-reader builds are unaffected.
+    ///
+    /// **Bindings** (the **Insert** key is the reader modifier — the long-
+    /// standing NVDA/Orca convention; tracked via [`Self::screen_reader_modifier_down`]
+    /// since winit has no Insert modifier bit). These deliberately avoid Tab
+    /// (focus order), Alt+arrows / bare arrows (directional focus) and Ctrl+keys
+    /// (undo / app shortcuts):
+    ///
+    /// | Keys | Action |
+    /// |---|---|
+    /// | `Insert + Down`  | **Read all** — speak the whole reading order ("say all") |
+    /// | `Insert + Right` | **Read next** — step the reading cursor forward and speak it |
+    /// | `Insert + Left`  | **Read previous** — step the reading cursor back and speak it |
+    /// | `Insert + Up`    | **Where am I** — re-announce the currently-focused widget |
+    /// | `Insert + Escape`| **Stop** — silence speech and clear the queue |
+    ///
+    /// The `Insert` key itself is swallowed (so a stray Insert never types) but
+    /// reported as *not* a command (returns `false`) so it doesn't suppress a
+    /// genuine following keypress's normal handling.
+    fn handle_screen_reader_key(&mut self, event: &WindowEvent) -> bool {
+        // Disabled → never intercept anything.
+        if self.screen_reader.is_none() {
+            return false;
+        }
+        let WindowEvent::KeyboardInput { event: ke, .. } = event else {
+            return false;
+        };
+        use winit::event::ElementState;
+        use winit::keyboard::{Key, NamedKey};
+
+        // Track the Insert modifier press/release.
+        if let Key::Named(NamedKey::Insert) = ke.logical_key {
+            self.screen_reader_modifier_down = ke.state == ElementState::Pressed;
+            // Swallow the Insert key so it never produces text, but report it as
+            // not-a-command so the next key dispatches normally.
+            return false;
+        }
+
+        // Only act on presses while the reader modifier is held.
+        if ke.state != ElementState::Pressed || !self.screen_reader_modifier_down {
+            return false;
+        }
+
+        let Key::Named(named) = ke.logical_key else {
+            return false;
+        };
+        match named {
+            NamedKey::ArrowDown => {
+                // Split-borrow: root_widget and screen_reader are disjoint
+                // fields, so borrow each independently.
+                if let Some(sr) = self.screen_reader.as_mut() {
+                    sr.read_all(self.root_widget.as_ref());
+                }
+                true
+            }
+            NamedKey::ArrowRight => {
+                if let Some(sr) = self.screen_reader.as_mut() {
+                    sr.read_next(self.root_widget.as_ref());
+                }
+                true
+            }
+            NamedKey::ArrowLeft => {
+                if let Some(sr) = self.screen_reader.as_mut() {
+                    sr.read_prev(self.root_widget.as_ref());
+                }
+                true
+            }
+            NamedKey::ArrowUp => {
+                self.announce_current_focus();
+                true
+            }
+            NamedKey::Escape => {
+                if let Some(sr) = self.screen_reader.as_mut() {
+                    sr.stop();
+                }
+                true
+            }
+            _ => false,
         }
     }
 
@@ -748,6 +963,20 @@ impl App {
             if let Some(id) = new_id {
                 if let Some(&w_ptr) = self.node_map.get(&id) {
                     unsafe { (*w_ptr).set_focus(true); }
+                    // Screen-reader focus narration (W6). Pull the newly-focused
+                    // widget's semantics and speak it, INTERRUPTING the previous
+                    // utterance so rapid arrow/Tab navigation stays responsive
+                    // (the reader's queue coalesces a focus storm to the latest).
+                    // No-op when the reader is disabled — the hot focus path
+                    // pays only a single `Option::is_some`-style branch.
+                    if self.screen_reader.is_some() {
+                        let node = unsafe { (*w_ptr).accessibility() };
+                        if let (Some(node), Some(sr)) =
+                            (node, self.screen_reader.as_mut())
+                        {
+                            sr.announce_focus(&node);
+                        }
+                    }
                 }
             }
             self.layout_dirty = true;
@@ -783,6 +1012,81 @@ impl App {
             }
         }
         if let Some(new_id) = best_candidate { self.set_focused_node(Some(new_id)); }
+    }
+
+    /// Build a fresh [`accesskit::TreeUpdate`] from the current widget tree,
+    /// node map, and focus. Pure delegation to
+    /// [`crate::accesskit_bridge::build_tree_update`]; kept on `App` so the
+    /// adapter's `update_if_active` closure can build the tree from the App's
+    /// live state. `scale` is the window scale factor so bounds land in
+    /// physical pixels (what AT-SPI expects).
+    pub fn build_a11y_tree_update(&self, scale: f64) -> accesskit::TreeUpdate {
+        crate::accesskit_bridge::build_tree_update(
+            self.root_widget.as_ref(),
+            &self.node_map,
+            self.focused_node,
+            scale,
+        )
+    }
+
+    /// Dispatch an accessibility action (already mapped to our
+    /// [`crate::a11y::Action`]) at the AccessKit node `target`.
+    ///
+    /// The `target` is an [`accesskit::NodeId`] derived from a `taffy::NodeId`
+    /// (`taffy_id + 1`, with `0` reserved for the synthetic window root — see
+    /// [`crate::accesskit_bridge`]). We invert that to find the live widget in
+    /// `node_map` and:
+    ///   1. give the widget first refusal via
+    ///      [`Widget::perform_action`](crate::widget::Widget::perform_action);
+    ///   2. if it declines, handle [`Action::Focus`] by moving keyboard focus,
+    ///      and any other verb by synthesising a click through the existing
+    ///      input path (return the click coordinates so the caller can inject a
+    ///      [`UserEvent::Click`]).
+    ///
+    /// Returns `Some((x, y))` window-logical coordinates if the caller should
+    /// synthesise a click there (the generic activation fallback), else `None`
+    /// (the action was fully handled in-place).
+    pub fn dispatch_a11y_action(
+        &mut self,
+        target: accesskit::NodeId,
+        action: &crate::a11y::Action,
+    ) -> Option<(f64, f64)> {
+        use crate::a11y::Action;
+        let raw = target.0;
+        // Reverse the bridge's id scheme: window root (0) has no widget.
+        if raw == 0 {
+            return None;
+        }
+        let taffy_id = NodeId::from(raw - 1);
+        let Some(&w_ptr) = self.node_map.get(&taffy_id) else {
+            return None;
+        };
+
+        // 1. Widget gets first refusal.
+        let handled = unsafe {
+            (*w_ptr).perform_action(action, &mut self.state.doc, &self.state.root)
+        };
+        if handled {
+            self.needs_sync = true;
+            self.layout_dirty = true;
+            return None;
+        }
+
+        // 2. Generic fallbacks.
+        match action {
+            Action::Focus => {
+                self.set_focused_node(Some(taffy_id));
+                None
+            }
+            Action::Activate | Action::ToggleCheck => {
+                // Synthesise a click at the widget's centre through the same
+                // path real pointer input takes.
+                let rect = unsafe { (*w_ptr).get_rect() };
+                let c = rect.center();
+                Some((c.x, c.y))
+            }
+            _ => None,
+        }
     }
 
     /// Build the initial taffy tree, seed the focus order, and (when
@@ -932,6 +1236,10 @@ impl App {
             .build()
             .unwrap();
         let proxy = event_loop.create_proxy();
+        // Keep a clone for the AccessKit adapter (it routes initial-tree /
+        // action-request / deactivation events back through this same proxy as
+        // `UserEvent::AccessKit`).
+        let a11y_proxy = proxy.clone();
         setup(proxy);
 
         // Build the taffy tree up-front so widgets that don't depend on a
@@ -943,6 +1251,8 @@ impl App {
             app: self,
             window: None,
             render: None,
+            a11y_adapter: None,
+            a11y_proxy,
         };
         event_loop.run_app(&mut handler).unwrap();
     }
@@ -970,6 +1280,17 @@ struct AppHandler {
     /// the worker is joined so its surface is dropped BEFORE the
     /// `Window` arc goes away.
     render: Option<RenderThreadHandle>,
+    /// AccessKit ↔ winit adapter (W4). `None` until `resumed` creates the
+    /// window (the adapter must be created while the window is hidden, then the
+    /// window is shown). On Linux this pulls in `accesskit_unix`, which
+    /// publishes our exported tree over AT-SPI2 so Orca / braille work. The
+    /// adapter is **lazy**: `update_if_active` is a no-op until an AT actually
+    /// connects, so the hot path pays nothing when no screen reader is running.
+    /// Guarded so headless / no-window code paths never require it.
+    a11y_adapter: Option<accesskit_winit::Adapter>,
+    /// Proxy used to construct the adapter (it delivers accesskit events back
+    /// through the winit event loop as [`UserEvent::AccessKit`]).
+    a11y_proxy: EventLoopProxy<UserEvent>,
 }
 
 impl ApplicationHandler<UserEvent> for AppHandler {
@@ -1030,6 +1351,62 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 app.needs_sync = true;
                 window.request_redraw();
             }
+            UserEvent::AccessKit(ak_event) => {
+                use accesskit_winit::WindowEvent as AkWindowEvent;
+                match ak_event {
+                    AkWindowEvent::InitialTreeRequested => {
+                        // An AT just connected. Push the full tree so the
+                        // adapter has something to publish immediately.
+                        if let Some(adapter) = self.a11y_adapter.as_mut() {
+                            let scale = window.scale_factor();
+                            let app_ref: &App = &self.app;
+                            adapter.update_if_active(|| app_ref.build_a11y_tree_update(scale));
+                        }
+                        window.request_redraw();
+                    }
+                    AkWindowEvent::ActionRequested(req) => {
+                        // Map the AccessKit action (+ data) back to ours and
+                        // dispatch it to the target widget. A `Some((x, y))`
+                        // result means "synthesise a click here" — we route it
+                        // through the same path as a real / injected click.
+                        if let Some(action) = crate::accesskit_bridge::accesskit_action_to_ours(
+                            req.action,
+                            req.data.as_ref(),
+                        ) {
+                            let click = self.app.dispatch_a11y_action(req.target_node, &action);
+                            if let Some((x, y)) = click {
+                                // Reuse the synthetic-click path (CursorMoved →
+                                // Pressed → Released) so the activation takes the
+                                // identical route a pointer click would.
+                                let scale = window.scale_factor();
+                                let (px, py) = (x * scale, y * scale);
+                                let moved = WindowEvent::CursorMoved {
+                                    device_id: unsafe { std::mem::zeroed() },
+                                    position: PhysicalPosition::new(px, py),
+                                };
+                                self.window_event(event_loop, window_id, moved);
+                                let press = WindowEvent::MouseInput {
+                                    device_id: unsafe { std::mem::zeroed() },
+                                    state: ElementState::Pressed,
+                                    button: MouseButton::Left,
+                                };
+                                self.window_event(event_loop, window_id, press);
+                                let release = WindowEvent::MouseInput {
+                                    device_id: unsafe { std::mem::zeroed() },
+                                    state: ElementState::Released,
+                                    button: MouseButton::Left,
+                                };
+                                self.window_event(event_loop, window_id, release);
+                            }
+                            window.request_redraw();
+                        }
+                    }
+                    AkWindowEvent::AccessibilityDeactivated => {
+                        // All ATs gone — nothing to do; `update_if_active`
+                        // becomes a no-op until the next activation.
+                    }
+                }
+            }
         }
     }
 
@@ -1041,10 +1418,26 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         if self.window.is_some() {
             return;
         }
+        // The AccessKit adapter must be created while the window is still
+        // hidden (it asserts this), so build the window invisible, create the
+        // adapter, then show it.
         let window_attributes = Window::default_attributes()
             .with_title("QuickUI App")
+            .with_visible(false)
             .with_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0));
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
+
+        // Accessibility (W4): wire the AccessKit winit adapter so the exported
+        // tree reaches AT-SPI2 (Orca, braille). Events (initial-tree request,
+        // action requests, deactivation) are delivered back through our event
+        // loop proxy as `UserEvent::AccessKit`. This is intentionally created
+        // before the window is shown.
+        self.a11y_adapter = Some(accesskit_winit::Adapter::with_event_loop_proxy(
+            event_loop,
+            &window,
+            self.a11y_proxy.clone(),
+        ));
+        window.set_visible(true);
 
         let mut render_cx = RenderContext::new();
         let surface = pollster::block_on(render_cx.create_surface(
@@ -1108,6 +1501,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         };
         if window.id() != window_id {
             return;
+        }
+        // Accessibility: let the AccessKit adapter observe every window event
+        // before the app handles it (it tracks focus / window state for the
+        // AT-SPI bridge). No-op when no AT is attached.
+        if let Some(adapter) = self.a11y_adapter.as_mut() {
+            adapter.process_event(&window, &event);
         }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
@@ -1395,6 +1794,18 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     );
                 }
 
+                // Accessibility (W4): push the freshly-laid-out tree to the
+                // AccessKit adapter. `update_if_active` only builds + sends the
+                // `TreeUpdate` when an AT is actually attached, so this is free
+                // (a single bool check) on the common no-screen-reader path.
+                // Bounds are emitted in physical pixels (scale-multiplied) to
+                // match what the AT-SPI bridge expects from the window.
+                if let Some(adapter) = self.a11y_adapter.as_mut() {
+                    let app_ref: &App = app;
+                    let scale = scale_factor as f64;
+                    adapter.update_if_active(|| app_ref.build_a11y_tree_update(scale));
+                }
+
                 // Hand the encoded Scene to the render worker. The
                 // seven GPU steps that used to live here (encode →
                 // get_current_texture → encoder → blit → submit →
@@ -1499,6 +1910,19 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 let mut focus_target = None;
                 let mut is_undo_redo = false;
 
+                // Screen-reader command layer (W6): `Insert + <key>` drives the
+                // reading cursor / say-all / stop without colliding with normal
+                // navigation. Runs FIRST so it wins over Tab/arrow handling, and
+                // is a no-op (returns false) when the reader is disabled. When
+                // it consumes a command we still want a redraw (the narration
+                // may have moved a visible reading highlight in the future), so
+                // mark handled and let the tail of this branch request it.
+                if app.handle_screen_reader_key(&event) {
+                    handled = true;
+                    is_undo_redo = true; // suppress an undo commit for a read cmd
+                }
+
+                if !handled {
                 if let WindowEvent::KeyboardInput {
                     event:
                         winit::event::KeyEvent {
@@ -1511,6 +1935,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 {
                     app.debug_mode = !app.debug_mode;
                     handled = true;
+                }
                 }
 
                 if !handled && app.modifiers.state().control_key() {
@@ -2288,4 +2713,218 @@ pub fn dispatch_gated_event<W: crate::widget::Widget + ?Sized>(
     }
     dispatch();
     true
+}
+
+/// W6 — App ↔ screen-reader wiring. Proves the App narrates focus changes
+/// through an injected reader (over a recording speaker), toggles the reader
+/// on/off, and that a reader-off App is unaffected. The focus-narration path
+/// (`set_focused_node`) is private, so these tests drive it through the public
+/// `init_layout` (autofocus) + the public a11y action dispatch / setter API.
+#[cfg(test)]
+mod screen_reader_tests {
+    use super::*;
+    use crate::screen_reader::ScreenReader;
+    use crate::widget::{Button, Widget};
+    use qos_tts::{NullSpeaker, Speaker, Utterance};
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::rc::Rc;
+
+    // A recording speaker we can read back after moving a clone into the reader.
+    #[derive(Clone, Default)]
+    struct SharedRecorder(Rc<RefCell<NullSpeaker>>);
+    impl Speaker for SharedRecorder {
+        fn speak_utterance(&mut self, u: Utterance) {
+            self.0.borrow_mut().speak_utterance(u);
+        }
+        fn stop(&mut self) {
+            self.0.borrow_mut().stop();
+        }
+        fn set_rate(&mut self, r: f32) {
+            self.0.borrow_mut().set_rate(r);
+        }
+        fn set_voice(&mut self, v: &str) {
+            self.0.borrow_mut().set_voice(v);
+        }
+        fn is_speaking(&self) -> bool {
+            self.0.borrow().is_speaking()
+        }
+        fn backend_name(&self) -> &'static str {
+            "shared-null"
+        }
+    }
+    // Test-only: single-threaded, so the !Send Rc is fine.
+    unsafe impl Send for SharedRecorder {}
+
+    // A container of two focusable buttons that lays them out so directional
+    // focus has somewhere to go.
+    struct TwoButtons {
+        kids: Vec<Box<dyn Widget>>,
+    }
+    impl TwoButtons {
+        fn new() -> Self {
+            Self {
+                kids: vec![
+                    Box::new(Button::new("a", "Save", None)),
+                    Box::new(Button::new("b", "Cancel", None)),
+                ],
+            }
+        }
+    }
+    impl Widget for TwoButtons {
+        fn sync(&mut self, s: &mut automerge::AutoCommit, p: &automerge::ObjId) {
+            for c in &mut self.kids {
+                c.sync(s, p);
+            }
+        }
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let kids: Vec<_> = self
+                .kids
+                .iter_mut()
+                .map(|c| c.build_layout(taffy, theme, node_map))
+                .collect();
+            let node = taffy.new_with_children(taffy::Style::default(), &kids).unwrap();
+            node_map.insert(node, self as *mut dyn Widget);
+            node
+        }
+        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
+        fn draw(
+            &mut self,
+            _s: &mut Scene,
+            _t: Affine,
+            _tr: &mut TextRenderer,
+            _th: &Theme,
+            _p: &PresenceCtx,
+        ) {
+        }
+        fn handle_event(
+            &mut self,
+            _e: &WindowEvent,
+            _sf: f64,
+            _m: &winit::event::Modifiers,
+            _s: &mut automerge::AutoCommit,
+            _p: &automerge::ObjId,
+            _h: &mut bool,
+            _ft: &mut Option<NodeId>,
+            _ni: NodeId,
+            _t: &TaffyTree<()>,
+        ) {
+        }
+        fn children(&self) -> Vec<&dyn Widget> {
+            self.kids.iter().map(|c| c.as_ref()).collect()
+        }
+        fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+            self.kids.iter_mut().map(|c| &mut **c as &mut (dyn Widget + '_)).collect()
+        }
+        fn name(&self) -> &str {
+            "two-buttons"
+        }
+        fn get_rect(&self) -> KurboRect {
+            KurboRect::ZERO
+        }
+    }
+
+    fn app_with_reader() -> (App, SharedRecorder) {
+        let rec = SharedRecorder::default();
+        let mut app = App::new(State::new(), Box::new(TwoButtons::new()));
+        app.set_screen_reader(Some(ScreenReader::with_speaker(Box::new(rec.clone()))));
+        (app, rec)
+    }
+
+    #[test]
+    fn autofocus_narrates_the_focused_widget() {
+        // With the reader installed and autofocus on, building the layout
+        // focuses the first button and the reader speaks it.
+        let (mut app, rec) = app_with_reader();
+        app.autofocus_first = true;
+        app.init_layout();
+        assert_eq!(rec.0.borrow().spoken(), &["Save, button".to_string()]);
+    }
+
+    #[test]
+    fn directional_focus_change_narrates_new_widget() {
+        let (mut app, rec) = app_with_reader();
+        app.autofocus_first = true;
+        app.init_layout();
+        // Move focus to the next focusable (the second button). set_focused_node
+        // is private; drive it via the public a11y Focus action on the 2nd node,
+        // which routes through set_focused_node (the same path Tab/arrow use).
+        let second = app.focusable_order[1];
+        let ak_id = accesskit::NodeId(u64::from(second) + 1);
+        app.dispatch_a11y_action(ak_id, &crate::a11y::Action::Focus);
+        let spoken = rec.0.borrow();
+        assert_eq!(
+            spoken.spoken(),
+            &["Save, button".to_string(), "Cancel, button".to_string()],
+            "each focus change narrates the newly focused control"
+        );
+    }
+
+    #[test]
+    fn disabling_reader_silences_and_stops() {
+        let (mut app, rec) = app_with_reader();
+        app.autofocus_first = true;
+        app.init_layout();
+        assert!(app.screen_reader_enabled());
+        app.set_screen_reader_enabled(false);
+        assert!(!app.screen_reader_enabled());
+        assert!(rec.0.borrow().stop_count() >= 1, "disabling stops in-flight speech");
+        // Re-focus after disable: nothing new is spoken (reader is gone).
+        let before = rec.0.borrow().spoken().len();
+        let second = app.focusable_order[1];
+        let ak_id = accesskit::NodeId(u64::from(second) + 1);
+        app.dispatch_a11y_action(ak_id, &crate::a11y::Action::Focus);
+        assert_eq!(
+            rec.0.borrow().spoken().len(),
+            before,
+            "no narration after the reader is disabled"
+        );
+    }
+
+    #[test]
+    fn reader_disabled_by_default_unless_env() {
+        // A plain App (no env, no setter) has no reader, so focus is silent.
+        let mut app = App::new(State::new(), Box::new(TwoButtons::new()));
+        app.autofocus_first = true;
+        app.init_layout();
+        assert!(
+            !app.screen_reader_enabled(),
+            "the reader is opt-in; default-off builds are unaffected"
+        );
+    }
+
+    #[test]
+    fn screen_reader_key_layer_is_noop_when_disabled() {
+        // handle_screen_reader_key must return false (not intercept anything)
+        // when the reader is off — proving normal navigation is never stolen.
+        // winit's KeyEvent has no public constructor, but the disabled-guard is
+        // the first line of the method, so a non-keyboard event exercises it.
+        let mut app = App::new(State::new(), Box::new(TwoButtons::new()));
+        app.init_layout();
+        assert!(!app.screen_reader_enabled());
+        let ev = WindowEvent::CursorLeft {
+            device_id: unsafe { std::mem::zeroed() },
+        };
+        assert!(
+            !app.handle_screen_reader_key(&ev),
+            "reader-off App must never consume an event in the SR key layer"
+        );
+    }
+
+    #[test]
+    fn screen_reader_key_layer_ignores_non_keyboard_when_enabled() {
+        // Even with the reader ON, a non-keyboard event is not a command.
+        let (mut app, _rec) = app_with_reader();
+        app.init_layout();
+        assert!(app.screen_reader_enabled());
+        let ev = WindowEvent::CursorLeft {
+            device_id: unsafe { std::mem::zeroed() },
+        };
+        assert!(!app.handle_screen_reader_key(&ev));
+    }
 }

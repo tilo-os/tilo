@@ -459,6 +459,25 @@ impl Widget for PermissionPrompt {
 
     fn name(&self) -> &str { "PermissionPrompt" }
 
+    /// Accessibility (W3): a permission request is a modal, attention-demanding
+    /// dialog. `Role::Dialog` with `modal = true`; the accessible name states
+    /// what is being requested ("Camera access requested by org.gnome.gedit")
+    /// so an assertive screen-reader announcement is meaningful.
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        Some(
+            AccessNode::new(Role::Dialog)
+                .with_name(format!(
+                    "{} requested by {}",
+                    self.capability_label, self.app_id
+                ))
+                .with_state(AccessState {
+                    modal: true,
+                    ..Default::default()
+                }),
+        )
+    }
+
     fn get_rect(&self) -> Rect { self.rect }
 }
 
@@ -477,6 +496,23 @@ mod tests {
         // `mem::zeroed`. Same pattern as `quick-ui::widget::slider`'s
         // own test helpers.
         unsafe { std::mem::zeroed() }
+    }
+
+    #[test]
+    fn accessibility_reports_modal_dialog_with_request_name() {
+        use crate::a11y::Role;
+        let p = PermissionPrompt::new(
+            "org.gnome.gedit".into(),
+            "Camera access".into(),
+            true,
+        );
+        let node = Widget::accessibility(&p).expect("prompt is not presentational");
+        assert_eq!(node.role, Role::Dialog);
+        assert!(node.state.modal, "a permission prompt traps focus");
+        assert_eq!(
+            node.name.as_deref(),
+            Some("Camera access requested by org.gnome.gedit")
+        );
     }
 
     fn cursor_at(p: Point) -> WindowEvent {
