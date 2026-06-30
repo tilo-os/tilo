@@ -16,6 +16,7 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDe
 use winit::keyboard::{Key, NamedKey};
 
 use qdoc::document::MarkSpan;
+use qdoc::model::Region;
 use qdoc::snapshot::{AttrVal, BlockView, ChangeView, CommentView, NoteView};
 use ui::chrome::{self, LabelCue, ToolbarItem};
 use ui::gesture::{DragSelect, Granularity};
@@ -91,6 +92,14 @@ const PAPER_MUTED: Color = Color::from_rgb8(0x8a, 0x8a, 0x92);
 const PAPER_SELECTION: Color = Color::from_rgba8(0x46, 0x78, 0xe6, 0x4d);
 /// Caret colour on paper.
 const PAPER_CARET: Color = Color::from_rgb8(0x28, 0x5a, 0xc8);
+/// Translucent accent wash behind the header/footer band that is the active edit
+/// context (Word-style header/footer edit mode), so the focused band stands out.
+const ACTIVE_BAND_FILL: Color = Color::from_rgba8(0x46, 0x78, 0xe6, 0x14);
+/// Accent edge (dashed outline + the "Header"/"Footer" tab) of the active band.
+const ACTIVE_BAND_EDGE: Color = Color::from_rgb8(0x46, 0x78, 0xe6);
+/// A translucent veil drawn over the body content while a header/footer is being
+/// edited, so the body visibly recedes (like Word dimming the body in that mode).
+const BODY_DIM_VEIL: Color = Color::from_rgba8(0xfc, 0xfc, 0xfa, 0x66);
 
 /// OS-theme-driven chrome palette for the editor. Resolved once per frame from
 /// the [`Theme`] passed to `draw` (see [`ChromeColors::for_theme`]) and stashed
@@ -1111,6 +1120,53 @@ fn running_head_runs(b: &BlockView, page_no: usize) -> Vec<RichSpan> {
     runs
 }
 
+/// Like [`running_head_runs`] but for the band that is *currently being edited*:
+/// every character maps 1:1 to a caret offset (no multi-digit page-number
+/// substitution), so click-to-caret + caret rendering line up with the stored
+/// text model. A `page-number` field placeholder (U+FFFC) is shown as a single
+/// `#` glyph (a stable one-char field marker) rather than expanded to digits.
+fn running_head_runs_editing(b: &BlockView) -> Vec<RichSpan> {
+    let chars: Vec<char> = b.text.chars().collect();
+    let n = chars.len();
+    let key = |i: usize| {
+        (
+            char_has(i, &b.marks, "strong"),
+            char_has(i, &b.marks, "em"),
+            char_font_size(i, &b.marks).map(f32::to_bits),
+            char_font_family(i, &b.marks),
+            char_color(i, &b.marks),
+        )
+    };
+    let run_key = |i: usize| (key(i), char_is_page_number_field(i, &b.marks));
+    let mut runs: Vec<RichSpan> = Vec::new();
+    let mut i = 0;
+    while i < n {
+        let rk = run_key(i);
+        let mut j = i;
+        while j < n && run_key(j) == rk {
+            j += 1;
+        }
+        let ((bold, italic, size_bits, family, color), is_field) = rk;
+        // One glyph per char so offsets stay aligned; a field char shows as `#`.
+        let text: String = if is_field { "#".repeat(j - i) } else { chars[i..j].iter().collect() };
+        runs.push(RichSpan {
+            text,
+            bold,
+            italic,
+            size: size_bits.map(f32::from_bits),
+            family,
+            color,
+            background: None,
+            baseline: ui::richtext::BaselineShift::None,
+        });
+        i = j;
+    }
+    if runs.is_empty() {
+        runs.push(RichSpan::new(""));
+    }
+    runs
+}
+
 /// The note ids referenced by char `i` of `b` via a `note-ref` mark (covering
 /// exactly the placeholder char), in source order. Usually 0 or 1 per char.
 fn char_note_ref(i: usize, marks: &[MarkSpan]) -> Option<&str> {
@@ -1260,6 +1316,18 @@ struct Laid {
     page: usize,
 }
 
+/// One header/footer block laid out for the active edit context this frame, kept
+/// for click hit-testing + caret rendering inside the band. Mirrors [`Laid`] but
+/// carries the shaped layout inline (the band's layouts are small and not cached
+/// across frames). Coordinates are content space (the band draws through `ctf`).
+struct RegionLaid {
+    id: String,
+    text: String,
+    /// Top-left origin of the run in content space.
+    origin: Point,
+    layout: RichTextLayout,
+}
+
 /// A list item's 0-based nesting level (absent attr → 0).
 fn list_level(b: &BlockView) -> usize {
     match b.attrs.get("level") {
@@ -1337,6 +1405,17 @@ pub struct WordProcessorWidget {
     /// Mirrors `header`. When empty, a subtle default "Page N" indicator is drawn.
     footer: Vec<BlockView>,
     laid: Vec<Laid>,
+    /// Per-block laid geometry of the header/footer band that is currently being
+    /// edited (the active edit context's band on the reference page). Empty when
+    /// editing the body. Stored in content space so click hit-testing and the
+    /// band caret reuse the same coordinates as the body. `(block_id, text,
+    /// origin, shaped layout)`.
+    region_laid: Vec<RegionLaid>,
+    /// The header / footer band rects of the reference (first) page in content
+    /// space, cached each frame so the event handler can hit-test a click into a
+    /// band and switch the edit context. `(header_band, footer_band)`.
+    head_band_rect: Rect,
+    foot_band_rect: Rect,
     /// Incremental per-block shaped-text cache: block id → (shape key, shaped
     /// layout). Reused across frames when the key (text + marks + resolved
     /// style + wrap width) is unchanged, so only edited/resized blocks pay the
@@ -1558,6 +1637,9 @@ impl WordProcessorWidget {
             header: Vec::new(),
             footer: Vec::new(),
             laid: Vec::new(),
+            region_laid: Vec::new(),
+            head_band_rect: Rect::ZERO,
+            foot_band_rect: Rect::ZERO,
             layout_cache: HashMap::new(),
             dbg_layout_hits: 0,
             dbg_layout_misses: 0,
@@ -2086,9 +2168,66 @@ impl WordProcessorWidget {
         }
     }
 
+    /// The running region (if any) whose reference-page band contains content-
+    /// space point `p`. Used to switch the edit context on a click.
+    fn band_at_pointer(&self, p: Point) -> Option<Region> {
+        if self.head_band_rect.height() > 0.0 && self.head_band_rect.contains(p) {
+            Some(Region::Header)
+        } else if self.foot_band_rect.height() > 0.0 && self.foot_band_rect.contains(p) {
+            Some(Region::Footer)
+        } else {
+            None
+        }
+    }
+
+    /// Resolve a pointer position to a caret in the **active running region's**
+    /// band (`region_laid`) and apply it. Mirrors the body `caret_from_pointer`
+    /// but over the band's laid geometry.
+    fn band_caret_from_pointer(&mut self, p: Point, extend: bool) {
+        let mut hit: Option<(String, usize)> = None;
+        for rl in &self.region_laid {
+            let h = rl.layout.height() as f64;
+            if p.y >= rl.origin.y && p.y < rl.origin.y + h {
+                let byte = rl.layout.hit((p.x - rl.origin.x) as f32, (p.y - rl.origin.y) as f32);
+                hit = Some((rl.id.clone(), byte_to_char(&rl.text, byte)));
+                break;
+            }
+        }
+        // Fall back to the nearest band block (first/last) so a click anywhere in
+        // the band still lands a caret.
+        if hit.is_none() {
+            if let Some(rl) = self.region_laid.first() {
+                if p.y < rl.origin.y {
+                    hit = Some((rl.id.clone(), 0));
+                }
+            }
+            if hit.is_none() {
+                if let Some(rl) = self.region_laid.last() {
+                    let byte = rl.layout.hit((p.x - rl.origin.x) as f32, (rl.layout.height() - 1.0) as f32);
+                    hit = Some((rl.id.clone(), byte_to_char(&rl.text, byte)));
+                }
+            }
+        }
+        if let Some((block, offset)) = hit {
+            if extend {
+                self.inner.set_anchor();
+            } else {
+                self.inner.clear_anchor();
+            }
+            self.inner.set_caret(Caret { block, offset });
+            self.dirty = true;
+        }
+    }
+
     /// Resolve a pointer position to a caret and apply it (optionally extending
     /// the selection for click-drag).
     fn caret_from_pointer(&mut self, p: Point, extend: bool) {
+        // When editing a running region, the caret lives in that band — hit-test
+        // its laid geometry, not the body's.
+        if self.inner.in_running_region() {
+            self.band_caret_from_pointer(p, extend);
+            return;
+        }
         // Find the laid block under the pointer: cells hit by their full box (so
         // the right column is chosen), normal blocks by their vertical band.
         let mut hit: Option<(String, usize)> = None;
@@ -2203,8 +2342,14 @@ impl WordProcessorWidget {
     /// `is_footer` anchors the stack to the band's bottom (footers) vs. its top
     /// (headers). Drawn through `ctf` so it magnifies with the page content.
     ///
-    /// Returns whether anything was drawn (so the caller can fall back to the
-    /// default page indicator only when no footer exists).
+    /// When `editing` is set this band is the active edit context: it is shaped
+    /// with the *raw* (1 char ⇄ 1 caret offset) runs so click-to-caret + the band
+    /// caret line up with the model, and the per-block laid geometry is returned
+    /// for the caller to stash (so the event handler + caret pass can use it).
+    ///
+    /// Returns `(drew_anything, laid)` — `drew` lets the caller fall back to the
+    /// default page indicator only when no footer exists; `laid` is empty unless
+    /// `editing`.
     #[allow(clippy::too_many_arguments)]
     fn draw_running_band(
         &self,
@@ -2215,9 +2360,10 @@ impl WordProcessorWidget {
         page_no: usize,
         band: Rect,
         is_footer: bool,
-    ) -> bool {
+        editing: bool,
+    ) -> (bool, Vec<RegionLaid>) {
         if blocks.is_empty() || band.height() <= 2.0 {
-            return false;
+            return (false, Vec::new());
         }
         let wrap_w = band.width().max(40.0) as f32;
         // Header/footer run text is a touch smaller and muted, so it reads as
@@ -2227,7 +2373,7 @@ impl WordProcessorWidget {
         let mut shaped: Vec<RichTextLayout> = Vec::with_capacity(blocks.len());
         let mut total_h = 0.0f64;
         for b in blocks {
-            let runs = running_head_runs(b, page_no);
+            let runs = if editing { running_head_runs_editing(b) } else { running_head_runs(b, page_no) };
             let align = block_align(b, TextAlign::Left);
             let layout = RichTextLayout::shape(
                 &mut tr.font_system,
@@ -2247,12 +2393,84 @@ impl WordProcessorWidget {
         // bottom to fit the footer's content (footers).
         let mut y = if is_footer { (band.y1 - total_h).max(band.y0) } else { band.y0 };
         let mut drew = false;
-        for layout in &shaped {
-            tr.draw_rich(scene, layout, ctf * Affine::translate((band.x0, y)), PAPER_MUTED);
-            y += layout.height() as f64;
+        // Active-context bands draw their ink at full strength (so the editable
+        // text reads as live copy); non-active bands stay muted chrome. The
+        // editable ink is paper-context (dark), not chrome-context — the band sits
+        // on the light paper sheet, so chrome ink (light in dark mode) would be
+        // invisible there.
+        let ink = if editing { PAPER_INK } else { PAPER_MUTED };
+        let mut laid: Vec<RegionLaid> = Vec::new();
+        // Consume `shaped` so the (non-Clone) layouts can be *moved* into the laid
+        // geometry when editing, instead of cloned.
+        for (idx, layout) in shaped.into_iter().enumerate() {
+            let origin = Point::new(band.x0, y);
+            tr.draw_rich(scene, &layout, ctf * Affine::translate((origin.x, origin.y)), ink);
+            let h = layout.height() as f64;
+            if editing {
+                let b = &blocks[idx];
+                laid.push(RegionLaid { id: b.id.clone(), text: b.text.clone(), origin, layout });
+            }
+            y += h;
             drew = true;
         }
-        drew
+        (drew, laid)
+    }
+
+    /// Draw the "you are editing this band" affordance around the active
+    /// header/footer band (Word-style header/footer edit mode): a subtle dashed
+    /// accent outline plus a small "Header"/"Footer" tab label at the band's top
+    /// edge. Drawn through `ctf` so it tracks the page zoom.
+    fn draw_active_band_chrome(&self, scene: &mut Scene, ctf: Affine, tr: &mut TextRenderer, band: Rect) {
+        // A faint fill so the active band reads as the focused surface.
+        let pad = Rect::new(band.x0 - 2.0, band.y0 - 1.0, band.x1 + 2.0, band.y1 + 1.0);
+        scene.fill(Fill::NonZero, ctf, ACTIVE_BAND_FILL, None, &pad);
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0).with_dashes(0.0, [4.0, 3.0]),
+            ctf,
+            ACTIVE_BAND_EDGE,
+            None,
+            &pad,
+        );
+        let label = if self.inner.region() == Region::Header { "Header" } else { "Footer" };
+        let approx = label.chars().count() as f64 * 6.4 + 12.0;
+        let tab = Rect::new(band.x0 - 2.0, band.y0 - 15.0, band.x0 - 2.0 + approx, band.y0 - 1.0);
+        scene.fill(Fill::NonZero, ctf, ACTIVE_BAND_EDGE, None, &vello::kurbo::RoundedRect::from_rect(tab, 2.0));
+        // White label on the blue accent tab (a fixed contrast pair, not theme ink,
+        // since the tab colour is fixed).
+        tr.draw_text(scene, label, 10.0, Color::WHITE, ctf * Affine::translate((tab.x0 + 6.0, tab.y0 + 1.5)), None);
+    }
+
+    /// Render the caret (and any selection highlight) inside the active
+    /// header/footer band, using the laid geometry captured in `region_laid`. The
+    /// band caret mirrors the body caret (same `caret_geometry` machinery) so it
+    /// blinks-free but lands exactly between glyphs.
+    fn draw_band_caret(&self, scene: &mut Scene, ctf: Affine) {
+        if !self.focused {
+            return;
+        }
+        let caret = self.inner.caret();
+        // Selection highlight (single-band, char range) when present.
+        if let Some((s, e)) = self.inner.band_selection_range() {
+            if let Some(rl) = self.region_laid.iter().find(|r| r.id == s.0) {
+                let sb = char_to_byte(&rl.text, s.1);
+                let eb = char_to_byte(&rl.text, e.1);
+                for (rx0, ry0, rx1, ry1) in rl.layout.selection_rects(sb, eb) {
+                    let r = Rect::new(rl.origin.x + rx0 as f64, rl.origin.y + ry0 as f64, rl.origin.x + rx1 as f64, rl.origin.y + ry1 as f64);
+                    scene.fill(Fill::NonZero, ctf, PAPER_SELECTION, None, &r);
+                }
+            }
+        }
+        if let Some(rl) = self.region_laid.iter().find(|r| r.id == caret.block) {
+            let byte = char_to_byte(&rl.text, caret.offset);
+            let (cx, cy, ch) = rl.layout.caret_geometry(byte);
+            let c = Rect::new(
+                rl.origin.x + cx as f64,
+                rl.origin.y + cy as f64,
+                rl.origin.x + cx as f64 + CARET_WIDTH,
+                rl.origin.y + cy as f64 + ch as f64,
+            );
+            scene.fill(Fill::NonZero, ctf, PAPER_CARET, None, &c);
+        }
     }
 
     /// The per-side measurement the active mode edits (the page margins).
@@ -3819,6 +4037,11 @@ impl Widget for WordProcessorWidget {
         // `ctf` (the zoom transform) so the page magnifies with the content.
         let header = std::mem::take(&mut self.header);
         let footer = std::mem::take(&mut self.footer);
+        // Which running region (if any) is currently the active edit context, and
+        // on which page its editable band lives (the first page is the reference —
+        // the header/footer content is shared across pages, like Word).
+        let edit_region = self.inner.region();
+        self.region_laid.clear();
         for i in 0..num_pages {
             let ptop = page_top + i as f64 * page_pitch - sy;
             let sheet = Rect::new(page_x, ptop, page_x + page_w, ptop + letter_h);
@@ -3826,12 +4049,28 @@ impl Widget for WordProcessorWidget {
             let page_no = i + 1;
             // Header band: the top margin, inset by the L/R text margins.
             let head_band = Rect::new(sheet.x0 + m.left, sheet.y0, sheet.x1 - m.right, sheet.y0 + m.top);
-            self.draw_running_band(scene, ctf, text_renderer, &header, page_no, head_band, false);
             // Footer band: the bottom margin, inset by the L/R text margins.
             let foot_band = Rect::new(sheet.x0 + m.left, sheet.y1 - m.bottom, sheet.x1 - m.right, sheet.y1);
-            let drew_footer = self.draw_running_band(scene, ctf, text_renderer, &footer, page_no, foot_band, true);
+            // Cache the reference-page band rects for the event handler's hit-test.
+            if i == 0 {
+                self.head_band_rect = head_band;
+                self.foot_band_rect = foot_band;
+            }
+            let head_editing = i == 0 && edit_region == Region::Header;
+            let foot_editing = i == 0 && edit_region == Region::Footer;
+            let (_, head_laid) = self.draw_running_band(scene, ctf, text_renderer, &header, page_no, head_band, false, head_editing);
+            let (drew_footer, foot_laid) =
+                self.draw_running_band(scene, ctf, text_renderer, &footer, page_no, foot_band, true, foot_editing);
+            if head_editing {
+                self.region_laid = head_laid;
+                self.draw_active_band_chrome(scene, ctf, text_renderer, head_band);
+            }
+            if foot_editing {
+                self.region_laid = foot_laid;
+                self.draw_active_band_chrome(scene, ctf, text_renderer, foot_band);
+            }
             // Default page indicator in the gap — only when no footer was drawn.
-            if !drew_footer {
+            if !drew_footer && !foot_editing {
                 let label = format!("Page {page_no}");
                 let approx = label.chars().count() as f64 * 6.4;
                 let lx = (sheet.x0 + sheet.x1) / 2.0 - approx / 2.0;
@@ -4280,6 +4519,22 @@ impl Widget for WordProcessorWidget {
             self.draw_layout_overlay(scene, ctf, text_renderer, page);
         }
 
+        // Header/footer edit mode: veil the body text region of every page so the
+        // body visibly recedes (Word dims the body while editing a running head),
+        // and render the caret inside the active band. Drawn last so the veil sits
+        // over the body content but the band (in the margin) stays crisp + the
+        // band caret reads on top.
+        if self.inner.in_running_region() {
+            for i in 0..num_pages {
+                let ptop = page_top + i as f64 * page_pitch - sy;
+                let body_top = ptop + m.top;
+                let body_bot = ptop + letter_h - m.bottom;
+                let veil = Rect::new(page_x + m.left, body_top, page_x + page_w - m.right, body_bot);
+                scene.fill(Fill::NonZero, ctf, BODY_DIM_VEIL, None, &veil);
+            }
+            self.draw_band_caret(scene, ctf);
+        }
+
         scene.pop_layer();
 
         // Scrollbar thumb (right edge) when the content overflows the canvas.
@@ -4632,6 +4887,34 @@ impl Widget for WordProcessorWidget {
                         return;
                     }
                 }
+                // Edit-context switch: a click into a page header/footer band
+                // focuses that running region (creating an empty paragraph if the
+                // region is empty); a click in the body while editing a running
+                // region returns to the body. This is the entry point to Word-style
+                // header/footer editing.
+                let band = self.band_at_pointer(cp);
+                match band {
+                    Some(region) if region != self.inner.region() => {
+                        // Switch into the band. `focus_region` seats the caret on
+                        // the region's (possibly newly-created) first block; the
+                        // band lays out next frame, after which clicks refine the
+                        // exact offset.
+                        self.inner.focus_region(state, region);
+                        self.refresh_blocks(state);
+                        self.drag.press(self.pointer, shift);
+                        self.dirty = true;
+                        self.needs_commit = true;
+                        *handled = true;
+                        return;
+                    }
+                    None if self.inner.in_running_region() => {
+                        // Click in the body area exits header/footer editing.
+                        self.inner.focus_body(state);
+                        self.refresh_blocks(state);
+                        // Fall through so the same click also seats the body caret.
+                    }
+                    _ => {}
+                }
                 // Selection gesture (ui::DragSelect): shift extends; double/triple
                 // click select word/paragraph; a plain press starts a fresh drag.
                 let intent = self.drag.press(self.pointer, shift);
@@ -4696,6 +4979,16 @@ impl Widget for WordProcessorWidget {
                     && matches!(logical_key, Key::Named(NamedKey::Escape))
                 {
                     self.context_menu.close();
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
+                // Escape exits header/footer editing, returning to the body.
+                if self.inner.in_running_region()
+                    && matches!(logical_key, Key::Named(NamedKey::Escape))
+                {
+                    self.inner.focus_body(state);
+                    self.refresh_blocks(state);
                     self.dirty = true;
                     *handled = true;
                     return;
@@ -4779,6 +5072,20 @@ impl Widget for WordProcessorWidget {
                         // (view-only, default ON). Never mutates the document.
                         if shift && s.eq_ignore_ascii_case("m") {
                             self.toggle_markup();
+                            *handled = true;
+                            return;
+                        }
+                        // Ctrl+Shift+P inserts a page-number field at the caret.
+                        // Primarily for header/footer editing (a running "Page N"),
+                        // but works in the body too (the field renderer substitutes
+                        // the page number per page).
+                        if shift && s.eq_ignore_ascii_case("p") {
+                            self.inner.insert_page_number(state);
+                            self.refresh_blocks(state);
+                            self.dirty = true;
+                            self.needs_commit = true;
+                            self.modified = true;
+                            self.note_edit_for_autosave(state);
                             *handled = true;
                             return;
                         }
@@ -6815,6 +7122,149 @@ mod tests {
         assert_eq!(join(1), "Page 1", "page 1 footer resolves to 'Page 1'");
         assert_eq!(join(2), "Page 2", "page 2 footer resolves to 'Page 2'");
         assert!(!join(2).contains(qdoc::schema::FIELD_PLACEHOLDER), "the field placeholder is substituted, not rendered literally");
+    }
+
+    /// Header / footer materialized text via the production snapshot path.
+    fn header_text(wp: &WordProcessorWidget, state: &ui::State) -> Vec<String> {
+        let c = wp.model().containers.clone().unwrap();
+        qdoc::model::materialize_region(&state.doc, &c, qdoc::model::Region::Header).into_iter().map(|b| b.text).collect()
+    }
+    fn body_text(wp: &WordProcessorWidget, state: &ui::State) -> Vec<String> {
+        let c = wp.model().containers.clone().unwrap();
+        qdoc::model::materialize(&state.doc, &c).blocks.into_iter().map(|b| b.text).collect()
+    }
+
+    /// Drive a real named-key press (e.g. Escape) through `handle_event`.
+    fn press_named(wp: &mut WordProcessorWidget, state: &mut ui::State, key: NamedKey) {
+        use winit::keyboard::{NativeKeyCode, PhysicalKey};
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let node = NodeId::new(0);
+        let mods = Modifiers::default();
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        ev.logical_key = Key::Named(key);
+        ev.text = None;
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        wp.handle_event(
+            &WindowEvent::KeyboardInput { device_id: unsafe { std::mem::zeroed() }, event: ev, is_synthetic: false },
+            1.0, &mods, &mut state.doc, &state.root, &mut handled, &mut focus, node, &taffy,
+        );
+    }
+
+    /// End-to-end through the **production** event path: click into the header
+    /// band → the edit context switches to Header → typed characters land in the
+    /// header container (asserted via `materialize_region`), not the body. Then a
+    /// click back in the body returns the context to Body, and typing edits the
+    /// body again.
+    #[test]
+    fn clicking_header_band_routes_typing_into_the_header() {
+        let (mut state, mut wp) = bound();
+        // Put some content in the body first (proves it is not what gets edited).
+        wp.model_mut().insert_str(&mut state.doc, "body text");
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        assert_eq!(wp.model().region(), Region::Body, "starts in the body context");
+
+        // The cached header-band rect is content space; map its centre to a screen
+        // point the way the production pointer→content mapping inverts (identity at
+        // zoom 1.0, but go through the helper to be exact).
+        let hb = wp.head_band_rect;
+        assert!(hb.height() > 0.0, "header band rect was cached by draw");
+        let centre_content = Point::new((hb.x0 + hb.x1) / 2.0, (hb.y0 + hb.y1) / 2.0);
+        let screen = Point::new(
+            wp.content_x_to_screen(centre_content.x),
+            wp.zoom_anchor.y + (centre_content.y - wp.zoom_anchor.y) * wp.zoom,
+        );
+
+        left_click(&mut wp, &mut state, screen);
+        assert_eq!(wp.model().region(), Region::Header, "clicking the header band focuses the Header context");
+
+        // Type into the header — production keyboard path.
+        for ch in "My Title".chars() {
+            type_char(&mut wp, &mut state, ch);
+        }
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+
+        // Assert on the materialized HEADER snapshot (the production path).
+        assert_eq!(header_text(&wp, &state), vec!["My Title".to_string()], "typed text landed in the header container");
+        assert_eq!(body_text(&wp, &state), vec!["body text".to_string()], "the body is untouched");
+        // The band laid out the header block, so a caret can render in it.
+        assert!(wp.region_laid.iter().any(|r| r.text == "My Title"), "the header band is laid out for the active context");
+
+        // Escape returns to the body; typing then edits the body again.
+        press_named(&mut wp, &mut state, NamedKey::Escape);
+        assert_eq!(wp.model().region(), Region::Body, "Escape exits header editing");
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        wp.model_mut().move_end(&state.doc);
+        for ch in "!".chars() {
+            type_char(&mut wp, &mut state, ch);
+        }
+        assert_eq!(body_text(&wp, &state), vec!["body text!".to_string()], "after Escape, typing edits the body");
+        assert_eq!(header_text(&wp, &state), vec!["My Title".to_string()], "the header keeps its content");
+    }
+
+    /// Rasterize one frame while the header is the active edit context and write a
+    /// PNG (so the header-edit affordance — band wash + dashed outline + caret —
+    /// can be eyeballed). Renders through the real five-pass draw; asserts a
+    /// non-trivial image was produced. Output path is overridable via
+    /// `$QOS_WP_HEADER_SHOT` for manual inspection.
+    #[test]
+    fn header_edit_mode_renders_a_frame() {
+        let (mut state, mut wp) = bound();
+        wp.model_mut().insert_str(&mut state.doc, "The body paragraph recedes while the header is edited.");
+        // Focus the header and give it content through the production model API.
+        wp.model_mut().focus_region(&mut state.doc, Region::Header);
+        for ch in "Draft — Confidential".chars() {
+            wp.model_mut().insert_str(&mut state.doc, &ch.to_string());
+        }
+        let (w, h) = (1000u32, 700u32);
+        let theme = Theme::dark();
+        let presence = PresenceCtx::empty();
+        let permission = PermissionContext::permissive();
+        let mut tr = TextRenderer::new();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        wp.sync(&mut state.doc, &state.root);
+        let child = wp.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(
+                Style { size: Size { width: Dimension::length(w as f32), height: Dimension::length(h as f32) }, ..Default::default() },
+                &[child],
+            )
+            .unwrap();
+        {
+            let measure_map = node_map.clone();
+            let trr = &mut tr;
+            taffy
+                .compute_layout_with_measure(
+                    root,
+                    taffy::Size { width: AvailableSpace::Definite(w as f32), height: AvailableSpace::Definite(h as f32) },
+                    |known, available, node_id, _, _| {
+                        if let Some(&ptr) = measure_map.get(&node_id) {
+                            unsafe { (*ptr).measure(known, available, trr) }
+                        } else {
+                            taffy::Size::ZERO
+                        }
+                    },
+                )
+                .unwrap();
+        }
+        wp.apply_layout(&taffy, child, Point::ORIGIN);
+        let mut scene = Scene::new();
+        wp.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence, &permission);
+        // The header band laid out for the active context (so its caret + chrome
+        // are part of this frame).
+        assert!(wp.region_laid.iter().any(|r| r.text.contains("Draft")), "header band laid for the active context");
+
+        let out = std::env::var("QOS_WP_HEADER_SHOT").unwrap_or_else(|_| {
+            format!("{}/header-edit-mode.png", std::env::temp_dir().display())
+        });
+        ui::offscreen::OffscreenRenderer::new(w, h).render_png(&scene, Color::from_rgb8(0x20, 0x22, 0x28), std::path::Path::new(&out));
+        let meta = std::fs::metadata(&out).expect("a PNG frame was written");
+        assert!(meta.len() > 2000, "the rendered frame is a non-trivial PNG ({} bytes at {out})", meta.len());
     }
 
     #[test]
