@@ -1,14 +1,13 @@
 //! Accessibility semantic model for the qOS `ui` toolkit.
 //!
-//! This is the **data layer** of accessibility — workstream W0 of the a11y
-//! design (`docs/superpowers/specs/2026-06-30-accessibility-design.md`). It
+//! This is the **data layer** of accessibility. It
 //! defines the toolkit-ergonomic semantic types — [`Role`], [`AccessNode`],
 //! [`AccessState`], and [`Action`] — that every
 //! [`Widget`](crate::widget::Widget) describes itself with via
 //! [`Widget::accessibility`](crate::widget::Widget::accessibility).
 //!
-//! These types are deliberately a **thin convenience layer**. A later
-//! workstream (W4) maps them onto AccessKit's far richer schema (182 roles,
+//! These types are deliberately a **thin convenience layer**. The export
+//! layer maps them onto AccessKit's far richer schema (182 roles,
 //! 22 actions) and exports the assembled tree over AT-SPI2 so standard ATs
 //! (Orca, braille) work, while an in-process channel feeds the same nodes to
 //! the built-in screen reader. Keeping our surface small means a widget
@@ -29,7 +28,7 @@ use crate::color_compat::ColorCompat;
 /// Semantic role of an accessible element. A thin subset of AccessKit's 182
 /// roles covering the widgets the toolkit actually ships, plus the structural
 /// containers needed for landmark/heading navigation. Map liberally onto
-/// AccessKit when exporting (W4): unknown/rare cases fall back to
+/// AccessKit when exporting: unknown/rare cases fall back to
 /// [`Role::Generic`].
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -243,7 +242,7 @@ impl AccessState {
 
 /// An action that can be requested on an accessible element by an assistive
 /// technology or the built-in screen reader. Consumed by the future
-/// `Widget::perform_action` hook (W3/W4), which routes it through the same
+/// `Widget::perform_action` hook, which routes it through the same
 /// CRDT-mutating path as `handle_event`. Maps onto `accesskit::Action` and
 /// the AT-SPI action interface.
 #[non_exhaustive]
@@ -284,7 +283,7 @@ pub enum Action {
 ///
 /// Geometry comes from [`Widget::get_rect`](crate::widget::Widget::get_rect)
 /// and the subtree from [`Widget::children`](crate::widget::Widget::children);
-/// the `App` assembles the global tree from these (W4). `name`/`description`
+/// the `App` assembles the global tree from these. `name`/`description`
 /// must already be **FTL-resolved** strings (via [`i18n!`](crate::i18n)), not
 /// translation keys, because AccessKit/AT-SPI consume final text.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -356,7 +355,7 @@ impl AccessNode {
 }
 
 /// User-facing accessibility preferences. Stored in the per-user settings CRDT
-/// and mirrored into spawned sandboxes via `QOS_A11Y_*` env vars (W2), so every
+/// and mirrored into spawned sandboxes via `QOS_A11Y_*` env vars, so every
 /// `ui` app can read a consistent set. The shell owns theming and broadcasts
 /// changes; apps consult these to pick a [`Theme`](crate::theme::Theme) preset
 /// and to gate motion.
@@ -370,7 +369,7 @@ pub struct A11ySettings {
     /// [`Theme::high_contrast`]: crate::theme::Theme::high_contrast
     pub high_contrast: bool,
     /// Prefer reduced / no motion: animations jump to their end state instead
-    /// of easing. Consulted by `ui/src/animation` and the magnifier pan (W5).
+    /// of easing. Consulted by `ui/src/animation` and the magnifier pan.
     pub reduce_motion: bool,
     /// A screen reader is active. Apps/shell can use this to enable extra
     /// narration hooks and keep idle frames flowing for live regions.
@@ -390,7 +389,7 @@ impl Default for A11ySettings {
 /// WCAG 2.1 relative luminance of an sRGB colour, in `[0.0, 1.0]`. Alpha is
 /// ignored (colours are assumed opaque for contrast purposes). Used by the
 /// high-contrast theme tests and, later, by an automated contrast-ratio audit
-/// over theme token pairs (W2).
+/// over theme token pairs.
 pub fn relative_luminance(c: Color) -> f64 {
     fn channel(v: u8) -> f64 {
         let s = v as f64 / 255.0;

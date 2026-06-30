@@ -952,7 +952,7 @@ impl Widget for ActivityTimeline {
         "ActivityTimeline"
     }
 
-    /// Accessibility (W3): the timeline is a labelled list of history
+    /// Accessibility: the timeline is a labelled list of history
     /// entries. The accessible name is fixed ("Activity timeline"); the
     /// description carries the count of currently-visible (post-filter)
     /// entries so a screen reader can announce "Activity timeline, 7 items".
