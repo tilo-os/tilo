@@ -3129,6 +3129,8 @@ impl WordProcessorWidget {
             Some(WpFormat::Docx) => "Word Document",
             Some(WpFormat::Markdown) => "Markdown",
             Some(WpFormat::Pdf) => "PDF",
+            Some(WpFormat::Html) => "HTML",
+            Some(WpFormat::Rtf) => "Rich Text",
             None => "",
         };
         let dot = if self.modified { "●  " } else { "" };
